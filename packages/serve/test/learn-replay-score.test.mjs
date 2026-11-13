@@ -4,7 +4,7 @@
 // `both` guard only on 30 rows with 5 wrong.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { answerCorrect, championOf, clears, escalates, putGrade, servingOf, gradesOf, promotionOf, recordOnly, recordPromotion, promotionsOf, replayScore, sameAnswer, thresholdsOf } from "../dist/learn/promote.js";
+import { answerCorrect, championOf, clears, escalates, GRADES_KEPT, putGrade, PROMOTIONS_KEPT, servingOf, gradesOf, promotionOf, recordOnly, recordPromotion, promotionsOf, replayScore, sameAnswer, thresholdsOf } from "../dist/learn/promote.js";
 import { FIT_MIN_ROWS, fitLogistic, refitGuards } from "../dist/learn/refit.js";
 
 const guard = (node, p, threshold = 0) => ({ node, signal: "self", self: p ?? undefined, p, threshold, escalated: false });
@@ -173,4 +173,64 @@ test("champion/challenger: the digest promoted last serves while a newer revisio
   records = [champion, rec("c3", "promote", "refit", { refit: { from: "c1", guards: [] } }), { ...rec("x1", "replaying"), workflow: "other" }];
   assert.equal(championOf(records, "answer")?.digest, "c3");
   assert.deepEqual(servingOf(records), [{ workflow: "answer", digest: "c3", replaying: null }, { workflow: "other", digest: null, replaying: "x1" }]);
+});
+
+test("a replay row its workflow failed on (a step failed: a credential or tool the replay lacked) is no evidence: never scored, never the agent's answer", () => {
+  const rows = [
+    row("r1", { answer: "a", guards: [guard("pick", 0.9)] }),
+    row("r2", { answer: "b", outcome: "handed_back" }),
+    ...Array.from({ length: 8 }, (_, i) => row(`f${i}`, { answer: "z", outcome: "failed" })),
+  ];
+  const score = replayScore(rows, new Map([["pick", 0.5]]));
+  assert.deepEqual(score, { n: 2, agree: 1, agent_acc: 1, wf_acc: 1, delta: 0, handed_back: 1 }, "the eight failed rows are left out");
+});
+
+test("a refit never brings a guard down past hand-backs whose answer nobody read: 20 graded hand-backs at p 0.2 keep a 0.5 guard", () => {
+  const text = JSON.stringify({ ...FLOW, root: { ...FLOW.root, steps: [FLOW.root.steps[0], { ...FLOW.root.steps[1], guard: { signal: "self", threshold: 0.5 } }] } });
+  // Served runs its guard handed back (escalated at p 0.2), the agent's answer graded right: what the workflow would have
+  // said past 0.2 is unknown, so a threshold under 0.2 serves answers nobody checked.
+  const handed = Array.from({ length: 20 }, () => ({ guards: [{ node: "pick", signal: "self", self: 0.2, p: 0.2, threshold: 0.5, escalated: true }], answered: false, wfCorrect: null, agentCorrect: 1 }));
+  const kept = refitGuards(text, handed, "2026-11-13T00:00:00.000Z");
+  assert.equal(kept.text, undefined, `the guard stays at 0.5: ${JSON.stringify(kept.guards)}`);
+  // A hand-back on a failed step (no guard escalated) says nothing of the thresholds: it never moves one either way.
+  const failed = Array.from({ length: 20 }, () => ({ guards: [{ node: "pick", signal: "self", self: 0.9, p: 0.9, threshold: 0.5, escalated: false }], answered: false, wfCorrect: null, agentCorrect: 1 }));
+  assert.equal(refitGuards(text, [...handed, ...failed], "t").text, undefined);
+  // Rows that answered alone still bring it down where their answers say so.
+  const right = Array.from({ length: 20 }, () => ({ guards: [{ node: "pick", signal: "self", self: 0.3, p: 0.3, threshold: 0.1, escalated: false }], answered: true, wfCorrect: true, agentCorrect: 1 }));
+  const low = refitGuards(text, right, "t");
+  assert.equal(low.guards.find((one) => one.node === "pick")?.threshold, 0.001);
+});
+
+test("each grade takes the next seq, a re-grade a new one, and the seq keeps climbing past the grades kept", async () => {
+  const kv = new Map();
+  const settings = {
+    get: async (key) => (kv.has(key) ? structuredClone(kv.get(key)) : undefined),
+    putIfAbsent: async (key, value) => (kv.has(key) ? kv.get(key) : (kv.set(key, structuredClone(value)), value)),
+    replaceIf: async (key, was, value) => (JSON.stringify(kv.get(key)) === JSON.stringify(was) ? (kv.set(key, structuredClone(value)), true) : false),
+  };
+  for (let i = 0; i < GRADES_KEPT + 5; i++) await putGrade(settings, "a", { run: `r${i}`, correct: true, source: "eval", at: `t${i}`, path: "agent" });
+  const again = await putGrade(settings, "a", { run: `r${GRADES_KEPT + 4}`, correct: false, source: "eval", at: "t", path: "agent" });
+  const grades = await gradesOf(settings, "a");
+  assert.equal(grades.length, GRADES_KEPT);
+  assert.equal(again.seq, GRADES_KEPT + 6);
+  assert.deepEqual(grades.slice(-2).map(({ run, seq }) => [run, seq]), [[`r${GRADES_KEPT + 3}`, GRADES_KEPT + 4], [`r${GRADES_KEPT + 4}`, GRADES_KEPT + 6]]);
+});
+
+test("the promotion history trim never drops a champion: newer revisions replaying and held past PROMOTIONS_KEPT leave it serving", async () => {
+  const kv = new Map();
+  const settings = {
+    get: async (key) => (kv.has(key) ? structuredClone(kv.get(key)) : undefined),
+    putIfAbsent: async (key, value) => (kv.has(key) ? kv.get(key) : (kv.set(key, structuredClone(value)), value)),
+    replaceIf: async (key, was, value) => (JSON.stringify(kv.get(key)) === JSON.stringify(was) ? (kv.set(key, structuredClone(value)), true) : false),
+  };
+  const rec = (digest, decided, extra = {}) => ({ workflow: "answer", digest, at: "t", decided, source: "replay", reason: "r", ...extra });
+  await recordPromotion(settings, "a", rec("champ", "promote", { commit: "s1" }), (was) => was === undefined);
+  for (let i = 0; i < PROMOTIONS_KEPT; i++) {
+    await recordPromotion(settings, "a", rec(`c${i}`, "replaying"), (was) => was === undefined);
+    await recordPromotion(settings, "a", rec(`c${i}`, "hold"), (was) => was?.decided === "replaying");
+  }
+  const records = await promotionsOf(settings, "a");
+  assert.equal(records.length, PROMOTIONS_KEPT);
+  assert.equal(championOf(records, "answer")?.digest, "champ", "the champion still serves");
+  assert.deepEqual(records.at(-1), rec(`c${PROMOTIONS_KEPT - 1}`, "hold"), "the newest kept");
 });

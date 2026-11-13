@@ -1,4 +1,5 @@
-// The Agent37 host: Agent37 Cloud instances (kind linux), each a whole VM by default (type "vm"), or a gVisor sandbox
+// The Agent37 host: Agent37 Cloud instances (kind linux, or kind desktop on our box template, agentrun-box, whose Xvfb
+// the adapter starts through the daemon), each a whole VM by default (type "vm"), or a gVisor sandbox
 // (type "default"). The control plane is Agent37's REST API over fetch (https://api.agent37.com/v1, a Bearer key);
 // every command (the daemon's upload, its install, init's start, the stdio bridge) goes over SSH, as root, through the
 // host's own ssh2 package, of which this package names only the slice it uses (Ssh2Module) and imports nothing at load.
@@ -107,7 +108,7 @@ export type Agent37Type = "vm" | "default";
 export type Agent37Region = "us" | "eu" | "ap-south";
 
 /** The Agent37 provider's options: the key, the SSH key and ssh2, then the shared adapter's (HostedOptions). */
-export interface Agent37ProviderOptions extends Omit<HostedOptions, "label" | "kind" | "maxLifetimeMs"> {
+export interface Agent37ProviderOptions extends Omit<HostedOptions, "label" | "maxLifetimeMs"> {
 	/** The workspace's API key (sk_live_...). The caller passes it; this provider never reads it from the environment. */
 	apiKey: string;
 	/**
@@ -129,6 +130,11 @@ export interface Agent37ProviderOptions extends Omit<HostedOptions, "label" | "k
 	type?: Agent37Type;
 	/** us (default), eu or ap-south; outside us, type vm alone. */
 	region?: Agent37Region;
+	/**
+	 * linux (default): no screen; desktop: an X server started through the daemon (Xvfb on :0 unless options.desktop says
+	 * otherwise), so the spec's image is a template that has one: our box template, agentrun-box (box/build-agent37.mjs).
+	 */
+	kind?: "desktop" | "linux";
 	/** The longest lifetime check takes: 24 h by default, the janitor's cap; Agent37 itself never ends an instance. */
 	maxLifetimeMs?: number;
 	timeouts?: Partial<HostedTimeouts>;
@@ -199,7 +205,7 @@ const KILL_SCRIPT = [
 
 /** The mount kinds an Agent37 computer takes, as capabilities().mount declares them: the run's folder on an Archil disk. */
 export const MOUNT: readonly MountKind[] = AGENT37.mounts;
-/** The machine kind and groups of each configuration: kind linux on its plain template. */
+/** The machine kind and groups of each configuration: kind linux (the default), and kind desktop on the box template. */
 export const CAPABILITIES: readonly KindCapabilities[] = AGENT37.capabilities;
 
 const show = (value: unknown) => (value === undefined ? "nothing" : JSON.stringify(value));
@@ -811,7 +817,7 @@ export const conformance = () => import("./conformance/agent37.js");
 
 /**
  * Computers that are Agent37 instances, on the shared adapter. A spec's image is an Agent37 template's name:
- * "agent37-base", Agent37's plain Linux, by default.
+ * "agent37-base", Agent37's plain Linux, for a sandbox; "agentrun-box", our box template with Xvfb, for a desktop.
  */
 export class Agent37Provider extends HostedProvider {
 	constructor(options: Agent37ProviderOptions) {
@@ -848,7 +854,7 @@ export class Agent37Provider extends HostedProvider {
 		if (region !== "us" && region !== "eu" && region !== "ap-south") throw new Error(`region is us, eu or ap-south, not ${JSON.stringify(region)}`);
 		if (region !== "us" && type !== "vm") throw new Error(`Agent37 runs type default in us alone: ${region} takes type vm`);
 		const host = new Agent37Host({ apiKey, sshKey: privateKey, ssh2, fetch: fetcher, WebSocket, apiUrl: api.href.replace(/\/+$/, ""), proxyDomain, type, region });
-		super(host, { ...rest, label: "Agent37", kind: "linux", maxLifetimeMs, timeouts: { createMs: DEFAULT_CREATE_MS, requestMs: DEFAULT_REQUEST_MS, ...timeouts } });
+		super(host, { ...rest, label: "Agent37", maxLifetimeMs, timeouts: { createMs: DEFAULT_CREATE_MS, requestMs: DEFAULT_REQUEST_MS, ...timeouts } });
 	}
 }
 

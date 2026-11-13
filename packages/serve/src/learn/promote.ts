@@ -38,6 +38,9 @@ export interface Grade {
   readonly path: RunPath;
   readonly workflow?: string;
   readonly digest?: string;
+  /** Its place among the agent's grades, one more than the grade put before it (a re-grade takes a new one): a cursor a
+   *  serving digest's check counts new grades from (PromotionRecord.checked) that the GRADES_KEPT trim never moves back. */
+  readonly seq?: number;
 }
 
 /** What a replay says, the shape the promotion record keeps (SPEC: replay {n, agree, agent_acc, wf_acc, delta}):
@@ -59,8 +62,11 @@ export interface ReplayScore {
  *  while it replayed: one challenger at a time, so its replay runs were cancelled and it never serves). `source`: `replay` (decided on its replay), `dry_run` (fewer than REPLAY_MIN graded inputs: promoted on
  *  its passing dry run), `refit` (a threshold refit wrote this revision, decided on the rows it was fit on), `graded` (a
  *  serving revision's graded runs fell below the bar: held). `replay`: the numbers it was decided on, with the graded runs
- *  replayed (`of`) and what its replay runs cost (`cost_usd`, null when one's is unknown). `refit`: the guards a refit
- *  changed. `checked`: how many graded runs of it the last refit check read (refits run once per REFIT_EVERY more). */
+ *  replayed (`of`), what its replay runs cost (`cost_usd`, null when one's is unknown) and how many of its inputs were
+ *  skipped (`skipped_write`: each needed a write the graded run's recording does not have, learn/replay-calls.ts; never
+ *  run, never scored). `refit`: the guards a refit
+ *  changed. `checked`: the newest grade (its seq) the last refit check read (refits run once per REFIT_EVERY more graded runs
+ *  it served, counted by seq: a count of the grades kept stalls once the GRADES_KEPT trim holds it). */
 export interface PromotionRecord {
   readonly workflow: string;
   readonly digest: string;
@@ -68,7 +74,7 @@ export interface PromotionRecord {
   readonly decided: "promote" | "hold" | "replaying" | "superseded";
   readonly source: "replay" | "dry_run" | "refit" | "graded";
   readonly reason: string;
-  readonly replay?: ReplayScore & { readonly of: readonly string[]; readonly cost_usd?: number | null };
+  readonly replay?: ReplayScore & { readonly of: readonly string[]; readonly cost_usd?: number | null; readonly skipped_write?: number };
   readonly runs?: readonly string[];
   readonly refit?: { readonly from: string; readonly guards: readonly RefitGuard[] };
   readonly checked?: number;
@@ -113,10 +119,14 @@ async function updateKept<T>(settings: Pick<Settings, "get" | "putIfAbsent" | "r
 /** The agent's grades, oldest first. */
 export const gradesOf = async (settings: Pick<Settings, "get">, agentId: string): Promise<Grade[]> => itemsOf<Grade>(await settings.get(gradesKey(agentId)));
 
-/** Keeps `grade`, in place of any earlier grade of the same run, the newest GRADES_KEPT kept. */
+/** Keeps `grade`, in place of any earlier grade of the same run, the newest GRADES_KEPT kept, at the next `seq`. */
 export const putGrade = async (settings: Pick<Settings, "get" | "putIfAbsent" | "replaceIf">, agentId: string, grade: Grade): Promise<Grade> => {
-  await updateKept<Grade>(settings, gradesKey(agentId), (items) => [...items.filter((one) => one.run !== grade.run), grade].slice(-GRADES_KEPT));
-  return grade;
+  let kept = grade;
+  await updateKept<Grade>(settings, gradesKey(agentId), (items) => {
+    kept = { ...grade, seq: Math.max(0, ...items.map((one) => one.seq ?? 0)) + 1 };
+    return [...items.filter((one) => one.run !== grade.run), kept].slice(-GRADES_KEPT);
+  });
+  return kept;
 };
 
 /** The agent's promotion records, oldest first. */
@@ -177,18 +187,41 @@ export async function recordPromotion(settings: Pick<Settings, "get" | "putIfAbs
       return items;
     }
     kept = record;
-    return [...items, record].slice(-PROMOTIONS_KEPT);
+    return trimPromotions([...items, record]);
   });
   return kept;
 }
 
+/** The newest PROMOTIONS_KEPT records, in order, never dropping a champion (championOf): each workflow's champion keeps
+ *  its first promote record (its place) and its newest, however many newer revisions replayed or were held since. */
+export function trimPromotions(items: readonly PromotionRecord[]): PromotionRecord[] {
+  if (items.length <= PROMOTIONS_KEPT) return [...items];
+  const keep = new Set<number>();
+  for (const workflow of new Set(items.map((one) => one.workflow))) {
+    const champion = championOf(items, workflow);
+    if (!champion) continue;
+    keep.add(items.lastIndexOf(champion));
+    keep.add(items.findIndex((one) => one.workflow === workflow && one.digest === champion.digest && one.decided === "promote"));
+  }
+  for (let i = items.length - 1, room = PROMOTIONS_KEPT - keep.size; i >= 0 && room > 0; i--) {
+    if (keep.has(i)) continue;
+    keep.add(i);
+    room -= 1;
+  }
+  return items.filter((_, i) => keep.has(i));
+}
+
 /** One replayed input: the graded run it replays (`of`), the agent's recorded answer and its grade, and what the workflow
- *  did on it: answered alone (`answer`), handed back, or failed (no workflow, a stale digest, a run that did not end
- *  completed); with its guard rows, read record-only (recordOnly) so each step's p is known. */
+ *  did on it: answered alone (`answer`), handed back (it escalated: an escalate node or a guard), or failed (a step failed,
+ *  on a credential or tool the replay lacked among them, or its output off its schema; no workflow, a stale digest, a run
+ *  that did not end completed); with its guard rows, read record-only (recordOnly) so each step's p is known. A failed
+ *  row is no evidence either way (replayScore leaves it out): the replay ran without what the run it replays had. A
+ *  skipped one (`skipped_write`) is none either: its workflow stopped at a write the graded run's recording does not have,
+ *  which a replay never runs (learn/replay-calls.ts). */
 export interface ReplayRow {
   readonly of: string;
   readonly recorded: { readonly answer: string | null; readonly correct: boolean; readonly expected?: Readonly<Record<string, unknown>> };
-  readonly outcome: "answered" | "handed_back" | "failed";
+  readonly outcome: "answered" | "handed_back" | "failed" | "skipped_write";
   readonly answer: string | null;
   readonly guards: readonly GuardRow[];
 }
@@ -291,9 +324,14 @@ export function escalates(row: Pick<ReplayRow, "outcome" | "guards">, thresholds
 
 const round = (value: number) => Math.round(value * 1e4) / 1e4;
 
-/** What a replay says at the serving `thresholds`: each input the workflow would have answered alone graded by
- *  answerCorrect, each it would have handed back the agent's recorded answer and grade. */
-export function replayScore(rows: readonly ReplayRow[], thresholds: ReadonlyMap<string, number>): ReplayScore {
+/** The replayed inputs a replay scores: those its workflow answered or handed back, never one it failed on or skipped. */
+export const scoredRows = (rows: readonly ReplayRow[]): ReplayRow[] => rows.filter((row) => row.outcome === "answered" || row.outcome === "handed_back");
+
+/** What a replay says at the serving `thresholds`, over the inputs it answered or handed back (scoredRows: a failed or
+ *  skipped one is no evidence): each the workflow would have answered alone graded by answerCorrect, each it would have handed back the
+ *  agent's recorded answer and grade. */
+export function replayScore(all: readonly ReplayRow[], thresholds: ReadonlyMap<string, number>): ReplayScore {
+  const rows = scoredRows(all);
   let [agentRight, wfRight, agree, handed] = [0, 0, 0, 0];
   for (const row of rows) {
     if (row.recorded.correct) agentRight += 1;

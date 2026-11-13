@@ -619,9 +619,21 @@ Settings → Computers. The kind says what the agent is given, and the provider 
 |---|---|---|
 | `none` | The run's folder alone: no computer, and no provider (`{"kind": "none"}`) | |
 | `sandbox` | A Linux shell, with files and processes | `docker`, `daytona`, `modal`, `e2b` |
-| `desktop` | A screen, a pointer and keys (`desktop_screen`, `desktop_input`), and a shell where its provider mounts the run's folder | `docker` (with an image that has an X server), `e2b`, `orgo` |
-| `phone` | A rented Android: its screen, touch and apps (the `phone_*` tools) | `phone-harness` |
+| `desktop` | The computer's tools (`computer_observe`, `computer_act`, `computer_screenshot`, `computer_script`), and a shell where its provider mounts the run's folder | `docker` (with an image that has an X server), `e2b`, `orgo`, or [a paired computer](#a-persons-own-computer) by its id |
+| `phone` | A rented Android, through the same computer tools | `phone-harness` |
 | `browser` | A hosted browser (the browser tools) | `browserbase`, `kernel` |
+
+A desktop's and a phone's tools are one set over the computer's groups. With the `ui` group, `computer_observe` returns
+the app window's elements as compact lines (`@e12 button "Save"`), and `computer_act` runs steps on them by ref (press,
+set, click, type, key, scroll, drag, nav), each step saying its route and whether a readback verified it, and the answer
+ending with the window's new state. Without it, observe is a screenshot and act's steps are raw input at its pixels.
+`computer_script` runs JavaScript in an isolate in this server, with a typed `computer` object as its only binding (no
+network, no keys): a known sequence of steps is one script, and it returns only what the next decision needs. Its
+declarations are `spec/computer/computer.d.ts`, generated from `packages/computer/src/surface/api.ts`. On pi, a run
+with a desktop or a phone also has pi's code mode (`codemode`), whose scripts call the run's tools and have the same
+`computer` bound; the call is held to the kind's setting. In Codex's code mode, a script's call of a computer tool
+answers the tool's value as JSON. `computerMcp` (`src/workspace/computer-mcp.ts`) serves the same tools to an MCP
+client, each answer with its value as `structuredContent`.
 
 A kind with no provider, a provider that does not serve the kind, or a provider whose required keys are not saved is
 refused before anything starts, in words that name the fix in Settings → Computers. A Docker computer needs a Docker
@@ -683,6 +695,40 @@ one computer that it keeps between runs, instead of a fresh one for each run:
 - Archiving the agent, turning `persistent` off, or moving the setting to another provider or image deletes it.
 - The computer is owned by this server's id (kept in its store) and the agent's id, so two servers on one vendor
   account never take each other's. The janitor deletes an agent's computer only once its agent no longer wants it.
+
+#### A person's own computer
+
+A computer of your own (a laptop, a desktop, a phone) can be an agent's computer. A driver on it dials this server and
+holds the connection open, so the computer needs no open port and this server needs no address of its
+([spec/computer/attach.md](../../spec/computer/attach.md)). This server knows no OS: a paired computer is what its
+driver's hello says it is (its kind, os, device, screen, capability groups and features), and a driver on any OS that
+passes the binding's conformance cases (below) needs no change here.
+
+- **Pair it.** Settings → Computers → Pair a computer shows a code, such as `K7PD-W3QX` (`POST /v2/computers/pairings`),
+  and this server's address. The code pairs one computer, once, within 10 minutes. Type both into the driver: it trades
+  the code for its own token (`POST /v2/computers/pair`, which takes no token of this server's) and keeps that token in
+  the OS's keychain. This server keeps only the token's SHA-256. A wrong, used or expired code is a 404, and each source
+  address gets 10 tries a minute.
+- **It attaches.** The driver dials `GET /v2/computers/attach`, a WebSocket with its token and the subprotocol
+  `agentrun.computer.0.2`, and dials again when the connection drops. `GET /v2/computers` lists it under `paired` as its
+  hello says, online or offline, with the run that holds it and the time that hold ends by, and as a provider, named by
+  its name and os, of each kind its hello serves (`desktop`, `phone`), ready while it is online.
+- **An agent uses it.** `computer: {"kind": "desktop", "provider": "cmp-8f2k3jq7m4xw9tnb"}` names it by its id. A run
+  claims it at its start (one run at a time: another is refused while one holds it) and releases it at its end, or at
+  its lifetime, released or not; it is never made, stopped or deleted. A run of an agent whose computer is offline is
+  refused at its start, saying to open its driver. A run uses what the hello's groups and features allow.
+- **Remove it.** Remove on its row (`DELETE /v2/computers/{computer_id}`) ends its token and closes its connection; a
+  run holding it loses it. Pairing it again gives it a new id.
+- **One process.** A computer's connection lands on one server process, and only a run in that process can use it:
+  run `agentrun-serve start` with its runner beside the server (the default). A runner started apart
+  (`agentrun-serve runner`, beside a server started with `--no-runner`) refuses a paired computer at the claim, saying
+  so. A second server on one store is already refused by the store's owner lock, on SQLite and Postgres alike.
+- **Conformance.** `node dist/attach-conformance-cli.js [--port 7392] [--listen 127.0.0.1]` runs the binding's cases
+  against whatever driver pairs with the code it prints: pair, a wrong or used code, ping, a quiet minute, a redial
+  after each close it must redial after (4408, 1000, 1001, 4409) and after a drop, a binary frame (1003), a frame over
+  1 MiB (1009), a second socket with the same token (4409 to the older), and revoke (4401, no redial). It runs a store
+  of its own in a scratch directory, prints PASS or FAIL for each case, and exits 0 when all pass; it takes about five
+  minutes. The revoke case leaves the driver unpaired. Serve's tests run the same cases against a test driver.
 
 **Where the run's folder lives.** A server keeps its runs' folders in one of two modes:
 
@@ -1458,6 +1504,21 @@ Streamable HTTP with the official MCP SDK client (`@modelcontextprotocol/client`
 value}}` (up to 8). An `oauth` server is signed in to first ([below](#signing-in-with-oauth)), then previewed by name.
 `url` is `https`, or `http` on loopback.
 
+### Composio
+
+Composio is an MCP server like any other, so it needs no adapter of its own. Settings → MCP servers has a Composio
+preset: you give your Composio API key, a toolkit (`github`, `slack`...), the actions to grant (picked from the
+toolkit's list) and a server name, and the server has Composio make a managed MCP server for them, then saves it as an
+ordinary MCP server with the key sealed as an `x-api-key` header. `POST /v2/settings/mcp-servers/composio/tools`
+`{api_key, toolkit}` lists the actions; `PUT /v2/settings/mcp-servers/{name}/composio` `{api_key, toolkit, tools,
+user_id?}` makes and saves the server. When the toolkit needs your account and `user_id` (default `agentrun`) has none
+active, the answer's `connect_url` is Composio's page to connect it; nothing here signs in. Composio's server can leave
+out an action it was allowed (it did for `HACKERNEWS_GET_FRONTPAGE`), so the answer's `not_served` names any chosen
+action the saved server doesn't list. Both routes are the owner's
+session alone, and a saved Composio server is gated, approved and shown on the Timeline as any MCP server's tools are,
+"not metered" until you price them. Composio's own meta tools stay refused, and the helper actions that connect an
+account are left off the server's address.
+
 What can go wrong, told apart:
 
 - `422 auth_required`: the server answered 401 or 403. `details.auth` is `oauth` when it names protected-resource
@@ -1542,7 +1603,12 @@ proxy on a public https address, set `AGENTRUN_PUBLIC_URL` to that address and h
 and `X-Forwarded-Proto: https`: without them a start reads as another address (or plain http) than the callback's,
 and every start answers `409 wrong_origin`. For an MCP server whose URL is not loopback, every endpoint its authorization server names (and
 every request to one) must be `https` and resolve to no private, loopback or link-local address, or the sign-in or
-refresh is refused with words and nothing is sent. A loopback MCP server is a development-only exception: its
+refresh is refused with words and nothing is sent. A loopback MCP server (a `127.0.0.1` or `localhost` URL) is taken only
+by a server started with `AGENTRUN_MCP_ALLOW_LOOPBACK=1`, which says this is a local install: set it only on a machine you
+alone use, since loopback is this machine's other services too. Without it such a URL is refused at the save, the preview
+and the sign-in, in words naming the variable, and a runner never reaches one; only the runner beside such a server does.
+An MCP server's URL is shown on every read as its origin and `/…`: its path and query are held as a secret, sent only to
+the server itself, and sending the shown URL back for a saved server keeps the saved one. A loopback MCP server is a development-only exception: its
 authorization server may name endpoints on the MCP server's own loopback host, exactly as its URL writes it (never
 another loopback address, the IPv6 loopback, or a name for this machine in its place), on any port but this server's own; any other
 loopback endpoint is refused the same way. The host is pinned, not the port, as a local authorization server listens on
@@ -1669,23 +1735,25 @@ asked by default.
 ## Webhooks
 
 One URL hears of your runs without anyone watching the page. `PUT /v2/settings/webhook` with `{url}` sets it: an `http`
-or `https` address, with no user or password in it. Loopback and private-network addresses are allowed, so a receiver
-on your own machine or network works. Two kinds of message are POSTed to it about runs: `run.needs_input` when a run comes to
+or `https` address, with no user or password in it, on a public host: a loopback or private-network address is refused
+unless the operator allows it (`AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1`, below). Two kinds of message are POSTed to it about runs: `run.needs_input` when a run comes to
 need its person (`input_required`: a question, a call held for approval, a pause at its cap, an ask for its person in
 its browser, desktop or phone, or a stopped turn) and `run.ended` when it ends
 (completed, failed or cancelled, once the run's end is written). A [schedule](#schedules) whose firing fails sends a third,
 `trigger.failed`; a server with no triggers never sends one.
 
-A run's end and its `run.ended` are one durable step. The server chooses the end's time once and gives it to the agent
-store, so the row's `ended_at` and the message's `webhook-id` name one time. `run.ended` is queued only once the agent
-store has the end, so a receiver that reads the run back on its message (`GET /v2/runs/{id}`) reads it ended; while the
-store refuses the end (a full disk, a busy store), nothing is sent, until a later try of the write or the next server
-stores it. The outbox, in the store with the runs, keeps, in the same write as each message, which end and which wait of
-each run it queued. A server that starts queues any end of the last day that the agent store holds and the outbox does
-not, under the same `webhook-id` (one lost to a kill, or to a crash of the machine), and a server that takes over a run
-queues a wait it stands at that the outbox does not name (one the run came to while no server was up), under its one
-`webhook-id`. An end before the webhook was set is never sent. A run is continued only once its end's
-`run.ended` is in the outbox (`503` meanwhile), so a continued run's next end is its own, under its own id.
+The server follows the store's run-change feed: each run that reaches its end, or that its runner lets go waiting on a
+person, is told once, in order, whichever runner wrote it, so a receiver that reads the run back on its message
+(`GET /v2/runs/{id}`) reads it as the message says. The end's time is the store's, so the row's `ended_at` and the
+message's `webhook-id` name one time. A wait's `webhook-id` comes from its ask (a question's, an approval's call, a
+pause at the cap, a hand-over), so one ask sends one `run.needs_input`, however often the run is read and after its
+answer too. Everything the webhook keeps is in the store: its messages, their tries, and which
+end and which wait of each run it queued, written with each message in one transaction. While the store refuses that
+write (a full disk, a busy store), nothing is sent and the log says so (`condition=outbox_unwritable`); the server tells
+the notice again on its next read. A server that starts queues any end of the last day that the store holds and the
+webhook has not, under the same `webhook-id` (one lost to a kill, or to a crash of the machine), and any wait a run
+stands at that it has not told (one the run came to while no server was up), under its one `webhook-id`. An end before
+the webhook was set is never sent.
 
 ```json
 { "type": "run.needs_input", "timestamp": "2026-11-01T12:00:00.000Z",
@@ -1708,16 +1776,23 @@ with any of its libraries: `webhook-id` (the same on every try of a message, so 
 the secret's bytes. A receiver checks the signature against the raw body and refuses a timestamp more than 5 minutes
 from its clock, so a replay does not pass. The first `PUT` makes the secret, `whsec_` and 32 random bytes in base64,
 and answers `201` with it, once; `GET /v2/settings/webhook` never shows it. It is kept like a [tool key](#tool-keys):
-sealed under `AGENTRUN_SEAL_KEY`, in the store (SQLite or Postgres) with the webhook itself. A new secret is a `DELETE` and a
-`PUT`; a secret that no longer opens under the server's key (sealed under another) is replaced, and shown once, by the next `PUT`.
+sealed under the server's seal key in the store, and a replaced or removed one is kept sealed too, so a run that echoes
+it is still cut. A `PUT` that changes the URL makes a new secret and shows it once, as the first does; one that keeps the
+URL keeps it. `GET` and the log show the URL's origin and its last four characters, never the whole URL (a chat
+service's incoming-hook URL is a credential itself). The URL is refused when it is on a private network or this machine,
+by address or by any address its name resolves to, and each try resolves the name again and dials the address it
+checked; an operator who sends to an internal receiver sets `AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1` where the server starts. A `DIR/webhook.json` an earlier build left is not read: the
+server says so at its start (`condition=webhook_left_over`), and a `PUT` sets the webhook again. A new secret for the
+same URL is a `DELETE` and a `PUT`; a secret that no longer opens under the server's key (sealed under another) is
+replaced, and shown once, by the next `PUT`. The URL and its secret go live together: a `PUT` whose write the store
+refuses leaves the webhook as it was, and the secret it made is never used.
 
 A try that is not answered 2xx within 15 s fails; a redirect is not followed. A failed message is tried again on the
 spec's schedule, with jitter: after about 5 s, 5 min, 30 min, 2 h, 5 h and 10 h, then logged as failed
 (`event=webhook condition=delivery_failed`). Each message goes on its own tries, so two queued close together can
 arrive in either order: a receiver orders them by `webhook-timestamp`, or reads the run (`GET /v2/runs/{id}`). A
-`410 Gone` turns the webhook off (`disabled` in `GET`, and the log says why) until a `PUT` sets it again. Pending messages are kept in the store's outbox, so the next server goes on with
-them after a restart; a message can then come twice, under the same `webhook-id`. An outbox of another version
-is not read: the server starts with none, and the log says so (`condition=outbox_not_read`). `GET /v2/settings/webhook/deliveries`
+`410 Gone` turns the webhook off (`disabled` in `GET`, and the log says why) until a `PUT` sets it again. Pending messages are kept in the store, so the next server goes on with them after a
+restart; a message can then come twice, under the same `webhook-id`. `GET /v2/settings/webhook/deliveries`
 lists the last 50 attempts (`webhook_id`, type, status code, latency, error, when, and the next try's time), and
 `POST /v2/settings/webhook/deliveries/{webhook_id}/redeliver` sends one of those messages again, once, under the same
 `webhook-id`. `POST /v2/settings/webhook/test` sends a `webhook.test` message once and answers how it went. A webhook a
@@ -1821,6 +1896,21 @@ since GitHub's carry their own ids and times. `X-GitHub-Delivery` (1 to 255 prin
 delivery on the payload's tag, for tracing. A request that carries no scheme's signature header, or more than
 one, or is signed under a scheme other than its trigger's, is the same `401` as a bad signature, and the headers are
 checked before the body is read.
+
+`composio` takes [Composio](https://composio.dev) trigger events. Register the trigger's `hook_url` as Composio's webhook
+subscription (`POST /api/v3.1/webhook_subscriptions` with `enabled_events: ["composio.trigger.message"]`); Composio
+answers with a `secret` it makes, which you give here, whole and as Composio shows it, with `POST /v2/triggers/{id}/secret`
+and the body `{"secret": "..."}` (the same call replaces it when you rotate it in Composio). A composio trigger is made with no
+secret (the URL carries its id, so Composio can only make the secret after); until one is set every request is refused. It is sealed as a minted one is and never shown again; this server never
+makes one for a composio trigger. Composio signs as Standard Webhooks does (`webhook-id`, `webhook-timestamp`, `webhook-signature`) but keyed by the
+UTF-8 bytes of that secret string, not a decoded `whsec_` key, which is why a `standard` trigger cannot take it. The
+firing's key is `webhook-id`, the event is the body's `metadata.trigger_slug`, so `accept: [{"event":
+"GITHUB_ISSUE_ADDED_EVENT"}]` takes one Composio trigger's events, and a rule's `where` pointers read the payload under
+`/data`. The subscription also delivers account events (`composio.connected_account.expired`,
+`composio.connected_account.activated`, `composio.trigger.disabled`), signed the same way, with no slug: their event is the
+body's top-level `type`, so `accept` can take them too. A Composio project's subscription posts every event to the one URL it names, so it fires that one composio
+trigger and its agent: other triggers never see those deliveries, whatever their `accept`. The tag also names
+`trigger_id` and `user_id`.
 
 `accept` makes a trigger take only the events it names, from the delivery alone:
 
@@ -2855,11 +2945,14 @@ cap, due at the run's first request), the words say the budget instead, on every
 $X, enough for little work: answer as soon as you can." On pi the words go into that one request's context;
 on claude-agent, codex and opencode the model proxy adds them to the body (after everything the CLI sent, so its cached
 prefix is unchanged). Neither CLI nor pi keeps them in its transcript, and no message is queued, so nothing runs after
-the model's answer. Once per cap, across restarts; a raise re-arms it.
+the model's answer. Once per cap, across restarts; a raise re-arms it. The note also comes due, if it has not already,
+on the request whose tool call would be refused now (the wrap-up below: what is left no longer covers what the run keeps
+back to answer), so the note tells the model what is left no later than its tools stop.
 
-A capped run also stops calling tools before its cap stops it. Once what it has spent, plus what its requests and paid
-steps still out are held at (their worst case, as the cap counts them, a browser session's open reserve included),
-reaches 75% of its cap, the run's tool gate
+A capped run also stops calling tools before its cap stops it. It keeps back enough to answer: one typical step (its own
+answers' typical cost) and one final answer at its least, as the cap prices the main model's next request. Once what it
+has spent, plus what its requests and paid steps still out are held at (their worst case, as the cap counts them, a
+browser session's open reserve included), leaves less than that, the run's tool gate
 refuses every call a model makes, in every conversation of the run, on every harness, before any setting or approval
 is read, with one fixed text: "Budget nearly spent: stop calling tools and answer now from what you have." A call that
 would open a child conversation is refused the same way, so no new one starts. Nothing in flight is cut: a child still
@@ -2868,7 +2961,10 @@ model requests are judged by the cap as before, so the run's final answer still 
 request that does not fit what is left is refused as above. The figure is read from the run's booking records at each
 call, never kept in memory, so a restart or a claim moved to another runner holds the same line, and a raise moves it.
 Several requests out at once hold far more than they cost, which is why a fan-out of children used to end a small cap
-with no answer at all; the quarter left above the line is the room for each of them, and the parent, to answer.
+with no answer at all: their holds count as taken, so the run stops calling tools while each of them, and the parent,
+still has room to answer. A simple run, with nothing else out, uses its cap up to its last step and answer. The run is
+told what is left (its wrap-up note, above) no later than its first refused call. Its one known miss: a request that
+writes to its max output can still leave no room for the answer; then the run pauses for a raise rather than overspend.
 
 Under a cap each request is limited to the
 output tokens what is left of the cap can buy, thinking included, never more than it asks for or than the model's
@@ -2895,13 +2991,13 @@ screenshots, then the answer), spending about $0.04 in all:
 
 | Cap mode | Route | First request needs | Five-step run needs | Each further step |
 | --- | --- | --- | --- | --- |
-| `strict` | Through a gateway (OpenRouter): the byte bound | $0.05 | $0.11 | about $0.013 |
+| `strict` | Through a gateway (OpenRouter): the byte bound | $0.06 | $0.12 | about $0.013 |
 | `strict` | Straight to Anthropic: Anthropic's count | $0.03 | $0.09 | about $0.012 |
 | `expected` (the default) | Either | as `strict` | $0.06 | about $0.007 |
 
 In `strict` mode every step's whole input is priced at the cache-write price. In `expected` mode a step after the first is priced from what the session's previous request read from the cache, so a five-step run needs about $0.06 by either route, and about $0.007 a further step; the first request is priced as in `strict`, so its figure is the same. A claude-agent run's first request is of the same size (the pinned
 CLI's measured 6,926 bytes with five tools: $0.04 for its first request through a gateway). A cap below these pauses at
-once with `Not sent: ... the next step needs at least $X`, and a raise to that figure sends it on.
+once with `Not sent: ... the next step needs at least $X`, and a raise to that figure sends it on. (In `strict` mode through a gateway, a run a cent under the five-step figure is not parked before its last step: the cap's wrap-up refuses its last screenshot, and the run answers from what it has.)
 `packages/serve/test/cap-minimum.test.mjs` holds these figures to what the cap does. A request in flight holds what it was admitted at until it answers, so requests
 sent side by side cannot pass the cap together. Spent so far is read from the run's store each time its process starts, so it
 survives a restart, plus each response since, and with them each charge a paid tool booked (`monid.run`, which is itself

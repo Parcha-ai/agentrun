@@ -1,12 +1,14 @@
 // The ui group on the ui fixture (ui-fixture.ts): observe's shape on a window whose elements the suite knows; refs that
 // stay good across states while their element exists and go stale when it leaves; a point refused as stale once its
-// window changed; an expect met and one unmet; the route each step took; and hello.features, each declared feature
+// window changed; an expect met and one unmet; the route each step took; a settle on the tree while a caret blinks; a
+// set the app takes back answered unverified; a window expect; an act whose window closed, with no window left or with
+// another to follow; and hello.features, each declared feature
 // doing what it says and each one off refused with its own sentence. The fixture is an image's, so its cases are Full: a
 // computer without it skips them in words. ui.hello needs no fixture and is Core for every computer of the ui group.
-import { FEATURES, type Feature, MAX_IMAGE_EDGE, type Point, type UiActParams, type UiActResult, type UiNode, type UiObserveResult, type UiRoute, type UiStepResult } from "../../protocol.js";
+import { FEATURES, type Feature, MAX_IMAGE_EDGE, MAX_SETTLE_MS, type Point, SET_HOLD_MS, type UiActParams, type UiActResult, type UiNode, type UiObserveResult, type UiRoute, type UiStepResult } from "../../protocol.js";
 import { featureOff } from "../../ui-engine.js";
 import type { Case, CaseContext } from "../types.js";
-import { UI_FIXTURE } from "../ui-fixture.js";
+import { NEW_WINDOW_MS, TAKES_BACK_MS, UI_FIXTURE } from "../ui-fixture.js";
 import { observeWrong } from "./apps.js";
 
 const APP = UI_FIXTURE.id;
@@ -27,8 +29,8 @@ const ROUTE_FEATURE: Readonly<Record<UiRoute, Feature>> = { semantic: "ui.tree",
  * what it offers rather than refuse it every step. Every step that ran is held to the routes it may take: its route's
  * feature on, and the foreground route only when the call allowed it.
  */
-const act = async (t: CaseContext, params: Omit<UiActParams, "target">): Promise<UiActResult> => {
-	const sent = { target: { app: APP }, ...(inputOnly(t) && !("foreground" in params) ? { foreground: true } : {}), ...params };
+const act = async (t: CaseContext, params: Omit<UiActParams, "target">, window?: string): Promise<UiActResult> => {
+	const sent = { target: { app: APP, ...(window === undefined ? {} : { window }) }, ...(inputOnly(t) && !("foreground" in params) ? { foreground: true } : {}), ...params };
 	const result = await t.call("ui.act", sent);
 	const features = t.hello.features ?? {};
 	for (const [index, step] of (result.steps ?? []).entries()) {
@@ -58,10 +60,16 @@ async function start(t: CaseContext): Promise<UiObserveResult> {
 	await launch(t);
 	const treeOff = featureOff(t.hello.features ?? {}, "ui.tree");
 	if (treeOff !== undefined) return t.skip(`the fixture's cases read its elements, and ${treeOff}`);
+	// A fresh window can add an element a moment after Next shows (on the Mac mini, a group in its title bar, every
+	// launch), which an act of no steps then counted as a change. The cases start once two looks in a row agree.
+	let last: string | undefined;
 	return t.until(async () => {
 		const seen = await look(t);
-		return seen.nodes.some((node) => node.id === "next") ? seen : undefined;
-	}, `the fixture's home window, with its Next button, in ui.observe`);
+		const shape = JSON.stringify(seen.nodes.map((node) => [node.ref, node.bounds]));
+		const still = shape === last;
+		last = shape;
+		return still && seen.nodes.some((node) => node.id === "next") ? seen : undefined;
+	}, `the fixture's home window, with its Next button, the same in two looks in a row in ui.observe`);
 }
 
 /** The step's result, which ran: its route one of the protocol's and verified a boolean. */
@@ -83,6 +91,26 @@ function refusedStep(t: CaseContext, result: UiActResult, what: string, kinds: s
 	t.assert(typeof error.message === "string" && error.message.length > 0, `${what}: the refusal has no words`);
 	return error;
 }
+
+/** The fixture's node by its id, or a skip in words when this computer's fixture leaves it out (one window per app). */
+const optional = (t: CaseContext, seen: UiObserveResult, id: string, why: string): UiNode =>
+	seen.nodes.find((node) => node.id === id) ?? t.skip(`the ui fixture here has no ${id} (${why}): a fixture that leaves it out skips this case`);
+
+/** New window pressed, and the act's expect waits for the window it opens: the act answers once it is there. */
+const openAnother = async (t: CaseContext, seen: UiObserveResult): Promise<UiActResult> => {
+	const open = optional(t, seen, "open", "New window, which opens a second window");
+	const opened = await act(t, { steps: [{ press: open.ref }], expect: { window: { title: "Another window" } } });
+	ran(t, opened.steps[0], "press New window");
+	t.equal(opened.expect, "met", `expect window "Another window": New window opens it ${NEW_WINDOW_MS} ms after its press, so only a polled expect sees it`);
+	return opened;
+};
+
+/** Whether a state is of this window: an observe of it since that state finds nothing changed. */
+const stateOf = async (t: CaseContext, state: string | undefined, window: string, what: string) => {
+	t.assert(typeof state === "string" && state !== "", `${what}: the act answered no state: ${show(state)}`);
+	const since = await look(t, { target: { app: APP, window }, since: state });
+	t.deepEqual(since.diff, { added: [], removed: [], changed: [] }, `${what}: observe of window ${window} since the act's state (a state of another window shows every node added)`);
+};
 
 const toSecond = async (t: CaseContext, seen: UiObserveResult) => {
 	const result = await act(t, { steps: [{ press: byId(t, seen, "next").ref }], expect: { text: "Second page" } });
@@ -357,6 +385,92 @@ export const uiCases: Case[] = [
 					says(t.refused(launched, "apps.launch in the background, apps.background off", ["unsupported"]).message, name);
 				}
 			}
+		},
+	},
+	{
+		id: "ui.settle-tree",
+		level: "full",
+		group: "ui",
+		needs: ["ui", "apps"],
+		async run(t) {
+			// A focused field's caret blinks: what the window draws changes, its tree does not. A driver settles on the tree
+			// when the window has nodes, so an act on it answers once the tree is still, never at the settle cap.
+			const seen = await start(t);
+			ran(t, (await act(t, { steps: [{ press: byId(t, seen, "name").ref }] })).steps[0], "press Name, which takes the focus");
+			for (const round of [1, 2, 3]) {
+				const began = Date.now();
+				const still = await act(t, { steps: [], expect: { text: "UI fixture" } });
+				const took = Date.now() - began;
+				t.equal(still.expect, "met", `act ${round} of no steps, its expect for the heading UI fixture`);
+				t.assert(took < MAX_SETTLE_MS * 0.8, `act ${round} of no steps on a window whose tree is still took ${took} ms, near the ${MAX_SETTLE_MS} ms settle cap: settle on the window's nodes, and on its image only when it has none (a blinking caret never settles)`);
+			}
+		},
+	},
+	{
+		id: "ui.set-holds",
+		level: "full",
+		group: "ui",
+		needs: ["ui", "apps"],
+		async run(t) {
+			// The Code field takes back any value set into it TAKES_BACK_MS later: the set ran, and did not hold.
+			const seen = await start(t);
+			const code = optional(t, seen, "code", "Code, a field that takes back what is set into it");
+			const taken = ran(t, (await act(t, { steps: [{ set: code.ref, value: "1234" }] })).steps[0], "set Code to 1234");
+			t.equal(taken.verified, false, `set Code, which takes its value back ${TAKES_BACK_MS} ms later: a set is verified only when its value still holds ${SET_HOLD_MS} ms after the settle`);
+			t.equal(byId(t, await look(t), "code").value ?? "", "", "Code's value, taken back");
+		},
+	},
+	{
+		id: "ui.expect-window",
+		level: "full",
+		group: "ui",
+		needs: ["ui", "apps"],
+		async run(t) {
+			const seen = await start(t);
+			// Unmet: no window of that title comes, and the act answers unmet after its timeout, never not_found.
+			const none = await act(t, { steps: [], expect: { window: { title: "No such window" }, timeoutMs: 300 } });
+			t.equal(none.expect, "unmet", "expect a window titled No such window, which never opens");
+			const opened = await openAnother(t, seen);
+			const front = await look(t);
+			t.equal(front.window.title, "Another window", "the window in front after New window");
+			await stateOf(t, opened.state, front.window.id, "a met window expect answers that window's state");
+			// The wait reads the app's main window, whichever it is now: the older home window, which the act is aimed at
+			// and whose title matches, does not meet it while Another window is in front.
+			const behind = await act(t, { steps: [], expect: { window: { title: "UI fixture" }, timeoutMs: 300 } }, seen.window.id);
+			t.equal(behind.expect, "unmet", "expect window \"UI fixture\", aimed at the home window while Another window is in front: the app's main window is Another window");
+		},
+	},
+	{
+		id: "ui.window-closed",
+		level: "full",
+		group: "ui",
+		needs: ["ui", "apps"],
+		async run(t) {
+			// Close on the fixture's only window: the app runs on with none, and the act says so with no state.
+			const seen = await start(t);
+			optional(t, seen, "open", "New window: a fixture that closes its window opens one too");
+			const closed = await act(t, { steps: [{ press: byId(t, seen, "close").ref }] });
+			ran(t, closed.steps[0], "press Close on the app's only window");
+			t.equal(closed.window, "closed", "ui.act's window after a step closed the app's last one");
+			t.equal(closed.state, undefined, "ui.act's state when the app has no window left");
+			t.equal(closed.changed, true, "ui.act's changed when the window closed");
+		},
+	},
+	{
+		id: "ui.window-follow",
+		level: "full",
+		group: "ui",
+		needs: ["ui", "apps"],
+		async run(t) {
+			// Close on a second window: the act follows the app's next main window, as after a nav, and answers its state.
+			const seen = await start(t);
+			const home = seen.window.id;
+			await openAnother(t, seen);
+			const another = await look(t);
+			const closed = await act(t, { steps: [{ press: byId(t, another, "close").ref }] }, another.window.id);
+			ran(t, closed.steps[0], "press Close on the second window");
+			t.equal(closed.window, undefined, `ui.act's window after a step closed one window of two: ${show(closed.window)}`);
+			await stateOf(t, closed.state, home, "an act whose window closed follows the app's next main window");
 		},
 	},
 ];

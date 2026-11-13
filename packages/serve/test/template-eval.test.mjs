@@ -253,7 +253,7 @@ test("on an owner's server it applies that server's package only when it is this
   const kept = await evalTemplate({ dir: PKG, cases: ["mcp-match"], server });
   assert.equal(kept.pass, false);
   assert.match(kept.cases[0].error, /already has an MCP server named crm/);
-  assert.equal((await api("GET", "/settings/mcp-servers/crm")).body.url, owner.url, "the owner's entry is untouched");
+  assert.equal((await api("GET", "/settings/mcp-servers/crm")).body.url, `${new URL(owner.url).origin}/…`, "the owner's entry is untouched (its URL shown as its origin)");
 
   // A folder whose package differs from the one the server ships is not measured on that server.
   const dir = join(await scratch(t), "evalpkg");
