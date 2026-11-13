@@ -5,7 +5,9 @@ logged. With --movie, each is recorded from screen.watch to a movie of its own w
     python3 -I mini-demos.py PATH/TO/computerd COMPUTERD_HOME OUT_DIR [--movie] [--ask-grants] [TASK ...]
 
 TASK is a task's id (mac.notes.new-note, ...); none runs all five. Without --movie nothing is recorded (no frames, no
-movie). --ask-grants raises Computerd's Automation prompts for the five apps, for a person at the Mac to answer, and
+movie). --movie works only on a demo machine, and refuses before anything is made otherwise: a CI runner
+(GITHUB_ACTIONS=true), or a user whose login name starts with "agentrun-demo" (a dedicated demo account, made by a
+person). Nothing else unlocks it. --ask-grants raises Computerd's Automation prompts for the five apps, for a person at the Mac to answer, and
 exits. Writes, under OUT_DIR:
 
     demos.json             every task's calls: method, params, ms, the steps' routes, the expect, the error, and what it left
@@ -50,6 +52,7 @@ import contextlib
 import fcntl
 import json
 import os
+import pwd
 import shutil
 import signal
 import subprocess
@@ -67,7 +70,18 @@ if flags - {"--movie", "--ask-grants"}:
 helper, home, out = args[0], args[1], os.path.abspath(args[2])
 only = set(args[3:])
 movie = "--movie" in flags
-here = os.path.dirname(os.path.abspath(__file__))
+
+
+def demo_machine():
+    """Whether this Mac may be recorded: a CI runner, or a dedicated demo account. The login name is the account's own
+    (the user database's, by uid), not $USER, so no variable or flag stands in for it."""
+    return os.environ.get("GITHUB_ACTIONS") == "true" or pwd.getpwuid(os.getuid()).pw_name.startswith("agentrun-demo")
+
+
+if movie and not demo_machine():
+    sys.exit("--movie records only on a demo machine: a CI runner (GITHUB_ACTIONS=true), or a user whose login name "
+             "starts with agentrun-demo. This is neither, so nothing was recorded or made; run without --movie.")
+here =os.path.dirname(os.path.abspath(__file__))
 CI = os.environ.get("CI") == "true"
 
 RUN = uuid.uuid4().hex[:6]
