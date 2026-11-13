@@ -493,7 +493,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                       if (v === CUSTOM_MODEL) { setCustomPicked(true); return; }
                       setCustomPicked(false); set({ model: v || undefined });
                     }} />
-                  {customModel && <Input id="agent-model-custom" aria-label="Custom model" className="mt-2" value={f.model ?? ""} onChange={(e) => set({ model: e.target.value || undefined })} placeholder="provider/model" />}
+                  {customModel && <Input id="agent-model-custom" aria-label="Custom model" className="mt-2" value={f.model ?? ""} onChange={(e) => { setCustomPicked(true); set({ model: e.target.value || undefined }); }} placeholder="provider/model" />}
                 </Field>
               )}
               {!starting && (

@@ -27,7 +27,7 @@ test("pi refuses a name with no provider, and suggests the id it likely means", 
   const refused = await api("POST", "/agents", agent("plain-name", { model: "Sonnet 5.5" }));
   assert.equal(refused.status, 422, JSON.stringify(refused.body));
   assert.match(message(refused), /On pi, a model is <provider>\/<model id>, like anthropic\/claude-sonnet-5-5 or openrouter\/anthropic\/claude-sonnet-5\.5/);
-  assert.match(message(refused), /Did you mean anthropic\/claude-sonnet-5-5\?/);
+  assert.match(message(refused), /Did you mean anthropic\/claude-sonnet-5-5, or openrouter\/anthropic\/claude-sonnet-5\.5 through OpenRouter\?/, "the save knows no keys: both forms");
   assert.doesNotMatch(message(refused), /pi-ai|host's default/);
 });
 

@@ -68,6 +68,14 @@ describe("AgentEditor, the Model picker", () => {
     expect(page.custom()?.value).toBe("anthropic/claude-sonnet-5.5");
   });
 
+  it("clearing the box of an agent opened on Custom keeps the box, so a replacement can be typed", async () => {
+    const page = await open(agentOn("pi", "anthropic/claude-sonnet-5.5"));
+    const box = page.custom()!;
+    await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(box, ""); box.dispatchEvent(new Event("input", { bubbles: true })); });
+    expect(page.custom(), "the box stays").not.toBeNull();
+    expect(page.model().textContent).toBe("Custom...");
+  });
+
   it("an agent on a listed model opens on it", async () => {
     const page = await open(agentOn("codex", "openai/gpt-6-luna"));
     expect(page.model().textContent).toBe("openai/gpt-6-luna");

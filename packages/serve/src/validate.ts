@@ -43,9 +43,12 @@ export const MODEL_TIER_NAMES = ["fast", "strong"] as const;
 export const MODEL_REF = /^[^/\s]+\/\S+$/;
 
 /** What a model that is no `provider/model-id` is told: the form `harness` takes, with examples, and the likely id when
- *  one is obvious. Structural, so it knows no keys here: the likely id is the vendor's own, and both forms are named. */
+ *  one is obvious. Structural, so it knows no keys here: the likely id is named in both forms (the vendor's own, and
+ *  OpenRouter's), never one that a server with only the other key could not run. */
 function modelFormIssue(harness: string, given: unknown): string {
-  const likely = typeof given === "string" ? likelyModel({}, harness, given) : undefined;
+  const own = typeof given === "string" ? likelyModel({}, harness, given) : undefined;
+  const routed = typeof given === "string" ? likelyModel({ OPENROUTER_API_KEY: "-" }, harness, given) : undefined;
+  const likely = own && routed && own !== routed ? `${own}, or ${routed} through OpenRouter` : own;
   return `${modelShape({}, harness)}: ${typeof given === "string" ? `"${given}"` : "that"} is not one.${likely ? ` Did you mean ${likely}?` : ""}`;
 }
 const SKILL_FILE = "/SKILL.md";
