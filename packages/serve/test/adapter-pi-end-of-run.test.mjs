@@ -219,14 +219,15 @@ test("pi through the adapter: a fenced end writes neither the end nor its patch"
   assert.deepEqual([row.outcome, row.costUsd, row.metrics], [null, null, null], "and none of the loop's patch");
 });
 
-test("pi through the adapter: an end patch whose reader stalls cannot hold a person's stop: the run still ends stopped", async (t) => {
+test("pi through the adapter: an end patch whose reader stalls cannot hold a person's stop: the run still ends stopped, its cost and metrics unknown", async (t) => {
   const { server, start, until } = await setup(t);
   const endPatch = () => new Promise(() => {});
   const { tool, running } = heldTool();
-  await start(loopWith(piAdapterSpec({ script: [{ call: "slow" }, { say: "done" }], tools: { slow: tool }, hooks: quiet }), { endPatch }), "runner-a");
+  await start(loopWith(piAdapterSpec({ script: [{ call: "slow" }, { say: "done" }], tools: { slow: tool }, hooks: quiet }), { endPatch, endPatchMs: 500 }), "runner-a");
   await running;
   await server.command("run-1", { kind: "stop" });
-  await until((row) => row.state === "stopped" && row.runner === null, "the run did not stop");
+  const row = await until((row) => row.state === "stopped" && row.runner === null, "the run did not stop");
+  assert.deepEqual([row.costUsd, row.metrics], [null, null], "never left as an earlier end stored them, never $0");
 });
 
 test("pi through the adapter: a mark committed through harnessReady's commit is in the run's journal, and refused once the run's claim is gone", async (t) => {

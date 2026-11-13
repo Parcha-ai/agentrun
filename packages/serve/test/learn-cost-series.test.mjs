@@ -43,9 +43,9 @@ test("a follow-up's end beside a kept learning that names no learning run queues
   const first = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
   await store.runs.update(first, { state: "ended", costUsd: 0.01, metrics: { path: "agent" } }, { also: [{ table: "learning_proposals", row: { turn: {}, proposal: dropped } }] });
   // A person's follow-up opens it again; its end keeps another learning and queues the learning run that would grade it.
-  await store.runs.reopen("run-1", { kind: "steer", body: { content: "And again." } });
+  const steer = await store.runs.reopen("run-1", { kind: "steer", body: { content: "And again." } });
   const second = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
-  await store.runs.update(second, { state: "ended", costUsd: 0.03, metrics: { path: "agent" } }, { also: [{ table: "learning_proposals", row: { turn: {}, proposal: proposed } }, { table: "learning_run", row: { id: "run-1-learning" } }] });
+  await store.runs.update(second, { state: "ended", costUsd: 0.03, metrics: { path: "agent" } }, { also: [{ table: "learning_proposals", row: { turn: {}, proposal: proposed } }, { table: "learning_run", row: { id: "run-1-learning" } }], take: [steer.id] });
 
   assert.equal(await store.runs.get("run-1-learning"), undefined, "no learning run that no kept learning names");
   assert.deepEqual((await store.runs.list({ agentId: "agent-1" })).map((run) => run.id), ["run-1"]);
@@ -160,7 +160,7 @@ test(`${IN_FLIGHT} runs in flight on the faux harness, on a busy store: every en
   await server.flush?.();
   const env = { AGENT_MODEL_BASE_URL: gw.url, AGENT_MODEL: "gpt-6.1-terra", AGENT_MODEL_API_KEY: `not-a-secret-${"gateway"}`, AGENT_MODEL_PRICE: "1,2,0.5", AGENTRUN_HARNESS_TABLE: fauxTable(FAUX_HARNESS), NODE_TEST_CONTEXT: process.env.NODE_TEST_CONTEXT ?? "1" };
   // The runs' own journals are the runner's (the claim's); the end's reads of the store (its path, its learning) queue.
-  const deps = { env, data: dir, journal: (claim) => store.journal(claim), store: busy(store, 120), sealKey: Buffer.alloc(32, 7), routeOf: async () => assert.fail("a CLI run takes no pi route"), computerForClaim: async () => ({ release: async () => {} }) };
+  const deps = { env, data: dir, journal: (claim) => store.journal(claim), store: busy(store, 50), sealKey: Buffer.alloc(32, 7), routeOf: async () => assert.fail("a CLI run takes no pi route"), computerForClaim: async () => ({ release: async () => {} }) };
   runner = startRunner({
     store, name: "runner-a", ...CONFORMANCE_TIMING, leaseMs: 120_000, stopMarginMs: 5_000, loops: IN_FLIGHT,
     createLoop: createDispatchLoop({
