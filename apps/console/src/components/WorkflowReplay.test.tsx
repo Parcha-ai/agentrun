@@ -37,7 +37,7 @@ describe("the replay's steps", () => {
   it("marks a node NEW where it first appears and EDITED where its prompt changed, each against the revision before", () => {
     const { steps, unreadable } = replaySteps(REVS);
     expect(unreadable).toBe(0);
-    expect(steps.map((s) => s.line)).toEqual(['First version: 1 step', 'Edited "classify"', 'Added 1 step ("check")']);
+    expect(steps.map((s) => s.line)).toEqual(['First version: 1 node', 'Edited "classify"', 'Added 1 node ("check")']);
     expect(steps[0]!.marks.diff).toMatchObject({ added: ["/root", "/root/steps/0"], edited: [] });
     expect(steps[1]!.marks.diff).toMatchObject({ added: [], edited: ["/root/steps/0"] });
     expect(steps[2]!.marks.diff).toMatchObject({ added: ["/root/steps/1"], edited: [] });
@@ -46,12 +46,12 @@ describe("the replay's steps", () => {
   it("leaves out a revision that does not read as a workflow, and diffs the next against the last that did", () => {
     const { steps, unreadable } = replaySteps([REVS[0]!, rev(5, "not json"), rev(6, null), REVS[1]!]);
     expect(unreadable).toBe(2);
-    expect(steps.map((s) => s.line)).toEqual(["First version: 1 step", 'Edited "classify"']);
+    expect(steps.map((s) => s.line)).toEqual(["First version: 1 node", 'Edited "classify"']);
   });
   it("says a revision that changed no node so, and names at most three labels", () => {
-    expect(replaySteps([REVS[0]!, rev(2, flow([step("classify", "Sort the invoice.")]).replace("sorter", "renamed"))]).steps[1]!.line).toBe("No step changed");
-    expect(changeLine(["a", "b", "c", "d", "e"], [], [], 0, 0)).toBe('Added 5 steps ("a", "b", "c" and 2 more)');
-    expect(changeLine([], ["x"], ["y"], 0, 0)).toBe('Edited "x", removed 1 step ("y")');
+    expect(replaySteps([REVS[0]!, rev(2, flow([step("classify", "Sort the invoice.")]).replace("sorter", "renamed"))]).steps[1]!.line).toBe("No node changed");
+    expect(changeLine(["a", "b", "c", "d", "e"], [], [], 0, 0)).toBe('Added 5 nodes ("a", "b", "c" and 2 more)');
+    expect(changeLine([], ["x"], ["y"], 0, 0)).toBe('Edited "x", removed 1 node ("y")');
   });
 });
 
@@ -61,7 +61,7 @@ describe("the replay", () => {
     expect(host.textContent).toContain("Revision 3 of 3");
     expect(host.textContent).toContain("Nov 3");
     expect(host.textContent).toContain("a person");
-    expect(line(host)).toBe('Added 1 step ("check")');
+    expect(line(host)).toBe('Added 1 node ("check")');
     expect(tags(host)).toEqual(["/root/steps/1:NEW"]);
     const slider = host.querySelector<HTMLInputElement>('input[type="range"]')!;
     expect(slider.getAttribute("aria-valuetext")).toMatch(/^Revision 3 of 3, Nov 3/);
@@ -75,7 +75,7 @@ describe("the replay", () => {
     const host = mount(Steps, { data: read(REVS), stepMs: 100 });
     const play = () => host.querySelector<HTMLButtonElement>('button[aria-pressed]')!;
     act(() => play().click());
-    expect(line(host)).toBe("First version: 1 step");
+    expect(line(host)).toBe("First version: 1 node");
     expect(play().getAttribute("aria-label")).toBe("Pause the replay");
     act(() => { vi.advanceTimersByTime(100); });
     expect(line(host)).toBe('Edited "classify"');
@@ -84,7 +84,7 @@ describe("the replay", () => {
     expect(line(host)).toBe('Edited "classify"');
     act(() => play().click());
     act(() => { vi.advanceTimersByTime(300); });
-    expect(line(host)).toBe('Added 1 step ("check")');
+    expect(line(host)).toBe('Added 1 node ("check")');
     expect(play().getAttribute("aria-pressed")).toBe("false");
   });
   it("shows a lone revision as a graph with no controls", () => {
@@ -114,7 +114,7 @@ describe("the replay of an agent's learned workflows", () => {
     await flush();
     expect(v2.learnedWorkflowRevisions).toHaveBeenCalledWith("a", "sorter", 50);
     expect(host.textContent).toContain("How the workflow changed");
-    expect(line(host)).toBe('Added 1 step ("check")');
+    expect(line(host)).toBe('Added 1 node ("check")');
     expect(host.querySelector('[role="combobox"], button[aria-haspopup="listbox"]')).toBeNull();
   });
   it("names a failed read and reads again on Try again", async () => {
@@ -126,6 +126,6 @@ describe("the replay of an agent's learned workflows", () => {
     fail = false;
     act(() => [...host.querySelectorAll("button")].find((b) => b.textContent === "Try again")!.click());
     await flush();
-    expect(line(host)).toBe('Added 1 step ("check")');
+    expect(line(host)).toBe('Added 1 node ("check")');
   });
 });

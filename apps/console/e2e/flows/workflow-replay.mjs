@@ -49,7 +49,7 @@ export default {
         check(await page.evaluate((t) => document.documentElement.classList.contains(t), theme), `${at}: the page is not in the ${theme} theme`);
         check((await tags(page)).join() === "/root/steps/2:NEW", `${at}: the newest revision's tags are ${(await tags(page)).join()}`);
         const line = card.getByTestId("replay-line");
-        check((await line.textContent()) === 'Added 1 step ("file it")', `${at}: the newest line says ${await line.textContent()}`);
+        check((await line.textContent()) === 'Added 1 node ("file it")', `${at}: the newest line says ${await line.textContent()}`);
         await shoot(card, `workflow-replay-${theme}-${width}-newest.png`);
         // The slider by the keyboard: one arrow back is the revision that rewrote the first step.
         const slider = card.getByRole("slider", { name: "Revision" });
@@ -61,7 +61,7 @@ export default {
         await shoot(card, `workflow-replay-${theme}-${width}-edited.png`);
         // Play, by the keyboard, from the first revision to the newest.
         await slider.press("Home");
-        check((await line.textContent()) === "First version: 1 step", `${at}: Home says ${await line.textContent()}`);
+        check((await line.textContent()) === "First version: 1 node", `${at}: Home says ${await line.textContent()}`);
         const play = card.getByRole("button", { name: "Play the replay" });
         await play.focus();
         await page.keyboard.press("Enter");

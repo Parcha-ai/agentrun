@@ -1,12 +1,12 @@
 import { graphDiff, workflowGraph, type WorkflowGraph } from "@dsl/graph";
-import type { GraphMarks } from "@/lib/wfGraph";
+import { drawnNodeCount, type GraphMarks, nodesWord } from "@/lib/wfGraph";
 import { metaOf } from "@/lib/runGraph";
 import type { WorkflowRevision } from "@/lib/v2";
 
 // A learned workflow's replay: each revision of its workflow.json (GET /agents/{id}/learning/workflows/{name}/revisions)
 // as the graph it draws, marked against the revision before it: a node that first appears in a revision is NEW, one whose
 // own fields changed (its prompt, code, inputs, tier, model: the DSL's changeCheck over everything the node says of
-// itself, children left out) or whose kind or label changed is EDITED, one that only moved (a step inserted before it) is
+// itself, children left out) or whose kind or label changed is EDITED, one that only moved (a node inserted before it) is
 // MOVED. The first revision has nothing before it: every node is new in it.
 
 /** One step of the replay: a revision that reads as a workflow, its graph, its marks and what changed in a line. */
@@ -34,15 +34,15 @@ const names = (labels: string[]) => {
 };
 const count = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
-/** What changed between two steps' graphs, as a line: "Added 2 steps (…), edited "Classify", removed 1 step". A graph
- *  with no node added, edited, removed or moved reads "No step changed" (or "Steps reordered" or "Connections changed"). */
+/** What changed between two steps' graphs, as a line: "Added 2 nodes (…), edited "Classify", removed 1 node". A graph
+ *  with no node added, edited, removed or moved reads "No node changed" (or "Nodes reordered" or "Connections changed"). */
 export function changeLine(added: string[], edited: string[], removed: string[], moved: number, rewired: number): string {
   const parts = [
-    added.length && `added ${count(added.length, "step")} (${names(added)})`,
+    added.length && `added ${count(added.length, "node")} (${names(added)})`,
     edited.length && `edited ${names(edited)}`,
-    removed.length && `removed ${count(removed.length, "step")} (${names(removed)})`,
+    removed.length && `removed ${count(removed.length, "node")} (${names(removed)})`,
   ].filter(Boolean) as string[];
-  if (!parts.length) return moved ? "Steps reordered" : rewired ? "Connections changed" : "No step changed";
+  if (!parts.length) return moved ? "Nodes reordered" : rewired ? "Connections changed" : "No node changed";
   const line = parts.join(", ");
   return line.charAt(0).toUpperCase() + line.slice(1);
 }
@@ -61,10 +61,12 @@ export function replaySteps(revisions: readonly WorkflowRevision[]): { steps: Re
     if (!graph?.nodes.length) { unreadable += 1; continue; }
     const diff = before ? graphDiff(before, graph) : null;
     const added = diff ? diff.added.map((n) => n.path) : graph.nodes.map((n) => n.path);
+    // A chain is no box of its own in the drawing (its steps are), so the line never names it.
+    const drawn = (path: string) => graph!.nodes.find((n) => n.path === path)?.kind !== "chain";
     const edited = diff ? [...diff.changed.map((n) => n.next), ...diff.rewritten.map((n) => n.next)] : [];
     const moved = diff ? diff.moved.map((n) => n.next) : [];
     const labelAt = new Map(graph.nodes.map((n) => [n.path, n.label]));
-    const removed = diff ? diff.removed.map((n) => n.label) : [];
+    const removed = diff ? diff.removed.filter((n) => n.kind !== "chain").map((n) => n.label) : [];
     const rewired = diff ? diff.edges.added.length + diff.edges.removed.length : 0;
     steps.push({
       commit: rev.commit, at: rev.at, run: "run" in rev.by ? rev.by.run : null, reason: rev.reason, graph,
@@ -74,8 +76,8 @@ export function replaySteps(revisions: readonly WorkflowRevision[]): { steps: Re
       },
       added, edited, removed,
       line: diff
-        ? changeLine(added.map((p) => labelAt.get(p) ?? p), edited.map((p) => labelAt.get(p) ?? p), removed, moved.length, rewired)
-        : `First version: ${count(graph.nodes.length, "step")}`,
+        ? changeLine(added.filter(drawn).map((p) => labelAt.get(p) ?? p), edited.filter(drawn).map((p) => labelAt.get(p) ?? p), removed, moved.length, rewired)
+        : `First version: ${nodesWord(drawnNodeCount(graph))}`,
     });
     before = graph;
   }
