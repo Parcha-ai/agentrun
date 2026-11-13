@@ -451,6 +451,18 @@ describe("one schedule", () => {
     await t.click(/^Resume$/);
     expect(calls.filter((c) => c.method === "PATCH").map((c) => c.body)).toEqual([{ enabled: true }]);
   });
+  it("tells a one-time schedule whose time passed while it was off to edit its time before Resume", async () => {
+    const off: Trigger = { ...NIGHTLY, source: { kind: "schedule", at: "2026-11-05T09:30:00Z" }, enabled: false, next_at: null, last_firing: null, failures_in_a_row: 5, disabled: { at: "2026-11-05T09:00:00Z", reason: "auto_paused" } };
+    const t = await open(server({ triggers: [off] }).v2, { trigger: "trg_1" });
+    const text = t.host.querySelector('[role="status"][data-disabled]')?.textContent ?? "";
+    expect(text).toContain("edit its time first, then Resume");
+    expect(text).not.toContain("Resume turns it on again");
+  });
+  it("shows a caught-up last firing in the list too", async () => {
+    const late: Trigger = { ...NIGHTLY, last_firing: { ...NIGHTLY.last_firing!, status: "started", reason: null, catch_up: true } };
+    const t = await open(server({ triggers: [late] }).v2, {});
+    expect(t.host.querySelector("[data-trigger]")?.textContent).toContain("Started · caught up late");
+  });
   it("says a source that can't be read", async () => {
     const off: Trigger = { ...NIGHTLY, enabled: false, next_at: null, disabled: { at: "2026-11-05T09:00:00Z", reason: "source_unreadable", detail: "unknown time zone Mars/Base" } };
     const t = await open(server({ triggers: [off] }).v2, { trigger: "trg_1" });

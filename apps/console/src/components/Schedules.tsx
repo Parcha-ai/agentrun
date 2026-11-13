@@ -68,7 +68,7 @@ function OffChip({ trigger }: { trigger: Trigger }) {
 }
 
 /** How a schedule's last firing went, or that it has not fired. */
-const lastWords = (t: Trigger) => (t.last_firing ? `${firingWords(t.last_firing)} · ${at(t.last_firing.nominal_at)}` : "Not fired yet");
+const lastWords = (t: Trigger) => (t.last_firing ? `${firingWords(t.last_firing)}${t.last_firing.catch_up ? " · caught up late" : ""} · ${at(t.last_firing.nominal_at)}` : "Not fired yet");
 
 function ScheduleList({ v2, go, agentName, every, now, failuresToPause }: PageProps & { every: number; now: () => number; failuresToPause?: number }) {
   const [triggers, setTriggers] = useState<Trigger[] | null>(null);
@@ -295,7 +295,7 @@ function ScheduleDetail({ v2, go, agentName, id, every, now, failuresToPause }: 
       </div>
       {disabledWords(trigger, failuresToPause) && (
         <p role="status" data-disabled className="mt-4 border border-warning/50 bg-warning/10 px-3 py-2 text-body text-warning-text">
-          {disabledWords(trigger, failuresToPause)} {trigger.disabled?.reason === "source_unreadable" ? "Edit its when, then Resume." : trigger.disabled?.reason === "auto_paused" ? "Resume turns it on again." : ""}
+          {disabledWords(trigger, failuresToPause)} {trigger.disabled?.reason === "source_unreadable" ? "Edit its when, then Resume." : trigger.disabled?.reason === "auto_paused" ? (done && "passed" in done ? "Its time has passed: edit its time first, then Resume." : done ? "" : "Resume turns it on again.") : ""}
         </p>
       )}
       {said && <ProblemCard problem={said} className="mt-4" />}
