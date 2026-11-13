@@ -31,14 +31,17 @@ const HELD = 'held() { x=$1; while :; do set -- $(ls -ldn "$x" 2>/dev/null); cas
 const INSTALL_SCRIPT = [
 	"# agentrun-computer: install",
 	// a: when set, the binary goes in beside its path and is moved into place last, so a pid1 entrypoint waiting for the
-	// path never starts one half written.
-	"s=$1; d=$2; h=$3; r=$4; a=${5-}; b=${d%/*}; t=$d; [ -z \"$a\" ] || t=$d.part",
+	// path never starts one half written; e: when set too, the sha256 it must read before it is moved, so the entrypoint
+	// never starts one that is not the daemon uploaded. (Not x: held() assigns x.)
+	"s=$1; d=$2; h=$3; r=$4; a=${5-}; e=${6-}; b=${d%/*}; t=$d; [ -z \"$a\" ] || t=$d.part",
 	'if [ "$(id -u)" = 0 ]; then p=; elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then p="sudo -n"; else echo "the sandbox user $(id -un) is not root and has no passwordless sudo, so the daemon cannot be installed"; exit 3; fi',
 	HELD,
 	'[ -d "${b%/*}" ] || $p mkdir -p -m 0755 "${b%/*}" || { echo "installing the daemon at $d failed"; exit 5; }',
 	'held "${b%/*}" || exit 6',
 	'[ ! -L "$b" ] || { echo "the daemon at $d is not root\'s alone: $b is a symbolic link"; exit 6; }',
-	'$p mkdir -p "$b" "$h" "$r" && $p chown 0:0 "$b" && $p chmod 0755 "$b" && $p rm -f "$d" "$t" && $p install -m 0755 -o 0 -g 0 "$s" "$t" && { [ "$t" = "$d" ] || $p mv -f "$t" "$d"; } || { echo "installing the daemon at $d failed"; exit 5; }',
+	'$p mkdir -p "$b" "$h" "$r" && $p chown 0:0 "$b" && $p chmod 0755 "$b" && $p rm -f "$d" "$t" && $p install -m 0755 -o 0 -g 0 "$s" "$t" || { echo "installing the daemon at $d failed"; exit 5; }',
+	'if [ -n "$a" ] && [ -n "$e" ]; then w=$($p sha256sum "$t" | cut -c1-64); [ "$w" = "$e" ] || { echo "sha256 $w"; echo "the daemon written to $t reads sha256 $w, not $e, so it is not moved into place"; $p rm -f "$t"; exit 7; }; fi',
+	'[ "$t" = "$d" ] || $p mv -f "$t" "$d" || { echo "installing the daemon at $d failed"; exit 5; }',
 	'held "$d" || exit 6',
 	'rm -f "$s"',
 	// Who installed it: the sandbox user's uid and name, and "sudo" when through passwordless sudo (installerOf).
@@ -124,8 +127,12 @@ const ENTRYPOINT_SCRIPT = [
 	'exec "$d" "$@"',
 ].join("\n");
 
-/** Where a pid1 Archil computer's entrypoint waits for root's word that the run's folder is mounted. */
-export const ARCHIL_GATE = `${SOCKET_DIR}-archil-mounted`;
+/**
+ * Where a pid1 Archil computer's entrypoint waits for root's word that the run's folder is mounted: beside the daemon,
+ * in the directory install makes root's alone before root makes the gate, so no other user can make it early. (A path
+ * under /run would hang on an image without /run, or one whose /run another user can write.)
+ */
+export const ARCHIL_GATE = `${DAEMON_IN_COMPUTER.slice(0, DAEMON_IN_COMPUTER.lastIndexOf("/"))}/archil-mounted`;
 
 /** The scripts the adapter runs, each one argv (see the file's head). */
 export interface HostedCommands {
@@ -141,7 +148,8 @@ export interface HostedCommands {
 /**
  * The adapter's commands for one computer. Init's flags are the child's (childCommands) for both modes: --own-network
  * always, the display and the most deadline.extend may move the deadline to when given. waitS bounds a pid1 entrypoint's
- * wait for the daemon (and gate, for an Archil computer).
+ * wait for the daemon (and gate, for an Archil computer); with atomic, install moves the daemon into place last, and only
+ * once it reads sha256, when given.
  */
 export function hostedCommands({
 	staging = "",
@@ -152,12 +160,13 @@ export function hostedCommands({
 	atomic = false,
 	waitS = 600,
 	gate,
-}: ChildCommandOptions & { atomic?: boolean; waitS?: number; gate?: string } = {}): HostedCommands {
+	sha256 = "",
+}: ChildCommandOptions & { atomic?: boolean; waitS?: number; gate?: string; sha256?: string } = {}): HostedCommands {
 	const init = [DAEMON_IN_COMPUTER, deadline, user, WORK, SOCKET_DIR];
 	if (display !== "" || maxDeadline !== "") init.push(display, maxDeadline);
 	const initArgs = ["init", "--deadline", deadline, "--user", user, "--own-network", ...(maxDeadline === "" ? [] : ["--max-deadline", maxDeadline])];
 	return {
-		install: argvOf(INSTALL_SCRIPT, [staging, DAEMON_IN_COMPUTER, WORK, SOCKET_DIR, ...(atomic ? ["1"] : [])]),
+		install: argvOf(INSTALL_SCRIPT, [staging, DAEMON_IN_COMPUTER, WORK, SOCKET_DIR, ...(atomic ? ["1", ...(sha256 === "" ? [] : [sha256])] : [])]),
 		start: argvOf(START_SCRIPT, [INIT_LOG, ...argvOf(INIT_SCRIPT, init)]),
 		stdio: argvOf(STDIO_SCRIPT, [DAEMON_IN_COMPUTER, SOCKET_DIR]),
 		log: argvOf(LOG_SCRIPT, [INIT_LOG]),
@@ -195,8 +204,9 @@ export function childCommands({ staging = "", deadline = "", user = TOOL_USER, d
 
 export interface DaemonExpected {
 	version: string;
-	uid: string;
-	gid: string;
+	/** The uid and gid it runs as; with neither, any one user that is not root (a spec named it, and attach reads it back). */
+	uid?: string;
+	gid?: string;
 	arch: string;
 	kind: ComputerCapabilities["kind"];
 	groups: ComputerCapabilities["groups"];
@@ -223,8 +233,11 @@ export async function daemonDrift(connection: ComputerConnection, expected: Daem
 	const ids = (name: string) => (fields.get(name) ?? "").split(/\s+/).filter(Boolean);
 	const uids = ids("Uid");
 	const gids = ids("Gid");
-	if (uids.length !== 4 || uids.some((id) => id !== expected.uid)) found.push(`daemon user: declared uid ${expected.uid}, read back ${show(fields.get("Uid"))}`);
-	if (gids.length !== 4 || gids.some((id) => id !== expected.gid)) found.push(`daemon group: declared gid ${expected.gid}, read back ${show(fields.get("Gid"))}`);
+	// With no user expected, the one it runs as: every id of the four the same, and uid not root.
+	const uid = expected.uid ?? (uids[0] === "0" ? undefined : uids[0]);
+	const gid = expected.gid ?? gids[0];
+	if (uids.length !== 4 || uid === undefined || uids.some((id) => id !== uid)) found.push(`daemon user: declared ${expected.uid === undefined ? "one uid that is not root" : `uid ${expected.uid}`}, read back ${show(fields.get("Uid"))}`);
+	if (gids.length !== 4 || gid === undefined || gids.some((id) => id !== gid)) found.push(`daemon group: declared ${expected.gid === undefined ? "one gid" : `gid ${expected.gid}`}, read back ${show(fields.get("Gid"))}`);
 	if ((fields.get("Groups") ?? "") !== "") found.push(`daemon groups: declared none, read back ${show(fields.get("Groups"))}`);
 	if (fields.get("NoNewPrivs") !== "1") found.push(`daemon no_new_privs: declared 1, read back ${show(fields.get("NoNewPrivs"))}`);
 	for (const set of CAPS) {

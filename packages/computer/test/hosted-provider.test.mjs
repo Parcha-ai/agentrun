@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -625,6 +625,7 @@ test("pid1: the machine's command is the entrypoint; the daemon goes in beside i
 	assert.match(m.request.command[2], /^# agentrun-computer: entrypoint\n/);
 	assert.ok(m.request.command.includes("--own-network"));
 	assert.equal(m.daemon.atomic, true, "installed to .part, then moved");
+	assert.equal(m.daemon.sha256, createHash("sha256").update(DAEMON_BYTES).digest("hex"), "and moved only once it reads the sha256 uploaded");
 	assert.ok(!runsOf(fake, m.id).includes("run start"));
 	assert.equal(provider.capabilities().daemon, "pid1");
 });
@@ -669,6 +670,132 @@ test("pid1 Archil: the entrypoint waits for the gate, which root makes once the 
 	const runs = runsOf(fake, m.id);
 	assert.ok(runs.indexOf("run serve") < runs.indexOf("run touch"), runs.join(", "));
 	assert.ok(m.init !== undefined);
+});
+
+test("pid1: the gate is beside the daemon, in the directory install makes root's alone", async () => {
+	const { ARCHIL_GATE } = await import("../dist/hosted/scripts.js");
+	assert.equal(ARCHIL_GATE, "/opt/agentrun/archil-mounted");
+	assert.equal(ARCHIL_GATE.slice(0, ARCHIL_GATE.lastIndexOf("/")), DAEMON.slice(0, DAEMON.lastIndexOf("/")));
+	const { entrypoint } = hostedCommands({ deadline: "2026-11-06T12:00:00.000Z", user: "2510:2510", waitS: 9, gate: ARCHIL_GATE });
+	assert.deepEqual(entrypoint.slice(3), ["sh", DAEMON, "9", "/work", "", "--gate", ARCHIL_GATE, "init", "--deadline", "2026-11-06T12:00:00.000Z", "--user", "2510:2510", "--own-network"]);
+	const plain = hostedCommands({ deadline: "2026-11-06T12:00:00.000Z", user: "1000:1000", waitS: 9 });
+	assert.deepEqual(plain.entrypoint.slice(3), ["sh", DAEMON, "9", "/work", "", "init", "--deadline", "2026-11-06T12:00:00.000Z", "--user", "1000:1000", "--own-network"], "no gate: the plain command");
+});
+
+test("the pid1 install, run by sh, moves the daemon into place only once it reads the sha256 given; one that reads another is removed, never moved", () => {
+	const root = mkdtempSync(join(tmpdir(), "computer-install-"));
+	try {
+		// Stand-ins for what needs root here: id says root, ls says root's alone (0755, owner 0), install copies.
+		const bin = join(root, "bin");
+		mkdirSync(bin);
+		const stub = (name, body) => {
+			writeFileSync(join(bin, name), `#!/bin/sh\n${body}\n`);
+			chmodSync(join(bin, name), 0o755);
+		};
+		stub("id", 'case "$1" in -u) echo 0 ;; -un) echo root ;; *) echo "uid=0(root)" ;; esac');
+		stub("ls", 'for x; do :; done; echo "drwxr-xr-x 2 0 0 4096 Jan 1 00:00 $x"');
+		stub("chown", "exit 0");
+		stub("install", 'for x; do s=$t; t=$x; done; cp "$s" "$t"');
+		const env = { PATH: `${bin}:${process.env.PATH}` };
+		const daemon = join(root, "opt", "agentrun", "computerd");
+		const run = (sha256) => {
+			const staging = join(root, "staged");
+			writeFileSync(staging, DAEMON_BYTES);
+			const words = [...hostedCommands({ staging, atomic: true, sha256 }).install];
+			// The daemon's path, its home and socket directory, here instead of /opt/agentrun, /work and /run/agentrun.
+			words[5] = daemon;
+			words[6] = join(root, "work");
+			words[7] = join(root, "run");
+			try {
+				return { code: 0, out: execFileSync(words[0], words.slice(1), { env, encoding: "utf8" }) };
+			} catch (error) {
+				return { code: error.status, out: String(error.stdout) };
+			}
+		};
+		const right = createHash("sha256").update(DAEMON_BYTES).digest("hex");
+		const wrong = run("0".repeat(64));
+		assert.equal(wrong.code, 7, wrong.out);
+		assert.match(wrong.out, new RegExp(`reads sha256 ${right}, not ${"0".repeat(64)}, so it is not moved into place`));
+		assert.throws(() => readFileSync(daemon), /ENOENT/, "nothing at the daemon's path");
+		assert.throws(() => readFileSync(`${daemon}.part`), /ENOENT/, "and the written one removed");
+		// The sha256 survives held(), which assigns x as it walks the path: the right one is moved into place.
+		const good = run(right);
+		assert.equal(good.code, 0, good.out);
+		assert.match(good.out, new RegExp(`^sha256 ${right}$`, "m"));
+		assert.deepEqual(readFileSync(daemon), DAEMON_BYTES);
+		assert.throws(() => readFileSync(`${daemon}.part`), /ENOENT/);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("pid1: a daemon that never answers reads no start log, which a pid1 machine has none of", async () => {
+	const { provider, fake } = setup({}, { facts: { daemon: "pid1" }, initFails: "computerd: init refused" });
+	const result = await create(provider);
+	assert.equal(result.ok, false);
+	const m = only(fake);
+	assert.ok(!runsOf(fake, m.id).includes("run log"), runsOf(fake, m.id).join(", "));
+	assert.equal(m.deleted, true, "the machine create gave up on is deleted");
+});
+
+// --- a host that takes a spec's user, and a host's runtime ---
+
+const USER_FACTS = { daemon: "pid1", specFields: ["user"], user: ["uid"], networkReadBack: false };
+
+test("a host that takes a spec's user: the daemon runs as the one the spec names (a uid alone is its own gid); root, a name and another user for an Archil computer are refused", async () => {
+	const { provider, fake } = setup({}, { facts: USER_FACTS });
+	const ref = made(await create(provider, { ...SPEC, user: "65534" }));
+	const m = only(fake);
+	assert.equal(m.init.user, "65534:65534", "init's --user");
+	assert.equal(m.request.user, "65534:65534");
+	assert.ok(ref.notes.includes(INSTALLER_NOTE));
+	assert.deepEqual(provider.check({ ...SPEC, user: "1000:0" }), [], "root's group, without root, is not root");
+	const refused = (spec) => provider.check(spec).map((r) => r.field);
+	for (const user of ["0", "0:1000", "00", "root", "alice", "-1", "1000:", "4294967295"]) assert.deepEqual(refused({ ...SPEC, user }), ["user"], user);
+	assert.match(provider.check({ ...SPEC, user: "0" })[0].message, /does not run as root: each connection is the vendor's exec of the daemon's stdio bridge/);
+	assert.deepEqual(refused({ ...ARCHIL_SPEC, user: "1000:1000" }), ["user"]);
+	assert.deepEqual(provider.check({ ...ARCHIL_SPEC, user: "2510" }), [], "the tool user, named");
+	// A host that takes no user refuses the field in words, as before.
+	assert.deepEqual(setup().provider.check({ ...SPEC, user: "65534" }).map((r) => r.field), ["user"]);
+});
+
+test("a host that takes a spec's user: attach reads the user back from inside, never root; a retry of the request with another user is refused", async () => {
+	const { provider, fake } = setup({}, { facts: USER_FACTS });
+	const requestId = "req-user-retry";
+	const ref = made(await provider.create({ ...SPEC, user: "1000:1000" }, { requestId }));
+	const attached = made(await provider.attach({ id: ref.id }));
+	assert.equal(attached.spec.user, "1000:1000", "the user its programs run as, read back");
+	const again = await provider.create({ ...SPEC, user: "1000:1000" }, { requestId });
+	assert.equal(made(again).id, ref.id, "the same request finds the same computer");
+	const other = await provider.create({ ...SPEC, user: "2000:2000" }, { requestId });
+	assert.equal(other.error?.code, "exists");
+	assert.match(other.error.message, /user: asked 2000:2000, read back 1000:1000/);
+	const m = only(fake);
+	m.box.uid = 0;
+	const root = await provider.attach({ id: ref.id });
+	assert.equal(root.error?.code, "refused");
+	assert.match(root.error.message, /daemon user: declared one uid that is not root, read back "0\\t0\\t0\\t0"/, "the four ids in words, as JSON gives a tab");
+	assert.equal(m.deleted, false, "attach leaves a drifted computer as it is");
+});
+
+test("a host's runtime: the probe's kernel is held to it at create, gVisor exactly where the host runs one", async () => {
+	const gvisor = setup({}, { facts: { ...USER_FACTS, runtime: () => "gvisor" } });
+	const refused = await create(gvisor.provider);
+	assert.equal(refused.error?.code, "refused");
+	assert.match(refused.error.message, /runtime: declared gVisor \(a GPU computer\), read back another kernel \("6\.1\.102"\)/);
+	await nothingLeft(gvisor.fake, "a computer of another runtime");
+	const vm = setup({}, { facts: { ...USER_FACTS, runtime: () => "vm" }, box: { kernel: "4.19.0-gvisor" } });
+	const other = await create(vm.provider);
+	assert.match(other.error?.message ?? "", /runtime: declared vm, read back gVisor/);
+	made(await create(setup({}, { facts: { ...USER_FACTS, runtime: () => "gvisor" }, box: { kernel: "4.19.0-gvisor" } }).provider));
+});
+
+test("a fence made inside a user namespace is said in create's notes", async () => {
+	const { provider } = setup({}, { box: { helloPatch: { fence: "userns-netns" } } });
+	const ref = made(await create(provider));
+	assert.ok(ref.notes.some((note) => /^fence: userns-netns: init made its programs' network namespace inside a user namespace of its own/.test(note)), JSON.stringify(ref.notes));
+	const plain = made(await create(setup().provider));
+	assert.ok(!plain.notes.some((note) => note.startsWith("fence:")));
 });
 
 // --- the conformance runner's end-of-run sweep ---

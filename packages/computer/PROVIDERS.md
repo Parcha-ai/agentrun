@@ -43,7 +43,10 @@ deleted as it lands, and one whose answer never comes is found by its name and d
 ### What the adapter does for every vendor
 
 - `check(spec)`: the shared rules (lifetime and cap, network none only, the provider's own label namespace, sizes and
-  users not in `specFields`, GPUs, the Archil mount and its tool user), then the host's `check`.
+  users not in `specFields`, GPUs, the Archil mount and its tool user), then the host's `check`. A host whose
+  `specFields` holds `user` makes each computer's daemon run as the uid (or uid:gid) its spec names, never root unless
+  `facts.user` holds `root`; `attach` reads that user back from inside. A host with `facts.runtime` has the probe's
+  kernel held to it at create (gVisor or not).
 - `create(spec, { requestId })`: the name is `computer-` and the first 12 hex digits of the request id's sha256. It
   lists by that name first: a machine still starting is waited for (within `createMs`) and returned once up; one up is
   returned when its labels and daemon read back as `attach` reads them (a daemon not yet as declared, such as a
@@ -85,6 +88,8 @@ conformance run's label (`agentrun.conformance`), reads each back gone, leaves a
 of the account) and every one recorded before, and prints `{"swept":n,"gone":m,"stillThere":[ids],"leftAlone":k}`.
 Exit 0 when every swept machine is gone, 1 when one is still there, 2 on a usage error. It reaches the vendor through
 the conformance module's `createHost({ env })`, which reads the same settings as the run and needs no live switch. A
+module whose account holds more than one place to list (an app and a server) also exports `sweepScope({ env })`:
+`--before` records it, and `--after` refuses a file of another place, or one that names none, before it lists. A
 conformance run of a hosted provider runs the same sweep over its own label at its end: the report's `cleanup.sweep`,
 whose `stillThere` must be empty for Core to pass.
 

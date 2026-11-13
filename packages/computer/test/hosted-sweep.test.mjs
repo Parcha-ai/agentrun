@@ -84,3 +84,33 @@ test("sweepMachines over a run's label: what the conformance runner calls at a r
 	assert.equal(left.deleted, true);
 	assert.equal(fake.live().length, 1, "another run's machine is not this run's sweep's");
 });
+
+test("a provider that names where it lists (sweepScope: an app and a server): --before records it, and --after refuses a file of another place, or one that names none, before any list or delete", async () => {
+	const fake = fakeHost();
+	const scope = "the app computers on https://api.example.invalid:443";
+	const file = join(DIR, "scoped.json");
+	const before = await sweep(["--provider", "fakehost", "--before", file], fake.host, { scope });
+	assert.equal(before.code, 0, before.err);
+	assert.equal(JSON.parse(readFileSync(file, "utf8")).scope, scope);
+	const victim = fake.add({ labels: { ...OURS, ...RUN } });
+	const { scope: _scope, ...unscoped } = JSON.parse(readFileSync(file, "utf8"));
+	const bare = join(DIR, "unscoped.json");
+	writeFileSync(bare, JSON.stringify(unscoped));
+	for (const [what, path, now, pattern] of [
+		["the settings name another app", file, "the app elsewhere on https://api.example.invalid:443", /was listed in the app computers on https:\/\/api\.example\.invalid:443, and the settings name the app elsewhere/],
+		["the settings name another server", file, "the app computers on https://other.example.invalid:443", /and the settings name the app computers on https:\/\/other\.example\.invalid:443 now/],
+		["the file names no place", bare, scope, /names no place it was listed in/],
+	]) {
+		fake.calls.length = 0;
+		const ran = await sweep(["--provider", "fakehost", "--after", path], fake.host, { scope: now });
+		assert.equal(ran.code, 2, `${what}: ${ran.err}`);
+		assert.match(ran.err, pattern, what);
+		assert.match(ran.err, /nothing was listed or deleted/, what);
+		assert.equal(ran.out, "", what);
+		assert.deepEqual(fake.calls.filter(([name]) => name === "list" || name === "delete"), [], `${what}: no list, no delete`);
+	}
+	assert.equal(victim.deleted, false, "every machine runs on");
+	const same = await sweep(["--provider", "fakehost", "--after", file], fake.host, { scope });
+	assert.equal(same.code, 0, same.err);
+	assert.deepEqual(JSON.parse(same.out), { swept: 1, gone: 1, stillThere: [], leftAlone: 0 });
+});

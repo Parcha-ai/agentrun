@@ -339,7 +339,7 @@ export function fakeHost({
 			return proc;
 		}
 		if (kind === "install") {
-			const [staging, daemon, , , atomic] = script.args;
+			const [staging, daemon, , , atomic, sha256] = script.args;
 			queueMicrotask(() => {
 				const bytes = m.files.get(staging);
 				if (install !== 0 || bytes === undefined) {
@@ -347,7 +347,7 @@ export function fakeHost({
 					return proc.exit(install || 5);
 				}
 				m.files.delete(staging);
-				m.daemon = { path: daemon, bytes, atomic: atomic === "1" };
+				m.daemon = { path: daemon, bytes, atomic: atomic === "1", sha256 };
 				proc.out.push(`installer 0 root\nsha256 ${sha === "lie" ? "0".repeat(64) : createHash("sha256").update(bytes).digest("hex")}\n`);
 				if (m.pid1) maybeEntry(m);
 				proc.exit(0);

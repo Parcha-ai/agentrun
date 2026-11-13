@@ -129,6 +129,8 @@ export const MAX_LABEL = `${COMPUTER_LABEL}.max-deadline`;
 const NAME = /^computer-[0-9a-f]{12}$/;
 const MACHINE_ID = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$/;
 const USER = /^(\d+):(\d+)$/;
+/** A spec's user, where the host takes one: a uid, or uid:gid, in numbers (a uid alone is its own gid). */
+const SPEC_USER = /^(\d+)(?::(\d+))?$/;
 const MAX_ID = 4_294_967_294;
 const DEFAULTS: HostedTimeouts = {
 	requestMs: 30_000,
@@ -224,6 +226,14 @@ function filterProblem(labels: unknown): string | undefined {
 	return undefined;
 }
 
+/** A spec's user as uid:gid in numbers, or undefined when it is not one. */
+function specUserOf(value: unknown): string | undefined {
+	const found = typeof value === "string" ? SPEC_USER.exec(value) : null;
+	if (found === null) return undefined;
+	const [uid, gid] = [Number(found[1]), Number(found[2] ?? found[1])];
+	return uid <= MAX_ID && gid <= MAX_ID ? `${uid}:${gid}` : undefined;
+}
+
 /** The caller's labels of a machine: every one but the adapter's own namespace and the Archil mount's. */
 const callerLabels = (labels: Record<string, string>) => Object.fromEntries(Object.entries(labels).filter(([key]) => key !== COMPUTER_LABEL && !key.startsWith(`${COMPUTER_LABEL}.`) && key !== ARCHIL_MOUNT_LABEL));
 
@@ -235,6 +245,10 @@ interface Made {
 	daemon: Buffer;
 	sha256: string;
 	commands: HostedCommands;
+	/** Who the daemon runs as, uid:gid: the provider's daemon user, or the spec's where the host takes one. */
+	user: string;
+	/** The runtime the host says this request runs (facts.runtime), which the probe's kernel is held to. */
+	runtime?: "vm" | "gvisor";
 }
 
 type Extend = (ref: ComputerRef, ttlMs: number, context?: CallContext) => Promise<Result<{ deadline: Date }>>;
@@ -343,7 +357,20 @@ export class HostedProvider implements ComputerProvider {
 		const label = this.#label;
 		refusals.push(...checkMount(mount, capabilities.mount ?? []), ...archilRefusals(given as unknown as ComputerSpec));
 		const daemonUser = `${this.#uid}:${this.#gid}`;
-		if ((mount as { kind?: unknown } | undefined)?.kind === "archil" && daemonUser !== ARCHIL_USER) {
+		const archil = (mount as { kind?: unknown } | undefined)?.kind === "archil";
+		const asked = this.#takesUser() ? given.user : undefined;
+		if (asked !== undefined) {
+			const user = specUserOf(asked);
+			if (user === undefined) refuse("user", "user must be a uid or uid:gid in numbers, such as 1000:1000; a name is refused, since the image may not have it");
+			else if (user.startsWith("0:") && !(this.host.facts.user ?? []).includes("root")) {
+				refuse(
+					"user",
+					`${a(label)} computer does not run as root: each connection is the vendor's exec of the daemon's stdio bridge, as the vendor's root, outside the daemon, and a root computer user, though init leaves it no capability, owns the directories above the daemon, so it could replace what that exec runs; ask for another uid, such as 1000:1000`,
+				);
+			} else if (archil && user !== ARCHIL_USER) {
+				refuse("user", `a computer with an Archil mount runs its tools as agentrun-tool, ${ARCHIL_USER}, the user its image makes with no way to root; leave user unset or ask for ${ARCHIL_USER}`);
+			}
+		} else if (archil && daemonUser !== ARCHIL_USER) {
 			refuse(
 				"mount",
 				`a computer with an Archil mount runs its tools as agentrun-tool, ${ARCHIL_USER}, the user its image makes with no way to root; this provider's daemon user is ${daemonUser}: make it with daemonUser ${ARCHIL_USER}`,
@@ -369,6 +396,16 @@ export class HostedProvider implements ComputerProvider {
 		}
 		if (this.host.check) refusals.push(...this.host.check(spec));
 		return refusals;
+	}
+
+	/** Whether the host takes a spec's user (facts.specFields): then a computer's daemon runs as the one a spec names. */
+	#takesUser(): boolean {
+		return (this.host.facts.specFields ?? []).includes("user");
+	}
+
+	/** Who one create's daemon runs as, uid:gid: the spec's user where the host takes one, else the provider's daemon user. */
+	#userOf(spec: ComputerSpec): string {
+		return (this.#takesUser() ? specUserOf(spec.user) : undefined) ?? `${this.#uid}:${this.#gid}`;
 	}
 
 	/** Why a spec's labels, with the adapter's own, are more than the vendor takes; undefined when they fit. */
@@ -500,6 +537,9 @@ export class HostedProvider implements ComputerProvider {
 				if (extra.length > 0) differ.push(`labels ${extra.join(", ")}: read back, never asked for`);
 				if (differ.length > 0) return this.#fail("exists", `${name} was made for this request with another spec, so it is not returned: ${differ.join("; ")}; create with a new request id`);
 				const attached = await this.#attached(machine, signal);
+				if (attached.ok && attached.value.spec.user !== this.#userOf(spec)) {
+					return this.#fail("exists", `${name} was made for this request with another spec, so it is not returned: user: asked ${this.#userOf(spec)}, read back ${attached.value.spec.user}; create with a new request id`);
+				}
 				if (attached.ok) return ok({ id: attached.value.id, name: attached.value.name, ...(attached.value.notes ? { notes: attached.value.notes } : {}) });
 				if (attached.error.code === "aborted") return attached;
 				// Its daemon is not up yet, or not yet as declared (a desktop whose display the first create is still
@@ -548,13 +588,15 @@ export class HostedProvider implements ComputerProvider {
 		const maxDeadline = new Date(now + this.#maxLifetimeMs).toISOString();
 		const labels = this.#labelsOf(spec, name, deadline, maxDeadline);
 		const archil = spec.mount?.kind === "archil";
+		const user = this.#userOf(spec);
 		const commands = hostedCommands({
 			staging: `${STAGING}${randomBytes(8).toString("hex")}`,
 			deadline,
-			user: `${this.#uid}:${this.#gid}`,
+			user,
 			display: this.#desktop?.display ?? "",
 			maxDeadline,
 			atomic: this.host.facts.daemon === "pid1",
+			sha256,
 			waitS: Math.ceil((this.#timeouts.createMs + this.#timeouts.uploadMs + this.#timeouts.execMs + (archil ? this.#timeouts.mountMs * 3 : 0)) / 1000),
 			...(archil && this.host.facts.daemon === "pid1" ? { gate: ARCHIL_GATE } : {}),
 		});
@@ -572,8 +614,9 @@ export class HostedProvider implements ComputerProvider {
 			...(taken.has("cpus") && spec.cpus !== undefined ? { cpus: spec.cpus } : {}),
 			...(taken.has("memoryMb") && spec.memoryMb !== undefined ? { memoryMb: spec.memoryMb } : {}),
 			...(taken.has("workdir") && spec.workdir !== undefined ? { workdir: spec.workdir } : {}),
-			...(taken.has("user") && spec.user !== undefined ? { user: spec.user } : {}),
+			...(taken.has("user") && spec.user !== undefined ? { user } : {}),
 		};
+		const runtime = this.host.facts.runtime?.(request);
 		const { createMs } = this.#timeouts;
 		// Never cancelled, only raced: an aborted call could leave a machine made whose id never came back.
 		let creating: Promise<Result<{ id: string }>>;
@@ -602,7 +645,7 @@ export class HostedProvider implements ComputerProvider {
 			return this.#fail(code, `${this.#label} did not create the machine: ${message}${swept}`);
 		}
 		this.#ended.delete(name);
-		return ok({ ref: { id: created.value.id, name }, made: { deadline, maxDeadline, labels, daemon, sha256, commands } });
+		return ok({ ref: { id: created.value.id, name }, made: { deadline, maxDeadline, labels, daemon, sha256, commands, user, ...(runtime === undefined ? {} : { runtime }) } });
 	}
 
 	/** Deletes a machine create gives up on, then waits, under the caller's signal, until the vendor reads it gone. */
@@ -702,7 +745,7 @@ export class HostedProvider implements ComputerProvider {
 	 * Everything between the vendor's answer and a computer that passed the read-back, whose value is what the read-back
 	 * recorded that does not refuse it (notes).
 	 */
-	async #prepare(spec: ComputerSpec, ref: ComputerRef, { labels, daemon, sha256, commands }: Made, signal?: AbortSignal): Promise<Result<string[]>> {
+	async #prepare(spec: ComputerSpec, ref: ComputerRef, { labels, daemon, sha256, commands, user, runtime }: Made, signal?: AbortSignal): Promise<Result<string[]>> {
 		const { uploadMs, execMs, requestMs } = this.#timeouts;
 		const running = await this.#running(ref, signal);
 		if (!running.ok) return running;
@@ -731,7 +774,7 @@ export class HostedProvider implements ComputerProvider {
 		// The run's folder, after the daemon is in place (serve runs it) and before init starts: no tool program runs before
 		// it is mounted. A folder mounted for a computer create then gives up on is let go before the delete, never signalled.
 		const started = async () => {
-			const done = await this.#start(spec, ref, commands, signal);
+			const done = await this.#start(spec, ref, commands, { user, ...(runtime === undefined ? {} : { runtime }) }, signal);
 			return done.ok && installer !== undefined ? ok([installer, ...done.value]) : done;
 		};
 		if (spec.mount?.kind !== "archil") return started();
@@ -752,7 +795,7 @@ export class HostedProvider implements ComputerProvider {
 	}
 
 	/** The rest of #prepare from the daemon's install on: init started, its first connection checked, the listing waited for. */
-	async #start(spec: ComputerSpec, ref: ComputerRef, commands: HostedCommands, signal?: AbortSignal): Promise<Result<string[]>> {
+	async #start(spec: ComputerSpec, ref: ComputerRef, commands: HostedCommands, want: Expected, signal?: AbortSignal): Promise<Result<string[]>> {
 		if (this.host.facts.daemon === "child") {
 			const init = await runToExit(this.host, ref.id, commands.start, { ms: this.#timeouts.execMs, ...(signal ? { signal } : {}), what: `starting the daemon in ${ref.name}` });
 			if (!init.ok) return init;
@@ -768,7 +811,7 @@ export class HostedProvider implements ComputerProvider {
 		try {
 			const archil = spec.mount?.kind === "archil" ? { mount: { kind: "archil" as const, disk: spec.mount.disk, region: spec.mount.region, folder: spec.mount.folder }, epoch: claimEpoch(spec.labels) } : undefined;
 			const expected = archil === undefined ? undefined : { ...archil, expected: readBackOf({ ...archil.mount, token: "" }, archil.epoch) };
-			const inside = await this.#checkInside(opened.value, ref.name, spec.network as "none", true, signal, expected);
+			const inside = await this.#checkInside(opened.value, ref.name, spec.network as "none", true, want, signal, expected);
 			if (!inside.ok) return inside;
 			notes = inside.value;
 		} finally {
@@ -781,8 +824,11 @@ export class HostedProvider implements ComputerProvider {
 	/** What init wrote to its log (child) or the vendor's words of the machine (pid1): the end of it, or nothing. */
 	async #initWords(ref: ComputerRef): Promise<string> {
 		const { requestMs } = this.#timeouts;
-		const log = await runToExit(this.host, ref.id, hostedCommands().log, { ms: requestMs, what: `reading init's log in ${ref.name}` });
-		if (log.ok) return log.value.stdout.trim().slice(-500);
+		// A pid1 machine's init is its main process, with no log of start's: the vendor's words of the machine stand for it.
+		if (this.host.facts.daemon === "child") {
+			const log = await runToExit(this.host, ref.id, hostedCommands().log, { ms: requestMs, what: `reading init's log in ${ref.name}` });
+			if (log.ok) return log.value.stdout.trim().slice(-500);
+		}
 		const read = await this.#get(ref.id);
 		return read.ok && read.value?.why ? read.value.why.slice(-500) : "";
 	}
@@ -791,16 +837,19 @@ export class HostedProvider implements ComputerProvider {
 	 * Inside the computer: for a desktop just made, the X server started through the daemon and hello declaring the
 	 * display; then the daemon's own report (hello, credentials, home, binary) and, for network none, the probe, which
 	 * refuses on an answer and records a silent accept in the notes it returns; and, for an Archil computer, the mount
-	 * read back from inside, held to the one expected. Its value says what was read back of the mount (mount).
+	 * read back from inside, held to the one expected. want.user is the uid:gid the daemon runs as (undefined: read back,
+	 * never root), want.runtime the kernel the probe must report. Its value says what was read back of the mount (mount)
+	 * and, through the probe, the user the computer's programs run as (user).
 	 */
 	async #checkInside(
 		connection: ComputerConnection,
 		name: string,
 		network: NetworkPolicy,
 		starting: boolean,
+		want: Expected,
 		signal?: AbortSignal,
 		archil?: RecordedArchil,
-	): Promise<Result<string[]> & { mount?: MountReadBack }> {
+	): Promise<Result<string[]> & { mount?: MountReadBack; user?: string }> {
 		let current = connection;
 		if (starting && this.#desktop) {
 			const shown = await startDisplay(connection.client, this.#desktop, { version: VERSION, vendor: this.id, signal });
@@ -809,22 +858,30 @@ export class HostedProvider implements ComputerProvider {
 			if (!hello.ok) return hello.error.code === "aborted" && !signal?.aborted ? this.#fail("timeout", `the daemon in ${name} did not answer hello within ${seconds(this.#timeouts.helloMs)}`) : hello;
 			current = { ...connection, hello: hello.value };
 		}
-		const found = await daemonDrift(current, this.#daemonExpected(), this.#timeouts.helloMs, signal);
+		const found = await daemonDrift(current, this.#daemonExpected(want.user), this.#timeouts.helloMs, signal);
 		if (!found.ok) return found;
 		const drift = [...found.value];
 		const notes: string[] = [];
+		let user: string | undefined;
 		if (network === "none") {
 			const probe = await this.#probe(current, name, signal);
 			if (!probe.ok) return probe;
+			user = `${probe.value.uid}:${probe.value.gid}`;
 			drift.push(...probeNetworkDrift(probe.value));
+			if (want.runtime !== undefined) drift.push(...runtimeDrift(want.runtime, probe.value.kernel));
 			notes.push(...probeNotes(probe.value, network));
 		}
-		if (archil === undefined) return drift.length === 0 ? ok(notes) : this.#fail("refused", `it did not match its spec: ${drift.join("; ")}`);
+		// Which way init fenced its programs, as hello read it back: said once a way other than the plain one was taken.
+		if (starting && current.hello.fence === "userns-netns") {
+			notes.push(`fence: userns-netns: init made its programs' network namespace inside a user namespace of its own, as root on ${want.runtime ?? "this machine"} may not make one itself`);
+		}
+		const said = user === undefined ? {} : { user };
+		if (archil === undefined) return drift.length === 0 ? { ...ok(notes), ...said } : this.#fail("refused", `it did not match its spec: ${drift.join("; ")}`);
 		const mount = await readArchilMount(current.client, archil, { name, timeoutMs: this.#timeouts.helloMs, ...(signal ? { signal } : {}) });
 		if (!mount.ok) return mount;
 		drift.push(...mountDrift(archil.expected, mount.value));
 		const read = mount.value === undefined ? {} : { mount: mount.value };
-		return drift.length === 0 ? { ...ok(notes), ...read } : this.#fail("refused", `it did not match its spec: ${drift.join("; ")}`);
+		return drift.length === 0 ? { ...ok(notes), ...read, ...said } : this.#fail("refused", `it did not match its spec: ${drift.join("; ")}`);
 	}
 
 	/** The shared Archil steps (archilMount) through root, with the takeover of this provider's lower epochs. */
@@ -839,9 +896,11 @@ export class HostedProvider implements ComputerProvider {
 		});
 	}
 
-	#daemonExpected(): DaemonExpected {
+	/** What the daemon must report: the user given (uid:gid), or, with none, any one user that is not root. */
+	#daemonExpected(user?: string): DaemonExpected {
 		const { kind, groups } = this.capabilities();
-		return { version: VERSION, uid: this.#uid, gid: this.#gid, arch: this.host.facts.arch, kind, groups };
+		const [uid, gid] = user === undefined ? [] : user.split(":");
+		return { version: VERSION, ...(uid === undefined || gid === undefined ? {} : { uid, gid }), arch: this.host.facts.arch, kind, groups };
 	}
 
 	/** One stdio bridge into the machine, after hello, unchecked. */
@@ -987,16 +1046,21 @@ export class HostedProvider implements ComputerProvider {
 		let kind: AttachedComputer["spec"]["kind"];
 		let notes: string[] = [];
 		let mount: MountReadBack | undefined;
+		let user: string | undefined;
 		if (machine.state === "running") {
 			const opened = await this.#open(ref, signal);
 			if (!opened.ok) return opened;
 			try {
-				const inside = await this.#checkInside(opened.value, name, network, false, signal, archil);
+				// A host that takes a spec's user made this computer's daemon run as the one its spec named: read back, never root
+				// (an Archil computer's is the tool user); every other runs as the provider's daemon user.
+				const want = this.#takesUser() ? (archil === undefined ? {} : { user: ARCHIL_USER }) : { user: `${this.#uid}:${this.#gid}` };
+				const inside = await this.#checkInside(opened.value, name, network, false, want, signal, archil);
 				if (!inside.ok && inside.error.code !== "refused") return inside;
 				if (!inside.ok) found.push(inside.error.message.replace(/^it did not match its spec: /, ""));
 				else {
 					notes = inside.value;
 					mount = inside.mount;
+					user = inside.user;
 				}
 			} finally {
 				await opened.value.close();
@@ -1009,7 +1073,7 @@ export class HostedProvider implements ComputerProvider {
 			spec: {
 				image,
 				...(resolved !== undefined && resolved !== image ? { snapshot: resolved } : {}),
-				user: `${this.#uid}:${this.#gid}`,
+				user: (this.#takesUser() ? user : undefined) ?? `${this.#uid}:${this.#gid}`,
 				network: spec.network,
 				...(cpus === undefined ? {} : { cpus }),
 				...(memoryMb === undefined ? {} : { memoryMb }),
@@ -1294,6 +1358,20 @@ function oldestFirst(machines: Machine[]): (a: Machine, b: Machine) => number {
 	const dated = machines.every((machine) => !Number.isNaN(at(machine)));
 	const byId = (a: Machine, b: Machine) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 	return (a, b) => (dated && at(a) !== at(b) ? at(a) - at(b) : byId(a, b));
+}
+
+/** What the read-back inside a computer holds it to, beside its spec: its daemon's user and its runtime. */
+interface Expected {
+	user?: string;
+	runtime?: "vm" | "gvisor";
+}
+
+/** The probe's kernel against the runtime declared: gVisor exactly where the host runs one (a pid1 host's GPU), a VM's elsewhere. */
+function runtimeDrift(runtime: "vm" | "gvisor", kernel: string): string[] {
+	const gvisor = /gvisor/i.test(kernel);
+	if (runtime === "vm" && gvisor) return [`runtime: declared vm, read back gVisor (the kernel reports ${JSON.stringify(kernel)})`];
+	if (runtime === "gvisor" && !gvisor) return [`runtime: declared gVisor (a GPU computer), read back another kernel (${JSON.stringify(kernel)})`];
+	return [];
 }
 
 /** A host's own test, its words kept: unauthorized and unreachable as the shared rule reads them. */

@@ -10,7 +10,9 @@
 // it, up to 60 s each, and prints one JSON line, {"swept":n,"gone":m,"stillThere":[ids],"leftAlone":k}: swept is every
 // conformance machine it found that was not there before, gone + stillThere.length = swept, and leftAlone counts the new
 // labelled machines with no conformance label, which another user of the account made during the run: never touched. A
-// machine in <file> is never touched either: no call names it, and a before file of another provider is refused.
+// machine in <file> is never touched either: no call names it, and a before file of another provider is refused, as is
+// one listed elsewhere for a provider whose module names where it lists (sweepScope: an app and a server), since
+// every machine there would read as new.
 // Exit 0 when every swept machine is gone, 1 when one is still there, 2 on a usage error, a before file it cannot read,
 // missing settings, or a listing the vendor refused (nothing is deleted then). It makes nothing, so it needs no live switch.
 //
@@ -90,6 +92,8 @@ export interface SweepIo {
 	env?: Record<string, string | undefined>;
 	/** The host to sweep, in place of the one the provider's conformance module makes from env. */
 	host?: MachineHost;
+	/** Where that host lists, in words, in place of the module's sweepScope. */
+	scope?: string;
 	stdout?: Writer;
 	stderr?: Writer;
 	/** How long --after reads one deleted machine back before it counts as still there; default 60 s. */
@@ -101,6 +105,8 @@ export interface SweepIo {
 /** A hosted provider's conformance module: it makes the host from its own settings, with no live switch. */
 interface HostModule {
 	createHost?(options: { env?: Record<string, string | undefined> }): Promise<MachineHost>;
+	/** Where the host lists, in words, when one account holds more than one place (an app, a server). */
+	sweepScope?(options: { env?: Record<string, string | undefined> }): string;
 }
 
 const USAGE = `usage: node packages/computer/dist/conformance/sweep.js --provider <id> --before <file> | --after <file>
@@ -143,8 +149,8 @@ function parse(argv: string[]): Args {
 	return { provider, ...found };
 }
 
-/** The ids a before file of this provider holds, or why it is not one. */
-function beforeIds(file: string, provider: string): Set<string> {
+/** The ids a before file of this provider (and of this scope, when the provider names one) holds, or why it is not one. */
+function beforeIds(file: string, provider: string, scope: string | undefined): Set<string> {
 	let text: string;
 	try {
 		text = readFileSync(file, "utf8");
@@ -160,10 +166,16 @@ function beforeIds(file: string, provider: string): Set<string> {
 	const { ids, provider: recorded } = (record ?? {}) as { ids?: unknown; provider?: unknown };
 	if (!Array.isArray(ids) || !ids.every((id) => typeof id === "string" && id !== "")) throw new Usage(`${file} is not a before file: it holds no "ids" array of machine ids`);
 	if (recorded !== provider) throw new Usage(`${file} is the before file of ${JSON.stringify(recorded)}, not of ${provider}: sweep each provider with its own`);
+	const listed = (record as { scope?: unknown }).scope;
+	if (scope !== undefined && listed !== scope) {
+		const words = typeof listed === "string" && listed !== "" ? `was listed in ${listed}` : "names no place it was listed in";
+		throw new Usage(`${file} ${words}, and the settings name ${scope} now: every machine there would read as new, so nothing was listed or deleted`);
+	}
 	return new Set(ids as string[]);
 }
 
-async function hostOf(provider: string, env: Record<string, string | undefined>): Promise<MachineHost> {
+/** The provider's conformance module, for its host and scope. */
+async function moduleOf(provider: string): Promise<HostModule> {
 	let module: HostModule;
 	try {
 		module = (await (await providerModule(provider)).conformance?.()) as HostModule;
@@ -171,7 +183,16 @@ async function hostOf(provider: string, env: Record<string, string | undefined>)
 		throw new Usage((error as Error).message);
 	}
 	if (typeof module?.createHost !== "function") throw new Usage(`the ${provider} provider is not on the shared machine-host adapter: it has no createHost to sweep with`);
-	return module.createHost({ env });
+	return module;
+}
+
+/** Where the module's host lists, in words, read from the same settings; undefined for a provider that names none. */
+function scopeOf(module: HostModule, env: Record<string, string | undefined>): string | undefined {
+	try {
+		return module.sweepScope?.({ env });
+	} catch (error) {
+		throw new Usage((error as Error).message);
+	}
 }
 
 export async function main(argv: string[], io: SweepIo = {}): Promise<number> {
@@ -179,10 +200,13 @@ export async function main(argv: string[], io: SweepIo = {}): Promise<number> {
 	let args: Args;
 	let before: Set<string> | undefined;
 	let host: MachineHost;
+	let scope: string | undefined;
 	try {
 		args = parse(argv);
-		if (args.mode === "after") before = beforeIds(args.file, args.provider);
-		host = io.host ?? (await hostOf(args.provider, env));
+		const module = io.host === undefined ? await moduleOf(args.provider) : undefined;
+		scope = io.host === undefined ? scopeOf(module as HostModule, env) : io.scope;
+		if (args.mode === "after") before = beforeIds(args.file, args.provider, scope);
+		host = io.host ?? (await (module as HostModule & Required<Pick<HostModule, "createHost">>).createHost({ env }));
 	} catch (error) {
 		await write(stderr, `${(error as Error).message}\n${error instanceof Usage ? `${USAGE}\n` : ""}`);
 		return 2;
@@ -194,7 +218,7 @@ export async function main(argv: string[], io: SweepIo = {}): Promise<number> {
 			return 2;
 		}
 		const ids = listed.value.map((machine) => machine.id).sort();
-		writeFileSync(args.file, `${JSON.stringify({ provider: args.provider, label: `${COMPUTER_LABEL}=1`, at: new Date().toISOString(), ids }, null, 2)}\n`);
+		writeFileSync(args.file, `${JSON.stringify({ provider: args.provider, ...(scope === undefined ? {} : { scope }), label: `${COMPUTER_LABEL}=1`, at: new Date().toISOString(), ids }, null, 2)}\n`);
 		await write(stdout, `${JSON.stringify({ recorded: ids.length, file: args.file })}\n`);
 		return 0;
 	}
