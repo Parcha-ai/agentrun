@@ -5,7 +5,9 @@
 -- trigger below in the transaction of the write that made it. Postgres has many writers, so a sequence alone does not
 -- number changes in commit order: the trigger takes one transaction-scoped advisory lock before it inserts, so two
 -- transactions that each write a change commit them in seq order, and a reader that has read seq n has every change at
--- or below it.
+-- or below it. The trigger is deferred to the commit, so the lock is held only while the change is numbered and the
+-- transaction commits: a run's end write and the statements after it never wait on another run's, which would make a
+-- runner of many loops end its runs one at a time.
 CREATE TABLE IF NOT EXISTS run_changes (
   seq BIGSERIAL PRIMARY KEY,
   run_id TEXT COLLATE "C" NOT NULL,
@@ -25,7 +27,8 @@ END
 $$;
 
 DROP TRIGGER IF EXISTS runs_changed ON runs;
-CREATE TRIGGER runs_changed AFTER UPDATE OF state, runner ON runs
+CREATE CONSTRAINT TRIGGER runs_changed AFTER UPDATE OF state, runner ON runs
+  DEFERRABLE INITIALLY DEFERRED
   FOR EACH ROW
   WHEN ((OLD.state IS DISTINCT FROM NEW.state OR OLD.runner IS DISTINCT FROM NEW.runner)
     AND (NEW.state IN ('ended', 'stopped', 'failed', 'parked') OR (NEW.state = 'running' AND NEW.runner IS NULL)))
