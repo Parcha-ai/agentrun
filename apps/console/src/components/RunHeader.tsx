@@ -12,6 +12,7 @@ import { costOfCap, isEstimate, runEnded, runLabel, soFar, soFarNote, when, runT
 import { NO_MESSAGES, runState } from "@/lib/runState";
 import type { RaiseAnswer, Run } from "@/lib/v2";
 import { runPlaceWords } from "@/lib/place";
+import { backendSdkLabel, backendSdkOf } from "@/lib/backendSdk";
 
 /** `onRaiseCap`: raises the run's spend cap (PATCH /v2/runs/{id}) and reads the run again; offered on a capped agentic
  *  run that has not ended, here and beside a budget pause's banner. */
@@ -29,8 +30,10 @@ const costTitle = (c: Run["cost"], ended: boolean): string | undefined => {
  *  Archive hides the run from the runs list and keeps it; the server takes it in any state, as serve's own page offers it. */
 export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run; agentName: string; actions?: RunActions; costText?: string }) {
   // Where it ran, as its start resolved it.
-  const ranIn = runPlaceWords(run.place);
-  const view = runState(run.status, run.state, run.kind, NO_MESSAGES, true, run.error, run.review);
+  const sdk = backendSdkOf(run);
+  const ranIn = sdk ? "your backend" : runPlaceWords(run.place);
+  const state = runState(run.status, run.state, run.kind, NO_MESSAGES, true, run.error, run.review);
+  const view = sdk ? { ...state, canStop: false, canCancel: false } : state;
   const [confirming, setConfirming] = useState(false);
   const archived = !!run.archived_at;
   // A capped run that has not ended, agentic or workflow, takes a raise here too, so a working one is raised before it pauses.
@@ -38,7 +41,7 @@ export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run
   // A run that waits on the person for something other than its cap (its served `pending`: an approval, a question, its
   // browser or computer) is not held by its cap: a raise changes nothing it waits on, so none is offered there.
   const waitsOnOther = !!run.pending && run.pending.kind !== "budget";
-  const raisable = !!actions.onRaiseCap && !view.final && typeof cap === "number" && !waitsOnOther;
+  const raisable = !sdk && !!actions.onRaiseCap && !view.final && typeof cap === "number" && !waitsOnOther;
   const [raising, setRaising] = useState(false);
   const budget = run.pending?.kind === "budget" ? run.pending : null;
   return (
@@ -65,6 +68,7 @@ export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run
             {archived && <Chip tone="muted">Archived</Chip>}
             {run.approvals === "never" && <Chip tone="warning" title="This run's agent never asks: no call of it waits for you.">Unattended</Chip>}
             <span className="font-mono">{run.kind} · rev {run.agent_version}{ranIn && ` · ${ranIn}`}</span>
+            {sdk && <span className="font-mono">{backendSdkLabel(sdk.runtime)} · {run.sdk?.model ?? "Model not reported"}</span>}
             <span className="font-mono">{when(run.created_at)}</span>
             {/* A workflow run's cost is its graph's totals (`costText`), the same the totals bar shows. Beside it, the run's
                 spend cap when it has one, as the run is read now (a raise reads the run again, so the new cap shows). */}
@@ -83,7 +87,7 @@ export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run
               </Button>
             )}
             {view.canStop && (
-              <Button size="sm" onClick={actions.onStop} disabled={!actions.onStop || !!actions.busy} title="End this turn. The run stays open and waits for your next message.">
+              <Button size="sm" onClick={actions.onStop} disabled={!actions.onStop || !!actions.busy} title={run.native ? "Stop this native turn. Start a new run for another task." : "End this turn. The run stays open and waits for your next message."}>
                 <Square aria-hidden /> {actions.busy === "stop" ? "Stopping" : "Stop"}
               </Button>
             )}

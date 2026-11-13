@@ -46,6 +46,7 @@ export interface LearningDispatchDeps {
   readonly store: Pick<Store, "runs" | "agents" | "learning">;
   /** The server's data directory: each agent's learning folder. */
   readonly data: string;
+  readonly sourceInstructions?: (runId:string) => Promise<string>;
   /** The runner's one model route (its pi runs take the same): where a grade goes, on which model, at what price; under
    *  --faux, the faux model's. GraderRoute moves to runner/model-route.ts with the route. */
   readonly routeOf: (grade: GradeRouteAsk) => GraderRoute | Promise<GraderRoute>;
@@ -155,7 +156,7 @@ export function learningLoopOf(deps: LearningDispatchDeps): LoopFactory {
       if (held.usd > room) throw new GeneralOverCap(`its worst case of ${money(held.usd)} is over the ${money(room)} the cap leaves`, false);
       return generalScores(jev, notes, source, signal, run, sending && (() => sending(held.usd)));
     };
-    const loop = learningLoopFactory({ store: deps.store, data: deps.data, ask, ...(deps.jev ? { general } : {}), ...(deps.generalThreshold !== undefined ? { generalThreshold: deps.generalThreshold } : {}), ...(deps.log ? { log: deps.log } : {}), ...(deps.now ? { now: deps.now } : {}) })(loopDeps);
+    const loop = learningLoopFactory({ store: deps.store, data: deps.data, ask, ...(deps.sourceInstructions ? { sourceInstructions: deps.sourceInstructions } : {}), ...(deps.jev ? { general } : {}), ...(deps.generalThreshold !== undefined ? { generalThreshold: deps.generalThreshold } : {}), ...(deps.log ? { log: deps.log } : {}), ...(deps.now ? { now: deps.now } : {}) })(loopDeps);
     return {
       start: (claim) => {
         claimed = claim.runId;

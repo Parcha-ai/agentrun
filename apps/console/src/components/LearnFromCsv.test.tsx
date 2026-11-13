@@ -87,11 +87,22 @@ describe("LearnFromCsv", () => {
     expect(onFinished).not.toHaveBeenCalled();
   });
   it("cancels a running batch", async () => {
-    const v2 = fake([batch(), batch({ status: "cancelled", finished: 1 })]);
+    vi.useFakeTimers();
+    let current = batch();
+    const v2 = fake([current]);
+    // Polling reads server state; it must not cancel the fixture before the person clicks Cancel.
+    v2.learningBatch.mockImplementation(async () => current);
+    v2.cancelLearningBatch.mockImplementation(async () => { current = batch({ status: "cancelled", finished: 1 }); return current; });
     const host = await show(v2);
+    await act(async () => { await vi.advanceTimersByTimeAsync(60); });
+    expect(v2.learningBatch.mock.calls.length).toBeGreaterThan(1);
+    expect(v2.cancelLearningBatch).not.toHaveBeenCalled();
     const cancel = [...host.querySelectorAll("button")].find((b) => b.textContent === "Cancel")!;
     await act(async () => { cancel.click(); });
+    expect(v2.cancelLearningBatch).toHaveBeenCalledTimes(1);
     expect(v2.cancelLearningBatch).toHaveBeenCalledWith("ag", "lb_1");
+    expect(host.textContent).toContain("Cancelled after 1 of 3 rows");
+    await act(async () => { await vi.advanceTimersByTimeAsync(60); });
     expect(host.textContent).toContain("Cancelled after 1 of 3 rows");
   });
   it("starts a batch from a file: the last column is the answer, the rest are given", async () => {

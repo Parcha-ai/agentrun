@@ -117,6 +117,30 @@ test("a queued run (created, not yet claimed) reads queued and working, its cost
   assert.equal(moment.live, false);
 });
 
+test("a running learning detail includes the learned skills and workflows actually supplied to it", async (t) => {
+  const { store } = await storeOn(t);
+  await agent(store);
+  for (const [id, notes, skills, workflows, detail] of [
+    ["skill-only", 0, ["check-release"], [], "Started from 1 skill."],
+    ["workflow-only", 0, [], ["release-check"], "Started from 1 workflow."],
+    ["mixed", 2, ["check-release"], ["release-check"], "Started from 2 notes, 1 skill and 1 workflow."],
+    ["not-laid", 0, [], [], "Started with nothing learned yet."],
+  ]) {
+    await store.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: {
+      input: { content: "Check the release." }, place: { mode: "runner" },
+      learning: { given: [], seed: "a".repeat(40), section: "", seedNotes: notes, skills: ["check-release", "not-installed"], workflows: ["release-check"] },
+    } });
+    const claim = await store.claim(id, "runner-a", { leaseMs: 60_000 });
+    const journal = store.journal(claim);
+    await commitWrites(journal, [
+      { type: "conversation", value: { id: ROOT } },
+      { type: "entry", value: { id: await journal.mintId(), conversationId: ROOT, kind: "agentrun.learning.laid", data: { skills, workflows } } },
+    ], context);
+    assert.equal((await viewOverStore(store, id, deps)).learning.detail, detail, id);
+    assert.equal((await summaryOverStore(store, id, deps)).learning.detail, detail, `${id} summary`);
+  }
+});
+
 test("a working run reads working/working and live, its updated_at and last_progress_at advancing with the runner's tick", async (t) => {
   const { store, clock } = await storeOn(t);
   await agent(store);

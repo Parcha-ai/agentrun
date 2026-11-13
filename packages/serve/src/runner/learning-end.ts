@@ -45,6 +45,7 @@ import { runEntries, runReflect, runTimeline } from "../store-reads/journal.js";
 import { capNowOf } from "./journal-kinds.js";
 import type { EndOfRunTurn } from "./loop-contract.js";
 import { type Checked, createReflectHook, type ReflectDeps, type ReflectTurn } from "./reflect-hook.js";
+import { sdkDraftTools, type SdkWorkflowTool } from "../sdk/workflows.js";
 import { runnerSecrets } from "./redact.js";
 
 /** What the step reads: the run's store, the data directory (the server's tool settings a draft's tools are read with),
@@ -104,8 +105,8 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
       // A notes run (`learning: "notes"`) is asked for no workflow draft, and its prompt describes none.
       const draftFor = start.notesOnly ? [] : await draftForOf(deps, agentId, runId, start.skills ?? []).catch(() => []);
       // With a draft asked for, what each tool its call nodes may run takes and gives, in the server's own words.
-      const described = draftFor.length ? await describedOf(tools, deps.store) : [];
-      return { active: start.seedNotes ?? start.given.length, tools, draftFor, described, ...(decisions ? { decisions } : {}), ...(start.notesOnly ? { workflows: false as const } : {}) };
+      const described = draftFor.length ? launch.sdk?.workflow_tools ? sdkDescribed(launch.sdk.workflow_tools.filter((tool) => tools.includes(tool.name))) : await describedOf(tools, deps.store) : [];
+      return { active: start.seedNotes ?? start.given.length, tools, draftFor, described, ...(decisions ? { decisions } : {}), ...(launch.sdk?.workflow_tools ? { workflowAdapters: launch.sdk.workflow_adapters ?? [] } : {}), ...(start.notesOnly ? { workflows: false as const } : {}) };
     },
     asked: async (runId) => {
       const [entries, reflect] = await Promise.all([runEntries(deps.store, runId, BACKGROUND_CONTEXT), runReflect(deps.store, runId, BACKGROUND_CONTEXT)]);
@@ -239,7 +240,7 @@ export function workflowNameOf(calls: readonly { tool: string; args: Record<stri
 /** Why each draft of `proposal` waits for its owner's OK whatever the grade: its steps calling an MCP tool with no
  *  declared price (skills.ts unpricedCalls), by its workflow.json's path, from the prices each server's row keeps
  *  (mcp-probe.ts McpPrices). A server the store can't read gives no price: held. */
-async function heldOf(store: Pick<Store, "mcp">, proposal: unknown): Promise<Record<string, string[]>> {
+async function heldOf(store: Pick<Store, "mcp">, proposal: unknown, manifest?: readonly SdkWorkflowTool[]): Promise<Record<string, string[]>> {
   const files = ((proposal as { files?: { file?: unknown; text?: unknown }[] } | null)?.files ?? []).filter((one): one is { file: string; text: string } => typeof one?.file === "string" && one.file.endsWith("/workflow.json") && typeof one.text === "string");
   const { draftMcpTools, unpricedCalls, unpricedLine } = await import("../learn/skills.js");
   const rows = new Map<string, Promise<McpServerRow | undefined>>();
@@ -255,6 +256,7 @@ async function heldOf(store: Pick<Store, "mcp">, proposal: unknown): Promise<Rec
     // Every MCP tool its call nodes run, as the workflow's own read reads them (draftMcpTools over the parsed JSON: an
     // escaped "\/" is a slash there), its price read first (unpricedCalls asks synchronously).
     for (const name of draftMcpTools(doc)) {
+      if (manifest) { priced.set(name, manifest.find((tool) => tool.name === name)?.price_usd); continue; }
       const [server, tool] = name.slice("mcp:".length).split("/") as [string, string];
       if (!rows.has(server)) rows.set(server, store.mcp.server(server).catch(() => undefined));
       const price = ((await rows.get(server))?.prices as Record<string, unknown> | undefined)?.[tool];
@@ -264,6 +266,11 @@ async function heldOf(store: Pick<Store, "mcp">, proposal: unknown): Promise<Rec
     if (lines.length) held[file] = lines;
   }
   return held;
+}
+
+/** The backend manifest is data describing existing callbacks, not a server MCP connection. */
+function sdkDescribed(manifest: readonly SdkWorkflowTool[]): { name: string; does: string }[] {
+  return manifest.map((tool) => ({ name: tool.name, does: `${tool.description}. Takes ${JSON.stringify(tool.input_schema)}.${tool.output_schema ? ` Gives ${JSON.stringify(tool.output_schema)}.` : ""}` }));
 }
 
 /** The tools each saved MCP server lists now, by the server's name (none for one not saved, or a store that can't be
@@ -352,6 +359,8 @@ export async function draftForOf(deps: Pick<LearningEndDeps, "store" | "learning
  *  with the server's settings (from the store) and the agent's; none for a workflow revision. */
 async function draftTools(deps: LearningEndDeps, runId: string): Promise<{ tools: string[]; gated: Record<string, string>; deniedBy: Record<string, "agent" | "server" | "default">; asked: string[]; decisions?: DraftDecisions }> {
   const run = await deps.store.runs.get(runId);
+  const launch = run ? readLaunchBody((await deps.store.runs.launch(runId)).body) : undefined;
+  if (launch?.sdk?.workflow_tools) return sdkDraftTools(launch.sdk.workflow_tools);
   const revision = run ? await deps.store.agents.revision(run.revisionId) : undefined;
   if (revision?.kind !== "agentic") return { tools: [], gated: {}, deniedBy: {}, asked: [] };
   const body = revision.body as { tools?: string[]; toolSettings?: unknown; approvals?: string };
@@ -397,13 +406,14 @@ async function checkedOf(deps: LearningEndDeps, input: { runId: string; agentId:
   const runDir = await mkdtemp(join(tmpdir(), "agentrun-learning-end-"));
   try {
     const { tools, gated, deniedBy, asked, decisions } = await draftTools(deps, input.runId);
+    const sdk = readLaunchBody((await deps.store.runs.launch(input.runId)).body)?.sdk;
     // #2424's card rule (learnedAskFits): a draft whose ask-set MCP tools would not all show on its approval card is refused.
     const { learnedAskFits } = await import("../learned-workflow.js");
     const turn = { answer: input.turn.answer, asked: [...input.turn.asked], ...(input.turn.triggered?.length ? { triggered: input.turn.triggered.map((one) => ({ ...one })) } : {}) };
     const folder = deps.learningFolder(input.agentId);
     let proposed;
     try {
-      proposed = await proposeRun({ folder: folder.workspace, runDir, seed: input.seed, ...(input.notesSeed ? { notesSeed: input.notesSeed } : {}), turn, refuse: input.refuse, outcome: input.outcome, tools, ...(Object.keys(gated).length ? { gated } : {}), ...(Object.keys(deniedBy).length ? { deniedBy } : {}), ask: { asked, fits: learnedAskFits }, ...(decisions ? { decisions } : {}), ...(input.workflows === false ? { workflows: false as const } : {}) });
+      proposed = await proposeRun({ ...(sdk?.workflow_tools ? { workflowAdapters: sdk.workflow_adapters ?? [] } : {}), folder: folder.workspace, runDir, seed: input.seed, ...(input.notesSeed ? { notesSeed: input.notesSeed } : {}), turn, refuse: input.refuse, outcome: input.outcome, tools, ...(Object.keys(gated).length ? { gated } : {}), ...(Object.keys(deniedBy).length ? { deniedBy } : {}), ask: { asked, fits: learnedAskFits }, ...(decisions ? { decisions } : {}), ...(input.workflows === false ? { workflows: false as const } : {}) });
     } finally {
       await folder.end();
     }
@@ -411,7 +421,7 @@ async function checkedOf(deps: LearningEndDeps, input: { runId: string; agentId:
     const proposal: unknown = JSON.parse(await readFile(join(runDir, PROPOSAL), "utf8"));
     // A draft calling an MCP tool with no declared price waits for its owner's OK whatever the grade (LS-07): held here,
     // from the prices the store keeps now, and said to the grader.
-    const held = await heldOf(deps.store, proposal);
+    const held = await heldOf(deps.store, proposal, sdk?.workflow_tools);
     return { ...proposed, proposal: Object.keys(held).length ? { ...(proposal as object), held } : proposal };
   } finally {
     await rm(runDir, { recursive: true, force: true });

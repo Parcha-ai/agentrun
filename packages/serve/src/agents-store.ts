@@ -133,6 +133,8 @@ function revisionInputOf(definition: Json, files: Record<string, string>): Revis
   return {
     kind: "agentic",
     instructions: definition.instructions as string,
+    ...(definition.sdk !== undefined ? {sdk: definition.sdk as import("./store/agent-body.js").SdkBinding} : {}),
+    ...(isObject(definition.native) ? { native: definition.native as unknown as import("./native/types.js").NativeBinding } : {}),
     ...(typeof definition.model === "string" ? { model: definition.model } : {}),
     ...(isObject(definition.model_tiers) ? { modelTiers: definition.model_tiers as ModelTiers } : {}),
     ...(typeof definition.thinking === "string" ? { thinking: definition.thinking } : {}),
@@ -218,7 +220,7 @@ export async function createAgent(
   if (given !== undefined && !ID_PATTERN.test(given)) throw invalid([{ field: "definition.id", reason: "invalid", message: `definition.id does not match ${ID_PATTERN.source}` }]);
   if (given !== undefined && (await store.agents.get(given))) throw new ApiError("agent_exists", `an agent ${given} exists here`);
   // Stamped on the revision now, never resolved at run time: an agent saved with no place keeps running on the runner.
-  const stamped = options.fresh && definition.place === undefined && definition.computer === undefined && !isObject(definition.workflow)
+  const stamped = options.fresh && definition.place === undefined && definition.computer === undefined && !isObject(definition.workflow) && !isObject(definition.sdk)
     ? { place: options.fresh.place, ...(definition.tools === undefined ? { tools: [...options.fresh.tools] } : {}) }
     : {};
   const revision = makeRevision({ ...definition, ...stamped }, skills, note);
@@ -319,6 +321,8 @@ function editOn(entry: AgentEntry, definition: Json, skills: Record<string, stri
   if (files === undefined) files = (isObject(current?.skills) ? (current!.skills as Record<string, string>) : {});
   const carried = current
     ? {
+        ...((currentBody as AgenticBody).sdk && definition.sdk === undefined ? { sdk: (currentBody as AgenticBody).sdk } : {}),
+        ...((currentBody as AgenticBody).native && definition.native === undefined ? { native: (currentBody as AgenticBody).native } : {}),
         ...(definition.harness === undefined && currentBody.harness ? { harness: currentBody.harness } : {}),
         // The computer and its place go together: an edit naming neither keeps both (the computer, else the place).
         ...(definition.place === undefined && definition.computer === undefined ? (currentBody.computer ? { computer: currentBody.computer } : currentBody.place ? { place: currentBody.place } : {}) : {}),
@@ -388,6 +392,8 @@ export function definitionOf(agent: AgentRow, revision: RevisionRow, version: nu
     name: agent.name,
     ...(agent.description !== null && agent.description !== undefined ? { description: agent.description } : {}),
     ...kindBody,
+    ...((body as AgenticBody).sdk ? { sdk: (body as AgenticBody).sdk } : {}),
+    ...((body as AgenticBody).native ? { native: (body as AgenticBody).native } : {}),
     // Its approvals, of either kind: "ask" where none is set, as the definition read says it (definitionOf).
     approvals: approvalsOf((body as { approvals?: unknown }).approvals),
     harness: harnessOfBody(body),
@@ -406,13 +412,14 @@ export function definitionOf(agent: AgentRow, revision: RevisionRow, version: nu
 export function agentView(
   entry: AgentEntry,
   origin: string,
-  extra: { signIns?: readonly object[]; learning?: { pending: number }; runs?: { count: number; live: number }; ownComputer?: Record<string, unknown> | null } = {},
+  extra: { nativeStatus?: import("./native/types.js").NativeBinding; signIns?: readonly object[]; learning?: { pending: number }; runs?: { count: number; live: number }; ownComputer?: Record<string, unknown> | null } = {},
 ) {
   const { agent, revision } = entry;
   const body = (revision?.body ?? {}) as Body;
   const external = externalOf(agent, revision);
   return {
     agent_id: agent.id,
+    ...(extra.nativeStatus ? { native_status: extra.nativeStatus } : {}),
     // Only on an agent another system owns (POST /runs): read-only here.
     ...(external ? { external } : {}),
     definition: revision ? definitionOf(agent, revision, entry.version) : null,

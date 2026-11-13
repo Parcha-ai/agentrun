@@ -860,17 +860,17 @@ const longNodes = (dsl: DraftReader, doc: unknown): DraftProblem[] =>
 
 /** The node the learned runner cannot run, as the DSL's own check says it (assertWorkflowCapabilities, which runWorkflow
  *  makes before any node runs) with the runner's deps: none when it can run every one. */
-const unrunnableNodes = (dsl: DraftReader, doc: unknown, decisions?: DraftDecisions): DraftProblem[] => {
+const unrunnableNodes = (dsl: DraftReader, doc: unknown, decisions?: DraftDecisions, adapters?: readonly ("runNode" | "runJudge")[]): DraftProblem[] => {
   const workflow = dsl.desugarWorkflow(doc as Workflow);
-  // With the run's decision providers, a decision node is runnable when its provider is one of them and answers what it
-  // asks (the DSL's checkDecisionProviders): the same registry the call's judge is built on.
-  const judging = decisions ? { runJudge: async () => ({}), decisionProviders: { providers: decisions.providers, default: decisions.default } } : {};
-  const runner = { runNode: async () => ({}), runEffect: async () => ({}), ...judging };
+  // Managed runs name the providers their host can ask; SDK runs supply their own explicit adapter capabilities.
+  const judging = decisions ? { ...(adapters === undefined || adapters.includes("runJudge") ? { runJudge: async () => ({}) } : {}), decisionProviders: { providers: decisions.providers, default: decisions.default } } : {};
+  const callbacks = Object.fromEntries((adapters ?? ["runNode"]).map((name) => [name, async () => ({})]));
+  const runner = { runEffect: async () => ({}), ...callbacks, ...judging };
   try {
     dsl.assertWorkflowCapabilities(workflow.root, runner as never, workflow);
     return [];
   } catch (error) {
-    return [{ rule: "workflow", detail: `${(error as Error).message.slice(0, 200)}: ${LEARNED_NODES}` }];
+    return [{ rule: "workflow", detail: `${(error as Error).message.slice(0, 200)}: ${adapters === undefined ? LEARNED_NODES : "this host has no adapter for that node"}` }];
   }
 };
 
@@ -890,7 +890,8 @@ const issuesOf = (dsl: DraftReader, doc: unknown, tools?: readonly string[]) => 
  *  names them all (`fits`: learned-workflow.ts learnedAskFits, the gate's own rule, handed in so it is never copied). */
 export type DraftAsk = { readonly asked: readonly string[]; readonly fits: (asks: readonly string[]) => boolean };
 
-export function draftProblems(dsl: DraftReader, text: string, tools?: readonly string[], gated: Readonly<Record<string, string>> = {}, deniedBy: Readonly<Record<string, SettingFrom>> = {}, ask?: DraftAsk, decisions?: DraftDecisions): DraftProblem[] {
+/** `decisions` is the managed host's registry; `adapters` is an explicit backend callback contract, when supplied. */
+export function draftProblems(dsl: DraftReader, text: string, tools?: readonly string[], gated: Readonly<Record<string, string>> = {}, deniedBy: Readonly<Record<string, SettingFrom>> = {}, ask?: DraftAsk, decisions?: DraftDecisions, adapters?: readonly ("runNode" | "runJudge")[]): DraftProblem[] {
   let doc: unknown;
   try {
     doc = JSON.parse(text);
@@ -904,7 +905,7 @@ export function draftProblems(dsl: DraftReader, text: string, tools?: readonly s
   if (issues.length) return issues.slice(0, 5).map((issue) => ({ rule: "workflow", detail: `the workflow DSL refuses it: ${issue.code} at ${issue.path || "/"}: ${issue.message.slice(0, 200)}` }));
   let out: DraftProblem[];
   try {
-    out = [...toolingNodes(dsl, doc), ...executableNodes(dsl, doc), ...unrunnableNodes(dsl, doc, decisions), ...longNodes(dsl, doc), ...gatedNodes(dsl, doc, gated, deniedBy), ...gatedDecisions(dsl, doc, decisions), ...[...synthesisProblems(doc, dsl), ...loopProblems(doc)].map((detail) => ({ rule: "workflow" as const, detail }))];
+    out = [...toolingNodes(dsl, doc), ...executableNodes(dsl, doc), ...unrunnableNodes(dsl, doc, decisions, adapters), ...longNodes(dsl, doc), ...gatedNodes(dsl, doc, gated, deniedBy), ...gatedDecisions(dsl, doc, decisions), ...[...synthesisProblems(doc, dsl), ...loopProblems(doc)].map((detail) => ({ rule: "workflow" as const, detail }))];
     // A learned workflow answers the value at its output's path: one that names none would answer its whole state, which
     // fails its output schema when the call ends, after every node spent.
     const path = (doc as { output?: { path?: unknown } } | null)?.output?.path;

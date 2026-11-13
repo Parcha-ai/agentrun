@@ -2,19 +2,19 @@ import { cva, type VariantProps } from "class-variance-authority";
 import * as React from "react";
 import { cn } from "@/lib/utils";
 
-// The console's button: mono caps, a 1px border, square. One per action; a row or a card someone can press is a plain
+// The console's button: mono caps, a 1px border, rounded action corners. One per action; a row or a card someone can press is a plain
 // <button> with its own layout, never this.
 export const buttonVariants = cva(
-  "caps inline-flex items-center justify-center gap-2 whitespace-nowrap border text-small transition-colors disabled:cursor-not-allowed disabled:opacity-45 [&_svg]:size-3.5 [&_svg]:shrink-0",
+  "caps inline-flex items-center justify-center gap-2 whitespace-nowrap !rounded-action border text-small transition-colors disabled:cursor-not-allowed disabled:opacity-45 [&_svg]:size-3.5 [&_svg]:shrink-0",
   {
     variants: {
       variant: {
         /** The default: any action that is not the page's one main action. */
         outline: "border-border bg-background hover:border-border-strong hover:bg-accent",
-        /** The main action where a filled button would be too loud (a toolbar, a card). */
-        primary: "border-primary text-primary-text hover:bg-primary/10",
-        /** The page's one main action. */
-        solid: "border-primary bg-primary text-primary-foreground hover:bg-primary/90",
+        /** The one main action in a toolbar or form: a translucent orange fill, stronger on hover or focus. */
+        primary: "border-transparent bg-primary/10 text-primary-action-text hover:bg-primary/20 focus-visible:bg-primary/20",
+        /** Legacy primary-action spelling; kept equivalent while callers migrate. */
+        solid: "border-transparent bg-primary/10 text-primary-action-text hover:bg-primary/20 focus-visible:bg-primary/20",
         /** An action that deletes or cannot be undone. */
         destructive: "border-destructive/60 text-destructive-text hover:bg-destructive/10",
         /** An action inside a dense row or a header, where a border would be noise. */

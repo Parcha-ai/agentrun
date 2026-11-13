@@ -1,15 +1,17 @@
-import { Segmented } from "@/components/ui/segmented";
 import { cn } from "@/lib/utils";
 import { Picker } from "@/components/ui/picker";
+import { Segmented } from "@/components/ui/segmented";
+import { Activity, Cpu } from "lucide-react";
 import { type Analytics, type AnalyticsGroup, cachedShare, compact, coverage, duration, groupCost, type MissionView, outcomes, percent, RANGES, type StatsRange, successRate, trendDays } from "@/lib/mission";
 
 /** The range and agent picker over the analytics, one row above them. */
 export function AnalyticsFilter({ range, onRange, agent, agents, onAgent }: { range: StatsRange; onRange: (range: StatsRange) => void; agent: string | null; agents: MissionView["perAgent"]; onAgent?: (agent: string | null) => void }) {
   return (
     <div className="flex flex-wrap items-center gap-3">
-      <Segmented label="Range" name="mission-range" value={range} onChange={onRange} options={RANGES.map((r) => ({ value: r.id, label: r.label }))} />
+      <Segmented label="Range" name="mission-range" value={range} onChange={onRange} size="sm"
+        options={RANGES.map((r) => ({ value: r.id, label: r.label }))} />
       {onAgent && agents.length > 0 && (
-        <Picker label="Agent" value={agent ?? ""} onChange={(v) => onAgent(v || null)} className="h-[38px] w-56"
+        <Picker label="Agent" value={agent ?? ""} onChange={(v) => onAgent(v || null)} className="h-control-sm w-56"
           options={[{ value: "", label: "All agents" }, ...agents.map((a) => ({ value: a.agentId, label: a.name }))]} />
       )}
     </div>
@@ -27,7 +29,7 @@ export function MissionAnalytics({ a, basis, now = Date.now(), refreshing = fals
   const rate = successRate(t);
   const spent = groupCost(t, basis);
   const tiles: { label: string; value: string; notes: (string | undefined)[] }[] = [
-    { label: "Tokens", value: compact(t.tokens), notes: [`${cached === null ? "" : `${percent(cached)} of input cached · `}${compact(t.output)} output`, coverage(t), t.unmetered ? `${plural(t.unmetered, "request")} with no token count` : undefined] },
+    { label: "Tokens", value: compact(t.tokens), notes: [`${cached === null ? "" : `${percent(cached)} of input cached · `}${compact(t.output)} output`, coverage(t), t.requests === null || t.unmetered === null ? "Model request counts unavailable" : t.unmetered ? `${plural(t.unmetered, "request")} with no token count` : undefined] },
     { label: "Run time", value: duration(a.time.wall_ms), notes: [`wall time of ${plural(a.time.ended_runs, "ended run")}`, a.time.active_runs ? `${duration(a.time.active_ms)} active, over ${plural(a.time.active_runs, "run")}` : undefined] },
     { label: "Success rate", value: percent(rate), notes: [t.completed + t.failed ? outcomes(t) : "No run completed or failed yet"] },
     { label: "Cost", value: spent.total, notes: [spent.note] },
@@ -36,15 +38,15 @@ export function MissionAnalytics({ a, basis, now = Date.now(), refreshing = fals
     <div className={cn("space-y-6 transition-opacity", refreshing && "opacity-60")} aria-busy={refreshing}>
       <ul className="grid grid-cols-2 gap-3 xl:grid-cols-4">
         {tiles.map((tile) => (
-          <li key={tile.label} className="border p-4">
+          <li key={tile.label} className="border bg-card p-5">
             <p className="caps text-label text-muted-foreground">{tile.label}</p>
-            <p className="mt-2 font-mono text-xl font-semibold">{tile.value}</p>
-            {tile.notes.filter(Boolean).map((n) => <p key={n} className="mt-1 font-mono text-label text-muted-foreground">{n}</p>)}
+            <p className="mt-3 font-mono text-2xl leading-tight">{tile.value}</p>
+            {tile.notes.filter(Boolean).map((n) => <p key={n} className="mt-2 text-small leading-relaxed text-muted-foreground">{n}</p>)}
           </li>
         ))}
       </ul>
       <Trend days={trendDays(a.by_day, a.filter.from, now)} />
-      <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
+      <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">
         <HarnessTable rows={a.by_harness_effort} basis={basis} />
         <ToolsTable tools={a.tools} />
       </div>
@@ -53,8 +55,8 @@ export function MissionAnalytics({ a, basis, now = Date.now(), refreshing = fals
   );
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  return <section className="border"><h3 className="caps border-b px-4 py-3 text-small font-semibold">{title}</h3>{children}</section>;
+function Section({ title, children }: { title: React.ReactNode; children: React.ReactNode }) {
+  return <section className="min-w-0 overflow-hidden border bg-card"><h3 className="caps flex min-h-12 items-center gap-2 border-b px-5 py-3 text-small font-semibold">{title}</h3>{children}</section>;
 }
 const th = "px-4 py-2 text-left font-normal";
 const td = "px-4 py-2.5 align-top";
@@ -132,49 +134,55 @@ const short = (day: string) => day.slice(5);
  *  each bar its own hover and focus readout, and a table view of every value. */
 function Trend({ days }: { days: Analytics["by_day"] }) {
   const any = days.some((d) => d.runs > 0);
-  if (!any) return <Section title="Per day"><p className="px-4 py-6 text-center font-mono text-body text-muted-foreground">No runs started in this range{days.length ? " in the last 30 days" : ""}.</p></Section>;
+  const runTitle = <><Activity className="size-4" aria-hidden />Run activity</>;
+  const tokenTitle = <><Cpu className="size-4" aria-hidden />Token usage</>;
+  if (!any) return <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
+    <Section title={runTitle}><p className="flex min-h-[220px] items-center justify-center px-5 py-6 text-center text-body text-muted-foreground">No runs started in this range{days.length ? " in the last 30 days" : ""}.</p></Section>
+    <Section title={tokenTitle}><p className="flex min-h-[220px] items-center justify-center px-5 py-6 text-center text-body text-muted-foreground">No token usage in this range.</p></Section>
+  </div>;
   const runsTop = niceTop(Math.max(...days.map((d) => d.runs)));
-  const tokensTop = niceTop(Math.max(...days.map((d) => d.tokens)));
+  const tokensTop = niceTop(Math.max(...days.flatMap((d) => d.tokens === null ? [] : [d.tokens]), 0));
   const SEGMENTS = [
     { key: "completed", label: "Completed", className: "bg-muted-foreground", of: (d: AnalyticsGroup) => d.completed },
     { key: "failed", label: "Failed", className: "bg-destructive", of: (d: AnalyticsGroup) => d.failed },
     { key: "other", label: "Other", className: "bg-border-strong", of: otherOf },
   ];
   return (
-    <Section title={`Per day, ${days[0]!.day} to ${days.at(-1)!.day} (UTC)`}>
-      <div className="grid grid-cols-1 gap-6 p-4 xl:grid-cols-2">
-        <figure>
+    <div className="space-y-3">
+      <p className="text-small text-muted-foreground">{`Per day, ${days[0]!.day} to ${days.at(-1)!.day} (UTC)`}</p>
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
+        <Section title={runTitle}><figure className="p-5">
           <figcaption className="mb-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-small">
             <span className="font-semibold">Runs</span>
-            {SEGMENTS.map((s) => <span key={s.key} className="inline-flex items-center gap-1.5 text-muted-foreground"><span className={cn("inline-block size-2.5", s.className)} aria-hidden />{s.label}</span>)}
+            {SEGMENTS.map((s) => <span key={s.key} className="inline-flex items-center gap-1.5 text-muted-foreground"><span className={cn("inline-block size-2.5 ", s.className)} aria-hidden />{s.label}</span>)}
           </figcaption>
           <Bars days={days} top={runsTop} label="Runs per day"
             stack={(d) => SEGMENTS.map((s) => ({ className: s.className, value: s.of(d) }))}
             readout={(d) => [`${d.runs} ${d.runs === 1 ? "run" : "runs"}`, `${d.completed} completed · ${d.failed} failed · ${otherOf(d)} other`]} />
-        </figure>
-        <figure>
-          <figcaption className="mb-2 text-small font-semibold">Tokens</figcaption>
+        </figure></Section>
+        <Section title={tokenTitle}><figure className="p-5">
+          <figcaption className="mb-2 text-small font-semibold">Tokens{days.some((day) => day.tokens === null) && <span className="ml-2 font-normal text-muted-foreground">? means unavailable</span>}</figcaption>
           <Bars days={days} top={tokensTop} label="Tokens per day" format={compact}
             stack={(d) => [{ className: "bg-primary", value: d.tokens }]}
             readout={(d) => [`${compact(d.tokens)} tokens`, coverage(d) ?? `${d.runs} ${d.runs === 1 ? "run" : "runs"}`]} />
-        </figure>
+        </figure></Section>
       </div>
-      <details className="border-t px-4 py-2">
+      <details className="border bg-card px-5 py-3">
         <summary className="caps cursor-pointer text-label text-muted-foreground">Table</summary>
         <div className="overflow-x-auto"><table className="mt-2 w-full border-collapse font-mono text-small">
           <thead><tr className="caps text-label text-muted-foreground">{["Day", "Runs", "Completed", "Failed", "Other", "Tokens"].map((h) => <th key={h} className="py-1 pr-4 text-left font-normal">{h}</th>)}</tr></thead>
-          <tbody>{days.map((d) => <tr key={d.day}><td className="py-0.5 pr-4">{d.day}</td><td className="pr-4">{d.runs}</td><td className="pr-4">{d.completed}</td><td className="pr-4">{d.failed}</td><td className="pr-4">{otherOf(d)}</td><td className="pr-4">{d.tokens.toLocaleString("en-US")}</td></tr>)}</tbody>
+          <tbody>{days.map((d) => <tr key={d.day}><td className="py-0.5 pr-4">{d.day}</td><td className="pr-4">{d.runs}</td><td className="pr-4">{d.completed}</td><td className="pr-4">{d.failed}</td><td className="pr-4">{otherOf(d)}</td><td className="pr-4">{d.tokens === null ? "Unknown" : d.tokens.toLocaleString("en-US")}</td></tr>)}</tbody>
         </table></div>
       </details>
-    </Section>
+    </div>
   );
 }
 
-/** Columns on one baseline, at most 24px wide, segments stacked bottom-up with a 2px surface gap and a 4px top;
+/** Columns on one baseline, at most 24px wide, segments stacked bottom-up with a 2px surface gap;
  *  a hairline grid at the axis' top and middle. Each column is a focus target whose readout shows on hover and focus. */
 function Bars({ days, top, label, stack, readout, format = (n: number) => n.toLocaleString("en-US") }: {
   days: Analytics["by_day"]; top: number; label: string; format?: (n: number) => string;
-  stack: (d: AnalyticsGroup) => { className: string; value: number }[]; readout: (d: AnalyticsGroup & { day: string }) => string[];
+  stack: (d: AnalyticsGroup) => { className: string; value: number | null }[]; readout: (d: AnalyticsGroup & { day: string }) => string[];
 }) {
   const H = 140;
   return (
@@ -187,13 +195,16 @@ function Bars({ days, top, label, stack, readout, format = (n: number) => n.toLo
           <div className="pointer-events-none absolute inset-x-0 top-0 border-t border-border" aria-hidden />
           <div className="pointer-events-none absolute inset-x-0 top-1/2 border-t border-border" aria-hidden />
           {days.map((d) => {
-            const parts = stack(d).filter((p) => p.value > 0);
+            const values = stack(d);
+            const unknown = values.some((part) => part.value === null);
+            const parts = values.filter((part): part is { className: string; value: number } => part.value !== null && part.value > 0);
             return (
               <div key={d.day} role="listitem" tabIndex={0} aria-label={`${d.day}: ${readout(d).join(", ")}`}
-                className="group relative flex h-full min-w-0 flex-1 flex-col items-center justify-end outline-none hover:bg-accent/60 focus-visible:bg-accent/60">
-                <div className="flex w-full max-w-[24px] flex-col-reverse gap-[2px]">
+                className="group relative flex h-full min-w-0 flex-1 flex-col items-center justify-end focus-visible:outline-focus focus-visible:outline-ring hover:bg-accent/60 focus-visible:bg-accent/60">
+                {unknown && <span aria-hidden className="font-mono text-small text-muted-foreground">?</span>}
+                <div className="flex w-full max-w-6 flex-col-reverse gap-0.5">
                   {parts.map((p, i) => (
-                    <div key={i} className={cn(p.className, i === parts.length - 1 && "")} style={{ height: Math.max(1, Math.round((p.value / top) * (H - 2 * (parts.length - 1)))) }} />
+                    <div key={i} className={p.className} style={{ height: Math.max(1, Math.round((p.value / top) * (H - 2 * (parts.length - 1)))) }} />
                   ))}
                 </div>
                 <div className="pointer-events-none absolute bottom-full left-1/2 z-raised mb-1 hidden -translate-x-1/2 whitespace-nowrap border bg-card px-2 py-1 text-left font-mono text-label shadow-float group-hover:block group-focus-visible:block">

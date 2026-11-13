@@ -6,6 +6,8 @@ import { type RunActions, RunHeader } from "@/components/RunHeader";
 import { RunError } from "@/components/RunError";
 import { ArtifactViewer, listedFiles, RunFiles } from "@/components/RunFiles";
 import { RunResult } from "@/components/RunResult";
+import { NativeRun } from "@/components/NativeRun";
+import { RunLearningResult } from "@/components/RunLearningResult";
 import { ScreenPanel, useRunScreen } from "@/components/RunScreen";
 import { ComputerAskCard } from "@/components/ComputerAskCard";
 import { Button } from "@/components/ui/button";
@@ -17,8 +19,10 @@ import { APPROVAL_ROW, approvalOf } from "@/lib/approval";
 import { askedAt, askOf, computerRefusal } from "@/lib/computerAsk";
 import { runEnded } from "@/lib/format";
 import { BY_THE_MINUTE } from "@/lib/computers";
-import { type LearningDiff, learningSteps } from "@/lib/learning";
+import { type LearningDiff, type RunLearningResultData, learningSteps } from "@/lib/learning";
 import { isEscalated, type MessageFeatures, type RunView, runState } from "@/lib/runState";
+import { cn } from "@/lib/utils";
+import { backendSdkLabel, backendSdkOf } from "@/lib/backendSdk";
 import { latest, NO_ANSWER, pendingQuestion } from "@/lib/viewing";
 import type { ComputerHoldAnswer, Computers, HandBackOutcome, Run, RunComputer, RunFile, RunLearningRead, TimelineRow } from "@/lib/v2";
 
@@ -61,8 +65,10 @@ export type RunDetailProps = {
   onHandBack?: (outcome?: HandBackOutcome) => Promise<ComputerHoldAnswer>;
   /** Reads the computer kinds and providers (GET /v2/computers): whether the run's provider is metered. */
   readComputers?: () => Promise<Computers>;
+  /** The recorded grader result and provenance, read only when the Learning tab opens. */
+  readLearningResult?: () => Promise<RunLearningResultData | null>;
 };
-type Tab = "graph" | "report" | "timeline" | "files" | "screen";
+type Tab = "graph" | "report" | "timeline" | "files" | "screen" | "learning";
 
 /** The message box's words while a tool call waits on an approval: a message declines the call, and the agent reads it. */
 const DECLINES = { label: "Decline and say what to do instead", placeholder: "Tell the agent what to do instead...", does: "Sending it declines the waiting call; the agent reads your message." };
@@ -99,14 +105,16 @@ function beforeAnswer(run: Pick<Run, "status" | "state" | "pending">, view: RunV
 }
 
 /** The run page: Report / Timeline / Files tabs over AgentRun Server's run, timeline and files. */
-export function RunDetail({ run, agentName, messages, harnessSteers, rows, files, readFile, openFile = null, actions, onMessage, onApprove, tab: initial, graphView, costText, readLearningDiff, readLearning, readComputer, computerEvery, onTakeOver, onHandBack, readComputers }: RunDetailProps) {
+export function RunDetail({ run, agentName, messages, harnessSteers, rows, files, readFile, openFile = null, actions, onMessage, onApprove, tab: initial, graphView, costText, readLearningDiff, readLearning, readLearningResult, readComputer, computerEvery, onTakeOver, onHandBack, readComputers }: RunDetailProps) {
   // A run paused at its spend cap takes no message until its cap is raised (409 budget_reached): no composer for it.
+  const native = run.native;
+  const sdk = backendSdkOf(run);
   const budget = run.pending?.kind === "budget" ? run.pending : null;
   // The agent's ask at its computer: a message is no answer to it, but one to a working run.
   const ask = askOf(run);
-  const askMode = ask ? (harnessSteers && messages.steer ? "steer" as const : messages.follow_up ? "follow_up" as const : null) : null;
+  const askMode = !sdk && !native && ask ? (harnessSteers && messages.steer ? "steer" as const : messages.follow_up ? "follow_up" as const : null) : null;
   const state = runState(run.status, run.state, run.kind, messages, harnessSteers, run.error, run.review);
-  const view = budget ? { ...state, canMessage: false, messageMode: null } : ask ? { ...state, canMessage: askMode !== null, messageMode: askMode } : state;
+  const view = sdk || native || budget ? { ...state, canMessage: false, messageMode: null } : ask ? { ...state, canMessage: askMode !== null, messageMode: askMode } : state;
   const defaultTab: Tab = graphView ? "graph" : view.final && run.status === "completed" ? "report" : "timeline";
   const [picked, setTab] = useState<Tab>(initial ?? defaultTab);
   // A Graph tab that went away (the graph's read was refused) leaves the run's default tab open, never a blank view.
@@ -199,15 +207,16 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
   // A story or a deep link can open a file on first render.
   useEffect(() => { if (openFile && readFile) void show(openFile); }, [openFile]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const tabs: [Tab, string][] = [...(graphView ? [["graph", "Graph"] as [Tab, string]] : []), ["report", "Report"], ["timeline", "Timeline"], ["files", `Files ${listedFiles(files, showHidden).length}`], ...(hasScreen ? [["screen", "Screen"] as [Tab, string]] : [])];
+  const tabs: [Tab, string][] = [...(graphView ? [["graph", "Graph"] as [Tab, string]] : []), ["report", "Report"], ["timeline", "Timeline"], ...(run.learning ? [["learning", "Learning"] as [Tab, string]] : []), ["files", `Files ${listedFiles(files, showHidden).length}`], ...(hasScreen ? [["screen", "Screen"] as [Tab, string]] : [])];
   return (
     // On a short screen (a phone on its side) the page scrolls as a whole, in <main>: the header, the tabs and the composer
     // keep their own heights and the tab body takes what it needs, instead of what is left of 390 px (nothing).
     <div className="flex h-full min-h-0 flex-col short:h-auto">
       <RunHeader run={run} agentName={agentName} actions={actions} costText={costText} />
-      <Tabs tabs={tabs.map(([id, label]) => ({ id, label }))} value={tab} onChange={setTab} />
+      <Tabs id="run-views" label="Run views" value={tab} onChange={(value) => setTab(value as Tab)} tabs={tabs.map(([id, label]) => ({ id, label }))} />
       {tab === "graph" ? <div className="min-h-0 flex-1 short:min-h-96">{graphView}</div> : <div className="min-h-0 flex-1 overflow-auto short:flex-none short:overflow-visible">
         <div className="mx-auto max-w-4xl space-y-6 px-5 py-8 md:px-8">
+          {native && <NativeRun native={native} agentId={run.agent_id} />}
           {run.status === "failed" && run.error && <RunError error={run.error} title={isEscalated(run.status, run.error) ? "The run escalated" : undefined} />}
           {run.status === "cancelled" && (
             <section className="border border-border-strong/60 p-4"><p className="caps text-label text-muted-foreground">Cancelled</p>
@@ -223,7 +232,7 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
           {approval ? <ApprovalCard key={approval.id} pending={approval} onAnswer={(decision, note) => approve(approval.id, decision, note)} />
             : ask ? <ComputerAskCard key={askKey} ask={ask} onAnswer={onHandBack ? answerAsk : undefined}
                 open={tab !== "screen" ? <Button size="sm" variant="primary" onClick={() => setTab("screen")}>Open the screen</Button> : null} />
-            : view.needsYou && (budget ? <BudgetPaused pending={budget} /> : <NeedsYou waiting={waiting} />)}
+            : !native && view.needsYou && (budget ? <BudgetPaused pending={budget} /> : <NeedsYou waiting={waiting} />)}
           {/* With no served cap the banner names none to raise above; the run header's raise reads the run's own cap. */}
           {view.needsYou && budget && typeof budget.cap_usd === "number" && actions?.onRaiseCap && <RaiseCap key={`${run.run_id}:${budget.at}`} cap={budget.cap_usd} suggested={suggestedCap(budget)} least={leastCap(budget)} paused onRaise={actions.onRaiseCap} />}
           {tab === "report" && <RunResult run={run} rows={rows} files={files} onOpen={show} />}
@@ -234,11 +243,14 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
           {tab === "timeline" && <Timeline rows={learningSteps(rows, run.learning)} live={view.live} ended={runEnded(run.status)} asking={approvalRow?.id ?? (view.needsYou && !budget ? waiting?.id : undefined)} waitingOn={run.status === "input_required" ? run.pending?.kind : undefined} files={files} onOpen={show} />}
           {(tab === "report" || tab === "timeline") && <RunUsed used={used} agentId={run.agent_id} />}
           {(tab === "report" || tab === "timeline") && changes && <RunChanges got={changes.got} retry={changes.retry} />}
+          {tab === "learning" && <RunLearningResult key={run.run_id} run={run} read={readLearningResult} onViewChanges={changes ? () => setTab("report") : undefined} />}
           {tab === "files" && <RunFiles files={files} onOpen={show} showHidden={showHidden} onShowHidden={setShowHidden} />}
           {tab === "screen" && hasScreen && <ScreenPanel runId={run.run_id} screen={screen} machine={machine} opens={screenOpens} followUp={view.canMessage && view.messageMode === "follow_up"} metered={metered}
             onTake={onTakeOver ? take : undefined} onHand={onHandBack ? () => hand() : undefined} />}
         </div>
       </div>}
+      {native && <p className="border-t px-5 py-4 text-small text-muted-foreground md:px-8">Native sessions cannot receive steering or follow-up messages. <a href={`#/playground?agent=${encodeURIComponent(run.agent_id)}`} className="underline underline-offset-2">Start a new native run</a> for another task.</p>}
+      {sdk && <p className="border-t px-5 py-4 text-small text-muted-foreground md:px-8">{backendSdkLabel(sdk.runtime)} runs in your backend. Start, stop and follow up through that application's controls. AgentRun records the result and checked learning.</p>}
       {/* While a call waits on an approval, a message declines it, as its reason: the box says so. */}
       {view.canMessage && (
         <div className="border-t px-5 py-4 md:px-8"><div className="mx-auto max-w-4xl"><Composer mode={view.messageMode!} onSend={onMessage} purpose={approval ? DECLINES : ask && askMode ? NOT_THE_ASK[askMode] : undefined} /></div></div>

@@ -125,7 +125,7 @@ export interface GraderRun {
 export interface LearningLoopDeps {
   /** The run that learned, from the learning run's launch row (its input's runId), and the round of its looks back the
    *  learning run grades (its input's round; absent, the first). */
-  sourceOf(learningRunId: string): Promise<{ readonly runId: string; readonly round?: number; readonly agentId: string; readonly instructions?: string } | undefined>;
+  sourceOf(learningRunId: string): Promise<{ readonly runId: string; readonly round?: number; readonly agentId: string; readonly instructions?: string; readonly policyError?: string; readonly nativeInstructions?: true } | undefined>;
   /** Its kept proposal of that round (store.learning.proposal). */
   proposal(runId: string, round: number): Promise<LearningProposal | undefined>;
   /** The agent's learning folder (learn/folder.ts learningWorkspace): its Workspace, and its end, called once the run is
@@ -432,6 +432,10 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
           await append(KINDS.learningDropped, { source: "", reason: "no_source", detail: said.stopped(STOPPED.notChecked) } satisfies DroppedData, "failed");
           return { state: "failed", error: { code: "learning_no_source", message: "the learning run names no run that learned" } };
         }
+        if (source.policyError) {
+          await append(KINDS.learningDropped, { source: source.runId, reason: "checker", detail: source.policyError } satisfies DroppedData, "ended");
+          return { state: "ended" };
+        }
         const round = source.round ?? 1;
         const kept = await learning.proposal(source.runId, round);
         if (!kept) {
@@ -567,10 +571,18 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
               return { state: "ended" };
             }
             const items = gradedItems(grading as NoteText[], (proposal.files ?? []) as NoteText[]);
-            const prompt = gradePrompt({
+            let prompt: string;
+            try { prompt = gradePrompt({
               run: source.runId, ...(source.instructions ? { instructions: source.instructions } : {}), active: main.active, superseded, proposed: grading,
+              ...(source.nativeInstructions?{nativeInstructions:true}:{}),
               ...(proposal.files?.length ? { files: proposal.files } : {}), ...(proposal.dryRuns ? { dryRuns: proposal.dryRuns } : {}), ...(proposal.drafted?.length ? { drafted: proposal.drafted } : {}), ...(proposal.asked ? { asked: proposal.asked } : {}), ...(proposal.triggered ? { triggered: proposal.triggered } : {}), ...(proposal.held ? { held: proposal.held } : {}),
-            });
+            }); } catch (error) {
+              // A full native policy can fill the remaining prompt budget. Refuse the whole proposal visibly;
+              // no grader was called and no standing instruction or proposal is silently omitted.
+              // Keep what the generality pre-check already spent.
+              await append(KINDS.learningDropped, { source: source.runId, reason: "checker", detail: error instanceof Error ? error.message : "The grading evidence exceeds the supported prompt budget.", usd: spent(), tokens, ...(unchecked !== undefined ? { unchecked } : {}) } satisfies DroppedData, "ended");
+              return { state: "ended" };
+            }
             /** The asks of this attempt that answered: the records holding more requests than these is an earlier attempt's. */
             let answered = 0;
             // Once an ask read the grade's records (`booked`), its dollars are theirs: an earlier attempt's requests counted too.

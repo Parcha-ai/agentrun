@@ -1,6 +1,8 @@
+import type { NativeBinding, NativeRuntime, NativeSelector, NativeTarget } from "./native";
+import type { ConnectorEnrollment, ConnectorEnrollmentCapabilities, RemoteConnector } from "./connectors";
 import type { Stats } from "./mission";
 import type { Agent, Definition, SaveWarning } from "./agentForm";
-import type { AgentLearning, LearningChange, LearningDiff, LearningNote, NoteProblem, NoteText, Page } from "./learning";
+import type { AgentLearning, LearningChange, LearningDiff, LearningNote, RunLearningResultData, NoteProblem, NoteText, Page } from "./learning";
 import type { ComposioTools, McpAuth, McpClientFeature, McpPreview, McpRefresh, McpServer } from "./mcp";
 import type { RunGraph } from "./runGraph";
 import { applyPage } from "./timeline";
@@ -134,6 +136,14 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     /** `filter`: one status and the archived runs only, or (the agent page's) just `archived`: the archived runs only (an
      *  archived agent's runs are all archived with it). */
     listAgentRuns: (id: string, limit = 50, cursor?: string | null, filter: RunsFilter | boolean = {}) => call<{ runs: Run[]; next_cursor: string | null }>("GET", `${agent(id)}/runs${runsQuery(limit, cursor, typeof filter === "boolean" ? { archived: filter } : filter)}`),
+    discoverNative: (project: string, runtime?: NativeRuntime) => call<{ machine_id: string; targets: NativeTarget[] }>("POST", "/native/discover", { body: { project, ...(runtime ? { runtime } : {}) } }),
+    connectNative: (body: { project: string; runtime: NativeRuntime; selector: NativeSelector }) => call<{ agent: Agent; native: NativeBinding }>("POST", "/native/connect", { body }),
+    getNative: (id: string) => call<{ native: NativeBinding | null }>("GET", `${agent(id)}/native`),
+    verifyNative: (id: string) => call<{ native: NativeBinding }>("POST", `${agent(id)}/native/verify`, { body: {} }),
+    disconnectNative: (id: string) => call<{ native: NativeBinding }>("POST", `${agent(id)}/native/disconnect`, { body: {} }),
+    listConnectors: () => call<{ connectors: RemoteConnector[] }>("GET", "/connectors"),
+    enrollConnector: (label?: string, capabilities?: ConnectorEnrollmentCapabilities) => call<ConnectorEnrollment>("POST", "/connectors/enrollment", { body: { ...(label?.trim() ? { label: label.trim() } : {}), ...(capabilities ? { capabilities } : {}) } }),
+    revokeConnector: (id: string) => call<{ connector: RemoteConnector }>("DELETE", `/connectors/${encodeURIComponent(id)}`),
     listAgents: ({ archived = false, cursor }: { archived?: boolean; cursor?: string | null } = {}) => {
       const q = new URLSearchParams();
       if (archived) q.set("archived", "true");
@@ -202,6 +212,8 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
       return made;
     },
     getRun: (id: string) => call<Run>("GET", run(id)),
+    /** The run's recorded learning outcome, grader decisions and usage; null when it did not learn. */
+    runLearningResult: (id: string) => call<RunLearningResultData | null>("GET", `${run(id)}/learning`),
     /** What the run's learning changed in its agent's notes, file by file (each with its patch, or why it is withheld). */
     runLearningDiff: (id: string) => call<LearningDiff>("GET", `${run(id)}/learning/diff`),
     /** The run's learning (GET /v2/runs/{id}/learning): with `used`, the learned skills it was offered and read, and the

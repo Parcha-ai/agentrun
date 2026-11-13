@@ -72,6 +72,7 @@ test("a learned draft with a judge node passes the learn-time check when the run
   const text = JSON.stringify(judgeFlow());
   assert.deepEqual(draftProblems(dsl, text, [], {}, {}, undefined, { providers: registry.providers, default: registry.default }), [], "proposed");
   assert.match(draftProblems(dsl, text, []).map((p) => p.detail).join("; "), /judge node "check" requires runJudge/, "no decision providers: refused as before");
+  assert.match(draftProblems(dsl, text, [], {}, {}, undefined, { providers: registry.providers, default: registry.default }, []).map((p) => p.detail).join("; "), /requires runJudge/, "a provider does not supply an adapter absent from the backend contract");
 });
 
 test("a learned draft whose decision node's provider the run's gate holds to deny is refused at learn time, in the gate's words; one it has no key for too", async (t) => {

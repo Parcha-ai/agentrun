@@ -9,17 +9,20 @@ import { ListSkeleton } from "@/components/Skeleton";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { Input } from "@/components/ui/field";
+import { CodingAgentAction } from "@/components/CodingAgentAction";
+import { runTemplatePrompt } from "@/lib/codingAgentPrompts";
 import { type Client, ClientError, type FieldIssue } from "@/lib/client";
 import { keeper } from "@/lib/idempotency";
 import { hookUrlOf, isScheduleTrigger, type Schedule, scheduleLine } from "@/lib/schedules";
 import { type Problem, problem } from "@/lib/problem";
-import { choiceOptions, grantsOf, issuesAt, needsOf, paramHelp, paramIssueWords, paramLabel, parametersOf, paramValid, type ParameterText, startValues, templateHash, titleOf } from "@/lib/templatePackages";
+import { choiceOptions, grantsOf, issuesAt, needsOf, paramHelp, paramIssueWords, paramLabel, parametersOf, paramValid, type ParameterText, readTemplateDraft, startValues, templateHash, templatePlaygroundHref, titleOf } from "@/lib/templatePackages";
 import { type Approvals, NEVER_ASK_LINE, type TemplateApplied, type TemplateView } from "@/lib/v2";
 
-type Props = { v2: Client; go: (hash: string) => void };
+type Props = { v2: Client; go: (hash: string) => void; playground?: boolean; draft?: string };
+const catalogHash = (playground: boolean) => playground ? "#/playground?operation=apply-template" : "#/templates";
 
-/** The server's templates (GET /v2/templates): the list (no `name`), or one template's Apply screen. */
-export function TemplatesPage({ v2, name, go }: Props & { name?: string }) {
+/** The server's templates: run with a coding agent, or explicitly apply through the API playground. */
+export function TemplatesPage({ v2, name, go, playground = false, draft }: Props & { name?: string }) {
   const [templates, setTemplates] = useState<TemplateView[] | null>(null);
   const [error, setError] = useState<Problem | null>(null);
   const [tries, setTries] = useState(0);
@@ -34,17 +37,19 @@ export function TemplatesPage({ v2, name, go }: Props & { name?: string }) {
     <div className="p-5 md:p-8">
       {error && !templates ? <ProblemCard problem={error} onRetry={() => setTries((n) => n + 1)} className="" />
         : !templates ? <ListSkeleton label="Loading the templates" rows={3} />
-        : name === undefined ? <TemplateList templates={templates} go={go} />
-        : shown ? <ApplyTemplate key={shown.name} v2={v2} template={shown} go={go} />
-        : <p className="border px-4 py-12 text-center font-mono text-body text-muted-foreground" role="alert">This server offers no template named {name}. <a href="#/templates" className="underline">See its templates</a>.</p>}
+        : name === undefined ? <TemplateList templates={templates} go={go} playground={playground} />
+        : shown ? <ApplyTemplate key={`${shown.name}:${draft ?? ""}`} v2={v2} template={shown} go={go} playground={playground} draft={draft} />
+        : <p className="border px-4 py-12 text-center font-mono text-body text-muted-foreground" role="alert">This server offers no template named {name}. <a href={catalogHash(playground)} className="underline">See its templates</a>.</p>}
     </div>
   );
 }
 
-function TemplateList({ templates, go }: { templates: TemplateView[]; go: (hash: string) => void }) {
+function TemplateList({ templates, go, playground }: { templates: TemplateView[]; go: (hash: string) => void; playground: boolean }) {
+  const Heading = playground ? "h2" : "h1";
+  const CardHeading = playground ? "h3" : "h2";
   return (
     <>
-      <h1 className="mb-5 font-mono text-2xl font-semibold">Templates</h1>
+      <Heading className="mb-5 font-mono text-2xl font-semibold">Templates</Heading>
       {!templates.length ? <p className="border px-4 py-12 text-center font-mono text-body text-muted-foreground">This server offers no templates yet.</p> : (
         <ul className="grid gap-3 md:grid-cols-2">
           {templates.map((t) => (
@@ -52,15 +57,18 @@ function TemplateList({ templates, go }: { templates: TemplateView[]; go: (hash:
               <article aria-label={titleOf(t)} className="flex h-full flex-col border bg-card px-5 py-4">
                 <div className="flex flex-wrap items-baseline gap-2">
                   <LayoutTemplate className="size-4 shrink-0 self-center text-muted-foreground" aria-hidden />
-                  <h2 className="min-w-0 break-words text-prose font-semibold">{titleOf(t)}</h2>
+                  <CardHeading className="min-w-0 break-words text-prose font-semibold">{titleOf(t)}</CardHeading>
                   <span className="font-mono text-small text-muted-foreground">{t.version}</span>
                 </div>
                 <p className="mt-2 text-lead leading-[1.6]">{t.description}</p>
                 <dl className="mt-3 space-y-1 font-mono text-small text-muted-foreground">
                   {needsOf(t).map(([what, words]) => <div key={what} className="flex gap-2"><dt className="shrink-0">{what}</dt><dd className="min-w-0 break-words text-foreground/80">{words}</dd></div>)}
                 </dl>
-                <div className="mt-auto pt-4">
-                  <Button size="sm" variant="solid" onClick={() => go(templateHash(t.name))}>Apply</Button>
+                <div className="mt-auto flex flex-wrap items-center justify-end gap-2 pt-4">
+                  {playground ? <Button size="sm" variant="primary" onClick={() => go(templatePlaygroundHref(t))}>Configure</Button> : <>
+                    <Button size="sm" onClick={() => go(templateHash(t.name))}>Configure</Button>
+                    <CodingAgentAction variant="primary" label="Run" prompt={runTemplatePrompt(location.origin, t)} playgroundHref={templatePlaygroundHref(t)} />
+                  </>}
                 </div>
               </article>
             </li>
@@ -85,14 +93,16 @@ function bounded<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
   return Promise.race([promise, late]).finally(() => clearTimeout(timer));
 }
 
-function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView }) {
+function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props & { template: TemplateView }) {
+  const Heading = playground ? "h2" : "h1";
+  const prepared = readTemplateDraft(draft, t);
   // The form starts at the template's served defaults for its checkboxes (a box shows what is sent); a text field
   // starts empty, its default as its hint, and is left out untouched for the server to apply that default.
-  const [values, setValues] = useState<ParameterText>(() => startValues(t));
-  const [ticked, setTicked] = useState<Set<string>>(new Set());
+  const [values, setValues] = useState<ParameterText>(() => ({ ...startValues(t), ...Object.fromEntries(Object.entries(prepared.body?.parameters ?? {}).map(([key, value]) => [key, String(value)])) }));
+  const [ticked, setTicked] = useState<Set<string>>(() => new Set(prepared.body?.grants ?? []));
   // The agent's approvals, sent as overrides.approvals: the template's own (approvals_default: never for one that runs
   // on its triggers with no one there), which the owner can switch.
-  const [approvals, setApprovals] = useState<Approvals>(t.approvals_default ?? "ask");
+  const [approvals, setApprovals] = useState<Approvals>(prepared.body?.overrides?.approvals ?? t.approvals_default ?? "ask");
   const [servers, setServers] = useState<Set<string> | null>(null);
   const [applying, setApplying] = useState(false);
   const [issues, setIssues] = useState<FieldIssue[]>([]);
@@ -115,6 +125,7 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
     return () => { live = false; };
   }, [v2]);
   const grants = grantsOf(t, ticked);
+  const body = { parameters: parametersOf(t, values), ...(grants.length ? { grants } : {}), overrides: { approvals } };
   const at = (field: string) => issuesAt(issues, field);
   // A parameter's value as typed or picked: an issue at it goes as soon as the value is one the server takes.
   const setParam = (key: string, value: string) => {
@@ -123,9 +134,9 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
     if (p && paramValid(p, value)) setIssues((was) => was.filter((i) => i.field !== `parameters.${key}`));
   };
   const apply = async () => {
+    if (!playground || prepared.error) return;
     setApplying(true); setIssues([]); setSaid(null);
     const sending = values;
-    const body = { parameters: parametersOf(t, sending), ...(grants.length ? { grants } : {}), overrides: { approvals } };
     try {
       const done = await v2.applyTemplate(t.name, body, keys.keyFor(t.name, body));
       keys.done();
@@ -160,7 +171,7 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
   if (made) {
     return (
       <section aria-label="Applied" className="max-w-3xl">
-        <h1 className="mb-4 flex items-center gap-2 font-mono text-2xl font-semibold"><Check className="size-5 text-success-text" aria-hidden /> {titleOf(t, sentValues)} applied</h1>
+        <Heading className="mb-4 flex items-center gap-2 font-mono text-2xl font-semibold"><Check className="size-5 text-success-text" aria-hidden /> {titleOf(t, sentValues)} applied</Heading>
         {made.warnings.length > 0 && <>
           <p className="mb-3 text-lead">The agent is made. The server says:</p>
           <ul className="mb-5 space-y-2 border bg-card px-4 py-3 text-body" role="status" aria-label="Warnings">
@@ -213,9 +224,11 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
   }
   return (
     <div className="max-w-3xl">
-      <a href="#/templates" className="caps mb-4 inline-flex items-center gap-1.5 text-small text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" aria-hidden /> Templates</a>
-      <h1 className="font-mono text-2xl font-semibold">{titleOf(t, values)} <span className="text-lead font-normal text-muted-foreground">{t.version}</span></h1>
+      <a href={catalogHash(playground)} className="caps mb-4 inline-flex items-center gap-1.5 text-small text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" aria-hidden /> Templates</a>
+      <Heading className="font-mono text-2xl font-semibold">{titleOf(t, values)} <span className="text-lead font-normal text-muted-foreground">{t.version}</span></Heading>
       <p className="mt-2 text-lead leading-[1.6]">{t.description}</p>
+      <p className="mt-2 text-body text-muted-foreground">{playground ? "Apply creates an agent and its triggers. It does not start a run." : "Run with your coding agent. It sets up this template, asks for any missing inputs, and runs the task."}</p>
+      {prepared.error && <p className="mt-3 text-body text-destructive-text" role="alert">{prepared.error} <a href={templatePlaygroundHref(t)} className="underline">Open a fresh request</a>.</p>}
 
       {params.length > 0 && (
         <Section title="Parameters">
@@ -315,7 +328,9 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
       </Section>
 
       <div className="mt-6 flex flex-wrap items-center gap-3">
-        <Button size="sm" variant="solid" onClick={() => void apply()} disabled={applying}>{applying ? "Applying…" : "Apply"}</Button>
+        {playground
+          ? <Button size="sm" variant="primary" onClick={() => void apply()} disabled={applying || !!prepared.error}>{applying ? "Applying…" : "Apply"}</Button>
+          : <CodingAgentAction variant="primary" label="Run" prompt={runTemplatePrompt(location.origin, t, body)} playgroundHref={templatePlaygroundHref(t, body)} />}
         {said && (!said.withIssues || issues.length > 0) && <p className="min-w-0 flex-1 text-body text-destructive-text" role="alert">{said.text}</p>}
       </div>
       {issues.filter((i) => !placed(i)).length > 0 && <div className="mt-2"><Issues issues={issues.filter((i) => !placed(i))} named /></div>}

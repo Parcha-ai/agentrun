@@ -7,7 +7,7 @@ const merge = extendTailwindMerge({
   // A size carries no line height here (the small steps set none), so it never removes a `leading-*` before it.
   override: { conflictingClassGroups: { "font-size": [] } },
   extend: {
-    theme: { spacing: ["sidebar", "control-sm", "control-md", "control-lg"] },
+    theme: { spacing: ["sidebar", "control-sm", "control-md", "control-lg"], borderRadius: ["composer", "action"] },
     classGroups: {
       "max-w": [{ "max-w": ["page", "page-wide"] }],
       "font-size": [{ text: ["micro", "label", "small", "body", "lead", "prose", "figure", "display"] }],

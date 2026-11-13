@@ -47,11 +47,11 @@ export type Stats = {
 /** Runs counted together in `analytics`. Escalated runs count in `completed`, and `needs_review` says how many.
  *  `tokens` sums over `runs_with_metrics` alone; `cost_usd` is null when no run's cost is known, and
  *  `unknown_cost_runs` counts the runs it leaves out. */
-export type AnalyticsGroup = { runs: number; completed: number; failed: number; needs_review: number; runs_with_metrics: number; tokens: number; cost_usd: number | null; unknown_cost_runs: number };
+export type AnalyticsGroup = { runs: number; completed: number; failed: number; needs_review: number; runs_with_metrics: number; tokens: number | null; cost_usd: number | null; unknown_cost_runs: number };
 /** GET /v2/stats's `analytics`. `input` excludes cached input: the whole input is input + cache_read + cache_write. */
 export type Analytics = {
   filter: { from: string | null; to: string | null; agent: string | null };
-  totals: AnalyticsGroup & { input: number; cache_read: number; cache_write: number; output: number; requests: number; unmetered: number };
+  totals: AnalyticsGroup & { input: number | null; cache_read: number | null; cache_write: number | null; output: number | null; requests: number | null; unmetered: number | null };
   time: { ended_runs: number; wall_ms: number; active_runs: number; active_ms: number };
   by_harness_effort: (AnalyticsGroup & { harness: string; effort: string | null })[];
   by_day: (AnalyticsGroup & { day: string })[];
@@ -81,6 +81,7 @@ export function outcomes(g: Pick<AnalyticsGroup, "completed" | "failed" | "needs
 }
 /** The share of the whole input that was read from the cache, or null with no input at all. */
 export function cachedShare(t: Analytics["totals"]): number | null {
+  if (t.input === null || t.cache_read === null || t.cache_write === null) return null;
   const input = t.input + t.cache_read + t.cache_write;
   return input ? t.cache_read / input : null;
 }
@@ -90,7 +91,8 @@ export const groupCost = (g: AnalyticsGroup, basis: MissionView["cost"]["basis"]
 export const coverage = (g: Pick<AnalyticsGroup, "runs" | "runs_with_metrics">) => (g.runs_with_metrics < g.runs ? `tokens from ${g.runs_with_metrics} of ${g.runs} runs` : undefined);
 
 /** 1,284 / 12.9K / 4.2M. */
-export function compact(n: number): string {
+export function compact(n: number | null): string {
+  if (n === null) return "Unknown";
   if (n < 10_000) return n.toLocaleString("en-US");
   const [v, unit] = n < 1e6 ? [n / 1e3, "K"] : n < 1e9 ? [n / 1e6, "M"] : [n / 1e9, "B"];
   return `${v < 100 ? v.toFixed(1).replace(/\.0$/, "") : Math.round(v)}${unit}`;

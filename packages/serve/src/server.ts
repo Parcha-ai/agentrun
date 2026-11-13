@@ -1,3 +1,12 @@
+import { SdkRuns, sdkOf } from "./sdk/runs.js";
+import { gradeRouteFor } from "./runner/harness-loops.js";
+import { routeOf as sdkModelRoute } from "./runner/model-route.js";
+import { answerSkill } from './skill-route.js';
+import { RemoteConnectors, verifyRemote } from './native/remote.js';
+import { nativeOf } from "./native/binding.js";
+import { discoverNative } from "./native/discovery.js";
+import { isNativeRuntime } from "./native/runtimes.js";
+import { connectNative, launchNative, updateNative, verifyConnection } from "./native/connection.js";
 // The /v2 API over the agent store in a data directory: the contract agentrun.v2/0, served on loopback with a bearer
 // token.
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
@@ -402,6 +411,24 @@ export type Route =
   | { method: string; pattern: RegExp; name: string; capability?: string; raw?: never }
   | { method: "PUT" | "POST"; pattern: RegExp; name: string; capability?: string; raw: true };
 export const ROUTES: readonly Route[] = [
+  {method:"GET",pattern:/^\/connectors$/,name:"listRemoteConnectors"},
+  {method:"POST",pattern:/^\/connectors\/enrollment$/,name:"enrollRemoteConnector"},
+  {method:"POST",pattern:/^\/connectors$/,name:"registerRemoteConnector"},
+  {method:"DELETE",pattern:/^\/connectors\/([^/]+)$/,name:"revokeRemoteConnector"},
+  {method:"POST",pattern:/^\/connectors\/([^/]+)\/import$/,name:"importRemoteTarget"},
+  {method:"POST",pattern:/^\/connectors\/([^/]+)\/targets\/([^/]+)\/history$/,name:"importRemoteHistory"},
+  {method:"POST",pattern:/^\/connectors\/([^/]+)\/poll$/,name:"pollRemoteConnector"},
+  {method:"POST",pattern:/^\/connectors\/([^/]+)\/commands\/([^/]+)\/events$/,name:"remoteCommandEvents"},
+  {method:"POST",pattern:/^\/connectors\/([^/]+)\/commands\/([^/]+)\/complete$/,name:"completeRemoteCommand"},
+  {method:"POST",pattern:/^\/agents\/([^/]+)\/sdk-runs$/,name:"startSdkRun"},
+  {method:"GET",pattern:/^\/sdk-runs\/([^/]+)$/,name:"getSdkRun"},
+  {method:"POST",pattern:/^\/sdk-runs\/([^/]+)\/events$/,name:"sdkRunEvents"},
+  {method:"POST",pattern:/^\/sdk-runs\/([^/]+)\/complete$/,name:"completeSdkRun"},
+  {method:"POST",pattern:/^\/native\/discover$/,name:"discoverNative"},
+  {method:"POST",pattern:/^\/native\/connect$/,name:"connectNative"},
+  {method:"GET",pattern:/^\/agents\/([^/]+)\/native$/,name:"getNative"},
+  {method:"POST",pattern:/^\/agents\/([^/]+)\/native\/verify$/,name:"verifyNative"},
+  {method:"POST",pattern:/^\/agents\/([^/]+)\/native\/disconnect$/,name:"disconnectNative"},
   { method: "GET", pattern: /^\/capabilities$/, name: "getCapabilities" },
   { method: "GET", pattern: /^\/openapi\.json$/, name: "getOpenapi" },
   // Answered here only with accounts off: with accounts on, the owner's routes answer it before any route (ownerRoute).
@@ -1248,7 +1275,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // no box relay here — a runner (its own process, sharing only this store) claims and runs every run. The leaves a start
   // needs that live in this request layer are gathered once as StartDeps; the run's model is resolved once, now (the runner
   // reads launch.model alone).
-  const modelOf = (_entry: AgentEntry, revision: Revision) => runModelRef(env, revision);
+  const modelOf = (_entry: AgentEntry, revision: Revision) => nativeOf(revision.body) ? Promise.resolve(undefined) : runModelRef(env, revision);
   const startDeps: StartDeps = {
     runBodyIssues,
     boundRepos: async (agentId) => bindingOf(await store.triggers.list(agentId), agentId),
@@ -1699,10 +1726,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   /** An agent view's extra fields (agents-store agentView): its saved sign-ins, its learning count, and its run counts.
    *  The run counts read the store's runs (store-reads/runs.ts listRuns): `count` is every run the agent has, `live` those
    *  still running (runReadState 'running': queued, running or parked), the same numbers the file-backed view showed. */
-  const agentExtra = async (entry: AgentEntry): Promise<{ signIns: object[]; learning?: { pending: number }; runs: { count: number; live: number }; ownComputer: Record<string, unknown> | null }> => {
+  const agentExtra = async (entry: AgentEntry): Promise<{ nativeStatus?: import("./native/types.js").NativeBinding; signIns: object[]; learning?: { pending: number }; runs: { count: number; live: number }; ownComputer: Record<string, unknown> | null }> => {
     const learning = await learningOfAgent(entry);
+    const native = nativeOf(entry.revision?.body);
+    const nativeStatus = native?.remote ? await new RemoteConnectors(store).status(native) : undefined;
     const runs = await listRunsOverStore(store, { agent: entry.agent.id }, ctx);
     return {
+      ...(nativeStatus ? {nativeStatus} : {}),
       signIns: await signIns.view(entry.agent.id),
       ...(learning ? { learning } : {}),
       runs: { count: runs.length, live: runs.filter((run) => run.state === "running").length },
@@ -1781,6 +1811,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  starts with the checks a save makes (runnable.ts): one a save refused, or one a setting of this host fixes that it
    *  does not have yet. `capped`: the run has a spend cap, which a web tool's resolution reads (tool-plane.ts). */
   async function runnable(revision: Revision, place: Place, { capped = false }: { capped?: boolean } = {}): Promise<void> {
+    if (sdkOf(revision.body)) throw new ApiError("agent_not_runnable", "This agent runs in its backend SDK. Call its SDK wrapper to start a task; AgentRun does not launch its tools or credentials.");
+    const native = nativeOf(revision.body);
+    if (native) {
+      if (!native.remote && (options.apiOnly || options.publicUrl || !isLoopback(host))) throw new ApiError("agent_not_runnable", "Native connections run only on an AgentRun server bound to loopback on the source machine, without a public URL.");
+      if (capped) throw new ApiError("agent_not_runnable", "Native runs retain their own limits; AgentRun cannot enforce a dollar cap on this connection. Remove max_cost_usd and use native limits.");
+      if(native.remote)await new RemoteConnectors(store).assertReady(native);else await launchNative(native); return;
+    }
     const shape = { ...shapeOf(revision), place, ...(revision.body.place ? {} : { unnamed: true as const }) };
     const blockers = await blockersOf(env, shape, settings.get(), { capped, boxes: boxOffers, computerReady, shellOf, offers, mcp: mcpTools, decisionPrice });
     if (!blockers.length) return;
@@ -1811,6 +1848,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // The store's NewRevision keeps the revision's fields under `body` (AgenticBody|WorkflowBody); build the flat shape the
     // host checks (runnable.ts RevisionShape) from it, as shapeOf does for a run's Revision.
     const body = revision.body as AgenticBody & Partial<WorkflowBody>;
+    if (nativeOf(body) || sdkOf(body)) return [];
     // An agent on a harness that installs on first use starts its install, if it is not in yet: its first run waits for less.
     const install = revision.kind === "agentic" ? installs[harnessOfBody(body)] : undefined;
     if (install) {
@@ -2093,6 +2131,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  (runs-over-store startInline). The answer is POST /agents/{agent_id}/runs' own: 202 and the run. */
   async function createInlineRun(req: IncomingMessage) {
     const { body, sealer } = handedMcpAuth(await bodyOf(req));
+    if (isObject(body.definition) && body.definition.native !== undefined) throw new ApiError("input_invalid", "Native references are registered only through /native/connect on the source machine; an inline definition cannot create one.");
     const { external, definition, skills, note, revision: pinned, ...run } = body;
     const given = { definition, ...(skills !== undefined ? { skills } : {}), ...(note !== undefined ? { note } : {}) };
     const issues: InputIssue[] = [
@@ -2714,16 +2753,96 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       secretSeen = checked.seen;
     }
+    // Connector credentials have no authority over the ordinary API. Enrollment is a one-use owner grant;
+    // subsequent calls are restricted to one connector and its explicitly imported target allowlist.
+    if (found.name === "registerRemoteConnector") {
+      const credential = String(req.headers.authorization ?? "").replace(/^Bearer /, "");
+      return send(res, 200, await new RemoteConnectors(store).register(credential, await bodyOf(req)));
+    }
+    if (found.name === "revokeRemoteConnector" && String(req.headers.authorization ?? "").startsWith("Bearer ar_connector_")) {
+      const connectorId = decodeURIComponent(found.pattern.exec(path)![1]!);
+      const broker = new RemoteConnectors(store);
+      await broker.authenticate(connectorId, String(req.headers.authorization).slice(7));
+      return send(res, 200, await broker.revoke(connectorId));
+    }
+    if (["importRemoteTarget", "importRemoteHistory", "pollRemoteConnector", "remoteCommandEvents", "completeRemoteCommand"].includes(found.name)) {
+      const parts = found.pattern.exec(path)!;
+      const connectorId = decodeURIComponent(parts[1]!);
+      const broker = new RemoteConnectors(store);
+      await broker.authenticate(connectorId, String(req.headers.authorization ?? "").replace(/^Bearer /, ""));
+      const body = await bodyOf(req);
+      if (found.name === "importRemoteTarget") return send(res, 200, await broker.importTarget(connectorId, body));
+      if (found.name === "importRemoteHistory") return send(res, 200, await broker.importHistory(connectorId, decodeURIComponent(parts[2]!), body, [token,String(req.headers.authorization??"").replace(/^Bearer /,"")]));
+      if (found.name === "pollRemoteConnector") return send(res, 200, await broker.poll(connectorId, body));
+      const commandId = decodeURIComponent(parts[2]!);
+      return send(res, 200, found.name === "remoteCommandEvents" ? await broker.events(connectorId, commandId, body) : await broker.complete(connectorId, commandId, body));
+    }
+    if (["getSdkRun","sdkRunEvents","completeSdkRun"].includes(found.name)) {
+      const runId=decodeURIComponent(found.pattern.exec(path)![1]!);
+      const sdk=new SdkRuns(store,data,token,serverSecrets);
+      await sdk.authenticate(runId,String(req.headers.authorization??"").replace(/^Bearer /,""));
+      if(found.name==="sdkRunEvents")return send(res,200,await sdk.events(runId,await bodyOf(req)));
+      if(found.name==="completeSdkRun")return send(res,200,await sdk.complete(runId,await bodyOf(req)));
+      return send(res,200,{...await sdk.status(runId),learning:await servedRunLearning({serverSecrets,signIns,statuses},store,runId)});
+    }
     if (!timingSafeEqual(digest(String(req.headers.authorization ?? "")), expected)) {
       authFailed(`/v2${path}`, req.headers.authorization === undefined ? "no_credential" : "wrong_token");
       throw new ApiError("unauthenticated", "this route needs Authorization: Bearer <the token in the data directory>", {}, { "www-authenticate": "Bearer" });
     }
     if (found.capability) throw unsupported(found.capability, UNSUPPORTED[found.capability]!);
+    if (["discoverNative","connectNative"].includes(found.name) && (options.apiOnly || options.publicUrl || !isLoopback(host))) throw new ApiError("forbidden", "Native connections require AgentRun on the source machine, bound to loopback without a public URL. A hosted browser cannot discover your laptop.");
     const [, first, second] = found.pattern.exec(path)!;
     const id = first ? decodeURIComponent(first) : "";
     switch (found.name) {
+      case "startSdkRun": {
+        if(!req.headers["idempotency-key"])throw new ApiError("bad_request","An SDK run requires Idempotency-Key so a retried start never duplicates execution.");
+        const body=await bodyOf(req),entry=await needAgent(id);
+        let gradeModel=gradeModelOf(env,options.gradeModel);
+        if(!gradeModel && sdkOf(entry.revision?.body) && learnsOf((entry.revision!.body as AgenticBody).learning) && learning!=="off"){
+          try{const chosen=await runModelRef(env,(await pinnedOf(entry,{}))!.revision);if(chosen)gradeModel=`${chosen.provider}/${chosen.modelId}`;}catch{}
+        }
+        const sdk=new SdkRuns(store,data,token,serverSecrets);
+        const answer=await idempotent(req,path,body,async origin=>({status:201,body:await sdk.start(entry,body,{...startDeps,...(gradeModel?{gradeModel}:{})},origin,async model=>{
+          try{const route=await gradeRouteFor({model,agentId:id},env,sdkModelRoute);await route.provider.credential();}catch{throw new ApiError("agent_not_runnable","Self-improving SDK runs need a working server model key and grading model. Configure Model keys or turn self-improving off.");}
+        },linkOrigin(req))}));
+        // Re-read the pinned receipt even on an in-memory replay: credentials saved since
+        // the first response must still be withheld without reselecting a different seed.
+        const receipt=await sdk.receipt((answer.body as {run_id:string}).run_id,linkOrigin(req));
+        return send(res,answer.status,receipt,answer.headers);
+      }
+      case "listRemoteConnectors": return send(res, 200, await new RemoteConnectors(store).list());
+      case "enrollRemoteConnector": return send(res, 200, await new RemoteConnectors(store).enroll(await bodyOf(req)));
+      case "revokeRemoteConnector": return send(res, 200, await new RemoteConnectors(store).revoke(id));
+      case "discoverNative": {
+        const body=await bodyOf(req);
+        if(typeof body.project!=="string" || (body.runtime!==undefined && !isNativeRuntime(body.runtime))) throw new ApiError("input_invalid","Choose the project directory on this source machine and a supported CLI runtime.");
+        return send(res,200,await discoverNative({project:body.project,...(body.runtime?{runtime:body.runtime}:{})}));
+      }
+      case "connectNative": {
+        const entry=await connectNative(store,await bodyOf(req));
+        return send(res,200,{agent:agentView(entry,linkOrigin(req),await agentExtra(entry)),native:nativeOf(entry.revision?.body)});
+      }
+      case "getNative": {
+        const entry=await needAgent(id);
+        const native=nativeOf(entry.revision?.body);
+        return send(res,200,{native:native?.remote?await new RemoteConnectors(store).status(native):native??null});
+      }
+      case "verifyNative": {
+        const before=await needAgent(id);
+        if(!nativeOf(before.revision?.body)?.remote && (options.apiOnly || options.publicUrl || !isLoopback(host)))throw new ApiError("forbidden","Local native verification must run on the source machine.");
+        const entry=nativeOf(before.revision?.body)?.remote?await verifyRemote(store,before):await verifyConnection(store,before);
+        return send(res,200,{native:nativeOf(entry.revision?.body)});
+      }
+      case "disconnectNative": {
+        const entry=await needAgent(id); const native=nativeOf(entry.revision?.body);
+        if(!native)throw new ApiError("not_found","This agent has no native connection.");
+        const changed=await updateNative(store,entry,{...native,connected:false});
+        if(native.remote)await new RemoteConnectors(store).disconnectTarget(native);
+        return send(res,200,{native:nativeOf(changed.revision?.body)});
+      }
       case "createAgent": {
         const body = await bodyOf(req);
+        if (isObject(body.definition) && body.definition.native !== undefined) throw new ApiError("input_invalid", "Native references are registered only through /native/connect on the source machine.");
         const answer = await idempotent(req, "/agents", body, async () => {
           const { entry, warnings } = await createAgentOf(body);
           return { status: 201, body: { ...agentView(entry, linkOrigin(req), await agentExtra(entry)), warnings }, headers: { location: `/v2/agents/${entry.agent.id}`, etag: etagOf(entry) } };
@@ -2754,6 +2873,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // contract's is the definition itself, and takes the contract's preconditions: If-Match, and a version past the
         // current one.
         const contract = !("definition" in body);
+        const nativeEdit = contract ? body.native : isObject(body.definition) ? body.definition.native : undefined;
+        if (nativeEdit !== undefined && stable(nativeEdit) !== stable(nativeOf(entry.revision?.body))) throw new ApiError("input_invalid", "Native references are changed only through the native connection endpoints. Normal edits retain the existing reference.");
         if (contract) {
           if (match === undefined) throw new ApiError("precondition_failed", "If-Match is required: the agent's ETag, as GET /agents/{agent_id} returned it.");
           if (body.version === undefined || (typeof body.version === "number" && body.version <= entry.version)) throw invalid([{ field: "definition.version", reason: body.version === undefined ? "missing" : "not_an_option", message: `definition.version must be greater than the current one, ${entry.version}` }]);
@@ -2782,7 +2903,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         if (extra.length) throw invalid(extra);
         const revision = body.revision;
         if (typeof revision !== "string" || !ID.test(revision)) throw invalid([{ field: "revision", reason: revision === undefined ? "missing" : "wrong_type", message: "revision is a revision id of this agent" }]);
-        if (!(await agents.revision(id, revision))) throw invalid([{ field: "revision", reason: "not_an_option", message: `${revision} is not a revision of the agent ${id}` }]);
+        const candidate = await agents.revision(id, revision);
+        if (!candidate) throw invalid([{ field: "revision", reason: "not_an_option", message: `${revision} is not a revision of the agent ${id}` }]);
+        if (stable(nativeOf(candidate.revision.body)) !== stable(nativeOf(entry.revision?.body))) throw new ApiError("input_invalid", "This revision changes the native connection. Reconnect or verify through the native connection controls; ordinary revision restore cannot change its source or connection state.");
         const moved = await agents.setCurrent(entry, revision);
         reconcileComputer(id);
         return send(res, 200, agentView(moved, linkOrigin(req), await agentExtra(moved)), { etag: etagOf(moved) });
@@ -3536,6 +3659,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (owner && (raw === "/v2/setup" || raw === "/v2/setup/import" || raw.startsWith("/v2/auth/"))) return void ownerRoute(req, res, raw.slice(3), owner).catch(fail);
     if (raw === MCP_PATH) return void mcp(req, res).catch(fail);
     if (raw === "/llms.txt") return void answerLlms(req, res).catch(fail);
+    if (raw === "/skills/agentrun-serve/SKILL.md") return void answerSkill(req, res).catch(fail);
     if (answerPage(req, res, raw, { token, authFailed, console: options.console, takesBytes, ...(owner ? { owner } : {}), ...(consoleSessions ? { sessions: consoleSessions } : {}), ...(options.publicUrl ? { publicUrl: options.publicUrl } : {}) })) return;
     if (!raw.startsWith("/v2/")) return fail(new ApiError("not_found", `no route ${raw}; the API is under /v2`));
     // A run's id needs no decoding: one that is not an id as sent (a stray or malformed escape) is no run's, and is never

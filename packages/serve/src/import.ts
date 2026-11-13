@@ -6,7 +6,7 @@
 // the owner's only. Read again, it imports only the sessions it has not.
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, type Stats } from "node:fs";
-import { lstat, realpath, stat } from "node:fs/promises";
+import { lstat, open, realpath, stat } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, sep } from "node:path";
 import { parseArgs } from "node:util";
@@ -42,6 +42,68 @@ export type ImportStore = {
   importRun: Store["importRun"];
   readJournal: Store["readJournal"];
 };
+
+/** Read only the explicitly selected project's historical sessions for an outbound connector. Metadata enumeration
+ * locates project sessions; unrelated transcripts are never exported or scanned for keys. No model is called and no
+ * source file is changed. Each page is independently redacted, bounded and safe to retry at the destination. */
+export async function exportRemoteHistory(
+  target: Pick<import('./native/types.js').NativeTarget, 'runtime'|'project'|'selector'>,
+  options: { home?: string; env?: NodeJS.ProcessEnv; own?: readonly string[]; now?: number; cursor?: number; inventory?: string; preview?: boolean } = {},
+): Promise<{ sessions: import('./native/history.js').RemoteHistorySession[]; skipped: { reason: string; count: number }[]; next_cursor: number|null; total: number; inventory: string }> {
+  if (target.selector.kind !== 'project') throw new Error('Session logs do not reliably identify named agents or profiles. Select the project to import its history.');
+  const now=options.now??Date.now(), cursor=options.cursor??0;
+  if(!Number.isSafeInteger(cursor)||cursor<0)throw new Error('Invalid history cursor.');
+  const project=await realpath(target.project), selected:Session[]=[], skipped=new Map<string,number>(),stamps=new Map<string,string>();
+  const sourceEnv=options.env??process.env,configRoot=target.runtime==='claude-code'?sourceEnv.CLAUDE_CONFIG_DIR:sourceEnv.CODEX_HOME;
+  const skip=(reason:string)=>skipped.set(reason,(skipped.get(reason)??0)+1);
+  for(const {file,stats} of await inOrder(await sessionFiles(options.home??homedir(),target.runtime,configRoot),target.runtime)){
+    if(stats.size>MAX_SESSION_BYTES)continue;
+    // The native session header identifies its project. Read at most 128 KiB before deciding whether this file is
+    // selected; do not parse unrelated conversations merely to discover their metadata or search their secrets.
+    const header=await open(file,'r').then(async handle=>{try{const bytes=Buffer.alloc(128*1024);const read=await handle.read(bytes,0,bytes.length,0);for(const line of bytes.subarray(0,read.bytesRead).toString('utf8').split('\n')){try{const row=JSON.parse(line);const cwd=row?.cwd??row?.payload?.cwd;if(typeof cwd==='string')return cwd;}catch{/* partial or non-JSON line */}}}finally{await handle.close();}}).catch(()=>undefined);
+    if(!header || (await realpath(header).catch(()=>header))!==project)continue;
+    const session=await readSession(file,target.runtime,{turns:false}).catch(()=>undefined);
+    if(!session?.cwd || (await realpath(session.cwd).catch(()=>session.cwd))!==project)continue;
+    if(session.child){skip('Subagent history is not a separate session.');continue;}
+    if(now-stats.mtimeMs<LIVE_MS){skip('Still being written or modified within ten minutes.');continue;}
+    if(stats.size>8_000_000){skip('Source session file exceeds the remote import size limit.');continue;}
+    selected.push(session);stamps.set(file,stampOf(stats));
+  }
+  const groups=byRun(selected).sort((a,b)=>a[0]!.id.localeCompare(b[0]!.id));
+  const inventory=hash(JSON.stringify({project,runtime:target.runtime,groups:groups.map(files=>({id:files[0]!.id,files:files.map(file=>({path:file.file,stamp:stamps.get(file.file)})).sort((a,b)=>a.path.localeCompare(b.path))}))}));
+  if((cursor>0 && options.inventory===undefined) || (options.inventory!==undefined && options.inventory!==inventory))throw new Error('The selected history inventory changed or is missing. Restart the import from its preview; previously imported sessions are safe to retry.');
+  const report=()=>[...skipped].map(([reason,count])=>({reason,count}));
+  if(options.preview)return {sessions:[],skipped:report(),next_cursor:null,total:groups.length,inventory};
+  if(cursor>0)skipped.clear(); // enumeration skips are reported once; each page still reports its own skips
+  const sessions:import('./native/history.js').RemoteHistorySession[]=[],cut=secretCut([process.env,options.env??{}],SECRET_NAMES);
+  cut.add(options.own??[]);
+  let bytes=0,index=cursor;
+  for(;index<groups.length && sessions.length<20;index++){
+    const parts:Session[]=[],seen=new Set<string>();let changed=false;
+    for(const listed of groups[index]!){
+      const before=await stat(listed.file).catch(()=>undefined);
+      if(!before || now-before.mtimeMs<LIVE_MS || before.size>8_000_000){changed=true;break;}
+      const part=await readSession(listed.file,target.runtime,{seen}).catch(()=>undefined),after=await stat(listed.file).catch(()=>undefined);
+      if(!part || !after || before.size!==after.size || before.mtimeMs!==after.mtimeMs || !part.cwd || (await realpath(part.cwd).catch(()=>part.cwd))!==project || part.id!==listed.id){changed=true;break;}
+      parts.push(part);
+    }
+    if(changed||!parts.length){skip('Source session changed during export or became unreadable.');continue;}
+    const session=merged(parts);
+    if(!session.startedAt || !session.endedAt || Date.parse(session.endedAt)>now-LIVE_MS){skip('Session has no stable historical completion time.');continue;}
+    if(session.turns.length>2000){skip('Session exceeds 2000 turns; it was not truncated.');continue;}
+    cut.add(await keysInSessions(parts));
+    // Include current and older connector/enrollment credentials, even when no longer present in the environment.
+    cut.add(JSON.stringify(parts).match(/ar_(?:connector|enroll|local)_[A-Za-z0-9_-]{20,}/g)??[]);
+    const packet=JSON.parse(JSON.stringify(cut.json({source:session.source,id:session.id,startedAt:session.startedAt,endedAt:session.endedAt,state:session.state,model:session.model,costUsd:session.costUsd,firstPrompt:session.firstPrompt,activeMs:session.activeMs,turns:session.turns}))) as import('./native/history.js').RemoteHistorySession;
+    if(packet.id!==session.id)packet.id=redactedId(session.id);
+    const size=Buffer.byteLength(JSON.stringify(packet));
+    if(size>1_000_000){skip('Session exceeds 1 MB after redaction; it was not truncated.');continue;}
+    try{(await import('./native/history.js')).remoteHistorySessions({sessions:[packet]},target.runtime,now);}catch{skip('Session contains unsupported or excessive fields; it was not truncated.');continue;}
+    if(bytes+size>1_800_000)break;
+    sessions.push(packet);bytes+=size;
+  }
+  return {sessions,skipped:report(),next_cursor:index<groups.length?index:null,total:groups.length,inventory};
+}
 
 /** In the data directory while an import the owner asked for at setup has not ended: the server's next start goes on with it. */
 export const IMPORT_ASKED = ".import-at-setup";

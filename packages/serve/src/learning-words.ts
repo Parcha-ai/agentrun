@@ -101,7 +101,10 @@ export const STOPPED = {
 
 /** A run's learning, in words, by where it stands. */
 export const said = {
-  seeded: (notes: number) => (notes === 0 ? "Started with nothing learned yet." : `Started from ${count(notes, "note")}.`),
+  seeded: (notes: number, skills = 0, workflows = 0) => {
+    const items = [...(notes ? [count(notes, "note")] : []), ...(skills ? [count(skills, "skill")] : []), ...(workflows ? [count(workflows, "workflow")] : [])];
+    return items.length ? `Started from ${listed(items)}.` : "Started with nothing learned yet.";
+  },
   reflecting: "Looking back on this run…",
   /** The end-of-run turn's message, as a person reads it in the timeline: never the prompt the model is sent. */
   asked: "Looking back on this run.",

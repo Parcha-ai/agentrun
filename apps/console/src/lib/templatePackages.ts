@@ -1,7 +1,7 @@
 import { dollars } from "./format";
 import type { FieldIssue } from "./client";
 import { browserZone } from "./schedules";
-import type { TemplateView } from "./v2";
+import type { TemplateApply, TemplateView } from "./v2";
 
 // The server's templates (GET /v2/templates), as the Templates page reads them. (lib/templates.ts is Mission Control's
 // first-run starters, made in the console; these are the server's.)
@@ -10,8 +10,39 @@ import type { TemplateView } from "./v2";
  *  apply) reads as the value typed for it so far (`values`), else "…": never as the raw placeholder. */
 export const titleOf = (t: TemplateView, values: ParameterText = {}) =>
   (t.display_name || t.name).replace(/\$\{parameters\.([A-Za-z0-9_]+)\}/g, (_, key: string) => (Object.hasOwn(values, key) ? values[key].trim() : "") || "…");
-/** A template's Apply screen. */
+/** A template's setup choices before handing Run to the coding agent. */
 export const templateHash = (name: string) => `#/templates/${encodeURIComponent(name)}`;
+
+/** Only the selected setup request travels in the fragment. Secrets are resolved by name on the server. */
+export function templatePlaygroundHref(t: TemplateView, body?: TemplateApply): string {
+  return `#/playground?${new URLSearchParams({ operation: "apply-template", template: t.name,
+    ...(body ? { draft: JSON.stringify({ template: t.name, version: t.version, body }) } : {}) })}`;
+}
+
+/** Reject stale or malformed prepared requests rather than silently applying different choices. */
+export function readTemplateDraft(raw: string | undefined, t: TemplateView): { body?: TemplateApply; error?: string } {
+  if (raw === undefined) return {};
+  const invalid = { error: "This prepared template request is invalid. Open a fresh request to review its settings." };
+  try {
+    const draft = JSON.parse(raw);
+    const object = (x: unknown): x is Record<string, unknown> => x !== null && typeof x === "object" && !Array.isArray(x);
+    if (!object(draft) || draft.template !== t.name || typeof draft.version !== "string") return invalid;
+    if (draft.version !== t.version) return { error: "This template's version changed. Open a fresh request to review the current package before applying." };
+    const b = draft.body;
+    const parameter = (key: string, value: unknown) => {
+      const p = t.parameters[key];
+      if (!Object.hasOwn(t.parameters, key)) return false;
+      return p.type === "boolean" ? typeof value === "boolean"
+        : p.type === "string" ? typeof value === "string"
+        : typeof value === "number" && Number.isFinite(value);
+    };
+    if (!object(b) || Object.keys(b).some((k) => !["parameters", "grants", "overrides"].includes(k))
+      || !object(b.parameters) || Object.entries(b.parameters).some(([k, v]) => !parameter(k, v))
+      || (b.grants !== undefined && (!Array.isArray(b.grants) || b.grants.some((g) => typeof g !== "string" || !t.mcp.some((m) => m.tools.some((tool) => tool.tool === g)))))
+      || !object(b.overrides) || Object.keys(b.overrides).some((k) => k !== "approvals") || (b.overrides.approvals !== "ask" && b.overrides.approvals !== "never")) return invalid;
+    return { body: b as TemplateApply };
+  } catch { return invalid; }
+}
 
 const count = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
 

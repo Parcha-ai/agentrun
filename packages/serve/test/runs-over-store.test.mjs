@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 
-const { openSqliteStore, RunFinal } = await import("../dist/store/index.js");
+const { openSqliteStore, RunFinal, StoreLaunchMissing } = await import("../dist/store/index.js");
 const { archiveRun, approve, cancel, message, pause, raiseCap, resume, startRun, stop, WAITS_ON_A_PERSON } = await import("../dist/runs-over-store.js");
 const { sendCommand } = await import("../dist/runner/commands.js");
 const { momentOverStore } = await import("../dist/store-view.js");
@@ -808,5 +808,35 @@ test("every command this module writes is one the runner's parser accepts", asyn
   await sendCommand(store, "cancel-run", { kind: "cancel", body: {} });
   for (const id of ["steer-run", "steer-trg", "deny-run", "approve-run", "raise-run", "stop-run", "cancel-run"]) {
     assert.equal((await commandsOf(store, id)).length, 1);
+  }
+});
+
+// A control's optional runtime metadata is absent on older rows; their command contract still holds.
+test("launchless run controls preserve message, stop and cancel commands", async () => {
+  const store = await freshStore();
+  for (const action of ["message", "stop", "cancel"]) {
+    const id = await queuedRun(store, `legacy-${action}`);
+    await assert.rejects(store.runs.launch(id), StoreLaunchMissing);
+    if (action === "message") assert.equal((await message(store, moment({ id }), "Keep going.")).mode, "steer");
+    else if (action === "stop") assert.equal(await stop(store, id), true);
+    else assert.equal(await cancel(store, moment({ id })), true);
+    const rows = await commandsOf(store, id);
+    assert.deepEqual(rows.map(({ kind, body }) => [kind, body]), [action === "message" ? ["steer", { text: "Keep going." }] : [action, {}]]);
+  }
+});
+
+test("control launch reads propagate storage errors and write no command", async () => {
+  const store = await freshStore();
+  const failure = new Error("launch storage read failed");
+  // A failure with the same name is not the store's typed missing-row result.
+  failure.name = "StoreLaunchMissing";
+  const failing = { ...store, runs: { ...store.runs, launch: async () => { throw failure; } } };
+  for (const action of ["message", "stop", "cancel"]) {
+    const id = await queuedRun(store, `failed-${action}`);
+    await assert.rejects(
+      () => action === "message" ? message(failing, moment({ id }), "Keep going.") : action === "stop" ? stop(failing, id) : cancel(failing, moment({ id })),
+      (error) => error === failure,
+    );
+    assert.deepEqual(await commandsOf(store, id), []);
   }
 });

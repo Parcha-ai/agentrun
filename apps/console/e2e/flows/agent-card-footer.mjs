@@ -1,6 +1,6 @@
 // The agent cards' footers, measured in the browser at four widths (three columns, two, two narrow, one): every chip's
 // words on one line, a card's chips on one row whenever that row fits in its footer, nothing in a footer past its card's
-// right edge, and every action button the same square. A class
+// right edge, and every whole action control the same height with rounded outer corners. A class
 // list says what was asked of the layout; only the laid-out boxes say what came of it. Six agents made through the API,
 // their list read through the page with counts no fresh server has (11 revisions, 4 runs with 3 live, 17 runs and one
 // learned item waiting), as an agent that has been used for a while reads. E2E_SHOTS=<dir> also saves each width's page.
@@ -26,10 +26,10 @@ function measure() {
     const card = footer.closest("li");
     const name = card.querySelector(".font-semibold")?.textContent ?? "?";
     const edge = card.getBoundingClientRect().right;
-    // A chip: an element in the footer holding words of its own (an action is a button holding only its icon). Its words'
-    // lines are the line boxes its text makes.
+    // Chips are measured separately from the Run/Edit dropdowns and Runs action. Their words' lines are the line
+    // boxes their text makes; a run count inside the Runs action is not another status chip.
     const own = (el) => [...el.childNodes].some((n) => n.nodeType === Node.TEXT_NODE && n.textContent.trim());
-    const held = [...footer.querySelectorAll("*")].filter(own);
+    const held = [...footer.querySelectorAll('[data-testid="agent-card-chips"] > *')].filter(own);
     const chips = held.map((chip) => {
       const range = document.createRange();
       range.selectNodeContents(chip);
@@ -43,11 +43,14 @@ function measure() {
     const fits = row <= footer.clientWidth;
     const past = [footer, ...footer.querySelectorAll("*")].map((el) => ({ el, right: el.getBoundingClientRect().right }))
       .filter(({ right }) => right > edge + 0.5).map(({ el, right }) => `${el.getAttribute("aria-label") ?? el.textContent ?? el.tagName} by ${px(right - edge)}px`);
-    const buttons = [...footer.querySelectorAll("button")].filter((b) => b.querySelector("svg") && !b.textContent.trim()).map((b) => {
-      const r = b.getBoundingClientRect();
-      return { label: b.getAttribute("aria-label"), width: px(r.width), height: px(r.height) };
+    const controls = [...footer.querySelector('[data-testid="agent-card-actions"]').children].map((control) => {
+      const r = control.getBoundingClientRect();
+      const style = getComputedStyle(control);
+      return { label: control.getAttribute("aria-label"), width: px(r.width), height: px(r.height),
+        radii: [style.borderTopLeftRadius, style.borderTopRightRadius, style.borderBottomLeftRadius, style.borderBottomRightRadius].map(parseFloat),
+        buttons: [...control.querySelectorAll("button")].map((b) => b.getAttribute("aria-label")) };
     });
-    return { name, chips, past, buttons, fits, rows: new Set(chips.map((c) => c.top)).size };
+    return { name, chips, past, controls, fits, rows: new Set(chips.map((c) => c.top)).size };
   });
 }
 
@@ -88,7 +91,6 @@ export default {
       check(cards.some((c) => c.chips.some((chip) => /Learning · 1/i.test(chip.text))), `${width}px: no card says Learning · 1`);
       // A single-line chip's height: the shortest chip's (every chip is one line high when its words are on one line).
       const single = Math.min(...cards.flatMap((c) => c.chips.map((chip) => chip.height)));
-      const square = cards[0].buttons[0];
       for (const c of cards) {
         for (const chip of c.chips) {
           if (chip.lines !== 1) wrong.push(`${width}px ${c.name}: "${chip.text}" takes ${chip.lines} lines`);
@@ -97,10 +99,14 @@ export default {
         }
         if (c.fits && c.rows > 1) wrong.push(`${width}px ${c.name}: its chips fit on one row of the footer but take ${c.rows}`);
         for (const p of c.past) wrong.push(`${width}px ${c.name}: ${p} past the card's right edge`);
-        check(c.buttons.length === 3, `${width}px ${c.name}: ${c.buttons.length} action buttons, not 3`);
-        for (const b of c.buttons) {
-          if (b.width !== b.height) wrong.push(`${width}px ${c.name}: ${b.label} is ${b.width}x${b.height}, not square`);
-          if (b.width !== square.width || b.height !== square.height) wrong.push(`${width}px ${c.name}: ${b.label} is ${b.width}x${b.height}, the others ${square.width}x${square.height}`);
+        check(c.controls.length === 4, `${width}px ${c.name}: ${c.controls.length} whole action controls, not 4`);
+        const [run, edit, runs, archive] = c.controls;
+        check(run.label === `Run ${c.name} options` && run.buttons.includes(`Choose coding agent for Run ${c.name}`), `${width}px ${c.name}: missing Run coding-agent dropdown`);
+        check(edit.label === `Edit ${c.name} options` && edit.buttons.includes(`Choose coding agent for Edit ${c.name}`), `${width}px ${c.name}: missing Edit coding-agent dropdown`);
+        check(runs.label === `Runs of ${c.name}` && archive.label === `Archive ${c.name}`, `${width}px ${c.name}: missing Runs or Archive action`);
+        for (const control of c.controls) {
+          if (control.height !== 32) wrong.push(`${width}px ${c.name}: ${control.label} is ${control.height}px high, expected 32px`);
+          if (control.radii.some((radius) => radius !== 8)) wrong.push(`${width}px ${c.name}: ${control.label} outer corners are ${control.radii.join(", ")}px, expected 8px`);
         }
       }
     }

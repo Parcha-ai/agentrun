@@ -3,6 +3,7 @@
 // and its revision's harness. The runs not archived (their own or their agent's), started in [from, to) and of `agent` when
 // given. A pending run (its end on the caller's way, not yet in the store) is counted at the state its end will have, in
 // the totals alone; its metrics, cost and effort wait for its end. No journal is read: the figures are the row's.
+import { sdkOf } from "../sdk/runs.js";
 import type { RunRow, Store } from "../store/store.js";
 import { DEFAULT_HARNESS } from "../harness.js";
 import { runReadState } from "./runs.js";
@@ -14,9 +15,9 @@ const PENDING_ENDS: ReadonlySet<string> = new Set<PendingEnd>(["completed", "esc
 export type AnalyticsFilter = { from?: string; to?: string; agent?: string; pending?: Readonly<Record<string, PendingEnd>> };
 /** Runs counted together: how many, how many completed (escalated included) and failed, how many have metrics, their
  *  tokens, and their cost as stats sums it (null when none ended with one; unknownCostRuns the rest). */
-export type AnalyticsGroup = { runs: number; completed: number; needsReview: number; failed: number; runsWithMetrics: number; tokens: number; costUsd: number | null; unknownCostRuns: number };
+export type AnalyticsGroup = { runs: number; completed: number; needsReview: number; failed: number; runsWithMetrics: number; tokens: number | null; costUsd: number | null; unknownCostRuns: number };
 export type StoreAnalytics = {
-  totals: AnalyticsGroup & { input: number; cacheRead: number; cacheWrite: number; output: number; requests: number; unmetered: number };
+  totals: AnalyticsGroup & { input: number | null; cacheRead: number | null; cacheWrite: number | null; output: number | null; requests: number | null; unmetered: number | null };
   time: { endedRuns: number; wallMs: number; activeRuns: number; activeMs: number };
   byHarnessEffort: Array<AnalyticsGroup & { harness: string; effort: string | null }>;
   byDay: Array<AnalyticsGroup & { day: string }>;
@@ -26,7 +27,7 @@ export type StoreAnalytics = {
 
 /** A run's metrics as the end commit wrote them (the row's JSON): what analytics sums. */
 type StoredMetrics = {
-  input?: number; cacheRead?: number; cacheWrite?: number; output?: number; requests?: number; unmetered?: number;
+  input?: number | null; cacheRead?: number | null; cacheWrite?: number | null; output?: number | null; requests?: number | null; unmetered?: number | null;
   activeMs?: number; effort?: string; tools?: Record<string, { calls?: number; errors?: number }>;
 };
 
@@ -73,7 +74,7 @@ export async function analytics(store: Store, filter: AnalyticsFilter = {}): Pro
     if (toMs !== null && !(run.startedAt < toMs)) continue;
     if (!harnessOf.has(run.revisionId)) {
       const revision = await store.agents.revision(run.revisionId);
-      harnessOf.set(run.revisionId, revision?.kind === "workflow" ? "workflow" : ((revision?.body as { harness?: string } | null)?.harness ?? DEFAULT_HARNESS));
+      harnessOf.set(run.revisionId, revision?.kind === "workflow" ? "workflow" : (sdkOf(revision?.body)?.runtime ?? (revision?.body as { harness?: string } | null)?.harness ?? DEFAULT_HARNESS));
     }
     const read = runReadState(run, harnessOf.get(run.revisionId) === "workflow" ? "workflow" : "agentic");
     const running = read === "running";
@@ -96,24 +97,29 @@ export async function analytics(store: Store, filter: AnalyticsFilter = {}): Pro
   }
 
   const counted = (group: readonly Fact[]): AnalyticsGroup => {
+    let unknownTokens=false;
     let runsN = 0, completed = 0, needsReview = 0, failed = 0, metered = 0, tokens = 0, costUsd = 0, known = 0, pend = 0;
     for (const f of group) {
       runsN += 1;
       if (f.state === "completed" || f.state === "escalated") completed += 1;
       if (f.state === "escalated") needsReview += 1;
       if (f.state === "failed") failed += 1;
-      if (f.metered) (metered += 1, (tokens += tokensOf(f.metrics!)));
+      if (f.metered) {metered += 1;tokens += tokensOf(f.metrics!);if(['input','cacheRead','cacheWrite','output'].some(key=>f.metrics?.[key as keyof StoredMetrics]===null))unknownTokens=true;}
       if (!f.running && !f.pending && f.costUsd !== null) (costUsd += f.costUsd, (known += 1));
       if (f.pending) pend += 1;
     }
-    return { runs: runsN, completed, needsReview, failed, runsWithMetrics: metered, tokens, costUsd: known > 0 ? costUsd : null, unknownCostRuns: runsN - known - pend };
+    return { runs: runsN, completed, needsReview, failed, runsWithMetrics: metered, tokens:unknownTokens?null:tokens, costUsd: known > 0 ? costUsd : null, unknownCostRuns: runsN - known - pend };
   };
 
   // Totals over the whole scope: the group counts, the token sums, and the time figures.
   let input = 0, cacheRead = 0, cacheWrite = 0, output = 0, requests = 0, unmetered = 0;
+  let unknownRequests = false;
+  const unknownTokens=new Set<string>();
   let endedRuns = 0, wallMs = 0, activeRuns = 0, activeMs = 0;
   for (const f of facts) {
     if (f.metered && f.metrics) {
+      if (f.metrics.requests === null) unknownRequests = true;
+      for(const key of ['input','cacheRead','cacheWrite','output'] as const)if(f.metrics[key]===null)unknownTokens.add(key);
       input += num(f.metrics.input); cacheRead += num(f.metrics.cacheRead); cacheWrite += num(f.metrics.cacheWrite);
       output += num(f.metrics.output); requests += num(f.metrics.requests); unmetered += num(f.metrics.unmetered);
       if (f.metrics.activeMs !== undefined && f.metrics.activeMs !== null) (activeRuns += 1, (activeMs += num(f.metrics.activeMs)));
@@ -161,7 +167,7 @@ export async function analytics(store: Store, filter: AnalyticsFilter = {}): Pro
 
   const totalsGroup = counted(facts);
   return {
-    totals: { ...totalsGroup, input, cacheRead, cacheWrite, output, requests, unmetered },
+    totals: { ...totalsGroup, input:unknownTokens.has('input')?null:input, cacheRead:unknownTokens.has('cacheRead')?null:cacheRead, cacheWrite:unknownTokens.has('cacheWrite')?null:cacheWrite, output:unknownTokens.has('output')?null:output, requests: unknownRequests ? null : requests, unmetered: unknownRequests ? null : unmetered },
     time: { endedRuns, wallMs, activeRuns, activeMs },
     byHarnessEffort: harnessEffort,
     byDay,

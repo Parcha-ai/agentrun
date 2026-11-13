@@ -96,7 +96,7 @@ export function NeedsYouStrip({ asking, failed, failedAll, live, learning = [], 
       ))}
       {asking.length > 0 && (
         <ul className="grid grid-cols-1 gap-3 xl:grid-cols-2">
-          {asking.map((r) => r.pending?.kind === "approval"
+          {asking.map((r) => r.native ? <li key={r.run_id} className="space-y-2 border p-4"><a href={runHref(r.run_id)} className="text-body underline underline-offset-2">{runTitle(r)}</a><p className="text-small text-muted-foreground">Native sessions cannot receive another message. <a href={`#/playground?agent=${encodeURIComponent(r.agent_id)}`} className="underline underline-offset-2">Start a new native run</a> to continue.</p></li> : r.pending?.kind === "approval"
             ? <Approval key={`${r.run_id}:${r.pending.id}`} run={r} pending={r.pending} agentName={agentName(r.agent_id)} at={at} onApprove={approve} />
             : askOf(r)
             ? <Asking key={`${r.run_id}:${askOf(r)!.asked_at}`} run={r} ask={askOf(r)!} agentName={agentName(r.agent_id)} at={at} onHandBack={handBack} />
@@ -289,7 +289,7 @@ function Live({ run, agentName, at, onStop }: { run: Run; agentName: string; at:
       <a href={runHref(run.run_id)} className="min-w-0 flex-1 truncate text-lead hover:underline">{runTitle(run)}</a>
       <span className="font-mono text-body text-run-active">working · {elapsed(at - Date.parse(run.created_at))}</span>
       <span className="font-mono text-small text-muted-foreground">{spent}</span>
-      <a href={runHref(run.run_id)} className="caps inline-flex h-8 items-center border px-3 text-small hover:bg-accent">Steer</a>
+      {!run.native && <a href={runHref(run.run_id)} className="caps inline-flex h-8 items-center border px-3 text-small hover:bg-accent">Steer</a>}
       {/* Stop ends an agentic run's turn (runState's rule, as the run page offers it). A workflow run, or one not in a
           turn, doesn't stop: its page has Cancel. */}
       {runState(run.status, run.state, run.kind, NO_MESSAGES, true, run.error, run.review).canStop

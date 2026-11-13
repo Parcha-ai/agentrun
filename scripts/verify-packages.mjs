@@ -119,10 +119,20 @@ const allowedEndpoints = {
     // The CLI's last resort for the server started on this machine: the address agentrun-serve binds by default.
     ['lib/cli.mjs',
       'http://127.0.0.1:7340/v2'], // key-gate: loopback-rule the default address of the server started on this machine
+    // The native-connect skill documents a loopback port placeholder for the server on the source machine.
+    ['skills/agentrun-cli/SKILL.md', 'http://127.0.0.1:PORT'],
   ],
   serve: [
     // The address agentrun-serve binds by default, which its quick start points a client at.
     ['README.md', 'http://127.0.0.1:7340'],
+    // Native connect uses the same public default and refuses a host outside loopback (src/native/cli.ts).
+    ['dist/native/cli.js', 'http://127.0.0.1:7340'],
+    // Reflection replaces inherited HTTP MCP transports with this inert placeholder only after disabling them;
+    // it confirms every server is still disabled before dispatch (src/native/runtime.ts), so no endpoint is called.
+    ['dist/native/runtime.js', 'http://127.0.0.1:1'],
+    // The served skill and its source copy document that same local native-connect default.
+    ['dist/skills/agentrun-serve/SKILL.md', 'http://127.0.0.1:7340'],
+    ['skills/agentrun-serve/SKILL.md', 'http://127.0.0.1:7340'],
     // The same address in the changelog entry the release fold writes from the package's fragment (#625).
     ['CHANGELOG.md', 'http://127.0.0.1:7340'],
     // The agentrun.v2/0 contract, vendored unchanged for GET /v2/openapi.json: its servers list the local server's default address.

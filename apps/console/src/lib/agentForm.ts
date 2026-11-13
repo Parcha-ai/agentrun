@@ -1,3 +1,4 @@
+import type { NativeBinding } from "./native";
 import { type Place, type Places, placeOf } from "./place";
 import type { ClientError } from "./client";
 import type { NoteProblem } from "./learning";
@@ -10,7 +11,7 @@ export type HarnessId = "pi" | "claude-agent" | "codex" | "opencode";
  *  learned workflows; "notes", notes and skills alone. */
 /** `max_cost_usd`: the agent's default spend cap per run, in dollars, for a run (or a trigger) with no cap of its own; an
  *  agentic revision's only. Absent or 0 is none, and an edit clears it only with an explicit 0. */
-export type Definition = { version: number; approvals?: Approvals; name: string; description?: string; instructions?: string; workflow?: unknown; harness?: string; thinking?: string; model?: string; learning?: boolean | "notes"; max_cost_usd?: number; skills: string[]; tools: string[]; tool_settings?: ToolSettings; [field: string]: unknown };
+export type Definition = { native?: NativeBinding; version: number; approvals?: Approvals; name: string; description?: string; instructions?: string; workflow?: unknown; harness?: string; thinking?: string; model?: string; learning?: boolean | "notes"; max_cost_usd?: number; skills: string[]; tools: string[]; tool_settings?: ToolSettings; [field: string]: unknown };
 /** What a save's answer says this host lacks to run the revision (`reason` not_set_up_here, say): it saved, and a run of it
  *  is refused until the host has it. `field` names the definition's field (`definition.model`, `definition.tools[2]`). */
 export type SaveWarning = { field: string; reason: string; message: string };
@@ -18,7 +19,7 @@ export type SaveWarning = { field: string; reason: string; message: string };
  *  the agent's page that opens after it (client.ts). */
 /** The console's agent, and of the served agent (GET /v2/agents/{id}, generated) its `sign_ins`, which only that read
  *  carries (a list's agents and a write's answer have none). */
-export type Agent = { agent_id: string; kind: "agentic" | "workflow"; revision: string; revisions: number; definition: Definition; archived_at: string | null; runs?: { count: number; live: number }; warnings?: SaveWarning[]; tools?: AgentTool[]; learning?: { pending: number } } & Partial<Pick<ServedAgent, "sign_ins">>;
+export type Agent = { agent_id: string; kind: "agentic" | "workflow"; revision: string; revisions: number; definition: Definition; native_status?: NativeBinding; archived_at: string | null; runs?: { count: number; live: number }; warnings?: SaveWarning[]; tools?: AgentTool[]; learning?: { pending: number } } & Partial<Pick<ServedAgent, "sign_ins">>;
 export type AgentFields = Partial<Pick<Definition, "name" | "description" | "instructions" | "harness" | "thinking" | "model" | "tools" | "workflow" | "learning" | "tool_settings" | "max_cost_usd" | "approvals">> & { workflowText?: string; maxCostText?: string; place?: Place; computer?: Computer };
 
 /** The body of a definition edit: the current definition with the edited fields; name and
