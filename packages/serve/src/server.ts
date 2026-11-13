@@ -3262,7 +3262,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "getTrigger":
         return send(res, 200, withSecretOf(await triggers.get(id)));
       case "updateTrigger":
-        return send(res, 200, await triggers.update(id, await bodyOf(req)));
+        // Its secret's metadata as a read answers it, so a page showing the changed trigger keeps saying it is set.
+        return send(res, 200, withSecretOf(await triggers.update(id, await bodyOf(req))));
       case "deleteTrigger":
         await triggers.remove(id);
         return void res.writeHead(204, { "cache-control": "no-store" }).end();

@@ -1838,8 +1838,9 @@ firing's key is `webhook-id`, the event is the body's `metadata.trigger_slug`, s
 "GITHUB_ISSUE_ADDED_EVENT"}]` takes one Composio trigger's events, and a rule's `where` pointers read the payload under
 `/data`. The subscription also delivers account events (`composio.connected_account.expired`,
 `composio.connected_account.activated`, `composio.trigger.disabled`), signed the same way, with no slug: their event is the
-body's top-level `type`, so `accept` can take them too. One subscription sends every trigger of its Composio project to one URL: make a composio trigger for each
-agent that takes some of them, each with its own `accept`. The tag also names `trigger_id` and `user_id`.
+body's top-level `type`, so `accept` can take them too. A Composio project's subscription posts every event to the one URL it names, so it fires that one composio
+trigger and its agent: other triggers never see those deliveries, whatever their `accept`. The tag also names
+`trigger_id` and `user_id`.
 
 `accept` makes a trigger take only the events it names, from the delivery alone:
 

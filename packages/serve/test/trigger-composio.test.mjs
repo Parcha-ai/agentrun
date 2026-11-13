@@ -72,6 +72,9 @@ test("a composio delivery fires once, keyed by its webhook-id; the same id again
   const { id } = created;
   assert.equal(created.signing_secret, undefined, "Composio's secret is not echoed");
   assert.equal((await api("GET", `/triggers/${id}`)).body.secret.set, true);
+  // A change's answer says the secret is set too, as a read does: a page that shows the answer after Pause or Resume
+  // never says a working secret is missing.
+  for (const enabled of [false, true]) assert.equal((await api("PATCH", `/triggers/${id}`, { enabled })).body.secret?.set, true, `PATCH enabled:${enabled}`);
   const first = await post(baseUrl, id, delivery(), { id: "msg_one" });
   assert.equal(first.status, 202, JSON.stringify(first.body));
   assert.equal(first.body.key, keyOf("webhook", id, "msg_one"));
