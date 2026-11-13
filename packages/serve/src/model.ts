@@ -260,6 +260,7 @@ export const PROVIDER_KEYS: Readonly<Record<string, readonly string[]>> = {
   "qwen-token-plan": ["QWEN_TOKEN_PLAN_API_KEY"],
   "qwen-token-plan-cn": ["QWEN_TOKEN_PLAN_CN_API_KEY"],
   "qwen-token-plan-individual": ["QWEN_TOKEN_PLAN_API_KEY"],
+  "qwen-token-plan-individual-cn": ["QWEN_TOKEN_PLAN_CN_API_KEY"],
   radius: ["RADIUS_API_KEY"],
   together: ["TOGETHER_API_KEY"],
   typesafe: ["TYPESAFE_API_KEY"],

@@ -8,7 +8,7 @@
 // The claim is the one fence for a run: claim() moves the run's epoch up by one, and every write a runner makes for the
 // run (its row, its journal commits, a command taken) carries the epoch it holds. A write under a lower epoch than the
 // run's is refused (Fenced) and writes nothing.
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import type { Storage, StorageWrite } from "@earendil-works/pi-durable";
 import type { JournalPage } from "./journal/storage.js";
 
@@ -274,6 +274,12 @@ export interface Learning {
    *  before it was proposed ended when it was kept; a proposal ended when its learning run ended (ended or failed), whose
    *  row keeps the grade's spend as its cost. One still waiting for its grade is none of them. */
   spend(window: { from: number; to: number }): Promise<LearningSpend[]>;
+  /** What was spent beside run `runId` on its behalf, the one figure every cap gate of the run reads with its own
+   *  sessions (and its grade's cap, learning-end.ts gradeCapOf): each learning run its rounds queued (`beforeRound`: only
+   *  those of the rounds before it), one that ended at its cost, one not ended at its own cap (the most its grade may
+   *  take), and one that ended at an unknown cost at that cap too, the most it could have taken. Null: unknown (one with
+   *  neither). 0 for a run that queued none. */
+  spentBeside(runId: string, options?: { beforeRound?: number }): Promise<number | null>;
 }
 
 /** One run's learning end as GET /usage's learning meter counts it (Learning.spend). */
@@ -685,6 +691,11 @@ export interface Runs {
    *  'stopped'), not imported and not a learning run, reopens: a workflow, a failed or cancelled run, any other, or none
    *  is RunFinal, and nothing is written. */
   reopen(runId: string, command: { kind: string; body?: unknown }, options?: LaunchSealedWrite): Promise<Command>;
+  /** Wakes a parked run: its wake_at set to now on the deadlines' clock, so a runner claims it at its next poll (the
+   *  claimable rule's wake branch) and its loop reads what it waits on again. True when the run was parked; a run in any
+   *  other state (or none) is left as it is, false. Its claim, if one holds it while it parks, is let go as before: the
+   *  release sets wake_at as the loop's end says. */
+  wake(runId: string): Promise<boolean>;
   /** The runs a runner may claim, oldest first: queued; parked with an untaken command or its wake_at passed; running with
    *  no runner (released at a runner's shutdown: it stays running, a run that started keeps that fact) or its claim run
    *  out. */

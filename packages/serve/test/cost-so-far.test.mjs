@@ -5,8 +5,14 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { test } from "node:test";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { commitWrites } from "@earendil-works/pi-durable/testing";
 import { agent, client, follow, journalOf, scratch, serve, startServe } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
+import { storeOn, T0 } from "./store-helpers.mjs";
+
+const { viewOverStore } = await import("../dist/store-view.js");
+const { servedTimelineRows } = await import("../dist/run-timeline-served.js");
 
 const OUTPUT_PRICED = new URL("./fixtures/faux-output-priced.mjs", import.meta.url).pathname;
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
@@ -125,6 +131,51 @@ test("pi: a run cancelled mid-request reads what it cost so far and 1 charge wit
   t.after(() => two.close());
   const listed = (await client(two.baseUrl, two.token)("GET", "/runs?agent=cancel-pi")).body.runs.find((r) => r.run_id === runId);
   assert.deepEqual([listed.cost.usd, listed.cost.so_far_usd, listed.cost.unpriced], [null, first, 1], JSON.stringify(listed.cost));
+});
+
+test("pi: a turn a stop cut reads its cut request as a charge with no price from the moment the run reads stopped, before the runner books the cut; never in flight, never the known sum", async (t) => {
+  // The store as a stop leaves it for a moment: pi settled the follow-up's message aborted (so the run reads stopped), and
+  // the runner has not yet written the cut request's end mark (it books the cut once the session's proxy sees its upstream
+  // end, which a loaded machine makes late). Built by hand, so the order is the race's every time.
+  const { store } = await storeOn(t);
+  await store.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer." } });
+  await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { message: "hi" }, title: "Stopped", place: { mode: "runner" } } });
+  const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
+  const journal = store.journal(claim);
+  const entry = async (kind, more = {}) => ({ id: await journal.mintId(), conversationId: 1, kind, ...more });
+  const user = async (content) => entry("pi.user", { model: [{ role: "user", content, timestamp: T0 }] });
+  const mark = () => entry("agentrun.request_started", { data: {} });
+  const hi = await user("hi");
+  const markOne = await mark();
+  const answer = await entry("pi.assistant", { model: [{ role: "assistant", stopReason: "stop", content: [{ type: "text", text: "Hello." }], usage: { input: 47, output: 3, cacheRead: 0, cacheWrite: 0, totalTokens: 50, cost: { total: 0.0003 } }, timestamp: T0 }] });
+  const followUp = await user("Take your time.");
+  const markTwo = await mark();
+  const [first, second] = [await journal.mintId(), await journal.mintId()];
+  const submission = (id, more) => ({ type: "submission", value: { type: "input", id, conversationId: 1, ...more } });
+  await commitWrites(journal, [
+    { type: "conversation", value: { id: 1 } },
+    ...[hi, markOne, answer, followUp, markTwo].map((value) => ({ type: "entry", value })),
+    submission(first, { status: "done", entry: hi.id, answer: answer.id }),
+    submission(second, { status: "placed", entry: followUp.id }),
+  ], BACKGROUND_CONTEXT);
+  const deps = { origin: "https://run.test", serverSecrets: () => [] };
+  const usageNow = async () => (await servedTimelineRows({ serverSecrets: () => [], keyEnv: () => ({}) }, store, "run-1", BACKGROUND_CONTEXT)).findLast((r) => r.kind === "usage")?.usage;
+  // Its turn open, the follow-up's request is in flight: no charge yet, priced or not.
+  assert.deepEqual((await viewOverStore(store, "run-1", deps)).cost, { usd: 0.0003, basis: "estimate", charge_state: null, cap_usd: null });
+  assert.deepEqual(await usageNow(), { usd: 0.0003, requests: 2 });
+
+  // The stop's abort: pi settles the message aborted. The run reads stopped, and the request the stop cut is a charge with
+  // no price, on the run and its usage row, though its end mark is not in yet.
+  await commitWrites(journal, [submission(second, { status: "unanswered", entry: followUp.id, reason: "aborted" })], BACKGROUND_CONTEXT);
+  const stopped = await viewOverStore(store, "run-1", deps);
+  assert.deepEqual([stopped.status, stopped.state], ["input_required", "idle"]);
+  assert.deepEqual(stopped.cost, { usd: null, basis: "estimate", charge_state: null, cap_usd: null, so_far_usd: 0.0003, unpriced: 1 });
+  assert.deepEqual(await usageNow(), { usd: null, requests: 2, so_far_usd: 0.0003, unpriced: 1 });
+
+  // The end mark landing after changes nothing: the one cut request, counted once.
+  await commitWrites(journal, [{ type: "entry", value: await entry("agentrun.request_ended", { data: {} }) }], BACKGROUND_CONTEXT);
+  assert.deepEqual((await viewOverStore(store, "run-1", deps)).cost, stopped.cost);
+  assert.deepEqual(await usageNow(), { usd: null, requests: 2, so_far_usd: 0.0003, unpriced: 1 });
 });
 
 for (const harness of ["claude-agent", "codex"]) {

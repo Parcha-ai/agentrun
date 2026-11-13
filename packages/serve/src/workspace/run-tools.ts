@@ -34,7 +34,7 @@
 // runTools is the one call: runHands binds the run's hands and executors, the kernel's createRegistry makes the run's
 // registry over them, and bindTools gives its tools as the kernel's HostTool, through the run's gate. The run's end
 // (end) ends its background processes through the computer (the kernel's endBackground), then sweeps.
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import type { HostTool } from "@parcha/agentrun-kernel";
 import { type CapabilityKind, COMPUTER_TOOLS, type ComputerPort, createRegistry, endBackground, type Executor, type Registry } from "@parcha/agentrun-kernel/kernel";
 import type { ComputerClient, HelloResult } from "@parcha/agentrun-computer";

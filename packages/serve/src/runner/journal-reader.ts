@@ -2,7 +2,7 @@
 // did, its tool calls and its messages, read the same way for every harness, so no harness grades itself. Two sources,
 // one output: a pi run's own records (its pi.tool tasks and its pi.user / pi.assistant entries), and a CLI run's
 // agentrun.* entries (runner/journal-kinds.ts). A run's stop reason is on its run row (its end commit's summary).
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { type MessageOrigin, originOf } from "../timeline/index.js";
 import type { ConversationId, ConversationRecord, EntryRecord, SubmissionRecord, TaskRecord } from "@earendil-works/pi-durable";
 import { inReflect, reflectRanges } from "./end-of-run.js";
@@ -58,19 +58,21 @@ async function scanAll<T>(scan: (cursor: unknown) => Promise<{ items: readonly T
 
 /** Every entry and task of the run: conversations in id order, each one's entries oldest first; tasks in id order. */
 export async function journalRecords(journal: JournalReads, context: Context): Promise<JournalRecords> {
-  const conversations = await scanAll<ConversationRecord>((cursor) => journal.scanConversations({ order: "ascending" } as never, PAGE, cursor as never, context));
-  const entries: EntryRecord[] = [];
-  for (const conversation of conversations) {
-    entries.push(...(await scanAll<EntryRecord>((cursor) => journal.scanEntries({ conversationId: conversation.id as ConversationId, order: "ascending" }, PAGE, cursor as never, context))));
-  }
+  const entries = await journalEntries(journal, context);
   const tasks = await scanAll<TaskRecord<unknown, unknown, unknown>>((cursor) => journal.scanTasks({ order: "ascending" } as never, PAGE, cursor as never, context) as never);
   const submissions = await scanAll<SubmissionRecord>((cursor) => journal.scanSubmissions({ order: "ascending" } as never, PAGE, cursor as never, context) as never);
   return { entries, tasks, submissions };
 }
 
-/** Every entry of the run (the CLI record and pi's entries alike). */
+/** Every entry of the run (the CLI record and pi's entries alike): its conversations and their entries, no task and no
+ *  submission read, for a reader of entries alone (an ask, an answer). */
 export async function journalEntries(journal: JournalReads, context: Context): Promise<EntryRecord[]> {
-  return [...(await journalRecords(journal, context)).entries];
+  const conversations = await scanAll<ConversationRecord>((cursor) => journal.scanConversations({ order: "ascending" } as never, PAGE, cursor as never, context));
+  const entries: EntryRecord[] = [];
+  for (const conversation of conversations) {
+    entries.push(...(await scanAll<EntryRecord>((cursor) => journal.scanEntries({ conversationId: conversation.id as ConversationId, order: "ascending" }, PAGE, cursor as never, context))));
+  }
+  return entries;
 }
 
 const entryNumber = (entry: EntryRecord): number => Number(entry.id);
