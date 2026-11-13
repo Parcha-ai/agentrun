@@ -222,6 +222,18 @@ test("computer_script: the script's value is the per-step tool's value; text() a
   assert.equal((await call(tools, "computer_script", { code: "" })).isError, true);
 });
 
+test("a script that shows output and returns nothing answers its words and images with no value, so a Codex script's nested call keeps them", async () => {
+  const root = scratch();
+  const run = await runTools(localWorkspace(root), { kind: "phone", computer: fakeScreen(root, { ui: true }), hello: helloOf("phone", [...PHONE_GROUPS, "ui"]) }, { mode: 2, context: ctx });
+  const tools = run.hostTools(run.kindTools);
+  const shown = await call(tools, "computer_script", { code: "image(await computer.screen.shot()); text('hello');" });
+  assert.equal(shown.isError, false, shown.text);
+  assert.equal(shown.text, "hello");
+  assert.equal(shown.images.length, 1);
+  assert.equal(shown.structured, undefined, "no value: the words and images are the answer");
+  await run.end();
+});
+
 test("a script's returned image keeps its own pixels, apart from the images it showed", async () => {
   const root = scratch();
   const run = await runTools(localWorkspace(root), { kind: "phone", computer: fakeScreen(root, { ui: true }), hello: helloOf("phone", [...PHONE_GROUPS, "ui"]) }, { mode: 2, context: ctx });

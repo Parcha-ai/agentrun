@@ -130,7 +130,7 @@ export function computerScriptExecutor(card: Card, guard: ScriptGuard): Executor
         return { text: result.output.length > 0 ? shown.text : "", error: why, ...(shown.images.length > 0 ? { images: shown.images } : {}) };
       }
       const shown = answerOf(result.output, result.value);
-      return { text: shown.text, ...(shown.images.length > 0 ? { images: shown.images } : {}), structured: (withoutImageData(result.value) ?? null) as JsonValue };
+      return { text: shown.text, ...(shown.images.length > 0 ? { images: shown.images } : {}), ...(result.value === undefined ? {} : { structured: withoutImageData(result.value) as JsonValue }) };
     } finally {
       await sandbox.close();
     }

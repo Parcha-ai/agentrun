@@ -302,6 +302,12 @@ test("a script's find() takes the app's own id, and its text matches an element'
 	assert.deepEqual(JSON.parse(JSON.stringify(found)), [["@e1"], ["@e2"], 0]);
 });
 
+test("a script's find() with a global regex matches every element it should, the expression's position never carried over", async () => {
+	const { surface } = surfaceOf();
+	const found = await runScript(surface, `const notes = computer.app("com.apple.Notes"); await notes.observe(); return notes.find({ text: /t/g }).map((n) => n.ref);`);
+	assert.deepEqual(JSON.parse(JSON.stringify(found)), ["@e1", "@e2"]);
+});
+
 test("a script's errors carry the computer's words", async () => {
 	const { surface } = surfaceOf({ groups: ["screen", "input.pointer"] });
 	await assert.rejects(runScript(surface, `return computer.input.act([]).then(() => computer.screen.shot()).then(() => { throw new Error("got here"); })`), /got here/);
