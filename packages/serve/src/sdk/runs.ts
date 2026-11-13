@@ -164,7 +164,7 @@ export class SdkRuns {
       deps,
       entry,
       pinned.revision,
-      { ...revisionBody, ...(!workflow && revisionBody.learning !== false ? { learning: "notes" } : {}) } as never,
+      { ...revisionBody, ...(!workflow && revisionBody.learning === true ? { learning: "notes" } : {}) } as never,
       { content: cleanedInput },
     );
     if (learning) {

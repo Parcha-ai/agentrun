@@ -38,12 +38,13 @@ describe("CodingAgentAction", () => {
     const group = document.querySelector('[role="group"][aria-label="Import agents options"]')!;
     const action = button("Import agents");
     const trigger = group.querySelector<HTMLButtonElement>('[aria-haspopup="menu"]')!;
-    expect(group.classList.contains("border-primary")).toBe(true);
+    expect(group.classList.contains("border-transparent")).toBe(true);
+    expect(group.classList.contains("bg-primary/10")).toBe(true);
     expect(group.classList.contains("bg-primary")).toBe(false);
-    expect(group.classList.contains("text-primary-text")).toBe(true);
-    expect(group.classList.contains("hover:bg-primary/10")).toBe(true);
-    expect(group.classList.contains("data-[state=open]:bg-primary/10")).toBe(true);
-    expect(group.classList.contains("has-[:focus-visible]:bg-primary/10")).toBe(true);
+    expect(group.classList.contains("text-primary-action-text")).toBe(true);
+    expect(group.classList.contains("hover:bg-primary/20")).toBe(true);
+    expect(group.classList.contains("data-[state=open]:bg-primary/20")).toBe(true);
+    expect(group.classList.contains("has-[:focus-visible]:bg-primary/20")).toBe(true);
     expect(group.classList.contains("!rounded-action")).toBe(true);
     expect(action.classList.contains("text-inherit")).toBe(true);
     expect(trigger.classList.contains("text-inherit")).toBe(true);
@@ -66,7 +67,7 @@ describe("CodingAgentAction", () => {
   it("only highlights the designated main action when a toolbar has several dropdowns", () => {
     const host = mount(true);
     const groups = [...host.querySelectorAll('[role="group"]')];
-    expect(groups.filter(group => group.classList.contains("border-primary"))).toHaveLength(1);
+    expect(groups.filter(group => group.classList.contains("bg-primary/10"))).toHaveLength(1);
     const secondary = host.querySelector('[aria-label="Query options"]')!;
     expect(secondary.classList.contains("border-border")).toBe(true);
     expect(secondary.classList.contains("text-primary-text")).toBe(false);

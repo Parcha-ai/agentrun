@@ -64,10 +64,10 @@ function TemplateList({ templates, go, playground }: { templates: TemplateView[]
                 <dl className="mt-3 space-y-1 font-mono text-small text-muted-foreground">
                   {needsOf(t).map(([what, words]) => <div key={what} className="flex gap-2"><dt className="shrink-0">{what}</dt><dd className="min-w-0 break-words text-foreground/80">{words}</dd></div>)}
                 </dl>
-                <div className="mt-auto flex flex-wrap items-center gap-2 pt-4">
+                <div className="mt-auto flex flex-wrap items-center justify-end gap-2 pt-4">
                   {playground ? <Button size="sm" variant="primary" onClick={() => go(templatePlaygroundHref(t))}>Configure</Button> : <>
-                    <CodingAgentAction variant="primary" label="Run" prompt={runTemplatePrompt(location.origin, t)} playgroundHref={templatePlaygroundHref(t)} />
                     <Button size="sm" onClick={() => go(templateHash(t.name))}>Configure</Button>
+                    <CodingAgentAction variant="primary" label="Run" prompt={runTemplatePrompt(location.origin, t)} playgroundHref={templatePlaygroundHref(t)} />
                   </>}
                 </div>
               </article>

@@ -53,7 +53,7 @@ export default {
         muted: { DEFAULT: hsl("muted"), foreground: hsl("muted-foreground") },
         accent: { DEFAULT: hsl("accent"), foreground: hsl("accent-foreground") },
         overlay: hsl("overlay"),
-        primary: { DEFAULT: hsl("primary"), foreground: hsl("primary-foreground"), text: hsl("primary-text") },
+        primary: { DEFAULT: hsl("primary"), foreground: hsl("primary-foreground"), text: hsl("primary-text"), "action-text": hsl("primary-action-text") },
         destructive: { DEFAULT: hsl("destructive"), text: hsl("destructive-text") },
         success: { DEFAULT: hsl("success"), text: hsl("success-text") },
         warning: { DEFAULT: hsl("warning"), text: hsl("warning-text") },

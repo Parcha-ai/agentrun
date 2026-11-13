@@ -65,9 +65,9 @@ export function McpServersPage({ v2, signIn, add, writable, whyNot = "sign_in", 
             <p className="mt-2 text-lead text-muted-foreground">A remote MCP server's tools, for any agent you grant them to in its Tools step. A saved credential is never shown again.</p>
           </div>
           {!form && !composio && (
-            <div className="flex gap-2">
-              <Button size="sm" variant="primary" onClick={() => setForm({})}>Add server</Button>
+            <div className="ml-auto flex gap-2">
               <Button size="sm" disabled={!writable} onClick={() => setComposio(true)}>Add from Composio</Button>
+              <Button size="sm" variant="primary" onClick={() => setForm({})}>Add server</Button>
             </div>
           )}
         </div>

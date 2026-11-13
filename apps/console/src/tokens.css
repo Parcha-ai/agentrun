@@ -27,6 +27,8 @@
   --primary: 30 100% 50%;
   --primary-foreground: 240 10% 3.9%;
   --primary-text: 30 100% 34%;
+  /* Action labels also sit on the stronger 20% hover/open wash. */
+  --primary-action-text: 30 100% 31%;
 
   /* Tones. The bare name is a fill, a border or a dot; `-text` is words in that tone on a page surface or on the
      tone's own 10% wash. */
@@ -114,6 +116,7 @@
   --primary: 30 100% 50%;
   --primary-foreground: 240 10% 3.9%;
   --primary-text: 30 100% 50%;
+  --primary-action-text: var(--primary-text);
   --success: 142 71% 45%;
   --success-text: 142 71% 45%;
   --warning: 38 92% 55%;

@@ -164,9 +164,9 @@ function AgentDetail({ agent, onAgent, onSignInsAgent, reread, onChanged, poll, 
         <Icon className="size-4 shrink-0 text-muted-foreground" aria-hidden />
         <strong className="min-w-0 truncate text-body font-semibold">{d.name}</strong>
         <div className="ml-auto flex max-w-full flex-wrap items-center justify-end gap-2">
+          <Button size="icon" aria-label="Refresh agent" onClick={() => { history.refresh(); refreshNative(); }} disabled={history.reading}><RefreshCw className={cn(history.reading && "animate-spin")} aria-hidden /></Button>
           <CodingAgentAction label="Edit agent" prompt={editAgentPrompt(location.origin, agent.agent_id, !!native, sdk?.runtime)} playgroundHref={native || sdk ? undefined : `#/playground?operation=edit-agent&agent=${encodeURIComponent(agent.agent_id)}`} />
           {!agent.archived_at && <CodingAgentAction variant="primary" label="Run agent" disabled={!!native && (!native.connected || native.state !== "ready" || !native.capabilities.launch)} prompt={runAgentPrompt(location.origin, agent.agent_id, sdk?.runtime)} playgroundHref={sdk ? undefined : `#/playground?agent=${encodeURIComponent(agent.agent_id)}`} />}
-          <Button size="icon" aria-label="Refresh agent" onClick={() => { history.refresh(); refreshNative(); }} disabled={history.reading}><RefreshCw className={cn(history.reading && "animate-spin")} aria-hidden /></Button>
         </div>
       </header>
       <main className="grid min-h-0 flex-1 grid-cols-1 items-start gap-6 overflow-auto p-5 lg:grid-cols-[minmax(260px,320px)_minmax(0,1fr)] md:p-8">

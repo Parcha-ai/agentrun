@@ -49,7 +49,7 @@ describe("running a served template", () => {
     expect(copied.mock.calls[0][0]).toContain("/v2/templates/review%2Fkit/apply");
     expect(copied.mock.calls[0][0]).toContain("instructions, rules, skills, schemas, learning and triggers");
     expect(copied.mock.calls[0][0]).toContain("Then read the created agent's current revision and run the template's intended task");
-    expect(host.querySelector("button")?.title).toBe("Copy prompt for Codex CLI");
+    expect(host.querySelector('[aria-label="Run options"] button')?.getAttribute("title")).toBe("Copy prompt for Codex CLI");
     expect(applyTemplate).not.toHaveBeenCalled();
   });
 

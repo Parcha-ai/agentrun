@@ -25,11 +25,12 @@ const key = async (el: Element, k: string) => { await act(async () => { el.dispa
 const html = (node: ReactElement) => renderToStaticMarkup(node);
 
 describe("Button", () => {
-  it("uses the outlined primary treatment for both primary spellings", () => {
+  it("uses the translucent primary treatment for both primary spellings", () => {
     const primary = html(<Button variant="primary">Run</Button>);
     expect(html(<Button variant="solid">Run</Button>)).toBe(primary);
-    expect(primary).toContain("border-primary");
-    expect(primary).toContain("text-primary-text");
+    expect(primary).toContain("border-transparent");
+    expect(primary).toContain("bg-primary/10");
+    expect(primary).toContain("text-primary-action-text");
     expect(primary).not.toMatch(/text-(black|white)|\sbg-primary\s/);
   });
   it("has a size for every control height, and xs for a row", () => {

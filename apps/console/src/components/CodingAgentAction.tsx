@@ -109,7 +109,7 @@ export function CodingAgentAction({ label, prompt, playgroundHref, playgroundLab
   const actionTitle = compact ? `${label} · ${title}` : title;
   // One edge and focus ring belong to the whole control; its two actions stay independently operable.
   const actionClass = `h-full !rounded-none border-0 bg-transparent text-inherit hover:bg-transparent focus-visible:bg-transparent focus-visible:outline-none ${compact ? "px-2" : "pl-3 pr-1"}`;
-  const activeTone = variant === "primary" ? "data-[state=open]:bg-primary/10 has-[:focus-visible]:bg-primary/10" : "data-[state=open]:bg-accent has-[:focus-visible]:bg-accent";
+  const activeTone = variant === "primary" ? "data-[state=open]:bg-primary/20 has-[:focus-visible]:bg-primary/20" : "data-[state=open]:bg-accent has-[:focus-visible]:bg-accent";
   return <div ref={container} role="group" aria-label={`${label} options`} data-state={open ? "open" : "closed"} className={cn(buttonVariants({ variant, size: "sm" }), "shrink-0 items-stretch gap-0 overflow-hidden px-0 has-[:focus-visible]:outline has-[:focus-visible]:outline-focus has-[:focus-visible]:outline-offset-focus has-[:focus-visible]:outline-ring", activeTone)}>
     {href && !disabled
       ? <a href={href} title={actionTitle} aria-label={compact ? label : undefined} className={cn(buttonVariants({ variant: "ghost", size: "sm" }), actionClass)}>{content}</a>

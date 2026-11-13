@@ -42,9 +42,9 @@ describe("contrast (WCAG 2.2 AA)", () => {
   for (const theme of ["light", "dark"] as const) {
     const rgb = (name: string) => hslToRgb(tokens[theme][name]!);
     it(`${theme}: every text pair is at least 4.5:1`, () => {
-      const failed = TEXT_PAIRS.map(({ text, on, wash }) => {
-        const surface = wash ? blend(rgb(wash), rgb(on), 0.1) : rgb(on);
-        return { pair: `${text} on ${wash ? `${wash}/10 over ` : ""}${on}`, ratio: Number(contrast(rgb(text), surface).toFixed(2)) };
+      const failed = TEXT_PAIRS.map(({ text, on, wash, alpha = 0.1 }) => {
+        const surface = wash ? blend(rgb(wash), rgb(on), alpha) : rgb(on);
+        return { pair: `${text} on ${wash ? `${wash}/${alpha * 100} over ` : ""}${on}`, ratio: Number(contrast(rgb(text), surface).toFixed(2)) };
       }).filter((p) => p.ratio < 4.5);
       expect(failed).toEqual([]);
     });

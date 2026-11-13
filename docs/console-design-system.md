@@ -14,12 +14,13 @@ you add or restyle anything a person sees there.
 ## The look, in six rules
 
 1. **Rounded actions, square fields and surfaces.** Every action button uses the same 8px radius. The build composer has its own softer edge.
-2. **One line weight.** Borders are 1px. 2px marks where you are (the open tab, the active nav item) and where the
+2. **One line weight.** Borders are 1px. 2px marks the open tab and where the
    keyboard is (the focus ring). Nothing else is thicker.
 3. **Mono for structure, sans for prose.** JetBrains Mono for labels, buttons, chips, ids, numbers and code. Schibsted
    Grotesk for sentences. Two weights: 400 and 600.
 4. **Orange means AgentRun is acting or you can act.** Each toolbar or form has at most one highlighted main action,
-   with an orange outline (`Button variant="primary"`), including coding-agent handoffs. Secondary controls stay
+   with a translucent orange fill (`Button variant="primary"`), including coding-agent handoffs. Place it last at the
+   far right of the toolbar, after secondary actions. Secondary controls stay
    neutral; destructive actions use their own tone. Do not give adjacent actions equal primary emphasis.
    Orange words are `text-primary-text`. Never use orange for decoration.
 5. **Flat.** One shadow exists (`shadow-float`), only under what floats over the page.
@@ -52,6 +53,7 @@ alpha: `bg-primary/10`. Never write a hex value, `rgb()`, `hsl()`, `white`, `bla
 | `overlay` | `bg-overlay/70` | What dims the page under a dialog. |
 | `primary`, `primary-foreground` | `bg-primary text-primary-foreground` | The brand fill and the text on it. |
 | `primary-text` | `text-primary-text` | Orange words and icons on a page surface. |
+| `primary-action-text` | `text-primary-action-text` | Primary action labels, readable on the 10% fill and 20% hover/open fill. |
 | `success`, `warning`, `destructive`, `info` | `bg-success/10`, `border-warning/50` | A tone's fill, border or dot. |
 | `success-text`, `warning-text`, `destructive-text`, `info-text` | `text-success-text` | Words in a tone. |
 | `border`, `border-strong` | `border`, `border-border-strong` | A dividing line; the edge of a hovered or floating thing. |
@@ -117,11 +119,11 @@ Controls in one row share one height. A target someone taps is at least 24px eac
 
 - `border` is the 1px line in `--border`. Use `border-border-strong` for the edge of a hovered or floating thing and
   `border-input` for a field.
-- `border-b-2` (or an inset 2px bar) marks the open tab and the active nav item. Nothing else.
+- `border-b-2` marks the open tab. The active sidebar item uses a rounded tint without a leading bar.
 - The stylesheet squares fields and surfaces by default. `Button` and `buttonVariants` use `!rounded-action`
   (`--radius-action: 0.5rem`) for every action, including links, icon buttons and menu triggers. The coding-agent
   action uses the same radius on its single outer edge; its main action and chooser stay square inside that edge.
-  Its outlined main action and chooser share the foreground, hover, open and focus treatment across the whole group,
+  Its tinted main action and chooser share the foreground, hover, open and focus treatment across the whole group,
   with no internal divider. Compact row actions keep the neutral secondary treatment.
 - The integrated build composer uses `!rounded-composer` (`--radius-composer: 1rem`). Keep this softer shape scoped
   to the build composer.
@@ -168,7 +170,7 @@ Import from `@/components/ui`.
 
 | Need | Use | Not |
 | --- | --- | --- |
-| An action | `Button`: `primary` (one orange-outline main action per toolbar or form; `solid` is a legacy alias), `outline` (default), `ghost`, `destructive`; sizes `xs`, `sm`, `md`, `lg`, `icon` | A `<button>` with its own border and caps. |
+| An action | `Button`: `primary` (one translucent-orange main action per toolbar or form, last at the far right in top toolbars; `solid` is a legacy alias), `outline` (default), `ghost`, `destructive`; sizes `xs`, `sm`, `md`, `lg`, `icon` | A `<button>` with its own border and caps. |
 | A row or a card someone presses | A plain `<button>` or `<a>` with `hover:bg-accent` and `text-left` | `Button`. |
 | A state or a kind | `Chip` with a tone; a run's state through `StatusBadge` | A hand-built span. |
 | A text field | `Field` around `Input` or `Textarea`. `note` goes before the control, `hint` after it | A bare `<input>` with its own classes. |
@@ -219,11 +221,11 @@ An error says what happened, why if the server said, and what to do next. It nev
 | State | Treatment |
 | --- | --- |
 | Hover, neutral control | `hover:bg-accent`; an outlined control also `hover:border-border-strong` |
-| Hover, toned control | The tone at 10%: `hover:bg-primary/10`, `hover:bg-destructive/10` |
+| Hover, toned control | A primary action's wash strengthens from 10% to 20% (`hover:bg-primary/20`); destructive actions use `hover:bg-destructive/10` |
 | Hover, quiet text action | `text-muted-foreground hover:text-foreground` |
 | Hover, link in prose | `underline underline-offset-2` always; links are not marked by colour alone |
 | Focus (keyboard) | The global ring: 2px, the text colour, 2px off the control. A field's ring sits on its edge. |
-| Selected, in a set | Inverted (`bg-foreground text-background`) in a `Segmented`; the brand colour and a 2px bar in `Tabs` and `NavItem` |
+| Selected, in a set | Inverted (`bg-foreground text-background`) in a `Segmented`; a brand underline in `Tabs`; a rounded brand wash in `NavItem` |
 | Disabled | `disabled:opacity-45 disabled:cursor-not-allowed`, and say why nearby when it is not obvious |
 | Busy | `aria-busy`, the control disabled, its label saying what is happening ("Saving") |
 | Refused field | `aria-invalid`, a red edge, and the `Field`'s error under it |
