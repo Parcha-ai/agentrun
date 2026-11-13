@@ -11,7 +11,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { checkLifetime, kindRefusals } from "../dist/index.js";
 import * as registry from "../dist/providers.js";
-import { fakeObjects } from "./fake-modal.mjs";
+import { fakeObjects } from "./fake-archil.mjs";
 
 const e2b = await import("../dist/e2b.js");
 const { E2BProvider, create } = e2b;

@@ -33,7 +33,6 @@ import { LocalBrowserProvider } from "../dist/local-chrome.js";
 import { BROWSERBASE_KEY, BROWSERBASE_URL, fakeBrowserbase, fakeKernel, KERNEL_KEY, KERNEL_URL } from "./fake-browser.mjs";
 import { create as createOrgo } from "../dist/orgo.js";
 import { fakeDocker } from "./fake-docker.mjs";
-import { fakeModal } from "./fake-modal.mjs";
 import { PhoneHarnessProvider } from "../dist/phone-harness.js";
 import { fakePhoneHarness, KEY as PHONE_KEY } from "./fake-phone-harness.mjs";
 
@@ -233,12 +232,19 @@ test("a kind's images, and the configuration a setting selects: by its image; no
 /** The E2B SDK's Sandbox slice, never called: these build a provider only to read what it declares. */
 const E2B_SANDBOX = Object.fromEntries(["create", "connect", "getInfo", "setTimeout", "kill", "list"].map((name) => [name, () => assert.fail(`Sandbox.${name} was called`)]));
 
+/** The Modal SDK's slice, never called: these build a provider only to read what it declares. */
+const MODAL_SDK = {
+	apps: { fromName: () => assert.fail("apps.fromName was called") },
+	images: { fromRegistry: () => assert.fail("images.fromRegistry was called") },
+	sandboxes: Object.fromEntries(["create", "fromId", "list"].map((name) => [name, () => assert.fail(`sandboxes.${name} was called`)])),
+};
+
 /** Each provider built as the registry offers it, from the unit tests' fakes. */
 const BUILT = {
 	docker: [() => fakeDocker().provider, () => fakeDocker({ desktop: {} }).provider],
 	e2b: [() => new E2BProvider({ apiKey: "fake-test-key", Sandbox: E2B_SANDBOX, kind: "linux" }), () => new E2BProvider({ apiKey: "fake-test-key", Sandbox: E2B_SANDBOX })],
 	daytona: [() => new DaytonaProvider({ apiKey: "fake-test-key", apiUrl: "https://api.daytona.test/api", daemonPath: "/nonexistent/computerd", fetch: async () => new Response(null, { status: 500 }) })],
-	modal: [() => new ModalProvider({ sdk: fakeModal().sdk, app: "computers", daemonImage: `ghcr.io/example/computerd@sha256:${"a".repeat(64)}` })],
+	modal: [() => new ModalProvider({ sdk: MODAL_SDK, app: "computers" })],
 	browserbase: [() => new BrowserbaseProvider({ apiKey: BROWSERBASE_KEY, apiUrl: BROWSERBASE_URL, fetch: fakeBrowserbase().fetch })],
 	kernel: [() => new KernelProvider({ apiKey: KERNEL_KEY, apiUrl: KERNEL_URL, fetch: fakeKernel().fetch })],
 	"local-chrome": [() => new LocalBrowserProvider({ executablePath: "/nonexistent/chrome" })],
