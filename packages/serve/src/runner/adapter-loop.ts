@@ -2037,6 +2037,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // the run's, or its handback is the agent's first input. Only while the session is new: a claim that finds a turn
         // under way (the handback sent) never runs it again.
         let served: Served | undefined;
+        // A workflow this run already served or handed back on an earlier claim (its end on the root): recovered whatever the
+        // money rule says now, so a crash before the handback never makes the agent redo finished work.
+        const keptFirst = spec.workflowFirst || !spec.workflowRevise || followedUp || firstUnplaced || session!.state !== "new" ? undefined : findData<WorkflowFirstData>(await entriesOf(gate!.journal, root!.id, context), WORKFLOW_FIRST, () => true);
+        const recovered: WorkflowFirst | undefined = keptFirst && keptFirst.outcome !== "needs_revision" ? { name: keptFirst.workflow, digest: keptFirst.digest, revision: keptFirst.revision, input: {} } : undefined;
+        const firstToServe = spec.workflowFirst ?? recovered;
         // A fitting workflow the money rule stopped: why, on the root, once for the run, as the agent takes it.
         if (spec.workflowRevise && !followedUp && !firstUnplaced && session!.state === "new") {
           const [on, theRoot, theGate] = [harness!, root!, gate!];
@@ -2048,11 +2053,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             }, context);
           }
         }
-        if (spec.workflowFirst && !followedUp && !firstUnplaced && session!.state === "new") {
+        if (firstToServe && !followedUp && !firstUnplaced && session!.state === "new") {
           let release!: () => void;
           servingFirst = new Promise<void>((resolve) => (release = resolve));
           try {
-            const step = await serveFirst(spec.workflowFirst);
+            const step = await serveFirst(firstToServe);
             // A stop while it ran, or while it was asked, ends the run stopped, its call ended interrupted (or its ask
             // withdrawn) on the record: given back parked with its stop untaken, the run would be claimed again only to end
             // then, as parkedFollowUp's park says. A lost claim leaves it.

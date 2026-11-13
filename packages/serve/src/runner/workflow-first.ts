@@ -63,7 +63,7 @@ export interface Revise {
 }
 
 /** How many of the agent's newest runs the money rule reads (pastOf). */
-const PAST_RUNS = 500;
+export const PAST_RUNS = 500;
 
 /** One of the agent's runs as the money rule reads it: its record's path fields, its booked cost, when it started. */
 export type PastRun = { readonly metrics: unknown; readonly costUsd: number | null; readonly startedAt: number };
