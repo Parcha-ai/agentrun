@@ -23,7 +23,7 @@ const entry = (slug, extra = {}) => ({ slug, display_name: slug, apply_patch_too
 const dirs = { home: '/vm/home', tmp: '/vm/tmp', own: '/vm/cache/codex-catalog' };
 
 test("Codex's bundled catalog without apply_patch: that one field null on every model, everything else as Codex ships it", () => {
-  const bundled = { models: [entry('gpt-6-luna', { context_window: 272000 }), entry('gpt-5.5', { tool_mode: null })], etag: 'kept' };
+  const bundled = { models: [entry('gpt-6-luna', { context_window: 272000 }), entry('gpt-6.1-terra', { tool_mode: null })], etag: 'kept' };
   const out = JSON.parse(withoutApplyPatch(JSON.stringify(bundled, null, 2)));
   assert.deepEqual(out, { models: bundled.models.map((m) => ({ ...m, apply_patch_tool_type: null })), etag: 'kept' });
   // Not a catalog: no override, Codex's own catalog stands.

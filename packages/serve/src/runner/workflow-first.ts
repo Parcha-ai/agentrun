@@ -27,6 +27,7 @@ import { COST_WINDOW, type RunPath } from "../learning-cost.js";
 
 export { COST_WINDOW };
 import type { Store } from "../store/store.js";
+import { KINDS } from "./journal-kinds.js";
 import { inputIssues, isObject, type Json } from "../validate.js";
 
 /** The root entry a run served workflow-first keeps, once the workflow's call ended: which workflow, at which learned
@@ -211,6 +212,23 @@ export function pathMetrics(launch: RunLaunch, classified: { path: RunPath; work
   if (!launch.learning) return {};
   const { path, workflow, digest } = classified ?? { path: "agent" as const, workflow: null };
   return { path, ...(launch.learning.seed ? { learned_revision: launch.learning.seed } : {}), ...(workflow ? { workflow } : {}), ...(digest ? { workflow_digest: digest } : {}) };
+}
+
+/** What run `entries` (its root's) say its learned workflow answered alone: the workflow and its answer (the model's
+ *  message written just before the WORKFLOW_FIRST entry, in its commit); undefined for a run it did not answer. A follow-up that opens such a
+ *  run again is the agent's first turn: its session never saw the job or the answer (servedAnswerText). */
+export function servedAnswerOf(entries: readonly { readonly kind: string; readonly data?: unknown }[]): { workflow: string; answer: string } | undefined {
+  const at = entries.findLastIndex((entry) => entry.kind === WORKFLOW_FIRST && (entry.data as { outcome?: unknown } | undefined)?.outcome === "answered");
+  const workflow = at < 0 ? undefined : (entries[at]!.data as { workflow?: unknown }).workflow;
+  if (typeof workflow !== "string") return undefined;
+  const said = entries.slice(0, at).findLast((entry) => entry.kind === KINDS.message && (entry.data as { role?: unknown } | undefined)?.role === "model")?.data as { text?: unknown } | undefined;
+  return { workflow, answer: typeof said?.text === "string" ? said.text : "" };
+}
+
+/** Said to the agent between the job and a follow-up's message, on a run its learned workflow answered alone: which
+ *  workflow answered and what, so the follow-up (a reviewer's word on that answer) reads against it. */
+export function servedAnswerText(name: string, answer: string): string {
+  return [`Your learned workflow \`${name}\` ran first on this job and answered it. Its answer:`, "", answer.trim() || "(it said nothing)"].join("\n");
 }
 
 /** The agent's first input on a handback: the hand-back first (which workflow, and its own words for why, the trace the

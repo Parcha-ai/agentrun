@@ -5,7 +5,7 @@
 //  - the command a child process runs (the first argument of execFile, execFileSync, spawn or spawnSync): `docker` the
 //    CLI, not the provider;
 //  - the literals BASELINE counts in a file today: the old stacks a named sprint item removes (S6 is CP-4: the browser
-//    tool and sign-ins on pi-browser; S7 is DEL-03: the box stack on pi-transport), and named false positives. Never a
+//    tool and sign-ins on pi-browser; S7 is DEL-03: the old box stack), and named false positives. Never a
 //    whole file: a file that gains one more of an id than its baseline fails, and one with fewer fails too, asking for
 //    its baseline to be lowered, so the count only goes down. Any file not in it fails on its first.
 // test/no-vendor-ids.test.mjs runs baselineProblems() on src/.
@@ -19,7 +19,7 @@ import ts from "typescript";
  * one is not a provider at all. Lower a count when its item removes some; never raise one.
  */
 export const BASELINE = {
-	// S7, DEL-03: the old box stack (pi-transport's Docker, Daytona and Modal boxes, and bwrap), its ids in the API.
+	// S7, DEL-03: the old box stack (its Docker, Daytona and Modal boxes, and bwrap), its ids in the API.
 	"place.ts": { ids: { docker: 4, daytona: 1, modal: 1 }, why: "DEL-03 (S7): the old box stack's places" },
 	"place-offers.ts": { ids: { docker: 7, daytona: 5, modal: 4 }, why: "DEL-03 (S7): the box providers' names and offers, moved here from boxes.ts" },
 	"server.ts": { ids: { docker: 1, browserbase: 4, kernel: 2 }, why: "DEL-03 (S7): the box stack's wiring; the browser plane's default vendor, Browserbase, for a run kept from before the pick" },

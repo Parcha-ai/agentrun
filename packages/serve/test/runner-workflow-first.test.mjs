@@ -87,8 +87,9 @@ const until = async (done, what, ms = 40_000) => {
 
 /** A pi run of an agent that learned `answer`, on `input`; the node submits `{answer, sure}` (`sure` false hands back);
  *  the agent, when asked, answers AGENT_SAYS. `toolSettings` on the revision; `approve`: answer the run's first ask ("stop":
- *  stop the run while it waits instead). */
-async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION }, sure = true, learned = true, workflowFirst, toolSettings, approve = false, past = [] } = {}) {
+ *  stop the run while it waits instead). `followUp`: once the run ends, a person's follow-up (a teacher's label on its
+ *  answer) reopens it, and the run read is the follow-up's end; `first` is the row of the end before it. */
+async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION }, sure = true, learned = true, workflowFirst, toolSettings, approve = false, past = [], followUp } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-workflow-first-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -152,7 +153,16 @@ async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION 
     parked = { ...parked, callId, requestsWhileParked: gw.requests.length };
     await sendCommand(server, RUN, approve === "stop" ? { kind: "stop" } : { kind: "approve", body: { approval: callId } });
   }
-  const row = await settled(["ended", "failed", "stopped"]);
+  let row = await settled(["ended", "failed", "stopped"]);
+  const first = followUp === undefined ? undefined : row;
+  if (first) {
+    await server.runs.reopen(RUN, { kind: "steer", body: { text: followUp } });
+    await server.flush?.();
+    row = await until(async () => {
+      const now = await server.runs.get(RUN);
+      return (now.endedAt ?? 0) > (first.endedAt ?? 0) && ["ended", "failed", "stopped"].includes(now.state) && now.runner === null && now;
+    }, "the follow-up's end");
+  }
   reader = await Harness.open(server.journal({ runId: RUN, runner: "reader", epoch: row.epoch, until: 0, from: row.state }), { models: () => createModels(), registry: createRegistry(), onReport: () => {} }, ctx);
   const sessions = journalSessions(reader, ctx, server);
   const all = [];
@@ -163,7 +173,7 @@ async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION 
   const entries = await runEntries(server, RUN, ctx);
   const kept = await server.learning.proposal(RUN);
   const reflect = await runReflect(server, RUN, ctx);
-  return { row, requests, turns, timeline, entries, kept, reflect, gateway: gw, seed, parked, logs, claims };
+  return { row, first, requests, turns, timeline, entries, kept, reflect, gateway: gw, seed, parked, logs, claims, server };
 }
 
 test("workflow alone: the run answers on its learned workflow with no agent-model request, path workflow, its node $ its cost", async (t) => {
@@ -220,6 +230,52 @@ test("handed back: the end-of-run turn asks for the workflow's next revision by 
   const ask = gateway.requests.find((request) => !isNode(request) && /handed it back to you\. If a change to it would have let it finish this case/.test(textOf(request.body)));
   assert.ok(ask, `the reflect turn asked about \`answer\`: ${gateway.requests.map((request) => textOf(request.body).slice(-300)).join("\n---\n")}`);
   assert.match(textOf(ask.body), /give `answer` again whole under its name/);
+});
+
+// A teacher's label sent after the run (a follow-up) is the feedback learning runs on: on a run its learned workflow served
+// and on one it handed back, the follow-up's end looks back as a round of its own (learning_proposals keyed by run and
+// round), kept beside the first round's, never dropped as a repeat of it. Its end-of-run turn reads the label. A run the
+// workflow answered alone, then the agent answered a follow-up on, did not finish on the workflow alone: handed_back.
+const LABEL = "Label: the reference answer is 42; keep the workflow's answer as it is.";
+const roundsOf = async (server) => [await server.learning.proposal(RUN, 1), await server.learning.proposal(RUN, 2)];
+/** The text of a request's last message: an end-of-run turn's is its prompt. */
+const lastText = (body) => textOf({ messages: (body?.messages ?? []).slice(-1) }).trim();
+/** The end-of-run turns asked after the label: the prompt is the last message, the label earlier in the conversation. */
+const labelAsks = (gateway) => gateway.requests.filter((request) => !isNode(request) && /^The task is done\. Before the run ends/.test(lastText(request.body)) && textOf(request.body).includes(LABEL));
+
+test("follow-up on a workflow-served run: the label's look-back is kept as round 2, beside round 1's drop, and the path turns handed_back", async (t) => {
+  const { row, first, gateway, server } = await piRun(t, { followUp: LABEL });
+  assert.equal(first.metrics?.path, "workflow", JSON.stringify(first.metrics));
+  assert.equal(row.state, "ended", JSON.stringify(row));
+  const [one, two] = await roundsOf(server);
+  assert.deepEqual([one?.round, one?.proposal?.state, one?.proposal?.reason, one?.turn], [1, "dropped", "empty", null], `round 1 stands: ${JSON.stringify(one)}`);
+  assert.equal(two?.round, 2, `the label's round is kept: ${JSON.stringify(two)}`);
+  assert.notEqual(two.turn, null, "round 2 looked back");
+  assert.ok(two.turn.asked.some((said) => said.includes(LABEL)), `round 2 heard the label: ${JSON.stringify(two.turn.asked)}`);
+  assert.ok(two.proposal.look_back_usd > 0, `its look-back was asked and paid: ${JSON.stringify(two.proposal)}`);
+  // The agent's first turn is the follow-up's: the job, what the workflow answered, then the label it is a word on.
+  const firstAgent = gateway.requests.find((request) => !isNode(request));
+  assert.match(textOf(firstAgent.body), new RegExp(`${QUESTION}[\\s\\S]*Your learned workflow \`answer\` ran first on this job and answered it\\. Its answer:[\\s\\S]*42[\\s\\S]*${LABEL.slice(0, 20)}`), textOf(firstAgent.body));
+  assert.equal(labelAsks(gateway).length, 1, "its end-of-run turn was asked once, with the label in it");
+  assert.ok(two.proposal.follow_up_usd > 0, `the label's own turn is the round's: ${JSON.stringify(two.proposal)}`);
+  assert.equal(row.metrics?.path, "handed_back", `the agent answered the follow-up: ${JSON.stringify(row.metrics)}`);
+  assert.equal(row.metrics?.workflow, "answer");
+});
+
+test("follow-up on a handed-back run: the label's look-back is kept as round 2, a later look, beside round 1's", async (t) => {
+  const { row, first, gateway, server } = await piRun(t, { sure: false, followUp: LABEL });
+  assert.equal(first.metrics?.path, "handed_back", JSON.stringify(first.metrics));
+  assert.equal(row.state, "ended", JSON.stringify(row));
+  const [one, two] = await roundsOf(server);
+  assert.equal(one?.round, 1);
+  assert.notEqual(one.turn, null, "round 1 looked back");
+  assert.equal(two?.round, 2, `the label's round is kept: ${JSON.stringify(two)}`);
+  assert.notEqual(two.turn, null, "round 2 looked back");
+  assert.ok(two.turn.asked.some((said) => said.includes(LABEL)), `round 2 heard the label: ${JSON.stringify(two.turn.asked)}`);
+  const asks = labelAsks(gateway);
+  assert.equal(asks.length, 1, "its end-of-run turn was asked once, with the label in it");
+  assert.match(textOf(asks[0].body), /You looked back on this run before/, "a later round's prompt");
+  assert.equal(row.metrics?.path, "handed_back");
 });
 
 test("workflow_first false: the agent takes the run from its first turn, path agent", async (t) => {

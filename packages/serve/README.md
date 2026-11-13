@@ -73,8 +73,7 @@ An edit is a new revision: `PUT $AGENTRUN_BASE_URL/agents/calc/definition` with
 `AGENTRUN_TOKEN`, when set, is the token (32 characters or more), and the server prints `$AGENTRUN_TOKEN` in its
 place: a token from the environment stays out of the logs. `DIR/.token`'s token is printed only by the start that made
 it; a later start prints `AGENTRUN_API_KEY=<in DIR/.token>`, to read it there. With `AGENTRUN_ACCOUNTS=0` the `Open`
-link carries the token (`?token=<in DIR/.token>` on a later start); it encodes the token, and the server also takes one
-whose `+` arrived as a space. `AGENTRUN_PUBLIC_URL`, when set, is the
+link carries a launch code this start made at random (`?launch=<code>`), never the token. `AGENTRUN_PUBLIC_URL`, when set, is the
 address people open (a container's published port, or a proxy's URL): the printed `Open` link and `AGENTRUN_BASE_URL`
 use it.
 
@@ -136,7 +135,7 @@ at=2026-10-25T21:04:09.010Z event=auth_failed route=/v2/runs reason=wrong_token
 ```
 
 A request's path has no query. `auth_failed` names the route and why (`no_credential`, `wrong_token`,
-`wrong_link_token`, `wrong_password`, `sign_in_table_full`), never the token given nor any part of it. `AGENTRUN_LOG=quiet` leaves out the request lines; the
+`wrong_launch_code`, `wrong_password`, `sign_in_table_full`), never the token given nor any part of it. `AGENTRUN_LOG=quiet` leaves out the request lines; the
 run and `auth_failed` lines stay. A run whose process failed at its start says why in its `error.message`, in words.
 One line at start, `event=boxes`, says which boxes this server has ([Boxes](#boxes)); quiet keeps it too.
 `event=harness_offers why=start ms=<n>` says how long the server took to check what each harness offers (each CLI's
@@ -688,13 +687,13 @@ one computer that it keeps between runs, instead of a fresh one for each run:
 **Where the run's folder lives.** A server keeps its runs' folders in one of two modes:
 
 - **Mode 1** (the default): on this server's own disk. Only a provider that binds a folder of this machine can hold
-  it, so a sandbox runs on Docker only; a Daytona, Modal or E2B sandbox is refused ("Mode 1 runs a sandbox only on
+  it, so a sandbox runs on Docker only; a Daytona, Modal, E2B or Agent37 sandbox is refused ("Mode 1 runs a sandbox only on
   Docker").
 - **Mode 2**: on Archil disks. `PUT /v2/workspace/archil` turns it on with the account key, `ARCHIL_API_KEY`, its
   region and that region's S3 URL (and an exec image pinned by digest, if you want one other than serve's default);
   `DELETE` turns it off. The default exec image is Docker's `buildpack-deps:trixie-scm` pinned by digest (git 2.47),
   because Archil's own has git 2.34 and a read-only bash policy runs git only at 2.43 or later. An image you name needs
-  git 2.43 for that too, and GNU coreutils and perl, as Debian-family images have. A Daytona, Modal or E2B sandbox mounts
+  git 2.43 for that too, and GNU coreutils and perl, as Debian-family images have. A Daytona, Modal, E2B or Agent37 sandbox mounts
   the run's folder from its disk with a mount credential minted for that run alone; Docker's sandbox is refused, since
   it cannot mount the disk.
 
@@ -799,7 +798,7 @@ no computer.
 registries and GitHub) through its egress proxy, and nothing else; `AGENTRUN_BOX_ALLOW=none` gives it no network. From a
 server in a container the proxy also refuses the Docker host's own addresses, which the server reads through the socket
 ([in the published image](#in-the-published-image)). A
-Daytona, Modal or E2B sandbox has no network of its own (loopback only). A phone and a hosted browser are on their
+Daytona, Modal, E2B or Agent37 sandbox has no network of its own (loopback only). A phone and a hosted browser are on their
 vendor's own network, whatever the list says. Local Chrome is open unless this server sets `AGENTRUN_BOX_ALLOW`; then
 only those hosts (the default list, a sandbox's package registries, is no browsing policy). Under
 `AGENTRUN_BOX_ALLOW=none`, each of these is refused at the run's start, in words that name the setting.
@@ -2353,10 +2352,13 @@ server's own origin, under a CSP that allows that origin only, but for the provi
 Its files (`index.html`, and Vite's hashed files under `/assets/`) are public and hold no data: everything it shows
 comes through `/v2`. With accounts on (the default) the console asks for the owner's password
 ([your password](#your-password)) and the browser holds the owner's session cookie; a `?token=` link sets no cookie: the
-token is for scripts and the CLI. With `AGENTRUN_ACCOUNTS=0`, the printed link (`/?token=`) sets a cookie (`HttpOnly`,
-`SameSite=Strict`, `Path=/`, and `Secure` when `X-Forwarded-Proto` says https) and sends the browser to the same address
-without the token. The cookie's value is derived from the token, never the token itself, and it lasts until the browser
-closes. Without it, the console says to open the link. Either cookie takes the place of `Authorization: Bearer` on
+token is for scripts and the CLI. With `AGENTRUN_ACCOUNTS=0`, the printed link (`/?launch=<code>`, a code each start
+makes at random) gives the browser a console session: a cookie (`HttpOnly`, `SameSite=Strict`, `Path=/`, and `Secure`
+when `X-Forwarded-Proto` says https) whose value is an id made at random and kept by the server, and sends the browser
+to the same address without the code. Nothing about it is derived from the API token, and a `?token=` link sets no
+cookie there either, so the token alone never holds a console session (and so never writes a secret, below). The
+session lasts until the browser closes or the server stops; the next start prints its own link. Without it, the console
+says to open the link. Either cookie takes the place of `Authorization: Bearer` on
 `/v2`: for a `GET`, and for any other method only when the request's `Origin` is the server's own origin
 and its body is `application/json`, or, on a `PUT` or `POST` to a route that takes bytes (`PUT /v2/files/{id}`,
 `POST /v2/files`), of any content type. A request that sends an `Authorization` header is checked on that header alone.
@@ -2805,7 +2807,7 @@ Who can approve: the owner, signed in with their password. No token approves, th
 `POST .../learning/files/{file}/approve` (and `.../restore`, which puts a retired item back into every run) takes the console's password session, sent from this server's own origin with
 a JSON body as every page write is. Any token is 403: the server's own (what scripts and the MCP endpoint's tools
 carry) and a token sent beside the session. So is every request on a server with accounts off
-(`AGENTRUN_ACCOUNTS=0`), whose page cookie any token holder can mint. With no credential it is 401, as every route.
+(`AGENTRUN_ACCOUNTS=0`), which has no password session: its console session comes from the launch code, never the token. With no credential it is 401, as every route.
 `capabilities.learning.approve` is true only for the owner's session; every other caller reads `approve: false` with
 `approve_needs: "password"`. A note that is not pending is 400; a stale ETag is 412, none 428. The approval is one host
 commit, `learning: approved by a person: <file>`, with the trailers `Changed-By: user` and `Approved-Via: console`; the
@@ -2895,12 +2897,9 @@ screenshots, then the answer), spending about $0.04 in all:
 | --- | --- | --- | --- | --- |
 | `strict` | Through a gateway (OpenRouter): the byte bound | $0.05 | $0.11 | about $0.013 |
 | `strict` | Straight to Anthropic: Anthropic's count | $0.03 | $0.09 | about $0.012 |
-| `expected` (the default) | Either | as `strict` | as `strict` until #2504 lands | as `strict` until #2504 lands |
+| `expected` (the default) | Either | as `strict` | $0.06 | about $0.007 |
 
-In `strict` mode every step's whole input is priced at the cache-write price. The `expected` row is today's: the runner
-does not yet price a step from what the previous request read from the cache, as `expected` is described above, so it
-prices like `strict` until #2504 lands. Once it does, a five-step run in `expected` mode needs about $0.06 by either route,
-and about $0.007 a further step. A claude-agent run's first request is of the same size (the pinned
+In `strict` mode every step's whole input is priced at the cache-write price. In `expected` mode a step after the first is priced from what the session's previous request read from the cache, so a five-step run needs about $0.06 by either route, and about $0.007 a further step; the first request is priced as in `strict`, so its figure is the same. A claude-agent run's first request is of the same size (the pinned
 CLI's measured 6,926 bytes with five tools: $0.04 for its first request through a gateway). A cap below these pauses at
 once with `Not sent: ... the next step needs at least $X`, and a raise to that figure sends it on.
 `packages/serve/test/cap-minimum.test.mjs` holds these figures to what the cap does. A request in flight holds what it was admitted at until it answers, so requests

@@ -1,5 +1,5 @@
-// A run's workflow decision receipts over the one store (design 2.1): the same rows the old durableDecisions read from a
-// run's own database, read now through the read-only journal view. The receipts are session-scoped documents the run's
+// A run's workflow decision receipts over the one store (design 2.1): the rows a run's own database once held,
+// read now through the read-only journal view. The receipts are session-scoped documents the run's
 // workflow wrote: either one `agentrun.decisions` document with a `receipts` array, or, when the run keeps them keyed, an
 // `agentrun.decisions.count` and the family rows in order. graph-view's ended-run path reads them this way instead of the
 // run's file.
@@ -17,7 +17,7 @@ async function sessionDocValue(reads: JournalReads, kind: string, key: string | 
   return stored ? (stored.value as Record<string, unknown>) : undefined;
 }
 
-/** A run's decision receipts, as durableDecisions answers them: the keyed `.count` and family rows in order, read through
+/** A run's decision receipts: the keyed `.count` and family rows in order, read through
  *  the one store's journal. */
 export async function decisionsOverStore(store: Store, runId: string, context: Context): Promise<Array<Record<string, unknown>>> {
   const reads = store.readJournal(runId);

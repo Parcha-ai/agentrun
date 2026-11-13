@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/field";
 import type { Client } from "@/lib/client";
 import { when } from "@/lib/format";
 import { type SecretsWhyNot, WHY_NOT_WORDS } from "@/lib/secrets";
-import { type McpAuth, type McpPreview, mcpProblem, type McpRefresh, type McpServer, PREVIEW_SCOPE_NOTE, signInFailure } from "@/lib/mcp";
+import { GITHUB_MCP_URL, type McpAuth, type McpPreview, mcpProblem, type McpRefresh, type McpServer, PREVIEW_SCOPE_NOTE, signInFailure } from "@/lib/mcp";
 
 type Problem = ReturnType<typeof mcpProblem>;
 type SignIn = { server: string; ok: boolean; error?: string };
@@ -25,12 +25,24 @@ const CREDENTIAL: Record<string, [string, "success" | "warning" | "plain"]> = {
  *  read, and cleared once sent to be kept: every credential is kept sealed under the server's seal key. `signIn`, the
  *  outcome an OAuth sign-in's way back names (`#/settings/mcp?server=&sign_in=`); `open` takes the browser to a sign-in. */
 /** `writable`: this session may type a credential (session.secrets_writable); `whyNot`, why not when it may not. */
-export function McpServersPage({ v2, signIn, writable, whyNot = "sign_in", open = (url) => location.assign(url) }: { v2: Client; signIn?: SignIn; writable: boolean; whyNot?: SecretsWhyNot; open?: (url: string) => void }) {
+type Add = { name: string; auth?: "github_app" };
+export function McpServersPage({ v2, signIn, add, writable, whyNot = "sign_in", open = (url) => location.assign(url) }: { v2: Client; signIn?: SignIn; add?: Add; writable: boolean; whyNot?: SecretsWhyNot; open?: (url: string) => void }) {
   const [servers, setServers] = useState<McpServer[] | null>(null);
   const [loadError, setLoadError] = useState<Problem | null>(null);
   // The open form: a new server, or a saved one; `problem`, a saved row's refusal it opens with (its sign-in needs a
-  // Client ID), so the form keeps that guidance.
-  const [form, setForm] = useState<{ saved?: McpServer; problem?: Problem } | null>(null);
+  // Client ID), so the form keeps that guidance. `add`: a template's Apply sent the person here to set up the server it
+  // needs, so the add form opens with its name filled.
+  const [form, setForm] = useState<{ saved?: McpServer; problem?: Problem; add?: Add } | null>(add ? { add } : null);
+  // The form follows the `add` param on every location change: Back to a setup URL opens it again, with its fields reset.
+  const addName = add?.name;
+  const addAuth = add?.auth;
+  const seenAdd = useRef(`${addName ?? ""}|${addAuth ?? ""}`);
+  useEffect(() => {
+    const now = `${addName ?? ""}|${addAuth ?? ""}`;
+    if (now === seenAdd.current) return;
+    seenAdd.current = now;
+    setForm(addName ? { add: { name: addName, ...(addAuth ? { auth: addAuth } : {}) } } : null);
+  }, [addName, addAuth]);
   const asked = useRef(0);
   const load = () => {
     const n = ++asked.current;
@@ -63,7 +75,7 @@ export function McpServersPage({ v2, signIn, writable, whyNot = "sign_in", open 
           </Banner>
         )}
         {/* A save that lands after its form was closed (Cancel, or another Change) closes no form opened since. */}
-        {form && <ServerForm key={form.saved?.name ?? "new"} v2={v2} saved={form.saved} given={form.problem} writable={writable} signIn={startSignIn} onCancel={() => setForm(null)} onSaved={((mine) => () => { setForm((open) => (open === mine ? null : open)); load(); })(form)} />}
+        {form && <ServerForm key={`${form.saved?.name ?? "new"}|${form.add?.name ?? ""}|${form.add?.auth ?? ""}`} v2={v2} saved={form.saved} add={form.add} given={form.problem} writable={writable} signIn={startSignIn} onCancel={() => setForm(null)} onSaved={((mine) => () => { setForm((open) => (open === mine ? null : open)); load(); })(form)} />}
         {servers && (servers.length
           ? <ul className="border">{servers.map((s) => <ServerRow key={s.name} v2={v2} server={s} writable={writable && !form} signIn={startSignIn} onChange={(problem) => setForm({ saved: s, ...(problem ? { problem } : {}) })} onChanged={load} />)}</ul>
           : <p className="border px-3 py-4 font-mono text-body text-muted-foreground">No MCP server is saved here yet.</p>)}
@@ -93,7 +105,8 @@ function ServerRow({ v2, server: s, writable, signIn, onChange, onChanged }: { v
         <div className="min-w-0 flex-1">
           <p className="flex flex-wrap items-center gap-2"><span className="font-mono text-prose font-semibold">{s.name}</span><Chip tone={tone}>{said}</Chip>{!!s.not_metered?.length && <Chip tone="plain">not metered</Chip>}</p>
           <p className="mt-1.5 break-all font-mono text-small text-muted-foreground">{s.url}</p>
-          {oauth && s.oauth && <p className="mt-1 font-mono text-small text-muted-foreground">Signed in with OAuth{s.oauth.scopes.length ? ` · ${s.oauth.scopes.join(" ")}` : ""}{s.oauth.client === "pre-registered" && s.oauth.client_id ? ` · client ${s.oauth.client_id}` : ""}{s.credential === "expired" ? " · sign-in expired: sign in again" : s.oauth.expires_at ? ` · token until ${when(s.oauth.expires_at)}` : ""}</p>}
+          {s.auth.type === "github_app" && <p className="mt-1 font-mono text-small text-muted-foreground">Signed with this server's GitHub App: a token narrowed to the run's repository is made for each run{s.auth.headers?.length ? ` · headers ${s.auth.headers.join(", ")}` : ""}</p>}
+          {oauth && s.oauth &&<p className="mt-1 font-mono text-small text-muted-foreground">Signed in with OAuth{s.oauth.scopes.length ? ` · ${s.oauth.scopes.join(" ")}` : ""}{s.oauth.client === "pre-registered" && s.oauth.client_id ? ` · client ${s.oauth.client_id}` : ""}{s.credential === "expired" ? " · sign-in expired: sign in again" : s.oauth.expires_at ? ` · token until ${when(s.oauth.expires_at)}` : ""}</p>}
           <details className="mt-2">
             <summary className="cursor-pointer font-mono text-small">{s.tools.length} tool{s.tools.length === 1 ? "" : "s"}</summary>
             <ul className="mt-1 space-y-0.5">{s.tools.map((t) => <li key={t.name} className="font-mono text-small">{t.name}{s.prices?.[t.name] !== undefined && <span className="text-muted-foreground"> · ${s.prices[t.name]} a call</span>}{s.not_metered?.includes(t.name) && <span className="text-muted-foreground"> · not metered</span>}</li>)}</ul>
@@ -174,17 +187,17 @@ function PrivateHosts({ v2 }: { v2: Client }) {
 }
 
 const secret = { type: "password", autoComplete: "new-password", spellCheck: false, autoCapitalize: "off", autoCorrect: "off", "data-1p-ignore": true, "data-lpignore": "true" } as const;
-const AUTH: [McpAuth["type"], string][] = [["none", "None"], ["bearer", "Bearer token"], ["headers", "Headers"], ["oauth", "Sign in with OAuth"]];
+const AUTH: [McpAuth["type"], string][] = [["none", "None"], ["bearer", "Bearer token"], ["headers", "Headers"], ["oauth", "Sign in with OAuth"], ["github_app", "GitHub App"]];
 /** A server's one secret ("mcp:<server>"), as its row says it: by the kind of credential it is. */
-const AUTH_LABEL: Record<McpAuth["type"], string> = { none: "Credential", bearer: "Bearer token", headers: "Headers", oauth: "OAuth sign-in" };
+const AUTH_LABEL: Record<McpAuth["type"], string> = { none: "Credential", bearer: "Bearer token", headers: "Headers", oauth: "OAuth sign-in", github_app: "Headers" };
 
 /** Add a server, or change a saved one (`saved`: its name stays, and a credential left empty is the sealed one kept).
  *  A new server is previewed before it can be saved; any change of its address or credential asks for another. */
-function ServerForm({ v2, saved, given, writable, signIn, onCancel, onSaved }: { v2: Client; saved?: McpServer; given?: Problem; writable: boolean; signIn: (name: string, body: Parameters<Client["startMcpSignIn"]>[1]) => Promise<void>; onCancel: () => void; onSaved: () => void }) {
+function ServerForm({ v2, saved, add, given, writable, signIn, onCancel, onSaved }: { v2: Client; saved?: McpServer; add?: Add; given?: Problem; writable: boolean; signIn: (name: string, body: Parameters<Client["startMcpSignIn"]>[1]) => Promise<void>; onCancel: () => void; onSaved: () => void }) {
   const form = useRef<HTMLFormElement>(null);
-  const [name, setName] = useState(saved?.name ?? "");
-  const [url, setUrl] = useState(saved?.url ?? "");
-  const [type, setType] = useState<McpAuth["type"]>(saved?.auth.type ?? "none");
+  const [name, setName] = useState(saved?.name ?? add?.name ?? "");
+  const [url, setUrl] = useState(saved?.url ?? (add?.auth === "github_app" ? GITHUB_MCP_URL : ""));
+  const [type, setType] = useState<McpAuth["type"]>(saved?.auth.type ?? add?.auth ?? "none");
   const [headerRows, setHeaderRows] = useState(Math.max(1, saved?.auth.headers?.length ?? 0));
   const [preview, setPreview] = useState<McpPreview | null>(null);
   // `given`: the refusal its row opened it with (a sign-in that needs a Client ID), kept until the next try.
@@ -204,7 +217,7 @@ function ServerForm({ v2, saved, given, writable, signIn, onCancel, onSaved }: {
   // The credential typed: none typed is none sent, which a save takes as "keep the sealed one".
   const auth = (): McpAuth => {
     if (type === "bearer") return value("mcp-token") ? { type, token: value("mcp-token") } : { type };
-    if (type !== "headers") return { type };
+    if (type !== "headers" && type !== "github_app") return { type };
     const headers = Object.fromEntries(Array.from({ length: headerRows }, (_, i) => [value(`mcp-header-name-${i}`), value(`mcp-header-value-${i}`)]).filter(([k, v]) => k && v));
     return Object.keys(headers).length ? { type, headers } : { type };
   };
@@ -252,13 +265,16 @@ function ServerForm({ v2, saved, given, writable, signIn, onCancel, onSaved }: {
         <div className="flex flex-wrap gap-4">
           {AUTH.map(([id, label]) => (
             <label key={id} className="flex items-center gap-2 text-body">
-              <input type="radio" name="mcp-auth" value={id} checked={type === id} disabled={!writable && id !== "none"} onChange={() => { setType(id); edited(); }} className="accent-primary" />{label}
+              <input type="radio" name="mcp-auth" value={id} checked={type === id} disabled={!writable && id !== "none"} onChange={() => { setType(id); if (id === "github_app" && !url.trim()) setUrl(GITHUB_MCP_URL); edited(); }} className="accent-primary" />{label}
             </label>
           ))}
         </div>
       </fieldset>
       {type === "bearer" && <label className="block"><span className="caps mb-2 block text-small font-semibold">Token</span>{keepNote("A new token replaces it; leave this empty to keep it.")}<Input name="mcp-token" {...secret} /></label>}
-      {type === "headers" && (
+      {type === "github_app" && (
+        <p className="text-small text-muted-foreground">Uses this server's GitHub App (Settings → GitHub): a token for the repository of each run is made when the run starts, and an agent never sees it. The address is GitHub's hosted MCP, the only one this credential goes to. Headers are optional.</p>
+      )}
+      {(type === "headers" || type === "github_app") && (
         <div className="space-y-2">
           {keepNote(`Its headers: ${saved?.auth.headers?.join(", ")}. New ones replace them all; leave the values empty to keep them.`)}
           {Array.from({ length: headerRows }, (_, i) => (
