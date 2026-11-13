@@ -91,6 +91,8 @@ export function container({ name, labels = {}, network = "none", running = true,
 	const all = { ...labels };
 	if (computer) all["agentrun.computer"] = "1";
 	if (computer && deadline !== null) all["agentrun.computer.deadline"] = deadline;
+	// The spec's own label keys, as create records them.
+	if (computer) all["agentrun.computer.labels"] = JSON.stringify(Object.keys(labels).sort());
 	return report({ id: idOf(name), name, labels: all, network, running, cmd: ["init", "--deadline", deadline ?? ""], ...rest });
 }
 

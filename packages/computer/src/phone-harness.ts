@@ -117,6 +117,8 @@ function phoneDiffer(spec: ComputerSpec, labels: Record<string, string>, image: 
 /** Where the provider keeps its phones' labels: the vendor keeps none. Each call may be sync or async. */
 export interface PhoneLedger {
 	put(entry: PhoneLedgerEntry): void | Promise<void>;
+	/** entry put only while the ledger holds none under its id, in one step (two writers never both put it): whether it was. */
+	claim(entry: PhoneLedgerEntry): boolean | Promise<boolean>;
 	get(id: string): PhoneLedgerEntry | undefined | Promise<PhoneLedgerEntry | undefined>;
 	list(): PhoneLedgerEntry[] | Promise<PhoneLedgerEntry[]>;
 	remove(id: string): void | Promise<void>;
@@ -127,6 +129,7 @@ export function memoryLedger(): PhoneLedger {
 	const entries = new Map<string, PhoneLedgerEntry>();
 	return {
 		put: (entry) => void entries.set(entry.id, structuredClone(entry)),
+		claim: (entry) => !entries.has(entry.id) && (entries.set(entry.id, structuredClone(entry)), true),
 		get: (id) => structuredClone(entries.get(id)),
 		list: () => [...entries.values()].map((entry) => structuredClone(entry)),
 		remove: (id) => void entries.delete(id),
@@ -149,6 +152,7 @@ function guardedLedger(ledger: PhoneLedger): PhoneLedger {
 		};
 	return {
 		put: guard("written", (entry: PhoneLedgerEntry) => ledger.put(entry)),
+		claim: guard("written", (entry: PhoneLedgerEntry) => ledger.claim(entry)),
 		get: guard("read", (id: string) => ledger.get(id)),
 		list: guard("read", () => ledger.list()),
 		remove: guard("written", (id: string) => ledger.remove(id)),
@@ -732,13 +736,24 @@ export class PhoneHarnessProvider implements ComputerProvider {
 
 	async #create(spec: ComputerSpec, name: string, requestKey: string, signal?: AbortSignal): Promise<Result<CreatedComputer>> {
 		if (signal?.aborted) return fail("aborted", "create was aborted before the phone harness was asked");
-		const held = await this.#held(spec, name, requestKey, signal);
-		if (held !== undefined) return held;
 		const from = this.#now();
 		const body = { platform: "android", kind: "emulator", timeout_seconds: Math.ceil(runLifetimeMs(spec) / 1000) };
-		// The key goes into the ledger before the POST: whatever answers are lost, list() can find the phone by it.
+		// The key goes into the ledger before the POST: whatever answers are lost, list() can find the phone by it. It is
+		// claimed, never put over another's: a create of the request in another provider on the same ledger (another
+		// process) holds the request's spec there, and one of another spec is refused before it can POST the same key.
 		const pending = pendingId(requestKey);
-		await this.#ledger.put({ id: pending, name, labels: { ...(spec.labels ?? {}) }, image: spec.image, deadline: new Date(from + runLifetimeMs(spec)).toISOString(), request: requestKey });
+		for (;;) {
+			const held = await this.#held(spec, name, requestKey, signal);
+			if (held !== undefined) return held;
+			if (await this.#ledger.claim({ id: pending, name, labels: { ...(spec.labels ?? {}) }, image: spec.image, deadline: new Date(from + runLifetimeMs(spec)).toISOString(), request: requestKey })) break;
+			const other = await this.#ledger.get(pending);
+			// Gone since: that create has ended, with a phone or none; look again.
+			if (other === undefined) continue;
+			const differ = phoneDiffer(spec, other.labels, other.image, "in flight");
+			if (differ.length > 0) return fail("exists", otherSpecWords(name, "is being made", differ));
+			// The same spec: its POST is under the same key, so the service answers both with one phone.
+			break;
+		}
 		const posted = await this.#api("POST", "/sessions", { body, headers: { "Idempotency-Key": requestKey }, ...(signal ? { signal } : {}) });
 		const cancelled = !posted.ok && posted.error.code === "aborted";
 		let first = posted.ok ? sessionOf(posted.value.json, "POST /sessions") : undefined;

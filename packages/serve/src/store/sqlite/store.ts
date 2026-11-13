@@ -1237,6 +1237,10 @@ class SqliteStore implements Store {
       put: async (provider, sessionId, labels, detail) => {
         await db.write([{ sql: "INSERT INTO computer_ledger (provider, session_id, labels, detail, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT (provider, session_id) DO UPDATE SET labels = excluded.labels, detail = excluded.detail, updated_at = excluded.updated_at", params: [provider, sessionId, JSON.stringify(labels), JSON.stringify(detail), now()] }]);
       },
+      claim: async (provider, sessionId, labels, detail) => {
+        const [result] = await db.write([{ sql: "INSERT INTO computer_ledger (provider, session_id, labels, detail, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT (provider, session_id) DO NOTHING", params: [provider, sessionId, JSON.stringify(labels), JSON.stringify(detail), now()] }]);
+        return (result?.changes ?? 0) === 1;
+      },
       get: async (provider, sessionId) => {
         const row = await db.get<ComputerLedgerRecord>("SELECT provider, session_id, labels, detail, updated_at FROM computer_ledger WHERE provider = ? AND session_id = ?", provider, sessionId);
         return row === undefined ? undefined : ledgerRowOf(row);

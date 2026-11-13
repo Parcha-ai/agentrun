@@ -246,6 +246,9 @@ const SETTLE_QUIET_MS = 3_000;
 /** The label naming which create made a computer's container: after its own docker run failed or was cut off, a create
  *  removes the container it made, never one another create of the same request made under the name. */
 const ATTEMPT_LABEL = "agentrun.computer.attempt";
+/** The label naming the spec's own labels (a JSON array of their keys, sorted): a container's labels also hold its image's,
+ *  so only this says which a create asked for, and a retry of the request that drops one is another spec (#differs). */
+const ASKED_LABEL = "agentrun.computer.labels";
 /** What #settle reads of each container it looks for: its id, its name, and its labels (whose attempt it is). */
 const SETTLE_FORMAT = '{"Id":{{json .Id}},"Name":{{json .Name}},"Config":{"Labels":{{json .Config.Labels}}}}';
 
@@ -473,7 +476,8 @@ export class DockerProvider implements ComputerProvider {
 	/**
 	 * How spec differs from report, the container Docker holds under its request's name: every way create's own drift
 	 * check would find it differs from spec (inspectDrift: each label asked, the image, user, network, mount, sizes and
-	 * workdir among them). Empty when it is the same.
+	 * workdir among them), and each label the computer was made with that spec does not ask for (ASKED_LABEL). Empty
+	 * when it is the same.
 	 */
 	async #differs(spec: ComputerSpec, report: DockerInspect, signal?: AbortSignal): Promise<Result<string[]>> {
 		const host = await this.host({ signal });
@@ -483,7 +487,18 @@ export class DockerProvider implements ComputerProvider {
 		const daemon = this.#daemon();
 		if (!daemon.ok) return daemon;
 		const expected = this.#expected(host.value, report.Config?.Labels?.[DEADLINE_LABEL] ?? "", this.#userFor(spec), this.#mountedDaemon(report) ?? daemon.value, proxy.value);
-		return ok(inspectDrift(spec, report, expected));
+		const labels = report.Config?.Labels ?? {};
+		let made: unknown;
+		try {
+			made = JSON.parse(labels[ASKED_LABEL] ?? "");
+		} catch {
+			made = undefined;
+		}
+		const asked = Object.keys(spec.labels ?? {});
+		const dropped = Array.isArray(made)
+			? made.filter((key) => typeof key === "string" && !asked.includes(key)).map((key) => `label ${key}: not declared, made with ${JSON.stringify(labels[key])}`)
+			: [`label ${ASKED_LABEL}: the spec's label keys, read back ${JSON.stringify(labels[ASKED_LABEL])}`];
+		return ok([...inspectDrift(spec, report, expected), ...dropped]);
 	}
 
 	/**
@@ -594,17 +609,19 @@ export class DockerProvider implements ComputerProvider {
 		const deadline = new Date(lifetimeFrom + runLifetimeMs(spec)).toISOString();
 		if (allow !== undefined) {
 			// The proxy first, ready before the computer exists: a computer never runs with an allowlist it cannot reach.
-			const started = await this.#startEgress(name, user, deadline, allow, spec.labels ?? {}, signal);
+			const started = await this.#startEgress(name, user, deadline, allow, spec.labels ?? {}, attempt, signal);
 			if (!started.ok) {
 				// Another create of this request, in another process, runs its proxy: what it makes is the request's.
 				if (nameTaken(started.error.message)) return this.#taken(spec, name, signal);
-				// The computer was never run by this create: only its proxy and volume go, never a container under the name.
-				const removed = await this.#removeProxy(name);
+				// The computer was never run by this create: only the proxy and volume it made go, never a container under the
+				// name, nor a proxy or volume another create of the request made.
+				const removed = await this.#removeProxy(name, attempt);
 				const after = removed.ok ? "its proxy and volume were removed" : `its proxy and volume could not be removed (${removed.error.message})`;
 				return fail(started.error.code, `${started.error.message}; the computer ${name} was never run, and ${after}`);
 			}
 		}
-		const args = ["run", "--detach", "--name", name, "--label", `${COMPUTER_LABEL}=1`, "--label", `${DEADLINE_LABEL}=${deadline}`, "--label", `${ATTEMPT_LABEL}=${attempt}`];
+		const asked = JSON.stringify(Object.keys(spec.labels ?? {}).sort());
+		const args = ["run", "--detach", "--name", name, "--label", `${COMPUTER_LABEL}=1`, "--label", `${DEADLINE_LABEL}=${deadline}`, "--label", `${ATTEMPT_LABEL}=${attempt}`, "--label", `${ASKED_LABEL}=${asked}`];
 		for (const [key, value] of Object.entries(spec.labels ?? {})) args.push("--label", `${key}=${value}`);
 		const memoryMb = spec.memoryMb ?? DEFAULT_MEMORY_MB;
 		args.push("--user", user, "--env", `HOME=${WORK}`);
@@ -636,7 +653,7 @@ export class DockerProvider implements ComputerProvider {
 		if (started.ok && started.value.exitCode !== 0 && nameTaken(started.value.stderr)) {
 			// Another create of this request, in another process, ran first: its computer is the request's, and this one's
 			// proxy, made for a computer that never ran, goes.
-			if (allow !== undefined) await this.#removeProxy(name);
+			if (allow !== undefined) await this.#removeProxy(name, attempt);
 			return this.#taken(spec, name, signal);
 		}
 		if (!started.ok || started.value.exitCode !== 0) {
@@ -715,11 +732,11 @@ export class DockerProvider implements ComputerProvider {
 	 * confirmed gone, in words (settleWords). A create later than that is the janitor's: sweepLeftovers takes it at the
 	 * next sweep, past #leftoverGraceMs, which stays the backstop.
 	 */
-	async #settle(containers: string[], volumes: string[], attempt?: string): Promise<string | undefined> {
+	async #settle(containers: string[], volumes: string[], attempt: string): Promise<string | undefined> {
 		const bound = AbortSignal.timeout(SETTLE_MS);
-		// With an attempt, only the containers that create made (ATTEMPT_LABEL) are removed and waited for: one another
-		// create of the request made under the name is not this create's leftover.
-		const mine = (reports: DockerInspect[]) => reports.filter((one) => attempt === undefined || one.Config?.Labels?.[ATTEMPT_LABEL] === attempt);
+		// Only what that create made (ATTEMPT_LABEL) is removed and waited for: a container or a volume another create of the
+		// request made under the name is not this create's leftover.
+		const mine = (reports: DockerInspect[]) => reports.filter((one) => one.Config?.Labels?.[ATTEMPT_LABEL] === attempt);
 		const look = () => (containers.length === 0 ? Promise.resolve(ok([])) : this.#inspect(containers, bound, SETTLE_FORMAT));
 		// When the looks first found none of them in the current run of empty looks; there, what the last look found.
 		let quietSince: number | undefined;
@@ -730,25 +747,19 @@ export class DockerProvider implements ComputerProvider {
 		let there = checked;
 		while (!bound.aborted) {
 			// --volumes, as release removes a computer: a late container of an image that declares a VOLUME has its own.
-			if (attempt === undefined) for (const container of containers) await this.#run(["rm", "--force", "--volumes", container], bound);
-			else {
-				// By id, the one looked at: never whatever holds the name by the time rm runs.
-				const seen = await look();
-				if (seen.ok) for (const one of mine(seen.value)) await this.#run(["rm", "--force", "--volumes", String(one.Id)], bound);
-			}
-			for (const volume of volumes) await this.#run(["volume", "rm", "--force", volume], bound);
+			// By id, the one looked at: never whatever holds the name by the time rm runs.
+			const seen = await look();
+			if (seen.ok) for (const one of mine(seen.value)) await this.#run(["rm", "--force", "--volumes", String(one.Id)], bound);
+			const owned = await this.#volumesOf(volumes, attempt, bound);
+			if (owned.ok) for (const volume of owned.value) await this.#run(["volume", "rm", "--force", volume], bound);
 			const found = await look();
-			const listed = volumes.length === 0 ? undefined : await this.#run(["volume", "inspect", "--format", "{{.Name}}", ...volumes], bound);
+			const listed = await this.#volumesOf(volumes, attempt, bound);
 			// A look the bound cut off says nothing: what the last whole look found stands.
 			if (bound.aborted) break;
-			// A read that fails for any reason but "no such" counts as all still there.
-			const unread = (ran: Ran) => ran.exitCode !== 0 && ran.stderr.split("\n").some((line) => line.trim() !== "" && !/no such volume/i.test(line));
+			// A read that fails counts as all still there.
 			const foundNames = found.ok ? mine(found.value).map(nameOf) : containers;
-			const listedText = listed === undefined ? "" : listed.ok && !unread(listed.value) ? listed.value.stdout : undefined;
-			there = [
-				...containers.filter((name) => foundNames.includes(name)).map(containerWords),
-				...volumes.filter((name) => listedText === undefined || listedText.split("\n").some((line) => line.includes(name))).map(volumeWords),
-			];
+			const listedNames = listed.ok ? listed.value : volumes;
+			there = [...containers.filter((name) => foundNames.includes(name)).map(containerWords), ...volumes.filter((name) => listedNames.includes(name)).map(volumeWords)];
 			if (there.length > 0) quietSince = undefined;
 			else {
 				quietSince ??= Date.now();
@@ -771,8 +782,10 @@ export class DockerProvider implements ComputerProvider {
 	 * bound, until the proxy logs its ready line. A proxy that ends first fails with its own last words. The caller
 	 * removes whatever was made when this fails.
 	 */
-	async #startEgress(name: string, user: string, deadline: string, allow: string[], labels: Record<string, string>, signal?: AbortSignal): Promise<Result<void>> {
+	async #startEgress(name: string, user: string, deadline: string, allow: string[], specLabels: Record<string, string>, attempt: string, signal?: AbortSignal): Promise<Result<void>> {
 		const proxy = egressNameOf(name);
+		// The proxy and its volume carry the create's attempt too: its cleanup removes only what it made.
+		const labels = { ...specLabels, [ATTEMPT_LABEL]: attempt };
 		const volume = await this.#run(egressVolumeArgs(name, user, deadline, labels), signal);
 		if (!volume.ok) return volume;
 		if (volume.value.exitCode !== 0) return vendorFail("docker",`docker volume create ${proxy} failed: ${volume.value.stderr.trim()}`);
@@ -781,7 +794,7 @@ export class DockerProvider implements ComputerProvider {
 		const ran = await this.#run(args, signal);
 		if (!ran.ok) {
 			// Cut off before its own exit: the daemon may still make the proxy after the caller's cleanup looked (#settle).
-			const left = await this.#settle([proxy], [proxy]);
+			const left = await this.#settle([proxy], [proxy], attempt);
 			const words = left === undefined ? "the proxy and its volume, if Docker made them after, were removed" : `the proxy and its volume could not all be removed: ${left}`;
 			return fail(ran.error.code, `${ran.error.message === "docker run was aborted" ? "create was aborted during docker run of the egress proxy" : ran.error.message}; ${words}`);
 		}
@@ -1244,36 +1257,75 @@ export class DockerProvider implements ComputerProvider {
 		return this.#remove(ref, how);
 	}
 
-	/** An allowlist proxy and its volume that create made for a computer it never ran, by their name. */
-	async #removeProxy(name: string): Promise<Result<void>> {
+	/**
+	 * An allowlist proxy and its volume that one create made for a computer it never ran: each only when it carries that
+	 * create's attempt (ATTEMPT_LABEL) with the computer's egress label, found by both as release finds a proxy, the
+	 * proxy removed by its id. One another create of the request made stays. Bounded by SETTLE_MS, never the caller's
+	 * signal, which may have ended.
+	 */
+	async #removeProxy(name: string, attempt: string): Promise<Result<void>> {
 		const proxy = egressNameOf(name);
-		const container = await this.#run(["rm", "--force", proxy]);
-		if (!container.ok) return container;
-		if (container.value.exitCode !== 0 && !noSuchContainer(container.value.stderr)) return vendorFail("docker", `docker rm ${proxy} failed: ${container.value.stderr.trim()}`);
-		const volume = await this.#run(["volume", "rm", "--force", proxy]);
-		if (!volume.ok) return volume;
-		if (volume.value.exitCode !== 0) return vendorFail("docker", `docker volume rm ${proxy} failed: ${volume.value.stderr.trim()}`);
+		const bound = AbortSignal.timeout(SETTLE_MS);
+		const filters = ["--filter", `label=${EGRESS_LABEL}=${name}`, "--filter", `label=${ATTEMPT_LABEL}=${attempt}`];
+		const lines = (text: string) => text.split("\n").map((line) => line.trim()).filter(Boolean);
+		const found = await this.#run(["ps", "-a", "--no-trunc", ...filters, "--format", "{{.ID}}"], bound);
+		if (!found.ok) return found;
+		if (found.value.exitCode !== 0) return vendorFail("docker", `docker ps for ${proxy} failed: ${found.value.stderr.trim()}`);
+		for (const id of lines(found.value.stdout)) {
+			const container = await this.#run(["rm", "--force", id], bound);
+			if (!container.ok) return container;
+			if (container.value.exitCode !== 0 && !noSuchContainer(container.value.stderr)) return vendorFail("docker", `docker rm ${proxy} failed: ${container.value.stderr.trim()}`);
+		}
+		const volumes = await this.#run(["volume", "ls", ...filters, "--format", "{{.Name}}"], bound);
+		if (!volumes.ok) return volumes;
+		if (volumes.value.exitCode !== 0) return vendorFail("docker", `docker volume ls for ${proxy} failed: ${volumes.value.stderr.trim()}`);
+		for (const volume of lines(volumes.value.stdout)) {
+			const removed = await this.#run(["volume", "rm", "--force", volume], bound);
+			if (!removed.ok) return removed;
+			if (removed.value.exitCode !== 0) return vendorFail("docker", `docker volume rm ${volume} failed: ${removed.value.stderr.trim()}`);
+		}
 		return ok(undefined);
+	}
+
+	/** Of the volumes named, the ones there that carry the attempt (ATTEMPT_LABEL); one that is not there is left out. */
+	async #volumesOf(names: string[], attempt: string, signal: AbortSignal): Promise<Result<string[]>> {
+		if (names.length === 0) return ok([]);
+		const ran = await this.#run(["volume", "inspect", "--format", "{{json .}}", ...names], signal);
+		if (!ran.ok) return ran;
+		const errors = ran.value.stderr.split("\n").filter((line) => line.trim() !== "" && !/no such volume/i.test(line));
+		if (ran.value.exitCode !== 0 && errors.length > 0) return vendorFail("docker", `docker volume inspect failed: ${errors.join("; ")}`);
+		const mine: string[] = [];
+		for (const line of ran.value.stdout.split("\n").filter((one) => one.trim() !== "")) {
+			let volume: { Name?: unknown; Labels?: Record<string, string> | null };
+			try {
+				volume = JSON.parse(line);
+			} catch {
+				return vendorFail("docker", `docker volume inspect wrote a line that is not JSON: ${line.slice(0, 200)}`);
+			}
+			if (typeof volume.Name === "string" && volume.Labels?.[ATTEMPT_LABEL] === attempt) mine.push(volume.Name);
+		}
+		return ok(mine);
 	}
 
 	/**
 	 * What one create made under the name, removed after its computer's docker run failed or was cut off: the container
-	 * that carries its attempt (ATTEMPT_LABEL), and the allowlist proxy and volume it made. A container another create of
-	 * the request made under the name, in another process or before this one, is left as it is: true then. That
-	 * create's computer has no proxy of its own here, or this create's proxy would have found the name taken. The look
-	 * is bounded (SETTLE_MS), never the caller's signal, which may have ended.
+	 * that carries its attempt (ATTEMPT_LABEL), and the allowlist proxy and volume it made (#removeProxy). A container
+	 * another create of the request made under the name, in another process or before this one, is left as it is, with
+	 * its proxy and volume: true then. The look is bounded (SETTLE_MS), never the caller's signal, which may have ended.
 	 */
 	async #removeAttempt(name: string, attempt: string): Promise<Result<boolean>> {
 		const found = await this.#inspect([name], AbortSignal.timeout(SETTLE_MS));
 		if (!found.ok) return found;
 		const report = found.value.find((one) => nameOf(one) === name);
-		if (report?.Config?.Labels?.[ATTEMPT_LABEL] === attempt) {
-			const removed = await this.#remove({ id: String(report.Id), name }, "delete");
-			return removed.ok ? ok(false) : removed;
+		const mine = report?.Config?.Labels?.[ATTEMPT_LABEL] === attempt;
+		// By the id looked at, never by the name, which another create may hold by the time rm runs.
+		if (mine) {
+			const removed = await this.#run(["rm", "--force", "--volumes", String(report.Id)], AbortSignal.timeout(SETTLE_MS));
+			if (!removed.ok) return removed;
+			if (removed.value.exitCode !== 0 && !noSuchContainer(removed.value.stderr)) return vendorFail("docker", `docker rm ${name} failed: ${removed.value.stderr.trim()}`);
 		}
-		// None there, or another create's: never an rm by the name, which another create may hold by the time it runs.
-		const proxy = await this.#removeProxy(name);
-		return proxy.ok ? ok(report !== undefined) : proxy;
+		const proxy = await this.#removeProxy(name, attempt);
+		return proxy.ok ? ok(report !== undefined && !mine) : proxy;
 	}
 
 	/** release's work, which create also does for what it made before its computer ran (its request is not spent). */

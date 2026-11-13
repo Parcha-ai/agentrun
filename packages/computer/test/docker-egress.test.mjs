@@ -78,14 +78,17 @@ test("create() with an allowlist makes the volume, starts the proxy and waits fo
 	const computer = computerRunOf(calls());
 	const deadline = valuesOf(computer, "--label").find((label) => label.startsWith("agentrun.computer.deadline="))?.split("=")[1];
 	assert.deepEqual(valuesOf(computer, "--pull"), ["never"], "the computer's run never pulls");
-	// The volume carries the computer's name, its deadline and the spec's labels, so the janitor finds it with no computer.
+	// The volume carries the computer's name, its deadline and the spec's labels, so the janitor finds it with no computer,
+	// and the create's attempt, as the computer and the proxy do, so a failed create removes only what it made.
+	const attempt = valuesOf(computer, "--label").find((label) => label.startsWith("agentrun.computer.attempt="));
+	assert.match(attempt ?? "", /^agentrun\.computer\.attempt=[0-9a-f-]{36}$/);
 	assert.deepEqual(calls()[4], [
 		"volume", "create", "--driver", "local", "--opt", "type=tmpfs", "--opt", "device=tmpfs", "--opt", `o=size=1m,uid=${uid},gid=${gid},mode=0700`,
-		"--label", `agentrun.computer.egress=${name}`, "--label", `agentrun.computer.deadline=${deadline}`, "--label", "team=a", volume,
+		"--label", `agentrun.computer.egress=${name}`, "--label", `agentrun.computer.deadline=${deadline}`, "--label", "team=a", "--label", attempt, volume,
 	]);
 	assert.deepEqual(proxyRunOf(calls()), [
 		"run", "--detach", "--name", volume,
-		"--label", `agentrun.computer.egress=${name}`, "--label", `agentrun.computer.deadline=${deadline}`, "--label", "team=a",
+		"--label", `agentrun.computer.egress=${name}`, "--label", `agentrun.computer.deadline=${deadline}`, "--label", "team=a", "--label", attempt,
 		"--user", DEFAULT_USER, "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--ipc", "private", "--cgroupns", "private",
 		"--pids-limit", "64", "--memory", "256m", "--memory-swap", "256m", "--cpu-period", "100000", "--cpu-quota", "50000", "--ulimit", "nofile=1024:1024",
 		"--log-driver", "json-file", "--log-opt", "max-size=1m", "--log-opt", "max-file=2",

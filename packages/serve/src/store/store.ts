@@ -958,6 +958,9 @@ export interface ComputerLedgerRow {
 export interface ComputerLedger {
   /** Saves `labels` and `detail` for `provider`'s session `sessionId`, inserted or replaced in place. */
   put(provider: string, sessionId: string, labels: Readonly<Record<string, string>>, detail: Readonly<Record<string, unknown>>): Promise<void>;
+  /** Saves `labels` and `detail` for the session only while no row is kept for it, in one statement (two writers never
+   *  both claim it): true when it was saved; false, with nothing written, when a row was there. */
+  claim(provider: string, sessionId: string, labels: Readonly<Record<string, string>>, detail: Readonly<Record<string, unknown>>): Promise<boolean>;
   /** The session's row, or undefined when none is kept. */
   get(provider: string, sessionId: string): Promise<ComputerLedgerRow | undefined>;
   /** Every session of `provider`, by its id. */

@@ -271,6 +271,37 @@ test("a session the service ended is gone to attach and list, and the ledger for
 	assert.equal(fake.requests().filter((r) => r.method === "POST" && r.path === "/sessions").length, 2, "nothing rented for a spent request");
 });
 
+test("two providers on one ledger: a create of the request with another spec while the first is in flight is refused exists before it can POST the request's key; one of the same spec after shares its phone", async () => {
+	const fake = fakePhoneHarness();
+	const base = memoryLedger();
+	const make = (ledger) => create({ apiKey: KEY, fetch: fake.fetch, adb: fake.adb, ledger, now: fake.clock.now, sleep: fake.clock.sleep, phoned: PHONED_JAR });
+	const spec = { ...SPEC, labels: { run: "a" } };
+	const context = { requestId: "phone-two-providers" };
+	// Another process's provider, on the same ledger: it creates the request while this one's claim is just made.
+	const other = await make(base);
+	let during;
+	const ledger = {
+		...base,
+		claim: async (entry) => {
+			const claimed = await base.claim(entry);
+			if (claimed && during === undefined) during = await Promise.all([other.create({ ...spec, labels: { run: "b" } }, context), other.create({ ...SPEC }, context)]);
+			return claimed;
+		},
+	};
+	const provider = await make(ledger);
+	const created = await provider.create(spec, context);
+	assert.equal(created.ok, true, JSON.stringify(created));
+	for (const refused of during) {
+		assert.equal(refused.error?.code, "exists", JSON.stringify(refused));
+		assert.match(refused.error.message, /^computer-[0-9a-f]{12} is being made for this request with another spec, so it is not returned: label/);
+	}
+	assert.match(during[0].error.message, /label run: asked "b", in flight "a"/);
+	assert.match(during[1].error.message, /labels run: in flight, never asked for/);
+	assert.equal(fake.requests().filter((r) => r.method === "POST" && r.path === "/sessions").length, 1, "only the first POSTed the request's key");
+	assert.deepEqual((await base.list()).map((e) => [e.id, e.labels]), [[created.value.id, { run: "a" }]], "the phone keeps the labels it was made with");
+	assert.deepEqual(await other.create(spec, context), created, "the same spec from the other provider answers the same phone");
+});
+
 test("list names a phone once while create swaps its pending key for the session's entry", async () => {
 	// The list runs inside create's put of the session's entry: the ledger holds the entry and the pending key at once.
 	const base = memoryLedger();
