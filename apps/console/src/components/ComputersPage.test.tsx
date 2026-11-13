@@ -38,7 +38,7 @@ const daytona: ComputerProvider = { id: "daytona", name: "Daytona", metered: tru
 /** A person's own Mac, paired and attached; it is also a provider of the desktop kind. */
 /** A paired computer of no OS the page knows: it is shown by what its hello says. */
 const DESK: PairedComputer = {
-  id: "cmp-abc", name: "desk-1", kind: "desktop", serves: ["desktop"], os: "windows", os_version: "11", device: { maker: "Acme", model: "Book 14" }, arch: "x86_64",
+  id: "cmp-abc", name: "desk-1", kind: "desktop", serves: ["desktop"], unserved: null, os: "windows", os_version: "11", device: { maker: "Acme", model: "Book 14" }, arch: "x86_64",
   screen: { width: 1920, height: 1080, scale: 1 }, groups: ["screen", "input.pointer", "input.keys"], features: { "ui.tree": { off: "no accessibility grant" } },
   driver: "0.2.0", online: true, held_by_run: null, held_until: null, created_at: "2026-11-12T10:00:30.000Z", seen_at: "2026-11-12T10:00:31.000Z",
 };
@@ -295,7 +295,9 @@ describe("Settings → Computers", () => {
   it("says a paired computer offline and how to bring it back, the run that holds one and the deadline its hold ends by, and removes one after asking", async () => {
     const held = { ...DESK, held_by_run: "0190f0aa-0000-7000-8000-00000000beef", held_until: "2026-11-12T11:00:00.000Z" };
     // A feature value of a shape the page does not know (an older server, a driver's malformed hello) is skipped, never a crash.
-    const away: PairedComputer = { ...DESK, id: "cmp-old", name: "old-desk", online: false, seen_at: null, features: { ...DESK.features, broken: null } as unknown as PairedComputer["features"] };
+    // One whose driver serves no kind says so in the server's words.
+    const UNSERVED = "old-desk's driver serves no kind: it says desktop but declares no input.pointer, input.keys: update the driver on old-desk";
+    const away: PairedComputer = { ...DESK, id: "cmp-old", name: "old-desk", serves: [], unserved: UNSERVED, online: false, seen_at: null, features: { ...DESK.features, broken: null } as unknown as PairedComputer["features"] };
     const { v2, calls } = server([{ ...view(), paired: [held, away] }, { ...view(), paired: [held] }], () => new Response(null, { status: 204 }));
     const { section, click } = await open(v2);
     const mine = section("Your computers");
@@ -305,6 +307,9 @@ describe("Settings → Computers", () => {
     expect(row("cmp-old")!.textContent).toContain("Offline");
     expect(row("cmp-old")!.querySelector("[data-offers]")?.textContent).toBe("Offers screen, input.pointer, input.keys · ui.tree off: no accessibility grant");
     expect(row("cmp-old")!.textContent).toContain("Open its driver on that computer: it dials this server.");
+    expect(row("cmp-abc")!.querySelector("[data-unserved]")).toBeNull();
+    expect(row("cmp-old")!.textContent).toContain("No agent can use it");
+    expect(row("cmp-old")!.querySelector("[data-unserved]")?.textContent).toBe(UNSERVED);
     await click(row("cmp-old")!, /^Remove$/);
     expect(calls.some((c) => c.method === "DELETE")).toBe(false);
     expect(row("cmp-old")!.querySelector("[data-confirm]")?.textContent).toContain("Remove old-desk?");

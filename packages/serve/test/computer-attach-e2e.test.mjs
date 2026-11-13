@@ -101,6 +101,7 @@ test("pair a computer with a code; it is listed as its hello says, offline once 
     name: NAME,
     kind: "desktop",
     serves: ["desktop"],
+    unserved: null,
     os: DRIVER_HELLO.os,
     os_version: DRIVER_HELLO.osVersion,
     device: null,

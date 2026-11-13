@@ -142,14 +142,16 @@ export function pairRefusal(name: string, hello: HelloResult): string | undefine
 }
 
 /** A paired computer as GET /v2/computers lists it under `paired`: whatever its hello says it is (its os and version, its
- *  device, its screen, its groups and features: the live hello's while it is attached, else what it paired with), the
- *  setting kinds it serves, whether it is attached now, its driver's build, and the run that holds it and until when.
+ *  device, its screen, its groups and features: the live hello's while it is attached, else its last one), the
+ *  setting kinds it serves and why it serves none, whether it is attached now, its driver's build, and the run that holds it and until when.
  *  Nothing here is any one OS's: a driver on any OS is shown by the same fields. */
 export type PairedView = {
   id: string;
   name: string;
   kind: string;
   serves: string[];
+  /** When it serves no kind, why, naming what its driver lacks (servesNoKind); null when it serves one. */
+  unserved: string | null;
   os: string;
   os_version: string | null;
   device: { maker: string; model: string } | null;
@@ -183,6 +185,7 @@ export function pairedView(row: PairedComputerRow, hub: Pick<AttachHub, "online"
     name: row.name,
     kind: String(paired.kind ?? ""),
     serves: [...serves],
+    unserved: serves.length === 0 ? (servesNoKind(row.name, paired) ?? null) : null,
     os: String(paired.os ?? ""),
     os_version: typeof hello.osVersion === "string" ? hello.osVersion : null,
     device: hello.device && typeof hello.device.maker === "string" && typeof hello.device.model === "string" ? { maker: hello.device.maker, model: hello.device.model } : null,
@@ -323,7 +326,7 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
         options.onSocket?.(row.id, ws);
         void hub.accept(pairedOf(row), attach).then(async (said) => {
           if (!said.ok) return log("computer_refused", { computer: row.id, code: said.error.code, why: said.error.message });
-          await paired.seen(row.id, said.value.version);
+          await paired.seen(row.id, said.value as unknown as Record<string, unknown>);
           log("computer_attached", { computer: row.id, driver: said.value.version });
         }).catch((error: unknown) => {
           log("computer_refused", { computer: row.id, why: error instanceof Error ? error.message : String(error) });

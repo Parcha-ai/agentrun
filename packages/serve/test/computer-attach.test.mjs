@@ -115,10 +115,12 @@ test("a paired computer is listed as its hello says, the live one's while attach
   const deadline = new Date(5000);
   const hub = (attached, holder) => ({ online: () => attached, hello: () => (attached ? live : undefined), claimed: () => (holder ? { "agentrun.run": holder } : undefined), deadline: () => (holder ? deadline : undefined) });
   assert.deepEqual(pairedView(row, hub(false), ["desktop"]), {
-    id: "cmp-abc", name: "desk", kind: "desktop", serves: ["desktop"], os: "windows", os_version: "11", device: null, arch: "arm64", screen: null, groups: HELLO.groups, features: {},
+    id: "cmp-abc", name: "desk", kind: "desktop", serves: ["desktop"], unserved: null, os: "windows", os_version: "11", device: null, arch: "arm64", screen: null, groups: HELLO.groups, features: {},
     driver: "0.2.0", online: false, held_by_run: null, held_until: null, created_at: new Date(0).toISOString(), seen_at: new Date(1000).toISOString(),
   });
   const held = pairedView(row, hub(true, "run-1"), ["desktop"]);
   assert.deepEqual({ os_version: held.os_version, device: held.device, screen: held.screen, features: held.features, driver: held.driver, online: held.online }, { os_version: "11 24H2", device: live.device, screen: live.screen, features, driver: "0.2.1", online: true });
   assert.deepEqual({ held_by_run: held.held_by_run, held_until: held.held_until }, { held_by_run: "run-1", held_until: deadline.toISOString() });
+  const lacking = pairedView({ ...row, hello: { ...row.hello, groups: ["screen"] } }, hub(false), []);
+  assert.equal(lacking.unserved, "desk's driver serves no kind: it says desktop but declares no input.pointer, input.keys: update the driver on desk", "one that serves no kind says why");
 });

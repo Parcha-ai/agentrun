@@ -1226,8 +1226,8 @@ class SqliteStore implements Store {
         return row === undefined ? undefined : pairedOf(row);
       },
       list: async () => (await db.all<PairedRecord>(`${PAIRED} WHERE revoked_at IS NULL ORDER BY created_at, id`)).map(pairedOf),
-      seen: async (id, driver) => {
-        await db.write([{ sql: "UPDATE paired_computers SET seen_at = ?, driver = ? WHERE id = ? AND revoked_at IS NULL", params: [now(), driver, id] }]);
+      seen: async (id, hello) => {
+        await db.write([{ sql: "UPDATE paired_computers SET seen_at = ?, hello = ?, driver = ? WHERE id = ? AND revoked_at IS NULL", params: [now(), JSON.stringify(hello), String(hello.version ?? ""), id] }]);
       },
       revoke: async (id) => {
         const [result] = await db.write([{ sql: "UPDATE paired_computers SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL", params: [now(), id] }]);

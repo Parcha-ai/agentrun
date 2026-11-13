@@ -24,7 +24,7 @@ test("a code pairs once, before it expires: a used, expired or unknown code pair
   assert.deepEqual((await paired.list()).map((row) => row.id).sort(), ["cmp_a", both[0] ? "cmp_e" : "cmp_f"].sort());
 });
 
-test("a paired computer is found by its token's hash and listed with what it paired as, until it is revoked; seen records its driver's build", async (t) => {
+test("a paired computer is found by its token's hash and listed with what it paired as, until it is revoked; seen records its driver's last hello and build", async (t) => {
   const { store, clock } = await storeOn(t);
   const paired = store.pairedComputers;
   await paired.addCode("code-1", clock.now + 60_000);
@@ -33,8 +33,10 @@ test("a paired computer is found by its token's hash and listed with what it pai
   assert.deepEqual({ ...row }, { id: "cmp_one", name: "cmp_one's Mac", hello: HELLO, driver: "0.2.0", labels: {}, createdAt: clock.now, seenAt: null, revokedAt: null });
   assert.equal(await paired.byToken("hash-other"), undefined, "another token finds none");
   clock.now += 5_000;
-  await paired.seen("cmp_one", "0.2.1");
-  assert.deepEqual([(await paired.get("cmp_one")).seenAt, (await paired.get("cmp_one")).driver], [clock.now, "0.2.1"]);
+  const later = { ...HELLO, version: "0.2.1", groups: [...HELLO.groups, "apps"] };
+  await paired.seen("cmp_one", later);
+  const seen = await paired.get("cmp_one");
+  assert.deepEqual([seen.seenAt, seen.driver, seen.hello], [clock.now, "0.2.1", later], "its last hello is kept, and its build as its driver");
   clock.now += 5_000;
   assert.equal(await paired.revoke("cmp_one"), true, "revoked");
   assert.equal(await paired.revoke("cmp_one"), false, "once");

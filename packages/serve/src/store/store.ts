@@ -814,7 +814,9 @@ export interface PairedComputerRow {
   readonly id: string;
   /** What the person calls it. */
   readonly name: string;
-  /** Its driver's hello at pairing: what it paired as (kind, os, groups, features). */
+  /** Its driver's last hello: at pairing, then each socket's (kind, os, groups, features). Kind and os stay what it
+   *  paired as, since a socket that says others is refused at hello; groups follow its driver, so an updated driver's
+   *  new groups serve the kinds they make. */
   readonly hello: Readonly<Record<string, unknown>>;
   /** The driver build its last hello named. */
   readonly driver: string;
@@ -849,8 +851,8 @@ export interface PairedComputers {
   byToken(tokenSha256: string): Promise<PairedComputerRow | undefined>;
   /** Every paired computer not removed, oldest first. */
   list(): Promise<PairedComputerRow[]>;
-  /** A socket of the computer said hello now, from driver build `driver`. */
-  seen(id: string, driver: string): Promise<void>;
+  /** A socket of the computer said `hello` now: kept as its hello, and its build (`hello.version`) as its driver. */
+  seen(id: string, hello: Readonly<Record<string, unknown>>): Promise<void>;
   /** Removes the computer: its token dials no more. False when it was not paired (unknown, or removed already). */
   revoke(id: string): Promise<boolean>;
 }

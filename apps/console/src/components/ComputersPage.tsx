@@ -234,7 +234,9 @@ function PairedSection({ v2, paired, reload }: { v2: Client; paired: PairedCompu
                       <span data-provider className="font-mono text-prose font-semibold">{computer.name}</span>
                       {computer.online ? <Chip tone="success">Online</Chip> : <Chip tone="muted">Offline</Chip>}
                       {computer.held_by_run && <Chip tone="active">In use by run {runLabel(computer.held_by_run)}</Chip>}
+                      {computer.unserved && <Chip tone="warning">No agent can use it</Chip>}
                     </p>
+                    {computer.unserved && <p data-unserved role="status" className="mt-1.5 text-small text-warning-text">{computer.unserved}</p>}
                     {computer.held_by_run && computer.held_until && <p data-held-until className="mt-1.5 text-small text-muted-foreground">The run's hold ends by {when(computer.held_until)}, released or not.</p>}
                     {!computer.online && <p className="mt-1.5 font-mono text-small text-muted-foreground">Open its driver on that computer: it dials this server.</p>}
                     <p data-machine className="mt-2 text-small text-muted-foreground">{machineOf(computer)}</p>
