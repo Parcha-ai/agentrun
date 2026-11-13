@@ -10,7 +10,7 @@
 import type { Harness } from "@earendil-works/pi-durable";
 import { defineDocFamily } from "@earendil-works/pi-durable";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { RecoveryError, asRecoveryError, bindingMismatch, type RecoveryBinding, type RecoveryEffect, type RecoveryItem, type RecoveryJournal, type RecoveryNote, type RecoveryParts, type RecoveryStore } from "@parcha/agentrun-dsl/recovery";
 import { storageError } from "./pi-versions.js";
 

@@ -2,7 +2,7 @@
 // From github.com/vercel-labs/durable-harness, packages/harness-process/src/tools.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
 // Changed by Parcha, and AgentRun's own since the port from upstream froze on 2026-11-07.
 import { type DriveContext, EffectFailure, type EffectError, type HostTool, hostToolIO, type ReplayPolicy, type ToolOutput } from '../kernel/index.js';
-import { type GateAnswer, type GateCall, HOST_RESULT_MAX_CHARS, type ToolImage } from '../types.js';
+import { type GateAnswer, type GateCall, HOST_RESULT_MAX_CHARS, type JsonValue, type ToolImage } from '../types.js';
 
 /**
  * The tool bridge: `HostTool`s as a harness-neutral list a port maps onto its
@@ -31,6 +31,8 @@ export interface ToolResult {
   interrupted?: boolean;
   /** Images the tool answered with, as it gave them (recorded with its outcome). */
   images?: readonly ToolImage[];
+  /** The answer as a value, where the tool gives one (recorded with its outcome): what a script's nested call reads. */
+  structured?: JsonValue;
   /** The text was cut at HOST_RESULT_MAX_CHARS (`boundResult`); it says so in its last line. */
   truncated?: true;
 }
@@ -153,11 +155,11 @@ export function toolBridge(ctx: DriveContext, tools: HostTool[], options: ToolBr
           },
           (io) => tool.execute(args, hostToolIO(io, ctx, { signal: signal ? AbortSignal.any([signal, io.signal]) : io.signal }))
         );
-        // A tool answers in text, or in text with images (a screenshot): the images come back as recorded.
-        const { text: whole, images } = typeof output === 'object' && output !== null ? (output as ToolOutput) : { text: String(output), images: undefined };
+        // A tool answers in text, or in text with images (a screenshot) and its value: they come back as recorded.
+        const { text: whole, images, structured } = typeof output === 'object' && output !== null ? (output as ToolOutput) : { text: String(output), images: undefined, structured: undefined };
         const { text, truncated } = boundResult(String(whole));
         if (fresh && live) ctx.live({ type: 'tool_end', name: tool.name, callId, result: text, ...(truncated ? { truncated } : {}) });
-        return { text, isError: false, ...(images?.length ? { images } : {}), ...(truncated ? { truncated } : {}) };
+        return { text, isError: false, ...(images?.length ? { images } : {}), ...(structured !== undefined ? { structured } : {}), ...(truncated ? { truncated } : {}) };
       } catch (err) {
         if (err instanceof EffectFailure) {
           const { text, truncated } = boundResult(failureText(err.error, options.partialChars));

@@ -16,9 +16,9 @@ import { agent, follow, runDir, scratchDir, serve, serverLog } from "./support.m
 
 /** A key for the fake endpoint: no real one. */
 const KEY = `not-a-secret-${"anthropic"}`;
-const MODEL = "claude-haiku-4-5";
-/** claude-haiku-4-5 in serve's catalog: $1 in, $5 out per million tokens. */
-const PRICE = { input: 1, output: 5 };
+const MODEL = "claude-sonnet-5-5";
+/** claude-sonnet-5-5 in serve's catalog: $2 in, $10 out per million tokens. */
+const PRICE = { input: 2, output: 10 };
 
 /** This test's own descendant processes, by walking each process's children from this one. */
 async function descendants() {
@@ -99,7 +99,7 @@ test("a run on claude-agent: through the adapter's proxy with the native model, 
   const { fake, release } = await heldFake(t);
   const { api, data } = await claudeServe(t, fake);
   // How many fit at once is this host's memory (admission.test.mjs).
-  const { max_concurrent_runs, ...offer } = (await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "claude-agent");
+  const { max_concurrent_runs, models: _models, ...offer } = (await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "claude-agent");
   assert.deepEqual(offer, { id: "claude-agent", available: true, steer: false, default_model: `anthropic/${MODEL}`, run_memory_mib: 288 });
   const run = await api("POST", "/agents/claude/runs", { input: { content: "Say what you did." } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
@@ -273,11 +273,11 @@ const PROBE_AGENT = "serve-log-test";
 /** A value no log may carry, sent as a bearer and in a query string. */
 const CANARY = `not-a-secret-${"canary"}-7b21e4`;
 
-test("a model named as OpenRouter names it (anthropic/claude-haiku-4.5, dotted), on one gateway for every harness, runs on Anthropic's own id and is priced at serve's catalog", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+test("a model named as OpenRouter names it (anthropic/claude-sonnet-5.5, dotted), on one gateway for every harness, runs on Anthropic's own id and is priced at serve's catalog", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
   const fake = await fakeAnthropic({ reply: () => ({ text: "Claude answered." }) });
   t.after(() => fake.close());
-  // OpenRouter's name for claude-haiku-4-5: dotted, as the gateway names it, never the catalog's dashed id.
-  const { api } = await claudeServe(t, fake, { AGENT_MODEL_BASE_URL: `${fake.url}/v1` }, "claude-haiku-4.5");
+  // OpenRouter's name for claude-sonnet-5-5: dotted, as the gateway names it, never the catalog's dashed id.
+  const { api } = await claudeServe(t, fake, { AGENT_MODEL_BASE_URL: `${fake.url}/v1` }, "claude-sonnet-5.5");
   const run = await api("POST", "/agents/claude/runs", { input: { content: "Say what you did." } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   const { rows } = await follow(api, run.body.run_id, ["completed"], { deadlineMs: 120_000 });
@@ -291,9 +291,9 @@ test("a model named as OpenRouter names it (anthropic/claude-haiku-4.5, dotted),
 test("a capped run on a model named as OpenRouter names it (dotted) is held to its cap: below one request's least, it is refused before anything is sent, in plain words, and the run pauses at its cap", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
   const fake = await fakeAnthropic({ reply: () => ({ text: "Claude answered." }) });
   t.after(() => fake.close());
-  const { api } = await claudeServe(t, fake, {}, "claude-haiku-4.5");
-  // claude-haiku-4-5 at $5 a million output tokens: the least a request may be limited to, its answer's 1,024 tokens,
-  // costs $0.00512 before its input, past a tenth of a cent.
+  const { api } = await claudeServe(t, fake, {}, "claude-sonnet-5.5");
+  // claude-sonnet-5-5 at $10 a million output tokens: the least a request may be limited to, its answer's 1,024 tokens,
+  // costs $0.01024 before its input, past a tenth of a cent.
   const run = await api("POST", "/agents/claude/runs", { input: { content: "Say what you did." }, max_cost_usd: 0.001 });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   await follow(api, run.body.run_id, ["input_required", "failed"], { deadlineMs: 120_000 });
@@ -303,7 +303,7 @@ test("a capped run on a model named as OpenRouter names it (dotted) is held to i
   const words = /^Not sent: the next step needs at least \$(\d+\.\d\d), and this run's cap is \$0\.001\. Raise the cap to at least \$(\d+\.\d\d) to continue\.$/.exec(ended.pending.said);
   assert.ok(words, ended.pending.said);
   assert.equal(words[2], words[1]);
-  assert.ok(Number(words[1]) >= 0.00512, `the least covers the answer's 1,024 tokens: $${words[1]}`);
+  assert.ok(Number(words[1]) >= 0.01024, `the least covers the answer's 1,024 tokens: $${words[1]}`);
   assert.equal(fake.messages().length, 0, "nothing reached the endpoint");
 });
 

@@ -12,10 +12,10 @@
 // Every event comes from one commit's own writes or entries (journal.commitsAfter returns each commit's own task,
 // submission and document writes, pi_commit_writes), never inferred: a call's start is the commit where its task runs, a
 // submission's placement the commit that placed it. A call that never ran ends with no start, as the door says it.
-import type { JsonValue } from "@earendil-works/chord";
+import type { JsonValue } from "@earendil-works/chord/json";
 import { AgentDoc, type EntryRecord, type SubmissionRecord, UsageDoc } from "@earendil-works/pi-durable";
 import { HOST_PHASE, RUN_RESUMED } from "../timeline/index.js";
-import { REFLECT_LABEL, reflectFrom } from "../runner/end-of-run.js";
+import { inReflect, REFLECT_LABEL, type ReflectRange, reflectRanges } from "../runner/end-of-run.js";
 import { type CallEndData, type CallStartData, type EndData, KINDS, type MessageData, type SessionKeyData } from "../runner/journal-kinds.js";
 import { PI_STOP } from "../runner/pi-stop.js";
 import type { JournalCommit } from "../store/journal/storage.js";
@@ -51,8 +51,9 @@ export interface LiveState {
   readonly calls: Map<string, { name: string; args?: unknown }>;
   /** An answer streamed as a partial (held): its stored message is only its end. */
   partial: boolean;
-  /** Where the run's end-of-run turn began (end-of-run.ts reflectFrom), once its input is placed: its messages from there
-   *  on carry the learning label, a tag the reader puts on (the run writes nothing for it). */
+  /** Where the run's end-of-run turn under way began (end-of-run.ts reflectRanges), once its input is placed, until the
+   *  run's end closes it: its messages from there on carry the learning label, a tag the reader puts on (the run writes
+   *  nothing for it). A follow-up's messages, after that end, carry none; its next end's turn begins anew. */
   reflectFrom?: number;
 }
 
@@ -160,9 +161,13 @@ export function translate(state: LiveState, commit: JournalCommit): LiveEvent[] 
   const entries = commit.entries.filter(mine);
   const tasks = commit.tasks.filter(mine);
   const submissions = commit.submissions.filter(mine);
-  // The end-of-run turn's input placed in this commit: its messages from there on are the turn's.
-  state.reflectFrom ??= reflectFrom(submissions, entries);
-  const tag = (entry: EntryRecord) => (state.reflectFrom !== undefined && Number(entry.id) >= state.reflectFrom ? { agent_label: REFLECT_LABEL } : {});
+  // The end-of-run turn under way, and any whose input was placed in this commit: their messages, up to the run's end that
+  // closes each, are the turn's. One still open after this commit carries on to the next.
+  const endAt = (from: number) => entries.find((entry) => entry.kind === KINDS.end && Number(entry.id) >= from);
+  const carried: ReflectRange[] = state.reflectFrom === undefined ? [] : [{ from: state.reflectFrom, ...(endAt(state.reflectFrom) ? { until: Number(endAt(state.reflectFrom)!.id) } : {}) }];
+  const ranges = [...carried, ...reflectRanges(submissions, entries)];
+  state.reflectFrom = ranges.filter((range) => range.until === undefined).at(-1)?.from;
+  const tag = (entry: EntryRecord) => (inReflect(ranges, Number(entry.id)) ? { agent_label: REFLECT_LABEL } : {});
   for (const entry of entries) {
     const message = modelOf(entry);
     if (message?.role === "assistant" && Array.isArray(message.content)) {

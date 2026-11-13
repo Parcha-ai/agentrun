@@ -9,7 +9,7 @@
 // node log's node.start/node.end lines (onEvent); and the `createWorkflowExtension` wiring — the effect-admission flush,
 // `withRecovery` over the driver with runNode/runEffect/runJudge/recordDecision, and the cap's wrappers around them. The
 // per-run process's pause gate is gone: a cap hold parks the run through the loop (workflow-loop.ts), not a file gate.
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import type { Extension } from "@earendil-works/pi-durable";
 import { type WorkflowTaskHost } from "../workflow/task.js";
 import { decisionRecovery } from "../workflow/decision-recovery.js";
@@ -41,6 +41,12 @@ export interface DecisionDriver {
   flush(): Promise<void>;
 }
 
+/** What a held call's wrapper asks of the DSL driver: its poll window moved back by the time the run was held for a raise
+ *  of its cap (dsl recovery/driver.ts holdPoll). */
+export interface PollDriver {
+  holdPoll?(executionPath: unknown, ms: number, hold: string): void;
+}
+
 /** The run's spend cap over the workflow's adapters (app.ts's budget: stepped/failing/capStopped and the decision cap),
  *  injected so this module holds no money of its own. Each wrapper is applied to its adapter where app.ts applied it; a run
  *  with no cap (a test, or before the cap is wired) passes none and the adapters run unwrapped. `held` is a call node's
@@ -50,7 +56,7 @@ export interface WorkflowCap {
   node<F>(fn: F): F;
   /** stepped(failing(·)): a call node, before the driver admits its effect: it waits for a raise on a held effect and
    *  goes again. */
-  effect<F>(fn: F): F;
+  effect<F>(fn: F, driver?: PollDriver): F;
   /** A call node's effect once the driver has admitted it: held through the kernel cap, run, and settled. Absent: the
    *  effect runs as given. */
   admittedEffect?<F>(fn: F): F;
@@ -169,7 +175,7 @@ export function workflowHost(deps: WorkflowHostDeps): { readonly extensions: rea
       return { deps: {
         ...recovered,
         runNode: cap.node(recovered.runNode),
-        runEffect: cap.effect(recovered.runEffect),
+        runEffect: cap.effect(recovered.runEffect, driver as PollDriver),
         ...(recovered.runJudge ? { runJudge: cap.judge(recovered.runJudge, driver as DecisionDriver) } : {}),
         onEvent,
         ...(cap.held ? { held: (path: string) => cap.held!(path) } : {}),

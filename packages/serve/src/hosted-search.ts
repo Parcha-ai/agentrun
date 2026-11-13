@@ -36,11 +36,9 @@ const ANSWER_TOKENS = 2_048;
 /** As Exa's and Parallel's searches stop. */
 const TIMEOUT_MS = 60_000;
 
-let runModels: Models | undefined;
-/** The run's models, marked and capped, handed over by the run's app before its tools are bound. */
-export function searchOn(models: Models): void {
-  runModels = models;
-}
+/** What a hosted search asks: the run's models a search request goes through (on the runner, the session's port: its
+ *  proxy, policy, key, price and cap), handed to each search by its run, never kept per process. */
+export type SearchModels = Pick<Models, "getModel" | "completeSimple">;
 
 type Event = { type?: string; index?: number; content_block?: Record<string, unknown>; delta?: Record<string, unknown>; usage?: Record<string, unknown>; item?: Record<string, unknown>; response?: Record<string, unknown> };
 const list = (value: unknown): Record<string, unknown>[] => (Array.isArray(value) ? value.filter((item) => typeof item === "object" && item !== null) : []);
@@ -99,8 +97,8 @@ function reader(anthropic: boolean) {
 }
 
 /** `query` searched by `ref`'s provider (`provider/model-id`, the model the server resolved web_search on) through the
- *  run's models, at most `n` results: a Search. `models`: the run's (searchOn). */
-export async function hostedSearch(query: string, n: number, ref: string | undefined, signal?: AbortSignal, models = runModels): Promise<Search> {
+ *  run's models (`models`: its own, handed by the run; none, no model to search on), at most `n` results: a Search. */
+export async function hostedSearch(query: string, n: number, ref: string | undefined, signal: AbortSignal | undefined, models: SearchModels | undefined): Promise<Search> {
   const slash = ref?.indexOf("/") ?? -1;
   const provider = ref && slash > 0 ? ref.slice(0, slash) : undefined;
   const id = ref && slash > 0 ? ref.slice(slash + 1) : undefined;

@@ -1,9 +1,11 @@
 // The run's computer at its claim, the one call both runner specs make (the adapter loop's and the CLI's): the agent's
 // computer setting, resolved in the server's mode against the computer module's kind registry (resolveComputer), started
 // for this run under this claim (labels agentrun.run and agentrun.epoch, the run's folder mounted only where the provider
-// mounts it), with a hold and its live view when it is a desktop or a phone, and released once at the run's end. (The
-// owner's take-over over the store is not on this line yet: its routes answer 501, computer-routes.ts.) A computer that cannot be had is refused in words
-// with code computer_unavailable; kind none, or no setting where the server's default is none, is no computer.
+// mounts it), with a hold and its live view when it is a desktop or a phone, and released once at the run's end. The hold
+// goes back to the spec (`held`), whose adapter loop journals it and applies the owner's take-over and hand-back rows to it
+// (runner/computer-journal.ts); the live view (computer-live.ts openClaimView) drives the same hold. A computer that cannot
+// be had is refused in words with code computer_unavailable; kind none, or no setting where the server's default is none,
+// is no computer.
 //
 // A provider is made with its keys (the server's environment's, else the store's sealed keys, through the composer's
 // keyOf: computer-deps.ts), by the names the registry declares, through serve's own
@@ -11,10 +13,15 @@
 // own (the phone's) is given the store's computer ledger. Nothing here knows a vendor: the registry, the providers' create
 // and a test's stand-ins are passed in.
 //
+// A paired computer (a person's own, attached-computers.ts) is one more provider of the registry for the claim, by its
+// id: claimed through the hub of the server's process (the computer package's attachedProvider), released by ending the
+// run's hold, never made or deleted.
+//
 // A persistent setting (the agent's own computer, agent-computer.ts) is made once under the agent's owner (this server's
 // id and the agent's), found again by its owner at each later claim and attached under the new claim, and detached, not
 // deleted, at the run's end. A run that finds it held by another run still going is refused, naming that run.
-import type { BrowserSpec, ComputerConnection, ComputerOwner, ComputerProvider, ComputerSpec, HelloResult, MountReadBack, Result } from "@parcha/agentrun-computer";
+import { randomUUID } from "node:crypto";
+import type { BrowserSpec, ComputerConnection, ComputerOwner, ComputerProvider, ComputerSpec, HelloResult, MountReadBack, Result, ScreenWatch, ScreenWatchHandlers, WatchOptions } from "@parcha/agentrun-computer";
 import { isBrowserProvider, ownerFilter, releaseOlder, RUN_LABEL, runLabels } from "@parcha/agentrun-computer";
 import { computerOfPlace, type ComputerSetting as RevisionComputer, type PlaceView } from "../computer-setting.js";
 import { KEY_TABLE, type KeyTable, type ProviderSettings, providerOptions } from "../computer-keys.js";
@@ -22,6 +29,7 @@ import { getSealedKey } from "../server-keys.js";
 import type { Store } from "../store/index.js";
 import { type AgentComputerHold, agentComputerOf, forgetAgentComputer, holdAgentComputer, keepAgentComputer, liveHolderOf, reconcileAgentComputer, serverIdOf } from "./agent-computer.js";
 import type { MountCheck } from "./attach.js";
+import { type AttachedComputers, pairedProvider, withPaired } from "./attached-computers.js";
 import { computerHold, type HeldComputer, heldHands } from "./computer-hold.js";
 import { type ProviderLedger, storeLedger } from "./computer-ledger.js";
 import { type ClaimBrowser, type ClaimSide, type ComputerSetting, type ComputerSettingKind, type KindRegistry, type LaunchedComputer, type ProviderEntry, providerKeys, resolveComputer } from "./resolve-computer.js";
@@ -67,9 +75,12 @@ export type ProviderExtras = { readonly ledger: ProviderLedger; readonly boxAllo
 /** Why a live view ends: the computer was released, or the run ended. */
 export type ViewEnd = "released" | "ended";
 
-/** The live view of a desktop or a phone, proxy-only, as its registration (computer-live.ts
- *  openComputerView, taken as a dep until it is on the base) opens it at the claim: fenced on the claim, tagged with the
- *  computer's ref id, fed by the provider's watch, and held by the run's take-over hold. */
+/** A computer's live frames and input: its provider's watch on the computer's ref (ComputerProvider.watch). */
+export type WatchOf = (handlers: ScreenWatchHandlers, options: WatchOptions) => Promise<Result<ScreenWatch>>;
+
+/** The live view of a desktop or a phone, proxy-only, as its registration (computer-live.ts openClaimView, which the
+ *  runner composes in) opens it at the claim: fenced on the claim, tagged with the computer's ref id, fed by the
+ *  provider's watch, and held by the run's take-over hold. */
 export type OpenComputerView = (args: {
   readonly store: unknown;
   readonly sealKey: Buffer | undefined;
@@ -78,9 +89,11 @@ export type OpenComputerView = (args: {
   /** How the viewer's input is made into actions: a desktop's, or the phone's platform (its machine kind). */
   readonly input: "desktop" | "android" | "ios";
   readonly tag: string;
-  readonly watch: (signal: AbortSignal) => unknown;
+  /** The launched computer's watch, bound to its ref: the opener gives the handlers and the signal. */
+  readonly watch: WatchOf;
+  /** The run's hold (computer-hold.ts ComputerHold). */
   readonly hold: unknown;
-}) => Promise<{ readonly ok: true; readonly view: { close(why: ViewEnd): unknown } } | { readonly ok: false; readonly refused: "fenced" | "bad_tag" | "kind"; readonly message: string }>;
+}) => Promise<{ readonly ok: true; readonly view: { close(why: ViewEnd): unknown } } | { readonly ok: false; readonly refused: "fenced" | "bad_tag" | "kind" | "failed"; readonly message: string }>;
 
 export interface ComputerForClaimDeps {
   /** The server's folder mode: 1, a folder of this machine; 2, Archil. */
@@ -103,8 +116,10 @@ export interface ComputerForClaimDeps {
   readonly answers?: (provider: string) => Promise<boolean>;
   /** Its daemon's answer (docker-daemon.ts), asked when a launch on such a provider fails (ClaimSide.daemon). */
   readonly daemon?: ClaimSide["daemon"];
-  /** A launch of the server's own in place of the providers' (--faux's desktop). */
+  /** A launch of the server's own in place of the providers' (--faux's desktop), for the providers `launches` takes (by
+   *  id; absent, every one): any other is made by its provider, as with no launch. */
   readonly launch?: ClaimSide["launch"];
+  readonly launches?: (provider: string) => boolean;
   /** The run's folder (mounted only where the provider mounts it) and the mount check attach runs. */
   readonly workspace: Workspace;
   readonly check: MountCheck;
@@ -125,6 +140,9 @@ export interface ComputerForClaimDeps {
    *  phone's adb not on PATH), in words that say how to fix it, or undefined: refused with code computer_unavailable
    *  before anything is rented. Absent: not asked. */
   readonly hostWhy?: (provider: string) => string | undefined;
+  /** The paired computers (attached-computers.ts): each one more provider of `kinds` for this claim, claimed through the
+   *  hub of this process. Absent: none is. */
+  readonly attached?: AttachedComputers;
   /** Why this run's harness takes no computer of `kind`, in words (a CLI harness's of a browser), or undefined: a kind
    *  it refuses is refused with code computer_unavailable before anything is made. Absent: every kind. */
   readonly refuseKind?: (kind: Exclude<ComputerSettingKind, "none">) => string | undefined;
@@ -153,6 +171,9 @@ const claimLost = (words: string): Error => Object.assign(new Error(words), { co
 const noop = async (): Promise<void> => {};
 
 /** The agent's computer setting: the launch's, else its revision's (computer, else place), else the launch's place. */
+/** A claim's create request: the run and its claim epoch, so a retry of the claim's create finds the computer it made. */
+const claimRequestId = (claim: { readonly runId: string; readonly epoch: number }) => `${claim.runId}#${claim.epoch}`;
+
 async function settingOf(launch: ClaimLaunch, store: Pick<Store, "agents">): Promise<ComputerSetting | undefined> {
   if (launch.computer) return launch.computer;
   const body = launch.revisionId ? ((await store.agents.revision(launch.revisionId))?.body as { computer?: RevisionComputer; place?: PlaceView } | undefined) : undefined;
@@ -168,7 +189,6 @@ function phonePlatform(machine: string | undefined, entry: ProviderEntry | undef
   return said === "ios" ? "ios" : "android";
 }
 
-/** The provider's watch of a computer's screen (ComputerProvider.watch), where it has one. */
 /** Told once, before the claim waits on its computer's image being built or pulled; never when the host has it. */
 export type ImageWait = (making: "build" | "pull", tag: string) => void;
 /** What a computer the claim made says it is, once it is connected: the provider's name in words, the agent's setting
@@ -191,9 +211,9 @@ async function readyImage(entry: ProviderEntry, provider: ComputerProvider, sign
   return ready.value;
 }
 
-type Watching = { watch(ref: { readonly id: string; readonly name: string }, context: { readonly signal: AbortSignal }): unknown };
-const watching = (provider: ComputerProvider): Watching | undefined =>
-  typeof (provider as Partial<Watching>).watch === "function" ? (provider as unknown as Watching) : undefined;
+/** The provider's watch of a computer's screen on `ref` (ComputerProvider.watch), where it has one. */
+const watchOf = (provider: ComputerProvider, ref: { readonly id: string; readonly name: string }): WatchOf | undefined =>
+  typeof provider.watch === "function" ? (handlers, options) => provider.watch!(ref, handlers, options) : undefined;
 
 /** The browser computer `ref`'s CDP URL now: the provider's connect (its signed URL), its words and code when the session
  *  has ended. The connection itself is let go once read. */
@@ -244,7 +264,8 @@ export function claimBrowser(provider: ComputerProvider, spec: ComputerSpec): { 
       features: structuredClone(features),
       async open(tag, lifetimeS, browser?: BrowserSpec, signal?: AbortSignal) {
         const lifetimeMs = Math.min(lifetime, Math.max(1, Math.round(lifetimeS)) * 1000);
-        const created = await provider.create({ ...spec, lifetimeMs, labels: { ...spec.labels, [SESSION_TAG]: labelValue(tag) }, ...(browser ? { browser } : {}) }, signal ? { signal } : {});
+        // Each open is its own request: a session closed and opened again under one tag is a new one.
+        const created = await provider.create({ ...spec, lifetimeMs, labels: { ...spec.labels, [SESSION_TAG]: labelValue(tag) }, ...(browser ? { browser } : {}) }, { requestId: randomUUID(), ...(signal ? { signal } : {}) });
         if (!created.ok) throw failed(created.error);
         open.add(created.value.id);
         return created.value.id;
@@ -285,10 +306,11 @@ async function providerLaunch(
   claim: { readonly runId: string; readonly epoch: number },
   spec: ComputerSpec,
   signal: AbortSignal | undefined,
-): Promise<LaunchedComputer & { machine: string; hello: HelloResult; watch?: (signal: AbortSignal) => unknown }> {
+): Promise<LaunchedComputer & { machine: string; hello: ComputerSaid["hello"]; watch?: WatchOf }> {
   const older = await releaseOlder(provider, claim.runId, claim.epoch, signal ? { signal } : {});
   if (!older.ok) throw new Error(older.error.message);
-  const created = await provider.create(spec, signal ? { signal } : {});
+  // The claim is the request: a retry of this launch under the same epoch gets the computer it made, never a second.
+  const created = await provider.create(spec, { requestId: claimRequestId(claim), ...(signal ? { signal } : {}) });
   if (!created.ok) throw new Error(created.error.message);
   const ref = { id: created.value.id, name: created.value.name };
   const release = async () => {
@@ -301,6 +323,7 @@ async function providerLaunch(
     throw new Error(connected.error.message);
   }
   const { client, hello } = connected.value;
+  const watch = watchOf(provider, ref);
   return {
     id: ref.id,
     groups: hello.groups,
@@ -314,7 +337,7 @@ async function providerLaunch(
       return attached.value.spec.mount ? { ok: true, value: attached.value.spec.mount } : { ok: false, error: { code: "not_found", message: "nothing is mounted in this computer" } };
     },
     // The provider's watch of the screen (provider.watch), which feeds the run's proxied live view.
-    ...(watching(provider) ? { watch: (signal: AbortSignal) => watching(provider)!.watch(ref, { signal }) } : {}),
+    ...(watch ? { watch } : {}),
     async release() {
       await connected.value.close().catch(() => undefined);
       await release();
@@ -350,7 +373,7 @@ async function ownedLaunch(
   spec: ComputerSpec,
   context: OwnedContext,
   signal: AbortSignal | undefined,
-): Promise<LaunchedComputer & { machine: string; hello: HelloResult; watch?: (signal: AbortSignal) => unknown }> {
+): Promise<LaunchedComputer & { machine: string; hello: HelloResult; watch?: WatchOf }> {
   const { store, agentId } = context;
   // One run at a time, taken in the store before anything is listed or made (agent-computer.ts holdAgentComputer): two
   // runs of the agent that claim at once never both make a computer. With no run rows to read, a holder is still going.
@@ -383,7 +406,7 @@ async function ownedStart(
   context: OwnedContext,
   hold: AgentComputerHold,
   signal: AbortSignal | undefined,
-): Promise<LaunchedComputer & { machine: string; hello: HelloResult; watch?: (signal: AbortSignal) => unknown }> {
+): Promise<LaunchedComputer & { machine: string; hello: HelloResult; watch?: WatchOf }> {
   const call = signal ? { signal } : {};
   const { store, agentId, note } = context;
   const older = await releaseOlder(provider, claim.runId, claim.epoch, call);
@@ -410,7 +433,7 @@ async function ownedStart(
     made = false;
     note(`Attached this agent's computer ${ref.name}, kept from its last run.`);
   } else {
-    const created = await provider.create(spec, call);
+    const created = await provider.create(spec, { ...call, requestId: claimRequestId(claim) });
     if (!created.ok) throw new Error(created.error.message);
     ref = { id: created.value.id, name: created.value.name };
     made = true;
@@ -470,7 +493,8 @@ async function ownedStart(
     async readBack(): Promise<Result<MountReadBack>> {
       return { ok: false, error: { code: "not_found", message: "an agent's own computer mounts no run's folder" } };
     },
-    ...(watching(provider) ? { watch: (signal: AbortSignal) => watching(provider)!.watch(ref, { signal }) } : {}),
+    // The provider's watch of the screen, which feeds the run's proxied live view, as a made computer's.
+    ...(watchOf(provider, ref) ? { watch: watchOf(provider, ref)! } : {}),
     async release() {
       await connected.close().catch(() => undefined);
       await detach();
@@ -487,31 +511,41 @@ export async function computerForClaim(
   deps: ComputerForClaimDeps,
 ): Promise<ClaimComputer> {
   const table = deps.keyTable ?? KEY_TABLE;
+  // The paired computers, each one more provider of the registry (attached-computers.ts): a setting names one by its id.
+  const paired = deps.attached ? await deps.attached.rows() : [];
+  const kinds = withPaired(deps.kinds, paired);
   /** The computer this claim started (one per claim): its ref id tags its live view, and its watch feeds it. */
-  let made: { readonly id: string; readonly machine?: string; readonly watch?: (signal: AbortSignal) => unknown } | undefined;
+  let made: { readonly id: string; readonly machine?: string; readonly watch?: WatchOf } | undefined;
   /** The provider entry it was started from: a phone's platform where the computer did not say it. */
   let madeBy: ProviderEntry | undefined;
+  /** A vendor's provider (or a local one's), made with the keys and the configuration the setting selected: that
+   *  configuration is built by its own create() options (Orgo's Windows: { os: "windows" }), beside the keys'. */
+  const vendorProvider = async (entry: ProviderEntry, keys: Readonly<Record<string, string>>, configuration: { readonly options?: Readonly<Record<string, unknown>> }): Promise<ComputerProvider> => {
+    const make = Object.hasOwn(deps.providers, entry.id) ? deps.providers[entry.id] : undefined;
+    if (!make) throw new Error(`this server has no ${entry.label} provider to start one with`);
+    const options = providerOptions(entry.id, keys, deps.settings ?? {}, table);
+    if (!options.ok) throw new Error(options.error.message);
+    return make({ ...options.options, ...configuration.options }, { ledger: storeLedger(store.computerLedger, entry.id), ...(launch.boxAllow === undefined ? {} : { boxAllow: launch.boxAllow }) });
+  };
   const side: ClaimSide = {
-    keysOf: providerKeys(deps.kinds, deps.keyOf ?? (async (name) => (deps.sealKey ? await getSealedKey(store, deps.sealKey, name) : undefined))),
+    keysOf: providerKeys(kinds, deps.keyOf ?? (async (name) => (deps.sealKey ? await getSealedKey(store, deps.sealKey, name) : undefined))),
     answers: deps.answers ?? (async () => false),
     ...(deps.daemon ? { daemon: deps.daemon } : {}),
     async launch(entry, { kind, keys, configuration, mount, gpu, persistent, signal }) {
+      const ownLaunch = deps.launch && (deps.launches?.(entry.id) ?? true) ? deps.launch : undefined;
       // An agent's own computer needs its agent and the store's record of it; the server's launch (--faux) keeps none.
-      if (persistent && (deps.launch || launch.agentId === undefined || store.settings === undefined)) throw new Error("this run can't keep its agent's own computer here: start it again with persistent off");
-      if (deps.launch) {
-        const own = await deps.launch(entry, { kind, keys, configuration, ...(mount ? { mount } : {}), ...(gpu ? { gpu } : {}), ...(signal ? { signal } : {}) });
-        const ownWatch = (own as unknown as { watch?: (signal: AbortSignal) => unknown }).watch;
+      if (persistent && (ownLaunch || launch.agentId === undefined || store.settings === undefined)) throw new Error("this run can't keep its agent's own computer here: start it again with persistent off");
+      // A paired computer is claimed through the hub of this process (attachedProvider), never made: --faux's launch,
+      // which stands in for the vendors', is not its.
+      const pairedRow = paired.find((row) => row.id === entry.id);
+      if (ownLaunch && !pairedRow) {
+        const own = await ownLaunch(entry, { kind, keys, configuration, ...(mount ? { mount } : {}), ...(gpu ? { gpu } : {}), ...(signal ? { signal } : {}) });
+        const ownWatch = (own as unknown as { watch?: WatchOf }).watch;
         made = { id: own.id, ...(ownWatch ? { watch: ownWatch } : {}) };
         madeBy = entry;
         return own;
       }
-      const make = Object.hasOwn(deps.providers, entry.id) ? deps.providers[entry.id] : undefined;
-      if (!make) throw new Error(`this server has no ${entry.label} provider to start one with`);
-      const options = providerOptions(entry.id, keys, deps.settings ?? {}, table);
-      if (!options.ok) throw new Error(options.error.message);
-      // The configuration the setting selected is built by its own create() options (Orgo's Windows: { os: "windows" }),
-      // beside the keys'.
-      const provider = await make({ ...options.options, ...configuration.options }, { ledger: storeLedger(store.computerLedger, entry.id), ...(launch.boxAllow === undefined ? {} : { boxAllow: launch.boxAllow }) });
+      const provider = pairedRow ? pairedProvider(pairedRow, deps.attached?.hub) : await vendorProvider(entry, keys, configuration);
       // What this provider makes, as it declares it: the spec asks for one of its networks, within its lifetime
       // (computer-deps.ts computerSpecOf).
       const { network: networks, maxLifetimeMs } = provider.capabilities();
@@ -562,7 +596,7 @@ export async function computerForClaim(
     },
   };
 
-  const resolved = await resolveComputer(await settingOf(launch, store), deps.mode, deps.kinds, side);
+  const resolved = await resolveComputer(await settingOf(launch, store), deps.mode, kinds, side);
   if ("refused" in resolved) throw unavailable(resolved.refused);
   if (resolved.kind === "none") return { computer: undefined, release: noop };
   const refusedKind = deps.refuseKind?.(resolved.kind);
@@ -594,7 +628,7 @@ export async function computerForClaim(
     if (deps.openComputerView && made?.watch) {
       const watch = made.watch;
       const input = computer.kind === "desktop" ? "desktop" : phonePlatform(made.machine, madeBy);
-      const opened = await deps.openComputerView({ store, sealKey: deps.sealKey, claim: launch.claim ?? { runId: launch.runId, epoch: launch.epoch }, kind: computer.kind, input, tag: made.id, watch: (signal) => watch(signal), hold: theHold });
+      const opened = await deps.openComputerView({ store, sealKey: deps.sealKey, claim: launch.claim ?? { runId: launch.runId, epoch: launch.epoch }, kind: computer.kind, input, tag: made.id, watch, hold: theHold });
       if (!opened.ok) {
         await started.release().catch(() => undefined);
         await revoke().catch(() => undefined);

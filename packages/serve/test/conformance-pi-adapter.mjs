@@ -10,7 +10,7 @@ const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { piAdapter } = await import("../dist/runner/adapters/pi.js");
 const { MAX_RESTARTS } = await import("../dist/runner/conformance/harness.js");
 
-export const MODEL = "claude-sonnet-4-5";
+export const MODEL = "claude-sonnet-5-5";
 const sse = (events) => new Response(events.map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(""), { status: 200, headers: { "content-type": "text/event-stream" } });
 const textOf = (message) => (typeof message?.content === "string" ? message.content : (message?.content ?? []).map((part) => (part.type === "text" ? part.text : "")).join(""));
 

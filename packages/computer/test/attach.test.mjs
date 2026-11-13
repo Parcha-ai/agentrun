@@ -3,10 +3,22 @@
 // hello that is not what the computer paired as is closed with its code; one run holds the computer at a time.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ATTACH_CLOSE, AttachHub, attachedProvider, conformanceCases, formatReport, redialDelay, redials, runConformance, socketStreams } from "../dist/index.js";
+import { ATTACH_CLOSE, AttachHub, attachedProvider, conformanceCases, formatReport, kindServed, redialDelay, redials, runConformance, socketStreams } from "../dist/index.js";
 import { FakeUiDriver, serveUiSocket, UI_FIXTURE } from "../dist/fake-ui-driver.js";
 
 const APP = UI_FIXTURE.id;
+/** The groups a desktop must declare to be given to an agent, and the ui group these tests call. */
+const DESKTOP = ["screen", "input.pointer", "input.keys", "apps", "ui"];
+/** A new create request: each create below is its own unless a test retries one. */
+let requests = 0;
+const req = () => ({ requestId: `attach-test-${++requests}` });
+
+/** A Mac's driver as serve sees it: a desktop that declares what a desktop needs. The fake answers apps and ui alone, all these tests call. */
+class Mac extends FakeUiDriver {
+	constructor(options = {}) {
+		super({ groups: DESKTOP, ...options });
+	}
+}
 
 /** Two ends of one socket, delivering in order, closing both ends at once. */
 function socketPair() {
@@ -47,7 +59,7 @@ async function dial(hub, paired, driver) {
 const pairedFor = (driver, id = "c-1") => ({ id, name: "Test Mac", hello: driver.hello(), labels: { owner: "test" } });
 
 test("the ui cases pass through the attach binding, and the run's hold ends on release", { timeout: 60_000 }, async () => {
-	const driver = new FakeUiDriver();
+	const driver = new Mac();
 	const hub = new AttachHub();
 	const paired = pairedFor(driver);
 	const { accepted } = await dial(hub, paired, driver);
@@ -61,7 +73,7 @@ test("the ui cases pass through the attach binding, and the run's hold ends on r
 });
 
 test("a drop fails the calls in flight with gone; a redial is a fresh connection, whose refs are its own", async () => {
-	const driver = new FakeUiDriver();
+	const driver = new Mac();
 	const hub = new AttachHub();
 	const paired = pairedFor(driver);
 	const first = await dial(hub, paired, driver);
@@ -86,7 +98,7 @@ test("a drop fails the calls in flight with gone; a redial is a fresh connection
 });
 
 test("a second socket from the same computer replaces the first", async () => {
-	const driver = new FakeUiDriver();
+	const driver = new Mac();
 	const hub = new AttachHub();
 	const paired = pairedFor(driver);
 	const first = await dial(hub, paired, driver);
@@ -105,14 +117,14 @@ test("an older dial whose hello answers after a newer one went live is closed, n
 	const gate = new Promise((resolve) => {
 		answer = resolve;
 	});
-	class Slow extends FakeUiDriver {
+	class Slow extends Mac {
 		async handle(engine, method, params, signal) {
 			if (method === "hello") await gate;
 			return super.handle(engine, method, params, signal);
 		}
 	}
 	const slow = new Slow();
-	const quick = new FakeUiDriver();
+	const quick = new Mac();
 	const paired = pairedFor(quick);
 	const [olderServe, olderComputer] = socketPair();
 	serveUiSocket(slow, olderComputer);
@@ -136,7 +148,7 @@ test("a socket that closes while it says hello never goes live", async () => {
 	const gate = new Promise((resolve) => {
 		answer = resolve;
 	});
-	class Slow extends FakeUiDriver {
+	class Slow extends Mac {
 		async handle(engine, method, params, signal) {
 			if (method === "hello") await gate;
 			return super.handle(engine, method, params, signal);
@@ -157,7 +169,7 @@ test("a socket that closes while it says hello never goes live", async () => {
 });
 
 test("a run's connection outlives a redial: gone while the computer is away; the first call after it is refused gone unrun (its old refs and handles are void), then its calls go over the new socket", async () => {
-	const driver = new FakeUiDriver();
+	const driver = new Mac();
 	const hub = new AttachHub();
 	const paired = pairedFor(driver);
 	const first = await dial(hub, paired, driver);
@@ -183,12 +195,12 @@ test("a run's connection outlives a redial: gone while the computer is away; the
 test("a hello that is not what the computer paired as is closed: another kind with mismatch, another protocol with protocol", async () => {
 	const hub = new AttachHub();
 	const phone = new FakeUiDriver({ os: "android", kind: "android" });
-	const mac = new FakeUiDriver();
+	const mac = new Mac();
 	const wrongKind = await dial(hub, pairedFor(phone), mac);
 	assert.equal(wrongKind.accepted.ok, false);
 	assert.match(wrongKind.accepted.error.message, /paired as a android android and now says macos desktop: pair it again/);
 	assert.equal(wrongKind.serve.closed.code, ATTACH_CLOSE.mismatch);
-	class Old extends FakeUiDriver {
+	class Old extends Mac {
 		hello() {
 			return { ...super.hello(), protocol: "0.1" };
 		}
@@ -200,13 +212,34 @@ test("a hello that is not what the computer paired as is closed: another kind wi
 	assert.equal(hub.online("c-1"), false);
 });
 
+test("a desktop whose hello lacks the pointer and keys is closed at connect with protocol, naming its os, its kind and the groups, and stops dialing", async () => {
+	const hub = new AttachHub();
+	// What the first Mac driver said: a desktop with no input.pointer and no input.keys, which no agent can be given.
+	const lacking = new FakeUiDriver({ groups: ["exec", "files", "screen", "apps", "ui"] });
+	const { serve, accepted } = await dial(hub, pairedFor(lacking), lacking);
+	assert.equal(accepted.ok, false);
+	assert.equal(serve.closed.code, ATTACH_CLOSE.protocol);
+	assert.equal(accepted.error.message, "Test Mac says it is a macos desktop but declares no input.pointer, input.keys: update the driver on Test Mac (the download is on the console's Computers page)");
+	assert.equal(redials(serve.closed.code), false, "a person updates the driver before it dials again");
+	assert.equal(hub.online("c-1"), false);
+	const phone = new FakeUiDriver({ os: "android", kind: "android", groups: ["screen", "apps", "ui"] });
+	const refused = await dial(hub, pairedFor(phone, "p-1"), phone);
+	assert.match(refused.accepted.error.message, /^Test Mac says it is a android android but declares no input\.touch: /);
+	const served = new Mac();
+	assert.equal((await dial(hub, pairedFor(served), served)).accepted.ok, true, "the same machine declaring what a desktop needs goes live");
+	assert.deepEqual(kindServed(served.hello()), []);
+	assert.deepEqual(kindServed({ kind: "desktop", groups: ["apps", "ui"] }), ["screen", "input.pointer", "input.keys"]);
+	assert.deepEqual(kindServed({ kind: "browser", groups: ["cdp"] }), []);
+	assert.deepEqual(kindServed({ kind: "linux", groups: ["exec"] }), ["files", "processes"]);
+});
+
 test("a revoke while the computer says hello closes that socket too: a removed computer never comes back", async () => {
 	const hub = new AttachHub();
 	let answer;
 	const gate = new Promise((resolve) => {
 		answer = resolve;
 	});
-	class Slow extends FakeUiDriver {
+	class Slow extends Mac {
 		async handle(engine, method, params, signal) {
 			if (method === "hello") await gate;
 			return super.handle(engine, method, params, signal);
@@ -229,8 +262,8 @@ test("a revoke while the computer says hello closes that socket too: a removed c
 
 test("a hello with no protocol or version is closed with protocol and the update words, never left open", async () => {
 	const hub = new AttachHub();
-	const mac = new FakeUiDriver();
-	class Blank extends FakeUiDriver {
+	const mac = new Mac();
+	class Blank extends Mac {
 		hello() {
 			return {};
 		}
@@ -240,7 +273,7 @@ test("a hello with no protocol or version is closed with protocol and the update
 	assert.equal(blank.serve.closed.code, ATTACH_CLOSE.protocol);
 	assert.match(blank.accepted.error.message, /answered hello without its protocol and version: update the driver on Test Mac/);
 	// A hello of this protocol without a field serve reads is refused at the door, never met later as a throw.
-	class NoGroups extends FakeUiDriver {
+	class NoGroups extends Mac {
 		hello() {
 			const { groups: _groups, arch: _arch, ...rest } = super.hello();
 			return rest;
@@ -254,7 +287,7 @@ test("a hello with no protocol or version is closed with protocol and the update
 
 test("a driver that answers pings but never hello is closed idle once the hello wait ends, saying so", async () => {
 	const hub = new AttachHub({ helloMs: 50 });
-	class Mute extends FakeUiDriver {
+	class Mute extends Mac {
 		async handle(engine, method, params, signal) {
 			if (method === "hello") return new Promise(() => {});
 			return super.handle(engine, method, params, signal);
@@ -275,11 +308,11 @@ test("a driver that answers pings but never hello is closed idle once the hello 
 
 test("a driver updated within the protocol is accepted, and the provider's version and groups follow its live hello", async () => {
 	const hub = new AttachHub();
-	const driver = new FakeUiDriver();
+	const driver = new Mac();
 	const paired = pairedFor(driver);
-	class Updated extends FakeUiDriver {
+	class Updated extends Mac {
 		hello() {
-			return { ...super.hello(), version: "fake.2", groups: ["apps", "ui", "screen"] };
+			return { ...super.hello(), version: "fake.2", groups: [...DESKTOP, "files"] };
 		}
 	}
 	const provider = attachedProvider(paired, hub);
@@ -287,31 +320,43 @@ test("a driver updated within the protocol is accepted, and the provider's versi
 	const updated = await dial(hub, paired, new Updated());
 	assert.equal(updated.accepted.ok, true);
 	assert.equal(provider.version, "fake.2");
-	assert.deepEqual(provider.capabilities().groups, ["apps", "ui", "screen"]);
+	assert.deepEqual(provider.capabilities().groups, [...DESKTOP, "files"]);
 	const connected = await provider.connect({ id: paired.id, name: paired.name });
 	assert.equal(connected.value.hello.version, provider.version, "the drift check's two versions agree");
 });
 
 test("one run holds an attached computer; offline refuses create; release never stops it; revoke closes it", async () => {
-	const driver = new FakeUiDriver();
+	const driver = new Mac();
 	const hub = new AttachHub();
 	const paired = pairedFor(driver);
 	const provider = attachedProvider(paired, hub);
 	const spec = { image: "attached", lifetimeMs: 60_000, network: "open", labels: { run: "a" } };
-	const offline = await provider.create(spec);
+	const offline = await provider.create(spec, req());
 	assert.equal(offline.error.code, "gone");
 	assert.match(offline.error.message, /is not attached now/);
+	assert.equal((await provider.create(spec)).error.code, "invalid", "a create with no request id");
 	const { serve } = await dial(hub, paired, driver);
-	const held = (await provider.create(spec)).value;
+	const request = req();
+	const held = (await provider.create(spec, request)).value;
 	assert.match(held.id, new RegExp(`^${paired.id}\\.[0-9a-f]{16}$`), "the run's ref names its hold");
-	const second = await provider.create({ ...spec, labels: { run: "b" } });
+	assert.equal((await provider.create(spec, request)).value.id, held.id, "the same request again answers its hold");
+	const relabelled = await provider.create({ ...spec, labels: { run: "b" } }, request);
+	assert.equal(relabelled.error.code, "exists", "the same request id with other labels is another request");
+	assert.match(relabelled.error.message, /other labels/);
+	assert.equal((await provider.create({ ...spec, labels: { run: "a", extra: "1" } }, request)).error.code, "exists", "labels beyond the claim's");
+	assert.equal((await provider.create({ ...spec, labels: {} }, request)).error.code, "exists", "labels short of the claim's");
+	assert.equal((await provider.create(spec, request)).value.id, held.id, "the claim's own labels still answer");
+	const second = await provider.create({ ...spec, labels: { run: "b" } }, req());
 	assert.equal(second.error.code, "refused");
 	assert.deepEqual((await provider.list({ run: "a" })).value.map((one) => one.ref.id), [held.id]);
 	assert.deepEqual((await provider.list({ run: "b" })).value, []);
 	assert.equal((await provider.release(held, "stop")).error.code, "unsupported");
 	assert.equal((await provider.release({ id: paired.id, name: paired.name }, "delete")).error.code, "invalid", "release names a hold, never the computer");
 	assert.equal((await provider.release(held, "delete")).ok, true);
-	assert.equal((await provider.create({ ...spec, labels: { run: "b" } })).ok, true, "released, another run may hold it");
+	const spent = await provider.create(spec, request);
+	assert.equal(spent.error.code, "exists", "the same request after its hold ended");
+	assert.match(spent.error.message, /was made for this request and has ended: create with a new request id/);
+	assert.equal((await provider.create({ ...spec, labels: { run: "b" } }, req())).ok, true, "released, another run may hold it");
 	hub.revoke(paired.id, "the owner removed this computer");
 	assert.equal(serve.closed.code, ATTACH_CLOSE.unauthorized);
 	assert.equal(redials(ATTACH_CLOSE.unauthorized), false);
@@ -320,19 +365,19 @@ test("one run holds an attached computer; offline refuses create; release never 
 });
 
 test("a run's release closes its connections: their calls in flight are cancelled and later ones refused, so the next run's computer is its own; a narrowed network is refused", async () => {
-	const driver = new FakeUiDriver();
+	const driver = new Mac();
 	const hub = new AttachHub();
 	const paired = pairedFor(driver);
 	const provider = attachedProvider(paired, hub);
 	await dial(hub, paired, driver);
 	const spec = { image: "attached", lifetimeMs: 60_000, network: "open", labels: { run: "a" } };
 	for (const network of ["none", { allow: ["example.com"] }]) {
-		const refused = await provider.create({ ...spec, network });
+		const refused = await provider.create({ ...spec, network }, req());
 		assert.equal(refused.error.code, "refused");
 		assert.match(refused.error.message, /a person's own machine on its own network, which a run cannot block or limit/);
 	}
 	assert.equal((await provider.network({ id: paired.id, name: paired.name }, "none")).error.code, "refused");
-	const a = (await provider.create(spec)).value;
+	const a = (await provider.create(spec, req())).value;
 	const first = (await provider.connect(a)).value;
 	await first.client.call("apps.launch", { id: APP });
 	const waiting = first.client.call("ui.act", { steps: [], expect: { text: "never", timeoutMs: 30_000 } });
@@ -341,7 +386,7 @@ test("a run's release closes its connections: their calls in flight are cancelle
 	assert.equal((await waiting).error.code, "aborted", "the released run's call in flight is cancelled");
 	assert.equal((await first.client.call("ping", {})).error.code, "gone", "and its later calls are refused");
 	assert.equal((await provider.connect(a)).error?.code, "gone", "and it cannot connect again under its ended hold");
-	const b = (await provider.create({ ...spec, labels: { run: "b" } })).value;
+	const b = (await provider.create({ ...spec, labels: { run: "b" } }, req())).value;
 	const second = (await provider.connect(b)).value;
 	assert.equal((await second.client.call("ping", {})).ok, true, "the next run's connection works over the same socket");
 	assert.equal((await provider.release(a, "delete")).ok, true, "a late release of the ended hold answers ok");
@@ -352,30 +397,30 @@ test("a run's release closes its connections: their calls in flight are cancelle
 });
 
 test("a run's hold on an attached computer ends at its lifetime, released or not: its connections close, the next run may claim it, and the machine stays attached", async () => {
-	const driver = new FakeUiDriver();
+	const driver = new Mac();
 	const hub = new AttachHub();
 	const paired = pairedFor(driver);
 	const provider = attachedProvider(paired, hub);
 	const { serve } = await dial(hub, paired, driver);
 	const spec = { image: "attached", lifetimeMs: 80, network: "open", labels: { run: "a" } };
-	const a = (await provider.create(spec)).value;
+	const a = (await provider.create(spec, req())).value;
 	const [held] = (await provider.list({ run: "a" })).value;
 	assert.ok(held.deadline instanceof Date && held.deadline.getTime() > Date.now(), "the hold reports its deadline");
 	assert.ok((await provider.attach({ id: a.id })).value.spec.deadline instanceof Date);
 	const run = (await provider.connect(a)).value;
 	assert.equal((await run.client.call("ping", {})).ok, true);
-	assert.equal((await provider.create({ ...spec, labels: { run: "b" } })).error?.code, "refused", "held until its deadline");
+	assert.equal((await provider.create({ ...spec, labels: { run: "b" } }, req())).error?.code, "refused", "held until its deadline");
 	await new Promise((resolve) => setTimeout(resolve, 150));
 	assert.equal((await run.client.call("ping", {})).error?.code, "gone", "the expired run's connection is closed");
 	assert.equal(hub.claimed(paired.id), undefined);
 	assert.equal(hub.online(paired.id), true, "the person's machine stays attached");
 	assert.equal(serve.closed, undefined);
-	const b = (await provider.create({ ...spec, labels: { run: "b" }, lifetimeMs: 60_000 })).value;
+	const b = (await provider.create({ ...spec, labels: { run: "b" }, lifetimeMs: 60_000 }, req())).value;
 	assert.ok(b, "the next run claims it");
 	assert.equal((await provider.release(a, "delete")).ok, true, "run a's late release, after its deadline");
 	assert.deepEqual(hub.claimed(paired.id), { run: "b" }, "leaves run b's hold");
 	assert.equal((await provider.release(b, "delete")).ok, true);
-	const agent = await provider.create({ image: "attached", network: "open", labels: { agent: "x" }, owner: { agent: "x" } });
+	const agent = await provider.create({ image: "attached", network: "open", labels: { agent: "x" }, owner: { agent: "x" } }, req());
 	assert.equal(agent.ok, true, JSON.stringify(agent));
 	assert.equal(hub.deadline(paired.id), undefined, "an agent's hold has no deadline");
 	driver.close();

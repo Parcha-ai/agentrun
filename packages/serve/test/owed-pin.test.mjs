@@ -62,7 +62,9 @@ test("owed is set in exactly four places, in browser-cost.ts, for money already 
 // `hold` (kernel/cap run-cap.ts) gives a step back on a lost claim: money reserved, never booked as cut. So only the
 // browser's holds set it, in browser-cost.ts: its ledger holds (holdOf: a session's reserve, a reopen's, a delayed
 // release, a person's time) and a browser call's hold. Every other `hold: true` only passes on the one it was given; the
-// recorder's credential `hold` (pi-browser, which reaches no ledger) is another word for another thing.
+// recorder's credential `hold` (pi-browser, which reaches no ledger) is another word for another thing. Words in a
+// string (a held computer's "a run started with hold: true", computer-held.ts) set nothing: strings are read as empty.
+const STRINGS = /"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`/g;
 test("hold is set in exactly two places, in browser-cost.ts, on the browser's hold-only steps; elsewhere only passed on", () => {
   const setters = [];
   const passes = [];
@@ -71,7 +73,7 @@ test("hold is set in exactly two places, in browser-cost.ts, on the browser's ho
     if (where === "pi-browser/src/recorder/credential.ts") continue;
     readFileSync(file, "utf8").split("\n").forEach((line, i) => {
       if (/^\s*(\/\/|\*|\/\*)/.test(line)) return;
-      for (const match of line.matchAll(/\bhold:\s*true(\s+as const)?/g)) {
+      for (const match of line.replace(STRINGS, '""').matchAll(/\bhold:\s*true(\s+as const)?/g)) {
         if (match[1]) passes.push({ where: `${where}:${i + 1}`, passedOn: /\.hold \? \{ hold: true as const \} : \{\}/.test(line) });
         else setters.push({ where: `${where}:${i + 1}`, line });
       }

@@ -131,6 +131,8 @@ export const said = {
   /** A run whose only work was its learned workflows, each answering, with nothing said after its first message: it was
    *  not asked to look back (runner/learning-end.ts onlyLearnedWorkflows). */
   onlyWorkflow: "Nothing new: the run only ran a learned workflow.",
+  /** A run started with `learning: "use"`: it read what its agent learned and kept nothing, as asked. */
+  use: "Used what its agent learned; this run keeps nothing.",
   /** A merge whose every item the owner has since retired: nothing it learned is kept now. */
   retiredSince: "What it learned was retired since.",
   /** The run's answer gave its notes, but not in the format asked for, so none was read. */
@@ -149,6 +151,10 @@ export const said = {
     ? "Not kept: a note it would replace is gone or was changed since."
     : `Not kept: the agent's notes changed while this run ran (${rulesIn(problems)}).`,
   noBudget: "Skipped: no budget left in this run to look back.",
+  /** The run's grade did not fit what its cap left (its learning run's cap): not run, so nothing it learned is kept. */
+  noRoomToGrade: "Not graded: no room under the cap.",
+  /** A grade under a cap whose cost can't be kept within it (its spend or the grade model's price unknown). */
+  gradeUncapped: "Not graded: the grade's cost can't be kept under the cap.",
   unknownCost: "Skipped: this run's spend is unknown, so its budget can't cover looking back.",
   stopped: (cause: string) => `Not kept: learning stopped (${cause}).`,
 };

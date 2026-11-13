@@ -34,6 +34,10 @@ export type TriggerAdapter = {
   /** What it keeps sealed (sealed-settings-store.ts), for the server or for each trigger: a field it mints (a signing secret)
    *  is made at a trigger's create and at a rotation, shown once, and goes with the trigger. */
   settings?: SettingsSpec;
+  /** Whether a trigger of this source keeps a secret its sender gave (a create's and a rotation's `secret`, Composio's)
+   *  instead of one this server mints: then the secret is required there, sealed as a minted one is, and never made
+   *  here. Default: it mints. */
+  givesSecret?(source: Source): boolean;
   /** Its shapes as a create's error names them: `{kind: "..."}` with its fields. */
   describe: string;
   /** When it fires, for the OpenAPI document's source description. */

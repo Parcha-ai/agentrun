@@ -25,7 +25,7 @@ const ECHOING = {
     streams: [sse([{ name: "message_start", data: { type: "message_start", message: { id: "msg_1", type: "message", role: "assistant", content: [], usage: { input_tokens: 3, output_tokens: 1 } } } }, { name: "error", data: { type: "error", error: { type: "authentication_error", message: `upstream refused key ${PLANTED}` } } }])],
   },
   "openai-responses": {
-    model: "gpt-5",
+    model: "gpt-6.1-sol",
     answer: () => ({ error: { message: `Incorrect API key provided: ${PLANTED}. You can find your API key at the provider.`, type: "invalid_request_error", code: "invalid_api_key" } }),
     streams: [
       sse([{ data: { type: "response.created", response: { id: "resp_1", status: "in_progress", output: [] } } }, { data: { type: "error", code: "invalid_api_key", message: `Incorrect API key provided: ${PLANTED}.` } }]),

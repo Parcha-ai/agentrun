@@ -12,7 +12,7 @@
 // edit's result name a path in the workspace relative to it (`hello.md`), never by the server's data directory
 // (`workspaceRelative`); in a box they name the box's paths. The runner's adapter loop gates each call before its intent
 // (tool-gate.ts RunGate.decide), so a call that reaches a host tool here was allowed.
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { withAbortSignal } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { ROOT_CONVERSATION_ID, type ToolExecutionApi, type ToolRegistration } from "@earendil-works/pi-durable";

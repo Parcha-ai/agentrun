@@ -432,7 +432,7 @@ export function settingsIssues(value: unknown, at = "", layer: "server" | "agent
       }
       if (key === "permission") {
         // A wildcard sets each tool of its server's: a catalog tool's permissions.
-        const offered = permissionsOf(isMcpTool(name) ? name : name.replace(/\/\*$/, "/_"));
+        const offered = permissionsOf(name);
         return offered.includes(given as Permission) ? [] : [{ field: field(name, key), reason: "not_an_option", message: `${field(name, key)} is one of ${offered.join(", ")}` }];
       }
       if (key !== "provider" || !pickable) return [{ field: field(name, key), reason: "not_allowed", message: `${field(name)} keeps no field ${key}.` }];
@@ -496,7 +496,7 @@ export function checkToolSettings(read: unknown, where: string): { settings: Too
       else kept.pin = setting.pin as Pin;
     }
     if (setting.permission !== undefined) {
-      const offered = permissionsOf(isMcpTool(name) ? name : name.replace(/\/\*$/, "/_"));
+      const offered = permissionsOf(name);
       if (offered.includes(setting.permission as Permission)) kept.permission = setting.permission as Permission;
       else {
         // Its fail-closed stand-in, marked so: an ask nobody set lets nothing run unasked (tool-gate.ts SHELL_WATCHERS).

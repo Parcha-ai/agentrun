@@ -14,12 +14,16 @@ import type { Revision } from "./agent-rows.js";
 import type { MessageOrigin } from "./timeline/index.js";
 import { type AgentEntry, type ExternalRef, externalKey, getAgent } from "./agents-store.js";
 import { CAP_TOLERANCE, money } from "./cap.js";
+import { holdOf } from "./computer-held.js";
+import { computerOfPlace, settingOfDefinition } from "./computer-setting.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
 import { harnessOfBody } from "./harness.js";
 import { redacted, redactedOutput } from "./key-refusal.js";
-import { chooseWorkflows, LEARNING_BUDGET, learnedParts, type LearningMode, learnsOf, type NoteUsed, type Seed, type Shown } from "./learning.js";
+import { chooseWorkflows, LEARNING_BUDGET, learnedParts, type LearningMode, learnsOf, type NoteUsed, RUN_LEARNING_USE, type Seed, type Shown } from "./learning.js";
 import { thinkingLevel } from "./model.js";
 import { type Place, resolvePlace } from "./place.js";
+import { githubTargetOf } from "./github.js";
+import { type RepoBinding, repoOf } from "./run-repo.js";
 import { type LaunchDisk, launchBody, type RunLaunch, type SeedFailed } from "./run-launch.js";
 import { type ApprovalDecision, raiseFollowUpId, type RunMoment } from "./run-view.js";
 import { sendCommand } from "./runner/commands.js";
@@ -435,6 +439,9 @@ export interface StartDeps {
   /** The model the server names to grade what a run proposes (learning.ts gradeModelOf), put on each learning start; none,
    *  the agent's own grades it. */
   readonly gradeModel?: string;
+  /** What the agent's GitHub triggers bind it to (run-repo.ts bindingOf), read when a person's start names or defaults a
+   *  repository. Absent: the agent is bound to none. */
+  boundRepos?(agentId: string): Promise<RepoBinding>;
   /** The host's secrets as they are shown now (learning-run.ts shown), for cutting the notes a run is given. */
   shown?(): Shown;
 }
@@ -459,13 +466,16 @@ const noShown: Shown = { text: (text) => text, name: (name) => name, holds: () =
  *  server's learning off, a workflow revision, or its revision does not say learning), else the notes its # Learned section
  *  names and the # Learned text (learnedParts, the one decision the runner puts in the prompt), the seed sha it starts
  *  from and the count of all the seed's notes before the budget picked `given` (seedNotes) — or given empty, seed null and no
- *  seedNotes when its seed cannot be read (a learning fault never refuses a run). */
-async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Revision, rbody: StartBody, input: unknown): Promise<{ given: NoteUsed[]; seed: string | null; section: string; seedNotes?: number; skills?: string[]; workflows?: string[]; notesOnly?: true; gradeModel?: string; seedFailed?: SeedFailed } | undefined> {
-  const learns = deps.learning !== undefined && deps.learning !== "off" && revision.kind === "agentic" && learnsOf(rbody.learning);
+ *  seedNotes when its seed cannot be read (a learning fault never refuses a run). `use`: the run's start said `learning:
+ *  "use"`, so it starts from what its agent learned, its revision's own learning aside, and keeps nothing. */
+async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Revision, rbody: StartBody, input: unknown, use: boolean): Promise<{ given: NoteUsed[]; seed: string | null; section: string; seedNotes?: number; notesLeftOut?: string[]; skills?: string[]; workflows?: string[]; notesOnly?: true; gradeModel?: string; seedFailed?: SeedFailed; use?: true } | undefined> {
+  // A run started with `learning: "use"` starts from what its agent learned whatever its revision says, and keeps nothing
+  // (no grade model: nothing is graded); the server's learning off still gives it nothing.
+  const learns = deps.learning !== undefined && deps.learning !== "off" && revision.kind === "agentic" && (learnsOf(rbody.learning) || use);
   // `learning: "notes"`: its notes and skills, never a learned workflow (none offered, none asked for at its end).
   const notesOnly = rbody.learning === "notes" ? { notesOnly: true as const } : {};
   if (!learns || !deps.seedFor) return undefined;
-  const grade = deps.gradeModel ? { gradeModel: deps.gradeModel } : {};
+  const grade = use ? { use: true as const } : deps.gradeModel ? { gradeModel: deps.gradeModel } : {};
   const seeded = await deps.seedFor(entry.agent.id);
   // The folder could not be read (main's STOPPED.unreadable), or what it read could not be made into the start (main's
   // copy that threw, STOPPED.notCopied): the run starts with nothing learned, and its learning end says which.
@@ -476,7 +486,9 @@ async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Re
     // The notes and the # Learned text are the old start's one decision (learnedParts: one choice of the note selector), so
     // the runner lays exactly this section for exactly these notes and reads no learning folder. seedNotes is the whole
     // seed's note count, before the budget narrowed `given` (as the old seed_notes was).
-    const { section, given } = learnedParts(seeded.seed, options);
+    const { section, given, left } = learnedParts(seeded.seed, options);
+    // The notes the section names in no way, over the budget: the claim says them in the run's log (learning-seed.ts).
+    const notesLeftOut = left.map((note) => options.shown.name(note.file));
     // The learned skills the seed offers the run, by name: each with its files (one over a run's skill budget at all is held
     // by its size and never laid) and no host secret in it, as chooseSkills leaves them out. The claim lays them; the
     // end-of-run turn counts the runs each served (runner/learning-end.ts draftForOf).
@@ -484,7 +496,7 @@ async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Re
     // The learned workflows its learned_workflow tool runs, by name, as the claim chooses them (chooseWorkflows): what the
     // agent's impact counts a run as started from, beside its notes and skills.
     const workflows = notesOnly.notesOnly ? [] : chooseWorkflows(seeded.seed, options.shown).flows.map(({ name }) => name);
-    return { given: given.map(({ file, name }) => ({ file, name })), seed: seeded.seed.sha, section: section ?? "", seedNotes: Object.keys(seeded.seed.notes).length, ...(skills.length ? { skills } : {}), ...(workflows.length ? { workflows } : {}), ...notesOnly, ...grade };
+    return { given: given.map(({ file, name }) => ({ file, name })), seed: seeded.seed.sha, section: section ?? "", seedNotes: Object.keys(seeded.seed.notes).length, ...(notesLeftOut.length ? { notesLeftOut } : {}), ...(skills.length ? { skills } : {}), ...(workflows.length ? { workflows } : {}), ...notesOnly, ...grade };
   } catch {
     return { given: [], seed: null, section: "", seedFailed: "not_copied", ...notesOnly, ...grade };
   }
@@ -617,6 +629,12 @@ export async function prepareLaunch(deps: StartDeps, entry: AgentEntry, body: Js
   const capMode = cap === undefined ? undefined : typeof body.cap_mode === "string" ? body.cap_mode : rbody.capMode;
   const place = resolvePlace(rbody.place as Place | undefined, deps.fallbackPlace(revision.kind, revision.kind === "agentic" ? (rbody.tools ?? []) : []));
   await deps.runnable(revision, place, { capped: cap !== undefined });
+  // A held computer (computer-held.ts): only one that speaks the protocol, its kind as the claim reads it (the
+  // revision's computer, else its place's).
+  const hold = holdOf(body, (settingOfDefinition(rbody as { computer?: unknown; place?: unknown })?.computer ?? computerOfPlace(place)).kind);
+  if (hold !== undefined && "field" in hold) throw invalid([hold]);
+  // A workflow's loop opens no held computer and takes no start or release: its run holds nothing.
+  if (hold !== undefined && revision.kind === "workflow") throw invalid([{ field: "hold", reason: "not_an_option", message: "hold is for an agent's run: a workflow run does not hold its computer for its owner." }]);
   // The title shows on the run's page, the runs list and Mission Control: built from its input as shown, each held value
   // redacted before a long one is cut (a cut key could no longer be found).
   const shown = redactedOutput(input, deps.serverSecrets());
@@ -632,7 +650,7 @@ export async function prepareLaunch(deps: StartDeps, entry: AgentEntry, body: Js
   // learning is on and its revision says so; then its seed is read now and the notes its # Learned section names (learnedParts,
   // the one decision) are pinned in the launch for the runner to put in the prompt. A seed that cannot be read starts it with
   // nothing (given empty, seed null); the end state is the runner's.
-  const learning = await learningStartFor(deps, entry, revision, rbody, input);
+  const learning = await learningStartFor(deps, entry, revision, rbody, input, body.learning === RUN_LEARNING_USE);
   // The run's Archil disk, chosen now and kept in its launch (run-launch.ts archilDisk): the one the body names (a disk per
   // customer), else its agent's when it has one; with neither, its claim makes the agent's.
   const named = isObject(body.archil_disk) && typeof body.archil_disk.disk_id === "string" ? body.archil_disk.disk_id : undefined;
@@ -642,8 +660,15 @@ export async function prepareLaunch(deps: StartDeps, entry: AgentEntry, body: Js
   // else none). Nothing set: none, so the run gets no effort note and its harness's own default. Kept in its launch, so
   // its harness's thinking, its guidance and its metrics all read the one value.
   const effort = typeof body.effort === "string" ? body.effort : (thinkingLevel(rbody.thinking) ?? thinkingLevel(deps.planeEnv().AGENT_THINKING));
+  // The repository a person's run reaches (run-repo.ts): the one the body names when the agent is bound to it, else the
+  // agent's one repository when the first message names none. A trigger's run takes its repository from its event.
+  const namedRepo = typeof body.repo === "string" ? body.repo : undefined;
+  if (trigger && namedRepo !== undefined) throw invalid([{ field: "repo", reason: "not_allowed", message: "A run a trigger starts takes its repository from the event that fired it.", fix: "Remove repo." }]);
+  const picked = trigger ? {} : repoOf(await (deps.boundRepos?.(entry.agent.id) ?? { repos: [], open: false }), namedRepo, githubTargetOf(typeof input.content === "string" ? input.content : undefined) !== undefined);
+  if (picked.refused) throw invalid([{ field: "repo", reason: "not_allowed", message: picked.refused }]);
   const launch: RunLaunch = {
     input,
+    ...(picked.repo !== undefined ? { repo: picked.repo } : {}),
     title: clip(redacted(title.trim().replace(/\s+/g, " "), deps.serverSecrets()), 80),
     place,
     harness: harnessOfBody(revision.body),
@@ -661,6 +686,7 @@ export async function prepareLaunch(deps: StartDeps, entry: AgentEntry, body: Js
     ...(from ? { inputOrigin: from } : {}),
     ...(model ? { model } : {}),
     ...(archilDisk ? { archilDisk } : {}),
+    ...(hold ? { hold } : {}),
   };
   return { launch, revision };
 }

@@ -71,6 +71,20 @@ test("a parked run's wake_at: in the future it is not claimable; once the clock 
   assert.deepEqual(await store.runs.claimable(), ["run-1"], "at it");
 });
 
+test("runs.wake makes a parked run claimable now, with no command row; it touches no run that is not parked", async (t) => {
+  const { store } = await storeOn(t);
+  await queued(store);
+  assert.equal(await store.runs.wake("run-1"), false, "queued: no wake");
+  assert.equal((await store.runs.get("run-1")).wakeAt, null, "its row untouched");
+  const claim = await store.claim("run-1", "runner-a", { leaseMs: 30_000 });
+  assert.equal(await store.runs.wake("run-1"), false, "running: no wake");
+  await store.release(claim, { state: "parked" });
+  assert.deepEqual(await store.runs.claimable(), [], "parked, nothing to wake it");
+  assert.equal(await store.runs.wake("run-1"), true, "parked: woken");
+  assert.deepEqual(await store.runs.claimable(), ["run-1"], "claimable at once, by its wake_at");
+  assert.equal(await store.runs.wake("run-none"), false, "no such run: nothing");
+});
+
 test("a running run its runner released without ending it (a runner's shutdown) stays running and is claimable at once, at epoch + 1", async (t) => {
   const { store } = await storeOn(t);
   await queued(store);

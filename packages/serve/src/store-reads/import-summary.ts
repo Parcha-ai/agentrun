@@ -2,7 +2,7 @@
 // the run row, what it used from the metrics the import wrote on the row, and its model requests' hours from its journal's
 // assistant entries — where the old reader opened the run's own database. undefined for a run the store does not hold as
 // imported.
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { type Found, hoursOf } from "../import-summary.js";
 import type { Store } from "../store/store.js";
 import { runEntries } from "./journal.js";

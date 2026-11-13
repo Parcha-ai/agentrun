@@ -64,11 +64,13 @@
     "maxActions": 100,
     "maxBatchWaitMs": 300000,
     "maxKeyRepeat": 100,
+    "launchWindowMs": 10000,
     "maxUiNodes": 5000,
     "maxSteps": 100,
     "maxExpectMs": 60000,
     "defaultExpectMs": 5000,
     "maxSettleMs": 3000,
+    "setHoldMs": 500,
     "minImageEdge": 256,
     "maxImageEdge": 2048,
     "defaultImageEdge": 1568
@@ -108,6 +110,7 @@
     "downloads"
   ],
   "features": {
+    "screen.capture": "screen.shot and screen.watch capture the whole screen; a computer of the screen group that does not list it captures it, and one that lists it off refuses both with its reason (a Mac whose owner has not granted the server it is paired with the screen)",
     "apps.background": "apps.launch with background: true opens an app without bringing it to the front",
     "ui.tree": "ui.observe reads the window's elements; off, it answers the window's image with no nodes (ui.image on) or is refused",
     "ui.image": "ui.observe returns the window's image",

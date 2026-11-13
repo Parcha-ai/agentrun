@@ -97,7 +97,7 @@ test("a run on codex goes through the adapter's proxy to serve's gateway, priced
   const gw = await gateway(t);
   const { api, standIn, data } = await codexServe(t, gw);
   // How many fit at once is this host's memory (admission.test.mjs).
-  const { max_concurrent_runs, ...offer } = (await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "codex");
+  const { max_concurrent_runs, models: _models, ...offer } = (await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "codex");
   assert.deepEqual(offer, { id: "codex", available: true, steer: false, default_model: "agent-model/gpt-test", run_memory_mib: 192 });
   const run = await api("POST", "/agents/coder/runs", { input: { content: "Say what you did." } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
@@ -122,7 +122,7 @@ test("a run on codex goes through the adapter's proxy to serve's gateway, priced
 test("through a gateway, codex sends the model id the revision names whole, as pi does: the gateway's own name, never stripped", { timeout: 90_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
   const gw = await gateway(t);
   const { api } = await codexServe(t, gw);
-  assert.equal((await api("POST", "/agents", agent("named", { harness: "codex", model: "openai/gpt-4o" }))).status, 201);
+  assert.equal((await api("POST", "/agents", agent("named", { harness: "codex", model: "openai/gpt-6.1-sol" }))).status, 201);
   const run = await api("POST", "/agents/named/runs", { input: { content: "Say what you did." } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   for (let i = 0; gw.seen.length === 0; i++) {
@@ -131,13 +131,13 @@ test("through a gateway, codex sends the model id the revision names whole, as p
   }
   gw.release();
   await follow(api, run.body.run_id, ["completed"], { deadlineMs: 60_000 });
-  assert.equal(gw.seen[0].body.model, "openai/gpt-4o", "the gateway gets the name it was configured with");
+  assert.equal(gw.seen[0].body.model, "openai/gpt-6.1-sol", "the gateway gets the name it was configured with");
 });
 
 test("behind a gateway, a codex agent naming no model runs on AGENT_MODEL as the gateway's own string, a namespaced one (team/model) included", { timeout: 90_000 }, async (t) => {
   const gw = await gateway(t);
   const { api } = await codexServe(t, gw, "team/model");
-  const { max_concurrent_runs, ...offer } = (await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "codex");
+  const { max_concurrent_runs, models: _models, ...offer } = (await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "codex");
   assert.equal(offer.available, true, JSON.stringify(offer));
   assert.equal(offer.default_model, "agent-model/team/model");
   const run = await api("POST", "/agents/coder/runs", { input: { content: "Say what you did." } });

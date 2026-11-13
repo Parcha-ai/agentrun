@@ -51,6 +51,9 @@ test("no route but POST /v2/hooks/{id} (and capabilities, the document and healt
     // (github-connection.ts), and an installation GitHub confirms to the App's JWT; with neither, the browser is sent to the
     // console's GitHub settings with why, and nothing is done.
     else if (route.name === "gitHubCallback" || route.name === "gitHubInstalled") assert.equal(answer.status, 302, `${route.method} ${path} (${route.name}): ${answer.text.slice(0, 200)}`);
+    // A driver pairing a computer takes no token: the pairing code in its body is the credential (computer-attach.ts),
+    // so an empty body is 422 for its missing code, and a wrong code is 404.
+    else if (route.name === "pairComputer") assert.equal(answer.status, 422, `${route.method} ${path} (${route.name}): ${answer.text.slice(0, 200)}`);
     else assert.equal(answer.status, 401, `${route.method} ${path} (${route.name}) needs the token: ${answer.text.slice(0, 200)}`);
   }
   const body = "{}";

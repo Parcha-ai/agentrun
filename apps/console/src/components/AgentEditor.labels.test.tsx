@@ -38,7 +38,8 @@ describe("the agent editor's labels name their inputs", () => {
     expect(name?.readOnly).toBe(true);
     act(() => root!.unmount()); document.body.innerHTML = "";
     const settings = await open({ agent, step: "settings" });
-    expect(settings.byLabel(/^model/i)[0]?.getAttribute("placeholder")).toBe("provider/model");
+    // The Model picker's button is what the label names.
+    expect(settings.byLabel(/^model/i)[0]?.id).toBe("agent-model");
   });
   it("Instructions' preview has no input, so no label points at one that isn't there", async () => {
     const { host, byLabel } = await open({ step: "context" });

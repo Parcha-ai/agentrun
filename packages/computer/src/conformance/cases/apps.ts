@@ -8,7 +8,7 @@ import { FIXTURE_BUTTON } from "../fixture.js";
 import { featureOff } from "../../ui-engine.js";
 import type { Case, CaseContext } from "../types.js";
 import { UI_FIXTURE } from "../ui-fixture.js";
-import { shoot } from "./screen.js";
+import { captureOff, shoot } from "./screen.js";
 import { namesOf, observe, openSettings, rowsOf, settingsApp, throughSettings } from "./settings.js";
 
 /** Whether the provider and the computer both declare group. */
@@ -30,11 +30,12 @@ async function screenPrint(t: CaseContext): Promise<string> {
 
 /**
  * What the screen shows now, as the case compares it: ui.observe's names and values when it reads the elements, else a
- * screenshot's print, else (ui.tree off, no screen group) ui.observe's image. Undefined when the launch cannot be seen.
+ * screenshot's print, else (ui.tree off, no screen group or screen.capture off) ui.observe's image. Undefined when the
+ * launch cannot be seen.
  */
 async function shown(t: CaseContext): Promise<string | undefined> {
 	if (readsTree(t)) return JSON.stringify(namesOf(await observe(t)));
-	if (declares(t, "screen")) return screenPrint(t);
+	if (declares(t, "screen") && captureOff(t) === undefined) return screenPrint(t);
 	if (declares(t, "ui")) return (await observe(t)).image?.data;
 	return undefined;
 }
@@ -58,6 +59,8 @@ export function observeWrong(result: unknown): string | undefined {
 	if (typeof app?.id !== "string" || typeof app.name !== "string") return `app is ${show(r.app)}, not { id, name }`;
 	const window = r.window as Record<string, unknown> | undefined;
 	if (typeof window?.id !== "string" || !isRect(window.bounds)) return `window is ${show(r.window)}, not { id, bounds: [x, y, w, h] }`;
+	if (window.title !== undefined && typeof window.title !== "string") return `window.title is ${show(window.title)}, not a string`;
+	if (window.role !== undefined && (typeof window.role !== "string" || !ROLES.has(window.role))) return `window.role is ${show(window.role)}, not one of the protocol's roles (UI_ROLES)`;
 	const [, , width, height] = window.bounds;
 	if (!Array.isArray(r.nodes)) return `nodes is ${show(r.nodes)}, not a list`;
 	if (r.nodes.length > MAX_UI_NODES) return `nodes holds ${r.nodes.length}, more than the ${MAX_UI_NODES} one observe gives`;
@@ -137,6 +140,28 @@ export const appsCases: Case[] = [
 			await t.until(async () => (await foreground(t)) !== app, `${app} no longer in front after apps.terminate`);
 			const missing = await t.client.call("apps.launch", { id: "ai.agentrun.no.such.app" }, { signal: t.signal });
 			t.refused(missing, "apps.launch of an app that is not installed", ["not_found"]);
+		},
+	},
+	{
+		// apps.launch answers once the app has a window (wire.md, apps.launch). A driver that answers when the launch is
+		// asked for races every caller: the Mac and the phone both answered not_found to the observe right after it.
+		id: "apps.launch-window",
+		level: "core",
+		group: "apps",
+		needs: ["apps", "ui"],
+		async run(t) {
+			if (treeOff(t) !== undefined && featureOff(t.hello.features ?? {}, "ui.image") !== undefined) return t.skip("ui.observe has nothing to show on this computer: ui.tree and ui.image are both off");
+			const listed = await t.call("apps.list", {});
+			const app = listed.apps.some((one) => one.id === UI_FIXTURE.id) ? UI_FIXTURE.id : settingsApp(t);
+			t.assert(listed.apps.some((one) => one.id === app), `apps.list holds ${app}`);
+			t.deepEqual(await t.call("apps.terminate", { id: app }), {}, `apps.terminate ${app}`);
+			await t.until(async () => (await foreground(t)) !== app, `${app} not in front after apps.terminate`);
+			t.deepEqual(await t.call("apps.launch", { id: app }), {}, `apps.launch ${app}`);
+			// At once, with no wait of the case's own: launch has answered, so the window is there.
+			const seen = await t.client.call("ui.observe", { target: { app } }, { signal: t.signal });
+			const window = t.ok(seen, `ui.observe of ${app} right after apps.launch answered: launch answers once the app has a window`);
+			t.equal(window.app.id, app, "the app ui.observe saw right after apps.launch");
+			t.deepEqual(await t.call("apps.terminate", { id: app }), {}, `apps.terminate ${app}, launched`);
 		},
 	},
 	{

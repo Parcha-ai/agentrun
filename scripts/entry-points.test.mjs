@@ -20,6 +20,7 @@ const realpathForm = 'compares realpathSync(argv[1]) with its URL, which is syml
 const reviewed = new Map([
   ['scripts/is-main.mjs', 'compares realpathSync(argv[1]) with its URL, symlink-safe, only where Node has no import.meta.main, to refuse the command rather than exit 0'],
   ['packages/computer/src/entry.ts', realpathForm],
+  ['packages/computer/test/fake-computerd.mjs', realpathForm],
   ['packages/serve/test/secret-custody.test.mjs', childScript],
   ['packages/serve/test/learn-support.mjs', childScript],
   ['packages/computer/test/phone-provider.test.mjs', childScript],
@@ -67,6 +68,7 @@ const bare = new Map([
   ['examples/run-support-answer.mjs', copiedOut],
   ['packages/dsl/test/fixtures/graph/generate.mjs', ownPackage],
   ['packages/dsl/test/fixtures/graph/record.mjs', ownPackage],
+  ['packages/computer/box/build-agent37.mjs', ownPackage],
 ]);
 const readsMain = (source) => source.includes('import.meta.main');
 const unasked = (sources) => sources.filter(([file, source]) => readsMain(source) && !bare.has(file)).map(([file]) => file);

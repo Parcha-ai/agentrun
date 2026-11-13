@@ -85,7 +85,7 @@ test("R2 a claude-agent run's learned node request reaches the session's proxy w
   const gw = await startFauxGateway({ call: submitsAnswer });
   t.after(() => gw.close());
   const key = fake("anthropic");
-  withEnv(t, { ANTHROPIC_API_KEY: key, ANTHROPIC_BASE_URL: gw.url, AGENT_MODEL: "anthropic/claude-sonnet-4-5" }, MODEL_VARS);
+  withEnv(t, { ANTHROPIC_API_KEY: key, ANTHROPIC_BASE_URL: gw.url, AGENT_MODEL: "anthropic/claude-sonnet-5-5" }, MODEL_VARS);
   const { api, data } = await serve(t, { learning: "on", harnessTable: fauxTable(FAUX_HARNESS), faux: undefined });
   const { runId, rows, view } = await ran(api, data, "claude-gated", "claude-agent", { fields: { max_cost_usd: 5 } });
   const sent = gw.requests.filter((r) => r.method === "POST");
@@ -100,7 +100,7 @@ test("R2 a claude-agent run's learned node request reaches the session's proxy w
   const own = (await entriesOf({ data }, runId, ["runner.request"])).filter((entry) => entry.host === undefined).map((entry) => entry.turn);
   assert.equal(own.includes(booked[0].turn), false, `the node's ${booked[0].turn} is none of the harness's ${own}`);
   assert.equal((await entriesOf({ data }, runId, ["runner.turn"])).filter((entry) => entry.turn === booked[0].turn).length, 1, "settled once, by its own runner.turn");
-  assert.deepEqual(sent.map((r) => [r.path, r.headers["x-api-key"], r.body?.model]), [["/v1/messages", key, "claude-sonnet-4-5"]], `the node's one request, at the gateway, with the run's key: ${said}`);
+  assert.deepEqual(sent.map((r) => [r.path, r.headers["x-api-key"], r.body?.model]), [["/v1/messages", key, "claude-sonnet-5-5"]], `the node's one request, at the gateway, with the run's key: ${said}`);
   assert.deepEqual(sent[0].body.tools.map((tool) => tool.name), ["submit"], "offered the node's submit, and nothing else");
   assert.equal(learnedResult(rows)?.tool_status, "success", JSON.stringify(learnedResult(rows)));
   assert.match(JSON.stringify(learnedResult(rows)), /\{\\?"answer\\?":42\}/);
@@ -137,10 +137,11 @@ test("R4 (guard) a capped codex run's learned node is admitted by the session's 
   t.after(() => gw.close());
   withEnv(t, { AGENT_MODEL_BASE_URL: gw.url, AGENT_MODEL: "gpt-test", AGENT_MODEL_API_KEY: fake("gateway"), AGENT_MODEL_PRICE: OUTPUT_PRICED }, MODEL_VARS);
   const { api, data } = await serve(t, { learning: "on", harnessTable: fauxTable(FAUX_HARNESS), faux: undefined });
-  // $0.103 holds the harness's own first request (its least, 1,024 tokens at $100 a million, $0.1024), not its next after
-  // the $0.001 it spent, nor the node's $0.9216: the run pauses at the cap whichever is asked first, on the one total. That
-  // the node's refusal counts the harness's spend is the next test's, on a cap that only that spend decides.
-  const cap = 0.103;
+  // $0.105 holds the harness's own first request (its least, 1,024 tokens at $100 a million, $0.1024) and is just above the
+  // line where the cap's wrap-up would refuse the node's call before it asks (the $0.001 spent plus the reserve), but not the
+  // node's $0.9216: the session's guard refuses the node and the run pauses at the cap on the one total. That the node's
+  // refusal counts the harness's spend is the next test's, on a cap that only that spend decides.
+  const cap = 0.105;
   const { runId, rows, view } = await ran(api, data, "capped-port", "codex", { fields: { max_cost_usd: cap }, ends: ["completed", "failed", "input_required"] });
   assert.deepEqual(gw.requests.filter((r) => r.method === "POST"), [], "the node's request never left");
   assert.deepEqual((await entriesOf({ data }, runId, ["runner.request"])).filter((entry) => entry.host === LEARNED_WORKFLOW_TOOL), [], "refused before its record: the session wrote none");

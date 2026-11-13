@@ -101,9 +101,18 @@ the host: about 5 GB for the default two. `docker compose logs runner-1` shows t
 704 MB, under `512m`) is never started there: the runner fails it at its claim, saying how much memory it needs. An
 opencode run needs a limit of at least 832 MB (its 704 and the runner's own 128); a claude-agent run 416 MB.
 
-**More runners.** Copy the `runner-2` service as `runner-3` and so on, with its own `--name` and the same name in its
-health check. Every runner on SQLite must mount the same `agentrun-data` volume, so all of them run on this
+**More runners.** Copy the `runner-2` service as `runner-3` and so on, with its own `--name`, `hostname` and
+`AGENTRUN_RUNNER_LIVE_HOST`, the same name in its health check, and its host added to the server's
+`AGENTRUN_RUNNER_HOSTS`. Every runner on SQLite must mount the same `agentrun-data` volume, so all of them run on this
 one Docker host. To spread runners over machines, use a Postgres store.
+
+**Live views on a runner apart from the server.** A run's browser, desktop or phone is watched and taken over through
+the server, which reaches the runner's viewer. Each runner names the host the server reaches it at
+(`AGENTRUN_RUNNER_LIVE_HOST`; its viewers listen there, or on `AGENTRUN_RUNNER_LIVE_BIND`), and the server dials only
+the hosts in its `AGENTRUN_RUNNER_HOSTS`. Every request the server makes of a runner's viewer is signed with a key
+derived from the seal key, and a runner takes no other. The hop is plain HTTP: keep the server and its runners on a
+private network of their own, as this stack does. With neither setting, viewers stay on loopback, which is right when
+the server and its runner share a machine (the default image's command).
 
 **Postgres.** The `pg` profile runs a Postgres for the store. In `.env`:
 
@@ -132,7 +141,9 @@ There is no upgrade in place. The earlier server kept its agents in `/data/store
 store's file, and the new server refuses to start on a data directory that holds one, saying so. Then either:
 
 - keep running the earlier version on that volume, or
-- start on a new data directory (a new volume) and re-create your agents there.
+- start on a new data directory (a new volume) and re-create your agents there. Under compose or `docker run` that is
+  new arguments after the image; on Render the Docker Command replaces the image's entrypoint too, so it must be the
+  whole start command shown in the release notes' "Before you upgrade", not flags alone.
 
 Nothing converts an earlier volume.
 

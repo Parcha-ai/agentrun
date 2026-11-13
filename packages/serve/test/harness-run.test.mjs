@@ -7,8 +7,7 @@ import { readFile, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { startServe } from "../dist/index.js";
-import { agent, client, FAUX, follow, journalOf, runDir, scratch, serve, startInProcessRunner, withEnv } from "./support.mjs";
+import { agent, client, FAUX, follow, journalOf, runDir, scratch, serve, startInProcessRunner, withEnv, startServe } from "./support.mjs";
 import { KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
 import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
 import { LONG_ANSWER } from "./fixtures/faux-harness.mjs";
@@ -58,10 +57,11 @@ test("one turn of three paid requests costs their sum, once: never twice", { tim
 const CRASHABLE = { leaseMs: 1_500, renewEveryMs: 300, stopMarginMs: 300, pollMs: 20, commandPollMs: 30 };
 
 test("a run whose runner dies mid-turn after a paid request resumes on the next runner and finishes; each paid request counted once; its timeline says it was taken over", { timeout: 90_000 }, async (t) => {
-  const { api, crashRunner } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), runnerTiming: CRASHABLE });
+  const lines = [];
+  const { api, crashRunner } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), runnerTiming: CRASHABLE, log: (line) => lines.push(line) });
   const go = join(await scratch(t), "go");
   // Granted read, the faux harness's first call: on the runner a call the session has no tool for has no row of its own.
-  const runId = await started(api, "resume", `Wait for ${go} before the answer.`, "claude-agent", ["read"]);
+  const runId = await started(api, "resume",`Wait for ${go} before the answer.`, "claude-agent", ["read"]);
   // The first request is paid and its tool has ended: its row is in, then the turn hangs.
   for (let i = 0; !(await api("GET", `/runs/${runId}/timeline`)).body.rows.some((r) => r.kind === "tool_result"); i++) {
     assert.ok(i < 300, "the first request's tool row");
@@ -74,6 +74,12 @@ test("a run whose runner dies mid-turn after a paid request resumes on the next 
   assert.deepEqual(usageOf(rows), { usd: 0.006, requests: 2 }, "the request before the crash and the one after it, once each");
   assert.equal(resumedRows(rows).length, 1, `one stored row: ${JSON.stringify(resumedRows(rows))}`);
   assert.match(resumedRows(rows)[0], /^Resumed after its runner \(.+\) was lost$/, "the next runner took the run over once the dead one's lease ran out");
+  // The reclaim is no second start: one run_started (the first runner's claim) and one run_ended.
+  for (let i = 0; !lines.some((line) => line.includes(" event=run_ended ")); i++) {
+    assert.ok(i < 100, lines.join("\n"));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.deepEqual(["run_started", "run_ended"].map((event) => lines.filter((line) => line.includes(` event=${event} `) && line.includes(`run=${runId} `)).length), [1, 1]);
 });
 
 // SKIP (follow-up #2089): a turn the server's stop lets go mid-way is claimed by the next start's runner and never goes
@@ -697,6 +703,9 @@ for (const harness of ["claude-agent", "codex"]) {
       if (paid.some(([, usd]) => usd !== null)) break;
     }
     assert.deepEqual(paid, [["paid:Parallel's search", 0.001]], "held, and booked at its fee though its turn was stopped");
-    assert.notEqual((await api("GET", `/runs/${run.body.run_id}`)).body.cost.usd, null, "the run's cost is known");
+    // A cancel reads cancelled from its 202 on, so the poll above can return before the run's end lands with its cost.
+    let usd = null;
+    for (const end = Date.now() + 15_000; Date.now() < end && usd === null; await new Promise((resolve) => setTimeout(resolve, 200))) usd = (await api("GET", `/runs/${run.body.run_id}`)).body.cost.usd;
+    assert.notEqual(usd, null, "the run's cost is known");
   });
 }
