@@ -49,7 +49,7 @@ const eight = (usd) => Math.round(usd * 1e8) / 1e8;
 
 /** Each CLI wire's harness, its gateway environment and its launch's model, as the run's own requests take them. */
 const HARNESSES = {
-  "claude-agent": { env: (url) => ({ ANTHROPIC_API_KEY: fake("anthropic"), ANTHROPIC_BASE_URL: url }), model: { provider: "anthropic", modelId: "claude-sonnet-4-5" } },
+  "claude-agent": { env: (url) => ({ ANTHROPIC_API_KEY: fake("anthropic"), ANTHROPIC_BASE_URL: url }), model: { provider: "anthropic", modelId: "claude-sonnet-5-5" } },
   codex: { env: (url) => ({ AGENT_MODEL_BASE_URL: `${url}/v1`, AGENT_MODEL: "gpt-test", AGENT_MODEL_API_KEY: fake("gateway"), AGENT_MODEL_PRICE: "1,2,0.5" }), model: { provider: "openai", modelId: "gpt-test" } },
 };
 
