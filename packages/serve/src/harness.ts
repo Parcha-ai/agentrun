@@ -20,7 +20,7 @@ export const DEFAULT_HARNESS: HarnessId = "pi";
 export type HarnessOffer = { id: HarnessId; available: boolean; steer: boolean; reason?: string; default_model?: string | null; keys?: readonly string[]; installs?: "on_first_use" };
 /** A harness as capabilities list it: an offer with its `default_model` resolved (harnessOffers), never left out, and
  *  the memory a run of it reserves (`run_memory_mib`). */
-export type HarnessCapability = HarnessOffer & { default_model: string | null; run_memory_mib: number };
+export type HarnessCapability = HarnessOffer & { default_model: string | null; models: string[]; run_memory_mib: number };
 
 
 const offered = new WeakMap<object, Promise<HarnessCapability[]>>();
@@ -71,9 +71,21 @@ export function harnessOffers(env: NodeJS.ProcessEnv): Promise<HarnessCapability
       // Each harness's model when a definition names none, as a save and a run resolve it (runnable.ts): none for a
       // harness that does not run here, or that no model here would run on.
       const { harnessModel } = await import("./runnable.js");
+      const { pickerCandidates } = await import("./model-form.js");
       return Promise.all(base.map(async (offer): Promise<HarnessCapability> => {
         const resolved = offer.available ? await harnessModel(env, offer.id, undefined, true) : undefined;
-        return { ...offer, default_model: resolved && "model" in resolved ? `${resolved.model.provider}/${resolved.model.modelId}` : null, run_memory_mib: harnessOf(env, offer.id)!.runMib };
+        // The models a person may pick for it (model-form.ts), each in the form it takes: those its entry's own choice
+        // takes (the catalog it runs on knows the id, a key may still be missing: a save warns of that, never refuses),
+        // so the picker never offers one a save would refuse. None for a harness that does not run here.
+        const entry = harnessOf(env, offer.id)!;
+        const models: string[] = [];
+        if (offer.available) {
+          for (const id of pickerCandidates(env, offer.id)) {
+            const chosen = await entry.model(env, id, true);
+            if (chosen && ("model" in chosen || chosen.needs === "key")) models.push(id);
+          }
+        }
+        return { ...offer, default_model: resolved && "model" in resolved ? `${resolved.model.provider}/${resolved.model.modelId}` : null, models, run_memory_mib: entry.runMib };
       }));
     })();
     offered.set(env, offers);

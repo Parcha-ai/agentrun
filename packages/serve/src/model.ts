@@ -11,6 +11,7 @@ import { DEFAULT_HARNESS } from "./harness.js";
 import { HARNESS_TABLE_ENV, type HarnessEntry, harnessOf } from "./harness-table.js";
 import type { Revision } from "./agent-rows.js";
 import { gatewayBase } from "./provider.js";
+import { modelFormWhy } from "./model-form.js";
 // Leaves, which the key rows below read as this module loads, in any import order (wires.ts, adapter-facts.ts).
 import { ADAPTER_FACTS } from "./adapter-facts.js";
 import { WIRES } from "./wires.js";
@@ -188,11 +189,11 @@ export async function chooseModel(env: NodeJS.ProcessEnv, ref: string | PinnedMo
   }
   if (!named) return { why: `${none}: ${ADD_A_KEY}`, host: true, needs: "key" };
   const slash = named.indexOf("/");
-  if (slash < 1) return { why: `The host's default model ${named} is not a provider/model-id.`, host: true, needs: "model" };
+  if (slash < 1) return { why: modelFormWhy(env, harness, named, ref === undefined), host: ref === undefined, needs: "model" };
   const [provider, modelId] = [named.slice(0, slash), named.slice(slash + 1)];
   const models = await providerModels(env);
   const model = models.getModel(provider, modelId);
-  if (!model) return { why: `pi-ai knows no model ${modelId} of ${provider}. Name one of its models, or route every model through a gateway with AGENT_MODEL_BASE_URL.`, host: ref === undefined, needs: "model" };
+  if (!model) return { why: modelFormWhy(env, harness, named, ref === undefined), host: ref === undefined, needs: "model" };
   // A gateway ANTHROPIC_BASE_URL names that a key may not go to (gatewayBase): no Anthropic model runs, by its words.
   const refused = provider === "anthropic" ? anthropicRefusal(models) : undefined;
   if (refused) return { why: refused, host: true, needs: "key" };

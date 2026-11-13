@@ -99,7 +99,7 @@ test("a run on claude-agent: through the adapter's proxy with the native model, 
   const { fake, release } = await heldFake(t);
   const { api, data } = await claudeServe(t, fake);
   // How many fit at once is this host's memory (admission.test.mjs).
-  const { max_concurrent_runs, ...offer } = (await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "claude-agent");
+  const { max_concurrent_runs, models: _models, ...offer } = (await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "claude-agent");
   assert.deepEqual(offer, { id: "claude-agent", available: true, steer: false, default_model: `anthropic/${MODEL}`, run_memory_mib: 288 });
   const run = await api("POST", "/agents/claude/runs", { input: { content: "Say what you did." } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
