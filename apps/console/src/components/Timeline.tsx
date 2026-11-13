@@ -61,14 +61,16 @@ const title = (row: TimelineRow) => {
   if (row.kind === "user_message" && text.startsWith("{")) {
     try { return Object.entries(JSON.parse(text) as Record<string, unknown>).map(([k, v]) => `${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`).join(" · "); } catch { /* not whole JSON: as is */ }
   }
+  // The summary is the text's first line (the server's), so an answer or your message with more says so with "…": the
+  // rest is a click away (the row opens its text whole), never dropped unseen.
+  const more = (row.text ?? "").split("\n").filter((l) => l.trim()).length > 1 ? "…" : "";
   // An answer's first line without its block marks (a heading's #, a quote's >, a list's -); its bold and code are
-  // drawn by `inline`. An answer left empty is said, not shown as a blank step. The summary is that first line (the
-  // server's), so an answer with more says so with "…": the rest is a click away, never dropped unseen.
+  // drawn by `inline`. An answer left empty is said, not shown as a blank step.
   if (row.kind === "final_answer") {
     if (!text.trim() && !row.text?.trim()) return NO_ANSWER;
-    const more = (row.text ?? "").split("\n").filter((l) => l.trim()).length > 1;
-    return `${text.replace(/^\s*(#{1,6}\s+|>\s+|[-*+]\s+)/, "")}${more ? "…" : ""}`;
+    return `${text.replace(/^\s*(#{1,6}\s+|>\s+|[-*+]\s+)/, "")}${more}`;
   }
+  if (row.kind === "user_message") return `${text}${more}`;
   return text;
 };
 /** How long a tool took: "27 ms", or "3.5 s" from a second on. */
@@ -194,7 +196,7 @@ function LearnedNodes({ nodes }: { nodes: LearnedNode[] }) {
 }
 
 /** The run's live timeline as a step list (lib/timeline's `steps`: each tool once, from either of the server's shapes;
- *  a question once; repeated failures once): newest last, older steps folded behind "N earlier steps". `asking`: the
+ *  a question once; repeated failures once): newest last, older steps folded behind "1 earlier step" or "N earlier steps". `asking`: the
  *  waiting row of the question the page shows above while the run waits on it; its step points there. */
 export function Timeline({ rows, live, fold = 6, asking, waitingOn, files, onOpen }: { rows: TimelineRow[]; live: boolean; fold?: number; asking?: string;
   /** The run's files and the handler that opens one: a link in an opened Answer that names a file opens it. */
@@ -214,7 +216,7 @@ export function Timeline({ rows, live, fold = 6, asking, waitingOn, files, onOpe
     <div>
       {hidden > 0 && (
         <button type="button" className="caps mb-1 ml-10 flex items-center gap-1 py-2 text-label text-muted-foreground hover:text-foreground" onClick={() => setAll(true)}>
-          <ChevronRight className="size-3" aria-hidden /> {hidden} earlier steps
+          <ChevronRight className="size-3" aria-hidden /> {hidden} earlier {hidden === 1 ? "step" : "steps"}
         </button>
       )}
       <ol>{shown.map((step, i) => <Row key={step.row.id} step={step} last={i === shown.length - 1 && !live} waitingChip={step.row.id === current && waitingOn ? WAITING_CHIP[waitingOn] : undefined} files={files} onOpen={onOpen} />)}</ol>
