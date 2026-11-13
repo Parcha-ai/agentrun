@@ -90,6 +90,9 @@ export type RunLearningRead = Answer<"getRunLearning">;
 /** GET /v2/agents/{id}/learning/cost's answer: the agent's runs in the order they started, what each cost and what
  *  learning added for it, the path it took, and what the series shows (the takeover, the levels before and after it). */
 export type LearningCost = Answer<"getLearningCost">;
+/** The held-out tests recorded for an agent (GET /v2/agents/{id}/learning/evals), newest first. */
+export type LearningEvals = Answer<"listLearningEvals">;
+export type LearningEval = LearningEvals["evals"][number];
 /** One run of that series. `path`: `workflow` a learned workflow finished it alone, `handed_back` one ran and the agent
  *  went on, `agent` none ran. */
 export type CostRun = LearningCost["runs"][number];

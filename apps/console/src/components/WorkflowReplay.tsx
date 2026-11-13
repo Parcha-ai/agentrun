@@ -95,8 +95,9 @@ export function Steps({ data, stepMs = STEP_MS }: { data: WorkflowRevisions; ste
         <p className="mt-1 break-words text-lead" role="status" data-testid="replay-line">{step.line}</p>
         {step.reason && <p className="mt-0.5 line-clamp-2 break-words text-body text-muted-foreground">{step.reason}</p>}
       </div>
-      <div className="overflow-auto border bg-[radial-gradient(hsl(var(--border))_1px,transparent_1px)] [background-size:22px_22px] p-3">
-        <WorkflowGraph graph={step.graph} marks={step.marks} label={`The workflow at revision ${at + 1} of ${n}, as a graph`} minScale={0.5} maxScale={1} />
+      {/* The graph takes the room: a short workflow is drawn up to 1.6x to the card's width, centred (by its margins, so a wide one still scrolls from its start) in a frame at least 280px tall. */}
+      <div className="flex min-h-[280px] overflow-auto border bg-[radial-gradient(hsl(var(--border))_1px,transparent_1px)] [background-size:22px_22px] p-4">
+        <WorkflowGraph graph={step.graph} marks={step.marks} label={`The workflow at revision ${at + 1} of ${n}, as a graph`} minScale={0.5} maxScale={1.6} className="m-auto" />
       </div>
       <div className="space-y-1.5">
         <GraphLegend />

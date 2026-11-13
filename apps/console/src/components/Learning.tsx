@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { problem, ProblemCard } from "@/components/learningProblem";
 import { CostPerRun } from "@/components/CostPerRun";
+import { HeldOutTest } from "@/components/HeldOutTest";
 import { WorkflowReplay } from "@/components/WorkflowReplay";
 import { LearningSwitch } from "@/components/LearningSwitch";
 import { GraphLegend, WorkflowGraph } from "@/components/WorkflowGraph";
@@ -175,6 +176,7 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places, on
           </ul>
         </section>
       )}
+      <HeldOutTest v2={v2} agentId={agent.agent_id} />
       {shownImpact(view.impact) ? <ImpactCard impact={view.impact} /> : view.impact === null && on && <p className="font-mono text-small text-muted-foreground">{IMPACT_LATER}</p>}
       <CostPerRun v2={v2} agentId={agent.agent_id} on={on} />
       <WorkflowReplay v2={v2} agentId={agent.agent_id} workflows={workflows} />

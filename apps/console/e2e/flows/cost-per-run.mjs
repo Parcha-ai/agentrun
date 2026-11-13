@@ -2,7 +2,7 @@
 // on, its GET /v2/agents/{id}/learning/cost answered with the console's invented sample (src/components/CostPerRun.sample.json:
 // 80 runs of an invoice-sorter agent whose learned workflow takes over at run 21). The chart lays out inside its card at
 // each width (no label past the plot's right edge), names the takeover and how many times cheaper, and a hover shows a
-// run's readout. Under it, the execution mix fits the card and a hover on a block names its runs and counts. E2E_SHOTS=<dir>
+// run's readout. The execution mix sits beside the chart at desktop width and under it below, fits the card, and a hover on a block names its runs and counts. E2E_SHOTS=<dir>
 // also saves each width and theme, before and during the hover.
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -14,12 +14,18 @@ export const WIDTHS = [1440, 820];
 /** The chart's card, measured where it is laid out: its box, the plot's, and every label's right edge. */
 function measure() {
   const card = document.querySelector('[data-testid="cost-per-run"]');
-  const svg = card?.querySelector("svg[aria-hidden]");
-  if (!card || !svg) return null;
+  const svg = card?.querySelector('[tabindex="0"] > svg');
+  const mix = card?.querySelector('[data-testid="execution-mix"] svg');
+  if (!card || !svg || !mix) return null;
   const edge = card.getBoundingClientRect().right;
-  const plot = svg.getBoundingClientRect();
-  const past = [...svg.querySelectorAll("text")].map((t) => ({ text: t.textContent, right: t.getBoundingClientRect().right })).filter((t) => t.right > Math.min(edge, plot.right) + 0.5).map((t) => t.text);
-  return { cardWidth: card.getBoundingClientRect().width, plotWidth: plot.width, past };
+  const pastOf = (el) => {
+    const box = el.getBoundingClientRect();
+    return [...el.querySelectorAll("text")].map((t) => ({ text: t.textContent, rect: t.getBoundingClientRect() })).filter((t) => t.rect.right > Math.min(edge, box.right) + 0.5 || t.rect.left < box.left - 0.5).map((t) => t.text);
+  };
+  const plot = svg.getBoundingClientRect(), strip = mix.getBoundingClientRect();
+  // Beside: the mix starts right of the plot; under: it starts below it. Never over it.
+  const overlaps = strip.left < plot.right - 0.5 && strip.top < plot.bottom - 0.5;
+  return { cardWidth: card.getBoundingClientRect().width, plotWidth: plot.width, past: [...pastOf(svg), ...pastOf(mix)], overlaps, beside: strip.left >= plot.right - 0.5 };
 }
 
 export default {
@@ -39,7 +45,7 @@ export default {
     for (const theme of ["light", "dark"]) {
       await page.evaluate((t) => localStorage.setItem("agentrun.theme", t), theme);
       for (const width of WIDTHS) {
-        await page.setViewportSize({ width, height: 1100 });
+        await page.setViewportSize({ width, height: 1600 });
         await page.goto(`${base}/#/agents/${encodeURIComponent(id)}/learning`);
         await page.reload();
         const card = page.getByTestId("cost-per-run");
@@ -52,6 +58,8 @@ export default {
         check(m, `${theme} ${width}px: no chart`);
         if (m.plotWidth > m.cardWidth + 0.5) wrong.push(`${theme} ${width}px: the plot is ${m.plotWidth}px in a ${m.cardWidth}px card`);
         for (const t of m.past) wrong.push(`${theme} ${width}px: "${t}" runs past the plot`);
+        if (m.overlaps) wrong.push(`${theme} ${width}px: the mix overlaps the chart`);
+        if (m.beside !== (width >= 1440)) wrong.push(`${theme} ${width}px: the mix is ${m.beside ? "beside" : "under"} the chart`);
         // A hover two thirds of the way along: a run after the takeover, by the learned workflow.
         if (shots) await card.screenshot({ path: join(shots, `cost-per-run-${theme}-${width}.png`) });
         const plot = card.locator('[tabindex="0"] > svg');
@@ -67,6 +75,7 @@ export default {
         // The execution mix: inside the card, and a block's hover names its runs and what each path took.
         const mix = card.getByTestId("execution-mix");
         const strip = mix.locator("svg");
+        await strip.scrollIntoViewIfNeeded();
         const [mixBox, cardBox] = [await strip.boundingBox(), await card.boundingBox()];
         if (mixBox.x + mixBox.width > cardBox.x + cardBox.width + 0.5) wrong.push(`${theme} ${width}px: the mix is past the card`);
         await page.mouse.move(mixBox.x + mixBox.width * 0.3, mixBox.y + mixBox.height * 0.5);
