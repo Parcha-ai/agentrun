@@ -41,7 +41,7 @@ export function StartHere({ harnesses, tools, onTry, imported = 0, keySettings =
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
           <h2 className="text-base font-semibold">Bring your agents into view</h2>
-          <p className="mt-1 text-lead text-muted-foreground">Connect existing agents to run your native Claude Code or Codex setup with AgentRun history and controls. No model key needed to connect. Import history separately when you want past conversations.</p>
+          <p className="mt-1 text-lead text-muted-foreground">Connect your Claude Code or Codex setup on this server or another machine. Your coding agent helps choose a live connection or a history import. No model key needed to connect.</p>
           {imported > 0 && <p className="mt-2 text-body text-muted-foreground">{imported} imported {imported === 1 ? "session" : "sessions"} · <a href="#/runs" className="text-primary-text underline-offset-4 hover:underline">Browse history</a></p>}
         </div>
         <button type="button" aria-label="Dismiss introduction" className="shrink-0 p-1 text-muted-foreground hover:bg-accent hover:text-foreground" onClick={() => {

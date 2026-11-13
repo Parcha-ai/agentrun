@@ -642,7 +642,7 @@ export async function prepareLaunch(deps: StartDeps, entry: AgentEntry, body: Js
   // else none). Nothing set: none, so the run gets no effort note and its harness's own default. Kept in its launch, so
   // its harness's thinking, its guidance and its metrics all read the one value.
   const effort = native ? undefined : typeof body.effort === "string" ? body.effort : (thinkingLevel(rbody.thinking) ?? thinkingLevel(deps.planeEnv().AGENT_THINKING));
-  const nativeLaunch = native ? await launchNative(native) : undefined;
+  const nativeLaunch = native?.remote ? native : native ? await launchNative(native) : undefined;
   const launch: RunLaunch = {
     ...(nativeLaunch ? { native: nativeLaunch } : {}),
     input,

@@ -24,13 +24,14 @@ describe("Coding-agent handoffs in the console", () => {
     expect(go).not.toHaveBeenCalled();
     expect(button("New agent")).toBeUndefined();
   });
-  it("offers Import history separately on an empty agent list without making an execution request", async () => {
+  it("offers one Connect agent handoff for live connection or history without making an execution request", async () => {
     const listAgents = vi.fn(async () => ({ agents: [], next_cursor: null }));
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);
     await act(async () => { root!.render(createElement(AgentsPage, { v2: { listAgents } as never, archived: false, go: vi.fn() })); });
-    expect(button("Import history")).toBeDefined();
-    await act(async () => { button("Import history")!.click(); });
+    expect(button("Import history")).toBeUndefined();
+    expect(button("Connect agent")).toBeDefined();
+    await act(async () => { button("Connect agent")!.click(); });
     expect(document.querySelector('[role="menu"]')?.textContent).toContain("Claude Code CLI");
     expect(document.querySelector('[role="menu"]')?.textContent).toContain("Codex CLI");
     expect(listAgents).toHaveBeenCalledTimes(1);

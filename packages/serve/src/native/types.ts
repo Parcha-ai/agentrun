@@ -27,6 +27,8 @@ export type NativeBinding = Omit<NativeTarget, "state"> & {
   state: NativeTarget["state"] | "ready";
   connected: boolean;
   verified_at?: string;
+  /** A source-approved target on an outbound-only connector, never a server-selected remote path. */
+  remote?: { connector_id: string; target_id: string };
 };
 export type NativeUsage = {
   input_tokens: number | null;

@@ -1,11 +1,45 @@
-import { createContext, useContext, useRef, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { Banner, Button, Chip, Dialog, Switch } from "@/components/ui";
 import { type Agent, editBody } from "@/lib/agentForm";
 import { type Client, problemOf } from "@/lib/client";
-import { nativeRuntimeLabel, nativeSelectorLabel, nativeStateLabel } from "@/lib/native";
+import { type NativeBinding, nativeReadinessOf, nativeRemoteSource, nativeRuntimeLabel, nativeSelectorLabel, nativeStateLabel } from "@/lib/native";
 
 type NativeMutations = { busy: boolean; begin: () => boolean; end: () => void };
 const NativeMutationContext = createContext<NativeMutations | null>(null);
+const NativeReadinessContext = createContext<NativeBinding | undefined>(undefined);
+
+/** Readiness is a runtime view. Never write offline flags back into the immutable source binding. */
+export function useNativeReadiness(agent: Agent, v2: Client) {
+  const binding = agent.definition.native;
+  const remote = nativeRemoteSource(binding);
+  const key = `${agent.agent_id}:${agent.revision}:${remote?.connector_id ?? ""}:${remote?.target_id ?? ""}`;
+  const [current, setCurrent] = useState<{ key: string; native: NativeBinding } | null>(null);
+  const [retry, setRetry] = useState(0);
+  const refresh = () => setRetry((n) => n + 1);
+  useEffect(() => {
+    if (!binding || !remote) return;
+    let live = true, reading = false;
+    const read = async () => {
+      if (reading) return;
+      reading = true;
+      try {
+        const { native } = await v2.getNative(agent.agent_id);
+        if (!native) throw new Error("The remote binding is no longer available.");
+        if (live) setCurrent({ key, native });
+      } catch (e) {
+        if (live) setCurrent({ key, native: { ...binding, state: "needs_attention", capabilities: { ...binding.capabilities, launch: false }, issues: [`Connection status could not be read: ${problemOf(e)}`] } });
+      } finally { reading = false; }
+    };
+    void read();
+    const visibleRead = () => { if (!document.hidden) void read(); };
+    const timer = setInterval(visibleRead, 15_000);
+    window.addEventListener("focus", visibleRead);
+    document.addEventListener("visibilitychange", visibleRead);
+    return () => { live = false; clearInterval(timer); window.removeEventListener("focus", visibleRead); document.removeEventListener("visibilitychange", visibleRead); };
+  }, [v2, key, retry]); // eslint-disable-line react-hooks/exhaustive-deps
+  const native = !remote || !binding ? binding : current?.key === key ? current.native : nativeReadinessOf(agent);
+  return { native, refresh };
+}
 function useNativeMutations(): NativeMutations {
   const shared = useContext(NativeMutationContext);
   const [busy, setBusy] = useState(false);
@@ -13,14 +47,14 @@ function useNativeMutations(): NativeMutations {
   return shared ?? { busy, begin: () => { if (held.current) return false; held.current = true; setBusy(true); return true; }, end: () => { held.current = false; setBusy(false); } };
 }
 /** One latch for native mutations across the overview, the Learning tab and a confirmation dialog. */
-export function NativeMutationProvider({ children }: { children: ReactNode }) {
+export function NativeMutationProvider({ children, native }: { children: ReactNode; native?: NativeBinding }) {
   const mutations = useNativeMutations();
-  return <NativeMutationContext.Provider value={mutations}>{children}</NativeMutationContext.Provider>;
+  return <NativeReadinessContext.Provider value={native}><NativeMutationContext.Provider value={mutations}>{children}</NativeMutationContext.Provider></NativeReadinessContext.Provider>;
 }
 
 /** Native runs use notes/skills only. Off stops both seed delivery and new AgentRun learning, preserving saved history. */
 export function NativeLearningSwitch({ agent, v2, learning, onAgent }: { agent: Agent; v2: Client; learning?: "on" | "off" | null; onAgent?: (agent: Agent) => void }) {
-  const native = agent.definition.native!;
+  const native = useContext(NativeReadinessContext) ?? agent.definition.native!;
   const mutations = useNativeMutations();
   const on = agent.definition.learning === true || agent.definition.learning === "notes";
   const [confirm, setConfirm] = useState(false);
@@ -58,7 +92,8 @@ export function NativeLearningSwitch({ agent, v2, learning, onAgent }: { agent: 
 }
 
 export function NativeAgent({ agent, v2, learning, onAgent, onChanged }: { agent: Agent; v2: Client; learning?: "on" | "off" | null; onAgent: (agent: Agent) => void; onChanged: () => Promise<void> }) {
-  const native = agent.definition.native!;
+  const native = useContext(NativeReadinessContext) ?? agent.definition.native!;
+  const remote = nativeRemoteSource(native);
   const mutations = useNativeMutations();
   const busy = mutations.busy;
   const [error, setError] = useState<string | null>(null);
@@ -67,13 +102,14 @@ export function NativeAgent({ agent, v2, learning, onAgent, onChanged }: { agent
     setError(null);
     try {
       const { native } = await (kind === "verify" ? v2.verifyNative(agent.agent_id) : v2.disconnectNative(agent.agent_id));
-      onAgent({ ...agent, definition: { ...agent.definition, native } });
+      // A remote read may say offline without changing its saved revision. Keep that state out of definition edits.
+      if (!remote) onAgent({ ...agent, definition: { ...agent.definition, native } });
       await onChanged();
     } catch (e) { setError(problemOf(e)); }
     finally { mutations.end(); }
   };
   return <NativeMutationContext.Provider value={mutations}><section className="space-y-4 border bg-card p-4" aria-label="Native connection">
-    <div className="flex flex-wrap items-center gap-3"><h2 className="mr-auto text-body font-semibold">Native connection</h2><Chip tone={native.connected && native.state === "ready" ? "success" : "warning"}>{nativeStateLabel(native)}</Chip></div>
+    <div className="flex flex-wrap items-center gap-3"><h2 className="mr-auto text-body font-semibold">{remote ? "Remote connection" : "Native connection"}</h2><Chip tone={native.connected && native.state === "ready" ? "success" : "warning"}>{nativeStateLabel(native)}</Chip></div>
     <div className="flex flex-wrap gap-2"><Button size="sm" disabled={busy || !native.connected} aria-busy={busy} onClick={() => void change("verify")}>Verify connection</Button><Button size="sm" disabled={busy || !native.connected} onClick={() => void change("disconnect")}>Disconnect</Button></div>
     {error && <Banner tone="error">{error}</Banner>}
     <div className="border-y py-4"><NativeLearningSwitch agent={agent} v2={v2} learning={learning} onAgent={onAgent} /></div>
@@ -82,7 +118,8 @@ export function NativeAgent({ agent, v2, learning, onAgent, onChanged }: { agent
     <details><summary className="cursor-pointer text-small">Skills · {native.skills.length} detected</summary>{native.skills.length ? <ul className="mt-2 space-y-1 text-small">{native.skills.map((skill) => <li key={skill} className="break-all font-mono">{skill}</li>)}</ul> : <p className="mt-2 text-small text-muted-foreground">None detected.</p>}</details>
     <details><summary className="cursor-pointer text-small">MCP servers · {native.mcp_servers.length} configured</summary>{native.mcp_servers.length ? <ul className="mt-2 space-y-1 text-small">{native.mcp_servers.map((server) => <li key={server} className="break-all font-mono">{server}</li>)}</ul> : <p className="mt-2 text-small text-muted-foreground">None configured.</p>}</details>
     <details><summary className="cursor-pointer text-small">Configuration provenance · {native.configuration.length} files</summary><dl className="mt-2 space-y-3 text-small"><div><dt className="text-muted-foreground">Verified</dt><dd className="break-all font-mono">{native.verified_at ?? "Not yet verified"}</dd></div><div><dt className="text-muted-foreground">Fingerprint</dt><dd className="break-all font-mono">{native.fingerprint}</dd></div></dl><ul className="mt-3 space-y-2 text-small">{native.configuration.map((file) => <li key={file.path} className="break-all font-mono">{file.path}<span className="block text-muted-foreground">SHA-256 {file.sha256}</span></li>)}</ul></details>
-    <details><summary className="cursor-pointer text-small">Capabilities and source machine</summary><p className="mt-2 text-small text-muted-foreground">Future launches resolve the latest original configuration. Verification checks metadata and authentication separately from a paid run. The source machine's local server must be available; hosted native pairing is unavailable.</p><p className="mt-2 text-small text-muted-foreground">Launch: {native.capabilities.launch ? "supported" : "unavailable"} · Approvals: {native.capabilities.approval} · Usage: {native.capabilities.usage ? "supported counters only; dollar cost may be unknown" : "unavailable"} · Spend caps: unavailable · Learned workflows: unavailable</p></details>
+    {remote && <p className="text-small text-muted-foreground">Jobs execute on the source machine through its connector. Native sign-in and project files stay there. <a href="#/agents/connect?source=remote" className="underline underline-offset-2">Manage remote machines</a></p>}
+    <details><summary className="cursor-pointer text-small">Capabilities and source machine</summary><p className="mt-2 text-small text-muted-foreground">Future launches resolve the latest original configuration. Verification checks metadata and authentication separately from a paid run. {remote ? "Keep the source CLI worker online for verification, execution and learning delivery. Connection status refreshes every 15 seconds." : "This project runs on the AgentRun server's machine."}</p><p className="mt-2 text-small text-muted-foreground">Launch: {native.capabilities.launch ? "supported" : "unavailable"} · Approvals: {native.capabilities.approval} · Usage: {native.capabilities.usage ? "supported counters only; dollar cost may be unknown" : "unavailable"} · Spend caps: unavailable · Learned workflows: unavailable</p></details>
     <p className="text-small text-muted-foreground">Disconnect prevents future native jobs. Original files and run history are preserved.</p>
     {!native.connected && <a href="#/agents/connect" className="block text-small underline underline-offset-2">Reconnect existing agent</a>}
   </section></NativeMutationContext.Provider>;

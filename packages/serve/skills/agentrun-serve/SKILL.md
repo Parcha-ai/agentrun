@@ -1,6 +1,6 @@
 ---
 name: agentrun-serve
-description: Connect to AgentRun Server (start it when it is not running), then create agents, run them, answer their questions and read their results over its MCP endpoint or its /v2 API. Use when asked to run an agent on AgentRun, start or check the AgentRun server, connect to it over MCP, or find out what an AgentRun run did.
+description: Connect existing Claude Code or Codex agents locally or remotely, import selected history, and manage agents and learning through AgentRun Server. Clarify whether the user wants a live connection or historical import, then use the existing instance and its matching CLI. Also use to create agents, run them, answer questions and inspect results over MCP or the v2 API.
 ---
 
 # AgentRun Server
@@ -8,6 +8,94 @@ description: Connect to AgentRun Server (start it when it is not running), then 
 The open platform's server for agents. One process on this machine's loopback address, port 7340 by default, keeps
 agents (a prompt with tools, or a typed workflow) and every run of them: its timeline, its files and its cost. A coding
 agent drives it over MCP (`/v2/mcp`) or HTTP (`/v2`); a person follows the same runs in its console (`/`).
+
+Read this skill from the target server's `/skills/agentrun-serve/SKILL.md` when possible; it matches the deployed
+build. Inspect `/v2/capabilities` and `/v2/openapi.json` before using an optional feature. A handoff naming an
+existing instance is not permission to start a replacement or change its destination.
+
+## Connect agent
+
+Use one entry point for live connections and history. Ask only what the conversation has not established:
+
+1. Does the user want to **connect an agent for future runs**, **import past history**, or both?
+2. Which machine holds the existing setup and native sign-in, and which AgentRun instance should receive it?
+3. Which project, runtime and specific named agent/profile should be selected? Discover only the chosen source.
+
+Explain the difference before a choice: a live connection retains the original native configuration and sign-in,
+and supports new jobs with optional self-improvement. A history import creates historical records; it does not
+attach a running conversation, resume it or turn it into learning. Do not infer consent for history from consent
+to connect, or enable learning solely because an agent was connected.
+
+### Live connection on this server
+
+Verify that the coding agent, source project and AgentRun server are on the same machine. A browser's loopback
+address alone does not prove this. Use the matching installed Node CLI:
+
+```sh
+npx @parcha/agentrun native discover --project /absolute/project
+npx @parcha/agentrun native connect --project /absolute/project --runtime claude-code --url http://127.0.0.1:7340
+```
+
+Use the verified server port, not necessarily 7340. Select `codex` for Codex, `--agent NAME` for a discovered Claude
+named agent or `--profile NAME` for a discovered Codex profile. Show the discovered setup and register only the
+user's selection. Verify sign-in separately from model execution. Reconnecting reuses its ordinary agent record.
+
+### Live connection from another machine
+
+Use the existing Python connector with its **remote** command from the same reviewed build as the OSS server.
+The observation-only hosted connector does not execute jobs. Do not assume an older published launcher includes
+this extension. A source checkout can be installed with `uv tool install ./connector` after building its matching
+Node runtime. The source machine needs `agentrun-serve remote-bridge` from that build; the connector accepts an
+explicit `--bridge` path to its compiled `remote-worker-bridge.js` for checkout-based installations.
+
+Run `python -m agentrun_cli remote --help` in the installed connector environment (or its `agentrun` entry point).
+Discover the selected project with `remote discover --project /absolute/project --runtime claude-code` or
+`--runtime codex`. Present the supported project default, Claude named agents or Codex profiles before importing.
+
+Have the user open the destination console's **Connect agent → Another machine** page and create a one-use
+connection code. Enter it directly into the CLI's secure prompt. Never place it in agent prompts, URLs, command
+arguments, shell history or logs. For an explicitly approved unattended setup, use the documented origin-bound,
+owner-only credential file; keep its contents out of chat. Do not send a broad server API key to the source.
+
+```sh
+agentrun remote connect --origin https://console.example.com --project /absolute/project --runtime claude-code
+```
+
+Replace the origin with the intended instance. Add `--selector-kind agent --selector-name NAME` for a Claude
+named agent, or `--selector-kind profile --selector-name NAME` for Codex. Use a separate private `--state-dir` for
+each connection. Import registers the selected source-bound setup as a normal agent/revision; it does not copy
+provider credentials, project files or historical conversations. Connection starts the source worker by default.
+Check `agentrun remote status`, the console's machine status and the imported agent link. Keep the source worker
+running for jobs. `agentrun remote worker --state-dir /private/connector --foreground` owns it in a terminal;
+persistent service installation is a separate user choice. Revocation prevents further remote work.
+
+The worker uses outbound HTTPS, the selected native target and a restricted connector credential. Native files,
+skills, MCP, hooks, models, permissions and sign-in remain on the source machine. Do not add permission-bypass
+flags or silently substitute managed execution. Independent desktop conversations are not attached.
+
+### Optional self-improvement
+
+When requested, verify the imported agent and enable its existing **Self-improving** control. Notes and skills are
+additive, pinned to a learning revision for each run. Reflection resumes the exact task session with tools disabled;
+the existing checker, grader and merge rules decide what becomes active. Risky proposals await owner review in
+Learning Dojo; a connector cannot approve them. Reflection and grading add model usage. Off means later runs
+receive and create no AgentRun learning. Do not start a paid run unless authorized, and do not promise enforcement
+of native dollar caps, interactive approvals, learned workflows or unsupported desktop tools.
+
+### Historical import
+
+Confirm source runtimes, projects and scope, then inspect the local importer with `npx @parcha/agentrun import
+--help`. This importer writes a local store; the remote connector does not upload session history. If source files
+and the intended store are on different machines, explain that limitation before offering a migration; never
+silently import into another instance or transfer transcripts without approval.
+
+Identify the existing server's actual data directory, store configuration, seal key and supervisor. Preserve them
+without printing secrets. Run the selected `import --data DIR --dry-run` first. Before write import, inspect active
+and queued work and enabled triggers, present scope and the stop/restart plan, and obtain any missing approval.
+The importer requires exclusive store ownership: stop the original service in an agreed idle window, import the
+approved sources, and restart the same service even if import fails. Do not delete locks, reset owner setup or
+bypass ownership. Verify health and imported/skipped counts at the original console address. If safe restart is
+not possible, stop after the dry run and explain the operator action required.
 
 ## 1. Check the server
 
@@ -17,7 +105,8 @@ If `AGENTRUN_BASE_URL` is set, check it:
 curl -sf "$AGENTRUN_BASE_URL/health"
 ```
 
-If it is not set, or nothing answers, start the server from a checkout of the repository (Node 24.22.3 or later), in the
+If the user named an existing server and it does not answer, diagnose that instance; do not start another one.
+Only when the user wants a new local server, start it from a checkout of the repository (Node 24.22.3 or later), in the
 background, with its data in a directory you name:
 
 ```sh

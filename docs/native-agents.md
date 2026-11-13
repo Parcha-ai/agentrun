@@ -1,6 +1,6 @@
 # Connect existing Claude Code and Codex agents
 
-Run AgentRun on the machine where the original CLI is installed and signed in. In **Connect existing agents**, select the source project, discover its setups, and connect the project default, a Claude Code named agent, or a Codex profile. Verify checks the CLI and native sign-in without a model call. It separately reports that model and tool execution remain untested.
+Use **Connect agent** and choose whether to connect a live setup, import past history, or both. For a live connection, select this server or another source machine, discover the selected project and choose its default, a Claude Code named agent, or a Codex profile. Verify checks the CLI and native sign-in without a model call. It separately reports that model and tool execution remain untested. The console handoff reads the skill bundled with that exact server build at `/skills/agentrun-serve/SKILL.md`.
 
 The current bridge requires stable Claude Code 2.1.322 or later in major version 2, or Codex 0.167.2 or later in major version 0. Older, prerelease and other major versions show Needs attention until the bridge supports their protocol.
 
@@ -12,7 +12,24 @@ npx @parcha/agentrun native connect --project /absolute/project --runtime claude
 npx @parcha/agentrun native connect --project /absolute/project --runtime codex --profile review
 ```
 
-Use `--agent NAME` for a discovered Claude named agent. Use `--data DIR` for another local instance, or `--url http://127.0.0.1:PORT`. Discovery runs metadata commands only. Connection needs the local server credential; it needs no model API key. A browser on a hosted instance cannot discover a laptop: hosted pairing and migration are deferred.
+Use `--agent NAME` for a discovered Claude named agent. Use `--data DIR` for another local instance, or `--url http://127.0.0.1:PORT`. Discovery runs metadata commands only. Local connection needs the local server credential; it needs no model API key. A browser cannot scan another machine; use its explicit outbound connector below.
+
+## Connect another machine
+
+The existing Python AgentRun CLI is bundled in `connector/`, with an opt-in `remote` command. Install it and the Node runtime from the same reviewed build as the server. Older released observation-only launchers do not provide remote native execution. From a built source checkout, use `uv tool install ./connector`; its `agentrun` command accepts `remote discover`, `remote connect`, `remote worker`, `remote status` and `remote disconnect`. `python -m agentrun_cli` in that installed environment avoids a command-name collision with the Node management CLI.
+
+1. On the source machine, run `agentrun remote discover --project /absolute/project --runtime claude-code` or `codex`. Only the selected project is discovered; past sessions are not read.
+2. In the destination console, open **Connect agent → Another machine** and create a one-use connection code. Enter it into the CLI's secure prompt, never a command argument or coding-agent prompt.
+3. Run `agentrun remote connect --origin https://console.example.com --project /absolute/project --runtime claude-code`, using the intended server's origin. `--selector-kind agent --selector-name NAME` selects a Claude named agent; `--selector-kind profile --selector-name NAME` selects a Codex profile. Connection imports exactly that source-bound setup and starts the worker, without starting a model task.
+4. Verify the source worker is online and open its imported agent. Turn Self-improving On when wanted, then start a normal AgentRun job.
+
+The CLI finds `agentrun-serve remote-bridge` from the matching Node installation. For a source checkout, pass `--bridge /path/to/checkout/packages/serve/dist/native/remote-worker-bridge.js`. Use a private `--state-dir` per connection; `--no-start` registers without starting observation/execution. An approved unattended connection can use `--credential-file /private/enrollment.json`: an owner-only file with `origin` and the one-use code in `api_key`. The broad server API token stays off the source machine. Only a restricted connector credential is retained after enrollment.
+
+`agentrun remote worker --state-dir /private/connector --foreground` owns the worker in a terminal. A persistent service is optional and must be explicitly installed by the source operator. `remote disconnect` or the console's Revoke action prevents future work and stops the worker on its next poll. Loss of a command lease closes native execution; an interrupted dispatch is recorded as uncertain and never automatically replayed. The source worker makes outbound HTTPS requests only, with no public inbound listener.
+
+Import here means an ordinary agent/revision referencing the selected source setup. Its configuration, skills, MCP, hooks and sign-in stay on that machine. Run prompts, results, tool activity, usage and an immutable standing-instruction snapshot are sent to the destination for the approved runs and learning. The server cannot select another source path, executable or environment through the worker protocol. The original source permissions remain authoritative. The existing hosted metadata observer remains separate and unchanged.
+
+Historical transcript import is still a separate local-store operation. It is offered through the same Connect agent skill, which clarifies scope and destination first. The remote execution connector does not upload past conversations or attach a desktop conversation already in progress.
 
 Connected agents use the ordinary agent, revision, skills and per-agent learning records. Their revision contains a reference to the native source, not a copied prompt or credential store. Normal definition edits retain that reference. The portable `agent.md` template manifest continues to compile into the same ordinary records; it rejects native machine references. The current template API does not export a connected source setup. Existing managed adapters retain their isolated configuration.
 
@@ -24,7 +41,7 @@ Learned notes are additive context. Learned skills are supplied with files under
 
 The bridge supports new jobs, native event history, supported usage counters, stop and cancel. Interactive approval handling and in-session steering are unavailable; a denied tool request is shown explicitly. No permission-bypass flags are added. Per-run effort overrides and uploaded attachments are unavailable: change the original native setup or source files. Native dollar limits cannot be enforced by AgentRun, so capped launches are refused. Unknown costs, token counters and model request counts remain unknown; native turns are not counted as model requests.
 
-Jobs for the same source directory are serialized. An interrupted native dispatch is never blindly replayed because its side effects may have happened. After a runner crash, inspect the source project and the task-owned `native-locks` entry named by the failure before removing a stale lock and starting a new job. Native sessions launched independently in a terminal or desktop app are outside this bridge.
+Jobs for the same source directory are serialized. An interrupted native dispatch is never blindly replayed because its side effects may have happened. After a runner or source-worker crash, inspect the source project and its task-owned lock named by the failure before removing a stale lock and starting a new job. Native sessions launched independently in a terminal or desktop app are outside this bridge.
 
 ## Run the live acceptance test
 
@@ -39,3 +56,13 @@ AGENTRUN_NATIVE_E2E=1 node scripts/native-learning-e2e.mjs \
 The script creates disposable projects with ordinary native instructions, connects each, enables learning, teaches a preference, waits for checked grading and promotion, and starts a fresh session that must use the exact promoted revision. It then turns learning Off and verifies a fresh control receives no AgentRun learning and no reflection. It checks source instruction and static native configuration hashes, exact distinct native session IDs, and records sanitized usage receipts. It does not write the taught rule into a project file. Claude’s own `.claude.json` bookkeeping can change during normal native CLI use and is excluded from the static-file hash comparison. `--claude-agent` and `--codex-profile` select existing named setups. Native global instructions and hooks still apply, so choose a compatible source setup. A grader rejection is a test failure, not a reason to bypass grading.
 
 This proves accepted learning reaches a later run. It does not establish a general quality improvement; that requires independent outcome evaluations.
+
+For remote acceptance, first connect disposable source projects with the actual CLI worker, preferably in a separate filesystem where their paths do not exist on the server. Supply a JSON file listing the selected fixture `agent_id` and `runtime` values:
+
+```sh
+AGENTRUN_REMOTE_E2E=1 node scripts/remote-learning-e2e.mjs \
+  --url https://console.example.com --token-file /private/server-token \
+  --agents /private/remote-fixtures.json --out /private/remote-evidence
+```
+
+This makes real model calls for each selected agent: teach a preference, wait for checked grading and promotion, verify a fresh remote session uses the exact accepted revision and answer format, then verify a fresh Off control receives no seed or reflection. Successful fixtures are left with learning On. The receipt records real run/session IDs, reported usage and live working visibility. Separately verify source configuration hashes, connector revocation, lost-lease behavior and that the source cannot call unrelated server APIs.

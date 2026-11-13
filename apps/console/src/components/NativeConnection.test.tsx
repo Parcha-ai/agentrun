@@ -23,7 +23,7 @@ it("discovers on the server host without running, connects the selected native t
   await act(async () => root.render(createElement(NativeConnections, { v2, go: () => {} })));
   expect(calls).toEqual([]);
   expect(host.textContent).toContain("cannot scan your laptop");
-  expect(host.textContent).toContain("Import history");
+  expect(host.textContent).toContain("import history");
   const field = host.querySelector<HTMLInputElement>('input[aria-label="Project on server host"]')!;
   act(() => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(field, "/workspace/project"); field.dispatchEvent(new Event("input", { bubbles: true })); });
   await act(async () => [...host.querySelectorAll("button")].find((b) => b.textContent === "Discover")!.click());
@@ -37,4 +37,25 @@ it("discovers on the server host without running, connects the selected native t
   expect(calls[1]).toEqual({ path: "/v2/native/connect", body: { project: "/workspace/project", runtime: "claude-code", selector: { kind: "agent", name: "frontend" } } });
   expect(host.querySelector('a[href="#/agents/frontend"]')).not.toBeNull();
   expect(calls.some((c) => c.path.endsWith("/runs"))).toBe(false);
+});
+
+it("offers remote connection without scanning the server's project files or claiming history was imported", async () => {
+  const calls: string[] = [];
+  const v2 = createClient({ fetch: (async (url) => {
+    const path = new URL(String(url), "https://console.example.test").pathname;
+    calls.push(path);
+    if (path === "/v2/connectors") return json({ connectors: [] });
+    throw new Error(path);
+  }) as typeof fetch });
+  const host = document.body.appendChild(document.createElement("div")); root = createRoot(host);
+  await act(async () => root.render(createElement(NativeConnections, { v2, go: () => {} })));
+  const source = host.querySelector<HTMLInputElement>('input[type="radio"][value="remote"]');
+  expect(source).not.toBeNull();
+  await act(async () => source!.click());
+  expect(calls).toEqual(["/v2/connectors"]);
+  expect(host.querySelector('input[aria-label="Project on server host"]')).toBeNull();
+  expect(host.textContent).toContain("Connect remote agents");
+  expect(host.textContent).toContain("No remote machines connected");
+  expect(host.textContent).toContain("does not import past conversations");
+  expect(host.textContent).not.toContain("run AgentRun locally there and open its console");
 });

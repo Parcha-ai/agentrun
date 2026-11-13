@@ -25,8 +25,8 @@ describe("StartHere", () => {
   it("starts with native connection, without model setup or expanded execution controls", () => {
     const h = html({ harnesses: [{ id: "pi", available: true, default_model: null }] });
     expect(h).toContain("No model key needed");
-    expect(h).toContain("Connect existing agents");
-    expect(h).toContain("Import history separately");
+    expect(h).toContain("Connect agent");
+    expect(h).toContain("live connection or a history import");
     expect(h).toContain('aria-expanded="false"');
     expect(h).not.toContain("Try it");
     expect(h).not.toContain("Set up models");

@@ -2,6 +2,7 @@ import { expect, it } from "vitest";
 import { route } from "./App";
 it("opens the native connection flow from its own address rather than treating connect as an agent id", () => {
   expect(route("#/agents/connect")).toEqual({ section: "agents", nativeConnect: true });
+  expect(route("#/agents/connect?source=remote")).toEqual({ section: "agents", nativeConnect: true, connectionSource: "remote" });
   expect(route("#/agents/connect/runs")).toEqual({ section: "agents", agent: "connect", tab: "runs" });
 });
 

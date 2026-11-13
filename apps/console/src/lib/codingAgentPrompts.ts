@@ -2,7 +2,7 @@ import type { AgentCreateDraft } from "./agentDraft";
 import type { TemplateView } from "./v2";
 
 // Prompts carry only the public server address and the selected task, never browser credentials. The bundled skill
-// handles the API; imports use the local CLI because this server has no remote session-import endpoint.
+// handles the API; historical imports still use the local CLI. Remote setup import uses the scoped connector.
 const SKILL = "https://raw.githubusercontent.com/Parcha-ai/agentrun/main/packages/serve/skills/agentrun-serve/SKILL.md";
 
 function server(origin: string): URL {
@@ -98,17 +98,24 @@ Help me send this prepared request: POST ${root}/v2/agents/${encodeURIComponent(
 ${JSON.stringify(body, null, 2)}`;
 }
 
-/** Native connection is separate from MCP management and optional historical import. */
+/** The deployed skill stays in step with the server and its matching connector CLI. */
 export function connectExistingAgentsPrompt(origin: string): string {
-  const target = server(origin);
-  const root = target.origin;
-  const local = target.hostname === "localhost" || target.hostname === "[::1]" || /^127\./.test(target.hostname);
-  const sourceUrl = local ? root : "<source-machine-loopback-url>";
-  return `Load the installed agentrun-serve skill, or read ${SKILL}. This console is ${root}/v2. Never print credentials. Use native sign-in on the source machine; do not copy its credentials or configuration to another host.
+  const root = server(origin).origin;
+  return `Read ${root}/skills/agentrun-serve/SKILL.md and follow its Connect agent workflow. Target this existing AgentRun instance only: ${root}/v2. Do not start a replacement server. Never print credentials.
 
-Connect my existing native Claude Code project/named agents or Codex project/profiles to AgentRun. Run discovery on the machine that holds my project and native sign-in. A remote console cannot scan my laptop. This release runs projects on the AgentRun server's host; hosted native pairing is unavailable. If this instance is not on my source machine, explain the limitation and offer a local AgentRun instance there. Do not start another server or switch the destination without my approval. A loopback address must also be checked: the coding agent and browser may be on different machines.
+First ask whether I want a live agent connection, to import past session history, or both. Confirm the source machine, project and selected Claude Code agent or Codex profile. Keep existing instructions, skills, MCP, permissions and native sign-in in place. Discover before importing; show the selected setup and ask before changing anything.
 
-Ask for the project path if it is unknown. Read-only discovery: npx @parcha/agentrun native discover --project <path>
-Connection: npx @parcha/agentrun native connect --project <path> --runtime claude-code|codex [--agent NAME|--profile NAME] --url ${sourceUrl}
-Use the verified source-machine loopback URL, not a hosted console URL. Use --agent only for a Claude Code named agent and --profile only for a Codex profile. Use the matching runtime, not the literal alternatives. Register only the targets I choose. Reconnecting must reuse the same agent. No new model API key is needed to register; native execution reuses local sign-in. Show project, selector, model, machine, detected skills/MCP servers, compatibility limits and verification state. Discovery and connection must not launch a model or run project hooks. Verify metadata/auth separately; ask before any paid run. App choices do not imply desktop session attachment or desktop-only tools; explain unsupported desktop dependencies. Keep native files, permissions and configuration in place, and resolve changes on the next launch. History import is a separate optional action. Do not import history or enable learning unless I ask. Return the connected agent's console link.`;
+Use the skill's source-machine workflow: local native connection for this server, or the existing remote CLI for another machine. Use the matching reviewed build; do not assume the released npm CLI has new remote commands. Keep enrollment codes out of coding-agent prompts, URLs and command arguments; I enter them directly into the CLI's secure prompt. Historical import is separate and remote transcript upload is unsupported. Do not import history, enable self-improvement or start a paid run unless requested. Verify the connection and return the agent's console link.`;
+}
+
+/** Enrollment credentials never travel through a prompt or a coding-app URL. */
+export function connectRemoteAgentsPrompt(origin: string): string {
+  const root = server(origin).origin;
+  return `Read ${root}/skills/agentrun-serve/SKILL.md and follow its Connect agent workflow for another machine. Target ${root}/v2 only. Use the existing AgentRun CLI and Node bridge from the same reviewed build as this server; check their remote command support before proceeding. Do not assume the released npm CLI includes this feature or start a replacement server. Never print credentials.
+
+Ask for the source project and runtime, discover the native setup, then let me choose the exact Claude Code project/named agent or Codex project/profile to connect. Keep its native files, permissions, skills, tools and sign-in on this machine. Create a source-bound connection; do not copy credentials or import past conversations.
+
+I create a one-use connection code at ${root}/#/agents/connect?source=remote under Another machine and enter it directly in the connector's secure terminal prompt. Do not put it into a coding-agent prompt, URL, command argument, shell history or log. Show the selected scope before importing, start the source worker and verify its online status in the console. Do not install a persistent service without asking.
+
+Keep self-improvement Off unless I request it. If requested, verify the remote connection and follow the skill's notes-only learning setup; explain reflection/grading usage. Accepted notes and skills apply to later runs, while risky changes require owner review in Learning Dojo. Ask before a paid run and return the connected agent link.`;
 }

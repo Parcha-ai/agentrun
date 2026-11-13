@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyTemplatePrompt, buildAgentPrompt, connectAgentPrompt, connectExistingAgentsPrompt, editAgentPrompt, importAgentsPrompt, playgroundPrompt, queryRunsPrompt, runAgentPrompt } from "./codingAgentPrompts";
+import { applyTemplatePrompt, buildAgentPrompt, connectAgentPrompt, connectExistingAgentsPrompt, connectRemoteAgentsPrompt, editAgentPrompt, importAgentsPrompt, playgroundPrompt, queryRunsPrompt, runAgentPrompt } from "./codingAgentPrompts";
 import type { TemplateView } from "./v2";
 
 const template: TemplateView = {
@@ -10,13 +10,28 @@ const template: TemplateView = {
 };
 
 describe("coding-agent handoffs", () => {
-  it("gives a hosted native handoff a source-local command without promising remote pairing", () => {
+  it("uses one skill-directed Connect agent handoff to clarify live connection or history and the source machine", () => {
     const prompt = connectExistingAgentsPrompt("https://console.example.test");
-    expect(prompt).toContain("npx @parcha/agentrun native discover --project <path>");
-    expect(prompt).toContain("--url <source-machine-loopback-url>");
-    expect(prompt).not.toContain("--url https://console.example.test");
-    expect(prompt).toContain("hosted native pairing is unavailable");
+    expect(prompt).toContain("https://console.example.test/skills/agentrun-serve/SKILL.md");
+    expect(prompt).toContain("live agent connection, to import past session history, or both");
+    expect(prompt).toContain("source machine, project");
+    expect(prompt).toContain("existing remote CLI for another machine");
+    expect(prompt).toContain("remote transcript upload is unsupported");
     expect(prompt).toContain("Never print credentials");
+    expect(prompt).not.toContain("hosted native pairing is unavailable");
+    expect(prompt.length).toBeLessThan(1800);
+  });
+
+  it("hands remote setup to the matching connector build without putting a credential into the prompt", () => {
+    const prompt = connectRemoteAgentsPrompt("https://console.example.test");
+    expect(prompt).toContain("same reviewed build");
+    expect(prompt).toContain("secure terminal prompt");
+    expect(prompt).toContain("one-use connection code");
+    expect(prompt).toContain("do not copy credentials or import past conversations");
+    expect(prompt).toContain("Keep self-improvement Off unless I request it");
+    expect(prompt).toContain("Ask before a paid run");
+    expect(prompt).not.toContain("--api-key");
+    expect(prompt).not.toContain("npx");
   });
 
   it("targets the current server without carrying credentials or page parameters into the prompt", () => {

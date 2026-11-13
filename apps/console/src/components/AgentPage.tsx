@@ -10,7 +10,7 @@ import { CodingAgentAction } from "@/components/CodingAgentAction";
 import { editAgentPrompt, queryRunsPrompt, runAgentPrompt } from "@/lib/codingAgentPrompts";
 import { AgentSkeleton, ListSkeleton } from "@/components/Skeleton";
 import { StatusBadge } from "@/components/StatusBadge";
-import { NativeAgent, NativeMutationProvider } from "@/components/NativeAgent";
+import { NativeAgent, NativeMutationProvider, useNativeReadiness } from "@/components/NativeAgent";
 import { nativeStateLabel } from "@/lib/native";
 import { LearningTab } from "@/components/Learning";
 import { LearningChips, WaitingCount } from "@/components/LearningChips";
@@ -108,7 +108,7 @@ function AgentDetail({ agent, onAgent, reread, stale, v2, go, stats, analytics, 
   const [factsOpen, setFactsOpen] = useState(false);
   const itemsWaiting = waitingOf(agent);
   const d = agent.definition;
-  const native = d.native;
+  const { native, refresh: refreshNative } = useNativeReadiness(agent, v2);
   const workflow = agent.kind === "workflow";
   const Icon = workflow ? Workflow : Bot;
   // A workflow revision has no harness, model or thinking of its own (the server refuses them beside a workflow).
@@ -141,7 +141,7 @@ function AgentDetail({ agent, onAgent, reread, stale, v2, go, stats, analytics, 
   const liveCount = agent.runs?.live ?? (history.runs ? `${live.length}${history.cursor ? "+" : ""}` : "—");
   const overviewFacts: [string, string, string?][] = [["Status", agent.archived_at ? "Archived" : native ? nativeStateLabel(native) : "Active"], ["Live jobs", String(liveCount)], ...facts];
   return (
-    <NativeMutationProvider><section className="flex h-full min-h-0 flex-col" aria-label="Agent detail">
+    <NativeMutationProvider native={native}><section className="flex h-full min-h-0 flex-col" aria-label="Agent detail">
       <header className="flex min-h-12 shrink-0 flex-wrap items-center gap-2 border-b px-5 py-2 lg:flex-nowrap lg:py-0" aria-label="Agent toolbar">
         <Button size="icon" variant="ghost" aria-label="Back to agents" onClick={() => go(agent.archived_at ? "#/agents?archived=true" : "#/agents")}><ArrowLeft aria-hidden /></Button>
         <Icon className="size-4 shrink-0 text-muted-foreground" aria-hidden />
@@ -149,7 +149,7 @@ function AgentDetail({ agent, onAgent, reread, stale, v2, go, stats, analytics, 
         <div className="ml-auto flex max-w-full flex-wrap items-center justify-end gap-2">
           <CodingAgentAction label="Edit agent" prompt={editAgentPrompt(location.origin, agent.agent_id, !!native)} playgroundHref={native ? undefined : `#/playground?operation=edit-agent&agent=${encodeURIComponent(agent.agent_id)}`} />
           {!agent.archived_at && <CodingAgentAction label="Run agent" disabled={!!native && (!native.connected || native.state !== "ready" || !native.capabilities.launch)} prompt={runAgentPrompt(location.origin, agent.agent_id)} playgroundHref={`#/playground?agent=${encodeURIComponent(agent.agent_id)}`} />}
-          <Button size="icon" aria-label="Refresh agent" onClick={history.refresh} disabled={history.reading}><RefreshCw className={cn(history.reading && "animate-spin")} aria-hidden /></Button>
+          <Button size="icon" aria-label="Refresh agent" onClick={() => { history.refresh(); refreshNative(); }} disabled={history.reading}><RefreshCw className={cn(history.reading && "animate-spin")} aria-hidden /></Button>
         </div>
       </header>
       <main className="grid min-h-0 flex-1 grid-cols-1 items-start gap-6 overflow-auto p-5 lg:grid-cols-[minmax(260px,320px)_minmax(0,1fr)] md:p-8">
@@ -172,7 +172,7 @@ function AgentDetail({ agent, onAgent, reread, stale, v2, go, stats, analytics, 
           {offText && <Banner tone="warning" aria-label="Harness not available">{offText}</Banner>}
           {!agent.archived_at && needsModel && <Banner>Running this agent needs a configured model. <a href="#/settings/keys" className="text-primary-text underline underline-offset-2">Set up models in Settings</a></Banner>}
           {stale && <Banner tone="error">Couldn't refresh this agent. <Button size="sm" onClick={() => void reread()}>Retry</Button></Banner>}
-          {native && <NativeAgent agent={agent} v2={v2} learning={learning} onAgent={onAgent} onChanged={reread} />}
+          {native && <NativeAgent agent={agent} v2={v2} learning={learning} onAgent={onAgent} onChanged={async () => { refreshNative(); await reread(); }} />}
           {!native && <section className="border bg-card p-4" aria-label="Agent configuration">
             <h2 className="mb-4 text-body font-semibold">Configuration</h2>
             <dl className="space-y-3 text-small">

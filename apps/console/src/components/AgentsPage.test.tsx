@@ -179,8 +179,8 @@ describe("AgentsPage's coding-agent handoff", () => {
     const v2 = { listAgents: async () => ({ agents: [], next_cursor: null }) };
     await act(async () => root!.render(createElement(AgentsPage, { v2: v2 as never, archived: false, go: () => {} })));
     const button = (label: string) => [...host.querySelectorAll("button")].find((control) => control.textContent === label);
-    expect(button("Build an agent")).toBeDefined(); expect(button("Connect existing agents")).toBeDefined(); expect(button("New agent")).toBeUndefined();
-    await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Choose coding agent for Connect existing agents"]')!.click());
+    expect(button("Build an agent")).toBeDefined(); expect(button("Connect agent")).toBeDefined(); expect(button("New agent")).toBeUndefined();
+    await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Choose coding agent for Connect agent"]')!.click());
     expect(document.querySelector('[role="menu"]')?.textContent).toContain("Claude Code CLI");
     expect(document.querySelector('[role="menu"]')?.textContent).toContain("Codex app");
     expect(document.querySelector('[role="menu"] a')?.getAttribute("href")).toBe("#/agents/connect");

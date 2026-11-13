@@ -4,7 +4,7 @@ import { afterEach, expect, it } from "vitest";
 import { createClient } from "@/lib/client";
 import type { Agent } from "@/lib/agentForm";
 import type { NativeBinding } from "@/lib/native";
-import { NativeAgent } from "./NativeAgent";
+import { NativeAgent, NativeMutationProvider, useNativeReadiness } from "./NativeAgent";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: Root;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
@@ -84,4 +84,42 @@ it("serializes verification and self-improvement changes and reads the fresh ETa
   expect(savedEtag).toBe("r3");
   expect(current.definition.learning).toBe("notes");
   expect(host.textContent).toContain("Self-improving: On");
+});
+
+it("reads remote readiness separately from the saved definition and refuses learning while the worker is offline", async () => {
+  const saved = { ...agent, definition: { ...agent.definition, native: { ...native, remote: { connector_id: "remote-1", target_id: "target-1" } } } };
+  const original = JSON.stringify(saved);
+  let online = false;
+  const read = async () => ({ native: online ? saved.definition.native : { ...saved.definition.native, state: "needs_attention" as const, capabilities: { ...native.capabilities, launch: false }, issues: ["The source machine is offline."] } });
+  const v2 = { getNative: read } as never;
+  function RemoteAgent() {
+    const readiness = useNativeReadiness(saved, v2);
+    return createElement(NativeMutationProvider, { native: readiness.native, children: createElement(NativeAgent, { agent: saved, v2, learning: "on", onAgent: () => {}, onChanged: async () => {} }) });
+  }
+  const host = document.body.appendChild(document.createElement("div")); root = createRoot(host);
+  await act(async () => root.render(createElement(RemoteAgent)));
+  expect(host.textContent).toContain("Remote connection");
+  expect(host.textContent).toContain("The source machine is offline");
+  expect(host.querySelector<HTMLButtonElement>('[role="switch"]')!.disabled).toBe(true);
+  expect(JSON.stringify(saved)).toBe(original);
+  online = true;
+  await act(async () => window.dispatchEvent(new Event("focus")));
+  expect(host.querySelector<HTMLButtonElement>('[role="switch"]')!.disabled).toBe(false);
+  expect(host.textContent).toContain("Ready to run");
+  expect(host.textContent).not.toContain("The source machine is offline");
+  expect(JSON.stringify(saved)).toBe(original);
+});
+
+it("fails closed on a remote status read failure instead of presenting persisted readiness as current", async () => {
+  const saved = { ...agent, definition: { ...agent.definition, native: { ...native, remote: { connector_id: "remote-1", target_id: "target-1" } } } };
+  const v2 = { getNative: async () => { throw new Error("Network unavailable"); } } as never;
+  function RemoteAgent() {
+    const readiness = useNativeReadiness(saved, v2);
+    return createElement(NativeMutationProvider, { native: readiness.native, children: createElement(NativeAgent, { agent: saved, v2, learning: "on", onAgent: () => {}, onChanged: async () => {} }) });
+  }
+  const host = document.body.appendChild(document.createElement("div")); root = createRoot(host);
+  await act(async () => root.render(createElement(RemoteAgent)));
+  expect(host.textContent).toContain("Connection status could not be read: Network unavailable");
+  expect(host.querySelector<HTMLButtonElement>('[role="switch"]')!.disabled).toBe(true);
+  expect(host.textContent).not.toContain("Ready to run");
 });

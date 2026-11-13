@@ -1,16 +1,18 @@
 import { useState } from "react";
-import { Banner, Button, Chip, Field, Input } from "@/components/ui";
+import { Banner, Button, Chip, Field, Input, Segmented } from "@/components/ui";
+import { RemoteConnections } from "@/components/RemoteConnections";
 import { CodingAgentAction } from "@/components/CodingAgentAction";
-import { connectExistingAgentsPrompt, importAgentsPrompt } from "@/lib/codingAgentPrompts";
+import { connectExistingAgentsPrompt } from "@/lib/codingAgentPrompts";
 import { type Client, problemOf } from "@/lib/client";
 import { type NativeTarget, nativeRuntimeLabel, nativeSelectorLabel, nativeStateLabel } from "@/lib/native";
 
 export function ConnectExistingAgents() {
-  return <CodingAgentAction label="Connect existing agents" prompt={connectExistingAgentsPrompt(location.origin)} playgroundHref="#/agents/connect" playgroundLabel="Discover on this server" />;
+  return <CodingAgentAction label="Connect agent" prompt={connectExistingAgentsPrompt(location.origin)} playgroundHref="#/agents/connect" playgroundLabel="Connection setup" />;
 }
 
 /** Reads only the server host's explicitly selected project. It never presents browser-local discovery as possible. */
-export function NativeConnections({ v2, go }: { v2: Client; go: (hash: string) => void }) {
+export function NativeConnections({ v2, go, initialSource = "server" }: { v2: Client; go: (hash: string) => void; initialSource?: "server" | "remote" }) {
+  const [source, setSource] = useState<"server" | "remote">(initialSource);
   const [project, setProject] = useState("");
   const [targets, setTargets] = useState<NativeTarget[] | null>(null);
   const [selected, setSelected] = useState<number[]>([]);
@@ -35,10 +37,12 @@ export function NativeConnections({ v2, go }: { v2: Client; go: (hash: string) =
     } catch (e) { setError(problemOf(e)); }
     finally { setBusy(false); }
   };
-  return <section className="mx-auto max-w-page space-y-6 p-5 md:p-8" aria-label="Connect existing agents">
-    <div className="flex flex-wrap items-center gap-3"><h1 className="mr-auto text-2xl font-semibold">Connect existing agents</h1><Button size="sm" onClick={() => go("#/agents")}>Back to agents</Button></div>
+  return <section className="mx-auto max-w-page space-y-6 p-5 md:p-8" aria-label="Connect agent">
+    <div className="flex flex-wrap items-center gap-3"><h1 className="mr-auto text-2xl font-semibold">Connect agent</h1><Button size="sm" onClick={() => go("#/agents")}>Back to agents</Button></div>
     <p className="max-w-prose text-lead text-muted-foreground">Keep your native project, instructions, skills, tools, permissions and sign-in. New jobs use the latest native configuration on the source machine.</p>
-    <Banner title="Choose the source machine">This browser cannot scan your laptop. Discovery below reads the AgentRun server's host only. If your project lives on another machine, run AgentRun locally there and open its console. Desktop applications and CLI setups can differ; existing app sessions are not attached.</Banner>
+    <Banner title="Choose the source machine">This browser cannot scan your laptop. Choose this server for a project on the machine running AgentRun, or another machine to connect through the source CLI. Desktop applications and CLI setups can differ; existing app sessions are not attached.</Banner>
+    <Segmented name="native-source" label="Source machine" value={source} onChange={setSource} options={[{ value: "server", label: "This server", disabled: busy }, { value: "remote", label: "Another machine", disabled: busy }]} />
+    {source === "remote" ? <RemoteConnections v2={v2} /> : <>
     <ConnectExistingAgents />
     <section className="space-y-4 border bg-card p-4" aria-label="Discover native setups">
       <h2 className="text-lg font-semibold">Discover on this server</h2>
@@ -62,6 +66,7 @@ export function NativeConnections({ v2, go }: { v2: Client; go: (hash: string) =
       {!!targets.length && <Button variant="solid" size="sm" onClick={() => void connect()} disabled={busy || !selected.some((index) => !connected[index])} aria-busy={busy}>{busy ? "Connecting…" : "Connect selected"}</Button>}
       <p className="text-small text-muted-foreground">Connecting saves a reference and starts no run. Authentication and approval compatibility are checked separately on the connected agent's page.</p>
     </section>}
-    <details className="border p-4"><summary className="cursor-pointer text-body">Import history (optional)</summary><p className="my-3 text-body text-muted-foreground">Past conversations stay historical. They are separate from native connections and do not become live jobs or AgentRun learning.</p><CodingAgentAction label="Import history" prompt={importAgentsPrompt(location.origin)} /></details>
+    </>}
+    <p className="text-small text-muted-foreground">Your coding agent can also help import history. Past conversations stay historical; they do not become live jobs or AgentRun learning. Remote transcript upload is not supported.</p>
   </section>;
 }

@@ -1,3 +1,5 @@
+import { answerSkill } from './skill-route.js';
+import { RemoteConnectors, verifyRemote } from './native/remote.js';
 import { nativeOf } from "./native/binding.js";
 import { discoverNative } from "./native/discovery.js";
 import { connectNative, launchNative, updateNative, verifyConnection } from "./native/connection.js";
@@ -371,6 +373,14 @@ export type Route =
   | { method: string; pattern: RegExp; name: string; capability?: string; raw?: never }
   | { method: "PUT" | "POST"; pattern: RegExp; name: string; capability?: string; raw: true };
 export const ROUTES: readonly Route[] = [
+  {method:"GET",pattern:/^\/connectors$/,name:"listRemoteConnectors"},
+  {method:"POST",pattern:/^\/connectors\/enrollment$/,name:"enrollRemoteConnector"},
+  {method:"POST",pattern:/^\/connectors$/,name:"registerRemoteConnector"},
+  {method:"DELETE",pattern:/^\/connectors\/([^/]+)$/,name:"revokeRemoteConnector"},
+  {method:"POST",pattern:/^\/connectors\/([^/]+)\/import$/,name:"importRemoteTarget"},
+  {method:"POST",pattern:/^\/connectors\/([^/]+)\/poll$/,name:"pollRemoteConnector"},
+  {method:"POST",pattern:/^\/connectors\/([^/]+)\/commands\/([^/]+)\/events$/,name:"remoteCommandEvents"},
+  {method:"POST",pattern:/^\/connectors\/([^/]+)\/commands\/([^/]+)\/complete$/,name:"completeRemoteCommand"},
   {method:"POST",pattern:/^\/native\/discover$/,name:"discoverNative"},
   {method:"POST",pattern:/^\/native\/connect$/,name:"connectNative"},
   {method:"GET",pattern:/^\/agents\/([^/]+)\/native$/,name:"getNative"},
@@ -1564,10 +1574,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   /** An agent view's extra fields (agents-store agentView): its saved sign-ins, its learning count, and its run counts.
    *  The run counts read the store's runs (store-reads/runs.ts listRuns): `count` is every run the agent has, `live` those
    *  still running (runReadState 'running': queued, running or parked), the same numbers the file-backed view showed. */
-  const agentExtra = async (entry: AgentEntry): Promise<{ signIns: object[]; learning?: { pending: number }; runs: { count: number; live: number }; ownComputer: Record<string, unknown> | null }> => {
+  const agentExtra = async (entry: AgentEntry): Promise<{ nativeStatus?: import("./native/types.js").NativeBinding; signIns: object[]; learning?: { pending: number }; runs: { count: number; live: number }; ownComputer: Record<string, unknown> | null }> => {
     const learning = await learningOfAgent(entry);
+    const native = nativeOf(entry.revision?.body);
+    const nativeStatus = native?.remote ? await new RemoteConnectors(store).status(native) : undefined;
     const runs = await listRunsOverStore(store, { agent: entry.agent.id }, ctx);
     return {
+      ...(nativeStatus ? {nativeStatus} : {}),
       signIns: await signIns.view(entry.agent.id),
       ...(learning ? { learning } : {}),
       runs: { count: runs.length, live: runs.filter((run) => run.state === "running").length },
@@ -1648,9 +1661,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   async function runnable(revision: Revision, place: Place, { capped = false }: { capped?: boolean } = {}): Promise<void> {
     const native = nativeOf(revision.body);
     if (native) {
-      if (options.apiOnly || options.publicUrl || !isLoopback(host)) throw new ApiError("agent_not_runnable", "Native connections run only on an AgentRun server bound to loopback on the source machine, without a public URL.");
+      if (!native.remote && (options.apiOnly || options.publicUrl || !isLoopback(host))) throw new ApiError("agent_not_runnable", "Native connections run only on an AgentRun server bound to loopback on the source machine, without a public URL.");
       if (capped) throw new ApiError("agent_not_runnable", "Native runs retain their own limits; AgentRun cannot enforce a dollar cap on this connection. Remove max_cost_usd and use native limits.");
-      await launchNative(native); return;
+      if(native.remote)await new RemoteConnectors(store).assertReady(native);else await launchNative(native); return;
     }
     const shape = { ...shapeOf(revision), place, ...(revision.body.place ? {} : { unnamed: true as const }) };
     const blockers = await blockersOf(env, shape, settings.get(), { capped, boxes: boxOffers, computerReady, shellOf, offers, mcp: mcpTools, decisionPrice });
@@ -2553,15 +2566,41 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       secretSeen = checked.seen;
     }
+    // Connector credentials have no authority over the ordinary API. Enrollment is a one-use owner grant;
+    // subsequent calls are restricted to one connector and its explicitly imported target allowlist.
+    if (found.name === "registerRemoteConnector") {
+      const credential = String(req.headers.authorization ?? "").replace(/^Bearer /, "");
+      return send(res, 200, await new RemoteConnectors(store).register(credential, await bodyOf(req)));
+    }
+    if (found.name === "revokeRemoteConnector" && String(req.headers.authorization ?? "").startsWith("Bearer ar_connector_")) {
+      const connectorId = decodeURIComponent(found.pattern.exec(path)![1]!);
+      const broker = new RemoteConnectors(store);
+      await broker.authenticate(connectorId, String(req.headers.authorization).slice(7));
+      return send(res, 200, await broker.revoke(connectorId));
+    }
+    if (["importRemoteTarget", "pollRemoteConnector", "remoteCommandEvents", "completeRemoteCommand"].includes(found.name)) {
+      const parts = found.pattern.exec(path)!;
+      const connectorId = decodeURIComponent(parts[1]!);
+      const broker = new RemoteConnectors(store);
+      await broker.authenticate(connectorId, String(req.headers.authorization ?? "").replace(/^Bearer /, ""));
+      const body = await bodyOf(req);
+      if (found.name === "importRemoteTarget") return send(res, 200, await broker.importTarget(connectorId, body));
+      if (found.name === "pollRemoteConnector") return send(res, 200, await broker.poll(connectorId, body));
+      const commandId = decodeURIComponent(parts[2]!);
+      return send(res, 200, found.name === "remoteCommandEvents" ? await broker.events(connectorId, commandId, body) : await broker.complete(connectorId, commandId, body));
+    }
     if (!timingSafeEqual(digest(String(req.headers.authorization ?? "")), expected)) {
       authFailed(`/v2${path}`, req.headers.authorization === undefined ? "no_credential" : "wrong_token");
       throw new ApiError("unauthenticated", "this route needs Authorization: Bearer <the token in the data directory>", {}, { "www-authenticate": "Bearer" });
     }
     if (found.capability) throw unsupported(found.capability, UNSUPPORTED[found.capability]!);
-    if (["discoverNative","connectNative","verifyNative","disconnectNative"].includes(found.name) && (options.apiOnly || options.publicUrl || !isLoopback(host))) throw new ApiError("forbidden", "Native connections require AgentRun on the source machine, bound to loopback without a public URL. A hosted browser cannot discover your laptop.");
+    if (["discoverNative","connectNative"].includes(found.name) && (options.apiOnly || options.publicUrl || !isLoopback(host))) throw new ApiError("forbidden", "Native connections require AgentRun on the source machine, bound to loopback without a public URL. A hosted browser cannot discover your laptop.");
     const [, first, second] = found.pattern.exec(path)!;
     const id = first ? decodeURIComponent(first) : "";
     switch (found.name) {
+      case "listRemoteConnectors": return send(res, 200, await new RemoteConnectors(store).list());
+      case "enrollRemoteConnector": return send(res, 200, await new RemoteConnectors(store).enroll(await bodyOf(req)));
+      case "revokeRemoteConnector": return send(res, 200, await new RemoteConnectors(store).revoke(id));
       case "discoverNative": {
         const body=await bodyOf(req);
         if(typeof body.project!=="string" || (body.runtime!==undefined && body.runtime!=="claude-code" && body.runtime!=="codex")) throw new ApiError("input_invalid","Choose the project directory on this source machine and a supported CLI runtime.");
@@ -2573,10 +2612,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       case "getNative": {
         const entry=await needAgent(id);
-        return send(res,200,{native:nativeOf(entry.revision?.body)??null});
+        const native=nativeOf(entry.revision?.body);
+        return send(res,200,{native:native?.remote?await new RemoteConnectors(store).status(native):native??null});
       }
       case "verifyNative": {
-        const entry=await verifyConnection(store,await needAgent(id));
+        const before=await needAgent(id);
+        if(!nativeOf(before.revision?.body)?.remote && (options.apiOnly || options.publicUrl || !isLoopback(host)))throw new ApiError("forbidden","Local native verification must run on the source machine.");
+        const entry=nativeOf(before.revision?.body)?.remote?await verifyRemote(store,before):await verifyConnection(store,before);
         return send(res,200,{native:nativeOf(entry.revision?.body)});
       }
       case "disconnectNative": {
@@ -3307,6 +3349,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (owner && (raw === "/v2/setup" || raw === "/v2/setup/import" || raw.startsWith("/v2/auth/"))) return void ownerRoute(req, res, raw.slice(3), owner).catch(fail);
     if (raw === MCP_PATH) return void mcp(req, res).catch(fail);
     if (raw === "/llms.txt") return void answerLlms(req, res).catch(fail);
+    if (raw === "/skills/agentrun-serve/SKILL.md") return void answerSkill(req, res).catch(fail);
     if (answerPage(req, res, raw, { token, authFailed, console: options.console, takesBytes, ...(owner ? { owner } : {}), ...(options.publicUrl ? { publicUrl: options.publicUrl } : {}) })) return;
     // Under --faux only: a faux desktop's live view, a page on this server's own address (faux-computers.ts viewPage), so
     // a run's take-over has a viewer to open in the console's real-browser flows. Gone after the computer's release.

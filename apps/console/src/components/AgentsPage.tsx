@@ -3,8 +3,6 @@ import { AgentEditor, type EditorCaps, type Revision } from "@/components/AgentE
 import { agentHash } from "@/components/AgentPage";
 import { AgentsList } from "@/components/AgentsList";
 import { ConnectExistingAgents } from "@/components/NativeConnections";
-import { CodingAgentAction } from "@/components/CodingAgentAction";
-import { importAgentsPrompt } from "@/lib/codingAgentPrompts";
 import { type Agent, createBody, editBody, saveError } from "@/lib/agentForm";
 import { allPages, type Client, ClientError } from "@/lib/client";
 import type { McpServer } from "@/lib/mcp";
@@ -35,7 +33,7 @@ export function AgentsPage({ v2, archived, go }: { v2: Client; archived: boolean
   }, [v2, archived]); // eslint-disable-line react-hooks/exhaustive-deps
   return (
     <AgentsList agents={agents} archived={archived} onArchivedChange={(on) => go(on ? "#/agents?archived=true" : "#/agents")} error={error}
-      handoff={<><ConnectExistingAgents /><CodingAgentAction label="Import history" prompt={importAgentsPrompt(location.origin)} /></>}
+      handoff={<ConnectExistingAgents />}
       actions={{
         onOpen: (id) => go(agentHash(id)),
         onEdit: (id) => go(agentHash(id, "edit")),

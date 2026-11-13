@@ -1,4 +1,5 @@
 import type { NativeBinding, NativeRuntime, NativeSelector, NativeTarget } from "./native";
+import type { ConnectorEnrollment, RemoteConnector } from "./connectors";
 import type { Stats } from "./mission";
 import type { Agent, Definition, SaveWarning } from "./agentForm";
 import type { AgentLearning, LearningChange, LearningDiff, LearningNote, RunLearningResultData, NoteProblem, NoteText, Page } from "./learning";
@@ -140,6 +141,9 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     getNative: (id: string) => call<{ native: NativeBinding | null }>("GET", `${agent(id)}/native`),
     verifyNative: (id: string) => call<{ native: NativeBinding }>("POST", `${agent(id)}/native/verify`, { body: {} }),
     disconnectNative: (id: string) => call<{ native: NativeBinding }>("POST", `${agent(id)}/native/disconnect`, { body: {} }),
+    listConnectors: () => call<{ connectors: RemoteConnector[] }>("GET", "/connectors"),
+    enrollConnector: (label?: string) => call<ConnectorEnrollment>("POST", "/connectors/enrollment", { body: label?.trim() ? { label: label.trim() } : {} }),
+    revokeConnector: (id: string) => call<{ connector: RemoteConnector }>("DELETE", `/connectors/${encodeURIComponent(id)}`),
     listAgents: ({ archived = false, cursor }: { archived?: boolean; cursor?: string | null } = {}) => {
       const q = new URLSearchParams();
       if (archived) q.set("archived", "true");
