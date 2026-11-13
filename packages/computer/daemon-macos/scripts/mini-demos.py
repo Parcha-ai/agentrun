@@ -300,7 +300,7 @@ REMOVE_FOLDERS = """on run argv
 end run"""
 
 # The windows and tabs on the sandbox's files: Safari's tabs by their address, Finder's windows by their folder's name
-# (a sandbox's own name) or path, TextEdit's documents by their path, each closed without saving. An app that is not
+# (a sandbox's own name), TextEdit's documents by their path, each closed without saving. An app that is not
 # running has none.
 CLOSE_WINDOWS = """on run argv
   set root to item 1 of argv
@@ -320,23 +320,21 @@ CLOSE_WINDOWS = """on run argv
     end tell
   end if
   set name_prefix to item 2 of argv
-  tell application "Finder"
-    -- By id: Finder answers close on a reference from a window list with -10010.
-    set ids to {}
-    repeat with w in Finder windows
-      set wid to id of w
-      if name of w starts with name_prefix then
-        set end of ids to wid
-      else
+  -- Finder's windows by name, the sandbox folder's own: on macOS 26 Finder answered close on a reference taken from
+  -- its window list with -10010, and id of one with -1728, so each is named instead.
+  tell application "Finder" to set names to name of every Finder window
+  repeat with n in names
+    set n to n as text
+    if n starts with name_prefix then
+      tell application "Finder"
         try
-          if POSIX path of (target of w as alias) starts with root then set end of ids to wid
+          close (every Finder window whose name is n)
         end try
-      end if
-    end repeat
-    repeat with wid in ids
-      close window id (wid as integer)
-    end repeat
-  end tell
+        if exists Finder window n then close Finder window n
+        if exists Finder window n then error "Finder's window " & n & " stayed open"
+      end tell
+    end if
+  end repeat
   return ""
 end run"""
 
