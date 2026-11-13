@@ -1,58 +1,89 @@
-// BoxdProvider against a fake of the boxd SDK slice it takes (test/fake-boxd.mjs): every call is recorded with what it
-// was given and answered as @boxd-sh/sdk@0.3.1 answers it. No SDK is loaded, no key is read from the environment and
-// nothing reaches the network.
+// BoxdProvider's own half: what boxd's host hands the SDK and how it reads boxd's answers back, call by call, against a
+// recorder of the SDK slice (@boxd-sh/sdk@0.3.1) that answers what a test gives it. The adapter's lifecycle (the daemon,
+// the bridge, the probe, idempotent create, late-create cleanup, extend, release) is tested once, against its one fake
+// host (hosted-provider.test.mjs); boxd's own is proven live (test/boxd). No SDK is loaded and nothing reaches the network.
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import test from "node:test";
 import { BOXD, kindRefusals } from "../dist/index.js";
 import { providerFor } from "../dist/providers.js";
-import { DESKTOP_GROUPS, fakeBoxd, KEY, LINUX_GROUPS, VERSION } from "./fake-boxd.mjs";
 
 const { BoxdProvider, create, CAPABILITIES, MOUNT } = await import("../dist/boxd.js");
-const { BOXD_ENV, settingsFromEnv, conformanceImage, createProvider } = await import("../dist/conformance/boxd.js");
+const { BOXD_ENV, settingsFromEnv, conformanceImage, createProvider, createHost } = await import("../dist/conformance/boxd.js");
 
-const COMPUTER = "agentrun.computer";
+const KEY = "bxd_fake_computer_key_0123456789";
 const NAME = "agentrun.computer.name";
-const DEADLINE = "agentrun.computer.deadline";
 const IMAGE_LABEL = "agentrun.computer.image";
 const MAX_LABEL = "agentrun.computer.max-deadline";
 const SPEC = { image: "default", lifetimeMs: 600_000, network: "none" };
-const dir = mkdtempSync(join(tmpdir(), "computer-boxd-"));
-const DAEMON_PATH = join(dir, "computerd");
-const DAEMON_BYTES = Buffer.from("a stand-in for computerd, linux/amd64\n");
-writeFileSync(DAEMON_PATH, DAEMON_BYTES);
-const SHA = createHash("sha256").update(DAEMON_BYTES).digest("hex");
-test.after(() => rmSync(dir, { recursive: true, force: true }));
+const LINUX_GROUPS = ["exec", "files", "processes"];
+const DESKTOP_GROUPS = [...LINUX_GROUPS, "screen", "input.pointer", "input.keys"];
+const TIMEOUTS = { requestMs: 2_000, createMs: 3_000 };
+const HOUR = 3_600_000;
 
-/** Short bounds, so the waits in these tests take milliseconds. */
-const TIMEOUTS = { requestMs: 2_000, createMs: 2_000, readyMs: 2_000, uploadMs: 2_000, execMs: 2_000, helloMs: 1_000, probeMs: 1_000, listMs: 2_000, goneMs: 500, pollMs: 5, listedMs: 1_000 };
+const named = (name, extra = {}) => Object.assign(new Error(name), { name, ...extra });
 
-function setup(options = {}, fakeOptions = {}) {
-	const fake = fakeBoxd(fakeOptions);
-	const provider = new BoxdProvider({ apiKey: KEY, Boxd: fake.Boxd, org: "acme", daemonPath: DAEMON_PATH, timeouts: TIMEOUTS, ...options });
-	return { fake, provider };
+/** A machine as boxd reads one that create made as asked: running, isolated, egress closed, no idle timer. */
+function machine(patch = {}) {
+	const max = new Date(Date.now() + HOUR).toISOString();
+	return {
+		id: "m-1",
+		name: "computer-0123456789ab",
+		status: "running",
+		labels: { [NAME]: "computer-0123456789ab", [MAX_LABEL]: max },
+		egressAllow: ["none"],
+		idle: { suspendAfter: 0, hibernateAfter: 0, destroyAfter: 0 },
+		resources: { vcpu: 2, memoryBytes: 8 * 1024 ** 3 },
+		networking: { isolated: true },
+		org: { id: "org-1", name: "acme" },
+		deleteAt: null,
+		source: null,
+		...patch,
+	};
 }
-const only = (fake) => {
-	assert.equal(fake.machines.size, 1, "one machine was made");
-	return [...fake.machines.values()][0];
-};
-let requests = 0;
-/** A request id of its own for each create: the same one again is a retry of the same request. */
-const request = () => ({ requestId: `request-${++requests}` });
-const createParams = (fake) => fake.calls.find(([name]) => name === "machines.create")?.[1];
 
-test("the client is given the key, the API's address and the region explicitly, so the SDK reads none from the environment", () => {
-	const { fake } = setup({ region: "nyc" });
-	assert.deepEqual(fake.clients, [
+/** The SDK slice as a recorder: each call records its name and arguments and answers what answers[name] gives. */
+function recorder(answers = {}) {
+	const calls = [];
+	const clients = [];
+	const call = (name) => async (...args) => {
+		calls.push([name, ...args]);
+		const answer = answers[name];
+		return typeof answer === "function" ? answer(...args) : answer;
+	};
+	const machines = {
+		...Object.fromEntries(["create", "get", "list", "delete", "waitUntilReady", "setEgressAllow", "setAutoHibernateTimeout", "updateLabels"].map((name) => [name, call(name)])),
+		streamExec: (...args) => {
+			calls.push(["streamExec", ...args]);
+			return answers.streamExec();
+		},
+		files: { upload: call("files.upload") },
+	};
+	const Boxd = class {
+		constructor(options) {
+			clients.push(options);
+			this.machines = machines;
+		}
+	};
+	return { calls, clients, Boxd };
+}
+
+function setup(options = {}, answers = {}) {
+	const rec = recorder(answers);
+	const provider = new BoxdProvider({ apiKey: KEY, Boxd: rec.Boxd, org: "acme", timeouts: TIMEOUTS, ...options });
+	return { rec, provider, host: provider.host };
+}
+const ctx = { timeoutMs: 1_234 };
+const request = (labels = {}) => ({ name: "computer-0123456789ab", image: "default", labels: { [NAME]: "computer-0123456789ab", [MAX_LABEL]: new Date(Date.now() + HOUR).toISOString(), ...labels }, network: "none" });
+
+test("the SDK gets the key, the address and the region explicitly; create has its own client, bounded by createMs and never retried", () => {
+	const { rec } = setup({ region: "nyc" });
+	assert.deepEqual(rec.clients, [
 		{ apiKey: KEY, baseURL: "https://boxd.sh:9443", region: "nyc", timeout: TIMEOUTS.requestMs },
-		// create's own: the SDK bounds a call by its client's timeout, so create gets createMs, and is never sent twice.
 		{ apiKey: KEY, baseURL: "https://boxd.sh:9443", region: "nyc", timeout: TIMEOUTS.createMs, maxRetries: 0 },
 	]);
-	const bare = setup({ org: undefined });
-	assert.equal(bare.fake.clients[0].region, "", "no region given is the API's home region, never left out");
+	const bare = recorder();
+	new BoxdProvider({ apiKey: KEY, Boxd: bare.Boxd });
+	assert.deepEqual(bare.clients.map(({ region, timeout }) => [region, timeout]), [["", 30_000], ["", 120_000]], "no region is the home region, never left for the SDK to read");
 });
 
 test("create() needs the key, refuses in words without it, and never echoes one", async () => {
@@ -61,742 +92,177 @@ test("create() needs the key, refuses in words without it, and never echoes one"
 		assert.doesNotMatch(error.message, /BOXD_API_KEY=|bxd_/);
 		return true;
 	});
-	const fake = fakeBoxd();
-	const provider = await create({ apiKey: KEY, Boxd: fake.Boxd, daemonPath: DAEMON_PATH });
+	const provider = await create({ apiKey: KEY, Boxd: recorder().Boxd });
 	assert.equal(provider.id, "boxd");
-	assert.equal(provider.version, VERSION);
 });
 
-test("the constructor refuses a size that is not boxd's, a root or machine-user daemon, and a bad region, in words", () => {
-	const fake = fakeBoxd();
-	const make = (options) => () => new BoxdProvider({ apiKey: KEY, Boxd: fake.Boxd, ...options });
-	assert.throws(make({ vcpu: 2 }), /vcpu and memory go together/);
+test("the constructor refuses a size that is not boxd's and the machine user's uid as the daemon's, in words", () => {
+	const make = (options) => () => new BoxdProvider({ apiKey: KEY, Boxd: recorder().Boxd, ...options });
+	assert.throws(make({ vcpu: 2 }), /not one of boxd's sizes/);
 	assert.throws(make({ vcpu: 2, memory: "16G" }), /not one of boxd's sizes/);
 	assert.doesNotThrow(make({ vcpu: 4, memory: "16G" }));
-	assert.throws(make({ daemonUser: "0:0" }), /root/);
 	assert.throws(make({ daemonUser: "1000:1000" }), /machine's own user/);
-	assert.throws(make({ region: "Frankfurt!" }), /region/);
-	assert.throws(make({ baseUrl: "http://boxd.sh" }), /https/);
-	assert.throws(make({ kind: "windows" }), /kind is desktop or linux/);
-	assert.throws(make({ maxLifetimeMs: 31 * 24 * 3_600_000 }), /30 days/);
+	assert.throws(make({ maxLifetimeMs: 31 * 24 * HOUR }), /the longest boxd keeps a computer/);
 });
 
-test("capabilities: a child daemon in a microVM, network none, janitor lifetime, delete only, boxd's agent port declared", () => {
-	const { provider } = setup();
-	const caps = provider.capabilities();
-	assert.deepEqual(caps, {
-		kind: "linux",
-		lifetime: "janitor",
-		network: ["none"],
-		networkReadBack: true,
-		isolation: "microvm",
-		os: "linux",
-		daemon: "child",
-		groups: LINUX_GROUPS,
-		maxLifetimeMs: 24 * 3_600_000,
-		release: ["delete"],
-		mount: [],
-		vendorAgentPorts: [57073],
-	});
+test("capabilities: a child daemon in a microVM, network none read back, janitor lifetime, delete only, boxd's agent port; desktop too", () => {
+	const caps = setup().provider.capabilities();
+	assert.deepEqual(
+		{ ...caps },
+		{ kind: "linux", lifetime: "janitor", network: ["none"], networkReadBack: true, isolation: "microvm", os: "linux", daemon: "child", groups: LINUX_GROUPS, maxLifetimeMs: 24 * HOUR, release: ["delete"], mount: [], vendorAgentPorts: [57073] },
+	);
 	assert.deepEqual(kindRefusals(caps), []);
 	assert.deepEqual(setup({ kind: "desktop" }).provider.capabilities().groups, DESKTOP_GROUPS);
 	assert.deepEqual(MOUNT, []);
 	assert.deepEqual(CAPABILITIES, BOXD.capabilities);
-	assert.deepEqual(
-		BOXD.capabilities.map(({ kind, options }) => [kind, options.kind]),
-		[
-			["linux", "linux"],
-			["desktop", "desktop"],
-		],
-	);
+	assert.deepEqual(BOXD.capabilities.map(({ kind, options }) => [kind, options.kind]), [["linux", "linux"], ["desktop", "desktop"]]);
 });
 
-test("check refuses in words, with no call: open and allowlists, a size, a user, a workdir, a mount, the provider's labels, a lifetime past the cap", () => {
-	const { fake, provider } = setup();
-	const fields = (spec) => provider.check(spec).map(({ field }) => field);
-	assert.deepEqual(provider.check(SPEC), []);
+test("check takes default or a snapshot's name, refuses a snapshot with a size and a label name boxd does not take, with no call", () => {
+	const { rec, provider } = setup();
+	const fields = (spec, p = provider) => p.check(spec).map(({ field }) => field);
+	assert.deepEqual(fields(SPEC), []);
 	assert.deepEqual(fields({ ...SPEC, image: "my-snapshot" }), []);
+	assert.deepEqual(fields({ ...SPEC, image: "no spaces" }), ["image"]);
+	assert.deepEqual(fields({ ...SPEC, image: "my-snapshot" }, setup({ vcpu: 2, memory: "8G" }).provider), ["image"]);
+	assert.deepEqual(fields({ ...SPEC, labels: { "boxd/owner": "x" } }), ["labels"]);
+	assert.deepEqual(fields({ ...SPEC, labels: { Team: "x" } }), ["labels"]);
 	assert.deepEqual(fields({ ...SPEC, network: "open" }), ["network"]);
-	assert.deepEqual(fields({ ...SPEC, network: { allow: ["example.com"] } }), ["network"]);
-	assert.deepEqual(fields({ ...SPEC, cpus: 4 }), ["cpus"]);
-	assert.deepEqual(fields({ ...SPEC, user: "0" }), ["user"]);
-	assert.deepEqual(fields({ ...SPEC, workdir: "/srv" }), ["workdir"]);
-	assert.deepEqual(fields({ ...SPEC, mount: { kind: "bind", source: "/tmp" } }), ["mount"]);
-	assert.deepEqual(fields({ ...SPEC, labels: { [DEADLINE]: "x" } }), ["labels"]);
-	assert.deepEqual(fields({ ...SPEC, image: "" }), ["image"]);
-	assert.ok(fields({ ...SPEC, lifetimeMs: 24 * 3_600_000 + 1 }).includes("lifetimeMs"));
-	assert.deepEqual(fake.calls, []);
+	assert.deepEqual(rec.calls, []);
 });
 
-test("create makes an isolated machine with no standby, closes its egress and hibernation, installs the daemon and starts init detached as root", async () => {
-	const { fake, provider } = setup({ vcpu: 4, memory: "16G" });
-	const made = await provider.create({ ...SPEC, labels: { "agentrun.run": "r1" } }, request());
-	assert.ok(made.ok, made.ok ? "" : made.error.message);
-	const m = only(fake);
-	assert.equal(made.value.id, m.id);
-	assert.match(made.value.name, /^computer-[0-9a-f]{12}$/);
-	const params = createParams(fake);
-	assert.equal(params.name, made.value.name);
-	assert.equal(params.org, "acme");
-	assert.equal(params.isolated, true);
-	assert.deepEqual(params.config, { autoSuspendTimeout: 0, vcpu: 4, memory: "16G" });
-	assert.equal(params.fromSnapshot, undefined, "image default starts from boxd's own image");
-	assert.equal(params.labels[COMPUTER], "1");
-	assert.equal(params.labels[NAME], made.value.name);
-	assert.equal(params.labels[IMAGE_LABEL], "default");
-	assert.equal(params.labels["agentrun.run"], "r1");
-	assert.ok(Math.abs(Date.parse(params.labels[DEADLINE]) - (Date.now() + 600_000)) < 5_000);
-	assert.ok(!("deleteAfter" in params), "boxd is given no delete timer: the janitor ends a computer by its label");
-	assert.deepEqual(m.egressAllow, ["none"]);
-	assert.equal(m.idle.hibernateAfter, 0);
-	// The order: ready, egress and hibernation, read back, then the daemon.
-	const order = fake.names().filter((name) => name !== "machines.get");
-	// The listing by the request's name comes first: a machine boxd already holds for the request is answered, not made again.
-	assert.deepEqual(order.slice(0, 7), ["machines.list", "machines.create", "machines.waitUntilReady", "machines.setEgressAllow", "machines.setAutoHibernateTimeout", "files.upload", "machines.exec"]);
-	const upload = fake.uploads[0];
-	assert.match(upload.path, /^\/tmp\/agentrun-computerd-[0-9a-f]{16}$/);
-	assert.deepEqual(upload.bytes, DAEMON_BYTES);
-	assert.deepEqual(m.daemon, { path: "/opt/agentrun/computerd", bytes: DAEMON_BYTES });
-	// init's command goes through the start script, detached, its words to a file only root writes.
-	assert.match(m.startedWith.init, /# agentrun-computer: init/);
-	assert.equal(m.startedWith.log, "/run/agentrun-computerd.log");
-	const start = fake.calls.find(([name, , kind]) => name === "machines.exec" && kind === "start")[3].command;
-	assert.match(start, /setsid -f/);
-	assert.match(start, /sudo -n/);
-	assert.match(m.startedWith.init, /--own-network/);
-	assert.equal(m.init.user, "2510:2510");
-	// The first connection checked the daemon, then closed: hello, credentials, network, home, binary, probe.
-	const methods = fake.requests.map(({ method }) => method);
-	assert.deepEqual(methods.slice(0, 2), ["hello", "files.read"]);
-	assert.ok(methods.includes("exec.run"), "the probe ran");
-	assert.ok(fake.bridges.every((bridge) => bridge.closed), "every bridge was closed");
-	assert.deepEqual(fake.deletes, []);
+test("create asks for an isolated machine in the org with no standby, the size, the snapshot, and with deleteTimer a delete 5 minutes past the most it may live", async () => {
+	const { rec, host } = setup({ vcpu: 2, memory: "8G", deleteTimer: true }, { create: machine() });
+	const req = request();
+	assert.deepEqual(await host.create({ ...req, image: "my-snapshot" }, ctx), { ok: true, value: { id: "m-1" } });
+	const [[name, params]] = rec.calls;
+	assert.equal(name, "create");
+	const { deleteAfter, ...rest } = params;
+	assert.deepEqual(rest, { name: req.name, org: "acme", labels: req.labels, isolated: true, config: { autoSuspendTimeout: 0, vcpu: 2, memory: "8G" }, fromSnapshot: "my-snapshot" });
+	assert.ok(Math.abs(deleteAfter - (HOUR / 1000 + 300)) <= 2, `deleteAfter ${deleteAfter}`);
+	const plain = setup({ org: undefined }, { create: machine() });
+	await plain.host.create(req, ctx);
+	assert.deepEqual(plain.rec.calls[0][1], { name: req.name, labels: req.labels, isolated: true, config: { autoSuspendTimeout: 0 } }, "default is boxd's own image: no snapshot, no size, no timer");
 });
 
-test("a snapshot image restores the machine from it, and the read-back is held to it", async () => {
-	const { fake, provider } = setup();
-	const made = await provider.create({ ...SPEC, image: "agentrun-base" }, request());
-	assert.ok(made.ok, made.ok ? "" : made.error.message);
-	assert.equal(createParams(fake).fromSnapshot, "agentrun-base");
-	const drifted = setup({}, { machine: { source: null } });
-	const refused = await drifted.provider.create({ ...SPEC, image: "agentrun-base" }, request());
-	assert.equal(refused.ok, false);
-	assert.match(refused.error.message, /image: declared the snapshot "agentrun-base", read back no snapshot/);
-	assert.deepEqual(drifted.fake.deletes.length, 1, "the drifted machine was deleted");
+test("prepare waits until boxd's agent is ready, then closes egress and hibernation, in that order", async () => {
+	const { rec, host } = setup();
+	assert.deepEqual(await host.prepare("m-1", ctx), { ok: true, value: undefined });
+	assert.deepEqual(rec.calls, [
+		["waitUntilReady", "m-1", { timeout: ctx.timeoutMs }],
+		["setEgressAllow", "m-1", ["none"]],
+		["setAutoHibernateTimeout", "m-1", 0],
+	]);
 });
 
-test("a machine that reads back drifted from what create asked is refused and deleted: egress open, not isolated, a delete timer", async () => {
-	for (const [patch, words] of [
-		[{ egressAllow: [] }, /network: declared none, read back open/],
-		[{ egressAllow: ["example.com"] }, /egress allowlist of 1 entries/],
-		[{ networking: { isolated: false } }, /isolated: declared true, read back false/],
-		[{ deleteAt: new Date(Date.now() + 60_000) }, /delete-after/],
-		[{ idle: { suspendAfter: 900, hibernateAfter: 0, destroyAfter: 0 } }, /auto-suspend: declared 0, read back 900/],
-	]) {
-		const { fake, provider } = setup({}, { machine: patch });
-		const made = await provider.create(SPEC, request());
-		assert.equal(made.ok, false);
-		assert.equal(made.error.code, "refused");
-		assert.match(made.error.message, words);
-		assert.equal(fake.deletes.length, 1);
-		assert.deepEqual(fake.uploads, [], "no daemon goes into a machine that drifted");
-	}
+test("get reads the machine back: state, network, size and snapshot; boxd's own create options read back wrong are drift", async () => {
+	const read = async (patch, options) => (await setup(options, { get: machine(patch) }).host.get("m-1", ctx)).value;
+	const good = await read({}, { vcpu: 2, memory: "8G" });
+	assert.deepEqual({ ...good, labels: undefined }, { id: "m-1", labels: undefined, state: "running", network: "none", size: { cpus: 2, memoryMb: 8192 } });
+	assert.equal((await read({ egressAllow: [] })).network, "open");
+	assert.deepEqual((await read({ egressAllow: ["example.com"] })).network, { other: "an egress allowlist of 1 entries, which this provider never makes" });
+	for (const [status, state] of [["pending", "starting"], ["suspended", "running"], ["migrating", "running"], ["hibernated", "stopped"], ["stopped", "stopped"], ["failed", "failed"], ["destroyed", "going"]]) assert.equal((await read({ status })).state, state, status);
+	assert.deepEqual(await read({ status: "melting" }).then(({ state, why }) => [state, why]), ["failed", 'boxd reads its status as "melting"']);
+	const drift = async (patch, options) => (await read(patch, options)).drift ?? [];
+	assert.deepEqual(await drift({}), []);
+	assert.match((await drift({ name: "other" }))[0], /^name:/);
+	assert.match((await drift({ networking: { isolated: false } }))[0], /^isolated:/);
+	assert.deepEqual((await drift({ idle: { suspendAfter: 60, hibernateAfter: 0, destroyAfter: 600 } })).map((line) => line.split(":")[0]), ["auto-suspend", "auto-destroy"]);
+	assert.match((await drift({ deleteAt: new Date(Date.now() + 60_000) }))[0], /^delete-after: .* before the most it may live/);
+	assert.deepEqual(await drift({ deleteAt: new Date(Date.now() + 2 * HOUR) }), [], "a delete after the most it may live is the backstop");
+	assert.match((await drift({ source: { kind: "snapshot", name: "snap" } }))[0], /^snapshot:/);
+	const restored = machine({ source: { kind: "snapshot", name: "snap" } });
+	restored.labels[IMAGE_LABEL] = "snap";
+	assert.deepEqual((await setup({}, { get: restored }).host.get("m-1", ctx)).value.image, { resolved: "snap" });
+	assert.match((await drift({ resources: { vcpu: 1, memoryBytes: 4 * 1024 ** 3 } }, { vcpu: 2, memory: "8G" }))[0], /^size:/);
 });
 
-test("an installed daemon whose sha256 is not the upload's is refused and the machine deleted", async () => {
-	const { fake, provider } = setup({}, { sha: "lie" });
-	const made = await provider.create(SPEC, request());
-	assert.equal(made.ok, false);
-	assert.match(made.error.message, new RegExp(`uploaded sha256 ${SHA}, the installed binary reads back "0{64}"`));
-	assert.equal(fake.deletes.length, 1);
+test("a restore that carries agentrun labels create did not write is drift; one of another org, or not found, is none", async () => {
+	const { host } = setup({}, { create: machine(), get: () => machine({ labels: { ...machine().labels, "agentrun.run": "old" } }) });
+	await host.create(request(), ctx);
+	assert.match((await host.get("m-1", ctx)).value.drift[0], /^label agentrun\.run: create wrote none/);
+	assert.deepEqual(await setup({}, { get: machine({ org: { id: "org-2", name: "other" } }) }).host.get("m-1", ctx), { ok: true, value: undefined });
+	assert.equal((await setup({ org: "org-2" }, { get: machine({ org: { id: "org-2", name: "other" } }) }).host.get("m-1", ctx)).value.id, "m-1", "the org by id");
+	const gone = setup({}, { get: () => Promise.reject(named("NotFoundError")) });
+	assert.deepEqual(await gone.host.get("m-1", ctx), { ok: true, value: undefined });
+	await assert.rejects(setup({}, { get: () => Promise.reject(named("AuthenticationError")) }).host.get("m-1", ctx), { name: "AuthenticationError" });
 });
 
-test("init that does not come up: the error carries init's own words, and the machine is deleted", async () => {
-	const { fake, provider } = setup({}, { initFails: "computerd: init: refusing: another process holds uid 2510" });
-	const made = await provider.create(SPEC, request());
-	assert.equal(made.ok, false);
-	assert.match(made.error.message, /the daemon did not answer/);
-	assert.match(made.error.message, /init wrote: computerd: init: refusing: another process holds uid 2510/);
-	assert.equal(fake.deletes.length, 1);
+test("list asks the org for the labels; delete of a machine boxd no longer has is done", async () => {
+	const { rec, host } = setup({}, { list: [machine()], delete: () => Promise.reject(named("NotFoundError")) });
+	const listed = await host.list({ "agentrun.computer": "true" }, ctx);
+	assert.deepEqual(listed.value.map(({ id }) => id), ["m-1"]);
+	assert.deepEqual(rec.calls[0], ["list", { org: "acme", labels: { "agentrun.computer": "true" } }]);
+	assert.deepEqual(await host.delete("m-1", ctx), { ok: true, value: undefined });
+	await assert.rejects(setup({}, { delete: () => Promise.reject(named("RateLimitError")) }).host.delete("m-1", ctx), { name: "RateLimitError" });
 });
 
-test("a bridge that finds no daemon listening yet is tried again until init's socket answers", async () => {
-	const { fake, provider } = setup({}, { notListening: 2 });
-	const made = await provider.create(SPEC, request());
-	assert.ok(made.ok, made.ok ? "" : made.error.message);
-	assert.ok(fake.bridges.length >= 3);
-});
-
-test("a daemon of another version is refused at create, and the machine deleted", async () => {
-	const { fake, provider } = setup({}, { box: { helloPatch: { version: "0.0.0-drift" } } });
-	const made = await provider.create(SPEC, request());
-	assert.equal(made.ok, false);
-	assert.match(made.error.message, /version/);
-	assert.equal(fake.deletes.length, 1);
-});
-
-test("a daemon that reaches an address from inside is refused: network none is held from inside too", async () => {
-	const { provider } = setup({}, { box: { reached: ["1.1.1.1:443"] } });
-	const made = await provider.create(SPEC, request());
-	assert.equal(made.ok, false);
-	assert.match(made.error.message, /1\.1\.1\.1:443/);
-});
-
-test("a create boxd refused made nothing, and nothing is deleted; one whose answer was lost is found by its name and deleted", async () => {
-	const refused = setup({}, { create: "invalid" });
-	const made = await refused.provider.create({ ...SPEC, image: "no-such-snapshot" }, request());
-	assert.equal(made.ok, false);
-	assert.equal(made.error.code, "invalid");
-	assert.deepEqual(refused.fake.deletes, []);
-	const denied = await setup({}, { create: "auth" }).provider.create(SPEC, request());
-	assert.equal(denied.error.code, "denied");
-	const lost = setup({}, { create: "lost" });
-	const gone = await lost.provider.create(SPEC, request());
-	assert.equal(gone.ok, false);
-	assert.match(gone.error.message, /was deleted and read back gone/);
-	assert.equal(lost.fake.deletes.length, 1);
-});
-
-test("a create the SDK gave up on at its deadline is looked for by its name, and the machine that lands is deleted", async () => {
-	const { fake, provider } = setup({}, { create: "deadline", landMs: 60 });
-	const made = await provider.create(SPEC, request());
-	assert.equal(made.ok, false);
-	assert.equal(made.error.code, "timeout");
-	assert.match(made.error.message, /was deleted and read back gone/);
-	assert.equal(fake.deletes.length, 1);
-	assert.deepEqual((await provider.list({})).value, [], "nothing is left");
-});
-
-test("a create aborted while boxd still answers: the machine that lands later is deleted by its id", async () => {
-	const { fake, provider } = setup({}, { create: "hold" });
-	const controller = new AbortController();
-	const pending = provider.create(SPEC, { ...request(), signal: controller.signal });
-	await new Promise((resolve) => setTimeout(resolve, 20));
-	controller.abort();
-	const made = await pending;
-	assert.equal(made.ok, false);
-	assert.equal(made.error.code, "aborted");
-	assert.match(made.error.message, /deleted as it lands/);
-	await fake.release();
-	await new Promise((resolve) => setTimeout(resolve, 50));
-	assert.equal(fake.deletes.length, 1, "the machine that landed was deleted");
-	assert.equal([...fake.machines.values()].every((m) => m.deleted), true);
-});
-
-test("a create whose answer never comes within createMs is given up on, and the machine that lands later is deleted", async () => {
-	const { fake, provider } = setup({ timeouts: { ...TIMEOUTS, createMs: 50 } }, { create: "hold" });
-	const made = await provider.create(SPEC, request());
-	assert.equal(made.ok, false);
-	assert.equal(made.error.code, "timeout");
-	await fake.release();
-	await new Promise((resolve) => setTimeout(resolve, 50));
-	assert.equal(fake.deletes.length, 1);
-});
-
-test("a machine that landed late and cannot be deleted is tried three times, then told to onCleanupFailed with its id", async () => {
-	const left = [];
-	let deletes = 0;
-	const { fake, provider } = setup(
-		{ onCleanupFailed: (one) => left.push(one) },
-		{
-			create: "hold",
-			onStep: (step) => {
-				if (step !== "machines.delete") return;
-				deletes++;
-				throw new Error("boxd is unavailable");
-			},
-		},
-	);
-	const controller = new AbortController();
-	const pending = provider.create(SPEC, { ...request(), signal: controller.signal });
-	await new Promise((resolve) => setTimeout(resolve, 20));
-	controller.abort();
-	const made = await pending;
-	assert.equal(made.error.code, "aborted");
-	assert.match(made.error.message, /deleted as it lands, and one that cannot be is the janitor's by its deadline label/);
-	assert.deepEqual(left, [], "nothing is told before the machine lands");
-	await fake.release();
-	await new Promise((resolve) => setTimeout(resolve, 150));
-	assert.equal(deletes, 3, "the delete was tried three times");
-	const machine = only(fake);
-	assert.equal(machine.deleted, false);
-	assert.equal(left.length, 1);
-	assert.equal(left[0].id, machine.id);
-	assert.equal(left[0].name, machine.name);
-	assert.match(left[0].message, /could not be deleted \(.*boxd is unavailable.*\); the janitor deletes it by its deadline label/);
-	assert.ok(isFinite(Date.parse(machine.labels[DEADLINE])), "the machine left carries the deadline label the janitor reads");
-});
-
-test("a late delete that fails once is tried again, and a cleanup that works tells onCleanupFailed nothing; a handler that throws is dropped", async () => {
-	const left = [];
-	let deletes = 0;
-	const { fake, provider } = setup(
-		{ timeouts: { ...TIMEOUTS, createMs: 50 }, onCleanupFailed: (one) => left.push(one) },
-		{
-			create: "hold",
-			onStep: (step) => {
-				if (step === "machines.delete" && ++deletes === 1) throw new Error("boxd is unavailable");
-			},
-		},
-	);
-	assert.equal((await provider.create(SPEC, request())).error.code, "timeout");
-	await fake.release();
-	await new Promise((resolve) => setTimeout(resolve, 100));
-	assert.equal(deletes, 2);
-	assert.equal(only(fake).deleted, true);
-	assert.deepEqual(left, []);
-
-	const throwing = setup(
-		{
-			timeouts: { ...TIMEOUTS, createMs: 50 },
-			onCleanupFailed: () => {
-				throw new Error("the host's handler failed");
-			},
-		},
-		{
-			create: "hold",
-			onStep: (step) => {
-				if (step === "machines.delete") throw new Error("boxd is unavailable");
-			},
-		},
-	);
-	const unhandled = [];
-	const note = (error) => unhandled.push(error);
-	process.on("unhandledRejection", note);
-	try {
-		assert.equal((await throwing.provider.create(SPEC, request())).error.code, "timeout");
-		await throwing.fake.release();
-		await new Promise((resolve) => setTimeout(resolve, 150));
-	} finally {
-		process.off("unhandledRejection", note);
-	}
-	assert.deepEqual(unhandled, []);
-	assert.throws(() => new BoxdProvider({ apiKey: KEY, Boxd: fakeBoxd().Boxd, onCleanupFailed: "log" }), /onCleanupFailed is a function/);
-});
-
-test("attach refuses a computer whose timers changed since create: standby, hibernation, auto-destroy, or a delete before the most it may live", async () => {
-	const { fake, provider } = setup();
-	const made = await provider.create(SPEC, request());
-	assert.ok(made.ok, made.ok ? "" : made.error.message);
-	const machine = only(fake);
-	assert.ok((await provider.attach({ id: made.value.id })).ok, "as create left it, it attaches");
-	const refused = async (change, words) => {
-		const before = structuredClone({ idle: machine.idle, deleteAt: machine.deleteAt });
-		change();
-		for (const ref of [{ id: made.value.id }, { labels: { [NAME]: machine.name } }]) {
-			const attached = await provider.attach(ref);
-			assert.equal(attached.ok, false, words.source);
-			assert.equal(attached.error.code, "refused");
-			assert.match(attached.error.message, words);
-			assert.match(attached.error.message, /left as it is/);
-		}
-		Object.assign(machine, before);
-	};
-	await refused(() => (machine.idle.hibernateAfter = 14_400), /auto-hibernate: declared 0, read back 14400/);
-	await refused(() => (machine.idle.suspendAfter = 900), /auto-suspend: declared 0, read back 900/);
-	await refused(() => (machine.idle.destroyAfter = 3_600), /auto-destroy: declared 0, read back 3600/);
-	const most = Date.parse(machine.labels[MAX_LABEL]);
-	await refused(() => (machine.deleteAt = new Date(most - 1_000)), /delete-after: boxd deletes it at .*before the most it may live/);
-	await refused(() => (machine.deleteAt = new Date(Date.now() + 60_000)), /delete-after: boxd deletes it at /);
-	assert.equal(fake.deletes.length, 0, "a refused attach deletes nothing");
-	// A delete timer at or past the most it may live is the deleteTimer backstop: it ends nothing early.
-	machine.deleteAt = new Date(most + 300_000);
-	const kept = await provider.attach({ id: made.value.id });
-	assert.ok(kept.ok, kept.ok ? "" : kept.error.message);
-	machine.deleteAt = null;
-	assert.ok((await provider.attach({ id: made.value.id })).ok);
-});
-
-test("deleteTimer writes boxd's delete timer with the machine, past the most it may live, and holds the read-back to it", async () => {
-	const { fake, provider } = setup({ deleteTimer: true, maxLifetimeMs: 3_600_000 });
-	const made = await provider.create(SPEC, request());
-	assert.ok(made.ok, made.ok ? "" : made.error.message);
-	assert.equal(createParams(fake).deleteAfter, 3_600 + 300);
-	const off = setup();
-	assert.ok((await off.provider.create(SPEC, request())).ok);
-	assert.ok(!("deleteAfter" in createParams(off.fake)), "without the option boxd is given no timer");
-	const missing = setup({ deleteTimer: true }, { machine: { deleteAt: null } });
-	const refused = await missing.provider.create(SPEC, request());
-	assert.equal(refused.ok, false);
-	assert.match(refused.error.message, /delete-after: declared between/);
-});
-
-test("deleteTimer's read-back takes boxd's timer from the most a computer may live to 5 minutes and 2 of clock skew past it", async () => {
-	const hour = 3_600_000;
-	// boxd's timer as get reads it, offset from now plus the most the computer may live (create's time plus maxLifetimeMs).
-	const at = async (offsetS) => {
-		const { provider } = setup({ deleteTimer: true, maxLifetimeMs: hour }, { machine: { get deleteAt() { return new Date(Date.now() + hour + offsetS * 1000); } } });
-		return provider.create(SPEC, request());
-	};
-	for (const offsetS of [10, 300, 400]) {
-		const made = await at(offsetS);
-		assert.ok(made.ok, `${offsetS} s past the most: ${made.ok ? "" : made.error.message}`);
-	}
-	for (const offsetS of [-60, 480]) {
-		const made = await at(offsetS);
-		assert.equal(made.ok, false, `${offsetS} s past the most is refused`);
-		assert.match(made.error.message, /delete-after: declared between/);
-	}
-});
-
-test("a restore that carries agentrun's labels from its snapshot is refused and deleted; a size with a snapshot is refused in check", async () => {
-	const { fake, provider } = setup({}, { snapshotLabels: { "agentrun.run": "old-run" } });
-	const made = await provider.create({ ...SPEC, image: "agentrun-base" }, request());
-	assert.equal(made.ok, false);
-	assert.match(made.error.message, /label agentrun\.run: create wrote none, read back "old-run"/);
-	assert.equal(fake.deletes.length, 1);
-	const sized = setup({ vcpu: 4, memory: "16G" });
-	assert.deepEqual(sized.provider.check({ ...SPEC, image: "agentrun-base" }).map(({ field }) => field), ["image"]);
-	assert.deepEqual(sized.provider.check(SPEC), []);
-});
-
-test("check refuses a label name boxd does not take", () => {
-	const { provider } = setup();
-	for (const key of ["Team", "boxd/x", "a".repeat(64), "has space"]) assert.deepEqual(provider.check({ ...SPEC, labels: { [key]: "v" } }).map(({ field }) => field), ["labels"], key);
-	assert.deepEqual(provider.check({ ...SPEC, labels: { "agentrun.run": "r1", team: "a" } }), []);
-});
-
-test("a desktop: init is given the display, Xvfb starts through the daemon, and hello declares the screen", async () => {
-	const { fake, provider } = setup({ kind: "desktop" });
-	const made = await provider.create(SPEC, request());
-	assert.ok(made.ok, made.ok ? "" : made.error.message);
-	const m = only(fake);
-	assert.equal(m.init.display, ":0");
-	assert.equal(m.xvfb.argv[0], "Xvfb");
-	const dies = await setup({ kind: "desktop" }, { display: "dies" }).provider.create(SPEC, request());
-	assert.equal(dies.ok, false);
-	assert.match(dies.error.message, /X server/);
-});
-
-test("list, attach, network and connect read the computer back; release deletes it and waits until boxd reads it gone", async () => {
-	const { fake, provider } = setup({}, { lingers: 2 });
-	const made = await provider.create({ ...SPEC, labels: { "agentrun.run": "r1" } }, request());
-	assert.ok(made.ok);
-	const ref = made.value;
-	const listed = await provider.list({ "agentrun.run": "r1" });
-	assert.ok(listed.ok);
-	assert.equal(listed.value.length, 1);
-	assert.deepEqual(listed.value[0].ref, { id: ref.id, name: ref.name });
-	assert.equal(listed.value[0].state, "running");
-	assert.equal(listed.value[0].network, "none");
-	assert.ok(listed.value[0].deadline instanceof Date);
-	assert.deepEqual((await provider.list({ "agentrun.run": "r2" })).value, []);
-
-	const byId = await provider.attach({ id: ref.id });
-	assert.ok(byId.ok, byId.ok ? "" : byId.error.message);
-	assert.equal(byId.value.spec.image, "default");
-	assert.equal(byId.value.spec.user, "2510:2510");
-	assert.equal(byId.value.spec.network, "none");
-	assert.equal(byId.value.spec.workdir, "/work");
-	const byLabels = await provider.attach({ labels: { "agentrun.run": "r1" } });
-	assert.ok(byLabels.ok);
-	assert.equal(byLabels.value.id, ref.id);
-
-	assert.deepEqual(await provider.network(ref), { ok: true, value: "none" });
-	const wider = await provider.network(ref, "open");
-	assert.equal(wider.error.code, "refused");
-
-	const connected = await provider.connect(ref);
-	assert.ok(connected.ok);
-	assert.deepEqual((await connected.value.client.call("ping", {})).value, {});
-	await connected.value.close();
-
-	assert.equal((await provider.release(ref, "stop")).error.code, "unsupported");
-	const released = await provider.release(ref, "delete");
-	assert.ok(released.ok, released.ok ? "" : released.error.message);
-	assert.deepEqual(fake.deletes, [ref.id]);
-	assert.ok(fake.calls.filter(([name]) => name === "machines.get").length >= 3, "release read the machine back until it was gone");
-	assert.deepEqual(await provider.release(ref, "delete"), { ok: true, value: undefined }, "a second release is ok");
-	assert.equal((await provider.connect(ref)).error.code, "not_found");
-});
-
-test("namePrefix names every machine, and a provider of another prefix never finds it", async () => {
-	const { fake, provider } = setup({ namePrefix: "t-agentrun-" });
-	const made = await provider.create(SPEC, request());
-	assert.ok(made.ok);
-	assert.match(made.value.name, /^t-agentrun-[0-9a-f]{12}$/);
-	assert.equal(only(fake).name, made.value.name);
-	const other = new BoxdProvider({ apiKey: KEY, Boxd: fake.Boxd, org: "acme", daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
-	assert.equal((await other.attach({ id: made.value.id })).error.code, "not_found");
-	assert.deepEqual((await other.list({})).value, []);
-	assert.throws(() => new BoxdProvider({ apiKey: KEY, Boxd: fake.Boxd, namePrefix: "Bad" }), /namePrefix/);
-});
-
-/** The name a request's machine takes: the prefix, then the first 12 hex digits of sha256(request id). */
-const nameOf = (requestId, prefix = "computer-") => `${prefix}${createHash("sha256").update(requestId, "utf8").digest("hex").slice(0, 12)}`;
-const creates = (fake) => fake.calls.filter(([name]) => name === "machines.create").length;
-const another = (fake, options = {}) => new BoxdProvider({ apiKey: KEY, Boxd: fake.Boxd, org: "acme", daemonPath: DAEMON_PATH, timeouts: TIMEOUTS, ...options });
-
-test("idempotent create: a retry of one request answers the computer the first made, at once, once it is up and from another provider, and never makes a second", async () => {
-	const { fake, provider } = setup();
-	const requestId = "run-a#1";
-	const [first, early] = await Promise.all([provider.create(SPEC, { requestId }), provider.create(SPEC, { requestId })]);
-	assert.ok(first.ok, first.ok ? "" : first.error.message);
-	assert.deepEqual(early, first, "a create of a request in flight answers what the first does");
-	assert.equal(first.value.name, nameOf(requestId), "the machine is named by its request");
-	const again = await provider.create(SPEC, { requestId });
-	assert.ok(again.ok, again.ok ? "" : again.error.message);
-	assert.deepEqual({ id: again.value.id, name: again.value.name }, { id: first.value.id, name: first.value.name });
-	// A provider that never saw the first create (a restart, another process) reads the machine from boxd by its name.
-	const restarted = await another(fake).create(SPEC, { requestId });
-	assert.ok(restarted.ok, restarted.ok ? "" : restarted.error.message);
-	assert.equal(restarted.value.id, first.value.id);
-	assert.equal(creates(fake), 1, "boxd was asked for one machine");
-	assert.equal(fake.machines.size, 1);
-	assert.deepEqual(fake.deletes, []);
-	const other = await provider.create(SPEC, { requestId: "run-a#2" });
-	assert.ok(other.ok);
-	assert.notEqual(other.value.id, first.value.id, "another request is another computer");
-	assert.equal(fake.machines.size, 2);
-});
-
-test("create needs a request id, and one without makes nothing", async () => {
-	const { fake, provider } = setup();
-	for (const context of [undefined, {}, { requestId: "" }, { requestId: 7 }]) {
-		const refused = await provider.create(SPEC, context);
-		assert.equal(refused.error?.code, "invalid");
-		assert.match(refused.error.message, /requestId/);
-	}
-	assert.deepEqual(fake.calls, [], "boxd was never called");
-});
-
-test("a retry of a request whose computer was released, failed at create, sleeps or is past its deadline is refused as exists, in words; one made with other labels too", async () => {
-	const { fake, provider } = setup({ namePrefix: "t-agentrun-" });
-	const made = await provider.create(SPEC, { requestId: "ends" });
-	assert.ok(made.ok);
-	assert.equal(made.value.name, nameOf("ends", "t-agentrun-"));
-	assert.ok((await provider.release(made.value, "delete")).ok);
-	const released = await provider.create(SPEC, { requestId: "ends" });
-	assert.equal(released.error?.code, "exists");
-	assert.equal(released.error.message, `${made.value.name} was made for this request and has ended: create with a new request id`);
-	assert.equal(creates(fake), 1, "the released request made no second machine");
-
-	const failing = setup({}, { sha: "lie" });
-	assert.equal((await failing.provider.create(SPEC, { requestId: "fails" })).error?.code, "refused");
-	const retried = await failing.provider.create(SPEC, { requestId: "fails" });
-	assert.equal(retried.error?.code, "exists");
-	assert.match(retried.error.message, /was made for this request and has ended/);
-	assert.equal(creates(failing.fake), 1);
-
-	const held = setup();
-	const labels = { [COMPUTER]: "1", [IMAGE_LABEL]: "default", [DEADLINE]: new Date(Date.now() + 600_000).toISOString(), [MAX_LABEL]: new Date(Date.now() + 3_600_000).toISOString() };
-	held.fake.add({ name: nameOf("asleep"), labels: { ...labels, [NAME]: nameOf("asleep") }, status: "hibernated" });
-	assert.equal((await held.provider.create(SPEC, { requestId: "asleep" })).error?.code, "exists");
-	held.fake.add({ name: nameOf("past"), labels: { ...labels, [NAME]: nameOf("past"), [DEADLINE]: new Date(Date.now() - 1_000).toISOString() } });
-	assert.equal((await held.provider.create(SPEC, { requestId: "past" })).error?.code, "exists");
-	held.fake.add({ name: nameOf("other"), labels: { ...labels, [NAME]: nameOf("other"), team: "b" } });
-	const other = await held.provider.create({ ...SPEC, labels: { team: "a" } }, { requestId: "other" });
-	assert.equal(other.error?.code, "exists");
-	assert.match(other.error.message, new RegExp(`${nameOf("other")} was made for this request with another spec, so it is not returned: label team: asked "a", read back "b"`));
-	assert.equal(creates(held.fake), 0, "never a second machine under one name");
-	assert.deepEqual(held.fake.deletes, [], "and the machines boxd holds are left as they are");
-});
-
-test("a retry from another provider finds the machine while the first create still makes it, waits until it is up, and answers it", async () => {
-	let hold;
-	const started = new Promise((reached) => {
-		hold = reached;
+test("exec is one streamExec of the quoted argv, stdin ended when none is asked; wait reads a lost stream as -1, kill closes it", async () => {
+	const events = [];
+	const stream = (code) => ({
+		stderr: (async function* () {})(),
+		async *[Symbol.asyncIterator]() {},
+		write: (bytes) => events.push(["write", Buffer.from(bytes).toString()]),
+		end: () => events.push(["end"]),
+		wait: () => (code === undefined ? Promise.reject(new Error("stream lost")) : Promise.resolve(code)),
+		close: () => events.push(["close"]),
 	});
-	let go;
-	const gate = new Promise((open) => {
-		go = open;
-	});
-	// The first create stops before it starts init: the machine runs, and no daemon answers in it yet.
-	const fake = fakeBoxd({
-		onStep: async (step) => {
-			if (step !== "exec start") return;
-			hold();
-			await gate;
-		},
-	});
-	const first = another(fake).create(SPEC, { requestId: "two-providers" });
-	await started;
-	const second = another(fake).create(SPEC, { requestId: "two-providers" });
-	setTimeout(go, 40);
-	const [a, b] = await Promise.all([first, second]);
-	assert.ok(a.ok, a.ok ? "" : a.error.message);
-	assert.ok(b.ok, b.ok ? "" : b.error.message);
-	assert.equal(b.value.id, a.value.id);
-	assert.equal(creates(fake), 1, "the second provider made no machine");
-	assert.deepEqual(fake.deletes, []);
+	const { rec, host } = setup({}, { streamExec: () => stream(3) });
+	const quiet = (await host.exec("m-1", ["echo", "a b"], { stdin: false }, ctx)).value;
+	assert.deepEqual(rec.calls[0], ["streamExec", "m-1", { command: "echo 'a b'" }]);
+	assert.deepEqual(events, [["end"]]);
+	assert.equal(await quiet.wait(), 3);
+	events.length = 0;
+	const fed = (await host.exec("m-1", ["cat"], { stdin: true }, ctx)).value;
+	await fed.write(Buffer.from("hi"));
+	await fed.end();
+	await fed.kill();
+	assert.deepEqual(events, [["write", "hi"], ["end"], ["close"]]);
+	const lost = setup({}, { streamExec: () => stream(undefined) });
+	assert.equal(await (await lost.host.exec("m-1", ["true"], { stdin: false }, ctx)).value.wait(), -1);
 });
 
-test("a create boxd refuses because the name was taken since the listing answers the machine that holds it, and deletes nothing", async () => {
-	let second;
-	const landed = new Promise((done) => {
-		second = done;
-	});
-	let seen = 0;
-	// Both providers list the name and find nothing; the second one's create reaches boxd after the first one's machine is up.
-	const fake = fakeBoxd({
-		onStep: async (step) => {
-			if (step === "machines.create" && ++seen === 2) await landed;
-		},
-	});
-	const first = another(fake).create(SPEC, { requestId: "taken" });
-	const late = another(fake).create(SPEC, { requestId: "taken" });
-	const a = await first;
-	assert.ok(a.ok, a.ok ? "" : a.error.message);
-	second();
-	const b = await late;
-	assert.ok(b.ok, b.ok ? "" : b.error.message);
-	assert.equal(b.value.id, a.value.id);
-	assert.equal(creates(fake), 2, "boxd refused the second create");
-	assert.equal(fake.machines.size, 1);
-	assert.deepEqual(fake.deletes, [], "the machine that holds the name is not swept");
-	// A name held by a machine that is not this provider's computer: exists, and that machine is left.
-	const foreign = setup();
-	foreign.fake.add({ name: nameOf("foreign"), labels: { team: "x" } });
-	const refused = await foreign.provider.create(SPEC, { requestId: "foreign" });
-	assert.equal(refused.error?.code, "exists");
-	assert.match(refused.error.message, new RegExp(`boxd holds the name ${nameOf("foreign")} for a machine this provider does not list as this request's computer`));
-	assert.deepEqual(foreign.fake.deletes, []);
+test("upload is files.upload, and setLabels sets the janitor's labels with updateLabels", async () => {
+	const { rec, host } = setup({}, { "files.upload": 4, updateLabels: {} });
+	const bytes = new Uint8Array([1, 2, 3, 4]);
+	assert.deepEqual(await host.upload("m-1", "/tmp/computerd", bytes, ctx), { ok: true, value: undefined });
+	assert.deepEqual(await host.setLabels("m-1", { "agentrun.computer.deadline": "x" }, ctx), { ok: true, value: undefined });
+	assert.deepEqual(rec.calls, [
+		["files.upload", "m-1", "/tmp/computerd", bytes],
+		["updateLabels", "m-1", { set: { "agentrun.computer.deadline": "x" } }],
+	]);
 });
 
-test("a machine this provider did not make is never attached, connected or released", async () => {
-	const { fake, provider } = setup();
-	const other = fake.add({ name: "someone-else", labels: { team: "x" } });
-	assert.equal((await provider.attach({ id: other.id })).error.code, "not_found");
-	const ref = { id: other.id, name: "computer-0123456789ab" };
-	assert.equal((await provider.connect(ref)).error.code, "not_found");
-	assert.equal((await provider.release(ref, "delete")).error.code, "not_found");
-	assert.deepEqual(fake.deletes, []);
-	// A machine wearing the label but named otherwise is not ours either.
-	const lookalike = fake.add({ name: "someone-else", labels: { [COMPUTER]: "1", [NAME]: "computer-0123456789ab" } });
-	assert.equal((await provider.attach({ id: lookalike.id })).error.code, "not_found");
+test("errorCode reads the SDK's error names and gRPC codes", () => {
+	const { host } = setup();
+	const cases = [
+		[named("AbortError"), "aborted"],
+		[named("NotFoundError"), "not_found"],
+		[named("MachineFileNotFoundError"), "not_found"],
+		[named("AuthenticationError"), "denied"],
+		[named("PermissionDeniedError"), "denied"],
+		[named("RegionNotEnabledError"), "denied"],
+		[named("RateLimitError"), "limit"],
+		[named("APIStatusError", { grpcCode: 8 }), "limit"],
+		[named("ConflictError"), "exists"],
+		[named("APIConnectionError"), "timeout"],
+		[named("APIStatusError", { grpcCode: 4 }), "timeout"],
+		[named("APIStatusError", { grpcCode: 14 }), "timeout"],
+		[named("APIStatusError", { grpcCode: 3 }), "invalid"],
+		[named("APIStatusError", { grpcCode: 9 }), "refused"],
+		[new Error("anything"), "vendor"],
+		[undefined, "vendor"],
+	];
+	for (const [error, code] of cases) assert.equal(host.errorCode(error), code, error?.name);
 });
 
-test("a saved reference to a computer in another org is not found by attach, connect, network, extend or release, and nothing is deleted", async () => {
-	const { fake, provider } = setup({ maxLifetimeMs: 3_600_000 });
-	const made = await provider.create(SPEC, request());
-	assert.equal(made.ok, true, JSON.stringify(made));
-	const ref = { id: made.value.id, name: made.value.name };
-	// The same key, a provider set to another org: the machine reads back by its id, with its own org.
-	for (const org of ["other", "org-other"]) {
-		const elsewhere = new BoxdProvider({ apiKey: KEY, Boxd: fake.Boxd, org, daemonPath: DAEMON_PATH, timeouts: TIMEOUTS, maxLifetimeMs: 3_600_000 });
-		const bridges = fake.bridges.length;
-		const labels = { ...only(fake).labels };
-		for (const result of [await elsewhere.attach({ id: ref.id }), await elsewhere.connect(ref), await elsewhere.network(ref), await elsewhere.extend(ref, 120_000), await elsewhere.release(ref, "delete")]) {
-			assert.equal(result.ok, false, JSON.stringify(result));
-			assert.equal(result.error.code, "not_found", JSON.stringify(result));
-		}
-		assert.deepEqual(fake.deletes, []);
-		assert.equal(fake.bridges.length, bridges, "no connection is opened to a machine of another org");
-		assert.deepEqual(only(fake).labels, labels);
-	}
-	// The org by its id is the org too, and the provider that made the computer still releases it.
-	const byId = new BoxdProvider({ apiKey: KEY, Boxd: fake.Boxd, org: "org-acme", daemonPath: DAEMON_PATH, timeouts: TIMEOUTS, maxLifetimeMs: 3_600_000 });
-	const attached = await byId.attach({ id: ref.id });
-	assert.equal(attached.ok, true, JSON.stringify(attached));
-	assert.deepEqual(await provider.release(ref, "delete"), { ok: true, value: undefined });
-	assert.deepEqual(fake.deletes, [ref.id]);
-});
-
-test("extend moves init's deadline and the label the janitor reads, never earlier and never past the cap", async () => {
-	const { fake, provider } = setup({ maxLifetimeMs: 3_600_000 });
-	const made = await provider.create({ ...SPEC, lifetimeMs: 60_000 }, request());
-	assert.ok(made.ok);
-	const m = only(fake);
-	const extended = await provider.extend(made.value, 120_000);
-	assert.ok(extended.ok, extended.ok ? "" : extended.error.message);
-	assert.equal(m.init.deadline, extended.value.deadline.toISOString());
-	assert.equal(m.labels[DEADLINE], extended.value.deadline.toISOString());
-	const earlier = await provider.extend(made.value, 30_000);
-	assert.equal(earlier.ok, false);
-	assert.equal(m.labels[DEADLINE], extended.value.deadline.toISOString(), "a refused extend moves nothing");
-	const past = await provider.extend(made.value, 3_600_000 + 60_000);
-	assert.equal(past.error.code, "limit");
-	assert.ok(Date.parse(m.labels[MAX_LABEL]) > Date.now());
-});
-
-/** Two providers over one fake boxd, the first one's extend held at the nth call of a step until the test lets it go. */
-function twoExtenders(step, nth) {
-	let seen = 0;
-	let reached;
-	let go;
-	const atStep = new Promise((done) => (reached = done));
-	const gate = new Promise((done) => (go = done));
-	let holding = false;
-	const fake = fakeBoxd({
-		onStep: async (name) => {
-			if (!holding || name !== step || ++seen !== nth) return;
-			reached();
-			await gate;
-		},
-	});
-	const options = { apiKey: KEY, Boxd: fake.Boxd, org: "acme", daemonPath: DAEMON_PATH, timeouts: TIMEOUTS, maxLifetimeMs: 3_600_000 };
-	return { fake, first: new BoxdProvider(options), second: new BoxdProvider(options), hold: () => (holding = true), atStep, go };
-}
-
-test("two providers extending one computer leave the label at the later deadline when the earlier label lands last", async () => {
-	const { fake, first, second, hold, atStep, go } = twoExtenders("machines.updateLabels", 1);
-	const made = await first.create({ ...SPEC, lifetimeMs: 60_000 }, request());
-	assert.ok(made.ok, made.ok ? "" : made.error.message);
-	const m = only(fake);
-	hold();
-	// The first extend moves init, reads the label, and its label write is held; the second runs whole meanwhile.
-	const earlier = first.extend(made.value, 120_000);
-	await atStep;
-	const later = await second.extend(made.value, 600_000);
-	assert.ok(later.ok, later.ok ? "" : later.error.message);
-	assert.equal(m.labels[DEADLINE], later.value.deadline.toISOString());
-	go();
-	const result = await earlier;
-	assert.ok(result.ok, result.ok ? "" : result.error.message);
-	assert.equal(m.init.deadline, later.value.deadline.toISOString());
-	assert.equal(m.labels[DEADLINE], later.value.deadline.toISOString(), "the janitor reads the deadline init holds, not the earlier one written last");
-	assert.equal(result.value.deadline.toISOString(), later.value.deadline.toISOString(), "extend answers the deadline the computer holds");
-});
-
-test("an extend leaves a label another provider already moved later", async () => {
-	// The first extend is held as it reads the label back before writing it (its second machines.get).
-	const { fake, first, second, hold, atStep, go } = twoExtenders("machines.get", 2);
-	const made = await first.create({ ...SPEC, lifetimeMs: 60_000 }, request());
-	assert.ok(made.ok, made.ok ? "" : made.error.message);
-	const m = only(fake);
-	hold();
-	const earlier = first.extend(made.value, 120_000);
-	await atStep;
-	const later = await second.extend(made.value, 600_000);
-	assert.ok(later.ok, later.ok ? "" : later.error.message);
-	const writes = () => fake.calls.filter(([name]) => name === "machines.updateLabels").length;
-	const before = writes();
-	go();
-	const result = await earlier;
-	assert.ok(result.ok, result.ok ? "" : result.error.message);
-	assert.equal(writes(), before, "the earlier deadline is never written over the later one");
-	assert.equal(m.labels[DEADLINE], later.value.deadline.toISOString());
-	assert.equal(result.value.deadline.toISOString(), later.value.deadline.toISOString());
-});
-
-test("an extend that cannot ask init again says both moved and what is unknown", async () => {
-	// Init never answers the second deadline.extend, so the check ends at helloMs.
-	let asked = 0;
-	const onStep = (step) => (step === "deadline.extend" && ++asked === 2 ? new Promise(() => {}) : undefined);
-	const { fake, provider } = setup({ maxLifetimeMs: 3_600_000, timeouts: { ...TIMEOUTS, helloMs: 300 } }, { onStep });
-	const made = await provider.create({ ...SPEC, lifetimeMs: 60_000 }, request());
-	assert.ok(made.ok);
-	const m = only(fake);
-	const extended = await provider.extend(made.value, 120_000);
-	assert.equal(extended.ok, false);
-	assert.match(extended.error.message, /init's deadline and the label .* moved to .*could not be asked whether another extend moved its deadline later/);
-	assert.equal(m.labels[DEADLINE], m.init.deadline);
-});
-
-test("testConnection lists by the provider's label and makes nothing", async () => {
-	const { fake, provider } = setup();
-	const tested = await provider.testConnection();
-	assert.deepEqual(tested, { ok: true, value: { detail: "boxd answered: 0 computers of this provider" } });
-	assert.deepEqual(fake.names(), ["machines.list"]);
-});
-
-test("the conformance module reads only its COMPUTER_BOXD_* names, after the live switch", async () => {
+test("the conformance module reads only its COMPUTER_BOXD_* names, after the live switch; the sweep's host needs none", async () => {
 	assert.throws(() => settingsFromEnv({ BOXD_API_KEY: "fake" }), /COMPUTER_BOXD_API_KEY/);
 	assert.deepEqual(settingsFromEnv({ [BOXD_ENV.key]: KEY, [BOXD_ENV.org]: "acme", [BOXD_ENV.region]: "fra", [BOXD_ENV.kind]: "desktop" }), { apiKey: KEY, org: "acme", region: "fra", kind: "desktop" });
 	assert.equal(conformanceImage({ env: {} }), "default");
 	assert.equal(conformanceImage({ env: { [BOXD_ENV.image]: "snap" } }), "snap");
 	await assert.rejects(createProvider({ env: { [BOXD_ENV.key]: KEY } }), /AGENTRUN_COMPUTER_LIVE_BOXD=1/);
-	const fake = fakeBoxd();
-	const provider = await createProvider({ env: { [BOXD_ENV.live]: "1", [BOXD_ENV.key]: KEY }, Boxd: fake.Boxd });
+	const provider = await createProvider({ env: { [BOXD_ENV.live]: "1", [BOXD_ENV.key]: KEY }, Boxd: recorder().Boxd });
 	assert.equal(provider.capabilities().maxLifetimeMs, 30 * 60_000);
+	assert.equal((await createHost({ env: { [BOXD_ENV.key]: KEY }, Boxd: recorder().Boxd })).id, "boxd");
 });

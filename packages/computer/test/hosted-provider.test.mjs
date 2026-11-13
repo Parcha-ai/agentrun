@@ -114,6 +114,25 @@ test("a host's own rules (check), label budget and label names are held at check
 
 // --- create ---
 
+test("a host's prepare settles its settings before the read-back: create holds the machine as it reads after prepare", async () => {
+	const fake = fakeHost();
+	const prepared = new Set();
+	// A vendor whose network is closed by a call once the machine runs (boxd's egress allowlist): open until prepare.
+	const host = {
+		...fake.host,
+		prepare: async (id) => (prepared.add(id), { ok: true, value: undefined }),
+		get: async (id, ctx) => {
+			const read = await fake.host.get(id, ctx);
+			return read.ok && read.value !== undefined && !prepared.has(id) ? { ok: true, value: { ...read.value, network: "open" } } : read;
+		},
+	};
+	const provider = hostedProvider(host, { label: "Fakehost", daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+	const computer = made(await create(provider));
+	assert.deepEqual([...prepared], [computer.id]);
+	assert.equal(made(await provider.network(computer)), "none");
+	made(await provider.release(computer, "delete"));
+});
+
 test("create needs a request id: none, an empty one or one with a NUL is invalid, with no host call", async () => {
 	const { provider, fake } = setup();
 	for (const context of [undefined, {}, { requestId: "" }, { requestId: 7 }, { requestId: "a\0b" }]) {

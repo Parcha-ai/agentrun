@@ -2445,81 +2445,68 @@ const made = await boxd.create({ image: "default", lifetimeMs: 600_000, network:
 
 A boxd computer is a [boxd](https://boxd.sh?ref=agentrun) machine: a KVM microVM running Ubuntu 24.04, with its own
 kernel and disk. It is kind `linux` by default, and kind `desktop` with `kind: "desktop"`: computerd starts Xvfb itself,
-as on E2B and a Docker desktop, and its X11 shim drives it. Every call goes through the host's boxd TypeScript SDK, the
-`@boxd-sh/sdk` package's `Boxd` class, of which `src/boxd.ts` names only the slice it calls (`BoxdClientClass`) and
-imports nothing at load. The package is the host's to install, as E2B's and Modal's are; this repository pins it as a
-root devDependency for the live tests.
+as on E2B and a Docker desktop, and its X11 shim drives it. boxd runs on the shared machine-host adapter
+([PROVIDERS.md](PROVIDERS.md)): `src/boxd.ts` is boxd's `MachineHost`, its SDK slice and the mapping of a boxd machine
+to a machine, and `src/hosted/provider.ts` does everything that is not boxd's own (the computer's name, idempotent
+create, the upload, the install, init's start, the stdio bridge, the probe, the janitor's extend, delete-then-wait-gone,
+the sweep of a create that lands late). Every call goes through the host's boxd TypeScript SDK, the `@boxd-sh/sdk`
+package's `Boxd` class, of which `src/boxd.ts` names only the slice it calls and imports nothing at load. The package is
+the host's to install, as E2B's and Modal's are; this repository pins it as a root devDependency for the live tests.
 
 ### Settings
 
 `create(options)` takes the key as `options.apiKey` and nowhere else, and refuses in words without it. It reads no
 setting from the environment: serve passes its own `BOXD_API_KEY`, `BOXD_ORG` and `BOXD_REGION`, and the conformance
-module the `COMPUTER_BOXD_*` names it reads. The provider gives the SDK the key, the API's address (`baseUrl`, default
-`https://boxd.sh:9443`) and the region (`""`, the API's home region, when unset) explicitly, so the SDK takes none of
-them from the environment.
+module the `COMPUTER_BOXD_*` names it reads. The provider gives the SDK the key, the API's address and the region
+explicitly, so the SDK takes none of them from the environment.
 
 | Option | Meaning | Unset |
 | --- | --- | --- |
 | `apiKey` | the boxd API key | required |
 | `org` | the org machines are made in and listed from, by name or id | the key's own |
 | `region` | the region machines are made in (`fra`, `nyc`) | the API's home region |
+| `baseUrl` | the API's address | `https://boxd.sh:9443` |
 | `vcpu`, `memory` | a boxd size: 1 and `4G`, 2 and `8G`, 4 and `16G`, or 8 and `32G`; both or neither | the org's default |
 | `kind` | `linux` or `desktop` | `linux` |
-| `namePrefix` | what every machine's name starts with, before the 12 hex digits of its request | `computer-` |
 | `maxLifetimeMs` | the longest lifetime `check` takes, at most 30 days | 24 h |
-| `deleteTimer` | a backstop: boxd deletes every machine 5 minutes past create's time plus `maxLifetimeMs`, whatever the host does, written in the same call that makes it | `false` |
-| `onCleanupFailed` | a function, for a host that builds the provider in code: called with `{ name, id?, message }` when a machine that landed after create gave up on it could not be deleted | none |
+| `deleteTimer` | a backstop: boxd deletes every machine 5 minutes past the most it may live, whatever the janitor does, written in the same call that makes it | `false` |
 | `daemonUser` | uid:gid the daemon runs as; never root, never the image's own user (1000) | `2510:2510` |
 | `daemonPath`, `desktop`, `timeouts`, `probeTargets` | as on E2B | |
 
-### How the daemon gets in, and how it is reached
+### The mapping
 
-boxd's own agent runs every command in a machine, as the image's user (`boxd`, uid 1000, with passwordless sudo), so
-computerd is a `child`, as on Daytona and E2B:
+| MachineHost | boxd |
+| --- | --- |
+| `create` | `machines.create` with the adapter's name and labels, the org, `isolated: true` (the machine joins none of the org's networks and holds no in-machine credential), `config.autoSuspendTimeout: 0` and the size; any image but `"default"` is a snapshot, restored with `fromSnapshot`; with `deleteTimer`, `deleteAfter`. Its own client, bounded by `createMs` and never sent twice |
+| `prepare` | `machines.waitUntilReady`, then `setEgressAllow(id, ["none"])` and `setAutoHibernateTimeout(id, 0)`: boxd's idle timers watch network traffic, and a computer's programs may work for a long time with none |
+| `get` | `machines.get`; not found, or a machine of another org, is none |
+| `list` | `machines.list` by the labels, in the org |
+| `delete` | `machines.delete`; not found is done |
+| `exec` | one `machines.streamExec` of the argv quoted; boxd runs it as the image's user (`boxd`, uid 1000) with passwordless sudo, and the adapter's scripts `sudo -n` to root. `kill` cancels the stream: boxd ends the process group |
+| `upload` | `files.upload` |
+| `setLabels` | `machines.updateLabels({ set })`, the janitor's deadline label at extend |
+| `errorCode` | the SDK's error names (`NotFoundError`, `AuthenticationError`, `RateLimitError`, `ConflictError`, ...), then an `APIStatusError`'s gRPC code (3 invalid, 4 and 14 timeout, 8 limit, 9 refused) |
+| `check` | `"default"` or a snapshot's name, and no snapshot when the provider names a size (a restore has the snapshot's); label names of 1 to 63 of `a-z0-9._/-`, not `boxd/` |
 
-1. `machines.create` with the name `<namePrefix><the first 12 hex digits of the request id's sha256>` (with the
-   default prefix, `computerNameFor`'s name), `isolated: true` (the machine joins none of the
-   org's networks, no other machine reaches it, and it holds no in-machine credential), the run's labels with the
-   provider's own beside them (`agentrun.computer=1`, its name, the deadline, the image and the most extend may reach),
-   `config.autoSuspendTimeout: 0` and, with `vcpu`, the size. `image: "default"` is boxd's own image; any other image
-   is the name of a boxd snapshot, restored with `fromSnapshot` (its size is the snapshot's, so `check` refuses one with
-   `vcpu`). With `deleteTimer`, `deleteAfter` too. create has a client of its own, bounded by `createMs` and never sent
-   twice. The create is raced against the caller's signal, never cancelled: one that lands after create gave up is
-   deleted by its id; one whose answer never said what it made (the SDK's deadline, a lost connection) is looked for by
-   its name label until it shows or `listedMs` (60 s) passes, and deleted. After an abort or `createMs`, that cleanup
-   runs once create has answered: its delete is tried three times, and a machine it could not delete, or could not look
-   for, is told to `onCleanupFailed`. The janitor deletes such a machine by its deadline label.
-2. `machines.waitUntilReady`, then `machines.setEgressAllow(id, ["none"])` (the machine reaches nothing) and
-   `machines.setAutoHibernateTimeout(id, 0)`: boxd's idle timers watch network traffic, and a computer's programs may
-   work for a long time with none, so neither standby nor hibernation may freeze them. Then `machines.get` reads it
-   all back (below).
-3. `files.upload` puts the daemon at `/tmp/agentrun-computerd-<random>`, and the install command Daytona and E2B send
-   (`src/hosted/scripts.ts`) moves it to `/opt/agentrun/computerd`, root-owned, through `sudo -n`, and prints its sha256, which
-   must be the uploaded one's.
-4. A start command runs `computerd init --deadline <time> --user 2510:2510 --own-network --max-deadline <create's time
-   plus the cap>` as root, detached with `setsid -f`, so the exec that started it returns and init stays. Init's own
-   words go to `/run/agentrun-computerd.log`, which only root can write; a create whose daemon never answers reads it
-   back into its error.
-5. `connect()` runs `computerd stdio` as root over one `machines.streamExec`: requests go in on its stdin, replies come
-   back on its stdout. `close()` cancels the stream, which ends the bridge and nothing else, since init runs in a
-   session of its own.
-6. A desktop's X server, `Xvfb :0 -screen 0 1280x800x24 -nolisten tcp`, starts through the daemon with
-   `process.start`, as the computer's user, inside init's network namespace, and create waits until hello declares the
-   display (`src/desktop.ts`).
+`get` reads back the state (`suspended`, standby that wakes on the next call, and `migrating` run; `hibernated` and
+`stopped` are stopped), the network (`["none"]` is none, `[]` is open), the size and the snapshot, and holds boxd's own
+create options as drift: the name, `isolated`, every idle timer at 0, no delete timer before the most the computer may
+live, the snapshot it was restored from, no `agentrun.*` label create did not write (a restore merges its snapshot's
+labels), and the size when the provider names one. boxd keeps a name to one machine, so a create that loses a race for
+its name is `exists`, and the adapter's retry finds the machine by its name label.
 
 boxd's in-machine agent, which carries the SDK's exec and file calls, listens on TCP 57073. Init starts with
 `--own-network`, so the daemon and every program it starts run in a network namespace of their own, their loopback
-alone, with no vsock and no io_uring (see [Init, the socket and the bridge](#init-the-socket-and-the-bridge)):
-`vendorAgentPorts` declares 57073, and `isolation.vendor-agent` checks that a program of the computer's user reaches it
-on neither loopback.
+alone (see [Init, the socket and the bridge](#init-the-socket-and-the-bridge)): `vendorAgentPorts` declares 57073, and
+`isolation.vendor-agent` checks that a program of the computer's user reaches it on neither loopback.
 
 ### Capabilities
 
 | Capability | Declared | Why |
 | --- | --- | --- |
 | `kind` | `linux` (default) or `desktop` | `options.kind`; a desktop's X server is computerd's own |
-| `lifetime` | `janitor` | the janitor deletes a computer past its deadline label, and init ends every process at the deadline itself; with `deleteTimer`, boxd also deletes it just past the most it may live, as a backstop |
-| `network` | `none` | the egress allowlist `["none"]`, read back by `machines.get`, and the daemon's own network namespace; open and allowlists wait for a proxy out of it, as on Daytona and E2B |
+| `lifetime` | `janitor` | the janitor deletes a computer past its deadline label, and init ends every process at the deadline itself; with `deleteTimer`, boxd also deletes it just past the most it may live |
+| `network` | `none` | the egress allowlist `["none"]`, read back by `machines.get`, and the daemon's own network namespace |
 | `networkReadBack` | `true` | `machines.get` reports `egressAllow` |
 | `isolation` | `microvm` | a KVM microVM with its own kernel |
 | `daemon` | `child` | boxd's agent runs the commands; init is a detached command it starts |
@@ -2529,71 +2516,27 @@ on neither loopback.
 | `mount` | none | the run's folder on an Archil disk needs box/Dockerfile's tools in the machine; not built for boxd yet |
 | `vendorAgentPorts` | `[57073]` | boxd's in-machine agent |
 
-### What the provider does
-
-- `check(spec)` refuses in words, with no call: an image that is not `"default"` or a snapshot's name (or a snapshot,
-  when the provider names a size), a lifetime past the cap, a network that is not none, a label in the provider's
-  namespace or a name boxd does not take (1 to 63 of `a-z0-9._/-`, not `boxd/`), `cpus`, `memoryMb` or `pids` (the size is
-  the provider's), `user`, `workdir`, `mount` and any other field.
-- `create(spec, { requestId })` makes one computer per request
-  ([`spec/computer/provider.md`](../../spec/computer/provider.md#idempotent-create)), through `CreateRequests` as every
-  provider does. The request names the machine, and boxd keeps a name to one machine, so the name is what a retry
-  finds. create lists the name first: a machine that runs is returned once its labels are the spec's and its daemon
-  reads back as `attach` reads it, and one the first create is still making is read again within `createMs`; one with
-  other labels, one that sleeps or failed, and one past its deadline are refused as `exists`. A create boxd refuses
-  because the name was taken since the listing (another provider's create of the same request) answers the machine
-  that holds it, and deletes nothing. A second create of a request still in flight in the same provider shares the
-  first's answer. A request whose computer this provider released, gave up on or deleted is refused as `exists` from
-  memory (the last 4096); past the process, what boxd lists under the name is what holds.
-- `create` holds the machine `machines.get` reads back to what it asked for: every label, the name, the snapshot it was
-  restored from, no other `agentrun.*` label (a restore merges its snapshot's labels), the egress allowlist `["none"]`,
-  `isolated`, no standby, no hibernation, no auto-destroy, the delete timer (none, or with `deleteTimer` the backstop),
-  the org and the size when given, and a status that runs. Then the daemon: the installed binary's sha256, hello
-  (version, `linux`, `amd64`, kind, groups and its fence), `/proc/self/status` (uid and gid 2510, no groups,
-  `NoNewPrivs` 1, every capability set zero, seccomp on), its own network (the loopback alone), `/proc/self/cwd`
-  (`/work`) and `/proc/self/exe`; and the probe, which refuses the computer if any target answers. A failure, mismatch
-  or abort at any step deletes the machine and waits until boxd reads it gone; create never returns ok once its signal
-  has aborted.
-- `attach({ id })` or `attach({ labels })` reads the spec back from boxd and, for a running machine, the daemon, as at
-  create; one that drifts is refused and left as it is. The timers are read too: standby, hibernation or auto-destroy
-  switched on since create, or a delete timer before the most the computer may live, is drift. Only a machine with `agentrun.computer=1` whose name is the one
-  its label records, with this provider's prefix, counts.
-- `list(labels)` asks boxd for the provider's label and the labels given, in its org. `running`, `suspended` (standby,
-  which wakes on the next call) and the states on the way to running are `running`; `hibernated`, `stopped` and
-  `failed` are `stopped`, so the janitor can sweep them.
-- `extend(ref, ttlMs)` moves init's deadline with `deadline.extend`, then the deadline label the janitor reads; never
-  earlier, and never past create's time plus the cap. Two providers may extend one computer at once: the label never
-  moves back, and after writing it extend asks init again, so a deadline another extend moved later is the one the
-  label takes and the one extend answers.
-- With `org` set, every call that reads a machine by its id (`attach({ id })`, `connect`, `network`, `extend`,
-  `release`) holds the machine boxd reads back to that org, by name or id. One in another org is `not_found` and left
-  as it is, as a saved reference from before the setting changed would be.
-- `release(ref, "delete")` reads the machine back to check it is this provider's, deletes it, and waits until
-  `machines.get` answers not found and the label listing no longer shows it, twice running, within `goneMs` (120 s).
-  `release(ref, "stop")` is refused in words.
-- `testConnection()` is one listing by the provider's label, which makes nothing.
-
 ### Conformance on boxd
 
 ```sh
 AGENTRUN_COMPUTER_LIVE_BOXD=1 COMPUTER_BOXD_API_KEY=... npm run conformance -w @parcha/agentrun-computer -- --provider boxd
 AGENTRUN_COMPUTER_LIVE_BOXD=1 COMPUTER_BOXD_API_KEY=... npm run test:boxd -w @parcha/agentrun-computer
+node packages/computer/dist/conformance/sweep.js --provider boxd --before /tmp/boxd-before.json   # then --after
 ```
 
 The conformance module, `dist/conformance/boxd.js`, checks `AGENTRUN_COMPUTER_LIVE_BOXD=1` before it reads anything
 else, then reads `COMPUTER_BOXD_API_KEY` (`apiKey`, required), `COMPUTER_BOXD_ORG` (`org`), `COMPUTER_BOXD_REGION`
-(`region`), `COMPUTER_BOXD_DAEMON` (`daemonPath`), `COMPUTER_BOXD_KIND` (`kind`), `COMPUTER_BOXD_USER` (`daemonUser`)
-and `COMPUTER_BOXD_NAME_PREFIX` (`namePrefix`), never `BOXD_API_KEY`, and caps every computer of a run at 30 minutes.
-`conformanceImage()` is `COMPUTER_BOXD_IMAGE`, else `"default"`, and `createDriftedProvider()` uploads a daemon built
-with Go as `<version>-drift`. `test/boxd/conformance.boxd.test.mjs` runs the suite with `computerd-fixture` built for
-linux/amd64, and skips unless the switch and `COMPUTER_BOXD_API_KEY` are both set.
+(`region`), `COMPUTER_BOXD_DAEMON` (`daemonPath`), `COMPUTER_BOXD_KIND` (`kind`) and `COMPUTER_BOXD_USER`
+(`daemonUser`), never `BOXD_API_KEY`, and caps every computer of a run at 30 minutes. `conformanceImage()` is
+`COMPUTER_BOXD_IMAGE`, else `"default"`, and `createDriftedProvider()` uploads a daemon built with Go as
+`<version>-drift`. `createHost()` is the generic sweep's host. `test/boxd/conformance.boxd.test.mjs` runs the suite
+with `computerd-fixture` built for linux/amd64, and skips unless the switch and `COMPUTER_BOXD_API_KEY` are both set.
 
 ### Live runs
 
-On 2026-11-12, against boxd with an org key, the suite passed Core on both kinds: `kind linux` 62/62 (with
-`lifetime.extend`), `kind desktop` 68/68 (screen and input included), and the CLI's run of `--provider boxd` 63/63 (with
-`health.no-key-in-errors`). Every run left no computer behind. A run of serve with a boxd desktop took a screenshot
-and released the machine when the run ended.
+On 2026-11-12, against boxd with an org key, the provider as first written (before it moved onto the shared adapter)
+passed Core on both kinds: `kind linux` 62/62, `kind desktop` 68/68, and the CLI's run of `--provider boxd` 63/63.
+Every run left no computer behind. The adapter-based host has not run live yet.
 
 ## Conformance
 

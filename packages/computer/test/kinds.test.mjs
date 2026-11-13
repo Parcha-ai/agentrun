@@ -36,7 +36,6 @@ import { LocalBrowserProvider } from "../dist/local-chrome.js";
 import { BROWSERBASE_KEY, BROWSERBASE_URL, fakeBrowserbase, fakeKernel, KERNEL_KEY, KERNEL_URL } from "./fake-browser.mjs";
 import { create as createOrgo } from "../dist/orgo.js";
 import { fakeDocker } from "./fake-docker.mjs";
-import { fakeBoxd } from "./fake-boxd.mjs";
 import { PhoneHarnessProvider } from "../dist/phone-harness.js";
 import { fakePhoneHarness, KEY as PHONE_KEY } from "./fake-phone-harness.mjs";
 
@@ -240,6 +239,10 @@ test("a kind's images, and the configuration a setting selects: by its image; no
 
 /** The E2B SDK's Sandbox slice, never called: these build a provider only to read what it declares. */
 const E2B_SANDBOX = Object.fromEntries(["create", "connect", "getInfo", "setTimeout", "kill", "list"].map((name) => [name, () => assert.fail(`Sandbox.${name} was called`)]));
+/** boxd's SDK slice: a client whose every machines call fails the test. */
+const BOXD_SDK = class {
+	machines = { ...Object.fromEntries(["create", "get", "list", "delete", "streamExec", "waitUntilReady", "setEgressAllow", "setAutoHibernateTimeout", "updateLabels"].map((name) => [name, () => assert.fail(`machines.${name} was called`)])), files: { upload: () => assert.fail("machines.files.upload was called") } };
+};
 /** ssh2's Client slice for Agent37, never constructed here; and a fresh key, never used. */
 const AGENT37_SSH2 = {
 	Client: class {
@@ -275,7 +278,7 @@ const BUILT = {
 		},
 	],
 	// Each configuration built by its own create() options, as serve builds the one a setting's image selects.
-	boxd: PROVIDERS.find((one) => one.id === "boxd").capabilities.map(({ options }) => () => new BoxdProvider({ ...options, apiKey: "fake-test-key", Boxd: fakeBoxd().Boxd })),
+	boxd: PROVIDERS.find((one) => one.id === "boxd").capabilities.map(({ options }) => () => new BoxdProvider({ ...options, apiKey: "fake-test-key", Boxd: BOXD_SDK })),
 	orgo: PROVIDERS.find((one) => one.id === "orgo").capabilities.map(({ options }) => () => createOrgo({ ...options, apiKey: "fake-test-key", workspaceId: "ws-test", fetch: async () => new Response(null, { status: 500 }) })),
 };
 
