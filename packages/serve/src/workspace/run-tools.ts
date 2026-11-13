@@ -79,7 +79,7 @@ function mountedIn(computer: RunComputer | undefined): { readonly computer: Atta
 
 /** The kind's ports, as the computer's groups offer them, the kinds whose tools the run gets (a desktop's with a screen
  *  and input, a phone's with a screen and touch; a browser's none), and the kind's tools its groups do not offer: a
- *  phone's tree without apps.ui_tree, its keys without input.keys (an iPhone's today). */
+ *  phone's tree without the ui group, its keys without input.keys (an iPhone's today). */
 function portsOf(computer: RunComputer | undefined): { readonly ports: Pick<Hands, "screen" | "input" | "phone">; readonly kinds: readonly CapabilityKind[]; readonly without: readonly string[] } {
   if (computer?.kind === "desktop") {
     const { client } = computer.computer;
@@ -91,7 +91,7 @@ function portsOf(computer: RunComputer | undefined): { readonly ports: Pick<Hand
   if (computer?.kind === "phone") {
     const { groups } = computer.hello;
     if (!groups.includes("screen") || !groups.includes("input.touch")) return { ports: {}, kinds: [], without: [] };
-    const tree = groups.includes("apps.ui_tree");
+    const tree = groups.includes("ui");
     const keys = groups.includes("input.keys");
     return { ports: { phone: phoneOf(computer.computer.client, { tree, keys }) }, kinds: ["phone"], without: [...(tree ? [] : ["phone_tree"]), ...(keys ? [] : ["phone_key"])] };
   }

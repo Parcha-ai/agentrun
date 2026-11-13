@@ -52,8 +52,8 @@ test("SETTING_KINDS is the agreed table: machine kinds, required and optional gr
 	assert.deepEqual(SETTING_KINDS, {
 		none: { machineKinds: [], required: [], optional: [] },
 		sandbox: { machineKinds: ["linux"], required: ["exec", "files", "processes"], optional: [] },
-		desktop: { machineKinds: ["desktop"], required: ["screen", "input.pointer", "input.keys"], optional: ["exec", "files", "processes", "apps", "stream"] },
-		phone: { machineKinds: ["android", "ios"], required: ["screen", "input.touch", "apps"], optional: ["input.keys", "apps.install", "apps.ui_tree", "stream"] },
+		desktop: { machineKinds: ["desktop"], required: ["screen", "input.pointer", "input.keys"], optional: ["exec", "files", "processes", "apps", "ui", "stream"] },
+		phone: { machineKinds: ["android", "ios"], required: ["screen", "input.touch", "apps"], optional: ["input.keys", "apps.install", "ui", "stream"] },
 		browser: { machineKinds: ["browser"], required: ["cdp"], optional: ["stream", "downloads"] },
 	});
 	for (const kind of SETTINGS) {
