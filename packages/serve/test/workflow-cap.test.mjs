@@ -295,8 +295,8 @@ test("a capped workflow's polled call held at its cap past its poll window is se
       },
       input: { schemaId: "In" },
       output: { schemaId: "Search", path: "found" },
-      // A poll window of 2 s, which the hold below outlasts.
-      root: { node: "chain", steps: [{ node: "call", label: "search", via: "tool", tool: "web_search", args: { query: "{question}", n: 2 }, out: "Search", as: "found", deadline_s: 2, poll: { until: { predicate: "field_type", path: "query", type: "string" }, interval_s: 1, deadline_s: 2 } }] },
+      // A poll window of 8 s, which the hold below outlasts (wide enough that a loaded box's own delays are not the window).
+      root: { node: "chain", steps: [{ node: "call", label: "search", via: "tool", tool: "web_search", args: { query: "{question}", n: 2 }, out: "Search", as: "found", deadline_s: 8, poll: { until: { predicate: "field_type", path: "query", type: "string" }, interval_s: 1, deadline_s: 8 } }] },
     };
     const id = `polled-${letGoFirst}`;
     const made = await api("POST", "/agents", flowAgent(id, flow, { tools: ["web_search"], tool_settings: { web_search: { provider: "parallel" } } }));
@@ -305,8 +305,8 @@ test("a capped workflow's polled call held at its cap past its poll window is se
     await follow(api, runId, SETTLED, { deadlineMs: 60_000 });
     assert.equal((await view(api, runId)).pending?.node, "search");
     if (letGoFirst) await releasedOnStore(store, runId);
-    // Held 3 s, past the 2 s window.
-    await new Promise((resolve) => setTimeout(resolve, 3_000));
+    // Held 10 s, past the 8 s window.
+    await new Promise((resolve) => setTimeout(resolve, 10_000));
     assert.equal((await api("PATCH", `/runs/${runId}`, { max_cost_usd: 1 })).status, 200);
     await follow(api, runId, ENDED, { deadlineMs: 60_000 });
     const run = await view(api, runId);
