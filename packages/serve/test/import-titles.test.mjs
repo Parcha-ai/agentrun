@@ -36,11 +36,11 @@ function claude(home, project, n, opening) {
 const meta = (content) => ({ type: "user", isMeta: true, message: { role: "user", content } });
 
 /** Each imported run's title (its serve.json's), by its session's id, for the sessions `write` puts in a home's
- *  billing-api folder, imported with `extra` options. */
-async function titles(t, write, extra = {}) {
+ *  `folder` (billing-api unless given), imported with `extra` options. */
+async function titles(t, write, extra = {}, folder = "billing-api") {
   const root = await scratch(t);
   const home = join(root, "home");
-  const project = join(home, "code", "billing-api");
+  const project = join(home, "code", folder);
   mkdirSync(project, { recursive: true });
   write(home, project);
   const data = join(root, "agents");
@@ -89,6 +89,13 @@ test("a session with no words of the person's is titled by where it ran, on ever
     { all: true },
   );
   assert.deepEqual(got, { [sessionId(9)]: "Session in billing-api", [sessionId(10)]: "Session in billing-api", [sessionId(11)]: "Session in billing-api" });
+});
+
+test("a session titled by where it ran never names a folder a key touches: a key across the folder and its parent leaves no piece in the title", async (t) => {
+  // The key holds a "/", so the project's path ends in its second half: the folder alone is no key the cut can match.
+  const key = "CANARY7f3e9d2c/b0a6e5d4c3b2";
+  const got = await titles(t, (home, project) => claude(home, project, 16, [command("resume"), stdout("")]), { all: true, env: { ...ENV, OPENAI_API_KEY: key } }, `deploy-${key}`);
+  assert.deepEqual(got, { [sessionId(16)]: "claude-code session" });
 });
 
 test("personsWords keeps the person's words around a command and drops only the CLI's elements", () => {

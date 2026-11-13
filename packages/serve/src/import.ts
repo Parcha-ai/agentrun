@@ -856,10 +856,17 @@ async function revisionFor(
 }
 
 /** An imported run's title, whole: the source's own (Claude Code's), else the person's first words, else where the
- *  session ran ("Session in billing-api"), never a CLI's command markup. */
-function runTitleOf(session: Pick<Session, "sourceTitle" | "titleText" | "cwd" | "source">): string {
-  const folder = session.cwd ? basename(session.cwd) : "";
-  return session.sourceTitle ?? session.titleText ?? (folder ? `Session in ${folder}` : `${session.source} session`);
+ *  session ran ("Session in billing-api"), never a CLI's command markup. A folder a key touches (as `keptName` judges it,
+ *  a key across the folder and its parent among them) is not named at all: the cut of the title matches only a whole key,
+ *  so the piece of one the folder holds would be left in it. */
+function runTitleOf(session: Pick<Session, "sourceTitle" | "titleText" | "cwd" | "source">, cut: Cut): string {
+  const generic = `${session.source} session`;
+  if (session.sourceTitle !== undefined) return session.sourceTitle;
+  if (session.titleText !== undefined) return session.titleText;
+  const parts = session.cwd ? session.cwd.split("/") : [];
+  const last = parts.findLastIndex((segment) => segment !== "");
+  if (last < 0) return generic;
+  return touchedSegments(session.cwd, cut).includes(last) ? generic : `Session in ${parts[last]}`;
 }
 
 /** The secrets this server made and keeps, by value: its API token and its sign-in sessions' secret (still files beside the
@@ -980,7 +987,7 @@ export async function runImport(store: ImportStore, plan: Plan, options: ImportO
       const answer = session.turns.findLast((t) => t.role === "assistant" && t.text)?.text;
       // Cut, then put on one line and clipped: a key the clip cut short, or a passphrase whose spaces were changed, would
       // match no cut.
-      const title = clip(text(runTitleOf(session)).replace(/\s+/g, " ").trim(), 120);
+      const title = clip(text(runTitleOf(session, text)).replace(/\s+/g, " ").trim(), 120);
       await store.importRun({
         id: randomUUID(),
         agentId: project.agentId,
