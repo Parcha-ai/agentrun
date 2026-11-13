@@ -29,11 +29,16 @@ export function bindingOf(triggers: readonly { readonly source: unknown; readonl
     // A github trigger with no accept takes every event the App sends, from any repository.
     if (!rules.length) open = true;
     for (const rule of rules) {
-      const named = isObject(rule) && Array.isArray(rule.where)
-        ? rule.where.flatMap((c) => (isObject(c) && c.pointer === FULL_NAME && Array.isArray(c.in) ? c.in.filter((v): v is string => typeof v === "string" && REPO_NAME.test(v)) : []))
-        : [];
-      if (!named.length) open = true;
-      for (const repo of named) if (!repos.some((r) => r.toLowerCase() === repo.toLowerCase())) repos.push(repo);
+      // A rule's conditions all hold: each `in` list on the repository narrows the rule, so they are intersected; rules
+      // are alternatives, so what they name is joined.
+      let named: string[] | undefined;
+      for (const c of isObject(rule) && Array.isArray(rule.where) ? rule.where : []) {
+        if (!isObject(c) || c.pointer !== FULL_NAME || !Array.isArray(c.in)) continue;
+        const list = c.in.filter((v): v is string => typeof v === "string" && REPO_NAME.test(v));
+        named = named === undefined ? list : named.filter((r) => list.some((l) => l.toLowerCase() === r.toLowerCase()));
+      }
+      if (named === undefined) open = true;
+      for (const repo of named ?? []) if (!repos.some((r) => r.toLowerCase() === repo.toLowerCase())) repos.push(repo);
     }
   }
   return { repos, open };

@@ -22,7 +22,9 @@ export function startBody(kind: "agentic" | "workflow", f: StartForm): { ok: tru
     body.max_cost_usd = cap;
   }
   if (f.fileIds?.length) body.file_ids = [...f.fileIds];
-  const repo = f.repo?.trim();
+  // The repository field is the agent form's alone; a workflow start never reads it (a value kept from the agent
+  // the person switched from is not sent, nor checked).
+  const repo = kind === "agentic" ? f.repo?.trim() : undefined;
   if (repo) {
     if (!/^[^/\s]+\/[^/\s]+$/.test(repo)) return { ok: false, field: "repo", message: "A repository is owner/name, like Parcha-ai/agentrun." };
     body.repo = repo;

@@ -1185,7 +1185,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const modelOf = (_entry: AgentEntry, revision: Revision) => runModelRef(env, revision);
   const startDeps: StartDeps = {
     runBodyIssues,
-    boundRepos: async (agentId) => bindingOf((await triggers.list()).triggers, agentId),
+    boundRepos: async (agentId) => bindingOf(await store.triggers.list(agentId), agentId),
     pinnedOf,
     inputIssuesOf,
     explainRun,

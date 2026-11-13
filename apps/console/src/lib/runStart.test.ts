@@ -23,6 +23,8 @@ describe("startBody", () => {
   });
 
   it("names the repository when given as owner/name, and refuses anything else", () => {
+    expect(startBody("workflow", { text: '{"a":1}', repo: "not a repo" })).toEqual({ ok: true, body: { input: { a: 1 } } });
+    expect(startBody("workflow", { text: '{"a":1}', repo: "a/b" })).toEqual({ ok: true, body: { input: { a: 1 } } });
     expect(startBody("agentic", { text: "Go.", repo: " Parcha-ai/agentrun " })).toEqual({ ok: true, body: { input: { content: "Go." }, repo: "Parcha-ai/agentrun" } });
     expect(startBody("agentic", { text: "Go.", repo: "" })).toEqual({ ok: true, body: { input: { content: "Go." } } });
     expect(startBody("agentic", { text: "Go.", repo: "agentrun" })).toMatchObject({ ok: false, field: "repo" });

@@ -56,6 +56,15 @@ test("an agent whose trigger takes every repository, or two, is bound to no defa
   assert.equal(repoOf(bindingOf([], "a"), "a/b", false).refused?.includes("bound to no GitHub repository"), true);
 });
 
+test("conditions of one rule all hold: the repositories they name are intersected, rules are unioned", () => {
+  const rule = (...lists) => ({ event: "release", where: lists.map((l) => ({ pointer: "/repository/full_name", in: l })) });
+  const bound = (...rules) => bindingOf([{ source: { kind: "github", accept: rules }, target: { kind: "start_run", agent_id: "a" } }], "a");
+  assert.deepEqual(bound(rule(["a/a", "a/b"], ["a/a"])), { repos: ["a/a"], open: false }, "a/b is excluded by the second condition");
+  assert.equal(repoOf(bound(rule(["a/a", "a/b"], ["a/a"])), "a/b", false).refused?.includes("bound to a/a"), true);
+  assert.deepEqual(bound(rule(["a/a"], ["a/b"])), { repos: [], open: false }, "no repository satisfies both: the rule takes none");
+  assert.deepEqual(bound(rule(["a/a"]), rule(["a/b"])), { repos: ["a/a", "a/b"], open: false }, "two rules: either");
+});
+
 test("the runner's access takes the launch's repository, and a run with none says what to do, never to reconnect", async (t) => {
   const { store } = await storeOn(t);
   const key = randomBytes(32);
