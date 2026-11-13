@@ -18,6 +18,10 @@ describe("parseCsv", () => {
     expect(parseCsv("a,a\n1,2")).toEqual({ error: "The column a is named twice in the header line." });
     expect(parseCsv("a,b\n1,2\n3")).toEqual({ error: "Row 2 has 1 cells, and the header line has 2." });
   });
+  it("refuses a file that ends inside a quoted cell: the rows after it never become one answer", () => {
+    expect(parseCsv('q,a\none,"A\ntwo,B')).toEqual({ error: "The file ends inside a quoted cell: a quote is not closed." });
+    expect(parseCsv('q,a\none,"A"\n')).toEqual({ columns: ["q", "a"], rows: [{ q: "one", a: "A" }] });
+  });
 });
 
 describe("stopWords", () => {

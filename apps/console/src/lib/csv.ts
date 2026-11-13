@@ -3,8 +3,9 @@
 
 export type Csv = { columns: string[]; rows: Record<string, string>[] } | { error: string };
 
-/** The cells of `text`, line by line. */
-function cells(text: string): string[][] {
+/** The cells of `text`, line by line; null when the file ends inside a quoted cell (a quote never closed would make every
+ *  row after it one cell). */
+function cells(text: string): string[][] | null {
   const lines: string[][] = [];
   let row: string[] = [], cell = "", quoted = false;
   const src = text.replace(/^﻿/, "");
@@ -21,15 +22,17 @@ function cells(text: string): string[][] {
       row = [];
     } else cell += c;
   }
+  if (quoted) return null;
   row.push(cell);
   if (row.some((x) => x.trim() !== "")) lines.push(row);
   return lines;
 }
 
-/** `text` as a header and its rows, or why it is not one: no rows, a header with an empty or repeated name, a row with a
+/** `text` as a header and its rows, or why it is not one: a quote not closed, no rows, a header with an empty or repeated name, a row with a
  *  different count of cells than the header. */
 export function parseCsv(text: string): Csv {
   const lines = cells(text);
+  if (!lines) return { error: "The file ends inside a quoted cell: a quote is not closed." };
   const header = lines.shift()?.map((x) => x.trim());
   if (!header || !lines.length) return { error: "The file needs a header line and at least one row." };
   if (header.some((h) => h === "")) return { error: "A column in the header line has no name." };

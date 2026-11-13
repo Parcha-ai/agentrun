@@ -38,6 +38,27 @@ async function show(v2: ReturnType<typeof fake>, onFinished = () => {}) {
 const wait = (ms: number) => act(async () => { await new Promise((r) => setTimeout(r, ms)); });
 
 describe("LearnFromCsv", () => {
+  it("a first read that fails is read again, and a person can try again at once: the feature is never hidden for the visit", async () => {
+    const v2 = fake([]);
+    let fails = 1;
+    v2.learningBatches.mockImplementation(async () => { if (fails-- > 0) throw new Error("network down"); return { batches: [] }; });
+    const host = await show(v2);
+    expect(host.textContent).toMatch(/not available right now: network down/);
+    await wait(150);
+    expect(host.textContent).toContain("Learn from a CSV");
+    expect([...host.querySelectorAll("button")].some((b) => b.textContent === "Learn from a CSV")).toBe(true);
+  });
+  it("the unavailable view has Try again", async () => {
+    const v2 = fake([]);
+    v2.learningBatches.mockImplementation(async () => { throw new Error("down"); });
+    const host = await show(v2);
+    const again = [...host.querySelectorAll("button")].find((b) => b.textContent === "Try again");
+    expect(again).toBeTruthy();
+    v2.learningBatches.mockImplementation(async () => ({ batches: [] }));
+    await act(async () => { again!.click(); });
+    await wait(10);
+    expect([...host.querySelectorAll("button")].some((b) => b.textContent === "Learn from a CSV")).toBe(true);
+  });
   it("shows a running batch: rows done, right and wrong, cost, lessons and each row", async () => {
     const host = await show(fake([batch()]));
     const t = host.textContent ?? "";

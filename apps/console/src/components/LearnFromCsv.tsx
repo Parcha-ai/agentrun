@@ -43,7 +43,8 @@ export function LearnFromCsv({ v2, agentId, onFinished, pollMs = POLL_MS }: { v2
       } catch (e) {
         if (!live) return;
         setError(e ?? new Error("unknown"));
-        if (seenRunning.current) timer = setTimeout(() => void read(id), pollMs * 2);
+        // Every failed read is read again (a first one too: the feature is never hidden for the visit by one bad read).
+        timer = setTimeout(() => void read(id), pollMs * 2);
       }
     };
     void read();
@@ -51,7 +52,13 @@ export function LearnFromCsv({ v2, agentId, onFinished, pollMs = POLL_MS }: { v2
   }, [v2, agentId, pollMs, again]);
 
   if (batch === undefined && !error) return <Bone className="h-24 w-full" />;
-  if (batch === undefined) return <p className="font-mono text-small text-muted-foreground" role="status">Learn from a CSV is not available right now: {error instanceof Error ? error.message : String(error)}.</p>;
+  if (batch === undefined)
+    return (
+      <div className="flex flex-wrap items-center gap-3">
+        <p className="font-mono text-small text-muted-foreground" role="status">Learn from a CSV is not available right now: {error instanceof Error ? error.message : String(error)}.</p>
+        <Button size="sm" variant="outline" onClick={() => { setError(null); setAgain((n) => n + 1); }}>Try again</Button>
+      </div>
+    );
   const now = batch && running(batch);
   return (
     <section className="space-y-4" aria-label="Learn from a CSV">
