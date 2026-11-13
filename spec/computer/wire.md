@@ -108,7 +108,8 @@ An error reply is JSON-RPC's, with the protocol's kind in `data`:
   kind, never on the message. `stale` is the `ui` group's: a ref whose element is gone, or a point whose window
   changed under it. `invalid` is a request malformed whatever the computer; `unsupported` a method or feature this
   computer does not have; `refused` a call it has, on a value or state it does not serve (a step on a disabled
-  control).
+  control). A provider's results use the same kinds the same way, with `vendor` as the only open one
+  ([`provider.md`](provider.md#every-call-answers-a-result)).
 - `code` follows from the kind:
 
   | Kind | Code |

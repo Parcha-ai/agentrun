@@ -380,6 +380,8 @@ export class AttachHub {
 	}
 }
 
+const ATTACHED_NOTE = "an attached computer is a person's own machine: release ends the run's hold on it, and deletes nothing";
+
 /**
  * One paired computer as a provider, id "attached": its capabilities are what it paired as. create claims it for a
  * run (refused while it is offline or another run holds it) and release ends the claim; a person's machine is never
@@ -415,6 +417,8 @@ export function attachedProvider(paired: PairedComputer, hub: AttachHub): Comput
 		return { hold, current: hub.hold(paired.id) === hold };
 	};
 	const mine = (asked: { id: string }) => named(asked) !== undefined;
+	/** The hold each create request made: a request id makes one hold, ever. */
+	const holdsBy = new Map<string, string>();
 	const ended = () => fail("gone", `this run's hold on ${paired.name} has ended (released, or at its deadline): another run may hold it now`);
 	const unknown = (id: string) => fail("not_found", `no attached computer ${id}: this provider is ${paired.name}'s (${paired.id})`);
 	const offline = () => fail("gone", `${paired.name} is not attached now: open its driver, which dials this server`);
@@ -435,15 +439,24 @@ export function attachedProvider(paired: PairedComputer, hub: AttachHub): Comput
 			...(spec.owner === undefined ? checkLifetime(spec.lifetimeMs, capabilities()) : []),
 			...(spec.network === "open" ? [] : [{ field: "network", message: networkRefusal(spec.network) }]),
 		],
-		async create(spec) {
+		async create(spec, context) {
 			const refusals = this.check(spec);
 			if (refusals.length > 0) return fail("refused", refusals.map((refusal) => refusal.message).join("; "));
+			if (typeof context?.requestId !== "string" || context.requestId === "") return fail("invalid", "create needs a request id (CreateContext.requestId): pass the same one to retry the same request");
+			// One hold per request id (provider.md, Idempotent create): a retry while it holds answers it, and after it ended
+			// is refused, so a retry never takes the machine from the run that holds it next.
+			const before = holdsBy.get(context.requestId);
+			if (before !== undefined) {
+				if (hub.hold(paired.id) !== before) return fail("exists", `${paired.name}'s hold ${before} was made for this request and has ended: create with a new request id`);
+				return ok({ ...holdRef(before), notes: [ATTACHED_NOTE] });
+			}
 			if (!hub.online(paired.id)) return offline();
 			// A run's hold ends at its lifetime, released or not: a run that never releases cannot keep the machine from the next.
 			const deadline = spec.owner === undefined ? new Date(Date.now() + runLifetimeMs(spec)) : undefined;
 			const hold = hub.claim(paired.id, spec.labels ?? {}, deadline);
 			if (hold === undefined) return fail("refused", `${paired.name} is held by another run: one run at a time`);
-			return ok({ ...holdRef(hold), notes: ["an attached computer is a person's own machine: release ends the run's hold on it, and deletes nothing"] });
+			holdsBy.set(context.requestId, hold);
+			return ok({ ...holdRef(hold), notes: [ATTACHED_NOTE] });
 		},
 		async attach(asked) {
 			if ("id" in asked) {

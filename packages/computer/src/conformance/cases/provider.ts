@@ -2,10 +2,11 @@
 // what they say, the network reads back as asked, a change to a network the provider does not declare is refused
 // (Core) and one it does declare is refused or applied truthfully (Full), a computer does not run past its deadline,
 // the janitor ends only the expired, stopped or running, and a takeover releases the run's lower epochs by label (Full).
+// A create retried with its request id answers the computer the first made, and after release is refused (Full).
 import { randomBytes } from "node:crypto";
 import { releaseOlder, sweep } from "../../janitor.js";
 import { EPOCH_LABEL, OWNER_LABEL, RUN_LABEL, runLabels } from "../../labels.js";
-import { type ComputerRef, type ComputerSpec, type NetworkSpec, runLifetimeMs } from "../../provider.js";
+import { type ComputerRef, type ComputerSpec, computerNameFor, type NetworkSpec, runLifetimeMs } from "../../provider.js";
 import type { Case, CaseContext } from "../types.js";
 import { b64, CASE_LABEL, decode } from "./util.js";
 
@@ -171,6 +172,39 @@ export const providerCases: Case[] = [
 		t.deepEqual(await names(t, labels), [], "listed after delete");
 		t.refused(await t.provider.connect(ref), "connect to a deleted computer", ["gone", "not_found"]);
 	}),
+	provider(
+		"create-retried",
+		async (t) => {
+			// A retry of one request, at once and after it is up, answers the computer the first made: never a second.
+			const labels = own(t, "retried");
+			const spec = t.spec({ labels });
+			const requestId = `conformance-retried-${randomBytes(6).toString("hex")}`;
+			const [first, early] = await Promise.all([t.attempt(spec, t.provider, requestId), t.attempt(spec, t.provider, requestId)]);
+			const made = t.ok(first, "create");
+			t.deepEqual(refOf(t.ok(early, "the same create again while the first starts")), refOf(made), "the computer a create retried while it starts answers");
+			t.deepEqual(refOf(t.ok(await t.attempt(spec, t.provider, requestId), "the same create again once it is up")), refOf(made), "the computer a create retried once it is up answers");
+			t.equal(made.name, computerNameFor(requestId), "the computer's name, computer-<12 hex of sha256(request id)>");
+			t.deepEqual(await names(t, labels), [made.name], "the computers three creates of one request made");
+			const other = t.refused(await t.attempt(t.spec({ labels: { ...labels, role: "other" } }), t.provider, requestId), "the same request id with other labels", ["exists"]);
+			t.assert(other.message.includes(made.name), `the refusal names the request's computer ${made.name}: ${other.message}`);
+		},
+		{ level: "full" },
+	),
+	provider(
+		"create-after-release",
+		async (t) => {
+			// A request whose computer has ended is spent: the same id again is refused exists, in words, and makes nothing.
+			const labels = own(t, "after-release");
+			const spec = t.spec({ labels });
+			const requestId = `conformance-after-release-${randomBytes(6).toString("hex")}`;
+			const made = t.ok(await t.attempt(spec, t.provider, requestId), "create");
+			t.ok(await t.provider.release(made, "delete"), "release delete");
+			const again = t.refused(await t.attempt(spec, t.provider, requestId), "the same request id after its computer was released", ["exists"]);
+			t.match(again.message, /was made for this request and has ended: create with a new request id/, "the refusal says what to do");
+			t.deepEqual(await names(t, labels), [], "the computers the refused create made");
+		},
+		{ level: "full" },
+	),
 	provider("attach", async (t) => {
 		const labels = own(t, "attach");
 		const spec = t.spec({ labels: { ...labels, role: "a" } });

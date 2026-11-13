@@ -14,8 +14,9 @@
 // A persistent setting (the agent's own computer, agent-computer.ts) is made once under the agent's owner (this server's
 // id and the agent's), found again by its owner at each later claim and attached under the new claim, and detached, not
 // deleted, at the run's end. A run that finds it held by another run still going is refused, naming that run.
+import { randomUUID } from "node:crypto";
 import type { BrowserSpec, ComputerConnection, ComputerOwner, ComputerProvider, ComputerSpec, HelloResult, MountReadBack, Result } from "@parcha/agentrun-computer";
-import { isBrowserProvider, ownerFilter, releaseOlder, RUN_LABEL, runLabels } from "@parcha/agentrun-computer";
+import { EPOCH_LABEL, isBrowserProvider, ownerFilter, releaseOlder, RUN_LABEL, runLabels } from "@parcha/agentrun-computer";
 import { computerOfPlace, type ComputerSetting as RevisionComputer, type PlaceView } from "../computer-setting.js";
 import { KEY_TABLE, type KeyTable, type ProviderSettings, providerOptions } from "../computer-keys.js";
 import { getSealedKey } from "../server-keys.js";
@@ -227,6 +228,12 @@ export function claimBrowser(provider: ComputerProvider, spec: ComputerSpec): { 
   const features = provider.capabilities().browser ?? { timeout: "wall-clock" as const };
   const kept = isBrowserProvider(provider) ? provider.downloads : undefined;
   const open = new Set<string>();
+  // Each open is its own create request: the run's claim (its run and epoch labels) with the tag and a count, or, for
+  // a browser of no run, this browser's own id.
+  const run = spec.labels?.[RUN_LABEL];
+  const epoch = spec.labels?.[EPOCH_LABEL];
+  const requestOf = run !== undefined && epoch !== undefined ? `${run}.${epoch}` : `browser.${randomUUID()}`;
+  let opens = 0;
   const release = async (id: string) => {
     const released = await provider.release({ id, name: id }, "delete");
     if (!released.ok) throw failed(released.error);
@@ -244,7 +251,8 @@ export function claimBrowser(provider: ComputerProvider, spec: ComputerSpec): { 
       features: structuredClone(features),
       async open(tag, lifetimeS, browser?: BrowserSpec, signal?: AbortSignal) {
         const lifetimeMs = Math.min(lifetime, Math.max(1, Math.round(lifetimeS)) * 1000);
-        const created = await provider.create({ ...spec, lifetimeMs, labels: { ...spec.labels, [SESSION_TAG]: labelValue(tag) }, ...(browser ? { browser } : {}) }, signal ? { signal } : {});
+        const requestId = `${requestOf}.${labelValue(tag)}.${++opens}`;
+        const created = await provider.create({ ...spec, lifetimeMs, labels: { ...spec.labels, [SESSION_TAG]: labelValue(tag) }, ...(browser ? { browser } : {}) }, { requestId, ...(signal ? { signal } : {}) });
         if (!created.ok) throw failed(created.error);
         open.add(created.value.id);
         return created.value.id;
@@ -288,7 +296,8 @@ async function providerLaunch(
 ): Promise<LaunchedComputer & { machine: string; hello: HelloResult; watch?: (signal: AbortSignal) => unknown }> {
   const older = await releaseOlder(provider, claim.runId, claim.epoch, signal ? { signal } : {});
   if (!older.ok) throw new Error(older.error.message);
-  const created = await provider.create(spec, signal ? { signal } : {});
+  // The claim is the request: a retry of this launch under the same epoch gets the computer it made, never a second.
+  const created = await provider.create(spec, { requestId: `${claim.runId}.${claim.epoch}`, ...(signal ? { signal } : {}) });
   if (!created.ok) throw new Error(created.error.message);
   const ref = { id: created.value.id, name: created.value.name };
   const release = async () => {
@@ -410,7 +419,7 @@ async function ownedStart(
     made = false;
     note(`Attached this agent's computer ${ref.name}, kept from its last run.`);
   } else {
-    const created = await provider.create(spec, call);
+    const created = await provider.create(spec, { ...call, requestId: `${claim.runId}.${claim.epoch}` });
     if (!created.ok) throw new Error(created.error.message);
     ref = { id: created.value.id, name: created.value.name };
     made = true;

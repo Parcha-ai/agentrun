@@ -111,6 +111,9 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 	const clock: Clock = options.clock ?? { now: () => Date.now(), sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)) };
 	const run = randomBytes(6).toString("hex");
 	const runLabels = { [RUN_LABEL]: run };
+	/** One create request of this run: its own id, so each makes its own computer. */
+	let requests = 0;
+	const newRequestId = () => `conformance-${run}-${++requests}`;
 	const capabilities = provider.capabilities();
 	// A provider of the shape before groups declares none, so its kind-consistent case fails in words, not the run.
 	const groups: Group[] = Array.isArray(capabilities.groups) ? capabilities.groups : [];
@@ -206,7 +209,7 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 			// The run's signal ends the wait at once (Ctrl-C during setup) and reaches the create; a computer that arrives
 			// after it is deleted as it lands (lateCreate).
 			const stop = new AbortController();
-			const creating = provider.create(spec(), { signal: signal ? AbortSignal.any([signal, stop.signal]) : stop.signal });
+			const creating = provider.create(spec(), { signal: signal ? AbortSignal.any([signal, stop.signal]) : stop.signal, requestId: newRequestId() });
 			let created: Result<CreatedComputer>;
 			try {
 				created = await within(creating, caseTimeoutMs, "create", signal);
@@ -339,10 +342,11 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 			return once;
 		};
 		/** create through by, kept: what it gives is deleted when the case ends, or as it comes after that. */
-		const attempt = (whole: ComputerSpec, by: ComputerProvider = provider) => {
-			const creating = by.create(whole, { signal: caseSignal }).then((created) => {
+		const attempt = (whole: ComputerSpec, by: ComputerProvider = provider, requestId: string = newRequestId()) => {
+			const creating = by.create(whole, { signal: caseSignal, requestId }).then((created) => {
 				noteCreated(created, c.id);
-				if (created.ok) track(created.value, by);
+				// A retry of one request answers the computer the first attempt made: it is tracked once.
+				if (created.ok && !refs.some((one) => one.ref.id === created.value.id)) track(created.value, by);
 				return created;
 			});
 			keep(creating, `create (${c.id})`);

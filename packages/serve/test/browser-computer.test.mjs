@@ -78,7 +78,8 @@ test("a session is a computer labelled with the run's labels and custody's tag, 
   assert.equal(made.spec.lifetimeMs, 1_800_000, "a wall-clock vendor gets the session timeout");
   assert.deepEqual(made.spec.labels, { "agentrun.run": "run-1", "agentrun.epoch": "3", [TAG_LABEL]: SPEC.tag }, "the run's labels, so a sweep finds what a run left, and the tag");
   assert.deepEqual(made.spec.browser, { viewport: SPEC.viewport, stealth: true, headless: true, profile: { pointer: "ctx-7", save: true } }, "no extension: the driver is raw CDP");
-  assert.deepEqual(Object.keys(made.context), ["signal"], "create's second argument is its signal alone: the options ride the spec");
+  assert.deepEqual(Object.keys(made.context).sort(), ["requestId", "signal"], "create's second argument is its request id and signal alone: the options ride the spec");
+  assert.equal(made.context.requestId, `run-1.3.${SPEC.tag}.1`, "the session's request: the run's claim, its tag and its count");
   assert.deepEqual(ref, { id: "b1", tag: SPEC.tag });
   assert.deepEqual(await provider.findByTag(SPEC.tag), [ref], "found again by its tag");
   assert.equal(await provider.status(ref), "running");

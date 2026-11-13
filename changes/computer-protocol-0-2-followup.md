@@ -1,8 +1,10 @@
 ---
-packages: @parcha/agentrun-computer
+packages: @parcha/agentrun-computer, @parcha/agentrun-serve
 kind: breaking
 ---
-The computer protocol 0.2's follow-up: a driver whose hello lacks a group its kind needs is refused, `apps.launch` answers once the app has a window, and `ui.act` waits for windows, follows them when one closes, and answers a `set` verified only when its value holds. Breaking: `UiActResult.state` is optional; an act whose app has no window left answers `window: "closed"` with no state.
+The computer protocol 0.2's follow-up: create is idempotent by a required request id, a driver whose hello lacks a group its kind needs is refused, `apps.launch` answers once the app has a window, and `ui.act` waits for windows, follows them when one closes, and answers a `set` verified only when its value holds. Breaking: `ComputerProvider.create` takes a required context, `{ requestId }`; `UiActResult.state` is optional, and an act whose app has no window left answers `window: "closed"` with no state.
+- Idempotent create (`CreateContext`, `computerNameFor`): one computer per request id, named `computer-<12 hex of sha256(request id)>`; the same id while it starts or runs answers it, and after it ended is refused `exists`. Serve passes the run's claim (`<run>.<epoch>`). The Full cases `provider.create-retried` and `provider.create-after-release` check it; the fake ui provider and the attached provider keep it, and a fake ui computer's network is fixed at create (a change is `refused`).
+- The refusal kinds are `ComputerErrorCode`, with `vendor` the only open one: `invalid` is a malformed request, `unsupported` a call or feature the provider lacks, `refused` a value or state it does not serve, such as a network change after create on a remote computer.
 - `kindServed(hello)` answers the groups a hello lacks for its kind (a desktop needs `screen`, `input.pointer` and `input.keys`; a phone `screen`, `input.touch` and `apps`). The attach binding closes such a driver `4426` naming them, and the Core case `health.kind-served` fails it.
 - `DAEMON_METHODS` lists every method the daemon answers.
 - `apps.launch` answers once the app shows a window, or fails `timeout` naming the app after `LAUNCH_WINDOW_MS` (10 s); the Core case `apps.launch-window` observes right after the launch. The fake ui driver takes `windowAfterMs`.

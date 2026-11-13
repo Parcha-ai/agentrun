@@ -1,4 +1,5 @@
 // The provisioner: one per vendor. It makes, finds and ends computers; the daemon inside does the work.
+import { createHash } from "node:crypto";
 import type { MountKind, MountReadBack, MountSpec } from "./mount.js";
 import type { ComputerClient, ComputerKind, ComputerOs, Group, HelloResult, NetworkFence } from "./protocol.js";
 import type { Result } from "./result.js";
@@ -404,6 +405,20 @@ export interface CallContext {
 	signal?: AbortSignal;
 }
 
+/**
+ * create's context. requestId names the request, not the computer: a retry of the same request (a timeout, a crash
+ * between the vendor's answer and ours) passes the same id and gets the same computer, never a second one. Required,
+ * with no generated fallback: serve passes the run's claim id, and conformance one per create.
+ */
+export interface CreateContext extends CallContext {
+	requestId: string;
+}
+
+/** The vendor-side name of the computer a request id makes: computer-<12 hex of sha256(requestId)>. */
+export function computerNameFor(requestId: string): string {
+	return `computer-${createHash("sha256").update(requestId).digest("hex").slice(0, 12)}`;
+}
+
 /** attach's context: with a claim, an agent's computer is brought back and taken by that run, under that epoch. */
 export interface AttachContext extends CallContext {
 	claim?: ComputerClaim;
@@ -442,7 +457,11 @@ export interface ComputerProvider {
 	readonly version: string;
 	capabilities(): ComputerCapabilities;
 	check(spec: ComputerSpec): Refusal[];
-	create(spec: ComputerSpec, context?: { signal?: AbortSignal }): Promise<Result<CreatedComputer>>;
+	/**
+	 * Makes one computer for the spec, once per context.requestId (provider.md, Idempotent create): the same id again
+	 * while that computer starts or runs answers it, and after it ended is refused exists. Never a second computer.
+	 */
+	create(spec: ComputerSpec, context: CreateContext): Promise<Result<CreatedComputer>>;
 	/**
 	 * Finds one computer this provider made, by its id or by labels, with the spec read back from it; none or several is
 	 * an error in words. With context.claim (a provider that declares persistence): the agent's computer is brought back

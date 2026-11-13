@@ -32,7 +32,7 @@ import {
 	type UiStep,
 	type UiTarget,
 } from "./protocol.js";
-import { type ComputerCapabilities, type ComputerConnection, type ComputerProvider, checkLifetime, kindRefusals } from "./provider.js";
+import { type ComputerCapabilities, type ComputerConnection, type ComputerProvider, checkLifetime, computerNameFor, kindRefusals } from "./provider.js";
 import { fail, ok, type Result } from "./result.js";
 import { featureOff, UiEngine, type UiRun, type UiSource, type UiStepContext, type UiView } from "./ui-engine.js";
 
@@ -623,7 +623,8 @@ export function fakeUiProvider(options: FakeUiOptions = {}, make: (options: Fake
 	const drivers = new Map<string, FakeUiDriver>();
 	const labelsOf = new Map<string, Record<string, string>>();
 	const deadlines = new Map<string, Date>();
-	let next = 1;
+	/** Every computer a request made, ended or not: a request id makes one computer, ever. */
+	const made = new Set<string>();
 	const capabilities: ComputerCapabilities = {
 		kind: options.kind ?? "desktop",
 		lifetime: "vendor",
@@ -661,10 +662,21 @@ export function fakeUiProvider(options: FakeUiOptions = {}, make: (options: Fake
 			...checkLifetime(spec.lifetimeMs, capabilities),
 			...(spec.network === "none" || spec.network === "open" ? [] : [{ field: "network", message: typeof spec.network === "object" ? allowRefused : `network is "none" or "open", not ${JSON.stringify(spec.network)}` }]),
 		],
-		async create(spec) {
+		async create(spec, context) {
 			const refusals = this.check(spec);
 			if (refusals.length > 0) return fail("refused", refusals.map((refusal) => refusal.message).join("; "));
-			const id = `fake-ui-${next++}`;
+			if (typeof context?.requestId !== "string" || context.requestId === "") return fail("invalid", "create needs a request id (CreateContext.requestId): pass the same one to retry the same request");
+			// One computer per request id, named for it (provider.md, Idempotent create).
+			const id = computerNameFor(context.requestId);
+			if (made.has(id)) {
+				if (!live(id)) return fail("exists", `${id} was made for this request and has ended: create with a new request id`);
+				const have = labelsOf.get(id) ?? {};
+				const asked = spec.labels ?? {};
+				const same = Object.keys(have).length === Object.keys(asked).length && Object.entries(asked).every(([key, value]) => have[key] === value);
+				if (!same) return fail("exists", `${id} was made for this request with other labels (${JSON.stringify(have)}): create with a new request id`);
+				return ok({ id, name: id });
+			}
+			made.add(id);
 			drivers.set(id, make(options));
 			labelsOf.set(id, { ...spec.labels });
 			deadlines.set(id, new Date(Date.now() + (spec.lifetimeMs ?? capabilities.maxLifetimeMs)));
@@ -682,9 +694,11 @@ export function fakeUiProvider(options: FakeUiOptions = {}, make: (options: Fake
 		},
 		async network(ref, policy) {
 			if (!live(ref.id)) return missing(ref.id);
+			const now = networks.get(ref.id) ?? "none";
 			if (policy !== undefined && policy !== "none" && policy !== "open") return fail("refused", allowRefused);
-			if (policy !== undefined) networks.set(ref.id, policy);
-			return ok(networks.get(ref.id) ?? "none");
+			// A remote computer's network is fixed at create: asking for the one it has is ok, a change is refused.
+			if (policy !== undefined && policy !== now) return fail("refused", `${ref.id}'s network is ${now}, fixed when it was made: create a computer with network ${policy}`);
+			return ok(now);
 		},
 		async connect(ref) {
 			if (!live(ref.id)) return missing(ref.id);

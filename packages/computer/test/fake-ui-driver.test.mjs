@@ -363,21 +363,24 @@ test("ui.observe-shape skips, in hello's words, a computer with both ui.tree and
 	assert.match(reasonOf(report, "ui.observe-shape"), /this driver reads no tree, and .*this driver takes no images/);
 });
 
-test("the fake ui provider keeps a computer's network (none or open, never an allowlist) and ends a computer at its deadline", async () => {
+test("the fake ui provider keeps a computer's network (none or open, never an allowlist, fixed at create) and ends a computer at its deadline", async () => {
 	const provider = fakeUiProvider();
 	const spec = { image: "fake-ui", user: "501", kind: "desktop", labels: { run: "r1" } };
-	const allow = await provider.create({ ...spec, network: { allow: ["example.com"] }, lifetimeMs: 60_000 });
+	const allow = await provider.create({ ...spec, network: { allow: ["example.com"] }, lifetimeMs: 60_000 }, { requestId: "allow" });
 	assert.equal(allow.error?.code, "refused");
 	assert.match(allow.error.message, /never an allowlist/);
-	const made = await provider.create({ ...spec, network: "open", lifetimeMs: 60_000 });
+	const made = await provider.create({ ...spec, network: "open", lifetimeMs: 60_000 }, { requestId: "made" });
 	assert.equal(made.ok, true, JSON.stringify(made));
 	assert.equal((await provider.network(made.value)).value, "open");
 	assert.equal((await provider.attach({ id: made.value.id })).value.spec.network, "open");
 	assert.equal((await provider.list({ run: "r1" })).value[0].network, "open");
-	assert.equal((await provider.network(made.value, "none")).value, "none");
+	assert.equal((await provider.network(made.value, "open")).value, "open", "asking for the network it has is ok");
+	const change = await provider.network(made.value, "none");
+	assert.equal(change.error?.code, "refused", "a remote computer's network is fixed at create");
+	assert.match(change.error.message, /network is open, fixed when it was made: create a computer with network none/);
 	assert.equal((await provider.network(made.value, { allow: ["example.com"] })).error?.code, "refused");
-	assert.equal((await provider.network(made.value)).value, "none", "a refused policy changes nothing");
-	const brief = await provider.create({ ...spec, labels: { run: "r2" }, network: "none", lifetimeMs: 30 });
+	assert.equal((await provider.network(made.value)).value, "open", "a refused policy changes nothing");
+	const brief = await provider.create({ ...spec, labels: { run: "r2" }, network: "none", lifetimeMs: 30 }, { requestId: "brief" });
 	assert.equal(brief.ok, true, JSON.stringify(brief));
 	await new Promise((resolve) => setTimeout(resolve, 60));
 	assert.deepEqual((await provider.list({ run: "r2" })).value, [], "past its deadline it is not listed");
@@ -385,6 +388,21 @@ test("the fake ui provider keeps a computer's network (none or open, never an al
 	assert.equal((await provider.attach({ id: brief.value.id })).error?.code, "not_found");
 	assert.equal(provider.drivers.has(brief.value.id), false, "it was ended");
 	await provider.release(made.value, "delete");
+});
+
+test("idempotent create: the fake ui provider passes provider.create-retried and create-after-release; one that makes a computer per call fails both", { timeout: 60_000 }, async () => {
+	const ids = ["provider.create-retried", "provider.create-after-release"];
+	const good = await run(fakeUiProvider(), ids);
+	for (const id of ids) assert.equal(statuses(good)[id], "pass", `${id}: ${reasonOf(good, id)}`);
+	const fresh = fakeUiProvider();
+	let calls = 0;
+	const forgetful = { ...fresh, capabilities: fresh.capabilities, check: fresh.check, create: (spec, context) => fresh.create(spec, { ...context, requestId: `${context.requestId}#${calls++}` }) };
+	const bad = await run(forgetful, ids);
+	assert.equal(statuses(bad)["provider.create-retried"], "fail");
+	assert.match(reasonOf(bad, "provider.create-retried"), /the computer a create retried while it starts answers: expected/);
+	assert.equal(statuses(bad)["provider.create-after-release"], "fail");
+	assert.match(reasonOf(bad, "provider.create-after-release"), /the same request id after its computer was released: expected an error \(exists\), got ok/);
+	assert.deepEqual(bad.cleanup.left, [], "the second computers it made are released too");
 });
 
 test("a scripted switch's checked flag is where its state starts: it shows checked, turns off, and on again", async () => {

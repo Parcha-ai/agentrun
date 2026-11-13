@@ -114,8 +114,9 @@ export interface CaseContext {
 	/**
 	 * Calls create with this whole spec, through by (default the provider), and gives its result as it is. The runner
 	 * waits for it: a computer it makes is deleted when the case ends, or as it comes after that, named in cleanup.late.
+	 * Each attempt is a new request (a fresh request id) unless requestId names one, as a retry of the same request does.
 	 */
-	attempt(spec: ComputerSpec, by?: ComputerProvider): Promise<Result<ComputerRef>>;
+	attempt(spec: ComputerSpec, by?: ComputerProvider, requestId?: string): Promise<Result<ComputerRef>>;
 	/** A computer the case made through another provider (the drifted one): deleted through it when the case ends. */
 	track(ref: ComputerRef, by?: ComputerProvider): void;
 	/** A further connection, to the case's computer or another; fails the case when connect refuses. */
