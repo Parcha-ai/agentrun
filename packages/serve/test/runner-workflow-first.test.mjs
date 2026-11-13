@@ -82,7 +82,8 @@ const until = async (done, what, ms = 40_000) => {
 };
 
 /** A pi run of an agent that learned `answer`, on `input`; the node submits `{answer, sure}` (`sure` false hands back);
- *  the agent, when asked, answers AGENT_SAYS. `toolSettings` on the revision; `approve`: answer the run's first ask. */
+ *  the agent, when asked, answers AGENT_SAYS. `toolSettings` on the revision; `approve`: answer the run's first ask ("stop":
+ *  stop the run while it waits instead). */
 async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION }, sure = true, learned = true, workflowFirst, toolSettings, approve = false } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-workflow-first-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
@@ -124,7 +125,7 @@ async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION 
       return entries.find((entry) => entry.kind === "agentrun.ask")?.data?.callId;
     }, "the step's ask", 10_000);
     parked = { ...parked, callId, requestsWhileParked: gw.requests.length };
-    await sendCommand(server, RUN, { kind: "approve", body: { approval: callId } });
+    await sendCommand(server, RUN, approve === "stop" ? { kind: "stop" } : { kind: "approve", body: { approval: callId } });
   }
   const row = await settled(["ended", "failed", "stopped"]);
   reader = await Harness.open(server.journal({ runId: RUN, runner: "reader", epoch: row.epoch, until: 0, from: row.state }), { models: () => createModels(), registry: createRegistry(), onReport: () => {} }, ctx);
@@ -223,6 +224,13 @@ test("learned_workflow set to ask: the step parks before any node runs; approved
   assert.equal(row.metrics?.path, "workflow", JSON.stringify(row.metrics));
   assert.ok(gateway.requests.every(isNode), "approved, it ran the workflow alone");
   assert.ok(requests.every((request) => request.host === LEARNED_WORKFLOW_TOOL));
+});
+
+test("learned_workflow set to ask: a stop while the step waits ends the run stopped, the workflow never run", async (t) => {
+  const { row, parked, gateway } = await piRun(t, { toolSettings: { [LEARNED_WORKFLOW_TOOL]: { permission: "ask" } }, approve: "stop" });
+  assert.equal(parked.state, "parked", `the run parked on the ask: ${JSON.stringify(parked)}`);
+  assert.equal(row.state, "stopped", `the stop is taken, not parked again: ${JSON.stringify(row)}`);
+  assert.equal(gateway.requests.length, 0, "no model request: the workflow never ran, the agent never asked");
 });
 
 test("the deopt breaker skips a workflow that handed back more than half its last runs at its digest", async () => {
