@@ -492,6 +492,20 @@ describe("Settings → MCP servers, GitHub App", () => {
     expect((p.host.querySelector('input[name="mcp-auth"][value="github_app"]') as HTMLInputElement).checked).toBe(true);
   });
 
+  it("opens the add form again when Back returns to a setup URL while the page stays mounted", async () => {
+    const { v2 } = server([[]]);
+    const p = await open(v2, { add: { name: "github", auth: "github_app" } });
+    const show = async (add?: { name: string; auth?: "github_app" }) => {
+      await act(async () => { root!.render(createElement(McpServersPage, { v2, writable: true, ...(add ? { add } : {}) })); });
+    };
+    expect(p.host.querySelector('form[aria-label="Add an MCP server"]')).toBeTruthy();
+    await show(undefined);
+    expect(p.host.querySelector('form[aria-label="Add an MCP server"]')).toBeFalsy();
+    await show({ name: "github", auth: "github_app" });
+    expect(p.host.querySelector('form[aria-label="Add an MCP server"]')).toBeTruthy();
+    expect(p.input("mcp-name").value).toBe("github");
+  });
+
   it("says in words when GitHub is not connected, pointing at Settings → GitHub", async () => {
     const s = server([[]], (c) => (c.path.endsWith("/preview") ? refusal(409, "github_not_connected", "This server has no GitHub App") : undefined));
     const p = await open(s.v2, { add: { name: "github", auth: "github_app" } });

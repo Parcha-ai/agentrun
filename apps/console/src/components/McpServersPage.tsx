@@ -33,6 +33,16 @@ export function McpServersPage({ v2, signIn, add, writable, whyNot = "sign_in", 
   // Client ID), so the form keeps that guidance. `add`: a template's Apply sent the person here to set up the server it
   // needs, so the add form opens with its name filled.
   const [form, setForm] = useState<{ saved?: McpServer; problem?: Problem; add?: Add } | null>(add ? { add } : null);
+  // The form follows the `add` param on every location change: Back to a setup URL opens it again, with its fields reset.
+  const addName = add?.name;
+  const addAuth = add?.auth;
+  const seenAdd = useRef(`${addName ?? ""}|${addAuth ?? ""}`);
+  useEffect(() => {
+    const now = `${addName ?? ""}|${addAuth ?? ""}`;
+    if (now === seenAdd.current) return;
+    seenAdd.current = now;
+    setForm(addName ? { add: { name: addName, ...(addAuth ? { auth: addAuth } : {}) } } : null);
+  }, [addName, addAuth]);
   const asked = useRef(0);
   const load = () => {
     const n = ++asked.current;
@@ -65,7 +75,7 @@ export function McpServersPage({ v2, signIn, add, writable, whyNot = "sign_in", 
           </Banner>
         )}
         {/* A save that lands after its form was closed (Cancel, or another Change) closes no form opened since. */}
-        {form && <ServerForm key={form.saved?.name ?? "new"} v2={v2} saved={form.saved} add={form.add} given={form.problem} writable={writable} signIn={startSignIn} onCancel={() => setForm(null)} onSaved={((mine) => () => { setForm((open) => (open === mine ? null : open)); load(); })(form)} />}
+        {form && <ServerForm key={`${form.saved?.name ?? "new"}|${form.add?.name ?? ""}|${form.add?.auth ?? ""}`} v2={v2} saved={form.saved} add={form.add} given={form.problem} writable={writable} signIn={startSignIn} onCancel={() => setForm(null)} onSaved={((mine) => () => { setForm((open) => (open === mine ? null : open)); load(); })(form)} />}
         {servers && (servers.length
           ? <ul className="border">{servers.map((s) => <ServerRow key={s.name} v2={v2} server={s} writable={writable && !form} signIn={startSignIn} onChange={(problem) => setForm({ saved: s, ...(problem ? { problem } : {}) })} onChanged={load} />)}</ul>
           : <p className="border px-3 py-4 font-mono text-body text-muted-foreground">No MCP server is saved here yet.</p>)}
