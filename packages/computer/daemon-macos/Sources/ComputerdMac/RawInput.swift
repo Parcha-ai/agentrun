@@ -45,6 +45,12 @@ final class HIDInput: RawInput, @unchecked Sendable {
 			: buttons.contains(.middle) ? (.otherMouseDragged, .middle)
 			: (.mouseMoved, .left)
 		try await InputQueue.run { try self.post(type, at: point, button: button, clickState: buttons.isEmpty ? 0 : 1) }
+		// The window server moves the pointer after the event is posted, not when: wait (up to 100 ms) until it reads
+		// where the event put it, so the next action, and the take-over check before it, see the pointer where it is.
+		for _ in 0..<50 {
+			if let at = CGEvent(source: nil)?.location, abs(at.x - point.x) < 1, abs(at.y - point.y) < 1 { return }
+			try await Task.sleep(nanoseconds: 2_000_000)
+		}
 	}
 
 	func button(_ button: InputButton, down: Bool, at point: Point, clickState: Int) async throws {

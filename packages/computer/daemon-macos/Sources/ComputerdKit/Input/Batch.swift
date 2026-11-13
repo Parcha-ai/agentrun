@@ -152,7 +152,8 @@ final class InputRun: @unchecked Sendable {
 	}
 
 	func press(_ button: InputButton, down: Bool, clickState: Int = 1) async throws {
-		try await raw.button(button, down: down, at: cursor, clickState: clickState)
+		// Where the batch left the pointer (the take-over check holds it there), else where it is.
+		try await raw.button(button, down: down, at: left.map(point) ?? cursor, clickState: clickState)
 		if down { buttons.append(button) } else { buttons.removeAll { $0 == button } }
 	}
 
