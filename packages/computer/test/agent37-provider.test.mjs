@@ -101,7 +101,7 @@ test("the provider takes the key and the SSH key as options, a key's contents ne
 	const ssh2 = { Client: class {} };
 	await assert.rejects(create({ sshKey: SSH_KEY, ssh2 }), /options\.apiKey/);
 	await assert.rejects(create({ apiKey: KEY, ssh2 }), /options\.sshKey/);
-	await assert.rejects(create({ apiKey: KEY, sshKey: "/home/user/.ssh/id_ed25519", ssh2 }), (error) => {
+	await assert.rejects(create({ apiKey: KEY, sshKey: "~/.ssh/id_ed25519", ssh2 }), (error) => {
 		assert.match(error.message, /never a path/);
 		assert.doesNotMatch(error.message, new RegExp(KEY));
 		return true;
@@ -361,7 +361,9 @@ test("an SSH key pasted onto one line (a password field drops line breaks) is wr
 		const { value } = await provider.host.create(request(), CTX);
 		assert.equal((await run(provider.host, value.id, ["true"])).code, 0);
 	}
-	for (const bad of ["-----BEGIN OPENSSH PRIVATE KEY-----not base64!-----END OPENSSH PRIVATE KEY-----", "-----BEGIN OPENSSH PRIVATE KEY----------END OPENSSH PRIVATE KEY-----", "ssh-ed25519 AAAA..."]) {
+	// The armor of the generated key with its body replaced: no key text sits in this file.
+	const body = /\n([\s\S]*)\n(?=-----END)/;
+	for (const bad of [fake.sshKey.replace(body, "\nnot base64!\n"), fake.sshKey.replace(body, "\n\n"), "ssh-ed25519 AAAA..."]) {
 		assert.throws(() => new Agent37Provider({ ...fake.options, sshKey: bad }), /contents of an SSH private key/);
 	}
 });
@@ -389,6 +391,26 @@ test("a tunnel that fails to open is opened again, within the call's bound; afte
 	const error = await host.exec(value.id, ["true"], { stdin: false }, { timeoutMs: 300 }).catch((thrown) => thrown);
 	assert.equal(host.errorCode(error), "timeout", "the bound ends the retries");
 	fake.ws.failNext(0);
+});
+
+test("a tunnel still opening when its call times out or is aborted is closed, not left to open later", async (t) => {
+	const { fake, host } = await setup(t);
+	const { value } = await host.create(request(), CTX);
+	const before = fake.ws.closedBy.length;
+	fake.ws.hangNext(1);
+	const timedOut = await host.exec(value.id, ["true"], { stdin: false }, { timeoutMs: 200 }).catch((thrown) => thrown);
+	assert.equal(host.errorCode(timedOut), "timeout");
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.deepEqual(fake.ws.closedBy.slice(before), [0], "the opening tunnel was closed as the call gave up");
+	fake.ws.hangNext(1);
+	const stop = new AbortController();
+	const aborted = host.exec(value.id, ["true"], { stdin: false }, { timeoutMs: 30_000, signal: stop.signal }).catch((thrown) => thrown);
+	await new Promise((resolve) => setTimeout(resolve, 50));
+	stop.abort();
+	await aborted;
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.deepEqual(fake.ws.closedBy.slice(before), [0, 0], "and so was the one its caller aborted");
+	assert.equal((await run(host, value.id, ["true"])).code, 0, "the next call opens a tunnel of its own");
 });
 
 test("an SSH key the instance's sshd does not take is denied", async (t) => {
@@ -431,6 +453,10 @@ test("the conformance module reads COMPUTER_AGENT37_* alone, needs its live swit
 	await assert.rejects(conformanceModule.createDriftedProvider({ env, ...doubles }), /set AGENTRUN_COMPUTER_LIVE_AGENT37=1/);
 	const provider = await conformanceModule.createProvider({ env: { ...env, [ENV.live]: "1" }, ...doubles });
 	assert.equal(provider.capabilities().maxLifetimeMs, 30 * 60_000, "a conformance computer lives at most 30 minutes");
+	const shorter = await conformanceModule.createProvider({ env: { ...env, [ENV.live]: "1", [ENV.maxLifetimeMs]: "600000" }, ...doubles });
+	assert.equal(shorter.capabilities().maxLifetimeMs, 600_000, "a shorter cap from the environment is kept");
+	const longer = await conformanceModule.createProvider({ env: { ...env, [ENV.live]: "1", [ENV.maxLifetimeMs]: "3600000" }, ...doubles });
+	assert.equal(longer.capabilities().maxLifetimeMs, 30 * 60_000, "a longer one is cut to 30 minutes");
 	assert.equal(conformanceModule.conformanceImage({ env: {} }), "agent37-base");
 	assert.equal(conformanceModule.conformanceImage({ env: { [ENV.template]: "box@v1" } }), "box@v1");
 	const host = await conformanceModule.createHost({ env, ...doubles });

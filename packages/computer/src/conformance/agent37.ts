@@ -42,7 +42,7 @@ export const AGENT37_ENV = {
 	apiUrl: "COMPUTER_AGENT37_API_URL",
 	/** daemonPath: the daemon binary; default this package's dist/computerd-linux-amd64. */
 	daemon: "COMPUTER_AGENT37_DAEMON",
-	/** maxLifetimeMs: the cap, in ms, at most 86400000; a run caps it at 30 minutes. */
+	/** maxLifetimeMs: the cap, in ms, at most 86400000; a run takes it when it is under 30 minutes, else 30 minutes. */
 	maxLifetimeMs: "COMPUTER_AGENT37_MAX_LIFETIME_MS",
 	/** daemonUser: uid:gid the daemon runs as; default 2510:2510. */
 	user: "COMPUTER_AGENT37_USER",
@@ -120,11 +120,15 @@ const doubles = ({ ssh2, fetch, WebSocket, timeouts, onNote }: Agent37ModuleOpti
 	...(onNote ? { onNote } : {}),
 });
 
+/** A run's cap: COMPUTER_AGENT37_MAX_LIFETIME_MS when it is shorter, else CONFORMANCE_MAX_LIFETIME_MS. */
+const runCap = (settings: Agent37Settings) => Math.min(settings.maxLifetimeMs ?? CONFORMANCE_MAX_LIFETIME_MS, CONFORMANCE_MAX_LIFETIME_MS);
+
 /** The provider the CLI runs; throws in words without the live switch, or when a setting is missing or wrong. */
 export async function createProvider(options: Agent37ModuleOptions = {}): Promise<Agent37Provider> {
 	const { env = process.env, daemonPath } = options;
 	live(env);
-	return create({ ...settingsFromEnv(env), ...doubles(options), ...(daemonPath === undefined ? {} : { daemonPath }), maxLifetimeMs: CONFORMANCE_MAX_LIFETIME_MS });
+	const settings = settingsFromEnv(env);
+	return create({ ...settings, ...doubles(options), ...(daemonPath === undefined ? {} : { daemonPath }), maxLifetimeMs: runCap(settings) });
 }
 
 /** The same provider uploading a daemon that reports version <version>-drift, for the drift.version case. */
@@ -133,7 +137,7 @@ export async function createDriftedProvider(options: Agent37ModuleOptions = {}):
 	live(env);
 	const settings = settingsFromEnv(env);
 	const daemonPath = await buildDaemon(DRIFT_VERSION);
-	return create({ ...settings, ...doubles(options), daemonPath, maxLifetimeMs: CONFORMANCE_MAX_LIFETIME_MS });
+	return create({ ...settings, ...doubles(options), daemonPath, maxLifetimeMs: runCap(settings) });
 }
 
 /**

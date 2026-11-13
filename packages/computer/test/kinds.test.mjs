@@ -27,6 +27,7 @@ import {
 	servingRefusals,
 } from "../dist/index.js";
 import { Agent37Provider } from "../dist/agent37.js";
+import { keyPair } from "./fake-agent37.mjs";
 import { BrowserbaseProvider } from "../dist/browserbase.js";
 import { E2BProvider } from "../dist/e2b.js";
 import { KernelProvider } from "../dist/kernel.js";
@@ -235,7 +236,7 @@ test("a kind's images, and the configuration a setting selects: by its image; no
 
 /** The E2B SDK's Sandbox slice, never called: these build a provider only to read what it declares. */
 const E2B_SANDBOX = Object.fromEntries(["create", "connect", "getInfo", "setTimeout", "kill", "list"].map((name) => [name, () => assert.fail(`Sandbox.${name} was called`)]));
-/** ssh2's Client slice for Agent37, never constructed here; and a key of the right form, never used. */
+/** ssh2's Client slice for Agent37, never constructed here; and a fresh key, never used. */
 const AGENT37_SSH2 = {
 	Client: class {
 		constructor() {
@@ -243,7 +244,7 @@ const AGENT37_SSH2 = {
 		}
 	},
 };
-const FAKE_SSH_KEY = "-----BEGIN OPENSSH PRIVATE KEY-----\nfake\n-----END OPENSSH PRIVATE KEY-----\n";
+const FAKE_SSH_KEY = keyPair().private;
 
 /** Each provider built as the registry offers it, from the unit tests' fakes. */
 const BUILT = {

@@ -176,7 +176,9 @@ export async function fakeSshd({ publicKey }) {
 export function fakeWebSocket({ port, key = KEY }) {
 	const opened = [];
 	/** How many of the next tunnels fail to open (an error, then 1006), as a fresh instance's edge did once live. */
-	const state = { failing: 0 };
+	const state = { failing: 0, hanging: 0 };
+	/** The tunnels closed by their caller, each with its readyState when it was closed. */
+	const closedBy = [];
 	class FakeWebSocket {
 		binaryType = "blob";
 		readyState = 0;
@@ -191,6 +193,11 @@ export function fakeWebSocket({ port, key = KEY }) {
 					state.failing--;
 					this.#emit("error", { message: "Received network error or non-101 status code." });
 					return this.#close(1006, "");
+				}
+				if (state.hanging > 0) {
+					// Stays opening until its caller closes it.
+					state.hanging--;
+					return;
 				}
 				this.#socket = connect(port, "127.0.0.1", () => {
 					this.readyState = 1;
@@ -210,8 +217,11 @@ export function fakeWebSocket({ port, key = KEY }) {
 		}
 		close() {
 			if (this.readyState >= 2) return;
+			closedBy.push(this.readyState);
+			const opening = this.readyState === 0;
 			this.readyState = 2;
-			this.#socket?.end();
+			if (this.#socket) this.#socket.end();
+			else if (opening) setImmediate(() => this.#close(1006, ""));
 		}
 		#close(code, reason) {
 			if (this.readyState === 3) return;
@@ -222,7 +232,7 @@ export function fakeWebSocket({ port, key = KEY }) {
 			for (const listener of this.#listeners[type]) listener(event);
 		}
 	}
-	return { WebSocket: FakeWebSocket, opened, failNext: (count) => (state.failing = count) };
+	return { WebSocket: FakeWebSocket, opened, closedBy, failNext: (count) => (state.failing = count), hangNext: (count) => (state.hanging = count) };
 }
 
 /** All three, wired: a REST API, an sshd taking a fresh key, and the WebSocket to it. */

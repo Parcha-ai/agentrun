@@ -592,45 +592,66 @@ class Agent37Host implements MachineHost {
 		if (!INSTANCE_ID.test(id)) throw new Agent37Error(404, "not_found", `${JSON.stringify(id)} is not an Agent37 instance id (ten lowercase letters and digits)`);
 		const host = `${id}-${AGENT37_SSH_PORT}.${this.#proxyDomain}`;
 		const bound = deadline(ctx.timeoutMs, ctx.signal, `the SSH connection to ${id}`);
-		let late: Promise<Ssh2Client> | undefined;
+		// Ends the handshake in flight when this call gives up on it (its bound passed, or the caller aborted).
+		const givenUp = new AbortController();
 		try {
 			for (let attempt = 1; ; attempt++) {
-				const trying = this.#handshake(host, ctx.timeoutMs);
-				late = trying;
 				try {
-					const client = await Promise.race([trying, bound.promise]);
-					late = undefined;
-					return client;
+					return await Promise.race([this.#handshake(host, ctx.timeoutMs, givenUp.signal), bound.promise]);
 				} catch (error) {
 					const early = error instanceof Agent37TunnelError || (error as { level?: unknown }).level === "client-socket";
 					if (!early || attempt >= TUNNEL_TRIES) throw error;
 				}
 				await Promise.race([new Promise((resolve) => setTimeout(resolve, TUNNEL_RETRY_MS * 2 ** (attempt - 1))), bound.promise]);
 			}
+		} catch (error) {
+			givenUp.abort();
+			throw error;
 		} finally {
 			bound.clear();
-			// A handshake the bound or the caller's abort gave up on is dropped when it lands.
-			late?.then((client) => client.destroy(), () => {});
 		}
 	}
 
-	/** One tunnel and one SSH handshake over it; on a failure both are dropped. */
-	async #handshake(host: string, timeoutMs: number): Promise<Ssh2Client> {
+	/**
+	 * One tunnel and one SSH handshake over it. On a failure, or once stop aborts before the handshake is done, the
+	 * WebSocket (opening or open), the stream and the client are dropped.
+	 */
+	async #handshake(host: string, timeoutMs: number, stop: AbortSignal): Promise<Ssh2Client> {
 		const ws = new this.#WebSocket(`wss://${host}/`, { headers: { "X-Agent37-Key": this.#apiKey } });
 		ws.binaryType = "arraybuffer";
 		const { duplex, opened } = tunnelOf(ws, host);
 		const client = new this.#ssh2.Client();
-		try {
-			await opened;
-			await new Promise<void>((resolve, reject) => {
-				client.once("ready", resolve);
-				client.once("error", reject);
-				client.connect({ sock: duplex, username: "root", privateKey: this.#sshKey, readyTimeout: timeoutMs, keepaliveInterval: KEEPALIVE_MS });
-			});
-		} catch (error) {
+		const givenUp = () => new Agent37TunnelError(`the SSH tunnel to ${host} was given up on`);
+		let quit: (error: Error) => void = () => {};
+		const quitted = new Promise<never>((_resolve, reject) => {
+			quit = reject;
+		});
+		quitted.catch(() => {});
+		const drop = () => {
 			client.destroy();
 			duplex.destroy();
+			quit(givenUp());
+		};
+		stop.addEventListener("abort", drop, { once: true });
+		try {
+			await Promise.race([opened, quitted]);
+			await Promise.race([
+				new Promise<void>((resolve, reject) => {
+					client.once("ready", resolve);
+					client.once("error", reject);
+					client.connect({ sock: duplex, username: "root", privateKey: this.#sshKey, readyTimeout: timeoutMs, keepaliveInterval: KEEPALIVE_MS });
+				}),
+				quitted,
+			]);
+		} catch (error) {
+			drop();
 			throw error;
+		} finally {
+			stop.removeEventListener("abort", drop);
+		}
+		if (stop.aborted) {
+			drop();
+			throw givenUp();
 		}
 		// A later error ends the session; its channel's close reports it.
 		client.on("error", () => {});
