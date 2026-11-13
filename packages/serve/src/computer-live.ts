@@ -428,8 +428,8 @@ async function openOne(input: OpenComputerView, key: string): Promise<OpenedComp
     if (event.state === "agent") {
       awayOwed = false;
       if (before !== "agent") void liftHeld(viewer);
-    } else if (!viewer && awayOwed && !closed) {
-      // The viewer went while this take waited for the runner: it goes back now that it has landed.
+    } else if (awayOwed && !closed) {
+      // A viewer went while this take waited for the runner (a new viewer may be here since): it goes back now that it has landed.
       void Promise.resolve().then(() => hold.away()).catch(() => undefined);
     }
     const conn = viewer?.conn;
@@ -534,6 +534,8 @@ async function openOne(input: OpenComputerView, key: string): Promise<OpenedComp
       if (which === "take") {
         if (state === "person") return send(conn, { type: "hold", held: true });
         newTake();
+        // This viewer's own Take over: a return owed by an earlier viewer's take is settled by this one.
+        awayOwed = false;
         // Marked before the write: a viewer that goes meanwhile owes the take an away once it lands.
         taking = true;
         let answer: { readonly hold: HoldState };
@@ -566,7 +568,7 @@ async function openOne(input: OpenComputerView, key: string): Promise<OpenedComp
     // One viewer per computer, told so, and the first is never replaced.
     if (viewer) return refuse(conn, "viewer_in_use");
     viewer = { conn, abort: new AbortController(), chain: Promise.resolve(), queued: 0 };
-    awayOwed = false;
+    // awayOwed stays: a take an earlier viewer left pending is still returned when it lands, never inherited by this one.
     const current = viewer;
     state = await Promise.resolve(hold.state()).catch(() => state);
     if (viewer !== current) return;

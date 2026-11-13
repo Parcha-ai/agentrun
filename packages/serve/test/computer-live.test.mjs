@@ -690,6 +690,27 @@ test("a viewer gone while its take waits for the runner: the take is handed back
   assert.deepEqual(hold.calls, ["take", "away", "away"]);
 });
 
+test("a viewer that reopens before the runner applies the first one's take: the old take is still handed back when it lands, not kept for the new viewer", { timeout: 30_000 }, async (t) => {
+  const hold = fakeHold();
+  hold.hold.take = async () => (hold.calls.push("take"), { hold: "pending" });
+  const { row, watch } = await opened(t, { hold });
+  const first = await viewerOf(row);
+  await watch.opened();
+  first.sendJson({ type: "take" });
+  assert.deepEqual(await next(first, "status"), { type: "status", drive: "pending" });
+  const away = hold.nextCall();
+  first.destroy();
+  assert.equal(await away, "away");
+  // A new viewer, before the runner has applied the take; it never clicked Take over.
+  const second = await viewerOf(row);
+  assert.ok(second.ready);
+  const again = hold.nextCall();
+  hold.emit({ state: "person" });
+  assert.equal(await again, "away", "the old viewer's owed return is made though a new viewer is connected");
+  assert.equal(hold.hold.state(), "agent");
+  second.destroy();
+});
+
 test("the viewer's page holds a swipe to 1,000 ms as the computer does, and tells the endpoint when it loses focus", () => {
   assert.match(computerViewerAssets.js, /Math\.min\(1000, Date\.now\(\) - from\.at\)/);
   assert.doesNotMatch(computerViewerAssets.js, /Math\.min\(5000/);
@@ -697,6 +718,8 @@ test("the viewer's page holds a swipe to 1,000 ms as the computer does, and tell
   // A button pressed on the screen is released wherever the mouse goes up: heard on the window, not the canvas alone.
   assert.match(computerViewerAssets.js, /window\.addEventListener\("mouseup", function \(e\) \{\s*if \(input !== "desktop" \|\| !pressed\[e\.button\]\) return;/);
   assert.doesNotMatch(computerViewerAssets.js, /canvas\.addEventListener\("mouseup"/);
+  // A phone's mouse drag released outside the screen still ends its swipe: the press captures the pointer.
+  assert.match(computerViewerAssets.js, /canvas\.setPointerCapture\(e\.pointerId\)/);
 });
 
 test("a socket that closes mid-take ends the take away on the run's hold at once (not given), lets go of the button it held once, and leaves the agent's open ask open", { timeout: 30_000 }, async (t) => {

@@ -228,6 +228,8 @@ const js = `"use strict";
     focusScreen();
     var p = point(e); if (!p) return;
     e.preventDefault();
+    // Captured: a mouse drag released outside the screen still ends here, as a swipe.
+    try { canvas.setPointerCapture(e.pointerId); } catch (_) { /* a pointer that is gone */ }
     touchStart = { x: p.x, y: p.y, at: Date.now() };
   });
   canvas.addEventListener("pointerup", function (e) {
