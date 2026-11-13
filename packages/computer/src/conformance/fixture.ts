@@ -21,7 +21,7 @@ export const FIXTURE_COLORS: ReadonlyArray<readonly [number, number, number]> = 
 ];
 /** The fixture APK's application id. */
 export const FIXTURE_APP_ID = "ai.agentrun.fixture";
-/** The APK's button, found in apps.ui_tree by its id. */
+/** The APK's button, found in ui.observe by its id, its name the button's text. */
 export const FIXTURE_BUTTON = { id: `${FIXTURE_APP_ID}:id/button`, text: "agentrun fixture" } as const;
 /** Where the APK is written on a phone before apps.install. */
 export const FIXTURE_APK_PATH = "/data/local/tmp/agentrun-fixture.apk";

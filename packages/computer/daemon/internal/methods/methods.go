@@ -77,7 +77,7 @@ type HelloParams struct {
 
 // ProtocolVersion is the version of the protocol this daemon speaks (spec/computer), apart from its own version: the
 // TypeScript side's PROTOCOL_VERSION, which a test keeps equal.
-const ProtocolVersion = "0.1"
+const ProtocolVersion = "0.2"
 
 type HelloResult struct {
 	Protocol string   `json:"protocol"`
