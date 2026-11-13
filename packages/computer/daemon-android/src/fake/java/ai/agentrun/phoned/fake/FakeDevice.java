@@ -39,6 +39,8 @@ public final class FakeDevice implements Device {
 	public static final long SAVED_MS = 300;
 	public static final long NEXT_MS = 200;
 	public static final long NEXT_ANIMATE_MS = 300;
+	/** How long the fixture's Code field keeps a value set into it before it takes it back (TAKES_BACK_MS). */
+	public static final long TAKES_BACK_MS = 150;
 
 	static final int HOME_WINDOW = 1;
 	static final int SETTINGS_WINDOW = 10;
@@ -107,6 +109,10 @@ public final class FakeDevice implements Device {
 	public FakeNode search;
 	/** The fixture's canvas: its state counts the taps that reached it. */
 	public FakeNode canvas;
+	/** The fixture's Code field: it takes back any value set into it TAKES_BACK_MS later. */
+	public FakeNode code;
+	/** Sets into the Code field so far: a take-back undoes only the newest, as the app's restarted timer does. */
+	private int codeSets;
 
 	public FakeDevice(boolean virtualClock) {
 		this.virtual = virtualClock;
@@ -408,14 +414,22 @@ public final class FakeDevice implements Device {
 	}
 
 	/**
-	 * The fixture's home window: a heading, the Name field, the Wi-Fi switch (a row the app marks a Switch, its two texts
-	 * its name and its secondary text), Save, Next, and the Canvas, which no accessibility action reaches: its state is
-	 * the number of taps that reached it.
+	 * The fixture's home window: a heading, the Name field, the Code field (which takes back what is set into it), the
+	 * Wi-Fi switch (a row the app marks a Switch, its two texts its name and its secondary text), Save, Next, and the
+	 * Canvas, which no accessibility action reaches: its state is the number of taps that reached it. No New window: a
+	 * phone app has one window.
 	 */
 	public synchronized void fixture() {
 		FakeNode name = at(FakeNode.of("android.widget.EditText"), 16, 56, 200, 28).id(fixtureId("name"));
 		name.editable = true;
 		name.hint = "Name";
+		FakeNode field = at(FakeNode.of("android.widget.EditText"), 228, 56, 76, 28).id(fixtureId("code"));
+		field.editable = true;
+		field.hint = "Code";
+		field.on(a -> {
+			if (a.equals("ACTION_SET_TEXT")) takeBack(field);
+		});
+		code = field;
 		FakeNode wifiRow = at(FakeNode.of("android.widget.Switch"), 16, 96, 60, 28).id(fixtureId("wifi")).tappable();
 		wifiRow.checkable = true;
 		wifiRow.add(at(text("Wi-Fi", 0, 0, 0, 0), 16, 96, 60, 14), at(text("Networks nearby", 0, 0, 0, 0), 16, 110, 60, 14));
@@ -425,8 +439,18 @@ public final class FakeDevice implements Device {
 		canvas = at(FakeNode.of("android.widget.ImageView"), 16, 180, 200, 100).desc("Canvas").id(fixtureId("canvas"));
 		canvas.state = "0";
 		canvas.counts = true;
-		root.add(heading("UI fixture"), name, wifiRow, save, next, canvas);
+		root.add(heading("UI fixture"), name, field, wifiRow, save, next, canvas);
 		show(FIXTURE_WINDOW, "UI fixture", fixtureBounds(), root, FIXTURE);
+	}
+
+	/** The Code field's refusal: TAKES_BACK_MS after the newest value went in, it is empty again. */
+	private synchronized void takeBack(FakeNode field) {
+		int set = ++codeSets;
+		after(TAKES_BACK_MS, () -> {
+			if (set != codeSets || !field.alive || field.text == null || field.text.isEmpty()) return;
+			field.text = null;
+			changed();
+		});
 	}
 
 	/** Save's effect: the text Saved beside it, on the same window. */
@@ -645,6 +669,7 @@ public final class FakeDevice implements Device {
 			synchronized (FakeDevice.this) {
 				FakeNode f = focusedField();
 				if (f != null) f.text = (f.text == null ? "" : f.text) + text;
+				if (f != null && f == code) takeBack(f);
 				changed();
 			}
 		}
