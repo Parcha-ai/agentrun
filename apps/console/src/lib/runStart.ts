@@ -1,6 +1,7 @@
-export type StartBody = { input: unknown; revision?: string; effort?: string; max_cost_usd?: number; file_ids?: string[] };
-/** `fileIds`: the files the run names (uploaded with POST /v2/files), copied into its `inputs/` before it starts. */
-export type StartForm = { text: string; revision?: string; effort?: string; maxCostUsd?: string; fileIds?: string[] };
+export type StartBody = { input: unknown; revision?: string; effort?: string; max_cost_usd?: number; file_ids?: string[]; repo?: string };
+/** `fileIds`: the files the run names (uploaded with POST /v2/files), copied into its `inputs/` before it starts.
+ *  `repo`: the GitHub repository (owner/name) the run reaches; empty takes the agent's one bound repository. */
+export type StartForm = { text: string; revision?: string; effort?: string; maxCostUsd?: string; fileIds?: string[]; repo?: string };
 
 /** The body of `POST /v2/agents/{id}/runs` from the form. An agentic run's input is its first message, `{content}`; a
  *  workflow run's is its typed input, as JSON. A workflow run takes no spend cap (the server refuses one). */
@@ -21,6 +22,11 @@ export function startBody(kind: "agentic" | "workflow", f: StartForm): { ok: tru
     body.max_cost_usd = cap;
   }
   if (f.fileIds?.length) body.file_ids = [...f.fileIds];
+  const repo = f.repo?.trim();
+  if (repo) {
+    if (!/^[^/\s]+\/[^/\s]+$/.test(repo)) return { ok: false, field: "repo", message: "A repository is owner/name, like Parcha-ai/agentrun." };
+    body.repo = repo;
+  }
   return { ok: true, body };
 }
 

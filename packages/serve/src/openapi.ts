@@ -2043,6 +2043,11 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
   RunCreate: {
     mcp_auth: { ...MCP_RUN_AUTH, description: `${MCP_RUN_AUTH.description as string} Each names a saved MCP server whose \`auth.type\` is per_run (422 at \`mcp_auth.<server>\` otherwise, no run made). Sealed into the run's launch for its life, read at each claim, and erased by the write that ends it; never in its saved body, its timeline, its view or an Idempotency-Key's fingerprint (a retry with a new credential answers the first request's run).` },
     cap_mode: { ...CAP_MODE, description: `${CAP_MODE.description as string} Absent: the agent's (its definition's \`cap_mode\`), else expected. 422 not_allowed for a run with no cap.` },
+    repo: {
+      type: "string", pattern: "^[^/\\s]+/[^/\\s]+$",
+      description: "The GitHub repository (`owner/name`) this run reaches: the one its GitHub App token is made for, so its github MCP calls are scoped to it. It must be one the agent is bound to (a repository its GitHub triggers' `accept` names on `/repository/full_name`); another is 422 at `repo` in words naming the repositories it is bound to. Absent: the agent's repository when it is bound to exactly one and the first message names none; otherwise the repository a `https://github.com/<owner>/<repo>` URL in the first message names. A run a trigger starts takes its repository from its event, and `repo` there is 422.",
+      "x-agentrun-serve": "runrepo/1",
+    },
     archil_disk: {
       type: "object", additionalProperties: false, required: ["disk_id"],
       properties: { disk_id: { type: "string", pattern: "^dsk-[0-9a-f]{16}$", description: "The disk id Archil returned when the disk was made (`dsk-` and 16 hex digits): Archil's API addresses disks by id, not by owner/name. In this server's Archil region (the account key's)." } },
