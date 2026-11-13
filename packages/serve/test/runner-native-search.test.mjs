@@ -12,7 +12,7 @@
 // Claude Code runs on the scripted Agent SDK (no CLI, no key, no network); Codex on its pinned binary against a scripted
 // fetch (no network). Without the binary the Codex cases skip; with AGENTRUN_CODEX_REQUIRE_BINARY=1 (CI) they fail.
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -22,6 +22,7 @@ import { findCodex } from "../../run-adapters-codex/dist/binary.js";
 import { verifyCodexBinary } from "../../run-adapters-codex/dist/verify.js";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
 import { STATE } from "./fixtures/native-search-table.mjs";
+import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
 
 const { openSqliteStore } = await import("../dist/store/sqlite/store.js");
 const { startRunner } = await import("../dist/runner/runner.js");
@@ -188,6 +189,26 @@ test("web_search set to ask on a claude-agent run: the person's approval lets th
   assert.equal(ended.state, "ended", describe(ended));
   assert.deepEqual(decided.slice(parkedAt).filter((d) => d.name === "WebSearch").map((d) => d.decision), ["allow"], `the search ran once, after the approval: ${JSON.stringify(decided)}`);
   assert.deepEqual(await asksOf(server), asks, "no second card");
+});
+
+// From #2486 (its CLI case, folded in here): end to end through the API, the server's web_search picked native, each CLI
+// harness's adapter is built with its own search on the runner. The faux harness stands in for each CLI (fauxTable), and
+// what each adapter would be built with is filed (faux-harness.mjs `opened`).
+test("a CLI run whose web_search is picked native gets its harness's own search on the runner: claude-agent's adapter is built with its WebSearch, codex's with live search", { timeout: 120_000 }, async (t) => {
+  const { fauxTable } = await import("./fixtures/faux-table.mjs");
+  const harness = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
+  const opened = join(await scratch(t), "opened.jsonl");
+  withEnv(t, { ANTHROPIC_API_KEY: fake("anthropic"), AGENT_MODEL: "anthropic/claude-sonnet-5-5", OPENAI_API_KEY: fake("openai"), AGENTRUN_TEST_FAUX_HARNESS_OPENED: opened }, ["AGENT_MODEL_BASE_URL", "OPENROUTER_API_KEY", "ANTHROPIC_BASE_URL", "PARALLEL_API_KEY"]);
+  const { api } = await serve(t, { faux: undefined, harnessTable: fauxTable(harness) });
+  assert.equal((await api("PUT", "/settings/tools", { web_search: { provider: "native" } })).status, 200);
+  for (const [id, model] of [["claude-agent", "anthropic/claude-sonnet-5-5"], ["codex", "openai/gpt-6.1-terra"]]) {
+    assert.equal((await api("POST", "/agents", agent(`own-${id}`, { harness: id, model, tools: ["web_search"] }))).status, 201);
+    const started = await api("POST", `/agents/own-${id}/runs`, { input: { content: "hi" } });
+    assert.equal(started.status, 202, JSON.stringify(started.body));
+    await follow(api, started.body.run_id, ["completed", "failed"], { deadlineMs: 60_000 });
+  }
+  const said = readFileSync(opened, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)).filter((entry) => entry.harness);
+  assert.deepEqual(said.map((entry) => [entry.harness, entry.options.webSearch]), [["claude-agent", true], ["codex", "live"]], JSON.stringify(said));
 });
 
 test("the runner's read of a tool's setting for the session fails closed: a store that stops reading after an allow is a deny, never the last allow", { timeout: 30_000 }, async (t) => {

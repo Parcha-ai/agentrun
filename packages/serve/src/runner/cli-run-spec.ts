@@ -133,9 +133,11 @@ type CapPrice = { input: number; output: number; cacheRead: number; cacheWrite: 
  *  environment carries none. A spread would drop every secret the launcher handed the runner, and the route would send no
  *  key. The data directory is a plain variable, which a spawn carries. So is the run's resolved tool plane (`plane`,
  *  TOOL_PLANE_ENV, not a secret), as main hands its per-run process: the adapter reads web_search's there (adapters.ts
- *  nativeOptions), so a run whose plane resolves it to native gets the harness's own search; whatever the runner's own
- *  environment says of a plane is never the run's. */
-export function cliRunEnv(env: NodeJS.ProcessEnv | undefined, data: string, claimed: NodeJS.ProcessEnv = {}, plane?: Readonly<Record<string, unknown>>): NodeJS.ProcessEnv {
+ *  nativeOptions: claude-agent's WebSearch, codex's live search, admitted by its proxy's policy and priced with it), so a
+ *  run whose plane resolves it to native gets the harness's own search (#2458), this run's alone; whatever the runner's
+ *  own environment says of a plane is never the run's. Whether each search runs is the tool's setting at that search
+ *  (SessionIO.permission, the gate), never this plane, which is frozen when the run is made. */
+export function cliRunEnv(env: NodeJS.ProcessEnv | undefined, data: string, claimed: NodeJS.ProcessEnv = {}, plane?: RunLaunch["plane"]): NodeJS.ProcessEnv {
   const out = withModelKeys(env ?? {}, claimed);
   Object.defineProperty(out, DATA_ENV, { value: data, enumerable: true, writable: true, configurable: true });
   delete out[TOOL_PLANE_ENV];
