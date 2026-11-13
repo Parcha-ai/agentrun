@@ -70,9 +70,9 @@ describe("CostChart", () => {
   it("names each path in the legend with its runs, and colours its dots by a chart token", () => {
     const host = draw(sample);
     const legend = host.querySelector("figcaption")!.textContent!;
-    expect(legend).toContain("By the agent19");
-    expect(legend).toContain("Handed back5");
-    expect(legend).toContain("Learned workflow56");
+    expect(legend).toContain("By the agent 19");
+    expect(legend).toContain("Handed back 5");
+    expect(legend).toContain("Learned workflow 56");
     const dots = [...host.querySelectorAll("svg[aria-hidden] circle")].filter((c) => c.getAttribute("r") === "3");
     expect(dots).toHaveLength(79);
     expect(new Set(dots.map((c) => c.getAttribute("class")))).toEqual(new Set(["fill-chart-agent", "fill-chart-handed-back", "fill-chart-workflow"]));
@@ -91,7 +91,7 @@ describe("CostChart", () => {
   it("leaves the times-cheaper figure out under 20 runs after the takeover, and says when it comes", () => {
     const runs = [...Array.from({ length: 10 }, (_, i) => run(i + 1, "agent", 1)), ...Array.from({ length: 5 }, (_, i) => run(i + 11, "workflow", 0.1))];
     const host = draw(series(runs, { takeover: { n: 11, run_id: "run_11" }, before: { runs: 10, mean_usd: 1 }, after: { runs: 5, mean_usd: 0.1 } }));
-    expect(text(host)).not.toMatch(/cheaper/);
+    expect(text(host)).not.toMatch(/\dx cheaper/);
     expect(text(host)).toContain("5 runs since the workflow took over: how many times cheaper it is shows after 20.");
   });
   it("says what to do when no workflow has taken over: keep going with learning on, turn it on when off", () => {
