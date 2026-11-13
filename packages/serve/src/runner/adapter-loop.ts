@@ -54,6 +54,7 @@ import { type HostCalls, withHostCalls } from "../host-calls.js";
 import { sideEffect } from "./side-effects.js";
 import { McpClaimRefused } from "./mcp-claim.js";
 import { Fenced } from "../store/index.js";
+import { answerAsServed } from "../answer-json.js";
 import { type ClaimMcp, parkedFollowUp } from "./mcp-run.js";
 import { budgetOf, type RequestFigures, reserveFor, TOOL_BUDGET_TEXT, WRAP_UP_TEXT, wrappingUp } from "../tool-budget.js";
 import { LEARNED_CLIP, LEARNED_WORKFLOW_TOOL } from "../learned-workflow.js";
@@ -2026,16 +2027,12 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           }
           if (stopAbort.signal.aborted) return undefined;
           // An answer the agent could not stand behind goes back to it: one the tool cut (learnedText: no agent turn could
-          // recover its ending), or, for an agent with an output schema, one that is not JSON (its result.output reads the
-          // answer's fenced json block, so a bare JSON answer is fenced).
+          // recover its ending), or, for an agent with an output schema, one that cannot be shaped to it (answerAsServed:
+          // the answer as the run serves it, the one replay and grading read; why goes back with it).
           if (!answer.isError && answer.text.length > LEARNED_CLIP) answer = { ...answer, isError: true };
-          if (!answer.isError && first.structured) {
-            try {
-              JSON.parse(answer.text);
-              answer = { ...answer, text: `\`\`\`json\n${answer.text}\n\`\`\`` };
-            } catch {
-              answer = { ...answer, isError: true };
-            }
+          if (!answer.isError) {
+            const asServed = answerAsServed(answer.text, first.outputSchema);
+            answer = "why" in asServed ? { text: `${answer.text}\n\n[${asServed.why}]`, isError: true } : { ...answer, text: asServed.text };
           }
           const outcome = answer.isError ? "handed_back" : "answered";
           const data: WorkflowFirstData = { workflow: first.name, digest: first.digest, revision: first.revision, call: WORKFLOW_FIRST_CALL, outcome };

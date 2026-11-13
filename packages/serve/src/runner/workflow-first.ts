@@ -44,9 +44,9 @@ export interface WorkflowFirst {
   readonly digest: string;
   readonly input: Readonly<Record<string, unknown>>;
   readonly revision: string | null;
-  /** The agent has an output schema: its answer's structured part is a fenced json block (answer-json.ts), so the workflow's
-   *  answer is kept only as JSON, fenced, else the job goes back to the agent. */
-  readonly structured?: true;
+  /** The agent's output schema, when it has one: the workflow's answer is served shaped to it (answer-json.ts
+   *  answerAsServed), else the job goes back to the agent. */
+  readonly outputSchema?: unknown;
 }
 
 /** What WORKFLOW_FIRST keeps: the step's end (its call, and whether it answered or handed back), or why the workflow did
@@ -162,7 +162,7 @@ export const workflowDigest = (workflow: Pick<LearnedWorkflow, "workflow">): str
  *  nor notes-only), its launch does not force the agent path, and exactly one of them fits its input; then costLineOf over
  *  the agent's runs (`past`, pastOf). `log`: one line when the launch forces the agent, more than one fits, there is no
  *  by-hand cost to hold the workflow to, or the rule stops it. */
-export async function workflowFirstOf(kind: string, workflows: readonly LearnedWorkflow[], launch: RunLaunch, log?: (line: string) => void, past?: () => Promise<readonly PastRun[]>, structured = false): Promise<FirstChoice> {
+export async function workflowFirstOf(kind: string, workflows: readonly LearnedWorkflow[], launch: RunLaunch, log?: (line: string) => void, past?: () => Promise<readonly PastRun[]>, outputSchema?: unknown): Promise<FirstChoice> {
   if (kind !== "agentic" || workflows.length === 0 || !launch.learning) return {};
   if (launch.workflowFirst === false) {
     log?.("workflow-first: off for this run (workflow_first: false); the agent takes it");
@@ -176,7 +176,7 @@ export async function workflowFirstOf(kind: string, workflows: readonly LearnedW
   if (fitting.length !== 1) return {};
   const chosen = fitting[0]!;
   const digest = workflowDigest(chosen);
-  const serve = { serve: { name: chosen.name, digest, input: launch.input as Record<string, unknown>, revision: launch.learning.seed, ...(structured ? { structured: true as const } : {}) } };
+  const serve = { serve: { name: chosen.name, digest, input: launch.input as Record<string, unknown>, revision: launch.learning.seed, ...(outputSchema !== undefined ? { outputSchema } : {}) } };
   if (!past) return serve;
   const line = costLineOf(await past().catch(() => []), chosen.name, digest);
   if (line.served.runs < COST_WINDOW) return serve;
