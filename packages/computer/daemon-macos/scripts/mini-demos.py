@@ -942,6 +942,12 @@ def notes_new_note(t):
             raise Failed(f"{e}; Notes' folders: {osa(t.c, FOLDER_NAMES).strip()}") from None
         raise
     tree = t.observe("observe Notes with the task's folder")
+    # Notes on macOS 26 opens a new folder's name for editing, the script's too (its name shows as a text box), and a
+    # click on the folder then opens nothing: enter keeps the name and ends that. Part of making the sandbox, so not
+    # the task's step.
+    if find(tree["nodes"], role="textbox", value=NAME) is not None:
+        t.act([{"key": "enter"}], "keep the new folder's name (Notes opened it for editing)")
+        tree = t.observe("observe Notes with the task's folder")
     # The folder list names each folder "<name>, <count> notes": the task's folder, opened by its cell, is where
     # super+n puts the new note.
     cell = need(t, tree["nodes"], "the task's folder in the folder list", starts=f"{NAME},")
@@ -1026,22 +1032,29 @@ def calendar_new_event(t):
     add = need(t, tree["nodes"], "the Add Event button", role="button", name="Add Event")
     t.inspector = True  # from here on the teardown closes the inspector first (see close_inspector)
     t.act([{"press": add["ref"]}], "press Add Event")
+    ci_calendars(t, "after Add Event")
     tree = t.observe("observe the quick event field")
     boxes = [n for n in tree["nodes"] if n.get("role") == "textbox"]
     field = next((n for n in boxes if "focused" in (n.get("flags") or [])), None) or next((n for n in boxes if "Event" in (n.get("name") or "")), None)
     typing = {"type": title, "into": field["ref"]} if field is not None else {"type": title}
     t.act([typing, {"key": "enter"}], "type the event's title, enter", expect={"text": title, "timeoutMs": 10000})
+    ci_calendars(t, "after the quick event")
     tree = t.observe("observe the event's inspector")
     menu = need(t, tree["nodes"], "the inspector's calendar menu", id="calendar-button")
     t.act([{"press": menu["ref"]}], "open the event's calendar menu")
+    ci_calendars(t, "with the calendar menu open")
     tree = t.observe("observe the calendar menu", full=True)
     item = need(t, tree["nodes"], "the task's calendar in the menu", role="menuitem", name=NAME)
     t.act([{"press": item["ref"]}], "move the event into the task's calendar")
     ci_calendars(t, "after the move")
-    # The event is saved when its inspector closes: on macOS 26 an event whose inspector is still open is in no
-    # calendar yet (AppleScript finds it nowhere).
-    t.act([{"key": "escape"}], "close the event's inspector (saves the event)")
-    ci_calendars(t, "after the inspector closed")
+    # On macOS 26 an event whose inspector is still open, its title being edited, is in no calendar yet (AppleScript
+    # finds it nowhere), and escape there drops it: enter in the title saves it.
+    t.act([{"key": "enter"}], "save the event (enter in its title)")
+    if CI:
+        tree = t.observe("observe after enter")
+        shown = find(tree["nodes"], role="listitem", starts=f"{title}.") is not None
+        print(f"    after enter: inspector open {find(tree['nodes'], id='calendar-button') is not None}, event shown {shown}, "
+              f"calendars holding it: {osa(t.c, EVENT_CALENDARS, title).strip() or 'none'}", flush=True)
     count = """on run argv
   tell application "Calendar" to return count (events of calendar (item 1 of argv) whose summary is (item 2 of argv))
 end run"""
