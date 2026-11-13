@@ -10,7 +10,7 @@ Your agent gets its own browser, and you can take over and hand it back.
 
 If the process dies, a pi-durable host recovers the session and does not repeat an action. See [For hosts](#for-hosts).
 
-Part of [AgentRun](https://github.com/Parcha-ai/agentrun). Node `>=24.22.3`, pi 1.5.0 exactly (its
+Part of [AgentRun](https://github.com/Parcha-ai/agentrun). Node `>=24.22.3`, pi 1.5.2 exactly (its
 pi-durable and chord peers). ESM only: the
 package has `import` entries and no `require` entry.
 
@@ -18,7 +18,7 @@ package has `import` entries and no `require` entry.
 
 ```sh
 npm install @parcha/pi-browser@latest       # the library: providers, driver, durable adapter
-npm install @parcha/pi-browser@latest @earendil-works/pi-durable@1.5.0 @earendil-works/chord@1.5.0 @earendil-works/pi-ai@1.5.0   # a pi-durable host: its peers, pinned to 1.5.0
+npm install @parcha/pi-browser@latest @earendil-works/pi-durable@1.5.2 @earendil-works/chord@1.5.2 @earendil-works/pi-ai@1.5.2   # a pi-durable host: its peers, pinned to 1.5.2
 ```
 
 ## Quick start
@@ -259,7 +259,7 @@ Stagehand, undici, zod and the two HTML packages are dependencies. Three optiona
 |---|---|
 | `@earendil-works/pi-durable` and `@earendil-works/chord` | `/durable`, the adapter for a pi-durable Harness. |
 
-The pi peers are `@earendil-works/pi-durable` and `chord` `1.5.0` exactly. CI tests pi 1.5.0.
+The pi peers are `@earendil-works/pi-durable` and `chord` `1.5.2` exactly. CI tests pi 1.5.2.
 
 ## Entries
 

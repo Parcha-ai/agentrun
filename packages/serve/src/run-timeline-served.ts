@@ -8,7 +8,7 @@
 // A run whose hand can't be read back here serves no row. A trigger's row names the trigger as it is now (main's
 // servedTriggerRow): its name read by its id from the store at each read, never one the run's launch froze, cut as the
 // row's words are; a trigger gone keeps the id the journal wrote.
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { TRIGGER_LABELS, type TimelineEvent } from "./timeline/index.js";
 import { withDecisions } from "./decision-rows.js";
 import { currentLearning, holdsForOk, type ItemStatus, type Learning, secretsShown } from "./learning.js";

@@ -2,7 +2,7 @@
 // run's journal: the first answer for an ask is its answer. The ask is the run's browser host's hand-over entry
 // (KINDS.handover, waiting); an answer is a hand-over entry too, the person's at their own time (the row's), or the
 // ask's expiry at the expiry's time. The loop (adapter-loop.ts) commits what this decides.
-import type { JsonValue } from "@earendil-works/chord";
+import type { JsonValue } from "@earendil-works/chord/json";
 import type { ConversationId, Tx } from "@earendil-works/pi-durable";
 import { type HandoverAnswered, type HandoverAsked, type HandoverOutcome, KINDS } from "./journal-kinds.js";
 

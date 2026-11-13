@@ -10,7 +10,8 @@
 // committer for the nudge) is attached when the runner reaches the node, and a request, a call or a yield that pi
 // resumed first waits for it, so nothing of a node runs before its host observes it.
 import { randomUUID } from "node:crypto";
-import type { Context, JsonValue } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
+import type { JsonValue } from "@earendil-works/chord/json";
 import {
   configure, defineDoc, defineExtension, GenerationTask, hook, section, type AgentChange, type ConversationId, type Extension, type HookApi, type Tx,
   type ToolRegistration,
