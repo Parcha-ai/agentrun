@@ -626,7 +626,7 @@ const flippedForms = (id: string): string[] => [...new Set([id.replace(/(\d)-(\d
 /** `id`'s price in `catalog` (listedPrice): its own entries' metered price when the catalog lists one; else its flipped
  *  forms' (flippedForms), only when every metered entry they hold has one base price (input, output, cacheRead,
  *  cacheWrite; a long-context `tiers` table is not part of the comparison), the entry that carries `tiers` when one does
- *  (a long prompt is priced at the higher tier, erring high), else the first; else the metered price a gateway lists
+ *  (a long prompt is priced at the higher tier, erring high; entries with different `tiers` tables stay unpriced), else the first; else the metered price a gateway lists
  *  under a vendor's id for it (`<vendor>/<id>`, the named vendor's first: pi-ai lists the bare id of some models only
  *  under subscription plans, at $0, and the gateways that meter them under the vendor's). A flip that finds different
  *  prices leaves the model unpriced, and so does an id with no metered entry anywhere (#2339: a plan's $0 never prices a
@@ -640,7 +640,9 @@ function catalogEntries(catalog: ReadonlyMap<string, readonly Listed[]>, id: str
     const base = ({ input, output, cacheRead, cacheWrite }: ModelCost) => JSON.stringify([input, output, cacheRead, cacheWrite]);
     const one = base(flipped[0]!.cost);
     if (!flipped.every((entry) => base(entry.cost) === one)) return undefined;
-    return (flipped.find((entry) => entry.cost.tiers?.length) ?? flipped[0]!).cost;
+    const tiered = flipped.filter((entry) => entry.cost.tiers?.length);
+    if (tiered.some((entry) => JSON.stringify(entry.cost.tiers) !== JSON.stringify(tiered[0]!.cost.tiers))) return undefined;
+    return (tiered[0] ?? flipped[0]!).cost;
   }
   return vendorPrice(catalog, id, named);
 }
