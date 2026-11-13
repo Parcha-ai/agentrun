@@ -48,14 +48,17 @@ export interface PendingStore {
 }
 
 const sdk = () => import("@modelcontextprotocol/client");
-/** How the authorization server of an MCP server off loopback is reached: every address a name resolves to, and a
- *  request dialled at the one address that was checked. Tests give their own; the default is the system resolver and
- *  undici dialled through pi-browser's pinnedLookup. `local`: this machine's own addresses, never dialled even for a
- *  host the owner allows on a private network; omitted, this machine's network interfaces' (localAddresses). */
+/** How the authorization server of an MCP server off loopback, and an MCP server itself, is reached: every address a
+ *  name resolves to, and a request dialled at the one address that was checked. Tests give their own; the default is the
+ *  system resolver and undici dialled through pi-browser's pinnedLookup. `local`: this machine's own addresses, never
+ *  dialled even for a host the owner allows on a private network; omitted, this machine's network interfaces'
+ *  (localAddresses). `dial`: a request to an MCP server at the address checked, its answer streamed as it comes (an MCP
+ *  server's event stream may stay open); omitted, `fetch`. */
 export type OAuthNetwork = {
   lookup(host: string): Promise<string[]>;
   fetch(url: string, init: RequestInit, address: string): Promise<Response>;
   local?(): readonly string[];
+  dial?(url: string, init: RequestInit, address: string): Promise<Response>;
 };
 const MAX_ANSWER_BYTES = 2 ** 20;
 export const systemNetwork: OAuthNetwork = {
@@ -80,6 +83,21 @@ export const systemNetwork: OAuthNetwork = {
       return new Response(empty ? null : Buffer.concat(chunks), { status: res.status, statusText: res.statusText, headers: new Headers([...res.headers]) });
     } finally {
       await dispatcher.close().catch(() => undefined);
+    }
+  },
+  // Dialled at `address` as fetch is, its answer handed on unread: the connection is let go once that answer has been
+  // read or dropped (undici's close waits for the request in flight).
+  async dial(url, init, address) {
+    const [{ Agent, fetch: send }, { pinnedLookup }] = await Promise.all([import("undici"), import("@parcha/pi-browser")]);
+    const dispatcher = new Agent({ connect: { lookup: pinnedLookup(address) as never } });
+    try {
+      const res = await send(url, { ...(init as object), dispatcher } as never);
+      void dispatcher.close().catch(() => undefined);
+      const empty = [101, 204, 205, 304].includes(res.status);
+      return new Response(empty ? null : (res.body as ReadableStream<Uint8Array> | null), { status: res.status, statusText: res.statusText, headers: new Headers([...res.headers]) });
+    } catch (error) {
+      await dispatcher.close().catch(() => undefined);
+      throw error;
     }
   },
 };
@@ -109,10 +127,13 @@ function connectFailed(error: unknown): boolean {
  *  when it answered). Never what an authorization server said: its words are not passed on. */
 export type Seen = { refused?: string; failed?: { what: string; status?: number; why?: string } };
 
-/** Where a sign-in's or refresh's requests may go besides a public address: `own`, this server's own addresses (where
- *  it listens, and its public address when that is on loopback); `allowed`, the private-network hosts the owner allows
- *  (mcp-private-hosts.ts privateOAuthHosts, read once per sign-in step or refresh). */
-export type Reach = { own?: readonly string[]; allowed?: readonly string[] };
+/** Where a sign-in's or refresh's requests, or an MCP server's own, may go besides a public address: `own`, this server's
+ *  own addresses (where it listens, and its public address when that is on loopback); `allowed`, the private-network
+ *  hosts the owner allows (mcp-private-hosts.ts privateOAuthHosts, read once per sign-in step, refresh or MCP request).
+ *  `loopback`: an MCP server's URL on loopback (as written, mcpServerAt) may be dialled, on any port but `own`'s: a
+ *  server that is a local install (it listens on loopback alone, with no public address), and the runner, which dials
+ *  only what such a server admitted. */
+export type Reach = { own?: readonly string[]; allowed?: readonly string[]; loopback?: boolean };
 
 /** The authorization server's requests: no redirect followed (a code or secret goes only where discovery said), each
  *  held to REQUEST_MS (a refresh's to REFRESH_REQUEST_MS), and stopped with `stop` (the server's own stop). None goes to a private or link-local address or
@@ -133,10 +154,10 @@ const guarded = (stop: AbortSignal | undefined, mcpUrl: string, network: OAuthNe
     sentWithin ? request.catch((error: unknown) => Promise.reject(connectFailed(error) ? new RequestUnsent("the connection was not made", { cause: error }) : error)) : request;
   const url = new URL(input instanceof Request ? input.url : String(input));
   const what = `endpoint ${url.origin}${url.pathname}`;
-  if (loopbackAllowed(url, mcpUrl, reach.own ?? [])) return noted(sent(fetch(input, { ...init, redirect: "manual", signal: sending })), what, seen);
+  if (reach.loopback === true && loopbackAllowed(url, mcpUrl, reach.own ?? [])) return noted(sent(fetch(input, { ...init, redirect: "manual", signal: sending })), what, seen);
   let at: Awaited<ReturnType<typeof checked>>;
   try {
-    at = await checked(what, url.href, signal, network, reach);
+    at = await checked(`the authorization server's ${what}`, url.href, signal, network, reach);
   } catch (error) {
     // Its address check outlived the request's time (a name lookup that never answered), or the server stopped: the
     // endpoint is noted, never the error's own words. Nothing was sent.
@@ -177,7 +198,8 @@ function loopbackAllowed(url: string | URL, mcpUrl: string, own: readonly string
   });
 }
 
-/** `url`, which the authorization server named as its `what`, for an MCP server off loopback: refused when it is on
+/** `url`, which `subject` names (the authorization server's endpoint for an MCP server off loopback, or an MCP server
+ *  itself, mcpServerAt), in the words its refusal says: refused when it is on
  *  this machine or a private network, by name or by any address its name resolves to (pi-browser's isPrivateAddress,
  *  the check the agent's own web fetch uses), when its name does not resolve (fail closed), or when it is not https;
  *  else the address checked, the one a request to it is dialled at. A host the owner allows (`reach.allowed`, compared
@@ -185,12 +207,12 @@ function loopbackAllowed(url: string | URL, mcpUrl: string, own: readonly string
  *  link-local, unspecified, multicast or broadcast, never this machine's (`network.local`) nor this server's own
  *  (`reach.own`). Every address its name resolves to must pass, and the one dialled is one checked. An unlisted host
  *  whose private addresses the list could allow is refused in words that name it and where to allow it. */
-async function checked(what: string, url: string, signal: AbortSignal, network: OAuthNetwork, reach: Reach = {}): Promise<{ refused: string } | { address: string }> {
+async function checked(subject: string, url: string, signal: AbortSignal, network: OAuthNetwork, reach: Reach = {}): Promise<{ refused: string; unresolved?: true } | { address: string }> {
   let at: URL;
   try {
     at = new URL(url);
   } catch {
-    return { refused: `the authorization server's ${what} is not a URL; refused` };
+    return { refused: `${subject} is not a URL; refused` };
   }
   const { isPrivateAddress } = await import("@parcha/pi-browser");
   const host = at.hostname.replace(/^\[|\]$/g, "");
@@ -202,22 +224,43 @@ async function checked(what: string, url: string, signal: AbortSignal, network: 
       addresses = await raced(network.lookup(host), signal);
     } catch (error) {
       if (signal.aborted) throw error;
-      return { refused: `couldn't resolve the authorization server's ${what}; refused` };
+      return { refused: `couldn't resolve ${subject}; refused`, unresolved: true };
     }
-    if (!addresses.length) return { refused: `couldn't resolve the authorization server's ${what}; refused` };
+    if (!addresses.length) return { refused: `couldn't resolve ${subject}; refused`, unresolved: true };
   }
-  if (!addresses.length) return { refused: `the authorization server's ${what} is a private address; refused` };
+  if (!addresses.length) return { refused: `${subject} is a private address; refused` };
   const inside = addresses.filter(isPrivateAddress);
   if (inside.length) {
     const own = [...(network.local ?? localAddresses)(), ...(reach.own ?? []).map((one) => URL.parse(one)?.hostname.replace(/^\[|\]$/g, "") ?? "")];
-    if (!inside.every((address) => privateAllowed(address, own))) return { refused: `the authorization server's ${what} is a private address; refused` };
+    if (!inside.every((address) => privateAllowed(address, own))) return { refused: `${subject} is a private address; refused` };
     const named = hostKey(at.hostname);
     // Allowing it helps only an https endpoint: a plain-http one keeps the private-address words.
-    if (!(reach.allowed ?? []).includes(named)) return { refused: at.protocol === "https:" ? `the authorization server's ${what} is on a private network, refused: an owner can allow ${named} in ${PRIVATE_HOSTS_PAGE}` : `the authorization server's ${what} is a private address; refused` };
+    if (!(reach.allowed ?? []).includes(named)) return { refused: at.protocol === "https:" ? `${subject} is on a private network, refused: an owner can allow ${named} in ${PRIVATE_HOSTS_PAGE}` : `${subject} is a private address; refused` };
   }
-  if (at.protocol !== "https:") return { refused: `the authorization server's ${what} is not https; refused` };
+  if (at.protocol !== "https:") return { refused: `${subject} is not https; refused` };
   return { address: addresses[0]! };
 }
+
+/** Where a request to the MCP server at `url` may go, before anything is sent to it: the preview, the save, the tools'
+ *  refresh and the sign-in on this server, and each request of a run's calls on the runner. The rule is `checked`'s, the
+ *  one an authorization server's endpoint is held to: a public https address; a private-network one only for a host the
+ *  owner allows (`reach.allowed`), never loopback, link-local (cloud metadata among it) or this machine's own; every
+ *  address its name resolves to checked, and the one dialled is one checked (`address`; dialAt). The one exception is a
+ *  URL on loopback as written (localhost, 127.0.0.0/8, [::1]) where `reach.loopback` allows it, on any port but this
+ *  server's own (`reach.own`): `address` is then undefined and it is dialled as written. `unresolved`: its name did not
+ *  resolve, so nothing could be sent. */
+export async function mcpServerAt(url: URL, signal: AbortSignal, network: OAuthNetwork, reach: Reach = {}): Promise<{ refused: string; unresolved?: true } | { address: string | undefined }> {
+  if (reach.loopback && loopbackAllowed(url, url.href, reach.own ?? [])) return { address: undefined };
+  return checked(`the MCP server at ${url.host}`, url.href, signal, network, reach);
+}
+
+/** A fetch to the MCP server `mcpServerAt` checked: dialled at `address` (the network's dial, else its fetch), or as
+ *  written when there is none (a loopback URL a local install allows), through `plain`. */
+export const dialAt = (network: OAuthNetwork, address: string | undefined, plain: typeof fetch = fetch) => (input: string | URL | Request, init: RequestInit = {}): Promise<Response> => {
+  if (address === undefined) return plain(input, init);
+  const url = input instanceof Request ? input.url : String(input);
+  return (network.dial ?? network.fetch).call(network, url, init, address);
+};
 
 /** `work`, or `signal`'s reason as soon as it aborts: a resolver that never answers holds nothing past it. */
 const raced = <T>(work: Promise<T>, signal: AbortSignal): Promise<T> =>
@@ -235,8 +278,8 @@ async function discoveryRefusal(state: OAuthDiscoveryState, network: OAuthNetwor
   const metadata = state.authorizationServerMetadata;
   const named: Array<[string, string | undefined]> = [["address", state.authorizationServerUrl], ["metadata address", state.resourceMetadataUrl], ["authorization endpoint", metadata?.authorization_endpoint], ["token endpoint", metadata?.token_endpoint], ["registration endpoint", metadata?.registration_endpoint]];
   for (const [what, url] of named) {
-    if (url && loopbackAllowed(url, mcpUrl, reach.own ?? [])) continue;
-    const at = url ? await checked(what, url, signal, network, reach) : undefined;
+    if (url && reach.loopback === true && loopbackAllowed(url, mcpUrl, reach.own ?? [])) continue;
+    const at = url ? await checked(`the authorization server's ${what}`, url, signal, network, reach) : undefined;
     if (at && "refused" in at) return at.refused;
   }
   return undefined;
@@ -266,7 +309,8 @@ function registrationUnavailable(url: URL, callback: string): ApiError {
   const message = `${url.host} doesn't let apps register themselves: ${github ? "create an OAuth App on GitHub" : "create an OAuth app with that provider"} and enter its Client ID and Secret here.`;
   return new ApiError("input_invalid", message, { fields: [{ field: "client_id", reason: "registration_unavailable", message }], details: { oauth: { registration: false, callback } } });
 }
-const LOOPBACK = /^(?:localhost|\[::1\]|127(?:[.]\d{1,3}){3})$/; // key-gate: loopback-rule CIMD is never offered from loopback, and only a loopback MCP server may name loopback endpoints
+/** A URL's hostname on loopback as written (localhost, 127.0.0.0/8, [::1]). */
+export const LOOPBACK = /^(?:localhost|\[::1\]|127(?:[.]\d{1,3}){3})$/; // key-gate: loopback-rule CIMD is never offered from loopback, and only a loopback MCP server may name loopback endpoints
 
 export class McpSignIns {
   /** `pendingStore`: where sign-ins in flight are kept (over store.mcpOauth). `allowed`: the private-network hosts the
@@ -279,6 +323,9 @@ export class McpSignIns {
   /** Where this server listens (`http://<host>:<port>`), whatever `base` is: its port is never an endpoint a loopback
    *  authorization server may name. Set by McpServersOverStore.attach. */
   listening = "";
+  /** Whether this server is a local install (McpServersOverStore.attach): only then may a loopback MCP server's
+   *  authorization server be on loopback too. */
+  loopback = false;
   /** This server's own local addresses, whose ports a loopback authorization server may never name: where it listens,
    *  and its public address too when that is on loopback (a local https proxy on another port, in front of the
    *  listener, reaches this server). */
@@ -315,7 +362,8 @@ export class McpSignIns {
    *  when the discovery could not be made (refused, unreachable, not OAuth): the start's own words say why. `stop`: the
    *  preview's, so a server that stops cuts the discovery's requests and lookups with the preview's own. */
   async registration(url: URL, stop?: AbortSignal): Promise<{ registration: boolean; callback: string } | undefined> {
-    const found = await this.discovered(url, { own: this.own, allowed: await this.allowed() }, stop);
+    // The start's reach, loopback included: a local install's sign-in is told as its start will find it.
+    const found = await this.discovered(url, { own: this.own, allowed: await this.allowed(), loopback: this.loopback }, stop);
     return found && { registration: found.registration, callback: this.callback };
   }
 
@@ -342,7 +390,7 @@ export class McpSignIns {
     const entry: Pending = { name, url: url.href, was: options.was, ...(options.scope ? { scope: options.scope } : {}), kind: options.kind ?? "dynamic", ...(options.client ? { client: options.client } : {}), ...(options.keptFor ? { keptFor: options.keptFor } : {}), expires: now + STATE_MS };
     let opened: URL | undefined;
     const seen: Seen = {};
-    const reach: Reach = { own: this.own, allowed: await this.allowed() };
+    const reach: Reach = { own: this.own, allowed: await this.allowed(), loopback: this.loopback };
     const provider = this.provider(entry, reach, { state, redirect: (to) => void (opened = to), seen });
     // With no client entered or kept, the authorization server must let this app register itself: one that doesn't (a
     // code host's login, with no metadata or no registration endpoint) is said up front, on the field that fixes it.
@@ -377,12 +425,34 @@ export class McpSignIns {
   /** The code exchanged (with the verifier and the client the start kept) for the token set to seal. */
   async finish(entry: Pending, code: string, iss: string | undefined, stop?: AbortSignal): Promise<TokenSet> {
     let tokens: OAuthTokens | undefined;
-    const reach: Reach = { own: this.own, allowed: await this.allowed() };
+    const reach: Reach = { own: this.own, allowed: await this.allowed(), loopback: this.loopback };
     const provider = this.provider(entry, reach, { saved: (got) => void (tokens = got) });
     await (await sdk()).auth(provider, { serverUrl: entry.url, authorizationCode: code, ...(iss ? { iss } : {}), fetchFn: guarded(stop, entry.url, this.network, {}, reach) });
     if (!tokens || !entry.client || !entry.discovery) throw new ApiError("upstream_failed", "The authorization server gave no tokens.");
     const scope = tokens.scope ?? entry.scope;
     return { tokens: { ...tokens, ...(scope ? { scope } : {}) }, obtained_at: new Date().toISOString(), ...(expiresAt(tokens) ? { expires_at: expiresAt(tokens) } : {}), client: entry.client, kind: entry.kind, discovery: entry.discovery, ...(entry.resource ? { resource: entry.resource } : {}) };
+  }
+
+  /** A removed server's sign-in let go at its authorization server: its refresh token revoked (RFC 7009) where the
+   *  metadata discovery kept names a revocation_endpoint, sent as every request of a sign-in is (guarded: its address
+   *  checked, dialled at the address checked, no redirect followed), bounded as a refresh is. Best effort: whether it was
+   *  accepted, never a throw. */
+  async revoke(set: TokenSet, mcpUrl: string, stop?: AbortSignal): Promise<boolean> {
+    const endpoint = (set.discovery?.authorizationServerMetadata as { revocation_endpoint?: unknown } | undefined)?.revocation_endpoint;
+    const token = set.tokens.refresh_token;
+    if (typeof endpoint !== "string" || !token) return false;
+    try {
+      const reach: Reach = { own: this.own, allowed: await this.allowed(), loopback: this.loopback };
+      const { client_id: id, client_secret: secret } = set.client;
+      const body = new URLSearchParams({ token, token_type_hint: "refresh_token", ...(secret ? {} : { client_id: id }) });
+      // A confidential client authenticates as RFC 6749 says by default (client_secret_basic); a public one names itself.
+      const headers: Record<string, string> = { "content-type": "application/x-www-form-urlencoded", accept: "application/json", ...(secret ? { authorization: `Basic ${Buffer.from(`${encodeURIComponent(id)}:${encodeURIComponent(secret)}`).toString("base64")}` } : {}) };
+      const res = await guarded(stop, mcpUrl, this.network, {}, reach, REFRESH_REQUEST_MS)(endpoint, { method: "POST", headers, body: body.toString() });
+      await res.body?.cancel().catch(() => undefined);
+      return res.ok;
+    } catch {
+      return false;
+    }
   }
 
   private provider(entry: Pending, reach: Reach, hooks: { state?: string; redirect?: (url: URL) => void; saved?: (tokens: OAuthTokens) => void; seen?: Seen }): OAuthClientProvider {

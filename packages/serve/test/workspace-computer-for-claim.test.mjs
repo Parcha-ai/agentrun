@@ -55,8 +55,9 @@ function fakeProvider(root, record, groups, machine = "linux") {
       const held = (record.existing ?? []).filter((one) => Object.entries(labels).every(([name, value]) => one.labels[name] === value));
       return { ok: true, value: held.map((one) => ({ ref: one.ref, labels: one.labels, deadline: one.deadline, state: "running", network: "none" })) };
     },
-    async create(spec) {
+    async create(spec, context) {
       record.created.push(spec);
+      (record.requests ??= []).push(context?.requestId);
       return { ok: true, value: { id: "c1", name: "c1" } };
     },
     async connect() {
@@ -125,6 +126,7 @@ test("a Mode 1 sandbox on Docker is made under the run's labels with the run's f
   assert.equal(answer.computer.kind, "sandbox");
   assert.equal(record.created.length, 1);
   assert.deepEqual(record.created[0].labels, { "agentrun.run": "run-1", "agentrun.epoch": "3" });
+  assert.deepEqual(record.requests, ["run-1#3"], "create's request is the claim: the run and its epoch, so a retry of the claim finds its computer");
   assert.equal(record.created[0].mount?.kind, "bind", "the run's folder, as the provider binds it");
   assert.equal(record.created[0].image, "agentrun/computer:prepared", "the tag Docker's prepareImage() answered, over the spec's");
   assert.equal(record.options[0][2], "function", "the provider is handed the store's ledger");

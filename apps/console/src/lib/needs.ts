@@ -37,6 +37,12 @@ export function failureGroups(failed: readonly Run[]): { message: string; runs: 
     .sort((a, b) => at(b.runs[0]!) - at(a.runs[0]!));
 }
 
+/** How many failures Needs you lists of `failed` (imported history left out, as failureGroups leaves it): the count
+ *  Mission Control's Failed tile shows beside it. */
+export const failureCount = (failed: readonly Run[]) => failed.filter((r) => !r.imported_from).length;
+/** The window Needs you lists failures over, and Mission Control's Failed tile with it. */
+export const FAILED_WINDOW_MS = 86_400_000;
+
 /** Whether the owner has run anything here yet: a recent run not imported, or the analytics' runs started here
  *  (`by_source` "live"). Until then Mission Control shows its start-here panel. */
 export function hasOwnRun(recent: readonly Run[], bySource: readonly { source: string; runs: number }[]): boolean {

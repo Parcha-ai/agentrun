@@ -35,7 +35,7 @@ import { healthOf, hostMemory, maxRunsOf, MIN_FREE_MIB, runsThatFit } from "./ho
 import { IMPORT_ASKED } from "./import.js";
 import type { ImportAnswer, ImportTask } from "./import-worker.js";
 import { answerStoreCall, type StoreCall } from "./import-proxy.js";
-import { gradeModelOf, LEARNING_LABEL, learningBudgetOf, type LearningMode, learningOf, learnsOf, seedOf } from "./learning.js";
+import { gradeModelOf, LEARNING_LABEL, learningBudgetOf, type LearningMode, learningOf, learnsOf, RUN_LEARNING_USE, seedOf } from "./learning.js";
 import { agentLearning, learningLog, learningNotes, noteBody, pendingCount, promotable, readNote, secretsShown, sendNote, statusesOf, writeNote } from "./learning-routes.js";
 import type { DraftDecisions } from "./learn/skills.js";
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
@@ -44,7 +44,7 @@ import { boxAvailability, boxesLine, defaultPlaceOf, NEW_AGENT_TOOLS, newAgentPl
 import { boxAllowOf, boxAllowSetIn } from "./box-settings.js";
 import { dockerLimitsOf } from "./workspace/computer-deps.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
-import { answerPage, byOwnerSession, heldSessions, isJson, overHttps, ownerCookie, ownOrigin, sendHostRefused, signedIn } from "./page.js";
+import { answerPage, byOwnerSession, ConsoleSessions, heldSessions, isJson, overHttps, ownerCookie, ownOrigin, sendHostRefused, signedIn } from "./page.js";
 import { hostFix, hostName, loopbackNames } from "./host-check.js";
 import { computerViewerLink, familyReaches, type LiveFamily, type LiveHandover, liveViewerById, liveViewerFor, liveViewerLink, OpenViewers, proxyLiveUpgrade, serveViewerFile, viewerAnswers } from "./browser-live.js";
 import { browserHandBack, handBackTarget } from "./browser-commands.js";
@@ -72,7 +72,7 @@ import { analytics as analyticsOverStore } from "./store-reads/analytics.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { type AgenticBody, type McpCredentialMark, type NewRevision, openStore, type RevisionPlace, type RunMcpAuth, type RunRow, sealRunMcpAuth, type Store, StoreOwned, storeTarget, type WorkflowBody } from "./store/index.js";
 import { answerOf, logged } from "./agents.js";
-import { FINAL_STATES } from "./store/store.js";
+import { FINAL_STATES, RUN_CHANGES_PAGE, type RunChange, type RunChangeCursor } from "./store/store.js";
 import { runModelRef } from "./model.js";
 // The v2 run statuses, as the run view names them (run-view.ts Status), for the list filter's validation. */
 const STATUSES = ["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"] as const;
@@ -96,12 +96,13 @@ import { keyOf, SEAL_KEY_ENV, TOOL_FIELDS } from "./tool-keys.js";
 import { toolKeysOverStore } from "./tool-keys-store.js";
 import { SIGN_INS_DIR, vendorsOver } from "./sign-ins.js";
 import { signInsOverStore } from "./sign-ins-store.js";
-import { MCP_AUTH_TYPES, mcpAuthOf, type McpTool } from "./mcp-probe.js";
+import { MCP_AUTH_TYPES, mcpAuthOf, type McpTool, nameOf as mcpNameOf } from "./mcp-probe.js";
+import { type ComposioControl, composioSave, composioTools } from "./composio-preset.js";
 import { mcpServersOverStore } from "./mcp-servers-store.js";
 import { privateHostsRoute } from "./mcp-private-hosts.js";
 import { metaToolOf } from "./mcp-meta.js";
 import { MCP_SETTINGS_PAGE, signInCookie, startedHere } from "./mcp-oauth.js";
-import { OUTBOUND_WEBHOOK, type RunNotice, WEBHOOK_EVENTS, waitMarkerOf, Webhooks } from "./webhooks.js";
+import { type RunNotice, WEBHOOK_EVENTS, WEBHOOK_FILE, waitMarkerOf, Webhooks } from "./webhooks.js";
 import { appPermissionWarnings } from "./template-github-permissions.js";
 import { templateApplied, templateTriggerSecret, templateWebhookSecrets, triggerMade, triggerRotated, webhookSaved, withTriggerSecret } from "./trigger-secrets-shown.js";
 import { type SealedSettingsOverStore } from "./sealed-settings-store.js";
@@ -111,6 +112,7 @@ import { HOOK_TOLERANCE_S } from "./standard-webhooks.js";
 import { GitHubConnect, GitHubConnection, INSTALLED_PATH, startedHere as gitHubStartedHere, stateCookie } from "./github-connection.js";
 import { FAUX_GITHUB, FAUX_GITHUB_FILE, startFauxGitHub } from "./github-faux.js";
 import { GITHUB_API } from "./github.js";
+import { bindingOf, REPO_NAME } from "./run-repo.js";
 import { HookCut, receivePush } from "./push-handler.js";
 import type { TriggerAdapter } from "./trigger-adapter.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
@@ -128,7 +130,7 @@ import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./upl
 import { entryAt, listFiles, sendFile as sendWorkspaceFile, viewOf } from "./run-files.js";
 import { COMPUTER_ROUTES, computerHoldOf, computerRoute, runViewedKind } from "./computer-routes.js";
 import { PROVIDERS as COMPUTER_PROVIDERS, SETTING_KINDS, servingRefusals } from "@parcha/agentrun-computer";
-import { capabilityToolDefs, hostToolDefs } from "@parcha/agentrun-kernel/kernel";
+import { COMPUTER_TOOLS, hostToolDefs } from "@parcha/agentrun-kernel/kernel";
 import { archilRoute, createArchilRoutes, liveRunsOnDisk } from "./archil-routes.js";
 import { agentDiskOf, ARCHIL_DISK_ID, archilSettingsFromEnv, inArchilMode } from "./archil-settings.js";
 import { computerOfPlace, type ComputerKind, type ComputerSetting, type PlaceView } from "./computer-setting.js";
@@ -196,6 +198,10 @@ export type ServeOptions = {
    *  X-Forwarded-For names (the nearest one not itself a trusted proxy). None by default: the header is never read, and
    *  every request counts under the address it came from. */
   trustedProxies?: readonly string[];
+  /** This server is a local install, its operator says (the CLI: AGENTRUN_MCP_ALLOW_LOOPBACK=1, only on a machine they
+   *  alone use): an MCP server's URL may be on loopback, at its save, preview and sign-in, and for the runner beside it.
+   *  Never inferred; absent, loopback is refused there in words saying how to say so. */
+  mcpLoopback?: boolean;
   /** The address to listen on (default 127.0.0.1). On any other address every `Host` name is served and the token is
    *  the only lock: put TLS in front of it. */
   host?: string;
@@ -221,6 +227,8 @@ export type ServeOptions = {
   /** Another Archil control plane than the key's region's, and its fetch: a test's fake, for the server's own Archil calls
    *  (a launch's disk read, the settings' test, an agent's disk removed). */
   archilControl?: { readonly baseUrl?: string; readonly fetch?: typeof fetch };
+  /** Another Composio than the real one, and its fetch: a test's fake, for the Composio preset's calls (composio-preset.ts). */
+  composioControl?: ComposioControl;
   /** With `faux` only: a module whose default export gives the `browser` tool's `{ provider, driver }` (the tests' fake
    *  backend), in place of Browserbase's or Kernel's. */
   fauxBrowser?: string;
@@ -320,6 +328,9 @@ export type ServeOptions = {
   templates?: string;
   /** The waits before each try again of a webhook delivery (default 5 s, 5 min, 30 min, 2 h, 5 h and 10 h: webhooks.ts RETRY_MS). */
   webhookRetryMs?: readonly number[];
+  /** Whether the outbound webhook may send to a private network or this machine: off by default, so no caller of the API
+   *  can make the server POST inside its own network. The operator's AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1 turns it on. */
+  webhookPrivateTargets?: boolean;
 };
 
 /** Each test switch a run's process reads, by the variable it reads it from: set only under `faux`, but the faux
@@ -340,7 +351,13 @@ export function fauxEnvOf(options: ServeOptions): NodeJS.ProcessEnv {
 /** `setupUrl`: with accounts and no password yet, the page that sets it (with its code when setup needs one);
  *  `setupOpen`: whether that setup takes no code (open setup on a loopback listener). */
 /** `boxesLine`: what the start's banner says of the boxes, in words (place.ts boxesLine). */
-export type Serve = { url: string; baseUrl: string; port: number; token: string; tokenFile: string | null; tokenMade: boolean; setupUrl?: string; setupOpen?: boolean; boxesLine: string; close(): Promise<void>;
+/** `launchCode`: with no accounts, the code of the console's link this start prints (`/?launch=<code>`), which gives the
+ *  browser that opens it a console session (page.ts ConsoleSessions). */
+export type Serve = { url: string; baseUrl: string; port: number; token: string; tokenFile: string | null; tokenMade: boolean; setupUrl?: string; setupOpen?: boolean; launchCode?: string; boxesLine: string; close(): Promise<void>;
+  /** Whether this server is a local install (listening on loopback, reached at no address off it): the one kind whose own
+   *  runner beside it may reach an MCP server's URL on loopback (runner/beside.ts mcpLoopback). Only that runner is told:
+   *  it is this process's finding, never a store's, so another host's runner on a shared store never inherits it. */
+  localInstall: boolean;
   /** What a stop waits on: the runs whose processes still finish their turn, and the longest it waits on them. */
   stopping(): { runs: number; boundMs: number } };
 
@@ -444,8 +461,10 @@ export const ROUTES: readonly Route[] = [
   { method: "DELETE", pattern: /^\/settings\/tool-keys\/([^/]+)$/, name: "deleteToolKey" },
   { method: "GET", pattern: /^\/settings\/mcp-servers$/, name: "listMcpServers" },
   { method: "POST", pattern: /^\/settings\/mcp-servers\/preview$/, name: "previewMcpServer" },
+  { method: "POST", pattern: /^\/settings\/mcp-servers\/composio\/tools$/, name: "listComposioTools" },
   { method: "GET", pattern: /^\/settings\/mcp-servers\/([^/]+)$/, name: "getMcpServer" },
   { method: "PUT", pattern: /^\/settings\/mcp-servers\/([^/]+)$/, name: "saveMcpServer" },
+  { method: "PUT", pattern: /^\/settings\/mcp-servers\/([^/]+)\/composio$/, name: "saveComposioServer" },
   { method: "DELETE", pattern: /^\/settings\/mcp-servers\/([^/]+)$/, name: "deleteMcpServer" },
   { method: "POST", pattern: /^\/settings\/mcp-servers\/([^/]+)\/refresh$/, name: "refreshMcpServer" },
   { method: "POST", pattern: /^\/settings\/mcp-servers\/([^/]+)\/oauth\/start$/, name: "startMcpOAuth" },
@@ -1016,7 +1035,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const localTools = new Set(hostToolDefs({ maxExecS: 600, shell: "local" }).map((def) => def.name));
   const kindTools = (kind: ComputerKind): readonly string[] =>
     kind === "none" ? [] : kind === "sandbox" ? hostToolDefs({ maxExecS: 600, shell: "computer" }).map((def) => def.name).filter((name) => !localTools.has(name))
-      : kind === "browser" ? browserToolNames : capabilityToolDefs(kind).map((def) => def.name);
+      : kind === "browser" ? browserToolNames : [...COMPUTER_TOOLS];
   let faux: FauxComputers | undefined;
   const fauxOf = (): FauxComputers => (faux ??= fauxComputers());
   /** Whether a computer on a provider that binds a folder of this machine (Docker) can be had here now: Settings →
@@ -1136,11 +1155,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // (under faux, the vendor's fake alone), under this server's seal key. The store holds whether a sign-in is still held
   // (a live run's sign_in_handed) and who was handed it, so this takes no `holds`/`handedTo` callback — one store, one lock.
   const signIns = signInsOverStore(store, sealKey, vendorsOver(() => env, checkFetch));
-  // The outbound webhook and its outbox, in the store; its signing secret among the server's sealed settings, which list it
-  // (and each one it held before) with the server's own secrets.
-  const webhooks = new Webhooks(store, triggerSettings.get(OUTBOUND_WEBHOOK.id)!, (fields) => (log ? log(logLine("webhook", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("webhook", fields)}\n`)), options.webhookRetryMs);
-  await webhooks.load();
+  const webhooks = new Webhooks(store, sealKey, (fields) => (log ? log(logLine("webhook", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("webhook", fields)}\n`)), {
+    ...(options.webhookRetryMs ? { retryMs: options.webhookRetryMs } : {}),
+    privateTargets: options.webhookPrivateTargets ?? process.env.AGENTRUN_WEBHOOK_PRIVATE_TARGETS === "1",
+  });
+  // The outbound webhook's secret, as it stands (set by a PUT, gone with a DELETE), and each it held before.
   stops.push(() => webhooks.close());
+  await webhooks.load();
+  // Where an earlier version kept the webhook: no longer read.
+  if (existsSync(join(data, WEBHOOK_FILE))) log?.(logLine("webhook", { condition: "webhook_left_over", file: join(data, WEBHOOK_FILE), effect: "not read: the webhook is kept in the store now; set it again with PUT /v2/settings/webhook" }));
+  secretStores.add("webhook", () => webhooks.signingSecrets());
   const uploads = new Uploads(join(data, UPLOADS_DIR));
   // Under the data directory's lock and before this server answers anything, so no PUT of its own is in flight: an upload
   // temp file found now is a crashed one's.
@@ -1191,6 +1215,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const modelOf = (_entry: AgentEntry, revision: Revision) => runModelRef(env, revision);
   const startDeps: StartDeps = {
     runBodyIssues,
+    boundRepos: async (agentId) => bindingOf(await store.triggers.list(agentId), agentId),
     pinnedOf,
     inputIssuesOf,
     explainRun,
@@ -1330,6 +1355,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // (0.0.0.0 in the image, a LAN address), the first visit takes the printed code even with no public address.
   const openSetup = options.openSetup === true && isLoopback(host);
   const owner = options.accounts ? new Owner(data, openSetup, (line) => void process.stdout.write(`${line}\n`), options.signInAddresses) : undefined;
+  // With no accounts, the console's sessions: made by the link this start prints, never from the token (page.ts).
+  const consoleSessions = owner ? undefined : new ConsoleSessions();
   // Who a sign-in comes from, for its limit: the socket's peer, or, from a trusted proxy only, the client it forwards for.
   const trusted = (() => {
     if (!options.trustedProxies?.length) return undefined;
@@ -2063,7 +2090,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
 
   /** A run create's body as POST /agents/{id}/runs checks it before it reads the agent: each field issue. */
   function runBodyIssues(body: Json): InputIssue[] {
-    const issues = unknownFields(body, ["input", "revision", "file_ids", "effort", "max_cost_usd", "cap_mode", "quote_id", "archil_disk"]);
+    const issues = unknownFields(body, ["input", "revision", "file_ids", "effort", "max_cost_usd", "cap_mode", "quote_id", "learning", "archil_disk", "repo"]);
+    if (body.repo !== undefined && !(typeof body.repo === "string" && REPO_NAME.test(body.repo))) issues.push({ field: "repo", reason: "wrong_type", message: "repo is a GitHub repository as owner/name, one the agent is bound to" });
     if (body.archil_disk !== undefined) {
       const disk = body.archil_disk;
       const extra = isObject(disk) ? Object.keys(disk).filter((key) => key !== "disk_id") : [];
@@ -2076,6 +2104,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (body.max_cost_usd !== undefined && !(typeof body.max_cost_usd === "number" && body.max_cost_usd > 0 && Number.isFinite(body.max_cost_usd))) issues.push({ field: "max_cost_usd", reason: "wrong_type", message: "max_cost_usd is a number above 0" });
     if (body.cap_mode !== undefined && !(CAP_MODES as readonly unknown[]).includes(body.cap_mode)) issues.push({ field: "cap_mode", reason: "not_an_option", message: `cap_mode is one of ${CAP_MODES.join(", ")}` });
     if (body.file_ids !== undefined && !Array.isArray(body.file_ids)) issues.push({ field: "file_ids", reason: "wrong_type", message: "file_ids is a list of file ids" });
+    if (body.learning !== undefined && body.learning !== RUN_LEARNING_USE) issues.push({ field: "learning", reason: "not_an_option", message: `learning is "${RUN_LEARNING_USE}" (the run starts from what its agent learned and keeps nothing), or absent (its agent's own)` });
     return issues;
   }
 
@@ -3044,6 +3073,17 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         await refreshMcpMeta();
         return send(res, 200, saved);
       }
+      // Composio makes the managed MCP server; what is kept is the ordinary MCP save, so the key is a sealed header.
+      case "listComposioTools":
+        return send(res, 200, await composioTools(await bodyOf(req), options.composioControl ?? {}, stopping.signal), { "cache-control": "no-store" });
+      case "saveComposioServer": {
+        // The name is checked before Composio is called: a refused name leaves nothing made there.
+        mcpNameOf(id);
+        const body = await bodyOf(req);
+        const answer = await composioSave(body, options.composioControl ?? {}, (mcp) => mcpServers.save(id, mcp, stopping.signal), id, stopping.signal, async () => (await mcpServers.get(id)).url);
+        await refreshMcpMeta();
+        return send(res, 200, answer, { "cache-control": "no-store" });
+      }
       case "refreshMcpServer": {
         const refreshed = await mcpServers.refresh(id, stopping.signal);
         await refreshMcpMeta();
@@ -3193,7 +3233,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "testWebhook":
         return send(res, 200, await webhooks.test());
       case "listWebhookDeliveries":
-        return send(res, 200, webhooks.attemptsView());
+        return send(res, 200, await webhooks.attemptsView());
       case "redeliverWebhook":
         return send(res, 200, await webhooks.redeliver(id));
       case "listTriggers":
@@ -3342,7 +3382,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (owner && (raw === "/v2/setup" || raw === "/v2/setup/import" || raw.startsWith("/v2/auth/"))) return void ownerRoute(req, res, raw.slice(3), owner).catch(fail);
     if (raw === MCP_PATH) return void mcp(req, res).catch(fail);
     if (raw === "/llms.txt") return void answerLlms(req, res).catch(fail);
-    if (answerPage(req, res, raw, { token, authFailed, console: options.console, takesBytes, ...(owner ? { owner } : {}), ...(options.publicUrl ? { publicUrl: options.publicUrl } : {}) })) return;
+    if (answerPage(req, res, raw, { token, authFailed, console: options.console, takesBytes, ...(owner ? { owner } : {}), ...(consoleSessions ? { sessions: consoleSessions } : {}), ...(options.publicUrl ? { publicUrl: options.publicUrl } : {}) })) return;
     if (!raw.startsWith("/v2/")) return fail(new ApiError("not_found", `no route ${raw}; the API is under /v2`));
     // A run's id needs no decoding: one that is not an id as sent (a stray or malformed escape) is no run's, and is never
     // decoded here, where a throw would leave the request listener.
@@ -3427,17 +3467,20 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const url = `http://${shown.includes(":") ? `[${shown}]` : shown}:${address.port}`;
   owner?.attach(options.publicUrl ?? url);
   webhooks.attach(options.publicUrl ?? url);
-  mcpServers.attach(options.publicUrl ?? url, url);
+  // A local install is the one server an MCP server's URL may be on loopback for (anywhere else, loopback is this machine's
+  // other services: mcp-oauth.ts mcpServerAt), and only as its operator says (mcpLoopback), never inferred from where it
+  // listens: a hosted container listens on loopback behind its proxy too.
+  const localInstall = options.mcpLoopback === true;
+  mcpServers.attach(options.publicUrl ?? url, url, localInstall);
   // A run's end and its wait are the outbound webhook's run.ended and run.needs_input (webhooks.ts). The runners write them
-  // to the store and this server runs no run, so it follows the store: each read takes the runs not final yet and the
-  // newest runs (one that started and ended between two reads is among them). It tells each end it has not told once the
-  // run reads final, and each wait of a run a runner left parked (or let go of) once it reads input_required. The markers
-  // are main's (an end's time, a wait's last row), so each webhook-id is the one it always had, and the ledger tells each
-  // once across restarts; a start first catches up the ends the ledger lacks, which no server was up to see. A store read
-  // of the runs ended (or parked) since a mark would be the cleaner seam than this read of the open runs every 250 ms.
-  const RUN_ENDS_POLL_MS = 250;
-  const RUN_ENDS_NEWEST = 50;
-  const final = (row: RunRow) => (FINAL_STATES as readonly string[]).includes(row.state);
+  // to the store and this server runs no run, so it follows the store's run-change feed (Store.runs.changedSince): every
+  // run reaching a final state, or let go by its runner (parked, or running with none), once, in order, under a cursor
+  // kept in this process. It tells each end once the run reads final, and each wait of a run let go once it reads
+  // input_required. The markers are an end's time and a wait's ask (webhooks.ts waitMarkerOf), so each webhook-id is the
+  // same on every read, and the ledger tells each once across restarts. The feed is read every 250 ms; a store that woke its readers on a
+  // change would be the next seam.
+  const RUN_CHANGES_POLL_MS = 250;
+  const final = (row: { state: string }) => (FINAL_STATES as readonly string[]).includes(row.state);
   const endOf = (row: RunRow) => ({ id: row.id, state: final(row) ? row.state : "running", ...(final(row) && row.endedAt !== null ? { endedAt: new Date(row.endedAt).toISOString() } : {}) });
   /** The run as the store holds it now, with its notice (the run list's own view of it); null when there is no such run. */
   const endNotice = async (id: string) => {
@@ -3464,72 +3507,175 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const HELD_WAIT_REREAD_MS = 1_000;
   const waitKinds = new Set(["question", "approval", "budget", "browser"]);
   /** The wait of a run its runner left parked (or let go of), or holds in its claim, told once per ask: its marker the
-   *  ask's own (webhooks.ts waitMarkerOf), its kind the pending card's (a stop's when it waits on no card). */
-  const tellWait = async (row: RunRow): Promise<void> => {
+   *  ask's own (webhooks.ts waitMarkerOf), its kind the pending card's (a stop's when it waits on no card). False when it
+   *  is not done (a read that failed, or its notice not saved): it is read again. */
+  const tellWait = async (row: RunRow): Promise<boolean> => {
     const seen = `${row.state}\n${row.epoch}\n${row.runner ?? ""}\n${row.summary ?? ""}`;
-    if (readWaits.get(row.id) === seen) return;
+    if (readWaits.get(row.id) === seen) return true;
     const view = await viewOverStore(store, row.id, viewDepsFor(ownOriginOf()));
-    if (view?.status !== "input_required") return void readWaits.set(row.id, seen);
+    if (view?.status !== "input_required") return (readWaits.set(row.id, seen), true);
     const rows = (await timelineOverStore(store, row.id, viewDepsFor(ownOriginOf()))) ?? [];
     // One marker per ask, so the held read and the let-go read of one ask agree, whatever row shows last.
     const marker = waitMarkerOf(rows, view.pending as Parameters<typeof waitMarkerOf>[1], view.state === "waiting", LEARNING_LABEL);
-    if (!marker) return void readWaits.set(row.id, seen);
+    if (!marker) return (readWaits.set(row.id, seen), true);
     const card = (view.pending as { kind?: unknown } | null | undefined)?.kind;
     const kind = view.state !== "waiting" ? "stopped" : typeof card === "string" && waitKinds.has(card) ? card : "question";
-    const notice = { run_id: row.id, agent_id: row.agentId, status: "input_required", title: typeof view.title === "string" ? view.title : "", pending: { kind } } as RunNotice;
-    if ((await webhooks.emit("run.needs_input", notice, marker)) !== "unsaved") readWaits.set(row.id, seen);
+    const wait = { kind } as NonNullable<RunNotice["pending"]>;
+    const notice: RunNotice = { run_id: row.id, agent_id: row.agentId, status: "input_required", title: typeof view.title === "string" ? view.title : "", pending: wait };
+    if (!(await toldAll(row.id, waitSubscribers.map((tell) => () => tell(notice, wait, marker))))) return false;
+    readWaits.set(row.id, seen);
+    return true;
   };
-  let openRuns = new Set<string>();
+  /** Who hears of each run's end and each wait the follower reads (runNotices): the outbound webhook first. Each is called
+   *  once a run reads final (onEnded) or is let go waiting on a person (onWaits), and again on a later read while any of
+   *  them threw (said once, run_notice_unread): so at least once, and the same moment always comes with the same `marker`
+   *  (an end's time, a wait's ask), on which each dedupes in a ledger of its own. An end from while no server was up
+   *  reaches the webhook alone, through its own catch-up (webhooks.ts catchUp). */
+  const endedSubscribers: Array<(run: RunNotice, marker: string) => unknown> = [];
+  const waitSubscribers: Array<(run: RunNotice, wait: NonNullable<RunNotice["pending"]>, marker: string) => unknown> = [];
+  const runNotices = {
+    onEnded: (tell: (run: RunNotice, marker: string) => unknown) => void endedSubscribers.push(tell),
+    onWaits: (tell: (run: RunNotice, wait: NonNullable<RunNotice["pending"]>, marker: string) => unknown) => void waitSubscribers.push(tell),
+  };
+  runNotices.onEnded(async (run, marker) => {
+    if ((await webhooks.emit("run.ended", run, marker)) === "unsaved") throw new Error("its run.ended is not saved yet");
+  });
+  runNotices.onWaits(async (run, _wait, marker) => {
+    if ((await webhooks.emit("run.needs_input", run, marker)) === "unsaved") throw new Error("its run.needs_input is not saved yet");
+  });
+  /** Every call of `calls` made: false when one threw (said once for the run), so the run is told again. */
+  const toldAll = async (id: string, calls: ReadonlyArray<() => unknown>): Promise<boolean> => {
+    let done = true;
+    for (const call of calls) {
+      try {
+        await call();
+      } catch (error) {
+        sayUnread(id, (error as Error).message);
+        done = false;
+      }
+    }
+    return done;
+  };
+  /** Why a run's notice is not done yet, said once for the run (until it is done): one that stays undone shows. */
+  const unreadSaid = new Set<string>();
+  const sayUnread = (id: string, error: string) => {
+    if (unreadSaid.has(id)) return;
+    unreadSaid.add(id);
+    log?.(logLine("webhook", { condition: "run_notice_unread", run: id, error }));
+  };
+  /** A run's end, told once the run reads final. False when it is not done (a read that failed, or its notice not saved). */
+  const tellEnd = async (id: string): Promise<boolean> => {
+    const now = await endNotice(id).catch((error: Error) => (sayUnread(id, error.message), undefined));
+    if (now === undefined) return false;
+    readWaits.delete(id);
+    heldReadAt.delete(id);
+    if (!now?.endedAt || toldEnds.get(id) === now.endedAt) return (unreadSaid.delete(id), true);
+    if (!(await toldAll(id, endedSubscribers.map((tell) => () => tell(now.notice, now.endedAt!))))) return false;
+    toldEnds.set(id, now.endedAt);
+    unreadSaid.delete(id);
+    return true;
+  };
+  /** A run's row as the store holds it now: undefined when there is no such run, UNREAD when the read failed. */
+  const UNREAD = Symbol("unread");
+  const rowNow = (id: string) => store.runs.get(id).catch((): typeof UNREAD => UNREAD);
+  /** A run held in its claim waiting on its person (ask_person with its browser open, adapter-loop waitInClaim; or its
+   *  browser hand-over, tools.ts), which its row's summary says (HELD_WAITS). Its row's state and runner do not move, so
+   *  the feed has no change for it: each read looks for these among the running runs. */
+  const heldWait = (row: RunRow) => row.state === "running" && row.runner !== null && row.summary !== null && HELD_WAITS.has(row.summary);
+  /** A run waiting on its person: let go by its runner (parked, or running with none), or held in its claim (heldWait). */
+  const letGo = (row: RunRow) => row.state === "parked" || (row.state === "running" && row.runner === null) || heldWait(row);
+  /** One change of the feed, handled: an end told, a wait told, or nothing to tell. One not done goes to endsLeft or
+   *  waitsLeft, by its run, which each read tries first until it is: a run that stays undone holds back no other. A wait is
+   *  read from the run as it is now (a run gone since, or moved on, has none to tell). */
+  const handle = async (change: RunChange): Promise<void> => {
+    if (final(change)) {
+      if (!(await tellEnd(change.id))) endsLeft.add(change.id);
+      return;
+    }
+    if (change.state === "parked" || (change.state === "running" && change.runner === null)) {
+      if (!(await tellLetGo(change.id))) waitsLeft.add(change.id);
+    }
+  };
+  /** The wait of run `id` if it is let go now: false when not done (its read failed, or its wait not told). */
+  const tellLetGo = async (id: string): Promise<boolean> => {
+    const row = await rowNow(id);
+    if (row === UNREAD) return (sayUnread(id, "its row could not be read"), false);
+    if (row === undefined || !letGo(row)) return true;
+    const told = await tellWait(row).catch((error: Error) => (sayUnread(id, error.message), false));
+    if (told) unreadSaid.delete(id);
+    return told;
+  };
+  /** Where the feed is read on from: past each page once its changes are handled, each told or left in endsLeft or
+   *  waitsLeft. None is dropped (a run left is tried again on each read), none is skipped, and none is read twice. */
+  let changesCursor: RunChangeCursor | undefined;
+  /** The runs whose end, or whose wait, is not told yet (a read that failed, or a notice not saved): from the feed, or from
+   *  the start. Each read tries them first, until each is done. */
+  const endsLeft = new Set<string>();
+  const waitsLeft = new Set<string>();
+  const readChanges = async (): Promise<void> => {
+    for (const id of [...endsLeft]) {
+      if (closing) return;
+      if (await tellEnd(id)) endsLeft.delete(id);
+    }
+    for (const id of [...waitsLeft]) {
+      if (closing) return;
+      if (await tellLetGo(id)) waitsLeft.delete(id);
+    }
+    for (;;) {
+      if (closing) return;
+      const page = await store.runs.changedSince(changesCursor, { limit: RUN_CHANGES_PAGE });
+      for (const change of page.changes) await handle(change);
+      changesCursor = page.next;
+      if (page.changes.length < RUN_CHANGES_PAGE) break;
+    }
+    // The held waits, which the feed has no change for. A held run's next ask in the same claim reads the same row as its
+    // last (state, epoch, runner, summary), and the answer between may come and go within one read: so a held wait is read
+    // again now and then (HELD_WAIT_REREAD_MS), and told once per ask all the same, each ask's notice keyed to the ask
+    // itself (webhooks.ts waitMarkerOf), never to the row that shows last.
+    for (const row of await store.runs.list({ state: "running" })) {
+      if (closing) return;
+      if (!heldWait(row)) continue;
+      if (Date.now() - (heldReadAt.get(row.id) ?? 0) >= HELD_WAIT_REREAD_MS) {
+        heldReadAt.set(row.id, Date.now());
+        readWaits.delete(row.id);
+      }
+      if (!(await tellWait(row).catch((error: Error) => (sayUnread(row.id, error.message), false)))) waitsLeft.add(row.id);
+    }
+  };
   let endsTimer: NodeJS.Timeout | undefined;
   let endsRead: Promise<void> = Promise.resolve();
-  const readEnds = async (): Promise<void> => {
-    const open = new Set<string>();
-    for (const state of ["queued", "running", "parked"] as const) {
-      for (const row of await store.runs.list({ state })) {
-        open.add(row.id);
-        // A run waits on its person once its runner has let it go: parked, or running with no runner. Or held in its claim
-        // waiting on its person (ask_person with its browser open, adapter-loop waitInClaim; or its browser hand-over,
-        // tools.ts), which its row's summary says (HELD_WAITS); a new ask sets it anew, so each is read and told once.
-        const waitsInClaim = row.state === "running" && row.runner !== null && row.summary !== null && HELD_WAITS.has(row.summary);
-        // A held run's next ask in the same claim reads the same row as its last (state, epoch, runner, summary), and the
-        // answer between may come and go within one read: so a held wait is read again now and then (HELD_WAIT_REREAD_MS),
-        // and told once per ask all the same, since each ask's notice is keyed to its own last row (webhooks.ts emit).
-        if (waitsInClaim && Date.now() - (heldReadAt.get(row.id) ?? 0) >= HELD_WAIT_REREAD_MS) {
-          heldReadAt.set(row.id, Date.now());
-          readWaits.delete(row.id);
-        }
-        if (!closing && (row.state === "parked" || (row.state === "running" && row.runner === null) || waitsInClaim)) await tellWait(row).catch(() => undefined);
-      }
-    }
-    const newest = await store.runs.list({ limit: RUN_ENDS_NEWEST });
-    for (const id of new Set([...openRuns, ...newest.map((row) => row.id)])) {
-      if (open.has(id) || closing) continue;
-      const now = await endToTell(id).catch(() => undefined);
-      // Unread (a busy store): read again at the next turn, never lost.
-      if (now === undefined) {
-        open.add(id);
-        continue;
-      }
-      readWaits.delete(id);
-      heldReadAt.delete(id);
-      if (!now?.endedAt || !("notice" in now) || toldEnds.get(id) === now.endedAt) continue;
-      if ((await webhooks.emit("run.ended", now.notice, now.endedAt)) !== "unsaved") toldEnds.set(id, now.endedAt);
-    }
-    openRuns = open;
-  };
-  const followEnds = () => {
+  /** Whether the start (startFollowing) is done: until it is, each turn runs it again before it reads the feed, so the ends
+   *  and waits from while no server was up are told whatever failed it. Said once. */
+  let started = false;
+  let startSaid = false;
+  const followChanges = () => {
     if (closing) return;
-    endsRead = readEnds()
-      .catch((error: Error) => log?.(logLine("webhook", { condition: "run_ends_unread", error: error.message })))
+    const turn = started
+      ? readChanges()
+      : startFollowing().then(
+          () => ((started = true), readChanges()),
+          (error: Error) => void (startSaid || ((startSaid = true), log?.(logLine("webhook", { condition: "catch_up_unread", error: error.message })))),
+        );
+    endsRead = turn
+      .catch((error: Error) => log?.(logLine("webhook", { condition: "run_changes_unread", error: error.message })))
       .finally(() => {
-        if (!closing) (endsTimer = setTimeout(followEnds, RUN_ENDS_POLL_MS)).unref();
+        if (!closing) (endsTimer = setTimeout(followChanges, RUN_CHANGES_POLL_MS)).unref();
       });
   };
-  void store.runs
-    .list({})
-    .then((rows) => webhooks.catchUp(rows.filter((row) => !row.importedFrom).map(endOf), endNotice))
-    .catch((error: Error) => log?.(logLine("webhook", { condition: "catch_up_unread", error: error.message })))
-    .finally(followEnds);
+  /** The start, in this order, so no change is lost between its steps: the feed's head first (one read, untold),
+   *  then what the store holds now (the ends the ledger lacks, webhooks.ts catchUp, and the waits of the runs let go: the
+   *  feed has none from before its table, and none from a time no server read it), then the feed from that head. A change
+   *  after the head is read by the feed even when the store's rows already showed it, and the ledger tells it once. */
+  const startFollowing = async () => {
+    changesCursor = await store.runs.changesHead();
+    const rows = await store.runs.list({});
+    // An end catchUp cannot read, or whose notice the store refused, is said there and left for each read to try
+    // (endsLeft): it is before the feed's head, so no change of the feed brings it back.
+    const unsaved = await webhooks.catchUp(rows.filter((row) => !row.importedFrom).map(endOf), (id) => endNotice(id).catch((error: Error) => (endsLeft.add(id), Promise.reject(error))));
+    for (const id of unsaved) endsLeft.add(id);
+    for (const row of rows) if (!closing && letGo(row) && !(await tellWait(row).catch((error: Error) => (sayUnread(row.id, error.message), false)))) waitsLeft.add(row.id);
+  };
+  followChanges();
   const setupUrl = owner && !owner.hasPassword() ? owner.setupLink() : undefined;
   /** The server's stop: once (`close` keeps its promise). */
   let stopped: Promise<void> | undefined;
@@ -3579,7 +3725,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     tokenFile,
     tokenMade: stored?.made ?? false,
     ...(setupUrl ? { setupUrl, setupOpen: openSetup } : {}),
+    ...(consoleSessions ? { launchCode: consoleSessions.code } : {}),
     boxesLine: boxesLine(boxOffers, enabledBoxes(env), boxAllow, boxesByDefault(env)),
+    localInstall,
     // Once: a second call, at any time, is the first one's promise, so a close repeated after the next server started
     // never writes this data root's record again (the next server's, by then).
     close: () => (stopped ??= stop()),

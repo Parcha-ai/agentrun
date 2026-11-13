@@ -66,7 +66,8 @@ export function steps(rows: readonly TimelineRow[]): Step[] {
       // approval (a finished result is "success" or "failed"). The time to that row is no run of the tool's: no duration.
       const ran = result.tool_status !== null;
       step = {
-        row: { ...result, id: r.id, seq: r.seq, timestamp: r.timestamp, summary: ok ? (result.summary ?? "").replace(/:\s*ok$/i, "") : result.summary },
+        // The call's charge (its usage: a browser call's session time) is the step's, never its result's.
+        row: { ...result, id: r.id, seq: r.seq, timestamp: r.timestamp, summary: ok ? (result.summary ?? "").replace(/:\s*ok$/i, "") : result.summary, ...(r.usage ? { usage: r.usage } : {}) },
         ...(ran ? { ms: Math.max(0, Date.parse(result.timestamp) - Date.parse(r.timestamp)) } : {}),
         detail: parts.length === 2 ? `${parts[0]}\n\n→ ${parts[1]}` : parts[0] ?? null,
       };

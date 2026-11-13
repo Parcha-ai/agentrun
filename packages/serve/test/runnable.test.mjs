@@ -7,7 +7,6 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { test } from "node:test";
 import { commitAgent, createAgent, getAgent, setCurrentRevision } from "../dist/agents-store.js";
-import { startServe } from "../dist/index.js";
 import { checkDefinitionBody } from "../dist/validate.js";
 import { agent, answerFlow, serve, withEnv } from "./support.mjs";
 import { storeOn } from "./store-helpers.mjs";
@@ -50,17 +49,17 @@ test("empty instructions refuse the save, 422 at definition.instructions", async
 
 test("a model whose provider has no key here, or no model on a host with no default, saves with a warning; its runs are refused until the host has one", async (t) => {
   const { api } = await keyless(t);
-  const saved = await api("POST", "/agents", agent("keyless", { model: "openai/gpt-5" }));
+  const saved = await api("POST", "/agents", agent("keyless", { model: "openai/gpt-6.1-sol" }));
   assert.equal(saved.status, 201, JSON.stringify(saved.body));
   assert.deepEqual(saved.body.warnings.map((w) => [w.field, w.reason]), [["definition.model", "not_set_up_here"]]);
-  assert.match(saved.body.warnings[0].message, /No OpenAI key here for openai\/gpt-5: add one in Settings → Model keys, or set OPENAI_API_KEY where AgentRun starts\./);
+  assert.match(saved.body.warnings[0].message, /No OpenAI key here for openai\/gpt-6\.1-sol: add one in Settings → Model keys, or set OPENAI_API_KEY where AgentRun starts\./);
   const plain = await api("POST", "/agents", agent("plain"));
   assert.equal(plain.status, 201);
   assert.deepEqual(plain.body.warnings.map((w) => [w.field, w.reason]), [["definition.model", "not_set_up_here"]]);
   assert.match(plain.body.warnings[0].message, /No model yet: add a model key in Settings → Model keys, or set OPENROUTER_API_KEY, ANTHROPIC_API_KEY or OPENAI_API_KEY where AgentRun starts\./);
   const run = await api("POST", "/agents/keyless/runs", { input: { content: "hi" } });
   assert.deepEqual([run.status, run.body.error.code], [409, "agent_not_runnable"]);
-  assert.match(run.body.error.message, /No OpenAI key here for openai\/gpt-5: add one in Settings → Model keys, or set OPENAI_API_KEY where AgentRun starts\./);
+  assert.match(run.body.error.message, /No OpenAI key here for openai\/gpt-6\.1-sol: add one in Settings → Model keys, or set OPENAI_API_KEY where AgentRun starts\./);
 });
 
 test("a definition that runs here saves with no warnings", async (t) => {
@@ -72,13 +71,13 @@ test("a definition that runs here saves with no warnings", async (t) => {
 
 test("an edit is checked the same way: 422 by field leaves the current revision, a host-fixable one saves with a warning (200)", async (t) => {
   const { api } = await keyless(t);
-  assert.equal((await api("POST", "/agents", agent("edited", { model: "openai/gpt-5" }))).status, 201);
+  assert.equal((await api("POST", "/agents", agent("edited", { model: "openai/gpt-6.1-sol" }))).status, 201);
   const before = (await api("GET", "/agents/edited")).body;
   const refused = await api("PUT", "/agents/edited/definition", { definition: { instructions: "Answer.", tools: ["bash"], model: "nope/nope" } });
   assert.equal(refused.status, 422, JSON.stringify(refused.body));
   assert.deepEqual(fields(refused), [["definition.tools[0]", "not_an_option"], ["definition.model", "not_an_option"]]);
   assert.deepEqual((await api("GET", "/agents/edited")).body.home_etag, before.home_etag, "the current revision did not move");
-  const edited = await api("PUT", "/agents/edited/definition", { definition: { instructions: "Answer briefly.", model: "openai/gpt-4o" } });
+  const edited = await api("PUT", "/agents/edited/definition", { definition: { instructions: "Answer briefly.", model: "openai/gpt-6.1-sol" } });
   assert.equal(edited.status, 200, JSON.stringify(edited.body));
   assert.deepEqual(edited.body.warnings.map((w) => [w.field, w.reason]), [["definition.model", "not_set_up_here"]]);
 });

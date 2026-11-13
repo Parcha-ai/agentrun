@@ -3,7 +3,7 @@
 // stored commit (live/translate.ts), in commit order, each batch naming its commit's seq so a reader that comes back
 // resumes from it; and beside them, never inside a commit's batch, what the runner holds before pi stores it (the run's
 // run_live row: a running tool, a partial answer), in the same vocabulary.
-import { RUN_RESUMED } from "../timeline/index.js";
+import { REQUEST_ENDED, REQUEST_STARTED, RUN_RESUMED } from "../timeline/index.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { HeldState } from "../runner/loop-contract.js";
 import { FINAL_STATES, type RunState, type Store } from "../store/store.js";
@@ -16,9 +16,12 @@ export type { LiveEvent } from "./translate.js";
  *  row — but it is not a live stream event: a takeover ends the door's watch, so a reader meets the note only in a
  *  reconnect's snapshot, never as a commit on the open stream. The live view polls across a takeover, so without this it
  *  would stream the note's entry_appended; dropping it keeps a run taken over mid-turn streaming the same events as one
- *  that was not. The note stays in state.entries (translate pushed it before returning), so the next snapshot carries it. */
+ *  that was not. The note stays in state.entries (translate pushed it before returning), so the next snapshot carries it.
+ *  A request's start and end marks (REQUEST_STARTED, REQUEST_ENDED) are the same: bookkeeping the timeline reads for a
+ *  request's cost, no event a watcher is shown. */
+const NOT_STREAMED: ReadonlySet<unknown> = new Set([RUN_RESUMED, REQUEST_STARTED, REQUEST_ENDED]);
 const delivered = (events: LiveEvent[]): LiveEvent[] =>
-  events.filter((event) => !(event.type === "entry_appended" && (event.entry as { readonly kind?: unknown } | undefined)?.kind === RUN_RESUMED));
+  events.filter((event) => !(event.type === "entry_appended" && NOT_STREAMED.has((event.entry as { readonly kind?: unknown } | undefined)?.kind)));
 
 /** Where a batch came from: a stored commit (its seq), or the run's held state. */
 export type LiveBatchMeta = { readonly seq: number; readonly held?: undefined } | { readonly held: true; readonly seq?: undefined };

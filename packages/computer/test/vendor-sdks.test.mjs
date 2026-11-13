@@ -12,6 +12,7 @@ const json = (path) => JSON.parse(read(path));
 const SDKS = [
 	{ file: "../src/e2b.ts", constant: "E2B_PACKAGE", version: "2.63.0" },
 	{ file: "../src/modal.ts", constant: "MODAL_PACKAGE", version: "0.11.1" },
+	{ file: "../src/agent37.ts", constant: "SSH2_PACKAGE", version: "1.17.0" },
 ];
 
 test("each vendor SDK a provider imports is a root devDependency pinned exactly, at the same version in package-lock.json; packages/computer depends on none", () => {

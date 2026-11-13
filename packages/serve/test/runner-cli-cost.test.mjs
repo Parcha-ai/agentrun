@@ -36,7 +36,7 @@ const eight = (usd) => Math.round(usd * 1e8) / 1e8;
 
 /** Each CLI wire's harness, its gateway environment and its launch's model. */
 const HARNESSES = {
-  "claude-agent": { env: (url) => ({ ANTHROPIC_API_KEY: fake("anthropic"), ANTHROPIC_BASE_URL: url }), model: { provider: "anthropic", modelId: "claude-sonnet-4-5" } },
+  "claude-agent": { env: (url) => ({ ANTHROPIC_API_KEY: fake("anthropic"), ANTHROPIC_BASE_URL: url }), model: { provider: "anthropic", modelId: "claude-sonnet-5-5" } },
   codex: { env: (url) => ({ AGENT_MODEL_BASE_URL: `${url}/v1`, AGENT_MODEL: "gpt-test", AGENT_MODEL_API_KEY: fake("gateway"), AGENT_MODEL_PRICE: "1,2,0.5" }), model: { provider: "openai", modelId: "gpt-test" } },
 };
 
@@ -104,14 +104,15 @@ async function bookedTurns(server, row) {
 }
 
 test("a claude-agent run under a small cap parks at it once its booked spend leaves no room: the cap holds on a CLI run", { timeout: 90_000 }, async (t) => {
-  // Five $0.01 tool calls and a $0.01 answer, $0.06 in all, under a $0.035 cap.
-  const { row, view, turns } = await cliRun(t, "claude-agent", "Claude Code makes five cent calls.", { capUsd: 0.035 });
+  // Five $0.01 tool calls and a $0.01 answer, $0.06 in all, under a $0.025 cap.
+  const { row, view, turns } = await cliRun(t, "claude-agent", "Claude Code makes five cent calls.", { capUsd: 0.025 });
   const spent = eight(turns.reduce((sum, turn) => sum + (turn.bookedUsd ?? turn.usd ?? 0), 0));
   assert.equal(row.state, "parked", `the run parks at its cap, never runs on: ${JSON.stringify({ state: row.state, summary: row.summary })}`);
-  // Its first call is booked at $0.01; the next needs about $0.035 of room (its input and a 1,024-token answer at Sonnet's
-  // price), more than the $0.025 left, so it is never sent.
-  assert.deepEqual([turns.length, spent], [1, 0.01], `one request ran, booked at its price: ${JSON.stringify(turns)}`);
-  assert.match(row.summary, /^Not sent: this run has spent \$0\.01 of its \$0\.035 cap/, `the park names the booked spend: ${row.summary}`);
+  // Each call is booked at $0.01. The second is priced warm from the first (the cap's expected mode: the 10 tokens of
+  // input it reported and what the body grew by, and a 1,024-token answer at Sonnet's price), within the $0.015 left, so
+  // it runs; the third needs as much again, more than the $0.005 left, so it is never sent.
+  assert.deepEqual([turns.length, spent], [2, 0.02], `two requests ran, each booked at its price: ${JSON.stringify(turns)}`);
+  assert.match(row.summary, /^Not sent: this run has spent \$0\.02 of its \$0\.025 cap/, `the park names the booked spend: ${row.summary}`);
   assert.equal(eight(view?.cost?.usd ?? 0), spent, `and its view says that spend, never $0: ${JSON.stringify(view?.cost)}`);
 });
 

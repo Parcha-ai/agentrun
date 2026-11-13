@@ -8,13 +8,12 @@ import { createHash, randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { startServe } from "../dist/index.js";
 import { secret, SECRET_NAMES } from "../dist/secrets.js";
 import { readingOf } from "../dist/server.js";
 import { openSqliteStore, STORE_FILE } from "../dist/store/sqlite/store.js";
 import { rowUnlocks, TOOL_KEYS, unlockedBy } from "../dist/tool-keys.js";
 import { schemaProblems } from "./schema-support.mjs";
-import { agent, call, harnessData, client, cookieOf, FAUX, follow, printed, scratch, serve, storeBytes, withEnv } from "./support.mjs";
+import { agent, call, client, cookieOf, FAUX, follow, harnessData, printed, scratch, serve, startServe, storeBytes, withEnv } from "./support.mjs";
 
 const LAUNCHER = new URL("../launcher/agentrun-serve", import.meta.url).pathname;
 const FAUX_BROWSER = new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname;

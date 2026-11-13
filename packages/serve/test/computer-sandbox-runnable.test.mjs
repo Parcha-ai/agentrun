@@ -210,7 +210,7 @@ test("Mode 1: an agent saved with place {sandbox, docker} on a host where Docker
   // check (docker-daemon.ts: `docker version`, here the fake that fails) and refuses it now, in the one wording.
   const api = await server(t, { archil: false, docker: false });
   const said = await saveAndStart(api, "docker-down", { place: { mode: "sandbox", box: "docker" } });
-  const words = "No Docker on this server: Render and most hosted services run none. A vendor sandbox (Daytona, Modal or E2B) needs Archil turned on in Settings → Workspace.";
+  const words = "No Docker on this server: Render and most hosted services run none. A vendor sandbox (Daytona, Modal, E2B or Agent37) needs Archil turned on in Settings → Workspace.";
   assert.deepEqual(said.saved, [["definition.computer", "not_set_up_here", words]], JSON.stringify(said));
   assert.deepEqual(said.refused, [["definition.computer", "not_set_up_here", words]], JSON.stringify(said));
   assert.deepEqual(said.started.slice(0, 2), [409, "agent_not_runnable"], JSON.stringify(said));

@@ -141,7 +141,9 @@ There is no upgrade in place. The earlier server kept its agents in `/data/store
 store's file, and the new server refuses to start on a data directory that holds one, saying so. Then either:
 
 - keep running the earlier version on that volume, or
-- start on a new data directory (a new volume) and re-create your agents there.
+- start on a new data directory (a new volume) and re-create your agents there. Under compose or `docker run` that is
+  new arguments after the image; on Render the Docker Command replaces the image's entrypoint too, so it must be the
+  whole start command shown in the release notes' "Before you upgrade", not flags alone.
 
 Nothing converts an earlier volume.
 

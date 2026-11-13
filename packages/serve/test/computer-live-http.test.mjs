@@ -1,7 +1,7 @@
 // A desktop's live view on the real runner path: a run of an agent whose computer is a desktop is claimed by the runner
 // beside the server, composed as the CLI's runner composes it (runner/main.ts runnerComputers), its desktop made at the
 // claim through the provider loader (a fake desktop: no vendor, no network), and its view opened there under the run's
-// claim (computer-live.ts openClaimView). The agent looks at its desktop (desktop_screen, the tool the desktop brings);
+// claim (computer-live.ts openClaimView). The agent looks at its desktop (computer_screenshot, the computer surface's tool);
 // its second look waits inside the shot until the test lets it go. GET /computer is live with kind desktop and its link
 // under /computer/live, for the owner's session alone; the computer viewer's page is served there under LIVE_CSP, and its
 // socket is proxied to the runner's endpoint from this server's origin with the owner's cookie. Take over is a take-over
