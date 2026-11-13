@@ -5,7 +5,9 @@ logged. With --movie, each is recorded from screen.watch to a movie of its own w
     python3 -I mini-demos.py PATH/TO/computerd COMPUTERD_HOME OUT_DIR [--movie] [--ask-grants] [TASK ...]
 
 TASK is a task's id (mac.notes.new-note, ...); none runs all five. Without --movie nothing is recorded (no frames, no
-movie). --ask-grants raises Computerd's Automation prompts for the five apps, for a person at the Mac to answer, and
+movie). --movie works only on a demo machine, and refuses before anything is made otherwise: a CI runner
+(GITHUB_ACTIONS=true), or a user whose login name starts with "agentrun-demo" (a dedicated demo account, made by a
+person). Nothing else unlocks it. --ask-grants raises Computerd's Automation prompts for the five apps, for a person at the Mac to answer, and
 exits. Writes, under OUT_DIR:
 
     demos.json             every task's calls: method, params, ms, the steps' routes, the expect, the error, and what it left
@@ -19,7 +21,9 @@ pinned, else the one it last observed) before it is written anywhere, and every 
 painted black (window-frames.swift). A frame is kept only when the window list read before it and the one read after it
 agree (the window did not move, and nothing came in front or left), and the list, read every 10 ms in between, never
 changed for the window, so a frame never shows a window the cut did not know of (one that lived under 10 ms could
-still slip through). Until the task has a window, no frame is kept.
+still slip through). Until the task has a window, no frame is kept. The Dock's own window, which covers the display at
+the Dock's level and is clear but for the Dock, is not painted: anything the Dock draws in it (Mission Control's
+thumbnails, say) would show in a frame.
 
 The Mac is a person's own, so a task works only in a sandbox it makes, named "AgentRun demo <run id>": its own
 Calendar calendar, its own Notes folder, its own folder under /private/tmp/agentrun-demos. A note goes in the task's
@@ -48,6 +52,7 @@ import contextlib
 import fcntl
 import json
 import os
+import pwd
 import shutil
 import signal
 import subprocess
@@ -65,7 +70,18 @@ if flags - {"--movie", "--ask-grants"}:
 helper, home, out = args[0], args[1], os.path.abspath(args[2])
 only = set(args[3:])
 movie = "--movie" in flags
-here = os.path.dirname(os.path.abspath(__file__))
+
+
+def demo_machine():
+    """Whether this Mac may be recorded: a CI runner, or a dedicated demo account. The login name is the account's own
+    (the user database's, by uid), not $USER, so no variable or flag stands in for it."""
+    return os.environ.get("GITHUB_ACTIONS") == "true" or pwd.getpwuid(os.getuid()).pw_name.startswith("agentrun-demo")
+
+
+if movie and not demo_machine():
+    sys.exit("--movie records only on a demo machine: a CI runner (GITHUB_ACTIONS=true), or a user whose login name "
+             "starts with agentrun-demo. This is neither, so nothing was recorded or made; run without --movie.")
+here =os.path.dirname(os.path.abspath(__file__))
 CI = os.environ.get("CI") == "true"
 
 RUN = uuid.uuid4().hex[:6]
