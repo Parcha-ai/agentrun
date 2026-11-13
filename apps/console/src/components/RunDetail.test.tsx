@@ -137,7 +137,7 @@ describe("RunDetail's Report tab before an answer", () => {
     const done = runFixture("run.completed.idle.1");
     const d = report({ ...done.run, result: null }, done.page.rows.filter((r) => r.kind !== "final_answer"));
     expect(d).not.toContain(WRITING);
-    expect(d).toContain("This run gave no answer.");
+    expect(d).toContain("The agent finished without writing an answer.");
   });
 
   it("a queued or working run is the one that is writing the answer", () => {
