@@ -206,8 +206,11 @@ class Recorder(threading.Thread):
                 if why is None:
                     path = os.path.join(self.folder, f"{len(self.frames):05d}.jpg")
                     try:
-                        self.cropper.crop(data, before, path)
+                        cut = self.cropper.crop(data, before, path)
                         self.frames.append((at, path))
+                        if CI and len(self.frames) <= 2:  # what the cut saw, while frames came out black on CI
+                            print(f"    frame {len(self.frames)}: window {before['bounds']}, in front {before.get('who')}, "
+                                  f"brightness whole {cut.get('frameMean')}, cut {cut.get('cutMean')}", flush=True)
                     except RuntimeError as e:  # a window off the main display, say: that frame is not kept
                         why = "cut failed"
                         self.errors.append(str(e))
