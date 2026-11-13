@@ -71,3 +71,11 @@ test("a driver that dials again after it was removed fails revoke by name, and p
   assert.match(results.find((result) => result.name === "revoke").detail, /dialed again after 4401/);
   driver.stop();
 });
+
+test("a port already in use is refused in the listen's own error, never an uncaught one", async (t) => {
+  const { createServer } = await import("node:net");
+  const taken = createServer();
+  await new Promise((done) => taken.listen(0, "127.0.0.1", done));
+  t.after(() => taken.close());
+  await assert.rejects(runAttachConformance({ port: taken.address().port, pair: () => {} }), (error) => error.code === "EADDRINUSE");
+});

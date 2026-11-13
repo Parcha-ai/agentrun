@@ -155,7 +155,22 @@ export async function runAttachConformance(options: ConformanceOptions): Promise
       socket.end(`HTTP/1.1 ${status}\r\n${Object.entries({ ...headers, "content-type": "text/plain; charset=utf-8", "content-length": String(Buffer.byteLength(text)), connection: "close" }).map(([key, value]) => `${key}: ${value}\r\n`).join("")}\r\n${text}`);
     });
   });
-  await new Promise<void>((done) => server.listen(options.port ?? 0, options.host ?? "127.0.0.1", done));
+  // A port already in use (or an address this host lacks) is an error event with no listener otherwise, which would crash
+  // the CLI and leave the scratch store behind: it rejects here, and the scratch is cleaned before the error goes on.
+  try {
+    await new Promise<void>((done, fail) => {
+      server.once("error", fail);
+      server.listen(options.port ?? 0, options.host ?? "127.0.0.1", () => {
+        server.off("error", fail);
+        done();
+      });
+    });
+  } catch (error) {
+    await routes.close();
+    await store.close();
+    rmSync(dir, { recursive: true, force: true });
+    throw error;
+  }
   const { port } = server.address() as AddressInfo;
   const host = options.host ?? "127.0.0.1";
   // An IPv6 address goes in brackets in a URL ("http://[::1]:7392").
