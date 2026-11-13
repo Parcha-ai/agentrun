@@ -692,7 +692,8 @@ test("a create of a request in flight that its own signal cuts off is aborted at
 test("a retry whose computer stops while the retry reads it is exists: never answered once it is no longer running", async () => {
 	const requestId = "docker-stops-mid-retry";
 	const name = computerNameFor(requestId);
-	const { provider, calls, alter, proceed } = fakeDocker({ containers: [container({ name })], hold: ["hello"] });
+	// The provider runs as the seeded computer's user, whatever user runs the test.
+	const { provider, calls, alter, proceed } = fakeDocker({ containers: [container({ name })], hold: ["hello"], user: "1000:1000" });
 	const pending = provider.create(SPEC, { requestId });
 	// The retry's run found the name taken, and its attach says hello to the running computer: it stops now.
 	await until(() => calls().some((args) => args[0] === "exec"), "docker exec of hello");
