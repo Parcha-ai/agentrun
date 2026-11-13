@@ -71,7 +71,7 @@ async function open(a: Agent, fake: Fake = {}, props: Partial<LearningProps> = {
     learnedWorkflowRevisions: async (_id: string, name: string) => ({ name, revisions: [], total: 0, truncated: false }),
     learningCost: async () => (fake.cost ?? (async () => ({ agent: a.agent_id, runs: [], total_runs: 0, unknown_cost_runs: 0, unknown_path_runs: 0, summary: { takeover: null, before: null, after: null, times_cheaper: null }, workflows: [] })))(),
     // The loop's reads: none yet unless a test gives them; a failed one leaves its part out.
-    learningPromotions: async () => (fake.promotions ?? (async () => ({ agent: a.agent_id, promotions: [] })))(),
+    learningPromotions: async () => (fake.promotions ?? (async () => ({ agent: a.agent_id, promotions: [], serving: [] })))(),
     learningLoop: async () => (fake.loop ?? (async () => ({ agent: a.agent_id, compiles: [], guards: [] })))(),
     learningEvals: async () => ({ agent: a.agent_id, latest: null, evals: [] }),
     promoteWorkflow: async (_id: string, name: string, key: string) => { calls.push(`promote ${name}`); return (fake.promote ?? (async (n: string) => ({ ...a, agent_id: n, kind: "workflow", definition: { version: 1, name: n, workflow: {}, harness: "pi", skills: [], tools: [] } } as Agent)))(name, key); },

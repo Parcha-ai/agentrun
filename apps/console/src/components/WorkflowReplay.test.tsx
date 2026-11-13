@@ -145,7 +145,7 @@ describe("the workflow card: standing, guards and where it is unsure", () => {
 
   it("says where each revision stands, with its replay in one line; scrubbing moves it", () => {
     const promotions = [record({}), record({ digest: "2".repeat(16), at: "2026-11-03T10:00:00Z", decided: "promote", source: "refit", refit: { from: "1".repeat(16), guards: [{ node: "classify", was: 0.7, threshold: 0.82 }] } })];
-    const host = mount(createElement(Steps, { data: read(REVS2), promotions, loop }));
+    const host = mount(createElement(Steps, { data: read(REVS2), promotions, serving: "2".repeat(16), loop }));
     const standing = () => host.querySelector('[data-testid="standing"]')?.textContent;
     expect(standing()).toContain("Serving");
     expect(standing()).toContain("Refit on 20 graded inputs: workflow 95% vs agent 90% (+5 pts), 2 handed back");
@@ -157,10 +157,22 @@ describe("the workflow card: standing, guards and where it is unsure", () => {
 
   it("an older promoted revision says it served, not that it serves", () => {
     const promotions = [record({}), record({ digest: "2".repeat(16), at: "2026-11-03T10:00:00Z", replay: undefined, source: "dry_run", reason: "promoted on its dry run" })];
-    const host = mount(createElement(Steps, { data: read(REVS2), promotions, loop }));
+    const host = mount(createElement(Steps, { data: read(REVS2), promotions, serving: "2".repeat(16), loop }));
     act(() => (host.querySelector('button[aria-label="Previous revision"]') as HTMLButtonElement).click());
     expect(host.querySelector('[data-testid="standing"]')?.textContent).toContain("Served");
     expect(host.querySelector('[data-testid="standing"]')?.textContent).toContain("Replay on 20 graded inputs");
+  });
+
+  it("champion/challenger: the newest revision replaying or held says so, and the one before it is the one serving", () => {
+    const two = "2".repeat(16);
+    for (const decided of ["replaying", "hold"] as const) {
+      const promotions = [record({}), record({ digest: two, at: "2026-11-03T10:00:00Z", decided, replay: undefined, reason: decided === "hold" ? "worse than the agent" : "replaying on graded inputs" })];
+      const host = mount(createElement(Steps, { data: read(REVS2), promotions, serving: "1".repeat(16), loop }));
+      const standing = () => host.querySelector('[data-testid="standing"]')?.textContent;
+      expect(standing()).toContain(decided === "hold" ? "Held" : "Replaying");
+      act(() => (host.querySelector('button[aria-label="Previous revision"]') as HTMLButtonElement).click());
+      expect(standing()).toContain("Serving");
+    }
   });
 
   it("puts each step's guard on its card and lists its hand-backs and p by grade", () => {

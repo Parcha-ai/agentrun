@@ -83,7 +83,7 @@ export default {
     check(fresh.status === 200 && fresh.body.compiles.length === 0 && fresh.body.guards.length === 0, `a fresh agent's loop read: ${fresh.status} ${JSON.stringify(fresh.body)}`);
     await page.route(new RegExp(`/v2/agents/${enc}/learning$`), async (route) => { const real = await (await route.fetch()).json(); route.fulfill({ json: { ...real, notes: { items: NOTES, total: NOTES.length, next_cursor: null }, workflows: [ITEM] } }); });
     await page.route(new RegExp(`/v2/agents/${enc}/learning/cost(\\?.*)?$`), (route) => route.fulfill({ json: { ...SAMPLE, agent: id } }));
-    await page.route(new RegExp(`/v2/agents/${enc}/learning/promotions$`), (route) => route.fulfill({ json: { agent: id, promotions: PROMOTIONS } }));
+    await page.route(new RegExp(`/v2/agents/${enc}/learning/promotions$`), (route) => route.fulfill({ json: { agent: id, promotions: PROMOTIONS, serving: [{ workflow: WF, digest: D2, replaying: null }] } }));
     await page.route(new RegExp(`/v2/agents/${enc}/learning/loop$`), (route) => route.fulfill({ json: { agent: id, ...LOOP } }));
     await page.route(new RegExp(`/v2/agents/${enc}/learning/workflows/${WF}/revisions(\\?.*)?$`), (route) => route.fulfill({ json: { name: WF, revisions: REVISIONS, total: REVISIONS.length, truncated: false } }));
     const shots = process.env.E2E_SHOTS;
