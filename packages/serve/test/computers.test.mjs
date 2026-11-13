@@ -224,7 +224,8 @@ test("at the claim: a computer this server cannot give is refused in words that 
   assert.equal(await routes.claimRefusal({ kind: "phone", provider: "phone-harness" }), "Phone harness needs PHONE_HARNESS_API_KEY saved: save it in Settings → Computers (PUT /v2/computers/phone-harness/keys)");
   assert.equal(await routes.claimRefusal({ kind: "browser", provider: "e2b" }), "E2B does not serve a browser computer (kind browser is a browser machine, not a linux one; kind browser needs groups cdp, which the provider does not declare; kind browser is a browser machine, not a desktop one): set this agent's computer to one it serves (Settings → Computers)", "servingRefusals' words");
   assert.match(await routes.claimRefusal({ kind: "desktop", provider: "nobody" }), /names the provider nobody, which this server does not have/);
-  assert.equal(await routes.claimRefusal({ kind: "desktop", provider: "orgo" }), "Orgo needs ORGO_API_KEY and ORGO_WORKSPACE_ID saved: save them in Settings → Computers (PUT /v2/computers/orgo/keys)");
+  // ORGO_WORKSPACE_ID is picked, not required: unsaved, the provider uses the key's account's one workspace.
+  assert.equal(await routes.claimRefusal({ kind: "desktop", provider: "orgo" }), "Orgo needs ORGO_API_KEY saved: save it in Settings → Computers (PUT /v2/computers/orgo/keys)");
   await routes.saveKeys("phone-harness", { PHONE_HARNESS_API_KEY: "good-p" });
   assert.equal(await routes.claimRefusal({ kind: "phone", provider: "phone-harness" }), undefined);
 });
@@ -401,4 +402,31 @@ test("a sandbox provider's GPUs show on GET /v2/computers as its configuration d
   assert.equal(await routes.claimRefusal({ kind: "sandbox", provider: "modal" }), undefined, "a Modal sandbox with no GPU is as before");
   const local = (await setup(t)).routes;
   assert.match(await local.claimRefusal({ kind: "sandbox", provider: "docker", gpu: { type: "T4", count: 1 } }), /^Docker can't give this agent's computer its GPUs: this provider offers no GPU/);
+});
+
+test("a picked key (Orgo's workspace): the view lists it under picked, and choices reads its options from the provider made with the saved keys, marking the one saved", async (t) => {
+  const sealKey = randomBytes(32);
+  const { store } = await storeOn(t);
+  const made = [];
+  const workspaces = [{ value: "ws-a", label: "alpha" }, { value: "ws-b", label: "beta" }];
+  const factories = { orgo: async (options) => (made.push(options), { keyChoices: async (option) => (option === "workspaceId" ? { ok: true, value: workspaces } : { ok: false, error: { code: "unsupported", message: option } }) }) };
+  const routes = createComputerRoutes({ store, sealKey, kinds: KINDS, factories, tools, mode: "local" });
+  const orgo = providerOf(await routes.view(), "desktop", "orgo");
+  assert.deepEqual([orgo.required, orgo.picked], [["computer:orgo:ORGO_API_KEY"], ["computer:orgo:ORGO_WORKSPACE_ID"]]);
+  assert.equal(providerOf(await routes.view(), "sandbox", "docker").picked, undefined, "a provider with no picked key has no picked list");
+  // No key saved yet: why, naming the key to save; nothing made.
+  assert.deepEqual(await routes.choices("orgo"), { choices: [{ key: "ORGO_WORKSPACE_ID", why: "Orgo needs ORGO_API_KEY saved: save it in Settings → Computers" }] });
+  assert.deepEqual(made, []);
+  await routes.saveKeys("orgo", { ORGO_API_KEY: "fake-orgo-key" });
+  assert.deepEqual(await routes.choices("orgo"), { choices: [{ key: "ORGO_WORKSPACE_ID", options: workspaces }] });
+  assert.deepEqual(made, [{ apiKey: "fake-orgo-key" }]);
+  // Picked: saved under the key, as any key is, and marked saved among the options.
+  const saved = await routes.saveKeys("orgo", { ORGO_WORKSPACE_ID: "ws-b" });
+  assert.equal(saved.secrets.find((one) => one.name === "computer:orgo:ORGO_WORKSPACE_ID").set, true);
+  assert.deepEqual(await routes.choices("orgo"), { choices: [{ key: "ORGO_WORKSPACE_ID", options: workspaces, saved: "ws-b" }] });
+  assert.deepEqual(await routes.choices("docker"), { choices: [] });
+  assert.equal(await routes.choices("nobody"), undefined);
+  // An account with none: the provider's words.
+  const none = createComputerRoutes({ store, sealKey, kinds: KINDS, factories: { orgo: async () => ({ keyChoices: async () => ({ ok: false, error: { code: "not_found", message: "this Orgo key's account has no workspace: make one at orgo.ai" } }) }) }, tools, mode: "local" });
+  assert.deepEqual(await none.choices("orgo"), { choices: [{ key: "ORGO_WORKSPACE_ID", why: "this Orgo key's account has no workspace: make one at orgo.ai" }] });
 });
