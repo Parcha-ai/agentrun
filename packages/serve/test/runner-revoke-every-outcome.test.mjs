@@ -19,7 +19,7 @@ import { startRunner } from "../dist/runner/runner.js";
 import { sendCommand } from "../dist/runner/commands.js";
 import { archilClaim } from "../dist/workspace/index.js";
 import { cap, SONNET } from "./adapter-pi-cap-support.mjs";
-import { archilControlFetch } from "./archil-control-fake.mjs";
+import { agentDiskStore, archilControlFetch } from "./archil-control-fake.mjs";
 import { closeOpenSessions, piAdapterSpec } from "./conformance-pi-adapter.mjs";
 import { FakeArchilDisk } from "./fixtures/archil-fake.mjs";
 
@@ -32,7 +32,7 @@ const STEADY = { leaseMs: 60_000, renewEveryMs: 20_000, stopMarginMs: 5_000, pol
 /** The runner a case kills, or whose renews it fails: its lease outlasts a loaded machine's stalls (renewed every 150 ms,
  *  so a living runner never loses it), and runs out a few seconds after the kill or the first failed renew. */
 const DIES = { leaseMs: 5_000, renewEveryMs: 150, stopMarginMs: 1_000, pollMs: 20, commandPollMs: 30 };
-const SETTINGS = { diskId: "dsk-00000000000fake0", region: "aws-us-east-1", s3Url: "https://s3.green.us-east-1.aws.prod.archil.com" };
+const SETTINGS = { diskId: "dsk-00000000000fa4e0", region: "aws-us-east-1", s3Url: "https://s3.green.us-east-1.aws.prod.archil.com" };
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 /** `promise`, or a failure named `what` if it has not settled by `ms`: a bound that names the hang, not a wait. */
 function within(promise, what, ms = 20_000) {
@@ -87,6 +87,7 @@ async function revokeRun(t, { script, extra = () => ({}), holdRelease = () => un
     // As the builders make it: the server's settings, the account key, a mount credential for this run and claim epoch.
     const archil = await archilClaim({
       settings: SETTINGS, keys: store.sealedKeys, sealKey: undefined, env: { ARCHIL_API_KEY: "fake-test-key" },
+      run: { agentId: "agent-1", launch: { diskId: SETTINGS.diskId, kind: "agent" }, store: agentDiskStore("agent-1", SETTINGS.diskId) },
       signal: new AbortController().signal, makeDisk: () => new FakeArchilDisk(),
       mount: { runId: claim.runId, epoch: claim.epoch, ttlMs: 60_000, baseUrl: control.baseUrl, fetch: control.fetch },
     });

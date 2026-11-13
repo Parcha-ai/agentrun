@@ -57,6 +57,7 @@ alpha: `bg-primary/10`. Never write a hex value, `rgb()`, `hsl()`, `white`, `bla
 | `ring` | (the global focus rule) | The keyboard focus ring. |
 | `run-active`, `run-error-surface` | `text-run-active`, `bg-run-error` | A working run; a failed run's panel. |
 | `wf-jev`, `wf-parallel`, `wf-openrouter`, `wf-tool`, `wf-exit` | `text-wf-jev` | The workflow graph: who does a step's work. |
+| `chart-agent`, `chart-handed-back`, `chart-workflow` | `fill-chart-agent` | A chart's series, in this order: the path a run took. Marks only; words stay `text-foreground`. |
 
 **A tone is a pair.** The bare name fills, borders and dots. The `-text` name writes words. `text-success` on a
 white page fails contrast; `text-success-text` passes. The same holds for orange: `text-primary` is for a mark on a

@@ -1,8 +1,8 @@
 // A Docker computer's way out to the network when its spec asks for an allowlist ({ allow: [names or CIDRs] }): the
 // computer stays `--network none`, and its own egress proxy runs in a second container the provider makes, reads back
-// and removes with it. Moved from serve's box-egress.ts and rewritten onto the provider: the proxy no longer lives in the
-// process that made the computer, so the computer keeps its network when that process ends, and attach and list read it
-// back from Docker anywhere.
+// and removes with it. The proxy does not live in the process that
+// made the computer, so the computer keeps its network when that process ends, and attach and list read it back from
+// Docker anywhere.
 //
 //  - The volume `<computer>-egress`: a tmpfs of 1 MiB, mode 0700, owned by the computer's uid:gid. The proxy's Unix
 //    socket is made in it; the computer mounts it read-only at EGRESS_MOUNT.

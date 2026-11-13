@@ -82,7 +82,7 @@ export function resolveRunnerLoop(deps: AdapterSpecDeps): (harness: string, laun
       return createAdapterLoop((claim, adapterRun) =>
         runner.record === "loop"
           ? cliRunSpecFromLaunch(launch, adapterRun, deps, claim)
-          : adapterRunSpecFromLaunch(launch, adapterRun, deps, claim));
+          : adapterRunSpecFromLaunch(launch, adapterRun, deps, claim), deps.modelRetry ?? {});
     }
     return undefined;
   };

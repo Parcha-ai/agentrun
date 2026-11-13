@@ -52,8 +52,8 @@ test("SETTING_KINDS is the agreed table: machine kinds, required and optional gr
 	assert.deepEqual(SETTING_KINDS, {
 		none: { machineKinds: [], required: [], optional: [] },
 		sandbox: { machineKinds: ["linux"], required: ["exec", "files", "processes"], optional: [] },
-		desktop: { machineKinds: ["desktop"], required: ["screen", "input.pointer", "input.keys"], optional: ["exec", "files", "processes", "apps", "stream"] },
-		phone: { machineKinds: ["android", "ios"], required: ["screen", "input.touch", "apps"], optional: ["input.keys", "apps.install", "apps.ui_tree", "stream"] },
+		desktop: { machineKinds: ["desktop"], required: ["screen", "input.pointer", "input.keys"], optional: ["exec", "files", "processes", "apps", "ui", "stream"] },
+		phone: { machineKinds: ["android", "ios"], required: ["screen", "input.touch", "apps"], optional: ["input.keys", "apps.install", "ui", "stream"] },
 		browser: { machineKinds: ["browser"], required: ["cdp"], optional: ["stream", "downloads"] },
 	});
 	for (const kind of SETTINGS) {
@@ -88,7 +88,7 @@ test("PROVIDERS is the agreed table of ids, labels, key names, mounts and meteri
 	const key = (name, option, required = true) => ({ name, option, required });
 	assert.deepEqual(rows, [
 		{ id: "docker", label: "Docker", keys: [], metered: false },
-		{ id: "daytona", label: "Daytona", keys: [key("DAYTONA_API_KEY", "apiKey"), key("DAYTONA_API_URL", "apiUrl", false), key("DAYTONA_TARGET", "target", false)], metered: true },
+		{ id: "daytona", label: "Daytona", keys: [key("DAYTONA_API_KEY", "apiKey"), key("DAYTONA_API_URL", "apiUrl", false), key("DAYTONA_TARGET", "target", false), key("DAYTONA_ARCHIL_EGRESS", "archilEgress", false)], metered: true },
 		{ id: "modal", label: "Modal", keys: [key("MODAL_TOKEN_ID", "tokenId"), key("MODAL_TOKEN_SECRET", "tokenSecret")], metered: true },
 		{ id: "e2b", label: "E2B", keys: [key("E2B_API_KEY", "apiKey")], metered: true },
 		{ id: "orgo", label: "Orgo", keys: [key("ORGO_API_KEY", "apiKey"), key("ORGO_WORKSPACE_ID", "workspaceId")], metered: true },
@@ -98,13 +98,20 @@ test("PROVIDERS is the agreed table of ids, labels, key names, mounts and meteri
 		{ id: "local-chrome", label: "Local Chrome", keys: [], metered: false },
 	]);
 	// What is no key: Modal's app (default the server's own), Docker's image made before the first create on this host, and
-	// the phone harness's ledger the server keeps.
-	const extra = Object.fromEntries(PROVIDERS.map(({ id, settings, prepareImage, local, ledger, hostEnv, parked }) => [id, { settings, prepareImage, local, ledger, hostEnv, parked }]));
+	// the ledgers the server keeps: the phone harness's sessions, and Orgo's agents' computers.
+	const extra = Object.fromEntries(PROVIDERS.map(({ id, settings, prepareImage, imageEnv, local, ledger, hostEnv, parked }) => [id, { settings, prepareImage, imageEnv, local, ledger, hostEnv, parked }]));
 	assert.deepEqual(extra.modal.settings, [{ name: "modalApp", option: "app", default: "agentrun" }]);
 	assert.deepEqual([extra.docker.prepareImage, extra.docker.local], [true, true]);
+	// Daytona's image is the operator's snapshot when the server names one (an Archil mount needs box/Dockerfile's); no
+	// other provider declares one.
+	assert.deepEqual(Object.entries(extra).filter(([, one]) => one.imageEnv !== undefined).map(([id, one]) => [id, one.imageEnv]), [["daytona", "AGENTRUN_DAYTONA_SNAPSHOT"]]);
 	assert.deepEqual(extra["phone-harness"].ledger, { option: "ledger" });
+	assert.deepEqual(extra.orgo.ledger, { option: "ledger" });
 	// Local Chrome reads where Chrome is from the server's own environment: the names its findChrome reads, then PATH.
 	assert.deepEqual(extra["local-chrome"].hostEnv, [...CHROME_ENV, "PATH"]);
+	// The cloud browsers read the gateway a server reaches them through.
+	assert.deepEqual(extra.browserbase.hostEnv, ["BROWSERBASE_BASE_URL", "BROWSERBASE_CONNECT_BASE_URL"]);
+	assert.deepEqual(extra.kernel.hostEnv, ["KERNEL_BASE_URL"]);
 	// Orgo offers its Linux desktop; its Windows and macOS desktops are parked, each with why, and offered by no
 	// configuration.
 	assert.deepEqual(extra.orgo.parked.map((one) => one.image), ["windows", "macos"]);
@@ -113,8 +120,8 @@ test("PROVIDERS is the agreed table of ids, labels, key names, mounts and meteri
 	for (const [id, fields] of Object.entries(extra)) {
 		if (id !== "modal") assert.equal(fields.settings, undefined, id);
 		if (id !== "docker") assert.deepEqual([fields.prepareImage, fields.local], [undefined, undefined], id);
-		if (id !== "phone-harness") assert.equal(fields.ledger, undefined, id);
-		if (id !== "local-chrome") assert.equal(fields.hostEnv, undefined, id);
+		if (id !== "phone-harness" && id !== "orgo") assert.equal(fields.ledger, undefined, id);
+		if (!["local-chrome", "browserbase", "kernel"].includes(id)) assert.equal(fields.hostEnv, undefined, id);
 		if (id !== "orgo") assert.equal(fields.parked, undefined, id);
 	}
 	const kinds = Object.fromEntries(PROVIDERS.map((entry) => [entry.id, entry.kinds]));
@@ -196,6 +203,8 @@ test("a descriptor is checked when it is defined: its id, keys, settings and con
 		[{ network: ["vpn"] }, /network is not a list of the network forms/],
 		[{ load: "./acme.js" }, /load is not a function/],
 		[{ ledger: {} }, /ledger names the option it fills/],
+		[{ imageEnv: "acme image" }, /imageEnv is an environment variable name/],
+		[{ imageEnv: "" }, /imageEnv is an environment variable name/],
 		[{ hostCommand: { command: "/usr/bin/adb", from: "Android platform-tools" } }, /hostCommand's command is a program's name, with no path/],
 		[{ hostCommand: { command: "adb", from: " " } }, /hostCommand says in words what installs it/],
 		[{ hostCommand: { command: "adb", from: "Android platform-tools", builds: ["linux x64"] } }, /hostCommand's builds are machines as Node names them/],
@@ -246,9 +255,10 @@ test("a built provider's capabilities, in each configuration, are its entry's st
 	for (const [id, builds] of Object.entries(BUILT)) {
 		const entry = PROVIDERS.find((one) => one.id === id);
 		const built = builds.map((build) => build().capabilities());
-		// Each configuration's kind, groups and GPUs are its entry's (an image and create() options are the descriptor's alone).
-		const shape = ({ kind, groups, gpu }) => ({ kind, groups, ...(gpu === undefined ? {} : { gpu }) });
-		assert.deepEqual(built.map(shape), entry.capabilities.map(shape), `${id}: each configuration's kind, groups and GPUs`);
+		// Each configuration's kind, groups, GPUs and persistence are its entry's (an image and create() options are the
+		// descriptor's alone): Settings offers a persistent computer only where the built provider keeps one.
+		const shape = ({ kind, groups, gpu, persistence }) => ({ kind, groups, ...(gpu === undefined ? {} : { gpu }), ...(persistence === undefined ? {} : { persistence }) });
+		assert.deepEqual(built.map(shape), entry.capabilities.map(shape), `${id}: each configuration's kind, groups, GPUs and persistence`);
 		// Each configuration's network is among its entry's, and together they are all of it (Orgo: Linux none, Windows open).
 		for (const { network } of built) assert.ok(network.every((form) => entry.network.includes(form)), `${id}: ${network} is among ${entry.network}`);
 		assert.deepEqual([...new Set(built.flatMap(({ network }) => network))].sort(), [...entry.network].sort(), `${id}: its configurations make every form its entry declares`);

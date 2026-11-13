@@ -64,6 +64,7 @@ export default {
         "run-active": hsl("run-active"),
         "run-error": hsl("run-error-surface"),
         wf: { jev: hsl("wf-jev"), parallel: hsl("wf-parallel"), openrouter: hsl("wf-openrouter"), tool: hsl("wf-tool"), exit: hsl("wf-exit") },
+        chart: { agent: hsl("chart-agent"), "handed-back": hsl("chart-handed-back"), workflow: hsl("chart-workflow") },
       },
       spacing: { sidebar: "var(--sidebar-width)", "control-sm": "var(--control-sm)", "control-md": "var(--control-md)", "control-lg": "var(--control-lg)" },
       maxWidth: { page: "var(--page-width)", "page-wide": "var(--page-width-wide)" },

@@ -1,7 +1,7 @@
 // The runner's end-of-run metrics mapping (runner/metrics.ts): the run's StoredMetrics and cost from its journal, the old
 // per-run end path (runs.ts storedMetrics + costOf) moved onto the runner. The token, request and tool counts are the
 // timeline's own; the cost is the run's usage row; effort and model enrich the count as storedMetrics did. The entries
-// are shaped as pi writes them (mirroring pi-durable-agent's agent-store-metrics fixtures).
+// are shaped as pi writes them.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { REQUEST_COST } from "../dist/timeline/index.js";
@@ -58,6 +58,33 @@ test("bookedSpend counts a request the booking holds no answer for yet (no runne
   // Once it is booked, it is counted at its cost.
   const answered = [...entries, e(7, 5, "runner.turn", { turn: 2, usd: 0.001, bookedUsd: 0.001, usage: { input: 2, output: 1, cacheRead: 0, cacheWrite: 0 }, rule: "answered" })];
   assert.deepEqual(bookedSpend(answered, "model"), { usd: 0.003, known: 0.003, unpriced: 0, requests: 2, unmetered: 0, models: { "claude-haiku-5-5": 2 }, tokens: { input: 12, output: 6, cacheRead: 0, cacheWrite: 0 } });
+});
+
+test("an agent run's end cost counts its decisions beside its model requests and paid tool calls, and stays unknown when any part is (LS-07)", async () => {
+  const { runEndCost } = await import("../dist/runner/metrics.js");
+  assert.equal(runEndCost({ model: 0.01, paid: 0.002, decisions: 0.00003 }), 0.01 + 0.002 + 0.00003, "a run that spent on a decision shows it in its row cost");
+  assert.equal(runEndCost({ model: 0.01, paid: 0, decisions: null }), null, "a decision of unknown cost leaves the run's unknown");
+  assert.equal(runEndCost({ model: null, paid: 0, decisions: 0.001 }), null);
+  assert.equal(runEndCost({ model: 0.01, paid: null, decisions: 0 }), null);
+  assert.equal(runEndCost({ model: 0, paid: 0, decisions: 0 }), 0);
+});
+
+test("a run's decisions are their own session's spend, never its model requests': bookedSpend's model sum leaves DECISION_SESSION out, so a run's cost counts a decision once (LS-07)", async () => {
+  const { bookedSpend, runEndCost } = await import("../dist/runner/metrics.js");
+  const e = (conversationId, id, kind, data) => ({ conversationId, id, kind, data });
+  const entries = [
+    e(1, 1, "agentrun.session.key", { key: "harness", conversation: 7 }),
+    e(1, 2, "agentrun.session.key", { key: "decisions", conversation: 8 }),
+    e(7, 3, "runner.request", { turn: 1, model: "claude-haiku-5-5" }),
+    e(7, 4, "runner.turn", { turn: 1, usd: 0.002, bookedUsd: 0.002 }),
+    e(8, 5, "runner.request", { turn: 1, model: "jev" }),
+    e(8, 6, "runner.turn", { turn: 1, usd: 0.00002, bookedUsd: 0.00002 }),
+  ];
+  const model = bookedSpend(entries, "model").usd;
+  const decisions = bookedSpend(entries, "decisions").usd;
+  assert.equal(model, 0.002, "the model sum holds no decision");
+  assert.equal(decisions, 0.00002);
+  assert.equal(runEndCost({ model, paid: 0, decisions }), 0.002 + 0.00002, "counted once");
 });
 
 test("bookedSpend reads an answer with no price of its own as a cost unknown, never the hold the cap booked it at ($0 with no cap)", async () => {

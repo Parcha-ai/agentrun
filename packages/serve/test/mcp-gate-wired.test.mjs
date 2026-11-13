@@ -132,7 +132,23 @@ for (const harness of HARNESSES) {
     assert.equal(calls(fake).length, 1, "run exactly once");
   });
 
-  test(`${harness}: mcp:fake/* set to allow runs the call once with no one asked`, { timeout: 240_000 }, async (t) => {
+  test(`${harness}: a call parked on its person, its tool then set to allow, is answered by the setting at the run's next claim: it runs once and its approval row reads allowed by the setting`, { timeout: 240_000 }, async (t) => {
+    const { api, fake, answer, run } = await setup(t, harness);
+    const runId = await run(`flip-${harness}`);
+    await follow(api, runId, ["input_required"], { deadlineMs: 180_000 });
+    const pending = (await api("GET", `/runs/${runId}`)).body.pending;
+    assert.equal(calls(fake).length, 0, "nothing sent while it waits");
+    assert.equal((await api("PUT", "/settings/tools", { "mcp:fake/*": { permission: "allow" } })).status, 200);
+    // A flip alone wakes no run: the claim the person's answer starts is the one that finds the setting at allow.
+    assert.equal(await answer(runId, pending.id, { decision: "allow" }), 204);
+    const { rows } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 180_000 });
+    assert.match(await answerOf(api, runId), /5/);
+    assert.equal(calls(fake).length, 1, "run exactly once");
+    const shown = JSON.stringify(rows.map((r) => `${r.kind}: ${r.summary}`));
+    assert.deepEqual(rows.filter((r) => r.kind === "tool_approval_requested").map((r) => r.summary.split(":")[0]), ["Allowed by the tool's setting"], shown);
+  });
+
+  test(`${harness}: mcp:fake/* set to allow runs the call once with no one asked`,{ timeout: 240_000 }, async (t) => {
     const { api, fake, run } = await setup(t, harness);
     assert.equal((await api("PUT", "/settings/tools", { "mcp:fake/*": { permission: "allow" } })).status, 200);
     const runId = await run(`allow-${harness}`);

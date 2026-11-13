@@ -53,7 +53,7 @@ test("the prompt asks for the notes in the answer, one ```note block each, in th
 test("asked for a skill's job as a workflow draft (draftFor), the prompt gains exactly one line naming the skill; without it, none", () => {
   const plain = reflectPrompt({ dir: DIR, active: 0, tools: ["read"] });
   const asked = reflectPrompt({ dir: DIR, active: 0, tools: ["read"], draftFor: ["weekly-report"] });
-  const line = "Your skill `weekly-report` has now served 3 or more runs: this time, also keep its job as a workflow draft named `weekly-report`, its steps as nodes, if the job runs end to end as model and tool-call steps.";
+  const line = "Your skill `weekly-report` has now served 3 or more runs: this time, also keep its job as a workflow draft named `weekly-report`, its steps as nodes, if the job runs end to end as model and tool-call steps. Its output is the job's answer in the output format the skill gives: its last node writes it, and `output` names that node's text.";
   const extra = asked.split("\n").filter((one) => !plain.split("\n").includes(one));
   assert.deepEqual(extra, [line], "one extra line, and nothing else changes");
   assert.equal(asked.split("\n").length, plain.split("\n").length + 1);
@@ -145,4 +145,17 @@ test("what a note says is the checker's to judge: a parsed answer's notes go to 
   assert.equal(parsed.ok, true);
   const checked = checkProposal({ base: baseOf(), changes: parsed.notes.map(({ file, text }) => added(file, text)) });
   assert.deepEqual(checked.problems.map((p) => [p.rule, p.path]), [["outside", "../outside.md"], ["note", "ok.md"]], "the index is the host's, and ignored");
+});
+
+test("a run with decision providers is told a workflow draft may use judge, pick and sift nodes on its decision provider; a run with none (or only a denied one) keeps the ban, and neither may use a code node", () => {
+  const ban = "no judge, pick or sift node";
+  const none = reflectPrompt({ dir: DIR, active: 0, tools: ["read"] }).replace(/\s+/g, " ");
+  assert.ok(none.includes(ban), "no decisions: the ban stays");
+  assert.ok(reflectPrompt({ dir: DIR, active: 0, tools: ["read"], decisions: { providers: {}, default: "jev" } }).replace(/\s+/g, " ").includes(ban), "decisions with no provider: the ban stays");
+  assert.ok(reflectPrompt({ dir: DIR, active: 0, decisions: { providers: { jev: {} }, default: "jev", gated: { jev: "deny" } } }).replace(/\s+/g, " ").includes(ban), "its only provider denied: the ban stays");
+  for (const decisions of [{ providers: { jev: {} }, default: "jev" }, { providers: { jev: {} }, default: "jev", gated: { jev: "ask" } }]) {
+    const allowed = reflectPrompt({ dir: DIR, active: 0, tools: ["read"], decisions }).replace(/\s+/g, " ");
+    assert.ok(!allowed.includes(ban), allowed);
+    assert.match(allowed, /may use judge \(.+\), pick \(.+\) and sift \(.+\) nodes, which run on this run's decision provider under its cap and tool policy; no code node, no shell or executor call\./);
+  }
 });

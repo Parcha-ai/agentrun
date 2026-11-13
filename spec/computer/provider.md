@@ -87,6 +87,7 @@ that the server, Settings and the conformance suite all read the same declaratio
 | `capabilities` | One entry per configuration it offers: a machine kind and its groups, as each built provider's `capabilities()` declares. At least one. |
 | `defaultImage?` | The image a computer of each setting kind starts from when its setting names none. A kind with no entry has no default, and the caller refuses the setting in words. |
 | `prepareImage?` | Its providers have `prepareImage()`: the image is built or pulled before the first create. |
+| `imageEnv?` | The server's environment variable that, when set, names the image every computer of the provider starts from in place of `defaultImage` (Daytona's `AGENTRUN_DAYTONA_SNAPSHOT`). The provider's `check()` still judges it. |
 | `local?` | Its computers run on this machine's container engine, so the server passes it its local host options. |
 | `ledger?` | `{ option }`: `create()` takes a ledger the server keeps for it in that option (the phone harness's sessions). |
 | `load()` | Imports the provider module on demand: its `create()` and its conformance module. |

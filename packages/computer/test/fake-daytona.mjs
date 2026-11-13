@@ -106,7 +106,9 @@ const abortError = (signal) => signal?.reason ?? new DOMException("This operatio
  * - `hang`: [{ method, path: RegExp, times? }]: never answer, until the request's signal aborts; for the first `times`
  *   matches when given, else every one.
  * - `readBack(sandbox)`: fields merged over each single read; `listBack(item)`: over each listed item.
- * - `uploadStatus`: the daemon upload's answer. `install`: { exitCode, result } of the install script, or `installSha`.
+ * - `uploadStatus`: the daemon upload's answer. `olderToolbox`: the toolbox has no files/upload-v2 (404, the router's own
+ *   text) and serves files/upload with the same form, as the open daemon does (daytonaio/daytona@b5a5d9e7
+ *   apps/daemon/pkg/toolbox/server.go:191). `install`: { exitCode, result } of the install script, or `installSha`.
  * - `initFails`: init writes that to stderr and exits 1. `bridgeStderr`: a line the bridge writes to stderr at start.
  * - `hello`, `status`, `cwd`, `exe`, `interfaces` (its own /proc/self/net/dev, default the loopback alone): what the
  *   daemon reports. `echoInput`: input is echoed to stdout, as with
@@ -339,7 +341,8 @@ export function fakeDaytona(initial = {}) {
 	async function toolbox(method, sb, rest, url, body) {
 		const box = inside.get(sb.id);
 		if (sb.state !== "started") return json(409, { statusCode: 409, message: `sandbox ${sb.id} is ${sb.state}` });
-		if (method === "POST" && rest === "files/upload-v2") {
+		if (method === "POST" && rest === (knobs.olderToolbox ? "files/upload-v2" : "files/upload")) return new Response("404 page not found", { status: 404 });
+		if (method === "POST" && rest === (knobs.olderToolbox ? "files/upload" : "files/upload-v2")) {
 			if (knobs.uploadStatus) return json(knobs.uploadStatus, { statusCode: knobs.uploadStatus, message: "upload refused by the fake" });
 			const file = body.get("file");
 			box.files.set(url.searchParams.get("path"), Buffer.from(await file.arrayBuffer()));

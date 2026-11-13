@@ -34,6 +34,8 @@ const ARCHIL_SETTINGS = {
 	COMPUTER_ARCHIL_S3_URL: "https://s3.green.us-east-1.aws.prod.archil.com",
 };
 const readBack = (epoch = EPOCH) => ({ kind: "archil", disk: MOUNT.disk, region: MOUNT.region, folder: MOUNT.folder, exclusive: true, epoch });
+/** The mount as the spec tag records it: its source, its folder's agent (the run is the run label's) and its epoch. */
+const tagged = (epoch = EPOCH) => ({ disk: MOUNT.disk, region: MOUNT.region, agent: "a1", epoch });
 
 const dir = mkdtempSync(join(tmpdir(), "computer-modal-archil-"));
 const BINARY_PATH = join(dir, "computerd");
@@ -58,14 +60,14 @@ const verbsOf = (fake, id) => fake.rootRuns.filter((run) => run.sandbox === id).
 const newest = (fake) => [...fake.sandboxes.values()].at(-1);
 
 /** An Archil computer as create leaves one, seeded straight into the fake. */
-const seededArchil = ({ name = "computer-0123456789ab", epoch = EPOCH, mountEpoch = epoch, run = RUN, box = {}, running = true, network = "none" } = {}) => ({
+const seededArchil = ({ name = "computer-0123456789ab", epoch = EPOCH, mountEpoch = epoch, run = RUN, box = {}, running = true } = {}) => ({
 	tags: {
 		"agentrun.run": run,
 		"agentrun.epoch": String(epoch),
 		[COMPUTER]: "1",
 		[NAME]: name,
 		[DEADLINE]: new Date(Date.now() + 600_000).toISOString(),
-		[SPEC_TAG]: JSON.stringify({ image: IMAGE, user: "2510:2510", network, cpus: 2, memoryMb: 4096, workdir: "/work", runtime: "vm", mount: readBack(mountEpoch) }),
+		[SPEC_TAG]: JSON.stringify({ image: IMAGE, user: "2510:2510", cpus: 2, memoryMb: 4096, workdir: "/work", mount: tagged(mountEpoch) }),
 	},
 	running,
 	box: { uid: 2510, gid: 2510, network: "none", mounted: { disk: MOUNT.disk, region: MOUNT.region, folder: MOUNT.folder }, served: true, ...box },
@@ -106,6 +108,37 @@ test("Modal check(): an Archil spec takes network none, the run and epoch labels
 	assert.deepEqual(fake.calls, [], "no SDK call");
 });
 
+test("Modal's 512 bytes of tags: qa36's Archil computer and one of the longest agent id fit; past the bound check() refuses in words, before any SDK call", async () => {
+	const bytesOf = (tags) => Object.entries(tags).reduce((sum, [key, value]) => sum + Buffer.byteLength(key) + Buffer.byteLength(value), 0);
+	const archilSpec = (agent, image) => {
+		const run = "01a1d0b9-3e8b-7352-9497-a407e2909f53";
+		return { ...SPEC, image, labels: { "agentrun.run": run, "agentrun.epoch": "1" }, mount: { ...MOUNT, folder: `agents/${agent}/runs/${run}/work` } };
+	};
+	// qa36's (533 bytes of tags with the network, runtime, mount kind and hold, and the whole folder in the spec tag), and
+	// the longest agent id an agent may have on the default image.
+	for (const spec of [archilSpec("qa35e-modal-mwdsumo1", "registry.example/agentrun-archil:qa36"), archilSpec("a".repeat(128), "debian:bookworm-slim")]) {
+		const { provider, fake } = setup();
+		assert.deepEqual(provider.check(spec), []);
+		const created = await provider.create(spec);
+		assert.equal(created.ok, true, JSON.stringify(created));
+		const { tags } = createdParams(fake);
+		assert.ok(bytesOf(tags) <= 512, `${bytesOf(tags)} bytes of tags`);
+		const listed = await provider.list({ "agentrun.run": spec.labels["agentrun.run"] });
+		assert.deepEqual(listed.value[0].mount, { kind: "archil", disk: MOUNT.disk, region: MOUNT.region, folder: spec.mount.folder, exclusive: true, epoch: 1 }, "list rebuilds the folder from the recorded agent and the run label");
+	}
+	// Past the bound: refused at check() and create, never sent to Modal to refuse.
+	const { provider, fake } = setup();
+	const over = archilSpec("a".repeat(128), `registry.example/agentrun-archil@sha256:${"b".repeat(64)}`);
+	const refusals = provider.check(over);
+	assert.equal(refusals.length, 1, JSON.stringify(refusals));
+	assert.equal(refusals[0].field, "mount");
+	assert.match(refusals[0].message, /a Modal sandbox's tags come to at most 512 bytes, names and values together, and this computer's would come to \d+ \(.*agentrun\.computer\.spec \d+.*\): give a shorter image, mount folder or labels/);
+	noToken(refusals, "the refusal of the tags' size");
+	const created = await provider.create(over);
+	assert.equal(created.error?.code, "refused");
+	assert.deepEqual(fake.calls, [], "no SDK call");
+});
+
 test("Modal create of an Archil computer: preflight, the takeover, mount with the token on stdin, serve and the gate, as root through exec, before init starts; then the read-back", async () => {
 	const { provider, fake } = setup();
 	const created = await provider.create(SPEC);
@@ -120,11 +153,9 @@ test("Modal create of an Archil computer: preflight, the takeover, mount with th
 	assert.ok(at > 0, `the entrypoint waits for the gate: ${JSON.stringify(params.command)}`);
 	assert.equal(params.command[at + 1], ARCHIL_GATE);
 	assert.deepEqual(params.command.slice(params.command.indexOf("init")), ["init", "--deadline", params.tags[DEADLINE], "--user", "2510:2510", "--own-network"]);
-	// The spec tag records the mount as it reads back, never the token.
+	// The spec tag records the mount's disk, region, folder and epoch, never the token.
 	const recorded = JSON.parse(params.tags[SPEC_TAG]);
-	assert.deepEqual(recorded.mount, readBack());
-	assert.equal(recorded.user, "2510:2510");
-	assert.equal(recorded.network, "none");
+	assert.deepEqual(recorded, { image: IMAGE, user: "2510:2510", cpus: 2, memoryMb: 4096, workdir: "/work", mount: tagged() });
 
 	const { id } = newest(fake);
 	assert.deepEqual(eventsOf(fake, id), [
@@ -280,7 +311,7 @@ test("Modal connect: an Archil computer's client syncs after each call that may 
 						[COMPUTER]: "1",
 						[NAME]: "computer-0123456789ab",
 						[DEADLINE]: new Date(Date.now() + 600_000).toISOString(),
-						[SPEC_TAG]: JSON.stringify({ image: "debian:bookworm-slim", user: "1000:1000", network: "none", cpus: 2, memoryMb: 4096, workdir: "/work", runtime: "vm" }),
+						[SPEC_TAG]: JSON.stringify({ image: "debian:bookworm-slim", user: "1000:1000", cpus: 2, memoryMb: 4096, workdir: "/work" }),
 					},
 					box: { network: "none" },
 				},
@@ -318,7 +349,7 @@ test("Modal: the agentrun.mount label is the provider's own, as on Daytona and E
 						[COMPUTER]: "1",
 						[NAME]: "computer-0123456789ab",
 						[DEADLINE]: new Date(Date.now() + 600_000).toISOString(),
-						[SPEC_TAG]: JSON.stringify({ image: "debian:bookworm-slim", user: "1000:1000", network: "none", cpus: 2, memoryMb: 4096, workdir: "/work", runtime: "vm" }),
+						[SPEC_TAG]: JSON.stringify({ image: "debian:bookworm-slim", user: "1000:1000", cpus: 2, memoryMb: 4096, workdir: "/work" }),
 					},
 					box: { network: "none" },
 				},
@@ -375,7 +406,7 @@ test("Modal list: an Archil computer's mount as its spec tag records it, under i
 	assert.ok("other" in drifted.value[0].mount, `a recorded epoch that is not the label's is a mount in words: ${JSON.stringify(drifted.value[0].mount)}`);
 	assert.equal(fake.rootRuns.length, 0, "list execs nothing");
 
-	const plain = setup({}, { sandboxes: [{ tags: { [COMPUTER]: "1", [NAME]: "computer-0123456789ab", [SPEC_TAG]: JSON.stringify({ image: "x", user: "1000:1000", network: "none", cpus: 2, memoryMb: 4096, workdir: "/work", runtime: "vm" }) } }] });
+	const plain = setup({}, { sandboxes: [{ tags: { [COMPUTER]: "1", [NAME]: "computer-0123456789ab", [SPEC_TAG]: JSON.stringify({ image: "x", user: "1000:1000", cpus: 2, memoryMb: 4096, workdir: "/work" }) } }] });
 	const none = await plain.provider.list({});
 	assert.equal(none.value[0].mount, undefined);
 });

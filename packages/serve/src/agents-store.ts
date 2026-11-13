@@ -1,5 +1,4 @@
-// The agents this server holds, over the one store (store.agents); pi-durable-agent's agent-store.ts bodyOf and revisionOf
-// are folded into store/agent-body.ts. An agent is a
+// The agents this server holds, over the one store (store.agents); the body check is store/agent-body.ts. An agent is a
 // row with revisions written once; a definition is one revision; an edit commits the next and makes it current. A
 // revision's body is checked by store/agent-body.ts before anything is written; its skill texts ride on the revision's row.
 // The one server per store (the owner lock) is the sole writer of agents and revisions, so a read-then-write here is not
@@ -130,7 +129,7 @@ function revisionInputOf(definition: Json, files: Record<string, string>): Revis
   // A workflow keeps its approvals too ("never": it runs unattended), so its call nodes are checked with them (runnable.ts,
   // permissionOf with the revision's approvals): a call node on a tool set to ask runs under never, as on main.
   if (isObject(definition.workflow)) return { kind: "workflow", workflow: definition.workflow, ...(definition.approvals === "never" ? { approvals: "never" as const } : {}), ...common, ...capped };
-  const learning = typeof definition.learning === "boolean" ? { learning: definition.learning } : {};
+  const learning = typeof definition.learning === "boolean" || definition.learning === "notes" ? { learning: definition.learning as boolean | "notes" } : {};
   return {
     kind: "agentic",
     instructions: definition.instructions as string,
@@ -407,7 +406,7 @@ export function definitionOf(agent: AgentRow, revision: RevisionRow, version: nu
 export function agentView(
   entry: AgentEntry,
   origin: string,
-  extra: { signIns?: readonly object[]; learning?: { pending: number }; runs?: { count: number; live: number } } = {},
+  extra: { signIns?: readonly object[]; learning?: { pending: number }; runs?: { count: number; live: number }; ownComputer?: Record<string, unknown> | null } = {},
 ) {
   const { agent, revision } = entry;
   const body = (revision?.body ?? {}) as Body;
@@ -424,6 +423,8 @@ export function agentView(
     skills: Object.entries(body.skills ?? {}).map(([path, sha]) => ({ path, sha256: sha, size_bytes: entry.sizes.get(sha) ?? null })),
     sign_ins: extra.signIns ?? [],
     runs: extra.runs ?? { count: 0, live: 0 },
+    // Its own computer, kept between runs where its setting is persistent: the provider, the computer and its state.
+    own_computer: extra.ownComputer ?? null,
     region: "local",
     home_etag: etagOf(entry),
     archived_at: agent.archivedAt == null ? null : new Date(agent.archivedAt).toISOString(),

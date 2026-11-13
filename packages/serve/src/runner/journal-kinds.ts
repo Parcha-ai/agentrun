@@ -34,7 +34,7 @@ export const KINDS = {
    *  a call nor a message, so the reader passes over it. */
   messageSending: "agentrun.message.sending",
   /** A pi input the person did not type (a trigger's message): pi's user entry under the host's kind, its `data.origin`
-   *  the Timeline's attribution (pi-durable-agent's originMatcher reads a host's user entry's own origin). The model
+   *  the Timeline's attribution (the timeline reads a host's user entry's own origin). The model
    *  reads it as any message. */
   input: "agentrun.input",
   /** A tool call the gate asked a person about: the run parks on it. */
@@ -249,7 +249,7 @@ export interface AnswerData {
   readonly note?: string;
   /** "message": a deny a person's message gave while the call waited (the message route's deny row), which its approval
    *  row reads as "Declined by your message". Absent for an answer given directly. */
-  readonly by?: "message";
+  readonly by?: "message" | "setting";
   /** The allow a stop overrode (main's ApprovalAnswer.superseded): the call was approved but had not finished when its
    *  run was stopped, so the stop withdrew it. Kept as it was given. */
   readonly superseded?: { readonly decision: "allow"; readonly answeredAt?: string };
@@ -297,8 +297,9 @@ export interface EndData {
   /** How the run ended beside its state (the store's RunOutcome): an escalation's 'escalated'; a stopped end's 'stopped'
    *  (a person's stop: the turn is over, not the run) or 'cancelled' (stopEnd). */
   readonly outcome?: "completed" | "escalated" | "stopped" | "cancelled";
-  /** What the run cost, as its end knows it. */
-  readonly costUsd?: number;
+  /** What the run cost, as its end knows it: null when unknown, which clears a cost an earlier end of the run stored (a
+   *  follow-up's end). Absent: the stored cost is left as it is. */
+  readonly costUsd?: number | null;
   /** The run's metrics (the old StoredMetrics JSON). */
   readonly metrics?: unknown;
   /** A completed workflow run's output: the value at its workflow's output path (readWorkflowRun's `output`, null when it

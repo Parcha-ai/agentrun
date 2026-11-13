@@ -617,6 +617,9 @@ const FILTERED_DRAIN_MS = 5_000;
  *  and the first fields of its data, which a stop can be read from when the event's line is longer than either window. */
 const LINE_START = 16 * 1024;
 const LINE_STARTS = 4;
+/** The provider's word on asking again that an error answer passes on to the client (pi-ai's provider retry reads them,
+ *  as the OpenAI and Anthropic SDKs do): how long to wait, and whether to retry at all. */
+const RETRY_HEADERS = ["retry-after", "retry-after-ms", "x-should-retry"] as const;
 
 /** A response header that names the request: the provider's `request-id` (`x-request-id`), or a gateway's own call id
  *  (LiteLLM's `x-litellm-call-id`, the id its spend log records; `llm_provider-request-id`, the provider's passed on). */
@@ -1256,7 +1259,16 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       }
       began = { ok: upstream.ok, status: upstream.status };
       const contentType = upstream.headers.get("content-type") ?? "application/json";
-      res.writeHead(upstream.status, { "content-type": contentType });
+      const sentHeaders: Record<string, string> = { "content-type": contentType };
+      // An error answer keeps the provider's word on asking again (RETRY_HEADERS): the client's own retry of a 429 or a
+      // 5xx waits as long as the provider asked, not its own guess.
+      if (!upstream.ok) {
+        for (const name of RETRY_HEADERS) {
+          const value = upstream.headers.get(name);
+          if (value !== null) sentHeaders[name] = value;
+        }
+      }
+      res.writeHead(upstream.status, sentHeaders);
       const decoder = new TextDecoder();
       // The provider's own words in an error reach the harness with the credential this proxy sent, and the values of the
       // headers it added, cut out, then the host's redactor (errorCut): an error answer, or an error event in a stream. The
