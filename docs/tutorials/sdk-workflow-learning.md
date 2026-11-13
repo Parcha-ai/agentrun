@@ -2,7 +2,7 @@
 
 The [Claude Agent SDK](claude-sdk-learning.md) and [Codex SDK](codex-sdk-learning.md) wrappers can supply more than notes and skills. With an explicit MCP bridge, an accepted workflow can call your backend's existing tool callbacks on a later request. Your application still starts the job, owns its native SDK client, and supplies its tool permissions and credentials.
 
-This requires the client and server from the same reviewed development checkout. Build the DSL and client packages, and install their checkout versions alongside `@modelcontextprotocol/sdk` in your backend. The workflow entry point uses the DSL interpreter and MCP SDK; the notes-and-skills wrappers do not require a bridge.
+This requires the client and server from the same reviewed development checkout. Build the DSL and client packages, and install their checkout versions alongside `@modelcontextprotocol/sdk` in your backend. Your backend imports the DSL interpreter and supplies its inspection, execution and schema-resolution functions through the bridge's required `engine` option. The client stays an API surface and imports no workflow engine. The MCP entry point uses the MCP SDK; the notes-and-skills wrappers do not require a bridge.
 
 ## How MCP fits in
 
@@ -35,8 +35,10 @@ Expose the tools a learned workflow may call, using their canonical MCP names an
 
 ```ts
 import { createWorkflowMcpBridge } from '@parcha/agentrun-client/workflows';
+import * as workflowEngine from '@parcha/agentrun-dsl';
 
 const workflows = await createWorkflowMcpBridge({
+  engine: workflowEngine, // The backend explicitly owns and installs its interpreter.
   tools: [{
     name: 'mcp:release/release_status',
     description: 'Read the current release status for a service.',
@@ -52,6 +54,8 @@ const workflows = await createWorkflowMcpBridge({
   maxDurationMs: 60_000,
 });
 ```
+
+The bridge captures the engine functions, tool callbacks and host adapters at setup. It supplies its guarded `runEffect`, `runNode` and `runJudge` callbacks to the interpreter; the engine must use those callbacks for execution. Supplying an engine does not grant another tool or bypass the backend policy, schema checks, budgets or cancellation. If you provide model or judgment adapters, their request types are inferred from the supplied engine.
 
 `execute(args, context)` receives `signal`, `runId`, `workflow`, and `idempotencyKey`. Honor cancellation and keep the callback's existing authorization and side-effect protections. A permission requiring confirmation must not silently become `allow`; this bridge does not supply an approval dialog. Unknown tool pricing can leave a proposed workflow pending owner review. Do not declare a metered API free just to get it accepted.
 

@@ -4,10 +4,9 @@ import { createInterface } from 'node:readline';
 import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { pathToFileURL } from 'node:url';
 import { discoverNative, nativeIdentity, verifyNative } from './discovery.js';
 import { nativeEnvironment } from './environment.js';
 import { openNativeSession } from './runtime.js';
@@ -155,6 +154,7 @@ function timeout(value:unknown):number {
  return value as number;
 }
 
-if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
+// The installed package requires Node >=24.22.3: this stays symlink-safe without repository scripts.
+if (import.meta.main) {
  await runRemoteWorkerBridge();
 }

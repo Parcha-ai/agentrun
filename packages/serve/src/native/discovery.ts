@@ -5,6 +5,8 @@ import { dirname, join, resolve, delimiter, basename } from "node:path";
 import { homedir, hostname } from "node:os";
 import { spawn } from "node:child_process";
 import { ApiError } from "../errors.js";
+import { NATIVE_MINIMUM_VERSION, NATIVE_RUNTIME_FACTS, NATIVE_RUNTIMES } from "./runtimes.js";
+export { NATIVE_MINIMUM_VERSION } from "./runtimes.js";
 import type { NativeBinding, NativeRuntime, NativeSelector, NativeTarget } from "./types.js";
 
 const hash = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
@@ -16,7 +18,7 @@ const filesIn = async (path: string) => { try { return (await readdir(path, { wi
 
 /** Minimum installed CLI versions whose native JSON/resume/permission interfaces this bridge supports.
  * New major releases and prereleases require explicit compatibility validation before launch. */
-export const NATIVE_MINIMUM_VERSION = Object.freeze({ "claude-code": "2.1.322", codex: "0.167.2" } as const);
+// The minimums come from the native protocol registry; discovery remains their public export.
 
 function supportedVersion(runtime: NativeRuntime, version: string | null): boolean {
   if(!version || !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(version))return false;
@@ -30,7 +32,7 @@ export class NativeDiscoveryError extends ApiError {
 
 /** Resolve only through the supplied native PATH. Never substitutes a bundled managed runtime. */
 export async function nativeExecutable(runtime: NativeRuntime, env: NodeJS.ProcessEnv = process.env): Promise<string | null> {
-  const binary = runtime === "claude-code" ? "claude" : "codex";
+  const binary = NATIVE_RUNTIME_FACTS[runtime].binary;
   for (const dir of (env.PATH || "").split(delimiter)) {
     if (!dir) continue;
     const path = resolve(dir, binary);
@@ -62,7 +64,7 @@ export async function discoverNative(options: { project: string; runtime?: Nativ
   catch { throw new NativeDiscoveryError(); }
   let machine = hostname(); try { machine = (await readFile("/etc/machine-id", "utf8")).trim(); } catch { /* hostname fallback */ }
   const machine_id = hash(machine), targets: NativeTarget[] = [];
-  for (const runtime of options.runtime ? [options.runtime] : ["claude-code", "codex"] as NativeRuntime[]) {
+  for (const runtime of options.runtime ? [options.runtime] : NATIVE_RUNTIMES) {
     const binary = await nativeExecutable(runtime, env);
     const versionResult = binary ? await nativeMetadata(binary, ["--version"], project, env) : null;
     const version = versionResult?.code === 0 ? versionResult.stdout.match(/(?:^|\s)(\d+\.\d+\.\d+(?:[-+][\w.-]+)?)(?=$|\s|\()/)?.[1] ?? null : null;
@@ -86,7 +88,7 @@ export async function discoverNative(options: { project: string; runtime?: Nativ
       }
     };
     const ancestors = rootsOf(project);
-    if (runtime === "claude-code") {
+    if (NATIVE_RUNTIME_FACTS[runtime].protocol === "claude-json") {
       const claudeHome = env.CLAUDE_CONFIG_DIR || join(home,".claude");
       const configRoots = [claudeHome,...ancestors.map(root=>join(root,".claude"))];
       await take(join(claudeHome,"CLAUDE.md"));
@@ -145,9 +147,9 @@ export async function discoverNative(options: { project: string; runtime?: Nativ
         await toml(join(root,".codex","config.toml"));await readSkills(join(root,".agents","skills"));await readSkills(join(root,".codex","skills"));
       }
     }
-    if (!binary) issue(`Install ${runtime === "codex" ? "Codex CLI" : "Claude Code CLI"} on this machine and add it to PATH.`);
+    if (!binary) issue(`Install ${NATIVE_RUNTIME_FACTS[runtime].label} on this machine and add it to PATH.`);
     else if (!supported) {
-      const label=runtime === "codex" ? "Codex CLI" : "Claude Code CLI",minimum=NATIVE_MINIMUM_VERSION[runtime],major=minimum.split(".")[0];
+      const label=NATIVE_RUNTIME_FACTS[runtime].label,minimum=NATIVE_MINIMUM_VERSION[runtime],major=minimum.split(".")[0];
       issue(`${version ? `Native CLI version ${version} is unsupported.` : "The installed native CLI version could not be checked."} Use ${label} ${minimum} or newer within major ${major}. Other majors and prereleases require bridge compatibility validation.`);
     }
     issues.push("Interactive approval requests cannot be answered by this bridge; denied requests must be run in the native CLI.");
@@ -169,10 +171,10 @@ export async function verifyNative(target: NativeTarget | NativeBinding, options
   if (!current) return {...target,state:"needs_attention",connected:false,issues:["The selected native agent or profile no longer exists. Discover this project again."]};
   const binary = await nativeExecutable(current.runtime,env);
   if (!binary || current.state === "needs_attention") return {...current,connected:false};
-  const auth = await nativeMetadata(binary,current.runtime === "claude-code" ? ["auth","status","--json"] : ["login","status"],current.project,env,options.timeoutMs);
+  const auth = await nativeMetadata(binary,[...NATIVE_RUNTIME_FACTS[current.runtime].authStatus],current.project,env,options.timeoutMs);
   let authenticated = auth.code === 0;
-  if (current.runtime === "claude-code") { try { authenticated = authenticated && JSON.parse(auth.stdout).loggedIn === true; } catch { authenticated = false; } }
+  if (NATIVE_RUNTIME_FACTS[current.runtime].authStatusJson) { try { authenticated = authenticated && JSON.parse(auth.stdout).loggedIn === true; } catch { authenticated = false; } }
   // Codex reports login status to stderr in released CLIs; its exit code is the supported check.
-  if (!authenticated) return {...current,state:"needs_attention",connected:false,issues:[...current.issues,`Sign in with ${current.runtime === "codex" ? "codex login" : "claude auth login"} on this machine, then verify again.`]};
+  if (!authenticated) return {...current,state:"needs_attention",connected:false,issues:[...current.issues,`Sign in with ${NATIVE_RUNTIME_FACTS[current.runtime].loginCommand} on this machine, then verify again.`]};
   return {...current,state:"ready",connected:true,verified_at:new Date().toISOString(),issues:[...current.issues,"Authentication checked; model and tool execution remain untested."]};
 }

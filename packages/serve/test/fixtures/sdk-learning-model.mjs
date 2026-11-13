@@ -23,6 +23,7 @@ export default function reply(context, faux) {
         items: [
           {
             file: "answer-prefix.md",
+            general: true,
             decision: "keep",
             origin: "you",
             why: "The user explicitly requested this standing answer prefix.",
@@ -38,6 +39,7 @@ export default function reply(context, faux) {
         items: [
           {
             file: "refund-approval.md",
+            general: true,
             decision: "pending",
             origin: "you",
             question: "Risky",

@@ -22,6 +22,7 @@ import { request as httpRequest } from 'node:http';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { createWorkflowMcpBridge } from '../dist/workflows.js';
+import * as workflowEngine from '@parcha/agentrun-dsl';
 import { BackendLearningSession } from '../dist/learning.js';
 import { withClaudeAgentLearning } from '../dist/claude.js';
 
@@ -56,12 +57,40 @@ function newSession(bridge,doc=workflow,id='run-1') {
 }
 async function setup(t,patch={}) {
   const calls=[],events=[];
-  const bridge=await createWorkflowMcpBridge({tools:makeTools(calls),policy:()=> 'allow',onEvent:e=>events.push(e),...patch});
+  const bridge=await createWorkflowMcpBridge({engine:workflowEngine,tools:makeTools(calls),policy:()=> 'allow',onEvent:e=>events.push(e),...patch});
   const client=new Client({name:'workflow-test',version:'1.0.0'});
   t.after(async()=>{await client.close();await bridge.close();});
   await client.connect(new StreamableHTTPClientTransport(new URL(bridge.url),{requestInit:{headers:bridge.headers}}));
   return {bridge,client,calls,events,run:(receipt,input={service:'fresh-api'},name='release')=>client.callTool({name:'learned_workflow',arguments:{capability:receipt.capability,name,input}})};
 }
+
+test('a workflow bridge requires an explicitly supplied host engine before opening a listener', async () => {
+  let unexpected;
+  try {
+    await assert.rejects(createWorkflowMcpBridge({tools:makeTools([]),policy:()=> 'allow'}).then(bridge=>{unexpected=bridge;return bridge;}),
+      /explicit host workflow engine/i);
+  } finally { await unexpected?.close(); }
+});
+
+test('engine callbacks are captured once while the injected real engine still uses guarded effects', async t=>{
+  const invoked=[];
+  const engine={
+    inspectWorkflow(value){invoked.push('inspect');return workflowEngine.inspectWorkflow(value);},
+    runWorkflow(...args){invoked.push('run');return workflowEngine.runWorkflow(...args);},
+    resolveSchemaForWorkflow(...args){invoked.push('schema');return workflowEngine.resolveSchemaForWorkflow(...args);},
+  };
+  let permission='deny';
+  const {bridge,calls,run}=await setup(t,{engine,policy:()=>permission});
+  for(const name of Object.keys(engine))engine[name]=()=>{throw Error('mutated engine must never be invoked');};
+  assert.equal((await run(newSession(bridge))).isError,true);
+  assert.equal(calls.length,0,'injected execution cannot bypass the live tool policy');
+  permission='allow';
+  const result=await run(newSession(bridge));
+  assert.equal(result.isError,undefined);
+  assert.equal(result.content[0].text,'fresh-api current-2');
+  assert.deepEqual(calls.map(call=>call.name),['status','format']);
+  assert.ok(['inspect','run','schema'].every(name=>invoked.includes(name)),JSON.stringify(invoked));
+});
 
 test('real MCP workflow reuses exact backend callbacks with fresh inputs, schemas and unchanged textual output',async t=>{
   const {bridge,client,calls,events,run}=await setup(t);
@@ -132,6 +161,25 @@ test('static ask/deny tool declarations and model adapters are never inferred',a
   const model={...workflow,root:{node:'extract',label:'answer',out:'Output',as:'report',instructions:'Write a report.'}};
   assert.equal((await run(newSession(bridge,model))).isError,true);
   assert.equal(calls.length,0);
+});
+
+test('the injected engine preserves explicit host model and judge adapters and their cancellation signals',async t=>{
+  const requests=[];
+  const {bridge,client,run}=await setup(t,{
+    runNode:async request=>{requests.push(['node',request]);assert.equal(request.signal.aborted,false);return {brief:'host-produced answer'};},
+    runJudge:async request=>{requests.push(['judge',request]);assert.equal(request.signal.aborted,false);return {answers:{right:{type:'noul',noul:1}}};},
+  });
+  assert.deepEqual(bridge.adapters,['runNode','runJudge']);
+  assert.equal((await client.listTools()).tools[0].annotations.readOnlyHint,false);
+  const doc={...workflow,schemas:{...workflow.schemas,Check:{type:'object',properties:{right:{type:'boolean',description:'Is this answer correct?'}},required:['right']}},
+    root:{node:'chain',steps:[{node:'extract',label:'answer',out:'Output',as:'report',instructions:'Produce the report.'},
+      {node:'judge',label:'check',state:{answer:'{report}'},out:'Check',as:'checked'}]}};
+  const result=await run(newSession(bridge,doc));
+  assert.equal(result.isError,undefined,JSON.stringify(result));
+  assert.equal(result.content[0].text,'host-produced answer');
+  assert.deepEqual(requests.map(([kind])=>kind),['node','judge']);
+  assert.equal(requests[0][1].kind,'extract');
+  assert.equal(requests[1][1].questions.right.type,'noul');
 });
 
 test('native cancellation aborts an admitted callback, prevents further effects and marks evidence incomplete',async t=>{

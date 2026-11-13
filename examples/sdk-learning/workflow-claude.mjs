@@ -1,5 +1,6 @@
 import { withClaudeAgentLearning } from '@parcha/agentrun-client/claude';
 import { createWorkflowMcpBridge } from '@parcha/agentrun-client/workflows';
+import * as workflowEngine from '@parcha/agentrun-dsl';
 import { createReleaseWorkflowTools, WORKFLOW_INSTRUCTIONS } from './workflow-tools.mjs';
 import { serveReleaseTools } from './workflow-native-mcp.mjs';
 import { demonstrateWorkflows } from './workflow-demo.mjs';
@@ -10,7 +11,7 @@ export async function createClaudeWorkflowReleaseBackend(sdk, learning, existing
   const nativeTools = await serveReleaseTools(backend.tools);
   let bridge;
   try {
-    bridge = await createWorkflowMcpBridge({ tools: backend.tools, policy: async () => 'allow',
+    bridge = await createWorkflowMcpBridge({ engine: workflowEngine, tools: backend.tools, policy: async () => 'allow',
       onEvent: event => workflowEvents.push(event) });
     if (existingOptions.mcpServers?.release || existingOptions.mcpServers?.agentrun_workflows)
       throw new Error('The demo MCP names are already configured. Choose distinct names explicitly.');

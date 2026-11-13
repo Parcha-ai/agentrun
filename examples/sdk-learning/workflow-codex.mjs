@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { withCodexAgentLearning } from '@parcha/agentrun-client/codex';
 import { createWorkflowMcpBridge } from '@parcha/agentrun-client/workflows';
+import * as workflowEngine from '@parcha/agentrun-dsl';
 import { createReleaseWorkflowTools, WORKFLOW_INSTRUCTIONS } from './workflow-tools.mjs';
 import { serveReleaseTools } from './workflow-native-mcp.mjs';
 import { demonstrateWorkflows } from './workflow-demo.mjs';
@@ -16,7 +17,7 @@ export async function createCodexWorkflowReleaseBackend(createExistingCodex, lea
   let bridge;
   try {
     await writeFile(join(directory, 'AGENTS.md'), WORKFLOW_INSTRUCTIONS + '\n');
-    bridge = await createWorkflowMcpBridge({ tools: backend.tools, policy: async () => 'allow',
+    bridge = await createWorkflowMcpBridge({ engine: workflowEngine, tools: backend.tools, policy: async () => 'allow',
       onEvent: event => workflowEvents.push(event) });
     // Codex config is constructor-owned. The wrapper receives this exact instance and does not replace its auth/config.
     const existingCodex = createExistingCodex({ mcp_servers: {

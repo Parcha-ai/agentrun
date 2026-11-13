@@ -316,7 +316,7 @@ Optional peer/dependency names absent from this lockfile: `encoding`, `bufferuti
 | ts-algebra | 2.0.0 | MIT | agentrun, pi-browser, run-adapters-claude-agent, serve | no | 1 |
 | tslib | 2.8.1 | 0BSD | agentrun, pi-browser, serve | no | 1 |
 | type-is | 2.1.0 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
-| typebox | 1.3.27 | MIT | agentrun, client, decisions, dsl, jev, pi-browser, run-adapters, run-adapters-claude-agent, run-adapters-codex, serve | no | 1 |
+| typebox | 1.3.27 | MIT | agentrun, decisions, dsl, jev, pi-browser, run-adapters, run-adapters-claude-agent, run-adapters-codex, serve | no | 1 |
 | undici-types | 5.26.5 | MIT | agentrun, pi-browser, serve | no | 1 |
 | undici-types | 6.21.0 | MIT | agentrun, pi-browser, serve | no | 1 |
 | undici | 6.29.1 | MIT | agentrun, pi-browser, serve | no | 1 |

@@ -135,14 +135,17 @@ export function reflectPrompt(options: { dir: string; active: number; tools?: re
     "",
     ...(workflows ? [
       "A workflow draft does the job as one workflow DSL document: front matter with one line that says what it does and",
-      "when to use it, then the JSON. No code node, no shell or executor call.",
-      ...(adapters === undefined ? [judges
-        ? "It uses model and tool-call nodes, and may use judge (answers a question about a value), pick (chooses one of several options) and sift (keeps the items that pass a test) nodes, which run on this run's decision provider under its cap and tool policy."
-        : "It uses model and tool-call nodes only: no judge, pick or sift node."] : [
+      ...(adapters === undefined ? [
+        "when to use it, then the JSON. " + (judges
+          ? "It uses model and tool-call nodes, and may use judge (answers a question about a value), pick (chooses one of several options) and sift (keeps the items that pass a test) nodes, which run on this run's decision provider under its cap and tool policy; no code node, no shell or"
+          : "It uses model and tool-call nodes only: no judge, pick or sift node, no code node, no shell or"),
+        `executor call. Its model nodes name no tool. ${tools.length ? `Its call nodes may run only these tools: ${tools.join(", ")}.` : "It has no call node on a tool."} At most ${CAPS.file} bytes of JSON.`,
+      ] : [
+        "when to use it, then the JSON. No code node, no shell or executor call.",
         `This backend provides runEffect for the allowed tool callbacks${canModel ? ", runNode for tool-free model nodes" : "; it provides NO runNode: do not use agent, decide, extract, report or prose artifact nodes"}${canJudge ? ", and runJudge for decision nodes" : "; it provides NO runJudge: do not use judge, pick, sift, verification or model-based predicates"}.`,
         "Use tool-call nodes and deterministic bindings to reuse the backend tools. Preserve the skill output through a registered formatter tool if one is available; never invent a model, formatter or approval adapter.",
+        `Its model nodes name no tool. ${tools.length ? `Its call nodes may run only these tools: ${tools.join(", ")}.` : "It has no call node on a tool."} At most ${CAPS.file} bytes of JSON.`,
       ]),
-      `Its model nodes name no tool. ${tools.length ? `Its call nodes may run only these tools: ${tools.join(", ")}.` : "It has no call node on a tool."} At most ${CAPS.file} bytes of JSON.`,
       "To change a draft you were given, give it again whole under its name.",
       "Its schemas are declared once under `schemas`, and `input` and `output` name one each by `schemaId`, never a schema",
       "written in place.",

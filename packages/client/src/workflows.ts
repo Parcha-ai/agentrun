@@ -5,7 +5,6 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { AjvJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/ajv';
-import { inspectWorkflow, runWorkflow, resolveSchemaForWorkflow, type Workflow, type WorkflowDeps } from '@parcha/agentrun-dsl';
 import type { BackendLearningSession, BackendWorkflowBridge, BackendWorkflowToolManifest, SdkLearningEvent } from './learning.js';
 
 export interface WorkflowToolContext {
@@ -27,13 +26,61 @@ export interface WorkflowBridgeEvent {
   tool?: string;
   status?: 'completed' | 'failed' | 'cancelled';
 }
-export interface WorkflowMcpBridgeOptions {
+/** The small document view the transport needs; the injected engine owns its full workflow language. */
+export interface WorkflowEngineDocument {
+  schemas: Record<string, Record<string, unknown>>;
+  input?: { schemaId: string };
+}
+export interface WorkflowModelRequest {
+  signal?: AbortSignal;
+  tools?: string[];
+  context?: string;
+}
+export interface WorkflowJudgeRequest { signal?: AbortSignal }
+export interface WorkflowEffectRequest {
+  node: { via: string; tool?: string };
+  input: Record<string, unknown>;
+  idempotencyKey: string;
+  signal: AbortSignal;
+}
+export interface WorkflowEngineDeps<NodeRequest extends WorkflowModelRequest, JudgeRequest extends WorkflowJudgeRequest, JudgeResult> {
+  signal: AbortSignal;
+  onEvent(event: { type: string }): void;
+  runCode(): Promise<never>;
+  runNode?: (request: NodeRequest) => Promise<unknown>;
+  runJudge?: (request: JudgeRequest) => Promise<JudgeResult>;
+  runEffect(request: WorkflowEffectRequest): Promise<unknown>;
+}
+/** Trusted host-owned interpreter functions. The bridge supplies every guarded execution callback; the engine must
+ * use those callbacks for effects and model work. Generic requests preserve the host engine's own adapter types. */
+export interface WorkflowEngine<
+  Document extends WorkflowEngineDocument,
+  NodeRequest extends WorkflowModelRequest,
+  JudgeRequest extends WorkflowJudgeRequest,
+  JudgeResult,
+> {
+  inspectWorkflow(value: unknown): {
+    nodes: readonly { path: string }[];
+    requires: { adapters: readonly ('runNode' | 'runJudge' | 'runEffect')[]; tools: readonly string[]; sopSections: readonly string[]; executableCode: boolean };
+  };
+  runWorkflow(workflow: Document, input: Record<string, unknown>, deps: WorkflowEngineDeps<NodeRequest, JudgeRequest, JudgeResult>): Promise<{ status: string; output?: unknown }>;
+  resolveSchemaForWorkflow(workflow: Document, schema: Record<string, unknown>): Record<string, unknown>;
+}
+
+export interface WorkflowMcpBridgeOptions<
+  Document extends WorkflowEngineDocument = WorkflowEngineDocument,
+  NodeRequest extends WorkflowModelRequest = WorkflowModelRequest,
+  JudgeRequest extends WorkflowJudgeRequest = WorkflowJudgeRequest,
+  JudgeResult = unknown,
+> {
+  /** Explicit workflow engine supplied by the backend. This transport imports no workflow interpreter. */
+  engine: WorkflowEngine<Document, NodeRequest, JudgeRequest, JudgeResult>;
   tools: readonly BackendWorkflowTool[];
   /** Checked immediately before every effect. An ask decision is refused; the host must approve outside this bridge. */
   policy(name: string, input: Record<string, unknown>, context: WorkflowToolContext): 'allow' | 'ask' | 'deny' | Promise<'allow' | 'ask' | 'deny'>;
   /** Explicit host adapters only. The host owns their model selection, credentials, permissions and spending limits. */
-  runNode?: WorkflowDeps['runNode'];
-  runJudge?: WorkflowDeps['runJudge'];
+  runNode?: (request: NodeRequest) => Promise<unknown>;
+  runJudge?: (request: JudgeRequest) => Promise<JudgeResult>;
   /** Total calls across the entire native task (default 32, maximum 256). */
   maxToolCalls?: number;
   /** Total dynamic node starts across the entire native task (default 256, maximum 2048). */
@@ -92,7 +139,14 @@ type Lease = {
 /** Start once, explicitly configure this endpoint on the original native SDK, then pass the bridge to its wrapper.
  * The endpoint never executes a workflow supplied by a model: only the server's checked, pinned run snapshot.
  * Nothing is installed into the backend or executed through a new hidden native SDK session. */
-export async function createWorkflowMcpBridge(options: WorkflowMcpBridgeOptions): Promise<WorkflowMcpBridge> {
+export async function createWorkflowMcpBridge<
+  Document extends WorkflowEngineDocument,
+  NodeRequest extends WorkflowModelRequest,
+  JudgeRequest extends WorkflowJudgeRequest,
+  JudgeResult,
+>(options: WorkflowMcpBridgeOptions<Document, NodeRequest, JudgeRequest, JudgeResult>): Promise<WorkflowMcpBridge> {
+  if (!options.engine || typeof options.engine.inspectWorkflow !== 'function' || typeof options.engine.runWorkflow !== 'function' || typeof options.engine.resolveSchemaForWorkflow !== 'function')
+    throw new TypeError('Provide an explicit host workflow engine with inspection, execution and schema resolution.');
   if (typeof options.policy !== 'function') throw new TypeError('A live backend policy callback is required.');
   if (!Array.isArray(options.tools) || options.tools.length > 64) throw new TypeError('Provide at most 64 explicit backend tools.');
   const maxCalls = limit(options.maxToolCalls, 32, 256, 'maxToolCalls');
@@ -100,6 +154,7 @@ export async function createWorkflowMcpBridge(options: WorkflowMcpBridgeOptions)
   const maxDuration = limit(options.maxDurationMs, 60_000, 300_000, 'maxDurationMs');
   const leaseDuration = limit(options.leaseDurationMs, 3_600_000, 86_400_000, 'leaseDurationMs');
   // Capture callbacks and schemas once: later caller mutation cannot silently expand this bridge's authority.
+  const { inspectWorkflow, runWorkflow, resolveSchemaForWorkflow } = options.engine;
   const policy = options.policy, runNode = options.runNode, runJudge = options.runJudge, observer = options.onEvent;
   const validator = new AjvJsonSchemaValidator();
   const registered = new Map<string, { manifest: BackendWorkflowToolManifest; readOnly: boolean; execute: BackendWorkflowTool['execute']; input: ReturnType<AjvJsonSchemaValidator['getValidator']>; output?: ReturnType<AjvJsonSchemaValidator['getValidator']> }>();
@@ -129,9 +184,9 @@ export async function createWorkflowMcpBridge(options: WorkflowMcpBridgeOptions)
   const emit = (event: WorkflowBridgeEvent) => { try { observer?.(Object.freeze(event)); } catch { /* Observers cannot change execution. */ } };
   const evidence = async (lease: Lease, event: SdkLearningEvent) => { await lease.session.event(event).catch(() => undefined); };
 
-  const checked = (text: string): Workflow => {
+  const checked = (text: string): Document => {
     if (typeof text !== 'string' || Buffer.byteLength(text) > 262_144) refuse('The pinned workflow is too large.');
-    let workflow: Workflow;
+    let workflow: Document;
     try { workflow = JSON.parse(text); } catch { return refuse('The pinned workflow is invalid JSON.'); }
     const inspection = inspectWorkflow(workflow);
     if (inspection.requires.executableCode || inspection.requires.sopSections.length || inspection.nodes.length > 128)
@@ -156,7 +211,7 @@ export async function createWorkflowMcpBridge(options: WorkflowMcpBridgeOptions)
     if (lease.active || lease.blocked || lease.invocations >= 16) return toolResult('This native task cannot admit another workflow invocation. Do not retry an uncertain effect.', true);
     const accepted = lease.workflows.find(workflow => workflow.name === args.name);
     if (!accepted) return toolResult('That workflow is not in this native task\'s checked snapshot.', true);
-    let workflow: Workflow;
+    let workflow: Document;
     try { workflow = checked(accepted.workflow); } catch (error) { return toolResult(error instanceof Refused ? error.message : 'The pinned workflow failed structural admission.', true); }
     lease.active = true; lease.invocations++;
     const invocation = randomUUID(), controller = new AbortController();
@@ -172,14 +227,14 @@ export async function createWorkflowMcpBridge(options: WorkflowMcpBridgeOptions)
         signal,
         onEvent(event) { if (event.type === 'node.start' && ++lease.nodes > maxNodes) controller.abort(new Refused('The workflow node limit was reached.')); },
         runCode: async () => refuse('Code execution is not permitted by this bridge.'),
-        ...(runNode ? { runNode: async (request: Parameters<NonNullable<WorkflowDeps['runNode']>>[0]) => {
+        ...(runNode ? { runNode: async (request: NodeRequest) => {
           signal.throwIfAborted();
           if (request.tools?.length || request.context === 'fork') refuse('Native tools and transcript forks are not delegated to model nodes.');
           pending++;
           try { return await runNode({ ...request, signal: AbortSignal.any([signal, ...(request.signal ? [request.signal] : [])]) }); }
           finally { pending--; }
         } } : {}),
-        ...(runJudge ? { runJudge: async (request: Parameters<NonNullable<WorkflowDeps['runJudge']>>[0]) => {
+        ...(runJudge ? { runJudge: async (request: JudgeRequest) => {
           signal.throwIfAborted(); pending++;
           try { return await runJudge({ ...request, signal: AbortSignal.any([signal, ...(request.signal ? [request.signal] : [])]) }); }
           finally { pending--; }

@@ -44,7 +44,7 @@ To adapt an existing backend, see the [Claude Agent SDK cookbook](../../docs/tut
 
 ## Learn an executable workflow
 
-The workflow variants add an explicit MCP bridge to each native SDK. Your existing backend tools and the learned workflow call the same callback functions. See the [workflow MCP cookbook](../../docs/tutorials/sdk-workflow-learning.md) to adapt your own backend.
+The workflow variants add an explicit MCP bridge to each native SDK. Each example imports its own `@parcha/agentrun-dsl` engine and passes it through `createWorkflowMcpBridge({ engine, ... })`; the client does not install or select an interpreter. Your existing backend tools and the learned workflow call the same callback functions. See the [workflow MCP cookbook](../../docs/tutorials/sdk-workflow-learning.md) to adapt your own backend.
 
 Build the DSL and client before installing the standalone example dependencies:
 

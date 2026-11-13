@@ -5,6 +5,7 @@ import { answerSkill } from './skill-route.js';
 import { RemoteConnectors, verifyRemote } from './native/remote.js';
 import { nativeOf } from "./native/binding.js";
 import { discoverNative } from "./native/discovery.js";
+import { isNativeRuntime } from "./native/runtimes.js";
 import { connectNative, launchNative, updateNative, verifyConnection } from "./native/connection.js";
 // The /v2 API over the agent store in a data directory: the contract agentrun.v2/0, served on loopback with a bearer
 // token.
@@ -2813,8 +2814,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "revokeRemoteConnector": return send(res, 200, await new RemoteConnectors(store).revoke(id));
       case "discoverNative": {
         const body=await bodyOf(req);
-        if(typeof body.project!=="string" || (body.runtime!==undefined && body.runtime!=="claude-code" && body.runtime!=="codex")) throw new ApiError("input_invalid","Choose the project directory on this source machine and a supported CLI runtime.");
-        return send(res,200,await discoverNative({project:body.project,...(body.runtime?{runtime:body.runtime as "claude-code"|"codex"}:{})}));
+        if(typeof body.project!=="string" || (body.runtime!==undefined && !isNativeRuntime(body.runtime))) throw new ApiError("input_invalid","Choose the project directory on this source machine and a supported CLI runtime.");
+        return send(res,200,await discoverNative({project:body.project,...(body.runtime?{runtime:body.runtime}:{})}));
       }
       case "connectNative": {
         const entry=await connectNative(store,await bodyOf(req));

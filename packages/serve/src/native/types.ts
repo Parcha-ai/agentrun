@@ -1,5 +1,6 @@
 /** Native connections refer to the user's installed runtime; no configuration or credential is copied. */
-export type NativeRuntime = "claude-code" | "codex";
+import type { NativeRuntime } from "./runtimes.js";
+export type { NativeRuntime } from "./runtimes.js";
 export type NativeSelector = { kind: "project" | "agent" | "profile"; name?: string };
 export type NativeTarget = {
   runtime: NativeRuntime;

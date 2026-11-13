@@ -20,5 +20,5 @@ export default function reply(context, faux) {
   }
   const file = /Give one item for each of these files, each once, and for no other: ([^\n]+)\./.exec(prompt)?.[1];
   if (!file || !["skills/release-status/SKILL.md", "workflows/release-status/workflow.json"].includes(file)) throw new Error("Unexpected SDK workflow grading input.");
-  return faux.message(JSON.stringify({ merge: true, reason: "A reusable requested procedure using existing tools.", items: [{ file, decision: "keep", origin: "you", why: "The reusable procedure preserves the source task policy and output." }] }));
+  return faux.message(JSON.stringify({ merge: true, reason: "A reusable requested procedure using existing tools.", items: [{ file, general: true, decision: "keep", origin: "you", why: "The reusable procedure preserves the source task policy and output." }] }));
 }

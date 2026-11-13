@@ -29,7 +29,7 @@ import { type RepoBinding, repoOf } from "./run-repo.js";
 import { type LaunchDisk, launchBody, type RunLaunch, type SeedFailed } from "./run-launch.js";
 import { type ApprovalDecision, raiseFollowUpId, type RunMoment } from "./run-view.js";
 import { sendCommand } from "./runner/commands.js";
-import { AnswerTaken, ExternalBodyConflict, type NewRevision, RunFinal, type RunOrigin, type RunRow, type Store, StoreConstraint } from "./store/index.js";
+import { AnswerTaken, ExternalBodyConflict, type NewRevision, RunFinal, type RunOrigin, type RunRow, type Store, StoreConstraint, StoreLaunchMissing } from "./store/index.js";
 import { toolingOf } from "./tools.js";
 import { type Plane, planeFor, type ToolSettingsMap } from "./tool-plane.js";
 import type { RunTrigger } from "./triggers.js";
@@ -125,9 +125,20 @@ export async function cancel(store: RunsStore, moment: RunMoment): Promise<boole
   }
 }
 
+/** Older rows can lack launch metadata. Only that typed absence leaves their controls unchanged; a failed read
+ * must still fail the command, since it could be hiding native or SDK execution constraints. */
+async function controlLaunchBody(store: RunsStore, runId: string): Promise<unknown> {
+  try {
+    return (await store.runs.launch(runId)).body;
+  } catch (error) {
+    if (error instanceof StoreLaunchMissing) return undefined;
+    throw error;
+  }
+}
+
 /** Only the application can abort its SDK and tools. An HTTP acknowledgement must not pretend that it did. */
 async function refuseSdkStop(store: RunsStore, runId: string): Promise<void> {
-  const launch = (await store.runs.launch(runId)).body;
+  const launch = await controlLaunchBody(store, runId);
   if (isObject(launch) && launch.sdk) throw new ApiError("not_continuable", "This agent runs in your backend SDK. Cancel it using the original application's cancellation signal; its wrapper will report that outcome here.");
 }
 
@@ -167,7 +178,7 @@ export async function message(
   { requestId, answers = true, origin, queue, launchSealed, beforeSubmit }: { requestId?: string; answers?: boolean; origin?: unknown; queue?: (command: SteerCommand) => Promise<{ skipped: string } | void>; launchSealed?: Uint8Array; beforeSubmit?: (runId: string, content: string) => Promise<void> | void } = {},
 ): Promise<{ mode: MessageMode; messageId: string; skipped?: string }> {
   if (moment.importedSource !== undefined) throw importedRefusal(moment);
-  const launchBody = (await store.runs.launch(moment.id)).body;
+  const launchBody = await controlLaunchBody(store, moment.id);
   if (isObject(launchBody) && launchBody.sdk) throw new ApiError("not_continuable", "Backend SDK runs are single-task sessions. Start a new SDK call for another task.");
   if (nativeOf(launchBody)) throw new ApiError("input_invalid", "Native jobs do not support in-session steering or follow-up messages. Start a new native run.");
   // Archiving closes a run: it, or a run of its archived agent, takes no message, said as archived (never as finished).

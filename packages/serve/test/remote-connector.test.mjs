@@ -28,7 +28,7 @@ test('remote enrollment and import are explicit, scoped, persistent and secret-h
  assert.equal((await s.request('POST','/connectors',{...s.registration,operation_id:'other'},s.enrollment)).status,409);
  assert.equal((await s.request('GET','/agents',undefined,s.token)).status,401);
  assert.equal((await s.request('POST','/connectors/enrollment',{},s.token)).status,401);
- assert.equal((await s.request('POST','/connectors/rc_'+'a'.repeat(32)+'/poll',{worker_id:'worker-1'},s.token)).status,404);
+ assert.equal((await s.request('POST','/connectors/rc_'+'a'.repeat(32)+'/poll',{worker_id:'worker-1'},s.token)).status,401,'scoped auth does not reveal whether another connector exists');
  const definition=(await s.api('GET',`/agents/${s.agentId}`)).body.definition;
  assert.equal(definition.learning,false);
  assert.equal(definition.native.remote.connector_id,s.id);
@@ -111,7 +111,7 @@ test('remote task uses the ordinary journal, checked promotion and next-run seed
     const events=[{type:'session',sessionId:c.session_key},{type:'text',text:answer},{type:'usage',usage}];
     const recorded=await s.call('POST',`/commands/${c.command_id}/events`,{lease_token:c.lease_token,sequence:0,events});assert.equal(recorded.status,200,JSON.stringify(recorded.body));
     result={sessionId:c.session_key,answer,model:'source-model',usage};
-   }else if(c.type==='grade')result={sessionId:'isolated-grader',answer:JSON.stringify({merge:true,reason:'Explicit user preference.',items:[{file:'release-status.md',decision:'keep',origin:'you',why:'The user requested a stable format.'}]}),model:'source-model',usage};
+   }else if(c.type==='grade')result={sessionId:'isolated-grader',answer:JSON.stringify({merge:true,reason:'Explicit user preference.',items:[{file:'release-status.md',general:true,decision:'keep',origin:'you',why:'The user requested a stable format.'}]}),model:'source-model',usage};
    else if(c.type==='close')sessions.delete(c.session_key);
    const done=await s.call('POST',`/commands/${c.command_id}/complete`,{lease_token:c.lease_token,result});assert.equal(done.status,200,JSON.stringify(done.body));
   }

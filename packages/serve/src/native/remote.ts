@@ -65,11 +65,11 @@ export class RemoteConnectors {
     return { enrollment_token: token, expires_at: new Date(expires).toISOString(), workspace_id: 'local' };
   }
   async register(token: string, input: unknown) {
-    const b = object(input); bounded(b, 4096);
-    if (!validId(b.installation_id) || !validId(b.operation_id) || (b.label !== undefined && !text(b.label)) || typeof object(b.capabilities).native_execution !== 'boolean' || (object(b.capabilities).history_import!==undefined && typeof object(b.capabilities).history_import!=='boolean')) throw new ApiError('input_invalid', 'Remote native execution requires an explicit installation, operation and capability selection.');
     const key = keyOf('enrollment', hash(token));
     const enrollment = await this.store.settings.get(key) as Enrollment | undefined;
     if (!token.startsWith('ar_enroll_') || !enrollment || enrollment.expires <= this.now()) throw new ApiError('unauthenticated', 'The connection code expired or is invalid. Create another in the console.');
+    const b = object(input); bounded(b, 4096);
+    if (!validId(b.installation_id) || !validId(b.operation_id) || (b.label !== undefined && !text(b.label)) || typeof object(b.capabilities).native_execution !== 'boolean' || (object(b.capabilities).history_import!==undefined && typeof object(b.capabilities).history_import!=='boolean')) throw new ApiError('input_invalid', 'Remote native execution requires an explicit installation, operation and capability selection.');
     const requested={native_execution:object(b.capabilities).native_execution===true,history_import:object(b.capabilities).history_import===true};
     if(!requested.native_execution&&!requested.history_import || requested.native_execution && enrollment.capabilities?.native_execution===false || requested.history_import && enrollment.capabilities?.history_import!==true)throw new ApiError('forbidden','The source requested capabilities not approved by the owner connection code.');
     const requestHash = hash(JSON.stringify(b));
@@ -87,8 +87,9 @@ export class RemoteConnectors {
     return { connector: await this.view(row), credential, credential_expires_at: new Date(row.expires).toISOString() };
   }
   async authenticate(id: string, token: string): Promise<void> {
-    const row = await this.connector(id);
-    if (!token.startsWith('ar_connector_') || !timingSafeEqual(Buffer.from(hash(token)), Buffer.from(row.credential_hash)) || row.revoked || row.expires <= this.now()) throw new ApiError('unauthenticated', 'The connector credential is invalid, expired or revoked.');
+    // Scoped callers learn nothing about absent connectors; operational store failures still propagate.
+    const row = await this.store.settings.get(keyOf('connector', id)) as Connector | undefined;
+    if (!row || !token.startsWith('ar_connector_') || !timingSafeEqual(Buffer.from(hash(token)), Buffer.from(row.credential_hash)) || row.revoked || row.expires <= this.now()) throw new ApiError('unauthenticated', 'The connector credential is invalid, expired or revoked.');
   }
   async revoke(id: string) {
     for (let attempt = 0; attempt < 10; attempt++) {

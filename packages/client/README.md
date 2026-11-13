@@ -90,8 +90,10 @@ The first integration supports fresh, single-task sessions/threads only. See the
 policy snapshots and multimodal limits, or run the [opt-in live examples](../../examples/sdk-learning/README.md).
 
 For executable workflow learning, explicitly configure `createWorkflowMcpBridge` from
-`@parcha/agentrun-client/workflows` with your existing backend tool callbacks and live permission policy.
-This optional entry point requires the matching `@parcha/agentrun-dsl` package and `@modelcontextprotocol/sdk`.
+`@parcha/agentrun-client/workflows` with your existing backend tool callbacks, live permission policy and an explicit `engine` object containing
+`inspectWorkflow`, `runWorkflow` and `resolveSchemaForWorkflow`. Your backend imports and supplies its interpreter
+(for example, `import * as engine from "@parcha/agentrun-dsl"`); the client imports no workflow engine.
+The optional MCP entry point requires `@modelcontextprotocol/sdk`.
 The [workflow cookbook](../../docs/tutorials/sdk-workflow-learning.md) covers native MCP setup, checked promotion,
 run-scoped access, cancellation, and tests proving the next task reuses a workflow with fresh inputs.
 

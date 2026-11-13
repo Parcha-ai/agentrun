@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { NATIVE_RUNTIME_FACTS } from "./runtimes.js";
 import { nativeExecutable, nativeMetadata } from "./discovery.js";
 import type { NativeBinding, NativeEvent, NativeResult, NativeSendOptions, NativeSession, NativeTarget, NativeUsage } from "./types.js";
 
@@ -25,7 +26,7 @@ export async function openNativeSession(options: {
 }): Promise<NativeSession> {
   const {target} = options, env = options.env ?? process.env;
   if (options.signal?.aborted) throw new NativeRuntimeError("Native launch was cancelled.","aborted");
-  if ((target.runtime === "claude-code" && target.selector.kind === "profile") || (target.runtime === "codex" && target.selector.kind === "agent")) throw new NativeRuntimeError("This native runtime does not support the selected agent/profile selector. Discover this project again.","unavailable");
+  if (target.selector.kind !== "project" && target.selector.kind !== NATIVE_RUNTIME_FACTS[target.runtime].namedSelector) throw new NativeRuntimeError("This native runtime does not support the selected agent/profile selector. Discover this project again.","unavailable");
   if (target.selector.kind !== "project" && (!target.selector.name || !/^[\w.@+-]{1,160}$/.test(target.selector.name))) throw new NativeRuntimeError("The native selector is invalid. Discover this project again.","unavailable");
   const binary = await nativeExecutable(target.runtime,env);
   if (!binary) throw new NativeRuntimeError("The installed native CLI is unavailable on this machine. Verify the connection and PATH.","unavailable");
@@ -42,7 +43,7 @@ export async function openNativeSession(options: {
       if (sendOptions.signal?.aborted || options.signal?.aborted) throw new NativeRuntimeError("Native turn was cancelled before dispatch.","aborted",sessionId);
       busy = true;
       try {
-      const claude = target.runtime === "claude-code", args: string[] = [];
+      const claude = NATIVE_RUNTIME_FACTS[target.runtime].protocol === "claude-json", args: string[] = [];
       if (claude) {
         args.push("--print","--output-format","stream-json","--verbose","--permission-prompts","none");
         if (target.selector.kind === "agent") args.push("--agent",target.selector.name!);

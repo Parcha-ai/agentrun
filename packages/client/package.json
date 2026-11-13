@@ -67,15 +67,14 @@
     "tag": "beta"
   },
   "peerDependencies": {
-    "@parcha/agentrun-dsl": "0.1.0-beta.36",
     "@modelcontextprotocol/sdk": "1.32.2"
   },
   "peerDependenciesMeta": {
-    "@parcha/agentrun-dsl": {
-      "optional": true
-    },
     "@modelcontextprotocol/sdk": {
       "optional": true
     }
+  },
+  "devDependencies": {
+    "@parcha/agentrun-dsl": "0.1.0-beta.36"
   }
 }

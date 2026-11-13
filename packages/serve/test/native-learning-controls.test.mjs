@@ -90,3 +90,14 @@ test('native Codex aggregate input remains unknown when its cache-read split is 
  const run=(await api('GET',`/runs/${start.body.run_id}`)).body;assert.equal(run.native.usage.task.input_tokens,100);assert.equal(run.native.usage.task.cache_read_tokens,null);
  const stats=(await api('GET',`/stats?agent=${id}`)).body;assert.equal(stats.analytics.totals.input,null);assert.equal(stats.analytics.totals.output,20);
 });
+
+for (const scenario of ['missing-general', 'not-general']) {
+ test(`native grader ${scenario} refuses promotion before a later run can use the proposal`, {timeout:60_000}, async t=>{
+  const {api,id,run,learned}=await fixture(t,scenario);
+  const result=await learned(await run());
+  assert.equal(result.state,'dropped',JSON.stringify(result));
+  assert.equal(result.verdict.items[0].question,'General');
+  assert.match(result.verdict.items[0].why,scenario==='missing-general'?/did not say/:/one case/);
+  assert.deepEqual((await api('GET',`/agents/${id}/learning`)).body.notes.items,[]);
+ });
+}
