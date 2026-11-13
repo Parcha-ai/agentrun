@@ -1,16 +1,18 @@
 // An agent's cost per run, run after run (GET /agents/{id}/learning/cost): what each run of its cost, what learning added
 // for it, and the path it took, so a person sees the cost fall once a learned workflow does the job, and by how much.
 // Aggregates only: no run's input, answer or tool text. The store's reader (store-reads/learning.ts agentCostOverStore)
-// gives each run's figures and its path (runner/learning-end.ts runPathOf); this module sums its learning and says what the
+// gives each run's figures and its path (its run record's metrics.path, store-reads/learning.ts runPathOverStore); this module sums its learning and says what the
 // series shows (costSummary), the rule the console, the CLI and the CSV all read. It imports only the errors, so the API
 // document reads its words.
 
 import { ApiError } from "./errors.js";
 
-/** The path a run took: `workflow`, a learned workflow finished it alone (its job's only tool calls were learned_workflow
- *  calls, each answering, and nothing was said after its first message: the runner's own rule for a run with nothing new
- *  to look back on, runner/learning-end.ts onlyLearnedWorkflows); `handed_back`, a learned workflow ran and the agent
- *  went on (it failed, escalated, or the agent did more work after it); `agent`, no learned workflow ran. */
+/** The path a run took: `workflow`, a learned workflow finished it alone (served first and answered, or its job's only
+ *  tool calls were learned_workflow calls, each answering, and nothing was said after its first message: the runner's own
+ *  rule for a run with nothing new to look back on, runner/learning-end.ts onlyLearnedWorkflows); `handed_back`, a
+ *  learned workflow ran and the agent went on (it handed back, failed, escalated, or the agent did more work after it);
+ *  `agent`, no learned workflow ran. One classifier (store-reads/learning.ts runPathOverStore) writes it on the run's
+ *  record at its end (metrics.path). */
 export const RUN_PATHS = ["agent", "handed_back", "workflow"] as const;
 export type RunPath = (typeof RUN_PATHS)[number];
 

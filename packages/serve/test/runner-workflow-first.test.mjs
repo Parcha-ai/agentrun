@@ -8,7 +8,8 @@
 //     its end-of-run turn asks for the workflow's next revision by its name.
 //   - workflow_first false, an input no workflow fits: the agent takes the run from its first turn, path "agent".
 //   - learned_workflow set to ask: the run parks on the step before any node runs; approved, it runs.
-//   - the deopt breaker: a workflow that handed back more than half of its last 10 runs at its digest is skipped.
+//   - a stop while the step is asked: the claim that holds it ends the run stopped.
+//   - no breaker: a handback is an escalation, never a failure; one fitting workflow serves whatever its past runs.
 // pi's model and the node's go through the session proxy to a loopback gateway; no sleeps, no port races. The same on a
 // CLI harness (the faux one the harness table hands the runner): one loop serves every harness.
 import assert from "node:assert/strict";
@@ -36,7 +37,7 @@ const { sendCommand } = await import("../dist/runner/commands.js");
 const { LEARNED_WORKFLOW_TOOL } = await import("../dist/learned-workflow.js");
 const { runTimeline, runEntries, runReflect } = await import("../dist/store-reads/journal.js");
 const { said } = await import("../dist/learning-words.js");
-const { BREAKER_WINDOW, breakerOf, fits, workflowFirstOf, pathMetrics, WORKFLOW_FIRST } = await import("../dist/runner/workflow-first.js");
+const { fits, workflowFirstOf, pathMetrics, servedOf, WORKFLOW_FIRST } = await import("../dist/runner/workflow-first.js");
 const { resolveSchemaForWorkflow } = await import("@parcha/agentrun-dsl");
 
 const SEAL_KEY = Buffer.alloc(32, 7);
@@ -256,52 +257,29 @@ test("learned_workflow set to ask: a stop that lands while the step is asked is 
   assert.equal(gateway.requests.length, 0, "the workflow never ran, the agent never asked");
 });
 
-test("the deopt breaker skips a workflow that handed back more than half its last runs at its digest", async () => {
-  const digest = "0123456789abcdef";
-  const runs = (handed, of, extra = {}) => Array.from({ length: of }, (_, i) => ({ path: i < handed ? "handed_back" : "workflow", workflow: "answer", workflow_digest: digest, ...extra }));
-  assert.deepEqual(breakerOf(runs(6, BREAKER_WINDOW), "answer", digest), { handedBack: 6, of: BREAKER_WINDOW });
-  assert.equal(breakerOf(runs(5, BREAKER_WINDOW), "answer", digest), undefined, "half is not more than half");
-  assert.equal(breakerOf(runs(9, 9), "answer", digest), undefined, "a window not yet full never trips");
-  assert.equal(breakerOf(runs(10, 10), "answer", "fedcba9876543210"), undefined, "a new revision of the workflow starts clean");
-  assert.equal(breakerOf(runs(10, 10, { workflow: "other" }), "answer", digest), undefined, "another workflow's runs are not its record");
-  // Agent-path runs between them do not count, and only the newest window is read.
-  assert.deepEqual(breakerOf([{ path: "agent" }, ...runs(0, 4), ...runs(10, 10)], "answer", digest), { handedBack: 6, of: BREAKER_WINDOW }, "the newest 10: 4 served, 6 handed back");
-  assert.equal(breakerOf([{ path: "agent" }, ...runs(0, 5), ...runs(10, 10)], "answer", digest), undefined, "the newest 10: 5 served, 5 handed back");
-  // A run it skipped keeps it open, whatever older runs the page still holds: the runs that tripped it pushed out of the
-  // read by the skipped runs after them, it stays open until a new revision.
-  const skip = { path: "agent", workflow_skipped: "answer", workflow_digest: digest, learned_revision: "s2" };
-  assert.deepEqual(breakerOf([skip, ...Array.from({ length: 199 }, () => ({ ...skip }))], "answer", digest), { kept: true }, "only skipped runs in the page");
-  assert.deepEqual(breakerOf([{ path: "agent" }, skip, ...runs(0, 10)], "answer", digest), { kept: true }, "the newest skip wins over an older clean window");
-  assert.equal(breakerOf([skip], "answer", "fedcba9876543210"), undefined, "a skip of an older revision is not the new one's");
-  assert.equal(breakerOf([{ ...skip, workflow_skipped: "other" }], "answer", digest), undefined, "another workflow's skip");
-});
-
-test("workflowFirstOf: one fitting workflow serves; none, two, a workflow run, no learning start, a breaker open, or workflow_first false do not", async () => {
+test("workflowFirstOf: one fitting workflow serves, whatever its past runs; none, two, a workflow run, no learning start, or workflow_first false do not", async () => {
   const flow = (name, required) => ({ name, description: "", workflow: JSON.stringify({ ...answerFlow, name, schemas: { ...answerFlow.schemas, In: { type: "object", required, properties: Object.fromEntries(required.map((key) => [key, { type: "string" }])) } } }) });
   const launch = { input: { content: "c", question: "q" }, learning: { seed: "abc" } };
   const logs = [];
   const log = (line) => logs.push(line);
-  const { serve: one } = await workflowFirstOf("agentic", [flow("answer", ["question"])], launch, log);
+  const one = await workflowFirstOf("agentic", [flow("answer", ["question"])], launch, log);
   assert.deepEqual({ ...one, digest: typeof one.digest }, { name: "answer", digest: "string", input: launch.input, revision: "abc" });
-  assert.deepEqual(await workflowFirstOf("agentic", [flow("answer", ["question"]), flow("other", ["content"])], launch, log), {}, "two fit: the agent's");
+  assert.equal(await workflowFirstOf("agentic", [flow("answer", ["question"]), flow("other", ["content"])], launch, log), undefined, "two fit: the agent's");
   assert.ok(logs.some((line) => /2 of 2 learned workflows fit/.test(line)), JSON.stringify(logs));
-  assert.deepEqual(await workflowFirstOf("agentic", [flow("answer", ["missing"])], launch, log), {}, "none fit");
-  assert.deepEqual(await workflowFirstOf("agentic", [flow("answer", [])], launch, log), {}, "no required field: never fits");
-  assert.deepEqual(await workflowFirstOf("workflow", [flow("answer", ["question"])], launch, log), {}, "a workflow run is not agentic");
-  assert.deepEqual(await workflowFirstOf("agentic", [flow("answer", ["question"])], { ...launch, learning: undefined }, log), {}, "no learning start");
-  assert.deepEqual(await workflowFirstOf("agentic", [flow("answer", ["question"])], { ...launch, workflowFirst: false }, log), {}, "forced to the agent");
-  const past = async () => Array.from({ length: 10 }, () => ({ path: "handed_back", workflow: "answer", workflow_digest: one.digest }));
-  assert.deepEqual(await workflowFirstOf("agentic", [flow("answer", ["question"])], launch, log, past), { skipped: { workflow: "answer", digest: one.digest } }, "the breaker is open");
-  assert.ok(logs.some((line) => /answer handed back 10 of its last 10 runs/.test(line)), JSON.stringify(logs));
-  const kept = async () => [{ path: "agent", workflow_skipped: "answer", workflow_digest: one.digest }];
-  assert.deepEqual(await workflowFirstOf("agentic", [flow("answer", ["question"])], launch, log, kept), { skipped: { workflow: "answer", digest: one.digest } }, "kept open by the run it skipped last");
-  assert.ok(logs.some((line) => /answer handed back more than half of its last 10 runs/.test(line)), JSON.stringify(logs));
+  assert.equal(await workflowFirstOf("agentic", [flow("answer", ["missing"])], launch, log), undefined, "none fit");
+  assert.equal(await workflowFirstOf("agentic", [flow("answer", [])], launch, log), undefined, "no required field: never fits");
+  assert.equal(await workflowFirstOf("workflow", [flow("answer", ["question"])], launch, log), undefined, "a workflow run is not agentic");
+  assert.equal(await workflowFirstOf("agentic", [flow("answer", ["question"])], { ...launch, learning: undefined }, log), undefined, "no learning start");
+  assert.equal(await workflowFirstOf("agentic", [flow("answer", ["question"])], { ...launch, workflowFirst: false }, log), undefined, "forced to the agent");
   assert.equal(fits({ name: "x", description: "", workflow: "not json" }, launch.input, resolveSchemaForWorkflow), false);
-  // The run record carries the path only for a run that learns.
-  assert.deepEqual(pathMetrics({ input: {} }, []), {});
-  assert.deepEqual(pathMetrics({ input: {}, learning: { seed: "abc" } }, []), { path: "agent", learned_revision: "abc" });
-  // A run the breaker skipped keeps the skip, so the next run's breaker reads it.
-  assert.deepEqual(pathMetrics({ input: {}, learning: { seed: "abc" } }, [], { workflow: "answer", digest: "d" }), { path: "agent", learned_revision: "abc", workflow_skipped: "answer", workflow_digest: "d" });
+  // The run record carries the path only for a run that learns, as the run-end classifier gives it.
+  assert.deepEqual(pathMetrics({ input: {} }, { path: "workflow", workflow: "answer" }), {});
+  assert.deepEqual(pathMetrics({ input: {}, learning: { seed: "abc" } }, undefined), { path: "agent", learned_revision: "abc" });
+  assert.deepEqual(pathMetrics({ input: {}, learning: { seed: "abc" } }, { path: "handed_back", workflow: "answer", digest: "d" }), { path: "handed_back", learned_revision: "abc", workflow: "answer", workflow_digest: "d" });
+  assert.deepEqual(pathMetrics({ input: {}, learning: { seed: "abc" } }, { path: "workflow", workflow: "answer" }), { path: "workflow", learned_revision: "abc", workflow: "answer" }, "the agent called it itself: no digest");
+  // What the step did, from its entry alone.
+  assert.equal(servedOf([]), undefined);
+  assert.deepEqual(servedOf([{ kind: WORKFLOW_FIRST, data: { workflow: "answer", digest: "d", outcome: "handed_back" } }]), { outcome: "handed_back", workflow: "answer", digest: "d" });
 });
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;

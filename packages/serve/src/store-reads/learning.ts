@@ -11,8 +11,9 @@ import { currentLearning, holdsForOk, type ItemStatus, type Learning, LEARNING_R
 import { runLearningBody } from "../learning-routes.js";
 import { learningStartOf, readLaunchBody, type RunLaunch } from "../run-launch.js";
 import { type Impact, type ImpactLearning, learningImpact, noteRuns, notesRead } from "../learning-run.js";
-import { costSummary, type CostRun, type CostSummary, type RunPath, runCostOf } from "../learning-cost.js";
+import { costSummary, type CostRun, type CostSummary, RUN_PATHS, type RunPath, runCostOf } from "../learning-cost.js";
 import { runPathOf, workflowNameOf } from "../runner/learning-end.js";
+import { servedOf } from "../runner/workflow-first.js";
 import { type Reflect, reflects } from "../reflect-range.js";
 import type { NoteRuns } from "../learning.js";
 import { type NoteFiles, notesOf } from "../usage.js";
@@ -179,8 +180,8 @@ export async function agentLearningOverStore(store: Store, agentId: string): Pro
 
 /** Agent `agentId`'s cost per run from the one store (GET /agents/{id}/learning/cost, learning-cost.ts): each of its
  *  agentic runs that ended (ended, stopped or failed), oldest first, numbered from 1, with its own cost and what learning
- *  added for it (runCostOf over its row's cost and its learning's spend, learningSpendOf), the path it took and the learned workflow it called
- *  (journalReadsOf), and the learned revision it started from (its launch's seed); and what the series shows
+ *  added for it (runCostOf over its row's cost and its learning's spend, learningSpendOf), the path it took and the learned workflow it ran
+ *  (its run record's, pathOfRow), and the learned revision it started from (its launch's seed); and what the series shows
  *  (costSummary). A run still at work, an imported or archived one and a workflow revision's run are left out; a learning
  *  run (a run's grade and merge) is no run of the list, and its cost is its run's learning. `limit`: the latest runs
  *  shown, each keeping its number; the summary is over every run. */
@@ -193,7 +194,7 @@ export async function agentCostOverStore(store: Store, agentId: string, limit = 
     if (kinds.get(run.revisionId) === "workflow") continue;
     const started = await learningStartOfRun(store, run.id);
     const { looked, grade } = await learningSpendOf(store, run.id);
-    const { path, workflow } = await journalReadsOf(store, run, started);
+    const { path, workflow } = pathOfRow(run.metrics, started);
     runs.push({ n: runs.length + 1, run_id: run.id, started_at: new Date(run.startedAt).toISOString(), path, workflow, learned_revision: started?.seed ?? null, ...runCostOf(run.costUsd, looked, grade) });
   }
   return { runs: runs.slice(Math.max(0, runs.length - limit)), summary: costSummary(runs), total_runs: runs.length, unknown_cost_runs: runs.filter((run) => run.total_usd === null).length };
@@ -211,25 +212,42 @@ async function learningSpendOf(store: Store, runId: string): Promise<{ looked: R
   return { looked, grade: learningRun && FINAL_STATES.includes(learningRun.state) ? (learningRun.costUsd ?? null) : 0 };
 }
 
-/** What a run's journal tells the agent's learning view and its cost per run: the notes its job opened (`read`, once
- *  final), what its claims laid of the skills and workflows it was offered (`laid`), and, for a run offered a learned
- *  workflow, the path it took and the workflow it called last (`path`, `workflow`: runner/learning-end.ts
- *  runPathOf, workflowNameOf; any other run's path is `agent`). Read once for a settled run and kept by its epoch
+/** The path run `runId` took and the learned workflow it ran, the one classifier its run record keeps (metrics.path,
+ *  metrics.workflow, metrics.workflow_digest: workflow-first.ts pathMetrics, written at the run's end) and its cost per run
+ *  reads (pathOfRow). A run its learned workflow served first (its WORKFLOW_FIRST entry, servedOf): `workflow` when it
+ *  answered, `handed_back` when it handed back, with its digest. Else, for a run offered a learned workflow, its timeline
+ *  (runner/learning-end.ts runPathOf, the agent calling the tool itself): `workflow` when its job did only that,
+ *  `handed_back` when the agent went on, with the workflow its job called last. Any other run's path is `agent`. */
+export async function runPathOverStore(store: Store, runId: string, started: RunLaunch["learning"]): Promise<{ path: RunPath; workflow: string | null; digest?: string }> {
+  if (!started?.workflows?.length) return { path: "agent", workflow: null };
+  const entries = await runEntries(store, runId, BACKGROUND_CONTEXT);
+  const served = servedOf(entries);
+  if (served) return { path: served.outcome === "answered" ? "workflow" : "handed_back", workflow: served.workflow, ...(served.digest ? { digest: served.digest } : {}) };
+  const path = runPathOf(await runTimeline(store, runId, BACKGROUND_CONTEXT, { settled: false }));
+  // Only a name the launch offered: a call's raw `name` (a failed call's included) is the model's text, never shown.
+  return { path, workflow: path === "agent" ? null : offeredName(workflowNameOf([...callArgsOf(entries).values()]), started.workflows) };
+}
+
+/** A run's path and learned workflow as its record keeps them (`metrics`: runPathOverStore at its end); `agent` for a run
+ *  whose record names none (a run that does not learn). Only a workflow its launch offered is named. */
+function pathOfRow(metrics: unknown, started: RunLaunch["learning"]): { path: RunPath; workflow: string | null } {
+  const m = (metrics ?? {}) as { path?: unknown; workflow?: unknown };
+  const path = RUN_PATHS.includes(m.path as RunPath) ? (m.path as RunPath) : "agent";
+  return { path, workflow: path === "agent" || typeof m.workflow !== "string" ? null : offeredName(m.workflow, started?.workflows) };
+}
+
+/** What a run's journal tells the agent's learning view: the notes its job opened (`read`, once final) and what its
+ *  claims laid of the skills and workflows it was offered (`laid`). Read once for a settled run and kept by its epoch
  *  (settledJournalReads), else read now. */
 async function journalReadsOf(store: Store, run: { readonly id: string; readonly state: string; readonly epoch: number }, started: RunLaunch["learning"]): Promise<SettledReads> {
   const final = FINAL_STATES.includes(run.state as never);
   const offered = !!(started?.skills?.length || started?.workflows?.length);
-  const flows = !!started?.workflows?.length;
   const journal = async (): Promise<SettledReads> => {
-    const rows = (final && started?.given.length) || flows ? await runTimeline(store, run.id, BACKGROUND_CONTEXT, { settled: final }) : [];
+    const rows = final && started?.given.length ? await runTimeline(store, run.id, BACKGROUND_CONTEXT, { settled: final }) : [];
     const entries = offered ? await runEntries(store, run.id, BACKGROUND_CONTEXT) : [];
-    const path = flows ? runPathOf(rows) : "agent";
     return {
       read: final && started?.given.length ? notesReadOf(started.given, await runReflect(store, run.id, BACKGROUND_CONTEXT), rows) : [],
       laid: offered ? laidOf(entries) : undefined,
-      path,
-      // Only a name the launch offered: a call's raw `name` (a failed call's included) is the model's text, never shown.
-      workflow: path === "agent" ? null : offeredName(workflowNameOf([...callArgsOf(entries).values()]), started?.workflows),
     };
   };
   return final ? settledJournalReads(store, run.id, run.epoch, journal) : journal();
@@ -242,7 +260,7 @@ const offeredName = (name: string | null, offered: readonly string[] | undefined
  *  and a run's end each move the epoch, and only a claim writes to its journal, so a settled run's reads hold until the
  *  next claim of it. At most SETTLED_READS_MAX runs a store, the oldest read dropped first. */
 const settledReads = new WeakMap<Store, Map<string, { readonly epoch: number; readonly value: SettledReads }>>();
-type SettledReads = { readonly read: readonly NoteUsed[]; readonly laid: Laid | undefined; readonly path: RunPath; readonly workflow: string | null };
+type SettledReads = { readonly read: readonly NoteUsed[]; readonly laid: Laid | undefined };
 const SETTLED_READS_MAX = 4096;
 async function settledJournalReads(store: Store, runId: string, epoch: number, read: () => Promise<SettledReads>): Promise<SettledReads> {
   let runs = settledReads.get(store);

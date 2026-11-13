@@ -6,6 +6,7 @@
 import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { agentFolderOf } from "../dist/files.js";
 import { seedOf } from "../dist/learning.js";
@@ -115,6 +116,17 @@ test("GET /agents/{id}/learning/cost: the agent's runs in order, by hand until a
   const body = await cost();
   assert.deepEqual(body.runs.map((run) => [run.n, run.run_id, run.path, run.workflow]), [[1, byHand[0], "agent", null], [2, byHand[1], "agent", null], [3, alone, "workflow", "answer"], [4, back, "handed_back", null]], "a name the launch never offered (the model's own text) is never shown");
   assert.deepEqual([body.runs[2].learned_revision, body.runs[3].learned_revision], [sha, sha], "the commit its learning started from");
+  // One classifier: the agent called the tool itself (no workflow-first step), and its run record's metrics.path, written
+  // at its end, is the path the cost per run shows.
+  const metricsOf = (runId) => {
+    const db = new DatabaseSync(join(data, "store.sqlite"), { readOnly: true, timeout: 5_000 });
+    try {
+      return JSON.parse(db.prepare("SELECT metrics FROM runs WHERE id = ?").get(runId)?.metrics ?? "null");
+    } finally {
+      db.close();
+    }
+  };
+  assert.deepEqual(body.runs.map((run) => [metricsOf(run.run_id)?.path, metricsOf(run.run_id)?.workflow ?? null]), [["agent", null], ["agent", null], ["workflow", "answer"], ["handed_back", null]], "the record's path and workflow are the chart's");
   for (const run of body.runs) {
     const { learning } = await savedOf(data, run.run_id);
     const rowUsd = storeRun(data, run.run_id).costUsd;
