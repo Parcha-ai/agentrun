@@ -23,13 +23,14 @@ import java.util.function.Supplier;
  * user holds), or foreground, the phone's own input injected at the element (only when the call passes foreground).
  */
 public final class UiDriver {
-	/** protocol.ts UI_STATES_KEPT, MAX_STEPS, MAX_BATCH_WAIT_MS, DEFAULT_EXPECT_MS, MAX_EXPECT_MS, MAX_SETTLE_MS. */
+	/** protocol.ts UI_STATES_KEPT, MAX_STEPS, MAX_BATCH_WAIT_MS, DEFAULT_EXPECT_MS, MAX_EXPECT_MS, MAX_SETTLE_MS, SET_HOLD_MS. */
 	static final int KEPT_STATES = 32;
 	static final int MAX_STEPS = 100;
 	static final long MAX_DRAG_MS = 300_000;
 	static final long DEFAULT_EXPECT_MS = 5_000;
 	static final long MAX_EXPECT_MS = 60_000;
 	static final long MAX_SETTLE_MS = 3_000;
+	static final long SET_HOLD_MS = 500;
 	/** How often an expect looks again. */
 	static final long EXPECT_POLL_MS = 100;
 	/** The protocol's roles (protocol.ts UI_ROLES), which expect.window.role names one of. */
@@ -477,20 +478,122 @@ public final class UiDriver {
 					break;
 				}
 			}
-			Settle.quiet(a11y, clock, after(a11y, target).id(), MAX_SETTLE_MS, cancel);
-			String met = null;
-			// A met window expect answers the window that met it, the app's main window; every other act its own window.
-			Device.AxWindow main = null;
-			if (expect != null && !refused) {
-				met = holdsWithin(expect, a11y, target, clock, cancel) ? "met" : "unmet";
-				if (expect.window && !expect.gone && "met".equals(met)) main = mainOf(a11y, target);
-				// The answered state is the window once it settles after the expect, never a frame of a transition.
-				Settle.quiet(a11y, clock, (main != null ? main : after(a11y, target)).id(), MAX_SETTLE_MS, cancel);
-				if (main != null) main = mainOf(a11y, target);
+			boolean waitsForWindow = expect != null && expect.window;
+			// Every verdict of the act reads one final view, read after its last settle (ui-engine.ts, the same rule): a
+			// set's hold, the expect, and the state it answers. A poll's look only says when to read it again.
+			Final read = readFinal(a11y, target, waitsForWindow, cancel);
+			// A set holds: the final view is read again SET_HOLD_MS after the first, where an app that took the value back
+			// answers false.
+			List<Integer> sets = new ArrayList<>();
+			for (int i = 0; i < answers.size(); i++) {
+				Object one = answers.get(i);
+				if (steps.get(i).kind.equals("set") && one instanceof Map && Boolean.TRUE.equals(((Map<?, ?>) one).get("verified"))) sets.add(i);
 			}
-			Look last = new Look(main != null ? main : after(a11y, target), false);
+			if (!sets.isEmpty()) {
+				clock.sleep(SET_HOLD_MS);
+				read = readFinal(a11y, target, waitsForWindow, cancel);
+			}
+			String met = null;
+			if (expect != null && !refused) {
+				long start = clock.now();
+				for (;;) {
+					if (read.holds(expect)) {
+						met = "met";
+						break;
+					}
+					if (clock.now() - start >= expect.timeoutMs) {
+						met = "unmet";
+						break;
+					}
+					// Poll with quick looks until one holds or the time is up; then read the final view again, so a look
+					// caught mid-transition never decides the act.
+					for (;;) {
+						cancel.check();
+						clock.sleep(Math.max(1, Math.min(EXPECT_POLL_MS, expect.timeoutMs - (clock.now() - start))));
+						if (clock.now() - start >= expect.timeoutMs || holds(expect, a11y, target)) break;
+					}
+					read = readFinal(a11y, target, waitsForWindow, cancel);
+				}
+			}
+			for (int i : sets) {
+				if (!read.setHolds(steps.get(i))) answers.set(i, Json.obj("route", ((Map<?, ?>) answers.get(i)).get("route"), "verified", false));
+			}
+			// A met window expect answers the window that met it, the app's main window; every other act its own window.
+			Look last = waitsForWindow && "met".equals(met) && read.main != null ? read.main : read.own;
 			State now = record(last);
 			return Json.obj("steps", answers, "state", now.id, "changed", !first.equals(last.fingerprint()), "expect", met == null ? Json.OMIT : met);
+		}
+	}
+
+	/**
+	 * The act's final view: its own window settled, and for a window expect the app's main window settled; null where
+	 * the app shows none. What a verdict reads is this view, never a later look.
+	 */
+	private Final readFinal(Device.Accessibility a11y, Target target, boolean waitsForWindow, Wire.Cancel cancel) throws InterruptedException {
+		Device.Clock clock = device.clock();
+		Settle.quiet(a11y, clock, after(a11y, target).id(), MAX_SETTLE_MS, cancel);
+		if (waitsForWindow) {
+			Device.AxWindow main = mainOf(a11y, target);
+			if (main != null && main.id() != after(a11y, target).id()) Settle.quiet(a11y, clock, main.id(), MAX_SETTLE_MS, cancel);
+		}
+		return view(a11y, target, waitsForWindow);
+	}
+
+	/** The act's own window and, for a window expect, the app's main window, as they are now. */
+	private Final view(Device.Accessibility a11y, Target target, boolean waitsForWindow) {
+		Look own = new Look(after(a11y, target), false);
+		if (!waitsForWindow) return new Final(own, null);
+		Device.AxWindow main = mainOf(a11y, target);
+		return new Final(own, main == null ? null : main.id() == own.window.id() ? own : new Look(main, false));
+	}
+
+	/** One final view of the act: its own window, and the app's main window for a window expect. */
+	private final class Final {
+		final Look own;
+		final Look main;
+		/** Every element of the own window, not only the compact view's: what text and ref expects read. */
+		final Outline full;
+
+		Final(Look own, Look main) {
+			this.own = own;
+			this.main = main;
+			this.full = Outline.of(own.root, true);
+		}
+
+		/**
+		 * The expect holds in this view. window: the app's main window's title holds title and its role is role (a
+		 * phone's windows are ordinary ones, role "window"); text: some element's name or value holds it; ref: the
+		 * element is in the act's own window (holding text, when both); gone inverts.
+		 */
+		boolean holds(Expect e) {
+			if (e.window) {
+				String title = main == null ? null : main.window.title();
+				boolean seen = main != null && (e.windowTitle == null || (title != null && title.contains(e.windowTitle))) && (e.windowRole == null || "window".equals(e.windowRole));
+				return seen != e.gone;
+			}
+			boolean seen = false;
+			if (e.ref != null) {
+				AxNode node = nodeOfRef.get(e.ref);
+				Outline.Entry entry = node == null ? null : full.find(node.key());
+				seen = entry != null && (e.text == null || entry.holds(e.text));
+			} else {
+				for (Outline.Entry entry : full.entries) {
+					if (entry.holds(e.text)) {
+						seen = true;
+						break;
+					}
+				}
+			}
+			return seen != e.gone;
+		}
+
+		/** A set's value still holds in this view: a switch's or checkbox's checked state, else the field's text. */
+		boolean setHolds(Step s) {
+			AxNode node = nodeOfRef.get(s.ref);
+			Outline.Entry entry = node == null ? null : full.find(node.key());
+			if (entry == null) return false;
+			if (entry.node.checkable()) return entry.flags.contains("checked") == (s.text.equals("on") || s.text.equals("true"));
+			return java.util.Objects.equals(entry.value, Outline.trim(s.text));
 		}
 	}
 
@@ -915,18 +1018,6 @@ public final class UiDriver {
 		return null;
 	}
 
-	/** Polls the expect against the target's window until it holds or its time runs out. */
-	private boolean holdsWithin(Expect e, Device.Accessibility a11y, Target target, Device.Clock clock, Wire.Cancel cancel) throws InterruptedException {
-		long start = clock.now();
-		for (;;) {
-			cancel.check();
-			if (holds(e, a11y, target)) return true;
-			long spent = clock.now() - start;
-			if (spent >= e.timeoutMs) return false;
-			clock.sleep(Math.min(EXPECT_POLL_MS, e.timeoutMs - spent));
-		}
-	}
-
 	/**
 	 * The act's app's main window, which a window expect reads: the app's window in front, never the window a target or a
 	 * state aimed the act at (wire.md, expect.window). After a nav step the act has no app, and it is the app in front.
@@ -943,37 +1034,13 @@ public final class UiDriver {
 		}
 	}
 
-	/**
-	 * window: the app's main window's title holds title and its role is role (a phone's windows are ordinary ones, role
-	 * "window"); text: some element's name or value holds it; ref: the element is in the window (holding text, when both);
-	 * gone inverts.
-	 */
+	/** A poll's quick look: whether the expect holds in the windows as they are now. A window that is gone shows nothing. */
 	private boolean holds(Expect e, Device.Accessibility a11y, Target target) {
-		if (e.window) {
-			Device.AxWindow main = mainOf(a11y, target);
-			String title = main == null ? null : main.title();
-			boolean seen = main != null && (e.windowTitle == null || (title != null && title.contains(e.windowTitle))) && (e.windowRole == null || "window".equals(e.windowRole));
-			return seen != e.gone;
-		}
-		Outline outline;
 		try {
-			outline = Outline.of(after(a11y, target).root(), true);
+			return view(a11y, target, e.window).holds(e);
 		} catch (RpcError gone) {
+			if (!"not_found".equals(gone.kind)) throw gone;
 			return e.gone;
 		}
-		boolean seen = false;
-		if (e.ref != null) {
-			AxNode node = nodeOfRef.get(e.ref);
-			Outline.Entry entry = node == null ? null : outline.find(node.key());
-			seen = entry != null && (e.text == null || entry.holds(e.text));
-		} else {
-			for (Outline.Entry entry : outline.entries) {
-				if (entry.holds(e.text)) {
-					seen = true;
-					break;
-				}
-			}
-		}
-		return seen != e.gone;
 	}
 }

@@ -10,7 +10,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { CreateRequests, endedWords, otherSpecWords } from "../create-requests.js";
+import { CreateRequests, endedWords, otherSpecWords, readBackDiffer } from "../create-requests.js";
 import { DESKTOP_GROUPS, type DesktopOptions, desktopOf, startDisplay } from "../desktop.js";
 import { COMPUTER_LABEL, DAEMON_IN_COMPUTER, DEADLINE_LABEL, helloDrift, type ProbeReport, probeNetworkDrift, probeNotes, probeReportOf, WORK } from "../drift.js";
 import type { HostCall, Machine, MachineHost, MachineRequest } from "../host.js";
@@ -524,9 +524,11 @@ export class HostedProvider implements ComputerProvider {
 				const differ = this.#labelDiffer(spec, name, machine.labels, "read back");
 				if (differ.length > 0) return this.#fail("exists", otherSpecWords(name, "was made", differ));
 				const attached = await this.#attached(machine, signal);
-				if (attached.ok && attached.value.spec.user !== this.#userOf(spec)) {
-					return this.#fail("exists", otherSpecWords(name, "was made", [`user: asked ${this.#userOf(spec)}, read back ${attached.value.spec.user}`]));
-				}
+				// The image and an Archil mount are in the labels; the user, the network, and a size where the vendor takes
+				// one in a spec, are read back.
+				const sizes = (["cpus", "memoryMb"] as const).filter((field) => this.host.facts.specFields?.includes(field));
+				const drift = attached.ok ? readBackDiffer({ ...spec, user: this.#userOf(spec) }, attached.value.spec, ["user", "network", ...sizes]) : [];
+				if (drift.length > 0) return this.#fail("exists", otherSpecWords(name, "was made", drift));
 				if (attached.ok) return ok({ id: attached.value.id, name: attached.value.name, ...(attached.value.notes ? { notes: attached.value.notes } : {}) });
 				if (attached.error.code === "aborted") return attached;
 				// Its daemon is not up yet, or not yet as declared (a desktop whose display the first create is still

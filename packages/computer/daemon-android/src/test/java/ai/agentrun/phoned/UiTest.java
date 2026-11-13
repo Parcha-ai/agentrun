@@ -302,6 +302,58 @@ final class UiTest {
 		refuses("not_found", () -> phone.call("ui.act", "{" + target + ",\"steps\":[{\"key\":\"enter\"}],\"expect\":{\"window\":{\"title\":\"UI fixture\"}}}"));
 	}
 
+	static void testAWindowExpectIsJudgedOnTheFinalViewItAnswers() throws Exception {
+		Check.Phone phone = new Check.Phone();
+		phone.call("apps.launch", "{\"id\":\"" + FakeDevice.FIXTURE + "\"}");
+		String target = "\"target\":{\"app\":\"" + FakeDevice.FIXTURE + "\"}";
+		Map<String, Object> seen = phone.call("ui.observe", "{" + target + "}");
+		String next = null;
+		for (Object n : list(seen, "nodes")) if ("next".equals(map(n).get("id"))) next = (String) map(n).get("ref");
+		// The second page shows, then the app leaves it while the act settles: a look that once held never decides the
+		// act. The answer is unmet, and its state is the window the phone shows.
+		phone.device.secondStaysMs = FakeDevice.NEXT_ANIMATE_MS + 50;
+		Map<String, Object> flashed = phone.call("ui.act", "{" + target + ",\"steps\":[{\"press\":\"" + next + "\"}],\"expect\":{\"window\":{\"title\":\"Second page\"},\"timeoutMs\":1000}}");
+		eq("unmet", flashed.get("expect"));
+		Map<String, Object> now = phone.call("ui.observe", "{" + target + ",\"since\":\"" + flashed.get("state") + "\"}");
+		eq("UI fixture", map(now.get("window")).get("title"));
+		eq(0, list(map(now.get("diff")), "added").size());
+		// A second page that stays is met, and answers its own state. The fixture's home window is a new one, with new refs.
+		phone.device.secondStaysMs = 0;
+		String again = null;
+		for (Object n : list(phone.call("ui.observe", "{" + target + "}"), "nodes")) if ("next".equals(map(n).get("id"))) again = (String) map(n).get("ref");
+		yes(again != null, "the fixture's home window has its Next");
+		Map<String, Object> stayed = phone.call("ui.act", "{" + target + ",\"steps\":[{\"press\":\"" + again + "\"}],\"expect\":{\"window\":{\"title\":\"Second page\"},\"timeoutMs\":1000}}");
+		eq("met", stayed.get("expect"));
+		Map<String, Object> then = phone.call("ui.observe", "{" + target + ",\"since\":\"" + stayed.get("state") + "\"}");
+		eq("Second page", map(then.get("window")).get("title"));
+		eq(0, list(map(then.get("diff")), "added").size());
+	}
+
+	static void testASetThatTheAppTakesBackIsNotVerified() throws Exception {
+		Check.Phone phone = new Check.Phone();
+		phone.device.internet();
+		Map<String, Object> seen = phone.call("ui.observe", "{}");
+		Map<String, Object> toggle = null;
+		for (Object n : list(seen, "nodes")) if ("switch".equals(map(n).get("role"))) toggle = map(n);
+		yes(toggle != null, "the row's own switch is listed");
+		// The app turns Wi-Fi back on a moment after the switch is set off: the set reads back at once, and is not held.
+		FakeNode wifi = phone.device.wifi;
+		wifi.on(a -> {
+			if (a.equals("ACTION_CLICK") && !wifi.checked) phone.device.after(UiDriver.SET_HOLD_MS / 2, () -> {
+				wifi.checked = true;
+				phone.device.changed();
+			});
+		});
+		Map<String, Object> acted = phone.call("ui.act", "{\"steps\":[{\"set\":\"" + toggle.get("ref") + "\",\"value\":\"off\"}]}");
+		eq(Json.obj("route", "semantic", "verified", false), step(acted, 0));
+		eq(true, wifi.checked);
+		// One the app keeps holds.
+		wifi.on(a -> {});
+		Map<String, Object> kept = phone.call("ui.act", "{\"steps\":[{\"set\":\"" + toggle.get("ref") + "\",\"value\":\"off\"}]}");
+		eq(Json.obj("route", "semantic", "verified", true), step(kept, 0));
+		eq(false, wifi.checked);
+	}
+
 	static void testRowNamingSkipsActionableChildren() {
 		FakeNode row = FakeNode.of("android.widget.LinearLayout").at(0, 0, 100, 100).tappable();
 		FakeNode box = FakeNode.of("android.widget.CheckBox").at(80, 10, 95, 30).text("Remember");

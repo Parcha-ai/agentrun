@@ -390,6 +390,26 @@ test("the fake ui provider keeps a computer's network (none or open, never an al
 	await provider.release(made.value, "delete");
 });
 
+test("the fake ui provider holds a retry to the whole spec its computer was made with: another network, image, user or label is exists", async () => {
+	const provider = fakeUiProvider();
+	const spec = { image: "fake-ui", user: "501", kind: "desktop", labels: { run: "r1" }, network: "open", lifetimeMs: 60_000 };
+	const made = await provider.create(spec, { requestId: "whole" });
+	assert.equal(made.ok, true, JSON.stringify(made));
+	for (const [other, words] of [
+		[{ network: "none" }, /network: asked "none", read back "open"/],
+		[{ image: "fake-ui-2" }, /image: asked "fake-ui-2", read back "fake-ui"/],
+		[{ user: "0" }, /user: asked 0, read back 501/],
+		[{ labels: { run: "r2" } }, /label run: asked "r2", read back "r1"/],
+	]) {
+		const again = await provider.create({ ...spec, ...other }, { requestId: "whole" });
+		assert.equal(again.error?.code, "exists", JSON.stringify(other));
+		assert.match(again.error.message, words);
+	}
+	const same = await provider.create({ ...spec, lifetimeMs: 30_000 }, { requestId: "whole" });
+	assert.equal(same.value?.id, made.value.id, "another lifetime alone is the same request");
+	await provider.release(made.value, "delete");
+});
+
 test("idempotent create: the fake ui provider passes provider.create-retried and create-after-release; one that makes a computer per call fails both", { timeout: 60_000 }, async () => {
 	const ids = ["provider.create-retried", "provider.create-after-release"];
 	const good = await run(fakeUiProvider(), ids);

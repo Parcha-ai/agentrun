@@ -4,7 +4,7 @@
 // exists once the vendor forgets them. What a vendor can still show (a machine by that name, starting, up or stopped) is
 // the provider's own to read, in the make it passes.
 import { isDeepStrictEqual } from "node:util";
-import { type ComputerSpec, type CreateContext, type CreatedComputer, computerNameFor, requestIdProblem } from "./provider.js";
+import { type ComputerSpec, type CreateContext, type CreatedComputer, computerNameFor, type ReadBackSpec, requestIdProblem } from "./provider.js";
 import type { ComputerErrorCode, Result } from "./result.js";
 
 /** The most request names one provider remembers as ended, the oldest let go first: a bound, not a ledger. */
@@ -30,20 +30,33 @@ export function labelsDiffer(asked: Record<string, string>, have: Record<string,
 }
 
 /**
- * How asked differs from inFlight, the spec of a create of the same request still in flight, in words: every field but
- * lifetimeMs (each create counts its own lifetime from its start), the labels exactly, and the user as the provider
- * resolves it (userOf: an unset user is the provider's default). Empty when they are the same.
+ * How asked differs from have, the spec of another create of the same request, in words: every field but lifetimeMs
+ * (each create counts its own lifetime from its start), the labels exactly, and the user as the provider resolves it
+ * (userOf: an unset user is the provider's default). seen says where have is from: "in flight" for a create still
+ * running, "read back" for a computer whose vendor holds its whole spec (the fake's). Empty when they are the same.
  */
-export function specDiffer(asked: ComputerSpec, inFlight: ComputerSpec, userOf: (spec: ComputerSpec) => string | undefined = (spec) => spec.user): string[] {
-	const differ = labelsDiffer(asked.labels ?? {}, inFlight.labels ?? {}, "in flight");
-	const fields = new Set([...Object.keys(asked), ...Object.keys(inFlight)] as Array<keyof ComputerSpec>);
+export function specDiffer(asked: ComputerSpec, have: ComputerSpec, { userOf = (spec) => spec.user, seen = "in flight" }: { userOf?: (spec: ComputerSpec) => string | undefined; seen?: string } = {}): string[] {
+	const differ = labelsDiffer(asked.labels ?? {}, have.labels ?? {}, seen);
+	const fields = new Set([...Object.keys(asked), ...Object.keys(have)] as Array<keyof ComputerSpec>);
 	for (const field of fields) {
 		if (field === "lifetimeMs" || field === "labels" || field === "user") continue;
-		if (!isDeepStrictEqual(asked[field], inFlight[field])) differ.push(`${field}: asked ${show(asked[field])}, in flight ${show(inFlight[field])}`);
+		if (!isDeepStrictEqual(asked[field], have[field])) differ.push(`${field}: asked ${show(asked[field])}, ${seen} ${show(have[field])}`);
 	}
-	const [user, flying] = [userOf(asked), userOf(inFlight)];
-	if (user !== flying) differ.push(`user: asked ${user ?? "the default"}, in flight ${flying ?? "the default"}`);
+	const [user, held] = [userOf(asked), userOf(have)];
+	if (user !== held) differ.push(`user: asked ${user ?? "the default"}, ${seen} ${held ?? "the default"}`);
 	return differ;
+}
+
+/**
+ * How asked differs from what the vendor reads back of its request's computer (attach's spec), in words, over the
+ * fields this provider reads back as they were asked: each one asked, or read back, with another value. A size the
+ * spec left out is the vendor's default, so it differs from none. Labels are the provider's to compare, by its own.
+ */
+export function readBackDiffer(asked: ComputerSpec, have: ReadBackSpec, fields: ReadonlyArray<"image" | "network" | "user" | "cpus" | "memoryMb" | "pids">): string[] {
+	const sized = new Set(["cpus", "memoryMb", "pids"]);
+	return fields
+		.filter((field) => !(sized.has(field) && asked[field] === undefined) && !isDeepStrictEqual(asked[field], have[field]))
+		.map((field) => `${field}: asked ${show(asked[field])}, read back ${show(have[field])}`);
 }
 
 const show = (value: unknown) => (value === undefined ? "nothing" : JSON.stringify(value));
@@ -75,7 +88,7 @@ export class CreateRequests {
 		const name = computerNameFor(context.requestId);
 		const inFlight = this.#creating.get(name);
 		if (inFlight !== undefined) {
-			const differs = specDiffer(spec, inFlight.spec, userOf);
+			const differs = specDiffer(spec, inFlight.spec, userOf === undefined ? {} : { userOf });
 			if (differs.length > 0) return refuse("exists", otherSpecWords(name, "is being made", differs));
 			return inFlight.result;
 		}

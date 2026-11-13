@@ -32,8 +32,8 @@ import {
 	type UiStep,
 	type UiTarget,
 } from "./protocol.js";
-import { CreateRequests, endedWords, labelsDiffer, otherSpecWords } from "./create-requests.js";
-import { type ComputerCapabilities, type ComputerConnection, type ComputerProvider, checkLifetime, kindRefusals } from "./provider.js";
+import { CreateRequests, endedWords, otherSpecWords, specDiffer } from "./create-requests.js";
+import { type ComputerCapabilities, type ComputerConnection, type ComputerProvider, type ComputerSpec, checkLifetime, kindRefusals } from "./provider.js";
 import { fail, ok, type Result } from "./result.js";
 import { featureOff, UiEngine, type UiRun, type UiSource, type UiStepContext, type UiView } from "./ui-engine.js";
 
@@ -656,6 +656,8 @@ export function fakeUiProvider(options: FakeUiOptions = {}, make: (options: Fake
 		release: ["delete"],
 	};
 	const networks = new Map<string, "none" | "open">();
+	/** The spec each computer was made with, kept past its end: a retry of its request is held to all of it. */
+	const specs = new Map<string, ComputerSpec>();
 	const missing = (id: string) => fail("not_found", `no fake ui computer ${id}`);
 	const end = (id: string) => {
 		drivers.get(id)?.close();
@@ -691,11 +693,13 @@ export function fakeUiProvider(options: FakeUiOptions = {}, make: (options: Fake
 				make: async (id) => {
 					if (made.has(id)) {
 						if (!live(id)) return fail("exists", endedWords(id));
-						const differ = labelsDiffer(spec.labels ?? {}, labelsOf.get(id) ?? {}, "read back");
+						// The fake's vendor holds the whole spec a computer was made with: a retry is held to all of it.
+						const differ = specDiffer(spec, specs.get(id) as ComputerSpec, { seen: "read back" });
 						if (differ.length > 0) return fail("exists", otherSpecWords(id, "was made", differ));
 						return ok({ id, name: id });
 					}
 					made.add(id);
+					specs.set(id, spec);
 					drivers.set(id, make(options));
 					labelsOf.set(id, { ...spec.labels });
 					deadlines.set(id, new Date(Date.now() + (spec.lifetimeMs ?? capabilities.maxLifetimeMs)));
