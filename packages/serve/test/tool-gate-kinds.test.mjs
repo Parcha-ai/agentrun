@@ -45,3 +45,18 @@ test("each computer tool is held to the stricter of desktop and phone: either se
     assert.equal(gateWith({ phone: { permission: "deny" } }).policy(name), "deny", name);
   }
 });
+
+test("a script's shell, write and read are decided as the run's own bash, write and read are, on every harness: a deny, a read-only policy, and the default", async () => {
+  for (const harness of ["pi", "claude-agent", "codex", "opencode"]) {
+    const denied = runnerGate({ harness, settings: { bash: { permission: "deny" }, write: { permission: "deny" }, read: { permission: "deny" } } });
+    for (const [tool, args] of [["bash", { command: "ls" }], ["write", { path: "/workspace/a" }], ["read", { path: "/workspace/a" }]]) {
+      const decided = await denied.decide(tool, args);
+      assert.ok(typeof decided === "object" && "deny" in decided, `${harness} ${tool} is refused`);
+    }
+    assert.equal(await runnerGate({ harness }).decide("bash", { command: "ls" }), "allow", `${harness}: the default allows`);
+  }
+  const readOnly = runnerGate({ overrides: { bash: { policy: "read-only" } } });
+  assert.equal(await readOnly.decide("bash", { command: "ls" }), "allow");
+  const refused = await readOnly.decide("bash", { command: "rm -rf /workspace/x" });
+  assert.ok(typeof refused === "object" && "deny" in refused, "a read-only policy refuses a command that writes");
+});

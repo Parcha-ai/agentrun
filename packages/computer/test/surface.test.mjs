@@ -94,7 +94,7 @@ test("without the ui group: observe is the screen, read whole across screen.read
 				{ type: "click", at: [5, 6], count: 2 },
 				{ type: "type", text: "hi" },
 				{ type: "key", keys: ["cmd", "s"] },
-				{ type: "scroll", at: [1, 1], unit: "px", dy: 120 },
+				{ type: "scroll", at: [1, 1], unit: "clicks", dy: 1 },
 				{ type: "drag", path: [[0, 0], [9, 9]] },
 				{ type: "button", name: "back" },
 			],
@@ -123,6 +123,36 @@ test("a touch-only phone: click is a tap, a right click a long press, drag a swi
 		{ type: "long_press", at: [1, 2] },
 		{ type: "swipe", path: [[0, 0], [0, 50]], ms: 300 },
 	]);
+});
+
+test("without the ui group: a scroll is wheel clicks (about 120 px each, at least one, at most 50), never pixels", async () => {
+	const { surface, calls } = surfaceOf({ groups: ["screen", "input.pointer"] });
+	await surface.call("act", { steps: [{ scroll: [1, 1], dy: 600 }, { scroll: [1, 1], dy: -30, dx: 240 }, { scroll: [1, 1], dy: 99999 }] });
+	assert.deepEqual(calls.at(-1).params.actions, [
+		{ type: "scroll", at: [1, 1], unit: "clicks", dy: 5 },
+		{ type: "scroll", at: [1, 1], unit: "clicks", dx: 2, dy: -1 },
+		{ type: "scroll", at: [1, 1], unit: "clicks", dy: 50 },
+	]);
+});
+
+test("without the ui group: a full batch with observe still runs (the settling wait is its own batch), and a batch the computer refuses says why", async () => {
+	const { surface, calls } = surfaceOf({ groups: ["screen", "input.pointer", "input.keys"] });
+	const full = await surface.call("act", { steps: Array.from({ length: 100 }, () => ({ key: "a" })), observe: true });
+	const sent = calls.filter((call) => call.method === "input.actions");
+	assert.deepEqual(sent.map((call) => call.params.actions.length), [100, 1]);
+	assert.equal(full.value.steps.length, 100);
+	assert.ok(full.value.after, "the observation comes after the wait");
+	const fake = fakeComputer({ groups: ["screen", "input.pointer", "input.keys"] });
+	const call = fake.client.call.bind(fake.client);
+	fake.client.call = async (method, params, options) => (method === "input.actions" && params.actions.length > 100 ? { ok: true, value: { done: 0, failed: { index: 100, kind: "limit", message: "a batch holds at most 100 actions" } } } : call(method, params, options));
+	const over = await createSurface(fake.client, fake.hello).call("act", { steps: Array.from({ length: 101 }, () => ({ key: "a" })), observe: true });
+	assert.deepEqual(over.value.steps, [{ error: { kind: "limit", message: "a batch holds at most 100 actions" } }]);
+});
+
+test("a refused step throws in a script, so the steps after it never run", async () => {
+	const { surface, calls } = surfaceOf();
+	await assert.rejects(runScript(surface, `const notes = computer.app("com.apple.Notes"); await notes.press("@e99"); await notes.key("enter");`), /step 1 was refused \(stale\): that element is gone/);
+	assert.equal(calls.filter((call) => call.method === "ui.act").length, 1, "the key after the refused press was never sent");
 });
 
 test("input.act: a failed action is the last step, with its kind", async () => {

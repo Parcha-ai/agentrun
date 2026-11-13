@@ -59,6 +59,10 @@ const MAX_RUN_MS = 600_000;
 const MAX_LIST_PAGES = 10;
 /** How long raw input waits before the screenshot of an act's observe, so the screen can redraw. */
 const INPUT_SETTLE_MS = 500;
+/** A scroll of `distance` pixels as wheel clicks: about 120 pixels each, at least one, at most the most a driver takes in one. */
+const WHEEL_PX = 120;
+const MAX_WHEEL_CLICKS = 50;
+const wheelClicks = (distance: number): number => Math.sign(distance) * Math.min(MAX_WHEEL_CLICKS, Math.max(1, Math.round(Math.abs(distance) / WHEEL_PX)));
 
 /** The card of a hello. */
 export function cardOf(hello: HelloResult): Card {
@@ -220,20 +224,25 @@ export function createSurface(client: ComputerClient, hello: HelloResult): Surfa
 			}
 			if ("key" in step) return { type: "key", keys: chordKeys(step.key) };
 			if ("nav" in step) return { type: "button", name: step.nav };
-			if ("scroll" in step) return { type: "scroll", at: atPoint(step.scroll, index), unit: "px", ...(step.dx ? { dx: step.dx } : {}), ...(step.dy ? { dy: step.dy } : {}) };
+			// By wheel clicks: every driver takes them, and several (X11's, Orgo's) refuse pixels. A click is about 120 pixels.
+			if ("scroll" in step) return { type: "scroll", at: atPoint(step.scroll, index), unit: "clicks", ...(step.dx ? { dx: wheelClicks(step.dx) } : {}), ...(step.dy ? { dy: wheelClicks(step.dy) } : {}) };
 			if ("drag" in step) return touchOnly ? { type: "swipe", path: step.drag, ...(step.ms ? { ms: step.ms } : {}) } : { type: "drag", path: step.drag };
 			throw new SurfaceError("unsupported", `step ${index + 1} (${stepName(step)}) needs the ui group, which this computer does not have: click, type, key, scroll and drag at points instead`);
 		});
 	}
 
 	async function runInput(actions: InputAction[], observeAfter: boolean, signal?: AbortSignal): Promise<ActResult> {
-		const sent = observeAfter ? [...actions, { type: "wait", ms: INPUT_SETTLE_MS } as InputAction] : actions;
-		const result = await call("input.actions", { actions: sent }, signal);
+		const result = await call("input.actions", { actions }, signal);
 		const steps: StepResult[] = [];
 		for (let index = 0; index < Math.min(result.done, actions.length); index += 1) steps.push({ route: "input", verified: false });
-		if (result.failed && result.failed.index < actions.length) steps.push({ error: { kind: result.failed.kind, message: result.failed.message } });
+		// A batch the computer refused whole (a full batch, past the limit) says so: its reason is the one step's error.
+		if (result.failed) steps.push({ error: { kind: result.failed.kind, message: result.failed.message } });
 		const done: ActResult = { steps };
-		if (observeAfter && !result.failed) done.after = await screenState(signal);
+		if (observeAfter && !result.failed) {
+			// The settling wait is a batch of its own, so a full batch of actions still fits the computer's limit.
+			await call("input.actions", { actions: [{ type: "wait", ms: INPUT_SETTLE_MS } as InputAction] }, signal);
+			done.after = await screenState(signal);
+		}
 		return done;
 	}
 

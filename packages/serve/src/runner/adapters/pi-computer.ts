@@ -51,8 +51,7 @@ export function computerCodemode(computer: ScriptComputer): Extension {
       // The value whole, images and all: a script shows one with image(...).
       execute: async (given, _api, context) => {
         const [op, args] = given as [unknown, unknown];
-        const answer = await computer.port.call(String(op), args ?? {}, context.abortSignal);
-        return (answer.value ?? null) as JsonValue;
+        return (await computer.guard.call(String(op), args, () => computer.port.call(String(op), args ?? {}, context.abortSignal))) as JsonValue;
       },
     }],
   });

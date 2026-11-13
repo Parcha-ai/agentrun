@@ -24,6 +24,12 @@ export function bindComputer(call: Call, card: Card): Computer {
 			if (options.observe) args.observe = options.observe;
 			const result = (await call("act", args)) as ActResult;
 			if (result.after) last = result.after;
+			// A refused step is the last one run (api.ts ActResult): the script stops there, as computer_script's words say, so
+			// no later action lands on a screen it did not expect.
+			for (let index = 0; index < result.steps.length; index += 1) {
+				const step = result.steps[index] as { error?: { kind: string; message: string } };
+				if (step.error) throw new Error(`step ${index + 1} was refused (${step.error.kind}): ${step.error.message}`);
+			}
 			return result;
 		};
 		const app: App = {

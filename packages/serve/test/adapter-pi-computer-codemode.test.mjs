@@ -18,7 +18,13 @@ const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { piAdapter } = await import("../dist/runner/adapters/pi.js");
 const { computerCodemode, PI_CODEMODE_TOOL } = await import("../dist/runner/adapters/pi-computer.js");
 const { suiteTools } = await import("../dist/runner/conformance/harness.js");
-const { portOf } = await import("../dist/workspace/index.js");
+const { portOf, ScriptGuard } = await import("../dist/workspace/index.js");
+/** A script guard whose gate allows every call: these tests are about code mode, not the run's tool settings. */
+const allowAll = () => {
+  const guard = new ScriptGuard();
+  guard.install(async () => "allow");
+  return guard;
+};
 const { deniedText, settingsKeyOf } = await import("../dist/tool-gate.js");
 const TIMING = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 30 };
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
@@ -39,7 +45,7 @@ async function desktop() {
   computer.overrides["screen.shot"] = () => ({ id: "s1", size, data: PNG, eof: true, width: 1280, height: 800, scale: 1 });
   computer.overrides["input.actions"] = ({ actions }) => ({ done: actions.length });
   const surface = createSurface(computer.client, { protocol: "0.2", version: "0", os: "linux", kind: "desktop", arch: "amd64", groups: GROUPS });
-  return { computer, script: { card: surface.card, port: portOf(surface) } };
+  return { computer, script: { card: surface.card, port: portOf(surface), guard: allowAll() } };
 }
 
 /** A pi run of `script` with code mode on `computer`, its gate `gate(call)`; the request bodies the provider got. */

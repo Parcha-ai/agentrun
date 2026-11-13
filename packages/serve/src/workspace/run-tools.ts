@@ -41,7 +41,7 @@ import type { ComputerClient, HelloResult } from "@parcha/agentrun-computer";
 import { type Card, createSurface } from "@parcha/agentrun-computer/surface";
 import type { AttachableComputer, MountCheck } from "./attach.js";
 import { portOf } from "./computer-ports.js";
-import { computerScriptExecutor } from "./computer-script.js";
+import { computerScriptExecutor, ScriptGuard } from "./computer-script.js";
 import { answerText, type PiAnswer, piExecutor, type PiExecutor } from "./executors.js";
 import { ARCHIL_MAX_EXEC_S, type Hands, handsOf, MAX_EXEC_S, shellEnv } from "./hands.js";
 import { policyEnv, policyPrelude } from "../bash-read-only.js";
@@ -83,15 +83,15 @@ function mountedIn(computer: RunComputer | undefined): { readonly computer: Atta
 
 /** A desktop's or a phone's port, over its surface, the kind whose tools the run gets, its groups, and the script's
  *  executor for its card; none for any other computer. */
-async function portsOf(computer: RunComputer | undefined): Promise<{ readonly ports: Pick<Hands, "computer">; readonly kinds: readonly CapabilityKind[]; readonly groups: readonly string[]; readonly script?: Executor; readonly card?: Card }> {
+async function portsOf(computer: RunComputer | undefined, guard: ScriptGuard): Promise<{ readonly ports: Pick<Hands, "computer">; readonly kinds: readonly CapabilityKind[]; readonly groups: readonly string[]; readonly script?: Executor; readonly card?: Card }> {
   if (computer?.kind !== "desktop" && computer?.kind !== "phone") return { ports: {}, kinds: [], groups: [] };
   const surface = createSurface(computer.computer.client, computer.hello);
-  return { ports: { computer: portOf(surface) }, kinds: [computer.kind], groups: surface.card.groups, script: computerScriptExecutor(surface.card), card: surface.card };
+  return { ports: { computer: portOf(surface) }, kinds: [computer.kind], groups: surface.card.groups, script: computerScriptExecutor(surface.card, guard), card: surface.card };
 }
 
 /** A desktop's or a phone's surface as a harness's own script runtime binds it (pi's code mode): its card, which the
  *  script prelude builds `computer` from, and the run's port, held by the person's take-over as the tools' is. */
-export type ScriptComputer = { readonly card: Card; readonly port: ComputerPort };
+export type ScriptComputer = { readonly card: Card; readonly port: ComputerPort; /** What the script's shell and files are held to (computer-script.ts ScriptGuard). */ readonly guard: ScriptGuard };
 
 /** The run's scratch in its own folder: bash's TMPDIR. */
 export const TMP_DIR = ".agentrun/tmp";
@@ -150,7 +150,8 @@ export async function runHands(workspace: Workspace, computer: RunComputer | und
   const tools = Object.fromEntries([...fileTools(), bashTool()].map((tool) => [tool.name, tool]));
   const read = mounted === undefined ? tools.read! : readAnywhereInComputer(tools.read!, attached, names, env);
   const executor = (tool: typeof read) => piExecutor(tool, fileEnv, options.context);
-  const own = await portsOf(computer);
+  const guard = new ScriptGuard();
+  const own = await portsOf(computer, guard);
   const { ports, kinds, groups, script, card } = options.hold !== undefined && own.ports.computer ? { ...own, ports: options.hold(own.ports) } : own;
   return {
     workspace: attached,
@@ -164,7 +165,7 @@ export async function runHands(workspace: Workspace, computer: RunComputer | und
     cwd,
     names,
     executors: { read: executor(read), write: executor(tools.write!), edit: executor(tools.edit!), ...(shell === "none" ? {} : { bash: executor(tools.bash!) }), ...(script ? { computer_script: script } : {}) },
-    ...(card && ports.computer ? { computer: { card, port: ports.computer } } : {}),
+    ...(card && ports.computer ? { computer: { card, port: ports.computer, guard } } : {}),
     async sweep() {
       // Through the run's own Workspace, not the computer's: the sweep holds whether or not the computer still answers.
       for (const dir of [OUTPUT_DIR, TMP_DIR]) await workspace.remove(dir, { recursive: true, force: true });

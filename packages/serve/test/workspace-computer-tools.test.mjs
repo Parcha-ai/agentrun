@@ -222,6 +222,42 @@ test("computer_script: the script's value is the per-step tool's value; text() a
   assert.equal((await call(tools, "computer_script", { code: "" })).isError, true);
 });
 
+test("a script's returned image keeps its own pixels, apart from the images it showed", async () => {
+  const root = scratch();
+  const run = await runTools(localWorkspace(root), { kind: "phone", computer: fakeScreen(root, { ui: true }), hello: helloOf("phone", [...PHONE_GROUPS, "ui"]) }, { mode: 2, context: ctx });
+  const tools = run.hostTools(run.kindTools);
+  const returned = await call(tools, "computer_script", { code: "return await computer.screen.shot();" });
+  assert.equal(returned.isError, false, returned.text);
+  assert.deepEqual(returned.images, [{ data: PNG.toString("base64"), mimeType: "image/png" }]);
+  assert.ok(!JSON.stringify(returned.structured).includes(PNG.toString("base64")), "the value carries no pixels, the answer's images do");
+  const both = await call(tools, "computer_script", { code: "image({ type: 'image', mimeType: 'image/gif', data: 'R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7' });\nreturn await computer.screen.shot();" });
+  assert.equal(both.isError, false, both.text);
+  assert.deepEqual(both.images.map((image) => image.data), [PNG.toString("base64"), "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"], "the returned image first, with its own data, then the shown one");
+  await run.end();
+});
+
+test("a script's shell and files are held to the run's gate: a denied bash, a denied write and an ask refuse in the script, and an allow runs", async () => {
+  const root = scratch();
+  const computer = fakeScreen(root);
+  const run = await runTools(localWorkspace(root), { kind: "desktop", computer, hello: helloOf("desktop", DESKTOP_GROUPS), check: { readBackOf } }, { mode: 1, context: ctx });
+  const tools = run.hostTools(run.kindTools);
+  const code = "try { await computer.shell.run('echo hi'); return 'ran'; } catch (error) { return String(error.message); }";
+  const before = await call(tools, "computer_script", { code });
+  assert.match(before.structured, /not attached to its scripts yet/, "no gate installed: refused, never run");
+  const seen = [];
+  let verdict = "allow";
+  run.computer.guard.install(async (tool, args) => { seen.push([tool, args]); return verdict; });
+  assert.equal((await call(tools, "computer_script", { code })).structured, "ran");
+  assert.deepEqual(seen, [["bash", { command: "echo hi" }]]);
+  verdict = { deny: "bash is denied for this agent" };
+  assert.match((await call(tools, "computer_script", { code })).structured, /bash is denied for this agent/);
+  verdict = "ask";
+  assert.match((await call(tools, "computer_script", { code: "try { await computer.files.write('/workspace/a.txt', 'x'); return 'wrote'; } catch (error) { return String(error.message); }" })).structured, /write setting asks a person first/);
+  assert.deepEqual(seen.at(-1), ["write", { path: "/workspace/a.txt" }]);
+  assert.equal(computer.calls.filter(([method]) => method === "files.write").length, 0, "a refused write sent nothing");
+  await run.end();
+});
+
 test("the claim's MCP server: an MCP client lists the run's computer tools and its calls answer what the per-step tools and the script answer, with structuredContent and image blocks", async () => {
   const root = scratch();
   const phone = fakeScreen(root, { ui: true });
