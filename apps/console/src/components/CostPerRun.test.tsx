@@ -97,7 +97,7 @@ describe("CostChart", () => {
   });
   it("the hand-back rate is the server's, over every run since the takeover, never the latest runs the chart read", () => {
     // The chart read only runs it answered alone; the summary counts the hand-backs before them.
-    const host = draw(series([run(1, "agent", 0.9), run(2, "workflow", 0.1), run(3, "workflow", 0.1)], { takeover: { n: 1, run_id: "r1" }, hand_backs: { ran: 40, back: 10 } }));
+    const host = draw(series([run(1, "agent", 0.9), run(2, "workflow", 0.1), run(3, "workflow", 0.1)], { takeover: { n: 2, run_id: "r2" }, before: { runs: 1, mean_usd: 0.9 }, after: { runs: 2, mean_usd: 0.1 }, hand_backs: { ran: 40, back: 10 } }));
     expect(text(host)).toContain("25% handed back since");
   });
   it("before any workflow has finished a run, the mix's last words say who did, not 0% by the workflow", () => {
