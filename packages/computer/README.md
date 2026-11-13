@@ -2468,11 +2468,11 @@ the API's control URL) is a later change: `platform: "ios"` is refused in words.
   phoned answers on the phone itself (`daemon-android/README.md` has each method): `exec.run` as the shell user,
   `screen.shot`/`screen.read`/`screen.watch` scaled on the phone, `input.actions` through InputManager (taps, swipes,
   a pinch, key combos and holds, Unicode text through the clipboard), `apps.list`/`apps.launch`/`apps.terminate`, and
-  the UI tree from UiAutomation. files, processes and tar are refused in words, as are `apps.install` and
+  the `ui` group (`ui.observe`, `ui.act`) from UiAutomation. files, processes and tar are refused in words, as are `apps.install` and
   `deadline.extend`.
 - **Capabilities.** Kind and os `android`, daemon `none` (nothing is installed: phoned lives as long as the phone's
   connections), lifetime `vendor`, network `open`, release `delete` only.
-  Groups `exec`, `screen`, `input.touch`, `input.keys`, `apps` and `apps.ui_tree`. `maxLifetimeMs` is 30 min by default.
+  Groups `exec`, `screen`, `input.touch`, `input.keys`, `apps` and `ui`. `maxLifetimeMs` is 30 min by default.
   No mount, no extend.
 - **create** asks for `timeout_seconds` = the lifetime, and the phone harness ends the session then, whatever happens.
   The lifetime includes the boot, so a phone ready past its deadline fails `timeout`.

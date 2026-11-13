@@ -329,7 +329,7 @@ export class FakeUiDriver implements UiSource {
 		// only the app in front.
 		const owner = target?.app === undefined && target?.window !== undefined && !touch ? [...this.#running].find(([, state]) => state.windows.some((one) => one.id === target.window))?.[0] : undefined;
 		const id = target?.app ?? owner ?? this.#front;
-		// A phone reads only the app in front, as its accessibility dump does (phone-ui.ts): an app behind is not found.
+		// A phone reads only the app in front, as its accessibility tree does: an app behind is not found.
 		const front = this.#front ?? "home";
 		if (touch && target?.app !== undefined && target.app !== front) return fail("not_found", `${target.app} is not in front on this phone (${front} is): launch it with apps.launch first`);
 		if (id === undefined || (id === "home" && this.#front === undefined)) {
