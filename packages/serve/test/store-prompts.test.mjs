@@ -1,5 +1,5 @@
-// The prompt set validator folded into the store (store/prompts.ts, the P4 fold of home.ts's checkPrompts): the same rules
-// and words as before, tested on checkPrompts directly. Ported from pi-durable-agent/test/prompts.test.mjs's refusal cases.
+// The prompt set validator folded into the store (store/prompts.ts): the same rules
+// and words as before, tested on checkPrompts directly.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { checkPrompts, PromptsInvalid } from "../dist/store/prompts.js";

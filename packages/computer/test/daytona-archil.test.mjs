@@ -111,6 +111,20 @@ test("create: preflight, mount (the token on its stdin alone), serve, each as ro
 	assert.ok(exec.every((r) => r.body.suppressInputEcho === true), "no command echoes its input");
 });
 
+test("archilEgress: create hands the helper's mount the gateway as egress=, and an egress of another shape is refused when the provider is made", async () => {
+	const { fake, provider } = setup({}, { archilEgress: "10.60.0.40:18100:42050" });
+	const made = await provider.create(SPEC);
+	assert.equal(made.ok, true, made.ok ? "" : made.error.message);
+	const mount = fake.inside(made.value.id).archil.calls.find(({ verb }) => verb === "mount");
+	assert.deepEqual(mount.argv, [ARCHIL_HELPER, "mount", MOUNT.disk, MOUNT.region, MOUNT.folder, "egress=10.60.0.40:18100:42050"]);
+	assert.deepEqual(mount.stdin, [`${TOKEN}\n`]);
+	assert.throws(() => setup({}, { archilEgress: "10.60.0.40:8100:42050" }), /the Archil egress is/);
+	const unset = setup({}, { archilEgress: "" });
+	const plain = await unset.provider.create(SPEC);
+	assert.equal(plain.ok, true, plain.ok ? "" : plain.error.message);
+	assert.deepEqual(unset.fake.inside(plain.value.id).archil.calls.find(({ verb }) => verb === "mount").argv, [ARCHIL_HELPER, "mount", MOUNT.disk, MOUNT.region, MOUNT.folder]);
+});
+
 test("a GPU computer with an Archil mount is refused before any request: daytona-gpu's user is not root and it has no Archil client", async () => {
 	const gpu = { type: "H100", count: 1 };
 	for (const image of [SPEC.image, "default", "daytona-gpu"]) {

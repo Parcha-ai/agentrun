@@ -13,7 +13,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { homeOf } from "../dist/files.js";
 import { vendorsOver } from "../dist/sign-ins.js";
-import { keptContexts, keptProfile, savedOnRelease } from "../dist/tools.js";
+import { savedOnRelease } from "../dist/tools.js";
 import { openapiDocument } from "../dist/openapi.js";
 import { WITHHELD_SIGN_IN } from "../dist/run-view.js";
 import { calls as bbCalls, contexts, KEY as BB_KEY } from "./fixtures/faux-browserbase-check.mjs";
@@ -56,19 +56,6 @@ test("the vendors' calls: Browserbase's context made with the project and delete
   await assert.rejects(vendorsOver(() => env, async () => undefined).create("browserbase"), /no browserbase to call/);
 });
 
-test("in the run: Browserbase opens the agent's context as the profile `default` and never makes one; Kernel's create is asked for the agent's profile by its name at Kernel", async () => {
-  const store = keptContexts("ctx-7");
-  assert.equal(await store.resolve("acct|profile:default", () => assert.fail("made")), "ctx-7");
-  await assert.rejects(store.resolve("acct|profile:other", () => "made"), /no saved sign-in/);
-  await assert.rejects(keptContexts(undefined).resolve("acct|profile:default", () => "made"), /no saved sign-in/);
-  const asked = [];
-  const kernel = keptProfile({ name: "kernel", create: async (spec) => asked.push(spec.profile ?? null) }, "agentrun-0123456789abcdef01234567");
-  await kernel.create({ profile: { name: "default", save: false } });
-  await kernel.create({});
-  assert.deepEqual(asked, [{ name: "agentrun-0123456789abcdef01234567", save: false }, null]);
-  assert.equal(kernel.name, "kernel");
-});
-
 /** Polls `read` until `ok` holds of what it answers, for at most 20 s. */
 async function until(read, ok) {
   for (const end = Date.now() + 20_000; ;) {
@@ -105,7 +92,7 @@ test("through the API: an agent's first run holds the sign-in and saves; one sta
   const opened = await until(lines, (ops) => ops.some((op) => op.op === "profile"));
   const handed = opened.find((op) => op.op === "sign-in");
   assert.deepEqual([handed.provider, handed.save, handed.ref_in_env], ["browserbase", true, false], "over its pipe, never in its environment");
-  assert.deepEqual(opened.filter((op) => op.op === "profile"), [{ op: "profile", name: "default", save: true }], "the profile asked for by its name here, never the context");
+  assert.deepEqual(opened.filter((op) => op.op === "profile"), [{ op: "profile", pointer: handed.ref, save: true }], "the session opens on the agent's context, which only the provider is handed");
   const forgetHeld = await api("DELETE", "/agents/alpha/sign-ins/default");
   assert.deepEqual([forgetHeld.status, forgetHeld.body.error.code, forgetHeld.body.error.details.held_by], [409, "sign_in_held", first]);
 
@@ -115,7 +102,7 @@ test("through the API: an agent's first run holds the sign-in and saves; one sta
   await follow(api, second, ["completed"]);
   const during = (await lines()).slice(before);
   assert.deepEqual(during.filter((op) => op.op === "sign-in").map((op) => [op.ref, op.save, op.ref_in_env]), [[handed.ref, false, false]]);
-  assert.deepEqual(during.filter((op) => op.op === "profile"), [{ op: "profile", name: "default", save: false }]);
+  assert.deepEqual(during.filter((op) => op.op === "profile"), [{ op: "profile", pointer: handed.ref, save: false }]);
   assert.equal((await signIns("alpha"))[0].held_by, first, "still the first run's");
 
   // The first run ends: the lease with it, and the sign-in verified when its saving session let go.
@@ -241,7 +228,7 @@ test("a follow-up of a run that saved, opened while another run holds the lease,
   await follow(api, first, ["completed"], { after });
   const followUp = (await lines()).slice(mark);
   assert.deepEqual(followUp.filter((op) => op.op === "sign-in").map((op) => op.save), [false], "handed save false");
-  assert.deepEqual(followUp.filter((op) => op.op === "profile").map((op) => [op.name, op.save]), [["default", false]], "and its session saves nothing, whatever its conversation was made with");
+  assert.deepEqual(followUp.filter((op) => op.op === "profile").map((op) => op.save), [false], "and its session saves nothing, whatever its conversation was made with");
   await writeFile(gate, "");
   await follow(api, second, ["completed"], { deadlineMs: 60_000 });
 });
@@ -283,7 +270,7 @@ test("a follow-up handed a sign-in starts signed in and saves, though its run's 
   await follow(api, runId, ["completed"], { after });
   const followUp = (await lines()).slice(mark);
   assert.deepEqual(followUp.filter((op) => op.op === "sign-in").map((op) => op.save), [true]);
-  assert.deepEqual(followUp.filter((op) => op.op === "profile").map((op) => [op.name, op.save]), [["default", true]], "its session opens on the saved sign-in");
+  assert.deepEqual(followUp.filter((op) => op.op === "profile").map((op) => [op.pointer, op.save]), [[followUp.find((op) => op.op === "sign-in").ref, true]], "its session opens on the saved sign-in");
   const ready = await until(async () => (await api("GET", "/agents/alpha")).body.sign_ins, (list) => list[0]?.state === "ready");
   assert.ok(Date.parse(ready[0].verified_at) > 0, "and what it saved counts");
 });
@@ -411,7 +398,7 @@ test("after the agent's sign-in stops opening, a run that was never handed it (i
   assert.equal(JSON.parse(await readFile(join(runDir(data, runId), "serve.json"), "utf8")).unshown, undefined);
 });
 
-test("a launch that can't save that it was handed the sign-in hands none: the run browses signed out", { skip: "follow-up: #2067", timeout: 180_000 }, async (t) => {
+test("a launch that can't save that it was handed the sign-in hands none: the run browses signed out", { skip: "follow-up: #2067 (blocks serve.json.tmp, which nothing writes now: needs a store-write fault on runs.update)", timeout: 180_000 }, async (t) => {
   const dir = await scratch(t);
   const log = join(dir, "browser.jsonl");
   withEnv(t, { BROWSERBASE_API_KEY: BB_KEY, BROWSERBASE_PROJECT_ID: "proj-1", AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), FAUX_BROWSER_LOG: log, AGENTRUN_TEST_FAUX_BROWSERBASE_CONTEXTS_DOWN: "1" }, KEYS);

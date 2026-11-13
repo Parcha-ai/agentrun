@@ -190,7 +190,7 @@ export interface CodexMachine {
   commandTimeoutMs?: number;
 }
 
-export const DEFAULT_MODEL = 'openai/gpt-5.4-mini';
+export const DEFAULT_MODEL = 'openai/gpt-6-luna';
 
 const SANDBOX_MODES = new Set(['read-only', 'workspace-write', 'danger-full-access']);
 

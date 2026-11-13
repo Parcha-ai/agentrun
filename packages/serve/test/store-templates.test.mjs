@@ -56,3 +56,13 @@ test("templates.upgrade: revision n+1 made current, triggers upserted and remove
   assert.deepEqual(triggers.find((tr) => tr.name === "weekly")?.source, { kind: "schedule", cron: "0 10 * * 1" }, "upserted by name");
   assert.equal(triggers.find((tr) => tr.name === "weekly")?.id, "trg-weekly", "the same trigger, kept by name");
 });
+
+test("templates.apply and agents.create keep the computer a template's apply picked on revision 1: none with read alone (the fallback), a Docker sandbox with bash and its read-only policy", async (t) => {
+  const { store } = await storeOn(t);
+  const fallback = { instructions: "Read.", computer: { kind: "none" }, tools: ["read"] };
+  const shelled = { instructions: "Read.", computer: { kind: "sandbox", provider: "docker" }, tools: ["read", "bash"], toolSettings: { bash: { policy: "read-only" } } };
+  await store.templates.apply({ id: "agent-none", name: "Fallback" }, { id: "rev-none", kind: "agentic", body: fallback, package: PACKAGE }, []);
+  await store.agents.create({ id: "agent-shell", name: "Shell" }, { id: "rev-shell", kind: "agentic", body: shelled });
+  assert.deepEqual((await store.agents.revision("rev-none"))?.body, fallback);
+  assert.deepEqual((await store.agents.revision("rev-shell"))?.body, shelled);
+});

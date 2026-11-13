@@ -52,9 +52,11 @@ export {
 	ARCHIL_TOOL_USER,
 	ARCHIL_VERSION,
 	type ArchilMount,
+	type ArchilEgress,
 	type ArchilMountOptions,
 	type ArchilRoot,
 	type ProviderNote,
+	archilEgressOf,
 	archilLabels,
 	archilMount,
 	archilReadBack,
@@ -71,7 +73,13 @@ export {
 	syncingClient,
 } from "./mount-archil.js";
 export {
+	type BrowserComputerProvider,
+	type BrowserDownloads,
+	type BrowserFile,
+	type BrowserProfiles,
+	browserSpecRefusals,
 	type BrowserStream,
+	isBrowserProvider,
 	BrowserVendorError,
 	CREATE_LABEL,
 	causeOf,
@@ -87,7 +95,7 @@ export { CHROME_ENV, CHROME_FLAGS, checkChrome, chromeFence, findChrome, killTre
 export { DAEMON_IN_COMPUTER, helloDrift, type HelloExpected } from "./drift.js";
 export { drift, hostOf, inspectDrift, mountOf, networkOf, type DockerHost, type DockerInfo, type DockerInspect, type DriftExpected } from "./docker/inspect.js";
 export { type ReleasedOlder, releaseOlder, sweep, type SweepOptions, type Swept } from "./janitor.js";
-export { EPOCH_LABEL, epochOf, epochProblem, IDLE_TTL_LABEL, OWNER_LABEL, ownerLabels, ownerOf, RUN_HASH_LABEL, RUN_LABEL, runHash, runLabels, runProblem } from "./labels.js";
+export { EPOCH_LABEL, epochOf, epochProblem, IDLE_TTL_LABEL, OWNER_LABEL, OWNER_SERVER_LABEL, ownerFilter, ownerLabels, ownerOf, RUN_HASH_LABEL, RUN_LABEL, runHash, runLabels, runProblem } from "./labels.js";
 export { waitUntil, type WaitOptions } from "./wait.js";
 export {
 	type BuiltinProviderId,
