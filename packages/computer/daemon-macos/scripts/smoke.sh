@@ -71,5 +71,5 @@ python3 -I "$here/mini-demos.py" "$app/Contents/Helpers/computerd" "$home" "$hom
 # and seed-tcc.sh does not seed shows up here.
 echo "TCC requests in the last 15 minutes, by service:"
 log show --last 15m --style compact --predicate 'subsystem == "com.apple.TCC" AND eventMessage BEGINSWITH "AUTHREQ_CTX"' 2>&1 \
-	| grep -oE 'service=kTCCService[A-Za-z]+' | sort | uniq -c
+	| grep -oE 'service=kTCCService[A-Za-z]+' | sort | uniq -c || true
 exit $((smoke || conformance))
