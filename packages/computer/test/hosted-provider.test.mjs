@@ -425,8 +425,13 @@ test("a lifetime past the cap is refused before any host call; extend moves the 
 	assert.ok(longer.deadline.getTime() > before);
 	assert.equal(m.init.deadline, longer.deadline.toISOString(), "init took the end the vendor read back");
 	assert.equal(m.endsAt.toISOString(), longer.deadline.toISOString());
-	const shorter = made(await provider.extend(ref, 60_000));
-	assert.equal(shorter.deadline.toISOString(), longer.deadline.toISOString(), "an extend never shortens a computer's life");
+	const timers = () => fake.calls.filter(([name]) => name === "setTimer").length;
+	const timersBefore = timers();
+	const shorter = await provider.extend(ref, 60_000);
+	assert.equal(shorter.error?.code, "refused", "an extend to an earlier deadline is refused");
+	assert.match(shorter.error.message, /earlier/);
+	assert.equal(timers(), timersBefore, "the vendor's timer was never called");
+	assert.equal(m.init.deadline, longer.deadline.toISOString(), "the deadline did not move");
 	const past = await provider.extend(ref, 2 * HOUR);
 	assert.equal(past.error?.code, "limit");
 	assert.match(past.error.message, /the most this computer may live/);
