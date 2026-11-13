@@ -18,7 +18,7 @@
 import type { DraftAsk } from "./learn/skills.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { approve, buildIndex, CAPS, checkNote, draftProblems, frontKeys, INDEX_FILE, INDEX_LINES, isHeld, LEARNED_KEYS, type LearnedNote, learnedName, learnedPlace, learnedStatus, NOTE_FILE, NOTE_STATUSES, parseNoteFile, type Problem, printable, released, retire, retiredLearned, skillProblems, SKILLS_DIR, supersede, UNCLEAR_FRONT, unstorable, WORKFLOWS_DIR, unclearFront, restorable, restore, restoredLearned } from "./learn/index.js";
-import { blobOid, type FolderChange, FolderBusy, FolderRefused, FolderTooLarge, FolderUnreadable, heldOnMain, isBodyMismatch, type PersonKind, readLearning, PATCH_CAP, readRunDiff, readSnapshot, type SnapChange, type SnapHistory, type SnapLearned, type SnapNote, type Snapshot, snapshotNotes, writeLearning } from "./learn/folder.js";
+import { blobOid, type FolderChange, FolderBusy, FolderRefused, FolderTooLarge, FolderUnreadable, heldOnMain, isBodyMismatch, type PersonKind, readLearning, PATCH_CAP, readRunDiff, readSnapshot, type SnapChange, type SnapHistory, type SnapLearned, type SnapNote, type Snapshot, snapshotNotes, textsAt, writeLearning } from "./learn/folder.js";
 import { ApiError, invalid } from "./errors.js";
 import { type ItemStatus, detailShown, type Learning, learningFolderOf, type NoteRuns, notesView, reasonShown, secretsShown, type Shown, withAgentRepo } from "./learning.js";
 import type { Impact } from "./learning-run.js";
@@ -251,6 +251,39 @@ export async function learningLog(data: string, agentId: string, query: URLSearc
     const page = pageAt(agentId, snapshot, at);
     return logPage(page.snapshot, page.offset, limit, shown);
   }, () => EMPTY);
+}
+
+/** The most revisions a workflow's history answers, and its default. */
+const REVISIONS_MAX = 50;
+const REVISIONS_DEFAULT = 20;
+/** One revision of a learned workflow: a commit on main that changed its workflow.json, with that commit's text (null
+ *  when the commit holds no such file: it was deleted there), cut of the host's secrets. */
+type WorkflowRevision = { commit: string; at: string; by: Change["by"]; reason: string; text: string | null };
+
+/** GET /agents/{id}/learning/workflows/{name}/revisions?limit=: the latest revisions of learned workflow `name` (the
+ *  commits on main's log that changed `workflows/<name>/workflow.json`), oldest first, each with the workflow's text at
+ *  that commit, so a person can step through how it changed. One read-only exec per revision (textsAt), at most `limit`
+ *  of them. `total` counts every such commit the log holds, `truncated` says the log itself is cut (it keeps the latest
+ *  LOG_KEEP changes). A workflow no commit of the log changed is not_found. */
+export async function workflowRevisions(data: string, agentId: string, name: string, query: URLSearchParams, shown: Shown): Promise<{ name: string; revisions: WorkflowRevision[]; total: number; truncated: boolean }> {
+  if (!learnedName("workflow", name)) throw new ApiError("bad_request", "A workflow's folder is named with lowercase letters, digits, dashes and underscores.");
+  const given = query.get("limit");
+  const limit = given === null ? REVISIONS_DEFAULT : Number(given);
+  if ((given !== null && !/^\d+$/.test(given)) || limit < 1 || limit > REVISIONS_MAX) throw new ApiError("bad_request", `limit is an integer from 1 to ${REVISIONS_MAX}`);
+  const path = `${WORKFLOWS_DIR}/${name}/workflow.json`;
+  if (shown.name(path) !== path) throw new ApiError("not_found", "the agent's learning folder has no such workflow");
+  const found = await reading(data, agentId, async ({ ws, snapshot }) => {
+    const touched = snapshot.log.filter((change) => change.files.includes(path));
+    const latest = touched.slice(0, limit).reverse();
+    const revisions: WorkflowRevision[] = [];
+    for (const change of latest) {
+      const texts = await textsAt(ws, change.commit, [path]).catch((error: unknown) => { throw routeFailure(error); });
+      revisions.push({ commit: change.commit, at: change.at, by: change.by, reason: shown.text(change.reason), text: texts?.[path] === undefined ? null : shown.text(texts[path]!) });
+    }
+    return { revisions, total: touched.length, truncated: snapshot.log_more };
+  }, () => undefined);
+  if (!found || !found.total) throw new ApiError("not_found", "the agent's learning folder has no such workflow");
+  return { name, ...found };
 }
 
 /** The blob of `file` on the snapshot's main, as a route names it: the index, a note, a skill's SKILL.md, a draft's
