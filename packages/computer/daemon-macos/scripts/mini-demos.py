@@ -36,6 +36,7 @@ bench's task checks.
 """
 
 import base64
+import fcntl
 import json
 import os
 import shutil
@@ -202,6 +203,28 @@ function run(argv) {
 """
 
 
+RUNNING_JS = """
+ObjC.import('AppKit');
+function run(argv) {
+  const apps = $.NSWorkspace.sharedWorkspace.runningApplications;
+  const out = [];
+  for (let i = 0; i < apps.count; i++) {
+    const id = ObjC.unwrap(apps.objectAtIndex(i).bundleIdentifier);
+    if (argv.indexOf(id) >= 0) out.push(id);
+  }
+  return JSON.stringify(out);
+}
+"""
+
+
+def running():
+    """Which of the five apps run now (apps.list lists the installed ones too)."""
+    done = subprocess.run(["/usr/bin/osascript", "-l", "JavaScript", "-e", RUNNING_JS, *APPS], capture_output=True, text=True, timeout=30)
+    if done.returncode != 0:
+        raise Failed(f"the running apps: {done.stderr.strip()[-300:]}")
+    return set(json.loads(done.stdout or "[]"))
+
+
 def windows():
     done = subprocess.run(["/usr/bin/osascript", "-l", "JavaScript", "-e", WINDOWS_JS, *APPS], capture_output=True, text=True, timeout=30)
     if done.returncode != 0:
@@ -219,25 +242,32 @@ MAKE_CALENDAR = """on run argv
   return ""
 end run"""
 
-# The calendar, every event in it with it; and any event anywhere whose title holds the run id (a task that failed
-# before moving its event into the sandbox).
+# The calendars, every event in them with them; then any event anywhere titled exactly as a task titles its event (one
+# made in the default calendar and not yet moved into the sandbox when the task failed or was killed).
 REMOVE_CALENDARS = """on run argv
   set prefix to item 1 of argv
-  set runid to item 2 of argv
+  set titles to rest of argv
   tell application "Calendar"
     set n to 0
     repeat while (exists (first calendar whose name starts with prefix)) and n < 50
       delete (first calendar whose name starts with prefix)
       set n to n + 1
     end repeat
-    if runid is not "" then
+    repeat with t in titles
+      set t to t as text
       repeat with c in calendars
-        if writable of c then delete (every event of c whose summary contains runid)
+        if writable of c then delete (every event of c whose summary is t)
       end repeat
-    end if
+    end repeat
   end tell
   return ""
 end run"""
+
+
+def event_title(run):
+    """The calendar task's event title: one word with the run id in it, since Calendar reads a quick event's words for a
+    date and a time."""
+    return f"Standup-{run}"
 
 MAKE_FOLDER = """on run argv
   tell application "Notes" to make new folder with properties {name:item 1 of argv}
@@ -365,8 +395,11 @@ def sweep(c):
     earlier = [n for n in shot["calendars"] if n.startswith(PREFIX)] + [n for n in shot["folders"] if n.startswith(PREFIX)] + [f"{ROOT}/{n}" for n in shot["root"]]
     for name in earlier:
         print(f"  sweep: {name}", flush=True)
+    # A killed calendar task's event may still be in the default calendar: its title is known from the run id in the
+    # name of the calendar the task made first.
+    runs = sorted({n[len(PREFIX):len(PREFIX) + 6] for n in shot["calendars"] if n.startswith(PREFIX)})
     osa(c, CLOSE_WINDOWS, ROOT)
-    osa(c, REMOVE_CALENDARS, PREFIX, "")
+    osa(c, REMOVE_CALENDARS, PREFIX, *[event_title(r) for r in runs])
     osa(c, REMOVE_FOLDERS, PREFIX)
     shutil.rmtree(ROOT, ignore_errors=True)
     shot = snapshot(c)
@@ -401,6 +434,7 @@ class Task:
         self.calls, self.notes = [], []
         self.observed = 0
         self.window = None
+        self.inspector = False
         self.folder = os.path.join(out, tid)
         self.t0 = time.monotonic()
         self.rec = Recorder(os.path.join(self.folder, "frames"), lambda: time.monotonic() - self.t0) if movie else None
@@ -781,14 +815,14 @@ def calendar_prepare(t):
 
 def calendar_new_event(t):
     """mac.calendar.new-event: a new event with a given title, in the task's own calendar."""
-    # One word after the run id: Calendar reads a quick event's words for a date and a time.
-    title = f"Standup-{RUN}"
+    title = event_title(RUN)
     t.say("make the task's calendar (AppleScript)")
     t.run_exec(["/usr/bin/osascript", "-e", MAKE_CALENDAR, NAME], "make the calendar")
     tree = t.observe()
     # The toolbar's Add Event button opens the quick event field: the title typed there and enter make the event, in
     # the default calendar, with its inspector open; the inspector's calendar menu moves it into the task's calendar.
     add = need(t, tree["nodes"], "the Add Event button", role="button", name="Add Event")
+    t.inspector = True  # from here on the teardown closes the inspector first (see close_inspector)
     t.act([{"press": add["ref"]}], "press Add Event")
     tree = t.observe("observe the quick event field")
     boxes = [n for n in tree["nodes"] if n.get("role") == "textbox"]
@@ -809,12 +843,6 @@ end run"""
         if time.monotonic() > deadline:
             raise Failed(f"the task's calendar holds {got} events titled {title!r}, not 1")
         time.sleep(0.5)
-    # The inspector closes while its event is still there: an inspector left open on a deleted event saved a new,
-    # untitled one in the default calendar when it was dismissed later.
-    t.act([{"key": "escape"}], "close the event's inspector", expect={"text": title, "timeoutMs": 5000})
-    tree = t.observe("observe the calendar")
-    if find(tree["nodes"], id="calendar-button") is not None:
-        raise Failed("the event's inspector is still open after escape")
     t.notes.append(f"the event \"{title}\" is in the task's calendar")
 
 
@@ -827,6 +855,26 @@ TASKS = [
 ]
 
 
+def close_inspector(c, t):
+    """Calendar's event inspector (or its quick event field, or its calendar menu), closed by escape while its event is
+    still there: an inspector left open on a deleted event saved a new, untitled one in the default calendar when it was
+    dismissed later. The one teardown part the driver does, since a key to Calendar by AppleScript needs System Events'
+    grant too; when it cannot, the teardown fails, so the run says so."""
+    target = {"app": t.app}
+    for _ in range(3):
+        r = c.call("ui.act", {"target": target, "steps": [{"key": "escape"}]})
+        if "error" in r:
+            raise Failed(f"escape: {r['error'].get('message')}")
+        time.sleep(0.5)
+        r = c.call("ui.observe", {"target": target})
+        if "error" in r:
+            raise Failed(f"ui.observe: {r['error'].get('message')}")
+        nodes = r["result"].get("nodes", [])
+        if find(nodes, id="calendar-button") is None and find(nodes, role="menuitem", name=NAME) is None:
+            return
+    raise Failed("the event's inspector is still open after escape")
+
+
 def teardown(t):
     """The task's sandbox, removed by plain scripting on a connection of its own (the task's may be stuck in a call):
     the windows and tabs on its files, its calendar, its Notes folder and their notes, its files. Each part runs even
@@ -834,9 +882,10 @@ def teardown(t):
     failed = []
     c = Client()
     try:
-        parts = [
+        parts = [("close the event's inspector", lambda: close_inspector(c, t))] if t.inspector else []
+        parts += [
             ("close the windows and tabs on the task's files", lambda: osa(c, CLOSE_WINDOWS, ROOT)),
-            ("delete the task's calendar and its events", lambda: osa(c, REMOVE_CALENDARS, NAME, RUN)),
+            ("delete the task's calendar and its events", lambda: osa(c, REMOVE_CALENDARS, NAME, event_title(RUN))),
             ("delete the task's Notes folder and its notes", lambda: osa(c, REMOVE_FOLDERS, NAME)),
             ("delete the task's files", lambda: [shutil.rmtree(f"{ROOT}/{n}") for n in (os.listdir(ROOT) if os.path.isdir(ROOT) else []) if n.startswith(NAME)]),
         ]
@@ -864,21 +913,44 @@ def encode(timeline, path):
     return path
 
 
+shield = {"on": False, "asked": None}
+
+
 def stop(signum, frame):
-    """SIGTERM and SIGHUP stop the run as Ctrl-C does, so the teardown runs."""
-    raise KeyboardInterrupt(signal.Signals(signum).name)
+    """Ctrl-C, SIGTERM and SIGHUP stop the run, so the teardown runs. One that comes during a teardown waits for it to
+    finish, and the run then stops."""
+    name = signal.Signals(signum).name
+    if shield["on"]:
+        shield["asked"] = name
+        print(f"  ({name}: the teardown finishes first)", flush=True)
+        return
+    raise KeyboardInterrupt(name)
+
+
+LOCK = "/private/tmp/agentrun-demos.lock"
+
+
+def lock():
+    """One run at a time on a Mac: a second one's sweep would remove the first one's sandboxes. The lock goes with the
+    process, so a killed run holds nothing."""
+    f = open(LOCK, "w")
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        sys.exit("another mini-demos.py run is going on this Mac: run this again when it ends")
+    return f
 
 
 def main():
-    signal.signal(signal.SIGTERM, stop)
-    signal.signal(signal.SIGHUP, stop)
+    for s in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(s, stop)
+    held = lock()
     c = Client()
     hello = c.call("hello", {"client": "mini-demos"}).get("result") or {}
     print(f"Computerd on {hello.get('device', {}).get('model')}, macOS {hello.get('osVersion')}, features {json.dumps(hello.get('features'))}", flush=True)
     print(f"run {RUN}: sandboxes named {NAME!r}", flush=True)
-    running = {a.get("id") for a in (c.call("apps.list").get("result") or {}).get("apps", [])}
     # Each app is asked about only while it runs: one the run starts, it quits again at the end.
-    started = [app for app in APPS if app not in running]
+    started = [app for app in APPS if app not in running()]
     report = []
     interrupted = None
     try:
@@ -927,16 +999,23 @@ def main():
                     if isinstance(e, KeyboardInterrupt):
                         interrupted = e
                 finally:
-                    if error is not None and not interrupted:
-                        print(f"  {error}")
-                        t.dump()
-                    failed = teardown(t)
-                    if failed:
-                        error = "; ".join(([error] if error else []) + [f"teardown: {f}" for f in failed])
+                    shield["on"] = True
                     try:
-                        left = settle(c, before)
-                    except Exception as e:
-                        left = [f"no snapshot after the task: {e}"]
+                        if error is not None and not interrupted:
+                            print(f"  {error}")
+                            t.dump()
+                        failed = teardown(t)
+                        if failed:
+                            error = "; ".join(([error] if error else []) + [f"teardown: {f}" for f in failed])
+                        try:
+                            left = settle(c, before)
+                        except Exception as e:
+                            left = [f"no snapshot after the task: {e}"]
+                    finally:
+                        shield["on"] = False
+                    if shield["asked"]:
+                        interrupted = KeyboardInterrupt(shield["asked"])
+                        error = error or f"stopped by {shield['asked']}"
             took = round((time.monotonic() - t.t0) * 1000)
             if t.rec:
                 t.say("passed" if error is None else "failed")
@@ -971,6 +1050,8 @@ def main():
             if refused:
                 print(f"  (could not quit {APPS[app]}, which the run started: {refused})")
         c.close()
+        os.unlink(LOCK)
+        held.close()
 
     with open(os.path.join(out, "demos.json"), "w") as f:
         json.dump(report, f, indent=1)

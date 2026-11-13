@@ -115,10 +115,14 @@ touches anything it did not make.** Each task works in a sandbox named `AgentRun
 calendar, its own Notes folder, or its own folder under `/private/tmp/agentrun-demos`. Its window is found by its title
 and named in every call, so a person's own windows of the same app are never the target. AppleScript makes the
 sandbox and removes it, through Computerd's `exec.run`, not through the driver, so a broken driver cannot stop the
-cleanup. The teardown runs however the task ends (pass, failure, exception, Ctrl-C, SIGTERM). It closes the windows
-and tabs on the task's files, then deletes the task's calendar, its Notes folder and their notes (Recently Deleted
-too), and its files. A run starts by sweeping any `AgentRun demo` sandbox an earlier run left, for example one killed
-in the middle of a task.
+cleanup. The teardown runs however the task ends (pass, failure, exception, Ctrl-C, SIGTERM; a stop signal during a
+teardown waits for it to finish). The calendar task's first teardown step is a driver step: escape closes Calendar's
+event inspector while its event is still there, since an inspector left open on a deleted event saves a new,
+untitled one when it is dismissed. The teardown then closes the windows and tabs on the task's files, and deletes the
+task's calendar, its Notes folder and their notes (Recently Deleted too), and its files. A run starts by sweeping any
+`AgentRun demo` sandbox an earlier run left, for example one killed in the middle of a task, along with that run's
+event if it was still in the default calendar. Only one run goes at a time on a Mac (a lock in `/private/tmp`), so a
+sweep never removes a live run's sandbox.
 
 Before each task the script takes a snapshot of what it can see. That's every calendar with its count of today's
 events, every Notes folder with its count of notes, the five apps' onscreen windows by id, and the sandbox root. It
