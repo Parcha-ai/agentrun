@@ -39,7 +39,7 @@ import { said, STOPPED } from "../learning-words.js";
 import { proposeRun } from "../propose.js";
 import { learningStartOf, readLaunchBody, type RunLaunch, seedFailed } from "../run-launch.js";
 import { costOf, type SignInReader } from "../run-view.js";
-import type { McpServerRow, Store } from "../store/store.js";
+import { FINAL_STATES, type McpServerRow, type Store } from "../store/store.js";
 import { readApprovers } from "../server-approvers.js";
 import { runEntries, runReflect, runTimeline } from "../store-reads/journal.js";
 import { capNowOf } from "./journal-kinds.js";
@@ -136,6 +136,8 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
     },
     // The learning run's id, one per round of the run: a replayed end queues the same one (the store adds it once).
     newRunId: () => learningRunIdOf(runId, round),
+    // The cap its grade runs under (none for an uncapped run): what the run's cap leaves now.
+    ...(launch.maxCostUsd !== undefined ? { gradeCap: (runId: string) => gradeCapOf(deps.store, runId, round, launch.maxCostUsd!) } : {}),
     ...(gradeModel ? { gradeModel } : {}),
   });
   return async (input) => {
@@ -157,6 +159,33 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
     const before = prior ? { job_cost_usd: spent(kept?.job_cost_usd), look_back_usd: spent(kept?.look_back_usd), looked: prior.turn !== null } : undefined;
     return hookFor(input.runId, round, before)(input);
   };
+}
+
+/** The cap the grade of round `round` of run `runId` runs under (its learning run's max_cost_usd), so the run's grades
+ *  never take it past its cap: the cap the run is held to now (capNowOf: its newest raise's, else `launchCapUsd`), less
+ *  what the run spent (its job, its follow-ups and every look-back, its timeline's cost) and what each earlier round's
+ *  grade spent (that round's learning run: its cost once it ended, its own cap while it has not, its worst case). $0, no
+ *  room, when any of those is unknown (a cost null, or a read that fails): a grade whose room can't be read is skipped,
+ *  never run past the cap. */
+export async function gradeCapOf(store: Store, runId: string, round: number, launchCapUsd: number): Promise<number> {
+  try {
+    const capUsd = capNowOf(launchCapUsd, await runEntries(store, runId, BACKGROUND_CONTEXT));
+    const spent = costOf(await runTimeline(store, runId, BACKGROUND_CONTEXT, { settled: false }));
+    if (capUsd === undefined || spent === null || !Number.isFinite(spent)) return 0;
+    let graded = 0;
+    for (let earlier = 1; earlier < round; earlier++) {
+      const id = learningRunIdOf(runId, earlier);
+      const run = await store.runs.get(id);
+      // A round that queued no learning run (its learning dropped before a grade) spent nothing on one.
+      if (!run) continue;
+      const usd = FINAL_STATES.includes(run.state) ? run.costUsd : ((await store.runs.launch(id)).body as { max_cost_usd?: unknown } | null)?.max_cost_usd;
+      if (typeof usd !== "number" || !Number.isFinite(usd) || usd < 0) return 0;
+      graded += usd;
+    }
+    return Math.max(0, capUsd - spent - graded);
+  } catch {
+    return 0;
+  }
 }
 
 /** The learning run of round `round` of run `runId`'s learning: `<runId>-learning` for its first, `<runId>-learning-<n>`
