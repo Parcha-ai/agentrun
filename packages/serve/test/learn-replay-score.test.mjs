@@ -90,6 +90,24 @@ test("refit: each guard's cheapest threshold that keeps the bar; a too-high guar
   assert.deepEqual(same.guards, []);
 });
 
+test("refit raises the guard that catches the wrong answers, not the first one: never a hand-back of every input when one step's guard does it", () => {
+  // The walk's case: read's p is 0.9 on every row (never wrong); pick's p is 0.3 on the two rows it gets wrong, else 0.9.
+  // Taking the steps in order, read alone could only meet the bar at 0.999 (every row back to the agent), and pick then
+  // fell to the bottom: the refit served a workflow that hands back everything. Both start under every p they see.
+  const text = JSON.stringify({ ...FLOW, root: { ...FLOW.root, steps: [{ ...FLOW.root.steps[0], guard: { signal: "jev", threshold: 0.5 } }, { ...FLOW.root.steps[1], guard: { signal: "jev", threshold: 0.2 } }] } });
+  const rows = [];
+  for (let i = 0; i < 8; i++) {
+    const wrong = i < 2;
+    rows.push({ guards: [{ node: "read", signal: "jev", jev: 0.9, p: 0.9, threshold: 0.5, escalated: false }, { node: "pick", signal: "jev", jev: wrong ? 0.3 : 0.9, p: wrong ? 0.3 : 0.9, threshold: 0.2, escalated: false }], answered: true, wfCorrect: !wrong, agentCorrect: 1 });
+  }
+  const refit = refitGuards(text, rows, "2026-11-13T00:00:00.000Z");
+  const by = Object.fromEntries(refit.guards.map((one) => [one.node, one]));
+  assert.equal(by.pick.threshold, 0.9, "pick goes up past its wrong rows' 0.3");
+  assert.equal(by.read.threshold, 0.001, "read never hurt: it comes down");
+  assert.equal(refit.handed_back, 2, "only the two wrong rows go back");
+  assert.equal(refit.delta, 0);
+});
+
 test("refit fits a `both` guard's logistic only on 30 rows with 5 wrong, else keeps it", () => {
   const text = JSON.stringify(FLOW);
   const rowsOf = (n, wrongEvery) => Array.from({ length: n }, (_, i) => {
