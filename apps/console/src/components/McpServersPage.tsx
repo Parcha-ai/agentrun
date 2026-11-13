@@ -299,9 +299,9 @@ function ServerForm({ v2, saved, writable, signIn, onCancel, onSaved }: { v2: Cl
           : type === "oauth" && needsSignIn
           ? <Button type="submit" size="sm" variant="primary" disabled={busy || !url.trim()}>Sign in again with these settings</Button>
           : type === "oauth"
-          ? <Button type="button" size="sm" variant="primary" disabled={busy || !name.trim() || !url.trim()} onClick={() => void startSignIn()}>{saved ? "Sign in again" : "Sign in"}</Button>
+          ? <Button type="button" size="sm" variant={saved ? "outline" : "primary"} disabled={busy || !name.trim() || !url.trim()} onClick={() => void startSignIn()}>{saved ? "Sign in again" : "Sign in"}</Button>
           : <Button type="button" size="sm" disabled={busy || !url.trim()} onClick={runPreview}>Preview</Button>}
-        {(type !== "oauth" || (saved && !needsSignIn)) && <Button type="submit" size="sm" variant="primary" disabled={!canSave}>{busy ? "Working" : "Save"}</Button>}
+        {(type !== "oauth" || (saved && !needsSignIn)) && <Button type="submit" size="sm" variant={problem?.signIn && type !== "oauth" && writable ? "outline" : "primary"} disabled={!canSave}>{busy ? "Working" : "Save"}</Button>}
         <Button type="button" size="sm" onClick={() => { form.current?.reset(); onCancel(); }}>Cancel</Button>
       </div>
     </form>
