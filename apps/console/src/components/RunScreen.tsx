@@ -63,10 +63,11 @@ export function useRunScreen(read: (() => Promise<RunComputer>) | undefined, goi
 
 const same = (prev: ScreenView | null, next: Exclude<RunComputer, { state: "off" }>): boolean =>
   !!prev && prev.state !== "signed_out" && prev.state === next.state && prev.kind === next.kind && prev.hold === next.hold && (prev.state !== "live" || (next.state === "live" && prev.viewer === next.viewer))
-  && (prev.state !== "none" || (next.state === "none" && prev.ended?.at === next.ended?.at));
+  && (prev.state !== "none" || (next.state === "none" && prev.session === next.session && prev.ended?.at === next.ended?.at));
 
-/** A screen that closed with its run: `none`, of the same kind, the agent's. */
-const closed = (from: ScreenView | RunComputer): ScreenView | null => (from.state === "off" ? null : from.state === "signed_out" ? from : { state: "none", kind: from.kind, hold: "agent" });
+/** A screen that closed with its run: `none`, of the same kind, the agent's; one the run never opened stays unopened. */
+const closed = (from: ScreenView | RunComputer): ScreenView | null =>
+  from.state === "off" ? null : from.state === "signed_out" ? from : { state: "none", kind: from.kind, hold: "agent", session: from.state === "none" && from.session === "unopened" ? "unopened" : "closed" };
 
 type Kind = RunMachine["kind"];
 const ICONS = { browser: Globe, desktop: Monitor, phone: Smartphone, sandbox: Terminal } as const;
@@ -215,6 +216,16 @@ function words(kind: Kind, screen: ScreenView | null, machine: RunMachine | unde
   // Let go while the run waited for its person: said, with when, and that a new one opens when the run goes on. Never
   // "waiting for the browser" here: nothing is opening one until the person answers.
   if (opens && screen?.state === "none" && screen.ended) return `${screen.ended.why} (${clock(screen.ended.at)}). A new browser opens when the run goes on.`;
+  const session = screen?.state === "none" ? screen.session : undefined;
+  // None asked for so far (a run that only fetched pages, say): said plainly, never "waiting", since the agent may never
+  // open one.
+  if (session === "unopened") {
+    if (!opens) return `This run didn't open its ${kind}.${followUp ? " A follow-up opens one if the agent needs it." : ""}`;
+    return kind === "browser" ? "This run hasn't opened its browser. The agent's page shows here if it opens one." : `This run hasn't opened its ${kind}. Its screen shows here if the agent opens one.`;
+  }
+  // Opened, and not up now, while the run goes on: nothing is opening one until the agent asks again.
+  if (opens && session === "closed") return kind === "browser" ? "The run's browser isn't open now. The agent's page shows here if it opens one again." : `The run's ${kind} isn't up now. Its screen shows here when it comes up again.`;
+  // Being opened (or no answer read yet).
   if (opens) return kind === "browser" ? "Waiting for the browser. The agent's page shows here once it opens one." : `Waiting for the ${kind}. Its screen shows here once it is up.`;
   return `The ${kind} closed when the run ended.${followUp ? " A follow-up opens a new one if the agent needs it." : ""}`;
 }

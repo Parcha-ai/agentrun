@@ -48,7 +48,7 @@ import { answerPage, byOwnerSession, ConsoleSessions, heldSessions, isJson, over
 import { hostFix, hostName, loopbackNames } from "./host-check.js";
 import { computerViewerLink, familyReaches, type LiveFamily, type LiveHandover, liveViewerById, liveViewerFor, liveViewerLink, OpenViewers, proxyLiveUpgrade, serveViewerFile, viewerAnswers } from "./browser-live.js";
 import { browserHandBack, handBackTarget } from "./browser-commands.js";
-import { type ComputerOf, computerView } from "./computer-view.js";
+import { type ComputerOf, computerView, type JournalEntry, sessionIn } from "./computer-view.js";
 import { liveReachOf } from "./live-reach.js";
 import { screenWaitEnded } from "./browser-wait-ended.js";
 import { durationMs, logLine } from "./print.js";
@@ -2919,8 +2919,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const run = await needRun(id);
         const family: LiveFamily = found.name === "getRunBrowser" ? "browser" : "computer";
         // The run's open viewer, from the store's sealed viewer rows the runner publishes its hand-over into (browser-live.ts
-        // liveViewerLink/computerViewerLink, under the seal key); who drives, from the cut's computerHoldOf over the store.
-        const hold = await computerHoldOf(store, run.id);
+        // liveViewerLink/computerViewerLink, under the seal key); who drives, from the cut's computerHoldOf over the store,
+        // and where a computer with no viewer is (sessionIn), both over one read of the run's journal.
+        const entries = (await runEntries(store, run.id, ctx)) as unknown as readonly JournalEntry[];
+        const hold = await computerHoldOf(store, run.id, { entries: async () => entries });
         const kept = await keptBrowserOf(store, run.id);
         // A desktop or a phone (the run's revision's computer) whose screen is not open now is still the run's computer:
         // none with its kind, never off as if the agent had none (#2170).
@@ -2934,6 +2936,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
             return computerViewerLink(store, sealKey, run.id, answers);
           },
           computer: () => (viewed ? { kind: viewed } : computerOf(kept, env, family)),
+          session: (kind) => sessionIn(kind, entries),
           hold: () => hold,
           // A going run's browser let go while it waited for its person: the Screen tab says so, with when. One settings
           // row (browser-wait-ended.ts), never the run's journal: this is read on every Screen poll.
