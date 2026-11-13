@@ -22,6 +22,9 @@ export interface RunLaunch {
   /** The start request's body, as the person or trigger gave it, or an object a built-in run names. */
   readonly input: unknown;
   readonly title: string;
+  /** The GitHub repository (owner/name) a person's run reaches, from the start body's `repo` or its agent's one bound
+   *  repository (run-repo.ts); a github trigger's run has none here, its event names it. */
+  readonly repo?: string;
   readonly place: Place;
   /** The loop's adapter, when not the revision's: a built-in learning run names "learning". */
   readonly harness?: string;
@@ -119,6 +122,7 @@ export function launchBody(launch: RunLaunch): Json {
   return {
     input: launch.input,
     title: launch.title,
+    ...(launch.repo !== undefined ? { repo: launch.repo } : {}),
     place: launch.place,
     ...(launch.harness !== undefined ? { harness: launch.harness } : {}),
     ...(launch.model ? { model: launch.model } : {}),
@@ -166,6 +170,7 @@ export function readLaunchBody(stored: unknown): RunLaunch | undefined {
   return {
     input: stored.input,
     title: typeof stored.title === "string" ? stored.title : "",
+    ...(typeof stored.repo === "string" ? { repo: stored.repo } : {}),
     place,
     ...(typeof stored.harness === "string" ? { harness: stored.harness } : {}),
     ...(model ? { model } : {}),

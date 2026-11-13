@@ -46,12 +46,14 @@ export async function githubAppAccess(
   store: { readonly triggerSettings: Pick<TriggerSettings, "get"> },
   sealKey: Buffer | undefined,
   firstInput: unknown,
-  { api = GITHUB_API, now = Date.now, fromGitHub = false, hold }: { api?: string; now?: () => number; fromGitHub?: boolean; hold?: (values: string[]) => void } = {},
+  { api = GITHUB_API, now = Date.now, fromGitHub = false, hold, repo }: { api?: string; now?: () => number; fromGitHub?: boolean; hold?: (values: string[]) => void; repo?: string } = {},
 ): Promise<GithubAppAccessAt | undefined> {
   if (!sealKey) return undefined;
   const app = await appOf(store, sealKey);
   if (!app) return undefined;
-  const target = githubTargetOf(isObject(firstInput) ? firstInput.content : firstInput, { payload: fromGitHub });
+  // `repo`: the launch's (run-launch.ts repo), which the server checked against the agent's binding at the start: a run a
+  // person started with `repo`, or whose agent is bound to one repository. It comes before any URL in the words.
+  const target = repo !== undefined ? { repo } : githubTargetOf(isObject(firstInput) ? firstInput.content : firstInput, { payload: fromGitHub });
   return {
     api,
     target,

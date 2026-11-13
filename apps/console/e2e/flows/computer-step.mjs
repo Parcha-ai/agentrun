@@ -44,7 +44,7 @@ export default {
     await page.locator('input[name="computer-provider"][value="faux-sandbox"]').check();
     const listed = await api("GET", "/computers");
     const tools = listed.body.kinds.find((k) => k.kind === "sandbox").tools.join(", ");
-    check((await page.getByLabel("The loop gets").innerText()).includes(tools), `the step's tools are not the served ${JSON.stringify(tools)}`);
+    check((await page.getByLabel("Tools this computer adds").innerText()).includes(tools), `the step's tools are not the served ${JSON.stringify(tools)}`);
     const saved = page.waitForResponse((r) => r.request().method() === "PUT" && new URL(r.url()).pathname === `/v2/agents/${encodeURIComponent(id)}/definition`);
     await page.getByRole("button", { name: "Save revision", exact: true }).click();
     const response = await saved;

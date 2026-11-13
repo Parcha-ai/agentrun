@@ -48,7 +48,7 @@ test('setCanaryVersions sets every package and every exact pin between them, and
 
 // verify:packages installs every listed package, held ones too (a held package is bumped with the rest and skipped only at
 // publication), so a held package's exact pins must follow, or the clean consumer's install refuses (ERESOLVE): agentrun-harness's
-// peer pin on pi-transport, in the 11-07 dry run.
+// peer pin on a held package, in the 11-07 dry run.
 test('the command sets the canary versions on every listed package, held ones included', async () => {
   const source = await readFile(new URL('./canary.mjs', import.meta.url), 'utf8');
   assert.match(source, /setCanaryVersions\(root, listedPackages,/);
