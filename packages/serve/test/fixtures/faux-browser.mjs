@@ -204,7 +204,9 @@ export default function browser(env = process.env, vendor = "browserbase", signI
       },
     } : {}),
   };
-  // The driver dials the backend the URL names: this call's, or another call's whose provider made the session.
+  // The driver dials the backend the URL names: this call's, or another call's whose provider made the session. With
+  // $FAUX_BROWSER_SCREENSHOT (a PNG file), every screenshot is that real image, in place of the backend's header-only one.
+  const shot = process.env.FAUX_BROWSER_SCREENSHOT;
   const driver = async (target, ...rest) => {
     let named;
     try {
@@ -212,7 +214,8 @@ export default function browser(env = process.env, vendor = "browserbase", signI
     } catch {
       named = undefined;
     }
-    return fakeDriver(named ?? backend)(target, ...rest);
+    const made = await fakeDriver(named ?? backend)(target, ...rest);
+    return shot ? { ...made, screenshot: async () => ({ data: readFileSync(shot).toString("base64"), mimeType: "image/png" }) } : made;
   };
   return { computer, driver };
 }

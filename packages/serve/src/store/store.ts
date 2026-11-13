@@ -191,7 +191,9 @@ export type UpdatedRun = RunRow & { readonly save?: boolean };
 
 /** A run's launch, as the server writes it at start: its JSON `body` (run-launch.ts: the first input, title, place, effort,
  *  cap, trigger and origin), and `sealed` ciphertext for any secret it carries (sealed with the server's key outside the
- *  store, AAD `run_launch|<run_id>|sealed`), or none. Written once, in the same transaction as the queued run. */
+ *  store, AAD `run_launch|<run_id>|sealed`: the MCP credentials its caller handed it, store/seal.ts sealRunMcpAuth), or
+ *  none. The body is written once, in the same transaction as the queued run. `sealed` is the run's for its life only: a
+ *  message may replace it (runs.command and runs.reopen, `launchSealed`), and the write that ends the run erases it. */
 export interface RunLaunchInput {
   readonly body: unknown;
   readonly sealed?: Uint8Array | null;
@@ -204,6 +206,12 @@ export interface RunLaunchRow {
   readonly body: unknown;
   readonly sealed: Uint8Array | null;
   readonly createdAt: number;
+}
+
+/** A message's new launch secrets (runs.command, runs.reopen): `launchSealed` replaces the run's launch `sealed` in the
+ *  command's own transaction, so the runner that takes the command reads them, and a run already final takes neither. */
+export interface LaunchSealedWrite {
+  readonly launchSealed?: Uint8Array;
 }
 
 /** A run imported from another harness's session: an ended run with where it came from, its launch (built from the
@@ -583,7 +591,7 @@ export interface Runs {
    *  Only an agentic run that ended completed (state 'ended') or that a person stopped (state 'stopped', outcome
    *  'stopped'), not imported and not a learning run, reopens: a workflow, a failed or cancelled run, any other, or none
    *  is RunFinal, and nothing is written. */
-  reopen(runId: string, command: { kind: string; body?: unknown }): Promise<Command>;
+  reopen(runId: string, command: { kind: string; body?: unknown }, options?: LaunchSealedWrite): Promise<Command>;
   /** The runs a runner may claim, oldest first: queued; parked with an untaken command or its wake_at passed; running with
    *  no runner (released at a runner's shutdown: it stays running, a run that started keeps that fact) or its claim run
    *  out. */
@@ -1034,7 +1042,7 @@ export interface Store {
    *  not run twice, at a run's end and when a claim is released. */
   flush(): Promise<void>;
   /** Writes a command for the run. RunFinal when the run is final; unknown runs are refused the same way. */
-  command(runId: string, command: { kind: string; body?: unknown }): Promise<Command>;
+  command(runId: string, command: { kind: string; body?: unknown }, options?: LaunchSealedWrite): Promise<Command>;
   /** The run's commands with an id above `after`, in id order. */
   commands(runId: string, after: number): Promise<Command[]>;
   /** Every run's commands with an id above its own cursor, in id order, in one read: a runner's poll of all it holds. A run

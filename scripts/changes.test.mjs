@@ -261,8 +261,9 @@ test('a second fold of the same version appends to its section', () => repo(asyn
 // them at the tag into the archives; the next release's fold puts them into that release's section on main.
 const sectionOf = (text, version) => text.slice(text.indexOf(`## ${version}`)).split(/\n(?=## )/)[0];
 const emptyVision = '# Changelog\n\n## Unreleased\n';
-/** Release 0.1.0-beta.13 folded on main, then two pull requests that merged before its tag: the tag carries their fragments. */
-async function taggedWithLateFragments(root, git) {
+/** Release 0.1.0-beta.13 folded on main, then two pull requests that merged before its tag: the tag carries their fragments (and
+ *  whatever `more` writes beside them). */
+async function taggedWithLateFragments(root, git, more = async () => {}) {
   await writeFile(join(root, 'packages/run-adapters/CHANGELOG.md'), emptyVision);
   await writeFile(join(root, 'changes/early.md'), fragment('repo', 'feature', 'Early.'));
   await commitAll(git, 'main before the release');
@@ -270,6 +271,7 @@ async function taggedWithLateFragments(root, git) {
   await commitAll(git, 'the release pull request');
   await writeFile(join(root, 'changes/a-late.md'), fragment('repo, @parcha/agentrun-kernel', 'fix', 'Late.'));
   await writeFile(join(root, 'changes/b-late-vision.md'), fragment('@parcha/agentrun-kernel', 'fix', 'Late vision.'));
+  await more();
   await commitAll(git, 'two pull requests the queue merged before the tag');
   await git('tag', 'v0.1.0-beta.13');
 }
@@ -339,16 +341,87 @@ test("a held package's late fragment joins its Unreleased in the fold's order wi
   assert.deepEqual(await unreleasedEdits(root, base.trim()), { fold: true, edited: [] });
 }));
 
-test('a fragment is the earlier release\'s only when its tag carried that exact file: a reused name with new text is the new release\'s', () => repo(async (root, git) => {
+test('a fragment edited after its tag is still the earlier release\'s, by its file name, in the text the tag carried', () => repo(async (root, git) => {
   await taggedWithLateFragments(root, git);
+  // A later pull request rewords one and drops a package from the other (as a package's retirement does): the tag published both as they were.
   await writeFile(join(root, 'changes/b-late-vision.md'), fragment('@parcha/agentrun-kernel', 'fix', 'Reworded after the tag.'));
-  await commitAll(git, 'a fragment changed after the tag');
+  await writeFile(join(root, 'changes/a-late.md'), fragment('repo', 'fix', 'Late, its kernel dropped.'));
+  await writeFile(join(root, 'changes/next.md'), fragment('repo', 'feature', 'Next.'));
+  await commitAll(git, 'two fragments changed after the tag, and a new one');
   const previous = await previousRelease(root, '0.1.0-beta.14');
   assert.deepEqual([previous.tag, previous.version, [...previous.carried.keys()]], ['v0.1.0-beta.13', '0.1.0-beta.13', ['a-late.md', 'b-late-vision.md']]);
   assert.equal(await previousRelease(root, '0.1.0-beta.13'), null, 'the tag being folded is never its own previous release');
   const result = await fold(root, '0.1.0-beta.14', '2026-10-25');
-  assert.deepEqual(result.shipped, ['a-late.md']);
-  assert.match(await readFile(join(root, 'packages/run-adapters/CHANGELOG.md'), 'utf8'), /## 0\.1\.0-beta\.14 \(2026-10-25\)\n\n- Reworded after the tag\.\n\n## 0\.1\.0-beta\.13 \(2026-10-20\)\n\n- Late\.\n$/);
+  assert.deepEqual([result.folded, result.shipped, result.previous], [3, ['a-late.md', 'b-late-vision.md'], '0.1.0-beta.13']);
+  assert.deepEqual(await loadFragments(root), []);
+  assert.equal(await readFile(join(root, 'CHANGELOG.md'), 'utf8'),
+    '# Changelog\n\n## Unreleased\n\n## 0.1.0-beta.14 (2026-10-25)\n\n- Next.\n\n## 0.1.0-beta.13 (2026-10-20)\n\n- Existing root bullet.\n- Early.\n- Late.\n\n## 0.1.0-beta.12, 2026-10-09\n\n- Older.\n');
+  assert.equal(await readFile(join(root, 'packages/run-adapters/CHANGELOG.md'), 'utf8'),
+    '# Changelog\n\n## Unreleased\n\n## 0.1.0-beta.13 (2026-10-20)\n\n- Late.\n- Late vision.\n', 'nothing of either is 0.1.0-beta.14\'s');
+}));
+
+test('a fragment deleted after its tag, its package retired with it, still goes into the earlier release\'s section, once', () => repo(async (root, git) => {
+  await mkdir(join(root, 'packages/retired'));
+  await writeFile(join(root, 'packages/retired/package.json'), JSON.stringify({ name: '@parcha/agentrun-retired' }));
+  await taggedWithLateFragments(root, git, async () => {
+    await writeFile(join(root, 'changes/c-retired.md'), fragment('@parcha/agentrun-retired', 'docs', 'Retired docs.'));
+  });
+  // A later pull request retires the package and deletes its fragment, and another deletes a late kernel fragment.
+  await rm(join(root, 'packages/retired'), { recursive: true });
+  await rm(join(root, 'changes/c-retired.md'));
+  await rm(join(root, 'changes/b-late-vision.md'));
+  await writeFile(join(root, 'changes/next.md'), fragment('repo', 'feature', 'Next.'));
+  await commitAll(git, 'the package retired, two fragments deleted, and a new one');
+  const { stdout: base } = await git('rev-parse', 'HEAD');
+  const result = await fold(root, '0.1.0-beta.14', '2026-10-25');
+  assert.deepEqual([result.folded, result.shipped, result.previous], [2, ['a-late.md', 'b-late-vision.md', 'c-retired.md'], '0.1.0-beta.13']);
+  const rootAfter = '# Changelog\n\n## Unreleased\n\n## 0.1.0-beta.14 (2026-10-25)\n\n- Next.\n\n## 0.1.0-beta.13 (2026-10-20)\n\n- Existing root bullet.\n- Early.\n- Late.\n- Retired docs.\n\n## 0.1.0-beta.12, 2026-10-09\n\n- Older.\n';
+  const kernelAfter = '# Changelog\n\n## Unreleased\n\n## 0.1.0-beta.13 (2026-10-20)\n\n- Late.\n- Late vision.\n';
+  assert.equal(await readFile(join(root, 'CHANGELOG.md'), 'utf8'), rootAfter, 'a retired package\'s bullet goes to the root');
+  assert.equal(await readFile(join(root, 'packages/run-adapters/CHANGELOG.md'), 'utf8'), kernelAfter);
+  assert.deepEqual((await unreleasedEdits(root, base.trim())).edited, [], 'the release pull request passes the check');
+  // The release workflow's fold at this release's tag sees every fragment of the earlier tag deleted: it adds none of them again.
+  await commitAll(git, 'the release pull request');
+  await git('tag', 'v0.1.0-beta.14');
+  const atTag = await fold(root, '0.1.0-beta.14', '2026-10-25');
+  assert.deepEqual([atTag.folded, atTag.shipped], [0, []]);
+  assert.equal(await readFile(join(root, 'CHANGELOG.md'), 'utf8'), rootAfter);
+  assert.equal(await readFile(join(root, 'packages/run-adapters/CHANGELOG.md'), 'utf8'), kernelAfter);
+}));
+
+test('a package published at the tag and held now: its deleted fragment is restored nowhere, and its edited one joins Unreleased as it is now, so the check passes and a second fold adds nothing', () => repo(async (root, git) => {
+  const transportLog = '# Changelog\n\n## Unreleased\n';
+  await mkdir(join(root, 'packages/pi-transport'));
+  await writeFile(join(root, 'packages/pi-transport/package.json'), JSON.stringify({ name: '@parcha/pi-transport' }));
+  await writeFile(join(root, 'packages/pi-transport/CHANGELOG.md'), transportLog);
+  await taggedWithLateFragments(root, git, async () => {
+    await writeFile(join(root, 'changes/c-transport-gone.md'), fragment('@parcha/pi-transport', 'fix', 'Transport gone.'));
+    await writeFile(join(root, 'changes/d-transport-edit.md'), fragment('@parcha/pi-transport', 'fix', 'Transport edit.'));
+  });
+  await writeFile(join(root, 'packages/pi-transport/package.json'), JSON.stringify({ name: '@parcha/pi-transport', private: true }));
+  await rm(join(root, 'changes/c-transport-gone.md'));
+  await writeFile(join(root, 'changes/d-transport-edit.md'), fragment('@parcha/pi-transport', 'fix', 'Transport edited.'));
+  await commitAll(git, 'the transport held, one of its fragments deleted and one edited');
+  const { stdout: base } = await git('rev-parse', 'HEAD');
+  await fold(root, '0.1.0-beta.14', '2026-10-25');
+  const transportAfter = `${transportLog}\n- Transport edited.\n`;
+  assert.equal(await readFile(join(root, 'packages/pi-transport/CHANGELOG.md'), 'utf8'), transportAfter);
+  assert.deepEqual(await unreleasedEdits(root, base.trim()), { fold: true, edited: [] }, 'the release pull request passes the check');
+  await commitAll(git, 'the release pull request');
+  await git('tag', 'v0.1.0-beta.14');
+  await fold(root, '0.1.0-beta.14', '2026-10-25');
+  assert.equal(await readFile(join(root, 'packages/pi-transport/CHANGELOG.md'), 'utf8'), transportAfter, 'the fold at the tag adds nothing');
+}));
+
+test("a deleted fragment's bullet is held by its section only as a whole entry of its own, never as a nested line or the start of a longer entry", () => repo(async (root, git) => {
+  await taggedWithLateFragments(root, git);
+  const kernelLog = '# Changelog\n\n## Unreleased\n\n## 0.1.0-beta.13 (2026-10-20)\n\n- Other.\n  - Late vision.\n- Late vision.\n  And more of another entry.\n';
+  await writeFile(join(root, 'packages/run-adapters/CHANGELOG.md'), kernelLog);
+  await rm(join(root, 'changes/b-late-vision.md'));
+  await commitAll(git, 'the kernel section holds look-alikes, and the fragment is deleted');
+  const result = await fold(root, '0.1.0-beta.14', '2026-10-25');
+  assert.deepEqual(result.shipped, ['a-late.md', 'b-late-vision.md']);
+  assert.equal(await readFile(join(root, 'packages/run-adapters/CHANGELOG.md'), 'utf8'), `${kernelLog}- Late.\n- Late vision.\n`);
 }));
 
 test('a late fragment whose release has no dated section in the root changelog is refused, and nothing is written', () => repo(async (root, git) => {

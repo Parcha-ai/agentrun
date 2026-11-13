@@ -37,7 +37,7 @@ async function box(t, { root = true } = {}) {
   const opt = join(dir, "opt");
   mkdirSync(opt, { mode: 0o755 });
   const computerd = join(opt, "computerd");
-  writeFileSync(computerd, `#!/bin/sh\n{ printf 'computerd %s\\n' "$*"; printf 'stdin %s\\n' "$(wc -c | tr -d ' ')"; } >> '${join(dir, "calls")}'\n`);
+  writeFileSync(computerd, `#!/bin/sh\n{ printf 'computerd %s\\n' "$*"; printf 'stdin %s\\n' "$(wc -c | tr -d ' ')"; } >> '${join(dir, "calls")}'\n[ ! -e '${join(dir, "computerd-fails")}' ] || exit 1\n`);
   chmodSync(computerd, 0o755);
   const mp = join(dir, "workspace");
   mkdirSync(mp);
@@ -60,8 +60,12 @@ async function box(t, { root = true } = {}) {
   const mount = join(dir, "mount");
   writeFileSync(mount, `#!/bin/sh\nprintf '%s\\n' "$*" >> '${remounts}'\n[ -e '${remountable}' ] || { echo 'mount: /proc: permission denied.' >&2; exit 32; }\n[ "$*" = '-o remount,hidepid=2 /proc' ] || exit 1\nsed -i 's#^proc /proc proc \\([^ ]*\\) #proc /proc proc \\1,hidepid=invisible #' '${mounts}'\n`);
   chmodSync(mount, 0o755);
+  // The computer's nft: it records its arguments and the ruleset it was given on stdin, line by line.
+  const nft = join(dir, "nft");
+  writeFileSync(nft, `#!/bin/sh\n{ printf 'nft %s\\n' "$*"; sed 's/^/rule /'; } >> '${calls}'\n[ ! -e '${join(dir, "nft-fails")}' ] || exit 1\n`);
+  chmodSync(nft, 0o755);
   const source = readFileSync(HELPER, "utf8");
-  const fixed = { ARCHIL: ["/usr/bin/archil", archil], MP: ["/workspace", mp], MOUNTS: ["/proc/self/mounts", mounts], MOUNT: ["/usr/bin/mount", mount], CHOWN: ["/usr/bin/chown", chown], TOOL: ["agentrun-tool", userInfo().username], TOOL_UID: ["2510", String(process.getuid() + 1)], ROOT_UID: ["0", String(root ? process.getuid() : process.getuid() + 1)], COMPUTERD: ["/opt/agentrun/computerd", computerd], HELD_TOP: ["/", dir], SOCK: ["/run/agentrun-archil/archil.sock", join(dir, "run", "archil.sock")] };
+  const fixed = { NFT: ["/usr/sbin/nft", nft], ARCHIL: ["/usr/bin/archil", archil], MP: ["/workspace", mp], MOUNTS: ["/proc/self/mounts", mounts], MOUNT: ["/usr/bin/mount", mount], CHOWN: ["/usr/bin/chown", chown], TOOL: ["agentrun-tool", userInfo().username], TOOL_UID: ["2510", String(process.getuid() + 1)], ROOT_UID: ["0", String(root ? process.getuid() : process.getuid() + 1)], COMPUTERD: ["/opt/agentrun/computerd", computerd], HELD_TOP: ["/", dir], SOCK: ["/run/agentrun-archil/archil.sock", join(dir, "run", "archil.sock")] };
   let copy = source;
   for (const [name, [shipped, here]] of Object.entries(fixed)) {
     assert.ok(source.includes(`\n${name}=${shipped}\n`), `the helper fixes ${name}=${shipped}`);
@@ -74,7 +78,7 @@ async function box(t, { root = true } = {}) {
     const ran = spawnSync(helper, args, { input: stdin, encoding: "utf8", env: { PATH: process.env.PATH } });
     return { status: ran.status, stderr: ran.stderr, calls: existsSync(calls) ? readFileSync(calls, "utf8").split("\n").filter(Boolean) : [] };
   };
-  return { dir, mp, mounts, run, computerd, tree: (script) => writeFileSync(tree, script), sock: join(dir, "run", "archil.sock"), remounts: () => (existsSync(remounts) ? readFileSync(remounts, "utf8").split("\n").filter(Boolean) : []), remountable: () => writeFileSync(remountable, ""), mounted: (folder = FOLDER) => writeFileSync(mounts, `${PROC}${DISK}:/${folder}[${REGION}] ${mp} fuse.archil rw 0 0\n`) };
+  return { dir, mp, mounts, run, computerd, fail: (what) => writeFileSync(join(dir, `${what}-fails`), ""), tree: (script) => writeFileSync(tree, script), sock: join(dir, "run", "archil.sock"), remounts: () => (existsSync(remounts) ? readFileSync(remounts, "utf8").split("\n").filter(Boolean) : []), remountable: () => writeFileSync(remountable, ""), mounted: (folder = FOLDER) => writeFileSync(mounts, `${PROC}${DISK}:/${folder}[${REGION}] ${mp} fuse.archil rw 0 0\n`) };
 }
 
 /**
@@ -358,10 +362,97 @@ test("netlock is no verb of the helper's: the tools' network is init's own names
   }
 });
 
-test("the helper runs no firewall program and names none", () => {
+test("the helper runs no firewall program but nft, for egress alone, and names none other", () => {
   const source = readFileSync(HELPER, "utf8");
   for (const word of ["iptables", "ip6tables", "getent", "CAP_NET_ADMIN", "netlock"]) assert.ok(!source.includes(word), `the helper names ${word}`);
+  assert.deepEqual(source.split("\n").filter((line) => line.includes('"$NFT"')).length, 1, "nft runs in one place, route()");
 });
+
+const EGRESS = "egress=10.60.0.40:18100:42050";
+/** The ruleset the helper hands nft for egress, written out here rather than read from the helper. */
+const RULESET = [
+  "table inet agentrun_archil",
+  "delete table inet agentrun_archil",
+  "table inet agentrun_archil {",
+  "  chain out_redirect {",
+  "    type nat hook output priority -100; policy accept;",
+  "    meta skuid 0 meta nfproto ipv4 tcp dport { 8100, 32050 } redirect to :3129",
+  "  }",
+  "  chain out_fence {",
+  "    type filter hook output priority 0; policy accept;",
+  "    tcp dport { 8100, 32050 } reject with tcp reset",
+  "  }",
+  "}",
+].map((line) => `rule ${line}`);
+
+test("mount and revoke with egress start the relay, then set the redirect, then run the client: in that order, the token reaching the client alone", async (t) => {
+  for (const [verb, force] of [["mount", ""], ["revoke", " --force"]]) {
+    const b = await box(t);
+    const ran = b.run([verb, DISK, REGION, FOLDER, EGRESS]);
+    assert.equal(ran.status, 0, ran.stderr);
+    assert.deepEqual(ran.calls, [
+      "computerd archil-relay --gateway 10.60.0.40 --mount-lane 18100 --data-lane 42050",
+      "stdin 0",
+      "nft -f -",
+      ...RULESET,
+      `argv mount${force} ${DISK}:/${FOLDER} ${b.mp} --region ${REGION}`,
+      "env token",
+      "ps 0",
+      chowned(b),
+    ]);
+  }
+});
+
+test("without egress, a mount starts no relay and sets no firewall, as before", async (t) => {
+  const b = await box(t);
+  const ran = b.run(["mount", DISK, REGION, FOLDER]);
+  assert.equal(ran.status, 0, ran.stderr);
+  assert.ok(!ran.calls.some((call) => call.startsWith("computerd") || call.startsWith("nft")), ran.calls.join("\n"));
+});
+
+test("a relay or a redirect that cannot be set exits 4, in words, and the client never runs", async (t) => {
+  for (const [what, calls] of [["computerd", 2], ["nft", 3 + RULESET.length]]) {
+    const b = await box(t);
+    b.fail(what);
+    const ran = b.run(["mount", DISK, REGION, FOLDER, EGRESS]);
+    assert.equal(ran.status, 4, `${what}: ${ran.stderr}`);
+    assert.match(ran.stderr, /nothing is mounted/);
+    assert.equal(ran.calls.length, calls, `${what}: ${ran.calls.join("\n")}`);
+    assert.ok(!ran.calls.some((call) => call.startsWith("argv")), `${what}: the client ran`);
+  }
+});
+
+test("egress starts the relay only while computerd is root's alone: else exit 4, and nothing runs", async (t) => {
+  const b = await box(t);
+  chmodSync(b.computerd, 0o775);
+  const ran = b.run(["mount", DISK, REGION, FOLDER, EGRESS]);
+  assert.equal(ran.status, 4, ran.stderr);
+  assert.deepEqual(ran.calls, []);
+});
+
+for (const egress of [
+  "egress=",
+  "egress=10.60.0.40",
+  "egress=10.60.0.40:18100",
+  "egress=10.60.0.40:18100:18100",
+  "egress=10.60.0.40:8100:42050",
+  "egress=10.60.0.40:18100:32050",
+  "egress=10.60.0.40:0:42050",
+  "egress=10.60.0.40:65536:42050",
+  "egress=10.60.0.400:18100:42050",
+  "egress=proxy.internal:18100:42050",
+  "egress=10.60.0.40:18100:42050:1",
+  "egress=10.60.0.40:018100:42050",
+  "gateway=10.60.0.40:18100:42050",
+  "10.60.0.40:18100:42050",
+]) {
+  test(`refuses ${JSON.stringify(egress)}, and runs nothing`, async (t) => {
+    const b = await box(t);
+    const ran = b.run(["mount", DISK, REGION, FOLDER, egress]);
+    assert.equal(ran.status, 2, ran.stderr);
+    assert.deepEqual(ran.calls, []);
+  });
+}
 
 /** Regions, and whether the one rule takes each: a provider, a dash and its region, lowercase letters, digits and dashes. */
 const REGIONS = [

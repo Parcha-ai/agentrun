@@ -13,6 +13,7 @@
 import { mkdirSync, statSync, utimesSync, writeFileSync, writeSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { PROVIDERS } from "@parcha/agentrun-computer";
+import { ArchilSettingsEnvInvalid, archilSettingsFromEnv } from "../archil-settings.js";
 import { dockerPathsForRuns } from "../box-paths.js";
 import { hostCommandRefusals } from "../computers.js";
 import { hostAddressesOnce } from "../docker-host-addresses.js";
@@ -416,8 +417,12 @@ export async function runnerMain(argv: readonly string[], given: NodeJS.ProcessE
   let holds: ReturnType<typeof runnerHolds>;
   try {
     holds = runnerHolds(args, env);
+    // The Archil settings an operator sets, read by every run's claim here as the server reads them (archil-settings.ts):
+    // one of the region and S3 URL without the other, or a value the server would refuse, stops this start as it stops
+    // the server's.
+    archilSettingsFromEnv(env);
   } catch (error) {
-    if (!(error instanceof RunnerRefused)) throw error;
+    if (!(error instanceof RunnerRefused) && !(error instanceof ArchilSettingsEnvInvalid)) throw error;
     console.error(`agentrun-serve runner: ${error.message}`);
     return 2;
   }
