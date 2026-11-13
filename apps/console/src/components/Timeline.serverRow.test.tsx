@@ -5,7 +5,7 @@ import { Timeline } from "@/components/Timeline";
 import type { TimelineRow } from "@/lib/v2";
 
 // A message the server wrote into a run (an approval's resume, a raised cap's follow-up) comes as a `phase` row with
-// `origin: "server"` and the summary "AgentRun: <its first line>" (pi-durable-agent's timeline). It reads as AgentRun's,
+// `origin: "server"` and the summary "AgentRun: <its first line>" (serve's timeline). It reads as AgentRun's,
 // muted, never as the person's; a plain phase row keeps "Phase".
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: ReturnType<typeof createRoot> | undefined;
@@ -13,7 +13,7 @@ let host: HTMLElement;
 afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.innerHTML = ""; });
 
 const at = (s: number) => `2026-11-05T10:00:0${s}.000Z`;
-const row = (seq: number, over: Partial<TimelineRow>): TimelineRow => ({ id: `row_${seq}`, seq, kind: "phase", summary: "", text: null, timestamp: at(seq), tool_name: null, ...over });
+const row = (seq: number, over: Partial<TimelineRow>): TimelineRow => ({ created_at: "2026-10-28T19:33:16.118Z", agent_label: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null, id: `row_${seq}`, seq, kind: "phase", summary: "", text: null, timestamp: at(seq), tool_name: null, ...over });
 const RESUME = "[tool approval] This answers your web_fetch call call_1 (arguments {\"url\":\"http://public.example/\"}), which waited for a person's approval; it is not a new message from them.";
 const rows: TimelineRow[] = [
   row(0, { kind: "user_message", summary: "You: Fetch the page" }),
@@ -31,7 +31,7 @@ beforeEach(() => {
 const steps = () => [...host.querySelectorAll("li")];
 const step = (has: string) => steps().find((li) => (li.textContent ?? "").includes(has))!;
 // A step's title: the line under its label.
-const titleOf = (li: Element) => [...li.querySelectorAll("span")].find((s) => s.classList.contains("text-[15px]"))!;
+const titleOf = (li: Element) => [...li.querySelectorAll("span")].find((s) => s.classList.contains("text-prose"))!;
 
 describe("Timeline, a message the server wrote", () => {
   it("reads as AgentRun's, with its first line as the title, never as yours", () => {

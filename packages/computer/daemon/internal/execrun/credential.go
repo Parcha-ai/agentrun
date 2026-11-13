@@ -137,8 +137,19 @@ func hasCapability(bit uint) bool {
 	return false
 }
 
-// environment is PATH (the daemon's, or a standard one), HOME, USER and LOGNAME for the account, then the request's
-// variables over them. Nothing else of the daemon's environment is passed on.
+// proxyEnv is the proxy variables every program is given, set once by init before it serves anyone (SetProxyEnv): its
+// egress relay's, for a computer whose network is an allowlist. Empty: none.
+var proxyEnv map[string]string
+
+// SetProxyEnv makes vars part of every program's environment, under the request's own. Init calls it once, before it
+// serves any connection, for its egress relay.
+func SetProxyEnv(vars map[string]string) {
+	proxyEnv = vars
+}
+
+// environment is PATH (the daemon's, or a standard one), HOME, USER and LOGNAME for the account, the egress relay's proxy
+// variables when init has one, then the request's variables over them. Nothing else of the daemon's environment is
+// passed on.
 func environment(acct account, extra map[string]string) []string {
 	path := os.Getenv("PATH")
 	if path == "" {
@@ -150,6 +161,9 @@ func environment(acct account, extra map[string]string) []string {
 	}
 	if acct.name != "" {
 		vars["USER"], vars["LOGNAME"] = acct.name, acct.name
+	}
+	for key, value := range proxyEnv {
+		vars[key] = value
 	}
 	for key, value := range extra {
 		vars[key] = value

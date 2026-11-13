@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-claude-code/test/fake-anthropic.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, patches: 007-fake-anthropic-real-shape, 015-web-search
+// Changed by Parcha, and AgentRun's own since the port from upstream froze on 2026-11-07.
 /**
  * A scripted Anthropic Messages API for the real Claude Code CLI (docs/workspaces.md
  * §11.4, "the restart-on-a-new-sandbox tests"): what `query()` and the pinned
@@ -100,14 +100,6 @@ export interface FakeAnthropic {
 }
 
 let toolSeq = 0;
-
-/** The last user message's text (its string content, or its text blocks), without tool results. */
-export function lastUserText(r: Pick<FakeRequest, 'messages'>): string {
-  const m = [...r.messages].reverse().find((x) => x.role === 'user');
-  if (!m) return '';
-  if (typeof m.content === 'string') return m.content;
-  return m.content.filter((b) => b.type === 'text').map((b) => String(b.text)).join('\n');
-}
 
 /** Why `messages` breaks the Messages API's structure, or undefined when it doesn't. */
 export function structureProblem(all: unknown): string | undefined {

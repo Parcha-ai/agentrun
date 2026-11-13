@@ -8,6 +8,7 @@ import { existsSync } from "node:fs";
 import { createServer } from "node:http";
 import { test } from "node:test";
 import { agent, follow, serve } from "./support.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const WORDS = "The model provider stopped this answer (its content filter). Rephrase the request, or try another model.";
@@ -36,7 +37,7 @@ for (const [api, said] of Object.entries(SAID)) {
 
 for (const harness of ["claude-agent", "codex"]) {
   test(`${harness}: a turn the harness ended on the provider's content filter fails the run moderated, in plain words`, { timeout: 60_000 }, async (t) => {
-    const { api } = await serve(t, { fauxHarness: FAUX_HARNESS });
+    const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
     const { run } = await failedRun(api, `filtered-${harness}`, { harness, instructions: `Fail with: ${FILTERED}` }, "What is 2 plus 2?");
     assert.deepEqual([run.status, run.error?.code, run.error?.message, run.error?.retryable], ["failed", "moderated", WORDS, false], JSON.stringify(run.error));
   });
@@ -88,7 +89,7 @@ test("claude-agent on the Claude CLI: a provider that stops every answer on its 
 });
 
 test("a guard: any other failure stays run_failed, with its own words", { timeout: 60_000 }, async (t) => {
-  const { api } = await serve(t, { fauxHarness: FAUX_HARNESS });
+  const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
   const { run } = await failedRun(api, "fails-plainly", { harness: "claude-agent", instructions: "Fail with: the faux turn failed on purpose" }, "What is 2 plus 2?");
   assert.deepEqual([run.status, run.error?.code], ["failed", "run_failed"], JSON.stringify(run.error));
   assert.ok(!String(run.error?.message).includes("content filter"), run.error?.message);

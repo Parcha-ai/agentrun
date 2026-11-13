@@ -21,8 +21,8 @@ slot for paid runs, a model gateway) live outside the repository: in the file `S
 | Fact | Value |
 |---|---|
 | Protection | ruleset `main`: pull request, 1 approval, stale approvals dismissed on push, threads resolved, linear history; merge queue, ALLGREEN, up to 5 entries, squash |
-| Required checks | `verify (22.19.0)` and `verify (22.23.2)`; `gh api repos/{owner}/{repo}/rulesets` is the authority. Every other job (stranger, floors, `pi-1-2`, `real-chrome`, `transport-docker`, `lean`) is a merge condition by this skill, not by the ruleset: a red one is fixed or named with its cause in the batch line |
-| Toolchain | Node 22.19 or later on 22, or 24.2 or later; npm 11. Regenerate `package-lock.json` only with npm 11 (`--package-lock-only`), never by hand |
+| Required checks | `verify` and `lean`; `gh api repos/{owner}/{repo}/rulesets` is the authority. Every other job (stranger, floors, `pi-1-2`, `real-chrome`, `lean`) is a merge condition by this skill, not by the ruleset: a red one is fixed or named with its cause in the batch line |
+| Toolchain | Node 24.22.3 or later (`.nvmrc`); npm 11. Regenerate `package-lock.json` only with npm 11 (`--package-lock-only`), never by hand |
 | Changelog | a fragment in `changes/` per pull request with a user-visible change; no pull request edits an `Unreleased` section (`changes/README.md`) |
 | Identity | the machine identity authors, pushes, replies, resolves and arms auto-merge; only the maintainer approves |
 
@@ -67,165 +67,38 @@ Run on a maintainer's machine whose environment already holds the credentials. N
 Actions, never with a secret added to the repository. A package's section says when its check is
 required, the command, the pass rule and the cost. Its lead owns that section.
 
-### `@parcha/agentrun-dsl`, `@parcha/agentrun-jev`, `@parcha/agentrun-pi`
+### `@parcha/agentrun-dsl`, `@parcha/agentrun-jev`
 
-- **When:** any change to `packages/dsl`, `packages/jev` or `packages/pi`.
-- **pi versions:** each version in its own disposable checkout, because `--scratch` rewrites the manifests
-  and the lockfile: `git worktree add ../leg-<version> <head>`, then in it `npm ci --ignore-scripts` and
-  `node scripts/pi-leg.mjs --pi <version> --scratch --npm "npx --yes npm@11.21.0"`, at the lowest version the
-  peers accept (CI's floor jobs run 1.0.4) and at the newest minor they accept (the `pi-1-2` job runs 1.2.0).
-  `--plan` only prints the leg. Pass: build, type-check and suite green, one copy of each pi package at the
-  leg's version. Remove the checkout by its exact path afterwards.
+- **When:** any change to `packages/dsl` or `packages/jev`, or to serve's workflow engine (`packages/serve/src/workflow`).
+- **pi version:** the packages pin one pi family exactly (`scripts/pi-ranges.test.mjs`), and the suites run on it; there
+  is no other version to run.
 - **Recovery or durable behaviour** (the driver, the journal, reconcile, effects, `./durable`): the PR
   body carries a kill-storm proof on the head: seeds, kills, every outside call applied once, every
   record equal to the uncut run's, no stop. Cost: $0 (scripted providers).
-- **Recording format:** a change to what `./durable` exports for `agentrun.recording/1` validates
-  with `apps/viewer`'s `validate` on a fresh recording.
-
-### `@parcha/pi-durable-disk`
-
-- **When:** the diff touches `packages/pi-durable-disk/src/**`, `bin/**`, `package.json` or
-  `test/live/**`. A diff of only examples, the README or `changes/` skips it.
-- **Pending:** `test/live/ci.ts` lands with pull request #472; until it is on `main`, this check is not run and the
-  batch line says so.
-- **Command,** from the repository root at the head, under your scratch-disk credential wrapper, which
-  exports `ARCHIL_API_KEY`, `PDA_LIVE_DISK` and `PDA_LIVE_REGION` (default `aws-us-east-1`):
-
-  ```bash
-  npm run build && node packages/pi-durable-disk/test/live/ci.ts all
-  ```
-
-  `all` runs a preflight (it refuses without the key, a `dsk-` disk id or a region), the host suites
-  (claim, env, run, store, supervise, lifecycle), then the Docker suites, so the two never share the
-  disk, then a sweep that always runs and must leave 0 run directories and 0 token users, then a summary.
-- **Pass:** exit code 0 and a last stdout line that starts with `ok: live disk check passed`. Anything
-  else blocks: a non-zero exit, a last line `not ok: <step>: <reason>`, or no last line (killed or timed
-  out). Put the summary it prints above that line in the pull request body.
-- **Needs:** Docker, FUSE and the Archil client on the machine (the suites need root through
-  `archil-scoped`), and a SCRATCH key and disk only. The suites delete runs and token users on the disk
-  they are given: never run them with a production key.
 
 ### `@parcha/pi-browser`
 
 - **When:**
   - **Real Chrome:** any change to `packages/pi-browser/src/**`, `package.json`, `scripts/**`, `test/**` or `examples/**`, or to `package-lock.json` when it moves a pi-browser dependency.
   - **Package contents:** a change to the manifest (`exports`, `files`, `bin`, `peerDependencies`) or to anything the tarball ships.
-  - **Provider live check:** a change to `src/providers/**` (Browserbase, Kernel, the shared HTTP and CDP code), `src/recorder/**`, or the session lifecycle in `src/core/lease.ts` and `src/store.ts`.
   - A diff of only the README or `changes/` runs the stranger spec and nothing else here.
 - **Real Chrome,** from the repository root at the head, with `CHROME_PATH` naming Chrome for Testing at the version CI pins (`CHROME_FOR_TESTING` in the workflow):
 
   ```bash
   npm ci --ignore-scripts && npm run build
   npm run test:chrome -w @parcha/pi-browser
-  node scripts/check-reference-chrome.mjs
   npm test -w @parcha/pi-browser
   ```
 
   **Pass:** each command exits 0. The suites fail a file that leaves a process or a directory behind, so a teardown leak is a failure, not a warning.
 
-  A fix for a flaky test also runs that file 16 times, four at a time, on Node 22.19 and on the newest Node CI uses, plus a forced version of the race it fixes. The body gives the counts. A flake fixed only by hoping is not fixed.
+  A fix for a flaky test also runs that file 16 times, four at a time, on the Node CI uses, plus a forced version of the race it fixes. The body gives the counts. A flake fixed only by hoping is not fixed.
 - **Package contents:** `npm run verify:tarball -w @parcha/pi-browser`. **Pass:** exit 0. Then `node scripts/stranger.mjs pi-browser`, whose spec runs the README's no-key command and must print the README's block byte for byte.
-- **Provider live check,** once per provider the change can reach, with that provider's key already in the environment (`BROWSERBASE_API_KEY` for Browserbase, plus the Browserbase SDK installed; `KERNEL_API_KEY` for Kernel):
-
-  ```bash
-  PI_BROWSER_PROVIDER=browserbase node packages/pi-browser/examples/one-script-three-providers.mjs https://example.com
-  PI_BROWSER_PROVIDER=kernel node packages/pi-browser/examples/one-script-three-providers.mjs https://example.com
-  ```
-
-  **Pass:** exit 0, and one stdout line that starts with the provider's name and quotes the page's first snapshot line. The script releases its session in a `finally`. Confirm in the provider's console, or with its session list, that no session it made is still running. A change to the recorder also records that session and shows frames within the caps, a `credential_on_page` gap on a password page, and `session_released` last, with no token in any line.
-
-  Paste the provider lines and the session check into the body. Never paste a session's connect or live-view URL: they carry tokens.
 - **Needs:**
   - Chrome for Testing at CI's pinned version. On Ubuntu 24.04, an unprivileged Chrome needs `kernel.apparmor_restrict_unprivileged_userns=0`, the runner's documented switch; the sandbox stays on.
-  - Node 22.19 or later.
-  - For the live check, a Browserbase or Kernel key whose plan allows at least one concurrent session.
+  - Node 24.22.3 or later.
   - No other credential, and no secret ever goes into the repository.
-- **Cost:** the Chrome suites and the stranger spec are $0. A provider live check is one session of about a minute. At Browserbase's list price ($0.12 per session-hour, one-minute minimum) that is under $0.01; Kernel is on the same order.
-
-### `@parcha/pi-transport`
-
-Three live checks: Docker (free, on every source change), Daytona and Modal (paid, when the code they reach
-changes). Each suite labels every box it makes with a label of its own run, lists that label at the provider at the
-end, and fails if a box is left. All three run from the repository root at the head after `npm run build`.
-
-- **When:**
-  - **Docker:** the diff touches `packages/pi-transport/src/**`, `package.json`, or a `test/*docker.live.test.ts`
-    file. A diff of only the README, `changes/` or offline tests skips it.
-  - **Daytona:** the diff touches `src/box/daytona.ts`, the shared box code (`src/box/box.ts`, `files.ts`,
-    `child.ts`), `src/hands/**`, or `test/box-*daytona*.live.test.ts`.
-  - **Modal:** the diff touches `src/box/modal.ts`, the shared box code, `src/hands/**`, or
-    `test/*modal*.live.test.ts`.
-  - A change under `src/home/**` runs the Docker check (the home suites are Docker files) and, when the change moves
-    a session between providers, Daytona and Modal too.
-- **Command:**
-
-  ```bash
-  npm run build
-  npm run test:live:docker -w @parcha/pi-transport
-  # Daytona, under the credential wrapper that exports DAYTONA_API_KEY, DAYTONA_API_URL, DAYTONA_TARGET:
-  PI_TRANSPORT_LIVE_DAYTONA=1 npm run test:live -w @parcha/pi-transport
-  # Modal, under the wrapper that exports MODAL_TOKEN_ID and MODAL_TOKEN_SECRET:
-  npm install --no-save --ignore-scripts modal@0.11.0
-  PI_TRANSPORT_LIVE_MODAL=1 npm run test:live -w @parcha/pi-transport
-  ```
-
-  `test:live` loads every live file; each provider's own variable picks the files that run, and the others skip.
-  `PI_TRANSPORT_LIVE_MODAL_KINDS` picks Modal kinds (`sandbox,vm` by default; add `gpu` only when the change
-  touches GPU handling). `PI_TRANSPORT_LIVE_PREFIX` and `PI_TRANSPORT_LIVE_LABELS` (`a=b,c=d`) name and label the
-  run's boxes, so two runs never touch each other's boxes.
-- **Pass:** each command exits 0 and its Vitest summary shows `0 failed` (skipped files are fine). A non-zero exit,
-  a failed test, or a run killed before its summary blocks. The suites' own last test counts the run's boxes still
-  at the provider; a non-zero count fails the run. Put each summary line in the pull request body.
-- **Needs:** a Docker daemon and Node 22.19 or later; for Daytona, a key for a TEST organization (never a
-  production key) and its API URL and target; for Modal, a token pair and the `modal` SDK installed with `--no-save`
-  (the package never depends on it). No credential enters a box, a log or the pull request.
-- **Cost:** Docker $0. Daytona under $0.05 a run (about 60 short one-vCPU boxes, seconds each). Modal sandbox and VM
-  under $0.10 a run; the T4 kind adds about $0.05 when asked for. Estimates from list prices.
-
-### `@parcha/pi-vision`
-
-Two live checks. Both run from the repository root at the head, after `npm ci --ignore-scripts && npm run build`.
-
-**1. Programs on this machine** (ffmpeg, ffprobe, poppler, LibreOffice: the versions a host really has, not CI's).
-
-- **When:** the diff touches `packages/pi-vision/src/core/{read,readers,video,pdf,office,derive,image}.ts`,
-  `packages/pi-vision/src/providers/**`, `packages/pi-vision/src/node.ts`, `packages/pi-vision/test/binaries/**` or
-  `packages/pi-vision/package.json`.
-- **Command:**
-
-  ```bash
-  npm run test:binaries -w @parcha/pi-vision
-  ```
-
-- **Pass:** exit code 0 and `# fail 0` in its summary. A skip is allowed only for a program the machine does not
-  have, and the body names it (for example "LibreOffice absent: 1 skipped"). A missing ffmpeg, ffprobe or poppler is a
-  fail, not a skip.
-- **Needs:** ffmpeg and ffprobe, poppler-utils, optionally LibreOffice (`soffice`) on PATH. No key. Cost: $0.
-
-**2. Real eyes** (a few paid looks through pi-ai, the path no fake covers).
-
-- **When:** the diff touches `packages/pi-vision/src/eyes/**`, `src/core/guard.ts`, `src/core/evidence.ts`,
-  `src/core/limits.ts`, `src/core/see.ts`, `src/core/plan.ts`, `src/durable.ts`, or the `@earendil-works/*` peer or
-  dev ranges in `packages/pi-vision/package.json`.
-- **Command:**
-
-  ```bash
-  node packages/pi-vision/test/live/eyes.mjs
-  ```
-
-  It reads `PI_VISION_LIVE_EYES` (`<provider>/<model id>`, the public id pi-ai's catalog uses) and that provider's
-  key from the variable pi-ai itself reads; `PI_VISION_LIVE_BASE_URL` points it at a gateway when the machine has one
-  (a machine fact: it goes in `local.md`). It refuses to run without them. It makes four checks, each printed as a
-  numbered line: `scanned letter` (a synthetic scan built by `./testing`, whose identifier the eyes must read exactly);
-  `page 2` (a two-page PDF through `read` with `page`); `vision.see` (the same letter asked by path through the
-  code-mode global: exact identifier, one look filed, a price above 0); and `receipts` (every paid look has `cost_usd`
-  as a number and tokens above 0, and a forced no-eyes miss has `cost_usd: 0`).
-- **Pass:** exit code 0 and a last stdout line that starts with `ok: pi-vision live eyes passed`. Anything else
-  blocks: a non-zero exit, a last line `not ok: <step>: <reason>`, or no last line. Put the summary it prints (model,
-  read rate, tokens, dollars) in the pull request body.
-- **Needs:** one key for an eyes route that takes images. Use a model that reads identifiers reliably; the package's
-  eyes bench measured some routes dropping digits, and this check would then fail as designed.
-- **Cost:** about $0.01 a run.
+- **Cost:** the Chrome suites and the stranger spec are $0.
 
 ## Step 5: CI and threads
 

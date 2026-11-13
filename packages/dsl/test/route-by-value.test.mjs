@@ -1,12 +1,10 @@
 // A route either lets Jev choose a branch (instructions + state) or reads a choice the workflow already
 // holds (valuePath). The value form asks no model, coerces nothing into a branch name, takes `otherwise`
 // for a missing or unknown name and fails before any branch without one.
+import { candidatePolicyErrors } from '../dist/author.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {
-  runWorkflow, runWorkflowSlice, validateWorkflow, inspectWorkflow, candidatePolicyErrors,
-  declaredWrites, dryRunWorkflow, WorkflowStateError, routesByValue,
-} from '../dist/index.js';
+import { runWorkflow, runWorkflowSlice, validateWorkflow, inspectWorkflow, declaredWrites, dryRunWorkflow, WorkflowStateError, routesByValue } from '../dist/index.js';
 
 const effect = name => ({ node: 'call', label: name, via: 'tool', tool: name, args: { selection: '{applied}' }, out: 'Any', as: 'result', deadline_s: 30 });
 const route = { node: 'route', label: 'apply', valuePath: 'policy.action', as: 'applied', branches: {

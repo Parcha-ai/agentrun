@@ -6,7 +6,7 @@ import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { flowAgent, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
+import { flowAgent, follow, scratch, serve, withEnv } from "./support.mjs";
 import * as refusal from "../dist/key-refusal.js";
 
 const CUT_KEY = `not-a-secret-${"cut-key-0123456789abcdef"}`;
@@ -37,30 +37,48 @@ const flow = (second) => ({
 });
 
 async function graphed(t, id, second, extra = {}, cleared = []) {
-  withEnv(t, { AGENT_MODEL: "openai/gpt-6-sol", OPENAI_API_KEY: CUT_KEY, ...extra }, [...NAMES, ...Object.keys(extra), ...cleared]);
-  const { api } = await serve(t);
+  withEnv(t, { AGENT_MODEL: "openai/gpt-6.1-sol", OPENAI_API_KEY: CUT_KEY, ...extra }, [...NAMES, ...Object.keys(extra), ...cleared]);
+  const { api, data } = await serve(t);
   assert.equal((await api("POST", "/agents", flowAgent(id, flow(second), { tools: ["llm"] }))).status, 201);
   const started = await api("POST", `/agents/${id}/runs`, { input: { question: "x" } });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   await follow(api, started.body.run_id, ["completed", "failed"], { deadlineMs: 50_000 });
-  return { api, runId: started.body.run_id };
+  return { api, data, runId: started.body.run_id };
 }
 
 test("a workflow run's graph shows its llm call's output and a failed call's error with the held key redacted, 0 times whole or in part", { timeout: 60_000 }, async (t) => {
-  const { api, runId } = await graphed(t, "graph-keyed", true);
+  const { api, data, runId } = await graphed(t, "graph-keyed", true);
   const graph = (await api("GET", `/runs/${runId}/graph`)).body;
   assert.deepEqual(graph.effects.map((e) => [e.tool, e.status]), [["llm", "done"], ["llm", "failed"]], JSON.stringify(graph.effects.map((e) => [e.tool, e.status, e.error])));
   noKey(JSON.stringify(graph), "the graph");
+  // Cut at write too: the node log the graph reads keeps no part of the key in the store.
+  const db = new DatabaseSync(join(data, "store.sqlite"), { readOnly: true, timeout: 5_000 });
+  t.after(() => db.close());
+  const logged = db.prepare("SELECT record FROM pi_entries WHERE run_id = ?").all(runId).map((row) => String(row.record)).filter((record) => record.includes("agentrun.node.effect"));
+  assert.equal(logged.length, 4, "each call's start and end are on the node log");
+  noKey(logged.join("\n"), "the node log in the store");
   assert.equal(graph.effects[0].output.text, `Graph: [redacted] here, and ${LATER} too.`);
   assert.match(graph.effects[1].error, /\[redacted\]/, graph.effects[1].error);
 });
 
 test("a workflow run's graph is redacted once per held key set: a second read reads nothing again, and a key saved after redacts on the next read", { timeout: 60_000 }, async (t) => {
   const { api, runId } = await graphed(t, "graph-again", false, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, ["PARALLEL_API_KEY"]);
-  await api("GET", `/runs/${runId}/graph`);
-  const read = refusal.answerPasses.count;
-  const second = (await api("GET", `/runs/${runId}/graph`)).body;
-  assert.equal(refusal.answerPasses.count, read, "the second read redacted nothing again");
+  // A read of the same graph with the same held set redacts nothing again. The count is the process's own: on a loaded
+  // machine the run's view can still settle after it reads ended (a field that changes is a new part, cut once), and the
+  // runner beside the server shares the count. So the graph is read again until one read redacts nothing; a graph that
+  // is cut on every read never gets there.
+  let before = (await api("GET", `/runs/${runId}/graph`)).body;
+  let second;
+  for (const end = Date.now() + 20_000; ; ) {
+    const read = refusal.answerPasses.count;
+    second = (await api("GET", `/runs/${runId}/graph`)).body;
+    const passes = refusal.answerPasses.count - read;
+    if (passes === 0) break;
+    const changed = Object.keys(second).filter((key) => key !== "read_at" && JSON.stringify(second[key]) !== JSON.stringify(before[key]));
+    assert.ok(Date.now() < end, `every read of the graph redacted again (${passes} passes on the last, its changed fields: ${JSON.stringify(changed)})`);
+    before = second;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
   assert.equal(second.effects[0].output.text, `Graph: [redacted] here, and ${LATER} too.`);
   assert.equal((await api("PUT", "/settings/tool-keys/parallel", { values: { PARALLEL_API_KEY: LATER } })).status, 204);
   const third = (await api("GET", `/runs/${runId}/graph`)).body;
@@ -94,7 +112,7 @@ const judged = {
  *  judge saw the key in its state. */
 async function judgedRun(t, item = CUT_KEY) {
   const calls = join(await scratch(t), "decisions.jsonl");
-  withEnv(t, { AGENT_MODEL: "openai/gpt-6-sol", OPENAI_API_KEY: CUT_KEY, TYPESAFE_API_KEY: STAND_IN, AGENTRUN_SMOKE_DECISION_CALLS: calls, AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, [...NAMES, "PARALLEL_API_KEY"]);
+  withEnv(t, { AGENT_MODEL: "openai/gpt-6.1-sol", OPENAI_API_KEY: CUT_KEY, TYPESAFE_API_KEY: STAND_IN, AGENTRUN_SMOKE_DECISION_CALLS: calls, AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, [...NAMES, "PARALLEL_API_KEY"]);
   const { api, data } = await serve(t, { fauxJev: FAUX_DECISIONS });
   assert.equal((await api("POST", "/agents", flowAgent("graph-judged", judged, { tools: ["llm"] }))).status, 201);
   const started = await api("POST", "/agents/graph-judged/runs", { input: { question: `Is ${CUT_KEY} a question?`, items: [`${"x".repeat(190)}${item}`] } });
@@ -103,12 +121,13 @@ async function judgedRun(t, item = CUT_KEY) {
   return { api, data, runId: started.body.run_id };
 }
 
-/** The run's store held by another connection, as a run's own process holds it: an exclusive locking mode, which lets
- *  no locking reader in. The graph's read takes no lock (run-db.ts), so it never waits on it. */
+/** The one store held by another connection, as a runner mid-commit holds it: the write lock taken (BEGIN IMMEDIATE) and a
+ *  read open on the run's journal inside it. The graph reads the store in its own connection (WAL), so a held writer never
+ *  makes it wait or serve a stale view. */
 function hold(t, data, runId) {
-  const store = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { timeout: 0 });
-  store.exec("PRAGMA locking_mode=EXCLUSIVE; BEGIN EXCLUSIVE");
-  store.prepare("SELECT count(*) FROM sqlite_master").get();
+  const store = new DatabaseSync(join(data, "store.sqlite"), { timeout: 0 });
+  store.exec("BEGIN IMMEDIATE");
+  store.prepare("SELECT count(*) FROM pi_entries WHERE run_id = ?").get(runId);
   const release = () => store.isOpen && (store.isTransaction && store.exec("ROLLBACK"), store.close());
   t.after(release);
   return release;
@@ -143,7 +162,7 @@ test("a graph read while another connection holds the run's store: read whole an
 
 test("a call's error and a decision's state, each long enough to be cut, with the held key across the cut: the graph shows no part of it", { timeout: 60_000 }, async (t) => {
   const calls = join(await scratch(t), "decisions.jsonl");
-  withEnv(t, { AGENT_MODEL: "openai/gpt-6-sol", OPENAI_API_KEY: CUT_KEY, TYPESAFE_API_KEY: STAND_IN, AGENTRUN_SMOKE_DECISION_CALLS: calls }, [...NAMES, "PARALLEL_API_KEY"]);
+  withEnv(t, { AGENT_MODEL: "openai/gpt-6.1-sol", OPENAI_API_KEY: CUT_KEY, TYPESAFE_API_KEY: STAND_IN, AGENTRUN_SMOKE_DECISION_CALLS: calls }, [...NAMES, "PARALLEL_API_KEY"]);
   const { api } = await serve(t, { fauxJev: FAUX_DECISIONS });
   // A judge's state past 64 KB is kept cut (state_truncated); the key repeats, so a copy sits across that cut too.
   const flow = {

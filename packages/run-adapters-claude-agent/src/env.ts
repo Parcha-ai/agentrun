@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-claude-code/src/env.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, patches: 002-names, 008-tool-description-max, 016-mcp-output-tokens
+// Changed by Parcha, and AgentRun's own since the port from upstream froze on 2026-11-07.
 /**
  * The durable environment of the `claude` CLI in the session's VM
  * (docs/workspaces.md §5.6 "Env"). It replaces the parent's environment
@@ -126,8 +126,8 @@ export function durableEnv(options: DurableEnvOptions): Record<string, string> {
 }
 
 /**
- * A Gateway model id (`anthropic/claude-sonnet-4.5`) as the native id the
- * CLI knows (`claude-sonnet-4-5`). The Gateway accepts both; with a Gateway
+ * A Gateway model id (`anthropic/claude-sonnet-5.5`) as the native id the
+ * CLI knows (`claude-sonnet-5-5`). The Gateway accepts both; with a Gateway
  * id the CLI logs `unrecognized_model` and does not know the model's limits.
  * Ids that are not Anthropic Gateway ids come back unchanged.
  */

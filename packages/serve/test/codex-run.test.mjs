@@ -3,18 +3,18 @@
 // catalog, and the stand-in, Codex's own process, runs under the run's confinement: setpriv's no_new_privs, as pi's
 // commands do, under the same user.
 import assert from "node:assert/strict";
-import { copyFile, readdir, readFile, readlink } from "node:fs/promises";
+import { readdir, readFile, readlink } from "node:fs/promises";
 import { createServer } from "node:http";
 import { existsSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { fileURLToPath } from "node:url";
-import { agent, follow, runDir, runRecordOf, scratch, serve } from "./support.mjs";
+import { agent, follow, scratch, scratchDir, serve, serverLog } from "./support.mjs";
+import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
 
 /** The gateway's key in these tests: no real one. */
 const GATEWAY_KEY = `not-a-secret-${"gateway"}`;
-const STAND_IN = fileURLToPath(new URL("../../run-adapters-codex/test/fake-app-server.mjs", import.meta.url));
 
 /** serve's gateway, on loopback: each Responses request streamed back as one short answer with its usage, once the
  *  test lets it go. */
@@ -55,7 +55,7 @@ const field = (status, name) => new RegExp(`^${name}:\\s+(.*)$`, "m").exec(statu
 async function codexServe(t, gw, model = "gpt-test") {
   const dir = await scratch(t);
   const standIn = join(dir, "codex-stand-in.mjs");
-  await copyFile(STAND_IN, standIn);
+  await copyStandIn(standIn);
   const saved = { ...process.env };
   t.after(() => {
     for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
@@ -110,7 +110,7 @@ test("a run on codex goes through the adapter's proxy to serve's gateway, priced
   assert.ok(child, "Codex's process runs");
   assert.equal(field(child.status, "NoNewPrivs"), "1", "under setpriv --no-new-privs, as pi's commands are");
   assert.equal(field(child.status, "Uid")?.split(/\s+/)[0], String(process.getuid()), "as the run's own user");
-  assert.equal(await readlink(`/proc/${child.pid}/cwd`), realpathSync(join(runDir(data, run.body.run_id), "work")), "in the run's workspace, where its file tools write");
+  assert.equal(await readlink(`/proc/${child.pid}/cwd`), realpathSync(scratchDir(data, run.body.run_id)), "in the run's scratch folder, the alias of its workspace that its file tools take (cli-run-spec.ts)");
   gw.release();
   const { rows } = await follow(api, run.body.run_id, ["completed"], { deadlineMs: 60_000 });
   assert.equal(gw.seen[0].path, "/v1/responses");
@@ -151,40 +151,17 @@ test("behind a gateway, a codex agent naming no model runs on AGENT_MODEL as the
   assert.equal(gw.seen[0].body.model, "team/model", "the gateway gets its own id, as configured");
 });
 
-/** Whether `pid` still runs: a zombie, waiting to be reaped, does not. */
-const alive = processAlive;
-
-test("a codex run whose process dies while its request is in flight leaves no Codex process behind", { timeout: 120_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
-  const gw = await gateway(t);
-  const { api, standIn, data } = await codexServe(t, gw);
-  const run = await api("POST", "/agents/coder/runs", { input: { content: "Say what you did." } });
-  assert.equal(run.status, 202, JSON.stringify(run.body));
-  for (let i = 0; gw.seen.length === 0; i++) {
-    assert.ok(i < 300, "the turn's model request reaches the gateway");
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  const child = await processOf(standIn);
-  assert.ok(child, "Codex's process runs");
-  t.after(() => alive(child.pid) && process.kill(child.pid, "SIGKILL"));
-  const { holder } = runRecordOf(data, run.body.run_id);
-  process.kill(holder.pid, "SIGKILL");
-  for (let i = 0; alive(child.pid); i++) {
-    assert.ok(i < 20, `the dead process's Codex (pid ${child.pid}) is gone within 2 s`);
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-});
-
 /** This test's own caller, by its user-agent. */
 const PROBE_AGENT = "serve-log-test";
 /** A value no log may carry, sent as a bearer and in a query string. */
 const CANARY = `not-a-secret-${"canary"}-0f3c9a`;
 
-test("a codex run's model proxy reports a refusal in the run's log: one harness line, with no key in it, neither the one sent nor serve's own", { timeout: 90_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+test("a codex run's model proxy reports a refusal in the server's log: one harness line, with no key in it, neither the one sent nor serve's own", { timeout: 90_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+  const server = serverLog(t);
   const gw = await gateway(t);
   const { api, data, standIn } = await codexServe(t, gw);
   const run = await api("POST", "/agents/coder/runs", { input: { content: "Say what you did." } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
-  const dir = join(runDir(data, run.body.run_id));
   // Codex's own request, not another local process calling the gateway's port.
   for (let i = 0; !gw.seen.some((s) => s.path?.startsWith("/v1/")); i++) {
     assert.ok(i < 300, "the turn's model request reaches the gateway");
@@ -201,10 +178,10 @@ test("a codex run's model proxy reports a refusal in the run's log: one harness 
   assert.equal(refused.status, 401, "a caller without the session's key is refused");
   gw.release();
   await follow(api, run.body.run_id, ["completed"], { deadlineMs: 60_000 });
-  const log = await readFile(join(dir, "process.log"), "utf8");
+  const log = server.text();
   const lines = log.split("\n").filter(Boolean).map((line) => { try { return JSON.parse(line); } catch { return { line }; } });
   // Only this test's own request: another local process may call any loopback port, and is refused (and said) too.
   const said = lines.filter((l) => l.event === "harness" && /^model proxy \(.+\): refused$/.test(l.message ?? "") && l.userAgent === PROBE_AGENT);
-  assert.deepEqual(said.map((l) => [l.harness, l.status, l.method, l.path]), [["codex", 401, "GET", "/"]], `the refusal, once, in the run's log: ${log}`);
-  for (const secret of [CANARY, GATEWAY_KEY]) assert.ok(!log.includes(secret), `${secret} is not in the run's log`);
+  assert.deepEqual(said.map((l) => [l.harness, l.status, l.method, l.path]), [["codex", 401, "GET", "/"]], `the refusal, once, in the server's log: ${log}`);
+  for (const secret of [CANARY, GATEWAY_KEY]) assert.ok(!log.includes(secret), `${secret} is not in the server's log`);
 });

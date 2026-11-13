@@ -1,20 +1,21 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { LiveRun } from "./LiveRun";
+import { cost } from "@/lib/format";
 import type { Run, TimelinePage } from "@/lib/v2";
 
 // Archive's answer can describe the run as it was before a newer read landed: the page keeps the newer state and takes
 // only archived_at from the answer, then reads the run again.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: ReturnType<typeof createRoot> | undefined;
-afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
+afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; vi.useRealTimers(); });
 
-const at = (status: Run["status"], archived: boolean): Run => ({
+const at = (status: Run["status"], archived: boolean): Run => ({ sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0, place: { mode: "runner" },
   run_id: "r1", agent_id: "calc", agent_version: 1, revision: "rv1", kind: "agentic", status, state: status === "working" ? "working" : "idle", title: "What is two and two?",
-  created_at: "2026-10-30T06:00:00Z", ended_at: status === "working" ? null : "2026-10-30T06:00:03Z", result: null, error: null, cost: null, archived_at: archived ? "2026-11-01T07:00:00Z" : null,
+  created_at: "2026-10-30T06:00:00Z", ended_at: status === "working" ? null : "2026-10-30T06:00:03Z", result: null, error: null, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, archived_at: archived ? "2026-11-01T07:00:00Z" : null,
 });
-const final = (status: Run["status"]): TimelinePage => ({ run_id: "r1", status, state: "idle", rows: [], drop: [], reset: true, unchanged: false, final: true, has_more: false, next_after: 1 });
+const final = (status: Run["status"]): TimelinePage => ({ cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, run_id: "r1", status, state: "idle", rows: [], drop: [], reset: true, unchanged: false, final: true, has_more: false, next_after: 1 });
 
 describe("LiveRun's Archive", () => {
   it("an answer that says the run still works never puts back a state the page has read since; the run is read again", async () => {
@@ -49,7 +50,7 @@ describe("LiveRun's Archive", () => {
 describe("LiveRun, a run whose learning is still deciding", () => {
   it("reads the ended run again until its learning is kept, then shows Learned 1 note", async () => {
     let reads = 0;
-    const learning = (n: number): Run["learning"] => (n < 3 ? { state: n < 2 ? "reflecting" : "proposed", reason: null } : { state: "merged", reason: null, learned: [{ file: "b.md", name: "Try it first", supersedes: [] }] });
+    const learning = (n: number): Run["learning"] => (n < 3 ? { detail: null, at: "2026-11-03T16:52:09Z", state: n < 2 ? "reflecting" : "proposed", reason: null } : { detail: null, at: "2026-11-03T16:52:09Z", state: "merged", reason: null, learned: [{ file: "b.md", name: "Try it first", supersedes: [] }] });
     const v2 = {
       getRun: async () => ({ ...at("completed", false), learning: learning(++reads) }),
       listFiles: async () => ({ run_id: "r1", files: [], complete: true, truncated: false }),
@@ -76,13 +77,13 @@ describe("LiveRun, a run whose learning is still deciding", () => {
 describe("LiveRun, its header and its timeline", () => {
   it("reads the timeline again when the run's learning moves: the look-back's step and the header agree", async () => {
     let reads = 0, timelines = 0;
-    const learning = (n: number): Run["learning"] => (n < 3 ? { state: n < 2 ? "reflecting" : "proposed", reason: null } : { state: "merged", reason: null, learned: [{ file: "b.md", name: "Try it first", supersedes: [] }] });
+    const learning = (n: number): Run["learning"] => (n < 3 ? { detail: null, at: "2026-11-03T16:52:09Z", state: n < 2 ? "reflecting" : "proposed", reason: null } : { detail: null, at: "2026-11-03T16:52:09Z", state: "merged", reason: null, learned: [{ file: "b.md", name: "Try it first", supersedes: [] }] });
     // The run's learning row, as the server has it at each read of the timeline: it moves in place.
     const ending = (): TimelinePage["rows"] => {
       const merged = reads >= 3;
       const detail = merged ? "Learned: Try it first" : "Checking 1 new note…";
       return [
-        { id: "l1", seq: 1, kind: "user_message", agent_label: "learning", summary: "Looking back on this run.", text: "Looking back on this run.", timestamp: "2026-10-30T06:00:04Z", tool_name: null },
+        { created_at: "2026-10-28T19:33:16.118Z", tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null, id: "l1", seq: 1, kind: "user_message", agent_label: "learning", summary: "Looking back on this run.", text: "Looking back on this run.", timestamp: "2026-10-30T06:00:04Z", tool_name: null },
         { id: "learning", seq: 2, kind: "learning", agent_label: "learning", summary: detail, text: detail, timestamp: "2026-10-30T06:00:05Z", tool_name: null, learning: { state: merged ? "merged" : "proposed", reason: null, detail } } as TimelinePage["rows"][number],
       ];
     };
@@ -109,37 +110,6 @@ describe("LiveRun, its header and its timeline", () => {
     expect(step.querySelector("pre")!.textContent).not.toContain("Checking 1 new note");
     expect(timelines).toBeGreaterThan(1);
   }, 15_000);
-});
-
-// With one row per action, a call's row changes in place, and no result row follows it: the files are read again when a
-// call's row stops running, as they are when an older server's result row lands.
-describe("LiveRun, one row per action", () => {
-  it("reads the files again when an action's row stops running, and not while it runs", async () => {
-    const call = (status: "running" | "success") => ({ id: "c1", seq: 1, kind: "tool_use", summary: status === "running" ? "Wrote one.md" : "Wrote one.md: ok", text: null, timestamp: "2026-10-30T06:00:01Z", tool_name: "write", tool_use_id: "t1", tool_status: status, path: "one.md" });
-    const page = (rows: unknown[], reset: boolean): TimelinePage => ({ run_id: "r1", status: "working", state: "working", rows: rows as TimelinePage["rows"], drop: [], reset, unchanged: false, final: false, has_more: false, next_after: 2 });
-    const reads: Record<string, number> = {};
-    for (const ends of [true, false]) {
-      let files = 0, pages = 0;
-      const v2 = {
-        getRun: async () => at("working", false),
-        listFiles: async () => { files++; return { run_id: "r1", files: [], complete: true, truncated: false }; },
-        // The call runs, then (or not) ends under the same id; after that, the follow waits.
-        getTimeline: () => (++pages === 1 ? Promise.resolve(page([call("running")], true)) : pages === 2 ? Promise.resolve(page([call(ends ? "success" : "running")], false)) : new Promise<TimelinePage>(() => {})),
-        listRevisions: async () => ({ revisions: [], next_cursor: null }),
-      };
-      const host = document.body.appendChild(document.createElement("div"));
-      root = createRoot(host);
-      act(() => root!.render(createElement(LiveRun, { v2: v2 as never, runId: "r1", caps: null, agentName: () => "Calc" })));
-      // Until the follow has asked past the call's end (its third read), then a moment for the files read to land.
-      for (let i = 0; i < 150 && pages < 3; i++) await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
-      for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
-      expect(pages, `ends ${ends}`).toBeGreaterThanOrEqual(3);
-      reads[String(ends)] = files;
-      act(() => root?.unmount()); root = undefined;
-    }
-    // The same reads either way, and one more when the action ended.
-    expect(reads.true).toBe(reads.false! + 1);
-  });
 });
 
 // A run paused at its spend cap is raised from its page: one PATCH with the server's suggested cap prefilled, then
@@ -173,5 +143,188 @@ describe("LiveRun, a run paused at its spend cap", () => {
     expect(reads).toBeGreaterThan(before);
     expect(host.textContent).not.toContain("Paused at its $0.05 spend cap");
     expect(host.querySelector('input[aria-label="New cap in dollars"]')).toBeNull();
+  });
+});
+
+// A working run's header says its cost of its cap; a raise reads the run again, and the header says the raised cap,
+// though the timeline page followed before the raise still carried the old one.
+describe("LiveRun, a working run's cap in its header", () => {
+  it("reads $0.0059 est. of $1.00, then, after Raise the cap to 2, $0.0059 est. of $2.00", async () => {
+    let cap = 1;
+    const costAt = () => ({ usd: 0.0059, basis: "estimate" as const, charge_state: null, cap_usd: cap });
+    const v2 = {
+      getRun: async () => ({ ...at("working", false), cost: costAt() }),
+      listFiles: async () => ({ run_id: "r1", files: [], complete: true, truncated: false }),
+      // Each follow's first page carries the cost (and cap) as it stands when it was read; the next read waits, as a
+      // long poll does.
+      getTimeline: async (_id: string, { signal }: { signal?: AbortSignal } = {}) => {
+        if (signal && read.has(signal)) return new Promise<never>(() => {});
+        if (signal) read.add(signal);
+        return { ...final("working"), status: "working" as const, state: "working", final: false, cost: costAt() };
+      },
+      listRevisions: async () => ({ revisions: [], next_cursor: null }),
+      raiseCap: async (id: string, usd: number) => { cap = usd; return { run_id: id, max_cost_usd: usd, resumed: false, status: "working", state: "working" }; },
+    };
+    // The follows whose first page was read: each follow has its own signal.
+    const read = new WeakSet<AbortSignal>();
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(LiveRun, { v2: v2 as never, runId: "r1", caps: null, agentName: () => "Calc" })));
+    const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
+    await settle();
+    expect(host.querySelector("header")?.textContent).toContain("$0.0059 est. of $1.00");
+    await act(async () => { [...host.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Raise the cap")!.click(); });
+    const input = host.querySelector('input[aria-label="New cap in dollars"]') as HTMLInputElement;
+    await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "2"); input.dispatchEvent(new Event("input", { bubbles: true })); });
+    await act(async () => { (host.querySelector('form[aria-label="Raise the cap"] button[type="submit"]') as HTMLButtonElement).click(); });
+    await settle();
+    expect(host.querySelector("header")?.textContent).toContain("$0.0059 est. of $2.00");
+    expect(host.querySelector("header")?.textContent).not.toContain("of $1.00");
+  });
+});
+
+// A working run's cost moves with each priced request: every timeline page carries the run's cost as it stands, and the
+// header follows the newest page's, never the first read's (made before any priced request) until the run ends.
+describe("LiveRun, a working run's cost", () => {
+  it("the header reads the newest timeline page's cost while the run works, not the first read's $0", async () => {
+    const zero = { usd: 0, basis: "estimate", charge_state: null, cap_usd: null };
+    const priced = { usd: 0.0126, basis: "estimate", charge_state: null, cap_usd: null };
+    let pages = 0;
+    const v2 = {
+      // Every read of the run says working; the first one was made before any priced request, so it says $0.
+      getRun: async () => ({ ...at("working", false), cost: zero }),
+      listFiles: async () => ({ run_id: "r1", files: [], complete: true, truncated: false }),
+      // The first page carries the cost as it stands now; the follow-up read then waits, as a long poll does.
+      getTimeline: async (_id: string, o: { signal?: AbortSignal }) => (++pages === 1
+        ? { cost: priced, run_id: "r1", status: "working", state: "working", rows: [], drop: [], reset: true, unchanged: false, final: false, has_more: false, next_after: 0 } as unknown as TimelinePage
+        : new Promise<TimelinePage>((_, reject) => o.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true }))),
+      listRevisions: async () => ({ revisions: [], next_cursor: null }),
+    };
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(LiveRun, { v2: v2 as never, runId: "r1", caps: null, agentName: () => "Calc" })));
+    const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
+    await settle();
+    const header = () => host.querySelector("header")?.textContent ?? "";
+    expect(header()).toContain("Working");
+    expect(pages).toBeGreaterThanOrEqual(1);
+    // In the header's own words for each figure: the page's $0.0126, never the first read's $0.
+    expect(cost(priced as Run["cost"])).not.toBe(cost(zero as Run["cost"]));
+    expect(header()).toContain(cost(priced as Run["cost"]));
+    expect(header()).not.toContain(cost(zero as Run["cost"]));
+  });
+  it("follows each later page's cost while the run works, then the run's own read once it ends", async () => {
+    // Fake timers: the follow loop's pause between reads is stepped through, never waited for.
+    vi.useFakeTimers();
+    const at$ = (usd: number) => ({ usd, basis: "estimate", charge_state: null, cap_usd: null });
+    const page = (usd: number, status: Run["status"]) => ({ cost: at$(usd), run_id: "r1", status, state: status === "working" ? "working" : "idle", rows: [], drop: [], reset: false, unchanged: false, final: status !== "working", has_more: false, next_after: 0 }) as unknown as TimelinePage;
+    // The pages, one per read: the test hands each out in turn.
+    const waiting: ((p: TimelinePage) => void)[] = [];
+    let ended = false;
+    const v2 = {
+      getRun: async () => (ended ? { ...at("completed", false), cost: at$(0.08) } : { ...at("working", false), cost: at$(0) }),
+      listFiles: async () => ({ run_id: "r1", files: [], complete: true, truncated: false }),
+      getTimeline: () => new Promise<TimelinePage>((resolve) => { waiting.push(resolve); }),
+      listRevisions: async () => ({ revisions: [], next_cursor: null }),
+    };
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(LiveRun, { v2: v2 as never, runId: "r1", caps: null, agentName: () => "Calc" })));
+    const step = async (ms: number) => { await act(async () => { await vi.advanceTimersByTimeAsync(ms); }); };
+    const header = () => host.querySelector("header")?.textContent ?? "";
+    // The follow loop keeps a short pause between reads: step past it until it asks for the next page, then hand that one out.
+    const hand = async (p: TimelinePage) => {
+      for (let i = 0; i < 20 && !waiting.length; i++) await step(50);
+      expect(waiting.length).toBeGreaterThan(0);
+      waiting.shift()!(p);
+      for (let i = 0; i < 5; i++) await step(0);
+    };
+    await hand(page(0.0126, "working"));
+    expect(header()).toContain(cost(at$(0.0126) as Run["cost"]));
+    await hand(page(0.05, "working"));
+    expect(header()).toContain(cost(at$(0.05) as Run["cost"]));
+    expect(header()).not.toContain(cost(at$(0.0126) as Run["cost"]));
+    // The run ends: its own read (at its end) has the final figure, which the header shows, not the last page's.
+    ended = true;
+    await hand(page(0.09, "completed"));
+    expect(header()).toContain("Completed");
+    expect(header()).toContain(cost(at$(0.08) as Run["cost"], { ended: true }));
+    expect(header()).not.toContain(cost(at$(0.09) as Run["cost"]));
+  });
+});
+
+describe("LiveRun, a run that moves from one wait to the next", () => {
+  // A hand-back answers the agent's browser ask, and the agent asks its next question at once: the run is input_required
+  // and waiting before and after, and a timeline read (the server samples the run about once a second) can miss the
+  // working moment between. The page's new rows are what say the wait moved: the run is read again, so the hand-over's
+  // card goes and the question takes its place. The page carries no `pending` of its own.
+  const browserAsk = { kind: "browser", instruction: "Sign in with your own account", completion_condition: "the page shows you are signed in", asked_at: "2026-11-10T07:35:40Z", expires_at: "2026-11-10T07:50:40Z" };
+  const question = { kind: "question", question: "Shall I go on?", asked_at: "2026-11-10T07:35:43Z" };
+  const row = (id: number, kind: string, summary: string) => ({ id: `e${id}`, seq: id, kind, summary, timestamp: "2026-11-10T07:35:40Z" } as never);
+  const page = (next: number, rows: TimelinePage["rows"], { status = "input_required", state = "waiting", unchanged = false }: { status?: Run["status"]; state?: Run["state"]; unchanged?: boolean } = {}): TimelinePage =>
+    ({ cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, run_id: "r1", status, state, rows, drop: [], reset: next === 1, unchanged, final: false, has_more: false, next_after: next });
+
+  /** The run page over a run the test moves: `run()` is what each read of it gives, and each timeline read takes the next
+   *  page `push` gives (the long poll waits for one). `reads()`, how many times the run was read. */
+  async function mounted(run: () => Run, first: TimelinePage) {
+    let reads = 0;
+    const pages: TimelinePage[] = [first];
+    let waiter: ((next: TimelinePage) => void) | undefined;
+    const push = (next: TimelinePage) => { if (waiter) { const take = waiter; waiter = undefined; take(next); } else pages.push(next); };
+    const v2 = {
+      getRun: async () => { reads++; return run(); },
+      listFiles: async () => ({ run_id: "r1", files: [], complete: true, truncated: false }),
+      listRevisions: async () => ({ revisions: [], next_cursor: null }),
+      getTimeline: (_id: string, options?: { signal?: AbortSignal }) => {
+        const next = pages.shift();
+        if (next) return Promise.resolve(next);
+        return new Promise<TimelinePage>((resolve, reject) => { waiter = resolve; options?.signal?.addEventListener("abort", () => reject(new Error("aborted"))); });
+      },
+    };
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(LiveRun, { v2: v2 as never, runId: "r1", caps: null, agentName: () => "Drive" })));
+    const settle = async () => { for (let i = 0; i < 12; i++) await act(async () => { await new Promise((r) => setTimeout(r, 40)); }); };
+    await settle();
+    return { host, push, settle, reads: () => reads };
+  }
+  const waitingOn = (pending: unknown): Run => ({ ...at("working", false), status: "input_required", state: "waiting", ended_at: null, pending } as never);
+
+  it("reads the run again when a page brings new rows while it waits, though its status and state are the same", async () => {
+    let moved = false;
+    const page1 = mounted(() => waitingOn(moved ? question : browserAsk), page(1, [row(1, "waiting", "Waiting for you: the hand-over")]));
+    const { host, push, settle, reads } = await page1;
+    expect(host.textContent).toContain("Sign in with your own account");
+    const before = reads();
+    // The person hands back; the agent asks its question. The next page: the same status and state, new rows (the
+    // question's waiting row among them, as the server serves it after the call's result).
+    moved = true;
+    push(page(4, [row(2, "phase", "You handed the browser back"), row(3, "tool_use", "Asked you a question"), { id: "e4", seq: 4, kind: "waiting", summary: "Waiting for you: Shall I go on?", text: "Shall I go on?", timestamp: "2026-11-10T07:35:43Z" } as never]));
+    await settle();
+    expect(reads()).toBeGreaterThan(before);
+    // The hand-over's card is gone, and the agent's question shows where the person answers it.
+    expect(host.textContent).not.toContain("Sign in with your own account");
+    const asks = host.querySelector('section[aria-label="The agent asks"]');
+    expect(asks?.textContent).toContain("Shall I go on?");
+  });
+
+  it("an unchanged page while the run waits reads nothing again", async () => {
+    const { push, settle, reads } = await mounted(() => waitingOn(browserAsk), page(1, [row(1, "waiting", "Waiting for you: the hand-over")]));
+    const before = reads();
+    // The long poll ran out with nothing new: the same status and state, no rows, unchanged.
+    push(page(1, [], { unchanged: true }));
+    await settle();
+    expect(reads()).toBe(before);
+  });
+
+  it("a status or state change still reads the run again, whatever the rows", async () => {
+    let working = false;
+    const { push, settle, reads } = await mounted(() => (working ? { ...at("working", false), state: "working", pending: null } as never : waitingOn(browserAsk)), page(1, [row(1, "waiting", "Waiting for you: the hand-over")]));
+    const before = reads();
+    // Answered: the run works again. The page names the new status and state, with nothing new in its rows.
+    working = true;
+    push(page(1, [], { status: "working", state: "working", unchanged: true }));
+    await settle();
+    expect(reads()).toBeGreaterThan(before);
   });
 });

@@ -1,13 +1,9 @@
 // A workflow revision's run: the workflow runs in the run's process on the DSL's durable runner, its model nodes on the
 // run's model, and the run is read from its store once its process has exited.
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
 import { test } from "node:test";
-import { DatabaseSync } from "node:sqlite";
-import { readWorkflowRun } from "@parcha/pi-durable-agent/workflow";
 import { startServe } from "../dist/index.js";
-import { answerFlow, client, FAUX, flowAgent, follow, runDir, serve, storeRun } from "./support.mjs";
+import { answerFlow, client, FAUX, flowAgent, follow, journalOf, runDir, serve, storeRun, withEnv } from "./support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 
 const start = async (api, id, input, workflow = answerFlow()) => {
@@ -29,24 +25,23 @@ test("a workflow run executes its model node and completes with the workflow's o
   assert.deepEqual([run.status, run.kind, run.result, run.review], ["completed", "workflow", { output: { answer: 42 }, final_answer: null }, null], "a run that did not escalate has no review");
   const row = storeRun(data, started.run_id);
   assert.deepEqual([row.state, row.kind, row.summary], ["completed", "workflow", "answer"]);
-  const view = await readWorkflowRun({ runId: started.run_id, storePath: join(runDir(data, started.run_id), "store", "run.sqlite"), revision: { body: { workflow: answerFlow() } }, state: row.state });
-  assert.deepEqual(view.output, { answer: 42 });
   assert.deepEqual((await api("GET", "/runs?agent=flow")).body.runs.map((r) => [r.kind, r.status]), [["workflow", "completed"]]);
 });
 
-test("a workflow run's input is checked against the workflow's input schema (422), and a workflow run takes no max_cost_usd", async (t) => {
+test("a workflow run's input is checked against the workflow's input schema (422), and a workflow run takes a max_cost_usd, as an agentic run does", async (t) => {
   const { api } = await serve(t);
   assert.equal((await api("POST", "/agents", flowAgent("flow"))).status, 201);
   const wrong = await api("POST", "/agents/flow/runs", { input: { content: "no question" } });
   assert.equal(wrong.status, 422);
   assert.equal(wrong.body.error.code, "input_invalid");
   assert.match(wrong.body.error.fields[0].field, /^input/);
-  const capped = await api("POST", "/agents/flow/runs", { input: { question: "x" }, max_cost_usd: 1 });
-  assert.deepEqual(capped.body.error.fields.map((f) => [f.field, f.reason]), [["max_cost_usd", "not_allowed"]]);
   assert.deepEqual((await api("GET", "/runs")).body.runs, []);
+  const capped = await api("POST", "/agents/flow/runs", { input: { question: "x" }, max_cost_usd: 1 });
+  assert.equal(capped.status, 202, JSON.stringify(capped.body));
+  assert.equal((await api("GET", `/runs/${capped.body.run_id}`)).body.cost.cap_usd, 1);
 });
 
-test("a workflow run takes no message (501), stops nothing, and a cancel ends it cancelled and carried back stopped", async (t) => {
+test("a workflow run takes no message (501), and a cancel ends it cancelled and carried back stopped", async (t) => {
   const { api, data } = await serve(t);
   const started = await start(api, "slowflow", { question: "Take your time." });
   for (let i = 0; (await api("GET", `/runs/${started.run_id}`)).body.status !== "working"; i++) {
@@ -55,12 +50,11 @@ test("a workflow run takes no message (501), stops nothing, and a cancel ends it
   }
   const message = await api("POST", `/runs/${started.run_id}/messages`, { content: "faster" });
   assert.deepEqual([message.status, message.body.error.capability], [501, "messages.steer_workflow_runs"]);
-  assert.equal((await api("POST", `/runs/${started.run_id}/stop`)).body.stopped, false);
   const cancel = await api("POST", `/runs/${started.run_id}/cancel`);
   assert.deepEqual([cancel.status, cancel.body.cancel_requested], [202, true]);
   const { last } = await follow(api, started.run_id, ["cancelled"]);
   assert.equal(last.final, true);
-  assert.deepEqual([storeRun(data, started.run_id).state, storeRun(data, started.run_id).summary], ["stopped", "stopped before any node completed"]);
+  assert.deepEqual([storeRun(data, started.run_id).state, storeRun(data, started.run_id).summary], ["stopped", "cancelled"]);
 });
 
 test("each model node runs on its tier's model: fast on AGENT_MODEL_FAST, the rest on the default", async (t) => {
@@ -68,14 +62,12 @@ test("each model node runs on its tier's model: fast on AGENT_MODEL_FAST, the re
   process.env.AGENT_MODEL_FAST = "faux-fast";
   t.after(() => (saved === undefined ? delete process.env.AGENT_MODEL_FAST : (process.env.AGENT_MODEL_FAST = saved)));
   const { api, baseUrl, data } = await serve(t);
-  assert.deepEqual((await client(baseUrl)("GET", "/capabilities")).body.models, { source: "faux", route_prefix: null, fast: "faux/faux-fast", default: "faux/faux-1", strong: "faux/faux-1", ready: true, needs: null });
+  assert.deepEqual((await client(baseUrl)("GET", "/capabilities")).body.models, { source: "faux", route_prefix: null, fast: "faux/faux-fast", default: "faux/faux-1", strong: "faux/faux-1", ready: true, needs: null, priced: true });
   const tiered = answerFlow();
   tiered.root.steps.unshift({ node: "extract", label: "draft", instructions: "Draft an answer.", out: "Answer", as: "draft", tier: "fast" });
   const started = await start(api, "tiered", { question: "What is six times seven?" }, tiered);
   await follow(api, started.run_id, ["completed"]);
-  const store = new DatabaseSync(join(runDir(data, started.run_id), "store", "run.sqlite"), { readOnly: true });
-  t.after(() => store.close());
-  const models = store.prepare("SELECT record FROM entries ORDER BY id").all().map((r) => JSON.parse(r.record)).filter((e) => e.kind === "pi.assistant").map((e) => e.model[0].model);
+  const models = journalOf(data, started.run_id).filter((e) => e.kind === "pi.assistant").map((e) => e.model[0].model);
   assert.deepEqual([...new Set(models)], ["faux-fast", "faux-1"], "the fast node ran first, on the fast model; the default node on the default");
   assert.equal(storeRun(data, started.run_id).summary, "draft, answer");
 });
@@ -109,6 +101,20 @@ test("an escalated workflow run is completed on /v2 with no error and a review, 
   assert.deepEqual((await read("GET", `/runs/${started.run_id}`)).body.review, review);
 });
 
+test("an escalated run's review is cut of a key the server holds, in its node and kind as in its reason", async (t) => {
+  const KEY = `not-a-secret-review-${"k".repeat(24)}`;
+  withEnv(t, { PARALLEL_API_KEY: KEY });
+  const { api } = await serve(t);
+  const gated = answerFlow();
+  gated.schemas.In.properties.amount = { type: "number" };
+  gated.root.steps.unshift({ node: "escalate", label: `too big ${KEY}`, when: { predicate: "gte", path: "amount", n: 500 }, kind: "review", stage: "gate", summary: `needs a person, ${KEY}` });
+  const started = await start(api, "gated-key", { question: "What is six times seven?", amount: 600 }, gated);
+  await follow(api, started.run_id, ["completed"]);
+  for (const review of [(await api("GET", `/runs/${started.run_id}`)).body.review, (await api("GET", "/runs?status=completed")).body.runs[0].review]) {
+    assert.deepEqual([review.kind, review.node, review.reason], ["review", "too big [redacted]", "needs a person, [redacted]"], JSON.stringify(review));
+  }
+});
+
 test("a run loads only the tiers its revision uses: a fast-only workflow runs on AGENT_MODEL_FAST with no AGENT_MODEL", async (t) => {
   const { runModels } = await import("../dist/model.js");
   const gateway = { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9", AGENT_MODEL_FAST: "m-fast" };
@@ -127,12 +133,10 @@ test("a run loads only the tiers its revision uses: a fast-only workflow runs on
   assert.equal(started.status, 202, JSON.stringify(started.body));
   assert.equal((await api("POST", "/agents", flowAgent("default-too"))).status, 201);
   assert.match((await api("POST", "/agents/default-too/runs", { input: { question: "x" } })).body.error.message, /No model yet: name the gateway's model in AGENT_MODEL/, "a default-tier node still needs AGENT_MODEL");
-  // The run's process loaded its app (no default asked for) and opened the run.
-  const log = join(runDir(data, started.body.run_id), "process.log");
-  for (let i = 0; !(await readFile(log, "utf8").catch(() => "")).includes('"event":"running"'); i++) {
-    assert.ok(i < 200, `the run's process opened the run: ${await readFile(log, "utf8").catch(() => "")}`);
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
+  // The runner opened the run (no default asked for): it works, or ends on the unreachable gateway, never on a missing
+  // AGENT_MODEL.
+  const { last } = await follow(api, started.body.run_id, ["working", "failed", "completed"]);
+  assert.doesNotMatch(JSON.stringify(last), /No model yet/, JSON.stringify(last));
   await api("POST", `/runs/${started.body.run_id}/cancel`);
   await follow(api, started.body.run_id, ["cancelled", "failed"]);
 });

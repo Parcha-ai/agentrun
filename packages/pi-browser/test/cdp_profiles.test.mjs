@@ -179,8 +179,7 @@ test("a relaunch waits for the old session; a crashed Chrome, a failed start and
   await provider.release(replacement);
 
   const doomed = await provider.create(spec(`cdp-prof-${process.pid}-doomed`, { name: "work", save: true }), signal());
-  process.kill(Number(/^local:(\d+):/.exec(doomed.id)[1]), "SIGKILL");
-  await new Promise((r) => setTimeout(r, 300));
+  await crash(t, doomed);
   const after = await provider.create(spec(`cdp-prof-${process.pid}-after`, { name: "work", save: true }, { run: "r9", label: "z" }), signal());
   assert.ok(after.id, "a Chrome that died is not a writer any more");
   await provider.release(after);

@@ -1,7 +1,38 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { clock, cost, markdown, runLabel, when } from "./format";
+import { capDollars, clock, cost, costOfCap, markdown, runLabel, when } from "./format";
 import type { Cost } from "./v2";
 import unpriced from "../fixtures/run.working.working.1.json";
+
+// A run's header says its cost beside its spend cap ("$0.0059 est. of $1.00"), so a raised cap shows; with no cap, the
+// cost alone. A cost that is not one figure keeps its words, the cap after them.
+describe("costOfCap", () => {
+  const est = (usd: number | null): Cost => ({ usd, basis: "estimate", charge_state: null, cap_usd: null });
+  it("says the cost of the cap, the cost as cost() says it", () => {
+    expect(costOfCap(est(0.0059), 1)).toBe("$0.0059 est. of $1.00");
+    expect(costOfCap(est(0.0059), 2.5)).toBe("$0.0059 est. of $2.50");
+    expect(costOfCap({ usd: 0.42, basis: "charge", charge_state: null, cap_usd: null }, 1)).toBe("$0.42 of $1.00");
+  });
+  it("with no cap, the cost alone", () => {
+    expect(costOfCap(est(0.0059), null)).toBe("$0.0059 est.");
+    expect(costOfCap(est(0.0059), undefined)).toBe("$0.0059 est.");
+  });
+  it("an unknown cost keeps its word, the cap after it, never $0 of a cap", () => {
+    expect(costOfCap(est(null), 1)).toBe("Unknown · cap $1.00");
+    expect(costOfCap(null, 1)).toBe("Unknown · cap $1.00");
+  });
+  it("a cost worded already (a workflow run's totals) takes the cap the same way; a partial total, the cap after it", () => {
+    expect(costOfCap(null, 1, { text: "$0.0123" })).toBe("$0.0123 of $1.00");
+    expect(costOfCap(null, null, { text: "$0.0123" })).toBe("$0.0123");
+    expect(costOfCap(null, 1, { text: "$0.0188 + 2 unknown" })).toBe("$0.0188 + 2 unknown · cap $1.00");
+  });
+  it("a cap finer than a cent reads as set, so a small raise shows", () => {
+    expect(costOfCap(est(0.0059), 0.012)).toBe("$0.0059 est. of $0.012");
+    expect(costOfCap(est(0.0059), 0.013)).toBe("$0.0059 est. of $0.013");
+    expect(capDollars(1)).toBe("$1.00");
+    expect(capDollars(2.5)).toBe("$2.50");
+    expect(capDollars(0.0125)).toBe("$0.0125");
+  });
+});
 
 // An unknown cost is never $0: the contract says "Null while unknown. A client shows null as unknown, never as $0."
 describe("cost", () => {
@@ -13,7 +44,7 @@ describe("cost", () => {
   });
 
   it("reads the recorded run whose cost is not known as Unknown", () => {
-    const c = (unpriced as { body: { cost: { usd: number | null; basis: string; charge_state: string | null; cap_usd: number | null } } }).body.cost;
+    const c = (unpriced as { body: { cost: Cost } }).body.cost;
     expect(c.usd).toBeNull();
     expect(cost(c)).toBe("Unknown");
   });
@@ -21,19 +52,19 @@ describe("cost", () => {
   it("marks a local estimate as one, and shows a real zero only when the server priced it zero", () => {
     expect(cost({ usd: 0.004043, basis: "estimate", charge_state: null, cap_usd: null })).toBe("$0.0040 est.");
     expect(cost({ usd: 1.5, basis: "estimate", charge_state: null, cap_usd: null })).toBe("$1.50 est.");
-    expect(cost({ usd: 0, basis: "billed", charge_state: null, cap_usd: null })).toBe("$0.0000");
+    expect(cost({ usd: 0, basis: "charge", charge_state: null, cap_usd: null })).toBe("$0.0000");
   });
 
   it("never rounds a cost the server priced above zero down to $0", () => {
     // A short run on a cheap model: $0.000043 is not $0.0000.
     expect(cost({ usd: 0.000043, basis: "estimate", charge_state: null, cap_usd: null })).toBe("<$0.0001 est.");
-    expect(cost({ usd: 0.00004999, basis: "billed", charge_state: null, cap_usd: null })).toBe("<$0.0001");
+    expect(cost({ usd: 0.00004999, basis: "charge", charge_state: null, cap_usd: null })).toBe("<$0.0001");
     expect(cost({ usd: 0.0001, basis: "estimate", charge_state: null, cap_usd: null })).toBe("$0.0001 est.");
   });
 
   it("says est. for a local estimate and not for a cost the server reports otherwise", () => {
     expect(cost({ usd: 0.25, basis: "estimate", charge_state: null, cap_usd: null })).toContain("est.");
-    expect(cost({ usd: 0.25, basis: "billed", charge_state: null, cap_usd: null })).not.toContain("est.");
+    expect(cost({ usd: 0.25, basis: "charge", charge_state: null, cap_usd: null })).not.toContain("est.");
   });
 });
 
@@ -108,6 +139,13 @@ describe("a cost known so far (so_far_usd, unpriced)", () => {
     expect([0.07, 0.012, 0.5, 0.00004, 0].map((usd) => cost({ ...unknown, so_far_usd: usd, unpriced: 1 }))).toEqual(
       ["so far $0.07 · 1 not priced", "so far $0.012 · 1 not priced", "so far $0.50 · 1 not priced", "so far <$0.0001 · 1 not priced", "so far $0.00 · 1 not priced"]);
   });
+  it("an ended run's cost says what is known, never \"so far\"; a run still going keeps it", () => {
+    const partial = { ...unknown, basis: "estimate", so_far_usd: 0.0084, unpriced: 1 } as Cost;
+    expect(cost(partial, { ended: true })).toBe("$0.0084 est. known · 1 not priced");
+    expect(cost({ ...unknown, so_far_usd: 0.0123, unpriced: 2 }, { ended: true })).toBe("$0.0123 known · 2 not priced");
+    expect(cost(partial, { ended: false })).toBe("so far $0.0084 est. · 1 not priced");
+    expect(cost(partial)).toBe("so far $0.0084 est. · 1 not priced");
+  });
   it("says est. when the charges priced so far are a local estimate, as a priced run does", () => {
     expect(cost({ ...unknown, basis: "estimate", so_far_usd: 0.0123, unpriced: 1 })).toBe("so far $0.0123 est. · 1 not priced");
   });
@@ -151,5 +189,31 @@ describe("runLabel", () => {
   it("is the last 8 characters of the id, different for two UUIDv7s of the same millisecond", () => {
     expect(runLabel("01a1a869-ce4e-7cf5-abf8-c5407893934a")).toBe("7893934a");
     expect(runLabel("01a1a869-ce4e-7d11-9a02-3f6b0e21d7c5")).toBe("0e21d7c5");
+  });
+});
+
+// Rendered Markdown (a run's answer, a note, a run file) comes from models and fetched pages: DOMPurify drops a link whose
+// scheme runs script or carries a document (javascript:, data:, vbscript:, however it is spelled), and its text stays.
+// http and https links stay links, opened in a new tab. Read from the DOM the HTML builds.
+describe("markdown links", () => {
+  const links = (text: string) => { const div = document.createElement("div"); div.innerHTML = markdown(text); return div; };
+  it("keeps no link whose scheme runs script or carries a document, and keeps its text", () => {
+    for (const href of ["javascript:alert(1)", "JaVaScRiPt:alert(1)", "java&#x09;script:alert(1)", "data:text/html,<script>alert(1)</script>", "vbscript:msgbox(1)"]) {
+      for (const text of [`[click](${href})`, `<a href="${href}">click</a>`]) {
+        const div = links(text);
+        expect(div.textContent).toContain("click");
+        expect([...div.querySelectorAll("[href]")].map((a) => a.getAttribute("href"))).toEqual([]);
+      }
+    }
+  });
+  it("keeps http and https links, opened in a new tab", () => {
+    const div = links("[a](https://example.com/a) and <a href=\"http://example.com/b\">b</a>");
+    expect([...div.querySelectorAll("a")].map((a) => [a.getAttribute("href"), a.getAttribute("target"), a.getAttribute("rel")])).toEqual([["https://example.com/a", "_blank", "noopener noreferrer"], ["http://example.com/b", "_blank", "noopener noreferrer"]]);
+  });
+  it("keeps no image whose source runs script, beside one that loads", () => {
+    const div = links("![ok](https://example.com/i.png) ![x](javascript:alert(1)) <img src=\"javascript:alert(1)\" alt=\"y\">");
+    const srcs = [...div.querySelectorAll("img")].map((i) => i.getAttribute("src"));
+    expect(srcs).toContain("https://example.com/i.png");
+    expect(srcs.filter((s) => s !== null && /script/i.test(s))).toEqual([]);
   });
 });

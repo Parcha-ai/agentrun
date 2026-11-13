@@ -1,0 +1,4 @@
+# The apply this case runs against: no channel, so the digest is returned only.
+parameters:
+  competitors: "Quillforge (quillforge.example)"
+  lookback_days: 7

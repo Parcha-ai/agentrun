@@ -1,6 +1,7 @@
 import { CircleDollarSign, MessageCircleQuestion, Pause } from "lucide-react";
 import { type FormEvent, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/field";
 import { ClientError } from "@/lib/client";
 import type { BudgetPending, RaiseAnswer, TimelineRow } from "@/lib/v2";
 
@@ -21,17 +22,21 @@ export const pausedWords = (pending: BudgetPending): string =>
 export function BudgetPaused({ pending }: { pending: BudgetPending }) {
   return (
     <section className="border border-warning/50 bg-warning/5 p-4" aria-label="Paused at its spend cap">
-      <p className="caps flex items-center gap-2 text-[11px] text-warning-text"><CircleDollarSign className="size-3.5" aria-hidden /> {pausedWords(pending)}</p>
-      {typeof pending.said === "string" && <p className="mt-2 text-[15px] leading-relaxed">{pending.said}</p>}
-      <p className="mt-1 text-[13px] text-muted-foreground">It waits for its cap to be raised; a message can't go on until then.</p>
+      <p className="caps flex items-center gap-2 text-label text-warning-text"><CircleDollarSign className="size-3.5" aria-hidden /> {pausedWords(pending)}</p>
+      {typeof pending.said === "string" && <p className="mt-2 text-prose leading-relaxed">{pending.said}</p>}
+      <p className="mt-1 text-body text-muted-foreground">It waits for its cap to be raised; a message can't go on until then.</p>
     </section>
   );
 }
 
 /** The server's suggested new cap for a run paused at its cap (`pending.suggested_cap_usd`), shown as served: the
- *  console computes none, and with none served (an older server) the raise starts empty. */
+ *  console computes none, and with none served (a pause that names no `spent_usd` names no raise either) the raise
+ *  starts empty. */
 export const suggestedCap = (pending: Pick<BudgetPending, "suggested_cap_usd"> | null | undefined): number | null =>
   typeof pending?.suggested_cap_usd === "number" && Number.isFinite(pending.suggested_cap_usd) ? pending.suggested_cap_usd : null;
+/** The least cap that sends the refused request (`pending.least_cap_usd`), as served; none for a pause that names no least. */
+export const leastCap = (pending: Pick<BudgetPending, "least_cap_usd"> | null | undefined): number | null =>
+  typeof pending?.least_cap_usd === "number" && Number.isFinite(pending.least_cap_usd) ? pending.least_cap_usd : null;
 
 /** Why a raise was not taken, in words: the server's own for a 422 (what it wants of the cap), an ended run and a run
  *  it no longer has in the console's, anything else by its message. */
@@ -51,7 +56,7 @@ function raiseRefusal(e: unknown): string {
  *  else a working run's ("Raise the cap"). Sent once (PATCH /v2/runs/{id}; a click while it posts sends nothing more).
  *  A refusal is said under the input and the cap stays to change; a working run's `note` is said. `onRaise` reads the
  *  run again once raised, which ends a pause. */
-export function RaiseCap({ cap, suggested, paused, onRaise }: { cap: number; suggested: number | null; paused: boolean; onRaise: (usd: number) => Promise<RaiseAnswer> }) {
+export function RaiseCap({ cap, suggested, least = null, paused, onRaise }: { cap: number; suggested: number | null; least?: number | null; paused: boolean; onRaise: (usd: number) => Promise<RaiseAnswer> }) {
   const [value, setValue] = useState(suggested === null ? "" : String(suggested));
   const [busy, setBusy] = useState(false);
   const [refused, setRefused] = useState<string | null>(null);
@@ -78,16 +83,24 @@ export function RaiseCap({ cap, suggested, paused, onRaise }: { cap: number; sug
   return (
     <form className="border border-warning/50 p-4" aria-label="Raise the cap" onSubmit={(e) => void send(e)}>
       <div className="flex flex-wrap items-center gap-3">
-        <label className="flex items-center gap-2 font-mono text-[13px]">
+        <label className="flex items-center gap-2 font-mono text-body">
           <span className="text-muted-foreground">$</span>
-          <input aria-label="New cap in dollars" inputMode="decimal" value={value} onChange={(e) => setValue(e.target.value)} disabled={busy}
-            placeholder={`more than ${capWords(cap)}`} className="h-9 w-32 border bg-background px-3 font-mono text-[13px] outline-none focus:border-border-strong" />
+          <Input aria-label="New cap in dollars" inputMode="decimal" value={value} onChange={(e) => setValue(e.target.value)} disabled={busy}
+            placeholder={`more than ${capWords(cap)}`} className="h-9 w-32" />
         </label>
         <Button type="submit" size="sm" variant="solid" disabled={busy || !named}>{busy ? "Raising" : paused ? "Raise the cap and continue" : "Raise the cap"}</Button>
       </div>
-      {suggested !== null && <p className="mt-2 text-[12px] text-muted-foreground">The server's suggestion; change it before you raise, if you like.</p>}
-      {refused && <p className="mt-2 text-[13px] text-destructive-text" role="alert">{refused}</p>}
-      {note && <p className="mt-2 text-[13px] text-muted-foreground" role="status">{note}</p>}
+      {/* The least that sends the refused request and the raise offered, apart and labelled: side by side unnamed, the
+          server's "at least $X" and a larger prefill read as a contradiction. */}
+      {(least !== null || suggested !== null) && (
+        <ul className="mt-2 space-y-0.5 font-mono text-small" aria-label="Cap figures">
+          {least !== null && <li data-cap-figure="least">Least to continue: {capWords(least)}</li>}
+          {suggested !== null && <li data-cap-figure="suggested">Suggested: {capWords(suggested)}</li>}
+        </ul>
+      )}
+      {suggested !== null && <p className="mt-1 text-small text-muted-foreground">The suggestion is prefilled; change it before you raise, if you like.</p>}
+      {refused && <p className="mt-2 text-body text-destructive-text" role="alert">{refused}</p>}
+      {note && <p className="mt-2 text-body text-muted-foreground" role="status">{note}</p>}
     </form>
   );
 }
@@ -96,18 +109,18 @@ export function RaiseCap({ cap, suggested, paused, onRaise }: { cap: number; sug
  *  was stopped and the run waits for the next message. The two read differently on purpose. */
 export function NeedsYou({ waiting }: { waiting: TimelineRow | null }) {
   if (waiting) {
-    const question = (waiting.text ?? waiting.summary).replace(/^Waiting for you:\s*/, "");
+    const question = (waiting.text ?? waiting.summary ?? "").replace(/^Waiting for you:\s*/, "");
     return (
       <section className="border border-warning/50 bg-warning/5 p-4" aria-label="The agent asks">
-        <p className="caps flex items-center gap-2 text-[11px] text-warning-text"><MessageCircleQuestion className="size-3.5" aria-hidden /> Input required</p>
-        <p className="mt-2 text-[15px] leading-relaxed">{question}</p>
+        <p className="caps flex items-center gap-2 text-label text-warning-text"><MessageCircleQuestion className="size-3.5" aria-hidden /> Input required</p>
+        <p className="mt-2 text-prose leading-relaxed">{question}</p>
       </section>
     );
   }
   return (
     <section className="border border-border-strong/60 p-4" aria-label="Stopped">
-      <p className="caps flex items-center gap-2 text-[11px] text-muted-foreground"><Pause className="size-3.5" aria-hidden /> Stopped</p>
-      <p className="mt-2 text-[14px] text-muted-foreground">The turn was stopped. The run stays open: send a message to continue it.</p>
+      <p className="caps flex items-center gap-2 text-label text-muted-foreground"><Pause className="size-3.5" aria-hidden /> Stopped</p>
+      <p className="mt-2 text-lead text-muted-foreground">The turn was stopped. The run stays open: send a message to continue it.</p>
     </section>
   );
 }

@@ -3,9 +3,9 @@
 //   node scripts/release-ci-gate.mjs   (GITHUB_REPOSITORY, GITHUB_SHA, GH_TOKEN; exits 0 only on a pass)
 import { isMain } from './is-main.mjs';
 
-// The verify gates the main ruleset requires. Every other `verify (<node>)` gate of the run must pass as well; jobs that are
-// not gates (real-chrome, the pi legs, lean) do not stop a release.
-export const REQUIRED_GATES = ['verify (22.19.0)', 'verify (22.23.2)'];
+// The verify gate the main ruleset requires. Jobs that are not gates (real-chrome, the pi legs, lean) do not stop a
+// release.
+export const REQUIRED_GATES = ['verify'];
 
 /**
  * The verdict on ci.yml's push runs on main for one commit, newest first, each with the latest attempt of its jobs:
@@ -19,7 +19,7 @@ export function ciVerdict(sha, runs) {
   const run = own[0];
   if (run.status !== 'completed') return { pass: false, reason: `ci.yml run ${run.id} on ${sha} is ${run.status}; wait for it to finish` };
   if (!Array.isArray(run.jobs)) return { pass: false, reason: `the jobs of ci.yml run ${run.id} could not be read` };
-  const gates = run.jobs.filter(job => typeof job?.name === 'string' && /^verify \(.+\)$/.test(job.name));
+  const gates = run.jobs.filter(job => typeof job?.name === 'string' && job.name === 'verify');
   for (const name of REQUIRED_GATES) if (!gates.some(job => job.name === name)) return { pass: false, reason: `ci.yml run ${run.id} has no ${name} job` };
   const red = gates.filter(job => job.conclusion !== 'success');
   if (red.length) return { pass: false, reason: `ci.yml run ${run.id}: ${red.map(job => `${job.name} is ${job.conclusion ?? job.status}`).join(', ')}` };
@@ -49,7 +49,7 @@ if (isMain(import.meta)) {
   const { GITHUB_REPOSITORY: repository, GITHUB_SHA: sha, GH_TOKEN: token } = process.env;
   try {
     const verdict = await readCiVerdict({ repository, sha, token });
-    if (verdict.pass) console.log(`ci.yml run ${verdict.run} passed every verify gate on main for ${sha}`);
+    if (verdict.pass) console.log(`ci.yml run ${verdict.run} passed the verify gate on main for ${sha}`);
     else { console.error(`::error::${verdict.reason}`); process.exitCode = 1; }
   } catch (error) {
     console.error(`::error::${error instanceof Error ? error.message : 'the CI verdict could not be read'}`);

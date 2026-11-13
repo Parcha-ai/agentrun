@@ -2,8 +2,11 @@
 // so a read that holds the loop holds the run's heartbeat too, and the run is fenced: browser_read's markdown parsed and
 // converted the live page's whole HTML there, and its frame scan parsed up to 2M characters of it. Each big read here
 // runs in a child process, through pageTools' browser_read on a fake session, so a read that holds its own loop cannot
-// hold this runner's; the child reports its wall time and the longest its event loop was held (perf_hooks'
-// monitorEventLoopDelay), and one that does not answer within GUARD_MS is killed.
+// hold this runner's; the child reports its wall time and how late each 10 ms tick of a timer ran while it read, and
+// one that does not answer within GUARD_MS is killed. A shared runner preempts a process now and then for 100 ms or
+// so (CI saw 115 and 118 ms on one of several Node versions, each in a different run); reading the page on the loop,
+// as before #1490, holds it for seconds in one piece. So a run may have one late tick past 100 ms, never two, and none
+// past 250 ms.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import test from "node:test";
@@ -13,7 +16,6 @@ const GUARD_MS = 30_000;
 const URL_ = "https://downloads.example/dl/";
 const FRAME = '<iframe src="https://challenge.example/check?token=SECRET-FRAME">Checking your browser &amp; connection</iframe>';
 const CHILD = `
-import { monitorEventLoopDelay } from "node:perf_hooks";
 const [dist, fixture, chars, options] = process.argv.slice(1);
 const { what, oneTable, tools } = JSON.parse(options);
 const { pageTools } = await import(dist);
@@ -31,14 +33,19 @@ const call = {
   evidence: { file: async (label, record) => { filed.push(record); return { path: "evidence/node/1-browser_read.md", bodyLine: 9 }; } },
   classifyPage: async (seen) => { judged.push({ frames: seen.frames ?? null, frameText: seen.frameText ?? null }); return { wall: "content", injection: null, confidence: 0.9 }; },
 };
-const held = monitorEventLoopDelay({ resolution: 10 });
-held.enable();
+// Each tick's lateness: how much longer than 10 ms after the previous one it ran.
+const late = [];
+let tick = performance.now();
+const ticker = setInterval(() => { const now = performance.now(); late.push(now - tick - 10); tick = now; }, 10);
 const started = performance.now();
 const out = await pageTools(tools ?? {}).browser_read({ what }, port, call);
 const wallMs = performance.now() - started;
-held.disable();
+clearInterval(ticker);
+// The last tick is taken after the read, so a hold at its very end counts too. perf_hooks' monitorEventLoopDelay, which
+// this used to read, reported 11 to 13 ms through a 300 ms busy block in browser_read and a 750 ms on-loop markdown.
+late.push(performance.now() - tick - 10);
 const record = filed[0] ?? null;
-process.stdout.write(JSON.stringify({ wallMs, heldMs: held.max / 1e6, htmlChars: html.length, first: page.first, last: page.last, text, isError: out.isError === true, shown: out.content[0].text.slice(0, 400), body: record?.body ?? null, extractor: record?.facts.extractor ?? null, ext: record?.ext ?? null, judged }));
+process.stdout.write(JSON.stringify({ wallMs, ticks: late.length, lateTicks: late.filter((ms) => ms >= 100).map((ms) => Math.round(ms)), htmlChars: html.length, first: page.first, last: page.last, text, isError: out.isError === true, shown: out.content[0].text.slice(0, 400), body: record?.body ?? null, extractor: record?.facts.extractor ?? null, ext: record?.ext ?? null, judged }));
 `;
 
 /** browser_read `{ what }` on a generated page of `chars` characters, an iframe first in its main element, in a child
@@ -61,11 +68,16 @@ function inChild(chars, options) {
   });
 }
 
-/** The run answered within GUARD_MS and within `wallMs`, its event loop never held 100 ms, with no failure. */
+/** How late one tick may run: past it, the read held the loop, whatever the runner did. */
+const HELD_MS = 250;
+/** The run answered within GUARD_MS and within `wallMs`, with no failure, and its event loop was held 100 ms at most once
+ *  and never HELD_MS (see the file's head). */
 function quick(run, wallMs) {
   assert.ok(!run.hung, `no answer within ${GUARD_MS / 1000} s`);
   assert.ok(run.wallMs < wallMs, `${Math.round(run.wallMs)} ms, over ${wallMs} ms`);
-  assert.ok(run.heldMs < 100, `the event loop was held ${run.heldMs.toFixed(1)} ms`);
+  const held = `ticks 100 ms late or more: ${JSON.stringify(run.lateTicks)} of ${run.ticks}`;
+  assert.ok(run.lateTicks.every((ms) => ms < HELD_MS), `the event loop was held ${HELD_MS} ms or more: ${held}`);
+  assert.ok(run.lateTicks.length <= 1, `the event loop was held 100 ms or more more than once: ${held}`);
   assert.equal(run.isError, false, run.shown);
 }
 /** A file's row in the markdown table: a table pads each column to its widest cell. */
@@ -73,7 +85,7 @@ const row = (name) => new RegExp(`\\| \\[${name.replaceAll(".", "\\.")}\\]\\(/dl
 /** The judge saw the page's one real frame: its origin, and the text inside it. */
 const framed = (run) => assert.deepEqual(run.judged, [{ frames: ["https://challenge.example"], frameText: ["Checking your browser & connection"] }]);
 
-test("browser_read's markdown of a 3 MB page of one table answers within 10 s, its event loop never held 100 ms: the main element's markdown, cut, saying so", async () => {
+test("browser_read's markdown of a 3 MB page of one table answers within 10 s, its event loop held 100 ms at most once and never 250 ms: the main element's markdown, cut, saying so", async () => {
   const run = await inChild(3_000_000, { what: "markdown", oneTable: true });
   quick(run, 10_000);
   assert.deepEqual([run.extractor, run.ext], ["readability-md", "md"]);

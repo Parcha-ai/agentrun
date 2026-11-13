@@ -1,0 +1,134 @@
+// Touch on a phone, checked against the fixture app's log: a tap lands at its point, a swipe starts and ends where
+// asked, and a pinch moves two fingers apart. A phone that takes no fixture file is checked through Settings and
+// ui.observe instead (settings.ts): a tap on a row opens that row's page, the back button comes back, and a swipe up
+// moves the list up. The touches are input.actions' (screenshot pixels), aimed at nodes read in window points.
+import type { Point, UiObserveResult } from "../../protocol.js";
+import type { FixtureEvent, StartedFixture } from "../fixture.js";
+import type { Case, CaseContext } from "../types.js";
+import { act, allRan, logged, pointIn } from "./input.js";
+import { listOf, middle, observe, openSettings, pixelsOf, rowsOf, settingsRows, showsName, tapScene, throughSettings } from "./settings.js";
+
+/** How far a logged touch may be from where it was aimed: a phone's input path may round. */
+const SLACK = 2;
+
+type Touch = Extract<FixtureEvent, { event: "touch" }>;
+const touches = (events: FixtureEvent[]) => events.filter((e): e is Touch => e.event === "touch");
+const near = (a: Point, b: Point) => Math.abs(a[0] - b[0]) <= SLACK && Math.abs(a[1] - b[1]) <= SLACK;
+const distance = (a: Point, b: Point) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+const lifted = (events: FixtureEvent[], fingers: number) => new Set(touches(events).filter((e) => e.phase === "up").map((e) => e.pointer)).size >= fingers;
+
+/** The fixture, once the case has a way to see what touch did: the fixture's log over files. */
+async function observed(t: CaseContext): Promise<StartedFixture> {
+	const declared = t.provider.capabilities().groups;
+	if (!declared.includes("files")) {
+		if (!declared.includes("ui")) return t.skip("no way to observe the effect: declare files or ui");
+		return t.skip(`no fixture runs on a ${t.provider.capabilities().kind} computer with no files, and no stock app is known for it`);
+	}
+	return t.fixture();
+}
+
+/**
+ * A tap on Settings' first row opens its page: the row's title shows, as a text or a label (a live Android 15 page
+ * shows it only as its toolbar's content-desc), and the next row is gone. Back comes back to the list. A tap that lands
+ * nowhere leaves the next row, and one on another row shows another title, so neither passes.
+ */
+async function tapThroughSettings(t: CaseContext) {
+	await openSettings(t);
+	const { seen: list, rows } = await settingsRows(t, 2);
+	const [row, next] = [rows[0], t.present(rows.find((one) => one.text !== rows[0].text), "a second row with another title")];
+	const at = await pixelsOf(t, list, middle(row.bounds));
+	allRan(t, await act(t, [{ type: "tap", at }]), 1, `a tap on Settings' row ${JSON.stringify(row.text)} at ${at}`);
+	let seen: UiObserveResult | undefined;
+	try {
+		await t.until(async () => {
+			seen = await observe(t);
+			return showsName(seen, row.text) && !showsName(seen, next.text);
+		}, `the page of ${JSON.stringify(row.text)} after a tap on its row: its title, as a node's name, and not the row ${JSON.stringify(next.text)}`);
+	} catch (error) {
+		// A live run showed only the wait: the words say what the case saw, so a page beside the list tells apart from a
+		// tap that missed.
+		throw new Error(`${error instanceof Error ? error.message : String(error)} (${await tapScene(t, { at, row, next, seen })})`);
+	}
+	allRan(t, await act(t, [{ type: "button", name: "back" }]), 1, "the back button");
+	await t.until(async () => showsName(await observe(t), next.text), `Settings' list again after back: the row ${JSON.stringify(next.text)}`);
+}
+
+/** A swipe up Settings' list moves it up: a row on screen before and after is higher by a quarter of the swipe at least, or the first row has left. */
+async function swipeThroughSettings(t: CaseContext) {
+	await openSettings(t);
+	const { seen, rows } = await settingsRows(t, 2);
+	const [x, y, w, h] = t.present(listOf(seen), "Settings' list in ui.observe").bounds;
+	// In window points, as the rows are; the swipe itself in pixels.
+	const top: Point = [Math.floor(x + w / 2), Math.floor(y + h * 0.8)];
+	const bottom: Point = [top[0], Math.floor(y + h * 0.2)];
+	const [from, to] = [await pixelsOf(t, seen, top), await pixelsOf(t, seen, bottom)];
+	allRan(t, await act(t, [{ type: "swipe", path: [from, to], ms: 400 }]), 1, `a swipe up Settings' list from ${from} to ${to}`);
+	const enough = (top[1] - bottom[1]) / 4;
+	await t.until(async () => {
+		const after = rowsOf(await observe(t));
+		const moved = rows.some((before) => {
+			const now = after.find((one) => one.text === before.text);
+			return now !== undefined && before.bounds[1] - now.bounds[1] >= enough;
+		});
+		return moved || (after.length > 0 && !after.some((one) => one.text === rows[0].text));
+	}, `Settings' list moved up by ${Math.round(enough)} points at least after a swipe up`);
+}
+
+/** One finger's touches: where it went down, and where it came up. */
+function stroke(t: CaseContext, events: FixtureEvent[], pointer: number, what: string): { down: Point; up: Point } {
+	const mine = touches(events).filter((e) => e.pointer === pointer);
+	const down = t.present(mine.find((e) => e.phase === "down"), `${what}: the fixture logged no touch down of finger ${pointer}`);
+	const up = t.present(mine.findLast((e) => e.phase === "up"), `${what}: the fixture logged no touch up of finger ${pointer}`);
+	return { down: down.at, up: up.at };
+}
+
+const touch = (name: string, run: Case["run"], level: Case["level"] = "core"): Case => ({ id: `touch.${name}`, level, group: "touch", needs: ["input.touch"], run });
+
+export const touchCases: Case[] = [
+	touch("tap", async (t) => {
+		if (throughSettings(t)) return tapThroughSettings(t);
+		const fixture = await observed(t);
+		const at = pointIn(fixture, 0.5, 0.4);
+		const before = (await fixture.events()).length;
+		allRan(t, await act(t, [{ type: "tap", at }]), 1, `a tap at ${at}`);
+		const events = await logged(t, fixture, before, (events) => lifted(events, 1), `a tap in the fixture's log`);
+		t.deepEqual([...new Set(touches(events).map((e) => e.pointer))], [0], "the fingers a tap used");
+		const { down, up } = stroke(t, events, 0, "a tap");
+		t.assert(near(down, at) && near(up, at), `a tap at ${at} was logged down at ${down} and up at ${up}`);
+	}),
+	touch("swipe", async (t) => {
+		if (throughSettings(t)) return swipeThroughSettings(t);
+		const fixture = await observed(t);
+		const from = pointIn(fixture, 0.5, 0.7);
+		const to = pointIn(fixture, 0.5, 0.3);
+		const before = (await fixture.events()).length;
+		allRan(t, await act(t, [{ type: "swipe", path: [from, to], ms: 300 }]), 1, `a swipe from ${from} to ${to}`);
+		const events = await logged(t, fixture, before, (events) => lifted(events, 1), "a swipe in the fixture's log");
+		const { down, up } = stroke(t, events, 0, "a swipe");
+		t.assert(near(down, from), `a swipe from ${from} was logged starting at ${down}`);
+		t.assert(near(up, to), `a swipe to ${to} was logged ending at ${up}`);
+	}),
+	touch(
+		"pinch",
+		async (t) => {
+			if (throughSettings(t)) {
+				// Settings shows nothing a pinch changes; a provider that refuses pinch says so, and either way it is not seen.
+				const shot = await t.call("screen.shot", {});
+				const tried = await act(t, [{ type: "pinch", at: [Math.floor(shot.width / 2), Math.floor(shot.height / 2)], scale: 2, ms: 400 }]);
+				if (tried.failed?.kind === "unsupported") return t.skip(`the provider refuses a pinch in words: ${tried.failed.message}`);
+				return t.skip("a pinch shows nothing in Settings' nodes; only the fixture's log sees one");
+			}
+			const fixture = await observed(t);
+			const at = pointIn(fixture, 0.5, 0.5);
+			const before = (await fixture.events()).length;
+			allRan(t, await act(t, [{ type: "pinch", at, scale: 2, ms: 400 }]), 1, `a pinch apart at ${at}`);
+			const events = await logged(t, fixture, before, (events) => lifted(events, 2), "two fingers in the fixture's log");
+			const one = stroke(t, events, 0, "a pinch");
+			const two = stroke(t, events, 1, "a pinch");
+			const start = distance(one.down, two.down);
+			const end = distance(one.up, two.up);
+			t.assert(end > start, `a pinch apart: the fingers went from ${Math.round(start)} px apart to ${Math.round(end)} px`);
+		},
+		"full",
+	),
+];

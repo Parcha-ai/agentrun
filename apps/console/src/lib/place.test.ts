@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { defaultPlaceOf } from "./agentForm";
-import { placeOf, placesOf, placeWords } from "./place";
+import { defaultPlaceOf, runsWhere } from "./agentForm";
+import { placeOf, placesOf } from "./place";
 
 // The place shapes are the server's (definition.place, Run.place, capabilities.places); the console names no box itself.
 const BOXES = [{ id: "bwrap", available: false, reason: "bwrap is not set up on this server." }, { id: "docker", available: true }, { id: "daytona", available: false, reason: "runs in the daytona box are not available yet" }];
@@ -19,11 +19,16 @@ describe("places", () => {
     expect(placesOf({ harnesses: [] })).toBeNull();
   });
 
-  it("says where an agent runs in words", () => {
-    expect(placeWords({ mode: "sandbox", box: "docker" }, placesOf({ places: PLACES }))).toBe("Runs in a docker box");
-    expect(placeWords({ mode: "runner" }, null)).toBe("Runs on the server");
-    expect(placeWords(undefined, placesOf({ places: PLACES }))).toBe("Runs on the server");
-    expect(placeWords(undefined, placesOf({ places: { ...PLACES, default_place: { mode: "sandbox", box: "docker" } } }))).toBe("Runs in a docker box");
+  // Where an agent's current revision runs: its own place, else the server's default for it (byDefault); with no place
+  // and the server's places not read yet, unknown.
+  it("says where an agent's revision runs: its own place, else the server's default for it", () => {
+    const docker = placesOf({ places: { ...PLACES, default_place: { mode: "sandbox", box: "docker" } } });
+    const agentic = (definition: Record<string, unknown>) => ({ kind: "agentic" as const, definition: { version: 1, name: "a", instructions: "", skills: [], tools: ["write"], ...definition } }) as never;
+    expect(runsWhere(agentic({ place: { mode: "runner" } }), docker)).toEqual({ place: { mode: "runner" }, byDefault: false });
+    expect(runsWhere(agentic({}), docker)).toEqual({ place: { mode: "sandbox", box: "docker" }, byDefault: true });
+    expect(runsWhere(agentic({ tools: ["browser"] }), docker)).toEqual({ place: { mode: "runner" }, byDefault: true });
+    expect(runsWhere(agentic({}), placesOf({ places: PLACES }))).toEqual({ place: { mode: "runner" }, byDefault: true });
+    expect(runsWhere(agentic({}), null)).toBeUndefined();
   });
 
   // The server's cases (packages/serve/test/default-place.test.mjs): a revision with no place runs where default_place

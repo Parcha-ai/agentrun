@@ -1,0 +1,165 @@
+// Where the Docker a server runs computers on has the server's files. On a host, the server's paths are the daemon's own,
+// and a computer binds the run's folder by its path: nothing here is asked. A server in a container of that Docker's own, given its
+// socket (compose.yaml at the repository's root), has paths the daemon does not: the daemon has only what it mounted
+// into the server's container. One layout is supported: the data directory on a named volume of the server's own
+// container, as compose.yaml makes it. The server reads its own container's id from /proc/self/mountinfo (Docker binds
+// /etc/hostname from `<its root>/containers/<id>/hostname`), asks Docker for that container's mounts, and takes the
+// named volume that holds the data directory; a run's Docker computer then mounts its run's folder and its daemon copy as
+// that volume's subpaths (`volume-subpath`: Docker Engine 26 and later), never the volume's root (workspace/
+// computer-deps.ts dockerVolumeOf, the Docker provider's `volume`). Any other layout, or an older engine, is a reason,
+// said once at the start, and docker is unavailable: a guess would make every computer fail at its create.
+import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
+import { FAUX_ENV } from "./model.js";
+import { withoutSecrets } from "./secrets.js";
+
+/** Where the daemon has the data directory: the named volume mounted at `at`. */
+export type BoxPaths = { at: string; volume: string };
+
+/** The server's Docker files: its own (`here`, a host), through its container's named volume (`paths`), or none, and why. */
+export type DockerPaths = { here: true } | { paths: BoxPaths } | { reason: string };
+
+/** The one way a server in a container runs Docker computers. */
+export const IN_COMPOSE = "run AgentRun in a container with `docker compose up` from compose.yaml (its named data volume is how boxes reach a run's files)";
+/** An engine that cannot mount a volume's subpath. */
+export const OLD_ENGINE = "Docker Engine <26 can't mount a named volume's subpath: upgrade to Docker 26+";
+
+/** Why a Docker computer can't run for a server whose Docker daemon (at `endpoint`) is another machine's: a run's
+ *  computer mounts the run's folder (and the computer's daemon) by this server's own paths, which that daemon doesn't
+ *  have. */
+export const remoteDockerWords = (endpoint: string): string =>
+  `this server's Docker daemon (${endpoint}) is another machine's: it can't mount the run's folder from this machine, so Docker computers aren't available on this setup (give the agent another computer, or run the server on the Docker host)`;
+
+/** Loopback, by name or address: a daemon this machine reaches over its own loopback. */
+const LOOPBACK = /^(localhost|127(\.\d{1,3}){3}|\[?::1\]?)$/i; // key-gate: loopback-rule names this machine only, to tell its own daemon from another machine; the line dials nothing
+
+/** Whether a daemon endpoint is another machine's: ssh://, or tcp:// to a host that is not this machine's loopback.
+ *  Everything else is this machine's: unix:// (and fd://), npipe:// (Docker Desktop on Windows), tcp:// to loopback. Its
+ *  Docker provider still applies its own allow-list rule to those (the provider's check where it isn't on the host). */
+export function remoteEndpoint(endpoint: string): boolean {
+  const scheme = /^([a-z][a-z0-9+.-]*):\/\//i.exec(endpoint)?.[1]?.toLowerCase();
+  if (scheme === "ssh") return true;
+  if (scheme !== "tcp") return false;
+  let host: string;
+  try {
+    host = new URL(endpoint).hostname;
+  } catch {
+    return true;
+  }
+  return !LOOPBACK.test(host);
+}
+
+/** The daemon `env`'s docker reaches, when it is another machine's (remoteEndpoint): DOCKER_HOST when set, else the
+ *  current context's endpoint as the CLI resolves it (DOCKER_CONTEXT, else the saved current context), read as the
+ *  computer package's Docker provider reads it (`docker context inspect`); undefined for this machine's. A context that
+ *  can't be read is taken as this machine's: its Docker provider still refuses at create where it isn't. `docker` is
+ *  the tests'. */
+export async function remoteDockerOf(env: NodeJS.ProcessEnv, docker: DockerCall = dockerCall(env)): Promise<string | undefined> {
+  const host = env.DOCKER_HOST?.trim();
+  if (host) return remoteEndpoint(host) ? host : undefined;
+  const ran = await docker(["context", "inspect", "--format", "{{json .Endpoints.docker.Host}}"]);
+  if (ran.code !== 0) return undefined;
+  let endpoint: unknown;
+  try {
+    endpoint = JSON.parse(ran.stdout.trim());
+  } catch {
+    return undefined;
+  }
+  return typeof endpoint === "string" && remoteEndpoint(endpoint) ? endpoint : undefined;
+}
+
+/** remoteDockerOf, once per process for each environment's docker. */
+const remotes = new Map<string, Promise<string | undefined>>();
+export function remoteDockerOnce(env: NodeJS.ProcessEnv): Promise<string | undefined> {
+  const key = [env.PATH, env.DOCKER_HOST, env.DOCKER_CONTEXT, env.DOCKER_CONFIG].map((one) => one ?? "").join("\0");
+  let known = remotes.get(key);
+  if (!known) remotes.set(key, (known = remoteDockerOf(env)));
+  return known;
+}
+
+/** Why this server can't run a Docker computer, or undefined when it can: on its Docker's own host (`here`), or in a
+ *  container of that Docker's with its data on a named volume (`paths`: the computer mounts the run's folder and its
+ *  daemon as that volume's subpaths, workspace/computer-deps.ts dockerVolumeOf). Any other layout says why (`reason`,
+ *  dockerPathsOf), and so does a daemon of another machine (`remote`, remoteDockerOf's endpoint). The one check every
+ *  reader of Docker's offer takes. */
+export function dockerComputerRefusal(paths: DockerPaths, remote: string | undefined): string | undefined {
+  if ("reason" in paths) return paths.reason;
+  return remote !== undefined ? remoteDockerWords(remote) : undefined;
+}
+
+/** Where a runner's Docker has the data directory `data`, read once by the runner that makes a Docker computer: as the
+ *  server reads it at its start (dockerPathsOf), on Linux alone; under `--faux` from the mountinfo file the tests name
+ *  (FAUX_MOUNTINFO_ENV), else as a host. */
+export async function dockerPathsForRuns(env: NodeJS.ProcessEnv, data: string, platform: NodeJS.Platform = process.platform): Promise<DockerPaths> {
+  if (platform !== "linux") return { here: true };
+  if (env[FAUX_ENV]) {
+    const faux = env[FAUX_MOUNTINFO_ENV];
+    return faux ? dockerPathsOf(env, data, { mountinfo: await readFile(faux, "utf8"), inContainer: true }) : { here: true };
+  }
+  return dockerPathsOf(env, data);
+}
+
+/** Under `--faux` only: a file the server reads as its /proc/self/mountinfo (server.ts fauxMountinfo). */
+export const FAUX_MOUNTINFO_ENV = "AGENTRUN_SERVE_FAUX_MOUNTINFO";
+
+
+/** Its own container's id, from /proc/self/mountinfo: the source of the /etc/hostname Docker bound in. */
+export function ownContainerOf(mountinfo: string): string | undefined {
+  for (const line of mountinfo.split("\n")) {
+    const fields = line.split(" ");
+    const id = fields[4] === "/etc/hostname" ? /\/containers\/([0-9a-f]{64})\/hostname$/.exec(fields[3] ?? "")?.[1] : undefined;
+    if (id) return id;
+  }
+  return undefined;
+}
+
+/** A mount of a container, as `docker inspect` gives it. */
+export type ContainerMount = { Type?: string; Name?: string; Destination?: string; RW?: boolean };
+
+/** Where the daemon has `data`, by the server's container's `mounts` and the daemon's API version (`api`, `docker
+ *  version`'s): the read-write named volume that holds it, the deepest such mount, on an engine that mounts its subpath
+ *  (API 1.45, Docker Engine 26); else why. Pure. */
+export function pathsOf(mounts: readonly ContainerMount[], data: string, api: string): { paths: BoxPaths } | { reason: string } {
+  const holds = (at: string) => data === at || data.startsWith(`${at}/`);
+  const mount = mounts.filter((m) => typeof m.Destination === "string" && holds(m.Destination)).sort((a, b) => b.Destination!.length - a.Destination!.length)[0];
+  if (mount?.Type !== "volume" || !mount.Name || mount.RW !== true) return { reason: IN_COMPOSE };
+  // A mount below the data directory hides part of it from that volume: a box would get the volume's files there.
+  if (mounts.some((m) => typeof m.Destination === "string" && m.Destination.startsWith(`${data}/`))) return { reason: IN_COMPOSE };
+  const version = /^(\d+)\.(\d+)$/.exec(api.trim());
+  if (!version || Number(version[1]) < 1 || (Number(version[1]) === 1 && Number(version[2]) < 45)) return { reason: OLD_ENGINE };
+  return { paths: { at: mount.Destination!, volume: mount.Name } };
+}
+
+/** `docker` with `args`: its exit code (or the spawn's error code) and output. */
+export type DockerCall = (args: readonly string[]) => Promise<{ code: number | string; stdout: string; stderr: string }>;
+
+const dockerCall = (env: NodeJS.ProcessEnv): DockerCall => (args) =>
+  new Promise((resolve) => {
+    const child = execFile("docker", args, { env: withoutSecrets(env), timeout: 10_000, killSignal: "SIGKILL", maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
+      const failed = error as (NodeJS.ErrnoException & { killed?: boolean }) | null;
+      resolve({ code: !failed ? 0 : failed.killed ? "timeout" : typeof failed.code === "number" ? failed.code : (failed.code ?? failed.name), stdout: String(stdout), stderr: String(stderr) });
+    });
+    child.stdin?.end();
+  });
+
+/**
+ * Where the Docker this server runs boxes on has `data` (see the head of this file), resolved once at its start. A
+ * server with no container id in its mountinfo and none of a container's marks (`inContainer`: /.dockerenv, Podman's
+ * /run/.containerenv) is on a host: `here`, and nothing is asked. `mountinfo`, `inContainer` and `docker` are the tests'.
+ */
+export async function dockerPathsOf(env: NodeJS.ProcessEnv, data: string, options: { mountinfo?: string; inContainer?: boolean; docker?: DockerCall } = {}): Promise<DockerPaths> {
+  const mountinfo = options.mountinfo ?? (await readFile("/proc/self/mountinfo", "utf8").catch(() => ""));
+  const id = ownContainerOf(mountinfo);
+  if (!id) return (options.inContainer ?? (existsSync("/.dockerenv") || existsSync("/run/.containerenv"))) ? { reason: IN_COMPOSE } : { here: true };
+  const docker = options.docker ?? dockerCall(env);
+  // A container this Docker does not have is another Docker's: its socket is not the one that runs this server.
+  const inspected = await docker(["inspect", "--type", "container", "--format", "{{json .Mounts}}", id]);
+  if (inspected.code !== 0 && !/no such (container|object)/i.test(inspected.stderr)) return { reason: `docker inspect of this server's own container failed (${inspected.code === "timeout" ? "it did not answer" : `exit ${inspected.code}`}): restart this server to try again` };
+  let mounts: ContainerMount[] = [];
+  try {
+    if (inspected.code === 0) mounts = JSON.parse(inspected.stdout) as ContainerMount[];
+  } catch {}
+  const version = await docker(["version", "--format", "{{.Server.APIVersion}}"]);
+  return pathsOf(Array.isArray(mounts) ? mounts : [], data, version.code === 0 ? version.stdout : "");
+}

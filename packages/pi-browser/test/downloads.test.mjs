@@ -1,31 +1,67 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { cp as fs_cp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { cp as fs_cp, mkdir, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
 import test from "node:test";
 import { createRedactor, DOWNLOADS_MANIFEST, fetchDownloads, recordingHandle, safeDownloadName } from "../dist/index.js";
-import { browserbaseProvider } from "../dist/providers/browserbase.js";
 import { cdpProvider } from "../dist/providers/cdp.js";
-import { fakeBrowserbase } from "./fixtures/fake-browserbase.mjs";
 import { CHROME, NO_CHROME, skipIncapable } from "./fixtures/local-chrome.mjs";
 import { scratch } from "./fixtures/scratch.mjs";
 
 const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
-let keySeq = 0;
+let sessionSeq = 0;
+let fileSeq = 0;
 const spec = (tag) => ({ tag, maxLifetimeS: 600, idleTimeoutS: 60, proxies: false, verified: false, captcha: false, viewport: { width: 1000, height: 700 }, metadata: {} });
 
-async function browserbaseRig(t) {
-  const fake = fakeBrowserbase();
-  const provider = browserbaseProvider({ env: { BROWSERBASE_API_KEY: `dl-key-${(keySeq += 1)}` }, client: fake.sdk });
-  const ref = await provider.create(spec("ar-dl-1-1"), new AbortController().signal);
-  return { fake, provider, ref, workspace: await scratch(t, "dl-workspace-") };
+/** A provider that keeps a session's downloads at its vendor, as a hosted browser's host gives one (agentrun-serve's adapter over
+ *  a computer provider's downloads): each file's name is unique in its session (a vendor suffixes a timestamp), listed with its
+ *  size, and read as a stream cut past maxBytes. `calls` keeps each list and read, with the session it named. */
+function remoteDownloads() {
+  const files = new Map();
+  const calls = [];
+  const addDownload = (sessionId, name, content) => {
+    fileSeq += 1;
+    if (!files.has(sessionId)) files.set(sessionId, []);
+    files.get(sessionId).push({ name, bytes: Buffer.from(content), modifiedAt: new Date(Date.UTC(2026, 9, 6, 12, 0, fileSeq % 60)).toISOString() });
+  };
+  const provider = {
+    name: "remote",
+    caps: { profiles: false },
+    downloads: {
+      async list(ref) {
+        calls.push({ op: "list", session: ref.id });
+        return (files.get(ref.id) ?? []).map(({ name, bytes, modifiedAt }) => ({ name, sizeBytes: bytes.length, modifiedAt }));
+      },
+      async read(ref, name, maxBytes) {
+        calls.push({ op: "read", session: ref.id, name });
+        const file = (files.get(ref.id) ?? []).find((one) => one.name === name);
+        if (!file) throw new Error(`no download ${name} for session ${ref.id}`);
+        return (async function* () {
+          let total = 0;
+          for (let i = 0; i < file.bytes.length; i += 4) {
+            const chunk = file.bytes.subarray(i, i + 4);
+            total += chunk.byteLength;
+            if (total > maxBytes) throw new Error(`larger than the ${maxBytes}-byte limit`);
+            yield chunk;
+          }
+        })();
+      },
+    },
+  };
+  return { provider, addDownload, only: (op) => calls.filter((call) => call.op === op) };
+}
+
+async function remoteRig(t) {
+  const fake = remoteDownloads();
+  const ref = { id: `sess_${(sessionSeq += 1)}`, tag: "ar-dl-1-1" };
+  return { fake, provider: fake.provider, ref, workspace: await scratch(t, "dl-workspace-") };
 }
 const manifestOf = async (workspace) => JSON.parse(await readFile(path.join(workspace, DOWNLOADS_MANIFEST), "utf8"));
 
-test("browserbase downloads land in the workspace with their SHA-256; a second call fetches only what is new", async (t) => {
-  const { fake, provider, ref, workspace } = await browserbaseRig(t);
+test("a vendor's downloads land in the workspace with their SHA-256; a second call fetches only what is new", async (t) => {
+  const { fake, provider, ref, workspace } = await remoteRig(t);
   try {
     fake.addDownload(ref.id, "report-1719265797164.pdf", "PDF-bytes-one");
     fake.addDownload(ref.id, "table-1719265797999.csv", "a,b\n1,2\n");
@@ -38,7 +74,7 @@ test("browserbase downloads land in the workspace with their SHA-256; a second c
     assert.equal(await readFile(path.join(workspace, first.fetched[0].path), "utf8"), "PDF-bytes-one");
     assert.deepEqual((await manifestOf(workspace)).files.map((r) => [r.path, r.sha256, r.session]), first.fetched.map((f) => [f.path, f.sha256, ref.id]));
 
-    const reads = () => fake.only("get").filter((c) => c.options.__binaryResponse).length;
+    const reads = () => fake.only("read").length;
     const readsAfterFirst = reads();
     fake.addDownload(ref.id, "later-1719265800000.txt", "late");
     const second = await fetchDownloads({ provider, ref, session: ref.id, workspace });
@@ -49,12 +85,12 @@ test("browserbase downloads land in the workspace with their SHA-256; a second c
     const third = await fetchDownloads({ provider, ref, session: ref.id, workspace });
     assert.deepEqual([third.fetched.length, third.already_fetched.length], [0, 3]);
     assert.deepEqual((await readdir(path.join(workspace, "downloads"))).sort(), ["later-1719265800000.txt", "manifest.json", "report-1719265797164.pdf", "table-1719265797999.csv"], "no partial files are left");
-    assert.equal(fake.only("get").filter((c) => c.path === "/v1/downloads").every((c) => c.options.query.sessionId === ref.id), true);
+    assert.equal(fake.only("list").every((c) => c.session === ref.id), true);
   } finally { await rm(workspace, { recursive: true, force: true }); }
 });
 
 test("a deleted file is fetched again; a name taken by different bytes keeps both; hostile names stay inside downloads/", async (t) => {
-  const { fake, provider, ref, workspace } = await browserbaseRig(t);
+  const { fake, provider, ref, workspace } = await remoteRig(t);
   try {
     fake.addDownload(ref.id, "a.txt", "one");
     await fetchDownloads({ provider, ref, session: ref.id, workspace });
@@ -76,7 +112,7 @@ test("a deleted file is fetched again; a name taken by different bytes keeps bot
 });
 
 test("a file over the limit is skipped with its reason and the others still land; a symlinked downloads/ is refused", async (t) => {
-  const { fake, provider, ref, workspace } = await browserbaseRig(t);
+  const { fake, provider, ref, workspace } = await remoteRig(t);
   try {
     fake.addDownload(ref.id, "big.bin", "x".repeat(100));
     fake.addDownload(ref.id, "small.txt", "ok");
@@ -93,7 +129,7 @@ test("a file over the limit is skipped with its reason and the others still land
 });
 
 test("a third name for the same file name keeps all three: no rename ever replaces a file holding other bytes", async (t) => {
-  const { fake, provider, ref, workspace } = await browserbaseRig(t);
+  const { fake, provider, ref, workspace } = await remoteRig(t);
   try {
     const squat = `b-${sha("three").slice(0, 8)}.txt`;
     await mkdir(path.join(workspace, "downloads"), { recursive: true });
@@ -110,7 +146,7 @@ test("a third name for the same file name keeps all three: no rename ever replac
 });
 
 test("the per-call limit counts files this call fetches: files fetched before never starve the ones behind them", async (t) => {
-  const { fake, provider, ref, workspace } = await browserbaseRig(t);
+  const { fake, provider, ref, workspace } = await remoteRig(t);
   try {
     for (let i = 0; i < 5; i += 1) fake.addDownload(ref.id, `f${i}.txt`, `body ${i}`);
     const first = await fetchDownloads({ provider, ref, session: ref.id, workspace, maxFiles: 2 });
@@ -124,7 +160,7 @@ test("the per-call limit counts files this call fetches: files fetched before ne
 });
 
 test("two sessions that fetch identical bytes into one workspace each keep their record", async (t) => {
-  const a = await browserbaseRig(t); const b = await browserbaseRig(t);
+  const a = await remoteRig(t); const b = await remoteRig(t);
   try {
     a.fake.addDownload(a.ref.id, "report.pdf", "same bytes");
     b.fake.addDownload(b.ref.id, "report.pdf", "same bytes");
@@ -141,7 +177,7 @@ test("two sessions that fetch identical bytes into one workspace each keep their
 
 test("concurrent fetches into one workspace lose no record", async (t) => {
   const workspace = await scratch(t, "dl-workspace-");
-  const rigs = await Promise.all([1, 2, 3, 4].map(() => browserbaseRig(t)));
+  const rigs = await Promise.all([1, 2, 3, 4].map(() => remoteRig(t)));
   try {
     rigs.forEach((r, i) => { r.fake.addDownload(r.ref.id, `c${i}.txt`, `concurrent ${i}`); r.fake.addDownload(r.ref.id, `d${i}.txt`, `concurrent d ${i}`); });
     await Promise.all(rigs.map((r, i) => fetchDownloads({ provider: r.provider, ref: r.ref, session: `s${i}`, workspace })));
@@ -154,7 +190,7 @@ test("concurrent fetches into one workspace lose no record", async (t) => {
 test("concurrent calls fetching different bytes under one name keep both files, and every manifest row matches the file it names", async (t) => {
   for (let round = 0; round < 12; round += 1) {
     const workspace = await scratch(t, "dl-workspace-");
-    const rigs = await Promise.all([1, 2, 3].map(() => browserbaseRig(t)));
+    const rigs = await Promise.all([1, 2, 3].map(() => remoteRig(t)));
     try {
       rigs.forEach((r, i) => r.fake.addDownload(r.ref.id, "report.pdf", `different bytes ${round} ${i}`));
       await Promise.all(rigs.map((r, i) => fetchDownloads({ provider: r.provider, ref: r.ref, session: `s${i}`, workspace })));
@@ -167,7 +203,7 @@ test("concurrent calls fetching different bytes under one name keep both files, 
 });
 
 test("a download named like the lock or the manifest's temporary file blocks nothing", async (t) => {
-  const { fake, provider, ref, workspace } = await browserbaseRig(t);
+  const { fake, provider, ref, workspace } = await remoteRig(t);
   try {
     fake.addDownload(ref.id, "manifest.json.lock", "a file called that");
     fake.addDownload(ref.id, ".downloads.lock", "and a dotted one");
@@ -181,7 +217,7 @@ test("a download named like the lock or the manifest's temporary file blocks not
 });
 
 test("two remote files that trim to one local name keep a record each", async (t) => {
-  const { fake, provider, ref, workspace } = await browserbaseRig(t);
+  const { fake, provider, ref, workspace } = await remoteRig(t);
   try {
     fake.addDownload(ref.id, "a.txt", "identical");
     fake.addDownload(ref.id, " a.txt", "identical");
@@ -228,7 +264,9 @@ test("a real Chrome downloads a file; the cdp provider lists it once finished, a
     await page.goto(`http://127.0.0.1:${server.address().port}/`);
     await page.evaluate(() => document.getElementById("d").click());
     let listed = [];
-    for (const deadline = Date.now() + 20_000; !listed.length && Date.now() < deadline; ) { listed = await provider.downloads.list(ref); if (!listed.length) await new Promise((r) => setTimeout(r, 200)); }
+    // Until it is listed and nothing is still downloading: a file Chrome is writing is listed as downloading.
+    const settled = (rows) => rows.length > 0 && rows.every((f) => !f.downloading);
+    for (const deadline = Date.now() + 20_000; !settled(listed) && Date.now() < deadline; ) { listed = await provider.downloads.list(ref); if (!settled(listed)) await new Promise((r) => setTimeout(r, 200)); }
     assert.deepEqual(listed.map((f) => [f.name, f.sizeBytes]), [["fixture.bin", payload.length]], "the finished file, never a .crdownload");
     const first = await fetchDownloads({ provider, ref, session: "local", workspace });
     assert.deepEqual(first.fetched.map((f) => [f.path, f.sizeBytes, f.sha256]), [["downloads/fixture.bin", payload.length, sha(payload)]]);
@@ -242,6 +280,59 @@ test("a real Chrome downloads a file; the cdp provider lists it once finished, a
     server.close();
     await rm(root, { recursive: true, force: true }); await rm(workspace, { recursive: true, force: true });
   }
+});
+
+/** A local lease's downloads folder, as the cdp provider keeps it beside the lease's profile, filled by the test. */
+async function localFolder(t, tag) {
+  const root = await scratch(t, "cdp-dl-dir-");
+  const dir = `${path.join(root, tag)}.downloads`;
+  await mkdir(dir, { recursive: true });
+  return { provider: cdpProvider({ chrome: { executablePath: "x", profileRoot: root } }), ref: { id: `local:1:${tag}`, tag }, dir };
+}
+const STILL = "still downloading; call browser_downloads again";
+
+test("a download Chrome is still writing is told as still downloading, never filed: its empty final name beside a .crdownload, and the .crdownload itself; the next call files it with its SHA-256", async (t) => {
+  const { provider, ref, dir } = await localFolder(t, "dl-settling");
+  const workspace = await scratch(t, "dl-settling-ws-");
+  const payload = Buffer.from(Array.from({ length: 5000 }, (_, i) => (i * 7) % 256));
+  // As Chrome (sandboxed, under load) leaves it for a moment at the end: the final name created empty, the bytes still in
+  // the temporary file.
+  await writeFile(path.join(dir, "fixture.bin"), "");
+  await writeFile(path.join(dir, "Unconfirmed 33290.crdownload"), payload);
+  assert.deepEqual((await provider.downloads.list(ref)).map((f) => [f.name, f.sizeBytes, f.downloading ?? false]), [["fixture.bin", 0, true], ["Unconfirmed 33290", 5000, true]]);
+  const first = await fetchDownloads({ provider, ref, session: "local", workspace });
+  assert.deepEqual(first.fetched, [], "nothing filed while the browser writes");
+  assert.deepEqual(first.skipped, [{ name: "fixture.bin", reason: STILL }, { name: "Unconfirmed 33290", reason: STILL }], "the model is told each is still downloading");
+  // A .crdownload named for the final name is the same download, listed once.
+  await writeFile(path.join(dir, "fixture.bin.crdownload"), payload.subarray(0, 100));
+  assert.deepEqual((await provider.downloads.list(ref)).map((f) => [f.name, f.downloading ?? false]), [["fixture.bin", true], ["Unconfirmed 33290", true]]);
+  await rm(path.join(dir, "fixture.bin.crdownload"));
+  // Chrome renames the temporary file over the final name.
+  await rename(path.join(dir, "Unconfirmed 33290.crdownload"), path.join(dir, "fixture.bin"));
+  const second = await fetchDownloads({ provider, ref, session: "local", workspace });
+  assert.deepEqual(second.fetched.map((f) => [f.path, f.sizeBytes, f.sha256]), [["downloads/fixture.bin", 5000, sha(payload)]]);
+  assert.deepEqual(second.skipped, []);
+  assert.deepEqual(await readFile(path.join(workspace, "downloads", "fixture.bin")), payload);
+});
+
+test("a file replaced while it is read is not filed: the call says it is still downloading, and the next call files the file that stayed", async (t) => {
+  const { provider, ref, dir } = await localFolder(t, "dl-replaced");
+  const workspace = await scratch(t, "dl-replaced-ws-");
+  const early = Buffer.from("early bytes");
+  const final = Buffer.from("the bytes that stayed, longer than the early ones");
+  await writeFile(path.join(dir, "report.pdf"), early);
+  let swapped = false;
+  // The file is replaced once its read has opened it: the read streams the old file whole, and only a check after it can tell.
+  const racing = { list: provider.downloads.list, read: async (r, name, max) => {
+    const stream = await provider.downloads.read(r, name, max);
+    if (!swapped) { swapped = true; await writeFile(path.join(dir, ".swap"), final); await rename(path.join(dir, ".swap"), path.join(dir, "report.pdf")); }
+    return stream;
+  } };
+  const first = await fetchDownloads({ provider: { downloads: racing }, ref, session: "local", workspace });
+  assert.deepEqual([first.fetched, first.skipped], [[], [{ name: "report.pdf", reason: STILL }]]);
+  assert.deepEqual((await readdir(path.join(workspace, "downloads"))).filter((n) => n !== "manifest.json"), [], "no part of the old file is left");
+  const second = await fetchDownloads({ provider: { downloads: racing }, ref, session: "local", workspace });
+  assert.deepEqual(second.fetched.map((f) => [f.path, f.sizeBytes, f.sha256]), [["downloads/report.pdf", final.length, sha(final)]]);
 });
 
 // A read error's message is a provider's text; the run's secrets leave the whole message before the 200-character cut.

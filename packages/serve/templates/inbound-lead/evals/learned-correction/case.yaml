@@ -1,0 +1,8 @@
+# Applied with these parameters (POST /v2/templates/inbound-lead/apply). Pass: 3 of 3 runs.
+parameters:
+  icp: "B2B fintechs, banks and payment companies that onboard businesses or consumers and must run KYC or KYB checks. 50 to 5,000 employees. Headquartered in the US, the UK or the EU. Good signs: a compliance, risk or onboarding team; hiring compliance or KYC analysts; raised a Series A or later. Disqualifiers: gambling, betting or casino operators; companies under 10 people; students."
+  post_to: none
+  competitors: "Alloy, Persona, Middesk, Sardine"
+# The agent's learning folder is seeded from fixtures/learning/ (MEMORY.md and its one note) before the run, so the
+# run reads the note under # Learned as it would after the owner's correction was kept.
+learning: fixtures/learning/

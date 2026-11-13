@@ -6,14 +6,16 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { Agents } from "../dist/agents.js";
-import { BOX_IDS } from "../dist/boxes.js";
-import { agent, flowAgent, follow, scratch, serve } from "./support.mjs";
+import { PROVIDERS } from "@parcha/agentrun-computer";
+import { commitAgent, createAgent, getAgent } from "../dist/agents-store.js";
+import { BOX_IDS } from "../dist/place-offers.js";
+import { agent, flowAgent, follow, serve } from "./support.mjs";
+import { storeOn } from "./store-helpers.mjs";
 
 const storedBodies = (data) => {
   const db = new DatabaseSync(join(data, "store.sqlite"), { readOnly: true });
   try {
-    return db.prepare("SELECT body_json FROM revisions").all().map((row) => JSON.parse(row.body_json));
+    return db.prepare("SELECT body FROM revisions ORDER BY created_at, rowid").all().map((row) => JSON.parse(row.body));
   } finally {
     db.close();
   }
@@ -99,18 +101,22 @@ test("a place of the wrong shape is a 422 at definition.place with a plain messa
   assert.equal((await api("GET", "/agents/good")).body.revisions, 1);
 });
 
-test("a sandbox place saves with a warning naming its box, and a run of it is 409 agent_not_runnable naming the box: nothing starts", async (t) => {
+test("a sandbox place this server can't run saves with a warning that names the fix, and a run of it is 409 agent_not_runnable in the same words: nothing starts", async (t) => {
   const { api } = await serve(t);
-  for (const [id, body, box, input] of [
-    ["bwrapped", agent("bwrapped", { place: { mode: "sandbox", box: "bwrap" } }), "bwrap", { content: "hi" }],
-    ["sandboxed", agent("sandboxed", { place: { mode: "sandbox", box: "modal" } }), "modal", { content: "hi" }],
-    ["docked", agent("docked", { place: { mode: "sandbox", box: "docker" } }), "docker", { content: "hi" }],
+  // A place is its computer setting's view (computer-setting.ts), so it is checked as the run's claim resolves it
+  // (resolve-computer.ts computerReadiness): no such provider, Mode 1's Docker-only sandbox, or the Docker box's own
+  // reason (with the box it names, `box`), each naming what to do.
+  const SETTINGS = "for this agent's computer in Settings → Computers";
+  const SANDBOXES = PROVIDERS.filter((one) => one.kinds.includes("sandbox")).map((one) => one.label).join(", ");
+  for (const [id, body, words, box] of [
+    ["bwrapped", agent("bwrapped", { place: { mode: "sandbox", box: "bwrap" } }), `"bwrap" is no computer provider this server knows: pick one of ${SANDBOXES} ${SETTINGS}.`, undefined],
+    ["sandboxed", agent("sandboxed", { place: { mode: "sandbox", box: "daytona" } }), `Mode 1 runs a sandbox only on Docker: a Daytona sandbox can't reach the run's folder on this machine. Pick Docker ${SETTINGS}, or another kind of computer.`, undefined],
+    ["docked", agent("docked", { place: { mode: "sandbox", box: "docker" } }), "This agent's computer is a Docker sandbox, and this server cannot run it: not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker.", "docker"],
   ]) {
     const made = await api("POST", "/agents", body);
     assert.equal(made.status, 201, JSON.stringify(made.body));
-    assert.deepEqual(made.body.warnings.map((w) => [w.field, w.reason]), [["definition.place", "not_set_up_here"]]);
-    assert.equal(made.body.warnings[0].message, `This agent's place is sandbox on ${box}, and this server cannot run it there: ${box === "bwrap" ? "the bwrap box is not in this release yet: use the docker box" : `not enabled on this server: start AgentRun with AGENTRUN_BOXES=${box}`}.`);
-    const run = await api("POST", `/agents/${id}/runs`, { input });
+    assert.deepEqual(made.body.warnings.map((w) => [w.field, w.reason, w.message]), [["definition.computer", "not_set_up_here", words]]);
+    const run = await api("POST", `/agents/${id}/runs`, { input: { content: "hi" } });
     assert.equal(run.status, 409, JSON.stringify(run.body));
     assert.equal(run.body.error.code, "agent_not_runnable");
     assert.equal(run.body.error.details.box, box);
@@ -130,7 +136,7 @@ test("an edit that names no place keeps the agent's; one that names another plac
   };
   const kept = await edit({ instructions: "Answer briefly." });
   assert.deepEqual(kept.definition.place, { mode: "sandbox", box: "docker" }, "absent on an edit: unchanged");
-  assert.deepEqual(kept.warnings.map((w) => w.field), ["definition.place"], "and still warned of");
+  assert.deepEqual(kept.warnings.map((w) => w.field), ["definition.computer"], "and still warned of, as its computer setting");
   const moved = await edit({ instructions: "Answer briefly.", place: { mode: "runner" } });
   assert.deepEqual(moved.definition.place, { mode: "runner" });
   assert.deepEqual(moved.warnings, []);
@@ -149,17 +155,16 @@ test("an edit identical to the current revision is a no-op, whether it names the
 });
 
 test("an edit without If-Match that another edit overtakes while it is checked is built again on the new current revision: it never restores the place or harness it read", async (t) => {
-  const agents = new Agents(join(await scratch(t), "agents"));
-  t.after(() => agents.close());
-  const made = await agents.create({ definition: { id: "raced", name: "raced", instructions: "Answer.", place: { mode: "runner" } } });
+  const { store } = await storeOn(t);
+  const made = await createAgent(store, { definition: { id: "raced", name: "raced", instructions: "Answer.", place: { mode: "runner" } } });
   let overtaken = false;
   const checked = [];
-  const edited = await agents.commit(made, { definition: { instructions: "Answer briefly." } }, {
+  const edited = await commitAgent(store, made, { definition: { instructions: "Answer briefly." } }, {
     check: async (revision) => {
-      checked.push(revision.place);
+      checked.push(revision.body.place);
       if (overtaken) return;
       overtaken = true;
-      await agents.commit(await agents.get("raced"), { definition: { instructions: "Answer.", place: { mode: "sandbox", box: "docker" }, harness: "codex" } });
+      await commitAgent(store, await getAgent(store, "raced"), { definition: { instructions: "Answer.", place: { mode: "sandbox", box: "docker" }, harness: "codex" } });
     },
   });
   assert.equal(edited.revision.body.instructions, "Answer briefly.");

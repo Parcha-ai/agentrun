@@ -1,4 +1,4 @@
-// web_fetch: fetch_page's Page (fetch-page.ts) plus `via`, the path that served it. It is the kernel's guarded direct
+// web_fetch: the guarded fetch's Page (web-fetch-direct.ts) plus `via`, the path that served it. It is the kernel's guarded direct
 // fetch unless the run's plane resolves it to Parallel (tool-plane.ts: the agent's or the server's pick): then the page is
 // read through Parallel's Extract API (https://docs.parallel.ai/api-reference/extract-beta/extract, about $0.001 a URL),
 // and when Parallel answers no page (the URL in its `errors`, no content, a 5xx, a timeout) through the guarded direct
@@ -10,7 +10,7 @@
 // capabilities resolves to Parallel, read once and held in this module's memory: never in an environment, a child or a
 // file.
 //
-// A page is read once a run and given in parts (fetch-page.ts): the tool's `offset` and `max_chars` name the part. The
+// A page is read once a run and given in parts (web-fetch-direct.ts): the tool's `offset` and `max_chars` name the part. The
 // first call for a URL reads the page, through Parallel or the direct fetch, and the run keeps what it read by the URL
 // asked for (Pages, the last PAGES_HELD pages), from the moment the read starts: every later part of that URL, and a call
 // made while it is read, comes from it, with no request and, through Parallel, no bill. A read that fails is not kept.
@@ -20,11 +20,12 @@
 // known only when Parallel gave less than it was asked for (a cut text can be longer, in UTF-16 units, where Parallel
 // counts code points).
 import type { JsonValue } from "@earendil-works/chord";
-import type { TSchema } from "@earendil-works/pi-ai";
+import type { TSchema } from "typebox";
 import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { PublicFetchOptions } from "@parcha/pi-browser";
-import { FAUX_PARALLEL_ENV, fauxFetch, handedKeys, PARALLEL_KEY_ENV } from "./decisions.js";
-import { clip, fetchOptions, HTML_READ_CHARS, linksWithin, MAX_CHARS_MIN, PAGE_CHARS, PAGE_READ_MAX_CHARS, type Page, type Part, partOfRead, partProblem, type Read, readDirect, TEXT_CAP, TIMEOUT_MS, TITLE_CAP, textOf, type Unread, URL_MAX, URL_PARAMETERS } from "./fetch-page.js";
+import { type CapRefusal, capRefusals } from "./cap.js";
+import { FAUX_PARALLEL_ENV, fauxFetch, parallelKeyOf } from "./decisions.js";
+import { clip, fetchOptions, HTML_READ_CHARS, linksWithin, MAX_CHARS_MIN, PAGE_CHARS, PAGE_READ_MAX_CHARS, type Page, type Part, partOfRead, partProblem, type Read, readDirect, TEXT_CAP, TIMEOUT_MS, TITLE_CAP, textOf, type Unread, URL_MAX, URL_PARAMETERS } from "./web-fetch-direct.js";
 import { FAUX_ENV } from "./model.js";
 import { PaidRefused, paidRequest, parallelFeeOf } from "./paid-calls.js";
 import { forModel } from "./result.js";
@@ -42,7 +43,10 @@ export type WebPage = Page & { via: "parallel" | "direct" | "stopped"; parallel?
 /** A page web_fetch read, and how (WebPage's `via` and `parallel`). */
 export type WebRead = Read & Pick<WebPage, "via" | "parallel">;
 /** A page web_fetch could not read, and how it tried. */
-type WebUnread = Unread & Pick<WebPage, "via" | "parallel">;
+/** On a read the cap refused in a call node (readOnce): the refusal, carried with the shared read, so every call node
+ *  that shares it is told and held, not only the one that started it (webFetch). Never serialized: a symbol key. */
+const HELD = Symbol("the cap's refusal of a shared read");
+type WebUnread = Unread & Pick<WebPage, "via" | "parallel"> & { readonly [HELD]?: CapRefusal };
 /** The pages a run reads, by the URL asked for, each from its read's start (so calls at once share it), the last used
  *  last: at most PAGES_HELD of them. */
 export type Pages = Map<string, Promise<WebRead | WebUnread>>;
@@ -123,7 +127,7 @@ export function parallelExtract(apiKey: string, send: typeof fetch = fetch): Ext
   };
 }
 
-/** Whether the public-host guard passes `url` within `ms` and the caller's signal: fetch_page's port check, then
+/** Whether the public-host guard passes `url` within `ms` and the caller's signal: the guarded fetch's port check, then
  *  publicFetch's own checks of the first hop (scheme, name, every address it resolves to), stopped before it dials. A
  *  check that runs out of time (a resolver that does not answer) does not pass; publicFetch ends a lookup at the abort. */
 async function passes(url: string, options: GuardOptions, ms: number): Promise<boolean> {
@@ -136,16 +140,23 @@ async function passes(url: string, options: GuardOptions, ms: number): Promise<b
 }
 
 /** The page at `url` read once: through `parallel` when it is given and live and the guard passes the URL within
- *  `checkMs` (default fetch_page's 30 s), else (or when it answers no page) through fetch_page's guarded fetch. A page
+ *  `checkMs` (default the guarded fetch's 30 s), else (or when it answers no page) through the guarded fetch. A page
  *  fetched directly where `parallel` was given says why Parallel gave none (`parallel`): a picked provider that fails is
- *  never a silent fallback. */
+ *  never a silent fallback. In a workflow's call node (a listener for the cap's refusals, cap.ts capRefusals), a read the
+ *  cap refuses is the call's held refusal: no page, no direct fetch in its place, and nothing the run keeps, so the call
+ *  run again after a raise reads through Parallel. */
 async function readOnce(url: unknown, parallel: Extract | null | undefined, checkMs: number, options: GuardOptions): Promise<WebRead | WebUnread> {
   let why: string | undefined;
   if (parallel && !parallel.live()) why = "not tried: refused earlier in this run";
   else if (parallel && !(typeof url === "string" && (await passes(url, options, checkMs)))) why = "not tried: the URL did not pass the public-host guard";
   else if (parallel) {
-    const read = await parallel.read(url as string, options.signal);
+    const told = capRefusals.getStore();
+    let held: CapRefusal | undefined;
+    const read = told
+      ? await capRefusals.run((refusal) => ((held ??= refusal), told(refusal)), () => parallel.read(url as string, options.signal))
+      : await parallel.read(url as string, options.signal);
     if (typeof read !== "string") return { ...read, via: "parallel" };
+    if (held) return { ok: false, url: clip(url as string, URL_MAX), status: 0, title: "", text: "", links: [], error: read, via: "parallel", parallel: read, [HELD]: held };
     why = read;
   }
   return { ...(await readDirect(url, options)), via: "direct", ...(why ? { parallel: why } : {}) };
@@ -188,6 +199,8 @@ function untilStopped(url: unknown, reading: Promise<WebRead | WebUnread>, signa
 export async function webFetch(url: unknown, { parallel, pages, checkMs = TIMEOUT_MS, offset, maxChars, signal, ...options }: GuardOptions & Part & { parallel?: Extract | null; pages?: Pages; checkMs?: number } = {}): Promise<WebPage> {
   const named = typeof url === "string" ? url : undefined;
   let reading = named === undefined ? undefined : pages?.get(named);
+  /** The run's read under way for this URL, taken by this call: its refusal at the cap is this call's too (HELD). */
+  const shared = reading !== undefined;
   if (!reading) {
     const started = readOnce(url, parallel, checkMs, options);
     if (pages && named !== undefined) {
@@ -204,26 +217,44 @@ export async function webFetch(url: unknown, { parallel, pages, checkMs = TIMEOU
     trim(pages);
   }
   const read = await untilStopped(url, reading, signal);
+  // A shared read the cap refused holds this call node as it held the one that started it (told there, in readOnce):
+  // the same refusal, told here, so this call waits for a raise too instead of taking the unread page as its answer.
+  const refusal = shared && !read.ok ? read[HELD] : undefined;
+  if (refusal) capRefusals.getStore()?.(refusal);
   if (!read.ok) return read;
   const { via, parallel: why, ...page } = read;
   return { ...partOfRead(page, { offset, maxChars }), via, ...(why ? { parallel: why } : {}) };
 }
 
-let parallel: Extract | null | undefined;
-/** The pages this run read (Pages): its process is the run's, so the agent's tool and a call node's web_fetch share them. */
-export const runPages: Pages = new Map();
-/** The run's Parallel extract, made once in its process so a refused key holds for the rest of the run: on the Parallel
- *  key the server handed it (handedKeys, the read the decision providers share), null without one. */
+/** Each run's Parallel extract, by the environment its calls are given: one object per run (main's run process hands
+ *  process.env; the runner hands each claim its own, claim-secrets.ts), so one claim's key or client never serves another. */
+const parallels = new WeakMap<NodeJS.ProcessEnv, Extract | null>();
+/** Each run's pages, by the environment its calls are given (one object per run: main's run process hands process.env,
+ *  the runner hands each claim its own), so the pages one run read never serve another's. */
+const pagesByRun = new WeakMap<NodeJS.ProcessEnv, Pages>();
+/** The pages the run whose calls are given `env` read (Pages): the agent's tool and a call node's web_fetch of that run
+ *  share them, another run's never. */
+export function pagesOf(env: NodeJS.ProcessEnv): Pages {
+  let pages = pagesByRun.get(env);
+  if (!pages) pagesByRun.set(env, (pages = new Map()));
+  return pages;
+}
+/** The run's Parallel extract, made once for the environment its calls are given, so a refused key holds for the rest of
+ *  the run: on the Parallel key that environment holds (parallelKeyOf: the per-run pipe, or the claim's own), null
+ *  without one. */
 export function parallelOf(env: NodeJS.ProcessEnv): Extract | null {
-  if (parallel !== undefined) return parallel;
-  const key = handedKeys(env)[PARALLEL_KEY_ENV];
-  return (parallel = key === undefined ? null : parallelExtract(key, async (...args) => ((await fauxFetch(env, FAUX_PARALLEL_ENV)) ?? fetch)(...args)));
+  const made = parallels.get(env);
+  if (made !== undefined) return made;
+  const key = parallelKeyOf(env);
+  const extract = key === undefined ? null : parallelExtract(key, async (...args) => ((await fauxFetch(env, FAUX_PARALLEL_ENV)) ?? fetch)(...args));
+  parallels.set(env, extract);
+  return extract;
 }
 
 /** The part `options` names of the page at `url` by the provider the run's plane resolves web_fetch to: Parallel's
  *  extract (with the direct fetch behind it) where it resolves to parallel, the guarded direct fetch otherwise, and a
  *  failed Page saying why where it is unavailable or the part is one a call may not ask for (partProblem), before
- *  anything is fetched. From `pages` (the run's, runPages) where they hold the URL. */
+ *  anything is fetched. From `pages` (the run's, pagesOf) where they hold the URL. */
 export async function fetchFor(env: NodeJS.ProcessEnv, url: unknown, options: GuardOptions & Part & { pages?: Pages } = {}): Promise<WebPage | Page> {
   const problem = partProblem(options);
   if (problem) return { ok: false, url: typeof url === "string" ? clip(url, URL_MAX) : "", status: 0, title: "", text: "", links: [], error: problem };
@@ -263,7 +294,7 @@ export function webFetchText(page: WebPage | Page, name: string = WEB_FETCH_TOOL
   return lines.join("\n");
 }
 
-/** The agent's tool: the WebPage as JSON text (webFetchText), named `name` (fetch_page, its legacy name, runs it too). A
+/** The agent's tool: the WebPage as JSON text (webFetchText), named `name`. A
  *  run whose web_fetch resolves to Parallel reads its key as the tool is made, when the run opens. */
 /** Typed here, so its declaration names the schema type by a package serve declares (pi-ai), whatever else the build loads. */
 export function webFetchTool(env: NodeJS.ProcessEnv, name = WEB_FETCH_TOOL): ToolRegistration<TSchema, JsonValue> {
@@ -275,7 +306,7 @@ export function webFetchTool(env: NodeJS.ProcessEnv, name = WEB_FETCH_TOOL): Too
     replay: "safe",
     execute: async (args, _api, context) => {
       const { url, offset, max_chars } = args as { url?: unknown; offset?: number; max_chars?: number };
-      const page = await fetchFor(env, url, { ...(await fetchOptions(env, FAUX_ENV)), offset, maxChars: max_chars, pages: runPages, ...(context?.abortSignal ? { signal: context.abortSignal } : {}) });
+      const page = await fetchFor(env, url, { ...(await fetchOptions(env, FAUX_ENV)), offset, maxChars: max_chars, pages: pagesOf(env), ...(context?.abortSignal ? { signal: context.abortSignal } : {}) });
       return forModel(webFetchText(page, name), { details: page });
     },
   });

@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as dsl from "@parcha/agentrun-dsl";
 import { CAPS, checkProposal } from "../dist/learn/check.js";
-import { servedSkill } from "../dist/learn/skills.js";
+import { frontMatter, servedSkill } from "../dist/learn/skills.js";
 import * as words from "../dist/learning-words.js";
 import * as tools from "../dist/tools.js";
 import { added, baseOf, DRAFT_PATH, note, README_PATH, readme, richWorkflow, SEED, SKILL_PATH, skill, workflow } from "./learn-format-support.mjs";
@@ -39,9 +39,129 @@ test("the tools a draft may name are the agent's granted tools a workflow's call
   // A learned workflow's model node runs without tools: only a call node's tool is on the list (read is a model node's).
   assert.deepEqual(tools.learnedWorkflowTools(GRANTED), ["web_fetch", "web_search"]);
   // A legacy name a revision still grants is on the list as granted, and by its capability's name.
-  assert.deepEqual(tools.learnedWorkflowTools(["fetch_page"]), ["fetch_page", "web_fetch"]);
+  assert.deepEqual(tools.learnedWorkflowTools(["web_fetch"]), ["web_fetch"]);
   assert.deepEqual(tools.learnedWorkflowTools([]), []);
   for (const name of ["Bash", "exec_command", "apply_patch", "bash", "ask_person"]) assert.ok(!tools.learnedWorkflowTools([...tools.BOUND_TOOLS, name]).includes(name), name);
+});
+
+// LS-07: a learned workflow's call node runs an MCP tool as any tool, `via: "tool"` with its address in `tool`
+// (mcp:<server>/<tool>). A draft may name one the agent's revision grants, by its own name or its server's wildcard, and
+// its gate allows; the run's MCP pin is the runtime's to check at the call (there is none at proposal time).
+const mcpCall = (tool, label = "File it") => ({ node: "call", label, via: "tool", tool, args: { title: "{url}" }, out: "Page", as: "page", deadline_s: 30 });
+
+test("an MCP tool is on a draft's list when the agent's revision grants it, by its own name or under its server's wildcard as the server lists its tools, and its gate does not deny it: set to ask it is offered, since the learned_workflow call asks once (#2424); the runtime's own read admits none, its pin's tools come in apart", async () => {
+  const { permissionOf } = await import("../dist/tool-gate.js");
+  const MCP = { mcp: true, approvers: true };
+  // Granted by name: on the list. A wildcard names no tool until it is read against its server's listing.
+  assert.deepEqual(tools.learnedWorkflowTools(["web_fetch", "mcp:linear/create_issue", "mcp:github/*"], undefined, MCP), ["web_fetch", "mcp:linear/create_issue"]);
+  // The runtime's read (learned-workflow.ts, at a call): no MCP tool here, the run's pin's come in apart.
+  assert.deepEqual(tools.learnedWorkflowTools(["web_fetch", "mcp:linear/create_issue"]), ["web_fetch"]);
+  const listed = (server) => (server === "github" ? ["create_pull_request", "list_pull_requests"] : []);
+  assert.deepEqual(tools.mcpGrantsListed(["web_fetch", "mcp:github/*", "mcp:linear/create_issue", "mcp:gone/*"], listed), ["web_fetch", "mcp:github/create_pull_request", "mcp:github/list_pull_requests", "mcp:linear/create_issue"]);
+  const granted = tools.mcpGrantsListed(["web_fetch", "mcp:github/*", "mcp:linear/create_issue"], listed);
+  // Unset, an MCP tool asks (a third-party catalog tool's default): offered, since its learned_workflow call asks once.
+  const unset = tools.learnedDraftTools(granted, (name) => permissionOf(name, {}, {}, "ask"), undefined, undefined, MCP);
+  assert.deepEqual([unset.tools, unset.gated], [["web_fetch", "mcp:github/create_pull_request", "mcp:github/list_pull_requests", "mcp:linear/create_issue"], {}]);
+  // With no one to answer an ask (the server's accounts off, server-approvers.ts), the learned call's ask is refused at
+  // once (#2424): an MCP tool set to ask is held back, as a table tool's is. Not said: no one, so none is offered.
+  for (const options of [{ mcp: true, approvers: false }, { mcp: true }]) {
+    const lone = tools.learnedDraftTools(granted, (name) => permissionOf(name, {}, {}, "ask"), undefined, undefined, options);
+    assert.deepEqual([lone.tools, Object.keys(lone.gated).sort()], [["web_fetch"], ["mcp:github/create_pull_request", "mcp:github/list_pull_requests", "mcp:linear/create_issue"]], JSON.stringify(options));
+  }
+  // Denied (one tool, or its server's wildcard): refused, named with its setting.
+  const settings = { "mcp:github/*": { permission: "deny" }, "mcp:linear/create_issue": { permission: "allow" } };
+  const denied = tools.learnedDraftTools(granted, (name) => permissionOf(name, {}, settings, "ask"), undefined, undefined, MCP);
+  assert.deepEqual([denied.tools, denied.gated], [["web_fetch", "mcp:linear/create_issue"], { "mcp:github/create_pull_request": "deny", "mcp:github/list_pull_requests": "deny" }]);
+  // A table tool set to ask is still held back: its call node can't wait for an approval.
+  const table = tools.learnedDraftTools(["web_fetch"], () => "ask", undefined, undefined, MCP);
+  assert.deepEqual([table.tools, table.gated], [[], { web_fetch: "ask" }]);
+});
+
+// Who can answer an ask is server-wide (server-approvers.ts, the store's approvers row: accounts on); an agent whose
+// approvals are "never" turns an ask into an allow, a deny behind it still standing. The learn-time offer follows both.
+test("accounts off, an ask-set MCP tool is not offered and a draft using it is refused in the gate's words; accounts on, it is offered; approvals never, it is offered as allow", async () => {
+  const { permissionOf } = await import("../dist/tool-gate.js");
+  const granted = ["mcp:linear/create_issue"];
+  const ask = (approvals) => (name) => permissionOf(name, {}, {}, approvals);
+  const off = tools.learnedDraftTools(granted, ask("ask"), undefined, undefined, { mcp: true, approvers: false });
+  assert.deepEqual([off.tools, off.gated], [[], { "mcp:linear/create_issue": "ask" }]);
+  const refused = check(draft(withCall(mcpCall("mcp:linear/create_issue"))), { tools: off.tools, gated: off.gated });
+  assert.match(refused.problems.map((p) => p.detail).join(" | "), /calls mcp:linear\/create_issue, which is set to ask/);
+  const on = tools.learnedDraftTools(granted, ask("ask"), undefined, undefined, { mcp: true, approvers: true });
+  assert.deepEqual([on.tools, on.gated], [["mcp:linear/create_issue"], {}]);
+  assert.deepEqual(check(draft(withCall(mcpCall("mcp:linear/create_issue"))), { tools: on.tools, gated: on.gated }).ok, true);
+  // Approvals never: the ask reads allow, with no one to answer or with someone.
+  for (const approvers of [false, true]) {
+    const never = tools.learnedDraftTools(granted, ask("never"), undefined, undefined, { mcp: true, approvers });
+    assert.deepEqual([never.tools, never.gated], [["mcp:linear/create_issue"], {}], `approvers ${approvers}`);
+  }
+  // A deny behind it stands, approvals never or not.
+  const denied = tools.learnedDraftTools(granted, (name) => permissionOf(name, {}, { "mcp:linear/create_issue": { permission: "deny" } }, "never"), undefined, undefined, { mcp: true, approvers: true });
+  assert.deepEqual([denied.tools, denied.gated], [[], { "mcp:linear/create_issue": "deny" }]);
+});
+
+// #2424: a learned_workflow call whose MCP tools set to ask don't all fit on its approval card (learnedAskFits) is refused
+// at the gate. At learn time the same rule, #2424's own, refuses such a draft in the gate's words, so none is kept that
+// every call would refuse; one whose ask-set tools fit is offered and passes.
+const LONG = (i) => `mcp:linear/create_issue_with_a_rather_long_descriptive_name_${String(i).padStart(2, "0")}`;
+const manyCalls = (n) => {
+  const doc = JSON.parse(richWorkflow());
+  doc.root.steps.splice(1, 1, ...Array.from({ length: n }, (_, i) => ({ ...mcpCall(LONG(i), `Call ${i}`), as: `page${i}` })));
+  return JSON.stringify(doc);
+};
+test("a draft whose MCP tools set to ask would not all fit on its learned call's approval card is refused at learn time in the gate's words; one whose do is offered and passes", async () => {
+  const { learnedAskFits } = await import("../dist/learned-workflow.js");
+  const { permissionOf } = await import("../dist/tool-gate.js");
+  const granted = Array.from({ length: 40 }, (_, i) => LONG(i));
+  const offered = tools.learnedDraftTools(granted, (name) => permissionOf(name, {}, {}, "ask"), undefined, undefined, { mcp: true, approvers: true });
+  assert.deepEqual(offered.asked, granted, "every one is offered because it asks");
+  assert.equal(learnedAskFits(granted.slice(0, 40)), false, "40 of them do not fit");
+  const ask = { asked: offered.asked, fits: learnedAskFits };
+  const crowded = check(draft(manyCalls(40)), { tools: offered.tools, gated: offered.gated, ask });
+  assert.ok(crowded.problems.some((p) => p.rule === "workflow" && /its approval card can't name all 40 MCP tools it would call that are set to ask: set some of them to allow or deny for this agent\./.test(p.detail)), JSON.stringify(crowded.problems));
+  const few = check(draft(manyCalls(3)), { tools: offered.tools, gated: offered.gated, ask });
+  assert.deepEqual([few.ok, few.problems], [true, []]);
+  // Set to allow, a tool is no ask: forty allowed tools are no card at all.
+  const allowed = tools.learnedDraftTools(granted, () => "allow", undefined, undefined, { mcp: true, approvers: true });
+  assert.deepEqual(allowed.asked, []);
+  assert.equal(check(draft(manyCalls(40)), { tools: allowed.tools, gated: allowed.gated, ask: { asked: allowed.asked, fits: learnedAskFits } }).ok, true);
+});
+
+test("a draft's unpriced MCP call nodes, by step: each MCP tool with no declared price, named by its step, tool and server; a priced one and a table tool are not", async () => {
+  const { unpricedCalls, unpricedLine } = await import("../dist/learn/skills.js");
+  const doc = JSON.parse(richWorkflow());
+  doc.root.steps.splice(1, 1, { ...mcpCall("mcp:linear/create_issue", "File the ticket"), as: "a" }, { ...mcpCall("mcp:linear/list_issues", "List them"), as: "b" });
+  const priced = (tool) => (tool === "mcp:linear/list_issues" ? 0.002 : undefined);
+  const calls = unpricedCalls(doc, priced);
+  assert.deepEqual(calls, [{ label: "File the ticket", tool: "create_issue", server: "linear" }]);
+  assert.equal(unpricedLine(calls[0]), "its step File the ticket calls create_issue on linear, which has no price here, so it runs outside the run's cost and cap");
+  assert.deepEqual(unpricedCalls(JSON.parse(richWorkflow()), () => undefined), [], "web_fetch is no MCP tool");
+});
+
+// #2479 review (PRRT_kwDOUmdVMs62Q9SB): only the workflow's node positions are steps (root, a chain's steps, a parallel's
+// branches, a map's or a loop's body, a route's branches, a nested workflow's root): an object shaped like a call node in
+// a call's args or in a schema is data, never a step the workflow runs.
+test("a call-node-shaped object in a call's args or a schema is data: no MCP tool, no unpriced hold; a nested workflow's real step is one", async () => {
+  const { draftMcpTools, unpricedCalls } = await import("../dist/learn/skills.js");
+  const decoy = { node: "call", label: "Decoy", via: "tool", tool: "mcp:linear/delete_issue" };
+  const doc = JSON.parse(richWorkflow());
+  doc.schemas.Decoy = { type: "object", default: decoy, properties: { step: { const: decoy } } };
+  doc.root.steps.splice(1, 1, { ...mcpCall("mcp:linear/create_issue", "File it"), args: { title: "{url}", payload: decoy }, as: "a" }, {
+    node: "workflow", label: "Inner", as: "inner", input: {}, out: "Page",
+    workflow: { v: 2, name: "inner", schemas: { Page: { type: "object" } }, input: { schemaId: "Page" }, output: { schemaId: "Page", path: "b" }, root: { node: "chain", steps: [{ ...mcpCall("mcp:github/create_pr", "Open it"), args: { decoy }, as: "b" }] } },
+  });
+  assert.deepEqual(draftMcpTools(doc), ["mcp:linear/create_issue", "mcp:github/create_pr"]);
+  assert.deepEqual(unpricedCalls(doc, () => undefined).map((call) => call.label), ["File it", "Open it"]);
+});
+
+test("a draft whose call node runs an MCP tool passes when the agent may run it; one it was not granted is refused as workflow, and one its gate denies is refused in the gate's words", () => {
+  const offered = ["web_fetch", "mcp:linear/create_issue"];
+  assert.deepEqual(check(draft(withCall(mcpCall("mcp:linear/create_issue"))), { tools: offered }), { ok: true, problems: [], notes: [] });
+  const ungranted = check(draft(withCall(mcpCall("mcp:linear/delete_issue"))), { tools: offered });
+  assert.deepEqual(rules(ungranted), ["workflow"], JSON.stringify(ungranted.problems));
+  assert.match(ungranted.problems[0].detail, /mcp:linear\/delete_issue/);
+  const denied = check(draft(withCall(mcpCall("mcp:linear/delete_issue"))), { tools: offered, gated: { "mcp:linear/delete_issue": "deny" } });
+  assert.match(denied.problems.map((p) => p.detail).join(" | "), /calls mcp:linear\/delete_issue, which is set to deny/);
 });
 
 test("a draft whose call or model node names Bash, exec_command or apply_patch is refused as workflow, though the agent's definition lists it", () => {
@@ -108,7 +228,7 @@ test("a draft whose model node names any tool is refused as workflow, though the
 test("the tools a learned workflow may name on a run are those its run resolves: one its plane makes unavailable is not on the list", () => {
   assert.deepEqual(tools.learnedWorkflowTools(["web_fetch", "web_search"], { web_fetch: "unavailable: parallel picked, no PARALLEL_API_KEY", web_search: "native" }), ["web_search"]);
   assert.deepEqual(tools.learnedWorkflowTools(["web_fetch", "web_search"], { web_fetch: "kernel", web_search: "unavailable: web_search is turned off in settings" }), ["web_fetch"]);
-  assert.deepEqual(tools.learnedWorkflowTools(["fetch_page", "web_search"], { web_fetch: "parallel", web_search: "exa-keyless" }), ["fetch_page", "web_fetch", "web_search"]);
+  assert.deepEqual(tools.learnedWorkflowTools(["web_fetch", "web_search"], { web_fetch: "parallel", web_search: "exa-keyless" }), ["web_fetch", "web_search"]);
 });
 
 test("with no tool list a draft that names a tool is refused as no_tool_list; a tool-free draft passes", () => {
@@ -202,7 +322,7 @@ test("a skill's or a draft's folder name, any other file under them, a deletion,
 });
 
 test("skills and drafts are not notes: eight notes beside a skill and a draft pass", () => {
-  const notes = Array.from({ length: CAPS.newNotes }, (_, i) => added(`n${i}.md`, note({ name: `N${i}` })));
+  const notes = Array.from({ length: CAPS.newNotes }, (_, i) => added(`n${i}.md`, note({ name: `N${i}`, body: `Rule ${i}.\n` })));
   const result = check([...notes, added(SKILL_PATH, skill()), ...draft()]);
   assert.deepEqual([result.ok, result.notes.length], [true, CAPS.newNotes]);
 });
@@ -257,19 +377,27 @@ test("a skill or a draft whose seed text has a status (a person retired it, or i
 
 test("a skill is laid with name and description alone in its front matter, whatever its file on main holds; its body as it is", () => {
   const laid = servedSkill(HOOKED);
-  assert.equal(laid, "---\nname: find-policies\ndescription: Find a store's refund and shipping policies\n---\n1. Collect the tickets.\n");
+  assert.equal(laid, "---\nname: \"find-policies\"\ndescription: \"Find a store's refund and shipping policies\"\n---\n1. Collect the tickets.\n");
   assert.equal(servedSkill(skill({ description: "Use when: a case asks" })).split("\n")[2], 'description: "Use when: a case asks"');
 });
 
 test("a learned skill's description that wraps onto an indented line is served whole, on one line", () => {
   const served = servedSkill("---\nname: find-policies\ndescription: Find refund policies\n  and shipping policies\n---\nDo the job.\n");
-  assert.equal(served.split("\n")[2], "description: Find refund policies and shipping policies");
+  assert.equal(served.split("\n")[2], 'description: "Find refund policies and shipping policies"');
   assert.equal(servedSkill(served), served);
+  // A description holding quotes and a backslash: served twice is served once (OpenCode serves a laid skill again), and
+  // the value read back is the one written.
+  const original = 'Find "refund" policies under C:\\docs\\policies, or \'shipping\' ones';
+  const once = servedSkill(`---\nname: find-policies\ndescription: ${JSON.stringify(original)}\n---\nDo the job.\n`);
+  assert.equal(servedSkill(once), once, "serving is idempotent");
+  assert.equal(servedSkill(servedSkill(once)), once);
+  assert.equal(frontMatter(once).get("description"), original, "read back, the value is the original");
+  assert.equal(frontMatter(servedSkill(`---\nname: find-policies\ndescription: '${original.replace(/'/g, "''")}'\n---\nDo the job.\n`)).get("description"), original, "a single-quoted value reads back the same");
 });
 
 test("a skill whose plain name is followed by an indented comment keeps its name: the comment is no part of it", () => {
   const served = servedSkill("---\nname: find-policies\n  # a helper\ndescription: Find refund policies\n---\nDo the job.\n");
-  assert.equal(served.split("\n")[1], "name: find-policies");
+  assert.equal(served.split("\n")[1], 'name: "find-policies"');
 });
 
 // A call node's tool set to ask or deny (tool-gate.ts): the run would park or refuse it, so a learned draft never names
@@ -311,8 +439,8 @@ test("the tools a learned draft may name are the granted ones the gate allows: o
   assert.equal(typeof tools.learnedDraftTools, "function");
   const granted = ["read", "web_fetch", "web_search"];
   const permission = (name) => (name === "web_fetch" ? "ask" : name === "web_search" ? "deny" : "allow");
-  assert.deepEqual(tools.learnedDraftTools(granted, permission), { tools: tools.learnedWorkflowTools(granted).filter((name) => name !== "web_fetch" && name !== "web_search"), gated: { web_fetch: "ask", web_search: "deny" }, deniedBy: {} });
-  assert.deepEqual(tools.learnedDraftTools(granted, () => "allow"), { tools: tools.learnedWorkflowTools(granted), gated: {}, deniedBy: {} });
+  assert.deepEqual(tools.learnedDraftTools(granted, permission), { tools: tools.learnedWorkflowTools(granted).filter((name) => name !== "web_fetch" && name !== "web_search"), gated: { web_fetch: "ask", web_search: "deny" }, deniedBy: {}, asked: [] });
+  assert.deepEqual(tools.learnedDraftTools(granted, () => "allow"), { tools: tools.learnedWorkflowTools(granted), gated: {}, deniedBy: {}, asked: [] });
   // With where each was set, a deny names it.
   assert.deepEqual(tools.learnedDraftTools(granted, permission, undefined, () => "agent").deniedBy, { web_search: "agent" });
 });

@@ -69,19 +69,43 @@ export const soFar = (c: Cost | null | undefined): (Cost & { so_far_usd: number;
 
 /** Said beside a cost known so far: why it is not the whole cost (a charge with no price: a model request cut, stopped or
  *  still pending, a model with no price, a decision or a paid tool call whose cost is unknown). */
-export const soFarNote = (c: { unpriced: number }) =>
-  `The charges priced so far. ${c.unpriced} ${c.unpriced === 1 ? "charge has" : "charges have"} no price, so this is not the whole cost.`;
+export const soFarNote = (c: { unpriced: number }, { ended = false }: { ended?: boolean } = {}) =>
+  `The charges priced${ended ? "" : " so far"}. ${c.unpriced} ${c.unpriced === 1 ? "charge has" : "charges have"} no price, so this is not the whole cost.`;
+
+/** A run's status once it has ended: its cost is said as its whole, never "so far" (cost's `ended`). */
+const ENDED_STATUSES: ReadonlySet<string> = new Set(["completed", "failed", "cancelled"]);
+export const runEnded = (status: string | undefined | null): boolean => typeof status === "string" && ENDED_STATUSES.has(status);
 
 /** A local estimate stays an estimate, and a cost the server does not know says so: the contract's "Null while unknown.
  *  A client shows null as unknown, never as $0" (a request cut before its answer, a cost still pending, or a model with
  *  no price). When the server says what is known so far, that is said ("so far $0.0123 · 1 not priced"), never as the
- *  whole cost. Never a billed amount, never an invented zero. */
-export function cost(c: Cost | null | undefined): string {
+ *  whole cost; a run that has ended (`ended`) says what is known without "so far" ("$0.0123 known · 1 not priced"), as its
+ *  usage row says its cost. Never a billed amount, never an invented zero. */
+export function cost(c: Cost | null | undefined, { ended = false }: { ended?: boolean } = {}): string {
   const known = soFar(c);
   const est = (x: Cost) => (isEstimate(x) ? " est." : "");
-  if (known) return `so far ${soFarDollars(known.so_far_usd)}${est(known)} · ${known.unpriced} not priced`;
+  if (known) return ended ? `${soFarDollars(known.so_far_usd)}${est(known)} known · ${known.unpriced} not priced` : `so far ${soFarDollars(known.so_far_usd)}${est(known)} · ${known.unpriced} not priced`;
   if (!c || c.usd === null) return "Unknown";
   return `${dollars(c.usd)}${est(c)}`;
+}
+
+/** A run's cost as its header says it, beside its spend cap when it has one (`cap`, the run's `cost.cap_usd`): "$0.0059
+ *  est. of $1.00". A cost that is not one figure (unknown, or known so far with calls not priced) keeps its words, the cap
+ *  after them ("Unknown · cap $1.00"). `text`: the cost already worded (a workflow run's graph totals). No cap: the cost. */
+export function costOfCap(c: Cost | null | undefined, cap: number | null | undefined, { ended = false, text }: { ended?: boolean; text?: string } = {}): string {
+  const shown = text ?? cost(c, { ended });
+  if (typeof cap !== "number") return shown;
+  // One figure ("$0.0059 est.", "<$0.0001"): "of" the cap. A partial total ("$0.0188 + 2 unknown") or a word: the cap after.
+  const figure = text !== undefined ? ONE_FIGURE.test(text) : !soFar(c) && !!c && c.usd !== null;
+  return figure ? `${shown} of ${capDollars(cap)}` : `${shown} · cap ${capDollars(cap)}`;
+}
+const ONE_FIGURE = /^<?\$[\d.,]+( est\.)?$/;
+
+/** A spend cap in dollars as it was set: two places at least ($1.00, $2.50), more when the cap has them ($0.013), so a
+ *  raise finer than a cent still reads as a change. */
+export function capDollars(usd: number): string {
+  for (let places = 2; places < 8; places++) if (Number(usd.toFixed(places)) === usd) return `$${usd.toFixed(places)}`;
+  return `$${usd.toFixed(8)}`;
 }
 
 /** The run files a run's Markdown may link to: their paths as GET /v2/runs/{id}/files lists them, and `from`, the folder
@@ -130,3 +154,29 @@ export const openLinkedFile = (onOpen: (path: string) => void) => (e: MouseEvent
   const path = (e.target as Element).closest?.("[data-run-file]")?.getAttribute("data-run-file");
   if (path) { e.preventDefault(); onOpen(path); }
 };
+
+/** A trigger's payload's words, for a run with no input of its own before it: by the wrapper's scheme (a GitHub delivery
+ *  comes in as the webhook source with scheme github, serve's triggers.ts), else its source. */
+const payloadWords = (tag: string): string => {
+  const attr = (name: string) => new RegExp(`\\b${name}="([^"]*)"`).exec(tag)?.[1];
+  return attr("scheme") === "github" || attr("source") === "github" ? "A GitHub event" : attr("source") === "webhook" ? "A webhook request" : "A trigger's request";
+};
+
+/** A run's title as the console shows it. A webhook or GitHub trigger's run (one with a `trigger`) has the trigger's input
+ *  and then the request's payload inside `<trigger-payload source="…" … untrusted>` (serve's triggers.ts); its title is the
+ *  input's line alone, the payload left to the Timeline. The server clips a title to 80 characters with an ellipsis
+ *  (runs.ts), so the wrapper may be cut anywhere, its tag name included: everything from its opening goes. With no input
+ *  before the payload, its source's words. A run no trigger started keeps its title as served. */
+export function runTitle(run: { title: string; trigger?: unknown }): string {
+  const { title } = run;
+  if (!run.trigger) return title;
+  let at = title.search(/<trigger-payload\b/);
+  if (at < 0) {
+    // Cut inside the tag name: a "<", "<trig", … just before the clip's ellipsis.
+    const cut = /<([a-z-]*)…$/.exec(title);
+    if (!cut || !"trigger-payload".startsWith(cut[1]!)) return title;
+    at = cut.index;
+  }
+  const own = title.slice(0, at).trim();
+  return own || payloadWords(title.slice(at));
+}

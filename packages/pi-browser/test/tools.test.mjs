@@ -96,12 +96,12 @@ test("a provider key in the environment is scrubbed from the result and the file
   for (const [name, value] of Object.entries(keys)) assert.equal(shown.includes(value), false, `${name} reached the model`);
 });
 
-test("screenshot: a full page past 2,000 px is retaken as the viewport at CSS scale; the image and its receipt", async (t) => {
+test("screenshot: a full page too long to shrink readably is retaken as the viewport, scaled to the 2,000 px edge; the image and its receipt", async (t) => {
   const { backend, filed, seen, texts } = await session(t, [["screenshot", { fullPage: true, ask: "Is there a seal?" }]], { backend: new FakeBackend({ start: START, pages: { [START]: ARTICLE }, deviceScale: 2 }) });
   const shots = backend.dispatched.filter((row) => row.op === "screenshot").map((row) => row.options);
-  assert.deepEqual(shots, [{ fullPage: true, type: "jpeg", quality: 40 }, { fullPage: false, type: "jpeg", quality: 40, scale: "css" }]);
+  assert.deepEqual(shots, [{ fullPage: true, type: "jpeg", quality: 40 }, { fullPage: false, type: "jpeg", quality: 40 }, { fullPage: false, type: "jpeg", quality: 40, scale: 2000 / 2576 }]);
   assert.equal(seen[0].content[1].type, "image");
-  assert.match(texts[0], /^url: https:\/\/example\.test\/start\nevidence: evidence\/node-a\/1-screenshot\.md\nadjusted: the first capture \(2576x16638\) was over the 2,000 px long edge budget; this is the viewport at 1288x711$/);
+  assert.match(texts[0], /^url: https:\/\/example\.test\/start\nevidence: evidence\/node-a\/1-screenshot\.md\nadjusted: the first capture \(2576x16638\) was over the 2,000 px long edge budget; this is the viewport at 2000x1104, scaled down$/);
   assert.deepEqual([filed[0].record.tool, filed[0].record.ext, filed[0].record.facts.final_url], ["screenshot", "jpg", START]);
   assert.equal(filed[0].record.facts.sha256, sha(Buffer.from(seen[0].content[1].data, "base64")));
 });
@@ -1160,14 +1160,11 @@ test("while a person holds the browser a relaunch is refused and launches nothin
   assert.deepEqual([sessions.sessions[0].state, sessions.sessions[0].releaseReason], ["released", "tool"]);
 });
 
-test("a held session the host assigned answers a relaunch with the hold, not the fixed-session refusal", async (t) => {
-  const backend = new FakeBackend({ start: START, pages: { [START]: ARTICLE } });
-  const made = await backend.provider.create({ tag: "host-made", maxLifetimeS: 600, idleTimeoutS: 0, proxies: false, verified: false, captcha: false, viewport: { width: 1000, height: 700 }, metadata: {} }, new AbortController().signal);
-  const { assignedSessionProvider } = await import("@parcha/pi-browser/providers/assigned");
-  const provider = assignedSessionProvider({ name: "host-site", session: { id: made.id, attach: () => backend.provider.attach(made), status: async () => "running", release: async () => {}, failure: () => null } });
-  const { texts } = await session(t, [["snapshot"], ["browser_relaunch"]], { backend, provider, tools: { snapshot: holding("handoff-fixed") } });
+test("a held session on a provider of one fixed session answers a relaunch with the hold, not the fixed-session refusal", async (t) => {
+  const backend = new FakeBackend({ start: START, pages: { [START]: ARTICLE }, caps: { fixedSession: true } });
+  const { texts } = await session(t, [["snapshot"], ["browser_relaunch"]], { backend, tools: { snapshot: holding("handoff-fixed") } });
   assert.equal(failure(texts[1]).code, "waiting_for_human", texts[1]);
-  assert.deepEqual([backend.tally().creates, backend.tally().releases], [1, 0], "nothing launched or released");
+  assert.deepEqual([backend.tally().creates, backend.tally().releases], [1, 0], "nothing launched or released past the one session");
 });
 
 test("browser_release through the composed release path (#1001's releasable guard, #1057's already_released body): an open session and a held one are released; an already-released one says so; a lost one does not", { timeout: 90_000 }, async (t) => {
@@ -1378,8 +1375,8 @@ test("screenshot: after a budget retake the media block describes the image that
   const run = await session(t, [["screenshot", { type: "png", fullPage: true, ask: "Is there a seal?" }]], { backend: new FakeBackend({ start: START, pages: { [START]: ARTICLE }, deviceScale: 2 }) });
   const kept = Buffer.from(run.seen[0].content[1].data, "base64");
   assert.equal(run.filed[0].record.ext, "jpg", "a PNG request that was over budget is kept as the viewport JPEG");
-  assert.deepEqual(run.seen[0].details.media, { kind: "screenshot", path: "evidence/node-a/1-screenshot.jpg", mime: "image/jpeg", bytes: kept.length, width: 1288, height: 711, ask: "Is there a seal?" });
-  assert.match(run.texts[0], /this is the viewport at 1288x711$/, "and the text says the same size");
+  assert.deepEqual(run.seen[0].details.media, { kind: "screenshot", path: "evidence/node-a/1-screenshot.jpg", mime: "image/jpeg", bytes: kept.length, width: 2000, height: 1104, ask: "Is there a seal?" });
+  assert.match(run.texts[0], /this is the viewport at 2000x1104, scaled down$/, "and the text says the same size");
 });
 
 test("screenshot: a clip is captured alone, and the media block records it; the text names the clip, not the viewport, after a retake", async (t) => {
@@ -1390,9 +1387,9 @@ test("screenshot: a clip is captured alone, and the media block records it; the 
   assert.deepEqual(run.filed[0].record.args, { clip }, "the receipt's arguments name the clip");
 
   const dense = await session(t, [["screenshot", { type: "png", clip: { x: 0, y: 0, width: 600, height: 500 } }]], { backend: new FakeBackend({ start: START, pages: { [START]: ARTICLE }, deviceScale: 4 }) });
-  assert.deepEqual([dense.seen[0].details.media.width, dense.seen[0].details.media.height, dense.seen[0].details.media.mime], [600, 500, "image/jpeg"], "the retake at CSS scale keeps the clip");
+  assert.deepEqual([dense.seen[0].details.media.width, dense.seen[0].details.media.height, dense.seen[0].details.media.mime], [2000, 1667, "image/png"], "the clip, scaled to the 2,000 px edge");
   assert.deepEqual(dense.seen[0].details.media.clip, { x: 0, y: 0, width: 600, height: 500 });
-  assert.match(dense.texts[0], /this is the clip at 600x500$/);
+  assert.match(dense.texts[0], /this is the clip at 2000x1667, scaled down$/);
 });
 
 test("screenshot: an element by snapshot ID or CSS selector is captured as its own box, and the media block names it", async (t) => {
@@ -1646,4 +1643,31 @@ test("a reused session meets the navigation allow list the policy sets now: a se
   const kept = await session(t, [["snapshot"], ["browser_read"]], { backend: enforcing(), policy: { navigation: { allow: ["example.test"] } }, between: { 1: allow(["example.test", "example.org"]) } });
   assert.doesNotMatch(kept.texts[1], /"code":"refused"/, "a session whose list is inside the policy's was refused");
   assert.equal(kept.backend.tally().creates, 1);
+});
+
+test("a run of several actions whose connection drops partway is a dropped browser still: the driver is let go (the next call reconnects), and the model hears partial, with how many ran", async () => {
+  const { drivingGuard } = await import("../dist/core/driving-guard.js");
+  const { createDrivingGates } = await import("../dist/core/driving.js");
+  const record = { lastUrl: START, navigation: [{ at: "2026-10-16T00:00:00.000Z", url: START }] };
+  const call = { callId: "call-run", conversationId: 1, signal: undefined, label: "node-a", redact: (text) => text, evidence: { file: async () => null } };
+  const acts = [];
+  const driver = {
+    checkActions: async () => {},
+    run: async (input) => { for (const action of input.actions) { if (action.id === "2-2") throw lostConnection(); acts.push(action.id); } return { completed: input.actions.length, url: START }; },
+    url: async () => START,
+  };
+  let dropped = 0;
+  const port = {
+    session: async () => ({ driver, tag: "t-run", sessionId: "s-1", record, notice: null, interrupted: null, recorded: false, effects: null, replaced: null }),
+    dispatching: async () => {}, journal: async () => {}, mark: async () => {}, settle: async () => {}, navigated: async () => {},
+    dropped: async () => { dropped += 1; },
+    ended: async () => false,
+    unreachable: async () => ({ released: false, lastUrl: START }),
+  };
+  const run = drivingGuard(pageToolsOf({}).run, createDrivingGates());
+  const out = JSON.parse((await run({ actions: [{ op: "click", id: "1-1" }, { op: "click", id: "2-2" }] }, port, call)).content[0].text);
+  assert.deepEqual([out.code, out.effect, out.completed], ["browser_unavailable", "partial", 1], JSON.stringify(out));
+  assert.match(out.message, /1 of the 2 actions ran/);
+  assert.equal(dropped, 1, "the dropped driver was let go, so the next call reconnects");
+  assert.deepEqual(acts, ["1-1"]);
 });

@@ -45,7 +45,7 @@ describe("an answer's line breaks", () => {
 });
 
 describe("the timeline's Answer row", () => {
-  const answer = (text: string): TimelineRow => ({ id: "a", seq: 9, kind: "final_answer", summary: text.split("\n")[0], text, timestamp: "2026-11-04T20:36:00Z", tool_name: null });
+  const answer = (text: string): TimelineRow => ({ created_at: "2026-10-28T19:33:16.118Z", agent_label: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null, id: "a", seq: 9, kind: "final_answer", summary: text.split("\n")[0], text, timestamp: "2026-11-04T20:36:00Z", tool_name: null });
   const title = (r: TimelineRow) => {
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);

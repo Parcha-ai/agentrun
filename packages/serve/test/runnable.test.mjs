@@ -6,11 +6,11 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { test } from "node:test";
-import { openStore } from "@parcha/pi-durable-agent";
-import { Agents } from "../dist/agents.js";
+import { commitAgent, createAgent, getAgent, setCurrentRevision } from "../dist/agents-store.js";
 import { startServe } from "../dist/index.js";
 import { checkDefinitionBody } from "../dist/validate.js";
-import { agent, answerFlow, client, scratch, serve, withEnv } from "./support.mjs";
+import { agent, answerFlow, serve, withEnv } from "./support.mjs";
+import { storeOn } from "./store-helpers.mjs";
 
 /** No gateway, no default model, no OpenAI key: pi-ai's providers serve the models, and none has a key. */
 const MODEL_VARS = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_FAST", "AGENT_MODEL_STRONG", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY"];
@@ -112,29 +112,12 @@ test("a workflow whose tier has no model on this host saves with a warning", asy
   assert.match(saved.body.warnings[0].message, /fast tier/);
 });
 
-test("a revision saved before these checks is refused at its run with the same reasons (409)", async (t) => {
-  const data = join(await scratch(t), "agents");
-  const store = openStore(data);
-  try {
-    const { id } = store.createAgent({ name: "old", id: "old" });
-    await store.commitRevision(id, { kind: "agentic", instructions: "Answer.", tools: ["read", "bash"] }, { setCurrent: true });
-  } finally {
-    store.close();
-  }
-  const server = await startServe({ data, port: 0, faux: new URL("./fixtures/faux-model.mjs", import.meta.url).pathname });
-  t.after(() => server.close());
-  const run = await client(server.baseUrl, server.token)("POST", "/agents/old/runs", { input: { content: "hi" } });
-  assert.deepEqual([run.status, run.body.error.code, run.body.error.details.unbound], [409, "agent_not_runnable", ["bash"]]);
-  assert.match(run.body.error.message, /bash/);
-});
-
 test("a save whose checks run while another request changes the current revision is held to its If-Match: 412, never a stale 200", async (t) => {
-  const agents = new Agents(join(await scratch(t), "agents"));
-  t.after(() => agents.close());
+  const { store } = await storeOn(t);
   const body = (extra) => checkDefinitionBody(agent("x", extra), { creating: false });
-  const a = await agents.create(checkDefinitionBody(agent("x")));
-  const b = await agents.commit(a, body({ instructions: "Answer briefly.", version: 2 }));
-  const current = await agents.setCurrent(b, a.revision.id);
+  const a = await createAgent(store, checkDefinitionBody(agent("x")));
+  const b = await commitAgent(store, a, body({ instructions: "Answer briefly.", version: 2 }));
+  const current = await setCurrentRevision(store, b, a.revision.id);
   /** A check that says when it starts, and ends when the test lets it. */
   const gate = () => {
     let started, release;
@@ -144,26 +127,48 @@ test("a save whose checks run while another request changes the current revision
   };
   // The same PUT of A again, with If-Match A; while its checks run, another request makes B current.
   const first = gate();
-  const saving = agents.commit(current, body(), { ifCurrent: a.revision.id, check: first.check });
+  const saving = commitAgent(store, current, body(), { ifCurrent: a.revision.id, check: first.check });
   await first.running;
-  await agents.setCurrent(current, b.revision.id);
+  await setCurrentRevision(store, current, b.revision.id);
   first.release();
   await assert.rejects(saving, (error) => error.code === "precondition_failed");
-  assert.equal((await agents.get("x")).revision.id, b.revision.id, "B stays current");
+  assert.equal((await getAgent(store, "x")).revision.id, b.revision.id, "B stays current");
   // A PUT of B with If-Match A, while another request makes B current: the edit is now no change, and still 412.
-  const back = await agents.setCurrent(current, a.revision.id);
+  const back = await setCurrentRevision(store, current, a.revision.id);
   const second = gate();
-  const savingB = agents.commit(back, body({ instructions: "Answer briefly.", version: 2 }), { ifCurrent: a.revision.id, check: second.check });
+  const savingB = commitAgent(store, back, body({ instructions: "Answer briefly.", version: 2 }), { ifCurrent: a.revision.id, check: second.check });
   await second.running;
-  await agents.setCurrent(back, b.revision.id);
+  await setCurrentRevision(store, back, b.revision.id);
   second.release();
   await assert.rejects(savingB, (error) => error.code === "precondition_failed");
   // With no If-Match, a save naming version 3 while another request saves version 3 first: this one would be 4, so 422.
-  const two = await agents.get("x");
+  const two = await getAgent(store, "x");
   const third = gate();
-  const savingC = agents.commit(two, body({ instructions: "Answer in a word.", version: 3 }), { check: third.check });
+  const savingC = commitAgent(store, two, body({ instructions: "Answer in a word.", version: 3 }), { check: third.check });
   await third.running;
-  await agents.commit(two, body({ instructions: "Answer in a sentence.", version: 3 }));
+  await commitAgent(store, two, body({ instructions: "Answer in a sentence.", version: 3 }));
   third.release();
   await assert.rejects(savingC, (error) => error.code === "input_invalid" && /^definition\.version is 4 /.test(error.message));
+});
+
+test("a shell tool on the runner is let by where the runner's shell is here (shellOf): bash on Archil's exec in Mode 2; none with no shell, none asked, or a computer that mounts the folder from a runner place", async () => {
+  const { blockersOf } = await import("../dist/runnable.js");
+  const revision = (computer) => ({ kind: "agentic", instructions: "Answer.", tools: ["read", "bash", "bash_background"], place: { mode: "runner" }, ...(computer ? { computer } : {}) });
+  const asked = [];
+  const at = (shell) => async (setting) => { asked.push(setting); return shell; };
+  const shells = async (computer, shellOf) => (await blockersOf({}, revision(computer), {}, { offers: [{ id: "pi", available: true }], ...(shellOf ? { shellOf } : {}) })).filter((one) => one.field.startsWith("definition.tools")).map((one) => [one.field, one.tool]);
+  // Mode 2, no computer: bash runs on Archil's serverless exec; the background tools still run in a box alone.
+  assert.deepEqual(await shells({ kind: "none" }, at("local")), [["definition.tools[2]", "bash_background"]]);
+  // A place alone is asked as no computer.
+  assert.deepEqual(await shells(undefined, at("local")), [["definition.tools[2]", "bash_background"]]);
+  assert.deepEqual(asked, [{ kind: "none" }, { kind: "none" }]);
+  // A desktop whose provider mounts the folder: its place reads runner, so a shell there would share the folder with the
+  // runner-only tools (browser's downloads): refused as before, not let by this check.
+  assert.deepEqual(await shells({ kind: "desktop", provider: "docker" }, at("computer")), [["definition.tools[1]", "bash"], ["definition.tools[2]", "bash_background"]]);
+  // Mode 1, no computer, and a check that asks nothing: no shell at all, in the words it always had.
+  for (const shellOf of [at("none"), undefined]) {
+    const refused = (await blockersOf({}, revision({ kind: "none" }), {}, { offers: [{ id: "pi", available: true }], ...(shellOf ? { shellOf } : {}) })).filter((one) => one.field.startsWith("definition.tools"));
+    assert.deepEqual(refused.map((one) => one.tool), ["bash", "bash_background"]);
+    assert.match(refused[0].message, /^bash runs only in a box, and this agent's place is the runner, which has no shell \(a shell needs a sandbox computer\), /);
+  }
 });

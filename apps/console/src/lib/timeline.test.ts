@@ -4,10 +4,10 @@ import type { TimelinePage, TimelineRow } from "./v2";
 import { recorded } from "@/fixtures";
 
 const row = (id: string, seq: number, summary = id): TimelineRow =>
-  ({ id, seq, kind: "thinking", summary, text: null, timestamp: "2026-10-28T19:33:16.118Z", tool_name: null });
+  ({ created_at: "2026-10-28T19:33:16.118Z", agent_label: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null, id, seq, kind: "thinking", summary, text: null, timestamp: "2026-10-28T19:33:16.118Z", tool_name: null });
 const page = (rows: TimelineRow[], extra: Partial<TimelinePage> = {}): TimelinePage => ({
   run_id: "r", status: "working", state: "working", rows, drop: [], reset: false, unchanged: false, final: false,
-  has_more: false, next_after: 1, ...extra,
+  has_more: false, next_after: 1, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, ...extra,
 });
 
 describe("applyPage", () => {
@@ -43,8 +43,8 @@ describe("applyPage", () => {
 // A run's rows told as steps: one per tool use (its result folded in, with how long it took and the file it saved), a
 // question asked once, repeated failures said once with how many, the cost so far once, at the end.
 describe("steps", () => {
-  const r = (seq: number, kind: string, summary: string, at: string, over: Partial<TimelineRow> = {}): TimelineRow =>
-    ({ id: `r${seq}`, seq, kind, summary, text: null, timestamp: `2026-11-03T16:41:${at}Z`, tool_name: null, ...over });
+  const r = (seq: number, kind: TimelineRow["kind"], summary: string, at: string, over: Partial<TimelineRow> = {}): TimelineRow =>
+    ({ created_at: "2026-10-28T19:33:16.118Z", agent_label: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null, id: `r${seq}`, seq, kind, summary, text: null, timestamp: `2026-11-03T16:41:${at}Z`, tool_name: null, ...over });
   const tooled = [
     r(0, "user_message", "You: Check invoice INV-2291 against PO-7781.", "25.551"),
     r(1, "tool_use", "Wrote notes.md", "25.569", { tool_name: "write", tool_use_id: "t1", tool_input_preview: "notes.md" }),
@@ -94,72 +94,25 @@ describe("steps", () => {
   });
 });
 
-// One row per action (capabilities' timeline.actions): a call is its own row, so its steps are the rows as served, with
-// how long a call took once it ended, a repeated failure once, and the cost so far once.
-describe("steps, over one row per action", () => {
-  const r = (seq: number, kind: string, summary: string, at: string, over: Partial<TimelineRow> = {}): TimelineRow =>
-    ({ id: `r${seq}`, seq, kind, summary, text: null, timestamp: `2026-11-03T16:41:${at}Z`, tool_name: null, ...over });
-  it("keeps each action as its own step, whatever its status, with its duration once it ended and nothing while it runs", () => {
-    const s = steps([
-      r(1, "tool_use", "Wrote notes.md: ok", "25.569", { tool_name: "write", tool_status: "success", path: "notes.md", ended_at: "2026-11-03T16:41:25.596Z", tool_input_preview: "notes.md", tool_result_preview: "816 bytes" }),
-      r(2, "tool_use", "Read a.md", "25.615", { tool_name: "read", tool_status: "running", ended_at: null }),
-    ]);
-    expect(s.map((x) => [x.row.summary, x.row.tool_status, x.ms])).toEqual([["Wrote notes.md: ok", "success", 27], ["Read a.md", "running", undefined]]);
-    expect(s[0]!.detail).toBe("notes.md\n\n→ 816 bytes");
-    expect(s[0]!.saved).toBeUndefined();
-  });
-  it("says a failure repeated in a row once, and keeps only the last cost so far", () => {
-    const err = (seq: number, at: string) => r(seq, "error", "Model request failed: 529 overloaded", at);
-    const s = steps([r(0, "usage", "Cost so far: $0.001 over 1 model request", "20.000"), err(1, "27.356"), err(2, "29.375"), err(3, "41.398"), r(4, "usage", "Total: $0.002 · 2 model requests · 21 s", "41.500")]);
-    expect(s.map((x) => [x.row.kind, x.times ?? 1])).toEqual([["error", 3], ["usage", 1]]);
-    expect(s[1]!.row.summary).toBe("Total: $0.002 · 2 model requests · 21 s");
-  });
-});
-
-// The same pi run in both of the server's shapes (src/fixtures/timeline.*): either way a person reads each action once.
-describe("steps, over the recorded run in both shapes", () => {
+// A recorded pi run (src/fixtures/timeline.legacy.*): a person reads each action once.
+describe("steps, over the recorded run", () => {
   const rowsOf = (name: string) => recorded<TimelinePage>(name).body.rows;
-  const told = (s: ReturnType<typeof steps>) => s.filter((x) => x.row.kind === "tool_use" || x.row.kind === "tool_result").map((x) => x.row.summary.replace(/:\s*ok$/, ""));
-  it("tells the settled run's actions once each, in both shapes", () => {
+  const told = (s: ReturnType<typeof steps>) => s.filter((x) => x.row.kind === "tool_use" || x.row.kind === "tool_result").map((x) => (x.row.summary ?? "").replace(/:\s*ok$/, ""));
+  it("tells the settled run's actions once each", () => {
     const legacy = steps(rowsOf("timeline.legacy.completed"));
-    const actions = steps(rowsOf("timeline.actions.completed"));
-    // The legacy fold: every call once, no result row, no "Saved" row, the question folded behind its waiting row.
+    // Every call once, no result row, no "Saved" row, the question folded behind its waiting row.
     expect(legacy.some((x) => x.row.kind === "phase")).toBe(false);
     expect(told(legacy).filter((t) => t.startsWith("Read invoices/inv-"))).toEqual(["Read invoices/inv-1.md", "Read invoices/inv-2.md", "Read invoices/inv-3.md"]);
-    expect(legacy.find((x) => x.row.summary.startsWith("Wrote totals.md") && x.row.tool_status === "success")?.saved).toBe("totals.md");
-    // One row per action as served: the same reads, the miss in grey, the interrupted write and its retry.
-    expect(told(actions).filter((t) => t.startsWith("Read invoices/inv-"))).toEqual(["Read invoices/inv-1.md", "Read invoices/inv-2.md", "Read invoices/inv-3.md"]);
-    expect(actions.map((x) => x.row.tool_status).filter(Boolean)).toEqual(["missing", "success", "success", "success", "success", "success", "failed", "success", "success", "interrupted", "success"]);
-    expect(actions.at(-1)!.row.summary).toMatch(/^Total: /);
-  });
-  it("runs an interrupted write's duration to the run's end, the latest moment the run's rows hold", () => {
-    const rows = rowsOf("timeline.actions.completed");
-    const cut = steps(rows).find((x) => x.row.tool_status === "interrupted")!;
-    const latest = Math.max(...rows.flatMap((r) => [Date.parse(r.timestamp), r.ended_at ? Date.parse(r.ended_at) : 0]));
-    expect(Date.parse(cut.row.ended_at!)).toBe(latest);
-    expect(cut.ms).toBe(latest - Date.parse(cut.row.timestamp));
-    expect(cut.ms).toBe(8000);
-  });
-  it("gives every ended action its duration, never one before it started", () => {
-    const ended = steps(rowsOf("timeline.actions.completed")).filter((x) => x.row.kind === "tool_use");
-    expect(ended).toHaveLength(11);
-    for (const x of ended) expect(x.ms, x.row.summary).toBeGreaterThanOrEqual(0);
-  });
-  it("shows the live run's write as running, with no duration yet", () => {
-    const live = steps(rowsOf("timeline.actions.working"));
-    const write = live.find((x) => x.row.tool_status === "running")!;
-    expect(write.row.summary).toBe("Wrote summary.md");
-    expect(write.ms).toBeUndefined();
+    expect(legacy.find((x) => (x.row.summary ?? "").startsWith("Wrote totals.md") && x.row.tool_status === "success")?.saved).toBe("totals.md");
   });
 });
 
-// The shapes tell themselves apart by their rows: an older server's call row carries no status (null or absent), so it
-// still pairs with its result row; only a call row with a status of its own is its whole story.
-describe("steps, an older server's call row with no status of its own", () => {
-  const r = (seq: number, kind: string, summary: string, at: string, over: Partial<TimelineRow> = {}): TimelineRow =>
-    ({ id: `r${seq}`, seq, kind, summary, text: null, timestamp: `2026-11-03T16:41:${at}Z`, tool_name: null, ...over });
-  it("pairs with its result whether its tool_status is null or absent", () => {
-    for (const status of [{ tool_status: null }, {}]) {
+// A call row carries no status (null): it pairs with its result row.
+describe("steps, a call row and its result", () => {
+  const r = (seq: number, kind: TimelineRow["kind"], summary: string, at: string, over: Partial<TimelineRow> = {}): TimelineRow =>
+    ({ created_at: "2026-10-28T19:33:16.118Z", agent_label: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null, id: `r${seq}`, seq, kind, summary, text: null, timestamp: `2026-11-03T16:41:${at}Z`, tool_name: null, ...over });
+  it("pairs with its result", () => {
+    for (const status of [{ tool_status: null }]) {
       const s = steps([
         r(1, "tool_use", "Read notes.md", "25.615", { tool_name: "read", tool_use_id: "t2", ...status }),
         r(2, "tool_result", "Read notes.md: ok", "25.627", { tool_name: "read", tool_use_id: "t2", tool_status: "success" }),
@@ -172,8 +125,8 @@ describe("steps, an older server's call row with no status of its own", () => {
 // The fold keeps each thing with its own call: a saved file with the call whose result it follows, a question's rows
 // only behind that question's own waiting row, and a retried failure folded only when it is the same failure.
 describe("steps, each fold with its own call", () => {
-  const r = (seq: number, kind: string, summary: string, at: string, over: Partial<TimelineRow> = {}): TimelineRow =>
-    ({ id: `r${seq}`, seq, kind, summary, text: null, timestamp: `2026-11-03T16:41:${at}Z`, tool_name: null, ...over });
+  const r = (seq: number, kind: TimelineRow["kind"], summary: string, at: string, over: Partial<TimelineRow> = {}): TimelineRow =>
+    ({ created_at: "2026-10-28T19:33:16.118Z", agent_label: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null, id: `r${seq}`, seq, kind, summary, text: null, timestamp: `2026-11-03T16:41:${at}Z`, tool_name: null, ...over });
   it("credits each saved file to the call whose result it follows, when two calls run before either returns", () => {
     const s = steps([
       r(1, "tool_use", "Wrote a.md", "01.000", { tool_name: "write", tool_use_id: "A" }),

@@ -25,14 +25,13 @@ test("every tool in capabilities has a blurb: one line of at most 48 characters,
   assert.equal(by.ask_person, "Ask you a question mid-run");
 });
 
-test("an agent's tools carry the same blurb as capabilities; a legacy name takes its capability's, an MCP tool has none", () => {
+test("an agent's tools carry the same blurb as capabilities; an MCP tool has none", () => {
   const caps = toolsView({});
   const capBlurb = Object.fromEntries(caps.map((tool) => [tool.name, tool.blurb]));
-  const names = [...caps.filter((tool) => !tool.call_only).map((tool) => tool.name), "fetch_page", "learned_workflow", "mcp:srv/echo"];
+  const names = [...caps.filter((tool) => !tool.call_only).map((tool) => tool.name), "learned_workflow", "mcp:srv/echo"];
   const tools = agentTools({}, {}, { tools: names }, caps.map((tool) => tool.name));
   const by = Object.fromEntries(tools.map((tool) => [tool.name, tool]));
   for (const tool of caps.filter((tool) => !tool.call_only)) assert.equal(by[tool.name]?.blurb, capBlurb[tool.name], tool.name);
-  assert.equal(by.fetch_page?.blurb, capBlurb.web_fetch, "fetch_page reads as web_fetch");
   assert.equal(typeof by.learned_workflow?.blurb, "string", "learned_workflow, the server's own tool, has one");
   assert.ok(by.learned_workflow.blurb.length <= MAX && !by.learned_workflow.blurb.endsWith("."), by.learned_workflow.blurb);
   assert.equal("blurb" in (by["mcp:srv/echo"] ?? {}), false, "an MCP server's tool has no blurb");

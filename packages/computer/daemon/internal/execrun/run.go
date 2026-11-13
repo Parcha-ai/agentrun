@@ -3,14 +3,14 @@ package execrun
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"os"
-	"os/exec"
+	"slices"
 	"syscall"
 	"time"
 
+	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/proctree"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/rpc"
 )
 
@@ -41,11 +41,14 @@ type Result struct {
 	Truncated bool   `json:"truncated"`
 }
 
-// Run runs spec to its end, through a guard (guard.go) that is a child subreaper for this one run. On timeout or cancel
+// Run runs spec to its end, through a guard (guard.go) that is a child subreaper for this one run. The timeout counts
+// from the call, so it covers the start too: a guard that never reports the program's pid is killed with everything
+// under it, as on a timeout or cancel before the program started. On timeout or cancel
 // the guard sends SIGTERM to the program's group and every descendant, then SIGKILL KillGrace later; a timeout is a
 // result with TimedOut set, a cancel an aborted error. When the program ends, the guard kills and reaps every
 // descendant it left, in its group or not: nothing a run starts outlives it.
 func Run(ctx context.Context, spec Spec) (Result, error) {
+	deadline := time.Now().Add(spec.Timeout)
 	if len(spec.Argv) == 0 || spec.Argv[0] == "" {
 		return Result{}, rpc.Errorf(rpc.KindInvalid, "argv needs at least a program")
 	}
@@ -56,24 +59,6 @@ func Run(ctx context.Context, spec Spec) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	acct, err := resolveUser(spec.User)
-	if err != nil {
-		return Result{}, err
-	}
-	cred, err := credential(acct)
-	if err != nil {
-		return Result{}, err
-	}
-	dir, err := resolveCwd(spec.Cwd, acct)
-	if err != nil {
-		return Result{}, err
-	}
-	env := environment(acct, spec.Env)
-	path, err := lookPath(spec.Argv[0], env, dir)
-	if err != nil {
-		return Result{}, err
-	}
-
 	stdout, err := newOutputStream(limit)
 	if err != nil {
 		return Result{}, fmt.Errorf("cannot make a pipe: %w", err)
@@ -84,65 +69,41 @@ func Run(ctx context.Context, spec Spec) (Result, error) {
 		return Result{}, fmt.Errorf("cannot make a pipe: %w", err)
 	}
 	defer closeAll(stderr.reader, stderr.writer)
-	specReader, specWriter, err := os.Pipe()
-	if err != nil {
-		return Result{}, fmt.Errorf("cannot make a pipe: %w", err)
-	}
-	defer closeAll(specReader, specWriter)
-	statusReader, statusWriter, err := os.Pipe()
-	if err != nil {
-		return Result{}, fmt.Errorf("cannot make a pipe: %w", err)
-	}
-	defer closeAll(statusReader, statusWriter)
-	guard := &exec.Cmd{
-		Path:        "/proc/self/exe",
-		Args:        []string{"computerd", GuardCommand},
-		Env:         []string{},
-		Stdout:      stdout.writer,
-		Stderr:      stderr.writer,
-		ExtraFiles:  []*os.File{specReader, statusWriter},
-		SysProcAttr: &syscall.SysProcAttr{Setpgid: true},
-	}
-
 	if ctx.Err() != nil {
 		return Result{}, rpc.Errorf(rpc.KindAborted, "exec.run was cancelled before it started")
 	}
-	if err := guard.Start(); err != nil {
-		return Result{}, fmt.Errorf("cannot start the guard for %s: %w", spec.Argv[0], err)
-	}
-	closeAll(specReader, statusWriter)
+	startCtx, cancelStart := context.WithDeadline(ctx, deadline)
+	g, err := Start(startCtx, Program{Argv: spec.Argv, Cwd: spec.Cwd, Env: spec.Env, User: spec.User}, nil, stdout.writer, stderr.writer)
+	cancelStart()
 	stdout.collect()
 	stderr.collect()
-	statusRead := make(chan []byte, 1)
-	go func() {
-		data, _ := io.ReadAll(io.LimitReader(statusReader, 4096))
-		statusRead <- data
-	}()
-	guardDone := make(chan struct{})
-	go func() {
-		_ = guard.Wait()
-		close(guardDone)
-	}()
-	if err := json.NewEncoder(specWriter).Encode(guardSpec{Path: path, Argv: spec.Argv, Env: env, Dir: dir, Credential: cred}); err != nil {
-		_ = syscall.Kill(guard.Process.Pid, syscall.SIGKILL)
-		<-guardDone
+	if err != nil {
 		drain(stdout, stderr)
-		return Result{}, fmt.Errorf("cannot hand %s to its guard: %w", spec.Argv[0], err)
+		var late *startTimedOut
+		timedOut := errors.As(err, &late)
+		var e *rpc.Error
+		if ctx.Err() != nil && (timedOut || errors.As(err, &e) && e.Kind == rpc.KindAborted) {
+			return Result{}, rpc.Errorf(rpc.KindAborted, "exec.run was cancelled; the program and everything it started were ended")
+		}
+		if timedOut {
+			return Result{ExitCode: late.code, Signal: late.signal, Stdout: stdout.bytes(), Stderr: stderr.bytes(), TimedOut: true, Truncated: stdout.truncated || stderr.truncated}, nil
+		}
+		return Result{}, err
 	}
-	_ = specWriter.Close()
+	defer g.Close()
 
-	timer := time.NewTimer(spec.Timeout)
+	timer := time.NewTimer(time.Until(deadline))
 	defer timer.Stop()
 	timedOut, aborted := false, false
 	select {
-	case <-guardDone:
+	case <-g.Done():
 	case <-timer.C:
 		timedOut = true
 	case <-ctx.Done():
 		aborted = true
 	}
 	if timedOut || aborted {
-		if err := stopGuard(guard.Process.Pid, guardDone); err != nil {
+		if err := stopGuard(g); err != nil {
 			return Result{}, err
 		}
 	}
@@ -151,42 +112,77 @@ func Run(ctx context.Context, spec Spec) (Result, error) {
 		return Result{}, rpc.Errorf(rpc.KindAborted, "exec.run was cancelled; the program and everything it started were ended")
 	}
 	res := Result{Stdout: stdout.bytes(), Stderr: stderr.bytes(), TimedOut: timedOut, Truncated: stdout.truncated || stderr.truncated}
-	var status guardStatus
-	switch {
-	case json.Unmarshal(<-statusRead, &status) != nil:
-		res.ExitCode, res.Signal = exitStatus(guard.ProcessState)
-		if !timedOut {
-			return Result{}, fmt.Errorf("the guard for %s ended with no status (exit code %v, signal %q)", spec.Argv[0], res.ExitCode, res.Signal)
-		}
-		// The timeout's signal ended the guard before it could report, so its own end is the run's.
-	case status.StartError != "":
-		return Result{}, startError(spec.Argv[0], status.StartErrno, status.StartError)
-	case status.Signal != 0:
-		res.Signal = signalName(syscall.Signal(status.Signal))
-	default:
-		res.ExitCode = status.ExitCode
+	var reported bool
+	res.ExitCode, res.Signal, reported = g.Exit()
+	if !reported && !timedOut {
+		// Only the timeout's signal may end the guard before it reports; then its own end is the run's.
+		return Result{}, fmt.Errorf("the guard for %s ended with no status (exit code %v, signal %q)", spec.Argv[0], res.ExitCode, res.Signal)
 	}
 	return res, nil
 }
 
 // stopGuard asks the guard to end the run with SIGTERM. The guard takes KillGrace before its SIGKILL; should it still be
 // there guardSlack after that, it and every descendant are sent SIGKILL from here.
-func stopGuard(pid int, guardDone <-chan struct{}) error {
-	_ = syscall.Kill(pid, syscall.SIGTERM)
+func stopGuard(g *Guarded) error {
+	g.Stop()
 	select {
-	case <-guardDone:
+	case <-g.Done():
 		return nil
 	case <-time.After(KillGrace + guardSlack):
 	}
-	for _, d := range descendants(pid) {
-		_ = syscall.Kill(d, syscall.SIGKILL)
+	return killGuard(g)
+}
+
+// killGuard sends SIGKILL to every descendant of the guard and then to the guard, waits for the guard to be reaped, and
+// then for every descendant it sent SIGKILL to have ended.
+func killGuard(g *Guarded) error {
+	// Once the guard was reaped its pid is free and may already belong to another process: signal nothing.
+	select {
+	case <-g.Done():
+		return nil
+	default:
+	}
+	pid := g.guard.Process.Pid
+	killed := map[int]uint64{}
+	for _, d := range proctree.Descendants(pid) {
+		if started, ok := proctree.Started(d); ok {
+			killed[d] = started
+		}
+		if killDescendant != nil {
+			killDescendant(d)
+		} else {
+			_ = syscall.Kill(d, syscall.SIGKILL)
+		}
 	}
 	_ = syscall.Kill(pid, syscall.SIGKILL)
 	select {
-	case <-guardDone:
-		return nil
+	case <-g.Done():
 	case <-time.After(cleanupTimeout):
 		return fmt.Errorf("the guard, process %d, did not end %v after SIGKILL", pid, cleanupTimeout)
+	}
+	return awaitEnded(killed)
+}
+
+// awaitEnded waits until no process in killed (each pid with its start time) still runs, polling with a short backoff.
+// SIGKILL lands asynchronously, so one sent it may run on for a moment. A zombie has ended: its new parent reaps it.
+// Any still running descendantsTimeout on are named in the error.
+func awaitEnded(killed map[int]uint64) error {
+	deadline := time.Now().Add(descendantsTimeout)
+	for pause := time.Millisecond; ; pause = min(2*pause, 50*time.Millisecond) {
+		var running []int
+		for pid, started := range killed {
+			if proctree.Running(pid, started) {
+				running = append(running, pid)
+			}
+		}
+		if len(running) == 0 {
+			return nil
+		}
+		if !time.Now().Before(deadline) {
+			slices.Sort(running)
+			return fmt.Errorf("processes %v under the guard still run %v after SIGKILL", running, descendantsTimeout)
+		}
+		time.Sleep(min(pause, time.Until(deadline)))
 	}
 }
 
@@ -195,6 +191,12 @@ const guardSlack = 3 * time.Second
 
 // cleanupTimeout bounds the wait for a guard after SIGKILL.
 const cleanupTimeout = 10 * time.Second
+
+// descendantsTimeout bounds the wait for the guard's descendants after SIGKILL. A test shortens it.
+var descendantsTimeout = cleanupTimeout
+
+// killDescendant is nil outside tests: killGuard calls it in place of sending SIGKILL to a descendant.
+var killDescendant func(pid int)
 
 // drain waits for both streams to reach end of file. A pipe still held open (only if the guard itself was killed) is
 // closed on this side after drainGrace, and what was read so far is kept.

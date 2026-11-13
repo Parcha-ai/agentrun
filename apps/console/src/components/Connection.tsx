@@ -1,5 +1,7 @@
 import { RefreshCw, WifiOff } from "lucide-react";
 import { createContext, type ReactNode, useContext, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { Banner } from "@/components/ui/banner";
+import { Button } from "@/components/ui/button";
 import type { Connection, Link } from "@/lib/connection";
 
 const ConnectionContext = createContext<Connection | null>(null);
@@ -49,17 +51,12 @@ export function ConnectionBanner() {
   const secs = useSecondsTo(link.state === "offline" ? link.retryAt : null);
   if (!c || link.state === "online") return null;
   if (link.state === "resumed") return (
-    <div data-connection="resumed" role="status" className="flex shrink-0 items-center gap-2 border-b bg-card px-5 py-2 text-[13px] md:px-8">
-      <RefreshCw className="size-4 text-success-text" aria-hidden />
-      <span><span className="font-semibold">Resumed.</span> agentrun-serve is back.</span>
-    </div>
+    <Banner bar tone="success" icon={RefreshCw} data-connection="resumed"><span className="font-semibold">Resumed.</span> agentrun-serve is back.</Banner>
   );
   return (
-    <div data-connection="offline" role="status" className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b bg-card px-5 py-2 text-[13px] md:px-8">
-      <WifiOff className="size-4 text-warning-text" aria-hidden />
-      <span><span className="font-semibold">Can't reach agentrun-serve at {location.host}.</span> Reconnecting… next try in {secs} s. The page shows what it had.</span>
-      <button type="button" onClick={c.retryNow} className="caps border px-2 py-1 text-[11px] hover:bg-accent">Retry now</button>
-    </div>
+    <Banner bar tone="warning" icon={WifiOff} data-connection="offline" actions={<Button type="button" onClick={c.retryNow} size="xs">Retry now</Button>}>
+      <span className="font-semibold">Can't reach agentrun-serve at {location.host}.</span> Reconnecting… next try in {secs} s. The page shows what it had.
+    </Banner>
   );
 }
 
@@ -72,11 +69,11 @@ export function Unreached() {
   return (
     <div data-connection="offline" role="status" className="mx-auto mt-[12vh] max-w-md border bg-card p-6">
       <WifiOff className="size-5 text-warning-text" aria-hidden />
-      <p className="mt-3 text-[16px] font-semibold">Can't reach agentrun-serve at {location.host}.</p>
-      <p className="mt-2 text-[14px] leading-relaxed text-muted-foreground">Is it running? This page connects by itself as soon as the server answers.</p>
+      <p className="mt-3 text-base font-semibold">Can't reach agentrun-serve at {location.host}.</p>
+      <p className="mt-2 text-lead leading-relaxed text-muted-foreground">Is it running? This page connects by itself as soon as the server answers.</p>
       <div className="mt-4 flex items-center gap-3">
-        <button type="button" onClick={c?.retryNow} className="caps border px-3 py-2 text-[12px] hover:bg-accent">Retry now</button>
-        <span className="font-mono text-[12px] text-muted-foreground">Next try in {secs} s</span>
+        <Button type="button" onClick={c?.retryNow} size="sm">Retry now</Button>
+        <span className="font-mono text-small text-muted-foreground">Next try in {secs} s</span>
       </div>
     </div>
   );

@@ -1,6 +1,7 @@
-// Cuts the nested shape's recording fixture from a recording of examples/fixtures/graph-nested/run.ts: its durable lines of the workflow's own
+// Cuts the nested shape's recording fixture from a recording of a run of that shape: its durable lines of the workflow's own
 // documents (the driver's record, the map items, their states, the effects, the task), with every clock fixed so the bytes hold
-// no time, pid or path. Run: node examples/fixtures/graph-nested/run.ts --kill --record <dir> && node test/fixtures/graph/record.mjs <dir>
+// no time, pid or path. Run: node test/fixtures/graph/record.mjs <dir>. The example that made the committed recording
+// (examples/fixtures/graph-nested) is no longer in the repository, so the fixture is kept as committed.
 // It writes nested.recording.jsonl beside this file. The recording of a killed process keeps what that process's store
 // committed before it died, so two recordings of the same run can differ by the one commit that was in flight at the kill.
 import { readFileSync, writeFileSync } from 'node:fs';

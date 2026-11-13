@@ -3,8 +3,10 @@
 // holds on every harness. Only the shapes the harnesses give count (REFUSED); a 401 anywhere else in an error (a
 // count, a file name, a duration, another service's status) is no refused key, and the error is left as it is.
 import { DEFAULT_HARNESS } from "./harness.js";
+import { harnessOf } from "./harness-table.js";
 import { redactSecrets, valueMatcher } from "./learn/secrets.js";
-import { hostModel, MODEL_KEYS, openRouterOnly } from "./model.js";
+import { hostModel, MODEL_KEYS } from "./model.js";
+import { openRouterOnly, WIRES } from "./provider.js";
 
 /** The key a run's model requests carry, and who reads it: a provider's (saved in Settings → Model keys, or set where
  *  AgentRun starts), or serve's gateway's (set where AgentRun starts only). */
@@ -16,14 +18,15 @@ const row = (id: string): RunKey | undefined => {
 };
 
 /** The key `harness`'s run of model `ref` (the revision's; none, this host's default for the harness) sends, by the route
- *  each harness takes (adapters.ts, model.ts); undefined where it is not a model key this server names. */
+ *  its wire takes (provider.ts; pi's, model.ts); undefined where it is not a model key this server names. */
 export function runKeyOf(env: NodeJS.ProcessEnv, harness: string = DEFAULT_HARNESS, ref?: string): RunKey | undefined {
   const named = ref ?? hostModel(env, "default", harness);
   const provider = named?.includes("/") ? named.slice(0, named.indexOf("/")) : undefined;
   const gateway: RunKey = { who: "The gateway at AGENT_MODEL_BASE_URL", field: "AGENT_MODEL_API_KEY", saved: false };
-  if (harness === "claude-agent") return row(provider === "openrouter" || openRouterOnly("claude-agent", env) ? "openrouter" : "anthropic");
-  if (env.AGENT_MODEL_BASE_URL) return gateway;
-  if (harness === "codex" || harness === "opencode") return row(provider === "openrouter" || openRouterOnly(harness, env) ? "openrouter" : "openai");
+  const wire = harnessOf(env, harness)?.facts?.wire;
+  // Serve's gateway takes every request of the wire it serves, pi's too; a wire it does not serve never goes there.
+  if (env.AGENT_MODEL_BASE_URL && (!wire || WIRES[wire].gateway)) return gateway;
+  if (wire) return row(provider === "openrouter" || openRouterOnly(wire, env) ? "openrouter" : WIRES[wire].vendor);
   return provider === undefined ? undefined : row(provider);
 }
 
@@ -45,7 +48,7 @@ function detailOf(rest: string): string {
 }
 
 /** The most of a run's error or a tool's output serve ever shows: a Timeline row's text, cut at 2000 characters
- *  (pi-durable-agent's CAPS.text; a summary and a tool result's preview at 500), which the error box reads too. */
+ *  (`CAPS.text` in timeline/; a summary and a tool result's preview at 500), which the error box reads too. */
 const SHOWN = 2000;
 
 /** `text`, a run's error as serve shows it, with no held secret in it: the one rule learning's checker uses
@@ -131,7 +134,7 @@ export function redactedOutput(value: unknown, secrets: readonly string[]): unkn
   return value;
 }
 
-/** What a thinking or text block may show while it streams (pi-durable-agent's `redactLive`): what has streamed so far,
+/** What a thinking or text block may show while it streams: what has streamed so far,
  *  redacted by the same rule as redacted(), less a fixed tail held back until the block ends, when its settled row
  *  replaces this one whole. A key whose head has streamed but not its tail cannot be found by any redactor, and a key
  *  ending inside the tail would show its head. So the tail is the most a held value takes in its widest form (6 times it,
@@ -178,11 +181,27 @@ export function keyRefusal(text: string | undefined, key: RunKey | undefined, se
  *  address. Every pattern is tried at one place or advances past what it read, so a rewrite takes time in proportion to
  *  the text. */
 const LOOPBACK_TAIL = /^url:\s*https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?![\w.-])(:\d+)?\S*\s*$/i; // key-gate: loopback-rule strips the loopback proxy address codex prints
-const LOOPBACK = /https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?![\w.-])(:\d+)?[^\s,;:)\x22\x27\]]*/gi; // key-gate: loopback-rule replaces any loopback address in a run error
-const LOOPBACK_BARE = /(?<![\w.\/-])(?:127\.0\.0\.1|localhost|\[::1\])(:\d+)(?![\w.-])/gi; // key-gate: loopback-rule replaces a bare loopback address with its port, a refused connection to the proxy
+/** A loopback host, by any of its names. */
+const LOOPBACK_HOST = String.raw`(?:127\.0\.0\.1|localhost|\[::1\])`; // key-gate: loopback-rule the loopback host names every address pattern below shares
+/** What ends an address's path: a space, a quote, a backslash (a JSON string's escape), a closing mark, the text's end, or
+ *  a full stop followed by one of those (a sentence's, which stays). */
+const STOP = String.raw`[\s,;:)\x22\x27\]\\]`;
+const PATH = String.raw`[^\s,;:)\x22\x27\]\\]*?(?=${STOP}|\.(?:${STOP}|$)|$)`;
+/** One with a scheme, its port and its path. */
+const LOOPBACK = new RegExp(String.raw`https?:\/\/${LOOPBACK_HOST}(?![\w.-])(?::\d+)?${PATH}`, "gi"); // key-gate: loopback-rule replaces any loopback address with a scheme
+/** A bare one: its port, then its path when one follows. A port followed by a letter, a digit, a dash or a full stop
+ *  that ends no sentence names no address of the host's, so it is kept. */
+const LOOPBACK_BARE = new RegExp(String.raw`(?<![\w.\/-])${LOOPBACK_HOST}:\d+(?:\/${PATH})?(?![\w-])(?!\.(?!${STOP}|$))`, "gi"); // key-gate: loopback-rule replaces a bare loopback address with its port, a refused connection to the proxy
+
+/** `text` with each loopback address in it, with a scheme or bare with its port, its path with it, as "a local address",
+ *  and nothing else of it changed: a sentence's full stop, a label before it, its line's end and a JSON string's quotes
+ *  stay. What a learning text is served through (learning.ts secretsShown), and what withoutLoopback ends with. */
+export function withoutLoopbackAddresses(text: string): string {
+  return text.replace(LOOPBACK, "a local address").replace(LOOPBACK_BARE, "a local address");
+}
 
 /** `text`, a run's error, with no loopback address in it: Codex's `url:` tail goes (tried at the last "url:" only), and
- *  any other, with a scheme or bare with its port, becomes "a local address". */
+ *  any other address alone becomes "a local address" (withoutLoopbackAddresses). */
 export function withoutLoopback(text: string): string {
   let at = -1;
   for (const found of text.matchAll(/url:/gi)) at = found.index;
@@ -191,5 +210,14 @@ export function withoutLoopback(text: string): string {
     out = text.slice(0, at).trimEnd();
     if (out.endsWith(",")) out = out.slice(0, -1);
   }
-  return out.replace(LOOPBACK, "a local address").replace(LOOPBACK_BARE, "a local address");
+  return withoutLoopbackAddresses(out);
+}
+
+/** `value` with each string in it, however deep, through `cut`: what a run error's details hold is served and kept as its
+ *  message is (runs.ts). */
+export function cutStrings(value: unknown, cut: (text: string) => string): unknown {
+  if (typeof value === "string") return cut(value);
+  if (Array.isArray(value)) return value.map((item) => cutStrings(item, cut));
+  if (value !== null && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, cutStrings(item, cut)]));
+  return value;
 }

@@ -254,6 +254,48 @@ func TestHandlerErrorsKeepTheirKind(t *testing.T) {
 	}
 }
 
+type closer struct{ closed chan struct{} }
+
+func (c *closer) Close() error { close(c.closed); return nil }
+
+func TestLocalValuesAreKeptPerConnectionAndClosedAtItsEnd(t *testing.T) {
+	made := make(chan *closer, 4)
+	c := start(t, map[string]rpc.Handler{
+		"local": func(ctx context.Context, _ json.RawMessage) (any, error) {
+			value := rpc.Local(ctx, "k", func() io.Closer {
+				v := &closer{closed: make(chan struct{})}
+				made <- v
+				return v
+			})
+			return fmt.Sprintf("%p", value), nil
+		},
+	})
+	c.send(`{"jsonrpc":"2.0","id":1,"method":"local"}` + "\n")
+	first := c.next()
+	c.send(`{"jsonrpc":"2.0","id":2,"method":"local"}` + "\n")
+	second := c.next()
+	if first.Error != nil || string(first.Result) != string(second.Result) || len(made) != 1 {
+		t.Fatalf("want one value for the connection, got %s and %s (%d made)", first.Result, second.Result, len(made))
+	}
+	value := <-made
+	select {
+	case <-value.closed:
+		t.Fatal("the value was closed while the connection is open")
+	default:
+	}
+	_ = c.in.Close()
+	select {
+	case <-c.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Serve did not return at end of input")
+	}
+	select {
+	case <-value.closed:
+	default:
+		t.Fatal("Serve returned before closing the connection's value")
+	}
+}
+
 func TestCancellingServeReturnsWhileTheInputIsIdle(t *testing.T) {
 	for _, closable := range []bool{true, false} {
 		t.Run(fmt.Sprintf("closable=%v", closable), func(t *testing.T) {

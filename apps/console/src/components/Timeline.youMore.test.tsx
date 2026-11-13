@@ -12,13 +12,13 @@ let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.innerHTML = ""; });
 
 const THREE = "Install the Python package httpx in your box and tell me its version.\nTeam rule for every report: start with STATUS.\nEnd with a line that starts with Next:.";
-const you = (text: string): TimelineRow => ({ id: "u", seq: 0, kind: "user_message", summary: `You: ${text.split("\n")[0]}`, text, timestamp: "2026-11-06T15:13:00.000Z", tool_name: null });
+const you = (text: string): TimelineRow => ({ id: "u", seq: 0, kind: "user_message", summary: `You: ${text.split("\n")[0]}`, text, timestamp: "2026-11-06T15:13:00.000Z", tool_name: null, created_at: "2026-11-06T15:13:00.000Z", agent_label: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null });
 function render(row: TimelineRow) {
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
   act(() => root!.render(createElement(Timeline, { rows: [row], live: false })));
   const li = host.querySelector("li")!;
-  const titleOf = () => [...li.querySelectorAll("span")].find((s) => s.classList.contains("text-[15px]"))!.textContent;
+  const titleOf = () => [...li.querySelectorAll("span")].find((s) => s.classList.contains("text-prose"))!.textContent;
   return { li, titleOf };
 }
 

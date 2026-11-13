@@ -28,10 +28,10 @@ test("a box with no script refuses tty: true in plain words, and makes nothing; 
   await assert.rejects(start.execute({ command: "tty", tty: true }, { env }, ctx), /this box has no `script` program \(util-linux\), so tty: true cannot run here: start the command without tty/);
   assert.deepEqual(existsSync(join(work, "background")) ? readdirSync(join(work, "background")) : [], [], "the refused start made nothing");
   const started = await start.execute({ command: "echo plain; sleep 30" }, { env }, ctx);
-  assert.match(started.content[0].text, /^Started background process 1 /);
+  assert.match(started.output[0].text, /^Started background process 1 /);
   await new Promise((resolve) => setTimeout(resolve, 300));
-  assert.match((await output.execute({ id: "1" }, { env }, ctx)).content[0].text, /\n\nplain\n$/);
-  assert.match((await signal.execute({ id: "1", signal: "KILL" }, { env }, ctx)).content[0].text, /ended by signal KILL/);
+  assert.match((await output.execute({ id: "1" }, { env }, ctx)).output[0].text, /\n\nplain\n$/);
+  assert.match((await signal.execute({ id: "1", signal: "KILL" }, { env }, ctx)).output[0].text, /ended by signal KILL/);
 });
 
 test("a box whose script is not util-linux's (busybox's takes no -e and always exits 0) refuses tty: true in plain words, and makes nothing", async (t) => {

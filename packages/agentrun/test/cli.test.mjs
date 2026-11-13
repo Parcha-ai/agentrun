@@ -10,6 +10,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { removeAtEnd } from "./support.mjs";
 
 const BIN = new URL("../bin/agentrun.mjs", import.meta.url).pathname;
 const SERVE = new URL("../../serve/dist/cli.js", import.meta.url).pathname;
@@ -22,7 +23,7 @@ const NO_BOXES = { AGENTRUN_BOXES: "none" };
 
 function scratch(t) {
   const dir = mkdtempSync(join(tmpdir(), "agentrun-cli-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  removeAtEnd(dir);
   const env = { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !DROPPED.includes(name))), ...NO_BOXES };
   return { dir, env: { ...env, HOME: dir, XDG_CONFIG_HOME: join(dir, ".config") } };
 }
@@ -159,8 +160,10 @@ test("demo: the CLI creates an agent, starts a capped run, reads it, lists runs 
 
   const raw = cli(["api", "GET", "/health", ...data]);
   assert.deepEqual([raw.code, raw.json().status], [0, "ok"]);
+  // The webhook holds its signing secret, which only the owner's signed-in session writes or removes: the API token is
+  // refused, exit 4, in the server's words.
   const deleted = cli(["webhook", "delete", ...data]);
-  assert.deepEqual([deleted.code, deleted.out], [0, ""], deleted.err);
+  assert.deepEqual([deleted.code, deleted.out, JSON.parse(deleted.err).error.code], [4, "", "forbidden"], deleted.err);
 
   // 1: the server refused, its error JSON on stderr.
   const missing = cli(["runs", "get", "no-such-run", ...data]);
@@ -169,13 +172,22 @@ test("demo: the CLI creates an agent, starts a capped run, reads it, lists runs 
   for (const args of [["runs", "get"], ["runs", "start", "demo", "--max-cost-usd", "two"], ["runs", "bogus"], ["agents", "list", "--no-such-flag"], ["runs", "start", "demo", "--body", "{not json"]]) {
     assert.equal(cli([...args, ...data]).code, 2, args.join(" "));
   }
-  // A body that carries a secret is never taken from the command line.
+  // A body that carries a secret is never taken from the command line. Saving a key is the owner's, in the console: the
+  // CLI has no verb for it, and a raw call refuses an inline body.
   const inline = cli(["tool-keys", "save", "exa", "--body", '{"values":{"EXA_API_KEY":"not-a-secret"}}', ...data]);
   assert.equal(inline.code, 2);
-  assert.match(inline.err, /--body -/);
+  assert.match(inline.err, /has no verb save/);
   const rawInline = cli(["api", "PUT", "/settings/tool-keys/exa", "--body", '{"values":{"EXA_API_KEY":"not-a-secret"}}', ...data]);
   assert.equal(rawInline.code, 2);
   for (const run of [inline, rawInline]) assert.ok(!`${run.out}${run.err}`.includes("not-a-secret"), "the refused value is in no output");
+  // An MCP sign-in starts only in the owner's browser: no command for it. Its route may carry a pre-registered client's
+  // secret, so a raw call to it never takes its body from the command line either.
+  const oauthCommand = cli(["mcp-servers", "oauth-start", "docs", "--body", '{"url":"https://mcp.example.com/mcp","client_id":"app","client_secret":"not-a-secret"}', ...data]);
+  assert.equal(oauthCommand.code, 2, oauthCommand.err);
+  assert.match(oauthCommand.err, /has no verb oauth-start/);
+  const oauthRaw = cli(["api", "POST", "/settings/mcp-servers/docs/oauth/start", "--body", '{"url":"https://mcp.example.com/mcp","client_id":"app","client_secret":"not-a-secret"}', ...data]);
+  assert.equal(oauthRaw.code, 2, oauthRaw.err);
+  for (const run of [oauthCommand, oauthRaw]) assert.ok(!`${run.out}${run.err}`.includes("not-a-secret"), "the refused value is in no output");
   // 3: nothing answers.
   const port = await closedPort();
   const unreachable = cli(["agents", "list", "--base-url", `http://127.0.0.1:${port}/v2`], { extra: { AGENTRUN_API_KEY: "fake-test-key" } });
@@ -572,4 +584,83 @@ test("a file path argument keeps its slashes and refuses a dot segment (plain or
   assert.equal((await run(env, ["home", "read", "a", "notes/a b.md", ...at], { extra })).code, 0);
   const homeFile = ["", "v2", "agents", "a", "home", "files", "notes", "a%20b.md"].join("/");
   assert.deepEqual(server.requests.map((r) => r.url), ["/v2/agents/a/learning/files/skills%2Ffind-policies%2FSKILL.md", homeFile]);
+});
+
+test("agents create --help and runs start --help end with the document's working body as a --body to paste, and pasted it works", { timeout: 120_000 }, async (t) => {
+  const { dir, env } = scratch(t);
+  const server = await serve(t, dir, env);
+  const cli = cliOf(env, []);
+  const doc = JSON.parse(cli(["--data", server.data, "server", "openapi"]).out);
+  const exampleOf = (path, method) => Object.values(doc.paths[path][method].requestBody.content["application/json"].examples)[0].value;
+  /** The help's example line, as a shell would split it: the words, then the single-quoted body. */
+  const pasted = (args) => {
+    const help = cli([...args, "--help"]);
+    assert.equal(help.code, 0, help.err);
+    const [, words, quoted] = /\nExample:\n {2}agentrun ([^']+) --body '((?:[^']|'\\'')*)'\n?$/.exec(help.out) ?? assert.fail(help.out);
+    return { words: words.split(" "), body: quoted.replace(/'\\''/g, "'") };
+  };
+  const create = pasted(["agents", "create"]);
+  assert.deepEqual(create.words, ["agents", "create"]);
+  assert.deepEqual(JSON.parse(create.body), exampleOf("/agents", "post"), "the document's example, whole");
+  const created = cli(["--data", server.data, ...create.words, "--body", create.body]);
+  assert.equal(created.code, 0, created.err);
+  const start = pasted(["runs", "start"]);
+  assert.deepEqual(start.words, ["runs", "start", "AGENT_ID"]);
+  assert.deepEqual(JSON.parse(start.body), exampleOf("/agents/{agent_id}/runs", "post"));
+  const started = cli(["--data", server.data, "runs", "start", created.json().agent_id, "--body", start.body]);
+  assert.equal(started.code, 0, started.err);
+  assert.equal(started.json().status, "queued");
+});
+
+test("server mcp from flags alone is a JSON-RPC request: the body's required const (jsonrpc) and the map's fill (id) are added; a --body goes as given, a notification keeps no id; and the real server lists its tools", { timeout: 120_000 }, async (t) => {
+  const { dir, env } = scratch(t);
+  const fake = await listener(t);
+  const extra = { AGENTRUN_API_KEY: "fake-test-key" };
+  const at = ["--base-url", fake.base];
+  const listed = await run(env, ["server", "mcp", "--method", "tools/list", ...at], { extra });
+  assert.equal(listed.code, 0, listed.err);
+  assert.equal(fake.requests.at(-1).url, "/v2/mcp");
+  assert.deepEqual(JSON.parse(fake.requests.at(-1).body), { jsonrpc: "2.0", id: 1, method: "tools/list" });
+  const note = '{"jsonrpc":"2.0","method":"notifications/initialized"}';
+  assert.equal((await run(env, ["server", "mcp", "--body", note, ...at], { extra })).code, 0);
+  assert.equal(fake.requests.at(-1).body.toString(), note, "a whole --body is sent as given: a notification gets no id");
+  assert.equal((await run(env, ["server", "mcp", "--body", '{"jsonrpc":"2.0","id":"a"}', "--method", "ping", ...at], { extra })).code, 0);
+  assert.deepEqual(JSON.parse(fake.requests.at(-1).body), { jsonrpc: "2.0", id: "a", method: "ping" }, "a --body's own fields, with the flag's");
+  const help = await run(env, ["server", "mcp", "--help"]);
+  assert.equal(help.code, 0, help.err);
+  assert.match(help.out, /^Built from flags alone, the body also has: jsonrpc "2\.0", id 1\.$/m);
+
+  const server = await serve(t, dir, env);
+  const tools = await run(env, ["--data", server.data, "server", "mcp", "--method", "tools/list"]);
+  assert.equal(tools.code, 0, tools.err);
+  const answer = JSON.parse(tools.out);
+  assert.equal(answer.id, 1);
+  assert.ok(answer.result.tools.some((tool) => tool.name === "whoami"), tools.out);
+});
+
+test("no CLI command, the table's or a hand-written one, reaches an operation that writes a secret: the document's marks (markedOperations) name each; the API keeps the route, the TypeScript client its method, and help says where secrets are set", { timeout: 120_000 }, async () => {
+  const { servedDocument } = await import(GENERATOR);
+  const { markedOperations } = await import(join(ROOT, "packages", "serve", "dist", "secret-writes.js"));
+  const doc = await servedDocument();
+  const marked = markedOperations(doc);
+  assert.ok(marked.includes("saveToolKey") && marked.includes("deleteToolKey"), `a tool key's save and removal are secret writes: ${JSON.stringify(marked)}`);
+  const routeOf = new Map(Object.entries(doc.paths).flatMap(([path, item]) => Object.entries(item).filter(([, op]) => op?.operationId).map(([method, op]) => [op.operationId, `${method.toUpperCase()} ${path}`])));
+  const { COMMANDS, SECRET_ROUTES } = await import(TABLE);
+  assert.deepEqual(COMMANDS.filter((entry) => marked.includes(entry.operationId)).map((entry) => entry.command.join(" ")), [], "no table command");
+  const hand = [
+    ...(await import(join(ROOT, "packages", "agentrun", "lib", "login.mjs"))).SECRETS,
+    (await import(join(ROOT, "packages", "agentrun", "lib", "follow.mjs"))).WAIT,
+    (await import(join(ROOT, "packages", "agentrun", "lib", "skill.mjs"))).SKILL_INSTALL,
+    ...Object.values(await import(join(ROOT, "packages", "agentrun", "lib", "template.mjs"))).filter((entry) => entry?.command),
+  ];
+  const routes = marked.map((id) => routeOf.get(id));
+  assert.deepEqual(hand.filter((entry) => routes.some((route) => String(entry.route ?? "").startsWith(route))).map((entry) => entry.command.join(" ")), [], "no hand-written command");
+  // The raw `api` call still guards every secret route's body, a command's or not.
+  assert.ok(SECRET_ROUTES.some((entry) => entry.operationId === "saveToolKey"), "a raw call to the tool key route is still guarded");
+  // The API and the clients keep them: the routes answer the token in words (secret-writes.ts), and the client has the methods.
+  const client = readFileSync(join(ROOT, "packages", "client", "src", "operations.generated.ts"), "utf8");
+  for (const id of ["saveToolKey", "deleteToolKey"]) assert.ok(client.includes(`call("${id}"`), `the TypeScript client keeps ${id}`);
+  const help = spawnSync(process.execPath, [BIN, "help"], { encoding: "utf8" });
+  assert.match(help.stdout, /Keys and other secrets are set in the console, signed in/);
+  assert.doesNotMatch(help.stdout, /tool-keys[^\n]*\b(?:set|save|delete)\b/, "help lists no command that writes a key");
 });

@@ -1,5 +1,5 @@
 // A JSON Schema check for tests, over the keywords the contract uses: $ref within the document, allOf, oneOf, anyOf,
-// if/then/else, type, enum, const, properties, required, additionalProperties, propertyNames, items, minItems,
+// not, if/then/else, type, enum, const, properties, required, additionalProperties, propertyNames, items, minItems,
 // maxItems, uniqueItems, minLength, maxLength, pattern, minimum, maximum, exclusiveMinimum. `format` and
 // `discriminator` add nothing a value must meet here. Answers each problem as "path: what".
 
@@ -26,6 +26,7 @@ export function schemaProblems(doc, schema, value, at = "$") {
   for (const part of schema.allOf ?? []) out.push(...schemaProblems(doc, part, value, at));
   if (schema.oneOf && schema.oneOf.filter((part) => schemaProblems(doc, part, value, at).length === 0).length !== 1) out.push(`${at}: not exactly one of oneOf`);
   if (schema.anyOf && !schema.anyOf.some((part) => schemaProblems(doc, part, value, at).length === 0)) out.push(`${at}: none of anyOf`);
+  if (schema.not !== undefined && schemaProblems(doc, schema.not, value, at).length === 0) out.push(`${at}: matches what not refuses`);
   if (schema.if !== undefined) {
     const branch = schemaProblems(doc, schema.if, value, at).length === 0 ? schema.then : schema.else;
     out.push(...schemaProblems(doc, branch, value, at));

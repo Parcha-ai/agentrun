@@ -1,4 +1,4 @@
-import type { Permission, ToolSettings } from "./v2";
+import type { AgentTool, Permission, ToolPin, ToolSetting, ToolSettings } from "./v2";
 
 /** The harnesses a capability resolves for, in the order the console shows them. */
 export const HARNESS_ORDER = ["pi", "claude-agent", "codex", "opencode"] as const;
@@ -8,21 +8,14 @@ export const HARNESS_ORDER = ["pi", "claude-agent", "codex", "opencode"] as cons
  *  settings; and whether it runs here at all, with the server's reason when not (a provider of `off`, say). */
 export type ToolChoice = { name: string; providers: string[]; provider: string; default_provider: string; resolves: Record<string, string>; available: boolean; reason?: string };
 
-/** Older tool names a revision may still grant, and the capability each one is, as the server has them
- *  (packages/serve/src/tool-plane.ts, LEGACY_NAMES): `fetch_page` runs, and resolves, as web_fetch. */
-const LEGACY_NAMES: Readonly<Record<string, string>> = { fetch_page: "web_fetch" };
-/** The capability a granted tool name is: its legacy target, else itself. */
-export const capabilityOf = (name: string): string => LEGACY_NAMES[name] ?? name;
-
-/** The tools a workflow's call nodes call (`node: "call"` with a `tool`, wherever it sits), each at its settings key
- *  (fetch_page: web_fetch's), once, sorted. A call node runs only the server's built-in call tools, never a catalog one. */
+/** The tools a workflow's call nodes call (`node: "call"` with a `tool`, wherever it sits), once, sorted. A call node runs only the server's built-in call tools, never a catalog one. */
 export function callNodeTools(workflow: unknown): string[] {
   const found = new Set<string>();
   const walk = (v: unknown): void => {
     if (Array.isArray(v)) { v.forEach(walk); return; }
     if (!v || typeof v !== "object") return;
     const o = v as Record<string, unknown>;
-    if (o.node === "call" && typeof o.tool === "string") found.add(capabilityOf(o.tool));
+    if (o.node === "call" && typeof o.tool === "string") found.add(o.tool);
     Object.values(o).forEach(walk);
   };
   walk(workflow);
@@ -31,9 +24,9 @@ export function callNodeTools(workflow: unknown): string[] {
 
 /** The tools a 409 `agent_not_runnable` names as stopping a workflow's call nodes (approvals/1): `denied`, set to
  *  deny; `asks`, set to ask, which a call node can't wait for. Each is an array of settings keys, present only when not
- *  empty; a legacy name is held to its capability's key (fetch_page: web_fetch's), as the server holds it. */
+ *  empty. */
 export function toolBlockers(details: Record<string, unknown> | null | undefined): { denied: string[]; asks: string[] } {
-  const names = (v: unknown) => (Array.isArray(v) && v.every((x) => typeof x === "string") ? [...new Set((v as string[]).map(capabilityOf))] : []);
+  const names = (v: unknown) => (Array.isArray(v) && v.every((x) => typeof x === "string") ? [...new Set(v as string[])] : []);
   return { denied: names(details?.denied), asks: names(details?.asks) };
 }
 
@@ -54,16 +47,31 @@ export function toolChoices(raw: unknown): ToolChoice[] {
  *  (accounts off: approving a call takes the owner's password sign-in). */
 export type ToolGate = { name: string; permission: Permission; default_permission: Permission; permissions: Permission[]; ask_needs?: "password" };
 
-const PERMISSIONS: readonly string[] = ["allow", "ask", "deny"];
-const isPermission = (v: unknown): v is Permission => typeof v === "string" && PERMISSIONS.includes(v);
+/** Said wherever a tool the server's table denies shows: the server's deny is absolute (it holds over an agent's own
+ *  allow or ask and over Never ask). */
+export const SERVER_DENY = "Refused on this server for every agent, whatever the agent's own setting or Never ask.";
+/** Said beside a tool whose permission is deny: what deny does not do (its words are tl-tools'). */
+export const DENY_ONLY = "Deny stops this tool only. The agent can still reach the web with other tools it has, such as browser, bash or web_search: deny those too to keep it offline.";
 
-/** Each tool's permission, in the server's order: `capabilities.tools` entries that carry one. None from an older server. */
+/** An MCP tool as its server's read lists it (GET /v2/mcp/servers/{name}): this server's permission in force for it. */
+type McpListed = { name: string; tools: readonly { name: string; permission?: Permission }[] };
+
+/** Whether this server denies `name` for every agent, from the newest word there is on it: the agent's read when it lists
+ *  the tool (permission deny, from the server: read after capabilities, so a deny lifted since holds nothing); else, for an
+ *  MCP tool, its server's read; else the server's table (capabilities' permission in force). */
+export const serverDenies = (name: string, gates: readonly ToolGate[], read?: readonly AgentTool[], mcpServers?: readonly McpListed[]): boolean => {
+  const own = read?.find((t) => t.name === name);
+  if (own) return own.permission === "deny" && own.permission_from === "server";
+  const grant = /^mcp:([^/]+)\/(.+)$/.exec(name);
+  const listed = grant ? mcpServers?.find((s) => s.name === grant[1])?.tools.find((t) => t.name === grant[2]) : undefined;
+  if (listed) return listed.permission === "deny";
+  return gates.some((g) => g.name === name && g.permission === "deny");
+};
+
+/** Each tool's permission, in the server's order: every `capabilities.tools` entry carries one, the owner's default and
+ *  those offered. None until the capabilities read answers. */
 export function toolGates(raw: unknown): ToolGate[] {
-  return (Array.isArray(raw) ? raw : []).flatMap((t): ToolGate[] => {
-    const e = t as { name?: unknown; permission?: unknown; default_permission?: unknown; permissions?: unknown; ask_needs?: unknown } | null;
-    if (!e || typeof e.name !== "string" || !Array.isArray(e.permissions) || !e.permissions.length || !e.permissions.every(isPermission) || !isPermission(e.default_permission)) return [];
-    return [{ name: e.name, permission: isPermission(e.permission) ? e.permission : e.default_permission, default_permission: e.default_permission, permissions: e.permissions, ...(e.ask_needs === "password" ? { ask_needs: "password" as const } : {}) }];
-  });
+  return ((raw ?? []) as ToolGate[]).map(({ name, permission, default_permission, permissions, ask_needs }) => ({ name, permission, default_permission, permissions, ...(ask_needs === "password" ? { ask_needs } : {}) }));
 }
 
 const PROVIDER: Record<string, string> = { auto: "auto", native: "native", kernel: "kernel fetch", "exa-keyless": "Exa keyless", parallel: "Parallel" };
@@ -88,7 +96,7 @@ const BY_TOOL: Record<string, { label: Record<string, string>; help: Record<stri
 export const providerLabel = (provider: string, tool?: string) => (tool && BY_TOOL[tool]?.label[provider]) ?? PROVIDER[provider] ?? provider;
 
 const HELP: Record<string, string> = {
-  auto: "The harness's own search, or the model provider's hosted one, else keyless Exa.",
+  auto: "The harness's own search, or the model provider's hosted one; else Parallel where this server holds its key; else keyless Exa.",
   native: "The harness's own search, or the model provider's hosted one, never a third party: unavailable where there is none.",
   "exa-keyless": "Exa's keyless search: no key, a third party.",
   parallel: "Parallel: needs the Parallel key.",
@@ -116,7 +124,7 @@ function withField<K extends "provider" | "permission">(settings: ToolSettings, 
 /** `settings` with `tool`'s provider set to `provider`, its permission kept. One equal to `fallback` (what applies when this
  *  layer sets none: the built-in default for the server's, the server's for an agent's), or undefined, is no setting: the
  *  row takes its default again. Never changes `settings`. */
-export const withProvider = (settings: ToolSettings, tool: string, provider: string | undefined, fallback: string): ToolSettings => withField(settings, tool, "provider", provider, fallback);
+export const withProvider = (settings: ToolSettings, tool: string, provider: ToolSetting["provider"], fallback: string): ToolSettings => withField(settings, tool, "provider", provider, fallback);
 
 /** `settings` with `tool`'s permission set to `permission`, its provider kept. One equal to `fallback` (the owner's default
  *  for the server's, the server's for an agent's), or undefined, is no setting. Never changes `settings`. */
@@ -151,3 +159,30 @@ export function issuesFor(fields: Record<string, string>, prefix: string, shown:
   }
   return { byTool, rest };
 }
+
+type PinScalar = Exclude<ToolPin[string], unknown[]>;
+/** A one-of list in the gate's one form (tool-gate.ts canonicalChoices): each value once, null first, then by JSON text. */
+const choicesOf = (value: ToolPin[string]): PinScalar[] => {
+  if (!Array.isArray(value)) return [value];
+  const texts = [...new Set(value.filter((one) => one !== null).map((one) => JSON.stringify(one)))].sort();
+  return [...(value.includes(null) ? [null] : []), ...texts.map((text) => JSON.parse(text) as PinScalar)];
+};
+/** A pinned value in words: text as it is, any other as JSON (tool-gate.ts scalarWords; null is said by pinLine). */
+const valueWords = (one: PinScalar): string => (typeof one === "string" ? one : JSON.stringify(one));
+
+/** A pin in words, in the gate's order (tool-gate.ts pinWords: arguments sorted, each list in its one form), so the screen
+ *  and a refusal read alike: "event must be left out or COMMENT; method must be one of create, delete_pending". */
+export function pinLine(pin: ToolPin): string {
+  return Object.keys(pin).sort().map((arg) => {
+    const values = choicesOf(pin[arg]!);
+    const nullable = values[0] === null;
+    const rest = (nullable ? values.slice(1) : values).map((one) => valueWords(one));
+    if (!rest.length) return `${arg} must be left out`;
+    const of = rest.length === 1 ? rest[0] : `one of ${rest.join(", ")}`;
+    return `${arg} must be ${nullable ? `left out or ${of}` : of}`;
+  }).join("; ");
+}
+/** What every pin says after its words. */
+export const PIN_HOLDS = "Calls outside it are refused before they run or ask.";
+/** A pin that doesn't read (pin_broken): it fails closed. */
+export const PIN_BROKEN = "This pin doesn't read, so every call to this tool is refused. Set the pin again, or remove the tool's setting.";

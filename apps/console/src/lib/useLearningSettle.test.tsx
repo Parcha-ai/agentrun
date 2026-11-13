@@ -9,8 +9,8 @@ import type { Run } from "./v2";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 type R = Pick<Run, "status" | "learning">;
-const deciding: R = { status: "completed", learning: { state: "reflecting", reason: null } };
-const merged: R = { status: "completed", learning: { state: "merged", reason: null } };
+const deciding: R = { status: "completed", learning: { detail: null, at: "2026-11-03T16:52:09Z", state: "reflecting", reason: null } };
+const merged: R = { status: "completed", learning: { detail: null, at: "2026-11-03T16:52:09Z", state: "merged", reason: null } };
 
 let root: ReturnType<typeof createRoot> | undefined;
 let hidden = false;
@@ -88,13 +88,13 @@ describe("useLearningSettle", () => {
     expect(m.at()).toEqual([2]);
   });
   it("says when an ended run's learning moves, so the page reads its timeline again; not on the first read, nor while it works", () => {
-    const m = mount({ status: "working", learning: { state: "seeded", reason: null } });
-    m.render({ status: "working", learning: { state: "seeded", reason: null } });
+    const m = mount({ status: "working", learning: { detail: null, at: "2026-11-03T16:52:09Z", state: "seeded", reason: null } });
+    m.render({ status: "working", learning: { detail: null, at: "2026-11-03T16:52:09Z", state: "seeded", reason: null } });
     expect(m.moves).toEqual([]);
     m.render(deciding);
     m.render({ ...deciding });
     expect(m.moves).toEqual(["reflecting"]);
-    m.render({ status: "completed", learning: { state: "proposed", reason: null } });
+    m.render({ status: "completed", learning: { detail: null, at: "2026-11-03T16:52:09Z", state: "proposed", reason: null } });
     m.render(merged);
     m.render({ ...merged });
     expect(m.moves).toEqual(["reflecting", "proposed", "merged"]);
@@ -105,7 +105,7 @@ describe("useLearningSettle", () => {
     expect(settled.moves).toEqual([]);
   });
   it("does nothing for a run still working, one that does not learn, or one whose learning has settled", () => {
-    for (const run of [{ status: "working" as const, learning: { state: "seeded" as const, reason: null } }, { status: "completed" as const, learning: null }, merged, null]) {
+    for (const run of [{ status: "working" as const, learning: { state: "seeded" as const, reason: null, detail: null, at: "2026-11-03T16:52:09Z" } }, { status: "completed" as const, learning: null }, merged, null]) {
       const m = mount(run);
       wait(60_000);
       expect(m.reads).toHaveLength(0);
