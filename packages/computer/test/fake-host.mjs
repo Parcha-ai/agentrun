@@ -78,7 +78,7 @@ const START = Date.now();
  *  - flaps: for a new machine, whether each listing after its create shows it (true) or leaves it out (false), in turn,
  *    until they run out; then every listing shows it;
  *  - born(n): the creation time of the n-th machine made (1, 2, ...), or undefined for none; default the order made;
- *  - size: the size every machine reads back;
+ *  - size: the size every machine reads back; a machine reads back the GPUs its create asked for;
  *  - sha: "ok" or "lie"; install: the install's exit code; initFails: words init writes before it exits;
  *  - notListening: how many bridges find no daemon before one does;
  *  - box: what the daemon reports (hello patch, uid, gid, status, interfaces, reached, accepted, quiet, raised);
@@ -173,6 +173,7 @@ export function fakeHost({
 		image: { resolved: `${m.image}-id` },
 		...(m.createdAt === undefined ? {} : { createdAt: new Date(m.createdAt) }),
 		...(size === undefined ? {} : { size: { ...size } }),
+		...(m.request?.gpu === undefined ? {} : { gpu: { ...m.request.gpu } }),
 		endsAt: new Date(m.endsAt),
 		timerMoved: m.timerMoved,
 		...(drift ? { drift: [...drift] } : {}),

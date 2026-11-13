@@ -358,6 +358,22 @@ test("a retry is held to the size its computer reads back where the vendor takes
 	assert.equal(fake.creates(), 1, "never a second machine under one name");
 });
 
+test("a retry is held to the GPUs its computer reads back: a GPU request that finds its computer made without one, or the other way round, is refused as exists", async () => {
+	const H100 = { type: "H100", count: 1 };
+	const { provider, fake } = setup({}, { facts: { gpu: { types: ["H100"], max: 1 } } });
+	const plain = made(await provider.create(SPEC, { requestId: "cpu-first" }));
+	const gpu = await provider.create({ ...SPEC, gpu: H100 }, { requestId: "cpu-first" });
+	assert.equal(gpu.error?.code, "exists", "a GPU request never gets the computer made without one");
+	assert.match(gpu.error.message, new RegExp(`${plain.name} was made for this request with another spec, so it is not returned: gpu: asked \\{"type":"H100","count":1\\}, read back nothing`));
+	const withGpu = made(await provider.create({ ...SPEC, gpu: H100 }, { requestId: "gpu-first" }));
+	const none = await provider.create(SPEC, { requestId: "gpu-first" });
+	assert.equal(none.error?.code, "exists", "a request without a GPU never gets the GPU computer");
+	assert.match(none.error.message, /gpu: asked nothing, read back \{"type":"H100","count":1\}/);
+	assert.equal(made(await provider.create({ ...SPEC, gpu: H100 }, { requestId: "gpu-first" })).id, withGpu.id, "the same spec gets the same computer");
+	assert.equal(made(await provider.create(SPEC, { requestId: "cpu-first" })).id, plain.id);
+	assert.equal(fake.creates(), 2, "never a second machine under one name");
+});
+
 test("a retry that finds a desktop running whose display is not up yet waits for it within createMs; one that never comes up as declared is exists after createMs", async () => {
 	const labels = (request) => ({ [COMPUTER]: "1", [NAME]: nameOf(request), [DEADLINE]: new Date(Date.now() + 600_000).toISOString(), [MAX]: new Date(Date.now() + HOUR).toISOString(), "agentrun.computer.image": "img" });
 	const up = (m) => {
