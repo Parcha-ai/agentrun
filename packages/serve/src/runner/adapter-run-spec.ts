@@ -9,7 +9,7 @@
 // tools are the kernel registry's hands on the run's Workspace (runTools), and — once built through the ToolHost below —
 // tools.ts's full set (browser, web, MCP, decisions, monid) by their own names. The gate before a call's intent is the
 // run's revision's tool settings, read through runGate (approvals "never" among them), the adapter loop asking it.
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { defineExtension, type Extension, ROOT_CONVERSATION_ID, type ToolExecutionApi, type ToolRegistration } from "@earendil-works/pi-durable";
 import { type CapModel, type CapRefused, checkRaise, followUpOf, parkOf } from "@parcha/agentrun-kernel/kernel/cap";

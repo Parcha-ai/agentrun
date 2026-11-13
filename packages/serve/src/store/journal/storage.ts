@@ -6,7 +6,8 @@
 // commit error is final). A patch of the run row (state, cost, metrics, ended_at) staged before a commit lands in that
 // same transaction, so a run's end and its last journal commit are one commit; a command it takes lands with its effect
 // (taken_at, exactly once). `close` leaves the store's connection open: the store owns it.
-import type { Context, JsonValue } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
+import type { JsonValue } from "@earendil-works/chord/json";
 import { apply } from "@earendil-works/chord/delta";
 import {
   type CommitResult,

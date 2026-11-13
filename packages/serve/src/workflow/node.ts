@@ -9,7 +9,8 @@
 // request at all. A conversation another task owns is one whose task ended and was replaced by a new task over the
 // same journal (a failed run's next start): pi aborted what was in flight in it when that task ended, so the attempt
 // runs again in a conversation of the task that runs it now, unless the old one already delivered its record.
-import type { Context, JsonValue } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
+import type { JsonValue } from "@earendil-works/chord/json";
 import {
   configure, defineDocFamily, type AgentChange, type ConversationId, type DocumentReader, type InputSubmissionDraft, type Submission,
   type TaskId, type Tx,
