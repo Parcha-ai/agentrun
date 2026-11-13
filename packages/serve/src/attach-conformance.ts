@@ -338,8 +338,11 @@ export async function runAttachConformance(options: ConformanceOptions): Promise
     });
   } finally {
     await routes.close();
-    await new Promise<void>((done) => server.close(() => done()));
-    server.closeAllConnections();
+    // closeAllConnections right after close starts: a pairing request left unfinished would hold the close callback.
+    await new Promise<void>((done) => {
+      server.close(() => done());
+      server.closeAllConnections();
+    });
     await store.close();
     rmSync(dir, { recursive: true, force: true });
   }
