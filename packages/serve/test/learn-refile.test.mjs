@@ -358,6 +358,60 @@ test("the merge's own computation settles each note against the main it commits 
   }
 });
 
+// #2256 review (PRRT_kwDOUmdVMs62ayl3): a copy of a main note's rule, then an update of that note: the update holds the rule.
+test("the merge: a copy of a main note's rule, then an update of that note: the update merges, the copy is left out", async (t) => {
+  const data = mkdtempSync(join(tmpdir(), "learn-refile-update-"));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  await seedOf(data, "agent-1");
+  const folder = learningWorkspace({ mode: "local", data, agentId: "agent-1" });
+  try {
+    const units = noteNamed("units", "Units", "Convert every amount to cents first.");
+    assert.equal((await learningCommit(folder.workspace, { kind: "person", action: "created", file: units.file, text: units.text, ifMatch: null })).ok, true);
+    const copy = noteNamed("copy", "Copy", "convert every amount  to CENTS first.");
+    const update = { file: "update.md", text: noteNamed("update", "Update", "Convert every amount to cents first.").text.replace("---\n", `---\nsupersedes: [${units.file}]\n`) };
+    const done = await learningCommit(folder.workspace, { kind: "merge", runId: "run-u", reason: "r", graded: {}, files: [{ path: copy.file, text: copy.text }, { path: update.file, text: update.text }] });
+    assert.equal(done.ok, true, JSON.stringify(done));
+    const main = await mainTexts(folder.workspace, [copy.file, update.file]);
+    assert.deepEqual(Object.keys(main), [update.file], "the update merged, the copy did not");
+  } finally {
+    await folder.end();
+  }
+});
+
+// #2256 review (PRRT_kwDOUmdVMs62n9cX): the skill retires only while an active note holds its rule as the merge commits.
+test("the merge retires a re-filed skill only while an active note holds its rule: a holder a person retired since the grade leaves the skill active", async (t) => {
+  const data = mkdtempSync(join(tmpdir(), "learn-refile-retire-"));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  await seedOf(data, "agent-1");
+  const folder = learningWorkspace({ mode: "local", data, agentId: "agent-1" });
+  try {
+    assert.equal((await learningCommit(folder.workspace, { kind: "merge", runId: "run-old", reason: "learned a skill", graded: {}, files: [{ path: SKILL.file, text: SKILL.text }] })).ok, true);
+    const rule = ruleOf(parseNoteFile("report-format.md", skillAsNote(SKILL.file, SKILL.text).text).body);
+    const retire = [{ skill: SKILL.file, note: "report-format.md", rule }];
+    const status = async () => (await readSnapshot(folder.workspace)).skills.map(({ name, status: one }) => [name, one]);
+    // No active note holds the rule (the one that did was retired after the grade read main): the skill stays.
+    const one = await learningCommit(folder.workspace, { kind: "merge", runId: "run-a", reason: "r", graded: {}, files: [{ path: NOTE.file, text: NOTE.text }], retire });
+    assert.equal(one.ok, true, JSON.stringify(one));
+    assert.deepEqual(await status(), [["report-format", "active"]], "the rule has no active note: its skill stays");
+    // An active note holds it: the skill retires in the same write.
+    const holder = skillAsNote(SKILL.file, SKILL.text);
+    assert.equal((await learningCommit(folder.workspace, { kind: "person", action: "created", file: holder.file, text: holder.text, ifMatch: null })).ok, true);
+    const other = noteNamed("budget", "Budget", "Stay under the cap.");
+    const two = await learningCommit(folder.workspace, { kind: "merge", runId: "run-b", reason: "r", graded: {}, files: [{ path: other.file, text: other.text }], retire });
+    assert.equal(two.ok, true, JSON.stringify(two));
+    assert.deepEqual(await status(), [["report-format", "retired"]], "a note holds the rule: the skill retires");
+    // A replacement saved pending in the merge retires its skill too: the rule is the note's once the owner approves.
+    const again = { file: SKILL.file.replace("report-format", "other-format"), text: SKILL.text.replace("report-format", "other-format").replace("Start every report", "Begin every report") };
+    assert.equal((await learningCommit(folder.workspace, { kind: "merge", runId: "run-c", reason: "r", graded: {}, files: [{ path: again.file, text: again.text }] })).ok, true);
+    const pending = skillAsNote(again.file, again.text);
+    const three = await learningCommit(folder.workspace, { kind: "merge", runId: "run-d", reason: "r", graded: {}, files: [{ path: pending.file, text: pending.text }], held: [pending.file], retire: [{ skill: again.file, note: pending.file, rule: ruleOf(parseNoteFile(pending.file, pending.text).body) }] });
+    assert.equal(three.ok, true, JSON.stringify(three));
+    assert.deepEqual((await status()).find(([name]) => name === "other-format"), ["other-format", "retired"], "a pending replacement retires its skill");
+  } finally {
+    await folder.end();
+  }
+});
+
 test("re-filing an update to a skill main holds retires that skill in the same write: no old SKILL.md stays active beside the note", async (t) => {
   const old = { file: SKILL.file, text: "---\nname: report-format\ndescription: How every report is laid out\n---\nStart every report with STATUS.\n" };
   const { end, notes, skills } = await refileRun(t, { skill: old });
@@ -582,4 +636,31 @@ test("a re-filed skill whose same-rule note on main is retired is not retired: t
   assert.deepEqual(end, { state: "ended" });
   assert.match(notes["report-format.md"], /^status: retired$/m, "main's note stays retired");
   assert.deepEqual(skills.map(({ name, status }) => [name, status]), [["report-format", "active"]], "the skill is not retired: the rule stays served");
+});
+
+// #2256 review (PRRT_kwDOUmdVMs62XH5h, P1): a rule is held only by a note that stays active after this merge. old.md
+// holds R; the run keeps a note of rule S that supersedes old.md, and a skill re-filed as a note of R under another
+// name. The re-filed note is no copy of a rule main keeps (old.md goes), so it is kept and the skill retired: R stays
+// served, by the re-filed note.
+const R_OLD = noteNamed("old-format", "Old format", "Start every report with STATUS, at most 5 lines, and end it with Next:.");
+const S_NEW = noteNamed("report-v2", "Report v2", "Open every report with a one-line summary.", "supersedes: [old-format.md]\n");
+
+test("the checks: a seed rule whose note this proposal supersedes is held by no one, so its copy under another name is kept", () => {
+  const base = { files: ["MEMORY.md", R_OLD.file], active: [parseNoteFile(R_OLD.file, R_OLD.text)], rules: new Map([[ruleOf("Start every report with STATUS, at most 5 lines, and end it with Next:."), R_OLD.file]]) };
+  const change = ({ file, text }) => ({ path: file, status: "added", mode: "100644", bytes: Buffer.from(text) });
+  const copy = noteNamed("report-format", "Report format", "start every report with STATUS, at most 5 lines, and end it with Next:.");
+  const checked = checkProposal({ base, changes: [change(S_NEW), change(copy)] });
+  assert.deepEqual(checked.problems, [], JSON.stringify(checked.problems));
+  assert.deepEqual(checked.notes.map(({ file }) => file), [S_NEW.file, copy.file]);
+});
+
+test("the merge: a rule whose note the merge supersedes is kept by its re-filed copy, and the skill retired: the rule is never left unserved", async (t) => {
+  const answer = verdictOf([{ file: S_NEW.file, decision: "keep", why: "useful" }, { file: SKILL.file, decision: "note", why: "a rule for every report" }]);
+  const { end, notes, skills, learning } = await refileRun(t, { existing: { [R_OLD.file]: R_OLD.text }, skill: SKILL, notes: [S_NEW], files: [SKILL], answer });
+  assert.deepEqual(end, { state: "ended" });
+  assert.match(notes[R_OLD.file], /^status: superseded$/m, "old-format.md superseded by report-v2.md");
+  assert.ok(notes["report-format.md"], `the rule is served by the re-filed note: ${JSON.stringify(Object.keys(notes))}`);
+  assert.match(notes["report-format.md"], /Start every report with STATUS/);
+  assert.deepEqual(skills.map(({ name, status }) => [name, status]), [["report-format", "retired"]]);
+  assert.deepEqual(learning.learned.map(({ file }) => file).sort(), ["report-format.md", S_NEW.file].sort(), JSON.stringify(learning));
 });

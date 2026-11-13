@@ -5,14 +5,17 @@
 // when asked, and never under --faux.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
+import { container, fakeDocker } from "../../computer/test/fake-docker.mjs";
 import { ofStore, startRunnerProcess } from "../dist/runner/main.js";
 import { openSqliteStore } from "../dist/store/index.js";
 import { startJanitor, sweepServerComputers } from "../dist/workspace/computer-janitor.js";
 import { fauxLoops, until } from "./runner-support.mjs";
+import { withEnv } from "./support.mjs";
 
 const NOW = 1_800_000_000_000;
 const PAST = new Date(NOW - 60_000);
@@ -214,4 +217,31 @@ test("the runner process sweeps at its start when asked, with the computers its 
     await runner.close();
     assert.deepEqual(orgo.released, janitor ? [["late", "delete"]] : [], janitor ? "asked: swept" : "not asked: never swept");
   }
+});
+
+// The Docker computer's daemon file, which the computer package's build:daemon makes with Go (CI's build job does): the
+// runner's Docker provider is made only where it is there. The fake docker never runs it.
+const DAEMON = fileURLToPath(new URL("../../computer/dist/computerd-linux-amd64", import.meta.url));
+
+test("the runner's own composition sweeps Docker past a labelled container made with no --mount: this server's late computer ends, the other is kept", { skip: !existsSync(DAEMON) && "no computerd-linux-amd64: run npm run build:daemon -w @parcha/agentrun-computer (CI's build job does)" }, async (t) => {
+  const dir = dataDir(t);
+  const server = await openSqliteStore({ dataDir: dir, role: "server" });
+  t.after(() => server.close());
+  await server.agents.create({ id: "agent-1", name: "Agent one" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer." } });
+  await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
+  // The docker CLI on PATH is the computer package's fake, which runs a --format template as Docker does (a key the
+  // inspect lacks fails the call). Beside this server's late computer, one made by hand with the computer label and no
+  // --mount, of a run this store doesn't have: Docker leaves HostConfig.Mounts out of its inspect.
+  const PAST_ISO = new Date(Date.now() - 60_000).toISOString();
+  const bare = container({ name: "computer-0000000000dd", labels: { "agentrun.run": "run-of-another-server" }, deadline: PAST_ISO });
+  delete bare.HostConfig.Mounts;
+  bare.Mounts = [];
+  const fake = fakeDocker({ containers: [container({ name: "computer-0000000000aa", labels: labels("run-1", 0), deadline: PAST_ISO }), bare] });
+  withEnv(t, { PATH: `${dirname(fake.program)}${delimiter}${process.env.PATH}`, AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, ["AGENTRUN_SERVE_FAUX"]);
+  const said = [];
+  const runner = await startRunnerProcess({ dataDir: dir, name: "runner-docker", janitor: true, warn: (line) => said.push(line) });
+  t.after(() => runner.close());
+  await until(async () => said.some((line) => line.includes("docker")), "the start's sweep of docker");
+  assert.deepEqual(said.filter((line) => line.includes("docker")), ["the computer janitor ended docker's computers past their deadline: computer-0000000000aa"]);
+  assert.deepEqual(fake.names(), ["computer-0000000000dd"]);
 });

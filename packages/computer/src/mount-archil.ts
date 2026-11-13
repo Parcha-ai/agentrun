@@ -13,7 +13,7 @@ import { EPOCH_LABEL, epochOf, RUN_LABEL, runProblem } from "./labels.js";
 import { type MountReadBack, type MountSpec, readBackOf, WORKSPACE } from "./mount.js";
 import type { ComputerClient, DaemonMethod, DaemonMethods } from "./protocol.js";
 import type { ComputerRef, ComputerSpec, Refusal } from "./provider.js";
-import { type ComputerErrorCode, fail, ok, type Result } from "./result.js";
+import { type ComputerErrorCode, fail, failAs, ok, type Result } from "./result.js";
 
 /** Where the image has the root helper, root:root 0755. */
 export const ARCHIL_HELPER = "/usr/local/sbin/agentrun-archil";
@@ -134,7 +134,13 @@ const PREFLIGHT = [
 	'echo "archil $(/usr/bin/archil --version 2>/dev/null | head -n 1)"',
 	`echo "tool $(id -u ${ARCHIL_TOOL_USER} 2>/dev/null):$(id -g ${ARCHIL_TOOL_USER} 2>/dev/null)"`,
 	'echo "sudo $(command -v sudo 2>/dev/null || echo none)"',
+	// The FUSE device, which the archil client mounts through: the runtime gives it, not the image (Daytona's GPU host
+	// gives none, live 11-11).
+	'echo "fuse $([ -c /dev/fuse ] && echo present || echo absent)"',
 ].join("\n");
+
+/** Why a computer's preflight says the Archil folder cannot be mounted at all, before anything else is checked. */
+const NO_FUSE = "this computer has no /dev/fuse, so the Archil folder can't be mounted";
 
 /** How the preflight's words differ from the image the package ships, one line each; none when they do not. */
 function preflightDrift(output: string, expectedSha: string): string[] {
@@ -152,15 +158,54 @@ function preflightDrift(output: string, expectedSha: string): string[] {
 	if (!(lines.get("archil") ?? "").includes(`v${ARCHIL_VERSION}`)) found.push(`the archil client is not ${ARCHIL_VERSION} (${show(lines.get("archil"))})`);
 	if (lines.get("tool") !== `${ARCHIL_TOOL_UID}:${ARCHIL_TOOL_UID}`) found.push(`the tool user ${ARCHIL_TOOL_USER} is not ${ARCHIL_TOOL_UID}:${ARCHIL_TOOL_UID} (${show(lines.get("tool"))})`);
 	if (lines.get("sudo") !== "none") found.push(`the image has sudo (${show(lines.get("sudo"))}), which gives the tool user a way to root`);
+	if (lines.get("fuse") !== "present") found.push(`the preflight did not find /dev/fuse (${show(lines.get("fuse"))})`);
 	return found;
 }
 
 /** What Archil answers a mount of a folder another client holds. */
 const HELD = "has an outstanding delegation";
 
+/**
+ * An egress gateway for the archil client (parcha-proxy's archil-egress): with one, the helper's mount starts
+ * `computerd archil-relay` and redirects root's TCP to Archil's 8100 and 32050 to it, and the relay carries each
+ * connection to the gateway's lane for its port with a PROXY v2 header naming the original destination. The gateway
+ * forwards only to a destination that proves, by certificate, the Archil name the client asked for.
+ */
+export interface ArchilEgress {
+	/** The gateway's IPv4 address. */
+	gateway: string;
+	/** The gateway's port for the client's connections to 8100 (the mount endpoint). */
+	mountLane: number;
+	/** The gateway's port for the client's connections to 32050 (the file servers). */
+	dataLane: number;
+}
+
+const IPV4 = /^(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)$/;
+const LANE = /^[1-9]\d{0,4}$/;
+/** Archil's own ports, which the computer redirects to the relay: no lane may be one. */
+const ARCHIL_PORTS = new Set([8100, 32050]);
+
+/**
+ * Reads `<IPv4 gateway>:<mount lane>:<data lane>`, such as 10.60.0.40:18100:42050, as the helper checks it: an IPv4
+ * address and two different ports, neither 8100 nor 32050. Anything else throws, in words.
+ */
+export function archilEgressOf(text: string): ArchilEgress {
+	const [gateway = "", mount = "", data = "", ...rest] = text.split(":");
+	const mountLane = Number(mount);
+	const dataLane = Number(data);
+	const lane = (port: string, n: number) => LANE.test(port) && n <= 65535 && !ARCHIL_PORTS.has(n);
+	if (rest.length > 0 || !IPV4.test(gateway) || !lane(mount, mountLane) || !lane(data, dataLane) || mountLane === dataLane) {
+		throw new Error(`the Archil egress is <IPv4 gateway>:<mount lane>:<data lane>, such as 10.60.0.40:18100:42050, with two different ports, neither 8100 nor 32050; not ${JSON.stringify(text)}`);
+	}
+	return { gateway, mountLane, dataLane };
+}
+
 /** The helper's argv for a verb. */
-function helper(verb: "mount" | "revoke" | "serve" | "checkin", mount?: ArchilMount): string[] {
-	if (verb === "mount" || verb === "revoke") return [ARCHIL_HELPER, verb, mount!.disk, mount!.region, mount!.folder];
+function helper(verb: "mount" | "revoke" | "serve" | "checkin", mount?: ArchilMount, egress?: ArchilEgress): string[] {
+	if (verb === "mount" || verb === "revoke") {
+		const way = egress === undefined ? [] : [`egress=${egress.gateway}:${egress.mountLane}:${egress.dataLane}`];
+		return [ARCHIL_HELPER, verb, mount!.disk, mount!.region, mount!.folder, ...way];
+	}
 	return [ARCHIL_HELPER, verb];
 }
 
@@ -173,6 +218,8 @@ export interface ArchilMountOptions {
 	releaseOlder: () => Promise<Result<{ released: ComputerRef[]; kept: ComputerRef[]; unproven: unknown[] }>>;
 	/** The bound of each step in the computer. */
 	timeoutMs: number;
+	/** The egress gateway the archil client reaches Archil through; none, and it reaches Archil as the computer's network allows. */
+	egress?: ArchilEgress;
 	signal?: AbortSignal;
 }
 
@@ -188,13 +235,14 @@ export interface ArchilMountOptions {
  *      Another computer of the run at the claim's own epoch is never forced off: while one is listed there is no
  *      revoke, and a held folder refuses in words;
  *   4. serve: the resident sync server, which holds no token.
- * The archil client and serve run in the computer's own network namespace, which reaches Archil; the tools' network is
- * init's own namespace, loopback alone (computerd init --own-network), so there is no firewall to set here.
+ * The archil client and serve run in the computer's own network namespace, which reaches Archil (through the egress
+ * gateway, when one is given: the helper sets the relay and its redirect); the tools' network is init's own namespace,
+ * loopback alone (computerd init --own-network), so there is no firewall to set here.
  */
-export async function archilMount({ root, mount, self: computer, releaseOlder, timeoutMs, signal }: ArchilMountOptions): Promise<Result<void>> {
+export async function archilMount({ root, mount, self: computer, releaseOlder, timeoutMs, egress, signal }: ArchilMountOptions): Promise<Result<void>> {
 	const step = async (argv: readonly string[], what: string, stdin?: string) => {
 		const ran = await root.run(argv, { timeoutMs, ...(stdin === undefined ? {} : { stdin }), ...(signal ? { signal } : {}) });
-		if (!ran.ok) return fail(ran.error.code, `archil ${what} in the computer could not run: ${scrub(ran.error.message, mount.token)}`);
+		if (!ran.ok) return failAs(ran.error, `archil ${what} in the computer could not run: ${scrub(ran.error.message, mount.token)}`);
 		return ran;
 	};
 	const failed = (what: string, ran: { exitCode: number; output: string }, code: ComputerErrorCode = "refused") =>
@@ -202,19 +250,21 @@ export async function archilMount({ root, mount, self: computer, releaseOlder, t
 
 	const pre = await step(["sh", "-c", PREFLIGHT, "sh", ARCHIL_HELPER], "preflight");
 	if (!pre.ok) return pre;
+	// No FUSE device: the mount cannot happen whatever else holds, so that is the one reason given.
+	if (/^fuse absent$/m.test(pre.value.output)) return fail("refused", NO_FUSE);
 	const drift = preflightDrift(pre.value.output, helperSha256());
 	if (pre.value.exitCode !== 0 || drift.length > 0) {
 		return fail("refused", `the computer is not as the Archil image makes it: ${drift.length > 0 ? drift.join("; ") : `the preflight exited ${pre.value.exitCode}`}`);
 	}
 	const older = await releaseOlder();
-	if (!older.ok) return fail(older.error.code, `the takeover could not release the run's lower epochs, so nothing was revoked or mounted: ${older.error.message}`);
+	if (!older.ok) return failAs(older.error, `the takeover could not release the run's lower epochs, so nothing was revoked or mounted: ${older.error.message}`);
 	const twinsOf = (kept: ComputerRef[]) => kept.filter((ref) => ref.id !== computer.id).map((ref) => ref.name);
 	const twins = twinsOf(older.value.kept);
 	// Right before any force, the run's listing is read again: a higher epoch made since (two creates of one run
 	// interleaving, this one lagging) fences it, and a twin made since stops it, so nothing is revoked from either.
 	const beforeForce = async (): Promise<Result<void>> => {
 		const again = await releaseOlder();
-		if (!again.ok) return fail(again.error.code, `the run's computers, listed again right before the force, stop it, so nothing was revoked: ${again.error.message}`);
+		if (!again.ok) return failAs(again.error, `the run's computers, listed again right before the force, stop it, so nothing was revoked: ${again.error.message}`);
 		const late = twinsOf(again.value.kept);
 		if (late.length > 0) return fail("refused", `the run has ${late.join(", ")} at this claim's same epoch, listed right before the force: a create never forces off a computer of its own epoch, so nothing was revoked`);
 		return ok(undefined);
@@ -225,7 +275,7 @@ export async function archilMount({ root, mount, self: computer, releaseOlder, t
 		if (!checked.ok) return checked;
 	}
 	let verb: "mount" | "revoke" = force ? "revoke" : "mount";
-	let took = await step(helper(verb, mount), verb, `${mount.token}\n`);
+	let took = await step(helper(verb, mount, egress), verb, `${mount.token}\n`);
 	if (!took.ok) return took;
 	if (verb === "mount" && took.value.exitCode !== 0 && took.value.output.includes(HELD) && twins.length > 0) {
 		return fail("refused", `the run's folder is held, and the run has ${twins.join(", ")} at this claim's same epoch: a create never forces off a computer of its own epoch, so nothing was revoked; release that computer, or attach to it`);
@@ -234,7 +284,7 @@ export async function archilMount({ root, mount, self: computer, releaseOlder, t
 		const checked = await beforeForce();
 		if (!checked.ok) return checked;
 		verb = "revoke";
-		took = await step(helper(verb, mount), verb, `${mount.token}\n`);
+		took = await step(helper(verb, mount, egress), verb, `${mount.token}\n`);
 		if (!took.ok) return took;
 	}
 	if (took.value.exitCode !== 0) return failed(verb, took.value);

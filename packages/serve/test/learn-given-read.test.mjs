@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { test } from "node:test";
 import * as learning from "../dist/learning.js";
-import { outcomeOf } from "../dist/usage.js";
+import { notesOf } from "../dist/usage.js";
 import { noteRuns } from "../dist/learning-run.js";
 import { openapiDocument } from "../dist/openapi.js";
 import { note } from "./learn-format-support.mjs";
@@ -31,8 +31,8 @@ test("a run's learning shows given and read, never used: given from its start, r
   assert.deepEqual(learning.notesView(record, shown, true), { given: [{ file: "units.md", name: "Check units" }], read: [{ file: "units.md", name: "Check units" }] });
 });
 
-test("the ledger keeps the files a run was given and read, and the agent's notes count the runs of each", () => {
-  const line = outcomeOf("r1", "a", { state: "merged", reason: null, at: "2026-11-05T00:00:00.000Z", given: [{ file: "units.md", name: "U" }, { file: "tables.md", name: "T" }], read: [{ file: "units.md", name: "U" }] });
+test("a run's learning keeps the files it was given and read, and the agent's notes count the runs of each", () => {
+  const line = notesOf({ state: "merged", reason: null, at: "2026-11-05T00:00:00.000Z", given: [{ file: "units.md", name: "U" }, { file: "tables.md", name: "T" }], read: [{ file: "units.md", name: "U" }] });
   assert.deepEqual([line.given, line.read], [["units.md", "tables.md"], ["units.md"]]);
   const counts = noteRuns([{ given: ["units.md", "tables.md"], read: ["units.md"] }, { given: ["units.md"], read: [] }, null]);
   assert.deepEqual(counts.get("units.md"), { given: 2, read: 1 });
@@ -68,8 +68,8 @@ test("given: an index line a person edited to name two notes, neither of which f
   assert.deepEqual(given, ["tables.md", "units.md"], JSON.stringify(given));
 });
 
-test("the ledger reads a run's learning whose given or read holds an entry out of shape: the entries with a file count, and nothing throws", () => {
-  const line = outcomeOf("r1", "a", { state: "merged", reason: null, at: "2026-11-05T00:00:00.000Z", given: [null, { file: "a.md", name: "a" }, { name: "no file" }, "b.md"], read: [null, { file: "a.md", name: "a" }] });
+test("a run's learning whose given or read holds an entry out of shape: the entries with a file count, and nothing throws", () => {
+  const line = notesOf({ state: "merged", reason: null, at: "2026-11-05T00:00:00.000Z", given: [null, { file: "a.md", name: "a" }, { name: "no file" }, "b.md"], read: [null, { file: "a.md", name: "a" }] });
   assert.deepEqual([line.given, line.read], [["a.md"], ["a.md"]]);
   assert.deepEqual(noteRuns([line]).get("a.md"), { given: 1, read: 1 });
 });

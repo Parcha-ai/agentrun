@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 import { childCommands, type DaemonExpected, daemonDrift } from "./child.js";
 import { OWN_NETWORK_ONLY, readOwnNetwork, TOOL_USER } from "./isolation.js";
 import { DaemonClient } from "./client.js";
+import { E2B, E2B_BASE_TEMPLATE, E2B_DESKTOP_TEMPLATE } from "./descriptors/e2b.js";
 import { DESKTOP_GROUPS, type DesktopOptions, desktopOf, startDisplay } from "./desktop.js";
 import { COMPUTER_LABEL, DAEMON_IN_COMPUTER, DEADLINE_LABEL, helloDrift, type ProbeReport, probeNetworkDrift, probeNotes, probeReportOf, WORK } from "./drift.js";
 import { releaseOlder } from "./janitor.js";
@@ -49,16 +50,20 @@ import {
 	type ComputerSpec,
 	type CreatedComputer,
 	checkGpu,
-	checkLifetime,
-	type NetworkForm,
+	checkTenure,
 	type NetworkPolicy,
 	type NetworkSpec,
 	type Refusal,
+	type ReleaseHow,
+	runLifetimeMs,
 } from "./provider.js";
-import { type ComputerError, type ComputerErrorCode, fail, ok, type Result } from "./result.js";
+import { type ComputerError, type ComputerErrorCode, failFor, ok, type Result, vendorFail } from "./result.js";
 import { daemonWatch, type ScreenWatch, type ScreenWatchHandlers, type WatchOptions } from "./screen-watch.js";
 import { countTested } from "./test-connection.js";
 import { waitUntil } from "./wait.js";
+
+/** This module's failures: one with code vendor names E2B. */
+const fail = failFor("e2b");
 
 /** What every SDK call is given: the key, the domain and the API URL explicitly, and debug false (index.mjs:1126-1152). */
 export interface E2BConnectionOptions {
@@ -268,10 +273,6 @@ const VERSION: string = JSON.parse(readFileSync(new URL("../package.json", impor
 const NAME = /^computer-[0-9a-f]{12}$/;
 const SANDBOX_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const TEMPLATE = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/;
-/** E2B Desktop's template: a screen with an X server, the default for kind desktop. */
-export const E2B_DESKTOP_TEMPLATE = "desktop";
-/** E2B's plain template: no screen, the default for kind linux (a sandbox). */
-export const E2B_BASE_TEMPLATE = "base";
 const NAME_LABEL = `${COMPUTER_LABEL}.name`;
 /** The template create was asked for: E2B reports its id, and the alias only sometimes. */
 const IMAGE_LABEL = `${COMPUTER_LABEL}.image`;
@@ -303,17 +304,12 @@ const DEFAULTS: E2BTimeouts = {
 };
 
 /** The mount kinds an E2B computer takes, as capabilities().mount declares them: the run's folder on an Archil disk. */
-export const MOUNT: readonly MountKind[] = ["archil"];
-/** The network an E2B computer's programs get: none, a network of their own (isolation.ts OWN_NETWORK_ONLY). */
-export const NETWORK: readonly NetworkForm[] = ["none"];
+export const MOUNT: readonly MountKind[] = E2B.mounts;
 /** The user an Archil computer's tools run as: the image's agentrun-tool, with no sudo and no capability. */
 const ARCHIL_USER = `${ARCHIL_TOOL_UID}:${ARCHIL_TOOL_UID}`;
 
 /** The machine kind and groups of each configuration: kind linux (the plain template), and kind desktop (the default). */
-export const CAPABILITIES: readonly KindCapabilities[] = [
-	{ kind: "linux", groups: ["exec", "files", "processes"] },
-	{ kind: "desktop", groups: ["exec", "files", "processes", ...DESKTOP_GROUPS] },
-];
+export const CAPABILITIES: readonly KindCapabilities[] = E2B.capabilities;
 const RELEASE_POLL_MAX_MS = 5_000;
 const LISTED_POLL_MS = 150;
 const LISTED_ROUNDS = 2;
@@ -377,8 +373,9 @@ function codeOf(error: unknown): ComputerErrorCode {
 	if (name === "InvalidArgumentError" || name === "TemplateError") return "invalid";
 	if (name === "RateLimitError" || name === "NotEnoughSpaceError") return "limit";
 	if (name === "TimeoutError" || name === "SandboxUnreachableError") return "timeout";
-	return "e2b";
+	return "vendor";
 }
+
 
 /** Settles with the promise's result, or a timeout or abort in words once ms pass or signal aborts. */
 function race<T>(promise: Promise<T>, what: string, ms: number, signal?: AbortSignal): Promise<Result<T>> {
@@ -647,7 +644,7 @@ export class E2BProvider implements ComputerProvider {
 		return {
 			kind: this.#kind,
 			lifetime: "vendor",
-			network: [...NETWORK],
+			network: [...E2B.network],
 			networkReadBack: true,
 			isolation: "microvm",
 			os: "linux",
@@ -664,7 +661,7 @@ export class E2BProvider implements ComputerProvider {
 		const refusals: Refusal[] = [];
 		const refuse = (field: string, message: string) => refusals.push({ field, message });
 		const given = (typeof spec === "object" && spec !== null ? spec : {}) as unknown as Record<string, unknown>;
-		const { image, lifetimeMs, network, labels, mount } = given;
+		const { image, network, labels, mount } = given;
 		refusals.push(...checkMount(mount, MOUNT), ...archilRefusals(given as unknown as ComputerSpec));
 		const daemonUser = `${this.#uid}:${this.#gid}`;
 		if ((mount as { kind?: unknown } | undefined)?.kind === "archil" && daemonUser !== ARCHIL_USER) {
@@ -674,7 +671,7 @@ export class E2BProvider implements ComputerProvider {
 			);
 		}
 		if (typeof image !== "string" || !TEMPLATE.test(image)) refuse("image", `an image is required: the name or id of an E2B template, such as "${E2B_DESKTOP_TEMPLATE}" (E2B Desktop) or "${E2B_BASE_TEMPLATE}"`);
-		refusals.push(...checkLifetime(lifetimeMs, this.capabilities()));
+		refusals.push(...checkTenure(given, this.capabilities(), "E2B"));
 		if (network === "open" || (typeof network === "object" && network !== null && "allow" in network)) refuse("network", OWN_NETWORK_ONLY);
 		else if (network !== "none") refuse("network", 'network is required: "none"');
 		if (labels !== undefined) {
@@ -723,10 +720,10 @@ export class E2BProvider implements ComputerProvider {
 		if (signal?.aborted) return fail("aborted", "create was aborted before E2B was called");
 		const name = `computer-${randomBytes(6).toString("hex")}`;
 		const now = Date.now();
-		const deadline = new Date(now + spec.lifetimeMs).toISOString();
+		const deadline = new Date(now + runLifetimeMs(spec)).toISOString();
 		const maxDeadline = new Date(now + this.#maxLifetimeMs).toISOString();
 		// E2B kills the sandbox at its timeout, the lifetime in the whole seconds it takes (index.mjs:502-504).
-		const timeoutMs = Math.ceil(spec.lifetimeMs / 1000) * 1000;
+		const timeoutMs = Math.ceil(runLifetimeMs(spec) / 1000) * 1000;
 		const metadata = {
 			...spec.labels,
 			[COMPUTER_LABEL]: "1",
@@ -1174,7 +1171,7 @@ export class E2BProvider implements ComputerProvider {
 			if (signal?.aborted) return fail("aborted", `hello to the daemon in ${name} was aborted`);
 			if (hello.error.code === "aborted") return fail("timeout", `the daemon in ${name} did not answer hello within ${seconds(helloMs)}`);
 			if (hello.error.code !== "gone") return hello;
-			return { ...fail("e2b", `cannot reach the daemon in ${name}: ${stderr.trim() || hello.error.message}`), notListening: true };
+			return { ...vendorFail("e2b",`cannot reach the daemon in ${name}: ${stderr.trim() || hello.error.message}`), notListening: true };
 		}
 		return ok({ client, hello: hello.value as HelloResult, close });
 	}
@@ -1385,11 +1382,11 @@ export class E2BProvider implements ComputerProvider {
 		}
 		const found = new Map<string, E2BListedSandbox>();
 		for (let page = 0; paginator.hasNext; page++) {
-			if (page >= MAX_PAGES) return fail("e2b", `Sandbox.list ran past ${MAX_PAGES} pages`);
+			if (page >= MAX_PAGES) return vendorFail("e2b",`Sandbox.list ran past ${MAX_PAGES} pages`);
 			const left = Math.max(1, until - Date.now());
 			const items = await call("Sandbox.list", () => paginator.nextItems({ requestTimeoutMs: Math.min(requestMs, left), ...(signal ? { signal } : {}) }), left, signal);
 			if (!items.ok) return boundBy(items, given === undefined ? undefined : left, requestMs);
-			if (!Array.isArray(items.value)) return fail("e2b", "Sandbox.list: a page that is not a list of sandboxes");
+			if (!Array.isArray(items.value)) return vendorFail("e2b","Sandbox.list: a page that is not a list of sandboxes");
 			for (const sb of items.value) if (typeof sb?.sandboxId === "string") found.set(sb.sandboxId, sb);
 		}
 		return ok([...found.values()]);
@@ -1410,7 +1407,7 @@ export class E2BProvider implements ComputerProvider {
 		}
 		const items = await call("Sandbox.list", () => paginator.nextItems({ requestTimeoutMs: requestMs, ...(signal ? { signal } : {}) }), requestMs, signal);
 		if (!items.ok) return countTested("E2B", fail(items.error.code, items.error.message));
-		if (!Array.isArray(items.value)) return countTested("E2B", fail("e2b", "Sandbox.list: a page that is not a list of sandboxes"));
+		if (!Array.isArray(items.value)) return countTested("E2B", vendorFail("e2b","Sandbox.list: a page that is not a list of sandboxes"));
 		const count = items.value.filter((sb) => typeof sb?.sandboxId === "string" && ours(sb.metadata)).length;
 		return countTested("E2B", ok({ count, more: paginator.hasNext }));
 	}
@@ -1614,7 +1611,7 @@ export class E2BProvider implements ComputerProvider {
 	 * whatever that answers. A folder not let go cleanly loses nothing (every call that changed it synced, and the next
 	 * claim revokes the hold), so it is said through onNote, and the release succeeds once the sandbox is gone.
 	 */
-	async release(ref: ComputerRef, how: "stop" | "delete", { signal }: CallContext = {}): Promise<Result<void>> {
+	async release(ref: ComputerRef, how: ReleaseHow, { signal }: CallContext = {}): Promise<Result<void>> {
 		const problem = refProblem(ref);
 		if (problem) return fail("invalid", problem);
 		if (how !== "stop" && how !== "delete") return fail("invalid", `release is "stop" or "delete", not ${String(how)}`);

@@ -6,10 +6,11 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
-import { PROVIDER_KEYS } from "../dist/computer-keys.js";
+import { KEY_TABLE } from "../dist/computer-keys.js";
 import { createComputerRoutes } from "../dist/computers.js";
 import { FAUX_VIEW_PATH, fauxComputers } from "../dist/faux-computers.js";
 import { storeOn } from "./store-helpers.mjs";
+import { hostToolsOf } from "../dist/workspace/resolve-computer.js";
 
 const SERVE = "http://serve.test:4777";
 const FAUX = fauxComputers({ viewerBase: SERVE });
@@ -25,7 +26,7 @@ const entryOf = (id) => FAUX.kinds.PROVIDERS.find((one) => one.id === id);
 test("under --faux, Settings → Computers lists the three faux providers and nothing else", async (t) => {
   const view = await (await routes(t)).view();
   assert.deepEqual(providersOf(view), [["sandbox", "faux-sandbox"], ["sandbox", "faux-broken"], ["desktop", "faux-desktop"]]);
-  assert.deepEqual(providerOf(view, "sandbox", "faux-sandbox"), { id: "faux-sandbox", name: "Faux sandbox", metered: false, secrets: [{ name: "computer:faux-sandbox:FAUX_SANDBOX_KEY", set: false, source: null, changed_at: null }], required: ["computer:faux-sandbox:FAUX_SANDBOX_KEY"], ready: false, why: "Faux sandbox needs FAUX_SANDBOX_KEY saved: save it in Settings → Computers" });
+  assert.deepEqual(providerOf(view, "sandbox", "faux-sandbox"), { id: "faux-sandbox", name: "Faux sandbox", metered: false, secrets: [{ name: "computer:faux-sandbox:FAUX_SANDBOX_KEY", set: false, source: null, changed_at: null }], required: ["computer:faux-sandbox:FAUX_SANDBOX_KEY"], ready: false, why: "Faux sandbox needs FAUX_SANDBOX_KEY saved: save it in Settings → Computers", shell: "computer", host_tools: hostToolsOf("computer") });
   assert.deepEqual(view.kinds.map((kind) => [kind.kind, kind.offered]), [["none", true], ["sandbox", true], ["desktop", true], ["phone", false], ["browser", false]]);
 });
 
@@ -70,6 +71,6 @@ test("faux-sandbox and faux-broken start no computer, in words", async () => {
 });
 
 test("the faux providers are not in the real key table: only --faux's own table names them", () => {
-  assert.deepEqual(Object.keys(PROVIDER_KEYS).filter((id) => id.startsWith("faux-")), []);
+  assert.deepEqual(Object.keys(KEY_TABLE.keys).filter((id) => id.startsWith("faux-")), []);
   assert.deepEqual(Object.keys(FAUX.keyTable.keys).sort(), ["faux-broken", "faux-desktop", "faux-sandbox"]);
 });

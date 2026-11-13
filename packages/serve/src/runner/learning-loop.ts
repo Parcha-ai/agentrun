@@ -42,6 +42,8 @@ export interface KeptProposal {
   readonly files?: readonly NoteText[];
   /** Each kept draft's dry run, by its workflow.json's path (learn/skills.ts draftDryRun), which the grader is told. */
   readonly dryRuns?: Readonly<Record<string, { readonly status: string; readonly detail?: string }>>;
+  /** The skill of each draft's name as the folder held it at the seed, which the grader is shown beside the draft. */
+  readonly drafted?: readonly NoteText[];
   readonly asked?: readonly string[];
   /** Why each draft waits for its owner's OK whatever the grade (the learning end's: skills.ts unpricedCalls). */
   readonly held?: Readonly<Record<string, readonly string[]>>;
@@ -237,6 +239,13 @@ export const NOTE_NAME_IN_RUN = (name: string) => `This run also kept a note nam
 /** Whether `held`, the note main holds at `file`, says the same rule as `text`: their bodies, whitespace and case aside
  *  (notes.ts ruleOf), as readMain and the merge's own settle (learn/commit.ts) read it, whatever their front matter. A
  *  text that is no note is the same only when it is the same text. */
+/** The rule a re-filed note says (notes.ts ruleOf), "" when its text is no note: what the merge checks main still holds
+ *  before it retires the skill that note replaces. */
+const ruleOfText = (file: string, text: string): string => {
+  const note = parseNoteFile(file, text);
+  return Array.isArray(note) ? "" : ruleOf(note.body);
+};
+
 const sameRule = (file: string, held: string, text: string): boolean => {
   const [theirs, ours] = [parseNoteFile(file, held), parseNoteFile(file, text)];
   return !Array.isArray(theirs) && !Array.isArray(ours) ? ruleOf(theirs.body) === ruleOf(ours.body) : held === text;
@@ -318,7 +327,7 @@ export function mergeChangeOf(runId: string, merging: KeptProposal, verdict: Ver
   ];
   // Each skill re-filed as a note is retired on main in the same write (learn/commit.ts mergeOf): a kept one, and one
   // main already holds the same rule of as a note (dropped unsaid), so no old skill stays served beside its note.
-  const retire = verdict.items.flatMap((item) => (item.note && (item.keep || item.why === SAME_NOTE) && learnedPlace(item.file)?.kind === "skill" ? [{ skill: item.file, note: item.note.file }] : []));
+  const retire = verdict.items.flatMap((item) => (item.note && (item.keep || item.why === SAME_NOTE) && learnedPlace(item.file)?.kind === "skill" ? [{ skill: item.file, note: item.note.file, rule: ruleOfText(item.note.file, item.note.text) }] : []));
   return {
     kind: "merge", runId, reason: verdict.reason || "The grader kept every new note.", files: [...notes, ...files],
     ...(held.length ? { held } : {}), graded, ...(merging.seed ? { seed: merging.seed } : {}), ...(retire.length ? { retire } : {}),
@@ -484,7 +493,7 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
             const items = gradedItems(grading as NoteText[], (proposal.files ?? []) as NoteText[]);
             const prompt = gradePrompt({
               run: source.runId, ...(source.instructions ? { instructions: source.instructions } : {}), active: main.active, superseded: main.superseded, proposed: grading,
-              ...(proposal.files?.length ? { files: proposal.files } : {}), ...(proposal.dryRuns ? { dryRuns: proposal.dryRuns } : {}), ...(beside.length ? { beside } : {}), ...(proposal.asked ? { asked: proposal.asked } : {}), ...(proposal.triggered ? { triggered: proposal.triggered } : {}), ...(proposal.held ? { held: proposal.held } : {}),
+              ...(proposal.files?.length ? { files: proposal.files } : {}), ...(proposal.dryRuns ? { dryRuns: proposal.dryRuns } : {}), ...(proposal.drafted?.length ? { drafted: proposal.drafted } : {}), ...(beside.length ? { beside } : {}), ...(proposal.asked ? { asked: proposal.asked } : {}), ...(proposal.triggered ? { triggered: proposal.triggered } : {}), ...(proposal.held ? { held: proposal.held } : {}),
               ...(consolidation ? { consolidation: true as const } : {}),
             });
             // What the grade spends, as the server's grade counted it (grade.ts counter): each ask's dollars and tokens

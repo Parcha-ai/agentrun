@@ -12,8 +12,8 @@ import { RunStorage } from "../journal/storage.js";
 import { COMMANDS_ONE_ANSWER, DDL, SCHEMA_VERSION } from "../schema.js";
 import {
   AgentArchived, CommandTaken, ExternalBodyConflict, Fenced, RunFinal, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreConstraint, StoreFromEarlierVersion, TriggerFull, type AgentRow, type Agents,
-  type AlsoRow, type Claim, type Command, type FiringChange, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunPatch, type RunRow, type Runs,
-  type JournalReads, type UpdatedRun,
+  type Claim, type Command, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunRow, type Runs,
+  type JournalReads, type LaunchSealedWrite, type UpdatedRun,
   type ReleasedState, type RunState, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerPatch, type TriggerRow, type Triggers, type TriggerScope,
   FINAL_STATES, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, type Learning, type LearningProposal, type LearningSpend, type Live, type LiveRow, type LiveViewerRow, type LiveViewers, type Mcp, type McpCredentialMark, type McpPinRow, type McpServerRow, type McpServerWrite,
   type McpOauth, type McpOauthPendingRow, type SealedKeyRow, type SealedKeys, type SealedSecretRow, type SealedSecrets, type Settings, type SettingRow, type TriggerSettingRow, type TriggerSettings,
@@ -22,7 +22,7 @@ import {
 } from "../store.js";
 import type { Dialect } from "../dialect.js";
 import { Connection, type SqliteExecutor, type SqliteValue, type Statement, type StoreConnection, type Tx } from "./connection.js";
-import { applyRunPatch, notALearningRun, refuseLeftovers, RUN_COLUMNS, runOf, SIGN_IN_HANDED_LOCK, type RunRecord } from "./run-patch.js";
+import { applyRunPatch, notALearningRun, refuseLeftovers, REOPEN_SET, reopenableWhere, RUN_COLUMNS, runOf, SIGN_IN_HANDED_LOCK, type RunRecord } from "./run-patch.js";
 import { readLaunch, writeLaunch } from "./run-launch.js";
 import { canonical } from "../agent-body.js";
 import { aadOf, sealedAt } from "../seal.js";
@@ -304,6 +304,35 @@ function fenced(claim: Claim, sql: string, params: readonly SqliteValue[]): Stat
   return { sql, params, expect: { kind: "fenced", runId: claim.runId, epoch: claim.epoch } };
 }
 
+/** `connection` as one read-only snapshot: every read goes through `tx`, a write is refused, and a transaction opened
+ *  inside it is the snapshot itself (Store.snapshot). */
+function snapshotOf(connection: StoreConnection, tx: Tx): StoreConnection {
+  return {
+    dialect: connection.dialect,
+    where: connection.where,
+    get: (sql, ...params) => tx.get(sql, ...params),
+    all: (sql, ...params) => tx.all(sql, ...params),
+    write: () => Promise.reject(new Error("a store snapshot only reads")),
+    // A transaction inside the snapshot reads through the same handle, and refuses what writes (SQLite's deferred BEGIN is
+    // not read-only, so the refusal is here, as Postgres's read-only transaction makes it).
+    transaction: (callback) => callback(readOnly(tx)),
+    close: () => Promise.resolve(),
+  };
+}
+
+function readOnly(tx: Tx): Tx {
+  const refuse = () => Promise.reject(new Error("a store snapshot only reads"));
+  return {
+    dialect: tx.dialect,
+    get: (sql, ...params) => tx.get(sql, ...params),
+    all: (sql, ...params) => tx.all(sql, ...params),
+    exec: refuse,
+    run: refuse,
+    runCounted: refuse,
+    step: refuse,
+  };
+}
+
 /** The Store over `connection`, on whichever database it is (SQLite here, Postgres in postgres/store.ts), on the store's
  *  clock `now` (ms), its identity `where` (Store.where). The opener sets the schema up and checks its version first. */
 export function storeOver(connection: StoreConnection, now: () => number): Store {
@@ -330,6 +359,8 @@ class SqliteStore implements Store {
   readonly sealedSecrets: SealedSecrets;
   readonly #db: StoreConnection;
   readonly #now: () => number;
+  /** The store this one is a snapshot of, or itself (Store.origin). */
+  readonly origin: Store;
   /** Where this store's data is: its connection's (StoreConnection.where). */
   readonly where: string;
   /** The deadlines' clock now (fence.ts storeNow): the database's on Postgres, this store's clock bound on SQLite. */
@@ -343,9 +374,10 @@ class SqliteStore implements Store {
    *  epoch check in its own transaction. The map refuses early; the epoch is what guarantees it. */
   readonly #released = new Map<string, number>();
 
-  constructor(db: StoreConnection, now: () => number) {
+  constructor(db: StoreConnection, now: () => number, origin?: Store) {
     this.#db = db;
     this.#now = now;
+    this.origin = origin ?? this;
     this.where = db.where;
     const d = db.dialect;
     const clock = (): StoreNow => storeNow(d, now);
@@ -436,6 +468,7 @@ class SqliteStore implements Store {
         const row = await db.get<AgentRecord>(`SELECT ${AGENT_COLUMNS} FROM agents WHERE external_ref = ?`, ref);
         return row && agentOf(row);
       },
+      hasExternalVersion: async (agentId, version) => (await db.get<{ id: string }>("SELECT id FROM revisions WHERE agent_id = ? AND external_version = ?", agentId, version)) !== undefined,
       list: async ({ archived = false } = {}) =>
         (await db.all<AgentRecord>(`SELECT ${AGENT_COLUMNS} FROM agents WHERE archived_at IS ${archived ? "NOT NULL" : "NULL"} ORDER BY created_at, id`)).map(agentOf),
       archive: async (id, archived, why) =>
@@ -800,20 +833,17 @@ class SqliteStore implements Store {
         return rows.map(runOf);
       },
       archive: async (runId, archived) => {
-        await db.write([{ sql: "UPDATE runs SET archived_at = ? WHERE id = ?", params: [archived ? now() : null, runId] }]);
+        // Archiving an archived run keeps its first time: a second archive is a no-op, never a new time.
+        await db.write([archived ? { sql: "UPDATE runs SET archived_at = COALESCE(archived_at, ?) WHERE id = ?", params: [now(), runId] } : { sql: "UPDATE runs SET archived_at = NULL WHERE id = ?", params: [runId] }]);
       },
-      reopen: async (runId, { kind, body = null }) =>
+      reopen: async (runId, { kind, body = null }, { launchSealed } = {}) =>
         db.transaction(async (tx) => {
           // Back to running, released: the epoch, the journal, cost_usd and metrics stay (its next turn is booked on what it
           // spent); the end's own fields go. Only an agentic run that ended completed, not imported, not a learning run.
-          const reopened = await tx.runCounted(
-            `UPDATE runs SET state = 'running', runner = NULL, claimed_until = NULL, wake_at = NULL, backoff_until = NULL, ended_at = NULL, summary = NULL, outcome = NULL
-              WHERE id = ? AND state = 'ended' AND imported_from IS NULL
-                AND EXISTS (SELECT 1 FROM revisions WHERE revisions.id = runs.revision_id AND revisions.kind = 'agentic')
-                AND NOT EXISTS (SELECT 1 FROM run_launch WHERE run_launch.run_id = runs.id AND ${d.jsonText("run_launch.body", ["harness"])} = 'learning')`,
-            runId,
-          );
+          const reopened = await tx.runCounted(`UPDATE runs SET ${REOPEN_SET} WHERE id = ? AND ${reopenableWhere(d)}`, runId);
           if (reopened === 0) throw new RunFinal(runId);
+          // The message's launch secrets, with it: the claim that runs its turn reads them.
+          if (launchSealed) await tx.run("UPDATE run_launch SET sealed = ? WHERE run_id = ?", launchSealed, runId);
           const row = await tx.get<CommandRecord>(`INSERT INTO commands (run_id, kind, body, created_at) VALUES (?, ?, ?, ?) RETURNING ${COMMAND_COLUMNS}`, runId, kind, json(body), now());
           return commandOf(row!);
         }),
@@ -843,7 +873,7 @@ class SqliteStore implements Store {
             }
           }
           // An update that made the run final: its other untaken rows are refused in this transaction, after its own takes.
-          await refuseLeftovers(tx, claim.runId, patch.state, at);
+          await refuseLeftovers(tx, claim.runId, patch.state, at, d);
           // The bind's save lease, in this same transaction as the sign_in_handed write just made (applyRunPatch, under
           // SIGN_IN_HANDED_LOCK): this run saves unless another run already holds one of the handed pointers (a running run,
           // or — within signInSettleMs of leaving running, a vendor's settle window — one that left running less than that
@@ -1156,6 +1186,15 @@ class SqliteStore implements Store {
         const row = await db.get<{ value: string }>("SELECT value FROM settings WHERE key = ?", key);
         return row === undefined ? undefined : JSON.parse(row.value);
       },
+      // `was` is compared as the JSON text put wrote: a row read and parsed gives the same text back, its keys in order.
+      replaceIf: async (key, was, value) => {
+        const [result] = await db.write([{ sql: "UPDATE settings SET value = ?, updated_at = ? WHERE key = ? AND value = ?", params: [json(value), now(), key, json(was)] }]);
+        return result!.changes === 1;
+      },
+      removeIf: async (key, was) => {
+        const [result] = await db.write([{ sql: "DELETE FROM settings WHERE key = ? AND value = ?", params: [key, json(was)] }]);
+        return result!.changes === 1;
+      },
       remove: async (key) => {
         await db.write([{ sql: "DELETE FROM settings WHERE key = ?", params: [key] }]);
       },
@@ -1187,6 +1226,14 @@ class SqliteStore implements Store {
       list: async (provider) => (await db.all<ComputerLedgerRecord>("SELECT provider, session_id, labels, detail, updated_at FROM computer_ledger WHERE provider = ? ORDER BY session_id", provider)).map(ledgerRowOf),
       remove: async (provider, sessionId) => {
         await db.write([{ sql: "DELETE FROM computer_ledger WHERE provider = ? AND session_id = ?", params: [provider, sessionId] }]);
+      },
+      // The row is compared as the JSON text put wrote: a row read and parsed gives the same text back, its keys in order.
+      swap: async (provider, sessionId, was, labels, detail) => {
+        const [result] = await db.write([{
+          sql: "UPDATE computer_ledger SET labels = ?, detail = ?, updated_at = ? WHERE provider = ? AND session_id = ? AND labels = ? AND detail = ?",
+          params: [JSON.stringify(labels), JSON.stringify(detail), now(), provider, sessionId, JSON.stringify(was.labels), JSON.stringify(was.detail)],
+        }]);
+        return (result?.changes ?? 0) === 1;
       },
     };
 
@@ -1469,6 +1516,10 @@ class SqliteStore implements Store {
     return new RunStorage(this.#db, { runId, epoch: 0 }, this.#now);
   }
 
+  async snapshot<T>(read: (store: Store) => Promise<T>): Promise<T> {
+    return this.#db.transaction((tx) => read(new SqliteStore(snapshotOf(this.#db, tx), this.#now, this.origin)), { read: true });
+  }
+
   /** How many journals the store keeps (open, of a claim not released). */
   get openJournals(): number {
     return this.#journals.size;
@@ -1478,14 +1529,16 @@ class SqliteStore implements Store {
     await this.#db.write([{ sql: "UPDATE store_meta SET flushes = flushes + 1 WHERE singleton = 1" }], { full: true });
   }
 
-  async command(runId: string, { kind, body = null }: { kind: string; body?: unknown }): Promise<Command> {
+  async command(runId: string, { kind, body = null }: { kind: string; body?: unknown }, { launchSealed }: LaunchSealedWrite = {}): Promise<Command> {
     const [result] = await this.#db.write([{
       // The run row read under the share lock: a command never lands while the run's end is in flight, to be left untaken
       // by an end that refused the run's leftover rows before it (the end waits for it, or it waits for the end).
       sql: `INSERT INTO commands (run_id, kind, body, created_at) SELECT id, ?, ?, ? FROM runs WHERE id = ? AND state NOT IN (${FINAL})${this.#db.dialect.shareLock} RETURNING ${COMMAND_COLUMNS}`,
       params: [kind, json(body), this.#now(), runId],
       expect: { kind: "final", runId },
-    }]);
+    },
+    // The message's launch secrets, in the command's own write: written only when the command is (a final run refuses both).
+    ...(launchSealed ? [{ sql: "UPDATE run_launch SET sealed = ? WHERE run_id = ?", params: [launchSealed, runId] }] : [])]);
     return commandOf(result!.rows[0] as CommandRecord);
   }
 

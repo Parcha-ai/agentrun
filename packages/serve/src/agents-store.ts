@@ -1,5 +1,4 @@
-// The agents this server holds, over the one store (store.agents); pi-durable-agent's agent-store.ts bodyOf and revisionOf
-// are folded into store/agent-body.ts. An agent is a
+// The agents this server holds, over the one store (store.agents); the body check is store/agent-body.ts. An agent is a
 // row with revisions written once; a definition is one revision; an edit commits the next and makes it current. A
 // revision's body is checked by store/agent-body.ts before anything is written; its skill texts ride on the revision's row.
 // The one server per store (the owner lock) is the sole writer of agents and revisions, so a read-then-write here is not
@@ -14,7 +13,7 @@ import { harnessOfBody } from "./harness.js";
 import { storedHarness } from "./harness-table.js";
 import {
   AgentBodyInvalid, type AgenticBody, RevisionMoved, type AgentRow, bodyOf, canonical, isObject, type NewRevision, type RevisionBodyInput,
-  type RevisionComputer, type RevisionPlace, type RevisionRow, type Store, StoreConstraint, type ToolSettings, type WorkflowBody,
+  type ModelTiers, type RevisionComputer, type RevisionPlace, type RevisionRow, type Store, StoreConstraint, type ToolSettings, type WorkflowBody,
 } from "./store/index.js";
 import { canonicalToolSettings, settingsIssues, type ToolSettingsMap } from "./tool-plane.js";
 import { computerOfPlace, type PlaceView, settingOfDefinition } from "./computer-setting.js";
@@ -130,14 +129,18 @@ function revisionInputOf(definition: Json, files: Record<string, string>): Revis
   // A workflow keeps its approvals too ("never": it runs unattended), so its call nodes are checked with them (runnable.ts,
   // permissionOf with the revision's approvals): a call node on a tool set to ask runs under never, as on main.
   if (isObject(definition.workflow)) return { kind: "workflow", workflow: definition.workflow, ...(definition.approvals === "never" ? { approvals: "never" as const } : {}), ...common, ...capped };
-  const learning = typeof definition.learning === "boolean" ? { learning: definition.learning } : {};
+  const learning = typeof definition.learning === "boolean" || definition.learning === "notes" ? { learning: definition.learning as boolean | "notes" } : {};
   return {
     kind: "agentic",
     instructions: definition.instructions as string,
     ...(typeof definition.model === "string" ? { model: definition.model } : {}),
+    ...(isObject(definition.model_tiers) ? { modelTiers: definition.model_tiers as ModelTiers } : {}),
     ...(typeof definition.thinking === "string" ? { thinking: definition.thinking } : {}),
     ...(definition.approvals === "ask" || definition.approvals === "never" ? { approvals: definition.approvals } : {}),
     ...(isObject(definition.output_schema) ? { outputSchema: definition.output_schema } : {}),
+    ...(definition.checkout === "pull_request" ? { checkout: "pull_request" as const } : {}),
+    // The tool-call budget (tool-budget.ts): 0 keeps none.
+    ...(typeof definition.max_tool_calls === "number" && definition.max_tool_calls > 0 ? { maxToolCalls: definition.max_tool_calls } : {}),
     ...common,
     ...learning,
     ...capped,
@@ -323,9 +326,13 @@ function editOn(entry: AgentEntry, definition: Json, skills: Record<string, stri
         // No approvals here: an edit that leaves them out asks (openapi.ts DefinitionInput.approvals),
         // so no edit makes an agent unattended by saying nothing. The console's edit sends back the approvals it read.
         ...(definition.max_cost_usd === undefined && currentBody.maxCostUsd !== undefined ? { max_cost_usd: currentBody.maxCostUsd } : {}),
+        // A tool-call budget is a limit too: an edit of an agentic revision that leaves it out keeps it.
+        ...(definition.max_tool_calls === undefined && current.kind === "agentic" && !isObject(definition.workflow) && (currentBody as AgenticBody).maxToolCalls !== undefined ? { max_tool_calls: (currentBody as AgenticBody).maxToolCalls } : {}),
         ...(definition.cap_mode === undefined && currentBody.capMode !== undefined ? { cap_mode: currentBody.capMode } : {}),
         // The structured answer's schema is the agent's contract with its callers: an edit that leaves it out keeps it.
         ...(definition.output_schema === undefined && current.kind === "agentic" && !isObject(definition.workflow) && (currentBody as AgenticBody).outputSchema !== undefined ? { output_schema: (currentBody as AgenticBody).outputSchema } : {}),
+        // So is the checkout its runs start in (none clears it).
+        ...(definition.checkout === undefined && current.kind === "agentic" && !isObject(definition.workflow) && (currentBody as AgenticBody).checkout !== undefined ? { checkout: (currentBody as AgenticBody).checkout } : {}),
       }
     : {};
   return makeRevision({ ...definition, ...carried }, files, note);
@@ -373,7 +380,7 @@ export function definitionOf(agent: AgentRow, revision: RevisionRow, version: nu
     ...(body.capMode !== undefined ? { cap_mode: body.capMode } : {}),
   };
   const kindBody = revision.kind === "agentic"
-    ? { instructions: (body as AgenticBody).instructions, ...((body as AgenticBody).model ? { model: (body as AgenticBody).model } : {}), ...((body as AgenticBody).thinking ? { thinking: (body as AgenticBody).thinking } : {}), ...((body as AgenticBody).learning !== undefined ? { learning: (body as AgenticBody).learning } : {}), ...((body as AgenticBody).outputSchema !== undefined ? { output_schema: (body as AgenticBody).outputSchema } : {}), ...common }
+    ? { instructions: (body as AgenticBody).instructions, ...((body as AgenticBody).model ? { model: (body as AgenticBody).model } : {}), ...((body as AgenticBody).modelTiers ? { model_tiers: (body as AgenticBody).modelTiers } : {}), ...((body as AgenticBody).thinking ? { thinking: (body as AgenticBody).thinking } : {}), ...((body as AgenticBody).learning !== undefined ? { learning: (body as AgenticBody).learning } : {}), ...((body as AgenticBody).outputSchema !== undefined ? { output_schema: (body as AgenticBody).outputSchema } : {}), ...((body as AgenticBody).maxToolCalls !== undefined ? { max_tool_calls: (body as AgenticBody).maxToolCalls } : {}), ...((body as AgenticBody).checkout !== undefined ? { checkout: (body as AgenticBody).checkout } : {}), ...common }
     : { workflow: (body as WorkflowBody).workflow, ...common };
   return {
     id: agent.id,
@@ -399,7 +406,7 @@ export function definitionOf(agent: AgentRow, revision: RevisionRow, version: nu
 export function agentView(
   entry: AgentEntry,
   origin: string,
-  extra: { signIns?: readonly object[]; learning?: { pending: number }; runs?: { count: number; live: number } } = {},
+  extra: { signIns?: readonly object[]; learning?: { pending: number }; runs?: { count: number; live: number }; ownComputer?: Record<string, unknown> | null } = {},
 ) {
   const { agent, revision } = entry;
   const body = (revision?.body ?? {}) as Body;
@@ -416,6 +423,8 @@ export function agentView(
     skills: Object.entries(body.skills ?? {}).map(([path, sha]) => ({ path, sha256: sha, size_bytes: entry.sizes.get(sha) ?? null })),
     sign_ins: extra.signIns ?? [],
     runs: extra.runs ?? { count: 0, live: 0 },
+    // Its own computer, kept between runs where its setting is persistent: the provider, the computer and its state.
+    own_computer: extra.ownComputer ?? null,
     region: "local",
     home_etag: etagOf(entry),
     archived_at: agent.archivedAt == null ? null : new Date(agent.archivedAt).toISOString(),

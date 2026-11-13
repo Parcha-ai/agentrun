@@ -43,15 +43,19 @@ export function servedPart(kind: PartKind, value: unknown, values: readonly stri
 export const graphWalks = { part: 0, rest: 0 };
 
 const isRecordOrArray = (value: unknown): boolean => typeof value === "object" && value !== null;
+/** A time as Date's toISOString writes it, and nothing else: digits, its fixed separators and Z. */
+const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
 /** A graph view as GET /runs/{id}/graph serves it with `values` held, every field of it cut by the one rule (redactedOutput
  *  over the same values), the parts by the file path's rule on top:
  *  - its nodes, each decision and each call through servedPart (a map item's label and an error cut short after);
  *  - every other top-level field (its run, its workflow, its structure `graph`, which echoes the workflow's nodes and their
  *    words, its totals, and any field added later) through redactedOutput, each by itself, its keys included;
- *  - `read_at`, which moves with every read, cut on its own each time, never kept.
- *  Each part and each field is walked once per content and held set and kept in `cache`, so a poll that reads the same graph
- *  with the same values walks nothing, and a key saved since makes a new set. What holds no held value (ids, times,
+ *  - `read_at`, which moves with every read: the server's clock as toISOString writes it, served as it is, never kept;
+ *    anything else under the name is cut each read.
+ *  Each part and each field, its name and its value, scalar or not, is cut once per content and held set and kept in
+ *  `cache` as cut (never as read), so a poll that reads the same graph with the same values cuts nothing again, and a key
+ *  saved since makes a new set, cut on the next read. What holds no held value (ids, times,
  *  statuses) comes through as it was. */
 export function servedGraphView<T extends { nodes: unknown; decisions: unknown[]; effects: unknown[] }>(view: T, values: readonly string[], cache?: PartCache): T {
   const digest = (value: unknown): string => createHash("sha256").update(JSON.stringify(value) ?? "").digest("hex");
@@ -67,11 +71,15 @@ export function servedGraphView<T extends { nodes: unknown; decisions: unknown[]
   const { nodes, decisions, effects, read_at: readAt, ...rest } = view as T & { read_at?: unknown };
   const fields: Record<string, unknown> = {};
   for (const [name, value] of Object.entries(rest)) {
-    const cutName = redactedOutput(name, values) as string;
-    fields[cutName] = isRecordOrArray(value) ? kept(`field:${keys}:${name}:${digest(value)}`, () => (graphWalks.rest++, redactedOutput(value, values))) : redactedOutput(value, values);
+    // A field's name and its value, scalar or not, each cut once per content and held set: a poll walks none again.
+    // (graphWalks.rest counts the walks of a field that holds more than one value, as before.)
+    const cutName = kept(`name:${keys}:${digest(name)}`, () => redactedOutput(name, values)) as string;
+    fields[cutName] = kept(`field:${keys}:${digest(name)}:${digest(value)}`, () => (isRecordOrArray(value) && graphWalks.rest++, redactedOutput(value, values)));
   }
   return {
-    ...(readAt === undefined ? {} : { read_at: redactedOutput(readAt, values) }),
+    // The read's own time, the server's clock as toISOString writes it, holds nothing of the run: served as it is. Any other
+    // value under the name is cut, each read, as before.
+    ...(readAt === undefined ? {} : { read_at: typeof readAt === "string" && ISO_TIME.test(readAt) ? readAt : redactedOutput(readAt, values) }),
     ...fields,
     nodes: part("nodes", nodes),
     decisions: decisions.map((value) => part("decision", value)),

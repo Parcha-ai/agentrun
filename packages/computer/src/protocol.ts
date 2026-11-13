@@ -79,6 +79,11 @@ export interface HelloResult {
 	/** The daemon's own version (with daemon none, the provider's). */
 	version: string;
 	os: ComputerOs;
+	/**
+	 * The OS's own version as the computer says it: a phone's Android release (getprop ro.build.version.release), such
+	 * as "15". Absent where the computer does not say one.
+	 */
+	osVersion?: string;
 	kind: ComputerKind;
 	/** Go's name for the architecture: amd64, arm64. */
 	arch: string;

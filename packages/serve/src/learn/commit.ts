@@ -39,7 +39,7 @@ export type LearningChange =
        *  no old skill stays served beside the note that replaces it; not when `note` was left out as `taken` (another
        *  note holds that name, so the skill's rule would be lost). Its file is checked against the run's seed as a
        *  skill's file the merge writes is. */
-      retire?: { skill: string; note: string }[];
+      retire?: { skill: string; note: string; rule: string }[];
       /** Files the grader read beside the merge and it does not write (a consolidation's other side of a pair): each
        *  checked against the seed as a written skill's file is, so one changed since is a conflict. */
       pinned?: string[];
@@ -156,8 +156,29 @@ async function mergeOf(change: Extract<LearningChange, { kind: "merge" }>, snaps
   }));
   // Each re-filed skill main holds, not retired, retired in this write (`retire`), unless its note was left out as taken.
   const retiring: string[] = [];
-  for (const { skill, note } of change.retire ?? []) {
+  // The rules main's active notes hold now, apart from the notes this merge supersedes: a skill retires only while its rule
+  // has an active note, the re-filed note written here or another main holds as this merge commits (a person may have
+  // edited or retired it since the grade read main), so the rule is never left with no active copy.
+  const superseding = new Set([...(change.supersede ?? []).map(({ path }) => path), ...[...files].filter(([path]) => isNote(path) && !held.has(path)).flatMap(([path, text]) => {
+    const one = parseNoteFile(path, text);
+    return Array.isArray(one) ? [] : one.supersedes;
+  })]);
+  const holding = new Set<string>();
+  if (change.retire?.length) {
+    for (const one of snapshotNotes(snapshot).filter((note) => note.status === "active" && !superseding.has(note.file))) {
+      const text = parseNoteFile(one.file, await body(one.file, blobOf(snapshot, one.file)!));
+      if (!Array.isArray(text)) holding.add(ruleOf(text.body));
+    }
+    for (const [path, text] of files) {
+      // A replacement written here counts held or not: a pending note retires its skill as before (the owner's OK makes it
+      // the rule); only one that is not written at all (left out, or gone from main) must find another holder.
+      const one = isNote(path) ? parseNoteFile(path, text) : undefined;
+      if (one && !Array.isArray(one)) holding.add(ruleOf(one.body));
+    }
+  }
+  for (const { skill, note, rule } of change.retire ?? []) {
     if (left.some((one) => one.path === note && one.reason === "taken")) continue;
+    if (!holding.has(rule)) continue;
     const oid = blobOf(snapshot, skill);
     const item = snapshot?.skills.find((one) => one.files.some((file) => file.path === skill));
     if (oid === undefined || !item || item.status === "retired") continue;
@@ -225,10 +246,23 @@ async function settledNotes(change: Extract<LearningChange, { kind: "merge" }>, 
   const left: LeftNote[] = [];
   const newNotes = change.files.filter(({ path }) => isNote(path));
   if (newNotes.length) {
+    // The notes this merge supersedes (its own marks, or what its new notes not held for the owner's OK supersede by
+    // their front matter) keep no rule after it: a copy of their rule under another name is no duplicate, so a rule is
+    // never left with no active note.
+    const held = new Set(change.held ?? []);
+    const going = new Set([...(change.supersede ?? []).map(({ path }) => path), ...newNotes.filter(({ path }) => !held.has(path)).flatMap(({ path, text }) => {
+      const note = parseNoteFile(path, text);
+      return Array.isArray(note) ? [] : note.supersedes;
+    })]);
     const rules = new Map<string, string>();
+    // Every rule main's active notes hold, whoever this merge supersedes: an update of that holder takes the rule over
+    // from an earlier note of this merge that repeated it, whatever their order.
+    const onMainRules = new Map<string, string>();
     for (const note of snapshotNotes(snapshot).filter((one) => one.status === "active")) {
       const text = parseNoteFile(note.file, await body(note.file, blobOf(snapshot, note.file)!));
-      if (!Array.isArray(text)) rules.set(ruleOf(text.body), note.file);
+      if (Array.isArray(text)) continue;
+      onMainRules.set(ruleOf(text.body), note.file);
+      if (!going.has(note.file)) rules.set(ruleOf(text.body), note.file);
     }
     for (const { path, text } of newNotes) {
       const note = parseNoteFile(path, text);
@@ -243,8 +277,13 @@ async function settledNotes(change: Extract<LearningChange, { kind: "merge" }>, 
       }
       const holder = rules.get(rule);
       if (holder !== undefined && holder !== path && !note.supersedes.includes(holder)) {
-        left.push({ path, reason: "same" });
-        continue;
+        const original = onMainRules.get(rule);
+        // An update of the rule's holder on main, after a copy of it: the update holds the rule, the copy is the repeat.
+        if (original === undefined || holder === original || !note.supersedes.includes(original) || held.has(path)) {
+          left.push({ path, reason: "same" });
+          continue;
+        }
+        left.push({ path: holder, reason: "same" });
       }
       rules.set(rule, path);
     }

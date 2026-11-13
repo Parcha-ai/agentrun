@@ -7,6 +7,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { clock } from "@/lib/format";
 import { mcpToolLabel } from "@/lib/mcp";
 import { rowDetail, rowFailed, rowPaused, type Step, steps } from "@/lib/timeline";
+import { kindWithModel, ranOnWords } from "@/lib/nodeModel";
 import { cn } from "@/lib/utils";
 import type { LearnedNode, TimelineRow } from "@/lib/v2";
 
@@ -142,7 +143,7 @@ function LearnedNodes({ nodes }: { nodes: LearnedNode[] }) {
             <li key={i} className="flex items-center gap-3 px-3 py-1.5">
               <span data-status={n.status} className="contents"><Chip tone={NODE_TONE[n.status] ?? "muted"} className="w-[5.5rem] justify-center">{n.status}</Chip></span>
               <span className="min-w-0 flex-1 truncate text-body" title={n.label}>{n.label}</span>
-              <span className="font-mono text-label text-muted-foreground">{n.kind}</span>
+              <span data-kind className="font-mono text-label text-muted-foreground" title={ranOnWords(n) || undefined}>{kindWithModel(n.kind, n)}</span>
               <span className="w-14 text-right font-mono text-label text-muted-foreground">{took(n.duration_ms)}</span>
             </li>
           ))}

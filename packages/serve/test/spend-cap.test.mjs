@@ -55,8 +55,7 @@ test("the worst case prices the request's input: at $0 output, an input that pas
   assert.deepEqual([run.status, run.state, run.error, run.pending?.kind, posts()], ["input_required", "waiting", null, "budget", 0], JSON.stringify(run));
 });
 
-// SKIP (follow-up #2078): the spend cap or an unknown cost reads differently on the runner (cost reads $0, not unknown)
-test.skip("a request the cap refuses never reaches the model: the run's second request, its input alone over the cap, is not made, and the run pauses at its cap", async (t) => {
+test("a request the cap refuses never reaches the model: the run's second request, its input alone over the cap, is not made, and the run pauses at its cap", async (t) => {
   const calls = join(await scratch(t), "calls.jsonl");
   withEnv(t, { AGENTRUN_TEST_FAUX_CALLS: calls });
   const { api } = await serve(t, { faux: new URL("./fixtures/faux-recorded.mjs", import.meta.url).pathname });
@@ -70,8 +69,7 @@ test.skip("a request the cap refuses never reaches the model: the run's second r
   assert.deepEqual(made, [{ users: 1 }], "the model was called for the ask and never for the answer");
 });
 
-// SKIP (follow-up #2080): the spend cap or an unknown cost reads differently on the runner (cost reads $0, not unknown)
-test.skip("a response that costs more than its worst case is stopped by the server after it, and the answer it paid for is kept", async (t) => {
+test("a response that costs more than its worst case is stopped by the server after it, and the answer it paid for is kept", async (t) => {
   // A gateway that reports a million tokens each way, far past the 32k it was asked for: $2, over the $0.05 cap.
   const { api, posts } = await gateway(t, { price: "1,1", text: "The answer is 42.", tokens: 1_000_000 });
   const run = await ended(api, (await start(api, "over", "What is six times seven?", { max_cost_usd: 0.05 })).run_id);
@@ -80,8 +78,7 @@ test.skip("a response that costs more than its worst case is stopped by the serv
   assert.deepEqual(run.result, { output: null, final_answer: "The answer is 42." }, "the answer the cap stopped is kept");
 });
 
-// SKIP (follow-up #2080): the spend cap or an unknown cost reads differently on the runner (cost reads $0, not unknown)
-test.skip("a response that stops at its length and costs past the cap is stopped after it, and its text is the answer kept", async (t) => {
+test("a response that stops at its length and costs past the cap is stopped after it, and its text is the answer kept", async (t) => {
   // The same $2 response as above, cut at its max output tokens (pi's stopReason "length": text, no tool call). The
   // timeline shows it as the run's newest answer row (a text_block); the answer the cap keeps is that text.
   const { api, posts } = await gateway(t, { price: "1,1", text: "The answer, cut at its length.", tokens: 1_000_000, incomplete: true });
@@ -91,11 +88,21 @@ test.skip("a response that stops at its length and costs past the cap is stopped
   assert.deepEqual(run.result, { output: null, final_answer: "The answer, cut at its length." }, "the answer the cap stopped is kept, cut as it was");
 });
 
+test("a paid answer cut at its length and past the timeline's 2,000-character row is kept whole as the answer, never the row's cut", async (t) => {
+  const long = `The answer begins here. ${"Forty-two is the figure. ".repeat(150)}And it ends here.`;
+  assert.ok(long.length > 3_000);
+  const { api } = await gateway(t, { price: "1,1", text: long, tokens: 1_000_000, incomplete: true });
+  const run = await ended(api, (await start(api, "over-long", "What is six times seven?", { max_cost_usd: 0.05 })).run_id);
+  assert.deepEqual([run.status, run.error?.code], ["failed", "spend_cap_reached"], JSON.stringify(run.error));
+  assert.equal(run.result?.final_answer, long, `the whole paid answer: ${run.result?.final_answer?.length} of ${long.length} characters`);
+});
+
 const GROUPS = ["meter", "agent", "key", "day", "region"];
 /** /usage for every grouping: its total and each line's usd. */
 const usages = async (api) => Promise.all(GROUPS.map(async (group) => (await api("GET", `/usage?group_by=${group}`)).body));
 
-// SKIP (follow-up #2080): the spend cap or an unknown cost reads differently on the runner (cost reads $0, not unknown)
+// SKIP (follow-up #2080): a pi run's end reads its cost from its root's answers, so a request a cancel cut mid-answer (booked
+// unknown in its model session) ends at $0; waits on #2487's nullable end cost and #2486's pi end cost
 test.skip("a run cancelled while its request answers costs unknown (the request may have been billed), and /usage stays priced with the runs it knows", async (t) => {
   const { api, data } = await serve(t, { faux: OUTPUT_PRICED });
   const paid = await ended(api, (await start(api, "paid", "What is six times seven?")).run_id);
@@ -116,8 +123,7 @@ test.skip("a run cancelled while its request answers costs unknown (the request 
   }
 });
 
-// SKIP (follow-up #2080): the spend cap or an unknown cost reads differently on the runner (cost reads $0, not unknown)
-test.skip("a response of unknown price leaves the run's cost unknown (null), not $0, and /usage counts it as unpriced; a run with no request costs $0", async (t) => {
+test("a response of unknown price leaves the run's cost unknown (null), not $0, and /usage counts it as unpriced; a run with no request costs $0", async (t) => {
   const { api } = await serve(t, { faux: new URL("./fixtures/faux-unpriced.mjs", import.meta.url).pathname });
   const run = await ended(api, (await start(api, "unpriced", "What is six times seven?")).run_id);
   assert.deepEqual([run.status, run.cost.usd], ["completed", null], JSON.stringify(run.cost));
@@ -132,15 +138,15 @@ test.skip("a response of unknown price leaves the run's cost unknown (null), not
   }
 });
 
-// SKIP (follow-up #2080): the run completes on the runner before the state the test waits for
-test.skip("a refused request is final: one refusal, never retried, the model is never called for it, and the run pauses at its cap", async (t) => {
+test("a refused request is final: one refusal, never retried, the model is never called for it, and the run pauses at its cap", async (t) => {
   // $0.015625 per million output tokens: one request's least (its answer and the medium thinking level's allowance, 9,216
   // tokens) is $0.000144, over the $0.0001 cap. The refusal's code says the run is out of budget, which pi-ai's retry takes
   // as final whatever digits its words hold (cap-final.test.mjs puts retry digits in them).
+  // The agent names medium thinking: one that names none is sent at effort none, its least the answer's 1,024 tokens alone.
   const { api, posts } = await gateway(t, { price: "0,0.015625" });
   const from = Date.now();
-  const { run_id } = await start(api, "final", "What is six times seven?", { max_cost_usd: 0.0001 });
-  const { rows } = await follow(api, run_id, ["input_required", "failed"]);
+  const { run_id } = await start(api, "final", "What is six times seven?", { max_cost_usd: 0.0001 }, { thinking: "medium" });
+  const { rows } = await follow(api, run_id, ["input_required", "failed", "completed"]);
   const run = (await api("GET", `/runs/${run_id}`)).body;
   assert.deepEqual([run.status, run.state, run.error, run.pending?.kind], ["input_required", "waiting", null, "budget"], JSON.stringify(run));
   assert.match(run.pending.said, /^Not sent: the next step needs at least \$0\.01, and this run's cap is \$0\.0001\. Raise the cap to at least \$0\.01 to continue\.$/);

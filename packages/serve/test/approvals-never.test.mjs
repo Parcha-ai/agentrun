@@ -13,7 +13,7 @@ import { test } from "node:test";
 import { deniedText, permissionFrom } from "../dist/tool-gate.js";
 import { runnerGate } from "./gate-support.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
-import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
+import { agent, follow, retried, scratch, serve, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const fixture = (name) => new URL(`./fixtures/${name}`, import.meta.url).pathname;
@@ -32,9 +32,9 @@ async function network(t) {
 /** Agent `id` on `harness` that fetches PAGE once with web_fetch (`extra` beside it), and one run of it. */
 async function fetching(api, id, harness, extra = {}) {
   const ask = `Fetch ${PAGE} once.`;
-  const made = await api("POST", "/agents", agent(id, { harness, instructions: ask, tools: ["web_fetch"], ...extra }));
+  const made = await retried(api)("POST", "/agents",agent(id, { harness, instructions: ask, tools: ["web_fetch"], ...extra }));
   assert.equal(made.status, 201, JSON.stringify(made.body));
-  const run = await api("POST", `/agents/${id}/runs`, { input: { content: ask } });
+  const run = await retried(api)("POST", `/agents/${id}/runs`, { input: { content: ask } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   return run.body.run_id;
 }
@@ -99,7 +99,7 @@ test("under never, web_fetch set to ask runs without parking on pi; the agent an
   assert.equal((await api("GET", "/agents/ask-pi")).body.definition.approvals, "ask", "none set reads ask");
 });
 
-test("under never, web_fetch set to ask runs without parking on claude-agent and codex, as on pi", { timeout: 150_000, skip: "waits on the CLI harnesses being offered their host tools (cli-run-spec offers claude-agent and codex no web_fetch)" }, async (t) => {
+test("under never, web_fetch set to ask runs without parking on claude-agent and codex, as on pi", { timeout: 150_000 }, async (t) => {
   await neverOn(t, ["claude-agent", "codex"]);
 });
 
@@ -127,7 +127,7 @@ test("under never an MCP tool (which asks by default) runs unasked; a server's d
   t.after(() => fake.close());
   assert.equal((await api("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "bearer", token: MCP_TOKEN } })).status, 200);
   const content = 'Call mcp__fake__add with {"a":2,"b":3}';
-  const made = await api("POST", "/agents", agent("mcp-never", { tools: ["mcp:fake/add"], approvals: "never" }));
+  const made = await retried(api)("POST", "/agents",agent("mcp-never", { tools: ["mcp:fake/add"], approvals: "never" }));
   assert.equal(made.status, 201, JSON.stringify(made.body));
   const run = await api("POST", "/agents/mcp-never/runs", { input: { content } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
@@ -157,10 +157,10 @@ test("a workflow's call node on a tool set to ask runs under never, and its run 
     root: { node: "chain", steps: [{ node: "call", label: "Read the home page", via: "tool", tool: "web_fetch", args: { url: "{website}" }, out: "Page", as: "home", deadline_s: 60 }] },
   };
   assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: "ask" } })).status, 200);
-  assert.equal((await api("POST", "/agents", { definition: { id: "site-ask", name: "site-ask", workflow: flow, tools: ["web_fetch"] } })).status, 201);
+  assert.equal((await retried(api)("POST", "/agents",{ definition: { id: "site-ask", name: "site-ask", workflow: flow, tools: ["web_fetch"] } })).status, 201);
   const refused = await api("POST", "/agents/site-ask/runs", { input: { website: PAGE } });
   assert.deepEqual([refused.status, refused.body.error?.code, refused.body.error?.details?.asks], [409, "agent_not_runnable", ["web_fetch"]]);
-  const saved = await api("POST", "/agents", { definition: { id: "site-never", name: "site-never", workflow: flow, tools: ["web_fetch"], approvals: "never" } });
+  const saved = await retried(api)("POST", "/agents",{ definition: { id: "site-never", name: "site-never", workflow: flow, tools: ["web_fetch"], approvals: "never" } });
   assert.equal(saved.status, 201, JSON.stringify(saved.body));
   assert.deepEqual(saved.body.warnings ?? [], [], "no call-node warning under never");
   const ran = await api("POST", "/agents/site-never/runs", { input: { website: PAGE } });
@@ -170,7 +170,7 @@ test("a workflow's call node on a tool set to ask runs under never, and its run 
 
 test("approvals takes ask or never: anything else is a 422 naming the field", async (t) => {
   const { api } = await serve(t);
-  const bad = await api("POST", "/agents", agent("bad-approvals", { approvals: "sometimes" }));
+  const bad = await retried(api)("POST", "/agents",agent("bad-approvals", { approvals: "sometimes" }));
   assert.equal(bad.status, 422, JSON.stringify(bad.body));
   const field = bad.body.error.fields.find((f) => f.field === "definition.approvals");
   assert.equal(field?.reason, "not_an_option", JSON.stringify(bad.body.error.fields));
@@ -239,12 +239,12 @@ test("native web_search set to ask on claude-agent and codex: under never it is 
   const NATIVE_ASKS = /native search cannot wait for an approval/;
   for (const harness of ["claude-agent", "codex"]) {
     const native = { harness, tools: ["web_search"], tool_settings: { web_search: { provider: "native", permission: "ask" } } };
-    const never = await api("POST", "/agents", agent(`native-never-${harness}`, { ...native, approvals: "never" }));
+    const never = await retried(api)("POST", "/agents",agent(`native-never-${harness}`, { ...native, approvals: "never" }));
     assert.equal(never.status, 201, `${harness}: ${JSON.stringify(never.body)}`);
     assert.equal((never.body.warnings ?? []).some((w) => NATIVE_ASKS.test(w.message ?? "")), false, `${harness}: no native-ask warning under never: ${JSON.stringify(never.body.warnings)}`);
-    const started = await api("POST", `/agents/native-never-${harness}/runs`, { input: { content: "Search once." } });
+    const started = await retried(api)("POST", `/agents/native-never-${harness}/runs`, { input: { content: "Search once." } });
     assert.equal(started.status, 202, `${harness}: it starts under never: ${JSON.stringify(started.body)}`);
-    const asked = await api("POST", "/agents", agent(`native-ask-${harness}`, native));
+    const asked = await retried(api)("POST", "/agents",agent(`native-ask-${harness}`, native));
     assert.equal(asked.status, 201, `${harness}: ${JSON.stringify(asked.body)}`);
     assert.ok((asked.body.warnings ?? []).some((w) => NATIVE_ASKS.test(w.message ?? "")), `${harness}: under ask the warning stands: ${JSON.stringify(asked.body.warnings)}`);
   }
@@ -252,7 +252,7 @@ test("native web_search set to ask on claude-agent and codex: under never it is 
 
 test("approvals takes ask back: a definition put back as it reads (the console's edit) keeps what it reads, ask or never; a never agent edited to ask reads ask; an edit that leaves approvals out asks, of either kind, and a change of kind naming none asks", { timeout: 60_000 }, async (t) => {
   const { api } = await serve(t);
-  assert.equal((await api("POST", "/agents", agent("plain"))).status, 201);
+  assert.equal((await retried(api)("POST", "/agents",agent("plain"))).status, 201);
   const read = (await api("GET", "/agents/plain")).body.definition;
   assert.equal(read.approvals, "ask", "none set reads ask");
   // The console's edit (apps/console agentForm.ts editBody): the definition as read, one field changed, the next version.
@@ -261,7 +261,7 @@ test("approvals takes ask back: a definition put back as it reads (the console's
   assert.equal((await api("GET", "/agents/plain")).body.definition.approvals, "ask", "still ask");
 
   // A never agent: the console's edit sends back the approvals it read, so it stays never.
-  assert.equal((await api("POST", "/agents", agent("unattended", { approvals: "never" }))).status, 201);
+  assert.equal((await retried(api)("POST", "/agents",agent("unattended", { approvals: "never" }))).status, 201);
   const asRead = (await api("GET", "/agents/unattended")).body.definition;
   assert.equal(asRead.approvals, "never");
   const roundTrip = await api("PUT", "/agents/unattended/definition", { definition: { ...asRead, instructions: "Answer briefly.", version: asRead.version + 1 } });
@@ -289,7 +289,7 @@ test("approvals takes ask back: a definition put back as it reads (the console's
     output: { schemaId: "Page", path: "home" },
     root: { node: "chain", steps: [{ node: "call", label: "Read the home page", via: "tool", tool: "web_fetch", args: { url: "{website}" }, out: "Page", as: "home", deadline_s: 60 }] },
   };
-  const made = await api("POST", "/agents", { definition: { id: "flow-never", name: "flow-never", workflow: flow, tools: ["web_fetch"], approvals: "never" } });
+  const made = await retried(api)("POST", "/agents",{ definition: { id: "flow-never", name: "flow-never", workflow: flow, tools: ["web_fetch"], approvals: "never" } });
   assert.equal(made.status, 201, JSON.stringify(made.body));
   assert.equal((await api("GET", "/agents/flow-never")).body.definition.approvals, "never");
   const flowLeft = await api("PUT", "/agents/flow-never/definition", { definition: { id: "flow-never", name: "flow-never", version: 2, workflow: { ...flow, name: "read-site-again" }, tools: ["web_fetch"] } });
@@ -297,7 +297,7 @@ test("approvals takes ask back: a definition put back as it reads (the console's
   assert.equal((await api("GET", "/agents/flow-never")).body.definition.approvals, "ask", "a workflow edit leaving approvals out asks");
 
   // A change of kind (agentic → workflow) naming no approvals asks too.
-  assert.equal((await api("POST", "/agents", agent("switcher", { approvals: "never" }))).status, 201);
+  assert.equal((await retried(api)("POST", "/agents",agent("switcher", { approvals: "never" }))).status, 201);
   const switched = await api("PUT", "/agents/switcher/definition", { definition: { id: "switcher", name: "switcher", version: 2, workflow: flow, tools: ["web_fetch"] } });
   assert.equal(switched.status, 200, JSON.stringify(switched.body));
   assert.equal((await api("GET", "/agents/switcher")).body.definition.approvals, "ask", "a change of kind naming none asks");

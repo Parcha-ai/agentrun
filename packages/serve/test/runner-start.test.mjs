@@ -1,7 +1,8 @@
 // The runner started as its own process through the server's launcher: `agentrun-serve runner --data D [--loops N]`, the
 // same bin and Node as the server, its secrets over the launcher's pipe. Each case spawns the launcher as a real child
 // (no test runner context in its environment) and drives it by its own lines, never a sleep:
-//   - one ready line once it can claim: `Runner <name> ready: store sqlite schema v<N>, <N> loops`;
+//   - one ready line once it can claim: `Runner <name> ready: store sqlite schema v<N>, <N> loops`, then its memory
+//     budget on a line of its own: `Runner <name> memory: <N> MiB for runs, each weighed by its harness`;
 //   - exit 2 on bad arguments (runnerArgs' words), 3 on a store the server has not set up (SchemaVersionUnknown), 0 on
 //     SIGTERM after closing;
 //   - each option also as `--option=value` (the bin hands a data directory that starts with "-" as `--data=<dir>`), an
@@ -37,6 +38,7 @@ import { dropSchema, freshSchema, onPostgres, PG_URL, postgresOnly } from "./sto
 const { fakeAnthropic } = await import("@parcha/agentrun-harness-claude/testing");
 const main = await import("../dist/runner/main.js");
 const { SCHEMA_VERSION } = await import("../dist/store/schema.js");
+const { hostMemory, runsMemoryMib } = await import("../dist/host.js");
 
 const LAUNCHER = fileURLToPath(new URL("../launcher/agentrun-serve", import.meta.url));
 const MODEL = { provider: "anthropic", modelId: "claude-sonnet-4-5" };
@@ -147,6 +149,12 @@ test("bad arguments: the runner exits 2 in runnerArgs' words, and claims nothing
   assert.match(loops.err.join("\n"), /--loops is a whole number of runs above zero, not "0"/);
 });
 
+test("Archil settings in the runner's environment that are not whole: the runner exits 2 in words naming what is missing, and claims nothing", async (t) => {
+  const child = runnerChild(t, ["--data", scratch(t, "agentrun-runner-archil-")], { AGENTRUN_ARCHIL_REGION: "aws-us-east-1" });
+  assert.deepEqual(await child.exited, { code: 2, signal: null });
+  assert.match(child.err.join("\n"), /started with AGENTRUN_ARCHIL_REGION but not AGENTRUN_ARCHIL_S3_URL/);
+});
+
 test("the equals form: `runner --data=-odd-dir --loops=2 --name=runner-eq` opens that data directory (a name that starts with a dash) under those loops and that name", async (t) => {
   const parent = scratch(t, "agentrun-runner-eq-");
   const dir = join(parent, "-odd-dir");
@@ -174,11 +182,16 @@ test("a data directory the server has not set up: the runner exits 3, saying so"
   assert.match(child.err.join("\n"), /not set up yet: start the server on this data directory first/);
 });
 
-test("on the server's store the runner says it is ready in one line, claims nothing with nothing queued, and SIGTERM closes it with exit 0", async (t) => {
+test("on the server's store the runner says it is ready in one line, then its memory budget in another, claims nothing with nothing queued, and SIGTERM closes it with exit 0", async (t) => {
   const dir = await serverData(t);
   const child = runnerChild(t, ["--data", dir, "--loops", "3"], { AGENTRUN_RUNNER_NAME: "runner-solo" });
   const ready = (await child.line(READY)).match(READY);
   assert.deepEqual(ready.slice(1), ["runner-solo", String(SCHEMA_VERSION), "3"]);
+  // What its runs may hold: this host's memory (its container's limit, where it has one; the child shares this process's
+  // cgroup) less the server's own, as memory-claim.ts budgets it. The line after the ready line, never in it.
+  const memory = await child.line(/^Runner runner-solo memory: /);
+  assert.equal(memory, `Runner runner-solo memory: ${runsMemoryMib(hostMemory())} MiB for runs, each weighed by its harness`);
+  assert.equal(child.out.indexOf(memory), child.out.findIndex((line) => READY.test(line)) + 1, "right after the ready line");
   child.child.kill("SIGTERM");
   assert.deepEqual(await child.exited, { code: 0, signal: null });
 });

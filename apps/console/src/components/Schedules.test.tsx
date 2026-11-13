@@ -121,11 +121,10 @@ describe("the schedules list", () => {
     expect(rows.map((r) => r.getAttribute("data-trigger"))).toEqual(["trg_1", "trg_2"]);
     expect(rows[0].textContent).toContain("nightly triage");
     expect(rows[0].textContent).toContain("Triage");
-    expect(rows[0].textContent).toContain("At 01:30 · America/Los_Angeles");
-    expect(rows[0].textContent).toContain("Nov 5, 9:30 AM");
+    expect(rows[0].textContent).toContain("At 9:30 AM your time (01:30 America/Los_Angeles) · next Thu Nov 5, 9:30 AM UTC · Triage");
     expect(rows[0].textContent).toContain("Skipped: The last run is still working.");
     expect(rows[0].querySelector('a[href="#/triggers/trg_1"]')).not.toBeNull();
-    expect(rows[1].textContent).toContain("Every 5 minutes");
+    expect(rows[1].textContent).toContain("Every 5 minutes · no next time");
     expect(rows[1].textContent).toContain("Paused");
     expect(rows[1].textContent).toContain("Not fired yet");
     await t.click(/^New schedule$/);
@@ -158,6 +157,8 @@ describe("the schedules list", () => {
     const panel = t.host.querySelector('section[aria-labelledby="first-trigger"]')!;
     expect(panel.querySelector("h2")?.textContent).toBe("Start runs without being here");
     expect([...panel.querySelectorAll("li button")].map((b) => b.textContent)).toEqual(["New schedule", "New webhook", "New GitHub trigger"]);
+    expect(panel.textContent).toContain("At the times you set: every day or week at a time, every few minutes or hours, or once.");
+    expect(panel.textContent).not.toMatch(/cron/i);
     // Each is on the page once: the header's three show when there is a trigger.
     for (const name of ["New schedule", "New webhook", "New GitHub trigger"]) expect([...t.host.querySelectorAll("button")].filter((b) => b.textContent?.trim() === name).length, name).toBe(1);
   });
@@ -170,6 +171,14 @@ describe("a new schedule", () => {
     // The agent's control is the picker's field (a button; its value goes in a hidden input named "agent").
     // So are the schedule's shape and its zone (ScheduleWhen's and ZonePicker's fields).
     expect(named).toMatchObject({ Name: "name", Runs: "Runs", "Time zone": "Time zone", Agent: "Agent", "Each run is asked": "content" });
+  });
+  it("says the schedule and its zone in plain words, with no cron or zone-database terms", async () => {
+    const t = await open(server().v2, { trigger: null });
+    expect(t.text()).toContain("The time zone this schedule runs in.");
+    // The custom line's own field too, once picked.
+    await pick(picker(t.host, "Runs")!, "custom");
+    expect(t.host.querySelector('input[aria-label="Custom schedule"]')).toBeTruthy();
+    expect(t.text()).not.toMatch(/cron line|IANA|cron expression|crontab/i);
   });
   it("the Every form's amount and unit are two controls with two ids; the label names the amount", async () => {
     const t = await open(server().v2, { trigger: null });
@@ -274,14 +283,63 @@ describe("a new schedule", () => {
     await t.set("content", "Look.");
     await t.set("maxCost", "1");
     await t.click(/^Create schedule$/);
-    expect(t.issue("source.at")).toBe(message);
+    // In the person's own time (UTC here), as the schedule line reads: never the API's ISO time.
+    expect(t.issue("source.at")).toBe("Pick a time in the future: Nov 9, 9:30 AM UTC has already passed.");
+    expect(t.text()).not.toContain("2026-11-09T09:30:00Z");
     expect(t.text()).not.toContain("at is in the past");
-    // Still past (the page's clock is 2026-11-10T00:00Z): the issue stays.
+    // Still past (the page's clock is 2026-11-10T00:00Z): the issue stays, naming the time now picked.
     await t.set("at", "2026-11-09T23:59");
-    expect(t.issue("source.at")).toBe(message);
+    expect(t.issue("source.at")).toBe("Pick a time in the future: Nov 9, 11:59 PM UTC has already passed.");
     await t.set("at", "2026-11-12T09:30");
     expect(t.issue("source.at")).toBeNull();
     expect(t.went).toEqual([]);
+  });
+
+  // QA: a 9:00 AM picked in New York on a day whose 9:00 AM has passed read "Pick a time in the future:
+  // 2026-11-11T14:00:00Z has already passed." It reads the time picked, in the person's zone: "9:00 AM today".
+  it("a one time already passed today reads the time picked, in the person's own time, as today: no ISO", async () => {
+    vi.stubEnv("TZ", "America/New_York");
+    // The page's clock, 2026-11-10T00:00Z, is 7:00 PM on Nov 9 in New York; 9:00 AM that day is 14:00Z.
+    const message = "Pick a time in the future: 2026-11-09T14:00:00Z has already passed.";
+    const { v2 } = server({ write: () => refuse([{ field: "source.at", reason: "invalid", message }]) });
+    const t = await open(v2, { trigger: null });
+    await t.choose("at");
+    await t.set("at", "2026-11-09T09:00");
+    await t.set("agent", "triage");
+    await t.set("content", "Look.");
+    await t.set("maxCost", "1");
+    await t.click(/^Create schedule$/);
+    expect(t.issue("source.at")).toBe("Pick a time in the future: 9:00 AM today has already passed.");
+    expect(t.text()).not.toContain("2026-11-09T14:00:00Z");
+  });
+
+  // A browser clock behind the server's: a time a minute ahead of the page's clock (2026-11-10T00:00Z) has already passed
+  // on the server's. Its refusal is read as the past-time one, so the sentence is the person's time, never the ISO.
+  it("a time ahead of the page's clock that the server refuses as passed reads in the person's time: no ISO", async () => {
+    const message = "Pick a time in the future: 2026-11-10T00:01:00Z has already passed.";
+    const { v2 } = server({ write: () => refuse([{ field: "source.at", reason: "invalid", message }]) });
+    const t = await open(v2, { trigger: null });
+    await t.choose("at");
+    await t.set("at", "2026-11-10T00:01");
+    await t.set("agent", "triage");
+    await t.set("content", "Look.");
+    await t.set("maxCost", "1");
+    await t.click(/^Create schedule$/);
+    expect(t.issue("source.at")).toBe("Pick a time in the future: 12:01 AM today has already passed.");
+    expect(t.text()).not.toContain("2026-11-10T00:01:00Z");
+  });
+
+  it("a refusal of a time ahead for any other reason keeps the server's words", async () => {
+    const message = "at is too far ahead";
+    const { v2 } = server({ write: () => refuse([{ field: "source.at", reason: "invalid", message }]) });
+    const t = await open(v2, { trigger: null });
+    await t.choose("at");
+    await t.set("at", "2026-11-12T09:30");
+    await t.set("agent", "triage");
+    await t.set("content", "Look.");
+    await t.set("maxCost", "1");
+    await t.click(/^Create schedule$/);
+    expect(t.issue("source.at")).toBe(message);
   });
 
   it("shows each issue of the server's 422 under the field it names: an agent with no revision under the agent", async () => {
@@ -308,7 +366,7 @@ describe("one schedule", () => {
     ] };
     const t = await open(server({ firings }).v2, { trigger: "trg_1" });
     expect(t.text()).toContain("nightly triage");
-    expect(t.text()).toContain("At 01:30 · America/Los_Angeles");
+    expect(t.text()).toContain("At 9:30 AM your time (01:30 America/Los_Angeles) · next Thu Nov 5, 9:30 AM UTC");
     expect(t.text()).toContain("$2.00 a run");
     const rows = [...t.host.querySelectorAll("[data-firing]")];
     expect(rows.map((r) => r.getAttribute("data-firing"))).toEqual(["f3", "f2", "f1"]);
@@ -323,7 +381,9 @@ describe("one schedule", () => {
     vi.stubEnv("TZ", "America/Los_Angeles");
     const firings = { trg_1: [firing({ key: "f1", status: "started", run_id: "r1" })] };
     const t = await open(server({ firings }).v2, { trigger: "trg_1" });
-    expect(t.text()).toContain("next Nov 5, 1:30 AM");
+    // Its own zone is the viewer's: no parentheses, the zone said once, on its next time.
+    expect(t.text()).toContain("At 1:30 AM your time · next Thu Nov 5, 1:30 AM PST");
+    expect(t.text()).not.toContain("America/Los_Angeles");
     expect(t.host.querySelector("[data-firing]")?.textContent).toContain("Nov 4, 1:30 AM");
     expect(t.text()).not.toContain("UTC");
   });

@@ -178,8 +178,7 @@ test("the install lock AgentRun ships for Codex holds exactly the tarballs the a
   assert.deepEqual(driftFromPin(tampered), [`${CODEX}: not the pinned sha512`, "@openai/codex-linux-arm64: pinned, not in the lock"]);
 });
 
-// SKIP (follow-up #2078): Codex's first-use install does not run as before on the runner
-test.skip("the first codex run installs exactly 0.164.0, with this platform's binary, into <data>/harnesses/codex, and runs that binary once it is in", { timeout: 300_000, skip: skipReal }, async (t) => {
+test("the first codex run installs exactly 0.164.0, with this platform's binary, into <data>/harnesses/codex, and runs that binary once it is in", { timeout: 300_000, skip: skipReal }, async (t) => {
   assert.equal(CODEX_VERSION, PIN);
   const registry = await registryFor(t, pinnedBinary());
   const { api, data, exes } = await codexServe(t, registry, { real: true });
@@ -210,8 +209,7 @@ test("a second codex run doesn't reinstall: on the same data, after a restart, n
   await second.close();
 });
 
-// SKIP (follow-up #2078): Codex's first-use install does not run as before on the runner
-test.skip("a person's npm config that omits optional packages still installs Codex's platform binary, and the run runs it", { timeout: 300_000, skip: skipReal }, async (t) => {
+test("a person's npm config that omits optional packages still installs Codex's platform binary, and the run runs it", { timeout: 300_000, skip: skipReal }, async (t) => {
   const registry = await registryFor(t, pinnedBinary());
   const { api, data, exes } = await codexServe(t, registry, { npm: { omit: "optional" }, real: true });
   const run = await api("POST", "/agents/coder/runs", { input: { content: "Say what you did." } });
@@ -221,8 +219,7 @@ test.skip("a person's npm config that omits optional packages still installs Cod
   await ranInstalled(api, run.body.run_id, data, exes);
 });
 
-// SKIP (follow-up #2078): Codex's first-use install does not run as before on the runner
-test.skip("capabilities say codex installs on first use until it is installed, and the waiting run reads that it installs", { timeout: 300_000, skip }, async (t) => {
+test("capabilities say codex installs on first use until it is installed, and the waiting run reads that it installs", { timeout: 300_000, skip }, async (t) => {
   const registry = await registryFor(t);
   registry.hold(CODEX);
   const { api } = await codexServe(t, registry);

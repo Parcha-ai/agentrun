@@ -7,7 +7,8 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { checkLifetime, kindRefusals, ModalProvider, sweep } from "../dist/index.js";
+import { checkLifetime, kindRefusals, sweep } from "../dist/index.js";
+import { ModalProvider } from "../dist/modal.js";
 import * as modal from "../dist/modal.js";
 import { DAEMON, DAEMON_IMAGE, deferred, ENTRYPOINT_MARK, fakeModal, GVISOR_KERNEL, HELLO, UPLOAD_MARK, VERSION } from "./fake-modal.mjs";
 
@@ -43,11 +44,9 @@ const tagsFor = (spec, name, deadline, user = "2510:2510") => ({
 	[SPEC_TAG]: JSON.stringify({
 		image: spec.image,
 		user,
-		network: spec.network,
 		cpus: spec.cpus ?? 2,
 		memoryMb: spec.memoryMb ?? 4096,
 		workdir: spec.workdir ?? "/work",
-		runtime: "vm",
 	}),
 });
 /** A computer as create leaves one, seeded straight into the fake. */
@@ -100,7 +99,7 @@ test("capabilities: a linux VM whose lifetime Modal enforces up to 24 hours, ini
 		mount: ["archil"],
 		vendorAgentPorts: [],
 		// A GPU computer is gVisor's (Modal's one GPU runtime), preemptible, and takes no mount yet.
-		gpu: { types: ["T4", "L4", "A10", "L40S", "A100", "A100-40GB", "A100-80GB", "RTX-PRO-6000", "H100", "H200", "B200", "B300"], max: 8, isolation: "gvisor", preemptible: true, mounts: [], fence: "userns-netns" },
+		gpu: { types: ["T4", "L4", "A10", "L40S", "A100", "A100-40GB", "A100-80GB", "RTX-PRO-6000", "H100", "H200", "B200", "B300"], max: 8, isolation: "gvisor", preemptible: true, mounts: [], unmounted: { why: "Archil's FUSE mount isn't proven on Modal's gVisor runtime (#2279)", yet: true }, fence: "userns-netns" },
 	});
 	assert.deepEqual(modal.CAPABILITIES[0].gpu, provider.capabilities().gpu, "the static configuration declares the same GPUs");
 	assert.deepEqual(kindRefusals(provider.capabilities()), []);
@@ -221,7 +220,7 @@ test("create of a GPU computer: Modal's GPU option on its gVisor runtime, record
 	assert.equal(params.runtime, "gvisor", "Modal offers GPUs on gVisor only");
 	assert.equal(params.gpu, "A100-80GB:2", "the SDK's gpu: the type, then :count");
 	const recorded = JSON.parse(params.tags[SPEC_TAG]);
-	assert.deepEqual([recorded.runtime, recorded.gpu], ["gvisor", gpu], "the spec tag records the runtime and the GPUs");
+	assert.deepEqual(recorded.gpu, gpu, "the spec tag records the GPUs, and with them the runtime: gVisor, Modal's one GPU runtime");
 	assert.equal(params.command.at(-1), "--own-network", "one flag on every runtime: init picks how it makes the fence");
 	// gVisor's init made the fence inside a user namespace: hello read it back, and create says so in a note.
 	assert.ok(created.value.notes?.some((note) => note.startsWith("fence: userns-netns")), JSON.stringify(created.value.notes));
@@ -250,7 +249,7 @@ test("check() refuses a GPU with an Archil mount on Modal: its gVisor runtime ha
 	const mount = { kind: "archil", disk: "dsk-00000000000baf76", region: "aws-us-east-1", folder: "agents/a1/runs/r1/work", token: "tok-modal-archil-0123456789abcdef" };
 	const spec = { ...SPEC, labels: { "agentrun.run": "r1", "agentrun.epoch": "1" }, mount, gpu: { type: "T4", count: 1 } };
 	const refusals = provider.check(spec);
-	assert.ok(refusals.some((r) => r.field === "gpu" && /a GPU computer here takes no archil mount: it is not proven/.test(r.message)), JSON.stringify(refusals));
+	assert.ok(refusals.some((r) => r.field === "gpu" && /a GPU computer here takes no archil mount: Archil's FUSE mount isn't proven on Modal's gVisor runtime \(#2279\)/.test(r.message)), JSON.stringify(refusals));
 	assert.ok(!JSON.stringify(refusals).includes(mount.token));
 });
 
@@ -929,7 +928,7 @@ test("list: this provider's running sandboxes with every label, by tags through 
 				seeded({ name: "computer-000000000001", tags: { team: "a" }, deadline }),
 				seeded({ name: "computer-000000000002", tags: { team: "a", [DEADLINE]: "tomorrow" } }),
 				seeded({ name: "computer-000000000003", tags: { team: "b" } }),
-				seeded({ name: "computer-000000000004", tags: { team: "a" }, spec: { ...SPEC, network: "open" } }),
+				seeded({ name: "computer-000000000004", tags: { team: "a" } }),
 				{ tags: { [COMPUTER]: "1", team: "a", [NAME]: "not-ours" } },
 				seeded({ name: "computer-000000000005", tags: { team: "a" }, running: false }),
 			],
@@ -942,7 +941,7 @@ test("list: this provider's running sandboxes with every label, by tags through 
 		[
 			["computer-000000000001", "running", "none", deadline],
 			["computer-000000000002", "running", "none", undefined],
-			["computer-000000000004", "running", "open", listed.value[2].deadline?.toISOString()],
+			["computer-000000000004", "running", "none", listed.value[2].deadline?.toISOString()],
 		],
 	);
 	assert.equal(listed.value[0].labels.team, "a");
@@ -1001,9 +1000,6 @@ test("attach refuses a drifted computer in words and leaves it running", async (
 		[{ deadline: new Date(Date.now() + 2 * DAY_MS).toISOString() }, /24 hours/],
 		[{ deadline: "soon" }, /deadline/],
 		[{ tags: { [SPEC_TAG]: "not json" } }, /spec/],
-		[{ tags: { [SPEC_TAG]: JSON.stringify({ image: "x", user: "1000:1000", network: "none", cpus: 2, memoryMb: 4096, workdir: "/work", runtime: "gvisor" }) } }, /runtime/],
-		// A computer an earlier version made records no runtime: refused, never read as vm (the breaking change).
-		[{ tags: { [SPEC_TAG]: JSON.stringify({ image: "x", user: "1000:1000", network: "none", cpus: 2, memoryMb: 4096, workdir: "/work" }) } }, /runtime: the tag agentrun\.computer\.spec says nothing/],
 	];
 	for (const [options, pattern] of cases) {
 		const { provider, fake } = setup({}, { sandboxes: [seeded(options)] });
@@ -1028,14 +1024,11 @@ test("attach: an id that is not this provider's, or a sandbox that has finished,
 	assert.equal(fake.names().includes("sandbox.exec"), false);
 });
 
-test("network: none is read back by the probe from inside; open is open; a change is refused in words", async () => {
-	const { provider, fake } = setup({}, { sandboxes: [seeded(), seeded({ name: "computer-000000000002", spec: { ...SPEC, network: "open" } })] });
+test("network: none is read back by the probe from inside; a change is refused in words", async () => {
+	const { provider, fake } = setup({}, { sandboxes: [seeded()] });
 	const none = refOf(fake);
-	const open = refOf(fake, "computer-000000000002");
 	assert.deepEqual(await provider.network(none), { ok: true, value: "none" });
 	assert.equal(fake.execRuns.length, 1, "none was probed");
-	assert.deepEqual(await provider.network(open), { ok: true, value: "open" });
-	assert.equal(fake.execRuns.length, 1, "open needs no probe: nothing is wider");
 	assert.deepEqual(await provider.network(none, "none"), { ok: true, value: "none" });
 	const wider = await provider.network(none, "open");
 	assert.equal(wider.error?.code, "refused");
@@ -1110,7 +1103,7 @@ test("release never terminates a sandbox that is not this provider's", async () 
 test("release: a terminate that fails is an error unless the sandbox has finished", async () => {
 	const { provider, fake } = setup({}, { sandboxes: [seeded(), seeded({ name: "computer-000000000002", running: false })], terminate: "fail" });
 	const failed = await provider.release(refOf(fake), "delete");
-	assert.equal(failed.error?.code, "modal");
+	assert.deepEqual([failed.error?.code, failed.error?.vendor], ["vendor", "modal"]);
 	assert.match(failed.error.message, /terminate failed/);
 	assert.deepEqual(await provider.release(refOf(fake, "computer-000000000002"), "delete"), { ok: true, value: undefined });
 });

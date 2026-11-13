@@ -1,12 +1,14 @@
 // The reconcile seam: a host settles the effects a killed process left unknown through the driver's own open of the run,
 // so the run's generation counts processes, and nothing it leaves unknown is ever dispatched.
+import { frozenEffectId, frozenEffectPath } from '../dist/recovery/frozen-snapshot.js';
+import { gatewayIntentOf } from '../dist/recovery/handoff-receipts.js';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { runWorkflow } from '@parcha/agentrun-dsl';
-import { openRecovery, withRecovery, memoryStore, recoveryBound, workspaceFiles, RecoveryError, frozenEffectId, frozenEffectPath, gatewayIntentOf } from '@parcha/agentrun-dsl/recovery';
+import { openRecovery, withRecovery, memoryStore, recoveryBound, workspaceFiles, RecoveryError } from '@parcha/agentrun-dsl/recovery';
 
 const KEY = 'run-1';
 const SHELL = { code: 0, stdout: 'rendered', stderr: '' };

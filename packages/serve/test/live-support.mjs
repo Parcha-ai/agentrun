@@ -13,7 +13,7 @@ import { STEADY_LEASE } from "./runner-support.mjs";
 /** The input a B run's loop sends (conformance-pi-adapter's piAdapterSpec) and its request id (runner/loop.ts). */
 export const INPUT = "Follow the script.";
 
-/** The door's stream as it was recorded (pi-durable-disk's watchEvents, the old per-run process's GET /events) for the
+/** The door's stream as it was recorded (the old per-run process's GET /events) for the
  *  script [read, then say "done"] with the suite's read tool: fixtures/door-one-input.json as the run went, and
  *  fixtures/door-denied-call.json with every call denied before its intent. The recordings outlive the door's code. */
 export const SCRIPT = [{ call: "read" }, { say: "done" }];

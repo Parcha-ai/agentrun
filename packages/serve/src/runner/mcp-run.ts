@@ -66,6 +66,8 @@ export interface McpForClaimOptions {
   readonly fetch?: typeof fetch;
   readonly callBounds?: { callMs?: number; connectMs?: number };
   readonly githubTimer?: GithubTimer;
+  /** Each credential value the claim opens for a per_run server, for the run's redactors (mcp-claim.ts `hold`). */
+  readonly hold?: (values: string[]) => void;
 }
 
 /** A call as the loop's gate is asked about it: the tool by its catalog name. */
@@ -121,6 +123,7 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
       ...(githubApp ? { githubApp } : {}),
       ...(options.githubMcpOrigin ? { githubMcpOrigin: options.githubMcpOrigin } : {}),
       ...(options.githubTimer ? { githubTimer: options.githubTimer } : {}),
+      ...(options.hold ? { hold: options.hold } : {}),
     });
   } catch (error) {
     held.abort();
@@ -134,6 +137,7 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
   const gateway = mcpGateway({
     pin,
     credentials: step.credentials,
+    beforeCall: step.beforeCall,
     work: options.work,
     commit: () => <T>(change: (tx: unknown) => Promise<T>) => options.harness.commit(change as never, BACKGROUND_CONTEXT) as Promise<T>,
     ...(options.fetch ? { fetch: options.fetch } : {}),

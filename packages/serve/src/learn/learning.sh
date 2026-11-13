@@ -21,8 +21,6 @@
 #   snapshot <main>      the working tree and snapshot.json written again at <main>, which must be main (else 3)
 #   read [commit]        main's (or <commit>'s) tree, its first-parent log and its blobs, for the host to build a
 #                        snapshot from; 1 when <commit> is not in the repository
-#   before-retire <main> <path>
-#                        the text <path> had just before the newest person's retire of it on <main>'s line (else 1)
 #   has <main> <path>    whether <main> holds anything at <path>, any mode, any type (0 yes, 1 no)
 # stdin, for init, commit and snapshot: header lines, a blank line, then (init and commit) a fast-import stream:
 #   ref <name>           the temporary ref the stream commits on (refs/agentrun/import-<hex>)
@@ -353,17 +351,6 @@ case $op in
     for path in "$@"; do printf '%s:%s\n' "$commit" "$path" >> "$tmp/want"; done
     g cat-file --batch < "$tmp/want" || die "cat-file failed"
     ;;
-  before-retire)
-    main=${2:-}
-    path=${3:-}
-    hex40 "$main" || die "before-retire takes a main"
-    [ -n "$path" ] || die "before-retire takes a path"
-    g log --first-parent '--format=%H%x1f%s' "$main" -- "$path" > "$tmp/walk" || die "log failed"
-    wanted="learning: retired by a person: $path"
-    commit=$(awk -F "$(printf '\037')" -v wanted="$wanted" '$2 == wanted { print $1; exit }' "$tmp/walk")
-    [ -n "$commit" ] || exit 1
-    g cat-file blob "$commit^:$path" 2> /dev/null || exit 1
-    ;;
   has)
     main=${2:-}
     path=${3:-}
@@ -372,6 +359,6 @@ case $op in
     g cat-file -e "$main:$path" 2> /dev/null || exit 1
     ;;
   *)
-    die "no op $op: init, commit, snapshot, read, show, before-retire or has"
+    die "no op $op: init, commit, snapshot, read, show or has"
     ;;
 esac

@@ -18,7 +18,7 @@ const { openSqliteStore } = await import("../dist/store/sqlite/store.js");
 const { startRunner } = await import("../dist/runner/runner.js");
 const { createDispatchLoop } = await import("../dist/runner/dispatch.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
-const { adapterRunSpecFromLaunch, PI_WIRES } = await import("../dist/runner/adapter-run-spec.js");
+const { adapterRunSpecFromLaunch, capModelOf, PI_WIRES } = await import("../dist/runner/adapter-run-spec.js");
 const { cliRunSpecFromLaunch } = await import("../dist/runner/cli-run-spec.js");
 const { providerFromRoute } = await import("../dist/runner/workflow-spec.js");
 const { routeOf } = await import("../dist/runner/model-route.js");
@@ -40,7 +40,7 @@ const ROWS = [
   { name: "whole ids, the host's gpt-6-luna", ids: undefined, model: undefined, host: "gpt-6-luna", sent: "gpt-6-luna" },
   { name: "bare ids, the host's openai/gpt-6-luna", ids: "bare", model: undefined, host: "openai/gpt-6-luna", sent: "openai/gpt-6-luna" },
   // A bare id that keeps a slash after its provider (OpenRouter's vendor/model): only the provider is cut, once.
-  { name: "bare ids, the revision's openrouter/openai/gpt-6-sol", ids: "bare", model: "openrouter/openai/gpt-6-sol", host: "team-default", sent: "openai/gpt-6-sol" },
+  { name: "bare ids, the revision's openrouter/openai/gpt-6.1-sol", ids: "bare", model: "openrouter/openai/gpt-6.1-sol", host: "team-default", sent: "openai/gpt-6.1-sol" },
   // No price set: the catalog prices it, as the provider the revision names lists it (OpenAI's entry has tiers past 272k
   // input tokens; the highest of the others has none), so a bare id priced without that provider is priced wrong.
   { name: "bare ids, the revision's openai/gpt-5.5 at the catalog's price", ids: "bare", model: "openai/gpt-5.5", host: "team-default", sent: "gpt-5.5", catalog: true },
@@ -189,4 +189,23 @@ test("a workflow's route takes the host's model of each tier, as main's workflow
     const provider = await providerFromRoute(await routeOf(undefined, env, "default", PI_WIRES));
     assert.deepEqual([main.model.modelId, provider.modelId], [row.sent, row.sent], `${row.name}: the workflow's node sends main's id`);
   }
+});
+
+test("a subagent tier's own model (model_tiers) that is not the host's model for the tier routes through the gateway, at the tier's price", async () => {
+  const env = { ...gatewayEnv("http://127.0.0.1:9", ROWS[0]), AGENT_MODEL_STRONG: "team-strong", AGENT_MODEL_STRONG_PRICE: "3,4" };
+  const route = await routeOf("openai/gpt-6-luna", env, "strong", PI_WIRES);
+  assert.equal(route.model, "openai/gpt-6-luna", "the tier's own model, never the host's team-strong");
+  assert.deepEqual([route.cost?.input, route.cost?.output], [3, 4], `the strong tier's price: ${JSON.stringify(route.cost)}`);
+  const host = await routeOf(undefined, env, "strong", PI_WIRES);
+  assert.equal(host.model, "team-strong", "a tier with no model of its own is the host's");
+});
+
+test("a tier's model the gateway has no price for routes unpriced, and the cap reads its price as unknown, never $0", async () => {
+  const env = { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9/v1", AGENT_MODEL_API_KEY: fake("gateway"), AGENT_MODEL: "team-default", AGENT_MODEL_STRONG: "team-strong" };
+  const route = await routeOf("acme/mystery-1", env, "strong", PI_WIRES);
+  assert.equal(route.model, "acme/mystery-1");
+  assert.equal(route.unpriced, true, "no price set and none in the catalog");
+  assert.equal(capModelOf(route).price, null, "the cap never takes the placeholder zeros as a price");
+  const priced = await routeOf("acme/mystery-1", { ...env, AGENT_MODEL_STRONG_PRICE: "3,4" }, "strong", PI_WIRES);
+  assert.ok(!priced.unpriced && capModelOf(priced).price?.output === 4, "the tier's price, once set, is the cap's");
 });

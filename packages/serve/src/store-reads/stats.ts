@@ -3,7 +3,7 @@
 // row) and its revision's harness. Nothing under a run's journal is read: the figures are the row's, so a run's cost and
 // tokens are what its end carried back, never recomputed here. Every number but archivedAgents and archivedRuns leaves
 // out what is archived; a run's archive is its own or its agent's.
-import type { RunRow, Store } from "../store/store.js";
+import type { Store } from "../store/store.js";
 import { runReadState, type RunReadState } from "./runs.js";
 
 /** The run states the stats count by, as the old store named them. */
@@ -42,8 +42,11 @@ export async function stats(store: Store): Promise<StoreStats> {
   const shown = new Map<string, { counts: RunCounts; costUsd: number; known: number }>();
   const hidden = new Map<string, number>();
   const running: string[] = [];
+  // Each revision's kind, read once: an agentic run a person stopped reads running (runReadState).
+  const kinds = new Map<string, "agentic" | "workflow">();
   for (const run of runs) {
-    const state = runReadState(run);
+    if (!kinds.has(run.revisionId)) kinds.set(run.revisionId, (await store.agents.revision(run.revisionId))?.kind === "workflow" ? "workflow" : "agentic");
+    const state = runReadState(run, kinds.get(run.revisionId)!);
     const runArchived = run.archivedAt !== null;
     if (state === "running" && !runArchived && !archivedAgent.has(run.agentId)) running.push(run.id);
     if (runArchived) {

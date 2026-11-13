@@ -109,9 +109,19 @@ export interface RevisionRow {
   readonly externalVersion: string | null;
 }
 
-/** How an ended run (state 'ended') ended apart from being done: 'escalated' (it finished its work and waits for a person,
- *  which the v2 status reads as completed with a review) or 'completed'. A failed or stopped run says so in its state. */
-export type RunOutcome = "completed" | "escalated";
+/** How a run ended, beside its state. An ended run (state 'ended'): 'escalated' (it finished its work and waits for a
+ *  person, which the v2 status reads as completed with a review) or 'completed'. A stopped run (state 'stopped'): 'stopped'
+ *  when a person stopped it (its turn ended, never the run: an agentic run reads input_required and idle, as main's
+ *  statusOf reads a stopped run, and a person's message reopens it), 'cancelled' when it was cancelled (over for good). A
+ *  failed run says so in its state. */
+export type RunOutcome = "completed" | "escalated" | "stopped" | "cancelled";
+
+/** Whether `run`, of a revision of `kind`, was stopped by a person and waits for them (state 'stopped', outcome 'stopped',
+ *  an agentic run started here): its turn is over, the run is not. A workflow's stop, a cancel and an imported run's stop
+ *  are over for good. */
+export function stoppedByPerson(run: Pick<RunRow, "state" | "outcome" | "importedFrom">, kind: string): boolean {
+  return run.state === "stopped" && run.outcome === "stopped" && kind === "agentic" && run.importedFrom === null;
+}
 
 /** The harness an imported run came from. */
 export type ImportSource = "claude-code" | "codex" | "pi";
@@ -146,7 +156,7 @@ export interface RunRow {
   readonly costUsd: number | null;
   readonly metrics: unknown;
   readonly summary: string | null;
-  /** An ended run's outcome (RunOutcome), null for a plain completion or a run not ended this way. */
+  /** How the run ended beside its state (RunOutcome), null for a plain completion, a failure, or a run not ended. */
   readonly outcome: RunOutcome | null;
   /** When the run itself was archived (its agent's archive is read apart); null when it is not. */
   readonly archivedAt: number | null;
@@ -165,7 +175,7 @@ export interface RunPatch {
   readonly costUsd?: number | null;
   readonly metrics?: unknown;
   readonly summary?: string | null;
-  /** An ended run's outcome, set in its end commit; null clears it. */
+  /** How the run ended (RunOutcome), set in its end commit; null clears it. */
   readonly outcome?: RunOutcome | null;
   /** The SHA-256 hashes of the sign-in pointers handed to the run, which the runner writes at its claim (under the epoch
    *  fence); null clears them. While the run runs, a sign-in hashing to one of these cannot be forgotten (sign-ins-store.ts). */
@@ -181,7 +191,9 @@ export type UpdatedRun = RunRow & { readonly save?: boolean };
 
 /** A run's launch, as the server writes it at start: its JSON `body` (run-launch.ts: the first input, title, place, effort,
  *  cap, trigger and origin), and `sealed` ciphertext for any secret it carries (sealed with the server's key outside the
- *  store, AAD `run_launch|<run_id>|sealed`), or none. Written once, in the same transaction as the queued run. */
+ *  store, AAD `run_launch|<run_id>|sealed`: the MCP credentials its caller handed it, store/seal.ts sealRunMcpAuth), or
+ *  none. The body is written once, in the same transaction as the queued run. `sealed` is the run's for its life only: a
+ *  message may replace it (runs.command and runs.reopen, `launchSealed`), and the write that ends the run erases it. */
 export interface RunLaunchInput {
   readonly body: unknown;
   readonly sealed?: Uint8Array | null;
@@ -194,6 +206,12 @@ export interface RunLaunchRow {
   readonly body: unknown;
   readonly sealed: Uint8Array | null;
   readonly createdAt: number;
+}
+
+/** A message's new launch secrets (runs.command, runs.reopen): `launchSealed` replaces the run's launch `sealed` in the
+ *  command's own transaction, so the runner that takes the command reads them, and a run already final takes neither. */
+export interface LaunchSealedWrite {
+  readonly launchSealed?: Uint8Array;
 }
 
 /** A run imported from another harness's session: an ended run with where it came from, its launch (built from the
@@ -461,6 +479,8 @@ export interface Agents {
   /** The agent an external reference ("<source>:<kind>:<id>") maps to (Runs.createInline), or undefined before its first
    *  run. */
   byExternal(ref: string): Promise<AgentRow | undefined>;
+  /** Whether the agent already has the revision that maps `version` of its owning system (one row looked up, no bodies read). */
+  hasExternalVersion(agentId: string, version: string): Promise<boolean>;
   list(options?: { archived?: boolean }): Promise<AgentRow[]>;
   /** Archives the agent, or unarchives it. Archived, every trigger of it that is on is turned off in the same transaction
    *  (`disabled` set to `why`, JSON; its scope rows dropped), and those are the answer: from its commit no firing starts a
@@ -574,13 +594,14 @@ export interface Runs {
   list(filter: { agentId?: string; revisionId?: string; state?: RunState; archived?: boolean; limit?: number }): Promise<RunRow[]>;
   /** Archives the run (its own archive time), or unarchives it: idempotent. */
   archive(runId: string, archived: boolean): Promise<void>;
-  /** A person's follow-up to a run that ended completed: in one transaction, the run goes back to running with no runner
+  /** A person's follow-up to a run that ended completed, or that a person stopped: in one transaction, the run goes back to running with no runner
    *  (released, so a runner claims it at once by the claimable rule's released branch), its end's own fields cleared
    *  (ended_at, summary, outcome, its waits) and everything it did kept (its epoch, its journal, its cost and metrics,
    *  so its next turn is booked on top of what it spent), and `command` (the follow-up's steer) is written untaken for it.
-   *  Only an agentic run that ended completed (state 'ended'), not imported and not a learning run, reopens: a workflow,
-   *  a failed, stopped or cancelled run, any other, or none is RunFinal, and nothing is written. */
-  reopen(runId: string, command: { kind: string; body?: unknown }): Promise<Command>;
+   *  Only an agentic run that ended completed (state 'ended') or that a person stopped (state 'stopped', outcome
+   *  'stopped'), not imported and not a learning run, reopens: a workflow, a failed or cancelled run, any other, or none
+   *  is RunFinal, and nothing is written. */
+  reopen(runId: string, command: { kind: string; body?: unknown }, options?: LaunchSealedWrite): Promise<Command>;
   /** The runs a runner may claim, oldest first: queued; parked with an untaken command or its wake_at passed; running with
    *  no runner (released at a runner's shutdown: it stays running, a run that started keeps that fact) or its claim run
    *  out. */
@@ -727,6 +748,12 @@ export interface Settings {
   /** Saves `value` under `key` only when the key has no row yet, in one statement, so of two processes that race the first
    *  wins; the value saved under it after (this one, or the one there before). */
   putIfAbsent(key: string, value: unknown): Promise<unknown>;
+  /** Saves `value` under `key` only while its row still holds `was` (as get read it), in one statement: a compare-and-set,
+   *  so of two writers that read one row only one replaces it. True when it was replaced; false, with nothing written,
+   *  when the row changed since or is gone. */
+  replaceIf(key: string, was: unknown, value: unknown): Promise<boolean>;
+  /** The key's row goes only while it still holds `was`, in one statement: true when it went. */
+  removeIf(key: string, was: unknown): Promise<boolean>;
   /** The key's row goes; a key with no row is left as it is. */
   remove(key: string): Promise<void>;
   /** Every setting, by key. */
@@ -793,6 +820,10 @@ export interface ComputerLedger {
   list(provider: string): Promise<ComputerLedgerRow[]>;
   /** The session's row goes. */
   remove(provider: string, sessionId: string): Promise<void>;
+  /** Replaces the session's `labels` and `detail` only while its row still holds `was`'s, in one statement (a
+   *  compare-and-set, so two writers that read one row never both write it): true when it was replaced; false, with
+   *  nothing written, when the row changed since or is gone. */
+  swap(provider: string, sessionId: string, was: { readonly labels: Readonly<Record<string, string>>; readonly detail: Readonly<Record<string, unknown>> }, labels: Readonly<Record<string, string>>, detail: Readonly<Record<string, unknown>>): Promise<boolean>;
 }
 
 /** A trigger source's sealed setting as a row (store schema `trigger_settings`): its adapter, scope ("server" for the one
@@ -995,6 +1026,15 @@ export interface Store {
   /** The run's journal: pi-durable's Storage for this one run, every commit fenced by the claim (store/journal). Its commit
    *  holds the store's one connection while it runs, so it awaits nothing but its own statements, under a deadline. */
   journal(claim: Claim): Journal;
+  /** The store this one reads from: itself, but for the store a snapshot hands its callback, which is a new object at each
+   *  snapshot and gives the store it was taken of. What a reader keeps per store (a served answer's cache) is kept by this. */
+  readonly origin: Store;
+  /** `read` against this store as it stood at one moment: every read it makes sees one snapshot (one read-only transaction),
+   *  so a write that lands meanwhile, a runner's commit among them, is in all of its reads or in none. The store it is given
+   *  only reads. On SQLite the transaction holds this process's one connection until `read` settles, so `read` awaits the
+   *  store it is given and nothing else: never this store (that waits for the snapshot, which waits for it), and no
+   *  network or disk. Its deadline is the transaction's (StoreDeadline). */
+  snapshot<T>(read: (store: Store) => Promise<T>): Promise<T>;
   /** A run's journal opened for reading only (JournalReads): the server's reads of a run, which hold no claim. Its reads
    *  alone, never a commit; a read never fences, so it needs no claim. A run with no journal yet reads as empty. */
   readJournal(runId: string): JournalReads;
@@ -1010,7 +1050,7 @@ export interface Store {
    *  not run twice, at a run's end and when a claim is released. */
   flush(): Promise<void>;
   /** Writes a command for the run. RunFinal when the run is final; unknown runs are refused the same way. */
-  command(runId: string, command: { kind: string; body?: unknown }): Promise<Command>;
+  command(runId: string, command: { kind: string; body?: unknown }, options?: LaunchSealedWrite): Promise<Command>;
   /** The run's commands with an id above `after`, in id order. */
   commands(runId: string, after: number): Promise<Command[]>;
   /** Every run's commands with an id above its own cursor, in id order, in one read: a runner's poll of all it holds. A run
@@ -1153,15 +1193,30 @@ export type ConstraintRule = "check" | "unique" | "foreign_key" | "not_null";
 
 /** A row the store's constraints refuse (a duplicate id or name, a revision of an unknown agent, a bad kind). When the
  *  database said which rule refused it, `rule`; for a duplicate, `unique`: the table and the columns whose values were
- *  taken already (a primary key's or a UNIQUE's), so a caller tells "the name is taken" from any other refusal. */
+ *  taken already (a primary key's or a UNIQUE's), so a caller tells "the name is taken" from any other refusal. `index`:
+ *  the unique index (or constraint) the database named, when it named one: an index on an expression (one answer per
+ *  approval, schema.ts ONE_ANSWER_INDEX) has no plain columns to name, only its name. */
 export class StoreConstraint extends Error {
   readonly rule?: ConstraintRule;
   readonly unique?: { readonly table: string; readonly columns: readonly string[] };
-  constructor(message: string, details: { rule?: ConstraintRule; unique?: { table: string; columns: readonly string[] } } = {}) {
+  readonly index?: string;
+  constructor(message: string, details: { rule?: ConstraintRule; unique?: { table: string; columns: readonly string[] }; index?: string } = {}) {
     super(message);
     this.name = "StoreConstraint";
     if (details.rule) this.rule = details.rule;
     if (details.unique) this.unique = details.unique;
+    if (details.index) this.index = details.index;
+  }
+}
+
+/** An approve or deny command refused because its approval is answered already: an unrefused answer naming it was
+ *  written first (the one-answer index, schema.ts ONE_ANSWER_INDEX), so this one lost. Both stores raise it from that
+ *  index's unique violation alone, at the command's insert; any other refusal stays a plain StoreConstraint. Its caller
+ *  reads the answer that won: approve's 409 already_answered, or nothing to do. */
+export class AnswerTaken extends StoreConstraint {
+  constructor(message: string, index: string) {
+    super(message, { rule: "unique", index });
+    this.name = "AnswerTaken";
   }
 }
 

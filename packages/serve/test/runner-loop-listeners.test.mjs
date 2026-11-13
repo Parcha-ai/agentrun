@@ -1,5 +1,4 @@
-// A loop leaves nothing on its claim's signal once it ends (from #1933's Greptile thread on pi-durable-disk's live
-// events, declined there because the cutover deletes that path): every abort listener pi's loop (the adapter loop and the pi
+// A loop leaves nothing on its claim's signal once it ends (from #1933's Greptile thread): every abort listener pi's loop (the adapter loop and the pi
 // adapter) adds on deps.signal is
 // removed when start() settles, ended or parked alike, so a runner that holds many loops over its life gains none.
 import assert from "node:assert/strict";

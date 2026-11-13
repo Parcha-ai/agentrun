@@ -83,6 +83,9 @@ export type CheckInput = {
   readonly ask?: DraftAsk;
   /** Where each of `gated`'s denies was set (this agent's settings or this server's), for the refusal's words. */
   readonly deniedBy?: Readonly<Record<string, "agent" | "server" | "default">>;
+  /** False for a run of a revision that says `learning: "notes"`: a workflow draft it gives is left out (rule `workflow`,
+   *  NOTES_ONLY), and its notes and skill go on. */
+  readonly workflows?: false;
   /** The workflow DSL a draft is read with; a proposal that holds a draft is checked with it, never without. */
   readonly dsl?: DraftReader;
   /** Each draft's dry run (skills.ts draftDryRun), by its workflow.json's path: one that failed is refused, rule
@@ -96,6 +99,9 @@ export type CheckInput = {
 export type ProposalCheck = { readonly ok: boolean; readonly problems: Problem[]; readonly notes: ProposedNote[] };
 
 const MODES: Record<string, string> = { "120000": "a link: never followed", "040000": "a folder: nothing in it was read" };
+/** Why a draft from a run of a revision that learns notes alone (`learning: "notes"`) is left out. */
+const NOTES_ONLY = "this agent learns notes and skills alone (learning: \"notes\"): it keeps no workflow draft";
+
 /** Why a run's path is none of what it may propose. */
 const OUTSIDE = "a run proposes notes at the folder's top, skills/<name>/SKILL.md, and workflows/<name>/ with its workflow.json and README.md";
 
@@ -189,6 +195,7 @@ function learnedChecked(change: Change, place: LearnedPlace, refused: (text: str
   nameScanned(path, refused, add);
   if (!learnedName(place.kind, place.name)) return add("file_name", place.kind === "skill" ? "a skill's name is lowercase letters, digits and single dashes, at most 64" : "a workflow's name is lowercase letters, digits, dashes and underscores, at most 64, starting with a letter or digit", path);
   if (change.status === "deleted") return add("deleted", "a run never deletes a skill or a workflow", path);
+  if (place.kind === "workflow" && input.workflows === false) return add("workflow", NOTES_ONLY, path);
   if (change.mode !== undefined && change.mode !== "100644") return add("file_mode", MODES[change.mode] ?? "not a regular file: never read", path);
   const size = change.size ?? change.bytes?.length ?? 0;
   const cap = place.kind === "readme" ? CAPS.readme : CAPS.file;
@@ -290,7 +297,7 @@ export function checkProposal(input: CheckInput): ProposalCheck {
     if (base.has(path)) return add("exists", "the folder has a note by this name", path);
     const note = textChecked(path, change.size ?? change.bytes?.length ?? 0, change.bytes, refused, add, true);
     if (!note) return;
-    if (note.keys.includes("status") || note.keys.includes("superseded_by") || note.keys.includes("origin")) return add("status", "a run never sets status, superseded_by or origin: the host does, when it merges the note or a later one supersedes it", path);
+    if (["status", "superseded_by", "retired_from", "origin"].some((key) => note.keys.includes(key))) return add("status", "a run never sets status, superseded_by, retired_from or origin: the host does, when it merges the note, a later one supersedes it or a person retires it", path);
     candidates.push(note);
   };
   for (const change of changes) one(change);
@@ -343,15 +350,30 @@ export function checkProposal(input: CheckInput): ProposalCheck {
   }
 
   /** `notes` by rule, in order: the first of a rule holds it, the rest are its alternates (each with its holder). A
-   *  rule the seed's active notes hold is held by that note, unless the new note supersedes it (an update). */
+   *  rule the seed's active notes hold is held by that note, unless the new note supersedes it (an update), or any of
+   *  `notes` does: a note this proposal supersedes keeps no rule after it, so a copy of its rule under another name is
+   *  no duplicate, and the rule is never left with no active note. */
   function byRule(notes: readonly ProposedNote[]): { holders: ProposedNote[]; alternates: [ProposedNote, string][] } {
-    const rules = new Map(input.base.rules ?? []);
+    const going = new Set(notes.flatMap((note) => note.supersedes));
+    const rules = new Map([...(input.base.rules ?? [])].filter(([, holder]) => !going.has(holder)));
     const holders: ProposedNote[] = [];
     const alternates: [ProposedNote, string][] = [];
     for (const note of notes) {
       const rule = ruleOf(note.body);
       const holder = rules.get(rule);
       if (holder !== undefined && !note.supersedes.includes(holder)) {
+        // An update of the holder the seed has, after a copy of its rule: the update holds the rule, the copy is its
+        // alternate (else the update is dropped as the copy's duplicate, and the copy as the seed's, on the next pass).
+        const original = input.base.rules?.get(rule);
+        const at = holders.findIndex((one) => one.file === holder);
+        if (original !== undefined && holder !== original && at >= 0 && note.supersedes.includes(original)) {
+          // At its own place in the answer (the end of the holders so far), not the copy's: the shared checks name notes
+          // in answer order, so an update must not jump ahead of a note between the two.
+          alternates.push([holders.splice(at, 1)[0]!, note.file]);
+          holders.push(note);
+          rules.set(rule, note.file);
+          continue;
+        }
         alternates.push([note, holder]);
         continue;
       }

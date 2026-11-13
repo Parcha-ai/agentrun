@@ -5,14 +5,41 @@ import type { Result } from "./result.js";
 import type { ScreenWatch, ScreenWatchHandlers, WatchOptions } from "./screen-watch.js";
 
 export type NetworkSpec = "none" | "open" | { allow: string[] };
-/** A network's form, as a provider declares the ones it makes (capabilities().network, its module's NETWORK): "allow" is
- *  NetworkSpec's allowlist. */
+/** A network's form, as a provider declares the ones it makes (capabilities().network, its descriptor's network): "allow"
+ *  is NetworkSpec's allowlist. */
 export type NetworkForm = "none" | "open" | "allow";
+
+/** The agent a persistent computer belongs to (spec.owner): it outlives the agent's runs, which take it one at a time. */
+export interface ComputerOwner {
+	/** The agent's id: a non-empty string with no NUL byte (ownerProblem). */
+	agent: string;
+	/**
+	 * The server the agent is on, where more than one server shares a vendor account: two servers may each have an agent
+	 * of one id, and each owns its own computer. A non-empty string with no NUL byte. Absent: the agent's id alone.
+	 */
+	server?: string;
+	/** How long the computer may stay detached before the janitor deletes it. Absent: it stays until it is deleted. */
+	idleTtlMs?: number;
+}
+
+/** The claim a run holds a computer under: the run, and the claim's epoch (labels.ts). */
+export interface ComputerClaim {
+	run: string;
+	epoch: number;
+}
 
 export interface ComputerSpec {
 	image: string;
-	/** Required: a computer with no deadline is refused. */
-	lifetimeMs: number;
+	/**
+	 * Required for a run's computer: one with no deadline is refused. An agent's computer (owner) has no run deadline and
+	 * leaves it out (checkTenure).
+	 */
+	lifetimeMs?: number;
+	/**
+	 * Makes the computer the agent's, persistent across its runs, on a provider that declares persistence; refused in
+	 * words by any other. It carries the owner's labels (ownerLabels).
+	 */
+	owner?: ComputerOwner;
 	network: NetworkSpec;
 	cpus?: number;
 	memoryMb?: number;
@@ -26,6 +53,11 @@ export interface ComputerSpec {
 	 * refuses any other kind before a vendor call. An Archil token is never in a label, a read-back or an error.
 	 */
 	mount?: MountSpec;
+	/**
+	 * A browser's own options, for a provider whose capabilities().browser declares what they ask; check() refuses, in
+	 * words and before any vendor call, one it does not declare.
+	 */
+	browser?: BrowserSpec;
 	/**
 	 * GPUs for the computer: a type the provider declares (capabilities().gpu.types, the vendor's own name, such as Modal's
 	 * "A100-80GB" or Daytona's "H100") and how many, 1 up to capabilities().gpu.max. check() refuses one the provider does
@@ -60,11 +92,40 @@ export interface GpuCapability {
 	/** The mount kinds a GPU computer takes, where fewer than capabilities().mount: none yet proven on its GPU computers. */
 	mounts?: MountKind[];
 	/**
+	 * Why a GPU computer takes none of the other mounts, in words naming no field: a fact of the vendor's runtime, or
+	 * (yet) one not proven there. checkGpu's refusal of a mount gives it, and serve's refusal of the run's folder.
+	 */
+	unmounted?: { why: string; yet: boolean };
+	/**
 	 * How init holds a GPU computer's programs off its network, where it is not the plain network namespace: on Modal's
 	 * gVisor, "userns-netns", one made inside a user namespace, as root there may not make one (measured). The fence holds
 	 * either way; each computer's hello reads back the one it got.
 	 */
 	fence?: NetworkFence;
+}
+
+/** A browser session's options beside the protocol's. A flag set false asks for nothing, so it is never refused. */
+export interface BrowserSpec {
+	viewport?: { width: number; height: number };
+	/** A saved profile the session opens: the pointer profiles.create gave, and whether the session saves back to it. */
+	profile?: { pointer: string; save: boolean };
+	/** The vendor's anti-bot mode (Browserbase's Verified browser and its CAPTCHA solver). */
+	stealth?: boolean;
+	headless?: boolean;
+}
+
+/** What a browser provider's sessions offer beyond the protocol: each optional feature is there only when declared. */
+export interface BrowserFeatures {
+	/** "wall-clock": the vendor ends a session lifetimeMs after create; "inactivity": that long after its last connection closes. */
+	timeout: "wall-clock" | "inactivity";
+	/** The shortest lifetimeMs a session takes (Kernel's shortest idle timeout); absent, any above 0. */
+	minLifetimeMs?: number;
+	/** settleMs: how long after a saving session ends the vendor may still be writing the profile back. */
+	profiles?: { settleMs: number };
+	stealth?: true;
+	headless?: true;
+	/** path: the directory a driver points Browser.setDownloadBehavior at, so the vendor keeps what is saved there. */
+	downloads?: { path: string };
 }
 
 /** One kind of allowlist entry a provider takes: how many a list may hold, and the ports an entry opens. */
@@ -94,7 +155,7 @@ export interface ComputerCapabilities {
 	kind: ComputerKind;
 	/** Who ends a computer at its deadline: the vendor, or our janitor by label. */
 	lifetime: "vendor" | "janitor";
-	/** The network forms it makes: its module's NETWORK, which the kind registry's entry holds too. */
+	/** The network forms it makes: of its descriptor's network (the forms all its configurations make), its own. */
 	network: NetworkForm[];
 	/** With network "allow": what an allowlist may hold and which ports it opens. */
 	allow?: AllowCapability;
@@ -130,6 +191,13 @@ export interface ComputerCapabilities {
 	/** The kinds of spec.mount this provider takes: bind (a host folder), archil (a folder of an Archil disk). Absent: none. */
 	mount?: MountKind[];
 	/**
+	 * Present when the provider keeps computers for agents (spec.owner): release(ref, "detach") stops one with its state
+	 * kept, and attach with a claim brings it back. keepsState: its files survive a detach. resume: true when it comes
+	 * back as it was, its processes running; false when it boots again from its kept disk. Absent: spec.owner and detach
+	 * are refused in words.
+	 */
+	persistence?: { keepsState: true; resume: boolean };
+	/**
 	 * The TCP ports the vendor's own agent listens on inside the computer (Daytona's toolbox 2280, E2B's envd 49983), each
 	 * the provider's own fact: an agent that runs commands as root or with sudo for whoever reaches it. The computer's
 	 * programs must reach none of them on any address (computerd init --own-network), which isolation.vendor-agent checks
@@ -139,6 +207,8 @@ export interface ComputerCapabilities {
 	vendorAgentPorts?: number[];
 	/** The GPUs spec.gpu may ask for. Absent: none, and check() refuses any spec.gpu. */
 	gpu?: GpuCapability;
+	/** With kind browser: what its sessions offer beyond the protocol, which spec.browser asks for. */
+	browser?: BrowserFeatures;
 }
 
 /** The os and daemon modes each kind may have; no other pair is valid. */
@@ -181,6 +251,50 @@ export function checkLifetime(lifetimeMs: unknown, { lifetime, maxLifetimeMs }: 
 }
 
 /**
+ * A run's computer's lifetime, in a provider's create once check() passed the spec: its lifetimeMs, which
+ * checkLifetime requires of every spec with no owner. A spec without one is a caller's mistake past check(): a throw.
+ */
+export function runLifetimeMs(spec: Pick<ComputerSpec, "lifetimeMs">): number {
+	if (spec.lifetimeMs === undefined) throw new TypeError("a run's computer needs lifetimeMs: check() refuses a spec with neither lifetimeMs nor owner");
+	return spec.lifetimeMs;
+}
+
+/** Why owner is not an agent's ownership, in words, or undefined when it is one. */
+export function ownerProblem(owner: unknown): string | undefined {
+	if (typeof owner !== "object" || owner === null || Array.isArray(owner)) return "owner is { agent, server?, idleTtlMs? }";
+	const { agent, server, idleTtlMs } = owner as Partial<ComputerOwner>;
+	if (typeof agent !== "string" || agent === "") return "owner.agent must be the agent's id, a non-empty string";
+	if (agent.includes("\0")) return "owner.agent cannot hold a NUL byte: no provider takes one in a label";
+	if (server !== undefined && (typeof server !== "string" || server === "")) return "owner.server, when given, is the server's id, a non-empty string";
+	if (typeof server === "string" && server.includes("\0")) return "owner.server cannot hold a NUL byte: no provider takes one in a label";
+	if (idleTtlMs !== undefined && !(Number.isSafeInteger(idleTtlMs) && idleTtlMs > 0)) return `owner.idleTtlMs is a whole number of milliseconds above 0, not ${JSON.stringify(idleTtlMs)}`;
+	return undefined;
+}
+
+/**
+ * The lifetime rule every provider's check() shares, with no vendor call. A run's computer (no owner) takes
+ * checkLifetime. An agent's computer (owner) needs a provider that declares persistence, an owner that is one
+ * (ownerProblem), and no lifetimeMs: it has no run deadline.
+ */
+export function checkTenure(
+	{ lifetimeMs, owner }: { lifetimeMs?: unknown; owner?: unknown },
+	capabilities: Pick<ComputerCapabilities, "lifetime" | "maxLifetimeMs" | "persistence">,
+	provider = "this",
+): Refusal[] {
+	if (owner === undefined) return checkLifetime(lifetimeMs, capabilities);
+	if (capabilities.persistence === undefined) {
+		return [{ field: "owner", message: `the ${provider} provider keeps no computer for an agent (it declares no persistence), so spec.owner is refused: leave it out for a run's computer` }];
+	}
+	const refusals: Refusal[] = [];
+	const problem = ownerProblem(owner);
+	if (problem !== undefined) refusals.push({ field: "owner", message: problem });
+	if (lifetimeMs !== undefined) {
+		refusals.push({ field: "lifetimeMs", message: "an agent's computer has no run deadline: leave lifetimeMs out (owner.idleTtlMs bounds how long it stays detached)" });
+	}
+	return refusals;
+}
+
+/**
  * The one GPU rule every provider's check() shares, with no vendor call: no spec.gpu is no refusal; one given is an
  * object of a declared type (capabilities().gpu.types) and a whole count from 1 to capabilities().gpu.max; a provider
  * that declares no gpu refuses any. With `mount`, the spec's as given, a GPU computer takes only the kinds gpu.mounts
@@ -200,7 +314,8 @@ export function checkGpu(gpu: unknown, { gpu: offered }: Pick<ComputerCapabiliti
 	// A mount that is not an object with a kind (null among them) is checkMount's refusal; nothing is read from it here.
 	const kind = typeof mount === "object" && mount !== null ? (mount as { kind?: unknown }).kind : undefined;
 	if (kind !== undefined && offered.mounts !== undefined && !offered.mounts.includes(kind as MountKind)) {
-		return refuse(`a GPU computer here takes no ${String(kind)} mount: it is not proven on this provider's GPU computers yet; ask for a GPU computer without a mount, or a mount without a GPU`);
+		const why = offered.unmounted?.why ?? "it is not proven on this provider's GPU computers yet";
+		return refuse(`a GPU computer here takes no ${String(kind)} mount: ${why}; ask for a GPU computer without a mount, or a mount without a GPU`);
 	}
 	return [];
 }
@@ -238,6 +353,8 @@ export interface ReadBackSpec {
 	kind?: ComputerKind;
 	/** What is mounted at /workspace, never a token; absent when nothing is. */
 	mount?: MountReadBack;
+	/** An agent's computer: its owner, read back; absent for a run's computer. */
+	owner?: ComputerOwner;
 	/** The GPUs the computer was given, as the vendor reports them (Daytona) or as create recorded them (Modal); absent: none. */
 	gpu?: GpuSpec;
 }
@@ -265,16 +382,46 @@ export interface AttachedComputer extends ComputerRef {
 export interface ComputerInfo {
 	ref: ComputerRef;
 	labels: Record<string, string>;
-	/** undefined when the deadline label is missing or unreadable: the janitor deletes such a computer. */
+	/** undefined when the deadline label is missing or unreadable: the janitor deletes such a run's computer. An agent's has none. */
 	deadline: Date | undefined;
 	state: "running" | "stopped";
 	network: NetworkPolicy;
 	/** What is mounted at /workspace, read back, never a token; absent when nothing is. */
 	mount?: MountReadBack;
+	/**
+	 * An agent's computer (spec.owner), as the provider knows it, owner label or not: true. The janitor never deletes one
+	 * by a deadline. A provider whose listing carries the owner label need not set it.
+	 */
+	owned?: boolean;
+	/** An owned computer's owner, when the listing knows it (its labels, or the provider's own record). */
+	owner?: ComputerOwner;
+	/** An agent's computer that is detached now: when it was detached, the janitor's idle clock. Absent otherwise. */
+	detachedAt?: Date;
 }
 
 export interface CallContext {
 	signal?: AbortSignal;
+}
+
+/** attach's context: with a claim, an agent's computer is brought back and taken by that run, under that epoch. */
+export interface AttachContext extends CallContext {
+	claim?: ComputerClaim;
+}
+
+/**
+ * How release ends or lets go of a computer. stop: stopped and kept, until deleted. delete: gone. detach: an agent's
+ * computer stops with its state kept, still the agent's (a provider that declares persistence; refused otherwise).
+ */
+export type ReleaseHow = "stop" | "delete" | "detach";
+
+/**
+ * release's context: with a claim (a provider that declares persistence), a delete of an agent's computer is that claim's
+ * alone: done only while the computer still carries exactly the claim's run and epoch and no attach or detach holds it,
+ * else refused in words (fenced, or busy) with the computer as it was. So a claim that made the computer and lost it
+ * deletes it only where no later claim has taken it. A provider with no persistence has no agent's computer to fence.
+ */
+export interface ReleaseContext extends CallContext {
+	claim?: ComputerClaim;
 }
 
 /** A live connection to a computer's daemon. */
@@ -297,17 +444,24 @@ export interface ComputerProvider {
 	create(spec: ComputerSpec, context?: { signal?: AbortSignal }): Promise<Result<CreatedComputer>>;
 	/**
 	 * Finds one computer this provider made, by its id or by labels, with the spec read back from it; none or several is
-	 * an error in words.
+	 * an error in words. With context.claim (a provider that declares persistence): the agent's computer is brought back
+	 * (started, when detached) and taken under the claim, so it carries the claim's run and epoch labels. A claim of the
+	 * same run below the epoch the computer carries is refused as fenced, and a claim on a run's computer (no owner) is
+	 * refused; neither changes anything.
 	 */
-	attach(ref: { id: string } | { labels: Record<string, string> }, context?: CallContext): Promise<Result<AttachedComputer>>;
+	attach(ref: { id: string } | { labels: Record<string, string> }, context?: AttachContext): Promise<Result<AttachedComputer>>;
 	/** Every computer this provider made that carries all of these labels: the janitor's view. */
 	list(labels: Record<string, string>, context?: CallContext): Promise<Result<ComputerInfo[]>>;
 	/** Reads the network back; with a policy, sets it, or refuses in words when it cannot. Never wider than asked. */
 	network(ref: ComputerRef, policy?: NetworkSpec, context?: CallContext): Promise<Result<NetworkPolicy>>;
 	/** Checks hello against this provider's version, kind and groups, and refuses on a mismatch. */
 	connect(ref: ComputerRef): Promise<Result<ComputerConnection>>;
-	/** Idempotent: a computer already gone is ok. A "stop" capabilities().release does not declare is refused in words. */
-	release(ref: ComputerRef, how: "stop" | "delete"): Promise<Result<void>>;
+	/**
+	 * Idempotent: a computer already gone is ok. A "stop" capabilities().release does not declare is refused in words. A
+	 * "detach" is refused in words, the computer as it was, on a provider with no persistence and on a run's computer.
+	 * context.claim: a delete under that claim alone (ReleaseContext).
+	 */
+	release(ref: ComputerRef, how: ReleaseHow, context?: ReleaseContext): Promise<Result<void>>;
 	/**
 	 * Sets the deadline to now + ttlMs: never earlier than the current deadline, never past created + maxLifetimeMs. A
 	 * ttlMs that would move it earlier, or past that cap, is refused in words with the deadline unchanged: an extend
@@ -338,4 +492,11 @@ export interface ComputerProvider {
 	 * key. Optional.
 	 */
 	testConnection?(context?: CallContext): Promise<Result<{ detail: string }>>;
+	/**
+	 * The image its computers start from, made ready on its engine before the first create: built from its recipe, or
+	 * pulled by name, when the engine lacks it; ok with the tag to put in spec.image. `onWait` is told once, before a build
+	 * or a pull it waits on, never when the image is there. A provider whose descriptor declares prepareImage has it;
+	 * optional for every other.
+	 */
+	prepareImage?(context?: CallContext & { onWait?: (making: "build" | "pull", tag: string) => void }): Promise<Result<string>>;
 }

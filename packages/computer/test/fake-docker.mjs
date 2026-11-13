@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { after } from "node:test";
 import { fileURLToPath } from "node:url";
 import { checkAddress } from "../dist/docker/egress-table.js";
-import { DockerProvider } from "../dist/index.js";
+import { DockerProvider } from "../dist/docker.js";
 import { PROTOCOL_VERSION } from "../dist/protocol.js";
 
 export const VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
@@ -269,9 +269,27 @@ const held = (step, then) => {
 		then();
 	}, 20);
 };
-const pick = (value, path) => path.split(".").filter(Boolean).reduce((at, key) => (at == null ? undefined : at[key]), value);
+// As Docker runs a --format template on the JSON as a map: a key the map lacks fails the whole call (missingkey=error),
+// in Docker's words, where (index .Path "Key") reads it as null.
+const pick = (value, path) => path.split(".").filter(Boolean).reduce((at, key) => {
+	if (at == null) return undefined;
+	if (typeof at === "object" && !Array.isArray(at) && !Object.hasOwn(at, key)) throw new Error('template parsing error: template: :1: executing "" at <' + path + '>: map has no entry for key "' + key + '"');
+	return at[key];
+}, value);
 const render = (format, found) =>
-	format.replace(/\\{\\{(json )?([.A-Za-z]+)\\}\\}/g, (_, json, path) => (json ? JSON.stringify(pick(found, path) ?? null) : String(pick(found, path) ?? "")));
+	format.replace(/\\{\\{(json )?(?:\\(index ([.A-Za-z]+) "([A-Za-z]+)"\\)|([.A-Za-z]+))\\}\\}/g, (_, json, base, key, path) => {
+		const value = path === undefined ? pick(found, base)?.[key] : pick(found, path);
+		return json ? JSON.stringify(value ?? null) : String(value ?? "");
+	});
+/** render, or Docker's exit on a template it cannot run on the JSON. */
+const rendered = (format, found) => {
+	try {
+		return render(format, found);
+	} catch (error) {
+		process.stderr.write(error.message + "\\n");
+		process.exit(1);
+	}
+};
 const merge = (base, over) => {
 	for (const [key, value] of Object.entries(over)) {
 		base[key] = value && typeof value === "object" && !Array.isArray(value) && base[key] && typeof base[key] === "object" ? merge(base[key], value) : value;
@@ -352,7 +370,7 @@ switch (args[0]) {
 		let missing;
 		for (const key of args.slice(5)) {
 			const found = config.vanish.includes(key) ? undefined : find(all, key);
-			if (found) process.stdout.write(render(args[4], found) + "\\n");
+			if (found) process.stdout.write(rendered(args[4], found) + "\\n");
 			else missing = key;
 		}
 		if (missing) noSuch(missing);
@@ -388,7 +406,13 @@ switch (args[0]) {
 		if (present !== null && !present.includes(image)) saveImages([...present, image]);
 		process.stdout.write("Status: Downloaded newer image for " + image + "\\n");
 	}); break;
-	case "info": held("info", () => process.stdout.write(args[1] === "--format" ? render(args[2], config.info) + "\\n" : JSON.stringify(config.info) + "\\n")); break;
+	case "info": held("info", () => process.stdout.write(args[1] === "--format" ? rendered(args[2], config.info) + "\\n" : JSON.stringify(config.info) + "\\n")); break;
+	// The server's architecture in Docker's (Go's) words, as dockerArch asks for it.
+	case "version": {
+		const version = { Server: { Arch: { x86_64: "amd64", aarch64: "arm64" }[config.info.Architecture] ?? config.info.Architecture } };
+		process.stdout.write(args[1] === "--format" ? rendered(args[2], version) + "\\n" : JSON.stringify(version) + "\\n");
+		break;
+	}
 	case "context": {
 		if (args[1] !== "inspect") { process.stderr.write("unexpected docker context call\\n"); process.exit(2); }
 		if (config.endpoint === null) { process.stderr.write("context \\"elsewhere\\": context not found\\n"); process.exit(1); }

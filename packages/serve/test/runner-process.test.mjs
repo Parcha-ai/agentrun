@@ -58,4 +58,8 @@ test("a runner's arguments: --data D [--loops N], and nothing else", () => {
   assert.throws(() => runnerArgs(["--data"]), /--data needs a value/);
   assert.throws(() => runnerArgs(["--data", "/d", "--loops", "0"]), /--loops is a whole number/);
   assert.throws(() => runnerArgs(["--data", "/d", "--file", "x.sqlite"]), /unknown argument "--file"/);
+  // The faux model, a test switch, is the start's own option, as the server's --faux: the only way a runner loads one.
+  assert.deepEqual(runnerArgs(["--data", "/d", "--faux", "/t/faux.mjs"]), { dataDir: "/d", faux: "/t/faux.mjs" });
+  assert.deepEqual(runnerArgs(["--data", "/d", "--faux=/t/faux.mjs"]), { dataDir: "/d", faux: "/t/faux.mjs" });
+  assert.throws(() => runnerArgs(["--data", "/d", "--faux"]), /--faux needs a value/);
 });

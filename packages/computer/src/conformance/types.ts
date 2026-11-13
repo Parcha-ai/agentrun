@@ -1,6 +1,6 @@
 // The conformance suite's shapes: a case is data that names its level, its group and the capabilities it needs.
 import type { MountKind, MountSpec } from "../mount.js";
-import type { ComputerClient, ComputerKind, DaemonMethod, DaemonMethods, ExecRunParams, Group, HelloResult, NetworkFence } from "../protocol.js";
+import type { ComputerClient, ComputerKind, ComputerOs, DaemonMethod, DaemonMethods, ExecRunParams, Group, HelloResult, NetworkFence } from "../protocol.js";
 import type { ComputerConnection, ComputerProvider, ComputerRef, ComputerSpec, DaemonMode, GpuSpec } from "../provider.js";
 import type { ComputerError, ComputerErrorCode, Result } from "../result.js";
 import type { ComputerSettingKind, KindCapabilities } from "../kinds.js";
@@ -16,11 +16,11 @@ export type CaseGroup = "health" | "exec" | "files" | "process" | "provider" | "
 /**
  * What a case needs: a group (declared by both the provider's capabilities().groups and the computer's hello), a
  * network the provider declares, the janitor as the keeper of deadlines, a spec.user the provider takes, a release that
- * stops a computer and keeps it, a mount kind capabilities().mount declares, a provider method that is optional
- * (extend, stream), declared by being there, the ports of a vendor's agent in the computer (vendor-agent: declared
- * by capabilities().vendorAgentPorts, an empty list included), a secret the provider takes (secrets: declared by the
- * run's planted provider, which its conformance module's ENV makes possible), or GPUs (gpu: declared by
- * capabilities().gpu).
+ * stops a computer and keeps it, an agent's persistent computer (capabilities().persistence), a mount kind
+ * capabilities().mount declares, a provider method that is optional (extend, stream), declared by being there, the
+ * ports of a vendor's agent in the computer (vendor-agent: declared by capabilities().vendorAgentPorts, an empty list
+ * included), a secret the provider takes (secrets: declared by the run's planted provider, which its conformance
+ * module's ENV makes possible), or GPUs (gpu: declared by capabilities().gpu).
  */
 export type Capability =
 	| Group
@@ -31,6 +31,7 @@ export type Capability =
 	| "user:root"
 	| "user:uid"
 	| "release:stop"
+	| "persistence"
 	| "mount:bind"
 	| "mount:archil"
 	| "extend"
@@ -175,7 +176,21 @@ export interface Case {
 	computer?: "shared" | "fresh" | "none";
 	/** The longest this case may run, when it needs longer than the run's default. */
 	timeoutMs?: number;
+	/**
+	 * The systems the case's body is written for. Absent: any, but a case that needs exec or processes runs POSIX
+	 * programs (sh, id, /proc) and is Linux's alone, and one that needs files names POSIX paths (/tmp) and is no Windows
+	 * computer's (caseOs). A computer of another os skips it in words.
+	 */
+	os?: readonly ComputerOs[];
 	run(t: CaseContext): Promise<void>;
+}
+
+/** The systems a case runs on: its own os; else Linux alone for one that runs programs, any but Windows for one that names paths. */
+export function caseOs(c: Pick<Case, "os" | "needs">): readonly ComputerOs[] | undefined {
+	if (c.os !== undefined) return c.os;
+	if (c.needs.some((need) => need === "exec" || need === "processes")) return ["linux"];
+	if (c.needs.includes("files")) return ["linux", "macos", "android", "ios"];
+	return undefined;
 }
 
 export interface CaseResult {
@@ -186,9 +201,14 @@ export interface CaseResult {
 	reason?: string;
 	/**
 	 * On a skip: the needs that were not declared and are optional for this kind of computer. A Core case skipped for
-	 * these does not fail Core; any other skip of a Core case does.
+	 * these does not fail Core; any other skip of a Core case does, but one for `os`.
 	 */
 	undeclared?: Capability[];
+	/**
+	 * On a skip: the systems the case is written for (Case.os, caseOs), none of them this computer's. A Core case skipped
+	 * for this is not this computer's to pass or fail, so it does not fail Core; its reason stays in the report.
+	 */
+	os?: readonly string[];
 	/** What the case saw and recorded without asserting it (CaseContext.observe); absent when nothing. */
 	observed?: string[];
 }

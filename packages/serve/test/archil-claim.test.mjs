@@ -9,10 +9,11 @@ import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { sealColumn, sealedAt } from "../dist/store/seal.js";
 import * as archilSettings from "../dist/archil-settings.js";
-import { ARCHIL_API_KEY_ROW, ArchilClaimRefused, archilClaim } from "../dist/workspace/index.js";
+import { ARCHIL_API_KEY_ROW, ArchilClaimRefused, archilClaim, openRunWorkspace } from "../dist/workspace/index.js";
+import { FakeArchilDisk } from "./fixtures/archil-fake.mjs";
 
-const { ARCHIL_API_KEY_ROW: SETTINGS_API_ROW, loadArchilSettings, saveArchilSettings } = archilSettings;
-import { archilControlFake } from "./archil-control-fake.mjs";
+const { ARCHIL_API_KEY_ROW: SETTINGS_API_ROW, DEFAULT_ARCHIL_EXEC_IMAGE, loadArchilSettings, saveArchilSettings } = archilSettings;
+import { agentDiskStore, archilControlFake } from "./archil-control-fake.mjs";
 import { storeOn } from "./store-helpers.mjs";
 
 const KEY = randomBytes(32);
@@ -26,8 +27,12 @@ async function controlOn(t, options) {
   t.after(() => fake.close());
   return { fake, mount: { runId: "run-1", epoch: 3, ttlMs: 86_400_000, baseUrl: fake.baseUrl } };
 }
-/** The Archil settings as the store keeps them (archil-settings.ts). */
-const SETTINGS = { diskId: "dsk-0000000000000001", region: "aws-us-east-1", s3Url: "https://s3.green.us-east-1.aws.prod.archil.com" };
+/** The Archil settings as the store keeps them (archil-settings.ts), and the disk the run's launch record names as its
+ *  agent's (run-disk.ts: no Archil call resolves it). */
+const SETTINGS = { region: "aws-us-east-1", s3Url: "https://s3.green.us-east-1.aws.prod.archil.com" };
+const DISK = "dsk-0000000000000001";
+/** The agent's disk is stored on it (archil-settings.ts agentDiskOf), as its launch recorded it. */
+const RUN = { agentId: "agent-1", launch: { diskId: DISK, kind: "agent" }, store: agentDiskStore("agent-1", DISK) };
 const PINNED = `docker.io/library/debian@sha256:${"9e".repeat(32)}`;
 
 /** The sealed_keys rows as the store holds them: each sealed under `key` for its own row. */
@@ -35,7 +40,7 @@ const rowsOf = (key = KEY, values = { [ARCHIL_API_KEY_ROW]: API }) =>
   new Map(Object.entries(values).map(([name, value]) => [name, sealColumn(key, sealedAt.sealedKey(name), value)]));
 
 /** A claim over `rows`, with the disk it makes captured instead of made (no call leaves the process). */
-async function claimOf({ rows = rowsOf(), settings = SETTINGS, sealKey = KEY, signal = new AbortController().signal, mount, env } = {}) {
+async function claimOf({ rows = rowsOf(), settings = SETTINGS, sealKey = KEY, signal = new AbortController().signal, mount, env, disk } = {}) {
   const asked = [];
   const made = [];
   const claim = await archilClaim({
@@ -43,7 +48,8 @@ async function claimOf({ rows = rowsOf(), settings = SETTINGS, sealKey = KEY, si
     keys: { get: async (name) => { asked.push(name); return rows.get(name); } },
     sealKey,
     signal,
-    makeDisk: (options) => { made.push(options); return { id: options.disk, made: true }; },
+    makeDisk: (options) => { made.push(options); return disk ?? { id: options.disk, made: true }; },
+    run: RUN,
     ...(mount ? { mount } : {}),
     ...(env ? { env } : {}),
   });
@@ -53,11 +59,11 @@ async function claimOf({ rows = rowsOf(), settings = SETTINGS, sealKey = KEY, si
 test("archil claim: the disk is made from the settings, and its key is the sealed api key row, opened with the seal key", async () => {
   const { claim, asked, made } = await claimOf();
   assert.equal(made.length, 1);
-  assert.deepEqual([made[0].disk, made[0].region, made[0].s3BaseUrl], [SETTINGS.diskId, SETTINGS.region, SETTINGS.s3Url]);
+  assert.deepEqual([made[0].disk, made[0].region, made[0].s3BaseUrl], [DISK, SETTINGS.region, SETTINGS.s3Url]);
   assert.equal(typeof made[0].key, "function", "the key is a function the seam asks on every call");
   assert.equal(await made[0].key(), API);
-  assert.equal(claim.disk.id, SETTINGS.diskId);
-  assert.deepEqual([claim.region, claim.image], [SETTINGS.region, undefined], "no image: Archil's default");
+  assert.equal(claim.disk.id, DISK);
+  assert.deepEqual([claim.region, claim.image], [SETTINGS.region, { baseImage: DEFAULT_ARCHIL_EXEC_IMAGE }], "no image saved: serve's default, not Archil's");
   assert.deepEqual(asked, [ARCHIL_API_KEY_ROW], "only the account key: no disk token row is read");
 });
 
@@ -72,11 +78,27 @@ test("archil claim: the key rows are the store's one set of names, and a saved i
   }
 });
 
+test("archil claim: with no image saved, a run's exec runs in serve's default image, one with git 2.43 or later; a saved image replaces it", async () => {
+  // Archil's own exec image has git 2.34.1, below a bash policy's floor (bash-read-only.ts POLICY_GIT_FLOOR), so the
+  // default is a public image pinned by digest whose git was read from its layers: buildpack-deps:trixie-scm, git 2.47.3.
+  assert.match(DEFAULT_ARCHIL_EXEC_IMAGE, /^buildpack-deps@sha256:[0-9a-f]{64}$/);
+  const execImages = async (settings) => {
+    const disk = new FakeArchilDisk();
+    const { claim } = await claimOf({ settings, disk });
+    const { workspace, end } = await openRunWorkspace({ mode: 2, agentId: "acme-0123456789abcdef", runId: "r1", log: () => {}, archil: claim });
+    await workspace.exec(["true"], { env: { PATH: process.env.PATH ?? "/usr/bin:/bin" }, timeoutMs: 10_000 });
+    await end();
+    return disk.calls.filter((call) => call.op === "exec").map((call) => call.image);
+  };
+  assert.deepEqual(await execImages(SETTINGS), [{ baseImage: DEFAULT_ARCHIL_EXEC_IMAGE }], "no image saved: the exec carries serve's default");
+  assert.deepEqual(await execImages({ ...SETTINGS, image: PINNED }), [{ baseImage: PINNED }], "the owner's saved image replaces the default");
+});
+
 test("archil claim: over the settings row the server saved (archil-settings.ts)", async (t) => {
   const { store } = await storeOn(t);
   await saveArchilSettings(store, { ...SETTINGS, image: PINNED });
   const { claim, made } = await claimOf({ settings: await loadArchilSettings(store) });
-  assert.deepEqual([made[0].disk, made[0].region, made[0].s3BaseUrl, claim.image], [SETTINGS.diskId, SETTINGS.region, SETTINGS.s3Url, { baseImage: PINNED }]);
+  assert.deepEqual([made[0].disk, made[0].region, made[0].s3BaseUrl, claim.image], [DISK, SETTINGS.region, SETTINGS.s3Url, { baseImage: PINNED }]);
 });
 
 test("archil claim: the mount credential is minted when a mount first asks, once, held in the redaction set, and revoked by its identifier", async (t) => {
@@ -119,7 +141,7 @@ test("archil claim: a claim that cannot open its key is refused in words, before
   const refused = async (options, words) => {
     const made = [];
     await assert.rejects(
-      archilClaim({ settings: SETTINGS, keys: { get: async (name) => options.rows?.get(name) }, sealKey: KEY, signal: new AbortController().signal, ...options, makeDisk: (o) => { made.push(o); return { id: o.disk }; } }),
+      archilClaim({ settings: SETTINGS, keys: { get: async (name) => options.rows?.get(name) }, sealKey: KEY, signal: new AbortController().signal, run: RUN, ...options, makeDisk: (o) => { made.push(o); return { id: o.disk }; } }),
       (error) => error instanceof ArchilClaimRefused && words.test(error.message) && !error.message.includes(API),
     );
     assert.deepEqual(made, [], "no disk was made");
@@ -133,7 +155,7 @@ test("archil claim: a claim that cannot open its key is refused in words, before
   await refused({ rows: moved }, /does not open/);
   // The real disk checks its S3 endpoint when it is made (no call is sent): a bad one refuses the claim.
   await assert.rejects(
-    archilClaim({ settings: { ...SETTINGS, s3Url: "http://s3.example.com" }, keys: { get: async (name) => rowsOf().get(name) }, sealKey: KEY, signal: new AbortController().signal }),
+    archilClaim({ settings: { ...SETTINGS, s3Url: "http://s3.example.com" }, keys: { get: async (name) => rowsOf().get(name) }, sealKey: KEY, signal: new AbortController().signal, run: RUN }),
     (error) => error instanceof ArchilClaimRefused && /S3 endpoint/.test(error.message) && !error.message.includes(API),
   );
 });
@@ -142,12 +164,12 @@ test("archil claim: over the store's own sealed_keys rows, as the server saved t
   const { store } = await storeOn(t);
   for (const [name, sealed] of rowsOf()) await store.sealedKeys.put(name, sealed);
   const made = [];
-  const claim = await archilClaim({ settings: SETTINGS, keys: store.sealedKeys, sealKey: KEY, signal: new AbortController().signal, makeDisk: (options) => { made.push(options); return { id: options.disk }; } });
+  const claim = await archilClaim({ settings: SETTINGS, keys: store.sealedKeys, sealKey: KEY, signal: new AbortController().signal, run: RUN, makeDisk: (options) => { made.push(options); return { id: options.disk }; } });
   assert.equal(await made[0].key(), API);
-  assert.equal(claim.disk.id, SETTINGS.diskId);
+  assert.equal(claim.disk.id, DISK);
   await store.sealedKeys.remove(ARCHIL_API_KEY_ROW);
   await assert.rejects(
-    archilClaim({ settings: SETTINGS, keys: store.sealedKeys, sealKey: KEY, signal: new AbortController().signal, makeDisk: () => assert.fail("no disk") }),
+    archilClaim({ settings: SETTINGS, keys: store.sealedKeys, sealKey: KEY, signal: new AbortController().signal, run: RUN, makeDisk: () => assert.fail("no disk") }),
     (error) => error instanceof ArchilClaimRefused && /no archil\.api_key key is saved/.test(error.message),
   );
 });
