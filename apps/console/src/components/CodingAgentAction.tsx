@@ -108,12 +108,12 @@ export function CodingAgentAction({ label, prompt, playgroundHref, playgroundLab
   const content = <>{compact && compactIcon ? compactIcon : <CodingAgentIcon agent={agent} />}{compact ? <span className="sr-only">{copied ? "Copied" : label}</span> : copied ? "Copied" : label}</>;
   const actionTitle = compact ? `${label} · ${title}` : title;
   // One edge and focus ring belong to the whole control; its two actions stay independently operable.
-  const actionClass = `h-full border-0 bg-transparent focus-visible:bg-accent focus-visible:outline-none ${compact ? "px-2" : "pl-3 pr-1"}`;
-  return <div ref={container} role="group" aria-label={`${label} options`} className="inline-flex h-control-sm shrink-0 items-stretch overflow-hidden !rounded-action border bg-background transition-colors hover:border-border-strong has-[:focus-visible]:outline has-[:focus-visible]:outline-focus has-[:focus-visible]:outline-offset-focus has-[:focus-visible]:outline-ring">
+  const actionClass = `h-full border-0 bg-transparent hover:bg-transparent focus-visible:bg-transparent focus-visible:outline-none ${compact ? "px-2" : "pl-3 pr-1"}`;
+  return <div ref={container} role="group" aria-label={`${label} options`} data-state={open ? "open" : "closed"} className="inline-flex h-control-sm shrink-0 items-stretch overflow-hidden !rounded-action border bg-background transition-colors hover:border-border-strong hover:bg-accent data-[state=open]:bg-accent has-[:focus-visible]:bg-accent has-[:focus-visible]:outline has-[:focus-visible]:outline-focus has-[:focus-visible]:outline-offset-focus has-[:focus-visible]:outline-ring">
     {href && !disabled
       ? <a href={href} title={actionTitle} aria-label={compact ? label : undefined} className={cn(buttonVariants({ variant: "ghost", size: "sm" }), actionClass)}>{content}</a>
       : <Button variant="ghost" size="sm" className={actionClass} disabled={disabled} title={actionTitle} aria-label={compact ? label : undefined} onClick={() => agent ? void copy() : setOpen(true)}>{content}</Button>}
-    <Button ref={trigger} variant="ghost" size="icon" className="h-full w-7 border-0 bg-transparent text-muted-foreground hover:text-foreground focus-visible:bg-accent focus-visible:outline-none" disabled={disabled} aria-label={`Choose coding agent for ${label}`} aria-haspopup="menu" aria-expanded={open} aria-controls={open ? id : undefined}
+    <Button ref={trigger} variant="ghost" size="icon" className="h-full w-7 border-0 bg-transparent text-muted-foreground hover:bg-transparent hover:text-foreground focus-visible:bg-transparent focus-visible:outline-none" disabled={disabled} aria-label={`Choose coding agent for ${label}`} aria-haspopup="menu" aria-expanded={open} aria-controls={open ? id : undefined}
       onClick={() => setOpen((v) => !v)} onKeyDown={(event) => { if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); setOpen(true); } }}><ChevronDown aria-hidden /></Button>
     <span className="sr-only" role="status">{copied ? "Prompt copied" : ""}</span>
     {open && createPortal(<div ref={menu} id={id} role="menu" aria-label="Coding agent" onKeyDown={navigate}

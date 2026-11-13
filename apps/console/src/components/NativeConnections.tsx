@@ -67,6 +67,6 @@ export function NativeConnections({ v2, go, initialSource = "server" }: { v2: Cl
       <p className="text-small text-muted-foreground">Connecting saves a reference and starts no run. Authentication and approval compatibility are checked separately on the connected agent's page.</p>
     </section>}
     </>}
-    <p className="text-small text-muted-foreground">Your coding agent can also help import history. Past conversations stay historical; they do not become live jobs or AgentRun learning. Remote transcript upload is not supported.</p>
+    <p className="text-small text-muted-foreground">Your coding agent can also help import selected history. Past conversations stay historical; they do not become live jobs or AgentRun learning.</p>
   </section>;
 }

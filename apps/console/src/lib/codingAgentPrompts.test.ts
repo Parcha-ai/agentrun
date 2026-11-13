@@ -13,13 +13,13 @@ describe("coding-agent handoffs", () => {
   it("uses one skill-directed Connect agent handoff to clarify live connection or history and the source machine", () => {
     const prompt = connectExistingAgentsPrompt("https://console.example.test");
     expect(prompt).toContain("https://console.example.test/skills/agentrun-serve/SKILL.md");
-    expect(prompt).toContain("live agent connection, to import past session history, or both");
-    expect(prompt).toContain("source machine, project");
-    expect(prompt).toContain("existing remote CLI for another machine");
-    expect(prompt).toContain("remote transcript upload is unsupported");
+    expect(prompt).toMatch(/live agent connection,.*history, or both/);
+    expect(prompt).toMatch(/source machine, project, runtime/);
+    expect(prompt).toContain("https://console.example.test/v2");
+    expect(prompt).toMatch(/approval.*history scope/);
     expect(prompt).toContain("Never print credentials");
     expect(prompt).not.toContain("hosted native pairing is unavailable");
-    expect(prompt.length).toBeLessThan(1800);
+    expect(prompt.split(/\s+/).length).toBeLessThanOrEqual(150);
   });
 
   it("hands remote setup to the matching connector build without putting a credential into the prompt", () => {
@@ -27,11 +27,13 @@ describe("coding-agent handoffs", () => {
     expect(prompt).toContain("same reviewed build");
     expect(prompt).toContain("secure terminal prompt");
     expect(prompt).toContain("one-use connection code");
-    expect(prompt).toContain("do not copy credentials or import past conversations");
+    expect(prompt).toMatch(/History is scoped.*project\/runtime/);
+    expect(prompt).toMatch(/history only when requested and approved after preview/);
     expect(prompt).toContain("Keep self-improvement Off unless I request it");
     expect(prompt).toContain("Ask before a paid run");
     expect(prompt).not.toContain("--api-key");
     expect(prompt).not.toContain("npx");
+    expect(prompt.split(/\s+/).length).toBeLessThanOrEqual(150);
   });
 
   it("targets the current server without carrying credentials or page parameters into the prompt", () => {
@@ -40,7 +42,7 @@ describe("coding-agent handoffs", () => {
     const address = new URL("https://console.example.test/?token=also-private#/agents");
     address.username = "owner";
     address.password = "not-a-secret";
-    for (const make of [importAgentsPrompt, connectAgentPrompt, buildAgentPrompt, queryRunsPrompt]) {
+    for (const make of [importAgentsPrompt, connectAgentPrompt, buildAgentPrompt, queryRunsPrompt, connectExistingAgentsPrompt, connectRemoteAgentsPrompt]) {
       const prompt = make(address.href);
       expect(prompt).toContain("https://console.example.test/v2");
       expect(prompt).not.toContain("not-a-secret");
@@ -66,14 +68,21 @@ describe("coding-agent handoffs", () => {
     expect(prompt).not.toContain("~/.agentrun");
   });
 
-  it("does not suggest that a remote console can import this computer through an unsupported endpoint", () => {
+  it("uses scoped history-only enrollment for a remote destination without substituting a local store", () => {
     const prompt = importAgentsPrompt("https://console.example.test");
     expect(prompt).toContain("remote");
-    expect(prompt).toContain("local CLI import does not upload");
-    expect(prompt).toContain("no remote session-import API");
-    expect(prompt).toContain("Do not transfer transcripts");
-    expect(prompt).toContain("confirm the destination");
+    expect(prompt).toContain("history only: no executing worker or self-improvement");
+    expect(prompt).toMatch(/code at https:\/\/console\.example\.test\/.*source=remote with the matching scope/);
+    expect(prompt).toMatch(/history only when requested and approved after preview/);
+    expect(prompt).toContain("https://console.example.test/v2 only");
+    expect(prompt).not.toContain("import --data");
     expect(prompt).not.toContain("POST /v2/import");
+  });
+
+  it("carries the selected connection scope into the shared handoff without broadening it", () => {
+    expect(connectRemoteAgentsPrompt("https://console.example.test", "live")).toContain("live agent connection, without past history");
+    expect(connectRemoteAgentsPrompt("https://console.example.test", "history")).toContain("history only: no executing worker or self-improvement");
+    expect(connectRemoteAgentsPrompt("https://console.example.test", "both")).toContain("both a live agent connection and past history");
   });
 
   it("requires an approved maintenance window before the CLI takes the running server's store", () => {

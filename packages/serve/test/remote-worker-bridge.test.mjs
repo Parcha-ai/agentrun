@@ -6,6 +6,7 @@ import {fileURLToPath} from 'node:url';
 import {join} from 'node:path';
 import {readFile} from 'node:fs/promises';
 import {nativeFixture} from './native-fixtures/setup.mjs';
+import {claudeSession,codexSession,sessionId} from './fixtures/import-sessions.mjs';
 
 function bridge(t, env, idleTimeoutMs) {
  const url=new URL('../dist/native/remote-worker-bridge.js',import.meta.url);
@@ -72,4 +73,24 @@ test('a lost remote close cannot hold a source project lock indefinitely',async 
  await assert.rejects(remote.call('send',{target,session_key:'abandoned',payload:{prompt:'No replay'}}),/session is unavailable/);
  await remote.call('open',{target,session_key:'replacement'});await remote.call('close',{target,session_key:'replacement'});
  assert.equal((await f.calls()).filter(c=>c.args.includes('--print')).length,0);
+});
+
+for(const runtime of ['claude-code','codex'])test(`remote ${runtime} history exports the selected project without authentication or model execution`,async t=>{
+ const f=await nativeFixture(t),other=join(f.root,'unselected-project');await f.put(join(other,'README.md'),'Unselected');
+ const marker=['fixture','scoped','redact'].join('-'),write=runtime==='claude-code'?claudeSession:codexSession;
+ write(f.home,f.project,70,{prompt:`Selected conversation ${marker}`});write(f.home,other,71,{prompt:'Unselected conversation'});
+ (runtime==='claude-code'?codexSession:claudeSession)(f.home,f.project,72,{prompt:'Other runtime conversation'});
+ const remote=bridge(t,{...f.env,NATIVE_TEST_AUTH:'no'});
+ const target=(await remote.call('discover',{payload:{project:f.project,runtime}})).targets.find(item=>item.selector.kind==='project');
+ const preview=await remote.call('history-preview',{target});
+ assert.equal(preview.total,1);assert.deepEqual(preview.sessions,[]);assert.match(preview.inventory,/^[a-f0-9]{64}$/);
+ const page=await remote.call('history-export',{target,payload:{cursor:0,inventory:preview.inventory,redact_values:[marker]}});
+ assert.equal(page.inventory,preview.inventory);
+ await assert.rejects(remote.call('history-export',{target,payload:{cursor:1}}),/inventory|restart/i);
+ await assert.rejects(remote.call('history-export',{target,payload:{cursor:1,inventory:'0'.repeat(64)}}),/inventory|restart/i);
+ assert.equal(page.next_cursor,null);assert.equal(page.sessions.length,1);assert.equal(page.sessions[0].id,sessionId(70));
+ assert.equal(page.sessions[0].source,runtime);assert.match(JSON.stringify(page),/Selected conversation/);assert.ok(!JSON.stringify(page).includes(marker));
+ assert.ok(!JSON.stringify(page).includes('Unselected conversation'));assert.ok(!JSON.stringify(page).includes('Other runtime conversation'));
+ assert.ok((await f.calls()).every(call=>!call.args.includes('status')&&!call.args.includes('--print')&&!call.args.includes('exec')));
+ await assert.rejects(remote.call('history-preview',{target:{...target,selector:{kind:'profile',name:'not-project'}}}),/select project history/);
 });

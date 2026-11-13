@@ -46,7 +46,7 @@ it("creates a one-use code only on request, keeps it out of handoffs/storage and
   await act(async () => root.render(createElement(RemoteConnections, { v2 })));
   expect(calls).toEqual([{ path: "/v2/connectors", method: "GET", body: null }]);
   await act(async () => buttons("Create connection code")[0]!.click());
-  expect(calls.at(-1)).toEqual({ path: "/v2/connectors/enrollment", method: "POST", body: {} });
+  expect(calls.at(-1)).toEqual({ path: "/v2/connectors/enrollment", method: "POST", body: { capabilities: { native_execution: true, history_import: false } } });
   expect(document.querySelector<HTMLInputElement>('input[readonly]')?.value).toBe(code);
   expect([...document.querySelectorAll("a")].some((link) => link.href.includes(code))).toBe(false);
   expect(Object.values(localStorage)).not.toContain(code);
@@ -59,6 +59,35 @@ it("creates a one-use code only on request, keeps it out of handoffs/storage and
   await act(async () => [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find((item) => item.textContent === "Copy prompt")!.click());
   expect(writeText.mock.calls.at(-1)?.[0]).toContain("/skills/agentrun-serve/SKILL.md");
   expect(writeText.mock.calls.at(-1)?.[0]).not.toContain(code);
+});
+
+it.each([
+  ["History only", { native_execution: false, history_import: true }],
+  ["Both", { native_execution: true, history_import: true }],
+] as const)("grants %s only when explicitly selected before creating a connection code", async (choice, capabilities) => {
+  const bodies: unknown[] = [];
+  const v2 = createClient({ fetch: (async (url, init) => {
+    if (String(url).endsWith("/enrollment")) { bodies.push(JSON.parse(String(init?.body))); return json({ enrollment_token: "test-only-scope", expires_at: new Date(Date.now() + 600_000).toISOString(), workspace_id: "local" }); }
+    return json({ connectors: [] });
+  }) as typeof fetch });
+  const host = document.body.appendChild(document.createElement("div")); root = createRoot(host);
+  await act(async () => root.render(createElement(RemoteConnections, { v2 })));
+  const option = [...host.querySelectorAll("label")].find((label) => label.textContent === choice)!;
+  await act(async () => option.click());
+  expect(bodies).toHaveLength(0);
+  await act(async () => buttons("Create connection code")[0]!.click());
+  expect(bodies).toEqual([{ capabilities }]);
+});
+
+it("shows history-only sources as imported history without asking for an execution worker", async () => {
+  const historical: RemoteConnector = { ...connector, status: "offline", capabilities: { observe: true, native_execution: false, history_import: true }, targets: connector.targets.map((target) => ({ ...target, history_only: true, state: "needs_attention", capabilities: { ...target.capabilities, launch: false } })) };
+  const v2 = createClient({ fetch: (async () => json({ connectors: [historical] })) as typeof fetch });
+  const host = document.body.appendChild(document.createElement("div")); root = createRoot(host);
+  await act(async () => root.render(createElement(RemoteConnections, { v2 })));
+  expect(host.textContent).toContain("History import only");
+  expect(host.textContent).toContain("Imported history");
+  expect(host.textContent).not.toContain("The source worker is offline");
+  expect(host.textContent).not.toContain("Ready to run");
 });
 
 it("confirms revocation and encodes only the selected connector id", async () => {

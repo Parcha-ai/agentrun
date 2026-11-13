@@ -13,6 +13,7 @@ import { nativeEnvironment } from './environment.js';
 import { openNativeSession } from './runtime.js';
 import { snapshotNativeInstructions } from './instructions.js';
 import { nativeSkillContext } from './context.js';
+import { exportRemoteHistory } from '../import.js';
 import { runnerSecrets, secretRedactor } from '../runner/redact.js';
 import type { NativeBinding, NativeRuntime, NativeSelector, NativeSession, NativeTarget } from './types.js';
 
@@ -65,6 +66,16 @@ export async function runRemoteWorkerBridge(options: {idleTimeoutMs?: number} = 
  const dispatch = async(message:ObjectValue, signal:AbortSignal):Promise<unknown> => {
   const payload = message.payload === undefined ? {} : object(message.payload), type = message.type;
   if (type === 'discover') return discoverNative({project:text(payload.project,4096), ...(payload.runtime ? {runtime:runtime(payload.runtime)} : {}), env});
+  // Local connector action only: the Python network worker never dispatches these operations.
+  if (type === 'history-preview' || type === 'history-export') {
+   const target=targetOf(message.target);
+   if(target.selector.kind!=='project')throw new Error('History belongs to a project and runtime; select project history instead of a named agent or profile.');
+   if(payload.cursor!==undefined && (!Number.isSafeInteger(payload.cursor) || Number(payload.cursor)<0))throw new Error('Invalid local history cursor.');
+   if(payload.inventory!==undefined && (typeof payload.inventory!=='string' || !/^[a-f0-9]{64}$/.test(payload.inventory)))throw new Error('Invalid local history inventory.');
+   if(payload.redact_values!==undefined && (!Array.isArray(payload.redact_values) || payload.redact_values.length>16))throw new Error('Invalid local history redaction values.');
+   const own=Array.isArray(payload.redact_values)?payload.redact_values.map(value=>text(value,8192)):[];
+   return exportRemoteHistory(target,{env,own,preview:type==='history-preview',...(payload.inventory===undefined?{}:{inventory:String(payload.inventory)}),...(payload.cursor===undefined?{}:{cursor:Number(payload.cursor)})});
+  }
   if (type === 'prepare') {
    const target = await current(message.target), instructions = await snapshotNativeInstructions(target,redact);
    prepared.set(nativeIdentity(target),target);

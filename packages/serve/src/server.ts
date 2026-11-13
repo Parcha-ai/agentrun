@@ -378,6 +378,7 @@ export const ROUTES: readonly Route[] = [
   {method:"POST",pattern:/^\/connectors$/,name:"registerRemoteConnector"},
   {method:"DELETE",pattern:/^\/connectors\/([^/]+)$/,name:"revokeRemoteConnector"},
   {method:"POST",pattern:/^\/connectors\/([^/]+)\/import$/,name:"importRemoteTarget"},
+  {method:"POST",pattern:/^\/connectors\/([^/]+)\/targets\/([^/]+)\/history$/,name:"importRemoteHistory"},
   {method:"POST",pattern:/^\/connectors\/([^/]+)\/poll$/,name:"pollRemoteConnector"},
   {method:"POST",pattern:/^\/connectors\/([^/]+)\/commands\/([^/]+)\/events$/,name:"remoteCommandEvents"},
   {method:"POST",pattern:/^\/connectors\/([^/]+)\/commands\/([^/]+)\/complete$/,name:"completeRemoteCommand"},
@@ -2578,13 +2579,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       await broker.authenticate(connectorId, String(req.headers.authorization).slice(7));
       return send(res, 200, await broker.revoke(connectorId));
     }
-    if (["importRemoteTarget", "pollRemoteConnector", "remoteCommandEvents", "completeRemoteCommand"].includes(found.name)) {
+    if (["importRemoteTarget", "importRemoteHistory", "pollRemoteConnector", "remoteCommandEvents", "completeRemoteCommand"].includes(found.name)) {
       const parts = found.pattern.exec(path)!;
       const connectorId = decodeURIComponent(parts[1]!);
       const broker = new RemoteConnectors(store);
       await broker.authenticate(connectorId, String(req.headers.authorization ?? "").replace(/^Bearer /, ""));
       const body = await bodyOf(req);
       if (found.name === "importRemoteTarget") return send(res, 200, await broker.importTarget(connectorId, body));
+      if (found.name === "importRemoteHistory") return send(res, 200, await broker.importHistory(connectorId, decodeURIComponent(parts[2]!), body, [token,String(req.headers.authorization??"").replace(/^Bearer /,"")]));
       if (found.name === "pollRemoteConnector") return send(res, 200, await broker.poll(connectorId, body));
       const commandId = decodeURIComponent(parts[2]!);
       return send(res, 200, found.name === "remoteCommandEvents" ? await broker.events(connectorId, commandId, body) : await broker.complete(connectorId, commandId, body));
@@ -2625,6 +2627,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const entry=await needAgent(id); const native=nativeOf(entry.revision?.body);
         if(!native)throw new ApiError("not_found","This agent has no native connection.");
         const changed=await updateNative(store,entry,{...native,connected:false});
+        if(native.remote)await new RemoteConnectors(store).disconnectTarget(native);
         return send(res,200,{native:nativeOf(changed.revision?.body)});
       }
       case "createAgent": {

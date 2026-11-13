@@ -1,8 +1,9 @@
 import type { AgentCreateDraft } from "./agentDraft";
+import type { RemoteConnectionIntent } from "./connectors";
 import type { TemplateView } from "./v2";
 
 // Prompts carry only the public server address and the selected task, never browser credentials. The bundled skill
-// handles the API; historical imports still use the local CLI. Remote setup import uses the scoped connector.
+// handles local-store imports and remote connection/history scopes through the matching CLI.
 const SKILL = "https://raw.githubusercontent.com/Parcha-ai/agentrun/main/packages/serve/skills/agentrun-serve/SKILL.md";
 
 function server(origin: string): URL {
@@ -20,11 +21,12 @@ function setup(origin: string): string {
 export function importAgentsPrompt(origin: string): string {
   const target = server(origin);
   const loopback = target.hostname === "localhost" || target.hostname === "[::1]" || /^127\./.test(target.hostname);
+  if (!loopback) return connectRemoteAgentsPrompt(origin, "history");
   return `${setup(origin)}
 
 Import my existing Claude Code, Codex and pi projects and session history into this instance. No model-provider key is needed.
 
-${loopback ? "This is a loopback address: verify the coding agent, session files and this server are on the same machine." : "This is a remote address: a local CLI import does not upload to it. Confirm where this server and my session files live."} Identify this server's actual --data directory; do not assume the CLI's default store is the destination. There is no remote session-import API. If the files and target store are on different machines, explain that limitation and confirm the destination with me; offer a local console, but do not silently import into a different instance. Do not transfer transcripts to another machine without my approval.
+This is a loopback address: verify the coding agent, session files and this server are on the same machine. Identify this server's actual --data directory; do not assume the CLI's default store is the destination. If source files are on another machine, use the skill's scoped remote-history flow instead. Do not transfer transcripts to another machine without my approval or silently import into a different instance.
 
 When source files and the intended store are accessible together, use the matching installed AgentRun CLI. Set AGENTRUN_DATA_DIR to that verified directory and preserve the server's store configuration (AGENTRUN_STORE_URL and AGENTRUN_STORE_SCHEMA when used) and seal key securely, without printing secrets. Review sources with me, then run npx @parcha/agentrun import --data "$AGENTRUN_DATA_DIR" --dry-run (use --from for selected sources). A dry run may read the store while the server runs; CLI write import requires exclusive store ownership and refuses while the server holds it. The local import offered at initial password setup is a one-time exception. Do not reset the owner or reuse setup to force another import.
 
@@ -101,21 +103,19 @@ ${JSON.stringify(body, null, 2)}`;
 /** The deployed skill stays in step with the server and its matching connector CLI. */
 export function connectExistingAgentsPrompt(origin: string): string {
   const root = server(origin).origin;
-  return `Read ${root}/skills/agentrun-serve/SKILL.md and follow its Connect agent workflow. Target this existing AgentRun instance only: ${root}/v2. Do not start a replacement server. Never print credentials.
+  return `Read ${root}/skills/agentrun-serve/SKILL.md and follow its Connect agent workflow for ${root}/v2. Use this existing instance and a matching reviewed CLI build; do not start a replacement server.
 
-First ask whether I want a live agent connection, to import past session history, or both. Confirm the source machine, project and selected Claude Code agent or Codex profile. Keep existing instructions, skills, MCP, permissions and native sign-in in place. Discover before importing; show the selected setup and ask before changing anything.
+Ask only what's missing: live agent connection, past history, or both; source machine, project, runtime, and named agent/profile if relevant. Preserve original files, tools, permissions and sign-in. For another machine use the skill's remote flow; history stays scoped to the selected project/runtime.
 
-Use the skill's source-machine workflow: local native connection for this server, or the existing remote CLI for another machine. Use the matching reviewed build; do not assume the released npm CLI has new remote commands. Keep enrollment codes out of coding-agent prompts, URLs and command arguments; I enter them directly into the CLI's secure prompt. Historical import is separate and remote transcript upload is unsupported. Do not import history, enable self-improvement or start a paid run unless requested. Verify the connection and return the agent's console link.`;
+Keep codes and credentials out of prompts, URLs and logs; I enter codes in the secure terminal prompt. Never print credentials. Get approval for the previewed history scope. Do not import history, enable self-improvement or start a paid run unless requested. Verify the result and return its console link.`;
 }
 
 /** Enrollment credentials never travel through a prompt or a coding-app URL. */
-export function connectRemoteAgentsPrompt(origin: string): string {
+export function connectRemoteAgentsPrompt(origin: string, intent?: RemoteConnectionIntent): string {
   const root = server(origin).origin;
-  return `Read ${root}/skills/agentrun-serve/SKILL.md and follow its Connect agent workflow for another machine. Target ${root}/v2 only. Use the existing AgentRun CLI and Node bridge from the same reviewed build as this server; check their remote command support before proceeding. Do not assume the released npm CLI includes this feature or start a replacement server. Never print credentials.
+  return `Read ${root}/skills/agentrun-serve/SKILL.md for ${root}/v2 only. Use the existing AgentRun CLI and Node bridge from the same reviewed build; do not start a replacement server.
 
-Ask for the source project and runtime, discover the native setup, then let me choose the exact Claude Code project/named agent or Codex project/profile to connect. Keep its native files, permissions, skills, tools and sign-in on this machine. Create a source-bound connection; do not copy credentials or import past conversations.
+${intent === "live" ? "I selected a live agent connection, without past history." : intent === "history" ? "I selected history only: no executing worker or self-improvement." : intent === "both" ? "I selected both a live agent connection and past history." : "Ask whether I want a live agent connection, past history, or both."} Confirm the source machine, project and runtime. Preserve its native files, permissions and sign-in. History is scoped to the selected project/runtime.
 
-I create a one-use connection code at ${root}/#/agents/connect?source=remote under Another machine and enter it directly in the connector's secure terminal prompt. Do not put it into a coding-agent prompt, URL, command argument, shell history or log. Show the selected scope before importing, start the source worker and verify its online status in the console. Do not install a persistent service without asking.
-
-Keep self-improvement Off unless I request it. If requested, verify the remote connection and follow the skill's notes-only learning setup; explain reflection/grading usage. Accepted notes and skills apply to later runs, while risky changes require owner review in Learning Dojo. Ask before a paid run and return the connected agent link.`;
+Create a one-use connection code at ${root}/#/agents/connect?source=remote with the matching scope. I enter it in the secure terminal prompt; keep it out of prompts, URLs, command arguments and logs. Never print credentials. Import history only when requested and approved after preview. Keep self-improvement Off unless I request it. Ask before a paid run. Verify the result and return its console link.`;
 }

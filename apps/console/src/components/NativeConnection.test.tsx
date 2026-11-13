@@ -23,7 +23,7 @@ it("discovers on the server host without running, connects the selected native t
   await act(async () => root.render(createElement(NativeConnections, { v2, go: () => {} })));
   expect(calls).toEqual([]);
   expect(host.textContent).toContain("cannot scan your laptop");
-  expect(host.textContent).toContain("import history");
+  expect(host.textContent).toContain("import selected history");
   const field = host.querySelector<HTMLInputElement>('input[aria-label="Project on server host"]')!;
   act(() => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(field, "/workspace/project"); field.dispatchEvent(new Event("input", { bubbles: true })); });
   await act(async () => [...host.querySelectorAll("button")].find((b) => b.textContent === "Discover")!.click());
@@ -56,6 +56,7 @@ it("offers remote connection without scanning the server's project files or clai
   expect(host.querySelector('input[aria-label="Project on server host"]')).toBeNull();
   expect(host.textContent).toContain("Connect remote agents");
   expect(host.textContent).toContain("No remote machines connected");
-  expect(host.textContent).toContain("does not import past conversations");
+  expect(host.textContent).toContain("Past conversations are not shared");
+  expect(host.querySelector<HTMLInputElement>('input[name="remote-connection-intent"][value="live"]')?.checked).toBe(true);
   expect(host.textContent).not.toContain("run AgentRun locally there and open its console");
 });

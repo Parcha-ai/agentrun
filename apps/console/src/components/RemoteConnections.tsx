@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { CodingAgentAction } from "@/components/CodingAgentAction";
-import { Banner, Button, Chip, ConfirmDialog, Dialog, Field, Input, useToast } from "@/components/ui";
+import { Banner, Button, Chip, ConfirmDialog, Dialog, Field, Input, Segmented, useToast } from "@/components/ui";
 import { type Client, problemOf } from "@/lib/client";
-import type { ConnectorEnrollment, RemoteConnector } from "@/lib/connectors";
+import type { ConnectorEnrollment, RemoteConnectionIntent, RemoteConnector } from "@/lib/connectors";
 import { connectRemoteAgentsPrompt } from "@/lib/codingAgentPrompts";
 import { when } from "@/lib/format";
 import { nativeRuntimeLabel } from "@/lib/native";
@@ -14,6 +14,7 @@ export function RemoteConnections({ v2 }: { v2: Client }) {
   const [error, setError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [label, setLabel] = useState("");
+  const [intent, setIntent] = useState<RemoteConnectionIntent>("live");
   const [enrollment, setEnrollment] = useState<ConnectorEnrollment | null>(null);
   const [expired, setExpired] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -53,7 +54,7 @@ export function RemoteConnections({ v2 }: { v2: Client }) {
   const enroll = async () => {
     if (mutation.current) return;
     mutation.current = true; setBusy(true); setActionError(null); setExpired(false);
-    try { const result = await v2.enrollConnector(label); if (live.current) setEnrollment(result); }
+    try { const result = await v2.enrollConnector(label, { native_execution: intent !== "history", history_import: intent !== "live" }); if (live.current) setEnrollment(result); }
     catch (e) { if (live.current) setActionError(problemOf(e)); }
     finally { mutation.current = false; if (live.current) setBusy(false); }
   };
@@ -73,9 +74,9 @@ export function RemoteConnections({ v2 }: { v2: Client }) {
   };
   return <div className="space-y-6" aria-label="Remote connections">
     <section className="space-y-4 border bg-card p-4" aria-label="Connect another machine">
-      <div className="flex flex-wrap items-center gap-3"><h2 className="mr-auto text-lg font-semibold">Connect remote agents</h2><CodingAgentAction label="Connect agent" prompt={connectRemoteAgentsPrompt(location.origin)} /></div>
-      <p className="max-w-prose text-body text-muted-foreground">Run the connector on your laptop, VM or container. Choose a Claude Code project or named agent, or a Codex project or profile. AgentRun imports a reference to that setup; its files and native sign-in stay on the source machine.</p>
-      <p className="max-w-prose text-body text-muted-foreground">The source worker runs approved jobs and receives accepted learning. Connecting does not import past conversations, start a model task or enable self-improvement.</p>
+      <div className="flex flex-wrap items-center gap-3"><h2 className="mr-auto text-lg font-semibold">Connect remote agents</h2><CodingAgentAction label="Connect agent" prompt={connectRemoteAgentsPrompt(location.origin, intent)} /></div>
+      <p className="max-w-prose text-body text-muted-foreground">Connect a Claude Code or Codex setup on your laptop, VM or container. Its files and native sign-in stay there.</p>
+      <div className="space-y-3"><p className="caps text-label">Allow this connection to</p><Segmented name="remote-connection-intent" label="Connection scope" size="sm" value={intent} onChange={setIntent} options={[{ value: "live", label: "Live agent", disabled: busy }, { value: "history", label: "History only", disabled: busy }, { value: "both", label: "Both", disabled: busy }]} /><p className="max-w-prose text-small text-muted-foreground">{intent === "live" ? "Run future jobs with your existing setup. Past conversations are not shared." : intent === "history" ? "Upload completed conversations from one selected project and runtime. No executing worker or self-improvement is enabled." : "Connect for future jobs and upload completed conversations from the selected project and runtime."} {intent !== "live" && " Preview and approve the history on the source machine before upload. History is not used as learning."}</p></div>
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start"><div className="min-w-0 flex-1"><Field label="Machine label" hint="Optional. A name you recognize in this console."><Input value={label} onChange={(event) => setLabel(event.target.value)} placeholder="My development machine" disabled={busy} maxLength={120} /></Field></div><Button size="md" className="self-start sm:mt-6" disabled={busy} aria-busy={busy} onClick={() => void enroll()}>{busy && !revoking ? "Creating code…" : "Create connection code"}</Button></div>
       <p className="text-small text-muted-foreground">Use the code only in the connector's secure terminal prompt. It expires after ten minutes and can pair one machine. The coding-agent prompt contains no credentials.</p>
       {expired && <Banner tone="warning">The connection code expired. Create a new one if you have not connected the machine.</Banner>}
@@ -87,16 +88,16 @@ export function RemoteConnections({ v2 }: { v2: Client }) {
       {connectors === null && !error && <p className="text-body text-muted-foreground" role="status">Loading remote machines…</p>}
       {connectors?.length === 0 && <div className="border p-6"><h3 className="text-body font-semibold">No remote machines connected</h3><p className="mt-2 text-body text-muted-foreground">Use your coding agent to connect a source machine. It appears here once the connector has paired.</p></div>}
       {connectors?.map((connector) => <article key={connector.connector_id} className="space-y-4 border bg-card p-4">
-        <div className="flex flex-wrap items-center gap-3"><h3 className="mr-auto break-words text-body font-semibold">{connector.label || connector.connector_id}</h3><Chip tone={connector.status === "online" ? "success" : connector.status === "offline" ? "warning" : "plain"}>{connector.status === "online" ? "Online" : connector.status === "offline" ? "Offline" : "Revoked"}</Chip><Button size="sm" disabled={busy || connector.status === "revoked"} onClick={() => { setActionError(null); setRevoking(connector); }}>Revoke access</Button></div>
-        <dl className="grid gap-3 text-small sm:grid-cols-2"><div><dt className="text-muted-foreground">Last seen</dt><dd>{connector.last_seen_at ? when(connector.last_seen_at) : "Not yet seen"}</dd></div><div><dt className="text-muted-foreground">Access</dt><dd>{connector.capabilities.native_execution ? "Selected native agents and remote jobs" : "Observation only"}</dd></div></dl>
-        {connector.status === "offline" && <Banner tone="warning">The source worker is offline. Start it on the original machine to verify or run its agents. Saved agents and learning are preserved.</Banner>}
+        <div className="flex flex-wrap items-center gap-3"><h3 className="mr-auto break-words text-body font-semibold">{connector.label || connector.connector_id}</h3><Chip tone={connector.status === "revoked" || !connector.capabilities.native_execution ? "plain" : connector.status === "online" ? "success" : "warning"}>{connector.status === "revoked" ? "Revoked" : !connector.capabilities.native_execution && connector.capabilities.history_import ? "History only" : connector.status === "online" ? "Online" : "Offline"}</Chip><Button size="sm" disabled={busy || connector.status === "revoked"} onClick={() => { setActionError(null); setRevoking(connector); }}>Revoke access</Button></div>
+        <dl className="grid gap-3 text-small sm:grid-cols-2"><div><dt className="text-muted-foreground">Last seen</dt><dd>{connector.last_seen_at ? when(connector.last_seen_at) : "Not yet seen"}</dd></div><div><dt className="text-muted-foreground">Access</dt><dd>{connector.capabilities.native_execution ? connector.capabilities.history_import ? "Live agents and history import" : "Selected native agents and remote jobs" : connector.capabilities.history_import ? "History import only" : "Observation only"}</dd></div></dl>
+        {connector.status === "offline" && connector.capabilities.native_execution && <Banner tone="warning">The source worker is offline. Start it on the original machine to verify or run its agents. Saved agents and learning are preserved.</Banner>}
         {connector.targets.length > 0 ? <ul className="divide-y border-t">{connector.targets.map((target) => <li key={target.target_id} className="space-y-2 pt-3 [&+li]:mt-3">
           <div className="flex flex-wrap items-center gap-3"><span className="min-w-0 flex-1 break-words text-body font-semibold">{target.name}</span>{target.agent_id ? <a href={`#/agents/${encodeURIComponent(target.agent_id)}`} className="text-small underline underline-offset-2">Open agent</a> : <Chip>Not imported</Chip>}</div>
-          <p className="break-words text-small text-muted-foreground">{nativeRuntimeLabel(target.runtime)} · {target.machine_id} · {connector.status === "online" ? target.state === "ready" ? "Ready to run" : target.state === "needs_attention" ? "Needs attention" : "Needs verification" : "Worker unavailable"}</p>
+          <p className="break-words text-small text-muted-foreground">{nativeRuntimeLabel(target.runtime)} · {target.machine_id} · {target.history_only ? "Imported history" : connector.status === "online" ? target.state === "ready" && target.capabilities.launch ? "Ready to run" : target.state === "needs_attention" ? "Needs attention" : "Needs verification" : "Worker unavailable"}</p>
           {target.issues.length > 0 && <p className="text-small text-warning-text">{target.issues.join("; ")}</p>}
         </li>)}</ul> : <p className="text-small text-muted-foreground">No native targets imported. Choose a project or agent with the source connector.</p>}
       </article>)}
-      <p className="text-small text-muted-foreground">Refreshes every 15 seconds while this page is visible. Imported agents use the usual Runs and Learning Dojo views.</p>
+      <p className="text-small text-muted-foreground">Refreshes every 15 seconds while this page is visible. Open an agent to see its runs. Live connections also support Learning Dojo.</p>
     </section>
     <Dialog open={enrollment !== null} onClose={() => setEnrollment(null)} title="Connect this machine" description="Enter this code directly in the source connector's secure prompt."
       footer={<><Button size="sm" onClick={() => setEnrollment(null)}>Done</Button><Button size="sm" variant="solid" onClick={() => void copyCode()}>Copy connection code</Button></>}>

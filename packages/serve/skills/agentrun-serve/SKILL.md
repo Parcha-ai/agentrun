@@ -52,8 +52,9 @@ Run `python -m agentrun_cli remote --help` in the installed connector environmen
 Discover the selected project with `remote discover --project /absolute/project --runtime claude-code` or
 `--runtime codex`. Present the supported project default, Claude named agents or Codex profiles before importing.
 
-Have the user open the destination console's **Connect agent → Another machine** page and create a one-use
-connection code. Enter it directly into the CLI's secure prompt. Never place it in agent prompts, URLs, command
+Have the user open the destination console's **Connect agent → Another machine** page, select **Live agent**,
+**History only** or **Both**, and create a one-use connection code. The grant must match the requested scope;
+the default Live agent grant cannot upload history. Enter the code directly into the CLI's secure prompt. Never place it in agent prompts, URLs, command
 arguments, shell history or logs. For an explicitly approved unattended setup, use the documented origin-bound,
 owner-only credential file; keep its contents out of chat. Do not send a broad server API key to the source.
 
@@ -73,6 +74,40 @@ The worker uses outbound HTTPS, the selected native target and a restricted conn
 skills, MCP, hooks, models, permissions and sign-in remain on the source machine. Do not add permission-bypass
 flags or silently substitute managed execution. Independent desktop conversations are not attached.
 
+### Historical import from another machine
+
+History needs approval on both sides: the destination owner's code must allow history, and the source operator
+must explicitly select it. Use the same reviewed Python connector and Node bridge. First preview the exact project
+and runtime without uploading anything:
+
+```sh
+agentrun remote history-preview --project /absolute/project --runtime claude-code
+```
+
+Use `--runtime codex` for Codex. Show the candidate session counts and selected destination before upload; the
+export can skip oversized or unsettled content after the metadata preview. Only
+completed project sessions are eligible; recent sessions (last ten minutes) and child sessions are skipped.
+History cannot reliably identify one named Claude agent or Codex profile: do not attribute the project's sessions
+to one. History flags reject named/profile selectors. If the user wants that live setup too, connect it separately
+and import the project's history with a history-only connection.
+
+After the user approves the history scope, choose the matching code in the console and one of these commands:
+
+```sh
+# History only: no executing worker or self-improvement.
+agentrun remote connect --origin https://console.example.com --project /absolute/project --runtime claude-code --history-only
+
+# Both: connect the project for future jobs and import its completed history.
+agentrun remote connect --origin https://console.example.com --project /absolute/project --runtime claude-code --history
+```
+
+Run only the chosen command, with the intended origin, runtime and private `--state-dir`. With neither flag,
+connection imports no history. History-only needs no native sign-in or paid model call and cannot execute later;
+connecting it live requires a new owner grant. Historical records retain their source provenance and are excluded
+from live execution and automatic learning. Verify the imported/skipped counts and console links. Repeating
+`agentrun remote import-history --state-dir /private/connector` imports new eligible sessions for that approved
+target; duplicates are skipped. The worker does not continuously upload historical conversations.
+
 ### Optional self-improvement
 
 When requested, verify the imported agent and enable its existing **Self-improving** control. Notes and skills are
@@ -82,12 +117,12 @@ Learning Dojo; a connector cannot approve them. Reflection and grading add model
 receive and create no AgentRun learning. Do not start a paid run unless authorized, and do not promise enforcement
 of native dollar caps, interactive approvals, learned workflows or unsupported desktop tools.
 
-### Historical import
+### Historical import into a local store
 
 Confirm source runtimes, projects and scope, then inspect the local importer with `npx @parcha/agentrun import
---help`. This importer writes a local store; the remote connector does not upload session history. If source files
-and the intended store are on different machines, explain that limitation before offering a migration; never
-silently import into another instance or transfer transcripts without approval.
+--help`. This importer writes a local store and also supports pi history. For Claude Code or Codex sessions on
+another machine, use the scoped remote-history flow above. Do not silently import into another instance or
+transfer transcripts without approval.
 
 Identify the existing server's actual data directory, store configuration, seal key and supervisor. Preserve them
 without printing secrets. Run the selected `import --data DIR --dry-run` first. Before write import, inspect active
