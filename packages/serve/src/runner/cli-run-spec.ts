@@ -180,8 +180,18 @@ export async function sweepEarlier(harnesses: string, epoch: number): Promise<vo
  *  removed, then each of `parents` in order while it is empty: one another claim of the run has laid things in since (a
  *  follow-up's) stays, with what is in it. Run again over what a cut-off sweep left, it finishes it. */
 export async function sweepScratch(harnesses: string, epoch: number, parents: readonly string[]): Promise<void> {
-  await sweepEarlier(harnesses, epoch);
-  await rm(join(harnesses, String(epoch)), { recursive: true, force: true });
+  // An earlier folder that cannot be swept never keeps this claim's own folder: its removal is attempted anyway, and the
+  // earlier failure is thrown after it (with this one's, when both fail).
+  const failures: unknown[] = [];
+  await sweepEarlier(harnesses, epoch).catch((error: unknown) => { failures.push(error); });
+  await rm(join(harnesses, String(epoch)), { recursive: true, force: true }).catch((error: unknown) => { failures.push(error); });
+  if (failures.length === 0) await rmEmptyParents(parents);
+  else await rmEmptyParents(parents).catch((error: unknown) => { failures.push(error); });
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) throw new AggregateError(failures, failures.map((error) => (error as Error)?.message ?? String(error)).join("; "));
+}
+
+async function rmEmptyParents(parents: readonly string[]): Promise<void> {
   for (const parent of parents) {
     try {
       await rmdir(parent);

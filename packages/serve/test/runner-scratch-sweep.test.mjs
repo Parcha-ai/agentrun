@@ -93,3 +93,21 @@ test("a data directory with no scratch folder, or a store that fails on a row, n
   assert.ok(said.some((line) => /store busy/.test(line)), "the failure is said");
   assert.equal(existsSync(join(dir, "scratch", "agent-a", "run-ended")), true, "nothing is deleted on a failed read");
 });
+
+test("an earlier claim's folder that cannot be swept never keeps the current claim's own folder", async (t) => {
+  const { sweepScratch } = await import("../dist/runner/cli-run-spec.js");
+  const { dir, lay } = laid(t);
+  lay("agent-a", "run-x", 1);
+  lay("agent-a", "run-x", 2);
+  const harnesses = join(dir, "scratch", "agent-a", "run-x", "harness");
+  // Claim 1's home cannot be emptied (its parent is read-only), as a dead CLI's odd permissions leave it.
+  const locked = join(harnesses, "1", "home");
+  const { chmodSync } = await import("node:fs");
+  chmodSync(locked, 0o500);
+  try {
+    await assert.rejects(sweepScratch(harnesses, 2, [harnesses]), /EACCES|permission/i);
+  } finally {
+    chmodSync(locked, 0o700);
+  }
+  assert.equal(existsSync(join(harnesses, "2")), false, "the current claim's folder is removed despite the earlier failure");
+});
