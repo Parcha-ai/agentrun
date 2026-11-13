@@ -150,7 +150,7 @@ export async function message(
   store: RunsStore,
   moment: RunMoment,
   content: string,
-  { requestId, answers = true, origin, queue, launchSealed }: { requestId?: string; answers?: boolean; origin?: unknown; queue?: (command: SteerCommand) => Promise<{ skipped: string } | void>; launchSealed?: Uint8Array } = {},
+  { requestId, answers = true, origin, queue, launchSealed, beforeSubmit }: { requestId?: string; answers?: boolean; origin?: unknown; queue?: (command: SteerCommand) => Promise<{ skipped: string } | void>; launchSealed?: Uint8Array; beforeSubmit?: (runId: string, content: string) => Promise<void> | void } = {},
 ): Promise<{ mode: MessageMode; messageId: string; skipped?: string }> {
   if (moment.importedSource !== undefined) throw importedRefusal(moment);
   // Archiving closes a run: it, or a run of its archived agent, takes no message, said as archived (never as finished).
@@ -188,6 +188,8 @@ export async function message(
   if (mode === "answer" && !answers) throw waitingRefusal();
   const messageId = requestId ?? newMessageId();
   const body: Record<string, unknown> = { text: content, ...(answers ? {} : { answers: false }), ...(origin !== undefined ? { origin } : {}) };
+  // A test's seam (ServeOptions.beforeSubmit): every check above read `moment`; the write below is the run's door.
+  await beforeSubmit?.(moment.id, content);
   if (queue) {
     const queued = await queue({ kind: "steer", body });
     return { mode, messageId, ...(queued ? { skipped: queued.skipped } : {}) };

@@ -939,6 +939,17 @@ function decisionJudging(deps: { getCap: () => RunDecisions | undefined; provide
   };
 }
 
+/** A decision under the run's cap with no DSL driver around it (no request committed, none asked again): both halves of
+ *  decisionJudging in one, `before` over `admitted`. It prices the request as main does (holdOf), admits it through the
+ *  kernel cap, asks the judge and settles the hold at what the answer charged; a refusal for room parks the run through
+ *  the hook, one for no price fails it, and a price the catalog could not read fails the decision node unsent.
+ *  learned-workflow.ts wraps a learned workflow's decisions in it (LS-07), over the agent run's ledger.decisions: a
+ *  learned_workflow call is never run again. */
+export function decisionJudge<F>(inner: F, deps: { getCap: () => RunDecisions | undefined; providers: DecisionProviders; park: (refusal: CapRefusal) => void; hooks?: Pick<WorkflowHostHooks, "paused" | "pause"> }): F {
+  const judging = decisionJudging(deps);
+  return judging.before(judging.admitted(inner));
+}
+
 /** A decision's request for the kernel cap, priced as main holds it (serve decision-cap.ts holdOf): Parallel's list price
  *  for one request; Jev's published per-input-token price; an OpenRouter Decisions model at its catalog price (per request,
  *  per image, per token), "unreadable" when the catalog could not be read, a null-priced `price: null` (refused as no
