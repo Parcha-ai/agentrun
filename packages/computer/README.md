@@ -2457,6 +2457,11 @@ the API's control URL) is a later change: `platform: "ios"` is refused in words.
   - UiAutomation is one per phone, so one phoned answers every connection to a phone. Closing a connection cancels
     its own calls; the last close ends phoned (its stdin closes), then drops the adb transport. A phoned that ends on
     its own fails its connections' calls with `gone`, and the next connect starts another.
+  - A phoned holds the phone's UiAutomation until it exits, a moment after its stdin closes, so the next phoned on a
+    phone starts only once the last is gone: the provider keeps each phoned's pid (its shell writes it before
+    `app_process` takes its place) and waits on the phone up to 10 s for that process to end, kills it then, and fails
+    the connect in words if a kill leaves it running. A UiAutomation held by something else (`uiautomator dump`, an
+    instrumentation test, Appium) is not waited for: the first ui call is `unsupported` in words that name them.
   - Neither the endpoint nor the code is ever in a spawned adb's argv, which `/proc` shows to every user of the host.
     The endpoint goes to the local adb server over its socket protocol (`host:connect`, `host:devices-l`,
     `host:disconnect`). The unlock is the vendor's shell command `unlock <code>`, once per connection; every shell

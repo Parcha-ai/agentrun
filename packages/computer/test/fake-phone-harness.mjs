@@ -28,8 +28,13 @@ const jarDir = mkdtempSync(join(tmpdir(), "computer-phoned-"));
 process.once("exit", () => rmSync(jarDir, { recursive: true, force: true }));
 export const PHONED_JAR = join(jarDir, "phoned.jar");
 writeFileSync(PHONED_JAR, "phoned stand-in jar\n");
-/** The service adb's exec: runs to start phoned, as the provider sends it: the jar, app_process, and stderr to a log. */
-export const PHONED_SERVICE = /^exec:CLASSPATH=(\/data\/local\/tmp\/phoned-[0-9a-f]{16}\.jar) app_process \/ ai\.agentrun\.phoned\.android\.Main 2>(\/data\/local\/tmp\/phoned-[0-9a-f]{16}\.log)$/;
+/**
+ * The service adb's exec: runs to start phoned, as the provider sends it: sh's pid to a file of its own, then the jar,
+ * app_process in sh's place, and stderr to a log.
+ */
+export const PHONED_SERVICE = /^exec:echo \$\$ >(\/data\/local\/tmp\/phoned-[0-9a-f]{16}-[0-9a-f]{8}\.pid); CLASSPATH=(\/data\/local\/tmp\/phoned-[0-9a-f]{16}\.jar) exec app_process \/ ai\.agentrun\.phoned\.android\.Main 2>(\/data\/local\/tmp\/phoned-[0-9a-f]{16}\.log)$/;
+/** The provider's wait for a phoned to be gone (a shell loop on the phone): the pid it waits for. */
+const UNTIL_GONE = /^p=(\d+); alive\(\) \{/;
 
 /** A clock whose sleep() moves time on at once: no test waits on the wall clock. */
 export function fakeClock(start = Date.now()) {
@@ -119,12 +124,15 @@ function says(words) {
  * that stage until it settles, so a test can order a disconnect against a connect.
  *
  * The phone's phoned: `startPhoned({ jar, log, transport })` starts it when exec: names a jar the phone holds, and
- * answers the provider's end of its stdio (default the stand-in above, with `phonedVersion`, `abi` and `release`);
+ * answers the provider's end of its stdio, or { stream, pid, exited, kill } for a real process (default the stand-in
+ * above, with `phonedVersion`, `abi` and `release`). The pid goes to the file exec: names, and the provider's wait for a
+ * phoned to be gone waits on its process: a stand-in's exits as `phonedExits(index)` says, "eof" (when its stdin
+ * closes, the default), "kill" (only when the wait kills it, past its bound) or "never" (not even then);
  * `pushFails`, adb push fails; `pushCorrupts`, a pushed jar lands with other bytes. The provider pushes PHONED_JAR
  * (give it as the provider's phoned option). `pm install -r` installs a file the phone holds (phone.installed, by its
  * sha256), or answers pm's Failure line with `installFails`.
  */
-export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = false, loseRecovery = false, cancelPost, stall, onList, postAnswer, others = [], code, abi = "x86_64", release = "15", phonedVersion = PHONED_VERSION, startPhoned, pushFails = false, pushCorrupts = false, installFails = false, endLag = 0, unlockEcho = false, onServer, clock = fakeClock() } = {}) {
+export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = false, loseRecovery = false, cancelPost, stall, onList, postAnswer, others = [], code, abi = "x86_64", release = "15", phonedVersion = PHONED_VERSION, startPhoned, phonedExits = () => "eof", pushFails = false, pushCorrupts = false, installFails = false, endLag = 0, unlockEcho = false, onServer, clock = fakeClock() } = {}) {
 	const requests = [];
 	const adbCalls = [];
 	const sessions = new Map(others.map((s) => [s.id, { ...s }]));
@@ -232,11 +240,12 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 	// --- the phone ---------------------------------------------------------------------------------------------------
 	/**
 	 * connected and unlocked: the adb server's endpoints, and those whose connection took the code; files: the phone's
-	 * files by path, as their sha256; phoned: each phoned the phone started ({ jar, log, ended, stream: the provider's
-	 * end of its stdio, which a test destroys as a phone that kills phoned does }), in order; calls: every
-	 * request the stand-in phoneds read.
+	 * files by path, as their sha256; text: the small files the phone's sh wrote (phoned's pid), by path; phoned: each
+	 * phoned the phone started ({ jar, log, pid, ended, gone, stream: the provider's end of its stdio, which a test
+	 * destroys as a phone that kills phoned does }), in order, where ended is its stdio's end and gone its process's;
+	 * killed: the pids the provider's wait killed; calls: every request the stand-in phoneds read.
 	 */
-	const phone = { connected: new Set(), unlocked: new Set(), files: new Map(), phoned: [], calls: [], installed: [] };
+	const phone = { connected: new Set(), unlocked: new Set(), files: new Map(), text: new Map(), phoned: [], killed: [], calls: [], installed: [] };
 	const expected = code ?? ADB_CODE;
 	const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
@@ -273,6 +282,15 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 			return result();
 		}
 		if (w[0] === "test" && w[1] === "-e") return result("", phone.files.has(w[2]) ? 0 : 1);
+		if (w[0] === "cat") {
+			const text = phone.text.get(w[1]);
+			return text === undefined ? result("", 1) : result(text);
+		}
+		if (w[0] === "rm" && w[1] === "-f") {
+			phone.text.delete(w[2]);
+			phone.files.delete(w[2]);
+			return result();
+		}
 		if (w[0] === "touch") {
 			if (!phone.files.has(w[1])) phone.files.set(w[1], sha256(Buffer.alloc(0)));
 			return result();
@@ -377,19 +395,24 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 		// wait on, for the stage "before" or "after").
 		const before = onServer?.(service, "before");
 		if (before) await before;
-		const answer = handle(service, options);
+		const answer = await handle(service, options);
 		const after = onServer?.(service, "after");
 		if (after) await after;
 		return answer;
 	}
-	function handle(service, options) {
+	async function handle(service, options) {
 		if (options.transport !== undefined) {
 			const serial = serialOf(options.transport);
 			if (serial === undefined || !phone.connected.has(serial)) return { ok: false, error: { code: "vendor", vendor: "phone-harness", message: "the adb server refused host:transport-id: device not found" } };
 			const shellService = /^shell:(.*)$/s.exec(service);
 			if (!shellService) return { ok: false, error: { code: "vendor", vendor: "phone-harness", message: `the adb server does not know ${service.split(":")[0]}` } };
-			const ran = shellOn(serial, shellService[1]);
-			return { ok: true, value: ran.value.stdout.toString("utf8") };
+			const gone = UNTIL_GONE.exec(shellService[1]);
+			if (gone && phone.unlocked.has(serial)) {
+				ran.push(shellService[1]);
+				return { ok: true, value: await untilGone(Number(gone[1])) };
+			}
+			const out = shellOn(serial, shellService[1]);
+			return { ok: true, value: out.value.stdout.toString("utf8") };
 		}
 		const connect = /^host:connect:(.+)$/.exec(service);
 		if (connect) return { ok: true, value: connectTo(connect[1]) };
@@ -401,6 +424,24 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 		return { ok: false, error: { code: "vendor", vendor: "phone-harness", message: `the adb server does not know ${service}` } };
 	}
 	const serverCalls = [];
+
+	/**
+	 * The provider's wait for the phoned of pid to be gone: exited once its process ends; past the wait's bound (a
+	 * phoned that exits only when killed, or never), killed, or still running.
+	 */
+	async function untilGone(pid) {
+		const one = phone.phoned.find((started) => started.pid === pid);
+		if (one === undefined || one.gone) return "exited\n";
+		if (one.exits === "eof") {
+			await one.exited;
+			return "exited\n";
+		}
+		phone.killed.push(pid);
+		one.kill();
+		if (one.exits === "never") return "running\n";
+		await one.exited;
+		return "killed\n";
+	}
 
 	/**
 	 * A service's raw stream on the phone (adb's exec:): the only one the provider opens is phoned's start. A locked
@@ -415,14 +456,28 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 		if (!phone.unlocked.has(serial)) return { ok: true, value: says(LOCKED) };
 		const start = PHONED_SERVICE.exec(service);
 		if (!start) return { ok: true, value: says(`/system/bin/sh: ${service.slice("exec:".length).split(" ")[0]}: inaccessible or not found\n`) };
-		const [, jar, log] = start;
+		const [, pidFile, jar, log] = start;
 		if (!phone.files.has(jar)) return { ok: true, value: says("Error: Could not find class 'ai.agentrun.phoned.android.Main'\n") };
-		const started = { jar, log, ended: false };
+		const index = phone.phoned.length;
+		const started = { jar, log, ended: false, gone: false };
 		phone.phoned.push(started);
 		const onEnd = () => (started.ended = true);
-		const stream = startPhoned
+		const given = startPhoned
 			? await startPhoned({ jar, log, transport: options.transport })
 			: stubPhoned({ version: phonedVersion, abi, release, record: (request) => phone.calls.push(request), onEnd });
+		const stream = given.stream ?? given;
+		if (given.stream !== undefined) {
+			// A real process: its own pid, exit and kill.
+			Object.assign(started, { pid: given.pid, exits: "eof", exited: given.exited, kill: given.kill });
+		} else {
+			// The stand-in's process ends with its stdio, or only when killed, or never: phonedExits says.
+			const exits = phonedExits(index);
+			let kill = () => {};
+			const exited = exits === "eof" ? new Promise((resolve) => stream.once("close", resolve)) : exits === "kill" ? new Promise((resolve) => (kill = resolve)) : new Promise(() => {});
+			Object.assign(started, { pid: 4000 + index, exits, exited, kill: () => kill() });
+		}
+		started.exited.then(() => (started.gone = true));
+		phone.text.set(pidFile, `${started.pid}\n`);
 		started.stream = stream;
 		stream.once("close", onEnd);
 		if (!streams.has(serial)) streams.set(serial, new Set());
