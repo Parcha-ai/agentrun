@@ -37,6 +37,7 @@ import type { ImportAnswer, ImportTask } from "./import-worker.js";
 import { answerStoreCall, type StoreCall } from "./import-proxy.js";
 import { gradeModelOf, LEARNING_LABEL, learningBudgetOf, type LearningMode, learningOf, learnsOf, seedOf } from "./learning.js";
 import { agentLearning, learningLog, learningNotes, noteBody, pendingCount, promotable, readNote, secretsShown, sendNote, statusesOf, writeNote } from "./learning-routes.js";
+import type { DraftDecisions } from "./learn/skills.js";
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
 import { openapiDocument, servedOpenapi, UNSUPPORTED } from "./openapi.js";
 import { boxAvailability, boxesLine, defaultPlaceOf, NEW_AGENT_TOOLS, newAgentPlace, noBoxReason, type Place, placesOf, resolvePlace } from "./place.js";
@@ -1537,7 +1538,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   /** The tools a learned draft of agent `id` may name, as a run's merge reads them (learning-run.ts draftTools): its
    *  current revision's, those the gate allows under the server's settings and the agent's own. `entry`: the agent as the
    *  caller already read it, so what it checks and what it copies are one revision's (a promotion). */
-  async function learnedDraftToolsOf(id: string, entry?: AgentEntry): Promise<{ tools: string[]; gated: Record<string, string>; deniedBy: Record<string, "agent" | "server" | "default">; ask?: DraftAsk }> {
+  async function learnedDraftToolsOf(id: string, entry?: AgentEntry): Promise<{ tools: string[]; gated: Record<string, string>; deniedBy: Record<string, "agent" | "server" | "default">; ask?: DraftAsk; decisions?: DraftDecisions }> {
     const revision = (entry ?? (await needAgent(id))).revision;
     if (revision?.kind !== "agentic") return { tools: [], gated: {}, deniedBy: {} };
     const [{ learnedDraftTools, mcpGrantsListed }, { permissionFrom }, { learnedAskFits }] = await Promise.all([import("./tools.js"), import("./tool-gate.js"), import("./learned-workflow.js")]);
@@ -1551,7 +1552,21 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // `deniedBy`: where each deny was set (the agent's tool settings, the server's), which a refused draft's words name.
     const { tools, gated, deniedBy, asked } = learnedDraftTools(mcpGrantsListed(body.tools ?? [], (name) => listed.get(name) ?? []), (name) => gate(name).permission, undefined, (name) => gate(name).from, { mcp: true, approvers: await readApprovers(store.settings) });
     // #2424's card rule (learnedAskFits): a restored draft whose ask-set MCP tools would not all show is refused.
-    return { tools, gated, deniedBy, ask: { asked, fits: learnedAskFits } };
+    const ask = { asked, fits: learnedAskFits };
+    // A draft's decision nodes (LS-07), as a run's learning end checks them: on this server's decision providers (its
+    // keys, saved ones among them: env), each held to the gate by its bare id; deny alone refuses one.
+    const [{ decisionProvidersIn }, { DECISION_PROVIDER_KEYS }] = await Promise.all([import("./decisions.js"), import("./tool-plane.js")]);
+    const providers = await decisionProvidersIn(env);
+    if (!providers) return { tools, gated, deniedBy, ask };
+    const decided: Record<string, string> = {};
+    const decisionDeniedBy: Record<string, "agent" | "server" | "default"> = {};
+    for (const provider of DECISION_PROVIDER_KEYS) {
+      const { permission, from } = gate(provider);
+      if (permission === "allow") continue;
+      decided[provider] = permission;
+      if (permission === "deny") decisionDeniedBy[provider] = from as "agent" | "server" | "default";
+    }
+    return { tools, gated, deniedBy, ask, decisions: { providers: providers.providers, default: providers.default, gated: decided, deniedBy: decisionDeniedBy } };
   }
   async function needAgent(id: string): Promise<AgentEntry> {
     const entry = ID.test(id) ? await agents.get(id) : null;
