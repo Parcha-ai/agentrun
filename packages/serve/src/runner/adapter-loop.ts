@@ -39,7 +39,7 @@ import { answerOnce, HAND_BACK, handBackOf } from "./hand-back.js";
 import { isComputerCommand, type JournalHold, journalHold, type RunComputerHold } from "./computer-journal.js";
 import { COMPUTER_HANDOVER_KIND, COMPUTER_HOLD_KIND } from "../computer-commands.js";
 import { journalSessions } from "./sessions.js";
-import { DECISION_SESSION, FIT_TOLERANCE, overCapOf, paidRefusal, type Previous, runCap, type RunCap, type RunCapOptions, type RunDecisions, type RunTools, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
+import { DECISION_SESSION, FIT_TOLERANCE, overCapOf, paidRefusal, type Previous, previousAfter, runCap, type RunCap, type RunCapOptions, type RunDecisions, type RunTools, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
 import { PORT_PROVIDER, portModels, type PortModels, tierProvider } from "../port-models.js";
 
 /** The run's cap as its spec gives it: the kernel runCap's options but its sessions, which the loop's are. */
@@ -1118,13 +1118,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           const asked = askedFor.get(turn);
           askedFor.delete(turn);
           if (!asked?.own || asked.bound === undefined || usage.cut || (how !== undefined && how.end !== "answered")) return;
-          // A conversation only grows between its own requests, so a smaller one on the same model is another's (a child of
-          // the run, whose requests the proxy cannot tell from the root's): it never replaces the session's previous request.
-          // After the cache goes cold the previous request prices nothing (price.ts), so a compaction costs only that window.
-          if (previous?.model === asked.model && previous.counted === asked.counted && asked.bound < previous.boundTokens) return;
           const cachedTokens = (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0);
           if (!(usage.input >= 0 && cachedTokens >= 0 && usage.input + cachedTokens > 0)) return;
-          previous = { model: asked.model, cachedTokens, inputTokens: usage.input, boundTokens: asked.bound, counted: asked.counted, endedAt: (specNow?.runCap?.now ?? Date.now)() };
+          // A smaller request than the previous on the same model is a compaction or another conversation's (a child of the
+          // run, whose requests the proxy cannot tell from the root's): history resets (previousAfter), never sticks.
+          previous = previousAfter(previous, { model: asked.model, cachedTokens, inputTokens: usage.input, boundTokens: asked.bound, counted: asked.counted, endedAt: (specNow?.runCap?.now ?? Date.now)() });
         };
         const flushed = { flush: () => deps.flush() };
         const earlierDecisions = sessionSpendOf(await sessions.read(DECISION_SESSION)).spentUsd;
