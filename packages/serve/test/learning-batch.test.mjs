@@ -79,9 +79,9 @@ test("POST /agents/{id}/learning/batches: each row's run, in order, with learnin
   assert.equal(money(end.rows.reduce((sum, r) => sum + r.total_usd, 0)), end.spent_usd, "the header's cost is the rows'");
   assert.equal(end.cost_usd, end.spent_usd);
   assert.ok(end.spent_usd > 0 && end.spent_usd < end.max_cost_usd, "the faux model's runs cost a little, and the cap holds");
-  assert.deepEqual(end.lessons.notes, ["Check units"], "the first run's note, learned once");
+  assert.deepEqual(end.lessons.notes, ["Check units", "What the reviewer said"], "the first run's note, then the note its review taught, each once");
   assert.ok(end.rows[0].merged, "the merge of the first run's learning");
-  assert.deepEqual(end.rows[0].learned.notes, ["Check units"]);
+  assert.deepEqual(end.rows[0].learned.notes, ["Check units", "What the reviewer said"], "every round's");
 
   // Each run was given the chosen columns alone, in order, and was told the reference beside its own answer.
   const runs = (await api("GET", `/agents/${id}/runs?limit=20`)).body.runs.filter((r) => end.rows.some((row) => row.run_id === r.run_id));
