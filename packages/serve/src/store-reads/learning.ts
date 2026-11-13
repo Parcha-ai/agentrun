@@ -179,7 +179,7 @@ export async function agentLearningOverStore(store: Store, agentId: string): Pro
 
 /** Agent `agentId`'s cost per run from the one store (GET /agents/{id}/learning/cost, learning-cost.ts): each of its
  *  agentic runs that ended (ended, stopped or failed), oldest first, numbered from 1, with its own cost and what learning
- *  added for it (runCostOf over its row's cost and its learning end), the path it took and the learned workflow it called
+ *  added for it (runCostOf over its row's cost and its learning's spend, learningSpendOf), the path it took and the learned workflow it called
  *  (journalReadsOf), and the learned revision it started from (its launch's seed); and what the series shows
  *  (costSummary). A run still at work, an imported or archived one and a workflow revision's run are left out; a learning
  *  run (a run's grade and merge) is no run of the list, and its cost is its run's learning. `limit`: the latest runs
@@ -192,11 +192,23 @@ export async function agentCostOverStore(store: Store, agentId: string, limit = 
     if (!kinds.has(run.revisionId)) kinds.set(run.revisionId, (await store.agents.revision(run.revisionId))?.kind);
     if (kinds.get(run.revisionId) === "workflow") continue;
     const started = await learningStartOfRun(store, run.id);
-    const end = await runLearningEnd(store, run.id);
+    const { looked, grade } = await learningSpendOf(store, run.id);
     const { path, workflow } = await journalReadsOf(store, run, started);
-    runs.push({ n: runs.length + 1, run_id: run.id, started_at: new Date(run.startedAt).toISOString(), path, workflow, learned_revision: started?.seed ?? null, ...runCostOf(run.costUsd, end) });
+    runs.push({ n: runs.length + 1, run_id: run.id, started_at: new Date(run.startedAt).toISOString(), path, workflow, learned_revision: started?.seed ?? null, ...runCostOf(run.costUsd, looked, grade) });
   }
   return { runs: runs.slice(Math.max(0, runs.length - limit)), summary: costSummary(runs), total_runs: runs.length, unknown_cost_runs: runs.filter((run) => run.total_usd === null).length };
+}
+
+/** What run `runId`'s learning spent, as its cost per run counts it: what it kept as it answered (`looked`: answeredOf),
+ *  and its grade's spend (`grade`): its learning run's cost once that run ended, stopped or failed (runner/learning-loop.ts
+ *  keeps the grade's spend there, a paid grade a person stopped included; null when unknown), 0 while it runs or when the
+ *  run queued none. */
+async function learningSpendOf(store: Store, runId: string): Promise<{ looked: ReturnType<typeof answeredOf> | null; grade: number | null }> {
+  const kept = await store.learning.proposal(runId);
+  if (!kept) return { looked: null, grade: 0 };
+  const looked = answeredOf((kept.proposal ?? {}) as KeptRow);
+  const learningRun = kept.learningRunId ? await store.runs.get(kept.learningRunId) : undefined;
+  return { looked, grade: learningRun && FINAL_STATES.includes(learningRun.state) ? (learningRun.costUsd ?? null) : 0 };
 }
 
 /** What a run's journal tells the agent's learning view and its cost per run: the notes its job opened (`read`, once
