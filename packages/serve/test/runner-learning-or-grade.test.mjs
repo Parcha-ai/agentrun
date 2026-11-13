@@ -1,5 +1,5 @@
 // The runner's grade on a host whose only model key is OpenRouter's, with a grade model the server names on Anthropic
-// (anthropic/claude-sonnet-4-5, or OpenRouter's dotted spelling of it): the learning dispatch (harness-loops.ts, through
+// (anthropic/claude-sonnet-5-5, or OpenRouter's dotted spelling of it): the learning dispatch (harness-loops.ts, through
 // learning-dispatch.ts gradeRouteOf) sends it as main's grade sends a claude-agent run's (provider.ts providerFor):
 // to OpenRouter's Messages endpoint, on Anthropic's own id, with OpenRouter's key as a bearer token, its one credential,
 // and prices it at OpenRouter's catalog price for the model in the learning run's cost. Before, the runner's route
@@ -54,7 +54,7 @@ async function ended(t, model) {
   return { store, dir };
 }
 
-for (const named of ["anthropic/claude-sonnet-4-5", "anthropic/claude-sonnet-4.5"]) {
+for (const named of ["anthropic/claude-sonnet-5-5", "anthropic/claude-sonnet-5.5"]) {
   test(`a grade model ${named} on OpenRouter's key alone: the grade goes to OpenRouter's Messages endpoint on Anthropic's id, with one credential, priced at OpenRouter's price`, async (t) => {
     const gateway = await startFauxGateway({ text: KEEP, usage: USAGE });
     t.after(() => gateway.close());
@@ -71,11 +71,11 @@ for (const named of ["anthropic/claude-sonnet-4-5", "anthropic/claude-sonnet-4.5
     assert.deepEqual(end, { state: "ended" });
     assert.deepEqual(refused, [], "nothing off loopback but OpenRouter's origin, redirected");
     // (a) the id OpenRouter's Messages endpoint takes, Anthropic's own; (b) OpenRouter's key once, as a bearer token.
-    assert.deepEqual(gateway.requests.map((request) => [request.path.endsWith("/v1/messages"), request.body?.model, request.headers.authorization, request.headers["x-api-key"]]), [[true, "claude-sonnet-4-5", `Bearer ${KEY}`, undefined]]);
+    assert.deepEqual(gateway.requests.map((request) => [request.path.endsWith("/v1/messages"), request.body?.model, request.headers.authorization, request.headers["x-api-key"]]), [[true, "claude-sonnet-5-5", `Bearer ${KEY}`, undefined]]);
     const learning = await runLearningEnd(store, "run-1");
     assert.equal(learning?.state, "merged", JSON.stringify(learning));
     // (c) OpenRouter's catalog price of the model, for the usage the grade reported.
-    const priced = await routeOf("openrouter/anthropic/claude-sonnet-4.5", OR_ALONE, "default");
+    const priced = await routeOf("openrouter/anthropic/claude-sonnet-5.5", OR_ALONE, "default");
     const price = priced.price(priced.model, { input: USAGE.input, output: USAGE.output, cacheRead: 0, cacheWrite: 0 });
     assert.ok(price > 0);
     assert.ok(Math.abs(learning.cost_usd.grade - price) < 1e-12, `the grade's dollars ${learning.cost_usd.grade}, its price ${price}`);
@@ -85,9 +85,9 @@ for (const named of ["anthropic/claude-sonnet-4-5", "anthropic/claude-sonnet-4.5
 test("on a host with Anthropic's own key, a named Anthropic grade model keeps the runner's route as named: Anthropic's origin and key", async () => {
   const { gradeRouteOf } = await import("../dist/runner/learning-dispatch.js");
   const asked = [];
-  const route = await gradeRouteOf("anthropic/claude-sonnet-4-5", { ...OR_ALONE, ANTHROPIC_API_KEY: "fake-test-key" }, (model) => (asked.push(model), { model: "as-named", provider: { api: "anthropic-messages", origin: "https://api.anthropic.com", credential: () => "a" } }));
-  assert.deepEqual([asked, route.model], [["anthropic/claude-sonnet-4-5"], "as-named"]);
+  const route = await gradeRouteOf("anthropic/claude-sonnet-5-5", { ...OR_ALONE, ANTHROPIC_API_KEY: "fake-test-key" }, (model) => (asked.push(model), { model: "as-named", provider: { api: "anthropic-messages", origin: "https://api.anthropic.com", credential: () => "a" } }));
+  assert.deepEqual([asked, route.model], [["anthropic/claude-sonnet-5-5"], "as-named"]);
   const openai = [];
-  await gradeRouteOf("openai/gpt-5", OR_ALONE, (model) => (openai.push(model), { model, provider: { api: "anthropic-messages", origin: "x", credential: () => "k" } }));
-  assert.deepEqual(openai, ["openrouter/openai/gpt-5"], "an OpenAI model on OpenRouter's key alone: the same model on OpenRouter");
+  await gradeRouteOf("openai/gpt-6.1-sol", OR_ALONE, (model) => (openai.push(model), { model, provider: { api: "anthropic-messages", origin: "x", credential: () => "k" } }));
+  assert.deepEqual(openai, ["openrouter/openai/gpt-6.1-sol"], "an OpenAI model on OpenRouter's key alone: the same model on OpenRouter");
 });

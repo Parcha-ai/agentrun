@@ -16,7 +16,7 @@ const { journalSessions } = await import("../dist/runner/sessions.js");
 const { runLearningEnd } = await import("../dist/store-reads/learning.js");
 const { beforeRequestOf } = await import("../../run-adapters/dist/kernel/cap/index.js");
 
-const MODEL = "claude-sonnet-4-5";
+const MODEL = "claude-sonnet-5-5";
 /** The grader's model as the cap prices it, and the same price for the proxy's booking: Sonnet's list price. */
 const GRADER = Object.freeze({ id: MODEL, api: "anthropic-messages", price: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, outputCeiling: 64_000 });
 const price = (_model, usage) => (usage.input * 3 + usage.output * 15 + (usage.cacheRead ?? 0) * 0.3 + (usage.cacheWrite ?? 0) * 3.75) / 1e6;

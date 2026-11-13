@@ -12,7 +12,7 @@ import { answerWith, note } from "./fixtures/faux-learn.mjs";
 import { ended, keptProposal, learner, made, reflectRows, started } from "./learn-support.mjs";
 import { serve, withEnv } from "./support.mjs";
 
-const MODEL = "claude-haiku-4-5";
+const MODEL = "claude-haiku-5-5";
 const UNITS = note("Check units", "Convert every amount to one unit before comparing", "Amounts in one answer came in cents and in dollars.\n");
 // A note longer than a timeline row's text, with a URL in it: the server reads the answer whole, never a row of it.
 const SOURCES = note("Cite sources", "Name the page each figure came from", `A figure with no page could not be checked: https://example.com/policies/refund-policy?ref=notes\n${"Keep the page's own words. ".repeat(80).trimEnd()}\n`);

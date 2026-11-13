@@ -36,20 +36,22 @@ export function learningLoopFactory(deps: LearningFactoryDeps): LoopFactory {
   return createLearningLoop({
     sourceOf: async (learningRunId) => {
       const launch = await store.runs.launch(learningRunId);
-      const runId = objectOf(objectOf(launch.body).input).runId;
+      const input = objectOf(objectOf(launch.body).input);
+      const runId = input.runId;
       if (typeof runId !== "string") return undefined;
       const source = await store.runs.get(runId);
       if (!source) return undefined;
       const instructions = objectOf((await store.agents.revision(source.revisionId))?.body).instructions;
-      return { runId, agentId: source.agentId, ...(typeof instructions === "string" ? { instructions } : {}) };
+      const round = Number.isSafeInteger(input.round) && (input.round as number) > 1 ? { round: input.round as number } : {};
+      return { runId, ...round, agentId: source.agentId, ...(typeof instructions === "string" ? { instructions } : {}) };
     },
-    proposal: (runId) => store.learning.proposal(runId),
+    proposal: (runId, round) => store.learning.proposal(runId, round),
     ask: deps.ask,
     folder: (agentId) => learningWorkspace({ mode: "local", agentId, data: deps.data, ...(deps.log ? { log: deps.log } : {}) }),
     readMain: async (ws, proposal) => (await readMain(ws as Workspace, { notes: proposal.notes })) as GradeMain | { readonly problems: readonly Problem[] },
     commit: async (ws, change) => (await learningCommit(ws as Workspace, change as LearningChange)) as LearningCommitResult,
     mainTexts: (ws, paths) => mainTexts(ws as Workspace, paths),
-    merged: (ws, runId, paths) => mergedAt(ws as Workspace, runId, paths),
+    merged: (ws, runId, paths, round) => mergedAt(ws as Workspace, runId, paths, round),
     ...(deps.now ? { now: deps.now } : {}),
     ...(deps.general ? { general: deps.general } : {}),
     ...(deps.generalThreshold !== undefined ? { generalThreshold: deps.generalThreshold } : {}),

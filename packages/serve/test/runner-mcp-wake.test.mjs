@@ -90,7 +90,7 @@ async function saved(store) {
   await queued(store, "run-2");
 }
 
-const stepOf = (store, claim, extra) => mcpClaim({ store, claim, grants: ["mcp:fake/add"], sealKey: KEY, signal: new AbortController().signal, bounds: { requestMs: 5_000, tries: 1 }, now: () => T0, ...extra });
+const stepOf = (store, claim, extra) => mcpClaim({ loopback: true, store, claim, grants: ["mcp:fake/add"], sealKey: KEY, signal: new AbortController().signal, bounds: { requestMs: 5_000, tries: 1 }, now: () => T0, ...extra });
 const bearer = (step) => step.credentials.fake?.headers?.authorization;
 /** `step`'s outcome, or "asleep" if it has not settled within a bound of its own (only a failing case waits that long). */
 // The window is a real wait the test means to sit through: its timer holds the event loop (nothing else may, an idle store
@@ -167,7 +167,7 @@ test("two in-memory stores are different data: each its own where, and one's rel
   await b.mcp.leaseRefresh("fake", { seen: row.sealed, holder: "runner-elsewhere" });
   const waiter = new AbortController();
   const timer = manualTimer();
-  const waiting = mcpClaim({ store: b, claim: await b.claim("run-1", "runner-b", { leaseMs: 60_000 }), grants: ["mcp:fake/add"], sealKey: KEY, signal: waiter.signal, bounds: { requestMs: 5_000, tries: 1 }, now: () => T0, network: heldNetwork(), timer });
+  const waiting = mcpClaim({ loopback: true, store: b, claim: await b.claim("run-1", "runner-b", { leaseMs: 60_000 }), grants: ["mcp:fake/add"], sealKey: KEY, signal: waiter.signal, bounds: { requestMs: 5_000, tries: 1 }, now: () => T0, network: heldNetwork(), timer });
   const wait = await timer.waiting();
   let woke = false;
   void waiting.then(() => (woke = true), () => (woke = true));

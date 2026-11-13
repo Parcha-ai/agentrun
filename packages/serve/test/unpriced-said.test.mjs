@@ -15,11 +15,11 @@ import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
 import { agent, answerFlow, flowAgent, follow, scratch, serve, withEnv } from "./support.mjs";
 
 const KEY = "not-a-secret-gateway";
-/** An id no catalog lists in any form, and the one the catalog lists flipped (gpt-5.4-mini: $0.75 in, $4.50 out). */
+/** An id no catalog lists in any form, and the one the catalog lists flipped (gpt-6.1-sol: $2 in, $10 out). */
 const NO_PRICE = "house-model-x";
-const PRICED = "gpt-5-4-mini";
+const PRICED = "gpt-6-1-sol";
 const USAGE = { input: 1000, output: 100 };
-const PRICED_EACH = (USAGE.input * 0.75 + USAGE.output * 4.5) / 1e6;
+const PRICED_EACH = (USAGE.input * 2 + USAGE.output * 10) / 1e6;
 const NAMES = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_API_KEY", "AGENT_MODEL_PRICE", "AGENT_MODEL_FAST", "AGENT_MODEL_STRONG", "AGENT_MODEL_GATEWAY_IDS", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "AGENTRUN_CODEX_STANDIN", "AGENTRUN_SERVE_CODEX_STANDIN", "AGENTRUN_OPENCODE_STANDIN", "AGENTRUN_SERVE_OPENCODE_STANDIN"];
 const CODEX_STAND_IN_FILE = fileURLToPath(new URL("../../run-adapters-codex/test/fake-app-server.mjs", import.meta.url));
 const CODEX_STAND_IN = { AGENTRUN_CODEX_STANDIN: "1", AGENTRUN_SERVE_CODEX_STANDIN: JSON.stringify({ command: process.execPath, args: [CODEX_STAND_IN_FILE], env: { FAKE_CODEX_MODEL: "remote" } }) };
@@ -76,7 +76,7 @@ for (const harness of ["codex", "opencode"]) {
   });
 }
 
-test("codex: an uncapped run on a gateway model the catalog prices (gpt-5-4-mini) keeps a known cost, at the catalog's price", { timeout: 120_000 }, async (t) => {
+test("codex: an uncapped run on a gateway model the catalog prices (gpt-6-1-sol) keeps a known cost, at the catalog's price", { timeout: 120_000 }, async (t) => {
   const { run, usage, posts } = await uncapped(t, "codex", PRICED);
   assert.deepEqual([run.status, run.cost.usd, usage.unpriced_runs], ["completed", Math.round(posts * PRICED_EACH * 1e6) / 1e6, 0], JSON.stringify({ cost: run.cost, usage }));
 });
@@ -110,7 +110,7 @@ test("a capped run refused before it starts on a gateway model with no price nam
   assert.equal(gw.requests.length, 0, "nothing reached the gateway");
 });
 
-test("capabilities read a gateway default the catalog prices (gpt-5-4-mini, flipped) as priced", { timeout: 60_000 }, async (t) => {
+test("capabilities read a gateway default the catalog prices (gpt-6-1-sol, flipped) as priced", { timeout: 60_000 }, async (t) => {
   const gw = await gateway(t);
   withEnv(t, { AGENT_MODEL_BASE_URL: `${gw.url}/v1`, AGENT_MODEL_API_KEY: KEY, AGENT_MODEL: PRICED }, NAMES);
   const { api } = await serve(t, { faux: undefined });

@@ -13,7 +13,7 @@ const dir = mkdtempSync(join(tmpdir(), "runner-harnesses-"));
 after(() => rmSync(dir, { recursive: true, force: true }));
 const launch = (extra = {}) => ({
   run: { harness: {}, registry: { install() {} }, setModels() {} },
-  model: "claude-sonnet-4-5",
+  model: "claude-sonnet-5-5",
   provider: { origin: "https://faux.invalid", credential: () => `not-a-secret-${"x"}` },
   price: () => 0,
   sessionsDir: dir,

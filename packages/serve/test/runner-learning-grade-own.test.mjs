@@ -73,13 +73,13 @@ function offLoopback(t) {
 }
 
 test("an agent whose revision names its model, with no grade model named: the grade goes to the agent's model", async (t) => {
-  const { asked, sent } = await graded(t, { own: "anthropic/claude-sonnet-4-5" });
-  assert.deepEqual(asked, ["anthropic/claude-sonnet-4-5"], "the route is asked for the agent's own model");
-  assert.deepEqual(sent, ["anthropic/claude-sonnet-4-5"], "and the grade request names it");
+  const { asked, sent } = await graded(t, { own: "anthropic/claude-sonnet-5-5" });
+  assert.deepEqual(asked, ["anthropic/claude-sonnet-5-5"], "the route is asked for the agent's own model");
+  assert.deepEqual(sent, ["anthropic/claude-sonnet-5-5"], "and the grade request names it");
 });
 
 test("a grade model the server names comes before the agent's own; with neither, the host's default", async (t) => {
-  assert.deepEqual((await graded(t, { own: "anthropic/claude-sonnet-4-5", named: "openai/gpt-5" })).asked, ["strong:openai/gpt-5"], "the named grader, as the strong tier's model");
+  assert.deepEqual((await graded(t, { own: "anthropic/claude-sonnet-5-5", named: "openai/gpt-6.1-sol" })).asked, ["strong:openai/gpt-6.1-sol"], "the named grader, as the strong tier's model");
   assert.deepEqual((await graded(t, {})).asked, [undefined], "neither: the route picks the host's default");
   assert.equal(gradeModelFor({ own: "x/y" }), "x/y");
   assert.equal(gradeModelFor({ model: "a/b", own: "x/y" }), "a/b");
@@ -88,19 +88,19 @@ test("a grade model the server names comes before the agent's own; with neither,
 
 test("a faux host that inherited OpenRouter's key grades a named anthropic/* model on its faux route, as named: nothing goes to OpenRouter", async (t) => {
   const refused = offLoopback(t);
-  const { asked, sent, store } = await graded(t, { named: "anthropic/claude-sonnet-4-5", env: { AGENTRUN_SERVE_FAUX: "1", OPENROUTER_API_KEY: `not-a-secret-${"or"}` } });
-  assert.deepEqual(asked, ["strong:anthropic/claude-sonnet-4-5"], "the route is asked for the model as named (the strong tier's), not rewritten to OpenRouter");
-  assert.deepEqual(sent, ["anthropic/claude-sonnet-4-5"], "the grade went to the faux route's origin");
+  const { asked, sent, store } = await graded(t, { named: "anthropic/claude-sonnet-5-5", env: { AGENTRUN_SERVE_FAUX: "1", OPENROUTER_API_KEY: `not-a-secret-${"or"}` } });
+  assert.deepEqual(asked, ["strong:anthropic/claude-sonnet-5-5"], "the route is asked for the model as named (the strong tier's), not rewritten to OpenRouter");
+  assert.deepEqual(sent, ["anthropic/claude-sonnet-5-5"], "the grade went to the faux route's origin");
   assert.deepEqual(refused, [], "no request off loopback");
   assert.equal((await runLearningEnd(store, "run-1"))?.state, "merged");
 });
 
-test("with the real route and Anthropic's key, an agent whose revision names OpenRouter's dotted anthropic/claude-sonnet-4.5 is graded on claude-sonnet-4-5, and its learning merges", async (t) => {
+test("with the real route and Anthropic's key, an agent whose revision names OpenRouter's dotted anthropic/claude-sonnet-5.5 is graded on claude-sonnet-5-5, and its learning merges", async (t) => {
   const gateway = await startFauxGateway({ text: KEEP, usage: { input: 1_000, output: 40 } });
   t.after(() => gateway.close());
   const env = { ANTHROPIC_API_KEY: `not-a-secret-${"a"}`, ANTHROPIC_BASE_URL: gateway.url };
-  const { store } = await graded(t, { own: "anthropic/claude-sonnet-4.5", env, routeOf: realRouteOf });
-  assert.deepEqual(gateway.requests.map((request) => [request.path, request.body?.model]), [["/v1/messages", "claude-sonnet-4-5"]]);
+  const { store } = await graded(t, { own: "anthropic/claude-sonnet-5.5", env, routeOf: realRouteOf });
+  assert.deepEqual(gateway.requests.map((request) => [request.path, request.body?.model]), [["/v1/messages", "claude-sonnet-5-5"]]);
   const learning = await runLearningEnd(store, "run-1");
   assert.equal(learning?.state, "merged", JSON.stringify(learning));
   assert.ok(learning.cost_usd.grade > 0, "priced on the catalog's model");
