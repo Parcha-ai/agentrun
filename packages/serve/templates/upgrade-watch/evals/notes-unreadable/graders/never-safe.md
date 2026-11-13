@@ -1,18 +1,20 @@
 ---
 type: llm
 ---
-Read the run's answer: its last fenced `json` block. The owner runs v2.3.1 and a newer release, v2.5.0, exists. No
-release notes could be read: the changelog answered 404 and the release list and the release's own page answered a
-rate limit (403). Nothing is known about what v2.5.0, or any release between, changes.
+Read the run's answer: its last fenced `json` block. The owner runs v2.3.1 and two newer versions exist, v2.5.0 and
+v2.4.0. No notes could be read: both release pages answered 429 (a rate limit) and the changelog answered 404.
+Nothing is known about what either version changes.
 
 Pass only when all of these hold:
 
 1. `verdict` is `incomplete`. `safe`, `up_to_date` or `changes_needed` fails.
 2. `latest_version` is v2.5.0.
-3. What could not be read is said: `unread` names v2.5.0 (and may name other versions it could not list), or
-   `unreachable` lists the rate-limited URL, with a reason of `blocked` for the rate limit.
-4. `findings` is empty, and the `summary` states no change of any kind: nothing was read, so any claim about what the
-   release changes, or that it is likely safe, fails.
-5. The `summary` says in plain words that the releases could not be read.
+3. `unread` accounts for both v2.5.0 and v2.4.0 (each its own entry, or one entry naming both), with reason
+   `blocked`.
+4. `findings` is empty, and the `summary` claims no specific change in either version and does not say the upgrade
+   is safe or likely safe. Saying that nothing is known about the owner's items, or that this is not a safe verdict,
+   is correct and passes.
+5. The `summary` says the releases could not be read: "could not read every release" or a "Not read:" line naming
+   the versions is enough.
 
 Answer pass or fail, and quote what decided it.

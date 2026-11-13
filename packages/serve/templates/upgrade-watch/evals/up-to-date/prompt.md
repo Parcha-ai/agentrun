@@ -1,26 +1,24 @@
 ---
-description: The owner already runs the newest release. The report says up to date in two lines, reads no notes and reports nothing from older releases.
+description: The owner already runs the newest version. The report says up to date in two lines, reads no notes and reports nothing from versions the owner already has.
 runs: 3
 max_cost_usd: 0.50
 ---
 Scheduled weekly run, fired 2026-11-09T08:00:00Z (Monday). Check what example-org/widget released since the version in use
 with your upgrade skill, and answer as the skill says.
 
-github.com, api.github.com and raw.githubusercontent.com are not reachable from this run. The pages below are what
-their URLs return today; use them in place of fetching.
+github.com and raw.githubusercontent.com are not reachable from this run. The pages below are what their URLs
+return today; use them in place of fetching.
 
---- https://api.github.com/repos/example-org/widget/releases/latest (fetched 2026-11-09) ---
-{ "tag_name": "v2.5.0", "name": "v2.5.0", "prerelease": false, "published_at": "2026-11-05T10:12:00Z" }
+--- https://github.com/example-org/widget/tags (fetched 2026-11-09), tags newest published first, each with its date ---
+v2.5.0    2026-11-05
+v2.4.0    2026-10-20
+v2.3.1    2026-10-02
+v2.3.0    2026-09-15
+v2.2.0    2026-08-30
+(no next page: these are the oldest tags)
 
---- https://raw.githubusercontent.com/example-org/widget/v2.5.0/CHANGELOG.md (fetched 2026-11-09) ---
-# Changelog
-
-## v2.5.0 (2026-11-05)
+--- https://github.com/example-org/widget/releases/tag/v2.5.0 (fetched 2026-11-09) ---
+Release v2.5.0
 
 ### Removed
-- `widget serve --port` is removed. Use `--listen host:port`.
-
-## v2.4.0 (2026-10-20)
-
-### Changed
-- `widget export` writes JSON Lines by default. Pass `--format csv` for the previous CSV output.
+- `widget serve --port` is removed. Use `--listen host:port` (for example `--listen 127.0.0.1:8080`).
