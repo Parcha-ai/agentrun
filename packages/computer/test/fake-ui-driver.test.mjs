@@ -952,6 +952,18 @@ test("a window expect reads the app's main window, never the older window a targ
 		assert.equal(front.value.expect, "met", JSON.stringify(aimed));
 		assert.equal((await c.client.call("ui.observe", { since: front.value.state })).value.window.title, "Grand", "a met window expect answers the window that met it");
 	}
+	// A target that names only a window reads that window's app's main window, never the app in front.
+	const other = { id: "test.other", name: "Other", start: "only", size: [300, 200], screens: { only: { title: "Elsewhere", elements: [button("x", "X", {})] } } };
+	const two = await fakeUiConnection({ apps: [app, other] });
+	await two.client.call("apps.launch", { id: app.id });
+	const layers = (await two.client.call("ui.observe", {})).value;
+	await two.client.call("apps.launch", { id: other.id });
+	assert.equal((await two.client.call("ui.observe", {})).value.window.title, "Elsewhere", "the other app is in front");
+	const elsewhere = await two.client.call("ui.act", { target: { window: layers.window.id }, steps: [], expect: { window: { title: "Elsewhere" }, timeoutMs: 200 } });
+	assert.equal(elsewhere.value.expect, "unmet", "the window's own app has no window called Elsewhere");
+	const own = await two.client.call("ui.act", { target: { window: layers.window.id }, steps: [], expect: { window: { title: "Home" }, timeoutMs: 200 } });
+	assert.equal(own.value.expect, "met", JSON.stringify(own));
+	await two.close();
 	await c.close();
 	// ui.expect-window fails a driver whose window wait reads the window the act was aimed at first.
 	class Aimed extends FakeUiDriver {

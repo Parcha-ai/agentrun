@@ -570,7 +570,9 @@ export class UiEngine {
 		// act answers window "closed" and no state. Either way the steps that ran keep their results. An act with neither
 		// target nor state is bound to the app it began on, so a step that opens another app never lets a later step
 		// reach that one: only a nav hands the act on.
-		let aim: UiTarget | undefined = target ?? (view === undefined ? undefined : { app: view.app.id });
+		// A target that names only a window is bound to the app that window is in, from the first look: a window expect and
+		// a closed window's follow then read that app, never whichever is in front.
+		let aim: UiTarget | undefined = target === undefined ? (view === undefined ? undefined : { app: view.app.id }) : target.app === undefined && view !== undefined ? { ...target, app: view.app.id } : target;
 		/** Where the act goes once its aimed window is not found: the app's next main window, closed, or gone (out of reach). */
 		const reaim = async (): Promise<Result<"followed" | "closed" | "gone">> => {
 			const app = aim?.app;

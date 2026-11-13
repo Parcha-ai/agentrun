@@ -280,17 +280,23 @@ test("two providers on one ledger: a create of the request with another spec whi
 	// Another process's provider, on the same ledger: it creates the request while this one's claim is just made.
 	const other = await make(base);
 	let during;
+	let same;
 	const ledger = {
 		...base,
 		claim: async (entry) => {
 			const claimed = await base.claim(entry);
-			if (claimed && during === undefined) during = await Promise.all([other.create({ ...spec, labels: { run: "b" } }, context), other.create({ ...SPEC }, context)]);
+			if (claimed && during === undefined) {
+				during = await Promise.all([other.create({ ...spec, labels: { run: "b" } }, context), other.create({ ...SPEC }, context)]);
+				// The same spec waits for this create's phone, never sending the key itself.
+				same = other.create(spec, context);
+			}
 			return claimed;
 		},
 	};
 	const provider = await make(ledger);
 	const created = await provider.create(spec, context);
 	assert.equal(created.ok, true, JSON.stringify(created));
+	assert.deepEqual(await same, created, "the same spec, in flight on the other provider, answers the phone this one made");
 	for (const refused of during) {
 		assert.equal(refused.error?.code, "exists", JSON.stringify(refused));
 		assert.match(refused.error.message, /^computer-[0-9a-f]{12} is being made for this request with another spec, so it is not returned: label/);
@@ -300,6 +306,23 @@ test("two providers on one ledger: a create of the request with another spec whi
 	assert.equal(fake.requests().filter((r) => r.method === "POST" && r.path === "/sessions").length, 1, "only the first POSTed the request's key");
 	assert.deepEqual((await base.list()).map((e) => [e.id, e.labels]), [[created.value.id, { run: "a" }]], "the phone keeps the labels it was made with");
 	assert.deepEqual(await other.create(spec, context), created, "the same spec from the other provider answers the same phone");
+	assert.equal(fake.requests().some((r) => r.method === "DELETE"), false, "and nothing ended it");
+});
+
+test("a pending claim of the request's spec that no create here made, and no phone answers, is waited for; once stale, this create sends the key", async () => {
+	const { provider, fake, ledger } = await setup();
+	const spec = { ...SPEC, labels: { run: "a" } };
+	const requestId = "phone-stale-claim";
+	const key = createHash("sha256").update(requestId).digest("hex");
+	// A create in a process that died between its claim and its POST.
+	await ledger.put({ id: `pending-${key}`, name: computerNameFor(requestId), labels: { run: "a" }, image: SPEC.image, deadline: new Date(fake.clock.now() + 600_000).toISOString(), request: key });
+	const start = fake.clock.now();
+	const created = await provider.create(spec, { requestId });
+	assert.equal(created.ok, true, JSON.stringify(created));
+	// readyMs (240 s) and twice requestMs (30 s): past any create's POST and its recovery.
+	assert.ok(fake.clock.now() - start >= 300_000, `it waited for the claim's create first: ${fake.clock.now() - start} ms`);
+	assert.equal(fake.requests().filter((r) => r.method === "POST" && r.path === "/sessions").length, 1);
+	assert.deepEqual((await ledger.list()).map((e) => [e.id, e.labels]), [[created.value.id, { run: "a" }]]);
 });
 
 test("list names a phone once while create swaps its pending key for the session's entry", async () => {

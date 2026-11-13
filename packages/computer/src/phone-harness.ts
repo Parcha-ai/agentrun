@@ -446,6 +446,9 @@ export class PhoneHarnessProvider implements ComputerProvider {
 	/** Each create in flight, and the names of the phones this provider ended (create-requests.ts). Past this process, the
 	 *  ledger's released entry is what holds, until the service has ended the phone. */
 	readonly #requests = new CreateRequests();
+	/** The Idempotency-Keys whose pending entry a create here claimed, kept until it is removed: a pending entry of one is
+	 *  this provider's own (no create of it is in flight, CreateRequests shares those), so a retry here sends the POST. */
+	readonly #claimed = new Set<string>();
 	readonly #maxLifetimeMs: number;
 	readonly #readyMs: number;
 	readonly #pollMs: number;
@@ -736,24 +739,31 @@ export class PhoneHarnessProvider implements ComputerProvider {
 
 	async #create(spec: ComputerSpec, name: string, requestKey: string, signal?: AbortSignal): Promise<Result<CreatedComputer>> {
 		if (signal?.aborted) return fail("aborted", "create was aborted before the phone harness was asked");
-		const from = this.#now();
+		const looked = this.#now();
 		const body = { platform: "android", kind: "emulator", timeout_seconds: Math.ceil(runLifetimeMs(spec) / 1000) };
 		// The key goes into the ledger before the POST: whatever answers are lost, list() can find the phone by it. It is
 		// claimed, never put over another's: a create of the request in another provider on the same ledger (another
 		// process) holds the request's spec there, and one of another spec is refused before it can POST the same key.
+		// One of the same spec waits for that create's phone (#held finds it by the key, and never ends it): only the
+		// create that holds the claim owns the phone, to end it if it gives up. A claim older than any create's POST and
+		// its recovery (readyMs and twice requestMs from this look) is one whose create ended unrecorded: this one sends.
 		const pending = pendingId(requestKey);
+		const stale = looked + this.#readyMs + 2 * this.#requestMs;
 		for (;;) {
 			const held = await this.#held(spec, name, requestKey, signal);
 			if (held !== undefined) return held;
-			if (await this.#ledger.claim({ id: pending, name, labels: { ...(spec.labels ?? {}) }, image: spec.image, deadline: new Date(from + runLifetimeMs(spec)).toISOString(), request: requestKey })) break;
+			if (await this.#ledger.claim({ id: pending, name, labels: { ...(spec.labels ?? {}) }, image: spec.image, deadline: new Date(this.#now() + runLifetimeMs(spec)).toISOString(), request: requestKey })) break;
 			const other = await this.#ledger.get(pending);
 			// Gone since: that create has ended, with a phone or none; look again.
 			if (other === undefined) continue;
 			const differ = phoneDiffer(spec, other.labels, other.image, "in flight");
 			if (differ.length > 0) return fail("exists", otherSpecWords(name, "is being made", differ));
-			// The same spec: its POST is under the same key, so the service answers both with one phone.
-			break;
+			if (this.#claimed.has(requestKey) || this.#now() >= stale) break;
+			if (signal?.aborted) return fail("aborted", `create was aborted while another create of this request made ${name}`);
+			await this.#sleep(this.#pollMs);
 		}
+		this.#claimed.add(requestKey);
+		const from = this.#now();
 		const posted = await this.#api("POST", "/sessions", { body, headers: { "Idempotency-Key": requestKey }, ...(signal ? { signal } : {}) });
 		const cancelled = !posted.ok && posted.error.code === "aborted";
 		let first = posted.ok ? sessionOf(posted.value.json, "POST /sessions") : undefined;
@@ -772,6 +782,7 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		} else if (!posted.ok) {
 			// The phone harness refused the request: nothing was made, and the key is forgotten.
 			await this.#ledger.remove(pending);
+			this.#claimed.delete(requestKey);
 			return posted;
 		}
 		if (first === undefined || !first.ok) return vendorFail("phone-harness","POST /sessions answered no session");
@@ -791,6 +802,7 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		const named = await record(async () => {
 			await this.#ledger.put({ id, name, labels: { ...(spec.labels ?? {}) }, image: spec.image, deadline: this.#deadlineOf(first.value, from + runLifetimeMs(spec)) });
 			await this.#ledger.remove(pending);
+			this.#claimed.delete(requestKey);
 		});
 		if (!named.ok) return named;
 		const ended = async (code: ComputerErrorCode, words: string) => {
