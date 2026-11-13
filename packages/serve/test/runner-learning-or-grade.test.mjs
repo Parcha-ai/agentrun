@@ -71,7 +71,12 @@ for (const named of ["anthropic/claude-sonnet-5-5", "anthropic/claude-sonnet-5.5
     assert.deepEqual(end, { state: "ended" });
     assert.deepEqual(refused, [], "nothing off loopback but OpenRouter's origin, redirected");
     // (a) the id OpenRouter's Messages endpoint takes, Anthropic's own; (b) OpenRouter's key once, as a bearer token.
-    assert.deepEqual(gateway.requests.map((request) => [request.path.endsWith("/v1/messages"), request.body?.model, request.headers.authorization, request.headers["x-api-key"]]), [[true, "claude-sonnet-5-5", `Bearer ${KEY}`, undefined]]);
+    // Jev runs on the same key (decisions.ts jevKey): the generality pre-check (learn/general.ts) asks it first, on
+    // OpenRouter's System One endpoint, with that one credential too; the gateway's answer is no Jev answer, so the
+    // grader reads the note.
+    const messages = gateway.requests.filter((request) => request.path.endsWith("/v1/messages"));
+    assert.deepEqual(messages.map((request) => [request.body?.model, request.headers.authorization, request.headers["x-api-key"]]), [["claude-sonnet-5-5", `Bearer ${KEY}`, undefined]]);
+    assert.deepEqual(gateway.requests.filter((request) => !messages.includes(request)).map((request) => [request.path, request.headers.authorization, request.headers["x-api-key"]]), [["/api/v1/systemone", `Bearer ${KEY}`, undefined]], "the pre-check's one Jev request, on the same key");
     const learning = await runLearningEnd(store, "run-1");
     assert.equal(learning?.state, "merged", JSON.stringify(learning));
     // (c) OpenRouter's catalog price of the model, for the usage the grade reported.

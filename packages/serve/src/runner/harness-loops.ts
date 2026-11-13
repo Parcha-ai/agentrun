@@ -13,7 +13,8 @@ import { resolveHarness } from "./adapters/index.js";
 import { adapterRunSpecFromLaunch, type AdapterSpecDeps, PI_WIRES } from "./adapter-run-spec.js";
 import { createAdapterLoop } from "./adapter-loop.js";
 import { hostDecisionKeys, savedModelKeys, withModelKeys } from "./claim-secrets.js";
-import { decisionProvidersIn, DEFAULT_DECISION_PROVIDER } from "../decisions.js";
+import { decisionProvidersIn, DEFAULT_DECISION_PROVIDER, FAUX_JEV_ENV } from "../decisions.js";
+import { FAUX_ENV } from "../model.js";
 import { generalThresholdOf } from "../learn/general.js";
 import { createDispatchLoop } from "./dispatch.js";
 import { cliRunSpecFromLaunch } from "./cli-run-spec.js";
@@ -66,8 +67,13 @@ export function resolveRunnerLoop(deps: AdapterSpecDeps): (harness: string, laun
         ...(deps.gradeBound ? { gradeBound: deps.gradeBound } : {}),
         // The generality pre-check (learn/general.ts) on this host's Jev, built as a learning end builds its check's
         // decision providers (hostDecisionKeys: the runner's environment first, then the key saved in Settings), on the
-        // client and model a workflow's decision node gets when it names none. No Jev key: none asked.
-        jev: async () => (await decisionProvidersIn({ ...(deps.env ?? process.env), ...(await hostDecisionKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, [DEFAULT_DECISION_PROVIDER])) }))?.providers[DEFAULT_DECISION_PROVIDER],
+        // client and model a workflow's decision node gets when it names none. No Jev key: none asked. A faux host asks only
+        // its faux Jev (FAUX_JEV_ENV), as its grade goes only to the faux route: a key it inherited never sends a note out.
+        jev: async () => {
+          const env = deps.env ?? process.env;
+          if (env[FAUX_ENV] && !env[FAUX_JEV_ENV]) return undefined;
+          return (await decisionProvidersIn({ ...env, ...(await hostDecisionKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, [DEFAULT_DECISION_PROVIDER])) }))?.providers[DEFAULT_DECISION_PROVIDER];
+        },
         generalThreshold: generalThresholdOf(deps.env ?? process.env),
       });
     }

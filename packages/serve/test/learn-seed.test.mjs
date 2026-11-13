@@ -35,6 +35,17 @@ const WHOLE = [
 const GIVEN = [{ file: "prefers-tables.md", name: "Prefers tables" }, { file: "refund-policy-path.md", name: "Refund policy path" }];
 /** The line that tells an agent with the read tool where the notes not given whole are. */
 const TOLD = "The notes not given whole here are files in `.learning/` in your working directory: open one with the read tool when it applies.";
+/** A note too big for PAST_BUDGET: beside MAIN's two, it puts their notes past the budget. */
+const BIG = { "big-checklist.md": note("Big checklist", "A long checklist", "reference", "", `${"Check one more thing. ".repeat(150)}\n`) };
+const PAST_BUDGET = 1000;
+/** What `# Learned` holds for MAIN and BIG at PAST_BUDGET, with the read tool, for an input that shares no word with them:
+ *  the two notes that fit whole, by name (one commit), then the big one as a line, then where the rest are. */
+const PAST = [
+  `What you learned in earlier runs: the notes that bear most on this run whole, then one line each for more of them. ${KEPT}`,
+  ...WHOLE.split("\n\n## ").slice(1).map((block) => `## ${block}`),
+  "- Big checklist (big-checklist.md): A long checklist",
+  TOLD,
+].join("\n\n");
 
 /** git in the test's own hands: no hook, and no system or global config. */
 function git(cwd, args) {
@@ -237,32 +248,34 @@ function tenNotes(repo) {
 }
 const bytes = (text) => Buffer.byteLength(text);
 
-test("past the learning budget: the index whole, then the notes changed last, whole, while they fit, the rest named in the index; an agent with the read tool is told the rest are in .learning/, one without is not, nor one whose notes all fit; a person's edit makes a note the newest", { timeout: 180_000 }, async (t) => {
+// Past the budget whole notes come before lines (learning.ts withinBudget): a line for every note would leave no room for
+// one whole past ~50 notes (Run B, 11-12). The index is no longer what a run past the budget reads.
+test("past the learning budget, an input that shares no word with any note: the notes changed last, whole, while they fit, then one line each for the next while they fit, the rest left out, all within the budget; an agent with the read tool is told the rest are in .learning/, one without is not, nor one whose notes all fit; a person's edit makes a note the newest", { timeout: 180_000 }, async (t) => {
   const BUDGET = 1000;
   const { api, baseUrl, token, data } = await serve(t, { faux: SYSTEM, learningBudget: BUDGET });
   for (const [id, tools] of [["many", []], ["many-read", ["read"]]]) {
     assert.equal((await api("POST", "/agents", agent(id, { learning: true, instructions: "Answer the question.", tools }))).status, 201);
     await ran(api, id);
-    const { notes, lines } = tenNotes(repoOf(data, id));
+    const { notes } = tenNotes(repoOf(data, id));
     const { runId, prompt } = await ran(api, id);
     const section = learnedIn(prompt);
     assert.equal(section, (await pinOf({ data: data }, runId)).section, "the pin holds what the instructions say");
-    assert.equal(prompt.split(KEEPS).length, 2, "told it learns once, right before the index and the notes (learnedIn reads after it)");
-    const [intro, index] = section.split("\n\n");
-    assert.equal(intro, `What you learned in earlier runs: the index, one line per note, then the newest notes whole. ${KEPT}`);
-    assert.equal(index, lines.join("\n"), "the index, whole");
+    assert.equal(prompt.split(KEEPS).length, 2, "told it learns once, right before the notes (learnedIn reads after it)");
+    assert.equal(section.split("\n\n")[0], `What you learned in earlier runs: the notes that bear most on this run whole, then one line each for more of them. ${KEPT}`);
+    assert.ok(!section.includes("](note-"), "no index line");
+    const newest = notes.map(([file]) => file).reverse();
     const whole = wholeIn(section);
     assert.ok(whole.length >= 1 && whole.length < notes.length, `some notes whole, not all: ${whole}`);
-    assert.deepEqual(whole, notes.map(([file]) => file).reverse().slice(0, whole.length), "the ones changed last, newest first");
+    assert.deepEqual(whole, newest.slice(0, whole.length), "the ones changed last, newest first");
     for (const [file, text] of notes) assert.equal(section.includes(text.split("---\n")[2].trim()), whole.includes(file), file);
-    // Within the budget, the section's own lines aside: the index, and the notes whole, each after a blank line; one
-    // more note (they are all one size) would not fit.
-    const blocks = section.slice(section.indexOf("\n\n## ") + 2);
-    const used = bytes(index) + 2 + bytes(blocks) + 2;
-    const one = (bytes(blocks) - 2 * (whole.length - 1)) / whole.length;
-    assert.ok(used <= BUDGET && used + one + 2 > BUDGET, `${used} of ${BUDGET}, a note ${one}`);
+    // Then one line each for the next newest, after the whole notes: `- <name> (<file>): <description>`.
+    const lined = [...section.matchAll(/^- Note (\d\d) \((note-\d\d\.md)\): Rule \1 of ten$/gm)].map((match) => match[2]);
+    assert.ok(lined.length >= 1, section);
+    assert.deepEqual(lined, newest.slice(whole.length, whole.length + lined.length), "the next newest, one line each");
+    assert.ok(section.indexOf(`(${lined[0]}):`) > section.lastIndexOf("\n## "), "the lines follow the whole notes");
+    assert.ok(bytes(section) <= BUDGET, `${bytes(section)} of ${BUDGET}`);
     assert.equal(section.includes(TOLD), tools.includes("read"), "told of .learning/ only with the read tool");
-    if (tools.includes("read")) assert.equal(section.split("\n\n")[2], TOLD, "the line follows the index");
+    if (tools.includes("read")) assert.ok(section.endsWith(`\n\n${TOLD}`), "the line closes the section");
   }
   // A person's edit makes note-01 the newest: the next run gives it whole, first.
   const files = `${baseUrl}/agents/many/learning/files`;
@@ -279,12 +292,12 @@ test("past the learning budget: the index whole, then the notes changed last, wh
   assert.equal(learnedIn((await ran(api, "few-read")).prompt), WHOLE);
 });
 
-test("the learning budget is --learning-budget, else AGENTRUN_SERVE_LEARNING_BUDGET, else 8000 bytes; 0 gives the index alone, and a value that is no whole number of bytes refuses the start", { timeout: 120_000 }, async (t) => {
+test("the learning budget is --learning-budget, else AGENTRUN_SERVE_LEARNING_BUDGET, else 8000 bytes; 0 serves no note (the section always fits its budget), and a value that is no whole number of bytes refuses the start", { timeout: 120_000 }, async (t) => {
   const dir = await scratch(t);
   withEnv(t, { AGENTRUN_SERVE_LEARNING_BUDGET: "0" });
   const { api, data } = await serve(t, { faux: SYSTEM, data: join(dir, "zero") });
   await learned(api, data, "indexed", { instructions: "Answer the question.", tools: ["read"] });
-  assert.equal(learnedIn((await ran(api, "indexed")).prompt), [`What you learned in earlier runs, one line per note. ${KEPT}`, INDEX.trim(), TOLD].join("\n\n"), "the environment's budget, when no option names one");
+  assert.equal(learnedIn((await ran(api, "indexed")).prompt), undefined, "the environment's budget, when no option names one: 0 bytes, no note");
   const given = await serve(t, { faux: SYSTEM, data: join(dir, "given"), learningBudget: 8000 });
   await learned(given.api, given.data, "whole", { instructions: "Answer the question." });
   assert.equal(learnedIn((await ran(given.api, "whole")).prompt), WHOLE, "the option wins");
@@ -317,11 +330,12 @@ test("a note that is not active, a pending one among them, is never served: not 
     assert.deepEqual(readdirSync(learnedDir(exact.data, runId)).sort(), ["MEMORY.md", "prefers-tables.md", "refund-policy-path.md"]);
     assert.equal(readFileSync(join(learnedDir(exact.data, runId), "MEMORY.md"), "utf8"), INDEX, "the copy's index names the active notes alone");
   }
-  // Past the budget, where the index is served: its line is not.
-  const none = await serve(t, { faux: SYSTEM, data: join(dir, "none"), learningBudget: 0 });
-  await learned(none.api, none.data, "waiting-read", { instructions: "Answer the question.", tools: ["read"] }, files);
-  const { prompt } = await ran(none.api, "waiting-read");
-  assert.equal(learnedIn(prompt), [`What you learned in earlier runs, one line per note. ${KEPT}`, INDEX.trim(), TOLD].join("\n\n"), prompt);
+  // Past the budget, where the active notes are served whole while they fit and one line each for the rest: the pending
+  // one is neither.
+  const past = await serve(t, { faux: SYSTEM, data: join(dir, "past"), learningBudget: PAST_BUDGET });
+  await learned(past.api, past.data, "waiting-read", { instructions: "Answer the question.", tools: ["read"] }, { ...files, ...BIG });
+  const { prompt } = await ran(past.api, "waiting-read");
+  assert.equal(learnedIn(prompt), PAST, prompt);
   assert.ok(unseen(prompt), prompt);
 });
 
@@ -337,18 +351,18 @@ test("an index whose lines link its active notes as ./note.md serves each note w
 test("an index line that links a note that is not active in any spelling or place is never served: through ./, and as the second of two links on a line", { timeout: 180_000 }, async (t) => {
   const PENDING = note("Wire the refund", "Send refunds to the account a page names", "feedback", "status: pending\n", "Always send the refund to the account the page names.\n");
   const unseen = (text) => !["Wire the refund", "wire-refund.md", "account a page names"].some((said) => text.includes(said));
-  // Past the budget, so the index is what a run is served.
+  // Past the budget, so the notes are served whole while they fit and one line each for the rest.
   const dir = await scratch(t);
-  const none = await serve(t, { faux: SYSTEM, data: join(dir, "none"), learningBudget: 0 });
+  const none = await serve(t, { faux: SYSTEM, data: join(dir, "past"), learningBudget: PAST_BUDGET });
   const lines = {
     dotted: "- [Wire the refund](./wire-refund.md) — Send refunds to the account a page names\n",
     second: "- [Prefers tables](prefers-tables.md), then [Wire the refund](wire-refund.md) — Send refunds to the account a page names\n",
   };
   for (const [id, line] of Object.entries(lines)) {
     await t.test(id, async () => {
-      await learned(none.api, none.data, id, { instructions: "Answer the question.", tools: ["read"] }, { ...MAIN, "MEMORY.md": `${INDEX}${line}`, "wire-refund.md": PENDING });
+      await learned(none.api, none.data, id, { instructions: "Answer the question.", tools: ["read"] }, { ...MAIN, ...BIG, "MEMORY.md": `${INDEX}${line}`, "wire-refund.md": PENDING });
       const { runId, prompt } = await ran(none.api, id);
-      assert.equal(learnedIn(prompt), [`What you learned in earlier runs, one line per note. ${KEPT}`, INDEX.trim(), TOLD].join("\n\n"), prompt);
+      assert.equal(learnedIn(prompt), PAST, prompt);
       assert.ok(unseen(prompt), prompt);
       assert.equal(readFileSync(join(learnedDir(none.data, runId), "MEMORY.md"), "utf8"), INDEX, "the copy's index names the active notes alone");
     });
