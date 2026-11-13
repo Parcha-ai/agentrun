@@ -7,6 +7,10 @@
 </p>
 
 <p align="center">
+  <a href="#case-studies">Our code review bill went up 36x this year. Now a review costs us 18 cents. See how ↓</a>
+</p>
+
+<p align="center">
   <a href="https://www.npmjs.com/package/@parcha/agentrun"><img alt="npm" src="https://img.shields.io/npm/v/@parcha/agentrun?style=flat-square&label=npm&color=ff8700"></a>
   <a href="https://github.com/Parcha-ai/agentrun/actions/workflows/ci.yml?query=branch%3Amain"><img alt="Package checks" src="https://img.shields.io/github/actions/workflow/status/Parcha-ai/agentrun/ci.yml?branch=main&style=flat-square&label=checks"></a>
   <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-0a7ea4?style=flat-square"></a>
@@ -21,6 +25,7 @@
 
 <p align="center">
   <a href="#start-in-three-steps">Quickstart</a> ·
+  <a href="#case-studies">Case studies</a> ·
   <a href="#take-the-tour">Tour</a> ·
   <a href="#templates">Templates</a> ·
   <a href="#deploy-it">Deploy</a> ·
@@ -35,6 +40,20 @@ tokens with every run.
   <a href="https://agentrun.ai"><img alt="An agent's Learning tab in the AgentRun console: since it learned, answers take 2 seconds instead of 10 and a run costs $0.0077 instead of $0.05, with the two notes it kept" src="docs/assets/readme/learning.png" width="100%"></a>
   <br><sub>An agent's Learning tab: what it kept, and what changed since. Demo data from the console's recorded fixtures.</sub>
 </p>
+
+## Case studies
+
+<p align="center">
+  <a href="docs/case-studies/code-review.md"><img alt="1.6x the real bugs Greptile caught" src="docs/assets/case-studies/case-code-review.png" width="49%"></a>
+  <a href="docs/case-studies/merchant-classification.md"><img alt="7x cheaper once it learned the job" src="docs/assets/case-studies/case-merchant-codes.png" width="49%"></a>
+</p>
+
+**Code review.** Greptile started charging a dollar a review in March, then our agents took off, and our bill went
+from $180 a month to $6,451. So we built our own reviewer on a cheap model and tuned it on our own PRs. It costs 18 cents a review, and on 30 PRs
+it had never seen it caught 1.6x the real bugs Greptile did. [How we built it](docs/case-studies/code-review.md) · [Tune one on your repo](docs/tutorials/tune-a-template.md)
+
+**Merchant codes.** We let Opus figure out how to classify merchants, then handed what it learned to a cheap model.
+Same job, $0.89 down to $0.12 a merchant. [How it works](docs/case-studies/merchant-classification.md) · [Do it with your own job](docs/tutorials/learn-then-hand-off.md)
 
 ## Why AgentRun
 
@@ -225,7 +244,7 @@ until you tick each MCP tool yourself.
 
 | Template | What it does |
 | --- | --- |
-| `code-review` | Reviews a pull request or a diff, checks each finding against the code, and returns the findings as JSON. It sets up its own GitHub trigger |
+| `code-review` | Reviews a pull request with eight independent reviewers on a read-only checkout (or a pasted diff), merges and verifies their findings, quotes the line behind each, and returns them as JSON. It sets up its own GitHub trigger |
 | `kyb` | Due diligence on one company: registries, owners, sanctions lists, dated adverse media, and a verdict with every claim cited |
 | `market-monitor` | Every Monday, a digest of what changed at the companies you watch, each item dated and linked |
 | `inbound-lead` | Researches each lead a webhook sends and scores it 0 to 100 against your ideal customer profile |
@@ -233,6 +252,9 @@ until you tick each MCP tool yourself.
 
 `npx @parcha/agentrun template eval DIR` runs a template's eval cases as real runs on a throwaway server and grades
 them. [Template packages](packages/serve/templates/README.md) has the folder format.
+
+Want a template to know your code? [Tune a template on your own code](docs/tutorials/tune-a-template.md) walks
+through the loop we ran on `code-review`.
 
 **Triggers** start capped runs on their own: schedules, signed webhooks and GitHub pull request events.
 

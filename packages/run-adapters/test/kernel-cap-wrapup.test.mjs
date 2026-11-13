@@ -191,8 +191,8 @@ test("killed after it came due at step 0 and before a request took it: the reope
   assert.match(reopened.note(modelRequest(SONNET45, 10_000, 4_096))?.words ?? "", /^This run's budget is about/);
 });
 
-test("the typical counts the run's own model's answers only, never a summary's or a native search's", async () => {
-  const { cap } = capWith(10);
+test("the typical counts the run's own model's answers only, never a summary's or a native search's, and a process opened again reads the same", async () => {
+  const { cap, marks } = capWith(10);
   await answered(cap, modelRequest(SONNET45, 1_000, 1_000), 0.01);
   const summary = modelRequest(SONNET45, 1_000, 1_000, { side: true });
   await cap.admit(summary);
@@ -201,6 +201,8 @@ test("the typical counts the run's own model's answers only, never a summary's o
   await cap.admit(search);
   await cap.settle(search.id, { end: "answered", usd: 0.7 });
   assert.deepEqual(cap.ownCosts(SONNET45.id), [0.01]);
+  const reopened = await openCap({ capUsd: () => 10, now: () => T0, marks });
+  assert.deepEqual(reopened.ownCosts(SONNET45.id), [0.01], "read back from the marks: the turn's answer alone, no summary, no search");
 });
 
 test("a free-output model with no ceiling: due when its least admission is more than half of what is left", () => {

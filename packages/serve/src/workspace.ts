@@ -1,5 +1,5 @@
 // A run's work/ as this server reads it (the console's file view and listing, a skill's SKILL.md), and an agent's home as
-// it reads and writes it: never through a link. Each read and write goes through pi-durable-disk's confinement, which
+// it reads and writes it: never through a link. Each read and write goes through the confinement (confine.ts), which
 // walks down from the root on held directory handles without following, so a component swapped for a link between a
 // check and the open is refused, not followed. On top of it: the path must be the root joined with its own names (a link
 // anywhere on the way, even one pointing inside the root, is refused), only regular files and directories are read, and a

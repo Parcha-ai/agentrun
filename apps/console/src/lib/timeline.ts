@@ -14,8 +14,11 @@ export function applyPage(held: TimelineRow[], page: TimelinePage): TimelineRow[
 /** What a row opens to on the timeline: a call's input, a result's output, or else its own text. */
 export const rowDetail = (row: TimelineRow): string | null =>
   (row.kind === "tool_use" ? row.tool_input_preview : row.kind === "tool_result" ? row.tool_result_preview : row.text) ?? null;
-/** A row that failed: a call its result says did not do its work, or an error. */
-export const rowFailed = (row: TimelineRow) => row.tool_status === "failed" || row.kind === "error";
+/** A call refused before it ran (the server's `refused` mark: a tool set to deny, a person's deny, a call held for an
+ *  approval the run ended without): it never ran, so it never failed. */
+export const rowRefused = (row: TimelineRow) => row.refused === true;
+/** A row that failed: a call that ran and whose result says it did not do its work, or an error. A refused call is not. */
+export const rowFailed = (row: TimelineRow) => (row.tool_status === "failed" && !rowRefused(row)) || row.kind === "error";
 /** The server's mark of a run paused at its spend cap (a `phase` row it writes with `paused: true`): the run paused,
  *  nothing failed. A request that failed at the cap is an `error` row with no `paused`. */
 export const rowPaused = (row: TimelineRow) => row.paused === true;

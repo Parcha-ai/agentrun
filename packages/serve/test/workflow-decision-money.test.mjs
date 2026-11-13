@@ -30,6 +30,7 @@ const { servedTimelineRows } = await import("../dist/run-timeline-served.js");
 const { viewOverStore } = await import("../dist/store-view.js");
 const { journalSessions } = await import("../dist/runner/sessions.js");
 const { DECISION_SESSION } = await import("@parcha/agentrun-kernel/kernel/cap");
+const { sessionSpendOf } = await import("@parcha/agentrun-kernel");
 
 /** The faux System One service (serves OpenRouter's Decisions catalog and answers decisions), pointed at under --faux. */
 const FAUX_SYSTEM_ONE = fileURLToPath(new URL("../../decisions/dist/testing/faux-system-one.js", import.meta.url));
@@ -49,10 +50,10 @@ const askFlow = () => ({
   },
   input: { schemaId: "In" },
   output: { schemaId: "Verdict", path: "verdict" },
-  root: { node: "judge", label: "ask", provider: "openrouter", model: "openai/gpt-6-sol", state: { doc: "{doc}" }, out: "Verdict", as: "verdict" },
+  root: { node: "judge", label: "ask", provider: "openrouter", model: "openai/gpt-6.1-sol", state: { doc: "{doc}" }, out: "Verdict", as: "verdict" },
 });
 
-/** The gpt-6-sol decision price in OpenRouter's catalog (per token, per request, per image), as the parity test uses. */
+/** The gpt-6.1-sol decision price in OpenRouter's catalog (per token, per request, per image), as the parity test uses. */
 const priceOf = (overrides = {}) => ({ promptUsd: 1.25e-6, completionUsd: 10e-6, requestUsd: 0, imageUsd: 0, maxCompletionTokens: 4_096, ...overrides });
 
 /** An answer for each question by its type (the faux provider answers exactly what it is asked). */
@@ -80,9 +81,9 @@ function fauxOpenrouter({ price = priceOf(), costUsd = null, record } = {}) {
 
 /** A model provider that is never asked (a decision-only workflow runs no model node), for providerOf's default tier. */
 const idleModelProvider = () => () => ({
-  modelId: "openai/gpt-6-sol", api: "anthropic-messages", origin: "https://faux.invalid", credential: () => "not-a-secret-x",
-  policy: anthropicPolicy({ model: "openai/gpt-6-sol", tools: [] }), price: () => 0,
-  capModel: { id: "openai/gpt-6-sol", api: "anthropic-messages", price: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 }, outputCeiling: 128_000 },
+  modelId: "openai/gpt-6.1-sol", api: "anthropic-messages", origin: "https://faux.invalid", credential: () => "not-a-secret-x",
+  policy: anthropicPolicy({ model: "openai/gpt-6.1-sol", tools: [] }), price: () => 0,
+  capModel: { id: "openai/gpt-6.1-sol", api: "anthropic-messages", price: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 }, outputCeiling: 128_000 },
   fetch: async () => { throw new Error("the decision-only workflow asked a model, which it should not"); },
 });
 
@@ -259,7 +260,7 @@ const mixedFlow = () => ({
   output: { schemaId: "Verdict", path: "verdict" },
   root: { node: "chain", steps: [
     { node: "extract", label: "note", instructions: "Note the doc.", out: "Mid", as: "note_out" },
-    { node: "judge", label: "ask", provider: "openrouter", model: "openai/gpt-6-sol", state: { doc: "{doc}" }, out: "Verdict", as: "verdict" },
+    { node: "judge", label: "ask", provider: "openrouter", model: "openai/gpt-6.1-sol", state: { doc: "{doc}" }, out: "Verdict", as: "verdict" },
   ] },
 });
 
@@ -293,8 +294,8 @@ const twoJudgeFlow = () => ({
   input: { schemaId: "In" },
   output: { schemaId: "Verdict", path: "verdict2" },
   root: { node: "chain", steps: [
-    { node: "judge", label: "ask1", provider: "openrouter", model: "openai/gpt-6-sol", state: { doc: "{doc}" }, out: "Verdict", as: "verdict1" },
-    { node: "judge", label: "ask2", provider: "openrouter", model: "openai/gpt-6-sol", state: { doc: "{doc}" }, out: "Verdict", as: "verdict2" },
+    { node: "judge", label: "ask1", provider: "openrouter", model: "openai/gpt-6.1-sol", state: { doc: "{doc}" }, out: "Verdict", as: "verdict1" },
+    { node: "judge", label: "ask2", provider: "openrouter", model: "openai/gpt-6.1-sol", state: { doc: "{doc}" }, out: "Verdict", as: "verdict2" },
   ] },
 });
 
@@ -516,7 +517,7 @@ const mapFlow = () => ({
   output: { schemaId: "Out", path: "result" },
   root: { node: "chain", steps: [
     { node: "map", label: "each", itemsPath: "docs", as: "verdicts", resultPath: "verdict", maxConcurrency: 2,
-      body: { node: "judge", label: "ask", provider: "openrouter", model: "openai/gpt-6-sol", state: { doc: "{item}" }, out: "Verdict", as: "verdict" } },
+      body: { node: "judge", label: "ask", provider: "openrouter", model: "openai/gpt-6.1-sol", state: { doc: "{item}" }, out: "Verdict", as: "verdict" } },
     { node: "code", label: "result", code: "(s) => ({ result: { count: s.verdicts.length } })" },
   ] },
 });
@@ -593,6 +594,117 @@ test("a decision's hold is kept only once the driver has admitted its request: a
   // Not asked: runner A's write admitted the request, so runner B took the run over and escalated it, asked and never
   // answered, never a takeover that simply failed.
   else assert.deepEqual([ended.state, ended.outcome, ended.epoch > 1], ["ended", "escalated", true], `runner B escalates the decision runner A admitted: ${JSON.stringify(ended)}`);
+});
+
+/** Whether a journal commit (its StorageWrite[][]) books a runner.turn: in a judge-only run, the decision's settle. */
+const settles = (batches) => Array.isArray(batches) && batches.flat().some((write) => write?.type === "entry" && write.value?.kind === "runner.turn");
+
+/** run-1 (askFlow, capped at $1) on runner A, which dies at a commit around its decision's settle: `at` "settle" dies at
+ *  the settle's own commit, which never lands; "receipt" lets the settle land and dies at the next commit, the driver's
+ *  receipt of the answer, which never lands. Runner B then takes the run over once A's claim runs out (the stores'
+ *  clock moved past it). The run's row once it rests, its decisions' booking records, and how often `decider` was asked. */
+async function lostAround(t, { at, price, costUsd }) {
+  let skew = 0;
+  const now = () => Date.now() + skew;
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-wf-dec-settle-"));
+  const server = await openSqliteStore({ dataDir: dir, role: "server", now });
+  const real = await openSqliteStore({ dataDir: dir, role: "runner", now });
+  const second = await openSqliteStore({ dataDir: dir, role: "runner", now });
+  const runners = [];
+  // Runner A's frozen commits never come back while the case runs; at its end they fail, so A's claim unwinds.
+  const frozen = [];
+  t.after(async () => {
+    for (const fail of frozen.splice(0)) fail(new Error("runner A died"));
+    for (const runner of runners) await runner.close().catch(() => {});
+    for (const store of [real, second, server]) await store.close().catch(() => {});
+    rmSync(dir, { recursive: true, force: true });
+  });
+  let settled = false;
+  let died = false;
+  let diedNow;
+  const dead = new Promise((resolve) => (diedNow = resolve));
+  const store = new Proxy(real, { get(target, key) {
+    if (key === "journal") return (claim) => new Proxy(target.journal(claim), { get(inner, property) {
+      const value = Reflect.get(inner, property, inner);
+      if (property !== "commit") return typeof value === "function" ? value.bind(inner) : value;
+      return async (...args) => {
+        if (!died) {
+          const settle = settles(args[0]);
+          if ((at === "settle" && settle) || (at === "receipt" && settled)) {
+            died = true;
+            runners[0].kill();
+            diedNow();
+          }
+          if (settle) settled = true;
+        }
+        if (died) return new Promise((_, reject) => frozen.push(reject));
+        return value.apply(inner, args);
+      };
+    } });
+    const value = Reflect.get(target, key);
+    return typeof value === "function" ? value.bind(target) : value;
+  } });
+  let asked = 0;
+  const decider = fauxOpenrouter({ price, costUsd, record: () => (asked += 1) });
+  const providers = { providers: { openrouter: decider }, default: "openrouter" };
+  await server.agents.create({ id: "agent-1", name: "Flow" }, { id: "rev-1", kind: "workflow", body: { workflow: askFlow() } });
+  await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { doc: "Certificate of incorporation of Example Widgets, Inc." }, title: "t", place: { mode: "runner" }, max_cost_usd: 1 } });
+  runners.push(startRunner({ store, createLoop: createWorkflowLoop(workflowSpecOf({ store, providerOf: idleModelProvider(), decisionProvidersOf: () => providers })), name: "runner-a", ...TIMING }));
+  // The bound's timer is cleared once `dead` wins, so a passing case leaves nothing keeping Node alive.
+  let bound;
+  try {
+    await Promise.race([dead, new Promise((_, reject) => (bound = setTimeout(() => reject(new Error(`runner A never reached the commit it dies at (${at})`)), 20_000)))]);
+  } finally {
+    clearTimeout(bound);
+  }
+  skew += TIMING.leaseMs + 60_000;
+  runners.push(startRunner({ store: second, createLoop: createWorkflowLoop(workflowSpecOf({ store: second, providerOf: idleModelProvider(), decisionProvidersOf: () => providers })), name: "runner-b", ...TIMING }));
+  const row = await waitRow(server, (r) => r.state !== "running" && r.state !== "queued" && r.runner === null, 30_000);
+  return { row, records: await decisionRecords(second), requests: await decisionRequestsOf(second), asked };
+}
+
+/** run-1's decision requests as its driver's document holds them (graph-view.ts reads the same pin): each one's status
+ *  and the cost its outcome was saved with. */
+async function decisionRequestsOf(store) {
+  const reads = store.readJournal("run-1");
+  try {
+    const driver = await reads.findDocument({ kind: "agentrun.driver", scope: { kind: "session" }, key: "run-1" }, "current", BACKGROUND_CONTEXT);
+    const value = driver ? (await reads.document(driver.id, "current", BACKGROUND_CONTEXT))?.value : undefined;
+    return Object.values(value?.state?.pin?.decisions ?? {}).flatMap((requests) => Object.values(requests)).map((request) => [request.status, request.cost_usd]);
+  } finally {
+    await reads.close(BACKGROUND_CONTEXT);
+  }
+}
+
+const near = (actual, expected, what) => assert.ok(typeof actual === "number" && Math.abs(actual - expected) < 1e-9, `${what}: ${actual}, not ${expected}`);
+
+// A decision's settle commits before its receipt (runner/workflow-spec.ts decisionJudging: `admitted` settles before the
+// driver saves the answer), so a crash never leaves a receipt that names a charge beside a booking it lost: lost at the
+// settle, the receipt is lost too, and the provider may have billed its worst case.
+test("a decision whose booking a crash lost at its settle never reached its receipt: the next claim counts it at its hold and bound, asks it no more, and sends the run to review", async (t) => {
+  const { row, records, requests, asked } = await lostAround(t, { at: "settle", price: feeOnly(0.4), costUsd: 0.1 });
+  assert.equal(asked, 1, "asked once, by runner A; never again by runner B");
+  assert.deepEqual([row.state, row.outcome, row.epoch > 1], ["ended", "escalated", true], `runner B finds the decision asked and never answered, and escalates it: ${JSON.stringify(row)}`);
+  // The answer never reached the driver's record: no charge is named beside the booking the crash lost.
+  assert.deepEqual(requests, [["interrupted", null]], "the driver's record of the request: interrupted, at no cost it knows");
+  const request = records.find((r) => r.kind === "runner.request")?.data;
+  const turns = records.filter((r) => r.kind === "runner.turn").map((r) => r.data);
+  assert.deepEqual([records.filter((r) => r.kind === "runner.request").length, turns.map((d) => [d.cut === true, d.usd])], [1, [[true, null]]], `one booking, cut by the next claim: ${JSON.stringify(records)}`);
+  near(sessionSpendOf(records).spentUsd, request.heldUsd + (request.boundUsd ?? 0), "the cap counts it at its hold and bound");
+  assert.equal(row.costUsd, null, `its cost is unknown, never its hold: ${JSON.stringify(row)}`);
+});
+
+test("a decision whose receipt a crash lost after its settle counts at what it charged on the next claim, never at its larger hold", async (t) => {
+  // Held at $0.40, charged $0.10.
+  const { row, records, requests, asked } = await lostAround(t, { at: "receipt", price: feeOnly(0.4), costUsd: 0.1 });
+  assert.equal(asked, 1, "asked once, by runner A; never again by runner B");
+  assert.deepEqual([row.state, row.outcome, row.epoch > 1], ["ended", "escalated", true], `the answer never reached a receipt, so runner B escalates the decision: ${JSON.stringify(row)}`);
+  assert.deepEqual(requests, [["interrupted", null]], "the driver's record of the request: interrupted; the settle alone holds the charge");
+  const request = records.find((r) => r.kind === "runner.request")?.data;
+  assert.ok(request.heldUsd > 0.1, `the hold is above the charge, so a hold counted in its place shows: ${JSON.stringify(request)}`);
+  assert.deepEqual(records.filter((r) => r.kind === "runner.turn").map((r) => [r.data.cut === true, r.data.usd]), [[false, 0.1]], `the settle runner A committed, and no cut beside it: ${JSON.stringify(records)}`);
+  near(sessionSpendOf(records).spentUsd, 0.1, "the cap counts what it charged");
+  near(row.costUsd, 0.1, "the run's cost");
 });
 
 test("a decision its provider refuses unbilled (rate limited) charged nothing: its hold is booked at $0, and the run's cost says $0", async (t) => {

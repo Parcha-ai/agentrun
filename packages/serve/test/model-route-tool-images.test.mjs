@@ -61,7 +61,7 @@ test("OpenRouter: a tool's result with text and a PNG reaches the model with the
 });
 
 test("OpenAI: a tool's result with text and a PNG reaches the model in the call's output, the image after the text", async (t) => {
-  const body = await sentFor(t, "openai/gpt-6-sol", { OPENAI_API_KEY: KEY }, answered(SHOT));
+  const body = await sentFor(t, "openai/gpt-6.1-sol", { OPENAI_API_KEY: KEY }, answered(SHOT));
   const output = body.input.find((item) => item.type === "function_call_output")?.output;
   assert.ok(Array.isArray(output), `the call's output holds parts: ${JSON.stringify(body.input)}`);
   assert.deepEqual(output.map((part) => part.type), ["input_text", "input_image"], JSON.stringify(output));
@@ -73,6 +73,6 @@ test("a tool's result of text alone is sent as before, on OpenRouter and on Open
   const tool = routed.messages.find((message) => message.role === "tool");
   assert.equal(tool.content, "no image here");
   assert.equal(routed.messages.at(-1), tool, "nothing attached after it");
-  const responses = await sentFor(t, "openai/gpt-6-sol", { OPENAI_API_KEY: KEY }, answered("no image here"));
+  const responses = await sentFor(t, "openai/gpt-6.1-sol", { OPENAI_API_KEY: KEY }, answered("no image here"));
   assert.equal(responses.input.find((item) => item.type === "function_call_output")?.output, "no image here", "a string result stays one text");
 });

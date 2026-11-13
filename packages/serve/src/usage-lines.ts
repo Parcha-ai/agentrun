@@ -2,7 +2,7 @@
 // agent, by day). A part whose cost is unknown counts the run as unpriced on its line and adds what is known of it, so
 // no sum is ever null and none passes an unknown cost as $0.
 
-/** A run's meters, from its store (cap.ts metersIn) or its live rows: each null when one of its charges is unknown. */
+/** A run's meters, from the one store (store-reads/cap.ts metersOverStore) or its live rows: each null when one of its charges is unknown. */
 export type RunMeters = { tools: number | null; tokens: number | null; browser: { usd: number | null }; others: number | null; known?: { tokens: number; browser: number; others: number } };
 
 /** One run's parts of /usage's lines. `usd`: its cost, null when unknown; `soFar`: what it is known to have spent then;

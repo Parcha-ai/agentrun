@@ -41,12 +41,12 @@ export type FakeBackendOptions = {
   fullPageHeight?: number;
   /** What `locate` finds, by the snapshot ID or the CSS selector a caller gives: one box or several (a selector that matches more than one). Anything else matches nothing. */
   elements?: Record<string, FakeBox | FakeBox[]>;
-  /** Device pixels per CSS pixel; a screenshot is this many times larger unless it asks for `scale: "css"`. */
+  /** Device pixels per CSS pixel; a screenshot is this many times larger, times the `scale` it asks for. */
   deviceScale?: number;
 };
 
 export type FakeBox = { x: number; y: number; width: number; height: number };
-export type FakeScreenshotOptions = { fullPage?: boolean; type?: "png" | "jpeg"; quality?: number; scale?: "css" | "device"; clip?: FakeBox };
+export type FakeScreenshotOptions = { fullPage?: boolean; type?: "png" | "jpeg"; quality?: number; scale?: number; clip?: FakeBox };
 
 /** A PNG or JPEG whose header declares `width` x `height`: enough for a reader that decodes the header, not a picture. */
 export function fakeImage(type: "png" | "jpeg", width: number, height: number): Buffer {
@@ -64,7 +64,7 @@ export function fakeImage(type: "png" | "jpeg", width: number, height: number): 
   return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk("IHDR", ihdr), chunk("IEND", Buffer.alloc(0))]);
 }
 
-const DEFAULT_CAPS: ProviderCaps = { timeoutModel: "inactivity", maxLifetimeS: 3600, survivesDisconnect: false, releaseIsAsync: false, profiles: false, extension: "loaded-locally" };
+const DEFAULT_CAPS: ProviderCaps = { profiles: false };
 
 type Session = { id: string; tag: string; metadata: Record<string, string>; state: "running" | "stopped"; url: string; broker: boolean; plane: string };
 
@@ -393,13 +393,14 @@ export class FakeDriverFace {
     return this.session(id).url;
   }
 
-  /** Header-only image of the viewport (or full page) times the device scale; each capture is a dispatched row. */
+  /** Header-only image of the viewport (or full page) times the device scale and the asked scale, rounded as Chrome
+   *  rounds; each capture is a dispatched row. */
   async screenshot(id: string, options: FakeScreenshotOptions = {}): Promise<{ data: string; mimeType: string; width: number; height: number }> {
     await this.call(id, "screenshot", "screenshot", { options });
     const { viewport = { width: 1288, height: 711 }, fullPageHeight = 8319, deviceScale = 1 } = this.b.opts;
-    const factor = options.scale === "css" ? 1 : deviceScale;
-    const width = (options.clip ? options.clip.width : viewport.width) * factor;
-    const height = (options.clip ? options.clip.height : options.fullPage ? fullPageHeight : viewport.height) * factor;
+    const factor = deviceScale * (options.scale ?? 1);
+    const width = Math.round((options.clip ? options.clip.width : viewport.width) * factor);
+    const height = Math.round((options.clip ? options.clip.height : options.fullPage ? fullPageHeight : viewport.height) * factor);
     const type = options.type ?? "jpeg";
     await this.b.after("driver.screenshot");
     return { data: fakeImage(type, width, height).toString("base64"), mimeType: `image/${type}`, width, height };

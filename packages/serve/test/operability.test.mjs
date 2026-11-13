@@ -56,7 +56,7 @@ test("with accounts off the token's link signs no browser in, whatever the token
 });
 
 test("the printed link holds the launch code and never the token, and a token the first boot did not make is never printed", async () => {
-  const { banner } = await import("../dist/index.js");
+  const { banner } = await import("../dist/print.js");
   assert.equal(typeof banner, "function", "the banner's lines come from one function");
   const made = banner({ url: "http://127.0.0.1:7340", baseUrl: "http://127.0.0.1:7340/v2", data: "/data", token: AWKWARD, source: "made", launchCode: "LAUNCH-CODE-FOR-THE-TEST" });
   assert.ok(made.includes(`AGENTRUN_API_KEY=${AWKWARD}`));

@@ -4,9 +4,9 @@
 // here with its bytes; nothing the checker refuses is ever written to git. Every problem it reports is printable: its
 // path and detail are cut of the host's secrets and of text shaped like one, and a field over PRINT_MAX is redacted whole.
 import { hiddenCharacter } from "./invisible.js";
-import { INDEX_FILE, INDEX_LINES, type LearnedNote, NOTE_FILE, parseNoteFile } from "./notes.js";
+import { INDEX_FILE, INDEX_LINES, type LearnedNote, NOTE_FILE, parseNoteFile, ruleOf } from "./notes.js";
 import { learnedSecretShapes, redactLearned, valueMatcher } from "./secrets.js";
-import { type DraftAsk, type DraftDryRun, draftProblems, type DraftReader, decodedStrings, DECODED_DEPTH, DRY_RUN_FAILED, frontKeys, frontValues, LEARNED_KEYS, learnedName, learnedPlace, type LearnedPlace, setsStatus, skillProblems, WORKFLOWS_DIR } from "./skills.js";
+import { type DraftAsk, type DraftDecisions, type DraftDryRun, draftProblems, type DraftReader, decodedStrings, DECODED_DEPTH, DRY_RUN_FAILED, frontKeys, frontValues, LEARNED_KEYS, learnedName, learnedPlace, type LearnedPlace, setsStatus, skillProblems, WORKFLOWS_DIR } from "./skills.js";
 
 /** The most the host adds to a run's note as it merges it: `origin: you` and `status: pending`, a front matter line
  *  each (notes.ts mergedNote). */
@@ -41,7 +41,7 @@ export type Rule =
   | "too_many_files" | "outside" | "file_name" | "file_mode" | "encoding" | "edited" | "deleted" | "exists" | "too_large"
   | "too_many_notes" | "invisible_unicode" | "secret_shape" | "secret_value" | "note" | "status" | "supersedes" | "index_full"
   | "skill" | "skill_outcome" | "too_many_skills" | "workflow" | "too_many_workflows" | "no_tool_list" | "executable_node"
-  | "skill_front_matter" | "skill_status";
+  | "skill_front_matter" | "skill_status" | "duplicate";
 
 /** One problem with what a run proposed, printable as it is. */
 export type Problem = { readonly rule: Rule; readonly path?: string; readonly detail: string };
@@ -59,7 +59,9 @@ export type Change = {
 
 /** The folder a proposal is checked against (the run's seed, or main at merge time): every path it holds, and its active
  *  notes. */
-export type Base = { readonly files: Iterable<string>; readonly active: readonly LearnedNote[] };
+/** What a proposal is checked against: every path at the seed's top, its active notes, and `rules`, when the caller read
+ *  the active notes' texts, each one's rule (notes.ts ruleOf) to its file: a new note of the same rule is a duplicate. */
+export type Base = { readonly files: Iterable<string>; readonly active: readonly LearnedNote[]; readonly rules?: ReadonlyMap<string, string> };
 /** A new note that passed, with its whole text. */
 export type ProposedNote = LearnedNote & { readonly text: string };
 
@@ -81,8 +83,14 @@ export type CheckInput = {
   readonly ask?: DraftAsk;
   /** Where each of `gated`'s denies was set (this agent's settings or this server's), for the refusal's words. */
   readonly deniedBy?: Readonly<Record<string, "agent" | "server" | "default">>;
+  /** False for a run of a revision that says `learning: "notes"`: a workflow draft it gives is left out (rule `workflow`,
+   *  NOTES_ONLY), and its notes and skill go on. */
+  readonly workflows?: false;
   /** The workflow DSL a draft is read with; a proposal that holds a draft is checked with it, never without. */
   readonly dsl?: DraftReader;
+  /** The decision providers a draft's decision nodes may ask, and the gate's setting of each (learn/skills.ts
+   *  DraftDecisions, LS-07). Without them, a draft with a decision node is refused. */
+  readonly decisions?: DraftDecisions;
   /** Each draft's dry run (skills.ts draftDryRun), by its workflow.json's path: one that failed is refused, rule
    *  `workflow`, when the draft has no other problem. A draft with none given is checked without one. */
   readonly dryRuns?: Readonly<Record<string, DraftDryRun>>;
@@ -94,6 +102,9 @@ export type CheckInput = {
 export type ProposalCheck = { readonly ok: boolean; readonly problems: Problem[]; readonly notes: ProposedNote[] };
 
 const MODES: Record<string, string> = { "120000": "a link: never followed", "040000": "a folder: nothing in it was read" };
+/** Why a draft from a run of a revision that learns notes alone (`learning: "notes"`) is left out. */
+const NOTES_ONLY = "this agent learns notes and skills alone (learning: \"notes\"): it keeps no workflow draft";
+
 /** Why a run's path is none of what it may propose. */
 const OUTSIDE = "a run proposes notes at the folder's top, skills/<name>/SKILL.md, and workflows/<name>/ with its workflow.json and README.md";
 
@@ -187,6 +198,7 @@ function learnedChecked(change: Change, place: LearnedPlace, refused: (text: str
   nameScanned(path, refused, add);
   if (!learnedName(place.kind, place.name)) return add("file_name", place.kind === "skill" ? "a skill's name is lowercase letters, digits and single dashes, at most 64" : "a workflow's name is lowercase letters, digits, dashes and underscores, at most 64, starting with a letter or digit", path);
   if (change.status === "deleted") return add("deleted", "a run never deletes a skill or a workflow", path);
+  if (place.kind === "workflow" && input.workflows === false) return add("workflow", NOTES_ONLY, path);
   if (change.mode !== undefined && change.mode !== "100644") return add("file_mode", MODES[change.mode] ?? "not a regular file: never read", path);
   const size = change.size ?? change.bytes?.length ?? 0;
   const cap = place.kind === "readme" ? CAPS.readme : CAPS.file;
@@ -198,7 +210,7 @@ function learnedChecked(change: Change, place: LearnedPlace, refused: (text: str
   if (text === undefined || decodedScanned(path, text, refused, add)) return;
   if (place.kind === "workflow") {
     if (!input.dsl) throw new TypeError(`${path}: a workflow draft is read with the workflow DSL, which was not given`);
-    const problems = draftProblems(input.dsl, text, input.tools, input.gated, input.deniedBy, input.ask);
+    const problems = draftProblems(input.dsl, text, input.tools, input.gated, input.deniedBy, input.ask, input.decisions);
     for (const { rule, detail } of problems) add(rule, detail, path);
     // A draft the checks pass whose dry run failed: its wiring breaks at run time, before any node is paid for.
     const dry = input.dryRuns?.[path];
@@ -263,7 +275,9 @@ export function checkProposal(input: CheckInput): ProposalCheck {
   }
   const changes = given.slice(0, CAPS.changes);
   const base = new Set(input.base.files);
-  const notes: ProposedNote[] = [];
+  // The new notes that pass their own checks, in the answer's order. Which of them is a duplicate is settled after,
+  // with the merge's checks (settled below).
+  const candidates: ProposedNote[] = [];
   const skills: string[] = [];
   const workflows = new Set<string>();
   const added: string[] = [];
@@ -287,7 +301,7 @@ export function checkProposal(input: CheckInput): ProposalCheck {
     const note = textChecked(path, change.size ?? change.bytes?.length ?? 0, change.bytes, refused, add, true);
     if (!note) return;
     if (["status", "superseded_by", "retired_from", "origin"].some((key) => note.keys.includes(key))) return add("status", "a run never sets status, superseded_by, retired_from or origin: the host does, when it merges the note, a later one supersedes it or a person retires it", path);
-    notes.push(note);
+    candidates.push(note);
   };
   for (const change of changes) one(change);
   for (const path of added.slice(CAPS.newNotes)) add("too_many_notes", `${added.length} new notes; the cap is ${CAPS.newNotes} a run, and this one is past it`, path);
@@ -302,8 +316,119 @@ export function checkProposal(input: CheckInput): ProposalCheck {
     const [json, readme] = ["workflow.json", "README.md"].map((file) => `${WORKFLOWS_DIR}/${name}/${file}`) as [string, string];
     if (after.has(json) !== after.has(readme)) add("workflow", `the folder holds ${after.has(json) ? "workflow.json" : "README.md"} without the other file`, after.has(json) ? readme : json);
   }
-  if (!problems.length) problems.push(...mergeProblems(input.base, notes, values));
+  const notes = problems.length ? [] : settled(candidates);
   return { ok: problems.length === 0, problems, notes: problems.length ? [] : notes };
+
+  /** `candidates` once nothing else is wrong, settled in one order, so no note is ever lost to another's failure:
+   *  1. Each note alone against the base (ownProblems): what it supersedes, active there, and how many. One that fails
+   *     is left out with its own reason.
+   *  2. The survivors by rule: the first of a rule holds it, the rest are its alternates. A rule the seed's active
+   *     notes hold is held already (an alternate that supersedes its holder is an update, and holds it).
+   *  3. The holders' shared checks (sharedProblems): two notes superseding one note, the supersedes cap over the run,
+   *     the index's lines, each counted in order, after the duplicates are out. A holder they refuse is left out with
+   *     that reason, and its next alternate holds the rule in its place; then 3 again, until nothing changes (each
+   *     round leaves one note out or more: bounded by the count).
+   *  4. Only then the alternates no rule needed are left out, each as the duplicate of its rule's holder.
+   *  The notes that pass, in the answer's order. */
+  function settled(all: readonly ProposedNote[]): ProposedNote[] {
+    const survivors = all.filter((note) => {
+      const own = ownProblems(input.base, note);
+      for (const problem of own) add(problem.rule, problem.detail, problem.path);
+      return own.length === 0;
+    });
+    const out = new Set<string>();
+    for (;;) {
+      const { holders } = byRule(survivors.filter((note) => !out.has(note.file)));
+      const shared = sharedProblems(input.base, holders);
+      if (!shared.length) {
+        const { holders: kept, alternates } = byRule(survivors.filter((note) => !out.has(note.file)));
+        for (const [note, holder] of alternates) add("duplicate", `it says what ${holder} says`, note.file);
+        return kept;
+      }
+      for (const problem of shared) {
+        add(problem.rule, problem.detail, problem.path);
+        out.add(problem.path!);
+      }
+    }
+  }
+
+  /** `notes` by rule, in order: the first of a rule holds it, the rest are its alternates (each with its holder). A
+   *  rule the seed's active notes hold is held by that note, unless the new note supersedes it (an update), or any of
+   *  `notes` does: a note this proposal supersedes keeps no rule after it, so a copy of its rule under another name is
+   *  no duplicate, and the rule is never left with no active note. */
+  function byRule(notes: readonly ProposedNote[]): { holders: ProposedNote[]; alternates: [ProposedNote, string][] } {
+    const going = new Set(notes.flatMap((note) => note.supersedes));
+    const rules = new Map([...(input.base.rules ?? [])].filter(([, holder]) => !going.has(holder)));
+    const holders: ProposedNote[] = [];
+    const alternates: [ProposedNote, string][] = [];
+    for (const note of notes) {
+      const rule = ruleOf(note.body);
+      const holder = rules.get(rule);
+      if (holder !== undefined && !note.supersedes.includes(holder)) {
+        // An update of the holder the seed has, after a copy of its rule: the update holds the rule, the copy is its
+        // alternate (else the update is dropped as the copy's duplicate, and the copy as the seed's, on the next pass).
+        const original = input.base.rules?.get(rule);
+        const at = holders.findIndex((one) => one.file === holder);
+        if (original !== undefined && holder !== original && at >= 0 && note.supersedes.includes(original)) {
+          // At its own place in the answer (the end of the holders so far), not the copy's: the shared checks name notes
+          // in answer order, so an update must not jump ahead of a note between the two.
+          alternates.push([holders.splice(at, 1)[0]!, note.file]);
+          holders.push(note);
+          rules.set(rule, note.file);
+          continue;
+        }
+        alternates.push([note, holder]);
+        continue;
+      }
+      rules.set(rule, note.file);
+      holders.push(note);
+    }
+    return { holders, alternates };
+  }
+}
+
+/** What `note` alone cannot join `base` with, needing no other note: a `supersedes` that names no active note of `base`,
+ *  or more of them than CAPS.supersedes. */
+function ownProblems(base: Base, note: LearnedNote): Problem[] {
+  const active = new Set(base.active.map((one) => one.file));
+  const out: Problem[] = note.supersedes.filter((old) => !active.has(old)).map((old) => ({ rule: "supersedes", path: note.file, detail: `it supersedes ${old}, which is not an active note` }));
+  if (note.supersedes.length > CAPS.supersedes) out.push({ rule: "supersedes", path: note.file, detail: `it supersedes ${note.supersedes.length} notes; the cap is ${CAPS.supersedes} a run` });
+  return out;
+}
+
+/** What stops the holders `notes` (one a rule, each passing ownProblems) from joining `base` together, each named by the
+ *  note it falls on. In the answer's order: a note that supersedes one an earlier note supersedes, or that takes the
+ *  notes superseded past CAPS.supersedes (a note named counts toward neither, so a later one that fits is kept). Then
+ *  the index over the rest, whole (each active new note a line, each note it supersedes one fewer), so a note that frees
+ *  lines counts wherever it stands: past INDEX_LINES, the notes that add lines are named from the answer's end until
+ *  it fits. */
+function sharedProblems(base: Base, notes: readonly LearnedNote[]): (Problem & { path: string })[] {
+  const out: (Problem & { path: string })[] = [];
+  const replaced = new Set<string>();
+  const fits: LearnedNote[] = [];
+  for (const note of notes) {
+    const twice = note.supersedes.find((old) => replaced.has(old));
+    if (twice) {
+      out.push({ rule: "supersedes", path: note.file, detail: `${twice} is superseded by another new note too` });
+      continue;
+    }
+    const would = new Set([...replaced, ...note.supersedes]);
+    if (would.size > CAPS.supersedes) {
+      out.push({ rule: "supersedes", path: note.file, detail: `with it the new notes supersede ${would.size} notes; the cap is ${CAPS.supersedes} a run` });
+      continue;
+    }
+    for (const old of note.supersedes) replaced.add(old);
+    fits.push(note);
+  }
+  const net = (note: LearnedNote) => (note.status === "active" ? 1 : 0) - note.supersedes.length;
+  let lines = base.active.length + fits.reduce((sum, note) => sum + net(note), 0);
+  for (const note of [...fits].reverse()) {
+    if (lines <= INDEX_LINES) break;
+    if (net(note) <= 0) continue;
+    out.push({ rule: "index_full", path: note.file, detail: `with it the index would hold ${lines} lines; it holds at most ${INDEX_LINES}, so supersede a note rather than add one` });
+    lines -= net(note);
+  }
+  return out;
 }
 
 /** The notes the active ones of `notes` supersede, each by the note that supersedes it. A note that waits for its

@@ -57,7 +57,7 @@ test("Mode 1 (run folders on this machine): a sandbox is Docker's alone; a deskt
   assert.deepEqual(view.kinds.map((kind) => kind.kind), ["none", "sandbox", "desktop", "phone", "browser"]);
   assert.deepEqual([kindOf(view, "none").offered, kindOf(view, "none").providers], [true, []]);
   assert.deepEqual(kindOf(view, "sandbox").groups, ["exec", "files", "processes"]);
-  assert.deepEqual(kindOf(view, "desktop").groups, ["screen", "input.pointer", "input.keys", "exec", "files", "processes", "apps", "stream"], "required, then optional");
+  assert.deepEqual(kindOf(view, "desktop").groups, ["screen", "input.pointer", "input.keys", "exec", "files", "processes", "apps", "ui", "stream"], "required, then optional");
   assert.deepEqual(kindOf(view, "desktop").tools, ["screenshot", "computer_input"], "the kind's tools, from the kernel registry");
   assert.deepEqual(kindOf(view, "sandbox").providers.map((one) => one.id), ["docker", "daytona", "modal", "e2b"], "the providers whose capabilities serve the kind");
   assert.deepEqual(providerOf(view, "sandbox", "docker"), { id: "docker", name: "Docker", metered: false, secrets: [], required: [], ready: true, shell: "computer", host_tools: hostToolsOf("computer") });
@@ -280,6 +280,13 @@ test("the folder mode is read at each call (folderModeOf): turning Archil on or 
   assert.match(await routes.claimRefusal({ kind: "sandbox", provider: "docker" }), /can't mount the owner's disk/);
   await clearArchilSettings(store);
   assert.equal((await docker()).ready, true, "Mode 1 again");
+});
+
+test("the folder mode reads the Archil settings in the server's environment too: Mode 2 with nothing saved", async (t) => {
+  const { store } = await storeOn(t);
+  const env = { AGENTRUN_ARCHIL_REGION: "aws-us-east-1", AGENTRUN_ARCHIL_S3_URL: "https://s3.archil.example" };
+  assert.equal(await folderModeOf(store, env)(), "disk");
+  assert.equal(await folderModeOf(store)(), "local", "the same store without it: Mode 1");
 });
 
 test("at the claim in Mode 2: Docker's sandbox is refused", async (t) => {

@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## 0.1.0-beta.36 (2026-11-13)
+
+- Model defaults move to the current models. The OpenAI default (and OpenRouter's, for pi, codex and opencode) is now gpt-6.1-sol, where OpenRouter's was gpt-6-sol. The Claude Agent adapter's default is now claude-sonnet-5-5 (was claude-sonnet-4-5) and the Codex adapter's is openai/gpt-6-luna (was openai/gpt-5.4-mini). A host that relied on a default names its model; the READMEs' examples name the current ones.
+- The kernel and the Claude Agent test kit drop exports nothing in AgentRun used. From `@parcha/agentrun-kernel`: the `delegate` tool (`delegateTool`, `DELEGATE_TOOL`, `DELEGATE_RESULT_SCHEMA`, `delegateProblems` and the `DelegateAgent`, `DelegateEvent` and `DelegateOptions` types). From `./kernel`: the follow-up turn (`followUpOnce`, `followUpState`, `followUpKey`, `FOLLOW_UP_EFFECT`, `FOLLOW_UP_BUDGET_REACHED`, `FOLLOW_UP_CANCELLED` and their types) and `BASH_MAX_TIMEOUT_S`. From `./process`: `lastTurnEnd`, `summarizeBatch`, `batchTranscript` and `zodFromJsonSchema`. From `@parcha/agentrun-harness-claude/testing`: `lastUserText`. An embedder that imported one of them keeps its own copy: each was a small helper, or a feature the server never wired (a follow-up turn, a delegate tool). `zodShapeFromJsonSchema` stays.
+- The two harness adapters list `@parcha/agentrun-dsl` as a dev dependency, since only their tests import it, and serve's package keywords drop the retired `pi-durable`.
+
 ## 0.1.0-beta.35 (2026-11-11)
 
 - A capped run straight to Anthropic is no longer paused by a cap it could work under. Before each answer request on a route to `https://api.anthropic.com` (pi and claude-agent), the model proxy asks Anthropic's free token count (`POST /v1/messages/count_tokens`). It sends only the credential and version headers, and never goes through a gateway or any other base. The request's input bound is then that count plus the tool-use prompt, where before it was the body's bytes (about two to three times the tokens billed). A count that fails, says nothing or takes over 3 seconds leaves the byte bound, and the request goes on. Through OpenRouter or any other gateway the bound stays the bytes, so the cap still never passes.

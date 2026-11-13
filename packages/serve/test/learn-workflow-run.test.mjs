@@ -122,7 +122,7 @@ test("learned_workflow's description is short: one line of what it does, one lin
   const said = learnedWorkflowDescription([{ name: "answer", description: DESCRIPTION, workflow: JSON.stringify(answerFlow()) }]);
   const lines = said.split("\n");
   assert.equal(lines.length, 2, said);
-  for (const fact of ["learned workflows", "one call", "by name", "JSON input", "(* required)", "output as JSON", "why it did not run"]) assert.ok(lines[0].includes(fact), `${fact}: ${lines[0]}`);
+  for (const fact of ["learned workflow", "one call", "by name", "JSON input", "(* required)", "Text output: reply with it unchanged", "Else JSON", "why it did not run"]) assert.ok(lines[0].includes(fact), `${fact}: ${lines[0]}`);
   assert.equal(lines[1], `- answer {question* string}: ${DESCRIPTION}`);
   assert.ok(Buffer.byteLength(said) <= 270, `${Buffer.byteLength(said)} bytes: ${said}`);
   const tool = learnedWorkflowTool({ workflows: [{ name: "answer", description: DESCRIPTION, workflow: JSON.stringify(answerFlow()) }], granted: [], env: {}, work: "/tmp", models: {}, modelOf: () => undefined, policy: () => "allow", denyFrom: () => "default" });
@@ -284,7 +284,7 @@ test("a learned workflow whose later node is a judge is refused before any node 
   const { runId, rows } = await ran(api, data, "late-judge", "pi", flowFiles("answer", flow));
   const result = learnedResult(rows);
   assert.equal(result?.tool_status, "failed", JSON.stringify(result));
-  assert.match(JSON.stringify(result), /The learned workflow answer was not run: .*judge node \\?"check\\?" requires runJudge/, JSON.stringify(result));
+  assert.match(JSON.stringify(result), /The learned workflow answer was not run: .*judge node \\?"check\\?" names the decision provider jev, which this host does not have/, JSON.stringify(result));
   assert.deepEqual((await entriesOf({ data }, runId, ["agentrun.request_started"])).filter((entry) => entry.request === LEARNED_WORKFLOW_TOOL), [], "its first node never ran");
 });
 
@@ -472,4 +472,53 @@ test("a learned workflow's call reads on the run's timeline as the workflow it r
   assert.equal(use?.summary, "Ran the learned workflow answer", JSON.stringify(use));
   assert.equal(result?.tool_status, "success", JSON.stringify(result));
   assert.equal(result?.summary, "Ran the learned workflow answer: answer 42", JSON.stringify(result));
+});
+
+/** A workflow whose last node writes the card report in its fixed format, as the bench's expense draft does (#2412): its
+ *  output an object of one string field. */
+const reportFlow = () => ({
+  v: 2, name: "card-report",
+  schemas: {
+    In: { type: "object", required: ["question"], properties: { question: { type: "string" } } },
+    Report: { type: "object", required: ["report"], properties: { report: { type: "string" } } },
+  },
+  input: { schemaId: "In" },
+  output: { schemaId: "Report", path: "report" },
+  root: { node: "chain", steps: [{ node: "extract", label: "format", instructions: "Write the card report: the table, then Flagged:, then Grand total: last.", out: "Report", as: "report" }] },
+});
+
+test("learned_workflow's description says a text output is the reply, unchanged (#2412)", () => {
+  const said = learnedWorkflowDescription([{ name: "answer", description: DESCRIPTION, workflow: "{}" }]);
+  assert.match(said.split("\n")[0], /Text output: reply with it unchanged\./, said);
+});
+
+test("a learned workflow's output is handed back as text when it is text, one string or an object of one string field, and as JSON otherwise (#2412)", async () => {
+  const { learnedOutput } = await import("../dist/learned-workflow.js");
+  const report = "| Category | Count | Total |\n|---|---|---|\nGrand total: $2.00";
+  assert.equal(learnedOutput(report), report);
+  assert.equal(learnedOutput({ report }), report, "the draft's Report object: its one string field");
+  assert.equal(learnedOutput({ answer: 42 }), '{"answer":42}');
+  assert.equal(learnedOutput({ a: "x", b: "y" }), '{"a":"x","b":"y"}');
+  assert.equal(learnedOutput(null), "null");
+  assert.equal(learnedOutput(undefined), "null");
+});
+
+test("a learned workflow whose last node writes a report in a fixed format hands the run that report line by line, never JSON-quoted, and the run's answer holds it so (#2412)", { timeout: 120_000 }, async (t) => {
+  const { REPORT } = await import("./fixtures/faux-model.mjs");
+  const { api, data } = await serve(t, { learning: "on" });
+  const { rows, view } = await ran(api, data, "formatted", "pi", flowFiles("card-report", reportFlow()), [], { ask: "Use the learned workflow card-report on the week's card transactions." });
+  const result = learnedResult(rows);
+  assert.equal(result?.tool_status, "success", JSON.stringify(result));
+  assert.equal(view.status, "completed", JSON.stringify(view));
+  assert.ok(view.result.final_answer.includes(REPORT), `the answer holds the report as written: ${JSON.stringify(view.result.final_answer)}`);
+  assert.ok(!view.result.final_answer.includes("\\n"), "no JSON escape reached the answer");
+});
+
+test("a caller that replies with a learned workflow's text output as it is answers exactly the report its last node wrote, and the call's row sums the report up line by line (#2412)", { timeout: 120_000 }, async (t) => {
+  const { REPORT } = await import("./fixtures/faux-model.mjs");
+  const { api, data } = await serve(t, { learning: "on" });
+  const { rows, view } = await ran(api, data, "verbatim", "pi", flowFiles("card-report", reportFlow()), [], { ask: "Reply with the learned workflow card-report's output on the week's card transactions." });
+  assert.equal(view.status, "completed", JSON.stringify(view));
+  assert.equal(view.result.final_answer, REPORT, "the answer is the report, exactly");
+  assert.equal(learnedResult(rows)?.summary, "Ran the learned workflow card-report: | Category | Count | Total | / |---|---|---| / | Office | 2 | 1663.10 | / Flagged: Best Buy / Grand total: $1663.10");
 });

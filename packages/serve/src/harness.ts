@@ -1,4 +1,4 @@
-// The harness that runs a revision: pi (pi-durable-disk's, the default and the one a revision that names none gets) or
+// The harness that runs a revision: pi (the default and the one a revision that names none gets) or
 // one of the run adapters. A revision keeps the harness it names; the default is never stored, so a revision written
 // before this field existed and one that names pi are the same revision. Which harnesses this server runs is said in
 // capabilities, and a revision naming one it does not run saves with a warning and is refused at run time.
