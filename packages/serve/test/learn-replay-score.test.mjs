@@ -22,6 +22,15 @@ test("answers are the same as JSON values; a replay's answer takes the agent's g
   assert.equal(answerCorrect(null, { answer: "5", correct: true }), false);
 });
 
+test("a workflow whose output is one text field answers that text (learnedOutput): its expected field reads the bare answer", () => {
+  // A workflow with output {mcc} is served as "5999", not {"mcc":"5999"}: the one expected field is the answer itself.
+  assert.equal(answerCorrect("5812", { answer: '{"mcc":"5812","why":"x"}', correct: true, expected: { mcc: "5812" } }), true);
+  assert.equal(answerCorrect(" 5812\n", { answer: "x", correct: false, expected: { mcc: "5812" } }), true, "trimmed");
+  assert.equal(answerCorrect("5999", { answer: "x", correct: true, expected: { mcc: "5812" } }), false);
+  assert.equal(answerCorrect("5812", { answer: "x", correct: true, expected: { mcc: "5812", tier: "low" } }), false, "two fields: a bare text holds neither");
+  assert.equal(answerCorrect("[\"5812\"]", { answer: "x", correct: true, expected: { mcc: "5812" } }), false);
+});
+
 test("a hand-back in replay is the agent's recorded answer, never a failure: escalations do not lower the workflow's accuracy", () => {
   const rows = [
     row("r1", { answer: "a", guards: [guard("pick", 0.9)] }),

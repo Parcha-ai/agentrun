@@ -171,12 +171,16 @@ function same(a: unknown, b: unknown): boolean {
 export const sameAnswer = (a: string | null, b: string | null): boolean => a !== null && b !== null && same(valueOf(a), valueOf(b));
 
 /** Whether the workflow's `answer` to a graded input is right: with the grade's expected fields, when its JSON holds each
- *  of them; else when it says what the agent's graded answer said, that answer's grade. An answer that differs from the
- *  agent's when the agent's was wrong is counted wrong: nothing says it is right (a replay never flatters the workflow). */
+ *  of them (or, one field expected, when the answer is that field's text: a workflow whose output is one text field
+ *  answers with that text, learned-workflow.ts learnedOutput); else when it says what the agent's graded answer said,
+ *  that answer's grade. An answer that differs from the agent's when the agent's was wrong is counted wrong: nothing says
+ *  it is right (a replay never flatters the workflow). */
 export function answerCorrect(answer: string | null, recorded: ReplayRow["recorded"]): boolean {
   if (answer === null) return false;
   if (recorded.expected) {
     const value = valueOf(answer);
+    const fields = Object.values(recorded.expected);
+    if (fields.length === 1 && typeof fields[0] === "string" && answer.trim() === fields[0].trim()) return true;
     if (!value || typeof value !== "object" || Array.isArray(value)) return false;
     return Object.entries(recorded.expected).every(([key, want]) => same((value as Record<string, unknown>)[key], want));
   }
