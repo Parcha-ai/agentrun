@@ -527,6 +527,17 @@ test("an agent with an output schema: an output that cannot be shaped to it goes
   assert.match(handed.text, /does not meet the agent's output schema: \/answer/, `the reason is in it: ${handed.text}`);
 });
 
+test("a claim that dies after a handback the agent never got: the next claim sends the same handback, why and all (schema, cut)", async (t) => {
+  const outputSchema = { type: "object", required: ["answer"], properties: { answer: { type: "number" } } };
+  const words = await piRun(t, { flows: TEXT_FLOWS, answer: "forty-two", outputSchema, crashOnHandback: true });
+  assert.equal(words.row.state, "ended", JSON.stringify(words.row));
+  assert.ok(words.claims >= 2, `a second claim took the run: ${words.claims}`);
+  assert.deepEqual(words.entries.filter((entry) => entry.kind === WORKFLOW_FIRST).map((entry) => entry.data.outcome), ["handed_back"]);
+  const firstAgent = words.gateway.requests.find((request) => !isNode(request));
+  assert.match(textOf(firstAgent.body), /forty-two/, "the workflow's own answer is in it");
+  assert.match(textOf(firstAgent.body), /does not meet the agent's output schema: \/answer/, `the reason survives the crash: ${textOf(firstAgent.body)}`);
+});
+
 test("answerAsServed: one answer as served for serving, replay and grading; what it serves reads back as the value it shaped", () => {
   const mcc = { type: "object", required: ["mcc"], properties: { mcc: { type: "string" } } };
   const cases = [
