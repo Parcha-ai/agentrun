@@ -49,6 +49,28 @@ const holdsFolded = (text) => text.toLowerCase().replace(/[-_:.]/g, "").includes
 /** The grader keeps every item it is shown. */
 const KEEP = JSON.stringify({ merge: true, reason: "Worth keeping.", items: [{ file: "session-to-reuse.md", decision: "keep", why: "useful" }, { file: "retry-slowly.md", decision: "keep", why: "useful" }] });
 
+/** Writes run `runId`'s sign_in_handed as `mark` (JSON), on a connection of its own (no writer writes a malformed mark, so
+ *  runs.update can't). The runner's store holds its write lock in this process (a claim poll, a renewal: a transaction its
+ *  worker steps from this thread), so the write never busy-waits on this thread: a synchronous busy wait blocked the very
+ *  thread that steps the transaction to its commit, so it waited its whole timeout, the claim failed, and the run waited
+ *  out its lease past the test's wait (CI: "not within 30000 ms: run-1 ended"). Each try waits for nothing; a held lock
+ *  yields to the event loop, which lets the transaction commit, and tries again. */
+async function writeMark(file, runId, mark) {
+  const deadline = Date.now() + WAIT_MS;
+  for (;;) {
+    const db = new DatabaseSync(file, { timeout: 0 });
+    try {
+      db.prepare("UPDATE runs SET sign_in_handed = ? WHERE id = ?").run(JSON.stringify(mark), runId);
+      return;
+    } catch (error) {
+      if (!/database is locked|SQLITE_BUSY/i.test(String(error?.message)) || Date.now() > deadline) throw error;
+    } finally {
+      db.close();
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
 /** A store in a directory of its own; agent-1 learns and has a saved Browserbase sign-in; run-1 starts from its seed on
  *  a Browserbase plane, the person's words quoting the pointer. The runner runs run-1 on the adapter loop (bound to the
  *  pointer whose hash is `handed` at its claim, as the runner's bind writes it; or, with `mark`, its row's
@@ -78,14 +100,7 @@ async function world(t, { handed, mark, leaky = LEAKY, stored }) {
   const script = piAdapterSpec({ script: [{ say: `Logged in on ${POINTER}.` }, { say: reflected(leaky) }], tools: {}, hooks: quiet });
   const spec = async (claim, run) => {
     if (mark === undefined) await store.runs.update(claim, { signInHanded: [handed] });
-    else {
-      // Its own connection, which waits out a write the runner's store has in flight (a claim, a lease's renewal): with
-      // node:sqlite's default busy wait of none, a write held at that moment threw SQLITE_BUSY, the claim failed, and the
-      // run waited out its lease past the test's wait (CI, #2365).
-      const db = new DatabaseSync(join(dir, "store.sqlite"), { timeout: WAIT_MS });
-      db.prepare("UPDATE runs SET sign_in_handed = ? WHERE id = ?").run(JSON.stringify(mark), claim.runId);
-      db.close();
-    }
+    else await writeMark(join(dir, "store.sqlite"), claim.runId, mark);
     return { ...(await script(claim, run)), agentId: "agent-1", input: launch.input.content };
   };
   const signIns = signInsOverStore(store, KEY, { remove: async () => {} });

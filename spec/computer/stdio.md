@@ -34,9 +34,11 @@ computer, and the provider writes requests to its stdin and reads replies from i
 | --- | --- | --- |
 | `pid1` | The computer runs it as its main process (an image's entrypoint). | The computer ends. |
 | `child` | The vendor's own agent is the main process; the provider uploads `computerd` and starts init at boot. | The computer goes on; the provider no longer hands it out. |
-| `none` | No daemon runs. The provider answers the methods itself (over adb, the vendor's API, CDP). | (no init) |
+| `none` | No `computerd init` runs. Something else answers the methods: the provider itself (over adb, the vendor's API, CDP), or a driver on the machine (an attached Mac's Computerd, a phone's agent). | (no init) |
 
-A provider declares its mode in `capabilities().daemon` (see [`kinds.md`](kinds.md)).
+A provider declares its mode in `capabilities().daemon` (see [`kinds.md`](kinds.md)). The mode says only whether
+`computerd init` runs in the computer and so keeps init's promises about programs; who answers the wire is `hello`'s
+business. An attached Mac and a phone's own agent are `none`.
 
 ## What init promises the programs it runs
 
