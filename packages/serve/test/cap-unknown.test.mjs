@@ -823,19 +823,20 @@ test.skip("QA 7.4: a pi run under a $1 cap, stopped while its clamped request is
 });
 
 test("a capped pi run refused for room with no stop pauses at its cap: its cost stays the known total it spent, and the refused request counts as no request", async (t) => {
-  const { api, store } = await serve(t, { faux: OUTPUT_PRICED });
+  const { api, store } = await serve(t, { faux: new URL("./fixtures/faux-input-priced.mjs", import.meta.url).pathname });
   // A probe: one paid request (asking the person), to learn what one costs.
   assert.equal((await api("POST", "/agents", agent("probe", { tools: ["ask_person"] }))).status, 201);
   const probe = (await api("POST", "/agents/probe/runs", { input: { content: "Pick a region." } })).body.run_id;
   await follow(api, probe, ["input_required"]);
   const first = (await view(api, probe)).cost.usd;
   assert.ok(first > 0, "the ask was paid for");
-  // One request's least (1,024 tokens at $0.0001) plus half the ask: the ask goes, limited to what the cap buys, and the
-  // answer cannot buy its least after it.
+  // The cap sits above the wrap-up line at step 0 (a bit over three times a request's least, 1,024 tokens at $0.0001, with
+  // the note's own bytes: under it the run is told to finish and never asks), so the ask goes. The answer is a long message, input priced: its input alone, about
+  // 5,700 tokens ($0.57), is more than what the cap leaves after the ask, so it cannot be bought.
   assert.equal((await api("POST", "/agents", agent("plain", { tools: ["ask_person"] }))).status, 201);
-  const runId = (await api("POST", "/agents/plain/runs", { input: { content: "Pick a region." }, max_cost_usd: (1_024 * 100) / 1e6 + first / 2 })).body.run_id;
+  const runId = (await api("POST", "/agents/plain/runs", { input: { content: "Pick a region." }, max_cost_usd: 0.5 })).body.run_id;
   await follow(api, runId, ["input_required"]);
-  assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "eu" })).body.mode, "answer");
+  assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "eu ".repeat(6_666) })).body.mode, "answer");
   // Its next pause, past the question it answered: the answer is taken once the run reads as no longer asking.
   const run = await pausedPast(api, runId, "question");
   assert.deepEqual(pausedState(run), PAUSED, JSON.stringify(run));
