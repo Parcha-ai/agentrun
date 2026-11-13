@@ -4,8 +4,8 @@
 // the folder's snapshot and the bodies it names. A main that moved under it (the script's exit 3) is computed again on
 // the main that won, as long as no oid the caller read (`graded`, `ifMatch`) changed: a change it did not see is a
 // conflict, never written over. A folder with no main yet is made in the same call (the script's init first).
-import { isHeld, held, retiredLearned } from "./skills.js";
-import { buildIndex, INDEX_FILE, INDEX_LINES, type LearnedNote, mergedNote, NOTE_FILE, parseNoteFile, ruleOf, supersede } from "./notes.js";
+import { isHeld, held, retiredLearned, WORKFLOWS_DIR } from "./skills.js";
+import { buildIndex, compiledInto, INDEX_FILE, INDEX_LINES, type LearnedNote, mergedNote, NOTE_FILE, parseNoteFile, ruleOf, supersede } from "./notes.js";
 import { mergeProblems, type Problem, supersededBy } from "./check.js";
 import type { IndexEntry, NoteText } from "./grade.js";
 import { FolderRefused, FolderTooLarge, type FolderChange, readLearning, readRunDiff, readSnapshot, type Snapshot, snapshotNotes, textsAt, topOf, writeLearning } from "./folder.js";
@@ -40,6 +40,9 @@ export type LearningChange =
        *  note holds that name, so the skill's rule would be lost). Its file is checked against the run's seed as a
        *  skill's file the merge writes is. */
       retire?: { skill: string; note: string; rule: string }[];
+      /** A learned workflow this merge writes, compiled from notes (learn/compile.ts): each of `notes` that is active on
+       *  main as it commits gets `compiled_into: <workflow>` in the same write (notes.ts compiledInto), and stays served. */
+      compiled?: { workflow: string; notes: string[] };
     }
   | {
       kind: "person";
@@ -203,6 +206,16 @@ async function mergeOf(change: Extract<LearningChange, { kind: "merge" }>, snaps
     if (!active.has(path)) refused.push({ rule: "supersedes", path: by, detail: `it supersedes ${path}, which is not an active note` });
     else files.set(path, supersede(await body(path, blobOf(snapshot, path)!), by));
   }
+  // The notes the merge's compiled workflow does the work of, marked: an active one this merge writes nothing else to
+  // (a note it supersedes is no longer one to serve), its text on main as it is now. One gone or not active is left alone.
+  const compiledMarks = new Set<string>();
+  if (change.compiled && files.has(`${WORKFLOWS_DIR}/${change.compiled.workflow}/workflow.json`)) {
+    for (const path of change.compiled.notes) {
+      if (!active.has(path) || files.has(path)) continue;
+      files.set(path, compiledInto(await body(path, blobOf(snapshot, path)!), change.compiled.workflow));
+      compiledMarks.add(path);
+    }
+  }
   const added: LearnedNote[] = [];
   const written: LearnedNote[] = [];
   for (const [path, text] of files) {
@@ -215,7 +228,7 @@ async function mergeOf(change: Extract<LearningChange, { kind: "merge" }>, snaps
     written.push(note);
     // A merge adds notes and marks the ones they supersede: it never writes over another note main holds.
     if (blobOf(snapshot, path) === undefined) added.push(note);
-    else if (!marks.some((one) => one.path === path) && !replaced.has(path)) refused.push({ rule: "exists", path, detail: "the folder has a note by this name" });
+    else if (!marks.some((one) => one.path === path) && !replaced.has(path) && !compiledMarks.has(path)) refused.push({ rule: "exists", path, detail: "the folder has a note by this name" });
   }
   // mergeProblems asks of the new notes what a merge always asks: a free name, what they supersede active and named
   // once, the index's lines.

@@ -47,6 +47,9 @@ export interface KeptProposal {
   readonly triggered?: readonly { readonly source: string; readonly text: string }[];
   /** The commit of the learning folder's main the run started from (its pin's seed). */
   readonly seed?: string;
+  /** The draft the run's compile turn wrote (learn/compile.ts), by its name, and the notes it does the work of: marked
+   *  `compiled_into` when the draft merges. */
+  readonly compiled?: { readonly workflow: string; readonly from_notes: readonly string[] };
 }
 
 /** Main as the grader reads it: every active note's index line, the text of each note the proposal supersedes, and the
@@ -76,6 +79,8 @@ export interface MergeChange {
   readonly replace?: readonly string[];
   /** Each skill re-filed as a note, retired on main in the same write (its SKILL.md, and the note that replaces it). */
   readonly retire?: readonly { readonly skill: string; readonly note: string }[];
+  /** A compiled draft this merge writes, and the notes it marks `compiled_into` (learn/commit.ts). */
+  readonly compiled?: { readonly workflow: string; readonly notes: readonly string[] };
 }
 
 export type LearningCommitResult =
@@ -244,9 +249,11 @@ export function mergeChangeOf(runId: string, merging: KeptProposal, verdict: Ver
   // Each skill re-filed as a note is retired on main in the same write (learn/commit.ts mergeOf): a kept one, and one
   // main already holds the same rule of as a note (dropped unsaid), so no old skill stays served beside its note.
   const retire = verdict.items.flatMap((item) => (item.note && (item.keep || item.why === SAME_NOTE) && learnedPlace(item.file)?.kind === "skill" ? [{ skill: item.file, note: item.note.file, rule: ruleOfText(item.note.file, item.note.text) }] : []));
+  // The compiled draft, when the verdict keeps it: the notes it does the work of are marked as it merges.
+  const compiled = merging.compiled && files.some(({ path }) => path === `workflows/${merging.compiled!.workflow}/workflow.json`) && merging.compiled.from_notes.length ? { workflow: merging.compiled.workflow, notes: [...merging.compiled.from_notes] } : undefined;
   return {
     kind: "merge", runId, reason: verdict.reason || "The grader kept every new note.", files: [...notes, ...files],
-    ...(held.length ? { held } : {}), graded, ...(merging.seed ? { seed: merging.seed } : {}), ...(retire.length ? { retire } : {}),
+    ...(held.length ? { held } : {}), graded, ...(merging.seed ? { seed: merging.seed } : {}), ...(retire.length ? { retire } : {}), ...(compiled ? { compiled } : {}),
   };
 }
 

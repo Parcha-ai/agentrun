@@ -123,7 +123,14 @@ export type Learning = {
   /** A grader's drop on two answers the host could not read: the last, cut of secrets and in size (UNREAD_MAX), kept on the
    *  run's file to diagnose it by, and served by no read. */
   unread?: string;
+  /** The compile turn's record, when the run's end-of-run turn wrote the agent's job as a learned workflow
+   *  (learn/compile.ts): the workflow, the notes it absorbed, and each attempt with what the checks refused. */
+  compiled?: LearningCompiled;
+  /** What the checks refused of a compiled draft that never passed: never silent, on the run's learning and its API. */
+  draft_errors?: string[];
 };
+/** A compile turn's record (learn/compile.ts CompiledRecord). */
+export type LearningCompiled = { workflow: string; from_notes: string[]; attempts: { ok: boolean; errors: string[] }[]; promoted?: boolean };
 /** A skill or a workflow draft a merge added or changed. */
 export type LearnedFile = { file: string; name: string; pending?: true };
 

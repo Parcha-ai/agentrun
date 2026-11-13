@@ -36,8 +36,10 @@ export type EndOfRunTurn = (input: {
   /** The run was cut before it could look back: by a person's stop (`stopped`), by one during the end-of-run turn
    *  (`stopped-looking`), or by a fault (`faulted`). The step must not call `ask`: it returns only what a cut run keeps. */
   readonly cut?: "stopped" | "stopped-looking" | "faulted";
-  /** `again`: the turn asked once more in the same session (its first answer out of format), as its own request. */
-  ask(prompt: string, opts: { readonly origin: "reflect"; readonly deadlineMs: number; readonly again?: true }): Promise<EndOfRunAnswer>;
+  /** `again`: the turn asked once more in the same session (its first answer out of format), as its own request.
+   *  `step`: a turn of its own after the look-back, in the same session (the compile turn's attempts, `compile-<n>`,
+   *  learn/compile.ts), each its own request, answered from its submission on a later claim as the turn is. */
+  ask(prompt: string, opts: { readonly origin: "reflect"; readonly deadlineMs: number; readonly again?: true; readonly step?: string }): Promise<EndOfRunAnswer>;
   readonly signal: AbortSignal;
 }) => Promise<{ readonly also: readonly AlsoRow[] } | undefined>;
 

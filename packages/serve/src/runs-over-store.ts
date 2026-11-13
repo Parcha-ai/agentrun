@@ -479,7 +479,7 @@ async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Re
     const { section, given } = learnedParts(seeded.seed, options);
     // The learned skills the seed offers the run, by name: each with its files (one over a run's skill budget at all is held
     // by its size and never laid) and no host secret in it, as chooseSkills leaves them out. The claim lays them; the
-    // end-of-run turn counts the runs each served (runner/learning-end.ts draftForOf).
+    // agent's impact counts the runs each served.
     const skills = (seeded.seed.skills ?? []).flatMap(({ name, files }) => (files && !options.shown.holds(name) && !Object.entries(files).some(([path, text]) => options.shown.holds(path) || options.shown.holds(text)) ? [name] : []));
     // The learned workflows its learned_workflow tool runs, by name, as the claim chooses them (chooseWorkflows): what the
     // agent's impact counts a run as started from, beside its notes and skills.

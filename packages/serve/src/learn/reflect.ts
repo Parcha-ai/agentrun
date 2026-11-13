@@ -1,12 +1,11 @@
 // What a host asks of an agent once its run has answered or failed: one more turn in the same session, in which the agent
-// answers with the notes it would keep, and a skill or a workflow draft when the work repeats, as text in a strict
-// format, and uses no tool. The host parses the answer (parseReflection), checks what it gives (check.ts), a grader
+// answers with the notes it would keep, and a skill when the work repeats, as text in a strict format, and uses no tool
+// (a workflow is the compile turn's, learn/compile.ts, whose answer this parser reads too). The host parses the answer (parseReflection), checks what it gives (check.ts), a grader
 // judges it (grade.ts), and the host merges it, rebuilding the index; the agent never writes the folder, and nothing it
 // wrote during the task counts. The same on every harness: every model writes markdown, and no tool is needed.
 import { createHash } from "node:crypto";
 import { CAPS } from "./check.js";
 import { INDEX_FILE, INDEX_LINES } from "./notes.js";
-import { type DraftDecisions, draftDecisionProviders, LEARNED_MCP_TOOL, SKILL_NAME } from "./skills.js";
 
 /** Control and invisible characters: none may reach the prompt through a value the host puts in it. */
 const UNSEEN = /[\p{Cc}\p{Cf}]/u;
@@ -17,36 +16,14 @@ export const NOTE_BLOCK = "note";
  *  with four backticks so a ``` line inside does not close it. */
 export const SKILL_BLOCK = "skill";
 export const WORKFLOW_BLOCK = "workflow";
-/** How many earlier runs of an agent a learned skill has been given to before the host asks for its job as a workflow
- *  draft (`draftFor`): a run proposes one only when it thinks to, and few do. */
-export const DRAFT_AFTER_RUNS = 3;
-/** A tool's name as the prompt may print it: a table tool's, or an MCP tool's a learned workflow may run (skills.ts
- *  LEARNED_MCP_TOOL). */
-const TOOL_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
-const printable = (tool: string): boolean => TOOL_NAME.test(tool) || LEARNED_MCP_TOOL.test(tool);
-
 /** The end-of-run turn's message. `dir` is the run's copy of the folder relative to the run's workspace (`.learning`),
  *  where the agent can read its notes: the prompt never names a path of the host's, which a box would not see. `active`
- *  is how many notes are active in it, so how many lines the index has left. `tools`, the tools a workflow draft's
- *  call nodes may run (tools.ts learnedWorkflowTools): none when not given. Its model nodes name none. `draftFor`, the
- *  learned skills the run was given that have served DRAFT_AFTER_RUNS earlier runs with no learned workflow of their
- *  name: the prompt gains one line asking for that job as a workflow draft. None when not given. `described`, with a
- *  draft asked for: what each of `tools` takes and gives a call node, in the server's own words (tools.ts ToolEntry
- *  summary), said under the ask, one line each (at most DESCRIBED_MAX characters, unseen characters and line breaks made
- *  spaces); one for a tool not in `tools` is left out. Nothing is described unless a draft is asked for. `workflows`, false
- *  for a run of a revision that says `learning: "notes"`: the prompt asks for notes and a skill alone, says to keep no
- *  workflow draft, and asks for none (`draftFor` and `described` are not said). `decisions`, the run's decision providers
- *  (skills.ts DraftDecisions, the one the draft check reads): with a provider it has (draftDecisionProviders), a draft may
- *  use judge, pick and sift nodes; without, the prompt bans them as it always did. */
-export function reflectPrompt(options: { dir: string; active: number; tools?: readonly string[]; draftFor?: readonly string[]; described?: readonly { readonly name: string; readonly does: string }[]; workflows?: boolean; decisions?: DraftDecisions; handedBack?: string; revise?: ReviseAsk }): string {
-  const { dir, active, tools = [], draftFor = [], described = [], workflows = true, decisions, handedBack, revise } = options;
-  if (handedBack !== undefined && !SKILL_NAME.test(handedBack)) throw new Error("the workflow that handed the run back must be a workflow's name");
-  if (revise !== undefined && !SKILL_NAME.test(revise.workflow)) throw new Error("the workflow asked to be revised must be a workflow's name");
-  const judges = draftDecisionProviders(decisions).length > 0;
+ *  is how many notes are active in it, so how many lines the index has left. The turn keeps notes and a skill; a job
+ *  that repeats is compiled into a learned workflow by the compile turn (learn/compile.ts), never drafted here. */
+export function reflectPrompt(options: { dir: string; active: number }): string {
+  const { dir, active } = options;
   if (typeof dir !== "string" || dir === "" || dir.startsWith("/") || UNSEEN.test(dir)) throw new Error("the directory must be a path relative to the run's workspace, with no control or unseen characters");
   if (!Number.isSafeInteger(active) || active < 0) throw new Error("the count of active notes must be a whole number, 0 or more");
-  if (!Array.isArray(tools) || tools.some((tool) => typeof tool !== "string" || !printable(tool))) throw new Error("each tool must be a tool's name");
-  if (!Array.isArray(draftFor) || draftFor.some((name) => typeof name !== "string" || !SKILL_NAME.test(name))) throw new Error("each skill a draft is asked for must be a skill's name");
   const left = Math.max(0, INDEX_LINES - active);
   return [
     "The task is done. Before the run ends, say what this run taught you that will help in later runs, if anything.",
@@ -89,34 +66,17 @@ export function reflectPrompt(options: { dir: string; active: number; tools?: re
     "site, a source or a seller, or names where money or data goes.",
     "What `# Learned` in your instructions, and this message, say about learning itself is not a lesson: never put it in a note or a skill, nor the sentence you say when you keep something.",
     "",
-    ...(workflows ? [
-      "## Skills and workflow drafts, only when the work repeats",
-      "",
-      "When this run did, to the end, a job this agent will be asked to do again, you may also keep one skill and one",
-      "workflow draft for that job. Most runs keep neither. Neither holds this case's data: each is about the job, not the one case.",
-    ] : [
-      "## Skills, only when the work repeats",
-      "",
-      "When this run did, to the end, a job this agent will be asked to do again, you may also keep one skill for that job.",
-      "Most runs keep none. It holds none of this case's data: it is about the job, not the one case.",
-      "Keep no workflow draft: this agent learns notes and skills alone.",
-    ]),
+    "## Skills, only when the work repeats",
+    "",
+    "When this run did, to the end, a job this agent will be asked to do again, you may also keep one skill for that job.",
+    "Most runs keep none. It holds none of this case's data: it is about the job, not the one case.",
     "Steps the person asks you to follow every time a task comes back are a skill, not a note: keep them as the skill, in",
     "their words and with the exact output format they gave, and do not repeat them in a note.",
     "A job you keep a skill for needs no note beside it.",
     "A rule for every reply applies whatever the job is. Keep it as a note, which every later run reads. Steps or a format",
     "for one kind of job, named by when it applies (\"whenever I ask for a weekly summary\", \"when you open a PR\"), are a",
     "skill. A note holds its own lesson: never repeat another note's rule in it, so a retired rule stays retired.",
-    ...(workflows ? [
-      "A job that runs end to end as model and tool-call steps, from a defined input to a defined output, is a workflow draft,",
-      "and so is one the person asks you to keep as a workflow; its steps may also be a skill.",
-      "A workflow whose input takes a run's input as the run is given it (the same field names, such as `content`) runs first",
-      "on later runs, before you: it answers alone, or ends on an `escalate` node and hands the case back to you with what it found.",
-      "Give each of its model nodes `\"tier\": \"fast\"`; a step that needs your own judgment names no tier, and runs on your model.",
-      ...(handedBack ? [handbackAsk(handedBack)] : []),
-      ...(revise ? [reviseAsk(revise)] : []),
-      ...(draftFor.length ? [draftAsk(draftFor), ...describedLines(described, tools)] : []),
-    ] : []),
+    "Keep no workflow here: when the job repeats, the host may ask for it as a workflow in a turn of its own, from your notes.",
     "",
     `A skill is how to do the job, step by step, as a SKILL.md: front matter with its \`name\` (lowercase letters, digits`,
     "and single dashes) and a `description` of when to use it, then the steps. Open its block with four backticks, so a",
@@ -130,73 +90,13 @@ export function reflectPrompt(options: { dir: string; active: number; tools?: re
     "---",
     "1. Open the store's policies page first.",
     "````",
-    "",
-    ...(workflows ? [
-      "A workflow draft does the job as one workflow DSL document: front matter with one line that says what it does and",
-      "when to use it, then the JSON. " + (judges
-        ? "It uses model and tool-call nodes, and may use judge (answers a question about a value), pick (chooses one of several options) and sift (keeps the items that pass a test) nodes, which run on this run's decision provider under its cap and tool policy; no code node, no shell or"
-        : "It uses model and tool-call nodes only: no judge, pick or sift node, no code node, no shell or"),
-      `executor call. Its model nodes name no tool. ${tools.length ? `Its call nodes may run only these tools: ${tools.join(", ")}.` : "It has no call node on a tool."} At most ${CAPS.file} bytes of JSON.`,
-      "To change a draft you were given, give it again whole under its name.",
-      "Its schemas are declared once under `schemas`, and `input` and `output` name one each by `schemaId`, never a schema",
-      "written in place.",
-      "Give its front matter an `example:` line too: one JSON object on one line, the input this run would have given it.",
-      "The host dry-runs the draft on it before it is kept (no model or tool is called) and never keeps the example.",
-      "",
-      `\`\`\`\`${WORKFLOW_BLOCK} find-policies`,
-      "---",
-      "description: Finds a store's refund policy from its public pages; use when a case asks for it",
-      `example: ${JSON.stringify(tools.includes("web_fetch") ? { url: "https://shop.example/policies" } : { text: "Refunds are accepted within 30 days of delivery." })}`,
-      "---",
-      JSON.stringify(exampleDraft(tools.includes("web_fetch"))),
-      "````",
-    ] : []),
   ].join("\n");
 }
 
-/** The most of one tool's words the draft ask's description gives it. */
-const DESCRIBED_MAX = 600;
-/** What each of `tools` takes and gives a call node, from `described` (a tool's name and its words), one line each, under
- *  a line that says so; none when no tool of `tools` is described. */
-const describedLines = (described: readonly { readonly name: string; readonly does: string }[], tools: readonly string[]): string[] => {
-  const lines = tools.flatMap((name) => {
-    const does = described.find((one) => one.name === name)?.does;
-    if (typeof does !== "string") return [];
-    const flat = does.replace(new RegExp(UNSEEN.source, "gu"), " ").replace(/\s+/g, " ").trim().slice(0, DESCRIBED_MAX).trim();
-    return flat ? [`- \`${name}\`: ${flat}`] : [];
-  });
-  return lines.length ? ["What each tool a call node may run takes and gives:", ...lines] : [];
-};
-
-/** The one line that asks for a revision of the learned workflow that ran first on this run and handed it back. */
-const handbackAsk = (name: string): string =>
-  `Your learned workflow \`${name}\` ran first on this run and handed it back to you. If a change to it would have let it finish this case, give \`${name}\` again whole under its name with that change; if handing this case back was right, keep it as it is.`;
-
-/** A learned workflow the money rule stopped from running first (runner/workflow-first.ts costLineOf): its name, and its
- *  cost a run over its last `runs` served runs against the agent's by hand, in dollars. */
-export interface ReviseAsk {
-  readonly workflow: string;
-  readonly served_usd: number;
-  readonly by_hand_usd: number;
-  readonly runs: number;
-}
-
-/** The one line that asks for a revision of the learned workflow the money rule stopped from running first. */
-const reviseAsk = ({ workflow, served_usd, by_hand_usd, runs }: ReviseAsk): string =>
-  `Your learned workflow \`${workflow}\` no longer runs first: over its last ${runs} runs it served it cost $${served_usd} a run, against $${by_hand_usd} a run by hand, so you took this run from the start. To have it run first again, give \`${workflow}\` again whole under its name, changed to finish more cases alone or to spend less on each; a new version runs first again and is held to the same line.`;
-
-/** The one line that asks for a workflow draft of a skill's job, by the skill's name. */
-const draftAsk = (names: readonly string[]): string => {
-  const listed = names.map((name) => `\`${name}\``).join(", ");
-  return names.length === 1
-    ? `Your skill ${listed} has now served ${DRAFT_AFTER_RUNS} or more runs: this time, also keep its job as a workflow draft named \`${names[0]}\`, its steps as nodes, if the job runs end to end as model and tool-call steps. Its output is the job's answer in the output format the skill gives: its last node writes it, and \`output\` names that node's text.`
-    : `Your skills ${listed} have each served ${DRAFT_AFTER_RUNS} or more runs: this time, also keep one of their jobs as a workflow draft named like its skill, its steps as nodes, if the job runs end to end as model and tool-call steps. Its output is the job's answer in the output format its skill gives: its last node writes it, and \`output\` names that node's text.`;
-};
-
 /** The end-of-run turn asked again, once, when the parser refused its answer: why, in the parser's own words (`detail`,
  *  parseReflection's), and the whole answer again in the format. */
-export function reflectAgain(detail: string, workflows?: false): string {
-  return `Your answer could not be read: ${detail}. Give the whole answer again in the format asked for above, every ${workflows === false ? "note and skill" : "note, skill and workflow"} block in it, and nothing else.`;
+export function reflectAgain(detail: string): string {
+  return `Your answer could not be read: ${detail}. Give the whole answer again in the format asked for above, every note and skill block in it, and nothing else.`;
 }
 
 /** The end-of-run turn asked again, once, when the checks left a workflow draft out because its dry run failed: which
@@ -235,50 +135,6 @@ function retryToken(file: string, said: string): string {
     if (!said.includes(token)) return token;
   }
 }
-
-/** The prompt's example workflow draft, whole: its schemas declared once, its input and output naming them by `schemaId`,
- *  and a chain the learned runner runs (a `web_fetch` call when the agent has it, then a model node; else two model
- *  nodes), so an agent copies a draft the DSL and the checker pass (a test validates this text). */
-const exampleDraft = (fetches: boolean) =>
-  fetches
-    ? {
-        v: 2,
-        name: "find-policies",
-        schemas: {
-          Store: { type: "object", properties: { url: { type: "string" } }, required: ["url"] },
-          Page: { type: "object", properties: { text: { type: "string" } } },
-          Policies: { type: "object", properties: { refund: { type: "string" } }, required: ["refund"] },
-        },
-        input: { schemaId: "Store" },
-        output: { schemaId: "Policies", path: "policies" },
-        root: {
-          node: "chain",
-          steps: [
-            { node: "call", label: "fetch", via: "tool", tool: "web_fetch", args: { url: "{url}" }, out: "Page", as: "page", deadline_s: 30 },
-            { node: "extract", label: "read", instructions: "Say the store's refund policy, from the page.", out: "Policies", as: "policies" },
-          ],
-        },
-      }
-    : {
-        // With no tool to fetch with, the job's input is the page's text itself: every step reads what it is given,
-        // never a guess.
-        v: 2,
-        name: "find-policies",
-        schemas: {
-          Page: { type: "object", properties: { text: { type: "string" } }, required: ["text"] },
-          Lines: { type: "object", properties: { lines: { type: "string" } }, required: ["lines"] },
-          Policies: { type: "object", properties: { refund: { type: "string" } }, required: ["refund"] },
-        },
-        input: { schemaId: "Page" },
-        output: { schemaId: "Policies", path: "policies" },
-        root: {
-          node: "chain",
-          steps: [
-            { node: "extract", label: "quote", instructions: "Copy the lines of the page's text that are about refunds.", out: "Lines", as: "lines" },
-            { node: "extract", label: "read", instructions: "Say the store's refund policy, from those lines.", out: "Policies", as: "policies" },
-          ],
-        },
-      };
 
 /** A skill's or a workflow draft's block: the name its block gives, and its text whole. */
 export type LearnedBlock = { readonly name: string; readonly text: string };

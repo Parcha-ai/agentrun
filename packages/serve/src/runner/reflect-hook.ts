@@ -6,9 +6,8 @@
 // (`refuse`: the host's secrets and what it was handed, its sign-in pointer among them) is refused by the checks, and cut
 // from everything the hook keeps; a run whose list can't be read learns nothing.
 import { cutStrings } from "../key-refusal.js";
-import type { DraftDecisions } from "../learn/skills.js";
 import { DRY_RUN_FAILED, reflectAgain, reflectDryRun, reflectPrompt, redactSecrets } from "../learn/index.js";
-import type { ReviseAsk } from "../learn/reflect.js";
+import { type CompileAsk, type CompiledRecord, compileTurn, UNNAMED } from "../learn/compile.js";
 import { said, STOPPED } from "../learning-words.js";
 import type { AlsoRow, EndOfRunTurn } from "./loop-contract.js";
 
@@ -42,9 +41,14 @@ export interface ReflectDeps {
   readonly nothingNew?: (runId: string) => Promise<boolean>;
   /** The run's facts for reflectSkip: whether it learns, a person's cancel, its cap reached, its cap and spend so far. */
   readonly facts: (runId: string) => Promise<{ learns: boolean; cancelled?: boolean; capReached?: boolean; capUsd?: number; costUsd: number | null }>;
-  /** The prompt's facts: how many notes the run started from, the tools a workflow draft may name, and the learned skills
-   *  whose job the prompt asks for as a workflow draft (reflectPrompt's draftFor; none when absent). */
-  readonly promptFacts: (runId: string, agentId: string) => Promise<{ active: number; tools: readonly string[]; decisions?: DraftDecisions; draftFor?: readonly string[]; described?: readonly { readonly name: string; readonly does: string }[]; workflows?: false; handedBack?: string; revise?: ReviseAsk }>;
+  /** The prompt's facts: how many notes the run started from. */
+  readonly promptFacts: (runId: string, agentId: string) => Promise<{ active: number }>;
+  /** The compile turn's facts (learn/compile.ts CompileAsk), read once the look-back's answer is checked, `refuse` cut
+   *  from what they quote: undefined when the run compiles nothing (its job not due, a notes-only agent, a workflow
+   *  that answered). Absent, or a read that throws: no compile turn. */
+  readonly compileFacts?: (input: { runId: string; agentId: string; outcome: "completed" | "failed"; refuse: readonly string[] }) => Promise<CompileAsk | undefined>;
+  /** The compile turn's deadline, every attempt in it. Default learn/compile.ts COMPILE_TIMEOUT_MS. */
+  readonly compileDeadlineMs?: number;
   /** What the person said in the run, and a trigger's input, as the checks and the grader read them. */
   readonly asked: (runId: string) => Promise<{ asked: readonly string[]; triggered?: ReflectTurn["triggered"] }>;
   /** Every value the run must never learn (learning-run.ts refused): the host's secrets and what the run was handed, its
@@ -122,10 +126,10 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
     // string the kept rows hold, whatever looked adds now or later.
     const close = async (rows: AlsoRow[]) => ({ also: (await looked({ also: rows })).also.map((row) => cutRow(row, refuse)) });
     if (read === "unreadable") return close([droppedRow(null, "propose_failed", said.stopped(STOPPED.refuseUnread))]);
-    const { active, tools, draftFor, described, decisions, workflows, handedBack, revise } = await deps.promptFacts(input.runId, input.agentId);
+    const { active } = await deps.promptFacts(input.runId, input.agentId);
     const deadlineMs = deps.deadlineMs ?? REFLECT_TIMEOUT_MS;
     const started = now();
-    const end = await input.ask(reflectPrompt({ dir: LEARNED_DIR, active, tools, ...(decisions ? { decisions } : {}), ...(workflows === false ? { workflows: false } : { ...(draftFor?.length ? { draftFor, ...(described?.length ? { described } : {}) } : {}), ...(handedBack ? { handedBack } : {}), ...(revise ? { revise } : {}) }) }), { origin: "reflect", deadlineMs });
+    const end = await input.ask(reflectPrompt({ dir: LEARNED_DIR, active }), { origin: "reflect", deadlineMs });
     // closeLearning: how the turn ended.
     if ("timedOut" in end) return close([droppedRow(null, "reflect_timeout", said.stopped(STOPPED.timedOut))]);
     if ("failed" in end) return close([CAP_REFUSAL.test(end.failed.message) ? droppedRow(null, "no_budget", said.noBudget) : droppedRow(null, "reflect_failed", said.stopped(STOPPED.failed))]);
@@ -146,7 +150,7 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
     // within the turn's own deadline; a re-ask that times out or fails leaves the first answer's drop.
     if (checked.state === "dropped" && checked.reason === "unparsed") {
       const left = deadlineMs - (now() - started);
-      const again = left > 0 ? await input.ask(reflectAgain(checked.detail, ...(workflows === false ? [false as const] : [])), { origin: "reflect", deadlineMs: left, again: true }) : undefined;
+      const again = left > 0 ? await input.ask(reflectAgain(checked.detail), { origin: "reflect", deadlineMs: left, again: true }) : undefined;
       if (again && "ended" in again) {
         turn = turnOf(again.answer);
         checked = await checkOf(turn);
@@ -169,12 +173,49 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
         }
       }
     }
+    // The compile turn (learn/compile.ts): the job as a learned workflow, or a revision of one, checked as a draft is,
+    // its refusals sent back up to COMPILE_RETRIES times. A draft that passed goes in the proposal beside the notes; one
+    // that never did is never silent: its errors go with the learning, and its problems to its end.
+    const compile = deps.compileFacts ? await deps.compileFacts({ runId: input.runId, agentId: input.agentId, outcome: input.outcome, refuse }).catch(() => undefined) : undefined;
+    let compiled: { record: CompiledRecord; draft_errors?: string[] } | undefined;
+    if (compile) {
+      const result = await compileTurn<Checked>({
+        ask: async (prompt, attempt, left) => {
+          const said_ = await input.ask(prompt, { origin: "reflect", deadlineMs: left, step: `compile-${attempt}` });
+          return "ended" in said_ ? { answer: said_.answer } : undefined;
+        },
+        compile,
+        // The look-back's own answer, when the checks kept it: its notes and skills go on with the draft.
+        answer: checked.state === "proposed" ? turn.answer : "",
+        check: (answer) => checkOf(turnOf(answer)),
+        ...(deps.compileDeadlineMs !== undefined ? { deadlineMs: deps.compileDeadlineMs } : {}),
+        now,
+      });
+      if (result.kept?.checked.state === "proposed") {
+        const { workflow, from_notes } = result.record!;
+        turn = turnOf(result.kept.answer);
+        checked = { ...result.kept.checked, proposal: { ...(result.kept.checked.proposal as object), compiled: { workflow, from_notes } } };
+        compiled = { record: result.record! };
+      } else if (result.record) {
+        const named = result.record.workflow !== UNNAMED ? { path: `workflows/${result.record.workflow}/workflow.json` } : {};
+        const problems = result.draftErrors.map((detail) => ({ rule: "workflow" as const, ...named, detail }));
+        // Beside what the look-back kept, as what the checks left out; in place of a look-back that kept nothing, as the
+        // checks' drop; beside the checks' own drop, with it. A look-back whose answer could not be read keeps its reason,
+        // the draft's errors beside it.
+        checked = checked.state === "proposed" ? { ...checked, left: [...(checked.left ?? []), ...problems] }
+          : checked.reason === "empty" ? { state: "dropped", reason: "checker", problems }
+          : checked.reason === "checker" ? { ...checked, problems: [...checked.problems, ...problems] }
+          : checked;
+        compiled = { record: result.record, draft_errors: result.draftErrors };
+      }
+    }
+    const compiledFields = compiled ? { compiled: compiled.record, ...(compiled.draft_errors?.length ? { draft_errors: compiled.draft_errors } : {}) } : {};
     if (checked.state === "dropped") {
       const detail = checked.reason === "empty" ? said.empty : checked.reason === "unparsed" ? said.unparsed : said.checker(checked.problems as never);
-      return close([droppedRow(turn, checked.reason, detail, checked)]);
+      return close([droppedRow(turn, checked.reason, detail, { ...checked, ...compiledFields })]);
     }
     return close([
-      { table: "learning_proposals", row: { turn, proposal: { ...checked, detail: said.proposed(checked.notes, checked.skills, checked.workflows) } } },
+      { table: "learning_proposals", row: { turn, proposal: { ...checked, ...compiledFields, detail: said.proposed(checked.notes, checked.skills, checked.workflows) } } },
       { table: "learning_run", row: { id: deps.newRunId(), ...(deps.gradeModel ? { model: deps.gradeModel } : {}) } },
     ]);
   };

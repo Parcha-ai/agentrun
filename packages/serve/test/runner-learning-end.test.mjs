@@ -6,7 +6,7 @@
 // run whose launch names harness "learning", which the runner's dispatch runs on the learning loop). A run that does
 // not learn is asked nothing and keeps nothing.
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -14,6 +14,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { openSqliteStore } from "../dist/store/index.js";
 import { startRunner } from "../dist/runner/runner.js";
 import { closeOpenSessions, piAdapterSpec } from "./conformance-pi-adapter.mjs";
+import { git, repoOf, resnap } from "./learn-support.mjs";
 
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { journalRecords } = await import("../dist/runner/journal-reader.js");
@@ -102,6 +103,30 @@ async function world(t, body, launchOf, setup = async () => {}) {
 
 const runner = (learning) => (dir) => ({ input: { content: "Follow the script." }, title: "t", place: { mode: "runner" }, ...(learning ? { learning: learning(dir) } : {}) });
 
+/** Agent-1's folder with `count` active notes on main: a job it has learned enough of to be compiled (learn/compile.ts
+ *  compileDue). */
+async function noted(dir, count = 3) {
+  await seedOf(dir, "agent-1");
+  const repo = repoOf(dir, "agent-1");
+  const files = [];
+  for (let i = 1; i <= count; i++) {
+    const file = `rule-${i}.md`;
+    writeFileSync(join(repo, file), `---\nname: Rule ${i}\ndescription: Rule ${i} of the job\ntype: feedback\n---\nDo step ${i} before step ${i + 1}.\n`);
+    files.push(file);
+  }
+  git(repo, ["add", "--", ...files]);
+  git(repo, ["commit", "-q", "-m", "notes"]);
+  await resnap(dir, "agent-1");
+}
+/** A learning start over agent-1's folder as it is now, with `count` notes kept first (none: compiles nothing yet). */
+const compiling = (count = 3) => async (dir) => {
+  if (count) await noted(dir, count);
+  const seed = await seedOf(dir, "agent-1");
+  return runner(() => ({ given: [], seed: seed.sha, section: "", seedNotes: count }))(dir);
+};
+/** The compile turn's first ask among a run's user messages. */
+const compileAskIn = (users) => users.find((text) => text.startsWith("One more turn: write this agent's job as a learned workflow.")) ?? "";
+
 test("a learning agent's run, through a real runner, is asked its end-of-run turn and keeps its proposal beside its end, queueing the learning run", async (t) => {
   const w = await world(t, { instructions: "Answer.", tools: ["read"], learning: true }, async (dir) => {
     const seed = await seedOf(dir, "agent-1");
@@ -138,18 +163,16 @@ test("a run that does not learn, through the same runner, is asked nothing and k
   assert.ok(!(await w.server.learning.proposal("run-1")), "no learning kept");
 });
 
-test("the tools the end-of-run prompt offers a workflow draft follow the server's tool settings in the store", async (t) => {
+test("the tools the compile turn offers a call node follow the server's tool settings in the store", async (t) => {
   // The store denies web_search: the prompt offers what the store says.
-  const w = await world(t, { instructions: "Answer.", tools: ["read", "web_search"], learning: true }, async (dir) => {
-    const seed = await seedOf(dir, "agent-1");
-    return runner(() => ({ given: [], seed: seed.sha, section: "", seedNotes: 0 }))(dir);
-  }, async (server, dir) => {
+  const w = await world(t, { instructions: "Answer.", tools: ["read", "web_search"], learning: true }, compiling(), async (server) => {
     await saveToolSettings(server, { web_search: { permission: "deny" } });
   });
   await w.start((deps) => learningEndOfRun(w.launch, deps));
   const row = await w.ended();
-  const prompt = (await w.turnOf(row)).users[1] ?? "";
-  assert.match(prompt, /It has no call node on a tool\./, `the store's deny leaves web_search out of the draft's tools: ${prompt.slice(prompt.indexOf("call node") - 80, prompt.indexOf("call node") + 120)}`);
+  const prompt = compileAskIn((await w.turnOf(row)).users);
+  assert.ok(prompt, "the run was asked its compile turn");
+  assert.match(prompt, /There is no tool for a call node to run\./, prompt.slice(prompt.indexOf("## This job"), prompt.indexOf("## This job") + 300));
   assert.ok(!prompt.includes("web_search"), "the store's deny keeps it out");
 });
 
@@ -195,50 +218,44 @@ test("a re-ask whose answer keeps a note but still holds the broken draft does n
   assert.deepEqual(kept.proposal.proposal.notes.map(({ file }) => file), ["retry-slowly.md"], "the first answer's note, not the failed repair's");
 });
 
-test("a learned skill that served 3 earlier runs of the agent, with no learned workflow of its name, gets its job asked for as a workflow draft in the next run's end-of-run prompt", async (t) => {
-  // Three earlier runs of the agent were offered the skill (their launches say so); run-1 is offered it too.
-  const offered = (seed) => ({ given: [], seed, section: "", seedNotes: 0, skills: ["weekly-report"] });
-  const w = await world(t, { instructions: "Answer.", tools: ["read"], learning: true }, async (dir) => {
-    const seed = await seedOf(dir, "agent-1");
-    return runner(() => offered(seed.sha))(dir);
-  }, async (server) => {
-    for (const id of ["run-0a", "run-0b", "run-0c"]) await server.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: runner(() => offered(null))() });
-  });
-  await w.start((deps) => learningEndOfRun(w.launch, deps));
-  const row = await w.ended();
-  const prompt = (await w.turnOf(row)).users[1] ?? "";
-  assert.ok(prompt.includes("Your skill `weekly-report` has now served 3 or more runs: this time, also keep its job as a workflow draft named `weekly-report`, its steps as nodes"), prompt.slice(prompt.indexOf("## Skills"), prompt.indexOf("A skill is how")));
-  assert.equal(prompt.split("has now served").length - 1, 1, "one line, once");
+test("an agent with 3 kept notes and no learned workflow gets a compile turn after its look-back, with its notes and the DSL's own reference; with 2 notes and no earlier runs, none", async (t) => {
+  for (const count of [3, 2]) {
+    const w = await world(t, { instructions: "Answer.", tools: ["read"], learning: true }, compiling(count));
+    await w.start((deps) => learningEndOfRun(w.launch, deps));
+    const row = await w.ended();
+    const { users } = await w.turnOf(row);
+    const prompt = compileAskIn(users);
+    if (count === 2) {
+      assert.equal(prompt, "", "not due: no compile turn");
+      assert.equal(users.length, 2, "the job's message and the look-back's prompt");
+      continue;
+    }
+    assert.ok(prompt.includes("## The workflow language") && prompt.includes("## A worked example"), prompt.slice(0, 300));
+    for (const file of ["rule-1.md", "rule-2.md", "rule-3.md"]) assert.ok(prompt.includes(file), file);
+    assert.match(prompt, /This run's input has these fields: `content` \(string\)\./);
+    // The look-back's prompt asks for no workflow draft any more: the 3-offers ask is gone.
+    assert.doesNotMatch(users[1], /has now served|workflow draft named/);
+  }
 });
 
-test("the draft ask describes each tool a call node may run, by the server's own words for what it takes and gives", async (t) => {
+test("the compile ask describes each tool a call node may run, by the server's own words for what it takes and gives", async (t) => {
   const { toolOf } = await import("../dist/tools.js");
-  const offered = (seed) => ({ given: [], seed, section: "", seedNotes: 0, skills: ["weekly-report"] });
-  const w = await world(t, { instructions: "Answer.", tools: ["read", "web_fetch"], learning: true }, async (dir) => {
-    const seed = await seedOf(dir, "agent-1");
-    return runner(() => offered(seed.sha))(dir);
-  }, async (server) => {
-    for (const id of ["run-0a", "run-0b", "run-0c"]) await server.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: runner(() => offered(null))() });
+  const w = await world(t, { instructions: "Answer.", tools: ["read", "web_fetch"], learning: true }, compiling(), async (server) => {
   });
   await w.start((deps) => learningEndOfRun(w.launch, deps));
   const row = await w.ended();
-  const prompt = (await w.turnOf(row)).users[1] ?? "";
-  assert.ok(prompt.includes("What each tool a call node may run takes and gives:"), prompt.slice(prompt.indexOf("## Skills"), prompt.indexOf("A skill is how")));
+  const prompt = compileAskIn((await w.turnOf(row)).users);
+  assert.ok(prompt.includes("What each tool a call node may run takes and gives:"), prompt.slice(prompt.indexOf("## This job"), prompt.indexOf("## Your answer")));
   assert.ok(prompt.includes(`- \`web_fetch\`: ${toolOf("web_fetch").summary.slice(0, 120)}`), "web_fetch in the server's own words");
   assert.ok(!prompt.includes("- `read`:"), "read is no call node's tool");
 });
 
-test("the draft ask describes each MCP tool a call node may run by its server's listing, the schema it takes and the one it gives, granted by name or under its server's wildcard; one its gate denies is not offered (one set to ask is: its learned_workflow call asks once), and the run is asked its turn (LS-07)", async (t) => {
-  const offered = (seed) => ({ given: [], seed, section: "", seedNotes: 0, skills: ["weekly-report"] });
+test("the compile ask describes each MCP tool a call node may run by its server's listing, the schema it takes and the one it gives, granted by name or under its server's wildcard; one its gate denies is not offered (one set to ask is: its learned_workflow call asks once), and the run is asked its turn (LS-07)", async (t) => {
   const takes = { type: "object", properties: { title: { type: "string" } }, required: ["title"] };
   const gives = { type: "object", properties: { id: { type: "string" } } };
   // create_issue allowed, delete_issue denied, github's unset (ask: its learned_workflow call asks once, #2424).
   const settings = { "mcp:linear/create_issue": { permission: "allow" }, "mcp:linear/delete_issue": { permission: "deny" } };
-  const w = await world(t, { instructions: "Answer.", tools: ["read", "mcp:linear/create_issue", "mcp:linear/delete_issue", "mcp:github/*"], toolSettings: settings, learning: true }, async (dir) => {
-    const seed = await seedOf(dir, "agent-1");
-    return runner(() => offered(seed.sha))(dir);
-  }, async (server) => {
-    for (const id of ["run-0a", "run-0b", "run-0c"]) await server.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: runner(() => offered(null))() });
+  const w = await world(t, { instructions: "Answer.", tools: ["read", "mcp:linear/create_issue", "mcp:linear/delete_issue", "mcp:github/*"], toolSettings: settings, learning: true }, compiling(), async (server) => {
     await server.mcp.put({ name: "linear", url: "https://mcp.linear.example/mcp", auth: "none", tools: [
       { name: "create_issue", description: "Create an issue in a team", input_schema: takes, output_schema: gives },
       { name: "delete_issue", description: "Delete an issue", input_schema: { type: "object" } },
@@ -247,32 +264,27 @@ test("the draft ask describes each MCP tool a call node may run by its server's 
   });
   await w.start((deps) => learningEndOfRun(w.launch, deps));
   const row = await w.ended();
-  const prompt = (await w.turnOf(row)).users[1] ?? "";
-  assert.ok(prompt, "the run was asked its end-of-run turn");
-  const listed = prompt.slice(prompt.indexOf("What each tool a call node may run takes and gives:"), prompt.indexOf("A skill is how"));
+  const prompt = compileAskIn((await w.turnOf(row)).users);
+  assert.ok(prompt, "the run was asked its compile turn");
+  const listed = prompt.slice(prompt.indexOf("What each tool a call node may run takes and gives:"), prompt.indexOf("## Your answer"));
   assert.ok(listed.includes(`- \`mcp:linear/create_issue\`: Create an issue in a team. Takes ${JSON.stringify(takes)}. Gives ${JSON.stringify(gives)}.`), listed || prompt.slice(0, 200));
   assert.ok(listed.includes('- `mcp:github/create_pull_request`: Open a pull request. Takes {"type":"object","properties":{"repo":{"type":"string"}}}.'), listed);
   // Granted but denied by its gate: no call node may run it, so it is not offered.
   assert.ok(!prompt.includes("mcp:linear/delete_issue"), "delete_issue is denied: not offered");
 });
 
-test("with no one to answer an ask (the store's approvers row: the server's accounts off), the draft ask offers no MCP tool set to ask: its learned call would be refused at once (#2424); one set to allow is still offered (LS-07)", async (t) => {
+test("with no one to answer an ask (the store's approvers row: the server's accounts off), the compile ask offers no MCP tool set to ask: its learned call would be refused at once (#2424); one set to allow is still offered (LS-07)", async (t) => {
   const { writeApprovers } = await import("../dist/server-approvers.js");
-  const offered = (seed) => ({ given: [], seed, section: "", seedNotes: 0, skills: ["weekly-report"] });
-  const w = await world(t, { instructions: "Answer.", tools: ["read", "mcp:linear/create_issue", "mcp:github/*"], toolSettings: { "mcp:linear/create_issue": { permission: "allow" } }, learning: true }, async (dir) => {
-    const seed = await seedOf(dir, "agent-1");
-    return runner(() => offered(seed.sha))(dir);
-  }, async (server) => {
+  const w = await world(t, { instructions: "Answer.", tools: ["read", "mcp:linear/create_issue", "mcp:github/*"], toolSettings: { "mcp:linear/create_issue": { permission: "allow" } }, learning: true }, compiling(), async (server) => {
     await writeApprovers(server.settings, false);
-    for (const id of ["run-0a", "run-0b", "run-0c"]) await server.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: runner(() => offered(null))() });
     await server.mcp.put({ name: "linear", url: "https://mcp.linear.example/mcp", auth: "none", tools: [{ name: "create_issue", description: "Create an issue in a team", input_schema: { type: "object" } }] });
     await server.mcp.put({ name: "github", url: "https://mcp.github.example/mcp", auth: "none", tools: [{ name: "create_pull_request", description: "Open a pull request", input_schema: { type: "object" } }] });
   });
   await w.start((deps) => learningEndOfRun(w.launch, deps));
   const row = await w.ended();
-  const prompt = (await w.turnOf(row)).users[1] ?? "";
-  assert.ok(prompt, "the run was asked its end-of-run turn");
-  assert.ok(prompt.includes("- `mcp:linear/create_issue`: Create an issue in a team."), prompt.slice(prompt.indexOf("What each tool"), prompt.indexOf("A skill is how")));
+  const prompt = compileAskIn((await w.turnOf(row)).users);
+  assert.ok(prompt, "the run was asked its compile turn");
+  assert.ok(prompt.includes("- `mcp:linear/create_issue`: Create an issue in a team."), prompt.slice(prompt.indexOf("What each tool"), prompt.indexOf("## Your answer")));
   assert.ok(!prompt.includes("mcp:github/create_pull_request"), "github's tool asks, and no one can answer: not offered");
 });
 
@@ -431,21 +443,74 @@ const judgeDraft = `\`\`\`\`workflow check\n---\ndescription: Checks a claim; us
   root: { node: "chain", steps: [{ node: "judge", label: "check", state: { claim: "{claim}" }, out: "Check", as: "check" }] },
 })}\n\`\`\`\``;
 
-test("on a run with decision providers the end-of-run prompt allows judge nodes and a drafted judge workflow is kept; with none the prompt bans them and the draft is left out", async (t) => {
+test("on a run with decision providers the compile turn allows judge nodes and a compiled judge workflow is kept; with none it offers none, the draft is refused on every attempt and its errors go with the learning", async (t) => {
   for (const decided of [true, false]) {
-    const w = await world(t, { instructions: "Answer.", tools: ["read"], learning: true }, async (dir) => {
-      const seed = await seedOf(dir, "agent-1");
-      return runner(() => ({ given: [], seed: seed.sha, section: "", seedNotes: 0 }))(dir);
-    });
+    const w = await world(t, { instructions: "Answer.", tools: ["read"], learning: true }, compiling());
     const providers = await decisionProvidersIn({ TYPESAFE_API_KEY: "fake-test-key", AGENTRUN_SERVE_FAUX: "1", AGENTRUN_SERVE_FAUX_JEV: FAUX_JEV });
     assert.ok(providers?.providers.jev, "setup: the faux Jev");
-    await w.start((deps) => learningEndOfRun(w.launch, { ...deps, ...(decided ? { decisionProviders: async () => providers } : {}) }), { script: [{ say: "The job's answer." }, { say: `${REFLECTED}\n\n${judgeDraft}` }, { say: REFLECTED }] });
+    await w.start((deps) => learningEndOfRun(w.launch, { ...deps, ...(decided ? { decisionProviders: async () => providers } : {}) }), { script: [{ say: "The job's answer." }, { say: REFLECTED }, { say: judgeDraft }, { say: judgeDraft }, { say: judgeDraft }, { say: judgeDraft }] });
     const row = await w.ended();
     const turn = await w.turnOf(row);
-    const prompt = turn.users[1].replace(/\s+/g, " ");
-    assert.equal(prompt.includes("no judge, pick or sift node"), !decided, `the ban follows the run's decisions: ${prompt.slice(prompt.indexOf("A workflow draft does"), prompt.indexOf("A workflow draft does") + 400)}`);
+    const prompt = compileAskIn(turn.users).replace(/\s+/g, " ");
+    assert.ok(prompt, "the run was asked its compile turn");
+    assert.equal(prompt.includes("A judge node's confidence is its own yes-probability"), decided, "the judge rule follows the run's decisions");
     const kept = await w.server.learning.proposal("run-1");
     assert.equal(kept?.proposal?.state, "proposed", JSON.stringify(kept?.proposal));
     assert.equal(kept.proposal.workflows, decided ? 1 : 0, `the judge draft is ${decided ? "kept" : "left out"}: ${JSON.stringify(kept.proposal).slice(0, 400)}`);
+    assert.equal(kept.proposal.compiled.attempts.length, decided ? 1 : 4, JSON.stringify(kept.proposal.compiled));
+    const end = await runLearningEnd(w.server, "run-1");
+    if (decided) assert.deepEqual(end.draft_errors, undefined);
+    else assert.match((end.draft_errors ?? []).join("; "), /decision nodes on a run with decision providers/, JSON.stringify(end));
   }
+});
+
+// The compile turn authors against the checker (learn/compile.ts): a faux model writes a draft the static checks refuse,
+// then one whose dry run fails, then a good one. Each refusal goes back to it in the checks' own words, every attempt is
+// recorded, and the draft that passed is proposed beside the look-back's note, naming the notes it carries out.
+const compiledBlock = ({ output = "answer", tools } = {}) => `\`\`\`\`workflow answer\n---\ndescription: Answers a question as a number; use when asked\nexample: {"content":"What is six times seven?"}\nfrom_notes: [rule-1.md, rule-2.md, not-given.md]\n---\n${JSON.stringify({
+  v: 2, name: "answer",
+  schemas: { In: { type: "object", properties: { content: { type: "string" } }, required: ["content"] }, Answer: { type: "object", properties: { answer: { type: "number" }, confidence: { type: "number" } }, required: ["answer", "confidence"] } },
+  input: { schemaId: "In" }, output: { schemaId: "Answer", path: "answer" },
+  root: { node: "chain", steps: [{ node: "extract", label: "answer", instructions: "Answer the question.", out: "Answer", as: output, tier: "fast", ...(tools ? { tools } : {}) }] },
+})}\n\`\`\`\``;
+
+test("compile: a draft the checks refuse goes back with their words, up to 3 times; the fixed draft is proposed beside the note, every attempt recorded", async (t) => {
+  const w = await world(t, { instructions: "Answer.", tools: ["read"], learning: true }, compiling());
+  await w.start((deps) => learningEndOfRun(w.launch, deps), { script: [{ say: "The job's answer." }, { say: REFLECTED }, { say: compiledBlock({ tools: ["read"] }) }, { say: compiledBlock({ output: "other" }) }, { say: compiledBlock() }] });
+  const row = await w.ended();
+  const { users } = await w.turnOf(row);
+  const again = users.filter((text) => text.startsWith("Your workflow draft did not pass the checks"));
+  assert.equal(again.length, 2, JSON.stringify(users.map((text) => text.slice(0, 80))));
+  assert.match(again[0], /\(attempt 2 of 4\)[\s\S]*----- begin \w+: the checks -----/, again[0]);
+  assert.match(again[0], /tool/, "the static check's words");
+  assert.match(again[1], /\(attempt 3 of 4\)[\s\S]*dry run/, again[1]);
+  const kept = await w.server.learning.proposal("run-1");
+  assert.deepEqual([kept?.proposal?.state, kept?.proposal?.notes, kept?.proposal?.workflows], ["proposed", 1, 1], JSON.stringify(kept?.proposal));
+  const { compiled } = kept.proposal;
+  assert.equal(compiled.workflow, "answer");
+  assert.deepEqual(compiled.from_notes, ["rule-1.md", "rule-2.md"], "only notes it was given");
+  assert.deepEqual(compiled.attempts.map(({ ok }) => ok), [false, false, true]);
+  assert.ok(compiled.attempts[0].errors.length && compiled.attempts[1].errors.length && compiled.attempts[2].errors.length === 0, JSON.stringify(compiled.attempts));
+  assert.deepEqual(kept.proposal.proposal.compiled, { workflow: "answer", from_notes: ["rule-1.md", "rule-2.md"] }, "the merge marks the notes it absorbed");
+  assert.equal(kept.proposal.draft_errors, undefined, "no errors once it passed");
+  // Each attempt was its own request (learn-reflect-run-1:compile-<n>), never answered from an earlier one.
+  const end = await runLearningEnd(w.server, "run-1");
+  assert.deepEqual(end.compiled.attempts.map(({ ok }) => ok), [false, false, true]);
+});
+
+test("compile: a draft that never passes is never silent: its errors go with the learning entry and the look-back's note still goes on", async (t) => {
+  const w = await world(t, { instructions: "Answer.", tools: ["read"], learning: true }, compiling());
+  const bad = compiledBlock({ tools: ["read"] });
+  await w.start((deps) => learningEndOfRun(w.launch, deps), { script: [{ say: "The job's answer." }, { say: REFLECTED }, { say: bad }, { say: bad }, { say: bad }, { say: bad }] });
+  const row = await w.ended();
+  const { users } = await w.turnOf(row);
+  assert.equal(users.filter((text) => text.startsWith("Your workflow draft did not pass the checks")).length, 3, "three retries, no more");
+  const kept = await w.server.learning.proposal("run-1");
+  assert.deepEqual([kept?.proposal?.state, kept?.proposal?.notes, kept?.proposal?.workflows], ["proposed", 1, 0], JSON.stringify(kept?.proposal));
+  assert.equal(kept.proposal.compiled.attempts.length, 4);
+  assert.ok(kept.proposal.draft_errors.length > 0);
+  assert.ok((kept.proposal.left ?? []).some((problem) => problem.path === "workflows/answer/workflow.json"), JSON.stringify(kept.proposal.left));
+  const end = await runLearningEnd(w.server, "run-1");
+  assert.deepEqual(end.draft_errors, kept.proposal.draft_errors);
+  assert.ok(end.problems.some((problem) => problem.path === "workflows/answer/workflow.json"), "its end carries the problems too");
 });

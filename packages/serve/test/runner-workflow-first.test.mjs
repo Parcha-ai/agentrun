@@ -215,11 +215,12 @@ test("handed back: the guard holds, the same run goes on to the agent with the w
   assert.ok((row.costUsd ?? 0) > 0, `the run's cost: ${row.costUsd}`);
 });
 
-test("handed back: the end-of-run turn asks for the workflow's next revision by its name", async (t) => {
+test("handed back: the compile turn asks for the workflow's next revision by its name, with the workflow as it is", async (t) => {
   const { gateway } = await piRun(t, { sure: false });
-  const ask = gateway.requests.find((request) => !isNode(request) && /handed it back to you\. If a change to it would have let it finish this case/.test(textOf(request.body)));
-  assert.ok(ask, `the reflect turn asked about \`answer\`: ${gateway.requests.map((request) => textOf(request.body).slice(-300)).join("\n---\n")}`);
-  assert.match(textOf(ask.body), /give `answer` again whole under its name/);
+  const ask = gateway.requests.find((request) => !isNode(request) && /One more turn: revise your learned workflow `answer`\.\nYour learned workflow `answer` ran first on this run and handed it back to you\./.test(textOf(request.body)));
+  assert.ok(ask, `the compile turn asked about \`answer\`: ${gateway.requests.map((request) => textOf(request.body).slice(0, 300)).join("\n---\n")}`);
+  assert.match(textOf(ask.body), /Give `answer` again whole under its name/);
+  assert.match(textOf(ask.body), /`answer` as it is now:/);
 });
 
 test("workflow_first false: the agent takes the run from its first turn, path agent", async (t) => {
@@ -285,9 +286,9 @@ test("money rule: a workflow whose last 10 served runs cost more than the agent 
   const revise = entries.findLast((entry) => entry.kind === WORKFLOW_FIRST)?.data;
   assert.deepEqual(revise, { workflow: "answer", digest: DIGEST, revision: revise?.revision, outcome: "needs_revision", served_usd: 0.5, by_hand_usd: 0.2, runs: COST_WINDOW }, "the run's journal keeps why, with the two numbers");
   assert.ok(logs.some((line) => /answer cost \$0\.5 a run over its last 10 served runs, at or over \$0\.2 by hand/.test(line)), JSON.stringify(logs));
-  const ask = gateway.requests.find((request) => /no longer runs first: over its last 10 runs it served it cost \$0\.5 a run, against \$0\.2 a run by hand/.test(textOf(request.body)));
-  assert.ok(ask, `the end-of-run turn asked for a revision: ${gateway.requests.map((request) => textOf(request.body).slice(-400)).join("\n---\n")}`);
-  assert.match(textOf(ask.body), /give `answer` again whole under its name/);
+  const ask = gateway.requests.find((request) => /no longer runs first: over its last 10 served runs it cost \$0\.5 a run, against \$0\.2 a run by hand/.test(textOf(request.body)));
+  assert.ok(ask, `the compile turn asked for a revision: ${gateway.requests.map((request) => textOf(request.body).slice(0, 400)).join("\n---\n")}`);
+  assert.match(textOf(ask.body), /Give `answer` again whole under its name/);
 });
 
 test("money rule: under the by-hand cost, a new digest, fewer than 10 served runs, or no by-hand baseline: the workflow serves", async (t) => {

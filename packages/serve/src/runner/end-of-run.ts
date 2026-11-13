@@ -10,10 +10,10 @@ export const REFLECT_PREFIX = "learn-reflect-";
 /** The label a reader puts on the end-of-run turn's rows and messages: the server's (learning.ts LEARNING_LABEL). */
 export const REFLECT_LABEL = "learning";
 
-/** The end-of-run turn's request id, one per run: pi answers a repeat of it from its submission, so a turn asked again
+/** The end-of-run turn's request id, one per run (and one per `step`, a turn of its own after it: the compile turn's): pi answers a repeat of it from its submission, so a turn asked again
  *  on a later claim is never asked of the model twice. The server's own prefix, so the run's readers tell the turn's
  *  rows apart by it (reflectFrom). */
-export const reflectRequestId = (runId: string, again = false) => `${REFLECT_PREFIX}${runId}${again ? REFLECT_AGAIN : ""}`;
+export const reflectRequestId = (runId: string, again = false, step?: string) => `${REFLECT_PREFIX}${runId}${step !== undefined ? `:${step}` : again ? REFLECT_AGAIN : ""}`;
 /** The suffix of the end-of-run turn's re-ask's request id (EndOfRunTurn ask's `again`): one per run too, so a repeat
  *  is answered from its submission, never asked of the model twice. */
 export const REFLECT_AGAIN = ":again";

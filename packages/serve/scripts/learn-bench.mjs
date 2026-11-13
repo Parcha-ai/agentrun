@@ -53,9 +53,9 @@ const { parseDocument } = await import(pathToFileURL(createRequire(join(serveDir
 export const SCHEMA = "learning-bench/2";
 const KINDS = ["teach", "repeat", "change", "plant"];
 const JOB_FIELDS = ["template", "parameters", "grants", "fakes", "deny", "harnesses", "steps", "reuse"];
-/** How many steps a job that measures workflow reuse (job.yaml `reuse: true`) runs after the earliest step a workflow can
- *  be kept: its skill taught at the teach step, asked for as a workflow once the skill served DRAFT_AFTER_RUNS earlier
- *  runs (learn/reflect.ts, #2282), kept at that step's end and callable from the next. */
+/** How many steps a job that measures workflow reuse (job.yaml `reuse: true`) runs after the step a workflow is compiled
+ *  by: the compile turn writes the job as a learned workflow once the agent keeps enough notes or has completed enough
+ *  runs (learn/compile.ts COMPILE_AFTER_NOTES, COMPILE_AFTER_RUNS), kept at that step's end and callable from the next. */
 export const REUSE_STEPS = 3;
 const DEFAULT_MODELS = { pi: null, "claude-agent": "anthropic/claude-haiku-5-5" };
 
