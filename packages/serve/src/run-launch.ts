@@ -73,6 +73,9 @@ export interface RunLaunch {
    *  run uses its agent's disk, made at its claim when the agent has none (workspace/run-disk.ts). Kept here so every
    *  claim, revoke and reclaim of the run, after a restart too, acts on that one disk. */
   readonly archilDisk?: LaunchDisk;
+  /** A run started with `hold: true` (computer-held.ts): its computer waits for its owner's start, and stays the owner's
+   *  after the agent's end until released, each wait for at most `minutes` with no call. */
+  readonly hold?: { readonly minutes: number };
 }
 
 /** The disk a launch record names, and whose it is. */
@@ -141,6 +144,7 @@ export function launchBody(launch: RunLaunch): Json {
     ...(launch.inputOrigin ? { input_origin: launch.inputOrigin } : {}),
     ...(launch.followUp ? { follow_up: true } : {}),
     ...(launch.archilDisk ? { archil_disk: { disk_id: launch.archilDisk.diskId, kind: launch.archilDisk.kind } } : {}),
+    ...(launch.hold ? { hold: { minutes: launch.hold.minutes } } : {}),
   };
 }
 
@@ -190,6 +194,7 @@ export function readLaunchBody(stored: unknown): RunLaunch | undefined {
     ...(inputOrigin ? { inputOrigin } : {}),
     ...(stored.follow_up === true ? { followUp: true } : {}),
     ...(archilDisk ? { archilDisk } : {}),
+    ...(isObject(stored.hold) && typeof stored.hold.minutes === "number" ? { hold: { minutes: stored.hold.minutes } } : {}),
   };
 }
 

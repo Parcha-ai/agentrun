@@ -130,6 +130,7 @@ import { readApprovers, writeApprovers } from "./server-approvers.js";
 import type { DraftAsk } from "./learn/skills.js";
 import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./uploads.js";
 import { entryAt, listFiles, sendFile as sendWorkspaceFile, viewOf } from "./run-files.js";
+import { heldRoute, holdIssues, runComputerRead } from "./computer-held-routes.js";
 import { COMPUTER_ROUTES, computerHoldOf, computerRoute, runViewedKind } from "./computer-routes.js";
 import { ATTACH_PATH, AttachHub, PROVIDERS as COMPUTER_PROVIDERS, SETTING_KINDS, servingRefusals } from "@parcha/agentrun-computer";
 import { createAttachRoutes, pairedView } from "./computer-attach.js";
@@ -140,7 +141,6 @@ import { agentDiskOf, ARCHIL_DISK_ID, archilSettingsFromEnv, inArchilMode } from
 import { computerOfPlace, type ComputerKind, type ComputerSetting, type PlaceView } from "./computer-setting.js";
 import { computerCapabilities, type ComputerRoutes, createComputerRoutes, folderModeOf, hostCommandRefusals, type KindRegistry, settingsComputerRoute } from "./computers.js";
 import { type FauxComputers, fauxComputers } from "./faux-computers.js";
-import { runComputerField } from "./run-computer.js";
 import { writesHeld } from "./workspace.js";
 import { agentComputerOf, agentComputerView, agentHomeFolder, claimKinds, computerProviderFactories, computerProviderMakers, computerReadiness, dockerHostAddressesOf, isWorkspaceError, localWorkspace, reconcileAgentComputer, runShellOf, serverRunWorkspace, type ShellPlace, storeLedger, type Workspace } from "./workspace/index.js";
 import { keyReader } from "./key-meta.js";
@@ -447,6 +447,11 @@ export const ROUTES: readonly Route[] = [
   { method: "GET", pattern: /^\/runs\/([^/]+)\/computer$/, name: "getRunComputer" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/computer\/take-over$/, name: "takeOverRunComputer" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/computer\/hand-back$/, name: "handBackRunComputer" },
+  // A held computer's (computer-held-routes.ts): a run started with hold: true waits for its start, takes its owner's
+  // protocol calls, and keeps its computer after its agent's end until released.
+  { method: "POST", pattern: /^\/runs\/([^/]+)\/start$/, name: "startRun" },
+  { method: "POST", pattern: /^\/runs\/([^/]+)\/computer\/call$/, name: "callRunComputer" },
+  { method: "POST", pattern: /^\/runs\/([^/]+)\/computer\/release$/, name: "releaseRunComputer" },
   // Settings → Computers (computers.ts settingsComputerRoute) and the owner's Archil settings (archil-routes.ts
   // archilRoute): the server switch dispatches them, once the server opens its store.
   { method: "GET", pattern: /^\/computers$/, name: "listComputers" },
@@ -1153,15 +1158,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     return shellOf(body.computer ?? computerOfPlace(resolvePlace(body.place, fallbackPlace(revision.kind, revision.kind === "agentic" ? (body.tools ?? []) : []))));
   };
   /** A run's computer on its read: its revision's computer setting, else the one its place says; absent for none. */
-  const runComputerOf = async (runId: string, view: Record<string, unknown>): Promise<Record<string, unknown>> => {
-    const run = await store.runs.get(runId);
-    const body = run ? ((await store.agents.revision(run.revisionId))?.body as { computer?: ComputerSetting; place?: PlaceView } | undefined) : undefined;
-    const setting = body?.computer ?? (body?.place ? computerOfPlace(body.place) : undefined);
-    if (!setting) return {};
-    const error = view.error as { code?: unknown; message?: unknown } | null | undefined;
-    const field = runComputerField(setting, { id: runId, status: String(view.status), ...(error && typeof error.code === "string" ? { error: { code: error.code, message: String(error.message ?? "") } } : {}) });
-    return field ? { computer: field } : {};
-  };
+  const runComputerOf = (runId: string, view: Record<string, unknown>): Promise<Record<string, unknown>> => runComputerRead(store, runId, view, { context: ctx });
   // The agents accessor the routes call, over the one store (module A): the agents-store functions, with the run-row reads
   // the server makes (store-reads) under `.store`. `.request` is a thin pass-through — the store runs its own transactions,
   // so a call needs no outer serialization. The old Agents class and its per-agent home store are gone.
@@ -2175,7 +2172,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
 
   /** A run create's body as POST /agents/{id}/runs checks it before it reads the agent: each field issue. */
   function runBodyIssues(body: Json): InputIssue[] {
-    const issues = unknownFields(body, ["input", "revision", "file_ids", "effort", "max_cost_usd", "cap_mode", "quote_id", "learning", "archil_disk", "repo"]);
+    const issues = unknownFields(body, ["input", "revision", "file_ids", "effort", "max_cost_usd", "cap_mode", "quote_id", "learning", "archil_disk", "repo", "hold", "hold_minutes"]);
+    issues.push(...holdIssues(body));
     if (body.repo !== undefined && !(typeof body.repo === "string" && REPO_NAME.test(body.repo))) issues.push({ field: "repo", reason: "wrong_type", message: "repo is a GitHub repository as owner/name, one the agent is bound to" });
     if (body.archil_disk !== undefined) {
       const disk = body.archil_disk;
@@ -2971,6 +2969,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           ownerSession: byOwnerSession(req), token: req.headers.authorization !== undefined, accounts: owner !== undefined, body: await bodyOf(req),
         }, store, { context: ctx });
         return send(res, 200, answer, { "cache-control": "no-store" });
+      }
+      case "startRun":
+      case "callRunComputer":
+      case "releaseRunComputer": {
+        // A call on a run's computer (the computer call channel) and a held computer's start and release
+        // (computer-held-routes.ts), over the store: each a command row the run's runner applies.
+        const run = await needRun(id);
+        return send(res, 200, await heldRoute(found.name, run.id, await bodyOf(req), store, { context: ctx }), { "cache-control": "no-store" });
       }
       case "createPairing":
         return send(res, 201, await attach.createPairing(), { "cache-control": "no-store" });
