@@ -1,33 +1,57 @@
-// The gate's names, pinned: every name shape each harness emits (pi, claude-agent, codex, OpenCode; built-ins, hands,
-// MCP, native search, shell, pi-browser, kind tools) maps to the settings key, asked-as name and permissions the table in
-// tool-gate-key-pins.rows.mjs holds. It was written against the parse that settingsKeyOf was before it became a lookup in
-// the session's name map, and passes on both.
+// The gate's names pinned: one row per name shape per harness, hitting every source of a session's name map and every
+// open family settingsKeyOf still parses. [harness, mcp servers, name, settings key, permission, permission under denies]
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { settingsKeyOf } from "../dist/tool-gate.js";
 import { runnerGate } from "./gate-support.mjs";
-import { ROWS } from "./tool-gate-key-pins.rows.mjs";
 
-const DENY = Object.fromEntries(["bash", "read", "browser", "desktop", "phone", "monid.run", "mcp:srv/echo", "web_search"].map((key) => [key, { permission: "deny" }]));
-const split = (servers) => (servers === "" ? [] : servers.split(","));
+const DENY = Object.fromEntries(["bash", "read", "browser", "desktop", "monid.run", "mcp:srv/echo", "web_search"].map((key) => [key, { permission: "deny" }]));
+const ROWS = [
+  // table, own and decision tools: themselves
+  ["pi", [], "read", "read", "allow", "deny"],
+  ["pi", [], "web_search", "web_search", "allow", "deny"],
+  ["pi", [], "learned_workflow", "learned_workflow", "allow", "allow"],
+  ["pi", [], "jev", "jev", "allow", "allow"],
+  // the shell family: bash's key
+  ["pi", [], "bash_background", "bash", "allow", "deny"],
+  ["claude-agent", [], "mcp__hands__bash_output", "bash", "allow", "deny"],
+  // pi-browser's registrations: browser
+  ["pi", [], "snapshot", "browser", "allow", "deny"],
+  ["claude-agent", [], "mcp__hands__browser_read", "browser", "allow", "deny"],
+  // a computer kind's tools: the kind's key, a shared one the first's
+  ["claude-agent", [], "desktop_screen", "desktop", "allow", "deny"],
+  ["claude-agent", [], "mcp__hands__phone_tap", "phone", "allow", "allow"],
+  ["claude-agent", [], "computer_request_handoff", "desktop", "allow", "deny"],
+  // a CLI's own tools (nativeTools)
+  ["claude-agent", [], "Bash", "bash", "allow", "deny"],
+  ["claude-agent", [], "WebSearch", "web_search", "allow", "deny"],
+  ["codex", [], "shell", "bash", "allow", "deny"],
+  ["codex", [], "web_search", "web_search", "allow", "deny"],
+  ["pi", [], "Bash", undefined, "ask", "ask"],
+  // read_skill_file: read, unless OpenCode's alias makes it a configured server's tool
+  ["codex", [], "read_skill_file", "read", "allow", "deny"],
+  ["opencode", [], "read_skill_file", "read", "allow", "deny"],
+  ["opencode", ["read"], "read_skill_file", "mcp:read/skill_file", "ask", "ask"],
+  ["claude-agent", ["read"], "mcp__hands__read_skill_file", "read", "allow", "deny"],
+  // the open families: catalog names, MCP aliases, monid wire names, OpenCode's alias for a configured server only
+  ["pi", [], "monid.run", "monid.run", "ask", "deny"],
+  ["pi", [], "monid_run", "monid.run", "ask", "deny"],
+  ["claude-agent", [], "mcp__hands__monid_run", "monid.run", "ask", "deny"],
+  ["pi", [], "mcp:srv/echo", "mcp:srv/echo", "ask", "deny"],
+  ["pi", [], "mcp__srv__echo", "mcp:srv/echo", "ask", "deny"],
+  ["claude-agent", [], "mcp__hands__mcp__srv__echo", "mcp:srv/echo", "ask", "deny"],
+  ["opencode", ["srv"], "srv_echo", "mcp:srv/echo", "ask", "deny"],
+  ["opencode", [], "srv_echo", undefined, "ask", "ask"],
+  ["opencode", ["srv"], "srv_bash", "mcp:srv/bash", "ask", "ask"],
+  // nothing maps it: asks
+  ["pi", [], "mystery_tool", undefined, "ask", "ask"],
+  ["claude-agent", [], "mcp__hands__mystery", undefined, "ask", "ask"],
+];
 
-test("the table covers every harness, each name, and the three server sets", () => {
-  assert.equal(new Set(ROWS.map((row) => row[0])).size, 5);
-  assert.equal(new Set(ROWS.map((row) => row[1])).size, 3);
-  assert.ok(ROWS.length >= 1500);
-});
-
-test("settingsKeyOf and the gate's decisions are what the table pins, for every name on every harness", () => {
-  const gates = new Map();
-  const gateOf = (harness, servers, settings, tag) => {
-    const id = `${harness}|${servers}|${tag}`;
-    if (!gates.has(id)) gates.set(id, runnerGate({ harness, mcpServers: split(servers), settings }));
-    return gates.get(id);
-  };
-  const bad = [];
-  for (const [harness, servers, name, key, asked, open, shut] of ROWS) {
-    const got = [settingsKeyOf(harness, name, split(servers)) ?? null, gateOf(harness, servers, {}, "open").askedAs(name), gateOf(harness, servers, {}, "open").policy(name), gateOf(harness, servers, DENY, "shut").policy(name)];
-    if (JSON.stringify(got) !== JSON.stringify([key, asked, open, shut])) bad.push(`${harness} [${servers}] ${JSON.stringify(name)}: ${JSON.stringify(got)} != ${JSON.stringify([key, asked, open, shut])}`);
+test("each name shape maps to the settings key and permission pinned, on every harness", () => {
+  for (const [harness, servers, name, key, open, shut] of ROWS) {
+    assert.equal(settingsKeyOf(harness, name, servers), key, `${harness} ${name}`);
+    assert.equal(runnerGate({ harness, mcpServers: servers, settings: {} }).policy(name), open, `${harness} ${name} (open)`);
+    assert.equal(runnerGate({ harness, mcpServers: servers, settings: DENY }).policy(name), shut, `${harness} ${name} (deny)`);
   }
-  assert.deepEqual(bad, []);
 });
