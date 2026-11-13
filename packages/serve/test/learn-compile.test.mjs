@@ -430,3 +430,16 @@ test("a compile trace's feedback is the person's messages alone: the server's an
   // A trigger's first message is the run's input: what it was asked.
   assert.equal(learningEnd.traceFrom([{ id: "e1", kind: "phase", origin: "trigger", text: "Webhook w-1: refund order 1043" }, { id: "e2", kind: "final_answer", text: "done" }], []).input, "Webhook w-1: refund order 1043");
 });
+
+// #2641 review (class A, again): guardProblems reads the workflow's steps alone (skills.ts childNodes), never a literal
+// `state` or `args` value that happens to hold a `node` key.
+test("guardProblems walks steps alone: a call's args or a step's state holding a `node` key is data, never a step", () => {
+  const doc = { v: 2, name: "n", schemas: {}, root: { node: "chain", steps: [
+    { node: "call", label: "file", via: "tool", tool: "web_fetch", args: { node: "agent", nested: [{ node: "decide" }] }, out: "R", as: "r", deadline_s: 30 },
+    { node: "decide", label: "answer", state: { r: "{r}", shape: { node: "judge" } }, out: "A", as: "a", guard: { signal: "self", threshold: 0.7 } },
+  ] } };
+  assert.deepEqual(compile.guardProblems(doc, { jev: false }), []);
+  // The steps under a parallel, a loop and a route are steps.
+  const deep = { root: { node: "parallel", branches: [{ node: "loop", body: { node: "agent", label: "a" } }, { node: "route", branches: { x: { body: { node: "decide", label: "d" } } } }] } };
+  assert.deepEqual(compile.guardProblems(deep, { jev: false }).map((line) => line.split(" has ")[0]), ['the agent step "a"', 'the decide step "d"']);
+});
