@@ -1,10 +1,13 @@
-// The daemon as a child: for a vendor whose own agent is the computer's first process (Daytona's toolbox, E2B's envd),
-// computerd goes in through the vendor's file upload and starts as a command that agent runs. These are the shell
-// commands such a provider sends, exactly, and the read-back of the daemon it started: the same for every such vendor.
-import { DAEMON_IN_COMPUTER, helloDrift, SOCKET_DIR, WORK } from "./drift.js";
-import { readOwnNetwork, TOOL_USER } from "./isolation.js";
-import type { ComputerCapabilities, ComputerConnection } from "./provider.js";
-import { fail, ok, type Result } from "./result.js";
+// The scripts the shared machine-host adapter (./provider.ts) sends into a machine, exactly, and the read-back of the
+// daemon it started: the same for every vendor. A child host (the vendor's own agent is the machine's first process:
+// E2B's envd, Daytona's toolbox) gets the daemon through its upload, installs it, and starts init detached (start);
+// a pid1 host's machine runs the entrypoint as its main process, which waits for the daemon and becomes init. Every
+// connection runs stdio. Each is one argv, `sh -c '<script>' sh <args>`; shellCommand gives it as one string for a
+// vendor whose exec takes a shell line.
+import { DAEMON_IN_COMPUTER, helloDrift, SOCKET_DIR, WORK } from "../drift.js";
+import { readOwnNetwork, TOOL_USER } from "../isolation.js";
+import type { ComputerCapabilities, ComputerConnection } from "../provider.js";
+import { fail, ok, type Result } from "../result.js";
 
 const PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 const CAPS = ["CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"];
@@ -27,14 +30,22 @@ const HELD = 'held() { x=$1; while :; do set -- $(ls -ldn "$x" 2>/dev/null); cas
  *  image's is relied on. */
 const INSTALL_SCRIPT = [
 	"# agentrun-computer: install",
-	"s=$1; d=$2; h=$3; r=$4; b=${d%/*}",
+	// a: when set, the binary goes in beside its path and is moved into place last, so a pid1 entrypoint waiting for the
+	// path never starts one half written; e: when set too, the sha256 it must read before it is moved, so the entrypoint
+	// never starts one that is not the daemon uploaded; n: when set too, this create's nonce, written to the marker beside
+	// the daemon once it is in place, so the entrypoint starts the daemon this create installed and never one the image
+	// had there. (Not x: held() assigns x.)
+	"s=$1; d=$2; h=$3; r=$4; a=${5-}; e=${6-}; n=${7-}; b=${d%/*}; t=$d; [ -z \"$a\" ] || t=$d.part",
 	'if [ "$(id -u)" = 0 ]; then p=; elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then p="sudo -n"; else echo "the sandbox user $(id -un) is not root and has no passwordless sudo, so the daemon cannot be installed"; exit 3; fi',
 	HELD,
 	'[ -d "${b%/*}" ] || $p mkdir -p -m 0755 "${b%/*}" || { echo "installing the daemon at $d failed"; exit 5; }',
 	'held "${b%/*}" || exit 6',
 	'[ ! -L "$b" ] || { echo "the daemon at $d is not root\'s alone: $b is a symbolic link"; exit 6; }',
-	'$p mkdir -p "$b" "$h" "$r" && $p chown 0:0 "$b" && $p chmod 0755 "$b" && $p rm -f "$d" && $p install -m 0755 -o 0 -g 0 "$s" "$d" || { echo "installing the daemon at $d failed"; exit 5; }',
+	'$p mkdir -p "$b" "$h" "$r" && $p chown 0:0 "$b" && $p chmod 0755 "$b" && $p rm -f "$d" "$t" "$d.installed" && $p install -m 0755 -o 0 -g 0 "$s" "$t" || { echo "installing the daemon at $d failed"; exit 5; }',
+	'if [ -n "$a" ] && [ -n "$e" ]; then w=$($p sha256sum "$t" | cut -c1-64); [ "$w" = "$e" ] || { echo "sha256 $w"; echo "the daemon written to $t reads sha256 $w, not $e, so it is not moved into place"; $p rm -f "$t"; exit 7; }; fi',
+	'[ "$t" = "$d" ] || $p mv -f "$t" "$d" || { echo "installing the daemon at $d failed"; exit 5; }',
 	'held "$d" || exit 6',
+	`[ -z "$n" ] || { printf '%s\\n' "$n" | $p tee "$d.installed" >/dev/null; } || { echo "installing the daemon at $d failed: its marker was not written"; exit 5; }`,
 	'rm -f "$s"',
 	// Who installed it: the sandbox user's uid and name, and "sudo" when through passwordless sudo (installerOf).
 	'echo "installer $(id -u) $(id -un 2>/dev/null || echo unnamed)${p:+ sudo}"',
@@ -75,6 +86,100 @@ const STDIO_SCRIPT = ["# agentrun-computer: stdio", "d=$1; r=$2", HELD, 'held "$
 const quote = (word: string) => `'${word.replaceAll("'", "'\\''")}'`;
 /** One string for a shell: `sh -c '<script>' sh '<arg>' ...`, every word quoted. */
 export const shellCommand = (script: string, args: readonly string[]) => ["sh", "-c", quote(script), "sh", ...args.map(quote)].join(" ");
+/** One argv as one shell line, every word but a plain one ("sh", "-c") single-quoted: for a vendor whose exec takes a line. */
+export const shellLine = (argv: readonly string[]) => argv.map((word) => (/^[A-Za-z0-9_./:=@%+-]+$/.test(word) ? word : quote(word))).join(" ");
+const argvOf = (script: string, args: readonly string[]): string[] => ["sh", "-c", script, "sh", ...args];
+
+/** Where start leaves what init writes, root's alone: the words a create that never hears the daemon gives back. */
+export const INIT_LOG = `${SOCKET_DIR}-init.log`;
+
+/**
+ * Starts init detached from the call that starts it: in a session of its own (setsid), its output to the log, its stdin
+ * none, so the vendor's call ends at once and nothing of it holds init. As root, or through passwordless sudo.
+ */
+const START_SCRIPT = ["# agentrun-computer: start", "l=$1; shift", ROOT, `exec $p sh -c 'exec >"$0" 2>&1 </dev/null; setsid "$@" &' "$l" "$@"`].join("\n");
+
+/** The last words init wrote to its log, as root; nothing when it wrote none. */
+const LOG_SCRIPT = ["# agentrun-computer: log", "l=$1", ROOT, '$p tail -c 2000 "$l" 2>/dev/null || true'].join("\n");
+
+/**
+ * A pid1 machine's main process: waits, bounded, for the daemon this create installed to be moved into place executable
+ * (the marker beside it, `<daemon>.installed`, holds this create's nonce: a daemon the image had at the path, or one an
+ * earlier install left, has none, or another, and is never started), then becomes it with exec, so init is the machine's main process and the machine ends when init does. It starts init as start does a
+ * child's: from its home (HOME, and the working directory), with the display, when given, as its DISPLAY. POSIX sh and
+ * tools in BusyBox and coreutils alike; `date +%s` bounds the wait however long a sleep takes. An Archil computer's
+ * (`--gate <path>` before init's arguments) also waits for the gate, which root makes once the run's folder is mounted;
+ * a gate there before it starts (an image that holds one) is not this computer's, and goes first.
+ */
+const ENTRYPOINT_SCRIPT = [
+	"# agentrun-computer: entrypoint",
+	// The display is v, as in init's script; empty for a computer with no screen. n is this create's nonce.
+	"d=$1; w=$2; h=$3; v=$4; n=$5; shift 5",
+	'g=; if [ "${1-}" = --gate ]; then g=$2; shift 2; rm -f "$g"; fi',
+	"end=$(( $(date +%s) + $w ))",
+	// Ours: the daemon executable, and the marker install writes after the move holding this create's nonce.
+	'ours() { [ -f "$d" ] && [ -x "$d" ] && [ -n "$n" ] && [ "$(cat "$d.installed" 2>/dev/null)" = "$n" ]; }',
+	'until ours && { [ -z "$g" ] || [ -f "$g" ]; }; do',
+	'\tif [ "$(date +%s)" -gt "$end" ]; then',
+	'\t\tif ours; then echo "agentrun-computer: the Archil mount was not made within $w s ($g is not there), so this computer ends" >&2',
+	'\t\telse echo "agentrun-computer: the daemon did not arrive at $d within $w s, so this computer ends" >&2; fi',
+	"\t\texit 3",
+	"\tfi",
+	"\tsleep 0.2 2>/dev/null || sleep 1",
+	"done",
+	'export HOME="$h"',
+	'cd "$h" || { echo "agentrun-computer: init\'s home $h cannot be entered, so this computer ends" >&2; exit 4; }',
+	'if [ -n "$v" ]; then export DISPLAY="$v"; else unset DISPLAY; fi',
+	'exec "$d" "$@"',
+].join("\n");
+
+/**
+ * Where a pid1 Archil computer's entrypoint waits for root's word that the run's folder is mounted: beside the daemon,
+ * in the directory install makes root's alone before root makes the gate, so no other user can make it early. (A path
+ * under /run would hang on an image without /run, or one whose /run another user can write.)
+ */
+export const ARCHIL_GATE = `${DAEMON_IN_COMPUTER.slice(0, DAEMON_IN_COMPUTER.lastIndexOf("/"))}/archil-mounted`;
+
+/** The scripts the adapter runs, each one argv (see the file's head). */
+export interface HostedCommands {
+	install: string[];
+	/** child: init's start, detached; it answers once init is started. */
+	start: string[];
+	stdio: string[];
+	log: string[];
+	/** pid1: the machine's command. */
+	entrypoint: string[];
+}
+
+/**
+ * The adapter's commands for one computer. Init's flags are the child's (childCommands) for both modes: --own-network
+ * always, the display and the most deadline.extend may move the deadline to when given. waitS bounds a pid1 entrypoint's
+ * wait for the daemon (and gate, for an Archil computer); with atomic, install moves the daemon into place last, and only
+ * once it reads sha256, when given, then writes nonce, when given, to the marker the entrypoint waits for.
+ */
+export function hostedCommands({
+	staging = "",
+	deadline = "",
+	user = TOOL_USER,
+	display = "",
+	maxDeadline = "",
+	atomic = false,
+	waitS = 600,
+	gate,
+	sha256 = "",
+	nonce = "",
+}: ChildCommandOptions & { atomic?: boolean; waitS?: number; gate?: string; sha256?: string; nonce?: string } = {}): HostedCommands {
+	const init = [DAEMON_IN_COMPUTER, deadline, user, WORK, SOCKET_DIR];
+	if (display !== "" || maxDeadline !== "") init.push(display, maxDeadline);
+	const initArgs = ["init", "--deadline", deadline, "--user", user, "--own-network", ...(maxDeadline === "" ? [] : ["--max-deadline", maxDeadline])];
+	return {
+		install: argvOf(INSTALL_SCRIPT, [staging, DAEMON_IN_COMPUTER, WORK, SOCKET_DIR, ...(atomic ? ["1", sha256, nonce] : [])]),
+		start: argvOf(START_SCRIPT, [INIT_LOG, ...argvOf(INIT_SCRIPT, init)]),
+		stdio: argvOf(STDIO_SCRIPT, [DAEMON_IN_COMPUTER, SOCKET_DIR]),
+		log: argvOf(LOG_SCRIPT, [INIT_LOG]),
+		entrypoint: argvOf(ENTRYPOINT_SCRIPT, [DAEMON_IN_COMPUTER, String(waitS), WORK, display, nonce, ...(gate === undefined ? [] : ["--gate", gate]), ...initArgs]),
+	};
+}
 
 export interface ChildCommandOptions {
 	/** Where the vendor's upload left the daemon. */
@@ -106,8 +211,9 @@ export function childCommands({ staging = "", deadline = "", user = TOOL_USER, d
 
 export interface DaemonExpected {
 	version: string;
-	uid: string;
-	gid: string;
+	/** The uid and gid it runs as; with neither, any one user that is not root (a spec named it, and attach reads it back). */
+	uid?: string;
+	gid?: string;
 	arch: string;
 	kind: ComputerCapabilities["kind"];
 	groups: ComputerCapabilities["groups"];
@@ -134,8 +240,11 @@ export async function daemonDrift(connection: ComputerConnection, expected: Daem
 	const ids = (name: string) => (fields.get(name) ?? "").split(/\s+/).filter(Boolean);
 	const uids = ids("Uid");
 	const gids = ids("Gid");
-	if (uids.length !== 4 || uids.some((id) => id !== expected.uid)) found.push(`daemon user: declared uid ${expected.uid}, read back ${show(fields.get("Uid"))}`);
-	if (gids.length !== 4 || gids.some((id) => id !== expected.gid)) found.push(`daemon group: declared gid ${expected.gid}, read back ${show(fields.get("Gid"))}`);
+	// With no user expected, the one it runs as: every id of the four the same, and uid not root.
+	const uid = expected.uid ?? (uids[0] === "0" ? undefined : uids[0]);
+	const gid = expected.gid ?? gids[0];
+	if (uids.length !== 4 || uid === undefined || uids.some((id) => id !== uid)) found.push(`daemon user: declared ${expected.uid === undefined ? "one uid that is not root" : `uid ${expected.uid}`}, read back ${show(fields.get("Uid"))}`);
+	if (gids.length !== 4 || gid === undefined || gids.some((id) => id !== gid)) found.push(`daemon group: declared ${expected.gid === undefined ? "one gid" : `gid ${expected.gid}`}, read back ${show(fields.get("Gid"))}`);
 	if ((fields.get("Groups") ?? "") !== "") found.push(`daemon groups: declared none, read back ${show(fields.get("Groups"))}`);
 	if (fields.get("NoNewPrivs") !== "1") found.push(`daemon no_new_privs: declared 1, read back ${show(fields.get("NoNewPrivs"))}`);
 	for (const set of CAPS) {

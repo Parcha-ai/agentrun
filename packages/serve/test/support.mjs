@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 import { claudeAgentExecutable } from "@parcha/agentrun-harness-claude";
 import { codexTarget } from "../../run-adapters-codex/dist/binary.js";
 import { processAlive } from "@parcha/agentrun-kernel/host";
-import { startServe } from "../dist/index.js";
+import { startServe as startServeBuilt } from "../dist/index.js";
 import { dockerPathsForRuns } from "../dist/box-paths.js";
 import { hostAddressesOnce } from "../dist/docker-host-addresses.js";
 import { fauxEnvOf } from "../dist/server.js";
@@ -63,6 +63,14 @@ const secretWrite = (method, path) => SECRET_WRITE_PATHS.some((write) => write.m
 const CLIENT_OWNER_PHRASE = `client-owner-${createHash("sha256").update(String(process.pid)).digest("hex").slice(0, 24)}`;
 /** Each server's owner session cookie, by its base URL: set once, when the client first makes a secret write. */
 const ownerCookies = new Map();
+/** Each accounts-off server's launch code (Serve's launchCode), by its /v2 base URL: what the test client's owner's session
+ *  opens (ownerSessionOf). A server a test starts itself registers its own (launchFor). */
+const launchCodes = new Map();
+/** Registers `server`'s launch code (a Serve, or anything with `baseUrl` and `launchCode`) for the test client. */
+export const launchFor = (server) => (server?.launchCode ? launchCodes.set(server.baseUrl, server.launchCode) : undefined, server);
+/** The server's startServe, its launch code registered for the test client (launchFor): every test starts a server
+ *  through this one, so the client's secret writes open that server's launch link with accounts off. */
+export const startServe = async (options) => launchFor(await startServeBuilt(options));
 
 export const FAUX = new URL("./fixtures/faux-model.mjs", import.meta.url).pathname;
 
@@ -517,7 +525,8 @@ export function client(baseUrl, token, { owner = false } = {}) {
 /** The owner's session on the server at `baseUrl` (its /v2), for the client's secret writes. With accounts on, the client
  *  sets the owner's password the first time, with its token standing in for the setup code (so on any server, its setup
  *  open or not), or signs in with it on a server it set up before a restart; with accounts off, it follows the launch link
- *  (`/?token=`, the 303 that sets the console's cookie), whose console is the owner's on a loopback server
+ *  (`/?launch=<code>`, the server's launchCode, registered by launchFor; the 303 that sets the console's session cookie),
+ *  whose console is the owner's on a loopback server
  *  (secret-writes.ts). Where none works (an owner the test set up with its own password) it throws, saying so: a secret
  *  write never falls back to the token, which the server refuses; such a test makes its own owner's session. */
 async function ownerSessionOf(baseUrl, token) {
@@ -530,7 +539,8 @@ async function ownerSessionOf(baseUrl, token) {
   const answer = async (what, res) => (tried.push(`${what}: ${res.status}`), res);
   let res = await answer("setup", await post("/setup", token ? { authorization: `Bearer ${token}` } : {}));
   if (res.status !== 201) res = await answer("sign-in", await post("/auth/sign-in"));
-  if (res.status !== 200 && res.status !== 201 && token) res = await answer("launch link", await fetch(`${origin}/?token=${encodeURIComponent(token)}`, { redirect: "manual" }));
+  const code = launchCodes.get(baseUrl);
+  if (res.status !== 200 && res.status !== 201 && code) res = await answer("launch link", await fetch(`${origin}/?launch=${code}`, { redirect: "manual" }));
   const cookie = [200, 201, 303].includes(res.status) ? res.headers.getSetCookie().map((line) => line.split(";")[0]).join("; ") : "";
   if (!cookie) throw new Error(`the test client has no owner's session on ${baseUrl} for a secret write (${tried.join(", ")}): the token never writes a secret, so a test whose owner has its own password signs in itself`);
   const session = { cookie, origin };
