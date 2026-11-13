@@ -137,7 +137,7 @@ unless it holds the run id or is a word the script looks for.
 | mac.safari.follow-link | Safari | open the task's local page in the background, press the "Quarterly report" link by its ref, then the toolbar's Back button by its ref | the linked page's heading, then the first page's link |
 | mac.finder.rename-file | Finder | open the task's folder in the background, show it as a list, select draft.txt by its element, then rename it: enter, type "final", enter in the background, else the same with Finder brought forward. A file's name is an item that opens, not a field, so the driver refuses a set on it. Each way is judged by the disk, and the notes say which one renamed it | the folder holds final.txt and other.txt |
 | mac.textedit.edit-number | TextEdit | open the task's totals file in the background, select all and type the text with 42, by keys first (the window marks it Edited), then save with super+s (the mark goes) | the saved file is the new text, the other lines kept |
-| mac.calendar.new-event | Calendar | press Add Event, type a title into the quick event field and enter; move the event into the task's calendar through the inspector's calendar menu; escape | the task's calendar holds the event |
+| mac.calendar.new-event | Calendar | press Add Event, type a title into the quick event field and enter; move the event into the task's calendar through the inspector's calendar menu; enter in its title saves it (escape there dropped a new event on macOS 26) | the task's calendar holds the event |
 
 The sandbox needs two kinds of grant for Computerd. One is Automation for Calendar, Notes, Finder, TextEdit and Safari.
 The other is full access to calendars: Calendar's AppleScript reads the calendar store for the process that sent the
@@ -164,8 +164,9 @@ person's.
 A fresh Mac's first-run state is answered in each task's setup, before its snapshot, never in its steps: Notes' and
 Calendar's first-run sheets are pressed away; a Notes that showed its Welcome sheet gets a setup folder made and removed
 again, so the "Turn On iCloud" alert it raises the first time anything is made is answered Cancel there; and Calendar's
-list of calendars is read until it is still for 8 s, since a fresh Calendar adds Scheduled Reminders a moment after it
-opens.
+setup types into its quick event field and cancels it with escape before any event is made, since a fresh Calendar adds
+its own Scheduled Reminders calendar when that field first reads what is typed, then reads the list of calendars until
+it is still for 8 s.
 
 ## When something is off
 

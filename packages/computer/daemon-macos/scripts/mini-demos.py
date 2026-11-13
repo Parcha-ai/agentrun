@@ -972,13 +972,6 @@ def calendar_names(c):
     return [line.split("\t")[0] for line in osa(c, SNAPSHOT_CALENDARS).splitlines()]
 
 
-def ci_calendars(t, when):
-    """On CI, the calendars' names at a step, to see when Calendar adds one of its own (names are a person's
-    elsewhere)."""
-    if CI:
-        print(f"    calendars {when}: {calendar_names(t.c)}", flush=True)
-
-
 def calendar_prepare(t):
     """Calendar open, its first-run sheets answered, and its calendar list still: a fresh Calendar (CI's runner) adds
     its own calendar (Scheduled Reminders) when its quick event field first reads what is typed into it, and one added
@@ -995,8 +988,7 @@ def calendar_prepare(t):
         try:
             if field is not None:
                 t.act([{"type": "Setup", "into": field["ref"]}], "setup: type into it")
-                time.sleep(2)
-                ci_calendars(t, "with the quick event typed")
+                time.sleep(2)  # the field reads what is typed a moment later
         finally:
             # Escape cancels the field before enter makes the event; the field is gone after it.
             for _ in range(3):
@@ -1024,35 +1016,26 @@ def calendar_new_event(t):
     title = event_title(RUN)
     t.say("make the task's calendar (AppleScript)")
     t.run_exec(["/usr/bin/osascript", "-e", MAKE_CALENDAR, NAME], "make the calendar")
-    ci_calendars(t, "after the task's calendar")
     tree = t.observe()
     # The toolbar's Add Event button opens the quick event field: the title typed there and enter make the event, in
     # the default calendar, with its inspector open; the inspector's calendar menu moves it into the task's calendar.
     add = need(t, tree["nodes"], "the Add Event button", role="button", name="Add Event")
     t.inspector = True  # from here on the teardown closes the inspector first (see close_inspector)
     t.act([{"press": add["ref"]}], "press Add Event")
-    ci_calendars(t, "after Add Event")
     tree = t.observe("observe the quick event field")
     boxes = [n for n in tree["nodes"] if n.get("role") == "textbox"]
     field = next((n for n in boxes if "focused" in (n.get("flags") or [])), None) or next((n for n in boxes if "Event" in (n.get("name") or "")), None)
     typing = {"type": title, "into": field["ref"]} if field is not None else {"type": title}
     t.act([typing, {"key": "enter"}], "type the event's title, enter", expect={"text": title, "timeoutMs": 10000})
-    ci_calendars(t, "after the quick event")
     tree = t.observe("observe the event's inspector")
     menu = need(t, tree["nodes"], "the inspector's calendar menu", id="calendar-button")
     t.act([{"press": menu["ref"]}], "open the event's calendar menu")
     tree = t.observe("observe the calendar menu", full=True)
     item = need(t, tree["nodes"], "the task's calendar in the menu", role="menuitem", name=NAME)
     t.act([{"press": item["ref"]}], "move the event into the task's calendar")
-    ci_calendars(t, "after the move")
     # On macOS 26 an event whose inspector is still open, its title being edited, is in no calendar yet (AppleScript
     # finds it nowhere), and escape there drops it: enter in the title saves it.
     t.act([{"key": "enter"}], "save the event (enter in its title)")
-    if CI:
-        tree = t.observe("observe after enter")
-        shown = find(tree["nodes"], role="listitem", starts=f"{title}.") is not None
-        print(f"    after enter: inspector open {find(tree['nodes'], id='calendar-button') is not None}, event shown {shown}, "
-              f"calendars holding it: {osa(t.c, EVENT_CALENDARS, title).strip() or 'none'}", flush=True)
     count = """on run argv
   tell application "Calendar" to return count (events of calendar (item 1 of argv) whose summary is (item 2 of argv))
 end run"""
