@@ -14,7 +14,7 @@ import { scratch, withEnv } from "./support.mjs";
 
 /** A bare request with no body, as the stranger's probe sends it. */
 const probe = (url) => fetch(`${url}/`, { method: "GET", headers: { connection: "close" } });
-const MESSAGE = { model: "claude-sonnet-4-5", stream: true, messages: [{ role: "user", content: [{ type: "text", text: "the answer" }] }] };
+const MESSAGE = { model: "claude-sonnet-5-5", stream: true, messages: [{ role: "user", content: [{ type: "text", text: "the answer" }] }] };
 
 test("the fake upstream answers a bare GET / with no body 400, mid-test, and files no model request for it", async (t) => {
   const calls = join(await scratch(t), "upstream.jsonl");

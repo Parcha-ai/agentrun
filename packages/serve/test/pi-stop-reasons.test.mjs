@@ -16,7 +16,7 @@ import { createRegistry, defineExtension, defineTool, Harness, MemoryStorage } f
 
 const { PI_STOP } = await import("../dist/runner/pi-stop.js");
 
-const MODEL = "claude-sonnet-4-5";
+const MODEL = "claude-sonnet-5-5";
 const PROVIDER = "pi-stop-check";
 
 /** pi's models over a provider whose every request `fetch` answers. */

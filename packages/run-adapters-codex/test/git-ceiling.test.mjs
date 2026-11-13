@@ -60,7 +60,7 @@ test("a repository above the sessions directory: none of its branch, commit or r
     return new Response(sse(n, items), { status: 200, headers: { 'content-type': 'text/event-stream' } });
   };
   const store = memorySessionStore();
-  const codex = codexAdapter({ model: 'gpt-5.4-mini', provider: { origin: 'https://provider.invalid', credential: () => 'provider-secret' }, sessionsDir: join(repo, 'sessions'), fetch });
+  const codex = codexAdapter({ model: 'gpt-6-luna', provider: { origin: 'https://provider.invalid', credential: () => 'provider-secret' }, sessionsDir: join(repo, 'sessions'), fetch });
   const runNode = createHarnessRunner(codex, { store, timeoutMs: 90_000 });
   const output = await runNode({ kind: 'agent', label: 'git', system: ['Answer.'], user: 'Say ok.', schema: { type: 'object', properties: { answer: { type: 'string' } }, required: ['answer'] }, tools: [] });
   assert.deepEqual(output, { answer: 'ok' });
