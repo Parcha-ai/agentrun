@@ -2,9 +2,11 @@
 // process a run; it reads a request a line on stdin and answers a line on stdout, both JSON:
 //
 //   {"op": "where", "window": "1234"}
-//     -> {"bounds": [x, y, w, h], "above": [[x, y, w, h], ...]}   the window on screen, in points, and every window in
-//        front of it that overlaps it: another app's, or one of its own app's ordinary windows (not its menus or
-//        popovers, which are the demo's own). {"bounds": null} when the window is not on screen.
+//     -> {"bounds": [x, y, w, h], "above": [[x, y, w, h], ...], "changes": N}   the window on screen, in points, and
+//        every window in front of it that overlaps it: another app's, or one of its own app's ordinary windows (not its
+//        menus or popovers, which are the demo's own). {"bounds": null, ...} when the window is not on screen. From the
+//        first where on, the window list is read every 10 ms for that window, and changes counts each time what it
+//        answers changed: a window that came and went between two wheres shows there, though the two answers match.
 //   {"op": "crop", "jpeg": BASE64, "bounds": [...], "above": [...], "out": PATH, "quality": 70}
 //     -> {"width": W, "height": H}   the screen frame cut to the bounds, each overlapping window painted black, written
 //        to PATH as a JPEG. The frame covers the main display, at any scale.
@@ -94,6 +96,48 @@ struct Failure: Error {
 	init(_ words: String) { self.words = words }
 }
 
+/// The window the last where asked about, read every 10 ms on a thread of its own, and how many times its answer
+/// changed.
+final class Watch: @unchecked Sendable {
+	private let lock = NSLock()
+	private var window: Int?
+	private var last: NSDictionary?
+	private var changes = 0
+
+	init() {
+		Thread {
+			while true {
+				self.poll()
+				usleep(10_000)
+			}
+		}.start()
+	}
+
+	private func poll() {
+		lock.lock()
+		let id = window
+		lock.unlock()
+		guard let id else { return }
+		let now = NSDictionary(dictionary: locate(id))
+		lock.lock()
+		defer { lock.unlock() }
+		guard window == id else { return }
+		if let last, !last.isEqual(now) { changes += 1 }
+		last = now
+	}
+
+	func count(_ id: Int) -> Int {
+		lock.lock()
+		defer { lock.unlock() }
+		if window != id {
+			(window, last, changes) = (id, nil, 0)
+		}
+		return changes
+	}
+}
+
+let watch = Watch()
+
 while let line = readLine(strippingNewline: true) {
 	guard let request = (try? JSONSerialization.jsonObject(with: Data(line.utf8))) as? [String: Any] else {
 		answer(["error": "not a JSON object"])
@@ -105,7 +149,10 @@ while let line = readLine(strippingNewline: true) {
 			answer(["error": "where needs a window id"])
 			continue
 		}
-		answer(locate(id))
+		let changes = watch.count(id)
+		var place = locate(id)
+		place["changes"] = changes
+		answer(place)
 	case "crop":
 		do {
 			answer(try crop(request))

@@ -17,8 +17,9 @@ exits. Writes, under OUT_DIR:
 A screen.watch frame is the whole screen, and the Mac is a person's: a frame is cut to the task's window (the one it
 pinned, else the one it last observed) before it is written anywhere, and every window in front of that window is
 painted black (window-frames.swift). A frame is kept only when the window list read before it and the one read after it
-agree (the window did not move, and nothing came in front or left), so a frame never shows a window the cut did not
-know of. Until the task has a window, no frame is kept.
+agree (the window did not move, and nothing came in front or left), and the list, read every 10 ms in between, never
+changed for the window, so a frame never shows a window the cut did not know of (one that lived under 10 ms could
+still slip through). Until the task has a window, no frame is kept.
 
 The Mac is a person's own, so a task works only in a sandbox it makes, named "AgentRun demo <run id>": its own
 Calendar calendar, its own Notes folder, its own folder under /private/tmp/agentrun-demos. A note goes in the task's
@@ -43,6 +44,7 @@ bench's task checks.
 """
 
 import base64
+import contextlib
 import fcntl
 import json
 import os
@@ -149,7 +151,8 @@ class Recorder(threading.Thread):
         self.folder, self.clock, self.aim, self.cropper = folder, clock, aim, cropper
         self.frames, self.captions, self.errors = [], [], []
         # Frames not kept, by why: the sequence's first, no window yet, the window not on screen, the window moved, a
-        # window in front came or went, or the cut failed.
+        # window in front came or went, the window list changed and changed back between the two reads, or the cut
+        # failed.
         self.dropped = {}
         self.halt = threading.Event()
         os.makedirs(folder, exist_ok=True)
@@ -198,6 +201,8 @@ class Recorder(threading.Thread):
                     why = "moved"
                 elif before["above"] != after["above"]:
                     why = "in front"
+                elif before["changes"] != after["changes"]:
+                    why = "came and went"  # a window, say, in front only between the two reads
                 if why is None:
                     path = os.path.join(self.folder, f"{len(self.frames):05d}.jpg")
                     try:
@@ -903,8 +908,15 @@ def notes_prepare(t):
         return
     setup = f"{NAME} setup"
     t.say("make and remove a setup folder, answering the iCloud alert it raises")
-    t.run_exec(["/usr/bin/osascript", "-e", MAKE_FOLDER, setup], "make a setup folder")
+    with shielded():
+        notes_setup_folder(t, setup)
+
+
+def notes_setup_folder(t, setup):
+    """The setup folder made, the alert answered, and the folder removed whatever happened in between (the caller holds
+    stop signals off until then)."""
     try:
+        t.run_exec(["/usr/bin/osascript", "-e", MAKE_FOLDER, setup], "make a setup folder")
         deadline = time.monotonic() + 10
         while True:
             tree = t.observe("look for the iCloud alert")
@@ -972,6 +984,29 @@ def calendar_names(c):
     return [line.split("\t")[0] for line in osa(c, SNAPSHOT_CALENDARS).splitlines()]
 
 
+def calendar_setup_quick_event(t, add):
+    """The quick event field opened, typed into, and cancelled with escape whatever happened in between, before enter
+    makes an event (the caller holds stop signals off until then)."""
+    field = None
+    try:
+        t.act([{"press": add["ref"]}], "setup: open the quick event field")
+        tree = t.observe("observe the quick event field")
+        boxes = [n for n in tree["nodes"] if n.get("role") == "textbox"]
+        field = next((n for n in boxes if "focused" in (n.get("flags") or [])), None)
+        if field is not None:
+            t.act([{"type": "Setup", "into": field["ref"]}], "setup: type into it")
+            time.sleep(2)  # the field reads what is typed a moment later
+    finally:
+        # Escape cancels the field; it is gone after it.
+        for _ in range(3):
+            t.act([{"key": "escape"}], "setup: cancel the quick event")
+            tree = t.observe("observe after escape")
+            if field is None or not any(n.get("ref") == field["ref"] for n in tree["nodes"]):
+                break
+        else:
+            raise Failed("the setup's quick event field is still open after escape")
+
+
 def calendar_prepare(t):
     """Calendar open, its first-run sheets answered, and its calendar list still: a fresh Calendar (CI's runner) adds
     its own calendar (Scheduled Reminders) when its quick event field first reads what is typed into it, and one added
@@ -981,23 +1016,8 @@ def calendar_prepare(t):
     tree, _ = first_run(t, t.observe())
     add = find(tree["nodes"], role="button", name="Add Event")
     if add is not None:
-        t.act([{"press": add["ref"]}], "setup: open the quick event field")
-        tree = t.observe("observe the quick event field")
-        boxes = [n for n in tree["nodes"] if n.get("role") == "textbox"]
-        field = next((n for n in boxes if "focused" in (n.get("flags") or [])), None)
-        try:
-            if field is not None:
-                t.act([{"type": "Setup", "into": field["ref"]}], "setup: type into it")
-                time.sleep(2)  # the field reads what is typed a moment later
-        finally:
-            # Escape cancels the field before enter makes the event; the field is gone after it.
-            for _ in range(3):
-                t.act([{"key": "escape"}], "setup: cancel the quick event")
-                tree = t.observe("observe after escape")
-                if field is None or not any(n.get("ref") == field["ref"] for n in tree["nodes"]):
-                    break
-            else:
-                raise Failed("the setup's quick event field is still open after escape")
+        with shielded():
+            calendar_setup_quick_event(t, add)
     t.say("wait for Calendar's list of calendars to be still")
     start = time.monotonic()
     names, since = calendar_names(t.c), start
@@ -1125,6 +1145,19 @@ def encode(timeline, path):
 
 
 shield = {"on": False, "asked": None}
+
+
+@contextlib.contextmanager
+def shielded():
+    """A setup that makes something and removes it again: a stop signal that comes during it waits for it to finish,
+    as one during a teardown does, and the run then stops."""
+    shield["on"] = True
+    try:
+        yield
+    finally:
+        shield["on"] = False
+    if shield["asked"]:
+        raise KeyboardInterrupt(shield["asked"])
 
 
 def stop(signum, frame):
