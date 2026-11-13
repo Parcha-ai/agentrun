@@ -1273,7 +1273,6 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     },
     ...(options.batchPollMs ? { pollMs: options.batchPollMs } : {}),
   });
-  stops.push(async () => batches.halt());
   // A run's served view and its live moment, from the store (store-view): `origin` is where this request reaches the
   // console, the secrets are cut live, and the sign-ins give the handed-pointer cut. Trigger and background reads (no
   // request) use the server's public address, else its own.
@@ -3584,6 +3583,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // The ends' follower stops before the webhooks it feeds and the store it reads.
     clearTimeout(endsTimer);
     await endsRead;
+    // A learning batch's loop ends where it stands, still running: it takes up when a server starts on this data again.
+    await batches.halt();
     await webhooks.close();
     // An upgraded socket is no connection closeAllConnections ends, and server.close waits for it.
     viewers.close();

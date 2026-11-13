@@ -3,7 +3,7 @@
 // a cancel, and a cap that is never gone past. The faux model answers "Job answer." and learns the note its instructions plan.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { answerValue, BATCH_ROWS_MAX, checkBatchBody, matches, reviewText } from "../dist/learning-batch.js";
+import { answerValue, BATCH_ROWS_MAX, checkBatchBody, contentOf, LearningBatches, matches, reviewText, RUN_CAP_MIN_USD } from "../dist/learning-batch.js";
 import { note } from "./fixtures/faux-learn.mjs";
 import { LEARN, learner, made, sleep } from "./learn-support.mjs";
 import { follow, serve } from "./support.mjs";
@@ -36,6 +36,8 @@ test("the match is structural: trimmed, case-folded, whitespace-collapsed, numbe
   assert.equal(answerValue('{"result":{"code":5411}}', "result"), null, "an object is no answer");
   assert.equal(answerValue("plain words", "code"), null);
   assert.equal(answerValue("plain words", null), "plain words", "no field: the answer whole");
+  assert.equal(contentOf(["name"], { name: "Acme", truth: "x" }), "Acme");
+  assert.equal(contentOf(["name", "site"], { name: "Acme", site: "acme.example", truth: "x" }), "name: Acme\nsite: acme.example");
   assert.equal(reviewText("A", "B"), 'Review: the reference answer is "A"; you answered "B".');
   assert.equal(reviewText("A", null), 'Review: the reference answer is "A"; you answered "nothing".');
 });
@@ -77,18 +79,16 @@ test("POST /agents/{id}/learning/batches: each row's run, in order, with learnin
   assert.equal(money(end.rows.reduce((sum, r) => sum + r.total_usd, 0)), end.spent_usd, "the header's cost is the rows'");
   assert.equal(end.cost_usd, end.spent_usd);
   assert.ok(end.spent_usd > 0 && end.spent_usd < end.max_cost_usd, "the faux model's runs cost a little, and the cap holds");
-  assert.deepEqual(end.lessons.notes, ["check-units"], "the first run's note, learned once");
+  assert.deepEqual(end.lessons.notes, ["Check units"], "the first run's note, learned once");
   assert.ok(end.rows[0].merged, "the merge of the first run's learning");
-  assert.deepEqual(end.rows[0].learned.notes, ["check-units"]);
+  assert.deepEqual(end.rows[0].learned.notes, ["Check units"]);
 
   // Each run was given the chosen columns alone, in order, and was told the reference beside its own answer.
   const runs = (await api("GET", `/agents/${id}/runs?limit=20`)).body.runs.filter((r) => end.rows.some((row) => row.run_id === r.run_id));
   assert.equal(runs.length, 4);
   for (const row of end.rows) {
     const launch = await store.runs.launch(row.run_id);
-    const input = launch.body.input;
-    assert.deepEqual(Object.keys(input).sort(), ["name", "site"], "the answer column is never given to the run");
-    assert.equal(input.name, `Shop ${row.n}`);
+    assert.equal(launch.body.input.content, `name: Shop ${row.n}\nsite: shop${row.n}.example`, "the chosen columns alone: the answer column is never given to the run");
     const timeline = (await follow(api, row.run_id, ["completed"])).rows;
     const reviews = timeline.filter((r) => r.kind === "user_message" && /^Review: /.test(r.text ?? ""));
     assert.deepEqual(reviews.map((r) => r.text), [reviewText(["Job answer.", "Other", "job   ANSWER.", "Job answer"][row.n - 1], "Job answer.")], `row ${row.n}: one review, the reference and its own answer`);
@@ -174,24 +174,99 @@ test("cancel ends the loop, cancels the run in flight and keeps the rows done; a
   assert.equal((await api("POST", `/agents/${id}/learning/batches/${created.body.id}/cancel`, {})).body.status, "cancelled", "a second cancel answers it as it is");
 });
 
-test("the cap is never gone past: a row starts only when what is left covers the mean of the rows done, and the batch stops `cap`, its rows done kept", { timeout: 240_000 }, async (t) => {
+test("the cap is never gone past: a row starts only when what is left covers a run's smallest cap and the mean of the rows done, and the batch stops `cap`, its rows done kept", { timeout: 240_000 }, async (t) => {
   const { api } = await serve(t, { learning: "on", faux: LEARN, batchPollMs: 50 });
   const id = "csv-cap";
-  await made(api, learner(id, { plan: [["check-units.md", UNITS]], once: true }));
+  await made(api, learner(id));
   // One row first, to know what a row costs here.
   const probe = await api("POST", `/agents/${id}/learning/batches`, body(["Job answer."]));
   const one = await until(api, id, probe.body.id, finished);
   assert.equal(one.status, "completed");
   const row = one.rows[0].total_usd;
-  assert.ok(row > 0);
-  const cap = money(row * 1.6);
+  assert.ok(row > 0 && row < 0.005, `a faux row's cost: ${row}`);
+  // Room for a second row (a cent and a half a row left after the first), and not for a third.
+  const cap = money(RUN_CAP_MIN_USD + row * 1.5);
   const created = await api("POST", `/agents/${id}/learning/batches`, body(Array(6).fill("Job answer."), { max_cost_usd: cap }));
   assert.equal(created.status, 202, JSON.stringify(created.body));
   const end = await until(api, id, created.body.id, finished);
   assert.equal(end.status, "stopped", JSON.stringify(end));
   assert.equal(end.stopped, "cap");
-  assert.ok(end.finished >= 1 && end.finished < 6, `finished ${end.finished}`);
+  assert.equal(end.finished, 2, `finished ${end.finished}`);
   assert.ok(end.spent_usd <= cap, `spent ${end.spent_usd} of ${cap}`);
-  assert.equal(end.rows.filter((r) => r.state === "pending").length, 6 - end.finished, "the rows left never started");
+  assert.deepEqual(end.rows.map((r) => r.state), ["done", "done", "pending", "pending", "pending", "pending"], "the rows left never started");
   assert.equal(end.remaining_usd, money(cap - end.spent_usd));
+  assert.equal(end.rows[0].reviewed, true);
+});
+
+/** A batch host with no server: settings in memory, each run answering at once with a cost the test names. */
+function fakeHost({ costs, cancelled = [] }) {
+  const settings = new Map();
+  const runs = new Map();
+  let n = 0;
+  return {
+    runs,
+    settings: {
+      get: async (k) => (settings.has(k) ? structuredClone(settings.get(k)) : undefined),
+      put: async (k, v) => void settings.set(k, structuredClone(v)),
+      all: async () => [...settings].map(([key, value]) => ({ key, value: structuredClone(value), updatedAt: 0 })),
+    },
+    learning: async () => ({ learns: true }),
+    start: async (agentId, b) => {
+      const id = `run-${++n}`;
+      runs.set(id, { b, cost: costs[n - 1] ?? 0.4, messages: [] });
+      return id;
+    },
+    view: async (id) => {
+      const r = runs.get(id);
+      return { status: "completed", ended_at: `e${r.messages.length}`, answer: "A", cost_usd: r.cost, learning_state: "merged", error: null };
+    },
+    message: async (id, text) => void runs.get(id).messages.push(text),
+    cancel: async (id) => void cancelled.push(id),
+    figures: async (id) => ({ path: "agent", cost_usd: runs.get(id).cost === null ? null : runs.get(id).cost, learning_usd: 0, total_usd: runs.get(id).cost, learned: { notes: [], skills: [], workflows: [] }, merged: null }),
+    pollMs: 1,
+  };
+}
+const asked = (extra = {}) => ({ inputs: ["q"], answer: "a", rows: Array.from({ length: 6 }, (_, i) => ({ q: `q${i}`, a: "A" })), max_cost_usd: 1.2, ...extra });
+
+test("the cap's rule on its own: with $0.40 a row and $1.20, a third row is started (what is left, $0.40, covers the mean) and a fourth is not", async () => {
+  const host = fakeHost({ costs: [] });
+  const batches = new LearningBatches(host);
+  const made = await batches.create("a1", asked());
+  await batches.idle(made.id);
+  const end = await batches.read("a1", made.id);
+  assert.deepEqual([end.status, end.stopped, end.finished, end.spent_usd], ["stopped", "cap", 3, 1.2]);
+  assert.deepEqual(end.rows.map((r) => r.state), ["done", "done", "done", "pending", "pending", "pending"]);
+  assert.equal(host.runs.get("run-3").b.max_cost_usd, 0.4, "a run's own cap is what the batch has left");
+  assert.ok([...host.runs.values()].every((r) => r.messages.length === 1 && /^Review: the reference answer is "A"; you answered "A"\.$/.test(r.messages[0])));
+});
+
+test("a row whose cost is not known stops the batch: a cap is never guessed at", async () => {
+  const host = fakeHost({ costs: [0.1, null] });
+  const batches = new LearningBatches(host);
+  const made = await batches.create("a1", asked({ max_cost_usd: 50 }));
+  await batches.idle(made.id);
+  const end = await batches.read("a1", made.id);
+  assert.deepEqual([end.status, end.stopped, end.finished, end.unknown_cost_rows], ["stopped", "cost_unknown", 2, 1]);
+});
+
+test("a server that stops leaves the batch running, and one that starts takes up at the first unfinished row without running a finished row again", async () => {
+  const host = fakeHost({ costs: [0.01] });
+  let release;
+  const gate = new Promise((r) => (release = r));
+  const view = host.view;
+  // The second row's run never ends until the gate opens.
+  host.view = async (id) => (id === "run-2" ? await Promise.race([gate.then(() => view(id)), sleep(20).then(() => ({ status: "working", ended_at: null, answer: null, cost_usd: 0, learning_state: null, error: null }))]) : view(id));
+  const first = new LearningBatches(host);
+  const made = await first.create("a1", asked({ max_cost_usd: 50 }));
+  for (let i = 0; i < 200 && host.runs.size < 2; i++) await sleep(10);
+  await first.halt();
+  const mid = await first.read("a1", made.id);
+  assert.deepEqual([mid.status, mid.finished, mid.current], ["running", 1, 2]);
+  release();
+  const second = new LearningBatches(host);
+  assert.equal(await second.resume(), 1);
+  await second.idle(made.id);
+  const end = await second.read("a1", made.id);
+  assert.deepEqual([end.status, end.finished, host.runs.size], ["completed", 6, 6], "six rows, six runs: row 2's run was waited for, not started again");
+  assert.equal(host.runs.get("run-2").messages.length, 1, "its review was sent once");
 });

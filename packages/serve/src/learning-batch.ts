@@ -98,6 +98,8 @@ export interface BatchHost {
 }
 
 const ANSWER_SHOWN = 2_000;
+/** The least cap a run can take a step under (cap.ts: the next step needs at least a cent). */
+export const RUN_CAP_MIN_USD = 0.01;
 const HEAD = (id: string) => `learning_batch/${id}`;
 const ROW = (id: string, n: number) => `learning_batch/${id}/row/${n}`;
 const INDEX = (agentId: string) => `learning_batches/${agentId}`;
@@ -125,6 +127,9 @@ export function matches(answer: string | null, reference: string): boolean {
   const a = num(answer.trim()), r = num(reference.trim());
   return a !== null && r !== null ? a === r : text(answer) === text(reference);
 }
+/** What a run is given for a row: its one input column's text as it is, or each chosen column on a line, `column: value`, in
+ *  the order the batch names them (an agent's input is its `content`, a person's words). */
+export const contentOf = (inputs: readonly string[], row: Record<string, string>): string => (inputs.length === 1 ? row[inputs[0]!]! : inputs.map((column) => `${column}: ${row[column]}`).join("\n"));
 /** The review a run is sent: the same words right or wrong. */
 export const reviewText = (reference: string, answer: string | null): string => `Review: the reference answer is "${reference}"; you answered "${answer ?? "nothing"}".`;
 
@@ -275,8 +280,8 @@ export class LearningBatches {
     const loop: Loop = { cancelled: false, halted: false, current: null, done: Promise.resolve() };
     loop.done = this.loop(id, loop).catch(async (error) => {
       // The loop itself failing (the store, not a row) ends the batch stopped on the error's words, never silently.
-      const h = await this.header(id);
-      if (h && h.status === "running") await this.save({ ...h, status: "stopped", stopped: null, ended_at: new Date().toISOString(), error: String((error as Error)?.message ?? error).slice(0, 400) }).catch(() => undefined);
+      const h = await this.header(id).catch(() => undefined);
+      if (h && h.status === "running" && !loop.halted) await this.save({ ...h, status: "stopped", stopped: null, ended_at: new Date().toISOString(), error: String((error as Error)?.message ?? error).slice(0, 400) }).catch(() => undefined);
     }).finally(() => void this.loops.delete(id));
     this.loops.set(id, loop);
   }
@@ -292,6 +297,7 @@ export class LearningBatches {
         if (room !== true) { h = await this.end(h, "stopped", room); return; }
       }
       h = await this.runRow(h, row, loop);
+      if (loop.cancelled) break;
       if (h.stopped) { h = await this.end(h, "stopped", h.stopped); return; }
     }
     // The server stopping leaves the batch running: it takes up again when the server starts.
@@ -299,13 +305,14 @@ export class LearningBatches {
     await this.end(h, loop.cancelled ? "cancelled" : "completed", null);
   }
 
-  /** Whether another row may start: the cap's room covers the mean total of the rows done (above 0 for the first). */
+  /** Whether another row may start: the cap's room covers the mean total of the rows done, and a run's own smallest cap (a
+   *  run capped under a cent cannot take a step: cap.ts), so a row's run is never started to pause at its cap. */
   private room(h: Header): true | BatchStop {
     if (h.unknown_cost_rows) return "cost_unknown";
     const left = h.max_cost_usd - h.spent_usd;
     const done = h.finished - h.unknown_cost_rows;
     const typical = done > 0 ? h.spent_usd / done : 0;
-    return left > 0 && left >= typical ? true : "cap";
+    return left >= Math.max(typical, RUN_CAP_MIN_USD) ? true : "cap";
   }
 
   private async end(h: Header, status: BatchStatus, stopped: BatchStop | null): Promise<Header> {
@@ -337,7 +344,7 @@ export class LearningBatches {
     if (!row.run_id) {
       const remaining = usd(h.max_cost_usd - h.spent_usd);
       try {
-        row.run_id = await this.host.start(h.agent_id, { input: row.input, max_cost_usd: remaining, ...(h.effort ? { effort: h.effort } : {}) });
+        row.run_id = await this.host.start(h.agent_id, { input: { content: contentOf(h.inputs, row.input) }, max_cost_usd: remaining, ...(h.effort ? { effort: h.effort } : {}) });
       } catch (error) {
         return fail(`the run did not start: ${(error as Error)?.message ?? error}`);
       }
