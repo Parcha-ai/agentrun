@@ -212,7 +212,7 @@ async function packageWith(t, line) {
   mkdirSync(dir, { recursive: true });
   cpSync(REVIEW, dir, { recursive: true });
   const manifest = join(dir, "agent.md");
-  writeFileSync(manifest, readFileSync(manifest, "utf8").replace("budget: { per_run_usd: 2.00 }", line));
+  writeFileSync(manifest, readFileSync(manifest, "utf8").replace(/^budget: .*$/m, line));
   try {
     return { p: readPackage(dir), problems: [] };
   } catch (error) {

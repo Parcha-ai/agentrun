@@ -87,6 +87,13 @@ export type TimelineRow = components["TimelineRow"];
 export type LearnedNode = NonNullable<TimelineRow["learned_nodes"]>[number];
 /** GET /v2/runs/{id}/learning: a run's learning, null for a run that does not learn. */
 export type RunLearningRead = Answer<"getRunLearning">;
+/** GET /v2/agents/{id}/learning/cost's answer: the agent's runs in the order they started, what each cost and what
+ *  learning added for it, the path it took, and what the series shows (the takeover, the levels before and after it). */
+export type LearningCost = Answer<"getLearningCost">;
+/** One run of that series. `path`: `workflow` a learned workflow finished it alone, `handed_back` one ran and the agent
+ *  went on, `agent` none ran. */
+export type CostRun = LearningCost["runs"][number];
+export type RunPath = CostRun["path"];
 /** What the run's job did with the learned skills and workflows it was offered (`used`): each skill and whether its job
  *  read it, each learned workflow it called, how many times and how many of those failed. */
 export type LearnedUse = NonNullable<RunLearningRead>["used"];

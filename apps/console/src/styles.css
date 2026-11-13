@@ -49,7 +49,7 @@
   .report button[data-run-file] { @apply cursor-pointer text-left; font: inherit; }
 }
 
-/* The workflow graph (src/lib/wfGraph.ts, after pi-durable-agent's serve page.css): who works colours a card's swatch, a
+/* The workflow graph (src/lib/wfGraph.ts): who works colours a card's swatch, a
    run's state its box, and an item's cell. Decision providers: Jev pink, Parallel teal, OpenRouter indigo (tokens.css). Outside a layer: Tailwind keeps it whole. */
 svg.wf { display: block; max-width: 100%; height: auto; margin: 0 auto; font-family: "JetBrains Mono", monospace; }
 .wf .wire { fill: none; stroke: hsl(var(--border-strong) / 0.55); stroke-width: 1.5; }

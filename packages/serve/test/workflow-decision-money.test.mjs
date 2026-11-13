@@ -49,10 +49,10 @@ const askFlow = () => ({
   },
   input: { schemaId: "In" },
   output: { schemaId: "Verdict", path: "verdict" },
-  root: { node: "judge", label: "ask", provider: "openrouter", model: "openai/gpt-6-sol", state: { doc: "{doc}" }, out: "Verdict", as: "verdict" },
+  root: { node: "judge", label: "ask", provider: "openrouter", model: "openai/gpt-6.1-sol", state: { doc: "{doc}" }, out: "Verdict", as: "verdict" },
 });
 
-/** The gpt-6-sol decision price in OpenRouter's catalog (per token, per request, per image), as the parity test uses. */
+/** The gpt-6.1-sol decision price in OpenRouter's catalog (per token, per request, per image), as the parity test uses. */
 const priceOf = (overrides = {}) => ({ promptUsd: 1.25e-6, completionUsd: 10e-6, requestUsd: 0, imageUsd: 0, maxCompletionTokens: 4_096, ...overrides });
 
 /** An answer for each question by its type (the faux provider answers exactly what it is asked). */
@@ -80,9 +80,9 @@ function fauxOpenrouter({ price = priceOf(), costUsd = null, record } = {}) {
 
 /** A model provider that is never asked (a decision-only workflow runs no model node), for providerOf's default tier. */
 const idleModelProvider = () => () => ({
-  modelId: "openai/gpt-6-sol", api: "anthropic-messages", origin: "https://faux.invalid", credential: () => "not-a-secret-x",
-  policy: anthropicPolicy({ model: "openai/gpt-6-sol", tools: [] }), price: () => 0,
-  capModel: { id: "openai/gpt-6-sol", api: "anthropic-messages", price: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 }, outputCeiling: 128_000 },
+  modelId: "openai/gpt-6.1-sol", api: "anthropic-messages", origin: "https://faux.invalid", credential: () => "not-a-secret-x",
+  policy: anthropicPolicy({ model: "openai/gpt-6.1-sol", tools: [] }), price: () => 0,
+  capModel: { id: "openai/gpt-6.1-sol", api: "anthropic-messages", price: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 }, outputCeiling: 128_000 },
   fetch: async () => { throw new Error("the decision-only workflow asked a model, which it should not"); },
 });
 
@@ -259,7 +259,7 @@ const mixedFlow = () => ({
   output: { schemaId: "Verdict", path: "verdict" },
   root: { node: "chain", steps: [
     { node: "extract", label: "note", instructions: "Note the doc.", out: "Mid", as: "note_out" },
-    { node: "judge", label: "ask", provider: "openrouter", model: "openai/gpt-6-sol", state: { doc: "{doc}" }, out: "Verdict", as: "verdict" },
+    { node: "judge", label: "ask", provider: "openrouter", model: "openai/gpt-6.1-sol", state: { doc: "{doc}" }, out: "Verdict", as: "verdict" },
   ] },
 });
 
@@ -293,8 +293,8 @@ const twoJudgeFlow = () => ({
   input: { schemaId: "In" },
   output: { schemaId: "Verdict", path: "verdict2" },
   root: { node: "chain", steps: [
-    { node: "judge", label: "ask1", provider: "openrouter", model: "openai/gpt-6-sol", state: { doc: "{doc}" }, out: "Verdict", as: "verdict1" },
-    { node: "judge", label: "ask2", provider: "openrouter", model: "openai/gpt-6-sol", state: { doc: "{doc}" }, out: "Verdict", as: "verdict2" },
+    { node: "judge", label: "ask1", provider: "openrouter", model: "openai/gpt-6.1-sol", state: { doc: "{doc}" }, out: "Verdict", as: "verdict1" },
+    { node: "judge", label: "ask2", provider: "openrouter", model: "openai/gpt-6.1-sol", state: { doc: "{doc}" }, out: "Verdict", as: "verdict2" },
   ] },
 });
 
@@ -516,7 +516,7 @@ const mapFlow = () => ({
   output: { schemaId: "Out", path: "result" },
   root: { node: "chain", steps: [
     { node: "map", label: "each", itemsPath: "docs", as: "verdicts", resultPath: "verdict", maxConcurrency: 2,
-      body: { node: "judge", label: "ask", provider: "openrouter", model: "openai/gpt-6-sol", state: { doc: "{item}" }, out: "Verdict", as: "verdict" } },
+      body: { node: "judge", label: "ask", provider: "openrouter", model: "openai/gpt-6.1-sol", state: { doc: "{item}" }, out: "Verdict", as: "verdict" } },
     { node: "code", label: "result", code: "(s) => ({ result: { count: s.verdicts.length } })" },
   ] },
 });

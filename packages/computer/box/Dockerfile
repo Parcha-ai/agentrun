@@ -8,6 +8,8 @@
 #   - FUSE (fuse3, and the client's own FUSE library). No firewall: init and every tool run in a network namespace of
 #     their own with loopback alone (computerd init --own-network), while the archil client and serve, as root, stay in
 #     the computer's, which reaches Archil;
+#   - nftables, for the helper's mount with an egress gateway alone: it redirects root's TCP to Archil's 8100 and 32050
+#     to computerd's archil relay on the computer's loopback;
 #   - /workspace, empty and root's, where the helper mounts the run's folder.
 #
 # No sudo and no sudoers file: the image's user is root, so the provider's own exec (Daytona's toolbox, Modal's exec,
@@ -35,7 +37,7 @@ RUN set -eu; \
     case "$sum" in unpinned) echo "archil ${ARCHIL_VERSION} for $arch has no pinned sha256 yet: set ARCHIL_SHA256_$(echo "$arch" | tr a-z A-Z) to the package's sum" >&2; exit 1 ;; esac; \
     apt-get update -qq; \
     DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
-      git curl ca-certificates nodejs npm ripgrep fuse3 >/dev/null; \
+      git curl ca-certificates nodejs npm ripgrep fuse3 nftables >/dev/null; \
     curl -fsSL -o /tmp/archil.deb "https://s3.amazonaws.com/archil-client/pkg/archil_${ARCHIL_VERSION}_${arch}.deb"; \
     echo "$sum  /tmp/archil.deb" | sha256sum -c -; \
     DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends /tmp/archil.deb >/dev/null; \

@@ -117,6 +117,25 @@ describe("AgentPage", () => {
     } finally { vi.useRealTimers(); }
   });
 
+  it("a held sign-in's poll whose reads each outlast the interval still lands: the next tick never starves it", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      const base = agentFixture("lead-scorer");
+      const held = { ...base, sign_ins: [{ key: "default", provider: "browserbase", state: "held", held_by: "run-1", verified_at: null, secret: { name: "browserbase sign-in", set: true, source: "sign-in", changed_at: "2026-11-05T08:00:00.000Z" } }] } as Agent;
+      const done = { ...base, revision: "r2", sign_ins: [] } as Agent;
+      const answers: ((a: Agent) => void)[] = [];
+      // Read 0 is the page's own; every poll read stays open past the next tick.
+      const page = await open(held, { reads: (n) => n === 0 ? Promise.resolve(held) : new Promise<Agent>((r) => { answers.push(r); }) });
+      const forgetting = () => page.host.querySelector('section[aria-label="Sign-ins"]');
+      expect(forgetting()).toBeTruthy();
+      for (let i = 0; i < 3; i++) await act(async () => { vi.advanceTimersByTime(HELD_POLL_MS); });
+      expect(answers.length).toBeGreaterThanOrEqual(2);
+      await act(async () => { answers[0](done); });
+      for (let i = 0; i < 6; i++) await act(async () => { await Promise.resolve(); });
+      expect(forgetting()).toBeNull();
+    } finally { vi.useRealTimers(); }
+  });
+
   it("shows an ended run's known cost and how many charges have no price, and an unknown cost with nothing known not at all", async () => {
     const runs = runsOf("invoice-checker");
     const unknown = { usd: null, basis: "estimate" as const, charge_state: null, cap_usd: null };

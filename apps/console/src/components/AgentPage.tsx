@@ -86,12 +86,18 @@ export function AgentPage({ v2, agentId, routePrefix, harnesses, efforts = [], g
   // newest read lands, so one answered last never puts back an older count or revision. A read that fails says so, with
   // a retry.
   const rereads = useRef(0);
+  // The newest read that landed, and the oldest a read may be and still land: a write's own read raises it, so a poll that
+  // began before the write never puts back an older revision, while polls among themselves land in the order they began
+  // (a read slower than the poll interval still lands, never starved by the next tick's).
+  const landed = useRef(0);
+  const floor = useRef(0);
   const [stale, setStale] = useState(false);
   // `quiet`: the held sign-in poll's read, which waits for the next tick on a failure rather than say so.
   const reread = (quiet = false) => {
     const n = ++rereads.current;
+    if (!quiet) floor.current = n;
     v2.getAgent(agentId).then(
-      (r) => { if (n === rereads.current) { setAgent((cur) => (cur && cur.agent_id === r.agent.agent_id ? r.agent : cur)); setStale(false); } },
+      (r) => { if (n > landed.current && n >= floor.current) { landed.current = n; setAgent((cur) => (cur && cur.agent_id === r.agent.agent_id ? r.agent : cur)); setStale(false); } },
       () => { if (n === rereads.current && !quiet) setStale(true); },
     );
   };

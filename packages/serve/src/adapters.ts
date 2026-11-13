@@ -119,7 +119,7 @@ export const HARNESS_LOG_EVENT = "harness";
 
 /**
  * A harness's log, into the run's log: the run process's stderr, which serve opens on the run's process.log. One JSON
- * line per call, as pi-durable-disk writes them (`{at, event, message, ...}`). A request's path loses its query string,
+ * line per call (`{at, event, message, ...}`). A request's path loses its query string,
  * and every value of the environment's key-shaped variables is cut out of the line, so a key a client sent in either
  * place, or one serve holds, never reaches the log.
  */
@@ -197,7 +197,7 @@ const SETPRIV = "/usr/bin/setpriv";
 
 /** The argv a CLI run's process starts under for no_new_privs: `setpriv --no-new-privs --` on Linux, nothing on macOS
  *  (which has no no_new_privs). Where setpriv is not usable it throws (code `SETPRIV_UNAVAILABLE`), so the run is refused,
- *  never started unconfined. Copied from pi-durable-disk's noNewPrivsPrefix when that package was retired. */
+ *  never started unconfined. */
 export function noNewPrivsPrefix(options: { noNewPrivs?: boolean; setprivPath?: string } = {}): string[] {
   const noNewPrivs = options.noNewPrivs ?? process.platform !== "darwin";
   if (!noNewPrivs) return [];

@@ -5,7 +5,7 @@ import os from "node:os";
 import http from "node:http";
 import path from "node:path";
 import test from "node:test";
-import { setDownloadBehavior } from "../dist/providers/browserbase.js";
+import { cdpCall } from "../dist/core/cdp-call.js";
 import { cdpProvider } from "../dist/providers/cdp.js";
 import { stopWatchingChromeStderr, watchedChromeStderr } from "../dist/providers/chrome-stderr.js";
 import { CHROME, commandLine, isRunning, NO_CHROME, skipIncapable } from "./fixtures/local-chrome.mjs";
@@ -29,8 +29,9 @@ test("a local Chrome is created, driven through Stagehand's extension over the p
     assert.equal(await provider.status(ref), "running");
     const target = await provider.attach(ref);
     assert.match(target.sdkCdpUrl, /^ws:\/\/127\.0\.0\.1:\d+\/devtools\/browser\//, "the extension dials a debugger URL, so the target is one");
-    (await setDownloadBehavior(target.sdkCdpUrl)).close();
-    await assert.rejects(setDownloadBehavior(target.sdkCdpUrl.replace(/devtools\/browser\/.*/, "devtools/browser/nope"), { timeoutMs: 2_000 }));
+    const setDownloads = (url, timeoutMs) => cdpCall(url, "Browser.setDownloadBehavior", { behavior: "allow", downloadPath: "downloads", eventsEnabled: true }, timeoutMs);
+    (await setDownloads(target.sdkCdpUrl)).close();
+    await assert.rejects(setDownloads(target.sdkCdpUrl.replace(/devtools\/browser\/.*/, "devtools/browser/nope"), 2_000));
     let browser;
     try {
       browser = await localBrowser.connect({ cdpUrl: target.sdkCdpUrl });
@@ -93,7 +94,8 @@ test("Browser.setDownloadBehavior lasts as long as the socket that sent it: a do
   try {
     ref = await provider.create({ tag: "cdp-setting-1", maxLifetimeS: 600, idleTimeoutS: 60, proxies: false, verified: false, captcha: false, viewport: { width: 1000, height: 700 }, metadata: {} }, new AbortController().signal);
     const target = await provider.attach(ref);
-    setting = await setDownloadBehavior(target.sdkCdpUrl, { downloadPath: chosen });
+    // As a hosted browser's host holds it (agentrun-serve's browser-computer.ts): one socket per session, kept open.
+    setting = await cdpCall(target.sdkCdpUrl, "Browser.setDownloadBehavior", { behavior: "allow", downloadPath: chosen, eventsEnabled: true });
     assert.equal(setting.open, true);
     let browser;
     try {

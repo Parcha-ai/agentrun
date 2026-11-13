@@ -142,7 +142,7 @@ same ground with no key.
 | --- | --- |
 | Serves | `POST /v2/agents/{id}/runs` (`input`, `revision`, `effort`, `max_cost_usd`), `GET /v2/runs`, `GET /v2/runs/{id}`, `GET /v2/runs/{id}/timeline` (pages or SSE), `POST /v2/runs/{id}/{messages,stop,cancel,pause,resume}`, `GET /v2/runs/{id}/graph`, `GET /v2/usage`, and `harnesses[]` in `GET /v2/capabilities` |
 | Run fields others read | `status`, `state`, `result.final_answer`, `error.code` (`spend_cap_reached`, `moderated`, `run_failed`, `escalated`), `cost.usd` (`null` when unknown) |
-| Journal | In the run's rows of the store (`pi_entries`, `pi_tasks`, `pi_submissions`), from `@parcha/pi-durable-agent/timeline`: `REQUEST_STARTED` (`heldUsd`, `capRefused`), `REQUEST_ENDED` (`heldUsd`, `unsent`), `REQUEST_COST`, `REQUEST_REFUSED`, `REQUEST_COST_PENDING`, `REQUEST_COST_LATE`, `REQUEST_CONTINUED`. Read through `timelineOf` and `runMetricsOf` |
+| Journal | In the run's rows of the store (`pi_entries`, `pi_tasks`, `pi_submissions`), from `packages/serve/src/timeline`: `REQUEST_STARTED` (`heldUsd`, `capRefused`), `REQUEST_ENDED` (`heldUsd`, `unsent`), `REQUEST_COST`, `REQUEST_REFUSED`, `REQUEST_COST_PENDING`, `REQUEST_COST_LATE`, `REQUEST_CONTINUED`. Read through `timelineOf` and `runMetricsOf` |
 | Run directory | `DIR/disk/agents/<agent>/runs/<id>/work/`; the run's record is in the store, not its folder. The run's claim is its row in `runs` (`epoch`, `runner`, `claimed_until`), and a message, stop, cancel, raise or approval is a row of `commands` that its runner reads |
 | Adapters it calls | `dispatch.ts` reads the run's launch record and picks its loop (`harness-loops.ts` `resolveRunnerLoop`); `adapter-loop.ts` drives an `AgentAdapter` (`check`, `open`) for a `SessionSpec`: pi is `runner/adapters/pi.ts`, the others are `packages/run-adapters-*`. The cap is the loop's `beforeRequest` on the run's model port (`modelPortFor`), the one ledger for every harness; a CLI harness's requests reach it through `startModelProxy` under a `ProviderPolicy` |
 | Takes from the tool plane | `TOOLS` (`ToolEntry`, `tools.ts`); a run's session carries `HostTool[]`, each with its `REPLAY` class (`safe` or `never`), which the loop's side-effect rule (`runner/side-effects.ts`) reads before a call |
@@ -302,7 +302,7 @@ run's claim from the kernel. It gives back:
   run: "inputs/<path>" (<size>), ...`, each name quoted, at most `MANIFEST_ENTRIES` (20), from the run's `work/inputs/`,
   as `runner/adapter-run-spec.ts` and `runner/cli-run-spec.ts` send it, on every harness.
 - Serve, a run's computer as the run shows it (`computer-view.ts`: `GET /v2/runs/{id}/computer`, who drives now), read from
-  the store through `computerViewOf` (`computer-routes.ts`), which also holds the owner's take-over and hand-back routes.
+  the store through `computerHoldOf`; `computer-routes.ts` holds the owner's take-over and hand-back routes.
 
 **Alone.** Computers are faked: `--faux` swaps in three faux providers (`faux-computers.ts`: `faux-sandbox`,
 `faux-broken` and a faux desktop), and the workspace tests use a fake computer (`test/workspace-fake-computer.mjs`). Put

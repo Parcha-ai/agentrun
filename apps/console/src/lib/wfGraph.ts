@@ -1,4 +1,4 @@
-// The workflow graph, drawn into an SVG: packages/pi-durable-agent/src/serve/graph.js ported to a module, with what the
+// The workflow graph, drawn into an SVG, with what the
 // console adds on top. The shape comes from the paths alone: a chain is a spine, an escalate step an exit pill off it, a
 // route or a parallel fans its branches out under its card and joins them, and a map, a loop or a child workflow is a
 // frame around its body. The console adds: a decision node's provider and model, its question count and its image and

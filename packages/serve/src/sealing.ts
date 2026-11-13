@@ -1,5 +1,4 @@
-// AES-256-GCM sealing, the one primitive every secret this server keeps at rest is sealed with (copied from
-// @parcha/pi-durable-agent's vault.ts): the store's sealed columns (store/seal.ts), the
+// AES-256-GCM sealing, the one primitive every secret this server keeps at rest is sealed with (the store's sealed columns (store/seal.ts), the
 // trigger settings, the outbound webhook's secret, and what a runner opens under the server's seal key.
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 
