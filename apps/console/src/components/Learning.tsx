@@ -4,6 +4,7 @@ import { workflowGraph } from "@dsl/graph";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { problem, ProblemCard } from "@/components/learningProblem";
+import { CostPerRun } from "@/components/CostPerRun";
 import { LearningSwitch } from "@/components/LearningSwitch";
 import { GraphLegend, WorkflowGraph } from "@/components/WorkflowGraph";
 import { Banner } from "@/components/ui/banner";
@@ -173,6 +174,7 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places, on
         </section>
       )}
       {shownImpact(view.impact) ? <ImpactCard impact={view.impact} /> : view.impact === null && on && <p className="font-mono text-small text-muted-foreground">{IMPACT_LATER}</p>}
+      <CostPerRun v2={v2} agentId={agent.agent_id} on={on} />
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
         <div className="min-w-0 space-y-6">
         <section className="min-w-0 space-y-3" aria-label="Notes">
