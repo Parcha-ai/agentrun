@@ -40,11 +40,14 @@ public enum Permissions {
 	/// The grants in now, by name, for the grants window's board.
 	public static var granted: Set<String> { Set(Grant.allCases.filter(\.granted).map(\.rawValue)) }
 
-	/// What System Settings calls the pane with this anchor on this Mac.
+	/// What System Settings calls the pane with this anchor on this Mac (its window's title once the anchor opens it).
 	static func paneName(_ anchor: String) -> String {
-		guard anchor == "Privacy_ScreenCapture" else { return "Accessibility" }
-		if #available(macOS 15, *) { return "Screen & System Audio Recording" }
-		return "Screen Recording"
+		if anchor == "Privacy_ScreenCapture" {
+			if #available(macOS 15, *) { return "Screen & System Audio Recording" }
+			return "Screen Recording"
+		}
+		if #available(macOS 27, *) { return "Device Control and Data Access" }
+		return "Accessibility"
 	}
 
 	/// The panes that hold Computerd's grants, each with its grants, in Grant's order: one tile each in the grants window.

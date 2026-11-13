@@ -92,8 +92,8 @@ few minutes.
 Connect with Screen Sharing (`vnc://<mini's tailnet name>`). The Computerd window shows a Computerd tile for each
 System Settings pane that gives a grant, and opens the first pane still missing beside it:
 
-1. **Drag the tile into the pane's list** (Privacy & Security > Accessibility). Its rows tick, Accessibility and Post
-   Event, and the next pane opens.
+1. **Drag the tile into the pane's list** (Privacy & Security > Accessibility, called Device Control and Data Access
+   on macOS 27). Its rows tick, Accessibility and Post Event, and the next pane opens.
 2. **Drag the other tile into that list** (Privacy & Security > Screen & System Audio Recording). A click on a tile opens
    its pane again.
 3. **The window says every grant is in and closes itself,** so it never covers the windows the demos work in.

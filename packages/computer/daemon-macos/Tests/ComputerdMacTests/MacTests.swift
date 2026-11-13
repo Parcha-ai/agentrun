@@ -162,8 +162,8 @@ final class MacTests: XCTestCase {
 		XCTAssertEqual(panes.map(\.anchor), ["Privacy_Accessibility", "Privacy_ScreenCapture"])
 		XCTAssertEqual(panes[0].grants, ["Accessibility", "Post Event"])
 		XCTAssertEqual(panes[1].grants, ["Screen Recording"])
-		XCTAssertEqual(panes[0].name, "Accessibility")
-		XCTAssertTrue(panes[1].name.hasPrefix("Screen"))
+		XCTAssertTrue(["Accessibility", "Device Control and Data Access"].contains(panes[0].name), panes[0].name)
+		XCTAssertTrue(panes[1].name.hasPrefix("Screen"), panes[1].name)
 		XCTAssertEqual(Set(panes.flatMap(\.grants)), Set(Permissions.Grant.allCases.map(\.rawValue)))
 		// A runner without grants: the board opens the first pane still waiting, and is done only with every grant.
 		var board = GrantsBoard(panes: panes)
