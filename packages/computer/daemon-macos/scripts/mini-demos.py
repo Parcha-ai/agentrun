@@ -1,18 +1,24 @@
 """The Mac mini's five demo tasks (MINI.md), on Notes, Safari, Finder, TextEdit and Calendar. Each is driven through
-the running Computerd's own computerd command by ui.observe and ui.act with batched steps. Each is recorded from
-screen.watch to a movie with the step on screen. Each call's latency is logged.
+the running Computerd's own computerd command by ui.observe and ui.act with batched steps. Each call's latency is
+logged. With --movie, each is recorded from screen.watch to a movie of its own window, with the step on screen.
 
-    python3 -I mini-demos.py PATH/TO/computerd COMPUTERD_HOME OUT_DIR [--no-movie] [--ask-grants] [TASK ...]
+    python3 -I mini-demos.py PATH/TO/computerd COMPUTERD_HOME OUT_DIR [--movie] [--ask-grants] [TASK ...]
 
-TASK is a task's id (mac.notes.new-note, ...); none runs all five. --no-movie records nothing (no frames, no movie).
---ask-grants raises Computerd's Automation prompts for the five apps, for a person at the Mac to answer, and exits.
-Writes, under OUT_DIR:
+TASK is a task's id (mac.notes.new-note, ...); none runs all five. Without --movie nothing is recorded (no frames, no
+movie). --ask-grants raises Computerd's Automation prompts for the five apps, for a person at the Mac to answer, and
+exits. Writes, under OUT_DIR:
 
     demos.json             every task's calls: method, params, ms, the steps' routes, the expect, the error, and what it left
     demos.md               the table: task, calls, steps, ms, result, left behind
-    <task>.mp4             the task's movie, its current step written along the bottom (frames-to-movie.swift)
-    <task>/frames/         the frames, as screen.watch gave them, and timeline.txt
+    <task>.mp4             with --movie: the task's movie, its current step written along the bottom (frames-to-movie.swift)
+    <task>/frames/         with --movie: the frames, each cut to the task's window, and timeline.txt
     <task>/observe-N.json  each observation's nodes, for when a step finds nothing
+
+A screen.watch frame is the whole screen, and the Mac is a person's: a frame is cut to the task's window (the one it
+pinned, else the one it last observed) before it is written anywhere, and every window in front of that window is
+painted black (window-frames.swift). A frame is kept only when the window list read before it and the one read after it
+agree (the window did not move, and nothing came in front or left), so a frame never shows a window the cut did not
+know of. Until the task has a window, no frame is kept.
 
 The Mac is a person's own, so a task works only in a sandbox it makes, named "AgentRun demo <run id>": its own
 Calendar calendar, its own Notes folder, its own folder under /private/tmp/agentrun-demos. A note goes in the task's
@@ -29,7 +35,8 @@ difference is the task's "left". The run's last line is "N/5 pass, K left behind
 task passed and left nothing. A run starts by sweeping the sandboxes an earlier run left (one killed mid-task).
 
 Observations are written with every name and value redacted to its length, unless it holds the run id or is one the
-script itself looks for, so a person's own titles never reach a file.
+script itself looks for, so a person's own titles never reach a file. On a CI runner (CI=true), a throwaway Mac with
+nothing of a person's, nothing is redacted, so a failure's words can be read.
 
 The ids are the computer bench's mac-dev ids (packages/computer-bench/suites/mac-dev), and each task checks what the
 bench's task checks.
@@ -51,10 +58,13 @@ args = [a for a in sys.argv[1:] if not a.startswith("--")]
 flags = {a for a in sys.argv[1:] if a.startswith("--")}
 if len(args) < 3:
     sys.exit(__doc__)
+if flags - {"--movie", "--ask-grants"}:
+    sys.exit(f"unknown option {' '.join(sorted(flags - {'--movie', '--ask-grants'}))}\n{__doc__}")
 helper, home, out = args[0], args[1], os.path.abspath(args[2])
 only = set(args[3:])
-movie = "--no-movie" not in flags
+movie = "--movie" in flags
 here = os.path.dirname(os.path.abspath(__file__))
+CI = os.environ.get("CI") == "true"
 
 RUN = uuid.uuid4().hex[:6]
 PREFIX = "AgentRun demo "
@@ -95,31 +105,76 @@ class Client:
             self.p.kill()
 
 
-class Recorder(threading.Thread):
-    """The live view, from screen.watch on a connection of its own, each frame stamped with the run's clock."""
+class Cropper:
+    """window-frames.swift, one process a run: where a window is and what is in front of it, and a frame cut to it."""
 
-    def __init__(self, folder, clock):
+    def __init__(self):
+        self.p = subprocess.Popen(["swift", os.path.join(here, "window-frames.swift")], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        self.lock = threading.Lock()
+
+    def ask(self, request):
+        with self.lock:
+            self.p.stdin.write(json.dumps(request) + "\n")
+            self.p.stdin.flush()
+            line = self.p.stdout.readline()
+        if not line:
+            raise RuntimeError("window-frames.swift ended")
+        reply = json.loads(line)
+        if "error" in reply:
+            raise RuntimeError(f"window-frames.swift: {reply['error']}")
+        return reply
+
+    def where(self, window):
+        """{"bounds": [x, y, w, h], "above": [...]}, or None when the window is not on screen."""
+        reply = self.ask({"op": "where", "window": str(window)})
+        return reply if reply.get("bounds") else None
+
+    def crop(self, data, place, path):
+        return self.ask({"op": "crop", "jpeg": base64.b64encode(data).decode(), "bounds": place["bounds"], "above": place["above"], "out": path, "quality": 70})
+
+    def close(self):
+        try:
+            self.p.stdin.close()
+            self.p.wait(timeout=10)
+        except Exception:
+            self.p.kill()
+
+
+class Recorder(threading.Thread):
+    """The live view, from screen.watch on a connection of its own, each frame stamped with the run's clock and cut to
+    the task's window before it is written (see the top of this file). aim() answers the task's window id, or None."""
+
+    def __init__(self, folder, clock, aim, cropper):
         super().__init__(daemon=True)
-        self.folder, self.clock = folder, clock
+        self.folder, self.clock, self.aim, self.cropper = folder, clock, aim, cropper
         self.frames, self.captions, self.errors = [], [], []
+        # Frames not kept: no window yet, or the window list changed while the frame was taken.
+        self.dropped = 0
         self.halt = threading.Event()
         os.makedirs(folder, exist_ok=True)
 
     def caption(self, text):
         self.captions.append((self.clock(), text))
 
+    def place(self):
+        window = self.aim()
+        return self.cropper.where(window) if window else None
+
     def run(self):
         c = Client()
-        seq = 0
+        seq = None
         try:
             while not self.halt.is_set():
-                reply = c.call("screen.watch", {"after": seq, "waitMs": 250, "maxWidth": 1280, "quality": 70})
+                before = self.place()
+                # The first call only learns the sequence: screen.watch may answer it with a frame taken before the task.
+                reply = c.call("screen.watch", {"after": seq or 0, "waitMs": 0 if seq is None else 250, "maxWidth": 1280, "quality": 70})
                 r = reply.get("result")
                 if r is None:
                     self.errors.append(json.dumps(reply.get("error")))
                     time.sleep(0.5)
                     continue
                 if not r.get("changed"):
+                    seq = r["seq"] if seq is None else seq
                     continue
                 at = self.clock()
                 data = base64.b64decode(r.get("data", ""))
@@ -128,10 +183,18 @@ class Recorder(threading.Thread):
                     data += base64.b64decode(more.get("data", ""))
                     if more.get("eof", True):
                         break
-                seq = r["seq"]
+                first, seq = seq is None, r["seq"]
+                after = self.place()
+                if first or before is None or before != after:
+                    self.dropped += 1
+                    continue
                 path = os.path.join(self.folder, f"{len(self.frames):05d}.jpg")
-                with open(path, "wb") as f:
-                    f.write(data)
+                try:
+                    self.cropper.crop(data, before, path)
+                except RuntimeError as e:  # a window off the main display, say: that frame is not kept
+                    self.dropped += 1
+                    self.errors.append(str(e))
+                    continue
                 self.frames.append((at, path))
         except Exception as e:  # the movie is a record, not a check: a dead recorder never fails the task
             self.errors.append(repr(e))
@@ -364,6 +427,19 @@ SNAPSHOT_FOLDERS = """on run argv
 end run"""
 
 
+# Each calendar holding an event with this title, and how many.
+EVENT_CALENDARS = """on run argv
+  set out to ""
+  tell application "Calendar"
+    repeat with c in calendars
+      set n to count (events of c whose summary is (item 1 of argv))
+      if n > 0 then set out to out & (name of c) & " " & n & linefeed
+    end repeat
+  end tell
+  return out
+end run"""
+
+
 def snapshot(c):
     """What the harness can see: names, counts and ids."""
     shot = {"calendars": {}, "folders": {}, "windows": {}, "root": []}
@@ -447,7 +523,7 @@ KNOWN = {"Continue", "Get Started", "Not Now", "Done", "OK", "Add Event", "Go ba
 
 
 def redacted(text):
-    if not text or RUN in text or text in KNOWN:
+    if CI or not text or RUN in text or text in KNOWN:
         return text
     return f"<{len(text)} chars>"
 
@@ -459,15 +535,18 @@ def redact(node):
 class Task:
     """One run of one task: its calls, timed, its observations, its movie's captions, and what it made."""
 
-    def __init__(self, c, tid, app):
+    def __init__(self, c, tid, app, cropper):
         self.c, self.id, self.app = c, tid, app
         self.calls, self.notes = [], []
         self.observed = 0
         self.window = None
+        # The window the task last observed: the movie's frames are cut to it until the task pins one.
+        self.shown = None
         self.inspector = False
         self.folder = os.path.join(out, tid)
         self.t0 = time.monotonic()
-        self.rec = Recorder(os.path.join(self.folder, "frames"), lambda: time.monotonic() - self.t0) if movie else None
+        aim = lambda: self.window or self.shown  # noqa: E731
+        self.rec = Recorder(os.path.join(self.folder, "frames"), lambda: time.monotonic() - self.t0, aim, cropper) if cropper else None
 
     def say(self, text):
         print(f"  {self.id}: {text}", flush=True)
@@ -490,6 +569,7 @@ class Task:
             entry["changed"] = r.get("changed")
         if method == "ui.observe":
             entry["nodes"] = len(r.get("nodes", []))
+            self.shown = (r.get("window") or {}).get("id") or self.shown
         self.calls.append(entry)
         # A route, with " unverified" when no readback saw the step's effect; or the refusal's kind.
         routes = ", ".join(
@@ -657,13 +737,16 @@ FIRST_RUN = ("Continue", "Get Started", "Not Now", "Done", "OK")
 
 
 def first_run(task, tree):
+    """The tree once the app's first-run sheets are pressed away, and how many there were."""
+    pressed = 0
     for _ in range(3):
         button = next((n for n in tree["nodes"] if n.get("role") == "button" and n.get("name") in FIRST_RUN), None)
         if button is None:
-            return tree
+            break
         task.act([{"press": button["ref"]}], f"dismiss the first-run sheet ({button['name']})")
+        pressed += 1
         tree = task.observe("observe after the first-run sheet")
-    return tree
+    return tree, pressed
 
 
 # --- the five tasks ---------------------------------------------------------------------------------------------------
@@ -784,7 +867,7 @@ def safari_follow_link(t):
     # shows, and the teardown closes the tab by its address.
     t.pin(home_title, "find the page's window")
     t.wait_for("Quarterly report", "wait for the page")
-    tree = first_run(t, t.observe())
+    tree, _ = first_run(t, t.observe())
     link = need(t, tree["nodes"], "the Quarterly report link", role="link", contains="Quarterly report")
     t.act([{"press": link["ref"]}], "follow Quarterly report", expect={"text": report_title, "timeoutMs": 10000})
     # Back by the toolbar's Back button, by its ref: a background Safari's menus read disabled, and super+[ posted to
@@ -796,8 +879,32 @@ def safari_follow_link(t):
 
 
 def notes_prepare(t):
+    """Notes open, and a fresh Notes' first-run state answered before the snapshot. A Notes that showed its Welcome sheet
+    (CI's runner, which has no Apple Account) also asks to turn on iCloud the first time anything is made in it, so a
+    folder is made here, the alert is answered Cancel, and the folder is removed: the task then makes its own with no
+    alert, and the snapshot sees none of it."""
     t.launch()
-    first_run(t, t.observe())
+    _, pressed = first_run(t, t.observe())
+    if not pressed:
+        return
+    setup = f"{NAME} setup"
+    t.say("make and remove a setup folder, answering the iCloud alert it raises")
+    t.run_exec(["/usr/bin/osascript", "-e", MAKE_FOLDER, setup], "make a setup folder")
+    try:
+        deadline = time.monotonic() + 10
+        while True:
+            tree = t.observe("look for the iCloud alert")
+            alert = find(tree["nodes"], role="dialog")
+            cancel = find(tree["nodes"], role="button", name="Cancel")
+            if alert is not None and cancel is not None and find(tree["nodes"], contains="iCloud") is not None:
+                t.act([{"press": cancel["ref"]}], "answer the iCloud alert (Cancel)")
+                break
+            if time.monotonic() > deadline:
+                print("    (no iCloud alert in 10 s)", flush=True)
+                break
+            time.sleep(0.5)
+    finally:
+        t.run_exec(["/usr/bin/osascript", "-e", REMOVE_FOLDERS, setup], "remove the setup folder")
 
 
 def notes_new_note(t):
@@ -838,9 +945,27 @@ end run"""
     t.notes.append(f"the note \"{title}\" is in the task's folder, with its line")
 
 
+def calendar_names(c):
+    return [line.split("\t")[0] for line in osa(c, SNAPSHOT_CALENDARS).splitlines()]
+
+
 def calendar_prepare(t):
+    """Calendar open, its first-run sheets answered, and its calendar list still: a fresh Calendar (CI's runner) adds
+    its own calendars (Scheduled Reminders) a moment after it opens, and one added after the snapshot would count as
+    the task's. The list is read until it has not changed for 8 s (at most 40 s)."""
     t.launch()
     first_run(t, t.observe())
+    t.say("wait for Calendar's list of calendars to be still")
+    start = time.monotonic()
+    names, since = calendar_names(t.c), start
+    while time.monotonic() - since < 8 and time.monotonic() - start < 40:
+        time.sleep(1)
+        now = calendar_names(t.c)
+        if now != names:
+            # Names on CI only: on a person's Mac they are theirs.
+            print(f"    the calendars changed at {time.monotonic() - start:.1f} s: {len(names)} -> {len(now)}" + (f" {now}" if CI else ""), flush=True)
+            names, since = now, time.monotonic()
+    print(f"    {len(names)} calendars, still for {time.monotonic() - since:.0f} s" + (f": {names}" if CI else ""), flush=True)
 
 
 def calendar_new_event(t):
@@ -871,7 +996,9 @@ end run"""
     deadline = time.monotonic() + 10
     while (got := t.run_exec(["/usr/bin/osascript", "-e", count, NAME, title], "count the event in the task's calendar").strip()) != "1":
         if time.monotonic() > deadline:
-            raise Failed(f"the task's calendar holds {got} events titled {title!r}, not 1")
+            # On CI, where the event went instead (calendar names are a person's elsewhere).
+            where = f"; the calendars holding it: {osa(t.c, EVENT_CALENDARS, title).strip() or 'none'}" if CI else ""
+            raise Failed(f"the task's calendar holds {got} events titled {title!r}, not 1{where}")
         time.sleep(0.5)
     t.notes.append(f"the event \"{title}\" is in the task's calendar")
 
@@ -998,6 +1125,7 @@ def main():
     started = [app for app in APPS if app not in running()]
     report = []
     interrupted = None
+    cropper = None
     try:
         for app in started:
             c.call("apps.launch", {"id": app, "background": True})
@@ -1018,10 +1146,12 @@ def main():
             shutil.rmtree(out)
         os.makedirs(out)
         sweep(c)
+        if movie:
+            cropper = Cropper()
         for tid, app, prepare, drive in TASKS:
             if only and tid not in only:
                 continue
-            t = Task(c, tid, app)
+            t = Task(c, tid, app, cropper)
             os.makedirs(t.folder, exist_ok=True)
             print(f"{tid} ({APPS[app]})", flush=True)
             if t.rec:
@@ -1068,10 +1198,10 @@ def main():
                 t.say("passed" if error is None else "failed")
                 time.sleep(1)
                 timeline = t.rec.finish()
-                t.movie = encode(timeline, os.path.join(out, f"{tid}.mp4")) if movie else "not made: --no-movie"
                 frames = len(t.rec.frames)
+                t.movie = encode(timeline, os.path.join(out, f"{tid}.mp4")) if frames else "not made: no frame of the task's window"
             else:
-                t.movie, frames = "not made: --no-movie", 0
+                t.movie, frames = "not made: no --movie", 0
             acts = [x for x in t.calls if x["method"] == "ui.act"]
             ui_ms = sum(x["ms"] for x in t.calls if x["method"] in ("ui.act", "ui.observe"))
             entry = {
@@ -1080,10 +1210,15 @@ def main():
                 "observes": sum(1 for x in t.calls if x["method"] == "ui.observe"),
                 "frames": frames, "movie": t.movie, "notes": t.notes, "calls": t.calls,
             }
-            if t.rec and t.rec.errors:
-                entry["recorderErrors"] = t.rec.errors[:5]
+            if t.rec:
+                entry["framesDropped"] = t.rec.dropped
+                if t.rec.errors:
+                    entry["recorderErrors"] = t.rec.errors[:5]
             report.append(entry)
-            print(f"{'PASS' if error is None else 'FAIL'} {tid}: {took} ms, {entry['acts']} acts, {entry['steps']} steps, {frames} frames, movie {t.movie}" + (f"\n  {error}" if error else ""), flush=True)
+            dropped = f" ({t.rec.dropped} not kept)" if t.rec else ""
+            print(f"{'PASS' if error is None else 'FAIL'} {tid}: {took} ms, {entry['acts']} acts, {entry['steps']} steps, {frames} frames{dropped}, movie {t.movie}" + (f"\n  {error}" if error else ""), flush=True)
+            if t.rec and t.rec.errors:
+                print(f"  recorder: {'; '.join(t.rec.errors[:3])}", flush=True)
             print(f"  left: {json.dumps(left)}", flush=True)
             if interrupted:
                 break
@@ -1096,6 +1231,8 @@ def main():
                 refused = e
             if refused:
                 print(f"  (could not quit {APPS[app]}, which the run started: {refused})")
+        if cropper:
+            cropper.close()
         c.close()
         os.unlink(LOCK)
         held.close()

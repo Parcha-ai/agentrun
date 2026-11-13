@@ -153,12 +153,19 @@ python3 -I packages/computer/daemon-macos/scripts/mini-demos.py \
 
 It writes these files under `/tmp/demos`:
 
-- `<task>.mp4`: the task recorded from `screen.watch`, with the current step written along the bottom. `frames-to-movie.swift` makes it, with AVFoundation, so Xcode is all it needs. The recording is the whole screen, the person's own windows included: `--no-movie` records nothing.
+- `<task>.mp4`, only with `--movie`: the task recorded from `screen.watch`, with the current step written along the bottom. `frames-to-movie.swift` makes it, with AVFoundation, so Xcode is all it needs. Each frame is cut to the task's window before it is written (`window-frames.swift`), and every window in front of it is painted black; a frame taken while the window moved, or while a window came in front or left, is not kept. The cut keeps the task's window whole, so in Notes, Calendar and Safari it shows the app's own lists (a person's folders, events and tabs). Without `--movie` nothing is recorded.
 - `demos.json`: every call with its latency in ms, the routes its steps took, its expect, and what each task left.
 - `demos.md`: the table of tasks, calls, steps, ms and what each left, then the run's line.
 
-Name one or more task ids to run only those. CI runs all five after the ui conformance cases, and reports them without
-failing the run.
+Name one or more task ids to run only those. CI runs all five with `--movie` after the ui conformance cases, and
+reports them without failing the run. On CI (`CI=true`) the observations are not redacted: the runner holds nothing of a
+person's.
+
+A fresh Mac's first-run state is answered in each task's setup, before its snapshot, never in its steps: Notes' and
+Calendar's first-run sheets are pressed away; a Notes that showed its Welcome sheet gets a setup folder made and removed
+again, so the "Turn On iCloud" alert it raises the first time anything is made is answered Cancel there; and Calendar's
+list of calendars is read until it is still for 8 s, since a fresh Calendar adds Scheduled Reminders a moment after it
+opens.
 
 ## When something is off
 
