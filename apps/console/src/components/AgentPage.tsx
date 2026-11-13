@@ -12,6 +12,7 @@ import { AgentSkeleton, ListSkeleton } from "@/components/Skeleton";
 import { StatusBadge } from "@/components/StatusBadge";
 import { NativeAgent, NativeMutationProvider, useNativeReadiness } from "@/components/NativeAgent";
 import { nativeStateLabel } from "@/lib/native";
+import { backendSdkLabel, backendSdkOf } from "@/lib/backendSdk";
 import { LearningTab } from "@/components/Learning";
 import { LearningChips, WaitingCount } from "@/components/LearningChips";
 import { Button } from "@/components/ui/button";
@@ -108,6 +109,7 @@ function AgentDetail({ agent, onAgent, reread, stale, v2, go, stats, analytics, 
   const [factsOpen, setFactsOpen] = useState(false);
   const itemsWaiting = waitingOf(agent);
   const d = agent.definition;
+  const sdk = backendSdkOf(d);
   const { native, refresh: refreshNative } = useNativeReadiness(agent, v2);
   const workflow = agent.kind === "workflow";
   const Icon = workflow ? Workflow : Bot;
@@ -119,16 +121,16 @@ function AgentDetail({ agent, onAgent, reread, stale, v2, go, stats, analytics, 
     : fallback ? (({ text, title }) => ({ text: `${text} (default)`, title }))(modelLabel(fallback, routePrefix))
     : { text: NO_MODEL_YET };
   // A harness the server can't run: why, where its Run would fail (capabilities' harnesses[].reason).
-  const off = workflow || native ? undefined : harnesses?.find((h) => h.id === (d.harness ?? "pi") && h.available === false);
+  const off = workflow || native || sdk ? undefined : harnesses?.find((h) => h.id === (d.harness ?? "pi") && h.available === false);
   const offText = off ? `${off.id} doesn't run on this server${off.reason ? `: ${off.reason}` : "."}` : undefined;
   // Where it runs: its own place, else the server's default place for it, marked as such (#1790: resolved at each run).
   const where = runsWhere(agent, places);
   const runsLabel = `${placeLabel(where?.place)}${where?.byDefault ? " (server default)" : ""}`;
   // Explain a known absent default without blocking observation or the handoff that can configure it.
   // Explicit models and older servers leave readiness to the execution path.
-  const needsModel = !native && !workflow && !off && !d.model && !fallback && harnesses?.some((h) => h.id === (d.harness ?? "pi") && h.default_model === null);
+  const needsModel = !sdk && !native && !workflow && !off && !d.model && !fallback && harnesses?.some((h) => h.id === (d.harness ?? "pi") && h.default_model === null);
   const facts: [string, string, string?][] = [
-    ...(native ? [["Runtime", native.runtime], ["Model", native.model ?? "Native default"], ["Selector", native.selector.kind === "project" ? "Project default" : native.selector.name ?? native.selector.kind], ["Machine", native.machine_id]] as [string, string, string?][] : workflow ? [] : [["Harness", d.harness ?? "pi"], ["Model", model.text, model.title], ["Thinking", d.thinking ?? "default"], ["Runs", runsLabel]] as [string, string, string?][]),
+    ...(sdk ? [["Runtime", backendSdkLabel(sdk.runtime)], ["Model", "Reported per run"], ["Execution", "Your backend"]] as [string, string, string?][] : native ? [["Runtime", native.runtime], ["Model", native.model ?? "Native default"], ["Selector", native.selector.kind === "project" ? "Project default" : native.selector.name ?? native.selector.kind], ["Machine", native.machine_id]] as [string, string, string?][] : workflow ? [] : [["Harness", d.harness ?? "pi"], ["Model", model.text, model.title], ["Thinking", d.thinking ?? "default"], ["Runs", runsLabel]] as [string, string, string?][]),
     ["Revision", `rev ${d.version} of ${agent.revisions}`],
   ];
   // Until the server's capabilities are read, the Learning tab shows only on its own address, which opens it at once (a
@@ -147,8 +149,8 @@ function AgentDetail({ agent, onAgent, reread, stale, v2, go, stats, analytics, 
         <Icon className="size-4 shrink-0 text-muted-foreground" aria-hidden />
         <strong className="min-w-0 truncate text-body font-semibold">{d.name}</strong>
         <div className="ml-auto flex max-w-full flex-wrap items-center justify-end gap-2">
-          <CodingAgentAction label="Edit agent" prompt={editAgentPrompt(location.origin, agent.agent_id, !!native)} playgroundHref={native ? undefined : `#/playground?operation=edit-agent&agent=${encodeURIComponent(agent.agent_id)}`} />
-          {!agent.archived_at && <CodingAgentAction label="Run agent" disabled={!!native && (!native.connected || native.state !== "ready" || !native.capabilities.launch)} prompt={runAgentPrompt(location.origin, agent.agent_id)} playgroundHref={`#/playground?agent=${encodeURIComponent(agent.agent_id)}`} />}
+          <CodingAgentAction label="Edit agent" prompt={editAgentPrompt(location.origin, agent.agent_id, !!native, sdk?.runtime)} playgroundHref={native || sdk ? undefined : `#/playground?operation=edit-agent&agent=${encodeURIComponent(agent.agent_id)}`} />
+          {!agent.archived_at && <CodingAgentAction label="Run agent" disabled={!!native && (!native.connected || native.state !== "ready" || !native.capabilities.launch)} prompt={runAgentPrompt(location.origin, agent.agent_id, sdk?.runtime)} playgroundHref={sdk ? undefined : `#/playground?agent=${encodeURIComponent(agent.agent_id)}`} />}
           <Button size="icon" aria-label="Refresh agent" onClick={() => { history.refresh(); refreshNative(); }} disabled={history.reading}><RefreshCw className={cn(history.reading && "animate-spin")} aria-hidden /></Button>
         </div>
       </header>
@@ -167,7 +169,7 @@ function AgentDetail({ agent, onAgent, reread, stale, v2, go, stats, analytics, 
             {overviewFacts.map(([k, v, title]) => (
               <div key={k} className="min-w-0 border bg-card p-4"><dt className="mb-2 text-label text-muted-foreground">{k}</dt><dd className="break-words text-body font-semibold" title={title}>{v}</dd></div>
             ))}
-            {!workflow && !native && <div className="col-span-2 border bg-card p-4"><dt className="mb-2 text-label text-muted-foreground">Tools</dt><dd className="break-words text-small">{!workflow && agent.tools ? (agent.tools.length ? <ul className="space-y-2" aria-label="Tools">{agent.tools.map((tool) => <li key={tool.name}><span title={tool.blurb}>{tool.name}</span>{tool.provider ? ` · ${providerLabel(tool.provider, tool.name)}` : ""}{tool.permission ? ` · ${tool.permission}` : ""}{resolution(tool.resolved, tool.name).unavailable && <span data-unavailable className="text-warning-text" title={tool.resolved}> · unavailable</span>}</li>)}</ul> : "none") : d.tools.join(", ") || "None configured"}</dd></div>}
+            {!workflow && !native && !sdk && <div className="col-span-2 border bg-card p-4"><dt className="mb-2 text-label text-muted-foreground">Tools</dt><dd className="break-words text-small">{!workflow && agent.tools ? (agent.tools.length ? <ul className="space-y-2" aria-label="Tools">{agent.tools.map((tool) => <li key={tool.name}><span title={tool.blurb}>{tool.name}</span>{tool.provider ? ` · ${providerLabel(tool.provider, tool.name)}` : ""}{tool.permission ? ` · ${tool.permission}` : ""}{resolution(tool.resolved, tool.name).unavailable && <span data-unavailable className="text-warning-text" title={tool.resolved}> · unavailable</span>}</li>)}</ul> : "none") : d.tools.join(", ") || "None configured"}</dd></div>}
           </dl>
           {offText && <Banner tone="warning" aria-label="Harness not available">{offText}</Banner>}
           {!agent.archived_at && needsModel && <Banner>Running this agent needs a configured model. <a href="#/settings/keys" className="text-primary-text underline underline-offset-2">Set up models in Settings</a></Banner>}
@@ -177,7 +179,7 @@ function AgentDetail({ agent, onAgent, reread, stale, v2, go, stats, analytics, 
             <h2 className="mb-4 text-body font-semibold">Configuration</h2>
             <dl className="space-y-3 text-small">
               <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Kind</dt><dd>{agent.kind}</dd></div>
-              <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Skills</dt><dd className="max-w-[75%] break-words text-right">{d.skills.join(", ") || "None configured"}</dd></div>
+              <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Skills</dt><dd className="max-w-[75%] break-words text-right">{sdk ? "Managed by your backend" : d.skills.join(", ") || "None configured"}</dd></div>
             </dl>
             {d.instructions && <details className="mt-4 text-small"><summary className="cursor-pointer">Instructions</summary><pre className="mt-3 whitespace-pre-wrap break-words font-sans leading-relaxed text-muted-foreground">{d.instructions}</pre></details>}
           </section>}

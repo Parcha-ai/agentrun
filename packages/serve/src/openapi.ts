@@ -1,3 +1,4 @@
+import { SDK_BINDING, SDK_PATHS, SDK_RUN } from "./sdk/schema.js";
 import { NATIVE_BINDING, NATIVE_RUN, NATIVE_PATHS } from "./native/schema.js";
 // The OpenAPI document this server serves at GET /v2/openapi.json: the agentrun.v2/0 contract as vendored in
 // src/openapi/agentrun-v2.openapi.json (its source is in its info), with this server's marks. The contract's operations are
@@ -1998,6 +1999,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
   Usage: { unpriced_runs: { type: "integer", minimum: 0, description: "How many runs in the report have a cost no one knows on them: they add no dollars to `total_usd`, so no sum passes them off as $0.", "x-agentrun-serve": "costsofar/1" } },
   UsageLine: { unpriced_runs: { type: "integer", minimum: 0, description: "How many of the runs counted on this line have a cost no one knows on it: they add no dollars to `usd`, so no sum passes them off as $0.", "x-agentrun-serve": "costsofar/1" }, not_metered_calls: { type: "integer", minimum: 1, description: "On the `tools` meter's line, set when the runs counted made tool calls with no price (an MCP tool its owner set none for): how many. They are outside `usd`.", "x-agentrun-serve": "mcpservers/1" } },
   Run: {
+    sdk: SDK_RUN,
     native: NATIVE_RUN,
     ...RUN_FIELDS,
     approvals: { enum: ["ask", "never"], description: "Whether the run runs unattended: its revision's approvals, as it started (a run keeps the revision it started on). never: each tool that would ask was allowed at its gate, a deny still refused; ask: a tool set to ask parks it for an approval.", "x-agentrun-serve": "unattended/1" },
@@ -2040,6 +2042,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     example: { description: "A value the field accepts, said in `message` too: the operation's documented request body's value there, else the schema's example, const or option, else one made from its type; each is suggested only once the route's own check of the body takes it in place (else the schema, for a value the document gives), so this server never suggests a value it refuses. Absent when there is none. For a field the body does not keep that an object inside it does, the body with the field where it belongs, as `fix` shows it: `{\"definition\": {\"name\": \"Due diligence\"}}`.", "x-agentrun-serve": "explain/1" },
   },
   RunSummary: {
+    sdk: SDK_RUN,
     native: NATIVE_RUN,
     ...RUN_FIELDS,
     effort: { $ref: "#/components/schemas/Effort", description: "The effort the run was started with, as the run shows it; absent when it was started with none.", "x-agentrun-serve": "effort/1" },
@@ -2100,6 +2103,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     unreadable: { type: "boolean", const: true, description: "Present when this server cannot read the file: a tool in the run's box created it private (owner-only). Reading it answers 403 `system_file_forbidden` with `details.reason` `unreadable`.", "x-agentrun-serve": "unreadable/1" },
   },
   DefinitionInput: {
+    sdk: {...SDK_BINDING, "x-agentrun-serve":"sdk/1", description:"An existing backend SDK agent. Execution stays in its application; register tasks through /agents/{agent_id}/sdk-runs."},
     native: NATIVE_BINDING,
     model: { type: "string", description: "`provider/model-id`, the model an agentic revision runs on; absent, this host's default. A workflow revision keeps none.", "x-agentrun-serve": "model/1" },
     model_tiers: { type: "object", additionalProperties: false, minProperties: 1, properties: { fast: { type: "string" }, strong: { type: "string" } }, description: "The model of each of an agentic revision's tiers it names, each `provider/model-id`: what a `subagent` call that names that tier runs on (a call names a tier, never a model; one that names none runs on the revision's own model). A tier it leaves out runs on this host's model for the tier (AGENT_MODEL_FAST, AGENT_MODEL_STRONG, else the default). A workflow revision keeps none.", "x-agentrun-serve": "subagent/1" },
@@ -2790,8 +2794,8 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   if (adapters !== TRIGGER_ADAPTERS) withAdapters(doc, adapters);
   // Every server-wide pushed source's own hook, the registry's as a test's: this server's own, and listed so.
   const hooks = serverHooks(adapters);
-  Object.assign(doc.paths, hooks, NATIVE_PATHS);
-  ((doc.info["x-agentrun-serve"] as Json).extensions as string[]).push(...Object.entries(NATIVE_PATHS).flatMap(([path,item])=>Object.keys(item).map(method=>`${method.toUpperCase()} ${path}`)));
+  Object.assign(doc.paths, hooks, NATIVE_PATHS, SDK_PATHS);
+  ((doc.info["x-agentrun-serve"] as Json).extensions as string[]).push(...Object.entries({...NATIVE_PATHS,...SDK_PATHS}).flatMap(([path,item])=>Object.keys(item).map(method=>`${method.toUpperCase()} ${path}`)));
   ((doc.info["x-agentrun-serve"] as Json).extensions as string[]).push(...Object.keys(hooks).map((path) => `POST ${path}`));
   return doc;
 }

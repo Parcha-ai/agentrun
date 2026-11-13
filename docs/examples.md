@@ -1,6 +1,6 @@
 # Runnable examples
 
-Every example below runs on scripted models by default, with no key: it exercises the workflow and its plumbing, not model quality. The workflow examples use fictional inputs. Start with the [support example](#run-the-support-example).
+The workflow examples below run on scripted models by default, with no key: they exercise the workflow and its plumbing, not model quality. The workflow examples use fictional inputs. Start with the [support example](#run-the-support-example). The separate [backend SDK learning examples](#backend-sdk-learning-live-opt-in) require explicit live execution.
 
 ![Support workflow: search for an answer, check it with Jev, and return it or ask an agent to investigate. Check the investigation before returning it or escalating for review.](assets/support-workflow.gif)
 
@@ -62,3 +62,14 @@ The ranking example is a reusable workflow built from existing nodes, not a node
 Each example includes a failure or uncertainty path. `npm run demo:support -- unresolved` and `npm run demo -- --no-evidence` exit with code `2` after escalation.
 
 To connect models, follow [support integration](support-quickstart.md) or [research integration](live-research.md). Your application supplies tool permissions, credentials and cancellation. Scripted answers remain fixed when you edit a prompt.
+
+## Backend SDK learning (live, opt-in)
+
+Keep an existing backend agent's native SDK and tools while AgentRun checks learning for its next fresh request:
+
+| Cookbook | Live example | What it verifies |
+| --- | --- | --- |
+| [Claude Agent SDK](tutorials/claude-sdk-learning.md) | [Release reporter](../examples/sdk-learning/claude.mjs) | The existing in-process MCP tool still executes; an accepted note affects a fresh session. |
+| [Codex SDK](tutorials/codex-sdk-learning.md) | [Release reporter](../examples/sdk-learning/codex.mjs) | The existing native shell still reads a status file; an accepted revision is supplied to a fresh thread. |
+
+Follow the [setup and execution instructions](../examples/sdk-learning/README.md). These examples use real models only with `--live`, compare learning On with an Off control, and preserve the result for inspection in the console. They require this development checkout's client and server, plus the backend's existing SDK credentials and a configured server grading model.

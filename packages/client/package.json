@@ -22,6 +22,18 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
+    "./learning": {
+      "types": "./dist/learning.d.ts",
+      "default": "./dist/learning.js"
+    },
+    "./claude": {
+      "types": "./dist/claude.d.ts",
+      "default": "./dist/claude.js"
+    },
+    "./codex": {
+      "types": "./dist/codex.d.ts",
+      "default": "./dist/codex.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [

@@ -6,6 +6,7 @@ import { Chip } from "@/components/ui/chip";
 import { fieldBoxClass, Input } from "@/components/ui/field";
 import type { Agent } from "@/lib/agentForm";
 import { nativeReadinessOf, nativeRuntimeLabel, nativeStateLabel } from "@/lib/native";
+import { backendSdkLabel, backendSdkOf } from "@/lib/backendSdk";
 import { waitingOf, waitingWords } from "@/lib/learning";
 import { cn } from "@/lib/utils";
 import { workflowShape } from "@/lib/workflowDoc";
@@ -59,6 +60,7 @@ function AgentCard({ agent: a, actions }: { agent: Agent; actions: AgentsListAct
   const Icon = a.kind === "workflow" ? Workflow : Bot;
   const archived = !!a.archived_at;
   const native = nativeReadinessOf(a);
+  const sdk = backendSdkOf(a.definition);
   // Its learned items that wait for its owner's OK (the list's own read: each agent's `learning.pending`); nothing at 0.
   const waiting = waitingOf(a);
   return (
@@ -69,7 +71,7 @@ function AgentCard({ agent: a, actions }: { agent: Agent; actions: AgentsListAct
           <span className="flex flex-wrap items-center gap-2">
             <span className="text-base font-semibold">{a.definition.name}</span>
             <Chip>{a.kind}</Chip>
-            {a.kind === "agentic" && <Chip>{native ? nativeRuntimeLabel(native.runtime) : a.definition.harness ?? "pi"}</Chip>}
+            {a.kind === "agentic" && <Chip>{sdk ? backendSdkLabel(sdk.runtime) : native ? nativeRuntimeLabel(native.runtime) : a.definition.harness ?? "pi"}</Chip>}
             {native && <Chip tone={native.connected && native.state === "ready" ? "success" : "warning"}>{nativeStateLabel(native)}</Chip>}
             {archived && <Chip tone="muted">Archived</Chip>}
           </span>
@@ -85,8 +87,8 @@ function AgentCard({ agent: a, actions }: { agent: Agent; actions: AgentsListAct
             className="caps shrink-0 whitespace-nowrap border border-warning/50 bg-warning/10 px-1.5 py-0.5 text-micro text-warning-text hover:bg-warning/20">Learning · {waiting}</Button>
         )}
         <span className="flex-1" />
-        {!archived && <CodingAgentAction compact compactIcon={<Play className="size-3.5" aria-hidden />} label={`Run ${a.definition.name}`} disabled={!!native && (!native.connected || native.state !== "ready" || !native.capabilities.launch)} prompt={runAgentPrompt(location.origin, a.agent_id)} playgroundHref={`#/playground?agent=${encodeURIComponent(a.agent_id)}`} />}
-        <CodingAgentAction compact compactIcon={<Pencil className="size-3.5" aria-hidden />} label={`Edit ${a.definition.name}`} prompt={editAgentPrompt(location.origin, a.agent_id, !!native)} playgroundHref={native ? undefined : `#/playground?operation=edit-agent&agent=${encodeURIComponent(a.agent_id)}`} />
+        {!archived && <CodingAgentAction compact compactIcon={<Play className="size-3.5" aria-hidden />} label={`Run ${a.definition.name}`} disabled={!!native && (!native.connected || native.state !== "ready" || !native.capabilities.launch)} prompt={runAgentPrompt(location.origin, a.agent_id, sdk?.runtime)} playgroundHref={sdk ? undefined : `#/playground?agent=${encodeURIComponent(a.agent_id)}`} />}
+        <CodingAgentAction compact compactIcon={<Pencil className="size-3.5" aria-hidden />} label={`Edit ${a.definition.name}`} prompt={editAgentPrompt(location.origin, a.agent_id, !!native, sdk?.runtime)} playgroundHref={native || sdk ? undefined : `#/playground?operation=edit-agent&agent=${encodeURIComponent(a.agent_id)}`} />
         <Button size="sm" className="gap-1 px-2" variant="outline" aria-label={`Runs of ${a.definition.name}`} onClick={() => actions.onRuns?.(a.agent_id)}><History aria-hidden />{a.runs?.count ?? 0}</Button>
         <Button size="icon" variant="outline" aria-label={`${archived ? "Unarchive" : "Archive"} ${a.definition.name}`} onClick={() => actions.onArchive?.(a.agent_id, !archived)}>
           {archived ? <ArchiveRestore aria-hidden /> : <Archive aria-hidden />}

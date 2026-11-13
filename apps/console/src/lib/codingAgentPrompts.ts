@@ -1,6 +1,7 @@
 import type { AgentCreateDraft } from "./agentDraft";
 import type { RemoteConnectionIntent } from "./connectors";
 import type { TemplateView } from "./v2";
+import { backendSdkLabel, type BackendSdkRuntime } from "./backendSdk";
 
 // Prompts carry only the public server address and the selected task, never browser credentials. The bundled skill
 // handles local-store imports and remote connection/history scopes through the matching CLI.
@@ -66,8 +67,11 @@ Ask only for missing parameter values and clarification of my intended inputs, o
 Use POST ${root}/v2/templates/${encodeURIComponent(template.name)}/apply with only the documented parameters, grants and overrides. Submit once with an idempotency key; on an uncertain response, reconcile the same request before retrying. Map my additional requirements to supported parameters when possible; do not add a brief or instructions field to the apply body. If a requirement needs configuration changes beyond the apply schema, propose a separately approved revision after applying, preserving the rest of the package and using the current revision with If-Match. Report the new agent's console link and any warnings or enabled triggers. Do not start a run.${brief.trim() ? `\n\nMy additional requirements:\n${brief.trim()}` : ""}`;
 }
 
-export function editAgentPrompt(origin: string, agentId: string, native = false): string {
+export function editAgentPrompt(origin: string, agentId: string, native = false, sdk?: BackendSdkRuntime): string {
   const root = server(origin).origin;
+  if (sdk) return `${setup(origin)}
+
+Help me edit the existing backend agent ${JSON.stringify(agentId)}, using ${backendSdkLabel(sdk)}. Read ${root}/v2/agents/${encodeURIComponent(agentId)} and locate its original application entrypoint. Ask me where that source lives if it is unavailable. Clarify the change, then edit the application code with my approval. Preserve its SDK, tools, authentication, job triggering, and AgentRun learning wrapper with the same agentId and server address. Keep the instructions snapshot sent by the wrapper accurate when changing its policy. Do not replace this agent with a managed definition or treat its recorded definition as the executable source. Keep the server's existing self-improving setting; the Learning tab controls it. Test the changed backend and return its console link. Do not start a production job without my approval.`;
   if (native) return `${setup(origin)}
 
 Edit the original native setup for agent ${JSON.stringify(agentId)}. Read ${root}/v2/agents/${encodeURIComponent(agentId)} for its project, runtime, machine and selector. Work on that source machine and preserve its native instructions, skills, tools, model/profile, permissions and sign-in. Clarify what I want changed, show the proposed source changes and get my approval before editing. Future launches resolve the latest original configuration. Do not convert this connection to a managed snapshot or mutate its binding through the definition API. Return the connected agent's console link. Do not start a run.`;
@@ -84,8 +88,11 @@ export function queryRunsPrompt(origin: string, agentId?: string): string {
 Help me investigate ${agentId === undefined ? "runs across all agents" : `runs of agent ${JSON.stringify(agentId)}`}. Ask what I want to know and the time range if unclear, then make read-only requests to ${root}/v2${path}, following pagination, and inspect relevant run timelines/files. Include server-run sessions and imported history; identify the source and data freshness. Summarize findings with links to the runs, distinguish unknown metrics from zero, and do not create, edit, rerun or cancel anything.`;
 }
 
-export function runAgentPrompt(origin: string, agentId: string): string {
+export function runAgentPrompt(origin: string, agentId: string, sdk?: BackendSdkRuntime): string {
   const root = server(origin).origin;
+  if (sdk) return `${setup(origin)}
+
+Help me run the existing backend agent ${JSON.stringify(agentId)}, using ${backendSdkLabel(sdk)}. Read ${root}/v2/agents/${encodeURIComponent(agentId)} and locate its application's existing job entrypoint. Ask where that source runs if needed, and clarify the task and any required inputs or spending limits. Preserve its SDK, tools, credentials and AgentRun learning wrapper; trigger the task through the backend's normal invocation after my approval. Do not launch it with AgentRun's managed run API or create a replacement agent. The wrapper reports this task and uses the currently enabled accepted learning; wait for flushLearning() before a fresh test run that must use its latest lessons. Report the backend result and the recorded AgentRun console link. Any stop, retry or follow-up must use the backend's own controls.`;
   return `${setup(origin)}
 
 Help me run agent ${JSON.stringify(agentId)}. Read ${root}/v2/agents/${encodeURIComponent(agentId)} and its current revision first. Clarify the task and any required input, files, effort or spending limit. Check this agent's harness, model and tools are available. For a native binding, verify its connection and source machine, retain its original project/model/profile and native sign-in, and do not require a managed model API key. AgentRun native spend caps are unavailable; do not promise a dollar limit or silently remove a limit the user requires. Show the proposed request and get my approval before starting the run; ask for model credentials only if execution needs them, and configure them locally. Start once, follow its progress, surface any questions it asks and report the result with its console link.`;

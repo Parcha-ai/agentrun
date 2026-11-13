@@ -1,11 +1,12 @@
 import { nativeReadinessOf } from "@/lib/native";
+import { backendSdkLabel, backendSdkOf } from "@/lib/backendSdk";
 import { ToolBlockers } from "@/components/ToolBlockers";
 import { ArrowRight, Copy, Play } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FilePicker, type UploadLimits, useAttachments } from "@/components/FilePicker";
 import { Button } from "@/components/ui/button";
 import { CodingAgentAction } from "@/components/CodingAgentAction";
-import { playgroundPrompt } from "@/lib/codingAgentPrompts";
+import { playgroundPrompt, runAgentPrompt } from "@/lib/codingAgentPrompts";
 import { Picker } from "@/components/ui/picker";
 import { Input, Textarea } from "@/components/ui/field";
 import type { Agent } from "@/lib/agentForm";
@@ -55,6 +56,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
   }, [agents, initialAgent]); // eslint-disable-line react-hooks/exhaustive-deps
   const agent = agents.find((a) => a.agent_id === agentId);
   const native = nativeReadinessOf(agent);
+  const sdk = backendSdkOf(agent?.definition);
   const kind = agent?.kind ?? "agentic";
   const [text, setText] = useState("");
   const example = kind === "workflow" ? exampleInput(agent?.definition.workflow) : null;
@@ -96,7 +98,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
     : `const res = await fetch(${JSON.stringify(`${origin}/v2/agents/${agentId || "{agent_id}"}/runs`)}, {\n  method: "POST",\n  headers: {\n    Authorization: \`Bearer \${process.env.AGENTRUN_TOKEN}\`,\n    "Content-Type": "application/json",\n    "Idempotency-Key": ${JSON.stringify(key)},\n  },\n  body: JSON.stringify(${JSON.stringify(body, null, 2).replace(/\n/g, "\n  ")}),\n});\nconsole.log(res.status, await res.json());`;
   const nativeBlocked = !!native && (!native.connected || native.state !== "ready" || !native.capabilities.launch || !!cap.trim() || !!effort || attachments.fileIds.length > 0 || attachments.busy);
   const send = async () => {
-    if (nativeBlocked || !built.ok || !onSend || attachments.busy) return;
+    if (sdk || nativeBlocked || !built.ok || !onSend || attachments.busy) return;
     setSending(true);
     const r = await submitStart(keys, agentId, built.body, onSend);
     setSending(false); setResult(r); setPane("response"); setShowCode(true);
@@ -113,13 +115,17 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
           <Picker id="playground-agent" label="Agent" value={agentId} onChange={(id) => { setAgentId(id); setRevision(""); onAgent?.(id); }}
             options={agentsByName(agents).map((a) => ({ value: a.agent_id, label: a.definition.name }))} className="w-56 max-w-[60vw]" />
         </div>
-        <span className="font-mono text-small"><span className="text-primary-text">POST</span> <span className="text-muted-foreground">/v2/agents/{agentId || "{agent_id}"}/runs</span></span>
+        {sdk ? <span className="font-mono text-small">{backendSdkLabel(sdk.runtime)} · Your backend</span> : <span className="font-mono text-small"><span className="text-primary-text">POST</span> <span className="text-muted-foreground">/v2/agents/{agentId || "{agent_id}"}/runs</span></span>}
         <span className="flex-1" />
-        <span className="caps text-label text-muted-foreground">Live API</span>
-        <Button size="sm" type="button" onClick={() => setShowCode((s) => !s)} aria-expanded={showCode} className="caps hidden border px-3 py-1.5 text-label text-muted-foreground hover:text-foreground short:inline-flex">{showCode ? "Hide code" : "Show code"}</Button>
+        {!sdk && <span className="caps text-label text-muted-foreground">Live API</span>}
+        {!sdk && <Button size="sm" type="button" onClick={() => setShowCode((s) => !s)} aria-expanded={showCode} className="caps hidden border px-3 py-1.5 text-label text-muted-foreground hover:text-foreground short:inline-flex">{showCode ? "Hide code" : "Show code"}</Button>}
       </div>
       {/* Two columns only when the window is wide AND tall enough: a short one folds to one panel (short:), full width. */}
-      <div className="grid min-h-0 flex-1 grid-cols-1 lg:[@media(min-height:501px)]:grid-cols-2">
+      {sdk ? <section className="space-y-4 p-5 md:p-8">
+        <h2 className="text-lg font-semibold">Run through your backend</h2>
+        <p className="text-body text-muted-foreground">This agent keeps its existing SDK, tools and job entrypoint. Your coding agent can run it there; AgentRun records its progress and learning.</p>
+        <CodingAgentAction label="Run agent" prompt={runAgentPrompt(origin, agentId, sdk.runtime)} />
+      </section> : <div className="grid min-h-0 flex-1 grid-cols-1 lg:[@media(min-height:501px)]:grid-cols-2">
         <section aria-label="Request" className={cn("flex min-h-0 flex-col border-b lg:border-b-0 lg:border-r", showCode && "short:hidden")}>
           <header className="flex items-center justify-between border-b px-5 py-3 md:px-6">
             <span className="text-lead font-semibold">Request</span>
@@ -211,7 +217,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
             </>
           )}
         </section>
-      </div>
+      </div>}
     </div>
   );
 }

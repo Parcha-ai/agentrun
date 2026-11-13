@@ -143,6 +143,18 @@ progress. You can connect first and import history later with an explicitly appr
 
 [Connection and history guide](docs/native-agents.md) · [Remote CLI installation and commands](connector/README.md)
 
+Already run an agent inside your backend with an SDK? The development build can add checked learning around its
+existing call site. Your backend keeps its job queue, tools, model credentials and cancellation; AgentRun records
+the run and supplies accepted learning to the next fresh task. Use the matching client and server from this checkout.
+
+| Backend SDK | Integration |
+| --- | --- |
+| Claude Agent SDK | [Wrap your existing query and custom tools](docs/tutorials/claude-sdk-learning.md) |
+| Codex SDK | [Wrap your existing Codex client and fresh threads](docs/tutorials/codex-sdk-learning.md) |
+
+The [live examples](examples/sdk-learning/README.md) verify native tool execution, an accepted note, fresh-run reuse,
+and a learning-Off control. Reflection and independent grading run on the server and add model usage.
+
 ## Take the tour
 
 **Workflows that make the call.** A step can ask a fast typed question, see how sure the answer is, and pick a route.

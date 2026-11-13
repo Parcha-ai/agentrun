@@ -3,6 +3,7 @@
 // and its revision's harness. The runs not archived (their own or their agent's), started in [from, to) and of `agent` when
 // given. A pending run (its end on the caller's way, not yet in the store) is counted at the state its end will have, in
 // the totals alone; its metrics, cost and effort wait for its end. No journal is read: the figures are the row's.
+import { sdkOf } from "../sdk/runs.js";
 import type { RunRow, Store } from "../store/store.js";
 import { DEFAULT_HARNESS } from "../harness.js";
 import { runReadState } from "./runs.js";
@@ -73,7 +74,7 @@ export async function analytics(store: Store, filter: AnalyticsFilter = {}): Pro
     if (toMs !== null && !(run.startedAt < toMs)) continue;
     if (!harnessOf.has(run.revisionId)) {
       const revision = await store.agents.revision(run.revisionId);
-      harnessOf.set(run.revisionId, revision?.kind === "workflow" ? "workflow" : ((revision?.body as { harness?: string } | null)?.harness ?? DEFAULT_HARNESS));
+      harnessOf.set(run.revisionId, revision?.kind === "workflow" ? "workflow" : (sdkOf(revision?.body)?.runtime ?? (revision?.body as { harness?: string } | null)?.harness ?? DEFAULT_HARNESS));
     }
     const read = runReadState(run, harnessOf.get(run.revisionId) === "workflow" ? "workflow" : "agentic");
     const running = read === "running";

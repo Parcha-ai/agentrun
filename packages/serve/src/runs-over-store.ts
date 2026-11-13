@@ -93,6 +93,7 @@ export async function archiveRun(store: RunsStore, runId: string, archived: bool
 export async function stop(store: RunsStore, runId: string): Promise<boolean> {
   const row = await store.runs.get(runId);
   if (!row || row.importedFrom) return false;
+  await refuseSdkStop(store,runId);
   try {
     await sendCommand(store, runId, { kind: "stop", body: {} });
     return true;
@@ -108,6 +109,7 @@ export async function stop(store: RunsStore, runId: string): Promise<boolean> {
  *  nothing written). A run's first end is its last, so a cancel that races the end is the runner's to drop. */
 export async function cancel(store: RunsStore, moment: RunMoment): Promise<boolean> {
   if (moment.importedSource !== undefined) return false;
+  await refuseSdkStop(store,moment.id);
   // Already ended, or already ending (an outcome being written, or a cancel in flight): a run's first end is its last.
   if (moment.terminal || moment.cancelled) return false;
   try {
@@ -117,6 +119,12 @@ export async function cancel(store: RunsStore, moment: RunMoment): Promise<boole
     if (error instanceof RunFinal) return false;
     throw error;
   }
+}
+
+/** Only the application can abort its SDK and tools. An HTTP acknowledgement must not pretend that it did. */
+async function refuseSdkStop(store: RunsStore, runId: string): Promise<void> {
+  const launch = (await store.runs.launch(runId)).body;
+  if (isObject(launch) && launch.sdk) throw new ApiError("not_continuable", "This agent runs in your backend SDK. Cancel it using the original application's cancellation signal; its wrapper will report that outcome here.");
 }
 
 /** Pauses a workflow run, or resumes it (pauseRun/resumeRun): a pause or resume command the run's runner reads and applies.
@@ -155,7 +163,9 @@ export async function message(
   { requestId, answers = true, origin, queue }: { requestId?: string; answers?: boolean; origin?: unknown; queue?: (command: SteerCommand) => Promise<{ skipped: string } | void> } = {},
 ): Promise<{ mode: MessageMode; messageId: string; skipped?: string }> {
   if (moment.importedSource !== undefined) throw importedRefusal(moment);
-  if (nativeOf((await store.runs.launch(moment.id)).body)) throw new ApiError("input_invalid", "Native jobs do not support in-session steering or follow-up messages. Start a new native run.");
+  const launchBody = (await store.runs.launch(moment.id)).body;
+  if (isObject(launchBody) && launchBody.sdk) throw new ApiError("not_continuable", "Backend SDK runs are single-task sessions. Start a new SDK call for another task.");
+  if (nativeOf(launchBody)) throw new ApiError("input_invalid", "Native jobs do not support in-session steering or follow-up messages. Start a new native run.");
   // Archiving closes a run: it, or a run of its archived agent, takes no message, said as archived (never as finished).
   if (moment.archived !== undefined) throw archivedRefusal(moment);
   // A cancelled run takes no message, whether or not its end is written yet.
@@ -457,7 +467,7 @@ const noShown: Shown = { text: (text) => text, name: (name) => name, holds: () =
  *  names and the # Learned text (learnedParts, the one decision the runner puts in the prompt), the seed sha it starts
  *  from and the count of all the seed's notes before the budget picked `given` (seedNotes) — or given empty, seed null and no
  *  seedNotes when its seed cannot be read (a learning fault never refuses a run). */
-async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Revision, rbody: StartBody, input: unknown): Promise<{ given: NoteUsed[]; seed: string | null; section: string; seedNotes?: number; skills?: string[]; workflows?: string[]; notesOnly?: true; gradeModel?: string; seedFailed?: SeedFailed } | undefined> {
+export async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Revision, rbody: StartBody, input: unknown): Promise<{ given: NoteUsed[]; seed: string | null; section: string; seedNotes?: number; skills?: string[]; workflows?: string[]; notesOnly?: true; gradeModel?: string; seedFailed?: SeedFailed } | undefined> {
   const learns = deps.learning !== undefined && deps.learning !== "off" && revision.kind === "agentic" && learnsOf(rbody.learning);
   // `learning: "notes"`: its notes and skills, never a learned workflow (none offered, none asked for at its end).
   const notesOnly = rbody.learning === "notes" || nativeOf(revision.body) ? { notesOnly: true as const } : {};
@@ -493,6 +503,7 @@ async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Re
  *  runner's. Under `origin`, a key that already started a run gets that run (the store's one-run-per-key), so a retry never
  *  starts a second. */
 export async function startRun(store: Pick<Store, "runs" | "runOfOrigin">, deps: StartDeps, entry: AgentEntry, body: Json, { trigger, origin, capped = false, from, title }: StartOptions = {}): Promise<RunRow> {
+  if ((entry.revision?.body as {sdk?:unknown})?.sdk) throw new ApiError("agent_not_runnable", "This agent runs in your backend SDK. Start it through its SDK learning wrapper; AgentRun does not launch its tools or credentials.");
   const { launch, revision } = await prepareLaunch(deps, entry, body, { ...(trigger ? { trigger } : {}), capped, ...(from ? { from } : {}), ...(title !== undefined ? { title } : {}) });
   const runId = (deps.newRunId ?? uuidv7)();
   try {
