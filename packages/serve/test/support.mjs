@@ -17,7 +17,6 @@ import { dockerPathsForRuns } from "../dist/box-paths.js";
 import { hostAddressesOnce } from "../dist/docker-host-addresses.js";
 import { fauxEnvOf } from "../dist/server.js";
 import { FAUX_VENDOR_API_ENV } from "../dist/tools.js";
-import { readRunDbSync } from "../dist/run-db.js";
 import { resolve } from "node:path";
 import { openSqliteStore } from "../dist/store/index.js";
 import { startRunner } from "../dist/runner/runner.js";
@@ -655,10 +654,9 @@ export function paidCallsOf(data, runId) {
   return out;
 }
 
-/** Run `runId` as its claim and its process say it: the record the process keeps in its store (its status, `detail` and
- *  the epoch it ran under as `generation`), and its holder from the run's row — the runner that claimed it, whose name the
- *  runner mints as `<hostname>:<pid>:<uuid>` (runner.ts), so its `pid` is the process now running it; `{}` when there is
- *  neither yet. */
+/** Run `runId` as its claim says it: the epoch it runs under and its holder from the run's row — the runner that claimed
+ *  it, whose name the runner mints as `<hostname>:<pid>:<uuid>` (runner.ts), so its `pid` is the process now running it;
+ *  `{}` when there is neither yet. */
 export function runRecordOf(data, runId) {
   let claim;
   try {
@@ -676,20 +674,7 @@ export function runRecordOf(data, runId) {
     const pid = Number(/:(\d+):[^:]+$/.exec(claim.runner)?.[1]);
     if (Number.isInteger(pid)) holder = { pid, runner: claim.runner };
   }
-  let record = {};
-  const file = join(runDir(data, runId), "store", "run.sqlite");
-  if (existsSync(file)) {
-    try {
-      record = readRunDbSync(file, false, (db) => {
-        const row = db.prepare("SELECT record FROM pda_run_status WHERE id = 1").get();
-        return row ? JSON.parse(row.record) : {};
-      });
-    } catch {
-      record = {};
-    }
-  }
-  const { holder: _kept, ...rest } = record;
-  return { ...rest, ...(holder ? { holder } : {}), ...(claim ? { epoch: Number(claim.epoch) } : {}) };
+  return { ...(holder ? { holder } : {}), ...(claim ? { epoch: Number(claim.epoch) } : {}) };
 }
 
 /** Create agent `id` and start one run of it with `content`. */

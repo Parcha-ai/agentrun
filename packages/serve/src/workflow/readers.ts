@@ -7,7 +7,6 @@ import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { apply } from "@earendil-works/chord/delta";
 import type { RecoveryEffect, RecoveryNote } from "@parcha/agentrun-dsl/recovery";
-import { decisionKey } from "./decisions.js";
 import { effectKey } from "./store.js";
 import { walHasCommit } from "./wal.js";
 
@@ -108,16 +107,6 @@ function itemEffects(db: Database, key: string, table: unknown, into: string[]):
 /** A Session document of the run's store `file`, read-only; undefined when the file or the document is absent. */
 export function durableDoc<T = Record<string, unknown>>(file: string, kind: string, key?: string, options: DurableReadOptions = {}): T | undefined {
   return (withDurableFile(file, (db) => sessionDoc(db, kind, key), options) ?? undefined) as T | undefined;
-}
-
-/** The decision rows (`agentrun.decisions`) of the run's store `file`, in commit order: the keyed documents, one row each, in the order of their keys. */
-export function durableDecisions(file: string, options: DurableReadOptions = {}): Array<Record<string, unknown>> {
-  return withDurableFile(file, (db) => {
-    const count = (sessionDoc(db, "agentrun.decisions.count") as { count?: unknown } | undefined)?.count;
-    const rows: Array<Record<string, unknown>> = [];
-    if (typeof count === "number") for (let place = 0; place < count; place += 1) { const row = sessionDoc(db, "agentrun.decisions", decisionKey(place)); if (row) rows.push(row as Record<string, unknown>); }
-    return rows;
-  }, options) ?? [];
 }
 
 /** The journal `key` holds in the run's store `file`, as the last commit left it; undefined when the file holds no
