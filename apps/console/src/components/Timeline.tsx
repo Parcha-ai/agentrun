@@ -61,14 +61,16 @@ const title = (row: TimelineRow) => {
   if (row.kind === "user_message" && text.startsWith("{")) {
     try { return Object.entries(JSON.parse(text) as Record<string, unknown>).map(([k, v]) => `${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`).join(" · "); } catch { /* not whole JSON: as is */ }
   }
+  // The summary is the text's first line (the server's), so an answer or your message with more says so with "…": the
+  // rest is a click away (the row opens its text whole), never dropped unseen.
+  const more = (row.text ?? "").split("\n").filter((l) => l.trim()).length > 1 ? "…" : "";
   // An answer's first line without its block marks (a heading's #, a quote's >, a list's -); its bold and code are
-  // drawn by `inline`. An answer left empty is said, not shown as a blank step. The summary is that first line (the
-  // server's), so an answer with more says so with "…": the rest is a click away, never dropped unseen.
+  // drawn by `inline`. An answer left empty is said, not shown as a blank step.
   if (row.kind === "final_answer") {
     if (!text.trim() && !row.text?.trim()) return NO_ANSWER;
-    const more = (row.text ?? "").split("\n").filter((l) => l.trim()).length > 1;
-    return `${text.replace(/^\s*(#{1,6}\s+|>\s+|[-*+]\s+)/, "")}${more ? "…" : ""}`;
+    return `${text.replace(/^\s*(#{1,6}\s+|>\s+|[-*+]\s+)/, "")}${more}`;
   }
+  if (row.kind === "user_message") return `${text}${more}`;
   return text;
 };
 /** How long a tool took: "27 ms", or "3.5 s" from a second on. */
