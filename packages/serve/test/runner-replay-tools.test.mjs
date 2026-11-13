@@ -6,6 +6,7 @@
 //     sealed for the replay alone; nothing of it is printed or logged;
 //   - a write whose arguments the recording does not have is never sent: that input is skipped (skipped_write), neither
 //     wrong nor failed, and a replay whose every input was skipped holds the revision in those words.
+// The runner is a local install's (mcpLoopback): the fake MCP server listens on loopback.
 // The graded runs are real runs of the agent (no learning, so no workflow serves them): each calls the write itself, which
 // is what its journal records.
 import assert from "node:assert/strict";
