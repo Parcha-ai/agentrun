@@ -528,6 +528,8 @@ export interface ModelProxyHooks {
    *  proxy asks only for a paid request on the session's model whose policy can place one (`addNote`), with that request
    *  as its client sent it (NoteRequest: its input bound and output asks, measured before the note is placed). */
   note?(model: string, request?: NoteRequest): string | undefined;
+  /** The note `note` gave back (ModelPort.noteReturned): the request that took it left before `beforeRequest`. */
+  noteReturned?(note: string): void;
 }
 
 export interface ModelProxyOptions {
@@ -897,7 +899,26 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
   // The session's MCP door, mounted once here for whichever harness's client calls it (the call id from its fact).
   const mcpDoor: McpHandler | undefined = options.mcp && mcpRoute(options.mcp.session, { callIdMeta: options.mcp.client.callIdMeta, ...(options.mcp.keepaliveMs !== undefined ? { keepaliveMs: options.mcp.keepaliveMs } : {}) });
 
+  /** Serves one request. A note it took and did not bring to its admission (it left before `beforeRequest`: its client
+   *  gone while it was counted, a refusal, an error) is given back to the host then, however it left, so the next request
+   *  can take it at once. From its admission on the note is the admission's: told, or given back by its refusal. */
   const serve = async (req: IncomingMessage, res: ServerResponse) => {
+    const taken: { note?: string } = {};
+    try {
+      await serveRequest(req, res, taken);
+    } finally {
+      if (taken.note !== undefined) {
+        const note = taken.note;
+        taken.note = undefined;
+        try {
+          hooks.noteReturned?.(note);
+        } catch (error) {
+          say(`model proxy (${policy.id}): the host's note could not be given back`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
+        }
+      }
+    }
+  };
+  const serveRequest = async (req: IncomingMessage, res: ServerResponse, taken: { note?: string }) => {
     // A request refused before its body is read is drained, so its client gets the answer instead of a reset.
     res.once("finish", () => { if (!req.complete) req.resume(); });
     const path = req.url ?? "";
@@ -982,6 +1003,9 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
         request = {};
       }
       const note = hooks.note(asked, request);
+      // Taken: given back (serve) unless this request brings it to its admission, below. One the policy fails to place
+      // goes back too: this request goes without it.
+      if (note) taken.note = note;
       if (note) {
         try {
           const without = body;
@@ -990,6 +1014,8 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
           noted = true;
         } catch (error) {
           say(`model proxy (${policy.id}): the host's note could not be placed; the request goes without it`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
+          taken.note = undefined;
+          try { hooks.noteReturned?.(note); } catch { /* the host's to say */ }
         }
       }
     }
@@ -1105,6 +1131,8 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     }
     // This request's own admission, handed back to its booking (requests may be in flight together).
     let ticket: unknown;
+    // The note, if this request carries it, is its admission's from here: told once admitted, given back by a refusal.
+    if (noted) taken.note = undefined;
     try {
       if (!route.free) ticket = await hooks.beforeRequest({
         // A side call: on another model than the session's, or the host's own (it counts toward no typical request). One on

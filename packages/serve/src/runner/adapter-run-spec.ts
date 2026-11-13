@@ -20,6 +20,7 @@ import type { Approvals } from "../approvals.js";
 import type { installForClaim, installSettled } from "../harness-install.js";
 import type { LiveHandover, LiveViewerStore } from "../browser-live.js";
 import { dropLiveViewer, putLiveViewer } from "../browser-live.js";
+import { runnerLiveOf } from "../live-reach.js";
 import { llmTiers, nodeTiers, type PinnedModel, type Tier, thinkingLevel, TIERS, tierModelOf, workflowNodes } from "../model.js";
 import { firstMessage } from "../run-manifest.js";
 import { learningStartOf, seedFailed, type RunLaunch } from "../run-launch.js";
@@ -52,6 +53,7 @@ import { claimSecrets, hostDecisionKeys, learnedDecisionKeys, savedModelKeys, ti
 import { type ClaimMcp, mcpForClaim } from "./mcp-run.js";
 import { type AdapterLoopOptions, type AdapterRun, type AdapterRunSpec, hostLifecycle, type RunCapConfig } from "./adapter-loop.js";
 import { piAdapter } from "./adapters/pi.js";
+import { computerCodemode } from "./adapters/pi-computer.js";
 import { agentEntriesOf } from "./loop.js";
 import { SUBAGENT_TIERS, SUBAGENT_TOOL, type SubagentTier, subagentTool } from "./subagent.js";
 import { wireName } from "../catalog.js";
@@ -74,10 +76,12 @@ import { type Checkout, prCheckoutForClaim } from "./pr-checkout.js";
 import { holdStored, storeSecrets } from "./store-secrets.js";
 import { bashPolicyOf } from "../bash-read-only.js";
 
-/** What a claim gives the shared computerForClaim: the run, its epoch, its revision, its place and any computer choice. */
+/** What a claim gives the shared computerForClaim: the run, its epoch, the claim itself (a live view's row is fenced on it
+ *  and names its runner), its revision, its place and any computer choice. */
 export interface ClaimLaunch {
   readonly runId: string;
   readonly epoch: number;
+  readonly claim?: unknown;
   readonly revisionId: string;
   readonly place?: unknown;
   readonly computer?: unknown;
@@ -169,6 +173,10 @@ export interface AdapterSpecDeps {
   /** A test runner's fake GitHub MCP origin, the one a github_app server may be at (mcp-claim.ts githubMcpOrigin):
    *  for tests only: no environment variable, flag or setting maps onto it; absent, GitHub's hosted MCP (github.ts GITHUB_MCP_ORIGIN). Only a test's in-process runner sets it; the CLI's runner never does. */
   readonly githubMcpOrigin?: string;
+  /** Whether this runner's runs may reach an MCP server whose URL is on loopback: only a runner beside a local-install
+   *  server (runner/beside.ts, Serve.localInstall) is told so, by that server in its own process. Absent, never: a hosted
+   *  or standalone runner's loopback is its host's other services. */
+  readonly mcpLoopback?: boolean;
   /** For tests only: the adapter loop's model retry (adapter-loop.ts retry and stream), so a test whose provider fails a run
    *  on purpose does not wait out MODEL_RETRY's two and a half minutes. No environment variable, flag or setting maps onto
    *  it; absent, MODEL_RETRY and MODEL_STREAM. */
@@ -394,9 +402,9 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // credentials opened under the server's seal key into this claim's memory, one gateway for the claim. First, before
   // anything the spec would have to let go: a refusal (a pin that cannot be made, a pinned meta tool) ends the run in its
   // words before the session opens. The seal key is the runner's own (deps.sealKey), not re-read from the environment.
-  // A credential the claim opens mid-run (a GitHub App token, a per_run server's handed one) joins the run's redactor.
+  // A credential the claim opens mid-run (a GitHub App token, a saved or per_run server's) joins the run's redactor.
   const hold = (values: string[]) => cut.hold(values);
-  const mcp = await mcpForClaim({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, work: () => ws.workspace, launchInput: launch.input, hold, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}) });
+  const mcp = await mcpForClaim({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, work: () => ws.workspace, launchInput: launch.input, hold, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.mcpLoopback ? { loopback: true } : {}) });
   // The claim's MCP goes to the loop, which lets it go; a build that throws lets it go itself.
   holds.hold({ passed: mcp });
 
@@ -404,7 +412,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // Docker container for a sandbox, under the claim's epoch (the one fence). It throws computer_unavailable (nothing made)
   // when the computer cannot be had: the run fails in its words.
   const computer = await deps.computerForClaim(
-    { runId: claim.runId, epoch: claim.epoch, agentId: runRow.agentId, revisionId: runRow.revisionId, place: launch.place, ...((launch as { computer?: ComputerSetting }).computer !== undefined ? { computer: (launch as { computer?: ComputerSetting }).computer } : {}) },
+    { runId: claim.runId, epoch: claim.epoch, claim, agentId: runRow.agentId, revisionId: runRow.revisionId, place: launch.place, ...((launch as { computer?: ComputerSetting }).computer !== undefined ? { computer: (launch as { computer?: ComputerSetting }).computer } : {}) },
     deps.store,
     // revokeMount removes the run's Archil mount credential when the computer is released (and if a start fails after a mint);
     // the run's end revokes it too (below), so it goes on every outcome even when no computer is made. Idempotent. What
@@ -448,7 +456,9 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   //   (adapter-loop waitInClaim, the browser's personWait below). It stays out of the session's host tools and REPLAY, so a CLI harness still
   //   refuses it (runnable.ts). pi only.
   // - the browser's durable extension, when the run gets one (bindNonHandTools, below, before the session opens).
-  const native: Extension[] = granted.includes(ASK_TOOL) ? [defineExtension({ name: "ask_person", tools: [askPerson] })] : [];
+  // - pi's code mode, with a desktop or a phone (pi-computer.ts): the `codemode` tool beside the run's own, its scripts
+  //   with `computer` bound on the run's held port.
+  const native: Extension[] = [...(granted.includes(ASK_TOOL) ? [defineExtension({ name: "ask_person", tools: [askPerson] })] : []), ...(tools.computer ? [computerCodemode(tools.computer)] : [])];
   // pi-native tools in the session's own extension (PiAdapterOptions.tools): the subagent tool, pushed below.
   const piTools: ToolRegistration[] = [];
   // A run granted subagent (runner/subagent.ts): the model of each of its tiers, the revision's own (modelTiers) else the
@@ -500,6 +510,11 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // The gate names the run's folder by its Workspace (Mode 2: its folder on the run's disk, never this machine's folder at
   // the same path), for its path checks; it reads nothing in it.
   const gate = await adapterRunGate(deps.store, claim, revision, ws.workspace, tools.shell, mcpServersOf(granted));
+  // What a script's shell and files are held to: this gate, so a denied bash or write holds inside computer_script and codemode.
+  tools.computer?.guard.install(async (tool, args) => {
+    await gate.permissions.refresh();
+    return gate.permissions.decide(tool, args);
+  });
 
   // The run's one cap, as the loop's runCap reads it (adapter-loop.ts RunCapConfig): the launch's cap figure (undefined
   // uncapped — every paid request still books through the one cap), the run's model priced WITH tiers, strict where the
@@ -847,7 +862,7 @@ export async function learnedWorkflowHostTool(opts: {
  *  hostToolOf): web_fetch, web_search and monid, each by its catalog name under the adapter loop's one gate (`spec.gate`;
  *  `gated` is undefined here, as for the hands). Their paid requests are booked by the adapter loop on the run's one ledger
  *  (bookedIn), as main books them, so they run. The browser (through host.liveViewers), MCP (the MCP claim step's
- *  mcpForClaim(claim, store, sealKey, pin) -> { sessionMcp, redactions, release }), the learned workflow and decisions are
+ *  mcpForClaim(claim, store, sealKey, pin) -> { sessionMcp, release }), the learned workflow and decisions are
  *  each a named todo, added as their seams land. */
 /** The run's live-viewer writers over the store (browser-live.ts): a session's hand-over written sealed, and gone. Its
  *  viewer token, minted in the run, is held by `cut`, the run's one redactor, as it is handed over, before it is written. */
@@ -898,6 +913,7 @@ export function buildToolHost(opts: {
   readonly life: ReturnType<typeof hostLifecycle>;
   readonly redact: HeldRedact;
 }): ToolHost {
+  const liveAt = runnerLiveOf(opts.env, opts.sealKey);
   const { root, claim, run, life } = opts;
   return {
     // The run's directory and its per-claim environment: the hands come from runTools, so the non-hand tools get the run's
@@ -924,6 +940,8 @@ export function buildToolHost(opts: {
     // The run's one redactor: the browser's answers pass it inside their call, before pi stores them (tools.ts).
     redact: opts.redact,
     liveViewers: liveViewersOf(opts.store, opts.sealKey, claim, opts.redact),
+    // A runner on another host than its server (AGENTRUN_RUNNER_LIVE_HOST): its browser's viewer answers there.
+    ...(liveAt ? { liveAt } : {}),
     // What a tool files for the run's read (monid's whole answer past the model's cut) goes in the run's own Workspace, the
     // one its hands read: in Mode 2 its folder on the run's disk, never the local folder at `root`.
     workspace: opts.workspace,

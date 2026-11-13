@@ -2,10 +2,10 @@
 export { AgentArchived, AnswerTaken, CommandTaken, endedReason, ExternalBodyConflict, FINAL_STATES, Fenced, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, RevisionMoved, RunFinal, SchemaVersionUnknown, SignInHandedTo, SignInMissing, StoreBusy, StoreClosed, StoreConstraint, StoreDeadline, StoreFromEarlierVersion, StoreLaunchMissing, StoreOwned, StoreWorkerLost, STORE_WRITE_DEADLINE_MS, stoppedByPerson, TriggerFull } from "./store.js";
 export type {
   ConstraintRule,
-  AgentRow, Agents, AlsoRow, ChannelPost, Claim, Command, ComputerLedger, ComputerLedgerRow, Firing, FiringChange, FiringRow, FiringStatus, FiringStreak, Journal, Live, LiveRow, Mcp, McpCredentialMark, McpOauth, McpOauthPendingRow, McpPinRow,
-  McpServerRow, McpServerWrite, NewFiring, NewPairedComputer, NewRevision, NewTrigger, PairedComputerRow, PairedComputers, ReleasedState, RevisionRow, RunPatch, RunRow, Runs, RunState, SealedKeyRow, SealedKeys, SealedPlane, SealedSecretRow, SealedSecrets, SettingRow, Settings, Staged,
+  AgentRow, Agents, AlsoRow, ChannelPost, Claim, Command, ComputerLedger, ComputerLedgerRow, Firing, FiringChange, FiringRow, FiringStatus, FiringStreak, Journal, Live, LiveRow, Mcp, McpCredentialMark, McpRemoved, McpOauth, McpOauthPendingRow, McpPinRow,
+  McpServerRow, McpServerStamp, McpServerWrite, NewFiring, NewPairedComputer, NewRevision, NewTrigger, PairedComputerRow, PairedComputers, ReleasedState, RevisionRow, RunPatch, RunRow, Runs, RunState, SealedKeyRow, SealedKeys, SealedPlane, SealedSecretRow, SealedSecrets, SettingRow, Settings, Staged,
   StagedTake, Store, StoreRole, TemplatePackage, Templates, TriggerDef, TriggerPatch, TriggerRow, Triggers, TriggerScope, TriggerSettingRow,
-  TriggerSettings, ImportedFrom, ImportSource, ImportRunInput, JournalReads, RunOrigin, RunOutcome, RunLaunchInput, RunLaunchRow, Learning,
+  TriggerSettings, Channels, ChannelAttemptRow, ChannelPostRow, ChannelToldRow, ImportedFrom, ImportSource, ImportRunInput, JournalReads, RunOrigin, RunOutcome, RunLaunchInput, RunLaunchRow, Learning,
   LearningProposal, LiveViewerRow, LiveViewers, SignIns, SignInRow, SignInTombstoneRow, UpdatedRun, ViewerKind,
 } from "./store.js";
 export { aadOf, type McpCredential, type OpenedMcpCredential, openMcpCredential, openRunMcpAuth, type RunMcpAuth, sealColumn, type SealedAt, sealedAt, sealMcpCredential, sealRunMcpAuth, unsealColumn } from "./seal.js";

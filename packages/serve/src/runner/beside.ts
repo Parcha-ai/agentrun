@@ -33,12 +33,11 @@ export function besideStopping(server: { runs: number; boundMs: number }, held: 
  *  too (workspace/computer-janitor.ts), as the CLI's start asks. `hub`: the server's AttachHub (Serve.attachHub), which
  *  holds each paired computer's socket in this process, so a run here takes one. Returns the runner and a close() that
  *  stops both and closes its store. */
-export async function runnerBeside(dataDir: string, { loops, drainMs, env, janitor, hub, onLine }: { loops?: number; drainMs?: number; env?: NodeJS.ProcessEnv; janitor?: boolean; hub?: import("@parcha/agentrun-computer").AttachHub; onLine?: (line: string) => void } = {}): Promise<{ runner: Awaited<ReturnType<typeof import("./runner.js")["startRunner"]>>; close: () => Promise<void> }> {
+export async function runnerBeside(dataDir: string, { loops, drainMs, env, janitor, hub, mcpLoopback, onLine }: { loops?: number; drainMs?: number; env?: NodeJS.ProcessEnv; janitor?: boolean; hub?: import("@parcha/agentrun-computer").AttachHub; mcpLoopback?: boolean; onLine?: (line: string) => void } = {}): Promise<{ runner: Awaited<ReturnType<typeof import("./runner.js")["startRunner"]>>; close: () => Promise<void> }> {
   const { startRunner } = await import("./runner.js");
   const { dispatchRunner } = await import("./harness-loops.js");
   const { routeOf } = await import("./model-route.js");
-  const { openRunnerStore, runEnv } = await import("./main.js");
-  const { computerDepsFrom } = await import("../workspace/index.js");
+  const { openRunnerStore, runEnv, runnerComputers } = await import("./main.js");
   // The server's store, the runner's one way in (main.ts openRunnerStore, store/open.ts): Postgres when this process's
   // AGENTRUN_STORE_URL secret names one, else SQLite in the data directory; a schema it does not know is RunnerRefused.
   const { store } = await openRunnerStore(dataDir, process.env, (message) => void process.stderr.write(`agentrun-serve runner: ${message}\n`), undefined);
@@ -56,17 +55,22 @@ export async function runnerBeside(dataDir: string, { loops, drainMs, env, janit
   }
   // The beside-runner sees the server's environment as a separate runner would (runEnv, not withoutFaux): so an API run on
   // a --faux server reaches the faux gateway and its computers. The run's claim-time computer is composed once, the one way
-  // (workspace/computer-deps.ts computerDepsFrom), from that same environment; a Docker computer's mounts by where this
-  // process's Docker has the data directory (box-paths.ts), read once.
+  // (main.ts runnerComputers, a desktop's or a phone's live view with it), from that same environment; a Docker computer's
+  // mounts by where this process's Docker has the data directory (box-paths.ts), read once.
   const runs = env ?? runEnv(process.env);
   const { dockerPathsForRuns } = await import("../box-paths.js");
   const { hostAddressesOnce } = await import("../docker-host-addresses.js");
   const { PROVIDERS } = await import("@parcha/agentrun-computer");
   const { hostCommandRefusals } = await import("../computers.js");
-  const computers = computerDepsFrom({ env: runs, store, sealKey: seal.key, dockerPaths: () => dockerPathsForRuns(runs, dataDir), hostAddresses: () => hostAddressesOnce(runs), hostWhy: hostCommandRefusals(PROVIDERS, process.env.PATH), ...(hub ? { hub } : {}) });
-  const createLoop = dispatchRunner({ env: runs, data: dataDir, journal: (claim) => store.journal(claim), store, sealKey: seal.key, routeOf, computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps });
+  const computers = runnerComputers(store, runs, seal.key, { dockerPaths: () => dockerPathsForRuns(runs, dataDir), hostAddresses: () => hostAddressesOnce(runs), hostWhy: hostCommandRefusals(PROVIDERS, process.env.PATH), ...(hub ? { hub } : {}) });
+  // `mcpLoopback`: the server beside it is a local install (Serve.localInstall), so its runs may reach an MCP server on
+  // loopback; any other runner's runs never do.
+  const createLoop = dispatchRunner({ env: runs, data: dataDir, journal: (claim) => store.journal(claim), store, sealKey: seal.key, routeOf, computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps, ...(mcpLoopback ? { mcpLoopback: true } : {}) });
   // It claims by the host's memory as well as by --max-runs (memory-claim.ts): a heavy harness's run waits queued for room.
   const { runnerMemory } = await import("./memory-claim.js");
+  // Before it claims: the scratch folders of runs that ended after their runner died (scratch-sweep.ts).
+  const { sweepEndedScratch } = await import("./scratch-sweep.js");
+  await sweepEndedScratch(store, dataDir, { log: (line) => console.error(`agentrun-serve runner: ${line}`) });
   // Its run start and end lines go where the server's lines do (print.ts runLine), the one stdout; `onLine` is where a
   // launcher in this process (a test) reads them instead.
   const { runLine } = await import("../print.js");
@@ -90,7 +94,7 @@ export async function serveWithRunner(options: import("../server.js").ServeOptio
   const { besideRunEnv } = await import("./main.js");
   const { loops, drainMs } = besideRunnerOptions(options, process.env);
   const serve = await startServe(options);
-  const beside = await runnerBeside(options.data, { loops, drainMs, env: besideRunEnv(process.env, fauxEnvOf(options)), hub: serve.attachHub, ...(options.log ? { onLine: options.log } : {}) }).catch(async (error: unknown) => {
+  const beside = await runnerBeside(options.data, { loops, drainMs, env: besideRunEnv(process.env, fauxEnvOf(options)), hub: serve.attachHub, mcpLoopback: serve.localInstall, ...(options.log ? { onLine: options.log } : {}) }).catch(async (error: unknown) => {
     await serve.close();
     throw error;
   });

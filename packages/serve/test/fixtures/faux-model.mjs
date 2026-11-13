@@ -44,7 +44,10 @@ export const REPORT = "| Category | Count | Total |\n|---|---|---|\n| Office | 2
 function replyTo(context, faux) {
   const untilExists = (file) => untilExistsOr(file, faux.signal);
   const users = personOf(context).map(textOf);
-  const [first = "", last = ""] = [users[0], users.at(-1)];
+  // The run's first message as the person wrote it: the spend cap's note, placed in a request with one user message by
+  // appending it to that message, is the server's, never part of the words a pattern below reads. The last message keeps it
+  // (a reply that quotes the last text shows where the note went: cap-raise.test.mjs).
+  const [first = "", last = ""] = [(users[0] ?? "").replace(/\s*<system-reminder>[\s\S]*?<\/system-reminder>\s*$/, ""), users.at(-1)];
   const answered = context.messages.at(-1)?.role === "toolResult";
   // A workflow's model node: it delivers its record through `submit`, slowly when its input says so.
   const results = context.messages.filter((m) => m.role === "toolResult").length;

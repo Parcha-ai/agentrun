@@ -1,5 +1,5 @@
 -- The store's schema on Postgres, version 8: a person's own computer paired with this server (spec/computer/attach.md),
--- and the codes that pair one, as store/schema.ts keeps them on SQLite. Applied once, after 0005, inside the transaction
+-- and the codes that pair one, as store/schema.ts keeps them on SQLite (version 10). Applied once, after 0007, inside the transaction
 -- migrate.ts opens. Never edit this file once applied: a change is a new file.
 --
 -- paired_computers: the token's SHA-256 alone is kept (hex); revoked_at marks a removed computer, whose token dials no more.
@@ -27,4 +27,4 @@ CREATE TABLE IF NOT EXISTS pairing_codes (
   expires_at BIGINT NOT NULL
 );
 
-UPDATE store_meta SET schema_version = 5 WHERE singleton = 1;
+UPDATE store_meta SET schema_version = 8 WHERE singleton = 1;

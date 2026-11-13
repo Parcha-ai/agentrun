@@ -853,9 +853,10 @@ function createProjector(options: TimelineOptions) {
       if (systems.has(conv)) add(make("phase", conv, base, { summary: "Tools changed" }));
       systems.add(conv);
     } else if (entry.kind === "pi.reset") {
-      add(make("phase", conv, base, { summary: "Context reset", text: textOf(message) || null }));
+      // The new context and a summary of the older one are words from the run: redacted by the host, before any cut.
+      add(make("phase", conv, base, { summary: "Context reset", text: redactText(textOf(message)) || null }));
     } else if (entry.kind === "pi.compaction") {
-      add(make("phase", conv, base, { summary: "Summarized older context", text: textOf(message) || null }));
+      add(make("phase", conv, base, { summary: "Summarized older context", text: redactText(textOf(message)) || null }));
     } else if (entry.kind === HOST_PHASE) {
       // A step the host stamped (`at`, ms) shows at that time: written as it happened, it can sit after a message whose time
       // is earlier (a model request's start), and the time of the log before it would not be its own.

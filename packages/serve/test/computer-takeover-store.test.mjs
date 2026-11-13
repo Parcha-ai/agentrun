@@ -115,8 +115,8 @@ async function setup(t, { computer = { kind: "desktop", provider: "e2b" } } = {}
       holds.push(hold);
       const ends = [];
       hold.on((event) => event.type === "state" && event.ended && ends.push(event.ended));
-      const held = heldHands({ screen: { shot: async () => { shotStarted(); await released; return { png: "AA==" }; } } }, hold);
-      const look = { name: "look", replaySafe: true, run: async () => JSON.stringify(await held.screen.shot()) };
+      const held = heldHands({ computer: { groups: ["screen"], call: async () => { shotStarted(); await released; return { png: "AA==" }; } } }, hold);
+      const look = { name: "look", replaySafe: true, run: async () => JSON.stringify(await held.computer.call("screenshot", {})) };
       const base = await piAdapterSpec({ script: [{ call: "look" }, { say: "done" }], tools: { look }, hooks: quiet })(claim, run);
       return {
         ...base, agentId: "agent-1", computer: { kind: "desktop", hold },
@@ -150,14 +150,14 @@ async function setup(t, { computer = { kind: "desktop", provider: "e2b" } } = {}
     let letGoSecond;
     const releasedSecond = second ? new Promise((resolve) => (letGoSecond = resolve)) : Promise.resolve();
     let shots = 0;
-    const held = heldHands({ screen: { shot: async () => {
+    const held = heldHands({ computer: { groups: ["screen"], call: async () => {
       shots += 1;
       if (shots === 1) shotStarted();
       else secondShotStarted();
       await (shots === 1 ? released : releasedSecond);
       return { png: "AA==" };
     } } }, hold);
-    const look = { name: "look", replaySafe: true, run: async () => JSON.stringify(await held.screen.shot()) };
+    const look = { name: "look", replaySafe: true, run: async () => JSON.stringify(await held.computer.call("screenshot", {})) };
     // Two looks: the second is the agent's next call, parked while the person holds the desktop. (A run whose agent
     // answers instead waits at its end for the hand-back: startEnding.)
     const spec = piAdapterSpec({ script: [{ call: "look" }, { call: "look" }, { say: "done" }], tools: { look }, hooks: quiet });
@@ -177,8 +177,8 @@ async function setup(t, { computer = { kind: "desktop", provider: "e2b" } } = {}
     const inShot = new Promise((resolve) => (shotStarted = resolve));
     let letGo;
     const released = new Promise((resolve) => (letGo = resolve));
-    const held = heldHands({ screen: { shot: async () => { shotStarted(); await released; return { png: "AA==" }; } } }, hold);
-    const look = { name: "look", replaySafe: true, run: async () => JSON.stringify(await held.screen.shot()) };
+    const held = heldHands({ computer: { groups: ["screen"], call: async () => { shotStarted(); await released; return { png: "AA==" }; } } }, hold);
+    const look = { name: "look", replaySafe: true, run: async () => JSON.stringify(await held.computer.call("screenshot", {})) };
     const spec = piAdapterSpec({ script: [{ call: "look" }, { say: "done" }], tools: { look }, hooks: quiet });
     const releases = [];
     await begin(createAdapterLoop(async (claim, run) => {
@@ -207,7 +207,7 @@ async function setup(t, { computer = { kind: "desktop", provider: "e2b" } } = {}
    *  its tool's result is the answer's outcome. */
   const startAsking = async () => {
     const hold = computerHold();
-    const held = heldHands({ screen: { shot: async () => ({ png: "AA==" }) } }, hold);
+    const held = heldHands({ computer: { groups: ["screen"], call: async () => ({ png: "AA==" }) } }, hold);
     const handoff = { name: "handoff", replaySafe: false, run: async (_args, signal) => (await held.handoff.ask({ instruction: "Type the bank's code", completion_condition: "the statements show" }, signal)).outcome };
     const spec = piAdapterSpec({ script: [{ call: "handoff" }, { say: "done" }], tools: { handoff }, hooks: quiet });
     await begin(createAdapterLoop(async (claim, run) => ({ ...(await spec(claim, run)), agentId: "agent-1", computer: { kind: "desktop", hold } })));

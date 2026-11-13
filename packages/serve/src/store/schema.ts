@@ -1,11 +1,13 @@
-// The store's one schema, version 8 (design 2.1). Nothing migrates into it: the rewrite replaces the old stores, and a store
+// The store's one schema, version 10 (design 2.1). Nothing migrates into it: the rewrite replaces the old stores, and a store
 // an older build made is refused as a version this build does not know. The server sets it up once at its start (a
 // store_meta row holds the version); a runner refuses a version it does not know. Version 2 adds the computer ledger;
 // version 3 numbers each save of a sign-in (sign_ins.save); version 4 stamps an MCP token's end (mcp_servers.token_until);
 // version 5 maps an externally owned agent (agents.external_ref, revisions.external_version); version 6 tells a person's
 // stop from a cancel (runs.outcome 'stopped' or 'cancelled'); version 7 keeps a run's learning by round
-// (learning_proposals.round: a follow-up to a run that ended looks back again, a round of its own); version 8 pairs a
-// person's own computer (paired_computers, pairing_codes).
+// (learning_proposals.round: a follow-up to a run that ended looks back again, a round of its own); version 8 adds the
+// run-change feed (run_changes), each channel post's tries (channel_attempts) and the claim a post's try settles under
+// (channel_posts.claim); version 9 adds where a live viewer answers (computer_viewers.host, a runner's live host,
+// live-reach.ts); version 10 pairs a person's own computer (paired_computers, pairing_codes).
 // Conventions: every time is INTEGER epoch milliseconds; JSON is TEXT checked by json_valid; money is REAL US dollars;
 // sealed columns hold ciphertext only (sealed with the server's key outside the store), so the store never sees a secret
 // in the clear. Foreign keys are on (the connection's pragma).
@@ -17,7 +19,7 @@
 // journal tables, keyed by run_id (store/journal): one schema for every run's journal, so a query joins runs and their
 // journals.
 
-export const SCHEMA_VERSION = 8;
+export const SCHEMA_VERSION = 10;
 
 /** One answer per approval of a run: a second approve or deny command naming the same approval is refused
  *  (StoreConstraint), so the first answer a person gives wins from the moment it is written, before the runner takes it
@@ -115,6 +117,25 @@ export const STORE_DDL: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS runs_by_agent ON runs (agent_id, started_at)`,
   `CREATE INDEX IF NOT EXISTS runs_by_revision ON runs (revision_id, started_at)`,
   `CREATE INDEX IF NOT EXISTS runs_claimable ON runs (state, started_at)`,
+  // The run-change feed (Runs.changedSince): a row for each run reaching a final state or let go by its runner (parked, or
+  // running with no runner), written by the trigger below in the transaction of the write that made it, so no writer of a
+  // run's state or runner can miss it and none lands without its write. `seq` numbers them in commit order (one writer).
+  `CREATE TABLE IF NOT EXISTS run_changes (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL,
+    state TEXT NOT NULL,
+    ended_at INTEGER,
+    epoch INTEGER NOT NULL,
+    runner TEXT
+  ) STRICT`,
+  // A change is a move of the state or the runner into a final state, parked, or running with none: a fence's touch of
+  // the row (epoch = epoch), a claim, a renew and a cost or summary write are none.
+  `CREATE TRIGGER IF NOT EXISTS runs_changed AFTER UPDATE OF state, runner ON runs
+    WHEN (OLD.state IS NOT NEW.state OR OLD.runner IS NOT NEW.runner)
+      AND (NEW.state IN ('ended', 'stopped', 'failed', 'parked') OR (NEW.state = 'running' AND NEW.runner IS NULL))
+    BEGIN
+      INSERT INTO run_changes (run_id, state, ended_at, epoch, runner) VALUES (NEW.id, NEW.state, NEW.ended_at, NEW.epoch, NEW.runner);
+    END`,
   // One run per imported session: Store.importRun is refused a session it already imported (as the old store's
   // UNIQUE (source, session) did).
   `CREATE UNIQUE INDEX IF NOT EXISTS runs_import ON runs (json_extract(imported_from, '$.source'), json_extract(imported_from, '$.session')) WHERE imported_from IS NOT NULL`,
@@ -236,6 +257,7 @@ export const STORE_DDL: readonly string[] = [
     attempts INTEGER NOT NULL DEFAULT 0,
     next_at INTEGER NOT NULL,
     claimed_until INTEGER,
+    claim TEXT,
     state TEXT NOT NULL CHECK (state IN ('queued', 'sending', 'sent', 'dropped')),
     reason TEXT,
     created_at INTEGER NOT NULL
@@ -249,6 +271,22 @@ export const STORE_DDL: readonly string[] = [
     at INTEGER NOT NULL,
     PRIMARY KEY (channel, run_id, marker)
   ) STRICT`,
+  // Each try of a channel's post (the outbound webhook's deliveries log): kept to the newest few per channel, each once by
+  // its try's id.
+  `CREATE TABLE IF NOT EXISTS channel_attempts (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    try_id TEXT NOT NULL UNIQUE,
+    channel TEXT NOT NULL,
+    post_id TEXT NOT NULL,
+    moment TEXT NOT NULL,
+    at INTEGER NOT NULL,
+    status_code INTEGER,
+    latency_ms INTEGER NOT NULL,
+    error TEXT,
+    retry_at INTEGER,
+    redelivery INTEGER NOT NULL CHECK (redelivery IN (0, 1))
+  ) STRICT`,
+  `CREATE INDEX IF NOT EXISTS channel_attempts_by_channel ON channel_attempts (channel, seq)`,
 
   // A code review's ledger, per head and firing.
   `CREATE TABLE IF NOT EXISTS review_ledger (
@@ -425,6 +463,7 @@ export const STORE_DDL: readonly string[] = [
     at INTEGER NOT NULL,
     runner TEXT NOT NULL,
     epoch INTEGER NOT NULL,
+    host TEXT,
     PRIMARY KEY (run_id, kind, tag)
   ) STRICT`,
 
