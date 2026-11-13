@@ -10,6 +10,8 @@ import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { NOTE_ORIGINS, NOTE_STATUSES, NOTE_TYPES } from "./learn/index.js";
 import { ERROR_STATUS } from "./errors.js";
 import { TAKE_OVER_MINUTES } from "./computer-routes.js";
+import { HOLD_MAX_MINUTES, HOLD_MINUTES } from "./computer-held.js";
+import { CALL_MS, PROTOCOL_METHODS } from "./computer-channel.js";
 import { LAUNCH_LOST, SETUP_LOST } from "./files.js";
 import { HARNESSES } from "./harness.js";
 import { LEARNING_LABEL, LEARNING_MODES, LEARNING_REASONS, LEARNING_STATES, RUN_LEARNING_USE } from "./learning.js";
@@ -740,13 +742,27 @@ const ACCOUNT_TEST = {
     closed({ ok: { const: false }, why: { type: "string", description: "Why the test did not pass, in plain words naming what to check: never a key." } }),
   ],
 };
+/** held/1: what POST /runs/{run_id}/start and .../computer/release answer (computer-held-routes.ts heldRoute). */
+const HELD_ANSWER = (state: "started" | "released") => closed({ held: closed({ state: { const: state } }) });
 /** A run's computer, on the run read (run-computer.ts runComputerField). */
 const RUN_COMPUTER = {
   ...closedWith({
     kind: { enum: ["sandbox", "desktop", "phone", "browser"] },
     provider: { type: "string" },
     state: { enum: ["starting", "ready", "taken_over", "ended", "failed"], description: "`taken_over` while the owner holds the run's desktop or phone (POST /runs/{run_id}/computer/take-over); `failed` when the run could not have its computer (error code `computer_unavailable`)." },
-  }, { why: { type: "string", description: "With `failed`: the server's words, naming the setting to fill." } }),
+  }, {
+    why: { type: "string", description: "With `failed`: the server's words, naming the setting to fill." },
+    held: {
+      ...closedWith({
+        state: { enum: ["starting", "waiting", "started", "ended", "released"], description: "`starting` until the run's computer comes up; `waiting`, up and held, the agent not started (POST /runs/{run_id}/start); `started`, the agent runs; `ended`, the agent is done or was stopped and the run keeps the computer for its owner; `released`, let go (POST /runs/{run_id}/computer/release, no call for `minutes`, or the run's end)." },
+        minutes: { type: "integer", minimum: 1, maximum: HOLD_MAX_MINUTES, description: "How long the hold waits with no call from its owner (the run's `hold_minutes`)." },
+      }, {
+        until: { type: "string", format: "date-time", description: "When the hold lets the computer go if no call comes first. Absent once released." },
+        why: { enum: ["timeout", "lost"], description: "Why it was let go when no release did: `timeout`, no call came for `minutes`; `lost`, the runner that held it lost the run, and its computer with it." },
+      }),
+      description: "A run started with `hold: true`: where its held computer is.",
+    },
+  }),
   description: "The run's computer, its agent's `computer` setting: absent for a run with none.",
   "x-agentrun-serve": "computer/1",
 };
@@ -1424,6 +1440,47 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       requestBody: { required: false, content: { "application/json": { schema: closedWith({}, { outcome: { enum: ["done", "cancelled"], description: "The answer to the agent's ask: `done` when the person did what it asked, `cancelled` when they will not. Absent: done." } }) } } },
       responses: { "200": json(COMPUTER_ANSWER, "Who drives now, and the answer the agent gets when this answered its ask."), ...errors(401, 403, 404, 409, 422, 429, 500) },
       "x-agentrun-serve": "computer/1",
+    },
+  },
+  "/runs/{run_id}/start": {
+    post: {
+      operationId: "startRun", tags: ["runs"], summary: "Start a held run's agent",
+      description: "A run started with `hold: true` waits, its computer up and held, until this starts its agent on its input. A row the run's runner applies: answered once the agent is started. 404 for a run that holds no computer; 409 `computer_not_live` when its computer is not up yet (`computer.held.state` starting), its agent already started, or the computer was let go; 503 when no runner took the row within a minute. The owner's: the server's token or the owner's session. A run never holds the server's token.",
+      parameters: [ref("parameters/RunId")],
+      requestBody: { required: false, content: { "application/json": { schema: closed({}) } } },
+      responses: { "200": json(HELD_ANSWER("started"), "The agent is started."), ...errors(401, 404, 409, 422, 429, 500, 503) },
+      "x-agentrun-serve": "held/1",
+    },
+  },
+  "/runs/{run_id}/computer/call": {
+    post: {
+      operationId: "callRunComputer", tags: ["runs"], summary: "Send a run's computer one protocol call",
+      description: `One call of the computer protocol (spec/computer) on a running run's computer: a sandbox, a desktop or a phone. A run that holds its computer (\`hold: true\`) takes calls before its agent starts, while it runs, and after it ended until the release; each call starts the hold's \`hold_minutes\` again. The answer is the computer's, verbatim: \`{ok: true, value}\` or \`{ok: false, error: {code, message, data?}}\`, the method's result or error as the protocol defines it. A row the run's runner answers, behind the owner's take-over as the agent's calls are: while a person holds the desktop or phone, the call waits for the hand-back. A call runs ${CALL_MS / 1000} seconds at most, its wait included (then \`{ok: false, error: {code: "timeout"}}\`). The run's record keeps each call's method, outcome and time, never its params or its answer's bytes. \`method\` is one of the protocol's methods (422 otherwise). 404 for no such run; 409 \`computer_not_live\` when the run is not running, has no computer that takes calls, or let its computer go; 503 when no runner took the row in time. The owner's: the server's token or the owner's session. A run never holds the server's token, so its agent drives its computer through its own tools alone.`,
+      parameters: [ref("parameters/RunId")],
+      requestBody: {
+        required: true,
+        content: { "application/json": { schema: closedWith({ method: { enum: [...PROTOCOL_METHODS], description: "The protocol method." } }, { params: { type: "object", additionalProperties: true, description: "The method's params. Absent: {}." } }) } },
+      },
+      responses: {
+        "200": json({
+          oneOf: [
+            closed({ ok: { const: true }, value: { description: "The method's result." } }),
+            closed({ ok: { const: false }, error: { type: "object", additionalProperties: true, required: ["code", "message"], properties: { code: { type: "string" }, message: { type: "string" } }, description: "The computer's error: its code, its words and its data." } }),
+          ],
+        }, "The computer's answer."),
+        ...errors(401, 404, 409, 422, 429, 500, 503),
+      },
+      "x-agentrun-serve": "channel/1",
+    },
+  },
+  "/runs/{run_id}/computer/release": {
+    post: {
+      operationId: "releaseRunComputer", tags: ["runs"], summary: "Let a held run's computer go",
+      description: "The owner is done with the computer a run holds (`hold: true`). After the agent's end the run then ends as its agent did, and its computer goes with it; before the start, the run ends cancelled, its agent never run; while the agent runs, the run no longer waits after its end. A row the run's runner applies. 404 for a run that holds no computer, and for one already let go (released, timed out, or the run is over); 409 `computer_not_live` when it is not up yet; 503 when no runner took the row within a minute. The owner's: the server's token or the owner's session.",
+      parameters: [ref("parameters/RunId")],
+      requestBody: { required: false, content: { "application/json": { schema: closed({}) } } },
+      responses: { "200": json(HELD_ANSWER("released"), "The computer is let go."), ...errors(401, 404, 409, 422, 429, 500, 503) },
+      "x-agentrun-serve": "held/1",
     },
   },
   "/runs/{run_id}/computer": {
@@ -2228,6 +2285,8 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       description: "Archil mode only: the disk this run keeps its folder on, instead of its agent's own (a disk per customer, say). It is the caller's: agentrun never makes, renames or removes it, and removing the agent's disk never touches it. It is read at Archil before the run is made: none of that id, or one in another region than the account key's, is 422 at `archil_disk.disk_id` in words naming the region, and no run is made (503 when Archil can't be asked). The claim reads it again, so a disk removed in between fails the run in the same words. Its id alone: never a key or a region. The run's mount credential is minted on this disk, so Archil takes it on no other. 422 in Mode 1, or with no account key saved.",
       "x-agentrun-serve": "archil/1",
     },
+    hold: { type: "boolean", description: `true: the run claims its computer and holds it for its owner. Its agent waits until POST /runs/{run_id}/start; meanwhile POST /runs/{run_id}/computer/call sends the computer protocol calls, to set a task up. After the agent's end the run keeps the computer, for the owner's calls (to check what the agent left), until POST /runs/{run_id}/computer/release; then it ends as its agent did. A stop (POST /runs/{run_id}/stop) ends the agent and keeps the computer the same way, and the run ends stopped at the release; a cancel ends the run at once and lets the computer go. Each wait lets the computer go after \`hold_minutes\` with no call from the owner: before the start, the run then ends cancelled. The run read's \`computer.held\` says where the hold is. Only for an agent whose computer is a sandbox, a desktop or a phone, never a workflow (422 \`hold\` not_an_option otherwise). A run that loses its runner, or whose harness restarts after a fault, loses the computer it held: it fails, and \`computer.held.why\` is \`lost\`.`, "x-agentrun-serve": "held/1" },
+    hold_minutes: { type: "integer", minimum: 1, maximum: HOLD_MAX_MINUTES, description: `With \`hold: true\`: how long the held computer waits with no call from its owner, before the start and after the agent's end. Absent: ${HOLD_MINUTES}. Above ${HOLD_MAX_MINUTES}, or without hold, is 422.`, "x-agentrun-serve": "held/1" },
   },
   TimelineUsage: { ...SO_FAR, not_metered: { type: "integer", minimum: 1, description: "Set when the run made tool calls with no price (an MCP tool its owner set none for): how many. They ran outside the run's cost and its cap, and never make `usd` unknown.", "x-agentrun-serve": "mcpservers/1" } },
   Usage: { unpriced_runs: { type: "integer", minimum: 0, description: "How many runs in the report have a cost no one knows on them: they add no dollars to `total_usd`, so no sum passes them off as $0.", "x-agentrun-serve": "costsofar/1" } },
@@ -2324,6 +2383,31 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       items: { type: "object", additionalProperties: false, required: ["label", "kind", "status", "duration_ms"], properties: { label: { type: "string" }, kind: { type: "string", description: "The node's kind, as the workflow DSL names it (`extract`, `agent`, `call`, ...)." }, status: { type: "string", description: "How the node ended: `ok`, `failed` or `escalated`. Why a node failed is never shown: its text may hold part of a secret." }, duration_ms: { type: "number" }, model: { type: "string", description: "A model node's (agent, decide, extract, report): the model it ran on, as the run's model route names it. Absent on a call node." }, tier: { type: "string", description: "The tier the model node named (`fast`, `strong`); absent for none, which runs on the run's own model." } } },
       description: "On a learned workflow call's `tool_result` row alone (`tool_name` learned_workflow): each of the workflow's nodes that ran, in the order they ended, at most 64. Absent on every other row.",
       "x-agentrun-serve": "learnednodes/1",
+    },
+    computer_calls: {
+      type: "array",
+      items: {
+        type: "object", additionalProperties: false, required: ["method", "ok", "ms"],
+        properties: {
+          method: { type: "string", description: "The computer protocol method (spec/computer)." },
+          ok: { type: "boolean" },
+          ms: { type: "number" },
+          code: { type: "string", description: "The error's code, when the call failed." },
+          steps: {
+            type: "array",
+            items: { type: "object", additionalProperties: false, required: ["do"], properties: { do: { type: "string", description: "The step's kind: press, set, perform, click, type, key, nav, scroll or drag." }, route: { type: "string", description: "The route it ran by." }, verified: { type: "boolean", description: "Whether a readback showed it took." }, error: { type: "string", description: "The kind of error that refused it." } } },
+            description: "A ui.act call's steps, in order.",
+          },
+          expect: { enum: ["met", "unmet"], description: "A ui.act call's expect: whether it held." },
+        },
+      },
+      description: "On a tool call's `tool_result` row alone: each computer protocol call the tool made, in order, at most 200. Never a param's value or an answer's bytes: no screenshot, and no text a step set or typed. Absent on a call that made none.",
+      "x-agentrun-serve": "computercalls/1",
+    },
+    computer_calls_dropped: {
+      type: "integer",
+      description: "On a `tool_result` row whose call made more than 200 computer calls: how many past the 200 its record left out. Absent otherwise.",
+      "x-agentrun-serve": "computercalls/1",
     },
     learning: {
       ...closed({ state: { enum: [...LEARNING_STATES] }, reason: LEARNING_REASON, detail: { type: ["string", "null"] } }),

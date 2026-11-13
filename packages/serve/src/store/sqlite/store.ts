@@ -7,6 +7,7 @@
 import { existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { watchCommandsAt, wakeCommands } from "../command-wake.js";
 import { claimFence, storeNow, type StoreNow } from "../fence.js";
 import { RunStorage } from "../journal/storage.js";
 import { COMMANDS_ONE_ANSWER, DDL, SCHEMA_VERSION } from "../schema.js";
@@ -26,7 +27,7 @@ const seqOf = (cursor: RunChangeCursor): number => {
   if (!/^(0|[1-9][0-9]{0,15})$/.test(cursor)) throw new TypeError(`${JSON.stringify(cursor)} is not a run-change cursor this store gave`);
   return Number(cursor);
 };
-import type { Dialect } from "../dialect.js";
+import { type Dialect, settledBody } from "../dialect.js";
 import { Connection, type SqliteExecutor, type SqliteValue, type Statement, type StoreConnection, type Tx } from "./connection.js";
 import { applyRunPatch, NOT_A_LEARNING_RUN, refuseLeftovers, REOPEN_SET, reopenableWhere, RUN_COLUMNS, runOf, SIGN_IN_HANDED_LOCK, type RunRecord } from "./run-patch.js";
 import { readLaunch, writeLaunch } from "./run-launch.js";
@@ -680,8 +681,8 @@ class SqliteStore implements Store {
         }),
       pending: async () =>
         (await db.all<FiringRecord>(`SELECT ${FIRING_COLUMNS} FROM trigger_firings WHERE status = 'due' OR (status = 'failed' AND (notified IS NULL OR notified = 0)) ORDER BY at, ${d.firingOrder}`)).map(firingOf),
-      message: async ({ triggerId, key }, runId, command, bound) =>
-        db.transaction(async (tx) => {
+      message: async ({ triggerId, key }, runId, command, bound) => {
+        const sent = await db.transaction(async (tx) => {
           const at = now();
           await d.lockRow(tx, "triggers", "id", triggerId);
           const firing = await tx.get<{ status: string }>("SELECT status FROM trigger_firings WHERE trigger_id = ? AND key = ?", triggerId, key);
@@ -701,7 +702,10 @@ class SqliteStore implements Store {
           await tx.run(`UPDATE trigger_firings SET status = 'sent', run_id = ?, reason = NULL, ${clear} WHERE trigger_id = ? AND key = ?`, runId, triggerId, key);
           await tx.run("UPDATE triggers SET failures_in_a_row = 0, updated_at = ? WHERE id = ?", at, triggerId);
           return { sent: true as const, commandId: row!.id };
-        }),
+        });
+        if (sent !== undefined && "sent" in sent) wakeCommands(this.where, { runId, what: "written" });
+        return sent;
+      },
       waiting: async () =>
         (await db.all<FiringRecord & { free: number | boolean }>(
           `SELECT ${FIRING_COLUMNS.split(", ").map((c) => `f.${c}`).join(", ")},
@@ -882,8 +886,8 @@ class SqliteStore implements Store {
         // Archiving an archived run keeps its first time: a second archive is a no-op, never a new time.
         await db.write([archived ? { sql: "UPDATE runs SET archived_at = COALESCE(archived_at, ?) WHERE id = ?", params: [now(), runId] } : { sql: "UPDATE runs SET archived_at = NULL WHERE id = ?", params: [runId] }]);
       },
-      reopen: async (runId, { kind, body = null }, { launchSealed } = {}) =>
-        db.transaction(async (tx) => {
+      reopen: async (runId, { kind, body = null }, { launchSealed } = {}) => {
+        const command = await db.transaction(async (tx) => {
           // Back to running, released: the epoch, the journal, cost_usd and metrics stay (its next turn is booked on what it
           // spent); the end's own fields go. Only an agentic run that ended completed, not imported, not a learning run.
           const reopened = await tx.runCounted(`UPDATE runs SET ${REOPEN_SET} WHERE id = ? AND ${reopenableWhere(d)}`, runId);
@@ -892,7 +896,10 @@ class SqliteStore implements Store {
           if (launchSealed) await tx.run("UPDATE run_launch SET sealed = ? WHERE run_id = ?", launchSealed, runId);
           const row = await tx.get<CommandRecord>(`INSERT INTO commands (run_id, kind, body, created_at) VALUES (?, ?, ?, ?) RETURNING ${COMMAND_COLUMNS}`, runId, kind, json(body), now());
           return commandOf(row!);
-        }),
+        });
+        wakeCommands(this.where, { runId, what: "written" });
+        return command;
+      },
       claimable: async ({ limit } = {}) => {
         const claimable = claimableIn(d, clock());
         const bounded = typeof limit === "number" && Number.isSafeInteger(limit) && limit >= 0;
@@ -913,13 +920,13 @@ class SqliteStore implements Store {
       update: async (claim, patch, rows = {}) => {
         if (Array.isArray(rows) || typeof rows !== "object" || rows === null) throw new TypeError("runs.update's third argument is { also?, take?, signInSettleMs? }");
         const { also = [], take = [], signInSettleMs = 0 } = rows;
-        return db.transaction(async (tx): Promise<UpdatedRun> => {
+        const updated = await db.transaction(async (tx): Promise<UpdatedRun> => {
           // A run update may end the run, moving its epoch on: held against every write under the claim (dialect lockRow).
           await d.lockRow(tx, "runs", "id", claim.runId, "update");
           const at = now();
           const row = await applyRunPatch(tx, claim, patch, also, at, d, storeNow(d, () => at));
           for (const commandId of take) {
-            if ((await tx.runCounted("UPDATE commands SET taken_at = ? WHERE id = ? AND run_id = ? AND taken_at IS NULL", at, commandId, claim.runId)) === 0) {
+            if ((await tx.runCounted(`UPDATE commands SET taken_at = ?, ${settledBody(d)} WHERE id = ? AND run_id = ? AND taken_at IS NULL`, at, commandId, claim.runId)) === 0) {
               throw new CommandTaken(claim.runId, commandId);
             }
           }
@@ -940,6 +947,9 @@ class SqliteStore implements Store {
           }
           return row;
         });
+        // After the commit: the readers of this run's command answers in this process wake (a take, or the run gone final).
+        if (take.length > 0 || patch.state === "ended" || patch.state === "stopped" || patch.state === "failed") wakeCommands(this.where, { runId: claim.runId, what: "answered" });
+        return updated;
       },
     };
 
@@ -1640,7 +1650,7 @@ class SqliteStore implements Store {
     if (open && !open.closed) return open;
     const journal: RunStorage = new RunStorage(this.#db, claim, this.#now, () => {
       if (this.#journals.get(key) === journal) this.#journals.delete(key);
-    });
+    }, this.where);
     this.#journals.set(key, journal);
     return journal;
   }
@@ -1676,7 +1686,23 @@ class SqliteStore implements Store {
     },
     // The message's launch secrets, in the command's own write: written only when the command is (a final run refuses both).
     ...(launchSealed ? [{ sql: "UPDATE run_launch SET sealed = ? WHERE run_id = ?", params: [launchSealed, runId] }] : [])]);
+    wakeCommands(this.where, { runId, what: "written" });
     return commandOf(result!.rows[0] as CommandRecord);
+  }
+
+  watchCommands(listener: (event: { readonly runId: string; readonly what: "written" | "answered" }) => void): () => void {
+    return watchCommandsAt(this.where, listener);
+  }
+
+  async answerOf(runId: string, commandId: number): Promise<{ readonly value: unknown } | undefined> {
+    // Read and cleared in one transaction, so two readers never both get it. A refused row never holds one.
+    const text = await this.#db.transaction(async (tx) => {
+      const row = await tx.get<{ answer: string | null }>("SELECT answer FROM commands WHERE id = ? AND run_id = ? AND taken_at IS NOT NULL AND refused IS NULL", commandId, runId);
+      if (row?.answer === undefined || row.answer === null) return undefined;
+      // The clear counts: a reader that lost the race to another one clears nothing and gets nothing.
+      return (await tx.runCounted("UPDATE commands SET answer = NULL WHERE id = ? AND run_id = ? AND answer IS NOT NULL", commandId, runId)) === 0 ? undefined : row.answer;
+    });
+    return text === undefined ? undefined : { value: JSON.parse(text) };
   }
 
   async commands(runId: string, after: number): Promise<Command[]> {
@@ -1728,8 +1754,9 @@ class SqliteStore implements Store {
     // The clock is read inside the transaction, so the lease check and the write are one.
     await this.#db.transaction(async (tx) => {
       const now = await underClaim(tx, claim, this.#now);
-      await tx.run("UPDATE commands SET taken_at = ?, refused = ? WHERE id = ? AND run_id = ? AND taken_at IS NULL", now, outcome === "refused" ? (reason ?? "refused") : null, commandId, claim.runId);
+      await tx.run(`UPDATE commands SET taken_at = ?, refused = ?, ${settledBody(this.#db.dialect)} WHERE id = ? AND run_id = ? AND taken_at IS NULL`, now, outcome === "refused" ? (reason ?? "refused") : null, commandId, claim.runId);
     });
+    wakeCommands(this.where, { runId: claim.runId, what: "answered" });
   }
 
   async retry(claim: Claim, commandId: number): Promise<number> {

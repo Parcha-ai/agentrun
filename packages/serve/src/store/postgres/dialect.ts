@@ -22,6 +22,10 @@ export function postgresDialect(schema: string, { testClock = false }: { testClo
     jsonNotFalse: (column, keys) => `COALESCE((${column}::json #> ${path(keys)})::text NOT IN ('false', '0'), TRUE)`,
     jsonArrayHas: (column) => `EXISTS (SELECT 1 FROM json_array_elements_text(${column}::json) AS element(value) WHERE element.value = ?)`,
     jsonArrayLength: (column) => `json_array_length(${column}::json)`,
+    // Through jsonb, the one place: a body that loses a key is never read for its key order. Every Postgres JSON function
+    // decodes the whole document's strings, so a body holding a string jsonb refuses (an escaped NUL, a lone surrogate)
+    // fails it: a computer call's params are written as one JSON text (computer-channel.ts), whose escapes jsonb keeps.
+    jsonWithout: (column, key) => `(${column}::jsonb - '${key.replaceAll("'", "''")}')::text`,
     firingOrder: "ord",
     limitAll: "LIMIT ALL",
     nullSafeEquals: (column) => `${column} IS NOT DISTINCT FROM ?`,

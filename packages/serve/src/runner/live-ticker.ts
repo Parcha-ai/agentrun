@@ -112,6 +112,7 @@ export function withLiveTicker(store: { readonly live: Live }, createLoop: LoopF
         },
         command: (command) => loop.command(command),
         stop: (reason) => loop.stop(reason),
+        keepsComputer: (reason) => loop.keepsComputer?.(reason) ?? false,
       };
     },
     close: async () => {
