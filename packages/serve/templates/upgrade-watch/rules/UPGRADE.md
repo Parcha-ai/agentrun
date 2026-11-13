@@ -45,8 +45,9 @@ full. A change the notes call breaking counts even when it reads as small.
 
 Which versions lie in between is decided by comparing version numbers, never by where a version sits in a list or a
 changelog: fixes to an older line are published after newer versions. For the same reason the list of versions is
-checked before it is trusted: a newer line whose first version was not seen, or a skipped major number, means
-versions are missing from the list, and the verdict is `incomplete`.
+checked before it is trusted: a newer line whose first version was not seen, a skipped major number, or a next
+line that exists when asked for directly and was not on the pages read, means versions are missing from the list,
+and the verdict is `incomplete`. A version in use is called "not a tag" only when its own page does not exist.
 
 A verdict answers for the items it checked, and the report lists them. Every run reads the notes again and reports
 every finding still in range: a break the owner was told about last week is still a break until they upgrade past

@@ -54,7 +54,7 @@ The result of this trigger's last completed run (01a1cf00-0000-7000-8000-0000000
 ```
 
 github.com and raw.githubusercontent.com are not reachable from this run. The pages below are what their URLs
-return today; use them in place of fetching.
+return today; use them in place of fetching. Any other page of this repository answers 404: Not Found.
 
 --- https://github.com/example-org/widget/tags (fetched 2026-11-16), tags newest published first, each with its date ---
 v2.5.1    2026-11-12
