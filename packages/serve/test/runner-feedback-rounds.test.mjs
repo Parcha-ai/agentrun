@@ -241,3 +241,19 @@ test("a run with rounds: its impact and its cost per run read the same split: th
   assert.equal(impact.look_back_usd, 0.4, "the follow-up turn is learning, as the cost per run counts it");
   assert.equal(impact.grade_usd, 0.02);
 });
+
+test("a grade of an archived run, or of a run of an archived agent, is kept and opens no round: closed history starts no paid learning (#2648 review)", { timeout: 120_000 }, async (t) => {
+  const { server, start, grade } = await world(t);
+  const archived = await start("run-archived", 1, { byHand: true });
+  assert.equal(archived.metrics?.path, "agent", "the agent finished it: a label asks a look-back");
+  await server.runs.archive(archived.id, true);
+  const one = await grade(archived, false, LABEL(1));
+  assert.equal(one.round, null, "an archived run opens no round");
+  assert.equal(one.row.state, "ended");
+  assert.equal(one.row.endedAt, archived.endedAt, "the archived run was never opened again");
+  const ofArchived = await start("run-of-archived", 2, { byHand: true });
+  await server.agents.archive("agent-1", true);
+  const two = await grade(ofArchived, false, LABEL(2));
+  assert.equal(two.round, null, "a run of an archived agent opens no round");
+  assert.equal(two.row.endedAt, ofArchived.endedAt, "the run of the archived agent was never opened again");
+});

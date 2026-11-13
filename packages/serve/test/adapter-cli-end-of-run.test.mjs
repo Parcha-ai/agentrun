@@ -141,10 +141,22 @@ test("an unparsed answer is asked again once: the runner's reflect hook on a CLI
   assert.ok(await opened.server.runs.get("run-1-learning"), "one learning run queued");
 });
 
+/** One batch of a CLI's session journal as the kernel keeps it (run-adapters process/records.ts: a `journal:<n>` effect
+ *  whose input holds the batch): the transcript entries of a turn, as Codex's and Claude's journals write them. */
+function journalBatch(n, entries) {
+  const stepId = `journal-step-${n}`;
+  return [
+    { kind: "kernel.start", data: { key: `journal:${n}`, stepId, name: "journal", replay: "safe", input: { v: 1, n, streams: { transcript: { from: 0, entries: entries.map((data) => ({ data })) } } }, placed: [], attempt: 1, startedAt: new Date().toISOString() } },
+    { kind: "kernel.end", data: { stepId, status: "completed", output: null } },
+  ];
+}
+
 /** A CLI stand-in whose session survives its runner: what it was sent and what it finished are in the session's own
- *  records, so a process opened after a crash finds the turn it was in (open_turn) and recover() resumes that turn. A
- *  turn `hold` says yes to never ends (its runner is killed under it). */
-function durableCli(log, hold) {
+ *  records (each answer also in its transcript, journalBatch), so a process opened after a crash finds the turn it was in
+ *  (open_turn) and recover() resumes that turn. A turn `hold` says yes to never ends (its runner is killed under it).
+ *  `silent`: recover() finds the cut turn finished, as Codex does when only the turn's end was not in its log: it keeps
+ *  the answer in the transcript and says no text. */
+function durableCli(log, hold, { silent = false } = {}) {
   return {
     id: "stand-in-cli",
     capabilities: () => ({}),
@@ -155,12 +167,13 @@ function durableCli(log, hold) {
       const done = records.filter((record) => record.kind === "stand-in.done").length;
       let state = sent.length === 0 ? "new" : sent.length > done ? "open_turn" : "idle";
       const cut = sent.at(-1)?.data?.text;
+      let batches = records.filter((record) => record.kind === "kernel.start" && record.data?.name === "journal").length;
       let turn;
-      const answer = (text) => {
+      const answer = (text, quiet = false) => {
         const say = text === INPUT ? "the job's answer" : /graded/.test(text) ? "the round's note" : "a note";
         turn = (async () => {
-          await io.writer.append([{ kind: "stand-in.done", data: null }]);
-          io.onEvent({ type: "text", delta: say });
+          await io.writer.append([{ kind: "stand-in.done", data: null }, ...journalBatch(batches++, [{ type: "message", role: "assistant", text: say }, { type: "turn", status: "completed" }])]);
+          if (!quiet) io.onEvent({ type: "text", delta: say });
           io.onEvent({ type: "turn_end", status: "completed" });
           return { status: "completed" };
         })();
@@ -177,7 +190,7 @@ function durableCli(log, hold) {
         async recover() {
           log.recovered.push(cut);
           state = "idle";
-          answer(cut);
+          answer(cut, silent);
         },
         async settleOpenTurn() { state = "idle"; },
         turnEnd: () => turn,
@@ -188,7 +201,7 @@ function durableCli(log, hold) {
   };
 }
 
-test("a CLI feedback round whose runner died mid look-back: the next claim recovers that turn and asks it nothing again (#2648 review)", async (t) => {
+for (const silent of [false, true]) test(`a CLI feedback round whose runner died mid look-back: the next claim recovers that turn and asks it nothing again (#2648 review)${silent ? "; a turn its CLI finds finished and restores without saying it again is read from the session's transcript (#2648 review)" : ""}`, async (t) => {
   const opened = await stores({ runners: 2 });
   await queue(opened.server, "run-1");
   const log = { sent: [], recovered: [] };
@@ -201,7 +214,7 @@ test("a CLI feedback round whose runner died mid look-back: the next claim recov
     return undefined;
   };
   const loop = createAdapterLoop((claim) => ({
-    adapter: claim.runId === "run-1" ? durableCli(log, hold) : standInCli([]),
+    adapter: claim.runId === "run-1" ? durableCli(log, hold, { silent }) : standInCli([]),
     session: { key: "root", label: "root", system: [], tools: [], context: "fresh" },
     input: INPUT,
     runCap: { capUsd: () => undefined, modelOf: () => undefined },
