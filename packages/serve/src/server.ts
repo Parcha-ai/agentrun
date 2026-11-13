@@ -88,7 +88,8 @@ import { bootSealKey, withSealKey } from "./seal-key.js";
 import { ServerLockHeldError, takeServerLock } from "./server-lock.js";
 import { DRAIN_TIMEOUT } from "./runner/beside.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
-import { agentCostOverStore, agentLearningOverStore, learningCountsOverStore, learningSpendOverStore } from "./store-reads/learning.js";
+import { agentCostOverStore, agentLearningOverStore, costRunOf, learningCountsOverStore, learningSpendOverStore, runLearningEnd } from "./store-reads/learning.js";
+import { LearningBatches } from "./learning-batch.js";
 import { costCsv, learningCostQuery } from "./learning-cost.js";
 import { keyOf, SEAL_KEY_ENV, TOOL_FIELDS } from "./tool-keys.js";
 import { toolKeysOverStore } from "./tool-keys-store.js";
@@ -292,6 +293,8 @@ export type ServeOptions = {
    *  definition says `learning: true` starts from what its agent learned. `off`: no run this server starts does, whatever
    *  its agent's definition says, and its `learning` is null. */
   learning?: LearningMode;
+  /** A test's seam: how often a learning batch's loop looks at its run, in ms (learning-batch.ts; default 1000). */
+  batchPollMs?: number;
   /** How much of what a run learned its instructions hold under `# Learned`, in UTF-8 bytes (`--learning-budget`;
    *  default AGENTRUN_SERVE_LEARNING_BUDGET, else 8000): every note whole while they fit, else the notes that bear on
    *  the run's input whole and a line for each of the rest (learning.ts learnedParts, its note selector). */
@@ -478,6 +481,10 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/mcp$/, name: "callMcp" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning$/, name: "getAgentLearning" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/cost$/, name: "getLearningCost" },
+  { method: "POST", pattern: /^\/agents\/([^/]+)\/learning\/batches$/, name: "createLearningBatch" },
+  { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/batches$/, name: "listLearningBatches" },
+  { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/batches\/([^/]+)$/, name: "getLearningBatch" },
+  { method: "POST", pattern: /^\/agents\/([^/]+)\/learning\/batches\/([^/]+)\/cancel$/, name: "cancelLearningBatch" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/notes$/, name: "listLearningNotes" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/log$/, name: "listLearningLog" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/files\/([^/]+)$/, name: "readLearningFile" },
@@ -1239,6 +1246,34 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     },
     shown: () => secretsShown(serverSecrets(), { local: true }),
   };
+  // Learn from a CSV (learning-batch.ts): a batch's loop runs in this process over the run write half and the run view; its
+  // state is the store's settings, so a batch still running when the server stopped takes up again as it starts.
+  const batches = new LearningBatches({
+    settings: store.settings,
+    learning: async (agentId) => {
+      const entry = await needAgent(agentId);
+      if (entry.agent.archivedAt) return { learns: false, why: "it is archived." };
+      if (learning === "off") return { learns: false, why: "this server's learning is off (--learning)." };
+      if (entry.revision?.kind !== "agentic" || !learnsOf((entry.revision.body as { learning?: unknown }).learning)) return { learns: false, why: "its current revision does not say learning: true. Turn learning on first." };
+      return { learns: true };
+    },
+    start: async (agentId, body) => (await startRunOf(await needAgent(agentId), body as Json)).id,
+    view: async (runId) => {
+      const v = (await viewOverStore(store, runId, viewDepsFor(ownOriginOf()))) as Record<string, any> | undefined;
+      if (!v) return undefined;
+      return { status: String(v.status), ended_at: v.ended_at ?? null, answer: typeof v.result?.final_answer === "string" ? v.result.final_answer : null, cost_usd: typeof v.cost?.usd === "number" ? v.cost.usd : null, learning_state: typeof v.learning?.state === "string" ? v.learning.state : null, error: typeof v.error?.message === "string" ? v.error.message : null };
+    },
+    message: async (runId, content) => void (await message(store, await needRun(runId), content)),
+    cancel: async (runId) => void (await cancel(store, await needRun(runId))),
+    figures: async (runId) => {
+      const run = await store.runs.get(runId);
+      if (!run) return undefined;
+      const [cost, end] = await Promise.all([costRunOf(store, run, 0), runLearningEnd(store, runId)]);
+      return { path: cost.path, cost_usd: cost.cost_usd, learning_usd: cost.learning_usd, total_usd: cost.total_usd, merged: end?.merged ?? null, learned: { notes: (end?.learned ?? []).map((x) => x.name), skills: (end?.skills ?? []).map((x) => x.name), workflows: (end?.workflows ?? []).map((x) => x.name) } };
+    },
+    ...(options.batchPollMs ? { pollMs: options.batchPollMs } : {}),
+  });
+  stops.push(async () => batches.halt());
   // A run's served view and its live moment, from the store (store-view): `origin` is where this request reaches the
   // console, the secrets are cut live, and the sign-ins give the handed-pointer cut. Trigger and background reads (no
   // request) use the server's public address, else its own.
@@ -1411,6 +1446,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   stops.push(async () => triggers.close());
   // The firing loop runs against the server's own opened store: due firings start their runs through the run write half,
   // times missed while it was down are recorded, and the timer is armed for the next. (A test may inject its own store.)
+  void batches.resume().catch((error: Error) => void process.stderr.write(`agentrun-serve: the learning batches' resume: ${error.message}\n`));
   void triggers.start().catch((error: Error) => void process.stderr.write(`agentrun-serve: the triggers' start: ${error.message}\n`));
   // The App's installations repaired from GitHub's own, once, as the server starts: events missed while it was down. It
   // never rejects, and close (or a start that fails) aborts it and waits for it before it closes.
@@ -3097,6 +3133,20 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         }
         return send(res, 200, { agent: id, ...cost });
       }
+      case "createLearningBatch": {
+        await needAgent(id);
+        const made = await batches.create(id, await bodyOf(req));
+        return send(res, 202, await batches.read(id, made.id), { location: `/v2/agents/${encodeURIComponent(id)}/learning/batches/${made.id}` });
+      }
+      case "listLearningBatches":
+        await needAgent(id);
+        return send(res, 200, await batches.list(id));
+      case "getLearningBatch":
+        await needAgent(id);
+        return send(res, 200, await batches.read(id, second!));
+      case "cancelLearningBatch":
+        await needAgent(id);
+        return send(res, 200, await batches.cancel(id, second!));
       case "listLearningNotes":
       case "listLearningLog":
         await needAgent(id);
