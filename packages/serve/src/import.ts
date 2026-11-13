@@ -863,10 +863,11 @@ function runTitleOf(session: Pick<Session, "sourceTitle" | "titleText" | "cwd" |
   const generic = `${session.source} session`;
   if (session.sourceTitle !== undefined) return session.sourceTitle;
   if (session.titleText !== undefined) return session.titleText;
-  const parts = session.cwd ? session.cwd.split("/") : [];
+  const cwd = session.cwd ?? "";
+  const parts = cwd.split("/");
   const last = parts.findLastIndex((segment) => segment !== "");
   if (last < 0) return generic;
-  return touchedSegments(session.cwd, cut).includes(last) ? generic : `Session in ${parts[last]}`;
+  return touchedSegments(cwd, cut).includes(last) ? generic : `Session in ${parts[last]}`;
 }
 
 /** The secrets this server made and keeps, by value: its API token and its sign-in sessions' secret (still files beside the
