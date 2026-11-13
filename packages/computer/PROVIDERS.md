@@ -27,8 +27,14 @@ One pull request, with no generator script. For a vendor whose machines run Linu
    node packages/computer/dist/conformance/sweep.js --provider <vendor> --after /tmp/<vendor>-before.json
    ```
 
-   A desktop adds `--fixture <path>` (the `computerd-fixture` binary, from `daemon/cmd/fixture`). `--kind sandbox` (or
-   `desktop`) runs one kind's cases and ends on its verdict. `-- --help` lists every flag.
+   A desktop also needs the fixture the input cases read, built for the vendor's machines (`GOARCH=amd64` or `arm64`);
+   without it those cases skip and Core fails. Build it, then add `--fixture /tmp/computerd-fixture` to the run:
+
+   ```sh
+   (cd packages/computer/daemon && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /tmp/computerd-fixture ./cmd/fixture)
+   ```
+
+   `--kind sandbox` (or `desktop`) runs one kind's cases and ends on its verdict. `-- --help` lists every flag.
 5. Paste the report and the sweep's last line into the pull request and fill in its checklist. The run passes when it
    ends `core PASS` and exits 0, and the sweep prints `"stillThere":[]`.
 
