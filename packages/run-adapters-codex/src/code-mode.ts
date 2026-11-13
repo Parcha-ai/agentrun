@@ -87,13 +87,21 @@ type Tie = { callId: string; exec: string | null; since?: number };
 
 /** What the log holds of one nested call: the session's record, the rollout's completion line, and what the turn's recovery note
  *  calls it (`told`, by call id). */
+/** What a script's nested call of a tool with a value was sent (scriptAnswer's text), from the tool's stored answer: the rollout
+ *  holds that text, not the words the store keeps, so recovery compares the two. None for a tool with no value. */
+function sentOf(output: unknown): { sent: string } | Record<string, never> {
+  const kept = output as { structured?: unknown; images?: readonly Image[] } | null;
+  if (kept === null || typeof kept !== "object" || kept.structured === undefined) return {};
+  return { sent: JSON.stringify(withImageData(kept.structured, kept.images ?? [])) };
+}
+
 function factOf(state: SessionState, rolled: ReturnType<typeof completedNested>, tie: { callId: string }, told: ReadonlyMap<string, NestedFact["told"]> = new Map()): NestedFact {
   const e = state.effects.get(toolKey(tie.callId));
   const status = told.get(tie.callId);
   return {
     callId: tie.callId,
     tool: e ? e.name.replace(/^tool\./, "") : (rolled.get(tie.callId)?.tool ?? "a tool"),
-    ...(e ? { store: { status: e.status === "completed" ? "completed" : e.status === "failed" ? "failed" : "started", text: e.status === "failed" ? (e.error?.message ?? "") : outputTextOf(e.output), ...(e.error?.interrupted ? { interrupted: true } : {}) } as NonNullable<NestedFact["store"]> } : {}),
+    ...(e ? { store: { status: e.status === "completed" ? "completed" : e.status === "failed" ? "failed" : "started", text: e.status === "failed" ? (e.error?.message ?? "") : outputTextOf(e.output), ...(e.status === "completed" ? sentOf(e.output) : {}), ...(e.error?.interrupted ? { interrupted: true } : {}) } as NonNullable<NestedFact["store"]> } : {}),
     ...(rolled.has(tie.callId) ? { rollout: rolled.get(tie.callId)! } : {}),
     ...(status ? { told: status } : {}),
     ...(state.effects.get(parkedKey(tie.callId))?.status === "completed" ? { parked: true as const } : {}),

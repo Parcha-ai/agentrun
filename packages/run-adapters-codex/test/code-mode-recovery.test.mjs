@@ -56,7 +56,7 @@ test("a cut-off exec's output says of each nested call what the recovery note of
 
 /** An exec whose script made one call the host parked for a person's approval, through `call(drive)`, then was cut by the
  *  park (the host ends the turn on it), as the next drive reads it: the exec's recovered output. */
-async function parkedExec(call) {
+async function parkedExec(call, lines = []) {
   const store = memorySessionStore();
   const first = await openDrive({ writer: await store.open('code'), signal: new AbortController().signal });
   await first.submit({ id: 's1', kind: 'prompt', text: 'Add them.' });
@@ -66,11 +66,28 @@ async function parkedExec(call) {
   const next = await openDrive({ writer: await store.open('code'), signal: new AbortController().signal });
   const ties = [{ callId: 'exec-1', exec: EXEC, since }];
   const journal = { append() {}, flush: async () => {}, read: async (stream) => (stream === NESTED_STREAM ? ties.map((data) => ({ data })) : []) };
-  const mode = codeMode({ ctx: next, machine: {}, journal, logged: new Set(), synced: async () => {}, bridge: { get: () => undefined }, log() {}, lines: [], rpc: () => ({ request: async () => ({}) }), guard: (p) => p, threadId: () => 't', tries: 1 });
+  const mode = codeMode({ ctx: next, machine: {}, journal, logged: new Set(), synced: async () => {}, bridge: { get: () => undefined }, log() {}, lines, rpc: () => ({ request: async () => ({}) }), guard: (p) => p, threadId: () => 't', tries: 1 });
   const items = [{ type: 'custom_tool_call_output', call_id: EXEC, output: '' }];
   await mode.recoverItems(items, [{ callId: EXEC, name: 'exec', type: 'custom_tool_call' }], [], since);
   return items[0].output;
 }
+
+test("a completed computer tool's call, which the rollout holds as the value's JSON (what a script was sent), is completed after a restart, never interrupted, so it is not run again", async () => {
+  const { kernelTool } = await import('../dist/adapter.js');
+  const { scriptAnswer } = await import('../dist/code-mode.js');
+  const value = { steps: [{ route: 'semantic', verified: true }], state: 's2' };
+  const host = { name: 'computer_act', description: 'computer_act', inputSchema: { type: 'object' }, replay: 'never', call: async () => ({ text: '1. press: semantic, verified', structured: value }) };
+  const sent = scriptAnswer({ contentItems: [{ type: 'inputText', text: '1. press: semantic, verified' }], success: true }, { structured: value });
+  const lines = [JSON.stringify({ type: 'event_msg', payload: { type: 'item_completed', item: { type: 'DynamicToolCall', id: 'exec-1', tool: 'computer_act', status: 'completed', success: true, content_items: sent.contentItems } } })];
+  const output = await parkedExec(async (drive) => {
+    const bridge = toolBridge(drive, [kernelTool(host)], { live: false });
+    assert.equal((await bridge.call('computer_act', { steps: [{ press: '@e3' }] }, 'exec-1')).isError, false);
+  }, lines);
+  assert.match(output, /\n1\. computer_act completed: /);
+  assert.match(output, /Its effect is done; it was not run again\./);
+  assert.doesNotMatch(output, /may have taken effect/);
+});
+
 const WAITING = "This mcp:fake/add call waits for a person's approval; the run pauses here and continues with the result when they answer.";
 
 test("a cut-off exec tells a nested MCP call the host parked that it was waiting for a person's approval and did not run, never that it completed", async () => {
