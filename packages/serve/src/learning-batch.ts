@@ -2,8 +2,10 @@
 // and which the answer, and a cap; the server runs the agent on each row in order with learning on, and after each run tells
 // it the reference answer next to its own, the hindsight review the learning bench sends (learn-bench's follow-up: a message
 // to the finished run, which looks back again). The batch's progress is the store's, never the browser's: a header per batch
-// and one key per row in the server's settings (no table), each row's stage written before the next step, so a batch resumes
-// where it stopped when the server starts again. One row at a time, since what a row teaches is what the next one is given.
+// and one key per row in the server's settings (no table). The batch and each row are one machine (BATCH_MOVES, ROW_MOVES):
+// every move is one write, in an order where a stop between any two writes leaves a state the next start takes up, and every
+// side effect (a run's start, its review) is keyed so a move taken again finds it done. One row at a time, since what a row
+// teaches is what the next one is given.
 // Nothing here knows a job: the input is the chosen columns as {column: value}, the match is structural equality (a display,
 // not a judge: the learning grade is the judge), and the words of the review are generic.
 import { randomBytes } from "node:crypto";
@@ -23,6 +25,24 @@ export type BatchStatus = "running" | "completed" | "cancelled" | "stopped";
  *  the agent no longer learns here (learning turned off for it or for the server: a row is never run unlearned). */
 export type BatchStop = "cap" | "cost_unknown" | "learning_off";
 export type RowState = "pending" | "running" | "done" | "failed";
+/** A row's stage in its machine, read from its record (stageOf): `running` is started, answered or reviewed. */
+export type Stage = "pending" | "started" | "answered" | "reviewed" | "done" | "failed";
+/** The row machine. pending -> started: its run started under the row's key (a start the server stopped before this write
+ *  is found again by the key); started -> answered: the run's first end, its answer, right or wrong and the review's words
+ *  written once; answered -> reviewed: the review sent (a resume finds it in the run's commands and sends none); reviewed ->
+ *  done: the review's turn completed and its learning settled. Every other ending is failed, and a live row (started,
+ *  answered, reviewed) moves to failed only once its run has stopped (cancelled, waited for with its grade, then booked). */
+export const ROW_MOVES: Readonly<Record<Stage, readonly Stage[]>> = { pending: ["started", "failed"], started: ["answered", "failed"], answered: ["reviewed", "failed"], reviewed: ["done", "failed"], done: [], failed: [] };
+const LIVE: ReadonlySet<Stage> = new Set<Stage>(["started", "answered", "reviewed"]);
+export const stageOf = (row: Row): Stage => (row.state !== "running" ? row.state : row.reviewed ? "reviewed" : row.right !== undefined ? "answered" : "started");
+/** How a batch ends, written before its live row is stopped (the batch's `ending` stage): a stop between the two leaves a
+ *  batch the next start ends this way, never one it runs on. */
+export type Ending = { status: Exclude<BatchStatus, "running">; stopped: BatchStop | null; error?: string };
+/** The batch machine, in its header: made (the agent's index, then the rows, then the header, so a header is never saved
+ *  where a read can't find it) -> running -> ending (one write: `ending`) -> completed, cancelled or stopped (one write, once
+ *  no row is live). A start takes up every header still running: a running one at its first unfinished row, an ending one
+ *  where its ending stands. */
+export const BATCH_MOVES: Readonly<Record<"running" | "ending" | Exclude<BatchStatus, "running">, readonly string[]>> = { running: ["ending"], ending: ["completed", "cancelled", "stopped"], completed: [], cancelled: [], stopped: [] };
 
 type Lessons = { notes: string[]; skills: string[]; workflows: string[] };
 /** One row as the store keeps it. `input` and `reference` are the person's; `answer` the run's, cut. */
@@ -32,12 +52,15 @@ export type Row = {
   input: Record<string, string>;
   reference: string;
   run_id?: string;
-  /** The run's answer as compared (its answer_field's value when the batch names one), cut at ANSWER_SHOWN, and whether it is
-   *  the reference: written once, when the run first answers, never again (the reply to the review is no answer). */
+  /** The run's answer as compared (its answer_field's value when the batch names one), cut at ANSWER_SHOWN for display, and
+   *  whether it is the reference (the whole answer compared): written once, when the run first answers, never again (the
+   *  reply to the review is no answer). */
   answer?: string | null;
   right?: boolean;
   /** The run's end the review follows (its ended_at when it answered): the review's own end is a later one. */
   review_after?: string | null;
+  /** The review's words, decided with the answer (from the whole answer: reviewText) and sent as they are. Not shown. */
+  review?: string;
   /** The review was sent to the run (the run's commands hold it: a resume that finds it there sends none). */
   reviewed?: boolean;
   path?: RunPath;
@@ -79,6 +102,8 @@ export type Header = {
   revisions: { row: number; commit: string | null; workflows: string[] }[];
   /** The words of a loop that failed on the store itself (never a row's failure: that is the row's). */
   error?: string;
+  /** Set while the batch ends (BATCH_MOVES `ending`): how it ends, once its live row has stopped. Not shown. */
+  ending?: Ending;
 };
 
 /** What the loop reads of a run, from the server's view of it. */
@@ -100,7 +125,10 @@ export interface BatchHost {
   /** Whether the run was already sent `content` (its commands hold it): a review is sent once, across a restart too. */
   sent(runId: string, content: string): Promise<boolean>;
   message(runId: string, content: string): Promise<void>;
+  /** Asks the run to stop; nothing for a run that has ended. Never swallowed: a live row is let go only once this held. */
   cancel(runId: string): Promise<void>;
+  /** A run's figures as booked (costRunOf): what it has spent so far, its learning's every round included (a run still going
+   *  counts its live cost), so the live figure and the booked one are one function. */
   figures(runId: string): Promise<Figures | undefined>;
   /** How often a wait looks, the longest a row waits on its run (and its learning) before it is cancelled, and the longest
    *  an ending row waits for its run and grade to stop (past it, its cost is not known). */
@@ -154,8 +182,12 @@ export function matches(answer: string | null, reference: string): boolean {
 /** What a run is given for a row: its one input column's text as it is, or each chosen column on a line, `column: value`, in
  *  the order the batch names them (an agent's input is its `content`, a person's words). */
 export const contentOf = (inputs: readonly string[], row: Record<string, string>): string => (inputs.length === 1 ? row[inputs[0]!]! : inputs.map((column) => `${column}: ${row[column]}`).join("\n"));
-/** The review a run is sent: the same words right or wrong. */
-export const reviewText = (reference: string, answer: string | null): string => `Review: the reference answer is "${reference}"; you answered "${answer ?? "nothing"}".`;
+/** The review a run is sent, from its whole answer: the same words right or wrong. An answer past ANSWER_SHOWN characters is
+ *  quoted to there, and the review says it was cut and where the whole one is (never a prefix passed off as the answer). */
+export const reviewText = (reference: string, answer: string | null): string =>
+  answer !== null && answer.length > ANSWER_SHOWN
+    ? `Review: the reference answer is "${reference}"; you answered "${answer.slice(0, ANSWER_SHOWN)}…" (cut here: your answer runs to ${answer.length} characters, and the whole of it is your last answer in this run).`
+    : `Review: the reference answer is "${reference}"; you answered "${answer ?? "nothing"}".`;
 
 /** A create's body, checked: its issues, or the parsed batch. */
 export function checkBatchBody(body: Record<string, unknown>): InputIssue[] | { inputs: string[]; answer: string; answer_field: string | null; effort: string | null; max_cost_usd: number; rows: { input: Record<string, string>; reference: string }[] } {
@@ -175,7 +207,7 @@ export function checkBatchBody(body: Record<string, unknown>): InputIssue[] | { 
   const field = body.answer_field;
   if (field !== undefined && (typeof field !== "string" || !/^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$/.test(field))) issues.push({ field: "answer_field", reason: "wrong_type", message: "answer_field is a dotted path into a JSON answer, such as result.code" });
   const cap = body.max_cost_usd;
-  if (!(typeof cap === "number" && Number.isFinite(cap) && cap > 0)) issues.push({ field: "max_cost_usd", reason: cap === undefined ? "missing" : "wrong_type", message: "max_cost_usd is the most the whole batch spends, a number above 0: the runs and what learning adds" });
+  if (!(typeof cap === "number" && Number.isFinite(cap) && cap > 0)) issues.push({ field: "max_cost_usd", reason: cap === undefined ? "missing" : "wrong_type", message: "max_cost_usd caps what the batch's runs spend (their jobs, look-backs and review turns), a number above 0" });
   // A run's effort as POST /agents/{id}/runs checks it (server.ts runBodyIssues), in its words: a typo is refused here, never
   // a batch whose every row fails.
   if (body.effort !== undefined && !(EFFORTS as readonly unknown[]).includes(body.effort)) issues.push({ field: "effort", reason: "not_an_option", message: `effort is one of ${EFFORTS.join(", ")}` });
@@ -206,17 +238,30 @@ export function checkBatchBody(body: Record<string, unknown>): InputIssue[] | { 
 const usd = (v: number) => Math.round(v * 1e6) / 1e6;
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 const TERMINAL = new Set(["completed", "failed", "cancelled"]);
+/** A run and its learning have stopped: ended, and its learning over (merged, dropped, none), or never begun on a run that
+ *  did not complete (one stopped before its end-of-run turn keeps `seeded`: nothing more runs for it). */
+const settled = (s: RunSnap) => TERMINAL.has(s.status) && s.ended_at !== null && (s.learning_state === null || s.learning_state === "merged" || s.learning_state === "dropped" || (s.status !== "completed" && s.learning_state === "seeded"));
+/** How many times in a row a batch's loop may fail on the store (or a run's stop) and be taken up again from what the store
+ *  holds, before the batch ends stopped on the error's words. */
+const LOOP_TRIES = 5;
+const words = (error: unknown): string => String((error as Error)?.message ?? error).slice(0, 400);
+const batchStage = (h: Header): keyof typeof BATCH_MOVES => (h.status !== "running" ? h.status : h.ending ? "ending" : "running");
 
-/** A running batch's loop: `cancelled` ends it (a person's cancel, or the server stopping: `halted`, which leaves the batch running for the next start). */
-type Loop = { cancelled: boolean; halted: boolean; done: Promise<void>; current: string | null };
+/** A batch's loop in this process: `cancelled` (a person's cancel: the batch ends cancelled), `halted` (the server stopping:
+ *  the loop lets go where it stands, the batch still running for the next start), `failed` (the loop failed LOOP_TRIES
+ *  times: the batch ends stopped on these words). */
+type Loop = { cancelled: boolean; halted: boolean; failed: string | null; done: Promise<void> };
 
 /** The batches of one server: its running loops, and the store reads and writes. */
 export class LearningBatches {
   private readonly loops = new Map<string, Loop>();
   private index: Promise<void> = Promise.resolve();
+  private halting = false;
   constructor(private readonly host: BatchHost) {}
 
   private get settings() { return this.host.settings; }
+  private get clock() { return this.host.now ?? Date.now; }
+  private get pollMs() { return this.host.pollMs ?? 1_000; }
   private async header(id: string): Promise<Header | undefined> { return (await this.settings.get(HEAD(id))) as Header | undefined; }
   private async row(id: string, n: number): Promise<Row> { return (await this.settings.get(ROW(id, n))) as Row; }
   private async save(h: Header): Promise<void> { await this.settings.put(HEAD(h.id), h); }
@@ -235,11 +280,14 @@ export class LearningBatches {
       const ids = await this.ids(agentId);
       for (const other of ids.slice(-5)) if ((await this.header(other))?.status === "running") throw new ApiError("agent_not_runnable", `The agent ${agentId} has a learning batch running (${other}): learning is ordered, so one batch runs at a time. Cancel it, or wait for it.`, { details: { batch_id: other } });
       const id = `lb_${randomBytes(8).toString("hex")}`;
-      const now = new Date((this.host.now ?? Date.now)()).toISOString();
+      const now = new Date(this.clock()).toISOString();
       made = { id, agent_id: agentId, created_at: now, ended_at: null, status: "running", stopped: null, inputs: checked.inputs, answer: checked.answer, answer_field: checked.answer_field, effort: checked.effort, max_cost_usd: checked.max_cost_usd, total: checked.rows.length, finished: 0, right: 0, wrong: 0, failed: 0, spent_usd: 0, unknown_cost_rows: 0, paths: { agent: 0, handed_back: 0, workflow: 0 }, lessons: { notes: [], skills: [], workflows: [] }, revisions: [] };
+      // The index first, the header last: a batch is made (and runs, and a start takes it up) only once its header is
+      // saved, and by then the list and the running check find it. A stop before that leaves an id with no header, which
+      // nothing shows, runs or counts.
+      await this.settings.put(INDEX(agentId), [...ids, id]);
       for (const [i, r] of checked.rows.entries()) await this.saveRow(id, { n: i + 1, state: "pending", input: r.input, reference: r.reference });
       await this.save(made);
-      await this.settings.put(INDEX(agentId), [...ids, id]);
     });
     this.index = step.catch(() => undefined);
     await step;
@@ -247,7 +295,7 @@ export class LearningBatches {
     return made;
   }
 
-  /** The server started: every batch still running takes up where it stopped. */
+  /** The server started: every batch still running takes up where it stopped (an ending one, where its ending stands). */
   async resume(): Promise<number> {
     let n = 0;
     for (const { key, value } of await this.settings.all()) {
@@ -257,18 +305,22 @@ export class LearningBatches {
     return n;
   }
 
-  /** A batch whole as progress: its header, what is under way and what it costs now, and its rows (no input: the run holds it). */
+  /** A batch whole as progress: its header, what is under way and what it costs now, and its rows (no input: the run holds
+   *  it). The cost now is the finished rows' and the live row's figures so far, by the function that books it (figures). */
   async read(agentId: string, id: string): Promise<Record<string, unknown>> {
     const h = await this.need(agentId, id);
     const rows: Row[] = [];
     for (let n = 1; n <= h.total; n++) rows.push(await this.row(id, n));
-    const live = rows.find((r) => r.state === "running" && r.run_id);
-    const inflight = live?.run_id ? ((await this.host.view(live.run_id))?.cost_usd ?? null) : 0;
-    return { ...this.shown(h), current: live?.n ?? null, cost_usd: inflight === null ? null : usd(h.spent_usd + inflight), rows: rows.map(({ input: _input, ...r }) => r) };
+    const live = rows.find((r) => LIVE.has(stageOf(r)) && r.run_id);
+    const inflight = live?.run_id ? ((await this.host.figures(live.run_id).catch(() => undefined))?.total_usd ?? null) : 0;
+    return { ...this.shown(h), current: live?.n ?? null, cost_usd: inflight === null ? null : usd(h.spent_usd + inflight), rows: rows.map(({ input: _input, review: _review, ...r }) => r) };
   }
 
   /** A batch as the header says it, for a list (no rows). */
-  private shown(h: Header) { return { ...h, cost_usd: h.spent_usd, remaining_usd: usd(Math.max(0, h.max_cost_usd - h.spent_usd)) }; }
+  private shown(h: Header) {
+    const { ending: _ending, ...shown } = h;
+    return { ...shown, cost_usd: h.spent_usd, remaining_usd: usd(Math.max(0, h.max_cost_usd - h.spent_usd)) };
+  }
 
   async list(agentId: string): Promise<{ batches: ReturnType<LearningBatches["shown"]>[] }> {
     const out = [];
@@ -276,21 +328,22 @@ export class LearningBatches {
     return { batches: out };
   }
 
+  /** A person's cancel: the batch's loop ends it cancelled, its live row's run stopped and booked first; answers once it has. */
   async cancel(agentId: string, id: string): Promise<Record<string, unknown>> {
     const h = await this.need(agentId, id);
-    const loop = this.loops.get(id);
-    if (h.status === "running" && loop) {
+    if (h.status === "running" && !this.halting) {
+      const loop = this.arm(id);
       loop.cancelled = true;
-      if (loop.current) await this.host.cancel(loop.current).catch(() => undefined);
       await loop.done;
     }
     return this.read(agentId, id);
   }
 
-  /** The server is stopping: every loop ends where it stands, its batch still running (resume takes it up). */
+  /** The server is stopping: every loop lets go where it stands, its batch still running (resume takes it up). */
   async halt(): Promise<void> {
+    this.halting = true;
     const all = [...this.loops.values()];
-    for (const loop of all) { loop.halted = true; loop.cancelled = true; }
+    for (const loop of all) loop.halted = true;
     await Promise.all(all.map((loop) => loop.done));
   }
 
@@ -303,44 +356,61 @@ export class LearningBatches {
     return h;
   }
 
-  private arm(id: string): void {
-    if (this.loops.has(id)) return;
-    const loop: Loop = { cancelled: false, halted: false, current: null, done: Promise.resolve() };
-    loop.done = this.loop(id, loop).catch(async (error) => {
-      // The loop itself failing (the store, not a row) ends the batch stopped on the error's words, never silently.
-      const h = await this.header(id).catch(() => undefined);
-      if (h && h.status === "running" && !loop.halted) await this.save({ ...h, status: "stopped", stopped: null, ended_at: new Date().toISOString(), error: String((error as Error)?.message ?? error).slice(0, 400) }).catch(() => undefined);
-    }).finally(() => void this.loops.delete(id));
+  /** The batch's loop in this process, started if it has none. A loop that fails (the store, a run's stop) is taken up again
+   *  from what the store holds, LOOP_TRIES times, then ends its batch stopped on the error's words: never by letting the
+   *  batch go with its row's run still going (the batch stays running, and owned, until its ending has stopped that run). */
+  private arm(id: string): Loop {
+    const had = this.loops.get(id);
+    if (had) return had;
+    const loop: Loop = { cancelled: false, halted: this.halting, failed: null, done: Promise.resolve() };
     this.loops.set(id, loop);
+    loop.done = (async () => {
+      for (let tries = 1; ; tries++) {
+        try {
+          return await this.loop(id, loop);
+        } catch (error) {
+          if (loop.halted) return;
+          if (tries >= LOOP_TRIES) loop.failed ??= words(error);
+          await sleep(Math.min(30_000, this.pollMs * 2 ** tries));
+        }
+      }
+    })().finally(() => void this.loops.delete(id));
+    return loop;
   }
 
+  /** The batch machine from where the store has it: a running batch takes its rows in order until one of them, or the cap,
+   *  the agent's learning, a cancel or a failure, ends it (`ending`); an ending batch stops its live row and ends. */
   private async loop(id: string, loop: Loop): Promise<void> {
     // The header's figures folded from the rows as saved (a server that stopped between a row's write and its header's
     // books it here, once).
     let h = await this.tally((await this.header(id))!);
-    for (let n = 1; n <= h.total; n++) {
+    if (batchStage(h) !== "running" && batchStage(h) !== "ending") return;
+    if (loop.failed && !h.ending) h = await this.ending(h, { status: "stopped", stopped: null, error: loop.failed });
+    for (let n = 1; n <= h.total && !h.ending; n++) {
+      if (loop.halted) return;
       if (loop.cancelled) break;
-      const row = await this.row(id, n);
-      if (row.state === "done" || row.state === "failed") continue;
-      if (!row.run_id) {
+      let row = await this.row(id, n);
+      const stage = stageOf(row);
+      if (stage === "done" || stage === "failed") continue;
+      if (stage === "pending") {
         // A run started under the row's key before its row kept the id is that row's run: never a second.
-        row.run_id = await this.host.find(ROW_KEY(id, n));
-        if (row.run_id) { row.state = "running"; await this.saveRow(id, row); }
-      }
-      if (!row.run_id) {
-        const room = this.room(h);
-        if (room !== true) { h = await this.end(h, "stopped", room); return; }
-        // Learning is checked again before every row: an agent (or a server) that stopped learning runs no row unlearned.
-        const learns = await this.host.learning(h.agent_id);
-        if (!learns.learns) { h = await this.end({ ...h, error: `The agent does not learn here: ${learns.why}` }, "stopped", "learning_off"); return; }
+        const found = await this.host.find(ROW_KEY(id, n));
+        if (found) row = await this.move(id, row, "started", { run_id: found });
+        else {
+          const room = this.room(h);
+          if (room !== true) { h = await this.ending(h, { status: "stopped", stopped: room }); break; }
+          // Learning is checked again before every row: an agent (or a server) that stopped learning runs no row unlearned.
+          const learns = await this.host.learning(h.agent_id);
+          if (!learns.learns) { h = await this.ending(h, { status: "stopped", stopped: "learning_off", error: `The agent does not learn here: ${learns.why}` }); break; }
+        }
       }
       h = await this.runRow(h, row, loop);
-      if (loop.cancelled) break;
-      if (h.unknown_cost_rows) { h = await this.end(h, "stopped", "cost_unknown"); return; }
+      if (loop.halted) return;
+      if (h.unknown_cost_rows && !loop.cancelled) { h = await this.ending(h, { status: "stopped", stopped: "cost_unknown" }); break; }
     }
-    // The server stopping leaves the batch running: it takes up again when the server starts.
     if (loop.halted) return;
-    await this.end(h, loop.cancelled ? "cancelled" : "completed", null);
+    if (!h.ending) h = await this.ending(h, loop.cancelled ? { status: "cancelled", stopped: null } : { status: "completed", stopped: null });
+    await this.finish(h, loop);
   }
 
   /** Whether another row may start: the cap's room covers the mean total of the rows done, and a run's own smallest cap (a
@@ -353,109 +423,126 @@ export class LearningBatches {
     return left >= Math.max(typical, RUN_CAP_MIN_USD) ? true : "cap";
   }
 
-  private async end(h: Header, status: BatchStatus, stopped: BatchStop | null): Promise<Header> {
-    const ended = { ...h, status, stopped, ended_at: new Date((this.host.now ?? Date.now)()).toISOString() };
-    await this.save(ended);
-    return ended;
+  /** running -> ending: how the batch ends, one write, before its live row is stopped. */
+  private async ending(h: Header, ending: Ending): Promise<Header> {
+    if (batchStage(h) !== "running") throw new Error(`batch ${h.id} cannot end from ${batchStage(h)}`);
+    const next: Header = { ...h, ending };
+    await this.save(next);
+    return next;
   }
 
-  /** One row, as a machine whose every step is saved before the next and safe to take again after a stop: its run (started
-   *  under the row's key: find), its answer (written once), the review (sent once: sent), the review's look-back, the
-   *  booking (folded: tally). Every ending short of done stops its run and waits for it and its grade to stop first. */
-  private async runRow(h: Header, row: Row, loop: Loop): Promise<Header> {
-    const clock = this.host.now ?? Date.now;
-    // A run and its learning have stopped: ended, and its learning over (merged, dropped, none), or never begun on a run
-    // that did not complete (one stopped before its end-of-run turn keeps `seeded`: nothing more runs for it).
-    const settled = (s: RunSnap) => TERMINAL.has(s.status) && s.ended_at !== null && (s.learning_state === null || s.learning_state === "merged" || s.learning_state === "dropped" || (s.status !== "completed" && s.learning_state === "seeded"));
-    const wait = async (until: (s: RunSnap) => boolean, runId: string): Promise<RunSnap | "cancelled" | "timeout"> => {
-      const started = clock();
-      for (;;) {
-        if (loop.cancelled) return "cancelled";
-        const s = await this.host.view(runId);
-        if (s && until(s)) return s;
-        if (clock() - started > (this.host.rowTimeoutMs ?? 30 * 60_000)) return "timeout";
-        await sleep(this.host.pollMs ?? 1_000);
-      }
-    };
-    /** The row failed: its run stopped (`stop`: cancelled first) and waited for, with its grade, before its cost is read; a
-     *  run that does not stop in time leaves the row's cost unknown (and the batch stops). A server stopping meanwhile
-     *  leaves the row as it is, for the next start to end. */
-    const fail = async (error: string, stop: boolean): Promise<Header> => {
-      const runId = row.run_id;
-      let known = true;
-      if (runId) {
-        if (stop) await this.host.cancel(runId).catch(() => undefined);
-        const started = clock();
-        for (;;) {
-          if (loop.halted) return h;
-          const s = await this.host.view(runId).catch(() => undefined);
-          if (s && settled(s)) break;
-          if (clock() - started > (this.host.settleMs ?? 10 * 60_000)) { known = false; break; }
-          await sleep(this.host.pollMs ?? 1_000);
-        }
-      }
-      const f = runId && known ? await this.host.figures(runId).catch(() => undefined) : undefined;
-      const failed: Row = { ...row, state: "failed", error: error.slice(0, 400), total_usd: runId ? (f?.total_usd ?? null) : 0, ...(f ? { path: f.path, cost_usd: f.cost_usd, learning_usd: f.learning_usd, learned: f.learned, merged: f.merged } : {}) };
-      return this.close(h, failed, loop);
-    };
-    const ended = (why: string) => (loop.halted ? h : fail(why, true));
+  /** ending -> completed, cancelled or stopped: every live row's run stopped and booked failed (on the ending's words), then
+   *  the header's one write. A server stopping meanwhile leaves the batch ending, for the next start to finish. */
+  private async finish(h: Header, loop: Loop): Promise<void> {
+    const ending = h.ending!;
+    const why = ending.error ?? (ending.status === "cancelled" ? "the batch was cancelled" : "the batch stopped before this row ended");
+    for (let n = 1; n <= h.total; n++) {
+      const row = await this.row(h.id, n);
+      if (!LIVE.has(stageOf(row))) continue;
+      h = await this.fail(h, row, why, loop);
+      if (loop.halted) return;
+    }
+    const { ending: _ending, ...rest } = await this.tally(h);
+    if (!BATCH_MOVES.ending.includes(ending.status)) throw new Error(`batch ${h.id} cannot end ${ending.status}`);
+    await this.save({ ...rest, status: ending.status, stopped: ending.stopped, ...(ending.error ? { error: ending.error } : {}), ended_at: new Date(this.clock()).toISOString() });
+  }
 
-    if (!row.run_id) {
-      const remaining = usd(h.max_cost_usd - h.spent_usd);
+  /** One row's move: allowed by ROW_MOVES, one write of its record. */
+  private async move(id: string, row: Row, to: Stage, patch: Partial<Row>): Promise<Row> {
+    const from = stageOf(row);
+    if (!ROW_MOVES[from].includes(to)) throw new Error(`row ${row.n} of batch ${id} cannot go from ${from} to ${to}`);
+    const next: Row = { ...row, ...patch, state: to === "done" || to === "failed" ? to : "running" };
+    if (stageOf(next) !== to) throw new Error(`row ${row.n} of batch ${id} wrote ${stageOf(next)} for ${to}`);
+    await this.saveRow(id, next);
+    return next;
+  }
+
+  /** Waits until `until` holds of the run's view. A view that fails is looked at again (a read is no ending); a cancel or a
+   *  halt ends the wait ("stop": the row stays live, for the batch's ending or the next start), and so does the row's time. */
+  private async wait(runId: string, until: (s: RunSnap) => boolean, loop: Loop): Promise<RunSnap | "stop" | "timeout"> {
+    const started = this.clock();
+    for (;;) {
+      if (loop.cancelled || loop.halted) return "stop";
+      const s = await this.host.view(runId).catch(() => undefined);
+      if (s && until(s)) return s;
+      if (this.clock() - started > (this.host.rowTimeoutMs ?? 30 * 60_000)) return "timeout";
+      await sleep(this.pollMs);
+    }
+  }
+
+  /** A row's every move from where its record stands: its run (started under the row's key), its answer (written once), the
+   *  review (sent once), the review's turn and look-back, the booking. Returns the header folded once the row ended; a cancel
+   *  or a halt leaves it live (the batch's ending stops it, or the next start takes it up). */
+  private async runRow(h: Header, row: Row, loop: Loop): Promise<Header> {
+    if (stageOf(row) === "pending") {
+      const key = ROW_KEY(h.id, row.n);
+      let runId: string | undefined;
       try {
-        row.run_id = await this.host.start(h.agent_id, { input: { content: contentOf(h.inputs, row.input) }, max_cost_usd: remaining, ...(h.effort ? { effort: h.effort } : {}) }, ROW_KEY(h.id, row.n));
+        runId = await this.host.start(h.agent_id, { input: { content: contentOf(h.inputs, row.input) }, max_cost_usd: usd(h.max_cost_usd - h.spent_usd), ...(h.effort ? { effort: h.effort } : {}) }, key);
       } catch (error) {
-        return fail(`the run did not start: ${(error as Error)?.message ?? error}`, false);
+        // A start that failed after its run was made is that run's start: found by the key, the row is its.
+        runId = await this.host.find(key);
+        if (!runId) return this.fail(h, row, `the run did not start: ${words(error)}`, loop);
       }
-      row.state = "running";
-      await this.saveRow(h.id, row);
+      row = await this.move(h.id, row, "started", { run_id: runId });
     }
     const runId = row.run_id!;
-    loop.current = runId;
-    // A cancel that came while the run was starting (before it had an id to stop) stops it now.
-    if (loop.cancelled) return ended("the batch was cancelled");
+    if (loop.cancelled || loop.halted) return h;
 
-    // Its answer: its end, and its learning's. A person's wait (a question, a paused cap) is a failed row, cancelled.
-    if (row.right === undefined) {
-      const snap = await wait((s) => s.status === "input_required" || settled(s), runId);
-      if (snap === "cancelled") return ended("the batch was cancelled");
-      if (snap === "timeout") return fail("the run did not end in time", true);
-      if (snap.status === "input_required") return fail("the run waits on a person: a batch's runs ask no one", true);
-      if (snap.status !== "completed") return fail(snap.error ?? `the run ${snap.status}`, false);
-      const shown = answerValue(snap.answer, h.answer_field);
-      row.answer = shown === null ? null : shown.slice(0, ANSWER_SHOWN);
-      row.right = matches(shown, row.reference);
-      row.review_after = snap.ended_at;
-      await this.saveRow(h.id, row);
+    // Its answer: its end, and its learning's. A person's wait (a question, a paused cap) is a failed row.
+    if (stageOf(row) === "started") {
+      const snap = await this.wait(runId, (s) => s.status === "input_required" || settled(s), loop);
+      if (snap === "stop") return h;
+      if (snap === "timeout") return this.fail(h, row, "the run did not end in time", loop);
+      if (snap.status === "input_required") return this.fail(h, row, "the run waits on a person: a batch's runs ask no one", loop);
+      if (snap.status !== "completed") return this.fail(h, row, snap.error ?? `the run ${snap.status}`, loop);
+      const whole = answerValue(snap.answer, h.answer_field);
+      row = await this.move(h.id, row, "answered", { answer: whole === null ? null : whole.slice(0, ANSWER_SHOWN), right: matches(whole, row.reference), review_after: snap.ended_at, review: reviewText(row.reference, whole) });
     }
 
     // The review: once (a resume finds it in the run's commands), to a completed run whose learning has settled.
-    if (!row.reviewed) {
-      const words = reviewText(row.reference, row.answer ?? null);
+    if (stageOf(row) === "answered") {
+      const review = row.review!;
       try {
-        if (!(await this.host.sent(runId, words))) await this.host.message(runId, words);
+        if (!(await this.host.sent(runId, review))) await this.host.message(runId, review);
       } catch (error) {
-        return fail(`the review was not sent: ${(error as Error)?.message ?? error}`, false);
+        return this.fail(h, row, `the review was not sent: ${words(error)}`, loop);
       }
-      row.reviewed = true;
-      await this.saveRow(h.id, row);
+      row = await this.move(h.id, row, "reviewed", { reviewed: true });
     }
 
-    // The review's new end and the look-back it makes: a row is done only once its run learned from the reference.
+    // The review's turn, its new end and the look-back it makes: a row is done only once that turn completed and its run
+    // learned from the reference.
     const after = row.review_after ?? null;
-    const back = await wait((s) => s.status === "input_required" || (settled(s) && s.ended_at !== after), runId);
-    if (back === "cancelled") return ended("the batch was cancelled");
-    if (back === "timeout") return fail("the review's look-back did not end in time", true);
-    if (back.status === "input_required") return fail("the run waits on a person after its review: a batch's runs ask no one", true);
+    const back = await this.wait(runId, (s) => s.status === "input_required" || (settled(s) && s.ended_at !== after), loop);
+    if (back === "stop") return h;
+    if (back === "timeout") return this.fail(h, row, "the review's turn did not end in time", loop);
+    if (back.status === "input_required") return this.fail(h, row, "the run waits on a person after its review: a batch's runs ask no one", loop);
+    if (back.status !== "completed") return this.fail(h, row, `the review's turn ${back.status === "cancelled" ? "was cancelled" : "failed"}${back.error ? `: ${back.error}` : ""}`, loop);
     const f = await this.host.figures(runId);
-    const done: Row = { ...row, state: "done", ...(f ? { path: f.path, cost_usd: f.cost_usd, learning_usd: f.learning_usd, total_usd: f.total_usd, learned: f.learned, merged: f.merged } : {}) };
-    return this.close(h, done, loop);
+    await this.move(h.id, row, "done", f ? { path: f.path, cost_usd: f.cost_usd, learning_usd: f.learning_usd, total_usd: f.total_usd, learned: f.learned, merged: f.merged } : {});
+    return this.tally(h);
   }
 
-  /** The row ended: saved, then the header folded from the rows. */
-  private async close(h: Header, row: Row, loop: Loop): Promise<Header> {
-    await this.saveRow(h.id, row);
-    loop.current = null;
+  /** A row ends failed: a live row's run is asked to stop (nothing to one that ended; a stop that fails is the loop's
+   *  failure, so the row stays live and owned) and waited for, with its grade, before its figures are read; one that does not
+   *  stop within settleMs leaves the row's cost unknown. A halt meanwhile leaves the row as it is, for the next start. */
+  private async fail(h: Header, row: Row, error: string, loop: Loop): Promise<Header> {
+    const runId = row.run_id;
+    let known = true;
+    if (runId) {
+      const now = await this.host.view(runId).catch(() => undefined);
+      if (!now || !settled(now)) await this.host.cancel(runId);
+      const started = this.clock();
+      for (let s = now; !(s && settled(s)); ) {
+        if (loop.halted) return h;
+        if (this.clock() - started > (this.host.settleMs ?? 10 * 60_000)) { known = false; break; }
+        await sleep(this.pollMs);
+        s = await this.host.view(runId).catch(() => undefined);
+      }
+    }
+    const f = runId && known ? await this.host.figures(runId).catch(() => undefined) : undefined;
+    await this.move(h.id, row, "failed", { error: error.slice(0, 400), total_usd: runId ? (f?.total_usd ?? null) : 0, ...(f ? { path: f.path, cost_usd: f.cost_usd, learning_usd: f.learning_usd, learned: f.learned, merged: f.merged } : {}) });
     return this.tally(h);
   }
 
@@ -478,7 +565,7 @@ export class LearningBatches {
       if (row.learned?.workflows.length) next.revisions.push({ row: row.n, commit: row.merged ?? null, workflows: row.learned.workflows });
     }
     next.spent_usd = usd(spent);
-    await this.save(next);
+    if (h.status === "running") await this.save(next);
     return next;
   }
 }

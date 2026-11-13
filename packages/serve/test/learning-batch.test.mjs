@@ -1,6 +1,6 @@
 // Learn from a CSV (POST /v2/agents/{id}/learning/batches): rows in, the agent run on each in order with learning on, each
 // run told the reference answer beside its own, progress kept by the server (a reload reads it; a restart takes it up),
-// a cancel, and a cap that is never gone past. The faux model answers "Job answer." and learns the note its instructions plan.
+// a cancel, and a cap on its runs (grades booked, uncapped, as on every run). The faux model answers "Job answer." and learns the note its instructions plan.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { answerValue, BATCH_ROWS_MAX, checkBatchBody, contentOf, LearningBatches, matches, reviewText, RUN_CAP_MIN_USD } from "../dist/learning-batch.js";
@@ -152,6 +152,8 @@ test("a reload reads the batch from the server: the same figures mid-run and aft
   const created = await first.api("POST", `/agents/${id}/learning/batches`, body(refs));
   assert.equal(created.status, 202);
   const mid = await until(first.api, id, created.body.id, (b) => b.finished >= 2 && b.status === "running");
+  // The cost now is the rows booked and the row in flight as it will be booked (a run still going counts its live cost).
+  assert.ok(typeof mid.cost_usd === "number" && mid.cost_usd >= mid.spent_usd, `cost now ${mid.cost_usd}, booked ${mid.spent_usd}`);
   // A second read, as a reloaded page makes, is the same progress.
   const reread = (await first.api("GET", `/agents/${id}/learning/batches/${created.body.id}`)).body;
   assert.ok(reread.finished >= mid.finished && reread.total === 5);
@@ -188,7 +190,7 @@ test("cancel ends the loop, cancels the run in flight and keeps the rows done; a
   assert.equal((await api("POST", `/agents/${id}/learning/batches/${created.body.id}/cancel`, {})).body.status, "cancelled", "a second cancel answers it as it is");
 });
 
-test("the cap is never gone past: a row starts only when what is left covers a run's smallest cap and the mean of the rows done, and the batch stops `cap`, its rows done kept", { timeout: 240_000 }, async (t) => {
+test("the cap holds the runs: a row starts only when what is left covers a run's smallest cap and the mean of the rows done, and the batch stops `cap`, its rows done kept", { timeout: 240_000 }, async (t) => {
   const { api } = await serve(t, { learning: "on", faux: LEARN, batchPollMs: 50 });
   const id = "csv-cap";
   await made(api, learner(id));
@@ -292,20 +294,81 @@ test("a server that stops leaves the batch running, and one that starts takes up
   assert.equal(host.runs.get("run-2").messages.length, 1, "its review was sent once");
 });
 
-/** The host as one server process sees it: once that process "dies" (`kill`), every call it makes hangs, as a dead
- *  process makes none; the next process (`bound` again) reads and writes the same store and runs. `crashAt`: the effect
- *  (a write, a start, a review) numbered so after the batch's create is done, then the process dies at once. */
-function processes(host) {
-  const state = { epoch: 0, ops: 0, crashAt: Infinity, died: null };
+/** A host whose runs take a while, as a server's do: a run is working on its first look and has answered ("A") on its
+ *  second; the review reopens it (working, then its turn ends `reviewTurn`, its reply "B"); a cancel ends a working run
+ *  cancelled at its next look, and is nothing to a run that has ended. A run costs $0.10 a turn. */
+function lifeHost({ reviewTurn = "completed" } = {}) {
+  const settings = new Map();
+  const runs = new Map();
+  const keys = new Map();
+  let n = 0;
+  const look = (r) => {
+    if (r.status === "working") {
+      if (r.stop) r.status = "cancelled";
+      else if (++r.looks >= 2) r.status = r.turn === 1 ? "completed" : reviewTurn;
+    }
+    return r;
+  };
+  return {
+    runs,
+    keys,
+    settings: {
+      get: async (k) => (settings.has(k) ? structuredClone(settings.get(k)) : undefined),
+      put: async (k, v) => void settings.set(k, structuredClone(v)),
+      all: async () => [...settings].map(([key, value]) => ({ key, value: structuredClone(value), updatedAt: 0 })),
+    },
+    learning: async () => ({ learns: true }),
+    find: async (key) => keys.get(key),
+    start: async (agentId, b, key) => {
+      const id = `run-${++n}`;
+      runs.set(id, { id, key, turn: 1, looks: 0, status: "working", stop: false, messages: [] });
+      keys.set(key, id);
+      return id;
+    },
+    view: async (id) => {
+      const r = runs.get(id);
+      if (!r) return undefined;
+      look(r);
+      const ended = r.status !== "working";
+      return { status: r.status, ended_at: ended ? `t${r.turn}` : null, answer: r.turn === 1 ? "A" : "B", cost_usd: money(0.1 * r.turn), learning_state: ended ? "merged" : null, error: r.status === "failed" ? "the turn failed" : null };
+    },
+    sent: async (id, text) => runs.get(id).messages.includes(text),
+    message: async (id, text) => {
+      const r = runs.get(id);
+      if (r.status !== "completed") throw new Error(`the run is ${r.status}`);
+      r.messages.push(text);
+      Object.assign(r, { turn: r.turn + 1, looks: 0, status: "working" });
+    },
+    cancel: async (id) => { const r = runs.get(id); if (r?.status === "working") r.stop = true; },
+    figures: async (id) => { const r = runs.get(id); return { path: "agent", cost_usd: money(0.1 * r.turn), learning_usd: 0, total_usd: money(0.1 * r.turn), learned: { notes: [], skills: [], workflows: [] }, merged: null }; },
+    pollMs: 0,
+  };
+}
+
+/** The host as server processes see it, with faults: every call is numbered (`calls`), and every effect (a write, a start,
+ *  a review, a cancel) too (`effects`). `crashAt`: the process dies once that effect is done (every call it makes after
+ *  hangs, as a dead process makes none; the next process, `bound` again, has the same store and runs). `errorAt`: that
+ *  call fails once, before it does anything (`errorAfter`: after it did). `cancelAt`: a person's cancel arrives once that
+ *  effect is done (`onCancel`). */
+function faults(host) {
+  const s = { epoch: 0, effects: 0, calls: 0, crashAt: Infinity, errorAt: Infinity, errorAfter: false, cancelAt: Infinity, onCancel: null };
   let dead;
-  state.died = new Promise((r) => (dead = r));
+  s.died = new Promise((r) => (dead = r));
   const hang = () => new Promise(() => {});
   const bound = () => {
-    const epoch = state.epoch;
+    const epoch = s.epoch;
     const call = (fn, effect) => async (...a) => {
-      if (state.epoch !== epoch) return hang();
+      if (s.epoch !== epoch) return hang();
+      const at = ++s.calls;
+      if (at === s.errorAt && !s.errorAfter) throw new Error("the store is busy");
       const out = await fn(...a);
-      if (effect && ++state.ops === state.crashAt) { state.epoch++; dead(); return hang(); }
+      if (s.epoch !== epoch) return hang();
+      if (at === s.errorAt) throw new Error("the store is busy");
+      if (effect) {
+        const e = ++s.effects;
+        if (e === s.crashAt) { s.epoch++; dead(); return hang(); }
+        if (e === s.cancelAt) s.onCancel?.();
+      }
       return out;
     };
     return {
@@ -315,36 +378,164 @@ function processes(host) {
       start: call(host.start, true), message: call(host.message, true), cancel: call(host.cancel, true),
     };
   };
-  return { state, bound };
+  return { s, bound };
 }
 
-test("a server that dies between any two steps of a row, started again, runs each row once, sends each review once, keeps the first right or wrong, and books every row", async () => {
-  // A clean run counts the effects after the create: every boundary a death can fall on.
-  const clean = processes(fakeHost({ costs: [0.1, 0.2], after: "B" }));
-  const one = new LearningBatches(clean.bound());
-  const b0 = await one.create("a1", asked({ rows: [{ q: "q1", a: "A" }, { q: "q2", a: "B" }], max_cost_usd: 50 }));
-  const created = clean.state.ops;
-  await one.idle(b0.id);
-  const steps = clean.state.ops - created;
-  assert.ok(steps >= 8, `effects in a two-row batch: ${steps}`);
-  for (let at = 1; at <= steps; at++) {
-    const host = fakeHost({ costs: [0.1, 0.2], after: "B" });
-    const p = processes(host);
-    const first = new LearningBatches(p.bound());
-    const made = await first.create("a1", asked({ rows: [{ q: "q1", a: "A" }, { q: "q2", a: "B" }], max_cost_usd: 50 }));
-    p.state.crashAt = p.state.ops + at;
-    await Promise.race([p.state.died, first.idle(made.id)]);
-    const second = new LearningBatches(p.bound());
-    await second.resume();
-    await second.idle(made.id);
-    const end = await second.read("a1", made.id);
-    const why = `death at effect ${at} of ${steps}`;
-    assert.deepEqual([end.status, end.finished, end.failed], ["completed", 2, 0], `${why}: ${JSON.stringify(end)}`);
-    assert.equal(host.runs.size, 2, `${why}: one run a row`);
-    assert.deepEqual([...host.runs.values()].map((r) => r.messages.length), [1, 1], `${why}: one review a row`);
-    assert.deepEqual(end.rows.map((r) => [r.answer, r.right]), [["A", true], ["A", false]], `${why}: the answer before the review, never its reply`);
-    assert.deepEqual([end.right, end.wrong, end.spent_usd], [1, 1, 0.3], `${why}: every row booked once`);
+const HEAD_KEY = /^learning_batch\/lb_[0-9a-f]{16}$/;
+/** What every batch on `host` must be once a process has taken it up and let it end: listed (never hidden), ended, no row
+ *  left mid-way, a row done only when its run answered and was told the reference and that turn completed, the header the
+ *  fold of its rows, one run a row and every run stopped and owned by its row. */
+async function legal(host, batches, why) {
+  const heads = (await host.settings.all()).filter(({ key }) => HEAD_KEY.test(key)).map(({ value }) => value);
+  const owned = new Map();
+  for (const h of heads) {
+    const listed = (await batches.list(h.agent_id)).batches.map((b) => b.id);
+    assert.ok(listed.includes(h.id), `${why} | batch ${h.id} (${h.status}) is hidden from its agent's list`);
+    const b = await batches.read(h.agent_id, h.id);
+    assert.notEqual(b.status, "running", `${why} | the batch is still running once its loop let go: ${JSON.stringify(b)}`);
+    for (const r of b.rows) {
+      assert.ok(["pending", "done", "failed"].includes(r.state), `${why} | row ${r.n} left ${r.state}`);
+      if (r.run_id) owned.set(r.run_id, (owned.get(r.run_id) ?? 0) + 1);
+      if (r.state !== "done") continue;
+      const run = host.runs.get(r.run_id);
+      assert.deepEqual([run.status, run.turn, run.messages.length], ["completed", 2, 1], `${why} | row ${r.n} counted done, but its run is ${run.status} after ${run.messages.length} review(s)`);
+      assert.deepEqual([r.answer, r.right], ["A", r.reference === "A"], `${why} | row ${r.n}'s answer is the one before its review`);
+    }
+    const ended = b.rows.filter((r) => r.state === "done" || r.state === "failed");
+    assert.deepEqual([b.finished, b.right, b.wrong, b.failed, b.spent_usd], [ended.length, ended.filter((r) => r.state === "done" && r.right).length, ended.filter((r) => r.state === "done" && !r.right).length, ended.filter((r) => r.state === "failed").length, money(ended.reduce((sum, r) => sum + (r.total_usd ?? 0), 0))], `${why} | the header is its rows' fold`);
   }
+  const byKey = new Map();
+  for (const run of host.runs.values()) {
+    byKey.set(run.key, (byKey.get(run.key) ?? 0) + 1);
+    assert.notEqual(run.status, "working", `${why} | ${run.id} is left running`);
+    assert.equal(owned.get(run.id), 1, `${why} | ${run.id} is no row's run`);
+    assert.ok(run.messages.length <= 1, `${why} | ${run.id} was reviewed ${run.messages.length} times`);
+  }
+  assert.ok([...byKey.values()].every((c) => c === 1), `${why} | a row ran twice`);
+}
+
+const headOf = (all) => all.find(({ key }) => HEAD_KEY.test(key))?.value;
+const rowsOfOnly = (b) => [b.status, b.stopped, ...b.rows.map((r) => [r.state, r.answer, r.right ?? null, r.reviewed ?? null, r.total_usd ?? null])];
+const TWO = () => asked({ rows: [{ q: "q1", a: "A" }, { q: "q2", a: "B" }], max_cost_usd: 50 });
+
+/** One fault, then a server that starts again on the same store and runs whatever it finds running to its end. */
+async function scenario({ reviewTurn, crashAt = Infinity, errorAt = Infinity, errorAfter = false, cancelAt = Infinity }) {
+  const host = lifeHost({ reviewTurn });
+  const p = faults(host);
+  Object.assign(p.s, { crashAt, errorAt, errorAfter, cancelAt });
+  const first = new LearningBatches(p.bound());
+  let id = null;
+  let cancelling = null;
+  p.s.onCancel = () => { if (id) cancelling = first.cancel("a1", id).catch((error) => ({ error })); };
+  const making = first.create("a1", TWO()).then((b) => (id = b.id), () => null);
+  await Promise.race([p.s.died, (async () => {
+    await making;
+    if (id) await first.idle(id);
+    if (cancelling) await cancelling;
+  })()]);
+  // The faults are the first process's: the one that starts again meets none.
+  Object.assign(p.s, { onCancel: null, errorAt: Infinity, crashAt: Infinity });
+  const answered = cancelling && p.s.epoch === 0 ? await cancelling : null;
+  const second = new LearningBatches(p.bound());
+  await second.resume();
+  for (const { key, value } of await host.settings.all()) if (HEAD_KEY.test(key)) await second.idle(value.id);
+  return { host, second, answered, s: p.s };
+}
+
+test("the batch and its rows are one machine: a crash, a failed call or a cancel at any step, then a restart, ends in a legal state (every batch listed and ended, no run left running or unowned, nothing counted done that is not, the header its rows' fold)", { timeout: 600_000 }, async () => {
+  let cases = 0;
+  // Every case runs; what is not legal is collected (the first of each kind kept), so a red names every gap at once.
+  const gaps = new Map();
+  const check = async (fn) => {
+    try { await fn(); } catch (error) {
+      const kind = String(error.message).replace(/^.*? \| /s, "").replace(/lb_[0-9a-f]+|run-\d+|row \d+|\d+ review\(s\)/g, "#").slice(0, 120);
+      if (!gaps.has(kind)) gaps.set(kind, String(error.message).slice(0, 400));
+    }
+  };
+  for (const reviewTurn of ["completed", "failed", "cancelled"]) {
+    const clean = await scenario({ reviewTurn });
+    await check(() => legal(clean.host, clean.second, `${reviewTurn}, no fault`));
+    const { effects, calls } = clean.s;
+    assert.ok(effects >= 10 && calls > effects, `steps in a two-row batch: ${effects} effects, ${calls} calls`);
+    const done = await clean.second.read("a1", headOf(await clean.host.settings.all()).id);
+    await check(async () => {
+      assert.deepEqual(done.rows.map((r) => r.state), reviewTurn === "completed" ? ["done", "done"] : ["failed", "failed"], `${reviewTurn}, no fault | a row whose review's turn did not complete is failed, never done`);
+      if (reviewTurn !== "completed") assert.match(done.rows[0].error ?? "", /review/);
+    });
+    for (let at = 1; at <= effects; at++) {
+      for (const fault of [{ crashAt: at }, { cancelAt: at }, { cancelAt: at, crashAt: at + 1 }]) {
+        const why = `${reviewTurn}, ${JSON.stringify(fault)} of ${effects} effects`;
+        const run = await scenario({ reviewTurn, ...fault });
+        await check(() => legal(run.host, run.second, why));
+        // A crash alone loses nothing: the next start runs a batch that was made to its end, as if none had come.
+        const made = headOf(await run.host.settings.all());
+        if (!fault.cancelAt && made) await check(async () => assert.deepEqual(rowsOfOnly(await run.second.read("a1", made.id)), rowsOfOnly(done), `${why} | a crash changed how the batch ended`));
+        if (run.answered && !run.answered.error) {
+          await check(async () => {
+            const end = await run.second.read("a1", run.answered.id);
+            assert.equal(end.status, run.answered.status, `${why} | the status a cancel answered is the batch's for good`);
+            assert.notEqual(run.answered.status, "running", `${why} | a cancel answers once the batch has ended`);
+          });
+        }
+        cases++;
+      }
+    }
+    for (let at = 1; at <= calls; at++) {
+      for (const errorAfter of [false, true]) {
+        const run = await scenario({ reviewTurn, errorAt: at, errorAfter });
+        await check(() => legal(run.host, run.second, `${reviewTurn}, call ${at} of ${calls} fails ${errorAfter ? "after" : "before"} its effect`));
+        cases++;
+      }
+    }
+  }
+  assert.deepEqual([...gaps.values()], [], `of ${cases} cases`);
+  assert.ok(cases > 100, `cases: ${cases}`);
+});
+
+test("a loop that keeps failing ends its batch stopped on the error's words, and only once its row's run has stopped and been booked", async () => {
+  const host = lifeHost();
+  const put = host.settings.put;
+  // The store refuses every write of row 1 once it has answered (its `right`), and nothing else.
+  host.settings.put = async (k, v) => { if (/\/row\/1$/.test(k) && v.right !== undefined) throw new Error("the store is busy"); return put(k, v); };
+  const batches = new LearningBatches(host);
+  const made = await batches.create("a1", TWO());
+  await batches.idle(made.id);
+  const end = await batches.read("a1", made.id);
+  assert.deepEqual([end.status, end.stopped, end.rows[0].state, end.rows[1].state, host.runs.size], ["stopped", null, "failed", "pending", 1]);
+  assert.match(end.error, /store is busy/);
+  assert.equal(host.runs.get("run-1").status, "completed", "its run had ended: nothing left running");
+  assert.equal(end.rows[0].total_usd, 0.1, "and it is booked");
+  assert.equal((await batches.list("a1")).batches[0].status, "stopped");
+});
+
+test("a review quotes the answer it compares: an answer past 2,000 characters is quoted to there and the review says it was cut and where the whole one is", async () => {
+  const long = `${"x".repeat(2_400)} A`;
+  const host = fakeHost({ costs: [] });
+  const view = host.view;
+  host.view = async (id) => ({ ...(await view(id)), answer: host.runs.get(id).messages.length ? "B" : long });
+  const batches = new LearningBatches(host);
+  const made = await batches.create("a1", asked({ rows: [{ q: "q1", a: long }], max_cost_usd: 50 }));
+  await batches.idle(made.id);
+  const end = await batches.read("a1", made.id);
+  assert.deepEqual([end.rows[0].right, end.rows[0].answer.length], [true, 2_000], "compared whole, shown cut");
+  const sent = host.runs.get("run-1").messages[0];
+  assert.ok(sent === reviewText(long, long), `the review sent is built from the whole answer: ${sent.slice(-200)}`);
+  assert.ok(sent.includes(`you answered "${long.slice(0, 2_000)}…" (cut here: your answer runs to 2402 characters, and the whole of it is your last answer in this run)`), sent.slice(-300));
+  assert.equal(reviewText("A", "A"), 'Review: the reference answer is "A"; you answered "A".', "a short answer is quoted whole");
+});
+
+test("the live cost is the booked one's function: a row in flight adds what its run and its learning have spent so far, grades included", async () => {
+  const host = fakeHost({ costs: [] });
+  // Row 1's run looks working at $0.10 (its view); its figures, the booked function, count $0.25 with a grade that ended.
+  host.view = async () => ({ status: "working", ended_at: null, answer: null, cost_usd: 0.1, learning_state: "graded", error: null });
+  host.figures = async () => ({ path: "agent", cost_usd: 0.1, learning_usd: 0.15, total_usd: 0.25, learned: { notes: [], skills: [], workflows: [] }, merged: null });
+  const batches = new LearningBatches(host);
+  const made = await batches.create("a1", asked({ max_cost_usd: 50 }));
+  for (let i = 0; i < 200 && host.runs.size < 1; i++) await sleep(5);
+  await sleep(20);
+  const mid = await batches.read("a1", made.id);
+  assert.deepEqual([mid.current, mid.cost_usd], [1, 0.25]);
+  await batches.halt();
 });
 
 test("a cancel while a row's run is starting stops that run once it has an id, and the row ends failed with it", async () => {
@@ -354,6 +545,9 @@ test("a cancel while a row's run is starting stops that run once it has an id, a
   const gate = new Promise((r) => (release = r));
   const start = host.start;
   host.start = async (...a) => { await gate; return start(...a); };
+  // The run works on until it is stopped.
+  const view = host.view;
+  host.view = async (id) => (host.runs.get(id).cancelled ? view(id) : { status: "working", ended_at: null, answer: null, cost_usd: 0.05, learning_state: null, error: null });
   const batches = new LearningBatches(host);
   const made = await batches.create("a1", asked({ max_cost_usd: 50 }));
   await sleep(5);

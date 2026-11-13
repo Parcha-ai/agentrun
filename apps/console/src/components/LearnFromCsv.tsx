@@ -128,7 +128,7 @@ function Upload({ v2, agentId, onStarted, onCancel }: { v2: Client; agentId: str
           <Field label="The answer column" note="What the agent is told after each answer: the reference it should have given.">
             <Picker label="The answer column" value={answer} onChange={(v) => { setAnswer(v); setInputs((xs) => xs.filter((x) => x !== v)); }} options={file.columns.map((c) => ({ value: c, label: c }))} />
           </Field>
-          <Field label="Cap, in dollars" note="The most the whole batch spends, its runs and what learning adds. A row starts only when what is left covers it." hint={ready ? `Up to ${dollars(capUsd)} for ${file.rows.length} rows.` : undefined}>
+          <Field label="Cap, in dollars" note="Caps what the runs spend (each run, its look-back and its review). A row starts only when what is left covers it. Grades are counted in the cost but not capped." hint={ready ? `Up to ${dollars(capUsd)} for ${file.rows.length} rows.` : undefined}>
             <Input inputMode="decimal" value={cap} onChange={(e) => setCap(e.target.value)} className="max-w-40" aria-label="Cap, in dollars" />
           </Field>
           <Preview columns={[...inputs, answer].filter(Boolean)} rows={file.rows.slice(0, 3)} />

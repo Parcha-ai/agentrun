@@ -69,7 +69,8 @@ Under the chart, **who finished each run** stacks each block of runs by path on 
 workflow's share grows from the takeover marker.
 
 If you already have the answers, teach it from them. On the Learning tab, **Learn from a CSV** takes a file of rows, the
-column or columns to give the agent and the column that holds the reference answer, and a cap on the whole batch. The
+column or columns to give the agent and the column that holds the reference answer, and a cap on its runs (grades are
+counted in its cost, not capped). The
 server runs the agent on each row in order, and after each run tells it the reference answer beside its own, so it looks
 back again. The page shows rows done, right or wrong, what it learned and what it has cost, and keeps showing it after a
 reload: the batch is the server's (`POST /v2/agents/{id}/learning/batches`, read at `GET .../batches/{batch_id}`).

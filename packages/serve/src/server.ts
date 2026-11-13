@@ -91,7 +91,7 @@ import { ServerLockHeldError, takeServerLock } from "./server-lock.js";
 import { DRAIN_TIMEOUT } from "./runner/beside.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
 import { agentCostOverStore, agentLearningOverStore, costRunOf, learningCountsOverStore, learningSpendOverStore, runLearningEnd } from "./store-reads/learning.js";
-import { LearningBatches } from "./learning-batch.js";
+import { LearningBatches, type RunSnap } from "./learning-batch.js";
 import { costCsv, learningCostQuery } from "./learning-cost.js";
 import { evalOf, evalsOf, recordEval } from "./learning-evals.js";
 import { keyOf, SEAL_KEY_ENV, TOOL_FIELDS } from "./tool-keys.js";
@@ -1313,6 +1313,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     },
     shown: () => secretsShown(serverSecrets(), { local: true }),
   };
+  /** What a learning batch's loop reads of a run, from its view. */
+  const batchRunView = async (runId: string): Promise<RunSnap | undefined> => {
+    const v = (await viewOverStore(store, runId, viewDepsFor(ownOriginOf()))) as Record<string, any> | undefined;
+    if (!v) return undefined;
+    return { status: String(v.status), ended_at: v.ended_at ?? null, answer: typeof v.result?.final_answer === "string" ? v.result.final_answer : null, cost_usd: typeof v.cost?.usd === "number" ? v.cost.usd : null, learning_state: typeof v.learning?.state === "string" ? v.learning.state : null, error: typeof v.error?.message === "string" ? v.error.message : null };
+  };
   // Learn from a CSV (learning-batch.ts): a batch's loop runs in this process over the run write half and the run view; its
   // state is the store's settings, so a batch still running when the server stopped takes up again as it starts.
   const batches = new LearningBatches({
@@ -1328,19 +1334,22 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // server stopped before its row kept the id is found again, never started twice.
     find: async (key) => (await agents.request(() => agents.store.runOfOrigin(key)))?.runId,
     start: async (agentId, body, key) => (await startRunOf(await needAgent(agentId), body as Json, { origin: { key } })).id,
-    view: async (runId) => {
-      const v = (await viewOverStore(store, runId, viewDepsFor(ownOriginOf()))) as Record<string, any> | undefined;
-      if (!v) return undefined;
-      return { status: String(v.status), ended_at: v.ended_at ?? null, answer: typeof v.result?.final_answer === "string" ? v.result.final_answer : null, cost_usd: typeof v.cost?.usd === "number" ? v.cost.usd : null, learning_state: typeof v.learning?.state === "string" ? v.learning.state : null, error: typeof v.error?.message === "string" ? v.error.message : null };
-    },
+    view: (runId) => batchRunView(runId),
     // Sent already: a steer the run's commands hold with these words, not refused (a follow-up to an ended run is one too,
     // its reopen's).
     sent: async (runId, content) => (await store.commands(runId, 0)).some((c) => c.kind === "steer" && c.refused === null && (c.body as { text?: unknown } | undefined)?.text === content),
     message: async (runId, content) => void (await message(store, await needRun(runId), content)),
-    cancel: async (runId) => void (await cancel(store, await needRun(runId))),
+    // A run that is not there has nothing to stop; any other failure is the loop's (the row stays live and owned).
+    cancel: async (runId) => {
+      const moment = ID.test(runId) ? await momentOverStore(store, runId, viewDepsFor(ownOriginOf())) : undefined;
+      if (moment) await cancel(store, moment);
+    },
     figures: async (runId) => {
-      const run = await store.runs.get(runId);
-      if (!run) return undefined;
+      const stored = await store.runs.get(runId);
+      if (!stored) return undefined;
+      // A run still going has no stored cost yet (its column is written at its end): its live cost, from its view, stands in,
+      // so a batch's cost now and the cost it books are costRunOf both.
+      const run = FINAL_STATES.includes(stored.state) ? stored : { ...stored, costUsd: (await batchRunView(runId))?.cost_usd ?? null };
       // Every round the run kept (a review follow-up opens a round of its own): what each one learned, the newest's merge.
       const newest = await store.learning.proposal(runId);
       const ends = await Promise.all(Array.from({ length: newest?.round ?? 1 }, (_, i) => runLearningEnd(store, runId, i + 1)));
