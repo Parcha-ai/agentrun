@@ -14,6 +14,7 @@ import { LAUNCH_LOST, SETUP_LOST } from "./files.js";
 import { HARNESSES } from "./harness.js";
 import { LEARNING_LABEL, LEARNING_MODES, LEARNING_REASONS, LEARNING_STATES, RUN_LEARNING_USE } from "./learning.js";
 import { CHEAPER_AFTER_RUNS, COST_CSV_COLUMNS, COST_RUNS_DEFAULT, COST_RUNS_MAX, RUN_PATHS } from "./learning-cost.js";
+import { EVAL_JOBS_MAX, EVAL_TEXT_MAX, EVALS_KEPT } from "./learning-evals.js";
 import { MODEL_SOURCES, THINKING_LEVELS } from "./model.js";
 import { BOX_IDS, BOX_NETWORKS, BOX_STATES } from "./place-offers.js";
 import { PLACE_MODES } from "./place.js";
@@ -481,8 +482,9 @@ const LAST_CHANGE = closed({
   at: { type: "string", format: "date-time", description: "When: the commit's time." },
 }, "The item's last change: the newest commit on its file (a note's file, a skill's SKILL.md, a draft's README.md), a person's (named by its subject's fixed prefix, `learning: <kind> by a person: `) or a run's merge (its Run-Id: `learned`). Absent when that commit is neither (the folder's own first commit, or one made outside the server).");
 const LEARNING_NOTE = { ...LEARNING_NOTE_REQUIRED, properties: { ...LEARNING_NOTE_REQUIRED.properties, retired: RETIRED, last_change: LAST_CHANGE } };
+const LEARNING_BY = { oneOf: [closed({ run: { type: "string" } }), { type: "object", additionalProperties: false, required: ["user"], properties: { user: { type: "boolean", const: true }, via: { type: "string", description: "On an approval: how it came, `console` (the owner's signed-in page)." } } }], description: "A run's merge (its commit's `Run-Id` trailer), or a person's edit, creation, retirement or approval through this API (`Changed-By: user`, and `Approved-Via` on an approval)." };
 const LEARNING_CHANGE = closed({
-  by: { oneOf: [closed({ run: { type: "string" } }), { type: "object", additionalProperties: false, required: ["user"], properties: { user: { type: "boolean", const: true }, via: { type: "string", description: "On an approval: how it came, `console` (the owner's signed-in page)." } } }], description: "A run's merge (its commit's `Run-Id` trailer), or a person's edit, creation, retirement or approval through this API (`Changed-By: user`, and `Approved-Via` on an approval)." },
+  by: LEARNING_BY,
   commit: { type: "string" }, at: { type: "string", format: "date-time" },
   reason: { type: "string", description: "A merge's: the grader's reason. A person's: what was done, `edited by a person: <file>`." },
   files: { type: "array", items: { type: "string" }, description: "The files the commit changed, MEMORY.md among them; a name holding one of the host's secrets reads `[redacted]`." },
@@ -976,6 +978,27 @@ const LEARNING_COST = closed({
   }, "What the series shows, over every run it counts, `limit` aside."),
 });
 
+const EVAL_TEXT = (description: string, example: string) => ({ type: "string", minLength: 1, maxLength: EVAL_TEXT_MAX, description, example });
+const EVAL_IN = {
+  name: EVAL_TEXT("What ran the test, one line: a bench's name and set, a script's.", "invoice bench, sealed test"),
+  n: { type: "integer", minimum: 1, maximum: EVAL_JOBS_MAX, description: "The held-out jobs the test counted: jobs the agent never learned from." },
+  correct: { type: "integer", minimum: 0, maximum: EVAL_JOBS_MAX, description: "How many of the `n` jobs the agent with what it learned got right: 0 to `n`." },
+};
+const EVAL_IN_OPTIONAL = {
+  label_source: { ...EVAL_TEXT("Where the right answers came from, one line; null (or absent) when not said.", "teacher labels, 87% strict vs people"), type: ["string", "null"] },
+  cost_per_task_usd: { type: ["number", "null"], minimum: 0, description: "The agent with what it learned: its mean cost a task, in USD; null (or absent) when not counted." },
+  baseline_cost_per_task_usd: { type: ["number", "null"], minimum: 0, description: "The agent by hand (learning off): its mean cost a task, in USD; null (or absent) when not counted." },
+  learned_revision: { type: ["string", "null"], pattern: "^[0-9a-f]{7,64}$", description: "The learning folder's commit the test ran from; null (or absent) when not said." },
+};
+const LEARNING_EVAL = closed({
+  id: { type: "string" },
+  ...EVAL_IN,
+  ...EVAL_IN_OPTIONAL,
+  accuracy: { type: "number", minimum: 0, maximum: 1, description: "`correct` over `n`, to four places: the server's." },
+  ci: { type: "array", items: { type: "number", minimum: 0, maximum: 1 }, minItems: 2, maxItems: 2, description: "The 95% Wilson interval around `accuracy`, [low, high], to four places: the server's, from `n` and `correct`." },
+  recorded_at: { type: "string", format: "date-time" },
+}, "One recorded held-out test of the agent: its counts as posted, and the accuracy and 95% Wilson interval the server computed from them.");
+
 const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
   "/agents/{agent_id}/learning": {
     get: {
@@ -995,6 +1018,20 @@ const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
       ],
       responses: { "200": { description: "The agent's cost per run.", content: { "application/json": { schema: LEARNING_COST }, "text/csv": { schema: { type: "string" } } } }, ...errors(400, 401, 404, 429, 500) },
       "x-agentrun-serve": "learningcost/1",
+    },
+  },
+  "/agents/{agent_id}/learning/evals": {
+    get: {
+      operationId: "listLearningEvals", tags: ["agents"], summary: "The agent's eval records: the latest, and every one kept, newest first",
+      description: `What the console's Learning tab heads with: the latest record of a test on held-out jobs (jobs the agent never learned from), its accuracy with the 95% Wilson interval and the cost a task with learning against by hand. Only ever what was posted (POST below): never computed from the agent's own runs, which are the jobs it learned from. Append-only, the latest ${EVALS_KEPT} kept.`,
+      parameters: [AGENT_ID], responses: { "200": json(closed({ agent: { type: "string" }, latest: { anyOf: [LEARNING_EVAL, { type: "null" }], description: "The latest record: the one the console shows; null when none is recorded." }, evals: { type: "array", items: LEARNING_EVAL, maxItems: EVALS_KEPT, description: "Newest recorded first." } }), "The agent's eval records."), ...errors(401, 404, 429, 500) }, ...MARK,
+    },
+    post: {
+      operationId: "recordLearningEval", tags: ["agents"], summary: "Record a held-out test of the agent: its counts and the cost a task, with learning and by hand",
+      description: `Post the counts of a test run on held-out jobs (jobs the agent never learned from): \`n\` jobs, \`correct\` of them right, the cost a task with learning and by hand, where the labels came from. The server computes \`accuracy\` and its 95% Wilson interval \`ci\`; a body that sends either is refused. Only a held-out test belongs here: numbers from the jobs the agent learned on read as held-out on the console. Aggregates only: no rows, no inputs. Appended, the latest first; the latest ${EVALS_KEPT} kept. A field that is missing or wrong is 422 input_invalid by field, and nothing is kept. With Idempotency-Key, a retry answers the first request's record.`,
+      parameters: [AGENT_ID, ref("parameters/IdempotencyKey")],
+      requestBody: { required: true, content: { "application/json": { schema: closedWith(EVAL_IN, EVAL_IN_OPTIONAL) } } },
+      responses: { "201": { description: "Recorded.", headers: { "Idempotent-Replayed": ref("headers/IdempotentReplayed") }, content: { "application/json": { schema: LEARNING_EVAL } } }, ...errors(400, 401, 404, 422, 429, 500) }, ...MARK,
     },
   },
   "/agents/{agent_id}/learning/notes": {
@@ -1066,6 +1103,19 @@ const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
       security: [{ ownerSession: [] }],
       requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, maxProperties: 0 } } } },
       parameters: [AGENT_ID, NOTE_PARAM, IF_MATCH], responses: { "200": NOTE_TEXT("The note, restored."), ...WRITE_ERRORS }, ...MARK,
+    },
+  },
+  "/agents/{agent_id}/learning/workflows/{name}/revisions": {
+    get: {
+      operationId: "listLearnedWorkflowRevisions", tags: ["agents"], summary: "A learned workflow's revisions on main, oldest first, each with its workflow.json as it was then",
+      description: "The commits on the agent's learning main that changed `workflows/<name>/workflow.json`, the latest `limit` of them, oldest first, each with who made it (a run's merge, or a person), when, why, and the workflow's text at that commit (`null` when that commit holds no such file). What the console's learned-workflow replay steps through, drawing each text as a graph and marking its nodes new or edited against the revision before. One read-only exec per revision returned. `total` counts every such commit the log holds; `truncated` is true when the log itself is cut (it keeps the latest 200 changes). A workflow no commit in the log changed is 404. " + SIGN_IN_WITHHELD,
+      parameters: [AGENT_ID, { name: "name", in: "path", required: true, description: "The learned workflow's folder name, `workflows/<name>/`: lowercase letters, digits, dashes and underscores.", schema: { type: "string" } }, { name: "limit", in: "query", required: false, description: "The latest revisions to answer. At most 50.", schema: { type: "integer", minimum: 1, maximum: 50, default: 20 } }],
+      responses: { "200": json(closed({
+        name: { type: "string" },
+        revisions: { type: "array", items: closed({ commit: { type: "string" }, at: { type: "string", format: "date-time" }, by: LEARNING_BY, reason: { type: "string", description: "A merge's: the grader's reason. A person's: what was done." }, text: { type: ["string", "null"], description: "The workflow's workflow.json at this commit, cut of the host's secrets; null when the commit holds no such file." } }), description: "Oldest first." },
+        total: { ...COUNT, description: "How many commits in the log changed this workflow's workflow.json, `limit` aside." },
+        truncated: { type: "boolean", description: "The agent's log is cut at its latest 200 changes, so older revisions may exist." },
+      }), "The workflow's revisions."), ...errors(400, 401, 403, 404, 429, 500) }, ...MARK,
     },
   },
   "/agents/{agent_id}/learning/workflows/{name}/promote": {

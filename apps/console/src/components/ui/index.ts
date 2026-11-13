@@ -9,6 +9,7 @@ export { Menu, MenuItem, MenuSeparator } from "./menu";
 export { NavItem } from "./nav-item";
 export { Picker, type PickerOption } from "./picker";
 export { Segmented, type SegmentedOption } from "./segmented";
+export { Slider } from "./slider";
 export { Spinner } from "./spinner";
 export { Switch } from "./switch";
 export { type TabItem, tabPanelProps, Tabs } from "./tabs";
