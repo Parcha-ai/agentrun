@@ -13,11 +13,7 @@ const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const STORE = "packages/serve/src/store/";
 /** The files outside the store that held SQL when the store landed. Each goes at the cutover. */
 const TODAY = [
-  "packages/serve/src/cap.ts",
-  "packages/serve/src/run-db.ts",
   "packages/serve/src/server-lock.ts",
-  // The copy of pi/src/durable/readers.ts serve runs (its workflow code moved into serve; pi's copy goes with pi).
-  "packages/serve/src/workflow/readers.ts",
 ];
 /** A SQLite file named in source: only the store picks its file (a data directory is all anyone else passes). */
 const SQLITE_FILE = /\.sqlite\b/;
@@ -25,7 +21,6 @@ const SQLITE_FILE = /\.sqlite\b/;
  *  cutover; the list only shrinks. */
 const TODAY_FILE = [
   "packages/serve/src/import.ts",
-  "packages/serve/src/run-db.ts",
   "packages/serve/src/server.ts",
   "packages/serve/src/stats.ts",
 ];
@@ -126,13 +121,9 @@ test("the list only shrinks: a listed file with no SQL left is taken off it", ()
 
 const withDriver = roots.flatMap(sources).filter((file) => driversIn(readFileSync(join(ROOT, file), "utf8"), file).length > 0);
 /** The files outside the store that took a SQLite driver when the guard began reading imports. Each goes at the cutover;
- *  the list only shrinks. One file joined it after: pi/src/durable/readers.ts loads node:sqlite through createRequire,
- *  which the guard first saw when it learnt that form. */
+ *  the list only shrinks. */
 const TODAY_DRIVER = [
-  "packages/serve/src/run-db.ts",
   "packages/serve/src/server-lock.ts",
-  // The copy of pi/src/durable/readers.ts serve runs, as on TODAY.
-  "packages/serve/src/workflow/readers.ts",
 ];
 
 test("no SQLite driver taken outside the store, but for today's files on the list", () => {

@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/field";
 import type { Client } from "@/lib/client";
 import { when } from "@/lib/format";
 import { type SecretsWhyNot, WHY_NOT_WORDS } from "@/lib/secrets";
-import { type McpAuth, type McpPreview, mcpProblem, type McpRefresh, type McpServer, PREVIEW_SCOPE_NOTE, signInFailure } from "@/lib/mcp";
+import { GITHUB_MCP_URL, type McpAuth, type McpPreview, mcpProblem, type McpRefresh, type McpServer, PREVIEW_SCOPE_NOTE, signInFailure } from "@/lib/mcp";
 
 type Problem = ReturnType<typeof mcpProblem>;
 type SignIn = { server: string; ok: boolean; error?: string };
@@ -25,10 +25,24 @@ const CREDENTIAL: Record<string, [string, "success" | "warning" | "plain"]> = {
  *  read, and cleared once sent to be kept: every credential is kept sealed under the server's seal key. `signIn`, the
  *  outcome an OAuth sign-in's way back names (`#/settings/mcp?server=&sign_in=`); `open` takes the browser to a sign-in. */
 /** `writable`: this session may type a credential (session.secrets_writable); `whyNot`, why not when it may not. */
-export function McpServersPage({ v2, signIn, writable, whyNot = "sign_in", open = (url) => location.assign(url) }: { v2: Client; signIn?: SignIn; writable: boolean; whyNot?: SecretsWhyNot; open?: (url: string) => void }) {
+type Add = { name: string; auth?: "github_app" };
+export function McpServersPage({ v2, signIn, add, writable, whyNot = "sign_in", open = (url) => location.assign(url) }: { v2: Client; signIn?: SignIn; add?: Add; writable: boolean; whyNot?: SecretsWhyNot; open?: (url: string) => void }) {
   const [servers, setServers] = useState<McpServer[] | null>(null);
   const [loadError, setLoadError] = useState<Problem | null>(null);
-  const [form, setForm] = useState<{ saved?: McpServer } | null>(null);
+  // The open form: a new server, or a saved one; `problem`, a saved row's refusal it opens with (its sign-in needs a
+  // Client ID), so the form keeps that guidance. `add`: a template's Apply sent the person here to set up the server it
+  // needs, so the add form opens with its name filled.
+  const [form, setForm] = useState<{ saved?: McpServer; problem?: Problem; add?: Add } | null>(add ? { add } : null);
+  // The form follows the `add` param on every location change: Back to a setup URL opens it again, with its fields reset.
+  const addName = add?.name;
+  const addAuth = add?.auth;
+  const seenAdd = useRef(`${addName ?? ""}|${addAuth ?? ""}`);
+  useEffect(() => {
+    const now = `${addName ?? ""}|${addAuth ?? ""}`;
+    if (now === seenAdd.current) return;
+    seenAdd.current = now;
+    setForm(addName ? { add: { name: addName, ...(addAuth ? { auth: addAuth } : {}) } } : null);
+  }, [addName, addAuth]);
   const asked = useRef(0);
   const load = () => {
     const n = ++asked.current;
@@ -61,9 +75,9 @@ export function McpServersPage({ v2, signIn, writable, whyNot = "sign_in", open 
           </Banner>
         )}
         {/* A save that lands after its form was closed (Cancel, or another Change) closes no form opened since. */}
-        {form && <ServerForm key={form.saved?.name ?? "new"} v2={v2} saved={form.saved} writable={writable} signIn={startSignIn} onCancel={() => setForm(null)} onSaved={((mine) => () => { setForm((open) => (open === mine ? null : open)); load(); })(form)} />}
+        {form && <ServerForm key={`${form.saved?.name ?? "new"}|${form.add?.name ?? ""}|${form.add?.auth ?? ""}`} v2={v2} saved={form.saved} add={form.add} given={form.problem} writable={writable} signIn={startSignIn} onCancel={() => setForm(null)} onSaved={((mine) => () => { setForm((open) => (open === mine ? null : open)); load(); })(form)} />}
         {servers && (servers.length
-          ? <ul className="border">{servers.map((s) => <ServerRow key={s.name} v2={v2} server={s} writable={writable && !form} signIn={startSignIn} onChange={() => setForm({ saved: s })} onChanged={load} />)}</ul>
+          ? <ul className="border">{servers.map((s) => <ServerRow key={s.name} v2={v2} server={s} writable={writable && !form} signIn={startSignIn} onChange={(problem) => setForm({ saved: s, ...(problem ? { problem } : {}) })} onChanged={load} />)}</ul>
           : <p className="border px-3 py-4 font-mono text-body text-muted-foreground">No MCP server is saved here yet.</p>)}
         <PrivateHosts v2={v2} />
       </div>
@@ -75,7 +89,7 @@ const Said = ({ problem }: { problem: Problem }) => (
   <div role="alert"><p className="font-mono text-body text-destructive-text">{problem.text}</p>{problem.detail && <p className="mt-1 text-small text-muted-foreground">{problem.detail}</p>}</div>
 );
 
-function ServerRow({ v2, server: s, writable, signIn, onChange, onChanged }: { v2: Client; server: McpServer; writable: boolean; signIn: (name: string, body: { url: string }) => Promise<void>; onChange: () => void; onChanged: () => void }) {
+function ServerRow({ v2, server: s, writable, signIn, onChange, onChanged }: { v2: Client; server: McpServer; writable: boolean; signIn: (name: string, body: { url: string }) => Promise<void>; onChange: (problem?: Problem) => void; onChanged: () => void }) {
   const [busy, setBusy] = useState(false);
   const [confirm, setConfirm] = useState(false);
   const [note, setNote] = useState<McpRefresh | null>(null);
@@ -91,14 +105,15 @@ function ServerRow({ v2, server: s, writable, signIn, onChange, onChanged }: { v
         <div className="min-w-0 flex-1">
           <p className="flex flex-wrap items-center gap-2"><span className="font-mono text-prose font-semibold">{s.name}</span><Chip tone={tone}>{said}</Chip>{!!s.not_metered?.length && <Chip tone="plain">not metered</Chip>}</p>
           <p className="mt-1.5 break-all font-mono text-small text-muted-foreground">{s.url}</p>
-          {oauth && s.oauth && <p className="mt-1 font-mono text-small text-muted-foreground">Signed in with OAuth{s.oauth.scopes.length ? ` · ${s.oauth.scopes.join(" ")}` : ""}{s.oauth.client === "pre-registered" && s.oauth.client_id ? ` · client ${s.oauth.client_id}` : ""}{s.credential === "expired" ? " · sign-in expired: sign in again" : s.oauth.expires_at ? ` · token until ${when(s.oauth.expires_at)}` : ""}</p>}
+          {s.auth.type === "github_app" && <p className="mt-1 font-mono text-small text-muted-foreground">Signed with this server's GitHub App: a token narrowed to the run's repository is made for each run{s.auth.headers?.length ? ` · headers ${s.auth.headers.join(", ")}` : ""}</p>}
+          {oauth && s.oauth &&<p className="mt-1 font-mono text-small text-muted-foreground">Signed in with OAuth{s.oauth.scopes.length ? ` · ${s.oauth.scopes.join(" ")}` : ""}{s.oauth.client === "pre-registered" && s.oauth.client_id ? ` · client ${s.oauth.client_id}` : ""}{s.credential === "expired" ? " · sign-in expired: sign in again" : s.oauth.expires_at ? ` · token until ${when(s.oauth.expires_at)}` : ""}</p>}
           <details className="mt-2">
             <summary className="cursor-pointer font-mono text-small">{s.tools.length} tool{s.tools.length === 1 ? "" : "s"}</summary>
             <ul className="mt-1 space-y-0.5">{s.tools.map((t) => <li key={t.name} className="font-mono text-small">{t.name}{s.prices?.[t.name] !== undefined && <span className="text-muted-foreground"> · ${s.prices[t.name]} a call</span>}{s.not_metered?.includes(t.name) && <span className="text-muted-foreground"> · not metered</span>}</li>)}</ul>
           </details>
           {/* Its one secret ("mcp:<server>": its bearer token, its headers' values, or its sign-in), as every secret's row.
               Replace opens the server's form; a sign-in's has none: its Sign in is the write. */}
-          {s.secret && <ul className="mt-2"><SecretRow field={s.secret} label={AUTH_LABEL[s.auth.type]} writable={writable} onPaste={oauth ? undefined : onChange} /></ul>}
+          {s.secret && <ul className="mt-2"><SecretRow field={s.secret} label={AUTH_LABEL[s.auth.type]} writable={writable} onPaste={oauth ? undefined : () => onChange()} /></ul>}
           {changes && <p className="mt-2 font-mono text-small" role="status">{changes.length ? changes.join(" · ") : "No change: it lists the same tools."}</p>}
         </div>
         {!confirm && (
@@ -106,7 +121,7 @@ function ServerRow({ v2, server: s, writable, signIn, onChange, onChanged }: { v
             {oauth && s.credential !== "sealed" && writable && <Button size="sm" variant="primary" disabled={busy} onClick={() => void run(() => signIn(s.name, { url: s.url, ...(s.oauth?.scopes.length ? { scopes: s.oauth.scopes } : {}) }))}>Sign in again</Button>}
             {/* The list is read again however the refresh went: a refusal (a sign-in expired or revoked) changes the credential's state too. */}
             <Button size="sm" disabled={busy} onClick={() => void run(async () => { try { setNote(await v2.refreshMcpServer(s.name)); } finally { onChanged(); } })}>Refresh</Button>
-            <Button size="sm" disabled={busy} onClick={onChange}>Change</Button>
+            <Button size="sm" disabled={busy} onClick={() => onChange()}>Change</Button>
             <Button size="sm" variant="destructive" disabled={busy} onClick={() => setConfirm(true)}>Delete</Button>
           </div>
         )}
@@ -118,7 +133,7 @@ function ServerRow({ v2, server: s, writable, signIn, onChange, onChanged }: { v
           <Button size="sm" onClick={() => setConfirm(false)}>Keep</Button>
         </div>
       )}
-      {problem && <div className="mt-3"><Said problem={problem} /></div>}
+      {problem && <div className="mt-3"><Said problem={problem} />{problem.needsClient && writable && <Button className="mt-2" size="sm" variant="primary" onClick={() => onChange(problem)}>Enter a Client ID</Button>}</div>}
     </li>
   );
 }
@@ -172,20 +187,21 @@ function PrivateHosts({ v2 }: { v2: Client }) {
 }
 
 const secret = { type: "password", autoComplete: "new-password", spellCheck: false, autoCapitalize: "off", autoCorrect: "off", "data-1p-ignore": true, "data-lpignore": "true" } as const;
-const AUTH: [McpAuth["type"], string][] = [["none", "None"], ["bearer", "Bearer token"], ["headers", "Headers"], ["oauth", "Sign in with OAuth"]];
+const AUTH: [McpAuth["type"], string][] = [["none", "None"], ["bearer", "Bearer token"], ["headers", "Headers"], ["oauth", "Sign in with OAuth"], ["github_app", "GitHub App"]];
 /** A server's one secret ("mcp:<server>"), as its row says it: by the kind of credential it is. */
-const AUTH_LABEL: Record<McpAuth["type"], string> = { none: "Credential", bearer: "Bearer token", headers: "Headers", oauth: "OAuth sign-in" };
+const AUTH_LABEL: Record<McpAuth["type"], string> = { none: "Credential", bearer: "Bearer token", headers: "Headers", oauth: "OAuth sign-in", github_app: "Headers" };
 
 /** Add a server, or change a saved one (`saved`: its name stays, and a credential left empty is the sealed one kept).
  *  A new server is previewed before it can be saved; any change of its address or credential asks for another. */
-function ServerForm({ v2, saved, writable, signIn, onCancel, onSaved }: { v2: Client; saved?: McpServer; writable: boolean; signIn: (name: string, body: Parameters<Client["startMcpSignIn"]>[1]) => Promise<void>; onCancel: () => void; onSaved: () => void }) {
+function ServerForm({ v2, saved, add, given, writable, signIn, onCancel, onSaved }: { v2: Client; saved?: McpServer; add?: Add; given?: Problem; writable: boolean; signIn: (name: string, body: Parameters<Client["startMcpSignIn"]>[1]) => Promise<void>; onCancel: () => void; onSaved: () => void }) {
   const form = useRef<HTMLFormElement>(null);
-  const [name, setName] = useState(saved?.name ?? "");
-  const [url, setUrl] = useState(saved?.url ?? "");
-  const [type, setType] = useState<McpAuth["type"]>(saved?.auth.type ?? "none");
+  const [name, setName] = useState(saved?.name ?? add?.name ?? "");
+  const [url, setUrl] = useState(saved?.url ?? (add?.auth === "github_app" ? GITHUB_MCP_URL : ""));
+  const [type, setType] = useState<McpAuth["type"]>(saved?.auth.type ?? add?.auth ?? "none");
   const [headerRows, setHeaderRows] = useState(Math.max(1, saved?.auth.headers?.length ?? 0));
   const [preview, setPreview] = useState<McpPreview | null>(null);
-  const [problem, setProblem] = useState<Problem | null>(null);
+  // `given`: the refusal its row opened it with (a sign-in that needs a Client ID), kept until the next try.
+  const [problem, setProblem] = useState<Problem | null>(given ?? null);
   const [busy, setBusy] = useState(false);
   // Each change of the address or the credential: a preview's answer counts only for the inputs it was asked for.
   const edits = useRef(0);
@@ -201,11 +217,18 @@ function ServerForm({ v2, saved, writable, signIn, onCancel, onSaved }: { v2: Cl
   // The credential typed: none typed is none sent, which a save takes as "keep the sealed one".
   const auth = (): McpAuth => {
     if (type === "bearer") return value("mcp-token") ? { type, token: value("mcp-token") } : { type };
-    if (type !== "headers") return { type };
+    if (type !== "headers" && type !== "github_app") return { type };
     const headers = Object.fromEntries(Array.from({ length: headerRows }, (_, i) => [value(`mcp-header-name-${i}`), value(`mcp-header-value-${i}`)]).filter(([k, v]) => k && v));
     return Object.keys(headers).length ? { type, headers } : { type };
   };
   const act = async (work: () => Promise<void>) => { setBusy(true); setProblem(null); try { await work(); } catch (e) { setProblem(mcpProblem(e)); } setBusy(false); };
+  // A sign-in that needs a Client ID entered (its authorization server lets no app register itself): the form turns to
+  // OAuth, so its Client ID and Secret fields show, and the Client ID takes the cursor. Never a dead end.
+  const needsClient = !!problem?.needsClient;
+  useEffect(() => { if (needsClient) setType("oauth"); }, [needsClient]);
+  useEffect(() => {
+    if (needsClient && type === "oauth") (form.current?.elements.namedItem("mcp-client-id") as HTMLInputElement | null)?.focus();
+  }, [needsClient, type]);
   const startSignIn = () => act(() => {
     const scopes = value("mcp-scopes").split(/\s+/).filter(Boolean);
     const client = value("mcp-client-id");
@@ -215,7 +238,7 @@ function ServerForm({ v2, saved, writable, signIn, onCancel, onSaved }: { v2: Cl
     const asked = edits.current;
     void act(async () => {
       try {
-        const answer = await v2.previewMcpServer(url.trim(), auth());
+        const answer = await v2.previewMcpServer(url.trim(), auth(), saved?.name);
         if (asked === edits.current) setPreview(answer);
       } catch (e) { if (asked === edits.current) throw e; }
     });
@@ -236,19 +259,22 @@ function ServerForm({ v2, saved, writable, signIn, onCancel, onSaved }: { v2: Cl
         <span className="-mt-1 mb-2 block text-small text-muted-foreground">Lowercase letters, digits and dashes: an agent grants its tools as mcp:{name.trim() || "<name>"}/&lt;tool&gt;.</span>
         <Input name="mcp-name" value={name} readOnly={!!saved} onChange={(e) => setName(e.target.value)} spellCheck={false} /></label>
       <label className="block"><span className="caps mb-2 block text-small font-semibold">Address</span>
-        <Input name="mcp-url" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://mcp.example.com/mcp" spellCheck={false} /></label>
+        <Input name="mcp-url" value={url} onChange={(e) => { setUrl(e.target.value); if (problem?.needsClient) setProblem(null); }} placeholder="https://mcp.example.com/mcp" spellCheck={false} /></label>
       <fieldset>
         <legend className="caps mb-2 text-small font-semibold">Credential</legend>
         <div className="flex flex-wrap gap-4">
           {AUTH.map(([id, label]) => (
             <label key={id} className="flex items-center gap-2 text-body">
-              <input type="radio" name="mcp-auth" value={id} checked={type === id} disabled={!writable && id !== "none"} onChange={() => { setType(id); edited(); }} className="accent-primary" />{label}
+              <input type="radio" name="mcp-auth" value={id} checked={type === id} disabled={!writable && id !== "none"} onChange={() => { setType(id); if (id === "github_app" && !url.trim()) setUrl(GITHUB_MCP_URL); edited(); }} className="accent-primary" />{label}
             </label>
           ))}
         </div>
       </fieldset>
       {type === "bearer" && <label className="block"><span className="caps mb-2 block text-small font-semibold">Token</span>{keepNote("A new token replaces it; leave this empty to keep it.")}<Input name="mcp-token" {...secret} /></label>}
-      {type === "headers" && (
+      {type === "github_app" && (
+        <p className="text-small text-muted-foreground">Uses this server's GitHub App (Settings → GitHub): a token for the repository of each run is made when the run starts, and an agent never sees it. The address is GitHub's hosted MCP, the only one this credential goes to. Headers are optional.</p>
+      )}
+      {(type === "headers" || type === "github_app") && (
         <div className="space-y-2">
           {keepNote(`Its headers: ${saved?.auth.headers?.join(", ")}. New ones replace them all; leave the values empty to keep them.`)}
           {Array.from({ length: headerRows }, (_, i) => (
@@ -266,8 +292,8 @@ function ServerForm({ v2, saved, writable, signIn, onCancel, onSaved }: { v2: Cl
           {saved?.oauth?.client_id && <p className="text-small text-muted-foreground">Signing in again uses the client it signed in with ({saved.oauth.client_id}); a client ID here replaces it.</p>}
           <label className="block"><span className="caps mb-2 block text-small font-semibold">Scopes (optional)</span><Input name="mcp-scopes" placeholder="read write" defaultValue={saved?.oauth?.scopes.join(" ")} spellCheck={false} /></label>
           <div className="flex gap-2">
-            <label className="block flex-1"><span className="caps mb-2 block text-small font-semibold">Client ID (optional)</span><Input name="mcp-client-id" spellCheck={false} /></label>
-            {writable && <label className="block flex-1"><span className="caps mb-2 block text-small font-semibold">Client secret (optional)</span><Input name="mcp-client-secret" {...secret} /></label>}
+            <label className="block flex-1"><span className="caps mb-2 block text-small font-semibold">{needsClient ? "Client ID (this server needs one)" : "Client ID (optional)"}</span><Input name="mcp-client-id" spellCheck={false} /></label>
+            {writable && <label className="block flex-1"><span className="caps mb-2 block text-small font-semibold">{needsClient ? "Client secret (if its app has one)" : "Client secret (optional)"}</span><Input name="mcp-client-secret" {...secret} /></label>}
           </div>
         </div>
       )}

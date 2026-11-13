@@ -55,8 +55,9 @@ function fakeProvider(root, record, groups, machine = "linux") {
       const held = (record.existing ?? []).filter((one) => Object.entries(labels).every(([name, value]) => one.labels[name] === value));
       return { ok: true, value: held.map((one) => ({ ref: one.ref, labels: one.labels, deadline: one.deadline, state: "running", network: "none" })) };
     },
-    async create(spec) {
+    async create(spec, context) {
       record.created.push(spec);
+      (record.requests ??= []).push(context?.requestId);
       return { ok: true, value: { id: "c1", name: "c1" } };
     },
     async connect() {
@@ -124,6 +125,7 @@ test("a Mode 1 sandbox on Docker is made under the run's labels with the run's f
   assert.equal(answer.computer.kind, "sandbox");
   assert.equal(record.created.length, 1);
   assert.deepEqual(record.created[0].labels, { "agentrun.run": "run-1", "agentrun.epoch": "3" });
+  assert.deepEqual(record.requests, ["run-1#3"], "create's request is the claim: the run and its epoch, so a retry of the claim finds its computer");
   assert.equal(record.created[0].mount?.kind, "bind", "the run's folder, as the provider binds it");
   assert.equal(record.created[0].image, "agentrun/computer:prepared", "the tag Docker's prepareImage() answered, over the spec's");
   assert.equal(record.options[0][2], "function", "the provider is handed the store's ledger");
@@ -159,7 +161,7 @@ test("a desktop opens one proxied live view under the claim with its hold, and o
 });
 
 test("a phone's view is opened with its platform, as the phone says it: android, or ios", async () => {
-  const PHONE = ["screen", "input.touch", "input.keys", "apps", "apps.ui_tree"];
+  const PHONE = ["screen", "input.touch", "input.keys", "apps", "ui"];
   for (const machine of ["android", "ios"]) {
     const view = views();
     const { run } = await claim({ kind: "phone", provider: "phone-harness" }, { keys: { PHONE_HARNESS_API_KEY: "pk-test" }, groups: PHONE, machine, view });
@@ -171,7 +173,7 @@ test("a phone's view is opened with its platform, as the phone says it: android,
 });
 
 test("once its computer is connected, the claim says what it is, from its hello: the OS, the OS's version where it says one, the architecture", async () => {
-  const PHONE = ["screen", "input.touch", "input.keys", "apps", "apps.ui_tree"];
+  const PHONE = ["screen", "input.touch", "input.keys", "apps", "ui"];
   const said = [];
   const phone = await claim({ kind: "phone", provider: "phone-harness" }, { keys: { PHONE_HARNESS_API_KEY: "pk-test" }, groups: PHONE, machine: "android", onConnected: (one) => void said.push(one) });
   const answer = await phone.run();
@@ -187,7 +189,7 @@ test("once its computer is connected, the claim says what it is, from its hello:
 });
 
 test("a provider whose program this machine lacks is refused in words before anything is rented", async () => {
-  const PHONE = ["screen", "input.touch", "input.keys", "apps", "apps.ui_tree"];
+  const PHONE = ["screen", "input.touch", "input.keys", "apps", "ui"];
   const phone = await claim({ kind: "phone", provider: "phone-harness" }, { keys: { PHONE_HARNESS_API_KEY: "pk-test" }, groups: PHONE, machine: "android", hostWhy: (id) => (id === "phone-harness" ? "adb isn't installed on this server" : undefined) });
   await assert.rejects(phone.run(), (error) => error.code === "computer_unavailable" && /cannot run it: adb isn't installed on this server\./.test(error.message));
   assert.deepEqual(phone.record.created, [], "nothing rented");

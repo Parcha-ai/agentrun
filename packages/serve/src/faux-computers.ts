@@ -21,8 +21,8 @@ import type { ComputerSettingKind, LaunchedComputer } from "./workspace/resolve-
 const SETTING_KINDS: Readonly<Record<ComputerKind, SettingKindSpec>> = {
   none: { machineKinds: [], required: [], optional: [] },
   sandbox: { machineKinds: ["linux"], required: ["exec", "files", "processes"], optional: [] },
-  desktop: { machineKinds: ["desktop"], required: ["screen", "input.pointer", "input.keys"], optional: ["exec", "files", "processes", "apps", "stream"] },
-  phone: { machineKinds: ["android", "ios"], required: ["screen", "input.touch", "apps"], optional: ["input.keys", "apps.install", "apps.ui_tree", "stream"] },
+  desktop: { machineKinds: ["desktop"], required: ["screen", "input.pointer", "input.keys"], optional: ["exec", "files", "processes", "apps", "ui", "stream"] },
+  phone: { machineKinds: ["android", "ios"], required: ["screen", "input.touch", "apps"], optional: ["input.keys", "apps.install", "ui", "stream"] },
   browser: { machineKinds: ["browser"], required: ["cdp"], optional: ["stream", "downloads"] },
 } as unknown as Readonly<Record<ComputerKind, SettingKindSpec>>;
 const KIND_NAMES = Object.keys(SETTING_KINDS) as ComputerKind[];
@@ -122,7 +122,7 @@ export function fauxComputers({ viewerBase }: { readonly viewerBase: string }): 
     const id = `faux-desktop-${++started}`;
     const png = greyPng(WIDTH, HEIGHT);
     live.add(id);
-    const hello: HelloResult = { protocol: "0.2", version: "faux", os: "linux", kind: "desktop", arch: "amd64", groups: [...DESKTOP_GROUPS] };
+    const hello: HelloResult = { protocol: "0.2", version: "faux", os: "linux", kind: "desktop", arch: "amd64", groups: [...DESKTOP_GROUPS], screen: { width: WIDTH, height: HEIGHT, scale: 1 } };
     const call = async (method: string, params: Record<string, unknown>) => {
       if (method === "hello") return { ok: true, value: hello };
       if (method === "screen.shot") return { ok: true, value: { id: `${id}-shot`, data: png.toString("base64"), eof: true, size: png.length, width: WIDTH, height: HEIGHT } };

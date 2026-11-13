@@ -1,5 +1,5 @@
 import { BROWSER_OPENERS, BROWSER_STEPS, callFailed, endsTurn, failedWith, inputPreview, labelOf, outcomeOf, refusedLabel, savedPaths, type LabelFn, type ToolResultView } from "./labels.js";
-import { cut, firstLine, firstSentence, json, obj, scrubUrls, str, utf8Bytes, type Obj } from "./util.js";
+import { cut, firstLine, firstSentence, json, obj, saidSummary, scrubUrls, str, utf8Bytes, type Obj } from "./util.js";
 import { BESIDE_SUFFIX, NOTE_SUFFIX, originMatcher, TRIGGER_LABELS, type TriggerSource } from "./origin.js";
 
 export type TimelineKind =
@@ -50,6 +50,10 @@ export type TimelineEvent = {
    *  server and its id ending NOTE_SUFFIX: the request was not sent and the run paused for a raise; a pause, never a
    *  failure, whether the run waits on its cap now or was raised since. */
   paused?: true;
+  /** `true` on the `tool_result` row of a call refused before it ran (its host's mark, CALL_REFUSED: a gate's deny, a
+   *  person's, a call held for an approval the run ended or stopped without): it never ran, so it never failed, though
+   *  `tool_status` stays `failed` (it did not do its work). A client shows it apart from a call that ran and failed. */
+  refused?: true;
   /** On the usage row, the run's cost. On a paid tool's charge row (a `phase` naming the tool), that charge alone. On a
    *  browser call's `tool_use` row, every browser charge booked under that call (BROWSER_CHARGE): its session's time
    *  since its last charge, and its release's when it was the session's last call. `requests` is 0 on all but the usage
@@ -650,7 +654,7 @@ function createProjector(options: TimelineOptions) {
     return make("tool_result", conv, rowId, {
       summary: !view.isError && pageChanged(tool.name, view) ? PAGE_CHANGED_ROW : view.isError ? failedSummary : worded ? `${named}: ${saidOf(worded.text)}` : outcome?.failed ? `${named}: failed` : `${named}: ok`, tool_name: tool.name, tool_use_id: tool.callId,
       tool_status: failedWith(view, outcome) ? "failed" : "success", tool_result_preview: shown.text ? cut(scrubUrls(shown.text), caps.preview) : null,
-      tool_result_size_bytes: utf8Bytes(view.text), round: tool.round, parent_tool_use_id: parent,
+      tool_result_size_bytes: utf8Bytes(view.text), round: tool.round, parent_tool_use_id: parent, ...(refused(view) ? { refused: true as const } : {}),
     });
   };
 
@@ -764,7 +768,7 @@ function createProjector(options: TimelineOptions) {
         // say. A message with no text block (a request the adapter bridge writes without content) shows none.
         // An answer its turn goes on from is a text_block (provisional, below), an empty one too.
         if (text || (final && first("text") >= 0)) {
-          const row = make(final ? "final_answer" : "text_block", conv, `${base}:${first("text")}`, { summary: firstLine(text), text });
+          const row = make(final ? "final_answer" : "text_block", conv, `${base}:${first("text")}`, { summary: saidSummary(text), text });
           add(row);
           if (final) {
             const earlier = provisional.get(conv);
@@ -798,7 +802,7 @@ function createProjector(options: TimelineOptions) {
             const named = nameFor(name, args, before.view, before.shown);
             use.summary = clean(named, caps.summary);
             const fresh = resultRow(conv, before.row.id, { name, callId: id, round }, named, before.view, before.shown);
-            Object.assign(before.row, { summary: fresh.summary, tool_name: fresh.tool_name, tool_status: fresh.tool_status, seq: (use.seq ?? 0) + 0.5, ...(round === undefined ? {} : { round }) });
+            Object.assign(before.row, { summary: fresh.summary, tool_name: fresh.tool_name, tool_status: fresh.tool_status, seq: (use.seq ?? 0) + 0.5, ...(round === undefined ? {} : { round }), ...(fresh.refused ? { refused: true as const } : {}) });
             rows.splice(rows.indexOf(before.row), 1);
             rows.splice(rows.indexOf(use) + 1, 0, before.row);
             touch(before.row);
@@ -829,7 +833,7 @@ function createProjector(options: TimelineOptions) {
       add(row);
       if (!view.isError) {
         const answer = str(args.answer);
-        if (name === "submit" && answer !== undefined) add(make("final_answer", conv, `${base}:answer`, { summary: firstLine(answer), text: answer }));
+        if (name === "submit" && answer !== undefined) add(make("final_answer", conv, `${base}:answer`, { summary: saidSummary(answer), text: answer }));
         if (name === "request_sign_in") {
           const reason = str(args.reason);
           add(make("waiting", conv, `${base}:waiting`, { summary: `Waiting for you: ${reason ? firstLine(reason) : "sign in on the live browser"}` }));
@@ -1159,7 +1163,7 @@ export function timelineReducer(options: TimelineOptions = {}) {
         const shown = options.redactLive ? options.redactLive(raw) : fallback();
         // The agent's text streams as it will settle, its URLs whole; its thinking is scrubbed, as when it settles.
         const text = kind === "thinking" ? scrubUrls(shown) : shown;
-        const summary = kind === "thinking" ? `Thinking: ${cut(firstSentence(text), thinkingCap)}` : firstLine(text);
+        const summary = kind === "thinking" ? `Thinking: ${cut(firstSentence(text), thinkingCap)}` : saidSummary(text);
         live(kind, `${conv()}:live:${kind}`, text ? summary : undefined, { text });
       }
     };

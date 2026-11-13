@@ -94,7 +94,7 @@ describe("Playground's Agent and Revision pickers", () => {
     expect(request.querySelector('a[href="#/agents/new"]')?.textContent).toBe("Create an agent");
     expect(request.querySelector('a[href="#/templates"]')?.textContent).toBe("Browse templates");
     // The request's fields are still named, read-only.
-    expect([...request.querySelectorAll("dt")].map((d) => d.textContent)).toEqual(["input.content", "file_ids", "revision", "effort", "max_cost_usd"]);
+    expect([...request.querySelectorAll("dt")].map((d) => d.textContent)).toEqual(["input.content", "file_ids", "revision", "effort", "max_cost_usd", "repo"]);
     // The sample names the placeholder, never a path with an empty segment.
     expect(host.textContent).toContain("/v2/agents/{agent_id}/runs");
     expect(host.textContent).not.toContain("/agents//runs");

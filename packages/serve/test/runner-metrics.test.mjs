@@ -60,6 +60,33 @@ test("bookedSpend counts a request the booking holds no answer for yet (no runne
   assert.deepEqual(bookedSpend(answered, "model"), { usd: 0.003, known: 0.003, unpriced: 0, requests: 2, unmetered: 0, models: { "claude-haiku-5-5": 2 }, tokens: { input: 12, output: 6, cacheRead: 0, cacheWrite: 0 } });
 });
 
+test("an agent run's end cost counts its decisions beside its model requests and paid tool calls, and stays unknown when any part is (LS-07)", async () => {
+  const { runEndCost } = await import("../dist/runner/metrics.js");
+  assert.equal(runEndCost({ model: 0.01, paid: 0.002, decisions: 0.00003 }), 0.01 + 0.002 + 0.00003, "a run that spent on a decision shows it in its row cost");
+  assert.equal(runEndCost({ model: 0.01, paid: 0, decisions: null }), null, "a decision of unknown cost leaves the run's unknown");
+  assert.equal(runEndCost({ model: null, paid: 0, decisions: 0.001 }), null);
+  assert.equal(runEndCost({ model: 0.01, paid: null, decisions: 0 }), null);
+  assert.equal(runEndCost({ model: 0, paid: 0, decisions: 0 }), 0);
+});
+
+test("a run's decisions are their own session's spend, never its model requests': bookedSpend's model sum leaves DECISION_SESSION out, so a run's cost counts a decision once (LS-07)", async () => {
+  const { bookedSpend, runEndCost } = await import("../dist/runner/metrics.js");
+  const e = (conversationId, id, kind, data) => ({ conversationId, id, kind, data });
+  const entries = [
+    e(1, 1, "agentrun.session.key", { key: "harness", conversation: 7 }),
+    e(1, 2, "agentrun.session.key", { key: "decisions", conversation: 8 }),
+    e(7, 3, "runner.request", { turn: 1, model: "claude-haiku-5-5" }),
+    e(7, 4, "runner.turn", { turn: 1, usd: 0.002, bookedUsd: 0.002 }),
+    e(8, 5, "runner.request", { turn: 1, model: "jev" }),
+    e(8, 6, "runner.turn", { turn: 1, usd: 0.00002, bookedUsd: 0.00002 }),
+  ];
+  const model = bookedSpend(entries, "model").usd;
+  const decisions = bookedSpend(entries, "decisions").usd;
+  assert.equal(model, 0.002, "the model sum holds no decision");
+  assert.equal(decisions, 0.00002);
+  assert.equal(runEndCost({ model, paid: 0, decisions }), 0.002 + 0.00002, "counted once");
+});
+
 test("bookedSpend reads an answer with no price of its own as a cost unknown, never the hold the cap booked it at ($0 with no cap)", async () => {
   const { bookedSpend } = await import("../dist/runner/metrics.js");
   const e = (conversationId, id, kind, data) => ({ conversationId, id, kind, data });
@@ -136,7 +163,7 @@ test("a CLI run's models count each request on the model its booking names: the 
 });
 
 // #2480 review (PRRT_kwDOUmdVMs62RcPO): the run's own model, chosen as OpenRouter names it ("openrouter/anthropic/
-// claude-haiku-4.5") or by its dotted name, is booked by Anthropic's id ("claude-haiku-4-5"): matched as the router
+// claude-haiku-5.5") or by its dotted name, is booked by Anthropic's id ("claude-haiku-5-5"): matched as the router
 // matches them (the last segment, dots as dashes: provider.ts anthropicModelId), so its requests keep the chosen name.
 test("a CLI run on Claude through OpenRouter, or by its dotted name, counts its booked requests under the model it chose; another model stays apart", async () => {
   const { bookedSpend, cliRunMetrics } = await import("../dist/runner/metrics.js");
@@ -144,12 +171,12 @@ test("a CLI run on Claude through OpenRouter, or by its dotted name, counts its 
   const root = [e(1, 1, "agentrun.session.key", { key: "harness", conversation: 7 })];
   const all = [
     ...root,
-    e(7, 2, "runner.request", { turn: 1, model: "claude-haiku-4-5" }),
+    e(7, 2, "runner.request", { turn: 1, model: "claude-haiku-5-5" }),
     e(7, 3, "runner.turn", { turn: 1, usd: 0.001, bookedUsd: 0.001, usage: { input: 5, output: 2, cacheRead: 0, cacheWrite: 0 }, rule: "answered" }),
     e(7, 4, "runner.request", { turn: 2, model: "claude-sonnet-5-5" }),
     e(7, 5, "runner.turn", { turn: 2, usd: 0.003, bookedUsd: 0.003, usage: { input: 9, output: 4, cacheRead: 0, cacheWrite: 0 }, rule: "answered" }),
   ];
-  for (const chosen of ["openrouter/anthropic/claude-haiku-4.5", "anthropic/claude-haiku-4.5"]) {
+  for (const chosen of ["openrouter/anthropic/claude-haiku-5.5", "anthropic/claude-haiku-5.5"]) {
     const metrics = cliRunMetrics(root, bookedSpend(all, "model"), { model: chosen });
     assert.deepEqual(metrics.models, { [chosen]: 1, "claude-sonnet-5-5": 1 }, chosen);
   }

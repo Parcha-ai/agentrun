@@ -103,9 +103,9 @@ test("a revise naming only place replaces the computer the old one said; only co
   assert.equal(made.status, 201, JSON.stringify(made.body));
   assert.deepEqual(made.body.definition.computer, { kind: "none" });
   // (a) Only place: the new computer is the new place's, never the stored one carried beside it.
-  const placed = await api("PUT", "/agents/swap/definition", agent("swap", { version: 2, place: { mode: "sandbox", box: "bwrap" } }));
+  const placed = await api("PUT", "/agents/swap/definition", agent("swap", { version: 2, place: { mode: "sandbox", box: "docker" } }));
   assert.equal(placed.status, 200, JSON.stringify(placed.body));
-  assert.deepEqual([placed.body.definition.computer, placed.body.definition.place], [computerOfPlace({ mode: "sandbox", box: "bwrap" }), { mode: "sandbox", box: "bwrap" }]);
+  assert.deepEqual([placed.body.definition.computer, placed.body.definition.place], [computerOfPlace({ mode: "sandbox", box: "docker" }), { mode: "sandbox", box: "docker" }]);
   // (b) Only computer: the place is its view.
   const computed = await api("PUT", "/agents/swap/definition", agent("swap", { version: 3, computer: { kind: "phone", provider: "phone-harness" } }));
   assert.equal(computed.status, 200, JSON.stringify(computed.body));
