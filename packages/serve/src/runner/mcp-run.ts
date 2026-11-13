@@ -24,7 +24,7 @@ import { wireName } from "../catalog.js";
 import { mcpGateway, type McpGatewayOptions, noCallId } from "../mcp-gateway.js";
 import type { OAuthNetwork } from "../mcp-oauth.js";
 import type { Store, TriggerSettings } from "../store/index.js";
-import { type ApprovalPrice, argsPreview, mcpToolName, resumeText, RESUME_PREFIX, waitingText } from "../tool-gate.js";
+import { type ApprovalPrice, argsPreview, mcpToolName, RESUME_GO_ON, resumeText, RESUME_PREFIX, waitingText } from "../tool-gate.js";
 import { deniedText } from "./loop-contract.js";
 import { STOPPED_WHILE_WAITING } from "../refusal-words.js";
 import { type AnswerData, type AskData, type CallEndData, endedAnswer, KINDS } from "./journal-kinds.js";
@@ -251,5 +251,5 @@ export async function parkedFollowUp(mcp: ClaimMcp, options: ParkedFollowUpOptio
     texts.push(resumeText({ tool: call.tool, call_id: call.callId }, argsPreview(call.args), answer.approved ? "allow" : "deny", { text: result.text, isError: result.isError === true }));
     callIds.push(call.callId);
   }
-  return texts.length ? { text: texts.join("\n\n"), callIds } : undefined;
+  return texts.length ? { text: `${texts.join("\n\n")}\n\n${RESUME_GO_ON}`, callIds } : undefined;
 }
