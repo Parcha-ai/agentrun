@@ -1,7 +1,7 @@
 import type { Stats } from "./mission";
 import type { Agent, Definition, SaveWarning } from "./agentForm";
 import type { AgentLearning, LearningChange, LearningDiff, LearningNote, NoteProblem, NoteText, Page } from "./learning";
-import type { McpAuth, McpClientFeature, McpPreview, McpRefresh, McpServer } from "./mcp";
+import type { ComposioTools, McpAuth, McpClientFeature, McpPreview, McpRefresh, McpServer } from "./mcp";
 import type { RunGraph } from "./runGraph";
 import { applyPage } from "./timeline";
 import type { ApiError, Firing, GitHubConnectStart, GitHubDisconnected, GitHubStatus, InputIssue, McpPrivateHosts, TemplateApplied, TemplateApply, TemplateView, RaiseAnswer, Run, RunComputer, RunLearningRead, LearningCost, ComputerHoldAnswer, HandBackOutcome, RunFiles, RunStatus, TimelinePage, TimelineRow, SessionSecrets, SignInForgotten, ToolKeys, ToolKeysFeature, ToolSettings, Trigger, TriggerCreate, TriggerInput, TriggerMade, TriggerSecret, Webhook, WebhookAttempt, WebhookSaved, WebhooksFeature, Archil, ArchilBody, ArchilTest, Computers, ComputerKeysBody, ComputerProvider, ComputerTest } from "./v2";
@@ -304,9 +304,15 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     applyTemplate: (name: string, body: TemplateApply, idempotencyKey: string) =>
       call<TemplateApplied>("POST", `/templates/${encodeURIComponent(name)}/apply`, { body, headers: { "idempotency-key": idempotencyKey } }),
     listMcpServers: () => call<{ servers: McpServer[] }>("GET", "/settings/mcp-servers"),
-    previewMcpServer: (url: string, auth: McpAuth) => call<McpPreview>("POST", "/settings/mcp-servers/preview", { body: { url, auth } }),
+    /** `name`: the saved server an edit form previews, so its address as shown (origin and `/…`) is previewed at the saved endpoint. */
+    previewMcpServer: (url: string, auth: McpAuth, name?: string) => call<McpPreview>("POST", "/settings/mcp-servers/preview", { body: { url, auth, ...(name ? { name } : {}) } }),
     /** Sends no prices: the server keeps the saved ones for the tools still listed at the same address. */
     saveMcpServer: (name: string, url: string, auth: McpAuth) => call<McpServer>("PUT", mcpServer(name), { body: { url, auth } }),
+    /** The Composio preset: a toolkit's actions, for the picker (the owner's session alone; the key goes to Composio). */
+    composioTools: (api_key: string, toolkit: string) => call<ComposioTools>("POST", "/settings/mcp-servers/composio/tools", { body: { api_key, toolkit } }),
+    /** Has Composio make a managed MCP server for the chosen actions and saves it as an MCP server; `connect_url` when the
+     *  toolkit needs the person's account connected; `not_served` names chosen actions Composio's server left out. */
+    saveComposioServer: (name: string, api_key: string, toolkit: string, tools: string[]) => call<{ server: McpServer; connect_url?: string; not_served?: string[] }>("PUT", `${mcpServer(name)}/composio`, { body: { api_key, toolkit, tools } }),
     refreshMcpServer: (name: string) => call<McpRefresh>("POST", `${mcpServer(name)}/refresh`, { body: {} }),
     deleteMcpServer: (name: string) => call<unknown>("DELETE", mcpServer(name)),
     /** Starts an OAuth sign-in to the server at `url`: the page the person opens to approve it. */

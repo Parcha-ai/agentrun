@@ -59,11 +59,12 @@ const isLiveSearch = (tool: Record<string, unknown>) => Object.keys(tool).length
 /**
  * OpenAI's price of one web search call by model: "Web search (all models)", $10.00 / 1k calls, with its search content
  * tokens billed at the model's rates in the response's own usage (https://developers.openai.com/api/docs/pricing, Tools).
+ * The GPT-6 family (gpt-6-luna, gpt-6.1-sol, gpt-6.1-terra, ...) is among "all models", as GPT-5 is.
  * gpt-4o-mini and gpt-4.1-mini bill each call's search content as a fixed block of 8,000 input tokens instead, so they are
  * not listed: their searches, like any model's not listed here (a gateway's own id, say), are an unknown cost, never $0.
  */
 const WEB_SEARCH_USD: readonly (readonly [RegExp, number])[] = [
-  [/^(?:gpt-5|o3|o4-mini)(?:[-.][a-z0-9.-]+)?$/, 0.01],
+  [/^(?:gpt-6|gpt-5|o3|o4-mini)(?:[-.][a-z0-9.-]+)?$/, 0.01],
   [/^gpt-4(?:o|\.1)(?:-\d{4}-\d{2}-\d{2})?$/, 0.01],
 ];
 

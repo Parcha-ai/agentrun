@@ -2056,8 +2056,9 @@ Agent37 runs on the shared machine-host adapter ([PROVIDERS.md](PROVIDERS.md)): 
 `MachineHost`, and `src/hosted/provider.ts` does everything that is not Agent37's own (the upload, the install, init's
 start, the stdio bridge, the probe, the janitor's extend, idempotent create by the request's name label). An Agent37
 computer is an instance made from a workspace template, by default `agent37-base`, Agent37's plain Debian 12. It is
-kind `linux`, on type `vm` (a VM with its own kernel, the default) or `default` (Agent37's gVisor sandbox). Kind
-`desktop` waits for our box image as an Agent37 template (below).
+kind `linux`, on type `vm` (a VM with its own kernel, the default) or `default` (Agent37's gVisor sandbox). With
+`kind: "desktop"` it is a Linux desktop on `agentrun-box`, our box image as a template of the key's workspace
+([below](#the-desktop-agentrun-box)).
 
 ### Two keys
 
@@ -2102,7 +2103,7 @@ stdin is open (`ssh2@1.17.0` `lib/Channel.js:237-246`), and it reaches one proce
 
 | Capability | Declared | Why |
 | --- | --- | --- |
-| `kind` | `linux` | `desktop` waits for the box template (below) |
+| `kind` | `linux` or `desktop` | `options.kind`: `linux` (default), or `desktop` with `screen`, `input.pointer` and `input.keys`, on the box template (below) |
 | `daemon` | `child` | the image's entrypoint is a template field, not a create field; init is a detached command over SSH |
 | `isolation` | `vm` or `gvisor` | `options.type`: `vm` (default) or `default` |
 | `lifetime` | `janitor` | Agent37 never ends an instance on its own; init's deadline and the deadline label do, and the run's sweep is the backstop |
@@ -2126,7 +2127,8 @@ AGENTRUN_COMPUTER_LIVE_AGENT37=1 COMPUTER_AGENT37_API_KEY=... COMPUTER_AGENT37_S
 
 The conformance module, `dist/conformance/agent37.js`, checks `AGENTRUN_COMPUTER_LIVE_AGENT37=1` first, then reads
 `COMPUTER_AGENT37_API_KEY` (`apiKey`, required), `COMPUTER_AGENT37_SSH_KEY` (`sshKey`, required, the key's contents),
-`COMPUTER_AGENT37_TEMPLATE` (the run's image, default `agent37-base`), `COMPUTER_AGENT37_TYPE`, `COMPUTER_AGENT37_REGION`,
+`COMPUTER_AGENT37_KIND` (`linux`, the default, or `desktop`), `COMPUTER_AGENT37_TEMPLATE` (the run's image, default
+`agent37-base`, or `agentrun-box` for kind `desktop`), `COMPUTER_AGENT37_TYPE`, `COMPUTER_AGENT37_REGION`,
 `COMPUTER_AGENT37_API_URL`, `COMPUTER_AGENT37_DAEMON` (`daemonPath`), `COMPUTER_AGENT37_MAX_LIFETIME_MS` and
 `COMPUTER_AGENT37_USER` (`daemonUser`), never `AGENT37_API_KEY`. Every computer of a run lives at most 30 minutes.
 `createDriftedProvider()` uploads a daemon built as `<version>-drift`. The live sweep is the shared one,
@@ -2144,20 +2146,34 @@ answered with fence `netns`, and its programs ran as 2510 with no capability and
 kernel `4.19.0-gvisor`): root has no `CAP_SYS_ADMIN`, and init made its namespace inside a user namespace of its own
 (fence `userns-netns`); the rest as on `vm`. The Archil mount itself is the conformance run's to show, on the box template.
 
-### What the desktop template needs
+### The desktop: agentrun-box
 
-Kind `desktop` is not declared yet. It needs:
+`create({ kind: "desktop", ... })` (serve builds the descriptor's desktop configuration so) makes a desktop: the
+adapter gives init `DISPLAY` and starts `Xvfb :0 -screen 0 1280x800x24 -nolisten tcp` through the daemon as the tool
+user (`src/desktop.ts`), as on E2B, so the X server is one process in init's table, in its own network namespace, and
+ends with the computer. Its default image is `agentrun-box` (`AGENT37_BOX_TEMPLATE`): `box/Dockerfile` (the archil
+client, the helper, the tool user, FUSE, no sudo) plus Xvfb, built as a template of the key's own workspace by
+`box/build-agent37.mjs`:
 
-1. A recipe: `box/Dockerfile` (the archil client, the helper, the tool user, FUSE) plus Xvfb and the X11 shim's
-   libraries, as one Dockerfile whose `CMD` keeps running (Agent37 needs a long-running main process). The image is
-   `linux/amd64`, under Agent37's 15 GB cap.
-2. A cloud build of it as a workspace template, `box/build-agent37.mjs` beside `build-e2b.mjs`: `POST
-   /v1/template-builds` with the name (the recipe's hash, as E2B's) and the gzipped context's byte count, `PUT` the
-   context to the presigned URL, `POST .../start`, then poll `GET .../{id}` and its `logs` until the template is
-   published (builds are free, at most three at once, 45 minutes each; docs: templates, "Build an image in the cloud").
-3. Then the provider: `LINUX_DESKTOP` in the descriptor with that template as the desktop's default image, a `kind`
-   option as E2B's (the X server started through the daemon by `src/desktop.ts`), on type `vm`, and the screen and input
-   cases run live on it. The same template is what an Archil computer names as its image.
+```sh
+AGENT37_API_KEY=... node packages/computer/box/build-agent37.mjs   # prints template=agentrun-box
+```
+
+Agent37 keeps a template's revisions under one name, so the name is fixed and the recipe's hash (the Dockerfile, the
+helper and the desktop's lines in the script) is in the template's description: a workspace whose template names the
+hash already is built nothing, and a changed recipe publishes a new revision, which every instance made after it starts
+from. The script's calls: `GET /v1/templates/agentrun-box`, then `POST /v1/template-builds` (`name`, `size_bytes`,
+`description`), a `PUT` of the gzipped context (the Dockerfile and the helper at its root) to the presigned
+`upload_url` with no Agent37 key, `POST .../{id}/start`, and `GET .../{id}/logs?offset=N` until `succeeded` or `failed`.
+Builds are free, at most three at once per workspace and 45 minutes each (docs: templates, "Build an image in the
+cloud"). A workspace template is the workspace's own, so each workspace that runs desktops builds it once first.
+
+Why not Agent37's own `agent37-ubuntu`, which ships a desktop: its image (`ghcr.io/agent37-platform/ubuntu:2026.10.13c`,
+entrypoint `images/vm/ubuntu/entrypoint.sh` of agent37-platform/templates) runs `Xtigervnc :1 ... -ac` as root, with
+access control off, and an XFCE session as root on it. Any process in the machine can open that display, so a tool
+driving it, or merely connecting to `/tmp/.X11-unix/X1`, could type into root's terminal: the tool user would have a way
+to root. It has no Xvfb, no archil client and no helper either, and it is Ubuntu with `sudo` installed. The box image is
+also the one an Archil computer needs, so one template serves both.
 
 ### Sources
 

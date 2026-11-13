@@ -299,6 +299,9 @@ const MCP_AUTH = {
 };
 const MCP_URL = { type: "string", format: "uri", maxLength: 2048, description: "The server's Streamable HTTP endpoint: https, or http on a loopback address of this machine; no user or password." };
 const MCP_NAME = { name: "name", in: "path", required: true, description: "The server's name: lowercase letters, digits and dashes, starting with a letter, at most 32 (no underscores, so `mcp__<server>__<tool>` splits one way). `hands` and `monid` are reserved for AgentRun's own tools: a PUT under either is 422 input_invalid, field `name`, reason `reserved`.", schema: { type: "string", pattern: MCP_SERVER_NAME.source } };
+const COMPOSIO_KEY = { type: "string", minLength: 1, maxLength: 8192, "x-agentrun-secret": true, description: "The Composio API key, sent only to Composio." };
+const COMPOSIO_TOOLKIT = { type: "string", pattern: "^[a-z0-9][a-z0-9_-]{0,63}$", description: "The toolkit's slug as Composio names it (`github`, `slack`, `gmail`...)." };
+const COMPOSIO_NOTE = "The Composio preset: Composio is an MCP server like any other, and this makes one for the owner's key, toolkit and chosen actions. The key goes to Composio (backend.composio.dev) and into the sealed header, and is never logged or answered.";
 const MCP_FAILED = {
   "424": { description: "`upstream_failed`: the MCP server could not be reached, did not answer within 15 s (30 s for the whole listing), answered 5xx or more than 4 MiB at once, or failed to list its tools. `details.status` holds its HTTP status when it answered one.", content: { "application/json": { schema: ref("schemas/Error") } } },
 };
@@ -1511,8 +1514,8 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/settings/mcp-servers/preview": {
     post: {
       operationId: "previewMcpServer", tags: ["local"], summary: "Connect to a remote MCP server and list its tools, storing nothing",
-      description: `\`{url, auth}\`, or \`{name}\` for a saved server with its sealed credential (422 when it does not open). ${MCP_CONNECTS} ${MCP_PREVIEW_SCOPE}`,
-      requestBody: { required: true, content: { "application/json": { schema: { oneOf: [{ type: "object", additionalProperties: false, required: ["url"], properties: { url: MCP_URL, auth: MCP_AUTH } }, { type: "object", additionalProperties: false, required: ["name"], properties: { name: { type: "string" } } }] } } } },
+      description: `\`{url, auth}\`, or \`{name}\` for a saved server with its sealed credential (422 when it does not open). \`{name, url, auth}\` is an edit of the saved server \`name\`: its address as every read shows it (origin and \`/…\`), sent back unchanged, is previewed at the saved endpoint. ${MCP_CONNECTS} ${MCP_PREVIEW_SCOPE}`,
+      requestBody: { required: true, content: { "application/json": { schema: { oneOf: [{ type: "object", additionalProperties: false, required: ["url"], properties: { url: MCP_URL, auth: MCP_AUTH, name: { type: "string", description: "The saved server this is an edit of." } } }, { type: "object", additionalProperties: false, required: ["name"], properties: { name: { type: "string" } } }] } } } },
       responses: { "200": json(MCP_PREVIEW, `What the server offers. ${MCP_PREVIEW_SCOPE}`), ...errors(400, 401, 404, 409, 415, 422, 429, 500), ...MCP_FAILED },
       "x-agentrun-serve": "mcpservers/1",
     },
@@ -1546,6 +1549,25 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       description: `With its saved URL and sealed credential. \`added\` and \`removed\` are tool names; \`changed\` names a tool whose title, description, schemas or annotations differ. ${MCP_CONNECTS}`,
       parameters: [MCP_NAME],
       responses: { "200": json(closed({ added: { type: "array", items: { type: "string" } }, removed: { type: "array", items: { type: "string" } }, changed: { type: "array", items: { type: "string" } }, server: MCP_SERVER_VIEW }), "What changed, and the server now."), ...errors(401, 404, 409, 422, 429, 500, 503), ...MCP_FAILED },
+      "x-agentrun-serve": "mcpservers/1",
+    },
+  },
+  "/settings/mcp-servers/composio/tools": {
+    post: {
+      operationId: "listComposioTools", tags: ["local"], summary: "List the actions of a Composio toolkit, for the console's picker; stores nothing",
+      description: COMPOSIO_NOTE + " 422 `input_invalid` when Composio refuses the key (field `api_key`) or has no such toolkit (field `toolkit`); 424 `upstream_failed` when Composio does not answer or fails. The owner's signed-in session alone: 403 forbidden to the API token, which never sends a key.",
+      requestBody: { required: true, content: { "application/json": { schema: closed({ api_key: COMPOSIO_KEY, toolkit: COMPOSIO_TOOLKIT }) } } },
+      responses: { "200": json(closed({ toolkit: { type: "string" }, no_auth: { type: "boolean", description: "Whether the toolkit needs no account of the person's: nothing to connect." }, tools: { type: "array", items: closed({ slug: { type: "string" }, name: { type: "string" }, description: { type: "string" } }) } }), "The toolkit's actions."), ...errors(400, 401, 403, 409, 415, 422, 429, 500), ...MCP_FAILED },
+      "x-agentrun-serve": "mcpservers/1",
+    },
+  },
+  "/settings/mcp-servers/{name}/composio": {
+    put: {
+      operationId: "saveComposioServer", tags: ["local"], summary: "Have Composio make a managed MCP server for a toolkit's chosen actions, and save it as an MCP server",
+      description: COMPOSIO_NOTE + " Makes (or reuses) a Composio-managed auth config for a toolkit that needs the person's account, makes a Composio MCP server allowing only `tools`, asks for its address (the helper actions that connect an account left off; its path ends in `/mcp`), and saves that address as the MCP server `name` through the one MCP save: the key is sealed as an `x-api-key` header, the tools listed, none priced (\"not metered\"). When the toolkit needs an account and `user_id` has no active one, `connect_url` is Composio's page to connect it; nothing here signs in. `user_id` defaults to `agentrun`. 422 for a bad name, key, toolkit or tools, a key or request Composio refuses (each says the step); 424 `upstream_failed` when Composio fails or the saved address does not list its tools. Nothing is saved unless every step succeeds. The owner's signed-in session alone: 403 forbidden to the API token.",
+      parameters: [MCP_NAME],
+      requestBody: { required: true, content: { "application/json": { schema: closedWith({ api_key: COMPOSIO_KEY, toolkit: COMPOSIO_TOOLKIT, tools: { type: "array", minItems: 1, maxItems: 500, items: { type: "string", minLength: 1 }, description: "The slugs of the actions to grant, from the listing." } }, { user_id: { type: "string", pattern: "^[A-Za-z0-9._@-]{1,128}$", description: "The Composio user the actions run as; default `agentrun`." } }) } } },
+      responses: { "200": json(closedWith({ server: MCP_SERVER_VIEW }, { connect_url: { type: "string", format: "uri", description: "Present when the toolkit needs an account and the user has no active one: Composio's page to connect it." }, not_served: { type: "array", items: { type: "string" }, description: "Present when Composio's server leaves out some of `tools` (it can, for an action it was allowed): the slugs it doesn't list, which a run can't call." } }), "The server as saved, and where to connect the account when it must be."), ...errors(400, 401, 403, 409, 415, 422, 429, 500), ...MCP_FAILED },
       "x-agentrun-serve": "mcpservers/1",
     },
   },

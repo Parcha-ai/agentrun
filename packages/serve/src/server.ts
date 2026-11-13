@@ -95,7 +95,8 @@ import { keyOf, SEAL_KEY_ENV, TOOL_FIELDS } from "./tool-keys.js";
 import { toolKeysOverStore } from "./tool-keys-store.js";
 import { SIGN_INS_DIR, vendorsOver } from "./sign-ins.js";
 import { signInsOverStore } from "./sign-ins-store.js";
-import { MCP_AUTH_TYPES, mcpAuthOf, type McpTool } from "./mcp-probe.js";
+import { MCP_AUTH_TYPES, mcpAuthOf, type McpTool, nameOf as mcpNameOf } from "./mcp-probe.js";
+import { type ComposioControl, composioSave, composioTools } from "./composio-preset.js";
 import { mcpServersOverStore } from "./mcp-servers-store.js";
 import { privateHostsRoute } from "./mcp-private-hosts.js";
 import { metaToolOf } from "./mcp-meta.js";
@@ -128,7 +129,7 @@ import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./upl
 import { entryAt, listFiles, sendFile as sendWorkspaceFile, viewOf } from "./run-files.js";
 import { COMPUTER_ROUTES, computerHoldOf, computerRoute } from "./computer-routes.js";
 import { PROVIDERS as COMPUTER_PROVIDERS, SETTING_KINDS, servingRefusals } from "@parcha/agentrun-computer";
-import { capabilityToolDefs, hostToolDefs } from "@parcha/agentrun-kernel/kernel";
+import { COMPUTER_TOOLS, hostToolDefs } from "@parcha/agentrun-kernel/kernel";
 import { archilRoute, createArchilRoutes, liveRunsOnDisk } from "./archil-routes.js";
 import { agentDiskOf, ARCHIL_DISK_ID, archilSettingsFromEnv, inArchilMode } from "./archil-settings.js";
 import { computerOfPlace, type ComputerKind, type ComputerSetting, type PlaceView } from "./computer-setting.js";
@@ -196,6 +197,10 @@ export type ServeOptions = {
    *  X-Forwarded-For names (the nearest one not itself a trusted proxy). None by default: the header is never read, and
    *  every request counts under the address it came from. */
   trustedProxies?: readonly string[];
+  /** This server is a local install, its operator says (the CLI: AGENTRUN_MCP_ALLOW_LOOPBACK=1, only on a machine they
+   *  alone use): an MCP server's URL may be on loopback, at its save, preview and sign-in, and for the runner beside it.
+   *  Never inferred; absent, loopback is refused there in words saying how to say so. */
+  mcpLoopback?: boolean;
   /** The address to listen on (default 127.0.0.1). On any other address every `Host` name is served and the token is
    *  the only lock: put TLS in front of it. */
   host?: string;
@@ -221,6 +226,8 @@ export type ServeOptions = {
   /** Another Archil control plane than the key's region's, and its fetch: a test's fake, for the server's own Archil calls
    *  (a launch's disk read, the settings' test, an agent's disk removed). */
   archilControl?: { readonly baseUrl?: string; readonly fetch?: typeof fetch };
+  /** Another Composio than the real one, and its fetch: a test's fake, for the Composio preset's calls (composio-preset.ts). */
+  composioControl?: ComposioControl;
   /** With `faux` only: a module whose default export gives the `browser` tool's `{ provider, driver }` (the tests' fake
    *  backend), in place of Browserbase's or Kernel's. */
   fauxBrowser?: string;
@@ -343,6 +350,10 @@ export function fauxEnvOf(options: ServeOptions): NodeJS.ProcessEnv {
 /** `launchCode`: with no accounts, the code of the console's link this start prints (`/?launch=<code>`), which gives the
  *  browser that opens it a console session (page.ts ConsoleSessions). */
 export type Serve = { url: string; baseUrl: string; port: number; token: string; tokenFile: string | null; tokenMade: boolean; setupUrl?: string; setupOpen?: boolean; launchCode?: string; boxesLine: string; close(): Promise<void>;
+  /** Whether this server is a local install (listening on loopback, reached at no address off it): the one kind whose own
+   *  runner beside it may reach an MCP server's URL on loopback (runner/beside.ts mcpLoopback). Only that runner is told:
+   *  it is this process's finding, never a store's, so another host's runner on a shared store never inherits it. */
+  localInstall: boolean;
   /** What a stop waits on: the runs whose processes still finish their turn, and the longest it waits on them. */
   stopping(): { runs: number; boundMs: number } };
 
@@ -446,8 +457,10 @@ export const ROUTES: readonly Route[] = [
   { method: "DELETE", pattern: /^\/settings\/tool-keys\/([^/]+)$/, name: "deleteToolKey" },
   { method: "GET", pattern: /^\/settings\/mcp-servers$/, name: "listMcpServers" },
   { method: "POST", pattern: /^\/settings\/mcp-servers\/preview$/, name: "previewMcpServer" },
+  { method: "POST", pattern: /^\/settings\/mcp-servers\/composio\/tools$/, name: "listComposioTools" },
   { method: "GET", pattern: /^\/settings\/mcp-servers\/([^/]+)$/, name: "getMcpServer" },
   { method: "PUT", pattern: /^\/settings\/mcp-servers\/([^/]+)$/, name: "saveMcpServer" },
+  { method: "PUT", pattern: /^\/settings\/mcp-servers\/([^/]+)\/composio$/, name: "saveComposioServer" },
   { method: "DELETE", pattern: /^\/settings\/mcp-servers\/([^/]+)$/, name: "deleteMcpServer" },
   { method: "POST", pattern: /^\/settings\/mcp-servers\/([^/]+)\/refresh$/, name: "refreshMcpServer" },
   { method: "POST", pattern: /^\/settings\/mcp-servers\/([^/]+)\/oauth\/start$/, name: "startMcpOAuth" },
@@ -1014,7 +1027,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const localTools = new Set(hostToolDefs({ maxExecS: 600, shell: "local" }).map((def) => def.name));
   const kindTools = (kind: ComputerKind): readonly string[] =>
     kind === "none" ? [] : kind === "sandbox" ? hostToolDefs({ maxExecS: 600, shell: "computer" }).map((def) => def.name).filter((name) => !localTools.has(name))
-      : kind === "browser" ? browserToolNames : capabilityToolDefs(kind).map((def) => def.name);
+      : kind === "browser" ? browserToolNames : [...COMPUTER_TOOLS];
   let faux: FauxComputers | undefined;
   const fauxOf = (): FauxComputers => (faux ??= fauxComputers({ viewerBase: ownOriginOf() }));
   /** Whether a computer on a provider that binds a folder of this machine (Docker) can be had here now: Settings →
@@ -3042,6 +3055,17 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         await refreshMcpMeta();
         return send(res, 200, saved);
       }
+      // Composio makes the managed MCP server; what is kept is the ordinary MCP save, so the key is a sealed header.
+      case "listComposioTools":
+        return send(res, 200, await composioTools(await bodyOf(req), options.composioControl ?? {}, stopping.signal), { "cache-control": "no-store" });
+      case "saveComposioServer": {
+        // The name is checked before Composio is called: a refused name leaves nothing made there.
+        mcpNameOf(id);
+        const body = await bodyOf(req);
+        const answer = await composioSave(body, options.composioControl ?? {}, (mcp) => mcpServers.save(id, mcp, stopping.signal), id, stopping.signal, async () => (await mcpServers.get(id)).url);
+        await refreshMcpMeta();
+        return send(res, 200, answer, { "cache-control": "no-store" });
+      }
       case "refreshMcpServer": {
         const refreshed = await mcpServers.refresh(id, stopping.signal);
         await refreshMcpMeta();
@@ -3432,7 +3456,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const url = `http://${shown.includes(":") ? `[${shown}]` : shown}:${address.port}`;
   owner?.attach(options.publicUrl ?? url);
   webhooks.attach(options.publicUrl ?? url);
-  mcpServers.attach(options.publicUrl ?? url, url);
+  // A local install is the one server an MCP server's URL may be on loopback for (anywhere else, loopback is this machine's
+  // other services: mcp-oauth.ts mcpServerAt), and only as its operator says (mcpLoopback), never inferred from where it
+  // listens: a hosted container listens on loopback behind its proxy too.
+  const localInstall = options.mcpLoopback === true;
+  mcpServers.attach(options.publicUrl ?? url, url, localInstall);
   // A run's end and its wait are the outbound webhook's run.ended and run.needs_input (webhooks.ts). The runners write them
   // to the store and this server runs no run, so it follows the store: each read takes the runs not final yet and the
   // newest runs (one that started and ended between two reads is among them). It tells each end it has not told once the
@@ -3586,6 +3614,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     ...(setupUrl ? { setupUrl, setupOpen: openSetup } : {}),
     ...(consoleSessions ? { launchCode: consoleSessions.code } : {}),
     boxesLine: boxesLine(boxOffers, enabledBoxes(env), boxAllow, boxesByDefault(env)),
+    localInstall,
     // Once: a second call, at any time, is the first one's promise, so a close repeated after the next server started
     // never writes this data root's record again (the next server's, by then).
     close: () => (stopped ??= stop()),
