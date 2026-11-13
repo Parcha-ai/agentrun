@@ -28,7 +28,7 @@ export function MissionControl({ view, error, onRetry, scope, needsYou, asking, 
   if (!view) return <MissionSkeleton />;
   if (startHere) return (
     <div className="h-full overflow-auto">
-      <div className="max-w-page-wide space-y-6 p-5 md:p-8">
+      <div className="space-y-6 p-5 md:p-8">
         <h1 className="text-2xl font-semibold">Mission Control</h1>
         {startHere}
       </div>
@@ -58,7 +58,7 @@ export function MissionControl({ view, error, onRetry, scope, needsYou, asking, 
   ];
   return (
     <div className="h-full overflow-auto">
-      <div className="max-w-page-wide space-y-8 p-5 md:p-8">
+      <div className="space-y-8 p-5 md:p-8">
         <h1 className="text-2xl font-semibold">Mission Control</h1>
         {needsYou}
         {/* The server's counts: one strip of five cells, not five cards, so its inner lines are not read against the

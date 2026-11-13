@@ -95,7 +95,7 @@ export function ToolTable({ label, rows, settings, fallbackOf, permissionFallbac
                     {permissions && <td className="px-3 py-2">
                       {gate ? <>
                         <Picker small label={`${name} permission`} value={permission} disabled={busy || held} onChange={(v) => { const chosen = v as Permission; onEdit((current) => withPermission(current, name, chosen, gateFallback)); }}
-                          className={cn("w-36", permissionSet && "border-primary text-primary")}
+                          className={cn("w-48", permissionSet && "border-primary text-primary")}
                           options={gate.permissions.map((p) => ({ value: p, label: `${p}${p === gateFallback ? " (default)" : ""}`, ...(p === "ask" && gate.ask_needs === "password" && !unattended ? { disabled: true, title: "No one can approve a call here: it takes the owner's password sign-in." } : {}) }))} />
                         {permissionSet && !held && <span className="mt-1 block font-mono text-label text-muted-foreground">default: {gateFallback}</span>}
                         {denied && <span className="mt-1 block max-w-[260px] text-label text-warning-text">{SERVER_DENY}</span>}
@@ -107,7 +107,7 @@ export function ToolTable({ label, rows, settings, fallbackOf, permissionFallbac
                     {providers && <td className="px-3 py-2">
                       {t ? <>
                         <Picker small label={`${name} provider`} value={provider} disabled={busy} onChange={(v) => pick(v as ToolSetting["provider"])}
-                          className={cn("w-56 max-w-full", set && "border-primary text-primary")}
+                          className={cn("w-96 max-w-full", set && "border-primary text-primary")}
                           options={t.providers.map((p) => ({ value: p, label: `${providerLabel(p, name)}${p === fallback ? " (default)" : ""}` }))} />
                         {providerHelp(provider, name) && <span className="mt-1 block max-w-[300px] text-label text-muted-foreground">{providerHelp(provider, name)}</span>}
                         {set && <span className="mt-1 block font-mono text-label text-muted-foreground">default: {providerLabel(fallback, name)}</span>}

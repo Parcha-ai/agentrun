@@ -304,13 +304,15 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
           <h2 className="mb-6 border-b pb-4 text-lg font-semibold">{steps[at].label}</h2>
 
           {step === "context" && (
-            <div className="max-w-3xl space-y-6">
+            <div className="grid gap-x-10 gap-y-6 xl:grid-cols-[minmax(0,1fr)_minmax(0,2fr)] xl:items-start">
+              <div className="space-y-6">
               <Field label="Name" id="agent-name" required={creating} note={creating ? undefined : "Set when the agent was created; an edit keeps it."} error={fieldError("name")} warning={fieldWarning("name")}>
                 <Input id="agent-name" value={f.name} readOnly={!creating} onChange={(e) => set({ name: e.target.value })} placeholder="e.g., Invoice checker" />
               </Field>
               <Field label="Description" id="agent-description" optional note={creating ? undefined : "Set when the agent was created; an edit keeps it."} error={fieldError("description")} warning={fieldWarning("description")}>
                 <Input id="agent-description" value={f.description} readOnly={!creating} onChange={(e) => set({ description: e.target.value })} placeholder={creating ? "Short summary for the agent list" : "No description"} />
               </Field>
+              </div>
               {starting ? (
                 <Field label="Workflow">
                   <p className="border px-3 py-4 font-mono text-body text-muted-foreground">{f.harness === DECISION
@@ -338,7 +340,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
           )}
 
           {step === "computer" && !workflow && !starting && caps.computers && (
-            <div className="max-w-4xl space-y-8">
+            <div className="space-y-8">
               {/* The computer picked, else the one saved, else the place the form starts on as a computer (the server's
                   default for a new agent). A pick sets the place it is too, so a tool a box opens (bash) follows it. */}
               <ComputerSetting kinds={caps.computers} value={f.computer ?? (d?.computer as AgentFields["computer"]) ?? computerOfPlace(f.place ?? { mode: "runner" })}
@@ -351,7 +353,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
             </div>
           )}
           {step === "computer" && !workflow && !starting && !caps.computers && caps.places && (
-            <div className="max-w-3xl space-y-8">
+            <div className="space-y-8">
               {/* A pick is saved as the computer, the setting the server keeps place as a view of; the form's place still
                   decides which tools a box opens (bash). */}
               <PlaceSetting value={f.place} saved={d?.place} places={caps.places} tools={caps.tools} picked={f.tools ?? []}
@@ -360,7 +362,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
           )}
 
           {step === "tools" && (
-            <div className="max-w-3xl space-y-6">
+            <div className="space-y-6">
               <Field label="Tools" note="On by default: the tools this agent's harness runs on this server. Untick one to take it away." error={fieldError("tools")} warning={fieldWarning("tools")}>
                 {/* Columns by a minimum width: as many as fit, one card a row in a narrow pane (a phone on its side). */}
                 {/* Every collapsed card one height, top-aligned: one card's Details grows it alone, never its row. */}
@@ -422,7 +424,8 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
           )}
 
           {step === "settings" && (
-            <div className="max-w-3xl space-y-8">
+            // Two columns where the pane has the room, filled top to bottom: the order read is the order written.
+            <div className="2xl:columns-2 2xl:gap-x-10 [&>*]:mb-8 [&>*]:mt-0 [&>*]:break-inside-avoid">
               {!workflow && (
                 <Field named label="Harness" note="What runtime runs this agent." error={fieldError("harness")} warning={fieldWarning("harness")}>
                   {/* Cards by a minimum width: they wrap to more rows in a narrow pane (a phone on its side), never squeezed. */}
@@ -501,7 +504,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
           )}
 
           {step === "history" && !viewing && (
-            <ul className="max-w-3xl border">
+            <ul className="border">
               {revisions.map((r) => (
                 <li key={r.revision} className="flex flex-wrap items-center gap-3 border-b px-4 py-3 last:border-b-0">
                   <span className="caps w-14 text-small">rev {r.version}</span>

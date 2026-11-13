@@ -18,7 +18,7 @@ export function AgentsList({ agents, archived = false, onArchivedChange, actions
   const [q, setQ] = useState("");
   const shown = (agents ?? []).filter((a) => `${a.definition.name} ${a.definition.description ?? ""}`.toLowerCase().includes(q.toLowerCase()));
   return (
-    <div className="max-w-page-wide p-5 md:p-8">
+    <div className="p-5 md:p-8">
       <div className="mb-5 flex flex-wrap items-center gap-3">
         <h1 className="mr-3 text-2xl font-semibold max-sm:w-full">{archived ? "Archived agents" : "Agents"}</h1>
         <label className={cn("flex h-control-lg min-w-0 flex-1 items-center gap-3 px-3", fieldBoxClass)}>

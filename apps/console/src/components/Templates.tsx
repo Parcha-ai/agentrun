@@ -8,7 +8,7 @@ import { SecretOnce } from "@/components/Schedules";
 import { ListSkeleton } from "@/components/Skeleton";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
-import { Input } from "@/components/ui/field";
+import { formColumnsClass, Input } from "@/components/ui/field";
 import { type Client, ClientError, type FieldIssue } from "@/lib/client";
 import { keeper } from "@/lib/idempotency";
 import { hookUrlOf, isScheduleTrigger, type Schedule, scheduleLine } from "@/lib/schedules";
@@ -31,7 +31,7 @@ export function TemplatesPage({ v2, name, go }: Props & { name?: string }) {
   }, [v2, tries]);
   const shown = name === undefined ? undefined : templates?.find((t) => t.name === name);
   return (
-    <div className="max-w-page-wide p-5 md:p-8">
+    <div className="p-5 md:p-8">
       {error && !templates ? <ProblemCard problem={error} onRetry={() => setTries((n) => n + 1)} className="" />
         : !templates ? <ListSkeleton label="Loading the templates" rows={3} />
         : name === undefined ? <TemplateList templates={templates} go={go} />
@@ -159,7 +159,7 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
   const placed = (i: FieldIssue) => /^(parameters|secrets|mcp)\./.test(i.field) || /^grants\.\d+$/.test(i.field);
   if (made) {
     return (
-      <section aria-label="Applied" className="max-w-3xl">
+      <section aria-label="Applied" className="max-w-page">
         <h1 className="mb-4 flex items-center gap-2 text-2xl font-semibold"><Check className="size-5 text-success-text" aria-hidden /> {titleOf(t, sentValues)} applied</h1>
         {made.warnings.length > 0 && <>
           <p className="mb-3 text-lead">The agent is made. The server says:</p>
@@ -212,11 +212,12 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
     );
   }
   return (
-    <div className="max-w-3xl">
+    <div>
       <a href="#/templates" className="caps mb-4 inline-flex min-h-6 items-center gap-1.5 text-small text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" aria-hidden /> Templates</a>
       <h1 className="text-2xl font-semibold">{titleOf(t, values)} <span className="text-lead font-normal text-muted-foreground">{t.version}</span></h1>
-      <p className="mt-2 text-lead leading-[1.6]">{t.description}</p>
+      <p className="mt-2 max-w-prose text-lead leading-[1.6]">{t.description}</p>
 
+      <div className={`mt-6 ${formColumnsClass}`}>
       {params.length > 0 && (
         <Section title="Parameters">
           {params.map(([key, p]) => (
@@ -314,7 +315,9 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
         </dl>
       </Section>
 
-      <div className="mt-6 flex flex-wrap items-center gap-3">
+      </div>
+
+      <div className="mt-1 flex flex-wrap items-center gap-3">
         <Button size="sm" variant="solid" onClick={() => void apply()} disabled={applying}>{applying ? "Applying…" : "Apply"}</Button>
         {said && (!said.withIssues || issues.length > 0) && <p className="min-w-0 flex-1 text-body text-destructive-text" role="alert">{said.text}</p>}
       </div>

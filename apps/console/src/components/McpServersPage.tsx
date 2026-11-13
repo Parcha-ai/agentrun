@@ -1,3 +1,4 @@
+import { settingsBodyClass, settingsIntroClass, settingsPageClass } from "@/components/Settings";
 import { Plug } from "lucide-react";
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import { SecretRow } from "@/components/SecretRow";
@@ -55,8 +56,8 @@ export function McpServersPage({ v2, signIn, add, writable, whyNot = "sign_in", 
   const startSignIn = async (name: string, body: Parameters<Client["startMcpSignIn"]>[1]) => open((await v2.startMcpSignIn(name, body)).authorization_url);
   return (
     <div className="h-full overflow-auto">
-      <div className="max-w-page space-y-6 p-5 md:p-8">
-        <div className="flex flex-wrap items-end justify-between gap-3">
+      <div className={settingsPageClass}>
+        <div className={`flex flex-col items-start gap-3 ${settingsIntroClass}`}>
           <div>
             <p className="caps text-label text-muted-foreground">Settings</p>
             <h1 className="mt-1 text-2xl font-semibold">MCP servers</h1>
@@ -69,24 +70,26 @@ export function McpServersPage({ v2, signIn, add, writable, whyNot = "sign_in", 
             </div>
           )}
         </div>
-        {signIn && (
-          <p className={`border p-4 text-body ${signIn.ok ? "border-success/50 text-success-text" : "border-warning/50 text-warning-text"}`} role="status">
-            {signIn.ok ? `Signed in to ${signIn.server}. Its tools are saved.` : `Signing in to ${signIn.server} failed: ${signInFailure(signIn.error)}.`}
-          </p>
-        )}
-        {!writable && <p className="border bg-card p-4 text-body" role="status">{WHY_NOT_WORDS[whyNot]}</p>}
-        {loadError && (
-          <Banner tone="error" actions={<Button type="button" size="xs" onClick={load}>Try again</Button>}>
-            <p className="font-mono">The MCP servers could not be read. {loadError.text}</p>
-          </Banner>
-        )}
-        {/* A save that lands after its form was closed (Cancel, or another Change) closes no form opened since. */}
-        {form && <ServerForm key={`${form.saved?.name ?? "new"}|${form.add?.name ?? ""}|${form.add?.auth ?? ""}`} v2={v2} saved={form.saved} add={form.add} given={form.problem} writable={writable} signIn={startSignIn} onCancel={() => setForm(null)} onSaved={((mine) => () => { setForm((open) => (open === mine ? null : open)); load(); })(form)} />}
-        {composio && <ComposioForm v2={v2} onClose={() => setComposio(false)} onSaved={load} />}
-        {servers && (servers.length
-          ? <ul className="border">{servers.map((s) => <ServerRow key={s.name} v2={v2} server={s} writable={writable && !form} signIn={startSignIn} onChange={(problem) => setForm({ saved: s, ...(problem ? { problem } : {}) })} onChanged={load} />)}</ul>
-          : <p className="border px-3 py-4 font-mono text-body text-muted-foreground">No MCP server is saved here yet.</p>)}
-        <PrivateHosts v2={v2} />
+        <div className={settingsBodyClass}>
+          {signIn && (
+            <p className={`border p-4 text-body ${signIn.ok ? "border-success/50 text-success-text" : "border-warning/50 text-warning-text"}`} role="status">
+              {signIn.ok ? `Signed in to ${signIn.server}. Its tools are saved.` : `Signing in to ${signIn.server} failed: ${signInFailure(signIn.error)}.`}
+            </p>
+          )}
+          {!writable && <p className="border bg-card p-4 text-body" role="status">{WHY_NOT_WORDS[whyNot]}</p>}
+          {loadError && (
+            <Banner tone="error" actions={<Button type="button" size="xs" onClick={load}>Try again</Button>}>
+              <p className="font-mono">The MCP servers could not be read. {loadError.text}</p>
+            </Banner>
+          )}
+          {/* A save that lands after its form was closed (Cancel, or another Change) closes no form opened since. */}
+          {form && <ServerForm key={`${form.saved?.name ?? "new"}|${form.add?.name ?? ""}|${form.add?.auth ?? ""}`} v2={v2} saved={form.saved} add={form.add} given={form.problem} writable={writable} signIn={startSignIn} onCancel={() => setForm(null)} onSaved={((mine) => () => { setForm((open) => (open === mine ? null : open)); load(); })(form)} />}
+          {composio && <ComposioForm v2={v2} onClose={() => setComposio(false)} onSaved={load} />}
+          {servers && (servers.length
+            ? <ul className="border">{servers.map((s) => <ServerRow key={s.name} v2={v2} server={s} writable={writable && !form} signIn={startSignIn} onChange={(problem) => setForm({ saved: s, ...(problem ? { problem } : {}) })} onChanged={load} />)}</ul>
+            : <p className="border px-3 py-4 font-mono text-body text-muted-foreground">No MCP server is saved here yet.</p>)}
+          <PrivateHosts v2={v2} />
+        </div>
       </div>
     </div>
   );

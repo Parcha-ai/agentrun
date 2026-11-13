@@ -1,3 +1,4 @@
+import { settingsBodyClass, settingsIntroClass, settingsPageClass } from "@/components/Settings";
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import { RunError } from "@/components/RunError";
 import { ProviderIcon } from "@/components/ProviderIcon";
@@ -93,27 +94,29 @@ export function KeysPage({ v2, onChange, writable, whyNot = "sign_in" }: { v2: C
   );
   return (
     <div className="h-full overflow-auto">
-      <div className="max-w-page space-y-6 p-5 md:p-8">
-        <div>
+      <div className={settingsPageClass}>
+        <div className={settingsIntroClass}>
           <p className="caps text-label text-muted-foreground">Settings</p>
           <h1 className="mt-1 text-2xl font-semibold">Keys</h1>
           <p className="mt-2 text-lead text-muted-foreground">A model provider's key, which every agent runs on, and a tool's key, for every agent that uses the tool, kept on this server. A saved key is never shown again.</p>
         </div>
-        {!writable && <p className="border bg-card p-4 text-body" role="status">{WHY_NOT_WORDS[whyNot]}</p>}
-        {loadError && <ReadError inline error={loadError} onRetry={load} />}
-        {reenter && (
-          <Banner tone="warning" role="alert" aria-label="Keys to enter again" title="Enter these keys again">
-            <p>{REASON[reenter.reason]}</p>
-            <p className="mt-2 font-mono">{reenter.fields.length ? reenter.fields.join(", ") : "Which keys it held is not known: enter again each key you had saved."}</p>
-          </Banner>
-        )}
-        {groups.map((g) => (
-          <section key={g.label} aria-label={g.label}>
-            {groups.length > 1 && <h2 className="caps mb-2 text-small font-semibold text-muted-foreground">{g.label}</h2>}
-            {g.kind === "model" && <p className="mb-2 text-body text-muted-foreground">{KEY_ADVICE}</p>}
-            <ul className="border">{g.keys.map(row)}</ul>
-          </section>
-        ))}
+        <div className={settingsBodyClass}>
+          {!writable && <p className="border bg-card p-4 text-body" role="status">{WHY_NOT_WORDS[whyNot]}</p>}
+          {loadError && <ReadError inline error={loadError} onRetry={load} />}
+          {reenter && (
+            <Banner tone="warning" role="alert" aria-label="Keys to enter again" title="Enter these keys again">
+              <p>{REASON[reenter.reason]}</p>
+              <p className="mt-2 font-mono">{reenter.fields.length ? reenter.fields.join(", ") : "Which keys it held is not known: enter again each key you had saved."}</p>
+            </Banner>
+          )}
+          {groups.map((g) => (
+            <section key={g.label} aria-label={g.label}>
+              {groups.length > 1 && <h2 className="caps mb-2 text-small font-semibold text-muted-foreground">{g.label}</h2>}
+              {g.kind === "model" && <p className="mb-2 text-body text-muted-foreground">{KEY_ADVICE}</p>}
+              <ul className="border">{g.keys.map(row)}</ul>
+            </section>
+          ))}
+        </div>
       </div>
     </div>
   );

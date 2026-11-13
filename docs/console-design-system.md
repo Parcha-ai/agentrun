@@ -97,7 +97,7 @@ Space is Tailwind's 4px scale. These habits keep pages alike:
 
 | Where | Class |
 | --- | --- |
-| A page's gutter | `p-5 md:p-8` (or `px-5 md:px-8` on a full-width bar). Every page's text starts on it: the column is not centred, and a row of tabs puts its first label on it |
+| A page's gutter | `p-5 md:p-8` (or `px-5 md:px-8` on a full-width bar). Every page's text starts on it and its content ends on it: a page fills the width it has, and a row of tabs puts its first label on it |
 | Between a page's panels | `gap-6` or `space-y-6` |
 | Inside a panel or a card | `p-4` |
 | Between controls in a row | `gap-2`; between a control and its words, `gap-3` |
@@ -109,8 +109,8 @@ Space is Tailwind's 4px scale. These habits keep pages alike:
 | `control-md` | `h-control-md` | 40px | A form's fields and buttons. The default. |
 | `control-lg` | `h-control-lg` | 44px | The one action of an empty page or the sign-in page. |
 | `sidebar-width` | `w-sidebar` | 220px | The navigation. |
-| `page-width` | `max-w-page` | 1100px | A page of forms or text: a Settings page. |
-| `page-width-wide` | `max-w-page-wide` | 1600px | A page of data: Mission Control, a list (Runs, Agents, Triggers, Templates). |
+| `page-width` | `max-w-page` | 1100px | A page that is one message: what a template made. |
+| `page-width-wide` | `max-w-page-wide` | 1600px | Kept for a panel that must not grow past it. No page uses it: a page fills its width. |
 
 Controls in one row share one height. A target someone taps is at least 24px each way, and 44px in the navigation;
 a small link in a row gets there with padding the layout does not see (`-my-1 py-1`).
@@ -232,8 +232,15 @@ Never write `outline-none` without a `focus-visible:` replacement drawn with the
   Banners sit above the page, outside its scroller. `main` is the page's only scroller.
 - **Breakpoints** are Tailwind's: write mobile first and add `md:` for the desktop layout. `max-sm:` tightens a
   phone. `short:` is for a viewport under 500px tall (a phone on its side). Do not add a breakpoint.
-- **Widths.** A page of forms or text is `max-w-page`; a page of data is `max-w-page-wide`. A line of prose is at
-  most `max-w-prose`. Never write the number (`max-w-[1100px]`).
+- **Widths.** A page fills the width it has, so nothing is left empty beside it on a wide screen. What changes with
+  the width is how its parts are laid out, never a margin:
+  - A page of data (Mission Control, a list, a table) is fluid: its tables stretch and its card grids take more columns.
+  - A form's fields flow in columns: `formColumnsClass` on the box that holds them (one column, two from `xl`, three
+    from `2xl`), filled top to bottom so the order read is the order Tab takes.
+  - A Settings page puts what it is (its title and sentence) in a column of its own beside its settings from `xl`:
+    `settingsPageClass`, `settingsIntroClass` and `settingsBodyClass`. One that is a table (Tools) keeps the title above.
+  - A reading column (a run's report and timeline) is centred, at most `max-w-4xl`.
+  - A line of prose is at most `max-w-prose`. Never write a width as a number (`max-w-[1100px]`).
 - A page works at 390px wide with no sideways scroll. A wide table scrolls inside its own panel, and so does a row
   of tabs (`tabListClass`).
 

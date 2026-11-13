@@ -62,6 +62,10 @@ export const fieldClass = "w-full border border-input bg-background px-3 font-mo
  *  under the text. Put the control in a `fieldBoxClass` box, which shows the focus for it. */
 export const bareFieldClass = "min-w-0 bg-transparent font-mono text-body outline-none placeholder:text-muted-foreground focus-visible:outline-none disabled:cursor-not-allowed";
 /** The box round a `bare` control and what sits beside it: the field's edge, and the focus ring while the control has it. */
+/** A form's fields across a wide page: one column, two from `xl`, three from `2xl`, filled top to bottom so the order
+ *  read and the order Tab takes are the order written. Each direct child is one field (or one group) and is never split. */
+export const formColumnsClass = "xl:columns-2 xl:gap-x-10 2xl:columns-3 [&>*]:mb-5 [&>*]:mt-0 [&>*]:break-inside-avoid";
+
 export const fieldBoxClass = "border border-input bg-background hover:border-foreground/60 focus-within:outline focus-within:outline-focus focus-within:outline-ring";
 
 /** A one-line text field. `fieldSize`: sm (32px) for a toolbar, md (40px) for a form. `bare`: only the text, inside a

@@ -1,3 +1,4 @@
+import { settingsBodyClass, settingsIntroClass, settingsPageClass } from "@/components/Settings";
 import { Monitor, Smartphone } from "lucide-react";
 import { type FormEvent, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { SecretRow } from "@/components/SecretRow";
@@ -105,29 +106,31 @@ export function ComputersPage({ v2, writable, whyNot = "sign_in" }: {
 
   return (
     <div className="h-full overflow-auto">
-      <div className="max-w-page space-y-6 p-5 md:p-8">
-        <div>
+      <div className={settingsPageClass}>
+        <div className={settingsIntroClass}>
           <p className="caps text-label text-muted-foreground">Settings</p>
           <h1 className="mt-1 text-2xl font-semibold">Computers</h1>
           <p className="mt-2 text-lead text-muted-foreground">The computers an agent can be given, and who provides them. An agent can have a kind once one of its providers is ready. Keys are kept sealed on this server and never shown again.</p>
         </div>
-        <PairedSection v2={v2} paired={view.paired} reload={load} />
-        {!writable && <p role="status" className="border bg-card p-4 text-body">{WHY_NOT_WORDS[whyNot]}</p>}
-        {view.kinds.map((k) => (
-          <KindSection key={k.kind} kind={k} providers={k.providers.filter((p) => !pairedIds.has(p.id))} own={k.providers.filter((p) => pairedIds.has(p.id)).map((p) => p.name)}>
-            {k.providers.filter((p) => !pairedIds.has(p.id)).map((p) => {
-              const at = `${k.kind}/${p.id}`;
-              return (
-                <ProviderRow key={p.id} v2={v2} kind={k.kind} provider={p} writable={writable} serves={servesOf(p.id)} tested={tested[p.id]} testing={testing.has(p.id)}
-                  open={open?.at === at ? open.mode : null} problem={problem?.at === at ? problem.words : null}
-                  onOpen={(mode) => { setOpen(mode ? { at, mode } : null); setProblem(null); }}
-                  onSave={(keys) => save(at, p, keys)}
-                  onRemove={async (name) => { const refused = await save(at, p, { [name]: null }); if (refused) setProblem({ at, words: refused.fields?.map((f) => f.message).join(" ") || refused.message }); }}
-                  onTest={() => void test(p)} />
-              );
-            })}
-          </KindSection>
-        ))}
+        <div className={settingsBodyClass}>
+          <PairedSection v2={v2} paired={view.paired} reload={load} />
+          {!writable && <p role="status" className="border bg-card p-4 text-body">{WHY_NOT_WORDS[whyNot]}</p>}
+          {view.kinds.map((k) => (
+            <KindSection key={k.kind} kind={k} providers={k.providers.filter((p) => !pairedIds.has(p.id))} own={k.providers.filter((p) => pairedIds.has(p.id)).map((p) => p.name)}>
+              {k.providers.filter((p) => !pairedIds.has(p.id)).map((p) => {
+                const at = `${k.kind}/${p.id}`;
+                return (
+                  <ProviderRow key={p.id} v2={v2} kind={k.kind} provider={p} writable={writable} serves={servesOf(p.id)} tested={tested[p.id]} testing={testing.has(p.id)}
+                    open={open?.at === at ? open.mode : null} problem={problem?.at === at ? problem.words : null}
+                    onOpen={(mode) => { setOpen(mode ? { at, mode } : null); setProblem(null); }}
+                    onSave={(keys) => save(at, p, keys)}
+                    onRemove={async (name) => { const refused = await save(at, p, { [name]: null }); if (refused) setProblem({ at, words: refused.fields?.map((f) => f.message).join(" ") || refused.message }); }}
+                    onTest={() => void test(p)} />
+                );
+              })}
+            </KindSection>
+          ))}
+        </div>
       </div>
     </div>
   );

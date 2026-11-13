@@ -20,7 +20,7 @@ const STATUS_LABEL: Record<RunStatus, string> = { queued: "Queued", working: "Wo
 export function RunsList({ runs, agentName, onOpen, error, onRetry, onMore, loadingMore, filter = {}, onFilter }: { runs: Run[] | null; agentName: (id: string) => string; onOpen: (id: string) => void; error?: Problem | null; onRetry?: () => void; onMore?: () => void; loadingMore?: boolean; filter?: RunsFilter; onFilter?: (filter: RunsFilter) => void }) {
   const archived = !!filter.archived;
   return (
-    <div className="max-w-page-wide p-5 md:p-8">
+    <div className="p-5 md:p-8">
       <div className="mb-5 flex flex-wrap items-center gap-3">
         <h1 className="mr-auto text-2xl font-semibold">{archived ? "Archived runs" : "Runs"}</h1>
         {onFilter && (
