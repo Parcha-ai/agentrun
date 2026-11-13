@@ -84,6 +84,7 @@ export const DAYTONA = defineProvider({
 		{ name: "DAYTONA_API_KEY", option: "apiKey", required: true },
 		{ name: "DAYTONA_API_URL", option: "apiUrl", required: false },
 		{ name: "DAYTONA_TARGET", option: "target", required: false },
+		{ name: "DAYTONA_ARCHIL_EGRESS", option: "archilEgress", required: false },
 	],
 	metered: true,
 	mounts: ["archil"],
