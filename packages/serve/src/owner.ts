@@ -127,7 +127,7 @@ export class Owner {
   private settingUp = false;
 
   /** `openSetup`: no setup code; the first visit sets the password (no public address). `say` prints a setup code. */
-  constructor(private readonly dir: string, readonly openSetup: boolean, private readonly say: (line: string) => void = () => {}, addresses = SIGN_IN_PEERS) {
+  constructor(dir: string, readonly openSetup: boolean, private readonly say: (line: string) => void = () => {}, addresses = SIGN_IN_PEERS) {
     this.signIns = new SignInLimit(addresses);
     this.file = join(dir, OWNER_FILE);
     const secretFile = join(dir, SESSION_SECRET_FILE);

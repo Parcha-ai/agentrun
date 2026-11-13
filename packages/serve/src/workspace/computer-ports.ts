@@ -5,7 +5,7 @@
 // enter a key), and its apps are apps.list and apps.launch. A phone with no
 // computerd (daemon none) answers the same methods in process, so one port fits both. A refusal throws the computer's
 // code and words, as the kernel's port says.
-import type { ComputerClient, InputAction as ComputerAction, Result, UiNode } from "@parcha/agentrun-computer";
+import { type ComputerClient, type InputAction as ComputerAction, type Rect, type Result, type UiNode, windowRectToPixels } from "@parcha/agentrun-computer";
 import type { Input, Phone, PhoneKey, PhoneNode, Screen, Shot } from "@parcha/agentrun-kernel/kernel";
 
 /** A computer call's value, or its refusal thrown with the computer's code and words. */
@@ -71,24 +71,25 @@ function innerName(node: UiNode, children: ReadonlyMap<string, readonly UiNode[]
 /** The screen's structure (ui.observe's nodes, flat, a node after its parent), each node with whether a model can tap it
  *  or type into it: tappable with an action or an actionable role, typeable as a textbox or searchbox; a disabled or
  *  offscreen node is neither. A tappable node with no name of its own is named by its first inner name (else value), as
- *  phone_tree shows it, marked so. Bounds arrive in window points (the phone's window is its whole screen) and leave in
- *  screenshot PIXELS, points times `scale` (hello.screen.scale), because phone_tap goes through input.actions. */
-function flattened(nodes: readonly UiNode[], scale: number): PhoneNode[] {
+ *  phone_tree shows it, marked so. Bounds arrive in window points and leave in screenshot PIXELS (windowRectToPixels:
+ *  the window's origin added, times hello.screen.scale), because phone_tap goes through input.actions. */
+function flattened(nodes: readonly UiNode[], window: Rect, scale: number): PhoneNode[] {
   const children = new Map<string, UiNode[]>();
   for (const node of nodes) if (node.parent) children.set(node.parent, [...(children.get(node.parent) ?? []), node]);
-  const px = (points: number) => Math.round(points * scale);
   return nodes.map((node) => {
-    const [x, y, w, h] = node.bounds;
+    const [x, y, w, h] = windowRectToPixels(window, scale, node.bounds);
     const usable = !node.flags?.includes("disabled") && !node.flags?.includes("offscreen");
     const editable = usable && EDITABLE.has(node.role);
     const clickable = usable && ((node.actions?.length ?? 0) > 0 || ACTIONABLE.has(node.role));
     const own = node.name || node.value;
     const inner = clickable && !own ? innerName(node, children) : undefined;
+    // Both, never one for the other: a labeled field shows its label and the text in it.
     return {
       role: node.role,
       ...(node.id ? { id: node.id } : {}),
-      ...(own ? { text: own } : {}),
-      bounds: { x: px(x), y: px(y), w: px(w), h: px(h) },
+      ...(node.name ? { label: node.name } : {}),
+      ...(node.value ? { text: node.value } : {}),
+      bounds: { x, y, w, h },
       clickable,
       editable,
       ...(node.flags?.includes("focused") ? { focused: true } : {}),
@@ -108,8 +109,10 @@ export const phoneOf = (client: ComputerClient, offers: { readonly tree?: boolea
   ...(offers.tree !== false ? {
     async tree() {
       const { screen } = await valueOf(client.call("hello", { client: "agentrun-serve" }));
+      // No scale, no pixels: a guess of 1 would aim every tap wrong on a screen of any other density.
+      if (screen === undefined) throw new Error("this phone's hello gives no screen (its size and scale), so its tree cannot be put in screenshot pixels for a tap");
       const seen = await valueOf(client.call("ui.observe", {}));
-      return { nodes: flattened(seen.nodes, screen?.scale ?? 1), total: seen.nodes.length, truncated: seen.truncated };
+      return { nodes: flattened(seen.nodes, seen.window.bounds, screen.scale), total: seen.nodes.length, truncated: seen.truncated };
     },
   } : {}),
   tap: (at) => act(client, [{ type: "tap", at: [at.x, at.y] }]),

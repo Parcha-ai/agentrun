@@ -100,7 +100,7 @@ export function definitionIssues(definition: unknown, { at = "definition", creat
   }
   if (d.learning !== undefined) {
     if (d.workflow !== undefined) out.push(issue(`${at}.learning`, "not_allowed", "A workflow revision does not learn: only an agentic run reflects on its work.", `Remove ${at}.learning.`));
-    else if (typeof d.learning !== "boolean") out.push(issue(`${at}.learning`, "wrong_type", `${at}.learning is true or false`));
+    else if (typeof d.learning !== "boolean" && d.learning !== "notes") out.push(issue(`${at}.learning`, "wrong_type", `${at}.learning is true, false or "notes": true learns notes, skills and workflows, "notes" notes and skills alone`));
   }
   // An agentic revision's structured answer: the JSON Schema its final answer's last fenced json block meets, read into a
   // completed run's result.output (answer-json.ts structuredAnswer). A workflow's output is its workflow's own.

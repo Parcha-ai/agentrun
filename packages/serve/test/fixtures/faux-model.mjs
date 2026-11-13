@@ -38,6 +38,9 @@ export default function reply(context, faux) {
   return faux.signal && answer instanceof Promise ? Promise.race([answer, abortedOf(faux)]) : answer;
 }
 
+/** The report a format node writes ("Write the card report"): a table, then its Flagged and Grand total lines. */
+export const REPORT = "| Category | Count | Total |\n|---|---|---|\n| Office | 2 | 1663.10 |\n\nFlagged: Best Buy\nGrand total: $1663.10";
+
 function replyTo(context, faux) {
   const untilExists = (file) => untilExistsOr(file, faux.signal);
   const users = personOf(context).map(textOf);
@@ -51,6 +54,12 @@ function replyTo(context, faux) {
   const read = first.includes("Read the example page");
   // "Use the learned workflow <name> on <question>.": the run's learned_workflow, then its answer as the tool said it.
   const learned = /Use the learned workflow (\S+) on (.+?)\.$/.exec(first);
+  // "Reply with the learned workflow <name>'s output on <question>.": the run's learned_workflow, then its output as the
+  // tool gave it, and nothing else (a caller that keeps the answer as the workflow wrote it).
+  const verbatim = /Reply with the learned workflow (\S+)'s output on (.+?)\.$/.exec(first);
+  if (verbatim && !context.messages.some((m) => m.role === "system" && m.toolsAdded?.some((tool) => tool.name === "submit")) && !context.tools?.some((tool) => tool.name === "submit")) {
+    return results === 0 ? faux.message(faux.toolCall("learned_workflow", { name: verbatim[1], input: { question: verbatim[2] } }), { stopReason: "toolUse" }) : faux.message(textOf(context.messages.at(-1)));
+  }
   if (learned && !context.messages.some((m) => m.role === "system" && m.toolsAdded?.some((tool) => tool.name === "submit")) && !context.tools?.some((tool) => tool.name === "submit")) {
     return results === 0 ? faux.message(faux.toolCall("learned_workflow", { name: learned[1], input: { question: learned[2] } }), { stopReason: "toolUse" }) : faux.message(`Ran: ${textOf(context.messages.at(-1))}`);
   }
@@ -78,6 +87,14 @@ function replyTo(context, faux) {
     if (canary.includes("Submit the held key")) {
       if (answered) return faux.message("Submitted.");
       return faux.message(faux.toolCall("submit", { note: `kept ${CUT_KEY} here`, n: 7 }), { stopReason: "toolUse" });
+    }
+    // A node that writes a report in a fixed format (a learned workflow's last node, as a skill's format asks it).
+    if (canary.includes("Write the card report")) {
+      if (answered) return faux.message("Submitted.");
+      // In a session of its own, submit takes the DSL's envelope: the record under `value`.
+      const params = [...context.messages.flatMap((m) => m.toolsAdded ?? []), ...(context.tools ?? [])].find((tool) => tool.name === "submit")?.parameters;
+      const enveloped = Boolean(params?.properties?.value && Object.keys(params.properties).length === 1);
+      return faux.message(faux.toolCall("submit", enveloped ? { value: { report: REPORT } } : { report: REPORT }), { stopReason: "toolUse" });
     }
     // A node whose model request a provider refused (401), in pi-ai's words.
     if (canary.includes("Fail with a refused key")) return faux.message("", { stopReason: "error", errorMessage: '401: {"message":"User not found","code":401}' });

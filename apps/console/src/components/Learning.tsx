@@ -4,6 +4,7 @@ import { workflowGraph } from "@dsl/graph";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { problem, ProblemCard } from "@/components/learningProblem";
+import { CostPerRun } from "@/components/CostPerRun";
 import { LearningSwitch } from "@/components/LearningSwitch";
 import { GraphLegend, WorkflowGraph } from "@/components/WorkflowGraph";
 import { Banner } from "@/components/ui/banner";
@@ -82,7 +83,7 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places, on
     );
   };
 
-  const on = agent.definition.learning === true;
+  const on = agent.definition.learning === true || agent.definition.learning === "notes";
   const readOnly = !!agent.archived_at;
   const all = useMemo(() => [...(view?.notes.items ?? []), ...later.items], [view, later.items]);
   const active = all.filter((x) => x.status === "active");
@@ -150,6 +151,7 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places, on
     <div className="space-y-6">
       {stale}
       <Empty on={on} lookedBack={lookedBack} switchRow={switchRow(true)} onAdd={readOnly ? undefined : () => setAdding(true)} />
+      <CostPerRun v2={v2} agentId={agent.agent_id} on={on} quiet />
       <NotKept runs={runs} />
     </div>
   );
@@ -173,6 +175,7 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places, on
         </section>
       )}
       {shownImpact(view.impact) ? <ImpactCard impact={view.impact} /> : view.impact === null && on && <p className="font-mono text-small text-muted-foreground">{IMPACT_LATER}</p>}
+      <CostPerRun v2={v2} agentId={agent.agent_id} on={on} />
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
         <div className="min-w-0 space-y-6">
         <section className="min-w-0 space-y-3" aria-label="Notes">
@@ -335,7 +338,7 @@ function SavedSwitch({ agent, v2, onAgent, server, disabled, quiet }: { agent: A
     setShown(null); setBusy(false);
   };
   return (
-    <LearningSwitch id={`learns-${agent.agent_id}`} className="px-4 py-4" quiet={quiet} checked={shown ?? agent.definition.learning === true} onChange={(v) => void flip(v)}
+    <LearningSwitch id={`learns-${agent.agent_id}`} className="px-4 py-4" quiet={quiet} checked={shown ?? (agent.definition.learning === true || agent.definition.learning === "notes")} onChange={(v) => void flip(v)}
       busy={busy} disabled={disabled} server={server}
       problem={trouble ? <ProblemCard problem={failed(trouble, "the agent", "Learning was not changed.")} className="mt-2" /> : null} />
   );

@@ -7,6 +7,7 @@ import { MAX_UI_NODES, type Rect, UI_FLAGS, UI_ROLES, type UiNode } from "../../
 import { FIXTURE_BUTTON } from "../fixture.js";
 import { featureOff } from "../../ui-engine.js";
 import type { Case, CaseContext } from "../types.js";
+import { UI_FIXTURE } from "../ui-fixture.js";
 import { shoot } from "./screen.js";
 import { namesOf, observe, openSettings, rowsOf, settingsApp, throughSettings } from "./settings.js";
 
@@ -109,10 +110,12 @@ export const appsCases: Case[] = [
 		group: "apps",
 		needs: ["apps"],
 		async run(t) {
-			// The phone's own Settings app: listed; launched, in front and shown; terminated, and no longer in front.
-			const app = settingsApp(t);
+			// An app the computer has: the ui fixture where it is installed, else the phone's own Settings app. Listed;
+			// launched, in front and shown; terminated, and no longer in front.
 			const listed = await t.call("apps.list", {});
 			t.assert(Array.isArray(listed.apps) && listed.apps.every((one) => typeof one?.id === "string"), `apps.list gives apps with ids: ${JSON.stringify(listed.apps).slice(0, 300)}`);
+			const uiFixture = listed.apps.some((one) => one.id === UI_FIXTURE.id);
+			const app = uiFixture ? UI_FIXTURE.id : settingsApp(t);
 			t.assert(listed.apps.some((one) => one.id === app), `apps.list holds ${app}`);
 			t.deepEqual(await t.call("apps.terminate", { id: app }), {}, `apps.terminate ${app}`);
 			await t.until(async () => (await foreground(t)) !== app, `${app} not in front after apps.terminate`);
@@ -124,8 +127,9 @@ export const appsCases: Case[] = [
 			if (readsTree(t)) {
 				await t.until(async () => {
 					const seen = await observe(t);
-					return rowsOf(seen).length > 0 && JSON.stringify(namesOf(seen)) !== before;
-				}, `${app} shown after apps.launch: Settings' list in ui.observe, not the screen before it`);
+					const ready = uiFixture ? seen.nodes.some((node) => node.id === "next") : rowsOf(seen).length > 0;
+					return ready && JSON.stringify(namesOf(seen)) !== before;
+				}, `${app} shown after apps.launch: ${uiFixture ? "the ui fixture's Next button" : "Settings' list"} in ui.observe, not the screen before it`);
 			} else {
 				await t.until(async () => (await shown(t)) !== before, `${app} shown after apps.launch: ${declares(t, "screen") ? "a screenshot" : "ui.observe's image"} other than the one before it`);
 			}
@@ -141,9 +145,21 @@ export const appsCases: Case[] = [
 		group: "ui",
 		needs: ["ui"],
 		async run(t) {
-			const settings = throughSettings(t);
+			// With both off, ui.observe is refused by design (wire.md): there is no shape to read, so the case skips in the
+			// words hello gives for each.
+			const imageOff = featureOff(t.hello.features ?? {}, "ui.image");
+			const bothOff = treeOff(t);
+			if (bothOff !== undefined && imageOff !== undefined) return t.skip(`ui.observe has nothing to show on this computer: ${bothOff}, and ${imageOff}`);
+			// What to observe: the ui fixture where the computer has it installed (it needs no exec, files or processes,
+			// which a ui driver need not offer); else Settings on a phone with no fixture file; else the input fixture.
+			const listed = t.hello.groups.includes("apps") ? await t.call("apps.list", {}) : undefined;
+			const uiFixture = listed?.apps.some((app) => app.id === UI_FIXTURE.id) === true;
+			const settings = !uiFixture && throughSettings(t);
 			if (settings) await openSettings(t);
-			else await t.fixture();
+			else if (uiFixture) {
+				t.deepEqual(await t.call("apps.launch", { id: UI_FIXTURE.id }), {}, `apps.launch ${UI_FIXTURE.id}`);
+				await t.until(async () => (await t.call("apps.list", {})).foreground === UI_FIXTURE.id, `${UI_FIXTURE.id} in front after apps.launch`);
+			} else await t.fixture();
 			const off = treeOff(t);
 			if (off !== undefined) {
 				// With ui.tree off the observation is image-only: no nodes, the reason in empty, and the window's image.
@@ -158,14 +174,16 @@ export const appsCases: Case[] = [
 				return;
 			}
 			// Settings comes up, or the fixture's button, before the shape is read: a phone draws its window after the launch.
+			const waitedFor = settings ? "Settings' list, with its rows, in ui.observe" : uiFixture ? `the ui fixture's Next button, by its id, in ui.observe` : `the fixture's button, by its id ${FIXTURE_BUTTON.id}, in ui.observe`;
 			const seen = await t.until(async () => {
 				const one = await observe(t);
-				const ready = settings ? rowsOf(one).length > 0 : one.nodes.some((node) => node.id === FIXTURE_BUTTON.id);
+				const ready = settings ? rowsOf(one).length > 0 : one.nodes.some((node) => node.id === (uiFixture ? "next" : FIXTURE_BUTTON.id));
 				return ready || observeWrong(one) !== undefined ? one : undefined;
-			}, settings ? "Settings' list, with its rows, in ui.observe" : `the fixture's button, by its id ${FIXTURE_BUTTON.id}, in ui.observe`);
+			}, waitedFor);
 			const wrong = observeWrong(seen);
 			t.assert(wrong === undefined, `ui.observe: ${wrong}`);
 			if (settings) return;
+			if (uiFixture) return t.equal(seen.app.id, UI_FIXTURE.id, "the observed app");
 			const button = t.present(
 				seen.nodes.find((node: UiNode) => node.id === FIXTURE_BUTTON.id),
 				`the fixture's button, by its id ${FIXTURE_BUTTON.id}, in ui.observe`,

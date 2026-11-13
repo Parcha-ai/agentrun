@@ -101,8 +101,11 @@ An error reply is JSON-RPC's, with the protocol's kind in `data`:
 
 - `message` is words a person can act on. It never holds a key, a token or a secret.
 - `data.kind` is one of `not_found`, `invalid`, `timeout`, `aborted`, `denied`, `limit`, `unsupported`, `exists`,
-  `not_dir`, `is_dir`, `stale` (`errorKinds` in [`protocol.json`](protocol.json)). A caller acts on the kind, never on
-  the message. `stale` is the `ui` group's: a ref whose element is gone, or a point whose window changed under it.
+  `not_dir`, `is_dir`, `stale`, `refused` (`errorKinds` in [`protocol.json`](protocol.json)). A caller acts on the
+  kind, never on the message. `stale` is the `ui` group's: a ref whose element is gone, or a point whose window
+  changed under it. `invalid` is a request malformed whatever the computer; `unsupported` a method or feature this
+  computer does not have; `refused` a call it has, on a value or state it does not serve (a step on a disabled
+  control).
 - `code` follows from the kind:
 
   | Kind | Code |
@@ -186,11 +189,11 @@ The result:
 
 - `steps`: at most `maxSteps`, run in order. Each is one of: `press` (the element's default action), `set` with `value`
   (a field's text, a slider's value, a switch's `"on"` or `"off"`), `perform` with `action`, `click` (a ref or a point;
-  `button` and `count`), `type` (text, `into` a ref or where the focus is), `key` (a chord from the key table, `"super+s"`),
+  `button` and `count`), `type` (text, `into` a ref or where the focus is), `key` (a chord from the key table, `"super+s"`; its last key may be `+` itself, `"shift++"`),
   `nav` (`back`, `home`, `app_switch`; feature `ui.nav`), `scroll` (a ref or a point, `dx`, `dy` in points) and `drag`
   (points, with `ms`). There is no wait step: an act with no steps and an `expect` is a wait.
 - `state`: the state the steps' points were read from. A step at a point needs it.
-- `expect`: `text` somewhere in the window (in a name, value or desc), or on the element `ref`; with `gone: true`, until it is not. The computer
+- `expect`: `text` somewhere in the window (in a name, value or desc, never a `secure` field's value), or on the element `ref`; with `gone: true`, until it is not. The computer
   polls it for `timeoutMs` (default `defaultExpectMs`, at most `maxExpectMs`).
 - `foreground`: the call allows the foreground route, which moves the user's pointer and focus. Default false.
 
@@ -207,7 +210,11 @@ The result:
   that takes real input only, and the driver cannot always tell: such a step answers `verified: false`. A step the
   driver knows needs the foreground route, in a call without `foreground: true`, is refused `denied`.
 - A step that may not run answers `{"error": {"kind", "message"}}`, and it is the last result: the steps after it do
-  not run. Its kinds: `stale`, `invalid`, `denied`, `unsupported`, `not_found`, `timeout`, `limit`.
+  not run. Its kinds: `stale`, `invalid`, `denied`, `unsupported`, `not_found`, `timeout`, `limit`, `refused`. A
+  step on a disabled control by its ref is refused `refused`: a field's text never goes to whatever has the focus.
+  For the same reason, a `type` into a ref that is not a text field is refused `refused` with nothing sent, and a
+  driver that focuses a field before typing (a tap) checks the field took the focus, else refuses `refused` with
+  nothing typed.
 - `state` is the window after the act settled, `changed` whether it differs from before the steps, and `expect` is
   `met` or `unmet` (absent without an expect, or when a step was refused).
 
@@ -219,10 +226,18 @@ The result:
 - **A point is bound to its state.** A step at a point is refused `stale` when its state is no longer held, the window
   is another one, the window changed size, or what is under the point changed. Where no element is under the point
   (always so with `ui.tree` off), any change to what the window shows makes it stale. A point outside the window is
-  `invalid`. A window that only moved keeps its points good, because they are window points.
+  `invalid`. A window that only moved keeps its points good, because they are window points. Every point a step
+  touches is held to this, each point of a drag's path as much as its first.
 - **The driver waits, never the model.** Every act settles before it answers: the window looks the same twice, a short
   quiet apart, or `maxSettleMs` passed. An expect is polled on the computer, and an act's `state` is the window once it
   settles after the expect, never a frame of a transition.
+- **An act follows the app a step leaves for.** A `state` or `target` aims the act at its app's window; an act with
+  neither is aimed at the app in front when it begins, so a step that opens another app never lets a later step reach
+  it. After a `nav`
+  step, the act follows the window in front: the steps after it, the settle, the expect and the answered `state` are
+  that window's. When any other step (a key, a tap that opens another app) takes the aimed window away, the step after
+  it is refused `stale` and runs nothing, and the act settles on the window in front. Either way the steps that ran
+  keep their results.
 - **Nothing silent.** A feature that is off is refused with its reason, in words. A step a route cannot reach is
   refused, never sent to the wrong place.
 - **One at a time.** A connection's ui calls run in order; one act's steps never interleave with another's.

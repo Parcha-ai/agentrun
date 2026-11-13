@@ -431,7 +431,7 @@ in the kernel's tool registry, keyed by these groups.
   | id | label | kinds | keys (required unless marked) | mounts | metered |
   | --- | --- | --- | --- | --- | --- |
   | docker | Docker | sandbox, desktop | none | bind | no |
-  | daytona | Daytona | sandbox | `DAYTONA_API_KEY`; `DAYTONA_API_URL`, `DAYTONA_TARGET` (optional) | archil | yes |
+  | daytona | Daytona | sandbox | `DAYTONA_API_KEY`; `DAYTONA_API_URL`, `DAYTONA_TARGET`, `DAYTONA_ARCHIL_EGRESS` (optional) | archil | yes |
   | modal | Modal | sandbox | `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` | archil | yes |
   | e2b | E2B | sandbox, desktop | `E2B_API_KEY` | archil | yes |
   | orgo | Orgo | desktop (Linux; Windows and macOS with `os`) | `ORGO_API_KEY` | none | yes |
@@ -874,6 +874,14 @@ const made = await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 60
   `{ other: "<words>" }` for a mount at `/workspace` the provider never makes. An Archil mount's `epoch` is the
   computer's `agentrun.epoch` label (Archil's hold on a folder carries none); an Archil mount with no epoch reads back
   as `{ other }`, in words. The token is never in a label, a read-back or an error.
+- **An Archil egress gateway (Daytona, `archilEgress` / `DAYTONA_ARCHIL_EGRESS`).** For a target whose runners reach
+  Archil only through a gateway, `<IPv4 gateway>:<mount lane>:<data lane>` (such as `10.60.0.40:18100:42050`, parcha-proxy's
+  archil-egress). The helper's mount then starts `computerd archil-relay` on the computer's loopback (127.0.0.1:3129) and
+  an nftables table of its own (`inet agentrun_archil`) that redirects root's TCP to 8100 (the mount endpoint) and 32050
+  (the file servers, at the raw addresses the mount endpoint returns) to the relay and resets every other TCP to those
+  ports. The relay sends each connection to the gateway's lane for its port with a PROXY v2 header naming the original
+  destination; the gateway admits only a destination that proves, by certificate, the Archil name the client asked for.
+  A relay that cannot reach the gateway closes the connection, so the client reaches nothing. Unset, nothing changes.
 - **Docker takes a bind.** `create` adds `--mount type=bind,src=<path>,dst=/workspace` after the daemon's mount:
   read-write, propagation `rprivate`. A path Docker's `--mount` cannot hold (a comma, a double quote, a line break) is
   refused by `check`.
@@ -1493,7 +1501,10 @@ stopped one.
 Daytona runs its own toolbox daemon as the sandbox's first process, and a snapshot we do not build has no `computerd`.
 So the provider pushes it in at create and starts it as a long-lived command, and reaches it the same way:
 
-1. Upload the static binary through the toolbox's file upload, to `/tmp/agentrun-computerd-<random>`.
+1. Upload the static binary through the toolbox's file upload, to `/tmp/agentrun-computerd-<random>`:
+   `/files/upload-v2`, or `/files/upload` when the toolbox answers 404 for it. An older toolbox, as a self-hosted
+   Daytona's runners may run, serves only `/files/upload`, which takes the same form; any other refusal is not retried
+   on the older route.
 2. Install it with `/process/execute` (the command is piped to the sandbox's shell): root-owned, mode 755, at
    `/opt/agentrun/computerd`, and make `/work` (its home) and `/run/agentrun` (its socket's directory). As root, or
    through passwordless `sudo`; a sandbox with neither is refused in the script's words. The script prints the
@@ -1743,6 +1754,7 @@ repository's main; the docs were read on 2026-11-05.
 | `GET /sandbox/{sandboxId}/toolbox-proxy-url`; the toolbox at `toolboxProxyUrl` + `/` + id | `daytona/clients@8006f63e:openapi-specs/api.json:5235`; `daytona/clients@8006f63e:sdk-typescript/src/Sandbox.ts:1566-1573` |
 | `Authorization: Bearer <key>` | `daytona/clients@8006f63e:sdk-typescript/src/Daytona.ts:444` |
 | `POST /files/upload-v2?path=`, multipart field `file` | `daytona/clients@8006f63e:openapi-specs/toolbox.json:2031` |
+| `POST /files/upload?path=`, multipart field `file`, on a toolbox with no `/files/upload-v2` | `daytonaio/daytona@b5a5d9e7:apps/daemon/pkg/toolbox/server.go:191`, `daytonaio/daytona@b5a5d9e7:apps/daemon/pkg/toolbox/fs/upload_file.go:22-35` |
 | `POST /process/execute` `{command, timeout}` to `{exitCode, result}`; the command piped to the shell | `daytona/clients@8006f63e:openapi-specs/toolbox.json:3234`, `daytona/clients@8006f63e:openapi-specs/toolbox.json:4679`, `daytona/clients@8006f63e:openapi-specs/toolbox.json:4703`; `daytonaio/daytona@b5a5d9e7:apps/daemon/pkg/toolbox/process/execute.go:55-57` |
 | `POST /process/session` `{sessionId}`; a session's shell runs as the toolbox's own user | `daytona/clients@8006f63e:openapi-specs/toolbox.json:3636`, `daytona/clients@8006f63e:openapi-specs/toolbox.json:4525`; `daytonaio/daytona@b5a5d9e7:apps/daemon/pkg/session/create.go:20-24` |
 | `POST /process/session/{sessionId}/exec` `{command, runAsync, suppressInputEcho}` to `{cmdId}` | `daytona/clients@8006f63e:openapi-specs/toolbox.json:4017`, `daytona/clients@8006f63e:openapi-specs/toolbox.json:5922`, `daytona/clients@8006f63e:openapi-specs/toolbox.json:5935` |
@@ -2375,17 +2387,17 @@ Conformance (`src/conformance/phone-harness.ts`) reads `COMPUTER_PHONE_HARNESS_A
 `maxLifetimeMs`.
 
 With no fixture app (it takes no files), the touch, keys and apps cases drive the stock Settings app and read back
-through `apps.ui_tree` (`src/conformance/cases/settings.ts`):
+through `ui.observe` (`src/conformance/cases/settings.ts`):
 - `touch.tap`: a tap on a row opens its page: the row's title shows, as a text or a label (Android 15's page has it
   only as its toolbar's content-desc), and the next row is gone. Back comes back. When the page does not
   come, its words say what it saw: the screen in px and dp, what is in front, the tap point and the row's bounds,
   whether the title shows outside the list, and whether the next row is still shown;
 - `touch.swipe`: a swipe up moves the list up;
 - `input.type-text` and `input.key-table-refuses-unknown`: the text read back from the search field;
-- `apps.launch-terminate`, which needs the apps group alone: Settings is listed; once launched it is in front, and
-  shown, in `apps.ui_tree` when the phone has one, else in a screenshot other than the one before; once terminated it
-  is not in front;
-- `apps.ui-tree-shape`: the tree's shape, on Settings.
+- `apps.launch-terminate`, which needs the apps group alone: the ui fixture where it is installed, else Settings, is
+  listed; once launched it is in front, and shown, in `ui.observe` when the phone reads its elements, else in a
+  screenshot (or `ui.observe`'s image) other than the one before; once terminated it is not in front;
+- `ui.observe-shape`: the observation's shape, on the ui fixture where it is installed, else on Settings.
 
 `touch.pinch` skips in the provider's own refusal.
 
@@ -2412,7 +2424,7 @@ full lifetime  extend                                       - 1
 optional screen screenshot-size                              - 1
   - screen.screenshot-size: the provider does not declare screen
 ...
-core PASS 54/54 · 10 optional cases skipped, not declared · full 10/13 · mount:archil screen input.pointer input.keys input.touch apps.install apps apps.ui_tree extend not declared
+core PASS 54/54 · 10 optional cases skipped, not declared · full 10/13 · mount:archil screen input.pointer input.keys input.touch apps.install apps ui extend not declared
 ```
 
 An id is resolved through the provider registry, and only there; the usage lists every id it holds. A module path is
@@ -2507,8 +2519,8 @@ Core and Full follow the Kubernetes agent-sandbox conformance levels (KEP-539.2)
   kind `invalid`, and runs nothing), `input.actions-stops-at-first-failure` (move, left button down, move off the screen,
   click: `done` 2, the press released where it was, no click, and a later click lands, so nothing was left held), `touch.tap` and `touch.swipe` (the
   fixture app logs the tap at its point, and the swipe's start and end), `apps.install-launch` (installed, listed, in
-  front when launched and not when terminated) and `apps.ui-tree-shape` (every node typed as the protocol says, inside
-  the screenshot, with the fixture's button found by its id and text).
+  front when launched and not when terminated) and `ui.observe-shape` (every node typed as the protocol says, inside
+  its window, with the fixture's button found by its id and text).
 - **Full** is each optional capability a provider declares: network `open` (`network:open`), a network allowlist
   (`network:allow`), each with a change of a computer's network to it and back to `none`, refused or applied
   truthfully, on a computer of the case's own (`provider.network-switch`, `provider.network-switch-allow`), the janitor for a provider whose lifetime is `"janitor"` and that stops computers and keeps them
@@ -2553,8 +2565,8 @@ installed with `apps.install` and launched, logging to its files directory, with
 `ai.agentrun.fixture:id/button` that reads `agentrun fixture`). Each event is one JSON line (`ready`, `down`/`up` with
 button and point, `wheel`, `key`, `text`, `touch` with finger and phase); `src/conformance/fixture.ts` is the
 contract. A case that needs it and was given none skips, so Core cannot pass on a desktop or phone without it. The
-fixture is stopped when its case ends, once launched, even when it never logged ready. A phone that declares neither files nor `apps.ui_tree` skips the touch cases:
-`no way to observe the effect: declare files or apps.ui_tree`.
+fixture is stopped when its case ends, once launched, even when it never logged ready. A phone that declares neither files nor `ui` skips the touch cases:
+`no way to observe the effect: declare files or ui`.
 
 The suite makes every computer with the label `agentrun.conformance=<run id>`, image `--image`, a 30-minute lifetime
 and network `none` (`open` for a phone that declares no `none`, since its kind does not require it). It deletes each computer a case made when the case ends, and the shared one at the end; for a
@@ -2643,7 +2655,9 @@ it is declared (`descriptorProblems`), in words. Its fields: `id`, `label`, `key
 fills, and whether it is required), `settings` (a setting that is no key but fills an option, with its default),
 `metered`, `mounts`, `network` (the network forms its computers make, at least one of none, open and allow),
 `capabilities` (the kind and groups of each configuration), `defaultImage` (by setting kind),
-`prepareImage` (a provider that builds or pulls its image before a run), `local` (a computer on this host), and
+`prepareImage` (a provider that builds or pulls its image before a run), `imageEnv` (the server's environment variable
+that, when set, names the image of every computer of the provider, as Daytona's `AGENTRUN_DAYTONA_SNAPSHOT`), `local`
+(a computer on this host), and
 `ledger` (the option a provider's ledger fills). `providerFor(id, options)` builds a provider by id from its options and
 refuses an id it does not hold, naming the ones it does. The provider file, `src/<vendor>.ts`, exports what a
 `ProviderModule` is:

@@ -38,6 +38,33 @@ test("an ARCHIL_API_KEY environment variable overrides the saved key: source env
   assert.equal((await call("testWorkspaceArchil")).ok, true);
   assert.deepEqual(control.requests.map((one) => one.authorization), ["Bearer test-key"], "the environment's value is the one used");
 });
+// AGENTRUN_ARCHIL_REGION, _S3_URL (and _IMAGE) set the settings where the server is started: GET says so, the test asks
+// that region's control plane, and PUT and DELETE are refused in words, since nothing saved here would take effect.
+const ENV = { AGENTRUN_ARCHIL_REGION: "aws-eu-west-1", AGENTRUN_ARCHIL_S3_URL: "https://s3.env.archil.example" };
+const FROM_ENV = { region: ENV.AGENTRUN_ARCHIL_REGION, s3Url: ENV.AGENTRUN_ARCHIL_S3_URL };
+
+test("settings in the server's environment: on with source env over a saved row; the test asks its region; PUT and DELETE are 409 key_set_by_server and change nothing", async (t) => {
+  const { store, call } = await setup(t, { env: { ...ENV, ARCHIL_API_KEY: "test-key" } });
+  await store.settings.put("archil", SETTINGS);
+  const view = await call("getWorkspaceArchil");
+  assert.deepEqual(view, { on: true, source: "env", ...FROM_ENV, secret: { name: "workspace:archil", set: true, source: "env", changed_at: null } });
+  assert.deepEqual(await call("testWorkspaceArchil"), { ok: true, detail: "Archil's aws-eu-west-1 control plane listed the account's disks (2 so far)" }, "the environment's region is the one tested");
+  const setByServer = (promise) => assert.rejects(promise, (error) => error instanceof ApiError && error.code === "key_set_by_server" && error.status === 409
+    && error.message === "This server is started with AGENTRUN_ARCHIL_REGION, AGENTRUN_ARCHIL_S3_URL: its Archil settings are changed where the server is started, not here."
+    && error.extra.details.fields.length === 2);
+  await setByServer(call("putWorkspaceArchil", { ...SETTINGS, region: "aws-us-west-2", keys: { ARCHIL_API_KEY: API } }));
+  await setByServer(call("deleteWorkspaceArchil"));
+  assert.deepEqual(await store.settings.get("archil"), SETTINGS, "the saved row is untouched");
+  assert.deepEqual(await store.sealedKeys.all(), [], "no key sealed");
+  assert.deepEqual(await call("getWorkspaceArchil"), view, "still the environment's");
+});
+
+test("without the environment's settings, the same store answers as before: the saved row, source console, and PUT and DELETE change it", async (t) => {
+  const { call } = await setup(t, { env: { AGENTRUN_ARCHIL_REGION: "", AGENTRUN_ARCHIL_S3_URL: "  " } });
+  assert.deepEqual(await call("getWorkspaceArchil"), { on: false, secret: UNSET }, "empty variables are unset");
+  assert.equal((await call("putWorkspaceArchil", SETTINGS)).source, "console");
+  assert.equal((await call("deleteWorkspaceArchil")).on, false);
+});
 const refused = (promise, field) => assert.rejects(promise, (error) => error instanceof ApiError && error.code === "input_invalid" && (field === undefined || error.extra.fields?.some((one) => one.field === field)), field);
 
 test("the routes by their operation names", () => {
@@ -48,7 +75,7 @@ test("off at first; a PUT saves the settings and seals the account key, never ec
   const { store, sealKey, call } = await setup(t);
   assert.deepEqual(await call("getWorkspaceArchil"), { on: false, secret: UNSET });
   const saved = await call("putWorkspaceArchil", { ...SETTINGS, image: PINNED, keys: { ARCHIL_API_KEY: API } });
-  assert.deepEqual(saved, { on: true, ...SETTINGS, image: PINNED, secret: FROM_CONSOLE }, "the one SecretMeta: set, where from, when changed; never a value");
+  assert.deepEqual(saved, { on: true, source: "console", ...SETTINGS, image: PINNED, secret: FROM_CONSOLE }, "saved here; the one SecretMeta: set, where from, when changed; never a value");
   assert.ok(!JSON.stringify(saved).includes(API), "never echoed");
   assert.deepEqual(await call("getWorkspaceArchil"), saved);
   assert.deepEqual(await loadArchilSettings(store), { ...SETTINGS, image: PINNED }, "the settings row E1's readers load");
@@ -88,7 +115,7 @@ test("a PUT that is not right is refused before anything is saved, field by fiel
 test("the test lists the account's disks once with the sealed key, and says why it can't in plain words, never the key", async (t) => {
   let refuse;
   const { control, call } = await setup(t, { answer: () => refuse });
-  assert.deepEqual(await call("testWorkspaceArchil"), { ok: false, why: "Archil is off on this server: save its region, S3 URL and account key (PUT /v2/workspace/archil)" });
+  assert.deepEqual(await call("testWorkspaceArchil"), { ok: false, why: "Archil is off on this server: save its region, S3 URL and account key (PUT /v2/workspace/archil), or start the server with AGENTRUN_ARCHIL_REGION, AGENTRUN_ARCHIL_S3_URL and ARCHIL_API_KEY" });
   await call("putWorkspaceArchil", SETTINGS);
   const missing = await call("testWorkspaceArchil");
   assert.equal(missing.ok, false);

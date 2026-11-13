@@ -18,15 +18,15 @@ for (const face of ["in-process", "remote"]) {
       assert.equal(await driver.url(), "https://example.test/start");
       assert.equal(backend.dispatched.filter((d) => d.op === "read").length, 0);
 
-      assert.deepEqual(size(await driver.screenshot({ type: "png", scale: "css" })), { type: "png", width: 1288, height: 711 });
-      assert.deepEqual(size(await driver.screenshot({ type: "png", fullPage: true, scale: "css" })), { type: "png", width: 1288, height: 8319 });
-      assert.deepEqual(size(await driver.screenshot({ type: "png", scale: "device" })), { type: "png", width: 2576, height: 1422 });
+      assert.deepEqual(size(await driver.screenshot({ type: "png", scale: 0.5 })), { type: "png", width: 1288, height: 711 });
+      assert.deepEqual(size(await driver.screenshot({ type: "png", fullPage: true, scale: 0.5 })), { type: "png", width: 1288, height: 8319 });
+      assert.deepEqual(size(await driver.screenshot({ type: "png" })), { type: "png", width: 2576, height: 1422 });
 
       backend.dispatched.length = 0;
       const budgeted = await captureWithinBudget((options) => driver.screenshot(options), { fullPage: true });
       assert.equal(budgeted.adjusted?.why, "long_edge");
-      assert.deepEqual(budgeted.size, { type: "jpeg", width: 1288, height: 711 });
-      assert.deepEqual(backend.dispatched.map((d) => d.options), [{ fullPage: true, type: "jpeg", quality: 40 }, { fullPage: false, type: "jpeg", quality: 40, scale: "css" }]);
+      assert.deepEqual(budgeted.size, { type: "jpeg", width: 2000, height: 1104 });
+      assert.deepEqual(backend.dispatched.map((d) => d.options), [{ fullPage: true, type: "jpeg", quality: 40 }, { fullPage: false, type: "jpeg", quality: 40 }, { fullPage: false, type: "jpeg", quality: 40, scale: 2000 / 2576 }]);
     } finally { await served.close(); }
   });
 }

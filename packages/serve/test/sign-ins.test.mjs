@@ -398,7 +398,7 @@ test("after the agent's sign-in stops opening, a run that was never handed it (i
   assert.equal(JSON.parse(await readFile(join(runDir(data, runId), "serve.json"), "utf8")).unshown, undefined);
 });
 
-test("a launch that can't save that it was handed the sign-in hands none: the run browses signed out", { skip: "follow-up: #2067", timeout: 180_000 }, async (t) => {
+test("a launch that can't save that it was handed the sign-in hands none: the run browses signed out", { skip: "follow-up: #2067 (blocks serve.json.tmp, which nothing writes now: needs a store-write fault on runs.update)", timeout: 180_000 }, async (t) => {
   const dir = await scratch(t);
   const log = join(dir, "browser.jsonl");
   withEnv(t, { BROWSERBASE_API_KEY: BB_KEY, BROWSERBASE_PROJECT_ID: "proj-1", AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), FAUX_BROWSER_LOG: log, AGENTRUN_TEST_FAUX_BROWSERBASE_CONTEXTS_DOWN: "1" }, KEYS);
