@@ -112,7 +112,8 @@ for (const wire of Object.keys(SOURCES)) {
     const refused = await gradeOn(t, route, 1e-9);
     assert.deepEqual(refused.end, { state: "ended" });
     assert.equal(gateway.requests.length, before, "past the cap: not sent");
-    assert.equal((await runLearningEnd(refused.store, "run-1"))?.reason, "grade_failed");
+    // Refused by the cap before it was sent: skipped for room, never a failure (learning-loop.ts GradeOverCap).
+    assert.equal((await runLearningEnd(refused.store, "run-1"))?.reason, "no_budget");
   });
 }
 
