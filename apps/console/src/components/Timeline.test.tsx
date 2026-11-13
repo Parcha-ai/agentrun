@@ -49,9 +49,9 @@ describe("Timeline, a browser step", () => {
     expect(looked).not.toMatch(/>snapshot</);
     expect(html(row({ kind: "tool_use", tool_name: "browser_read", summary: "Read the page" }))).toMatch(/>Read the browser&#x27;s page</);
   });
-  it("leaves every other tool's name as it is", () => {
-    expect(html(row({ kind: "tool_use", tool_name: "write", summary: "Wrote notes.md" }))).toMatch(/>write</);
-    expect(html(row({ kind: "tool_use", tool_name: "web_fetch", summary: "Fetched example.com" }))).toMatch(/>web_fetch</);
+  it("says the common built-in tools in words", () => {
+    expect(html(row({ kind: "tool_use", tool_name: "write", summary: "Wrote notes.md" }))).toMatch(/>Write</);
+    expect(html(row({ kind: "tool_use", tool_name: "web_fetch", summary: "Fetched example.com" }))).toMatch(/>Fetch</);
   });
 });
 

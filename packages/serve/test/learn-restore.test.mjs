@@ -18,9 +18,11 @@ const TABLES = note("Answer in tables", "The user wants answers as tables", "Ans
 const SKILL = "---\nname: weekly-summary\ndescription: Writes the weekly support summary in its fixed format\n---\nWeekly summary: <dates>\n";
 
 /** A server with accounts and the owner's session, agent `keeper` (its definition's `extra` fields) with a folder;
- *  `files` committed on main. */
-async function keeper(t, files, extra = {}, before = async () => {}) {
+ *  `files` committed on main; `env`, more of the server's environment. */
+async function keeper(t, files, extra = {}, before = async () => {}, env = {}) {
   withEnv(t, {}, ["AGENTRUN_TEST_FAUX_GRADE_HOLD", "AGENTRUN_TEST_FAUX_CALLS", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_STRONG", "AGENTRUN_SERVE_GRADE_MODEL"]);
+  // `env`: what the server starts with beside that (a decision provider's key, its faux), set after the clear.
+  withEnv(t, env);
   const server = await serve(t, { learning: "on", faux: LEARN, accounts: true, openSetup: true });
   const { api, data, port } = server;
   const origin = `http://127.0.0.1:${port}`;
@@ -263,6 +265,23 @@ test("a note an approval or a restore supersedes says it was superseded, not app
       assert.deepEqual([of("answer-in-lists.md")?.last_change?.kind, of("answer-in-lists.md")?.last_change?.by], ["superseded", "person"], JSON.stringify(of("answer-in-lists.md")));
     });
   }
+});
+
+test("a retired workflow draft with a judge node is restored when the server has the decision provider it asks, as a run's learning end checks it (LS-07)", { timeout: 150_000 }, async (t) => {
+  const { CANARY } = await import("./fixtures/faux-jev.mjs");
+  const JUDGE = JSON.stringify({
+    v: 2, name: "claim-check",
+    schemas: { In: { type: "object", required: ["claim"], properties: { claim: { type: "string" } } }, Check: { type: "object", required: ["right"], properties: { right: { type: "boolean", description: "Is the claim right?" } } } },
+    input: { schemaId: "In" }, output: { schemaId: "Check", path: "check" },
+    root: { node: "chain", steps: [{ node: "judge", label: "check", state: { claim: "{claim}" }, out: "Check", as: "check" }] },
+  });
+  // Retired while active (#2316: a restore gives back the status its retire recorded, else waits for the owner's OK).
+  const README = "---\nname: claim-check\ndescription: Checks whether a claim is right\nstatus: retired\nretired_from: active\n---\n";
+  const { api, cookie, origin, restore } = await keeper(t, { "workflows/claim-check/workflow.json": JUDGE, "workflows/claim-check/README.md": README }, {}, undefined, { TYPESAFE_API_KEY: CANARY, AGENTRUN_SERVE_FAUX_JEV: new URL("./fixtures/faux-jev.mjs", import.meta.url).pathname });
+  const restored = await restore("workflows/claim-check/README.md", { ...json, cookie, origin });
+  assert.equal(restored.status, 200, restored.text);
+  const flow = (await api("GET", "/agents/keeper/learning")).body.workflows.find((item) => item.name === "claim-check");
+  assert.equal(flow?.status, "active", JSON.stringify(flow));
 });
 
 /** The fake MCP server saved as `fake`, no auth (its tool `add` among those it lists), closed when the test ends. */
