@@ -2859,7 +2859,7 @@ export type ListTriggersResponse = {
   }>;
 };
 
-/** A webhook trigger's new secret, shown once; the old one signs nothing from now on (POST /triggers/{trigger_id}/secret). */
+/** A webhook trigger's new secret, shown once; the old one signs nothing from now on (POST /triggers/{trigger_id}/secret). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code. */
 export type RotateTriggerSecretBody = {
   secret?: string;
 };
@@ -3244,7 +3244,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   listTriggerFirings: {"method":"GET","path":"/triggers/{trigger_id}/firings","pathParams":["trigger_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getTrigger: {"method":"GET","path":"/triggers/{trigger_id}","pathParams":["trigger_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listTriggers: {"method":"GET","path":"/triggers","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
-  rotateTriggerSecret: {"method":"POST","path":"/triggers/{trigger_id}/secret","pathParams":["trigger_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":false,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  rotateTriggerSecret: {"method":"POST","path":"/triggers/{trigger_id}/secret","pathParams":["trigger_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":false,"types":["application/json"]},"answer":"json","secret":true,"publicFields":[],"tagged":false},
   updateTrigger: {"method":"PATCH","path":"/triggers/{trigger_id}","pathParams":["trigger_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getUsage: {"method":"GET","path":"/usage","pathParams":[],"multiSegment":[],"query":["from","to","group_by"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   deleteWebhook: {"method":"DELETE","path":"/settings/webhook","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"none","secret":false,"publicFields":[],"tagged":false},

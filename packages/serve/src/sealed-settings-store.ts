@@ -107,7 +107,7 @@ class SealedSettingsOverStore {
     if (!spec.public && spec.format !== "pem" && (/\s/.test(value) || Buffer.byteLength(value, "utf8") < 8)) throw invalid([{ field, reason: "invalid", message: `${field} is at least 8 bytes, with no whitespace` }]);
     // `utf8`: a sender's own secret, whose whole string is the key (Composio's), not a Standard Webhooks one.
     if (as !== "utf8" && spec.minBytes === MIN_KEY_BYTES && !value.startsWith(SECRET_PREFIX)) throw invalid([{ field, reason: "invalid", message: `${field} is a Standard Webhooks secret: whsec_ and its key in base64` }]);
-    if (spec.minBytes !== undefined && keyBytes(value) < spec.minBytes) throw invalid([{ field, reason: "too_short", message: `${field} holds at least ${spec.minBytes} bytes` }]);
+    if (spec.minBytes !== undefined && (as === "utf8" ? Buffer.byteLength(value, "utf8") : keyBytes(value)) < spec.minBytes) throw invalid([{ field, reason: "too_short", message: `${field} holds at least ${spec.minBytes} bytes` }]);
     await this.put(scope, field, value);
   }
 

@@ -2529,6 +2529,12 @@ export const SECRET_ROUTES = [
     ]
   },
   {
+    "operationId": "rotateTriggerSecret",
+    "method": "POST",
+    "path": "/triggers/{trigger_id}/secret",
+    "publicFields": []
+  },
+  {
     "operationId": "saveMcpServer",
     "method": "PUT",
     "path": "/settings/mcp-servers/{name}",
