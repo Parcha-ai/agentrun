@@ -535,10 +535,10 @@ export class HostedProvider implements ComputerProvider {
 				const differ = this.#labelDiffer(spec, name, machine.labels, "read back");
 				if (differ.length > 0) return this.#fail("exists", otherSpecWords(name, "was made", differ));
 				const attached = await this.#attached(machine, signal);
-				// The image and an Archil mount are in the labels; the user, the network, and a size where the vendor takes
-				// one in a spec, are read back.
+				// The image and an Archil mount are in the labels; the user, the network, the GPUs, and a size where the vendor
+				// takes one in a spec, are read back.
 				const sizes = (["cpus", "memoryMb"] as const).filter((field) => this.host.facts.specFields?.includes(field));
-				const drift = attached.ok ? readBackDiffer({ ...spec, user: this.#userOf(spec) }, attached.value.spec, ["user", "network", ...sizes]) : [];
+				const drift = attached.ok ? readBackDiffer({ ...spec, user: this.#userOf(spec) }, attached.value.spec, ["user", "network", "gpu", ...sizes]) : [];
 				if (drift.length > 0) return this.#fail("exists", otherSpecWords(name, "was made", drift));
 				if (attached.ok) return ok({ id: attached.value.id, name: attached.value.name, ...(attached.value.notes ? { notes: attached.value.notes } : {}) });
 				if (attached.error.code === "aborted") return attached;
