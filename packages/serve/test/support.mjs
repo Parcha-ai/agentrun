@@ -27,6 +27,7 @@ import { dispatchRunner } from "../dist/runner/harness-loops.js";
 import { computerDepsFrom } from "../dist/workspace/index.js";
 import { routeOf } from "../dist/runner/model-route.js";
 import { withoutFaux } from "../dist/model.js";
+import { runLine } from "../dist/print.js";
 import { bootSealKey } from "../dist/seal-key.js";
 
 // Every test process has a config home of its own, never this machine's ~/.config: a test writes nothing outside its own
@@ -297,7 +298,7 @@ const FAST_MODEL_RETRY = { retry: { enabled: true, maxRetries: 8, baseDelayMs: 1
  *  either waits queued. Returns a close() that
  *  stops the runner and closes its store handle, and whose `beats()` counts the runner's polls and renewal passes
  *  (RunnerOptions.onBeat), so a test can wait for polls to pass without a clock. */
-export async function startInProcessRunner(data, { faux, githubApi, githubWeb, githubMcpOrigin, gradeTimeoutMs, computerForClaim, harnessLocks, runnerTiming, modelRetry = FAST_MODEL_RETRY, ...switches } = {}) {
+export async function startInProcessRunner(data, { faux, githubApi, githubWeb, githubMcpOrigin, gradeTimeoutMs, computerForClaim, harnessLocks, runnerTiming, modelRetry = FAST_MODEL_RETRY, log, ...switches } = {}) {
   const opened = await openSqliteStore({ dataDir: data, role: "runner" });
   // The runner's store, as a crash would leave its writes: once kill() has run, a journal commit of its loops never
   // lands while the test runs (a dead process writes nothing more), and fails when the runner's handle is closed.
@@ -353,6 +354,8 @@ export async function startInProcessRunner(data, { faux, githubApi, githubWeb, g
       // host's memory, read now (a test's process.constrainedMemory stand-in, set before serve(), is its container limit).
       memory: runnerMemory(store),
       onBeat: () => void beats++,
+      // The run start and end lines go to the server's log, as the CLI's runner beside it prints them (print.ts runLine).
+      ...(log ? { onEvent: (event) => { const line = runLine(event); if (line) log(line); } } : {}),
       // A test's fake GitHub, the server's githubApi seam: the runner mints the App's tokens there (never from the env). Its
       // fake GitHub MCP, the server's githubMcpOrigin seam: a github_app server there is the runner's GitHub MCP too. Its
       // GitHub site (githubWeb, the runner's alone): where a run's pull request is checked out from (pr-checkout.ts). The
