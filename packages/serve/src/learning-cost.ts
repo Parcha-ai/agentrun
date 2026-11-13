@@ -78,11 +78,14 @@ export function costSummary(runs: readonly CostRun[]): CostSummary {
   return { takeover: first < 0 ? null : { n: runs[first]!.n, run_id: runs[first]!.run_id }, before, after, times_cheaper: times };
 }
 
-/** The series as CSV (RFC 4180, a header line, `\r\n` line ends): one row a run, an unknown figure empty. */
+/** The series as CSV (RFC 4180, a header line, `\r\n` line ends): one row a run, an unknown figure empty. A text cell that
+ *  a spreadsheet would read as a formula (one starting with =, +, -, @, a tab or a carriage return) starts with a `'`, so
+ *  it opens as the text it is. */
 export const COST_CSV_COLUMNS = ["n", "run_id", "started_at", "path", "workflow", "learned_revision", "cost_usd", "learning_usd", "total_usd"] as const;
 export function costCsv(runs: readonly CostRun[]): string {
   const cell = (value: unknown) => {
-    const text = value === null || value === undefined ? "" : String(value);
+    const raw = value === null || value === undefined ? "" : String(value);
+    const text = typeof value === "string" && /^[=+\-@\t\r]/.test(raw) ? `'${raw}` : raw;
     return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
   };
   return [COST_CSV_COLUMNS.join(","), ...runs.map((run) => COST_CSV_COLUMNS.map((column) => cell(run[column])).join(","))].map((line) => `${line}\r\n`).join("");

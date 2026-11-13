@@ -81,7 +81,10 @@ export function CostChart({ data, on, width: fixed }: { data: LearningCost; on: 
   const y = (v: number) => M.top + H - (Math.min(v, top) / top) * H;
   const yTicks = [0, top / 4, top / 2, (3 * top) / 4, top];
   const xTicks = runTicks(first, last, width < 520 ? 5 : 7);
+  // The takeover's marker shows when its run is on the plot; the level after it shows either way, from the plot's left
+  // edge when the takeover is older than the runs read.
   const takeover = s.takeover && s.takeover.n >= first ? s.takeover : null;
+  const afterFrom = s.takeover ? Math.max(s.takeover.n, first) : null;
   const line = points.map((p, i) => `${i ? "L" : "M"}${x(p.n).toFixed(1)},${y(mean[i]!).toFixed(1)}`).join("");
   const at = active === null ? null : points[active]!;
   const cheaper = s.times_cheaper !== null ? `${s.times_cheaper}x cheaper` : null;
@@ -159,9 +162,9 @@ export function CostChart({ data, on, width: fixed }: { data: LearningCost; on: 
                 <Label x={x(takeover.n) + (markerLeft ? -6 : 6)} y={M.top + 6} anchor={markerLeft ? "end" : "start"}>Workflow took over, run {takeover.n}</Label>
               </g>
             )}
-            {takeover && s.after && (
+            {afterFrom !== null && s.after && (
               <g>
-                <path d={`M${x(takeover.n)},${y(s.after.mean_usd)}H${M.left + plotW}`} className="stroke-foreground" strokeWidth={1} strokeDasharray="2 3" />
+                <path d={`M${x(afterFrom)},${y(s.after.mean_usd)}H${M.left + plotW}`} className="stroke-foreground" strokeWidth={1} strokeDasharray="2 3" />
                 <Label x={M.left + plotW - 4} y={y(s.after.mean_usd) - 8} anchor="end" strong>After takeover {level(s.after.mean_usd)}{cheaper ? ` · ${cheaper}` : ""}</Label>
               </g>
             )}

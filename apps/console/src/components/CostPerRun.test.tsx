@@ -109,6 +109,11 @@ describe("CostChart", () => {
     expect(text(host)).toContain("No run with a known cost yet.");
     expect(text(host)).toContain("run the same job about 20 times");
   });
+  it("keeps the level after the takeover when the takeover is older than the runs read, without its marker", () => {
+    const host = draw({ ...sample, runs: sample.runs.slice(40), total_runs: 80 });
+    expect(text(host)).toContain("After takeover $0.128 · 7x cheaper");
+    expect(text(host)).not.toContain("Workflow took over, run 21");
+  });
   it("says only the latest runs are drawn when the server sent fewer than there are", () => {
     const host = draw({ ...sample, total_runs: 1200 });
     expect(text(host)).toContain("The latest 80 of 1,200 runs.");
