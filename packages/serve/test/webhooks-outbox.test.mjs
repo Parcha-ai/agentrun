@@ -1074,6 +1074,52 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     assert.deepEqual(fresh.got.map((r) => JSON.parse(r.body).type), ["webhook.test"], "nothing of the removed webhook reached the next receiver");
   });
 
+  test("a notice whose write passed the check before a 410 turned the webhook off, but lands after, is dropped with the rest: it never reaches the next receiver", async (t) => {
+    const old = await receiver(t, () => 410);
+    const fresh = await receiver(t);
+    const dir = await scratch(t);
+    const log = logged();
+    // The 410's write held until the second run's post has passed the check; that post held (as on Postgres, another
+    // connection's) until the 410's drop has had its time; its try's claim held until the next webhook is set.
+    let holdSettle = true;
+    let settleHeld;
+    const atSettle = new Promise((resolve) => (settleHeld = resolve));
+    let letSettle;
+    const settling = new Promise((resolve) => (letSettle = resolve));
+    let postHeld;
+    const atPost = new Promise((resolve) => (postHeld = resolve));
+    let letPost;
+    const posting = new Promise((resolve) => (letPost = resolve));
+    let holdClaim = false;
+    let letClaim;
+    const claiming = new Promise((resolve) => (letClaim = resolve));
+    const on = await webhookOn(t, dir, { wrap: seeing("channels", (channels) => ({
+      settle: async (...args) => (holdSettle && ((holdSettle = false), settleHeld(), await settling), channels.settle(...args)),
+      post: async (...args) => (args[0].runId === "run_late" && (postHeld(), await posting), channels.post(...args)),
+      claim: async (...args) => (holdClaim && (await claiming), channels.claim(...args)),
+    })) });
+    t.after(() => (letSettle(), letPost(), letClaim()));
+    await on.runs("run_1", "run_late");
+    const webhooks = await on.open(log.push);
+    await webhooks.save({ url: old.url });
+    await webhooks.emit("run.ended", { run_id: "run_1", agent_id: "a", status: "completed", title: "t" }, new Date().toISOString());
+    await atSettle;
+    const told = webhooks.emit("run.ended", { run_id: "run_late", agent_id: "a", status: "completed", title: "t" }, new Date().toISOString());
+    await atPost;
+    letSettle();
+    await log.when("condition=webhook_disabled");
+    // The 410 has dropped the queued messages without the held post, or waits for it: either way, the post lands now.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    holdClaim = true;
+    letPost();
+    assert.equal(await told, "queued");
+    await webhooks.save({ url: fresh.url });
+    letClaim();
+    assert.equal((await webhooks.test()).status_code, 200);
+    await settled(dir);
+    assert.deepEqual(fresh.got.map((r) => JSON.parse(r.body).type), ["webhook.test"], "nothing queued for the gone receiver reached the next one");
+  });
+
   test("a delivered try whose write the store refuses for a moment is written again soon: the message is sent once, never again when its claim runs out", async (t) => {
     const hook = await receiver(t);
     const dir = await scratch(t);

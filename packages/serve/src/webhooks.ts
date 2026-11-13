@@ -175,7 +175,7 @@ export class Webhooks {
   private readonly rewriting = new Map<NodeJS.Timeout, () => Promise<void>>();
   /** Those writes under way, which the close waits for, so each lands before the store closes. */
   private readonly rewrites = new Set<Promise<void>>();
-  /** The message writes in flight (posted), each settled or not: a DELETE waits for them before its drop. */
+  /** The message writes in flight (posted), each settled or not: a DELETE, and a 410's turn-off, waits for them before its drop. */
   private readonly posting = new Set<Promise<void>>();
 
   private readonly retryMs: readonly number[];
@@ -713,6 +713,9 @@ export class Webhooks {
         this.say({ condition: "webhook_unwritable", error: (error as Error).message });
       }
       this.say({ condition: "webhook_disabled", url: shownUrl(standing!.url), reason: off.disabled.reason });
+      // Every message whose write passed the check before the webhook went off lands first (as a DELETE waits, remove):
+      // then the drop takes it too, and none reaches a receiver a later PUT sets.
+      await Promise.all([...this.posting]);
       await this.drop("the webhook is off: its receiver answered 410");
     }
   }
