@@ -56,12 +56,30 @@ test("the start sweep is bounded by its limit and says so, and a second start fi
   const said = [];
   const first = await sweepEndedScratch(store, dir, { log: (line) => said.push(line), limit: 1 });
   assert.equal(first.examined, 1);
-  assert.ok(said.some((line) => /stopped after 1 run folders/.test(line)), `said: ${said.join(" | ")}`);
+  assert.ok(said.some((line) => /stopped after 1 run folders swept/.test(line)), `said: ${said.join(" | ")}`);
   const left = ["run-ended", "run-failed"].filter((run) => existsSync(folder("agent-a", run)));
   assert.equal(left.length, 1, "one run's folder is left by the bounded sweep");
   await sweepEndedScratch(store, dir, {});
   assert.equal(existsSync(join(dir, "scratch")), true, "the scratch root itself is never removed");
   assert.deepEqual(readdirSync(join(dir, "scratch")), [], "the next start swept the rest");
+});
+
+test("more retained folders than the limit in front of an ended run never hide it, and none of them is deleted", async (t) => {
+  const { dir, lay, folder } = laid(t);
+  // "a-" sorts before "z-": the retained folders (running and unknown rows) come first in the scan.
+  const retained = [];
+  for (let i = 0; i < 520; i += 1) {
+    const run = i % 2 === 0 ? "run-running" : `run-unknown-${i}`;
+    const agent = `a-${String(i).padStart(3, "0")}`;
+    lay(agent, run, 1);
+    retained.push(folder(agent, run));
+  }
+  lay("z-agent", "run-ended", 1);
+  const result = await sweepEndedScratch(store, dir, { limit: 500 });
+  assert.equal(existsSync(folder("z-agent", "run-ended")), false, "the ended run behind 520 retained folders is swept");
+  assert.equal(result.swept, 1);
+  assert.equal(result.kept, 520);
+  assert.ok(retained.every((path) => existsSync(path)), "no retained folder is deleted");
 });
 
 test("a data directory with no scratch folder, or a store that fails on a row, never stops the start", async (t) => {

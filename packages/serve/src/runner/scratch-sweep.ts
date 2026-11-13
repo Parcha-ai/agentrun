@@ -4,13 +4,14 @@
 // until this sweep, at the next start of a runner on the data directory, takes them. It reads each run's row: a folder is
 // swept only for a run the store says is final, and only the claims at or below the row's epoch (a follow-up that reopened
 // the run claims above it, and its folder is never touched). A run that is not final, one the store has no row for, and a
-// folder whose name is no run id stay. Bounded (`limit` run folders examined) and logged.
+// folder whose name is no run id stay. Bounded by `limit` run folders swept (or failed): a folder that stays costs one
+// row read and never counts, so retained folders in front of an ended run cannot hide it. Logged.
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { FINAL_STATES, type Store } from "../store/index.js";
 import { sweepScratch } from "./cli-run-spec.js";
 
-/** Most run folders one start examines: what is left past it is swept at the next start. */
+/** Most run folders one start sweeps (kept folders do not count): what is left past it is swept at the next start. */
 export const SCRATCH_SWEEP_LIMIT = 500;
 
 export type ScratchSwept = { readonly examined: number; readonly swept: number; readonly kept: number; readonly failed: number };
@@ -34,8 +35,8 @@ export async function sweepEndedScratch(store: Pick<Store, "runs">, dataDir: str
     outer: for (const agent of await names(root)) {
       const agentFolder = join(root, agent);
       for (const run of await names(agentFolder)) {
-        if (examined >= limit) {
-          log(`scratch sweep: stopped after ${limit} run folders; the rest is swept at the next start`);
+        if (swept + failed >= limit) {
+          log(`scratch sweep: stopped after ${limit} run folders swept; the rest is swept at the next start`);
           break outer;
         }
         examined += 1;
