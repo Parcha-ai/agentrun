@@ -108,6 +108,8 @@ test("a resumed script that repeats a completed computer call gets the JSON the 
   const bridge = { get: (name) => (name === 'computer_act' ? { name, replay: 'never' } : undefined), take: () => undefined };
   const mode = codeMode({ ctx: next, machine: {}, journal, logged: new Set(), synced: async () => {}, bridge, log() {}, lines, rpc: () => ({ request: async () => ({}) }), guard: (p) => p, threadId: () => 't', tries: 1 });
   await mode.recoverItems([{ type: 'custom_tool_call_output', call_id: EXEC, output: '' }], [{ callId: EXEC, name: 'exec', type: 'custom_tool_call' }], [], since);
+  // The resume of the interrupted turn arms the completed never calls the log holds.
+  await mode.resumeTurn({ turn: { since }, pending: [] }, []).catch(() => {});
   let ran = 0;
   const answered = await mode.request(async () => { ran += 1; return {}; })({ method: 'item/tool/call', params: { callId: 'exec-00000000-0000-0000-0000-000000000002', tool: 'computer_act', arguments: args } });
   assert.equal(ran, 0, 'the call is not run again');
