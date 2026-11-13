@@ -134,7 +134,7 @@ export function AgentRequest({ v2, origin, operation, agentId, draft, harnesses 
       </div>
       <footer className="flex flex-wrap items-center justify-end gap-2 border-t p-4">
         <CodingAgentAction label="Use your agent" prompt={prompt} disabled={!!invalid} />
-        <Button variant="solid" onClick={() => void send()} disabled={!ready}><Play aria-hidden />{sending ? "Sending" : "Send request"}</Button>
+        <Button variant="primary" onClick={() => void send()} disabled={!ready}><Play aria-hidden />{sending ? "Sending" : "Send request"}</Button>
       </footer>
     </section>
     <section className="flex min-h-0 flex-col">

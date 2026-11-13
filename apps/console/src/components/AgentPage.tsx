@@ -150,7 +150,7 @@ function AgentDetail({ agent, onAgent, reread, stale, v2, go, stats, analytics, 
         <strong className="min-w-0 truncate text-body font-semibold">{d.name}</strong>
         <div className="ml-auto flex max-w-full flex-wrap items-center justify-end gap-2">
           <CodingAgentAction label="Edit agent" prompt={editAgentPrompt(location.origin, agent.agent_id, !!native, sdk?.runtime)} playgroundHref={native || sdk ? undefined : `#/playground?operation=edit-agent&agent=${encodeURIComponent(agent.agent_id)}`} />
-          {!agent.archived_at && <CodingAgentAction label="Run agent" disabled={!!native && (!native.connected || native.state !== "ready" || !native.capabilities.launch)} prompt={runAgentPrompt(location.origin, agent.agent_id, sdk?.runtime)} playgroundHref={sdk ? undefined : `#/playground?agent=${encodeURIComponent(agent.agent_id)}`} />}
+          {!agent.archived_at && <CodingAgentAction variant="primary" label="Run agent" disabled={!!native && (!native.connected || native.state !== "ready" || !native.capabilities.launch)} prompt={runAgentPrompt(location.origin, agent.agent_id, sdk?.runtime)} playgroundHref={sdk ? undefined : `#/playground?agent=${encodeURIComponent(agent.agent_id)}`} />}
           <Button size="icon" aria-label="Refresh agent" onClick={() => { history.refresh(); refreshNative(); }} disabled={history.reading}><RefreshCw className={cn(history.reading && "animate-spin")} aria-hidden /></Button>
         </div>
       </header>

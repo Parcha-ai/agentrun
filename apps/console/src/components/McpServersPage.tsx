@@ -49,7 +49,7 @@ export function McpServersPage({ v2, signIn, writable, whyNot = "sign_in", open 
             <h1 className="mt-1 text-2xl font-semibold">MCP servers</h1>
             <p className="mt-2 text-lead text-muted-foreground">A remote MCP server's tools, for any agent you grant them to in its Tools step. A saved credential is never shown again.</p>
           </div>
-          {!form && <Button size="sm" variant="solid" onClick={() => setForm({})}>Add server</Button>}
+          {!form && <Button size="sm" variant="primary" onClick={() => setForm({})}>Add server</Button>}
         </div>
         {signIn && (
           <p className={`border p-4 text-body ${signIn.ok ? "border-success/50 text-success-text" : "border-warning/50 text-warning-text"}`} role="status">
@@ -166,7 +166,7 @@ function PrivateHosts({ v2 }: { v2: Client }) {
       {hosts && (
         <form onSubmit={(e) => void allow(e)} aria-label="Allow a private network host" className="flex gap-2">
           <Input name="mcp-private-host" aria-label="Host name or IP address" value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="auth.corp.example" spellCheck={false} autoCapitalize="off" autoCorrect="off" />
-          <Button type="submit" size="sm" variant="solid" disabled={busy || !draft.trim()}>Allow</Button>
+          <Button type="submit" size="sm" variant="primary" disabled={busy || !draft.trim()}>Allow</Button>
         </form>
       )}
       {problem && <Said problem={problem} />}
@@ -297,11 +297,11 @@ function ServerForm({ v2, saved, writable, signIn, onCancel, onSaved }: { v2: Cl
       <div className="flex flex-wrap gap-2">
         {type === "oauth" && !writable ? null
           : type === "oauth" && needsSignIn
-          ? <Button type="submit" size="sm" variant="solid" disabled={busy || !url.trim()}>Sign in again with these settings</Button>
+          ? <Button type="submit" size="sm" variant="primary" disabled={busy || !url.trim()}>Sign in again with these settings</Button>
           : type === "oauth"
-          ? <Button type="button" size="sm" variant="solid" disabled={busy || !name.trim() || !url.trim()} onClick={() => void startSignIn()}>{saved ? "Sign in again" : "Sign in"}</Button>
+          ? <Button type="button" size="sm" variant="primary" disabled={busy || !name.trim() || !url.trim()} onClick={() => void startSignIn()}>{saved ? "Sign in again" : "Sign in"}</Button>
           : <Button type="button" size="sm" disabled={busy || !url.trim()} onClick={runPreview}>Preview</Button>}
-        {(type !== "oauth" || (saved && !needsSignIn)) && <Button type="submit" size="sm" variant="solid" disabled={!canSave}>{busy ? "Working" : "Save"}</Button>}
+        {(type !== "oauth" || (saved && !needsSignIn)) && <Button type="submit" size="sm" variant="primary" disabled={!canSave}>{busy ? "Working" : "Save"}</Button>}
         <Button type="button" size="sm" onClick={() => { form.current?.reset(); onCancel(); }}>Cancel</Button>
       </div>
     </form>

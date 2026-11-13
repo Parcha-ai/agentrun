@@ -50,7 +50,7 @@ export function BuildAgent({ origin, v2 }: { origin: string; v2: Pick<Client, "l
           placeholder="A support agent that answers questions from our docs and escalates to Slack when it’s stuck…"
           className="block min-h-28 w-full resize-none px-5 pb-3 pt-5 font-sans text-base leading-relaxed text-foreground md:px-6 md:pt-6" />
         <div className="flex justify-end px-4 pb-4 pt-1 md:px-5 md:pb-5">
-          <CodingAgentAction label="Build an agent" prompt={prompt} playgroundHref={agentDraftHref(draft)} />
+          <CodingAgentAction variant="primary" label="Build an agent" prompt={prompt} playgroundHref={agentDraftHref(draft)} />
         </div>
       </div>
       <details className="mt-3 text-small text-muted-foreground">
@@ -90,7 +90,7 @@ export function BuildAgent({ origin, v2 }: { origin: string; v2: Pick<Client, "l
             </button>
             {expanded && <div id={actionsId} className="flex flex-wrap items-center justify-end gap-2 border-t px-4 py-4">
               <span className="mr-auto font-mono text-small text-muted-foreground">v{template.version}</span>
-              <CodingAgentAction label="Use this template" prompt={applyTemplatePrompt(origin, template, brief)} playgroundHref={`#/playground?${new URLSearchParams({ operation: "apply-template", template: template.name })}`} />
+              <CodingAgentAction variant="primary" label="Use this template" prompt={applyTemplatePrompt(origin, template, brief)} playgroundHref={`#/playground?${new URLSearchParams({ operation: "apply-template", template: template.name })}`} />
             </div>}
           </article>;
         })}

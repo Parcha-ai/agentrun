@@ -124,7 +124,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
       {sdk ? <section className="space-y-4 p-5 md:p-8">
         <h2 className="text-lg font-semibold">Run through your backend</h2>
         <p className="text-body text-muted-foreground">This agent keeps its existing SDK, tools and job entrypoint. Your coding agent can run it there; AgentRun records its progress and learning.</p>
-        <CodingAgentAction label="Run agent" prompt={runAgentPrompt(origin, agentId, sdk.runtime)} />
+        <CodingAgentAction variant="primary" label="Run agent" prompt={runAgentPrompt(origin, agentId, sdk.runtime)} />
       </section> : <div className="grid min-h-0 flex-1 grid-cols-1 lg:[@media(min-height:501px)]:grid-cols-2">
         <section aria-label="Request" className={cn("flex min-h-0 flex-col border-b lg:border-b-0 lg:border-r", showCode && "short:hidden")}>
           <header className="flex items-center justify-between border-b px-5 py-3 md:px-6">
@@ -177,7 +177,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
             <span className="text-small text-muted-foreground">Sends a real request to this server.</span>
             <div className="ml-auto flex flex-wrap items-center gap-2">
               <CodingAgentAction label="Use your agent" prompt={playgroundPrompt(origin, agentId, body)} disabled={nativeBlocked || !built.ok || !agentId || attachments.busy} />
-              <Button variant="solid" size="lg" onClick={send} disabled={nativeBlocked || !built.ok || !onSend || sending || !agentId || attachments.busy} title={attachments.busy ? "Waiting for the files to be sent" : undefined}><Play aria-hidden /> {sending ? "Sending" : "Send request"}</Button>
+              <Button variant="primary" size="lg" onClick={send} disabled={nativeBlocked || !built.ok || !onSend || sending || !agentId || attachments.busy} title={attachments.busy ? "Waiting for the files to be sent" : undefined}><Play aria-hidden /> {sending ? "Sending" : "Send request"}</Button>
             </div>
           </footer>
         </section>
