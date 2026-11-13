@@ -24,6 +24,11 @@ test("the mapping is the identity for a name that already is a wire name", () =>
   assert.equal(wireName("read"), "read");
 });
 
+test("every served tool has its own wire name", () => {
+  const names = Object.keys(TOOLS);
+  assert.equal(new Set(names.map(wireName)).size, names.length, "two served tools would share a wire name");
+});
+
 test("the served catalog's dotted names, monid's, map to wire names", () => {
   for (const kind of ["discover", "inspect", "run"]) {
     assert.ok(Object.keys(TOOLS).includes(`monid.${kind}`), `monid.${kind} is served`);
