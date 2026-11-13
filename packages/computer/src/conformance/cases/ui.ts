@@ -428,6 +428,10 @@ export const uiCases: Case[] = [
 			const front = await look(t);
 			t.equal(front.window.title, "Another window", "the window in front after New window");
 			await stateOf(t, opened.state, front.window.id, "a met window expect answers that window's state");
+			// The wait reads the app's main window, whichever it is now: the older home window, which the act is aimed at
+			// and whose title matches, does not meet it while Another window is in front.
+			const behind = await act(t, { steps: [], expect: { window: { title: "UI fixture" }, timeoutMs: 300 } }, seen.window.id);
+			t.equal(behind.expect, "unmet", "expect window \"UI fixture\", aimed at the home window while Another window is in front: the app's main window is Another window");
 		},
 	},
 	{

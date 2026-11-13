@@ -220,6 +220,8 @@ The result:
 - `expect.window`: `{"title"?, "role"?}`, at least one, and alone (no `text` or `ref`). The computer polls until the
   act's app shows a main window whose title holds `title` and whose role is `role` (`"window"` matches an ordinary
   one), and the act's `state` is then that window's. A dialog that opens a moment after a click is waited for this way.
+  From its first look it reads the app's main window, never the window a `target` or `state` aimed the act at: an older
+  window that matches while another is in front does not meet it.
   No such window in time is `unmet`, as any expect is, never `not_found`, even when the app has no window at all. An
   act that begins with no window keeps waiting for one of its own app: it never falls back to the app in front, and it
   never ends early because the app has no window left (`window: "closed"` is for a step that closed one). It
@@ -263,14 +265,16 @@ The result:
   touches is held to this, each point of a drag's path as much as its first.
 - **The driver waits, never the model.** Every act settles before it answers: the window looks the same twice, a short
   quiet apart, or `maxSettleMs` passed. An expect is polled on the computer, and an act's `state` is the window once it
-  settles after the expect, never a frame of a transition.
+  settles after the expect, never a frame of a transition. Every verdict of an act reads that one final view: a set's
+  hold, the expect's `met`, and the `state` it answers. A poll's look only says when to read the final view again.
 - **A settle reads the tree.** "Looks the same" compares the window's id, bounds and nodes (each node's role, name,
   value, flags and bounds). The window's image counts only when the window has no nodes (`ui.tree` off, or an app that
   exposes none). A blinking caret, a spinner's frame or a playing video changes the image every look, so a settle on
   the image would wait out `maxSettleMs` on every act; a transition moves the nodes, so a settle on the tree still
   waits for it. `ui.settle-tree` times acts on a focused field.
-- **A set holds.** A `set` step answers `verified: true` only when its value still holds `setHoldMs` (500 ms) after the
-  act settled: the driver reads the element again then. An app that takes the value back (a field that rejects it, a
+- **A set holds.** A `set` step answers `verified: true` only when its value still holds in the act's final view: read
+  no sooner than `setHoldMs` (500 ms) after the act settled, and after the expect's last settle, so a value taken back
+  while the expect waits is not verified. An app that takes the value back (a field that rejects it, a
   switch a policy turns back off) answers `verified: false`, though the set itself ran. The hold is waited out even
   when a later step closed the last window: a value that cannot be read then is `verified: false`, never true.
   `ui.set-holds` sets the

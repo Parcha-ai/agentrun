@@ -631,60 +631,72 @@ export class UiEngine {
 			if ("nav" in step) aim = undefined;
 		}
 		const ranAny = steps.some((one) => !("error" in one));
-		let last: UiView | undefined;
-		if (!closed) {
+		/** The act's window, settled: the aimed one, or the app's next main window once it closed; undefined when none is left. */
+		const settleAim = async (): Promise<Result<UiView | undefined>> => {
+			if (closed) return ok(undefined);
 			let settled = await this.#settle(aim, signal);
 			// A wait that began with no window keeps its app: it never follows the foreground and never ends as closed.
 			if (!settled.ok && settled.error.code === "not_found" && aim !== undefined && !windowless) {
 				const where = await reaim();
 				if (!where.ok) return where;
-				if (where.value === "closed") closed = true;
-				else if (where.value === "followed" || ranAny) settled = await this.#settle(aim, signal);
+				if (where.value === "closed") {
+					closed = true;
+					return ok(undefined);
+				}
+				if (where.value === "followed" || ranAny) settled = await this.#settle(aim, signal);
 			}
-			if (!closed) {
-				if (settled.ok) last = settled.value;
-				else if (!(windowless && settled.error.code === "not_found")) return settled;
-			}
-		}
-		// A set holds: its value read again SET_HOLD_MS after the settle, where an app that took it back answers false.
+			if (settled.ok || !(windowless && settled.error.code === "not_found")) return settled;
+			return ok(undefined);
+		};
+		/** Where a window expect looks: the app's main window, whichever it is now, never the window the act was aimed at. */
+		const frontOf = (): UiTarget | undefined => (aim?.app === undefined ? undefined : { app: aim.app });
+		/**
+		 * The act's final view, read after its last settle: the act's window, and for a window expect the app's main
+		 * window, each settled. Every verdict of the act reads this one view: a set's hold, the expect, and the state it
+		 * answers. A read that is not final (a poll's look) only says when to read it again.
+		 */
+		const final = async (): Promise<Result<{ view: UiView | undefined; front: UiView | undefined }>> => {
+			const view = await settleAim();
+			if (!view.ok) return view;
+			if (!waitsForWindow || closed || aim?.window === undefined) return ok({ view: view.value, front: view.value });
+			const front = await this.#settle(frontOf(), signal);
+			if (!front.ok && front.error.code !== "not_found") return front;
+			return ok({ view: view.value, front: front.ok ? front.value : undefined });
+		};
+		let read = await final();
+		if (!read.ok) return read;
+		// A set holds: the final view is read no sooner than SET_HOLD_MS after the first settle, where an app that took the
+		// value back answers false. The hold is waited out even when the window closed: a value that cannot be read after
+		// it is not verified.
 		const sets = params.steps.flatMap((step, index) => {
 			const result = steps[index];
 			return "set" in step && result !== undefined && !("error" in result) && result.verified ? [index] : [];
 		});
 		if (sets.length > 0) {
-			// The hold is waited out even when the window closed: a value that cannot be read after it is not verified.
 			await sleep(SET_HOLD_MS, signal);
 			if (signal.aborted) return aborted("ui.act");
-			const later = closed || last === undefined ? "closed" : await after();
-			const seen = later === "gone" || later === "closed" || !later.ok ? undefined : later.value;
-			for (const index of sets) {
-				if (seen === undefined || !this.#setHolds(params.steps[index] as { set: UiRef; value: string }, seen)) steps[index] = { ...(steps[index] as UiRun), verified: false };
-			}
-			if (later === "closed") closed = true;
-			else if (seen !== undefined && last !== undefined && fingerprint(seen) !== fingerprint(last)) {
-				const calm = await this.#settle(aim, signal);
-				if (!calm.ok) return calm;
-				last = calm.value;
-			}
+			read = await final();
+			if (!read.ok) return read;
 		}
 		let met: "met" | "unmet" | undefined;
 		const refusedStep = steps.some((one) => "error" in one);
 		if (params.expect !== undefined && !refusedStep) {
 			const expect = params.expect;
-			// A window expect looks at the app's main window, whichever it is now; any other expect at the act's window.
-			const poll = async (): Promise<Result<UiView | undefined>> => {
-				if (!waitsForWindow) {
-					const looked = await after();
-					if (looked === "closed") closed = true;
-					return looked === "gone" || looked === "closed" ? ok(undefined) : looked;
+			/** What the expect reads in a view: a window expect the app's main window, any other the act's window. */
+			const judged = (seen: { view: UiView | undefined; front: UiView | undefined }) => this.#holds(expect, waitsForWindow ? seen.front : seen.view);
+			/** A quick look between final reads, the same window judged reads; undefined when there is none. */
+			const peek = async (): Promise<Result<UiView | undefined>> => {
+				if (waitsForWindow) {
+					const looked = await this.#see(frontOf(), signal);
+					return looked.ok || looked.error.code !== "not_found" ? looked : ok(undefined);
 				}
-				const looked = await this.#see(aim?.app === undefined ? undefined : { app: aim.app }, signal);
-				return looked.ok || looked.error.code !== "not_found" ? looked : ok(undefined);
+				const looked = await after();
+				if (looked === "closed") closed = true;
+				return looked === "gone" || looked === "closed" ? ok(undefined) : looked;
 			};
-			let seen = closed ? undefined : last;
 			const until = Date.now() + (expect.timeoutMs ?? DEFAULT_EXPECT_MS);
 			for (;;) {
-				if (this.#holds(expect, seen)) {
+				if (judged(read.value)) {
 					met = "met";
 					break;
 				}
@@ -693,25 +705,29 @@ export class UiEngine {
 					met = "unmet";
 					break;
 				}
-				await sleep(Math.min(this.#pollMs, Math.max(0, until - Date.now())), signal);
-				if (signal.aborted) return aborted("ui.act");
-				const looked = await poll();
-				if (!looked.ok) return looked;
-				if (looked.value !== undefined || waitsForWindow || closed) seen = looked.value;
-			}
-			// A met window expect answers that window's state; a poll can meet an expect mid-transition: the state handed
-			// back is the window once it settles.
-			if (!closed && seen !== undefined && seen !== last) {
-				if (waitsForWindow && met === "met") aim = { app: seen.app.id, window: seen.window.id };
-				const calm = await this.#settle(aim, signal);
-				if (!calm.ok) return calm;
-				last = calm.value;
+				// Poll with quick looks until one holds, the window closes or the time is up; then read the final view again,
+				// so a look caught mid-transition never decides the act.
+				for (;;) {
+					await sleep(Math.min(this.#pollMs, Math.max(0, until - Date.now())), signal);
+					if (signal.aborted) return aborted("ui.act");
+					const looked = await peek();
+					if (!looked.ok) return looked;
+					if (closed || Date.now() >= until || this.#holds(expect, looked.value)) break;
+				}
+				read = await final();
+				if (!read.ok) return read;
 			}
 		}
+		const { view: own, front } = read.value;
+		for (const index of sets) {
+			if (own === undefined || !this.#setHolds(params.steps[index] as { set: UiRef; value: string }, own)) steps[index] = { ...(steps[index] as UiRun), verified: false };
+		}
+		// A met window expect answers the window that met it; every other act answers its own window.
+		const answered = waitsForWindow && met === "met" ? front : own;
 		const expectAnswer = met === undefined ? {} : { expect: met };
-		if (closed || last === undefined) return ok({ steps, window: "closed", changed: true, ...expectAnswer });
-		const state = this.#remember(last);
-		return ok({ steps, state, changed: !first.ok || fingerprint(first.value) !== fingerprint(last), ...expectAnswer });
+		if (closed || answered === undefined) return ok({ steps, window: "closed", changed: true, ...expectAnswer });
+		const state = this.#remember(answered);
+		return ok({ steps, state, changed: !first.ok || fingerprint(first.value) !== fingerprint(answered), ...expectAnswer });
 	}
 
 	/** Whether a set's value is still what it set: a switch's or checkbox's checked flag, else the element's value. */

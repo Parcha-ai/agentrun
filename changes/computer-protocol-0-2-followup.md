@@ -10,7 +10,7 @@ The computer protocol 0.2's follow-up: create is idempotent by a required reques
 - `apps.launch` answers once the app shows a window, or fails `timeout` naming the app after `LAUNCH_WINDOW_MS` (10 s); the Core case `apps.launch-window` observes right after the launch. The fake ui driver takes `windowAfterMs`.
 - A node's bounds are clamped to its window (`insideWindow`).
 - A settle compares the window's nodes, and its image only when it has none, so a blinking caret no longer holds every act to `MAX_SETTLE_MS`.
-- A `set` answers `verified: true` only when its value still holds `SET_HOLD_MS` (500 ms) after the settle.
-- `expect.window` (`{title?, role?}`) waits for a window of the act's app and answers its state; none in time is `unmet`. `UiWindow` gains `role` (`"dialog"` for a sheet, alert or panel).
+- A `set` answers `verified: true` only when its value still holds in the act's final view: at least `SET_HOLD_MS` (500 ms) after the settle, and after the expect's last settle. A set's hold, the expect and the answered state all read that one view.
+- `expect.window` (`{title?, role?}`) waits for the act's app's main window to match, from its first look (never the window a target or state aimed at), and answers its state; none in time is `unmet`. `UiWindow` gains `role` (`"dialog"` for a sheet, alert or panel).
 - A step that closes the act's window hands the act to its app's next main window; with none left the act answers `window: "closed"`.
 - The ui fixture gains "New window", "Close" and a "Code" field that takes its value back, with the Full cases `ui.settle-tree`, `ui.set-holds`, `ui.expect-window`, `ui.window-closed` and `ui.window-follow`. A fixture with one window per app leaves out "New window", and the window cases skip.

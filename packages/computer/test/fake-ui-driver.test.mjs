@@ -873,3 +873,78 @@ test("typing into a field of an opened window whose press changes its screen is 
 	assert.match(typed.value.steps[0].error.message, /did not take focus/);
 	await c.close();
 });
+
+// The act's verdicts all read one final view, after its last settle: a set's hold, the expect, and the state it answers.
+
+test("a field that takes its value back while the expect waits answers verified false: the hold reads the act's final view", async () => {
+	const field = { key: "slow", role: "textbox", name: "Slow", id: "slow", value: "", bounds: [10, 10, 120, 28] };
+	const app = {
+		id: "test.hold",
+		name: "Hold",
+		start: "form",
+		size: [300, 200],
+		screens: {
+			// Slow takes a value back 800 ms after its set, past SET_HOLD_MS; Done shows "All done" 1200 ms after its press.
+			form: { title: "Form", elements: [{ ...field, takesBack: 800 }, { key: "done", role: "button", name: "Done", id: "done", bounds: [10, 50, 80, 28], actions: ["AXPress"], press: { go: "sent", after: 1200 } }] },
+			sent: { title: "Form", elements: [field, { key: "ok", role: "text", name: "All done", bounds: [10, 50, 80, 28] }] },
+		},
+	};
+	const c = await fakeUiConnection({ apps: [app] });
+	await c.client.call("apps.launch", { id: app.id });
+	const form = (await c.client.call("ui.observe", {})).value;
+	const ref = (id) => form.nodes.find((n) => n.id === id).ref;
+	const done = await c.client.call("ui.act", { steps: [{ set: ref("slow"), value: "x" }, { press: ref("done") }], expect: { text: "All done", timeoutMs: 3000 } });
+	assert.equal(done.value.expect, "met");
+	const answered = (await c.client.call("ui.observe", { since: done.value.state })).value;
+	assert.equal(answered.nodes.find((n) => n.id === "slow").value, "", "the state the act answered shows the value taken back");
+	assert.equal(done.value.steps[0].verified, false, "so its set is not verified: the hold read the same view the state is");
+	await c.close();
+});
+
+test("a window expect reads the app's main window, never the older window a target or a state aimed the act at", async () => {
+	const button = (id, name, press) => ({ key: id, role: "button", name, id, bounds: [10, 10, 80, 28], actions: ["AXPress"], press });
+	const app = {
+		id: "test.layers",
+		name: "Layers",
+		start: "home",
+		size: [300, 200],
+		screens: {
+			home: { title: "Home", elements: [button("open", "Open", { open: "child" })] },
+			child: { title: "Child", elements: [button("deeper", "Deeper", { open: "grand" })] },
+			grand: { title: "Grand", elements: [{ key: "t", role: "text", name: "Grand", bounds: [10, 10, 80, 28] }] },
+		},
+	};
+	const c = await fakeUiConnection({ apps: [app] });
+	await c.client.call("apps.launch", { id: app.id });
+	const home = (await c.client.call("ui.observe", {})).value;
+	await c.client.call("ui.act", { steps: [{ press: home.nodes[0].ref }], expect: { window: { title: "Child" } } });
+	const child = (await c.client.call("ui.observe", {})).value;
+	assert.equal(child.window.title, "Child");
+	const grand = await c.client.call("ui.act", { steps: [{ press: child.nodes[0].ref }], expect: { window: { title: "Grand" } } });
+	assert.equal(grand.value.expect, "met");
+	// Grand is in front: Child, older and still open, matches the title, and must not answer met.
+	for (const aimed of [{ target: { app: app.id, window: child.window.id } }, { state: child.state }]) {
+		const began = Date.now();
+		const wait = await c.client.call("ui.act", { ...aimed, steps: [], expect: { window: { title: "Child" }, timeoutMs: 200 } });
+		assert.equal(wait.value.expect, "unmet", `${JSON.stringify(aimed)}: the app's main window is Grand`);
+		assert.ok(Date.now() - began >= 200, `${JSON.stringify(aimed)}: it polled out its timeout`);
+		const front = await c.client.call("ui.act", { ...aimed, steps: [], expect: { window: { title: "Grand" }, timeoutMs: 200 } });
+		assert.equal(front.value.expect, "met", JSON.stringify(aimed));
+		assert.equal((await c.client.call("ui.observe", { since: front.value.state })).value.window.title, "Grand", "a met window expect answers the window that met it");
+	}
+	await c.close();
+	// ui.expect-window fails a driver whose window wait reads the window the act was aimed at first.
+	class Aimed extends FakeUiDriver {
+		async handle(engine, method, params, signal) {
+			const wanted = params?.expect?.window?.title;
+			if (method === "ui.act" && wanted !== undefined && params?.target?.window !== undefined) {
+				const looked = await this.look(params.target);
+				if (looked.ok && looked.value.window.title?.includes(wanted)) return { ok: true, value: { steps: [], state: "s1", changed: false, expect: "met" } };
+			}
+			return super.handle(engine, method, params, signal);
+		}
+	}
+	const report = await run(fakeUiProvider({}, (options) => new Aimed(options)), ["ui.expect-window"]);
+	assert.equal(statuses(report)["ui.expect-window"], "fail");
+	assert.match(reasonOf(report, "ui.expect-window"), /aimed at the home window while Another window is in front/);
+});
