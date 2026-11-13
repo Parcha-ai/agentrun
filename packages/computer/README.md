@@ -1561,7 +1561,11 @@ from (the loopback block):
   neither port 2280 on the loopback nor the sandbox's own address; vsock and io_uring are refused to them; and init
   refuses to start while another process holds their uid, so a toolbox (or a session shell of its) that runs as the
   daemon's user is refused, not shared. `capabilities().vendorAgentPorts` declares 2280, and the Core case
-  isolation.vendor-agent probes it from a program of the computer's user, on both loopbacks. A runner whose root may
+  isolation.vendor-agent probes it from a program of the computer's user, on both loopbacks. Init takes others' access
+  off every socket under `/run`; Daytona's D-Bus session bus sits in `/tmp` (`/tmp/dbus-<10 characters>`, which a
+  program of the computer's user could connect to in the live baseline), so create, as root and before init starts,
+  takes others' access off each socket `/tmp/dbus-*` names (the host's `vendorSockets`), and its notes name the ones
+  it closed. A runner whose root may
   not make a network namespace (no CAP_SYS_ADMIN: a container class on a runner that is not privileged) fails closed:
   init refuses to start, in words, and create deletes the sandbox.
 - The provider still installs and starts the daemon through that toolbox, as root or through passwordless `sudo`, and

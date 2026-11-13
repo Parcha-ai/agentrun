@@ -435,6 +435,14 @@ test("the loopback block: network none only, the toolbox's port declared, and op
 	for (const policy of ["open", { allow: ["example.com"] }]) assert.match(provider.check({ ...SPEC, network: policy }).map((r) => r.message).join(" "), /network of their own/);
 });
 
+test("the socket block: Daytona's D-Bus session bus in /tmp, which no network namespace cuts, is among the sockets create closes to the tool user, and nothing more", async () => {
+	const { provider } = setup();
+	assert.deepEqual(provider.host.facts.vendorSockets, ["/tmp/dbus-*"]);
+	const { hostedCommands } = await import("../dist/hosted/scripts.js");
+	const { sockets } = hostedCommands({ vendorSockets: provider.host.facts.vendorSockets });
+	assert.deepEqual(sockets.slice(4), ["/tmp/dbus-*"], "the pattern reaches the sockets script, which matches the live run's /tmp/dbus-Y8OW6E3FDx");
+});
+
 test("the provider writes nowhere but its results, and reads no environment: its source has no console, no stdio and no process.env", () => {
 	const source = readFileSync(new URL("../src/daytona.ts", import.meta.url), "utf8");
 	assert.doesNotMatch(source, /console\.|process\.std(out|err)/);

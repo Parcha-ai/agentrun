@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -152,6 +152,61 @@ test("create names the computer from its request id, makes the machine with the 
 	assert.ok(runs.includes("daemon process.start"), "the X server started through the daemon");
 	assert.ok(runs.includes("daemon exec.run"), "the probe ran");
 	assert.deepEqual(fake.uploads.map(({ through }) => through), ["upload"], "the daemon went in through the host's file API");
+});
+
+test("a child host's own sockets (vendorSockets) are closed to the computer's user before init starts, and said in the notes; one that will not close refuses the computer", async () => {
+	const sockets = ["/tmp/dbus-Y8OW6E3FDx", "/tmp/dbus-AAAAAAAAAA", "/tmp/.X11-unix/X0", "/tmp/sub/dbus-nested"];
+	const { provider, fake } = setup({}, { facts: { vendorSockets: ["/tmp/dbus-*"] }, sockets });
+	const ref = made(await create(provider));
+	assert.deepEqual(ref.notes, [INSTALLER_NOTE, "Fakehost's own sockets closed to the computer's user: /tmp/dbus-AAAAAAAAAA, /tmp/dbus-Y8OW6E3FDx", ACCEPTED_NOTE]);
+	const runs = runsOf(fake, only(fake).id);
+	assert.deepEqual(runs.slice(0, 4), ["run install", "run sockets", "run start", "run stdio"], "closed after the install, before init starts");
+	assert.deepEqual(hostedCommands({ vendorSockets: ["/tmp/dbus-*"] }).sockets?.slice(4), ["/tmp/dbus-*"], "each pattern one argument, as given");
+	const none = setup({}, { facts: { vendorSockets: ["/tmp/dbus-*"] } });
+	assert.equal(made(await create(none.provider)).notes[1], "Fakehost's own sockets closed to the computer's user: none found (/tmp/dbus-*)");
+	const failing = setup({}, { facts: { vendorSockets: ["/tmp/dbus-*"] }, sockets, socketsFail: "/tmp/dbus-Y8OW6E3FDx" });
+	const refused = await create(failing.provider);
+	assert.equal(refused.error?.code, "refused");
+	assert.match(refused.error.message, /closing Fakehost's own sockets to the computer's user failed \(exit 1\): closed \/tmp\/dbus-AAAAAAAAAA\nfailed \/tmp\/dbus-Y8OW6E3FDx/);
+	assert.ok(!failing.fake.events.some(({ what }) => what === "run start"), "init never started");
+	await nothingLeft(failing.fake, "a computer whose vendor sockets would not close");
+	const plain = setup();
+	made(await create(plain.provider));
+	assert.ok(!runsOf(plain.fake, only(plain.fake).id).includes("run sockets"), "a host that names none runs no sockets script");
+	assert.equal(hostedCommands().sockets, undefined);
+	const pid1 = setup({}, { facts: { ...USER_FACTS, vendorSockets: ["/tmp/dbus-*"] }, sockets });
+	made(await create(pid1.provider));
+	assert.ok(!runsOf(pid1.fake, only(pid1.fake).id).includes("run sockets"), "a pid1 host's init is its main process: no sockets script");
+});
+
+test("the sockets script, run by sh: each socket a pattern names loses others' access (owner and group keep theirs), a link or a file is left alone, and it says each", () => {
+	const root = mkdtempSync(join(tmpdir(), "computer-sockets-"));
+	try {
+		// Not root here: the script reaches root through sudo -n, which this stand-in runs as it is.
+		const bin = join(root, "bin");
+		mkdirSync(bin);
+		writeFileSync(join(bin, "sudo"), '#!/bin/sh\n[ "$1" = -n ] && shift\nexec "$@"\n', { mode: 0o755 });
+		const bind = (path) => {
+			execFileSync("python3", ["-I", "-c", "import socket, sys\ns = socket.socket(socket.AF_UNIX)\ns.bind(sys.argv[1])", path]);
+			chmodSync(path, 0o777);
+		};
+		const bus = join(root, "dbus-Y8OW6E3FDx");
+		const other = join(root, "agentrun.sock");
+		const target = join(root, "target.sock");
+		for (const path of [bus, other, target]) bind(path);
+		symlinkSync(target, join(root, "dbus-link"));
+		writeFileSync(join(root, "dbus-file"), "");
+		chmodSync(join(root, "dbus-file"), 0o666);
+		const argv = hostedCommands({ vendorSockets: [`${root}/dbus-*`, `${root}/absent-*`] }).sockets;
+		const out = execFileSync(argv[0], argv.slice(1), { env: { PATH: `${bin}:${process.env.PATH}` }, encoding: "utf8" });
+		assert.equal(out, `closed ${bus}\n`);
+		assert.equal(statSync(bus).mode & 0o777, 0o770, "others lose read, write and search; the owner and group keep theirs");
+		assert.equal(statSync(other).mode & 0o777, 0o777, "a socket no pattern names is left alone");
+		assert.equal(statSync(target).mode & 0o777, 0o777, "a link is never followed");
+		assert.equal(statSync(join(root, "dbus-file")).mode & 0o777, 0o666, "a file that is not a socket is left alone");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
 });
 
 test("a host with no file API gets the daemon through exec's stdin", async () => {

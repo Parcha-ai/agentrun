@@ -167,6 +167,11 @@ const MAX_LIFETIME_MS = 30 * 24 * 60 * 60 * 1000;
 const LIFETIME_SLACK_MS = 60_000 + 120_000;
 /** The toolbox's port, on every interface of the sandbox (daytonaio/daytona@b5a5d9e7 apps/daemon/pkg/toolbox/config/config.go:6). */
 const TOOLBOX_PORT = 2280;
+/**
+ * Daytona's own path sockets outside /run: its D-Bus session bus, /tmp/dbus-<10 characters> (the live baseline's
+ * isolation.vendor-agent connected to /tmp/dbus-Y8OW6E3FDx as the tool user). Create closes them to the tool user.
+ */
+export const DAYTONA_SOCKETS: readonly string[] = ["/tmp/dbus-*"];
 const QUOTA = /quota|capacity|limit exceeded|too many/i;
 const STARTING = new Set(["creating", "restoring", "starting", "pending_build", "building_snapshot", "pulling_snapshot", "resizing", "snapshotting", "forking", "resuming", "unknown"]);
 const GONE = new Set(["destroyed", "destroying"]);
@@ -451,7 +456,8 @@ class DaytonaHost implements MachineHost {
 		// daemon child: Daytona's toolbox daemon is the sandbox's first process, and init a command started through it.
 		// maxLifetimeMs is the 30 days check() has always given; Daytona's TTL is in whole minutes and documents no cap of
 		// its own. The toolbox listens on 2280 on every interface and runs commands for whoever reaches it, so init starts
-		// with --own-network, and network none is all a computer takes.
+		// with --own-network, and network none is all a computer takes. Its D-Bus session bus in /tmp, which no network
+		// namespace cuts, is closed to the tool user before init starts (vendorSockets).
 		this.facts = {
 			daemon: "child",
 			isolation: options.sandboxClass === "linux-vm" ? "vm" : "container",
@@ -459,6 +465,7 @@ class DaytonaHost implements MachineHost {
 			maxLifetimeMs: MAX_LIFETIME_MS,
 			arch: options.arch,
 			vendorAgentPorts: [TOOLBOX_PORT],
+			vendorSockets: [...DAYTONA_SOCKETS],
 			networkReadBack: true,
 			network: [...DAYTONA.network],
 			mounts: [...MOUNT],

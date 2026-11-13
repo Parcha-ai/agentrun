@@ -62,7 +62,7 @@ import { daemonWatch, type ScreenWatch, type ScreenWatchHandlers, type WatchOpti
 import { countTested } from "../test-connection.js";
 import { waitUntil } from "../wait.js";
 import { bounded, CALL_SLACK_MS, failOf, hostCall, type Opened, openBridge, pause, race, rootOf, runToExit, seconds, uploadThroughExec, words } from "./process.js";
-import { ARCHIL_GATE, type DaemonExpected, daemonDrift, type HostedCommands, hostedCommands, installerOf } from "./scripts.js";
+import { ARCHIL_GATE, closedSocketsOf, type DaemonExpected, daemonDrift, type HostedCommands, hostedCommands, installerOf } from "./scripts.js";
 
 /** The longest each kind of call may take, and the pauses between polls. */
 export interface HostedTimeouts {
@@ -644,6 +644,7 @@ export class HostedProvider implements ComputerProvider {
 			nonce: randomBytes(16).toString("hex"),
 			waitS: Math.ceil((this.#timeouts.createMs + this.#timeouts.uploadMs + this.#timeouts.execMs + (archil ? this.#timeouts.mountMs * 3 : 0)) / 1000),
 			...(archil && this.host.facts.daemon === "pid1" ? { gate: ARCHIL_GATE } : {}),
+			...(this.host.facts.daemon === "child" && this.host.facts.vendorSockets !== undefined ? { vendorSockets: this.host.facts.vendorSockets } : {}),
 		});
 		const taken = new Set(this.host.facts.specFields ?? []);
 		const request: MachineRequest = {
@@ -841,7 +842,16 @@ export class HostedProvider implements ComputerProvider {
 
 	/** The rest of #prepare from the daemon's install on: init started, its first connection checked, the listing waited for. */
 	async #start(spec: ComputerSpec, ref: ComputerRef, commands: HostedCommands, want: Expected, signal?: AbortSignal): Promise<Result<string[]>> {
+		const closed: string[] = [];
 		if (this.host.facts.daemon === "child") {
+			// The vendor's own sockets outside /run, closed to the computer's user before any program of its runs.
+			if (commands.sockets !== undefined) {
+				const shut = await runToExit(this.host, ref.id, commands.sockets, { ms: this.#timeouts.execMs, ...(signal ? { signal } : {}), what: `closing ${this.#label}'s own sockets in ${ref.name}` });
+				if (!shut.ok) return shut;
+				if (shut.value.exitCode !== 0) return this.#fail("refused", `closing ${this.#label}'s own sockets to the computer's user failed (exit ${shut.value.exitCode}): ${`${shut.value.stdout} ${shut.value.stderr}`.trim().slice(0, 300)}`);
+				const found = closedSocketsOf(shut.value.stdout);
+				closed.push(`${this.#label}'s own sockets closed to the computer's user: ${found.join(", ") || `none found (${(this.host.facts.vendorSockets ?? []).join(", ")})`}`);
+			}
 			const init = await runToExit(this.host, ref.id, commands.start, { ms: this.#timeouts.execMs, ...(signal ? { signal } : {}), what: `starting the daemon in ${ref.name}` });
 			if (!init.ok) return init;
 			if (init.value.exitCode !== 0) return this.#fail("refused", `starting the daemon failed (exit ${init.value.exitCode}): ${`${init.value.stdout} ${init.value.stderr}`.trim().slice(0, 500)}`);
@@ -863,7 +873,7 @@ export class HostedProvider implements ComputerProvider {
 			await opened.value.close();
 		}
 		const listed = await this.#waitListed(ref, signal);
-		return listed.ok ? ok(notes) : listed;
+		return listed.ok ? ok([...closed, ...notes]) : listed;
 	}
 
 	/** What init wrote to its log (child) or the vendor's words of the machine (pid1): the end of it, or nothing. */

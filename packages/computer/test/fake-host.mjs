@@ -87,7 +87,9 @@ const START = Date.now();
  *  - lingers: { reads, lists } after a delete; fileApi: false for a host with no upload;
  *  - onStep(step, machine): at the start of every host call and daemon request, so a test can abort a signal there;
  *  - hang: a script's kind ("install", ...) whose process never ends; killHangs: a process's kill that never settles;
- *  - archil: root verbs' answers, as fake-modal's.
+ *  - archil: root verbs' answers, as fake-modal's;
+ *  - sockets: the path sockets every machine holds, which the sockets script closes where a pattern names them;
+ *    socketsFail: a path among them whose chmod fails.
  * fake.events records every exec by script or verb, every daemon method and every delete, per machine.
  */
 export function fakeHost({
@@ -113,6 +115,8 @@ export function fakeHost({
 	timer = "ok",
 	hang,
 	killHangs = false,
+	sockets = [],
+	socketsFail,
 } = {}) {
 	const machines = new Map();
 	const held = [];
@@ -365,6 +369,19 @@ export function fakeHost({
 			queueMicrotask(() => {
 				startInit(m, { deadline, user, display: shown, max });
 				proc.exit(0);
+			});
+			return proc;
+		}
+		if (kind === "sockets") {
+			// The script's patterns, matched as a shell's: * any characters but "/", the rest as written.
+			const named = (path) => script.args.some((pattern) => new RegExp(`^${pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replaceAll("*", "[^/]*")}$`).test(path));
+			queueMicrotask(() => {
+				let failed = 0;
+				for (const path of sockets.filter(named).sort()) {
+					if (path === socketsFail) failed = 1;
+					proc.out.push(`${path === socketsFail ? "failed" : "closed"} ${path}\n`);
+				}
+				proc.exit(failed);
 			});
 			return proc;
 		}
