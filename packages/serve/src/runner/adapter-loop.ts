@@ -52,6 +52,10 @@ import { Fenced } from "../store/index.js";
 import { type ClaimMcp, parkedFollowUp } from "./mcp-run.js";
 import { budgetOf, TOOL_BUDGET_TEXT, WRAP_UP_TEXT, wrappingUp } from "../tool-budget.js";
 
+/** The end of a harness's own call (Claude Code's WebSearch) the gate held and then let run: the host ran nothing of it,
+ *  and the harness's next call runs it. */
+export const OWN_TOOL_RELEASED = "Allowed after it waited; the agent's own tool runs it on its next call.";
+
 /** A pause or resume row on an agentic run, refused in main's words (runs.ts pause): only a workflow run pauses. */
 export const AGENTIC_PAUSE_REFUSED = "Only a workflow run pauses here: an agentic run's turn is stopped with POST /runs/{id}/stop.";
 
@@ -76,6 +80,9 @@ export type SpecGate = ((call: ToolCall, options?: { readonly replayed?: boolean
   /** The revision's tool-call budget (definition.max_tool_calls, tool-budget.ts): the calls each conversation may make. A
    *  call past it is refused before anything else is asked; one the adapter counts no calls for (a CLI's) is not held. */
   readonly toolCalls?: number;
+  /** A tool's setting now, by any name a call reaches the gate by (a harness's own, Codex's `web_search`), read again at
+   *  each ask: what the session reads (SessionIO.permission) for a tool no call of which reaches the gate before it runs. */
+  readonly permission?: (tool: string) => Promise<"allow" | "ask" | "deny">;
 };
 
 /** What one claimed run's adapter loop runs. */
@@ -1504,10 +1511,16 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           ? async (call, hookContext) => {
               const answer = await askingGate(call, hookContext);
               if (answer !== "allow" && "deny" in answer) await record.refused(call.callId, call.tool, call.args ?? {}, replaySafe(call.tool), answer.deny);
+              // A harness's own tool (Claude Code's WebSearch, which its provider runs) the gate held and a person now lets
+              // run: the host runs nothing of this call, so the start it parked ends here; the harness's next call runs it.
+              else if (answer === "allow" && approvedCalls.has(call.callId) && !tools.some((one) => one.name === call.tool)) await record.end(call.callId, "done", OWN_TOOL_RELEASED);
               return answer;
             }
           : gateOf;
-        const io: PiSessionIO = { writer, models: counted, signal: deps.signal, onEvent: record ? (event) => record.onEvent(event) : () => {}, gate: bridgeGate, hostTool: hosted, bookedCost };
+        // A tool no call of which reaches the gate before it runs (Codex's live search, inside its model requests): its
+        // setting now, read again at each request, so a deny or ask set mid-run reaches the next one.
+        const permission = spec.gate?.permission;
+        const io: PiSessionIO = { writer, models: counted, signal: deps.signal, onEvent: record ? (event) => record.onEvent(event) : () => {}, gate: bridgeGate, ...(permission ? { permission } : {}), hostTool: hosted, bookedCost };
         // The MCP tools: pi's own (host tools, through the gate above); for a harness with its own MCP client, the session's
         // MCP its adapter mounts on its proxy, each call asking the gate first (an ask parks the run, nothing sent).
         const mcpNames = new Set(mcp?.tools.map((tool) => tool.name));
