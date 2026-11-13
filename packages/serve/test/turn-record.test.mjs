@@ -7,8 +7,7 @@ import { existsSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { startServe } from "../dist/index.js";
-import { agent, client, FAUX, follow, scratch, serve, withEnv } from "./support.mjs";
+import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
@@ -99,9 +98,7 @@ for (const harness of ADAPTERS) {
 // ---- a cancel and the run's end ---------------------------------------------------------------------------------------
 
 for (const harness of ADAPTERS) {
-  // SKIP (owed): a claude-agent or codex run's journal holds no answer row until its turn ends, so the case's own wait
-  // ("the answer's row is in" while the turn is open) never sees it; the cancel-from-the-202 half holds (pi's case passes).
-  test.skip(`${harness}: a cancel after the turn's answer is in, before the turn is over, ends the run cancelled; it reads cancelled from the 202 on, never completed`, { timeout: 90_000 }, async (t) => {
+  test(`${harness}: a cancel after the turn's answer is in, before the turn is over, ends the run cancelled; it reads cancelled from the 202 on, never completed`, { timeout: 90_000 }, async (t) => {
     const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
     const signal = join(await scratch(t), "admitted");
     const runId = await start(api, harness, `Answer, then hold a request unanswered (signal ${signal}).`, { input: "hi" });
@@ -116,8 +113,7 @@ for (const harness of ADAPTERS) {
     assert.equal(view.result, null, JSON.stringify(view.result));
   });
 
-  // SKIP (owed): same missing behaviour as the case above: no answer row while a claude-agent or codex turn is open.
-  test.skip(`${harness}: a cancel, then a cost that takes the run over its cap, ends the run cancelled, never failed first`, { timeout: 90_000 }, async (t) => {
+  test(`${harness}: a cancel, then a cost that takes the run over its cap, ends the run cancelled, never failed first`, { timeout: 90_000 }, async (t) => {
     // The run's process cannot exit until the gate's file exists: the server reads the cost its cut turn writes on the
     // way out while that process still lives.
     const dir = await scratch(t);
@@ -176,9 +172,7 @@ for (const harness of ALL) {
 // ---- a turn the harness itself ends interrupted (no stop, no cancel) -------------------------------------------------
 
 for (const harness of ADAPTERS) {
-  // SKIP (owed): a claude-agent or codex turn the harness ends interrupted fails the run ("the run gave no answer
-  // (interrupted)") instead of leaving it input_required: the runner's end and the turn reader (turns.ts) disagree.
-  test.skip(`${harness}: a turn the harness ends interrupted with no stop or cancel waits for the person (input_required), never working for good; a message goes on`, { timeout: 90_000 }, async (t) => {
+  test(`${harness}: a turn the harness ends interrupted with no stop or cancel waits for the person (input_required), never working for good; a message goes on`, { timeout: 90_000 }, async (t) => {
     const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
     const runId = await start(api, harness, "The turn ends interrupted.", { input: "hi", tools: ["read"] });
     const { seen } = await watch(api, runId, (view) => view.status === "input_required" || terminal(view), "the interrupted turn moves the run");
@@ -194,9 +188,7 @@ for (const harness of ADAPTERS) {
 // The run's status is its last turn's end: the queued message's turn ran and completed, so the run completed, and the
 // failed turn stays in its timeline as history, as an error in a chat followed by a good answer does.
 for (const harness of ADAPTERS) {
-  // SKIP (owed): a claude-agent or codex run reads working/idle, never working/working, while its turn is open, so the
-  // case never reaches its queued message; the turn reader (turns.ts) opens no turn from the runner's CLI records.
-  test.skip(`${harness}: a turn that fails with a message queued behind it, whose own turn then completes, ends the run completed with that turn's answer; the failure stays in the timeline`, { timeout: 90_000 }, async (t) => {
+  test(`${harness}: a turn that fails with a message queued behind it, whose own turn then completes, ends the run completed with that turn's answer; the failure stays in the timeline`, { timeout: 90_000 }, async (t) => {
     const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), fauxWeb: WEB_HOLD });
     const go = join(await scratch(t), "go");
     const runId = await start(api, harness, `Fail a turn held until ${go}, with a follow-up behind it.`, { input: "hi", tools: ["web_fetch"] });
@@ -218,9 +210,7 @@ for (const harness of ADAPTERS) {
 // ---- a working turn's liveness -----------------------------------------------------------------------------------
 
 for (const harness of ALL) {
-  // SKIP (owed, claude-agent and codex only; pi passes): a CLI run shows no last_progress_at while its turn is open,
-  // for the same reason as the case above: no open turn is read from the runner's CLI records.
-  test(`${harness}: a run working through a long tool phase shows its last progress, advancing as the turn writes, and none once it ends`, { timeout: 90_000, skip: harness === "pi" ? false : "owed: a claude-agent or codex run shows no last_progress_at while its turn is open" }, async (t) => {
+  test(`${harness}: a run working through a long tool phase shows its last progress, advancing as the turn writes, and none once it ends`, { timeout: 90_000 }, async (t) => {
     const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), fauxWeb: WEB_HOLD });
     const dir = await scratch(t);
     const [one, two] = [join(dir, "one"), join(dir, "two")];
@@ -250,25 +240,21 @@ for (const harness of ALL) {
 
 // ---- a drain cuts a claude-agent turn (the server restarts): it is resumed, not read as a stop ---------------------
 
-// SKIP (owed): a claude-agent turn holding after its read shows no tool_result row while the turn is open (the journal
-// holds none until the turn ends), so the case's wait never sees it; the resume itself is unchecked.
-test.skip("claude-agent: a turn the server's restart drains mid-way is resumed by the next server and ends completed, never input_required", { timeout: 180_000 }, async (t) => {
+test("claude-agent: a turn the server's restart drains mid-way is resumed by the next server and ends completed, never input_required", { timeout: 180_000 }, async (t) => {
   const dir = await scratch(t);
   const data = join(dir, "agents");
   const go = join(dir, "go");
-  const options = { data, port: 0, faux: FAUX, harnessTable: fauxTable(FAUX_HARNESS), drainTimeout: "2s" };
-  const one = await startServe(options);
-  let closed = false;
-  t.after(() => (closed ? undefined : one.close()));
-  let api = client(one.baseUrl, one.token);
+  // The start is a server and the runner beside it on one data directory (serve): the restart stops both, the runner first
+  // (it lets its run go, cut mid-turn), and the next start's runner claims the run and resumes its session.
+  const options = { data, harnessTable: fauxTable(FAUX_HARNESS), drainTimeout: "2s" };
+  const one = await serve(t, options);
+  let api = one.api;
   const runId = await start(api, "claude-agent", `Hold mid-turn until ${go}.`, { input: "hi", tools: ["read"] });
   await until("the turn holds after its read", async () => (await rowsOf(api, runId)).some((r) => r.kind === "tool_result"));
-  await one.close();
-  closed = true;
+  await one.stop();
   await writeFile(go, "");
-  const two = await startServe(options);
-  t.after(() => two.close());
-  api = client(two.baseUrl, two.token);
+  const two = await serve(t, options);
+  api = two.api;
   const { seen } = await watch(api, runId, (view) => terminal(view) || view.status === "input_required", "the next server resumes the turn", { deadlineMs: 90_000 });
   const view = await endsAs(api, runId, seen, "completed");
   assert.equal(view.result?.final_answer, "Resumed and done.");
