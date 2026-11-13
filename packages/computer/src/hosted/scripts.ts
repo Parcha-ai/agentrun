@@ -99,6 +99,31 @@ export const INIT_LOG = `${SOCKET_DIR}-init.log`;
  */
 const START_SCRIPT = ["# agentrun-computer: start", "l=$1; shift", ROOT, `exec $p sh -c 'exec >"$0" 2>&1 </dev/null; setsid "$@" &' "$l" "$@"`].join("\n");
 
+/**
+ * Takes others' access off every path unix socket the vendor's patterns ($@, each a shell pattern with no space) name,
+ * as root: what init does itself under /run (daemon/internal/isolate CloseSystemSockets), for a vendor's socket
+ * elsewhere. The owner's and group's access stays, so the vendor's own service keeps its socket; the computer's user
+ * is neither. A link is never followed. Prints `closed <path>` for each socket it closed and `failed <path>` for one
+ * it could not; any failure fails the script, and create then refuses the computer.
+ */
+const SOCKETS_SCRIPT = [
+	"# agentrun-computer: sockets",
+	ROOT,
+	"failed=0",
+	'for g in "$@"; do',
+	"\tfor s in $g; do",
+	'\t\t[ -S "$s" ] && [ ! -L "$s" ] || continue',
+	'\t\tif $p chmod o-rwx "$s"; then echo "closed $s"; else echo "failed $s"; failed=1; fi',
+	"\tdone",
+	"done",
+	"exit $failed",
+].join("\n");
+
+/** The sockets the sockets script closed, from its `closed <path>` lines. */
+export function closedSocketsOf(output: string): string[] {
+	return output.split("\n").flatMap((line) => (line.startsWith("closed ") ? [line.slice("closed ".length).trim()] : []));
+}
+
 /** The last words init wrote to its log, as root; nothing when it wrote none. */
 const LOG_SCRIPT = ["# agentrun-computer: log", "l=$1", ROOT, '$p tail -c 2000 "$l" 2>/dev/null || true'].join("\n");
 
@@ -145,6 +170,8 @@ export interface HostedCommands {
 	install: string[];
 	/** child: init's start, detached; it answers once init is started. */
 	start: string[];
+	/** child: the vendor's sockets (HostFacts.vendorSockets) closed to others, run before start; none when it names none. */
+	sockets?: string[];
 	stdio: string[];
 	log: string[];
 	/** pid1: the machine's command. */
@@ -155,7 +182,8 @@ export interface HostedCommands {
  * The adapter's commands for one computer. Init's flags are the child's (childCommands) for both modes: --own-network
  * always, the display and the most deadline.extend may move the deadline to when given. waitS bounds a pid1 entrypoint's
  * wait for the daemon (and gate, for an Archil computer); with atomic, install moves the daemon into place last, and only
- * once it reads sha256, when given, then writes nonce, when given, to the marker the entrypoint waits for.
+ * once it reads sha256, when given, then writes nonce, when given, to the marker the entrypoint waits for. vendorSockets
+ * (HostFacts') gives a child its sockets command.
  */
 export function hostedCommands({
 	staging = "",
@@ -168,7 +196,8 @@ export function hostedCommands({
 	gate,
 	sha256 = "",
 	nonce = "",
-}: ChildCommandOptions & { atomic?: boolean; waitS?: number; gate?: string; sha256?: string; nonce?: string } = {}): HostedCommands {
+	vendorSockets = [],
+}: ChildCommandOptions & { atomic?: boolean; waitS?: number; gate?: string; sha256?: string; nonce?: string; vendorSockets?: readonly string[] } = {}): HostedCommands {
 	const init = [DAEMON_IN_COMPUTER, deadline, user, WORK, SOCKET_DIR];
 	if (display !== "" || maxDeadline !== "") init.push(display, maxDeadline);
 	const initArgs = ["init", "--deadline", deadline, "--user", user, "--own-network", ...(maxDeadline === "" ? [] : ["--max-deadline", maxDeadline])];
@@ -177,6 +206,7 @@ export function hostedCommands({
 		start: argvOf(START_SCRIPT, [INIT_LOG, ...argvOf(INIT_SCRIPT, init)]),
 		stdio: argvOf(STDIO_SCRIPT, [DAEMON_IN_COMPUTER, SOCKET_DIR]),
 		log: argvOf(LOG_SCRIPT, [INIT_LOG]),
+		...(vendorSockets.length === 0 ? {} : { sockets: argvOf(SOCKETS_SCRIPT, vendorSockets) }),
 		entrypoint: argvOf(ENTRYPOINT_SCRIPT, [DAEMON_IN_COMPUTER, String(waitS), WORK, display, nonce, ...(gate === undefined ? [] : ["--gate", gate]), ...initArgs]),
 	};
 }
