@@ -306,7 +306,7 @@ has Docker, and no computer otherwise. Remote computers bill through your own ac
   `npm run conformance -w @parcha/agentrun-computer -- --provider docker --kind sandbox`.
 
 [`@parcha/agentrun-computer`](packages/computer/README.md) is the protocol underneath: one small daemon in every
-computer and one provider per vendor.
+computer and one provider per vendor. To add your vendor, see [How to contribute a provider](packages/computer/PROVIDERS.md#how-to-contribute-a-provider).
 
 </details>
 
