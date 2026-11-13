@@ -687,6 +687,10 @@ export const MCP_REFRESH_LEASE_MS = MCP_REFRESH_CALL_MS + STORE_WRITE_DEADLINE_M
  *  refresh keeps the time; a new credential or a sign-in moves it). Null: no server by that name. */
 export type McpCredentialMark = { readonly auth: string; readonly sealed: boolean; readonly changedAt: number | null } | null;
 
+/** The row a removal deleted, as the statement that deleted it saw it: the address and the sealed credential as they were
+ *  at that instant (a token refresh landing earlier is in it, one landing later finds no row to keep). */
+export type McpRemoved = { readonly url: string; readonly sealed: Uint8Array | null };
+
 /** The fields of a server's write (Mcp.put). */
 export type McpServerWrite = { name: string; url: string; auth: string; protocol?: string | null; tools: unknown; prices?: unknown; serverInfo?: unknown; instructions?: string | null; sealed?: Uint8Array | null; listedAt?: number; updatedAt?: number; credentialChangedAt?: number | null; tokenLeftMs?: number | null };
 
@@ -707,10 +711,11 @@ export interface Mcp {
    *  set. undefined, writing nothing, when the credential changed meanwhile (a refresh kept a rotated set) or the row went:
    *  the caller reads it again and re-applies its change onto the fresh row, a bounded few times. */
   rewrite(server: { name: string; url: string; auth: string; protocol?: string | null; tools: unknown; prices?: unknown; serverInfo?: unknown; instructions?: string | null; listedAt?: number; updatedAt?: number }, seen: Uint8Array | null): Promise<McpServerRow | undefined>;
-  remove(name: string): Promise<void>;
+  /** Deletes the row, answering what it held as it went (McpRemoved); undefined when there was none. */
+  remove(name: string): Promise<McpRemoved | undefined>;
   /** remove(), only while the server's credential is still `expected` (its mark as the remover read it), compared and
-   *  deleted in one statement. False, deleting nothing, when it is not (or the server is gone). */
-  removeIfCredential(name: string, expected: NonNullable<McpCredentialMark>): Promise<boolean>;
+   *  deleted in one statement. Undefined, deleting nothing, when it is not (or the server is gone). */
+  removeIfCredential(name: string, expected: NonNullable<McpCredentialMark>): Promise<McpRemoved | undefined>;
   /** The registry's rows, by name. */
   servers(): Promise<McpServerRow[]>;
   server(name: string): Promise<McpServerRow | undefined>;

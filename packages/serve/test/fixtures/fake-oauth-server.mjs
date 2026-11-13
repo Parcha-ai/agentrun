@@ -31,6 +31,7 @@ export async function startFakeOAuth({ cimd = false, clients = {}, expiresIn = 3
   /** Each RFC 7009 revocation it was sent: the hint, the client named, and whether the token was a live refresh token
    *  of its own (never the token). `revoking`: the status `/revoke` answers with, 200 unless failRevocation set one. */
   const revocations = [];
+  const revokedTokens = [];
   let revoking = 200;
   const http = createServer(async (req, res) => {
     const url = new URL(req.url, issuer());
@@ -63,6 +64,7 @@ export async function startFakeOAuth({ cimd = false, clients = {}, expiresIn = 3
       const [id] = basic ? Buffer.from(basic[1], "base64").toString("utf8").split(":").map(decodeURIComponent) : [form.client_id];
       const known = refresh.get(form.token)?.client_id === id;
       revocations.push({ hint: form.token_type_hint, client_id: id, known });
+      revokedTokens.push(form.token);
       if (revoking !== 200) return void res.writeHead(revoking, { "content-type": "text/plain" }).end("revocation is down");
       if (known) refresh.delete(form.token);
       return void res.writeHead(200).end();
@@ -166,6 +168,8 @@ export async function startFakeOAuth({ cimd = false, clients = {}, expiresIn = 3
     next: (path = "/token") => new Promise((heard) => nexts.push({ path, heard })),
     /** Each revocation it was sent (`/revoke`, RFC 7009), as { hint, client_id, known }, in order. */
     revocations,
+    /** The token each revocation named, in order (the log keeps no token values). */
+    revokedTokens,
     /** From now on `/revoke` answers `status` (a 503, say) and revokes nothing. */
     failRevocation: (status) => void (revoking = status),
     /** Whether `token` is a refresh token it would still take. */

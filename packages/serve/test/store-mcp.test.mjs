@@ -69,11 +69,11 @@ test("a conditional removal deletes the row only while its credential is the one
   const read = mark(await store.mcp.server("github"));
   clock.now += 1_000;
   await store.mcp.put({ ...SERVER, auth: "bearer", sealed: SEALED });
-  assert.equal(await store.mcp.removeIfCredential("github", read), false, "a credential saved since: nothing is deleted");
+  assert.equal(await store.mcp.removeIfCredential("github", read), undefined, "a credential saved since: nothing is deleted");
   assert.equal((await store.mcp.server("github")).auth, "bearer");
-  assert.equal(await store.mcp.removeIfCredential("github", mark(await store.mcp.server("github"))), true);
+  assert.deepEqual(await store.mcp.removeIfCredential("github", mark(await store.mcp.server("github"))), { url: SERVER.url, sealed: SEALED }, "it answers what it deleted");
   assert.equal(await store.mcp.server("github"), undefined);
-  assert.equal(await store.mcp.removeIfCredential("github", read), false, "gone: nothing to delete");
+  assert.equal(await store.mcp.removeIfCredential("github", read), undefined, "gone: nothing to delete");
 });
 
 test("a run's pin is written once under its claim: a second pinOnce reads the first, a later claim reads it as written", async (t) => {

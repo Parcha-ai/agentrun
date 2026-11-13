@@ -310,14 +310,16 @@ export class McpServersOverStore {
    *  (its refresh token revoked, RFC 7009, where its metadata names a revocation_endpoint), behind the answer: best effort,
    *  never holding or failing the removal. A claimed run sees the removal at its next call (runner/mcp-claim.ts check). */
   async remove(name: string, checkedAgainst?: McpCredentialMark): Promise<void> {
-    const row = await this.need(name);
-    // Opened before the row goes; a sign-in kept as expired has no refresh token left to revoke.
-    const open = row.auth === "oauth" ? await openServerCredential(this.store, this.sealKey, name).catch(() => undefined) : undefined;
-    const credential = open && "credential" in open && open.credential.type === "oauth" && !(open.credential as { expired?: true }).expired ? open.credential : undefined;
-    if (checkedAgainst === undefined) await removeMcpServer(this.store, name);
-    else if (checkedAgainst === null || !(await removeMcpServerIfCredential(this.store, name, checkedAgainst))) changedMeanwhile(name, undefined);
+    await this.need(name);
+    // The credential revoked is the one the deleting statement saw (RETURNING): a run's refresh landing before it is in it,
+    // one landing after finds no row to keep. A sign-in kept as expired has no refresh token left to revoke.
+    const removed = checkedAgainst === undefined ? await removeMcpServer(this.store, this.sealKey, name)
+      : checkedAgainst === null ? undefined : await removeMcpServerIfCredential(this.store, this.sealKey, name, checkedAgainst);
+    if (checkedAgainst !== undefined && !removed) changedMeanwhile(name, undefined);
     await this.store.flush();
-    if (credential) void this.track(this.signIns.revoke(credential.set as TokenSet, row.url, this.stopped.signal));
+    const open = removed?.opened;
+    const credential = open && "credential" in open && open.credential.type === "oauth" && !(open.credential as { expired?: true }).expired ? open.credential : undefined;
+    if (credential && removed) void this.track(this.signIns.revoke(credential.set as TokenSet, removed.url, this.stopped.signal));
   }
 
   /** POST .../{name}/oauth/start: `{url, scopes?, client_id?, client_secret?}`; answers the URL the owner opens. */

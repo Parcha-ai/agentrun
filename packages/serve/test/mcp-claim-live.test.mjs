@@ -238,3 +238,37 @@ test("removing an OAuth server revokes its refresh token at its authorization se
   assert.equal(oauth.revocations.length, 2);
   assert.deepEqual((await on.registry.list()).servers, []);
 });
+
+test("a run's refresh that lands while a server is removed: the refresh token revoked is the one the row held when it went", async (t) => {
+  const on = await registryOn(t);
+  const oauth = await startFakeOAuth();
+  const mcp = await startFakeMcp({ token: oauth.accepts, oauth: oauth.issuer });
+  t.after(() => Promise.all([mcp.close(), oauth.close()]));
+  await signedIn(on.registry, "docs", mcp);
+  const { openServerCredential } = await import("../dist/mcp-store.js");
+  const { sealMcpCredential } = await import("../dist/store/index.js");
+  const before = await on.store.mcp.server("docs");
+  const opened = await openServerCredential(on.store, KEY, "docs");
+  const ROTATED = `not-a-secret-${"rotated-refresh-89ab"}`;
+  const rotated = { ...opened.credential.set, tokens: { ...opened.credential.set.tokens, refresh_token: ROTATED } };
+  // A runner's refresh lands (its provider rotated the refresh token) once the remover has read the row, before the row goes.
+  const store = on.store.mcp;
+  let landed = false;
+  for (const key of ["server", "remove", "removeIfCredential"]) {
+    const original = store[key].bind(store);
+    store[key] = async (...args) => {
+      if (key !== "server" && !landed) {
+        landed = true;
+        const kept = await store.keepRefreshed("docs", { seen: before.sealed, sealed: sealMcpCredential(KEY, "docs", { type: "oauth", set: rotated }, before.url), holder: "other@1", tokenLeftMs: 60 * 60_000 });
+        assert.equal(kept.kept, true, "the interleaved refresh was kept");
+      }
+      return original(...args);
+    };
+  }
+  const revoked = oauth.next("/revoke");
+  await on.registry.remove("docs");
+  await revoked;
+  assert.ok(landed, "the refresh landed in the removal");
+  assert.equal(await on.store.mcp.server("docs"), undefined, "removed");
+  assert.deepEqual(oauth.revokedTokens, [ROTATED],"the refresh token the row held as it went");
+});
