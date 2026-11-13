@@ -5,7 +5,8 @@ import { FilePicker, type UploadLimits, useAttachments } from "@/components/File
 import { Picker } from "@/components/ui/picker";
 import { ToolBlockers } from "@/components/ToolBlockers";
 import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/field";
+import { Input, Textarea } from "@/components/ui/field";
+import { capWords } from "@/components/NeedsYou";
 import type { Agent } from "@/lib/agentForm";
 import { type Client, ClientError, type FieldIssue } from "@/lib/client";
 import { exampleHint, exampleInput, keeper, startBody, submitStart } from "@/lib/runStart";
@@ -21,18 +22,24 @@ type Sent = { status: number; runId?: string; problem?: Problem };
  *  `blocked`: why no run can start here (a harness the server can't run): Run is off, and sends nothing. A start refused
  *  for a box this server lacks says so, and that the fix is where the agent runs, in its settings. Files picked here are
  *  sent at once and named by the run (`file_ids`); Run waits until each is sent. "Run with your coding agent" hands the
- *  same run, pinned to the agent's revision, to the person's Claude Code or Codex as a prompt to copy; it sends nothing. */
+ *  same run, pinned to the agent's revision, to the person's Claude Code or Codex as a prompt to copy; it sends nothing.
+ *  An agentic agent's Spend cap box caps this run alone (`max_cost_usd`); empty sends none, so the agent's default cap
+ *  applies (its definition's `max_cost_usd`, shown as the placeholder). A workflow run takes no cap (the server refuses
+ *  one), so it has no box. A cap the server refuses (a 422 naming max_cost_usd) is said at the box, in the server's words. */
 export function RunBar({ agent, efforts, v2, go, blocked, limits, upload = sendUpload }: { agent: Agent; efforts: string[]; v2: Client; go: (hash: string) => void; blocked?: string; limits?: UploadLimits; upload?: Upload }) {
   const workflow = agent.kind === "workflow";
   const example = useMemo(() => (workflow ? exampleInput(agent.definition.workflow) : null), [workflow, agent.definition.workflow]);
   const [text, setText] = useState(example?.text ?? "");
   const [effort, setEffort] = useState("");
+  const [cap, setCap] = useState("");
   const [problem, setProblem] = useState<Problem | null>(null);
   const keys = useMemo(() => keeper(), []);
   const [sending, setSending] = useState(false);
   // The files hold still while a start that names them is under way.
   const attachments = useAttachments({ upload, remove: v2.deleteUpload, limits, frozen: sending });
-  const built = startBody(agent.kind, { text, effort, fileIds: attachments.fileIds });
+  const built = startBody(agent.kind, { text, effort, maxCostUsd: cap, fileIds: attachments.fileIds });
+  // The agent's own default cap, which an empty box leaves in force.
+  const agentCap = typeof agent.definition.max_cost_usd === "number" ? agent.definition.max_cost_usd : null;
   const send = async (id: string, body: Parameters<Client["startRun"]>[1], key: string): Promise<Sent> => {
     try {
       const r = await v2.startRun(id, body, key);
@@ -58,8 +65,10 @@ export function RunBar({ agent, efforts, v2, go, blocked, limits, upload = sendU
     if (r.runId) { attachments.clear(); go(`#/runs/${encodeURIComponent(r.runId)}`); }
     else setProblem(r.problem ?? { message: `The server answered ${r.status}.` });
   };
-  // A 422 names its fields; each one whose message says more than the refusal's is listed under it.
-  const more = (problem?.fields ?? []).filter((f) => f.message !== problem?.message);
+  // What is wrong with the cap: the box's own check, else the server's refusal of it. Said at the box, not again below.
+  const capIssue = !workflow ? (!built.ok && built.field === "max_cost_usd" ? built.message : problem?.fields?.find((f) => f.field === "max_cost_usd")?.message ?? null) : null;
+  // A 422 names its fields; each one whose message says more than the refusal's is listed under it (the cap's at its box).
+  const more = (problem?.fields ?? []).filter((f) => f.message !== problem?.message && !(capIssue && f.field === "max_cost_usd"));
   return (
     <section className="border-b px-5 py-4 max-sm:py-3 md:px-8" aria-label="Start a run">
       {/* On a phone the message box is one line (a workflow's JSON keeps its height), and the file button sits in the
@@ -78,6 +87,16 @@ export function RunBar({ agent, efforts, v2, go, blocked, limits, upload = sendU
                 <Picker id="runbar-effort" label="Effort" value={effort} onChange={setEffort} className="w-32" options={["", ...efforts].map((e) => ({ value: e, label: e || "default" }))} />
               </div>
             )}
+            {!workflow && (
+              <div className="flex flex-col">
+                <div className="flex items-center gap-2" title={agentCap !== null ? `This run's spend cap in US dollars. Empty uses the agent's default, ${capWords(agentCap)}.` : "This run's spend cap in US dollars. Empty runs it with no cap."}>
+                  <span className="flex flex-col leading-tight"><label htmlFor="runbar-cap" className="caps text-label text-muted-foreground">Spend cap</label><span className="text-label text-muted-foreground max-sm:hidden">This run, US dollars</span></span>
+                  <Input id="runbar-cap" value={cap} onChange={(e) => { setCap(e.target.value); if (problem?.fields?.some((f) => f.field === "max_cost_usd")) setProblem(null); }} inputMode="decimal" aria-label="Spend cap"
+                    aria-invalid={capIssue ? true : undefined} placeholder={agentCap !== null ? capWords(agentCap) : "none"} className="w-24" />
+                </div>
+                {capIssue && <p className="mt-1 max-w-[16rem] font-mono text-label text-destructive-text" role="alert" data-issue="max_cost_usd">{capIssue}</p>}
+              </div>
+            )}
             <Button variant="solid" onClick={() => void start()} disabled={!built.ok || sending || !!blocked || attachments.busy} title={blocked ?? (attachments.busy ? "Waiting for the files to be sent" : undefined)}><Play aria-hidden /> {sending ? "Starting" : "Run"}</Button>
           </div>
         </div>
@@ -93,7 +112,7 @@ export function RunBar({ agent, efforts, v2, go, blocked, limits, upload = sendU
         </div>
       </div>
       {example && <p className="mt-2 font-mono text-label text-muted-foreground">{exampleHint(example, "run")}</p>}
-      {!built.ok && text.trim() && <p className="mt-2 font-mono text-small text-destructive-text" role="alert">{built.message}</p>}
+      {!built.ok && built.field !== "max_cost_usd" && text.trim() && <p className="mt-2 font-mono text-small text-destructive-text" role="alert">{built.message}</p>}
       {problem && (
         <div className="mt-3 border border-destructive/50 bg-destructive/10 px-3 py-2 font-mono text-small text-destructive-text" role="alert">
           <p>The run did not start: {problem.message}</p>
