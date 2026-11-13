@@ -5,7 +5,7 @@
 The core checks must pass: hello, ping, exec, files, apps, the socket's peer check, and each grant-bound method either
 working or refused in words that name the grant. With the grants in place (seed-tcc.sh), it also drives TextEdit in the
 background: open a document without bringing it forward, observe it, type into it, and expect the text. Then the ui
-fixture (UIFixture.app, when installed): its elements, an expect, its canvas, which only foreground input reaches, and
+fixture (UIFixture.app, when installed): its elements, its title-bar buttons' names, an expect, its canvas, which only foreground input reaches, and
 a press on Close that closes its last window; and input.actions on the keyboard and mouse against the same app as the desktop input fixture (--input-log).
 Those live results are reported, and fail the run only with SMOKE_STRICT_LIVE=1. A summary goes to $GITHUB_STEP_SUMMARY.
 """
