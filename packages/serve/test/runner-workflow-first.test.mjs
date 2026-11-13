@@ -17,6 +17,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
@@ -38,6 +39,8 @@ const { sendCommand } = await import("../dist/runner/commands.js");
 const { LEARNED_WORKFLOW_TOOL } = await import("../dist/learned-workflow.js");
 const { runTimeline, runEntries, runReflect } = await import("../dist/store-reads/journal.js");
 const { said } = await import("../dist/learning-words.js");
+const { agentCostOverStore } = await import("../dist/store-reads/learning.js");
+const { LEARNED_CLIP } = await import("../dist/learned-workflow.js");
 const { COST_WINDOW, costLineOf, workflowCostsOf, fits, workflowDigest, workflowFirstOf, pathMetrics, reviseOf, servedOf, WORKFLOW_FIRST } = await import("../dist/runner/workflow-first.js");
 const { resolveSchemaForWorkflow } = await import("@parcha/agentrun-dsl");
 
@@ -89,12 +92,12 @@ const until = async (done, what, ms = 40_000) => {
  *  the agent, when asked, answers AGENT_SAYS. `toolSettings` on the revision; `approve`: answer the run's first ask ("stop":
  *  stop the run while it waits instead). `followUp`: once the run ends, a person's follow-up (a teacher's label on its
  *  answer) reopens it, and the run read is the follow-up's end; `first` is the row of the end before it. */
-async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION }, sure = true, learned = true, workflowFirst, toolSettings, approve = false, past = [], followUp } = {}) {
+async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION }, sure = true, learned = true, workflowFirst, toolSettings, approve = false, past = [], followUp, flows = FLOWS, answer, outputSchema, crashOnHandback = false, pastFromSecondClaim = false } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-workflow-first-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
   const gw = await startFauxGateway({
-    call: ({ body }) => (offers(body, "submit") && !hasResult(body) ? { name: "submit", input: { value: { answer: sure ? 42 : 41, sure } } } : undefined),
+    call: ({ body }) => (offers(body, "submit") && !hasResult(body) ? { name: "submit", input: { value: { answer: answer ?? (sure ? 42 : 41), sure } } } : undefined),
     text: ({ body }) => (offers(body, "submit") ? "submitted" : AGENT_SAYS),
   });
   let runner;
@@ -107,8 +110,8 @@ async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION 
     await server.close().catch(() => {});
     rmSync(dir, { recursive: true, force: true });
   });
-  await server.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read"], ...(learned ? { learning: true } : {}), ...(toolSettings ? { toolSettings } : {}) } });
-  const seed = learned ? await landWorkflows(dir, "agent-1", FLOWS) : undefined;
+  await server.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read"], ...(learned ? { learning: true } : {}), ...(toolSettings ? { toolSettings } : {}), ...(outputSchema ? { outputSchema } : {}) } });
+  const seed = learned ? await landWorkflows(dir, "agent-1", flows) : undefined;
   const launch = { input, title: "t", place: { mode: "runner" }, model: { provider: "anthropic", modelId: MODEL }, ...(learned ? { learning: startAt(seed) } : {}), ...(workflowFirst === false ? { workflowFirst: false } : {}) };
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
   await server.flush?.();
@@ -117,13 +120,14 @@ async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION 
   const logs = [];
   // `past`: earlier runs of the agent, newest first, as its store lists them (the money rule's read): laid before the
   // store's own rows, every other read the store's.
-  const runsOf = { ...store.runs, list: async (filter) => [...past, ...(await store.runs.list(filter))] };
+  // `pastFromSecondClaim`: the money rule reads them only once a first claim has built its spec (a claim after a crash).
+  let claims = 0;
+  const runsOf = { ...store.runs, list: async (filter) => [...(pastFromSecondClaim && claims < 1 ? [] : past), ...(await store.runs.list(filter))] };
   for (const key of Object.getOwnPropertyNames(Object.getPrototypeOf(store.runs) ?? {})) if (typeof store.runs[key] === "function" && key !== "list" && key !== "constructor") runsOf[key] = store.runs[key].bind(store.runs);
   const depStore = past.length ? new Proxy(store, { get: (target, key) => (key === "runs" ? runsOf : typeof target[key] === "function" ? target[key].bind(target) : target[key]) }) : store;
   const deps = { env: {}, data: dir, journal: (claim) => store.journal(claim), store: depStore, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim: async () => ({ release: async () => {} }), log: (line) => logs.push(line) };
   // `approve: "stop-at-gate"`: the person's stop lands while the first claim is at the step's gate (the run's own gate,
   // asked before the ask is), so the claim that parks on the ask holds the stop. `claims`: the specs built, one per claim.
-  let claims = 0;
   const specOf = async (claim, run) => {
     const spec = await adapterRunSpecFromLaunch(launch, run, deps, claim);
     claims += 1;
@@ -137,7 +141,17 @@ async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION 
       return gate ? gate(call) : undefined;
     } };
   };
-  runner = startRunner({ store, name: "runner-a", ...TIMING, createLoop: createAdapterLoop(specOf) });
+  // `crashOnHandback`: the first claim dies as the handback is cut of secrets (after the workflow's end is on the record,
+  // before the agent is sent anything); the run is claimed again.
+  let crashed = false;
+  const redact = (text) => {
+    if (crashOnHandback && !crashed && /ran first on this job and handed it back to you/.test(text)) {
+      crashed = true;
+      throw new Error("the claim died before the handback was sent");
+    }
+    return text;
+  };
+  runner = startRunner({ store, name: "runner-a", ...TIMING, ...(crashOnHandback ? { redact } : {}), createLoop: createAdapterLoop(specOf) });
   const settled = (states) => until(async () => {
     const now = await server.runs.get(RUN);
     return states.includes(now.state) && now.runner === null && now;
@@ -380,6 +394,80 @@ test("costLineOf: the newest 10 served runs at the digest against the agent's by
   assert.equal(workflowCostsOf([...Array.from({ length: 10 }, (_, i) => served(i, 0.1)), run(10, { path: "agent" }, 0.2)])[0].state, "serving", "under the line");
 });
 
+// A workflow whose answer is a string (answerFlow's is a number): its answer is what the node submits, as long as a test likes.
+const textFlow = { ...answerFlow, schemas: { ...answerFlow.schemas, Answer: { type: "object", required: ["answer", "sure"], properties: { answer: { type: "string" }, sure: { type: "boolean" } } } } };
+const TEXT_FLOWS = [{ name: "answer", description: "Answers a question in words", workflow: textFlow }];
+
+test("a workflow's answer the tool cut goes back to the agent: no agent turn could recover its ending, so the run never ends on it", async (t) => {
+  const { row, entries, gateway, timeline } = await piRun(t, { flows: TEXT_FLOWS, answer: "x".repeat(LEARNED_CLIP + 5_000) });
+  assert.equal(row.state, "ended", JSON.stringify(row));
+  assert.deepEqual(entries.filter((entry) => entry.kind === WORKFLOW_FIRST).map((entry) => entry.data.outcome), ["handed_back"]);
+  assert.equal(row.metrics?.path, "handed_back", JSON.stringify(row.metrics));
+  const firstAgent = gateway.requests.find((request) => !isNode(request));
+  assert.match(textOf(firstAgent.body), /Your learned workflow `answer` ran first on this job and handed it back to you/);
+  assert.equal(timeline.findLast((one) => ["assistant", "final_answer"].includes(one.kind))?.text, AGENT_SAYS, "the agent's answer is the run's last word");
+});
+
+test("a workflow's answer under the cut is the run's own answer", async (t) => {
+  const { row, entries, gateway } = await piRun(t, { flows: TEXT_FLOWS, answer: "x".repeat(LEARNED_CLIP - 1_000) });
+  assert.equal(row.metrics?.path, "workflow", JSON.stringify(row.metrics));
+  assert.deepEqual(entries.filter((entry) => entry.kind === WORKFLOW_FIRST).map((entry) => entry.data.outcome), ["answered"]);
+  assert.equal(gateway.requests.filter((request) => !isNode(request)).length, 0);
+});
+
+test("an agent with an output schema: a workflow's JSON answer is fenced as its answer, and one that is not JSON goes back to the agent", async (t) => {
+  const outputSchema = { type: "object", properties: { answer: { type: "number" } } };
+  const json = await piRun(t, { outputSchema });
+  assert.equal(json.row.metrics?.path, "workflow", JSON.stringify(json.row.metrics));
+  const said = json.timeline.findLast((one) => ["assistant", "final_answer"].includes(one.kind))?.text ?? "";
+  assert.match(said, /^```json\n[\s\S]*42[\s\S]*\n```$/, `the answer is one fenced json block: ${said}`);
+  // Without a schema the same answer is left as the workflow gave it.
+  const bare = await piRun(t);
+  assert.doesNotMatch(bare.timeline.findLast((one) => ["assistant", "final_answer"].includes(one.kind))?.text ?? "", /```/);
+  const words = await piRun(t, { flows: TEXT_FLOWS, answer: "forty-two", outputSchema });
+  assert.equal(words.row.metrics?.path, "handed_back", JSON.stringify(words.row.metrics));
+  assert.deepEqual(words.entries.filter((entry) => entry.kind === WORKFLOW_FIRST).map((entry) => entry.data.outcome), ["handed_back"]);
+});
+
+test("a claim that dies after the workflow handed the job back: the next claim sends the handback even when the money rule now stops the workflow", async (t) => {
+  const { row, gateway, entries } = await piRun(t, { sure: false, crashOnHandback: true, past: pastRuns({ servedUsd: 0.5, byHandUsd: 0.2 }), pastFromSecondClaim: true });
+  assert.equal(row.state, "ended", JSON.stringify(row));
+  assert.deepEqual(entries.filter((entry) => entry.kind === WORKFLOW_FIRST).map((entry) => entry.data.outcome), ["handed_back"], "one step on the record: the money rule's stop added none");
+  assert.equal(gateway.requests.filter(isNode).length > 0, true, "the workflow ran once, on the first claim");
+  const firstAgent = gateway.requests.find((request) => !isNode(request));
+  assert.match(textOf(firstAgent.body), /Your learned workflow `answer` ran first on this job and handed it back to you/, "the agent's first input is the handback, not the bare job");
+});
+
+test("the cost page reads the workflows' history over the same window the launch's money rule does (the agent's newest PAST_RUNS runs)", async (t) => {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-workflow-first-cost-"));
+  const store = await openSqliteStore({ dataDir: dir, role: "server" });
+  t.after(async () => {
+    await store.close().catch(() => {});
+    rmSync(dir, { recursive: true, force: true });
+  });
+  await store.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read"], learning: true } });
+  const at = Date.UTC(2026, 10, 12);
+  const ids = [];
+  for (let i = 0; i < 4; i += 1) {
+    ids.push(`run-${i}`);
+    await store.runs.create({ id: `run-${i}`, agentId: "agent-1", revisionId: "rev-1" });
+  }
+  await store.flush?.();
+  const db = new DatabaseSync(join(dir, "store.sqlite"), { timeout: 5_000 });
+  try {
+    // run-0 the newest; the three older ones are served runs of one digest, the newest of them at 0.9, the oldest two at 0.1.
+    ids.forEach((id, i) => db.prepare("UPDATE runs SET state = 'ended', started_at = ?, ended_at = ?, cost_usd = ?, metrics = ? WHERE id = ?").run(at - i * 60_000, at - i * 60_000 + 1_000, i === 0 ? 0.9 : 0.1, JSON.stringify({ path: "handed_back", workflow: "answer", workflow_digest: DIGEST, learned_revision: "s" }), id));
+  } finally {
+    db.close();
+  }
+  const seen = [];
+  // A store whose history window is two runs: its list honours `limit`, newest first, as the runner's does at PAST_RUNS.
+  const windowed = new Proxy(store, { get: (target, key) => (key === "runs" ? { ...store.runs, list: async (filter) => (seen.push(filter?.limit), (await store.runs.list(filter)).slice(0, filter?.limit === undefined ? undefined : 2)) } : typeof target[key] === "function" ? target[key].bind(target) : target[key]) });
+  const { workflows } = await agentCostOverStore(windowed, "agent-1");
+  assert.ok(seen.includes(500), `the history is asked for at the runner's window: ${JSON.stringify(seen)}`);
+  assert.equal(workflows[0]?.served?.runs, 2, `the window's two runs, not all four: ${JSON.stringify(workflows)}`);
+});
+
 test("workflowFirstOf: one fitting workflow serves; none, two, a workflow run, no learning start, or workflow_first false do not", async () => {
   const flow = (name, required) => ({ name, description: "", workflow: JSON.stringify({ ...answerFlow, name, schemas: { ...answerFlow.schemas, In: { type: "object", required, properties: Object.fromEntries(required.map((key) => [key, { type: "string" }])) } } }) });
   const launch = { input: { content: "c", question: "q" }, learning: { seed: "abc" } };
@@ -417,7 +505,7 @@ async function cliRun(t, { sure = true } = {}) {
   const gw = await startFauxGateway({ call: ({ body }) => {
     const offered = (body?.tools ?? []).some((tool) => tool?.name === "submit");
     const answered = (body?.messages ?? []).some((m) => Array.isArray(m.content) && m.content.some((b) => b?.type === "tool_result")) || (body?.input ?? []).some((item) => item?.type === "function_call_output");
-    return offered && !answered ? { name: "submit", input: { value: { answer: sure ? 42 : 41, sure } } } : undefined;
+    return offered && !answered ? { name: "submit", input: { value: { answer: answer ?? (sure ? 42 : 41), sure } } } : undefined;
   } });
   let runner;
   let reader;
