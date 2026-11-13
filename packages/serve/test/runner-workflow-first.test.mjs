@@ -546,6 +546,12 @@ test("answerAsServed: one answer as served for serving, replay and grading; what
   assert.deepEqual(answerJson(replayed.text), { value: { mcc: "5462" } });
   assert.match(answerAsServed("forty-two", { type: "object", required: ["n"], properties: { n: { type: "number" } } }).why ?? "", /^its answer does not meet the agent's output schema: \/n /);
   assert.deepEqual(answerAsServed("5462", undefined), { text: "5462", value: "5462" }, "no schema: as the workflow gave it");
+  // An object output that fails the schema goes back to the agent, said against the object: never its own text in a field.
+  const wrongType = answerAsServed('{"answer":42,"sure":true}', { type: "object", required: ["answer"], properties: { answer: { type: "string" } } });
+  assert.equal(wrongType.text, undefined, `a mismatched object is not served: ${JSON.stringify(wrongType)}`);
+  assert.match(wrongType.why ?? "", /^its answer does not meet the agent's output schema: \/answer /);
+  // An array output is no object: as text, it fills the one field.
+  assert.deepEqual(answerAsServed('["a"]', mcc).value, { mcc: '["a"]' });
 });
 
 test("a claim that dies after the workflow handed the job back: the next claim sends the handback even when the money rule now stops the workflow", async (t) => {
