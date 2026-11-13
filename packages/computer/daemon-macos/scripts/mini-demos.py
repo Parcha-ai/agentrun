@@ -319,17 +319,6 @@ MAKE_CALENDAR = """on run argv
   tell application "Calendar" to make new calendar with properties {name:item 1 of argv}
   return ""
 end run"""
-
-# A calendar with one event in it, now, titled as given: Calendar's setup (see calendar_prepare).
-MAKE_CALENDAR_EVENT = """on run argv
-  tell application "Calendar"
-    set c to make new calendar with properties {name:item 1 of argv}
-    set t0 to current date
-    make new event at end of events of c with properties {summary:item 2 of argv, start date:t0, end date:t0 + 30 * minutes}
-  end tell
-  return ""
-end run"""
-
 # The Notes folders' names (CI only: on a person's Mac they are theirs).
 FOLDER_NAMES = """tell application "Notes" to return name of every folder"""
 
@@ -945,9 +934,14 @@ def notes_new_note(t):
     # Notes on macOS 26 opens a new folder's name for editing, the script's too (its name shows as a text box), and a
     # click on the folder then opens nothing: enter keeps the name and ends that. Part of making the sandbox, so not
     # the task's step.
-    if find(tree["nodes"], role="textbox", value=NAME) is not None:
-        t.act([{"key": "enter"}], "keep the new folder's name (Notes opened it for editing)")
+    for front in (False, True):
+        if find(tree["nodes"], role="textbox", value=NAME) is None:
+            break
+        t.act([{"key": "enter"}], "keep the new folder's name (Notes opened it for editing)" + (", in front" if front else ""), foreground=front)
         tree = t.observe("observe Notes with the task's folder")
+        if CI:
+            print(f"    after enter{' in front' if front else ''}: still editing the name {find(tree['nodes'], role='textbox', value=NAME) is not None}, "
+                  f"title {tree['window'].get('title')!r}", flush=True)
     # The folder list names each folder "<name>, <count> notes": the task's folder, opened by its cell, is where
     # super+n puts the new note.
     cell = need(t, tree["nodes"], "the task's folder in the folder list", starts=f"{NAME},")
@@ -956,6 +950,13 @@ def notes_new_note(t):
     deadline = time.monotonic() + 5
     while not (tree := t.observe("observe the task's folder"))["window"].get("title", "").startswith(NAME):
         if time.monotonic() > deadline:
+            if CI:  # which way opens it on macOS 26: a click at the folder's place
+                cell = find(tree["nodes"], starts=f"{NAME},", role="cell")
+                if cell is not None and cell.get("bounds"):
+                    x, y, w, h = cell["bounds"]
+                    r = t.act([{"click": [x + 12, y + h / 2]}], "click the task's folder at its place", state=tree.get("state"), must=False)
+                    time.sleep(1)
+                    print(f"    after the click at its place: {json.dumps(r and r.get('steps'))}, title {t.observe('observe')['window'].get('title')!r}", flush=True)
             raise Failed("the task's folder did not open: the window shows another")
         time.sleep(0.3)
     # The new note's editor takes focus a moment after super+n: typing at once went to the notes list and was lost.
@@ -993,20 +994,17 @@ def ci_calendars(t, when):
 
 def calendar_prepare(t):
     """Calendar open, its first-run sheets answered, and its calendar list still: a fresh Calendar (CI's runner) adds
-    its own calendar (Scheduled Reminders) a while after it opens, and one added after the snapshot would count as the
-    task's. A fresh Calendar's first one is made here, with an event, and removed, and the list is read until it has
-    not changed for 8 s (at most 40 s)."""
+    its own calendar (Scheduled Reminders) the first time it lists its calendars, and one added after the snapshot
+    would count as the task's. So the list is shown here and hidden again, and then read until it has not changed for
+    8 s (at most 40 s)."""
     t.launch()
-    first_run(t, t.observe())
-    # Calendar shows no first-run sheet on CI, so this runs every time; the setup calendar is in the run's sandbox
-    # (the sweep removes one a killed run left).
-    setup = f"{NAME} setup"
-    t.say("make and remove a setup calendar with an event")
-    try:
-        t.run_exec(["/usr/bin/osascript", "-e", MAKE_CALENDAR_EVENT, setup, f"{event_title(RUN)}-setup"], "make a setup calendar")
-        ci_calendars(t, "after the setup calendar")
-    finally:
-        t.run_exec(["/usr/bin/osascript", "-e", REMOVE_CALENDARS, setup, f"{event_title(RUN)}-setup"], "remove the setup calendar")
+    tree, _ = first_run(t, t.observe())
+    toggle = find(tree["nodes"], id="calendars-button")
+    if toggle is not None:
+        t.act([{"press": toggle["ref"]}], "show the list of calendars")
+        time.sleep(2)
+        ci_calendars(t, "with the list shown")
+        t.act([{"press": toggle["ref"]}], "hide the list of calendars")
     t.say("wait for Calendar's list of calendars to be still")
     start = time.monotonic()
     names, since = calendar_names(t.c), start
@@ -1042,7 +1040,6 @@ def calendar_new_event(t):
     tree = t.observe("observe the event's inspector")
     menu = need(t, tree["nodes"], "the inspector's calendar menu", id="calendar-button")
     t.act([{"press": menu["ref"]}], "open the event's calendar menu")
-    ci_calendars(t, "with the calendar menu open")
     tree = t.observe("observe the calendar menu", full=True)
     item = need(t, tree["nodes"], "the task's calendar in the menu", role="menuitem", name=NAME)
     t.act([{"press": item["ref"]}], "move the event into the task's calendar")
