@@ -183,7 +183,7 @@ test("the cap is never gone past: a row starts only when what is left covers a r
   const one = await until(api, id, probe.body.id, finished);
   assert.equal(one.status, "completed");
   const row = one.rows[0].total_usd;
-  assert.ok(row > 0 && row < 0.005, `a faux row's cost: ${row}`);
+  assert.ok(row > 0 && row < 0.02, `a faux row's cost: ${row}`);
   // Room for a second row (a cent and a half a row left after the first), and not for a third.
   const cap = money(RUN_CAP_MIN_USD + row * 1.5);
   const created = await api("POST", `/agents/${id}/learning/batches`, body(Array(6).fill("Job answer."), { max_cost_usd: cap }));

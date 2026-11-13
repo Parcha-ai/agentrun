@@ -46,9 +46,9 @@ function answeredOf(row: KeptRow): Pick<Learning, "answered_at" | "job_cost_usd"
   return { answered_at: row.answered_at, job_cost_usd: usdOrNull(row.job_cost_usd), look_back_usd: usdOrNull(row.look_back_usd) };
 }
 
-/** Run `runId`'s learning end; null when the run kept no learning. Proposed while its learning run has not ended. */
-export async function runLearningEnd(store: Store, runId: string): Promise<RunLearningEnd | null> {
-  const kept = await store.learning.proposal(runId);
+/** Run `runId`'s learning end (its newest round's, or round `round`'s); null when the run kept no learning. Proposed while its learning run has not ended. */
+export async function runLearningEnd(store: Store, runId: string, round?: number): Promise<RunLearningEnd | null> {
+  const kept = await store.learning.proposal(runId, round);
   if (!kept) return null;
   const row = (kept.proposal ?? {}) as KeptRow;
   return { ...(await endOfKept(store, kept, row)), ...answeredOf(row) };

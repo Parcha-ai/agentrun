@@ -1285,8 +1285,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     figures: async (runId) => {
       const run = await store.runs.get(runId);
       if (!run) return undefined;
-      const [cost, end] = await Promise.all([costRunOf(store, run, 0), runLearningEnd(store, runId)]);
-      return { path: cost.path, cost_usd: cost.cost_usd, learning_usd: cost.learning_usd, total_usd: cost.total_usd, merged: end?.merged ?? null, learned: { notes: (end?.learned ?? []).map((x) => x.name), skills: (end?.skills ?? []).map((x) => x.name), workflows: (end?.workflows ?? []).map((x) => x.name) } };
+      // Every round the run kept (a review follow-up opens a round of its own): what each one learned, the newest's merge.
+      const newest = await store.learning.proposal(runId);
+      const ends = await Promise.all(Array.from({ length: newest?.round ?? 1 }, (_, i) => runLearningEnd(store, runId, i + 1)));
+      const cost = await costRunOf(store, run, 0);
+      const end = ends.at(-1);
+      const names = (pick: (e: NonNullable<typeof end>) => readonly { name: string }[] | undefined) => [...new Set(ends.flatMap((e) => (e ? (pick(e) ?? []).map((x) => x.name) : [])))];
+      return { path: cost.path, cost_usd: cost.cost_usd, learning_usd: cost.learning_usd, total_usd: cost.total_usd, merged: end?.merged ?? null, learned: { notes: names((e) => e.learned), skills: names((e) => e.skills), workflows: names((e) => e.workflows) } };
     },
     ...(options.batchPollMs ? { pollMs: options.batchPollMs } : {}),
   });
