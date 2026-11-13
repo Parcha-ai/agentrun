@@ -5,7 +5,7 @@
 // (mcp-oauth.ts) keep the SDK tool-probe, validation and sign-in flow over these. The store never opens a credential;
 // only this process (and a runner) does, with the seal key.
 import {
-  type Mcp, type McpCredential, type McpCredentialMark, type McpOauth, type McpServerRow, type McpServerWrite, openMcpCredential, type OpenedMcpCredential,
+  type Mcp, type McpCredential, type McpCredentialMark, type McpOauth, type McpRemoved, type McpServerRow, type McpServerWrite, openMcpCredential, type OpenedMcpCredential,
   sealColumn, sealedAt, sealMcpCredential, unsealColumn,
 } from "./store/index.js";
 import { GITHUB_MCP_ONLY, GITHUB_MCP_ORIGIN, githubMcpUrl } from "./github.js";
@@ -93,15 +93,27 @@ export async function rewriteMcpServer(
   }, seen);
 }
 
-/** The server's row goes. */
-export async function removeMcpServer(store: { mcp: Pick<Mcp, "remove"> }, name: string): Promise<void> {
-  await store.mcp.remove(name);
+/** The server's row goes; what it held as it went (its address, its credential opened, as openServerCredential does), or
+ *  undefined when there was no row. */
+export async function removeMcpServer(store: { mcp: Pick<Mcp, "remove"> }, sealKey: Buffer, name: string): Promise<RemovedMcpServer | undefined> {
+  return removedServer(sealKey, name, await store.mcp.remove(name));
 }
 
-/** The server's row goes, only while its credential is still `expected` (Mcp.removeIfCredential). False when it is not. */
-export async function removeMcpServerIfCredential(store: { mcp: Pick<Mcp, "removeIfCredential"> }, name: string, expected: NonNullable<McpCredentialMark>): Promise<boolean> {
-  return store.mcp.removeIfCredential(name, expected);
+/** The server's row goes, only while its credential is still `expected` (Mcp.removeIfCredential). Undefined when it is not. */
+export async function removeMcpServerIfCredential(store: { mcp: Pick<Mcp, "removeIfCredential"> }, sealKey: Buffer, name: string, expected: NonNullable<McpCredentialMark>): Promise<RemovedMcpServer | undefined> {
+  return removedServer(sealKey, name, await store.mcp.removeIfCredential(name, expected));
 }
+
+/** A removed row: its address and its credential opened (§7), the credential the one the deleting statement saw. */
+export type RemovedMcpServer = { url: string; opened: OpenedMcpCredential | undefined };
+const removedServer = (sealKey: Buffer, name: string, removed: McpRemoved | undefined): RemovedMcpServer | undefined => {
+  if (!removed) return undefined;
+  try {
+    return { url: removed.url, opened: openMcpCredential(sealKey, { name, url: removed.url, sealed: removed.sealed }) };
+  } catch {
+    return { url: removed.url, opened: undefined };
+  }
+};
 
 /** Every saved server's row, by name (its credential stays sealed). */
 export async function listMcpServers(store: { mcp: Pick<Mcp, "servers"> }): Promise<McpServerRow[]> {

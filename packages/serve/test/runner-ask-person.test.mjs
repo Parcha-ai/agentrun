@@ -65,11 +65,11 @@ async function askRun(t, { tools, personWait, settled, loopOptions = {}, upstrea
     rmSync(dir, { recursive: true, force: true });
   });
   await server.agents.create({ id: "agent-1", name: "Asks" }, { id: "rev-1", kind: "agentic", body: { instructions: "Ask the person.", tools } });
-  const launch = { input: { content: "Pick a region." }, title: "t", place: { mode: "runner" }, model: { provider: "anthropic", modelId: "claude-sonnet-4-5" } };
+  const launch = { input: { content: "Pick a region." }, title: "t", place: { mode: "runner" }, model: { provider: "anthropic", modelId: "claude-sonnet-5-5" } };
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
   await server.flush?.();
-  const price = (_model, usage) => ((usage.input ?? 0) * 3 + (usage.output ?? 0) * 15) / 1e6;
-  const route = { model: "claude-sonnet-4-5", provider: { api: "anthropic-messages", origin: gw.url, credential: () => `not-a-secret-${"pi"}` }, cost: { input: 3, output: 15 }, outputCeiling: 8_192, price, fetch: (...args) => (upstream ?? globalThis.fetch)(...args) };
+  const price = (_model, usage) => ((usage.input ?? 0) * 2 + (usage.output ?? 0) * 10) / 1e6;
+  const route = { model: "claude-sonnet-5-5", provider: { api: "anthropic-messages", origin: gw.url, credential: () => `not-a-secret-${"pi"}` }, cost: { input: 2, output: 10 }, outputCeiling: 8_192, price, fetch: (...args) => (upstream ?? globalThis.fetch)(...args) };
   const deps = { env: {}, data: dir, journal: (claim) => store.journal(claim), store, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim: async () => ({ release: async () => {} }) };
   const specOf = async (claim, run) => {
     const spec = await adapterRunSpecFromLaunch(launch, run, deps, claim);
@@ -208,7 +208,7 @@ test("resume after a follow-up: a reopened run that parks on its question has it
 });
 
 test("CLI refused: a CLI-harness run that names ask_person is refused in main's words, never bound", async () => {
-  const blockers = await blockersOf({}, { kind: "agentic", instructions: "Ask the person.", tools: ["ask_person"], harness: "codex", model: "gpt-5" });
+  const blockers = await blockersOf({}, { kind: "agentic", instructions: "Ask the person.", tools: ["ask_person"], harness: "codex", model: "gpt-6.1-sol" });
   const ask = blockers.find((blocker) => blocker.tool === "ask_person");
   assert.ok(ask, `ask_person is refused on a CLI harness: ${JSON.stringify(blockers)}`);
   assert.match(ask.message, /runs on pi here/, `refused in main's words: ${JSON.stringify(ask)}`);

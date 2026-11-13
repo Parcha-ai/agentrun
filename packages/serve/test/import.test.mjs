@@ -1309,14 +1309,14 @@ async function listPrice(provider, id, { input = 0, output = 0, cacheRead = 0, c
 
 test("a run its source did not price gets the catalog's estimate at its own provider's price, its cost still unknown; an unlisted model, a provider the catalog does not list for it, or a request of unknown tokens leaves it unknown, a source's cost is kept with none, and a provider's $0 is $0", async (t) => {
   const { store, runs } = await importedOne(t, (home, project) => {
-    codexSession(home, project, 51, { model: "gpt-5.5" });
+    codexSession(home, project, 51, { model: "gpt-6.1-sol" });
     codexSession(home, project, 52);
-    codexSession(home, project, 53, { model: "gpt-5.5", usage: "none" });
+    codexSession(home, project, 53, { model: "gpt-6.1-sol", usage: "none" });
     claudeSession(home, project, 54, { unknownCost: true });
     claudeSession(home, project, 55);
     piSession(home, project, 56, { provider: "google", modelId: "gemma-4-26b-a4b-it", costs: [null, null] });
-    // A provider of its own: the catalog lists gpt-5.5, but not as this provider serves it.
-    codexSession(home, project, 57, { model: "gpt-5.5", provider: "router" });
+    // A provider of its own: the catalog lists gpt-6.1-sol, but not as this provider serves it.
+    codexSession(home, project, 57, { model: "gpt-6.1-sol", provider: "router" });
     // Free from this provider, though others list it paid: its own price, never another's.
     piSession(home, project, 58, { provider: "qwen-token-plan", modelId: "deepseek-v4-pro", costs: [null, null] });
   });
@@ -1325,7 +1325,7 @@ test("a run its source did not price gets the catalog's estimate at its own prov
     const { costUsdEst, costBasis } = await storedMetrics(store, run.id);
     priced.push([run.importedFrom.source, run.costUsd ?? null, costUsdEst ?? null, costBasis ?? null]);
   }
-  const codex = await listPrice("openai", "gpt-5.5", { input: 300 + 100, cacheRead: 600 + 900, output: 40 + 25 });
+  const codex = await listPrice("openai", "gpt-6.1-sol", { input: 300 + 100, cacheRead: 600 + 900, output: 40 + 25 });
   const claude = await listPrice("anthropic", "claude-sonnet-5", { input: 3 + 5, cacheRead: 1000 + 1300, cacheWrite: 200 + 100, output: 50 + 30 });
   assert.ok(codex > 0 && claude > 0);
   assert.deepEqual(priced, [

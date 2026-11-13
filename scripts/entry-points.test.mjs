@@ -20,6 +20,7 @@ const realpathForm = 'compares realpathSync(argv[1]) with its URL, which is syml
 const reviewed = new Map([
   ['scripts/is-main.mjs', 'compares realpathSync(argv[1]) with its URL, symlink-safe, only where Node has no import.meta.main, to refuse the command rather than exit 0'],
   ['packages/computer/src/entry.ts', realpathForm],
+  ['packages/computer/test/fake-computerd.mjs', realpathForm],
   ['packages/serve/test/secret-custody.test.mjs', childScript],
   ['packages/serve/test/learn-support.mjs', childScript],
   ['packages/computer/test/phone-provider.test.mjs', childScript],

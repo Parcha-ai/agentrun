@@ -769,6 +769,9 @@ export interface McpServerRow {
    *  never by its own clock against the set's expires_at, which the writer stamped on its clock. Null when the writer
    *  gave no measure of the token's life. */
   readonly tokenLeftMs: number | null;
+  /** The token's end as the store stamped it (token_until), read in the same snapshot as `sealed`: the end of the very
+   *  token the sealed set holds. A refresh by any claim moves it. Null as tokenLeftMs. */
+  readonly tokenUntil: number | null;
   readonly createdAt: number;
   readonly updatedAt: number;
   /** When the tools were last listed (ms): a refresh moves this, not updatedAt, so a refresh is not read as an owner edit.
@@ -777,6 +780,18 @@ export interface McpServerRow {
   /** When the sealed credential was last set (ms): a new credential's save or a sign-in, never a token refresh. Null with
    *  no credential. */
   readonly credentialChangedAt: number | null;
+}
+
+/** A saved MCP server's stamp (Mcp.stamp): its url and auth, when its credential last changed (credentialChangedAt), and
+ *  its access token's time left by the store's own clock (tokenLeftMs), as on its row. */
+export interface McpServerStamp {
+  readonly url: string;
+  readonly auth: string;
+  readonly credentialChangedAt: number | null;
+  readonly tokenLeftMs: number | null;
+  /** Its access token's end as the store stamped it (token_until, the store's clock): a refresh by any claim moves it, so a
+   *  claim that opened the row at one end knows the token it holds is not the row's once this differs. */
+  readonly tokenUntil: number | null;
 }
 
 /** A run's MCP pin: what it may call, per granted server (url, tools, prices), written once at its first claim. */
@@ -802,6 +817,10 @@ export const MCP_REFRESH_LEASE_MS = MCP_REFRESH_CALL_MS + STORE_WRITE_DEADLINE_M
  *  refresh keeps the time; a new credential or a sign-in moves it). Null: no server by that name. */
 export type McpCredentialMark = { readonly auth: string; readonly sealed: boolean; readonly changedAt: number | null } | null;
 
+/** The row a removal deleted, as the statement that deleted it saw it: the address and the sealed credential as they were
+ *  at that instant (a token refresh landing earlier is in it, one landing later finds no row to keep). */
+export type McpRemoved = { readonly url: string; readonly sealed: Uint8Array | null };
+
 /** The fields of a server's write (Mcp.put). */
 export type McpServerWrite = { name: string; url: string; auth: string; protocol?: string | null; tools: unknown; prices?: unknown; serverInfo?: unknown; instructions?: string | null; sealed?: Uint8Array | null; listedAt?: number; updatedAt?: number; credentialChangedAt?: number | null; tokenLeftMs?: number | null };
 
@@ -822,13 +841,18 @@ export interface Mcp {
    *  set. undefined, writing nothing, when the credential changed meanwhile (a refresh kept a rotated set) or the row went:
    *  the caller reads it again and re-applies its change onto the fresh row, a bounded few times. */
   rewrite(server: { name: string; url: string; auth: string; protocol?: string | null; tools: unknown; prices?: unknown; serverInfo?: unknown; instructions?: string | null; listedAt?: number; updatedAt?: number }, seen: Uint8Array | null): Promise<McpServerRow | undefined>;
-  remove(name: string): Promise<void>;
+  /** Deletes the row, answering what it held as it went (McpRemoved); undefined when there was none. */
+  remove(name: string): Promise<McpRemoved | undefined>;
   /** remove(), only while the server's credential is still `expected` (its mark as the remover read it), compared and
-   *  deleted in one statement. False, deleting nothing, when it is not (or the server is gone). */
-  removeIfCredential(name: string, expected: NonNullable<McpCredentialMark>): Promise<boolean>;
+   *  deleted in one statement. Undefined, deleting nothing, when it is not (or the server is gone). */
+  removeIfCredential(name: string, expected: NonNullable<McpCredentialMark>): Promise<McpRemoved | undefined>;
   /** The registry's rows, by name. */
   servers(): Promise<McpServerRow[]>;
   server(name: string): Promise<McpServerRow | undefined>;
+  /** The server's stamp, read cheaply (no tools, no sealed bytes): what a claimed run checks before each call
+   *  (runner/mcp-claim.ts) to see its credential removed, replaced or moved, or its access token near its end. Undefined
+   *  when it is no longer saved. */
+  stamp(name: string): Promise<McpServerStamp | undefined>;
   /** The run's pin, or none (a run that grants no MCP tool has none). */
   pin(runId: string): Promise<McpPinRow | undefined>;
   /** Writes the run's pin under `claim` unless it has one, in one transaction with the claim's epoch fence, and answers the

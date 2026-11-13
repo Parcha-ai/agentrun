@@ -111,7 +111,7 @@ test("the pinned CLI's tool set is the one the harness's lists decide: each of i
 });
 
 const MODEL = 'claude-sonnet-5-5';
-const SMALL = 'claude-haiku-4-5';
+const SMALL = 'claude-haiku-5-5';
 
 test("the CLI's every built-in, the web, a sub-agent and another MCP server are unavailable; only the host's tools run", { skip, timeout: 240_000 }, async (t) => {
   const dir = mkdtempSync(join(ROOT, 'run-'));

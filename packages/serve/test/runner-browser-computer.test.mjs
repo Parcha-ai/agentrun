@@ -147,7 +147,7 @@ test("pi: an agent whose computer is a Browserbase browser runs: its snapshot an
 
 test("a CLI harness refuses a browser computer at its claim, in words, before anything is made", { timeout: 60_000 }, async (t) => {
   const record = { created: [], released: [], connects: 0 };
-  const opened = await storeWith(t, { harness: "opencode", tools: ["read"], computer: BROWSER_COMPUTER }, { ...PI_LAUNCH, harness: "opencode", model: { provider: "openai", modelId: "gpt-5" } });
+  const opened = await storeWith(t, { harness: "opencode", tools: ["read"], computer: BROWSER_COMPUTER }, { ...PI_LAUNCH, harness: "opencode", model: { provider: "openai", modelId: "gpt-6.1-sol" } });
   const [claim] = await opened.store.runs.claimMany("runner-a", 1, { leaseMs: 60_000 });
   const registry = createRegistry();
   const harness = await Harness.open(opened.store.journal(claim), { models: () => undefined, registry, onReport: () => {} }, ctx);
