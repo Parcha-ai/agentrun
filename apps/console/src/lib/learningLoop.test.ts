@@ -39,6 +39,14 @@ describe("a revision's standing and numbers", () => {
     expect(replayLine(record({ replay: REPLAY }))).toBe("Replay on 20 graded inputs: workflow 95% vs agent 90% (+5 pts), 2 handed back");
     expect(replayLine(record({ source: "dry_run", reason: "no graded input it fits: promoted on its dry run" }))).toBe("no graded input it fits: promoted on its dry run");
   });
+  it("says how many replayed inputs were skipped for a write the recording doesn't have, only when any were", () => {
+    expect(replayLine(record({ replay: { ...REPLAY, skipped_write: 0 } }))).toBe("Replay on 20 graded inputs: workflow 95% vs agent 90% (+5 pts), 2 handed back");
+    expect(replayLine(record({ replay: { ...REPLAY, skipped_write: 3 } }))).toBe("Replay on 20 graded inputs: workflow 95% vs agent 90% (+5 pts), 2 handed back, 3 skipped: needs a write the recording doesn't have");
+    expect(replayLine(record({ replay: { ...REPLAY, n: 1, skipped_write: 1 } }))).toBe("Replay on 1 graded input: workflow 95% vs agent 90% (+5 pts), 2 handed back, 1 skipped: needs a write the recording doesn't have");
+    // Every input skipped: nothing was scored, the record's reason says why.
+    const reason = "every one of its 5 graded inputs needs a write the recording doesn't have: a replay never runs a write, so nothing was replayed";
+    expect(replayLine(record({ decided: "hold", reason, replay: { ...REPLAY, n: 0, agree: 0, skipped_write: 5 } }))).toBe(reason);
+  });
 });
 
 describe("guards and p", () => {
