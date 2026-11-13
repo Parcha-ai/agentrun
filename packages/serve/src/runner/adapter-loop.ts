@@ -2514,7 +2514,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     if (!step) return { kind: "rows", also: [] };
     if (!spec.agentId) throw new Error("the run's spec names no agent, so its end-of-run step cannot be asked");
     try {
-      const rows = await step({ runId: claim.runId, agentId: spec.agentId, claim, outcome, signal: deps.signal, ask: (prompt, opts) => askEndOfRun(claim, prompt, opts.deadlineMs, opts.again === true, opts.round ?? 1) });
+      const rows = await step({ runId: claim.runId, agentId: spec.agentId, claim, outcome, signal: deps.signal, ask: (prompt, opts) => askEndOfRun(claim, prompt, opts.deadlineMs, opts.again === true, opts.round ?? 1, opts.step) });
       return cut() ?? { kind: "rows", also: rows?.also ?? [] };
     } catch (error) {
       return cut() ?? (console.warn(`[runner] ${claim.runId}: its end-of-run step failed: ${said(error)}`), { kind: "rows", also: [] });
@@ -2548,18 +2548,19 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   /** The end-of-run turn: one more turn through the run's session, its request id one per round of the run (a repeat is
    *  answered from its submission, so a later claim never asks the model again; a follow-up's end is the next `round`,
    *  asked anew), its writes under work/.learning/ refused while it runs. `again`: its re-ask, a request of its own (one
-   *  per round too). Aborted at `deadlineMs`. A stop or a lost claim cuts it: it throws, and the step sees why. */
-  async function askEndOfRun(claim: Claim, prompt: string, deadlineMs: number, again = false, round = 1): Promise<EndOfRunAnswer> {
+   *  per round too); `step`, a turn of its own after the look-back (the compile turn's). Aborted at `deadlineMs`. A stop
+   *  or a lost claim cuts it: it throws, and the step sees why. */
+  async function askEndOfRun(claim: Claim, prompt: string, deadlineMs: number, again = false, round = 1, step?: string): Promise<EndOfRunAnswer> {
     if (!session || !harness || !gate || !root) throw new Error("the run's session is not open");
     const on = harness;
     const conversation = root;
     const theSession = session;
-    const requestId = reflectRequestId(claim.runId, again, round);
+    const requestId = reflectRequestId(claim.runId, again, round, step);
     const theRecord = cliRecord;
     // A grade's feedback round (feedbackNow): its first ask is told the grade first (feedback-round.ts feedbackAsk), and,
     // when the agent never took the job (its learned workflow answered alone: its session is new), the job and the
     // workflow's answer before it, cut of every secret the runner holds, as a follow-up's are.
-    if (feedbackNow && !again) {
+    if (feedbackNow && !again && step === undefined) {
       const cut = (text: string) => (deps.redact ? deps.redact(text) : text);
       const servedNow = theSession.state === "new" ? servedAnswerOf(await entriesOf(gate.journal, conversation.id, context)) : undefined;
       const seen = servedNow && specNow ? { job: specNow.input, served: { workflow: servedNow.workflow, answer: cut(servedNow.answer) } } : undefined;

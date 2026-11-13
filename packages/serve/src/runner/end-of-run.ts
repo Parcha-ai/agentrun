@@ -12,14 +12,17 @@ export const REFLECT_LABEL = "learning";
 
 /** The end-of-run turn's request id, one per round of a run: pi answers a repeat of it from its submission, so a turn
  *  asked again on a later claim is never asked of the model twice. A run's first end is round 1; an end after a follow-up
- *  opened the run again is the next round, whose turn is asked of the model anew under an id of its own. The server's own
- *  prefix, so the run's readers tell the turn's rows apart by it (reflectRanges). */
-export const reflectRequestId = (runId: string, again = false, round = 1) => `${REFLECT_PREFIX}${runId}${round > 1 ? `${REFLECT_ROUND}${round}` : ""}${again ? REFLECT_AGAIN : ""}`;
+ *  opened the run again is the next round, whose turn is asked of the model anew under an id of its own. `step`, a turn of
+ *  its own after the look-back in the same round (the compile turn's attempts, `compile-<n>`): its own request too. The
+ *  server's own prefix, so the run's readers tell the turn's rows apart by it (reflectRanges). */
+export const reflectRequestId = (runId: string, again = false, round = 1, step?: string) => `${REFLECT_PREFIX}${runId}${round > 1 ? `${REFLECT_ROUND}${round}` : ""}${step !== undefined ? `:${step}` : again ? REFLECT_AGAIN : ""}`;
 /** The suffix of the end-of-run turn's re-ask's request id (EndOfRunTurn ask's `again`): one per round too, so a repeat
  *  is answered from its submission, never asked of the model twice. */
 export const REFLECT_AGAIN = ":again";
 /** What names a later round in the end-of-run turn's request id, before its number. */
 const REFLECT_ROUND = ":round-";
+/** What ends a round's re-ask or step request id (reflectRequestId), stripped to read the round it is of. */
+const REFLECT_TAIL = /:(?:again|compile-\d+)$/;
 
 /** One round of a run's end-of-run turn in its journal: `from`, the entry its input placed (the turn's first); `until`, the
  *  run's end entry that closed it, once written. Every entry between is the turn's. */
@@ -35,7 +38,8 @@ export function reflectRanges(submissions: readonly { readonly type?: string; re
   const starts = new Map<string, number>();
   const note = (requestId: string, entry: number) => {
     if (!Number.isFinite(entry)) return;
-    const round = requestId.endsWith(REFLECT_AGAIN) ? requestId.slice(0, -REFLECT_AGAIN.length) : requestId;
+    // A re-ask and a step after the look-back (the compile turn's) are the round's own turn: one range.
+    const round = requestId.replace(REFLECT_TAIL, "");
     starts.set(round, Math.min(starts.get(round) ?? entry, entry));
   };
   for (const record of submissions) {

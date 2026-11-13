@@ -26,10 +26,12 @@ import type { AnalyticsFilter } from "./analytics.js";
 import { journalEntries } from "../runner/journal-reader.js";
 import { KINDS } from "../runner/journal-kinds.js";
 import { keptOf, learnedOf, lostOf, type DroppedData, type GradedData, type KeptProposal, type MergedData } from "../runner/learning-loop.js";
+import { promotedOf } from "../learn/compile.js";
+import { promotionsOf } from "../learn/promote.js";
 import type { Store } from "../store/store.js";
 
 /** A run's learning end: the Learning fields its end sets. */
-export type RunLearningEnd = Pick<Learning, "state" | "reason" | "detail" | "at" | "problems" | "verdict" | "graded" | "merged" | "cost_usd" | "tokens" | "learned" | "pending" | "skills" | "workflows" | "lost" | "answered_at" | "job_cost_usd" | "look_back_usd">;
+export type RunLearningEnd = Pick<Learning, "state" | "reason" | "detail" | "at" | "problems" | "verdict" | "graded" | "merged" | "cost_usd" | "tokens" | "learned" | "pending" | "skills" | "workflows" | "lost" | "answered_at" | "job_cost_usd" | "look_back_usd" | "compiled" | "draft_errors">;
 
 /** The kept row as the end-of-run hook writes it (runner/reflect-hook.ts): proposed with the proposal, or dropped, with
  *  when the job answered, its cost and what looking back cost once the run looked back. */
@@ -52,7 +54,24 @@ export async function runLearningEnd(store: Store, runId: string): Promise<RunLe
   const kept = await store.learning.proposal(runId);
   if (!kept) return null;
   const row = (kept.proposal ?? {}) as KeptRow;
-  return { ...(await endOfKept(store, kept, row)), ...answeredOf(row) };
+  return { ...(await endOfKept(store, kept, row)), ...answeredOf(row), ...compiledOf(row) };
+}
+
+/** What a kept row says of its compile turn (runner/reflect-hook.ts): the record, and a failed draft's errors; read as
+ *  untrusted, an entry out of shape left out. */
+function compiledOf(row: KeptRow): Pick<Learning, "compiled" | "draft_errors"> {
+  const texts = (list: unknown): string[] => (Array.isArray(list) ? list.filter((one): one is string => typeof one === "string") : []);
+  // The kept row's own (its proposal's `compiled` names only the workflow and its notes, for the merge).
+  const { compiled: record, draft_errors } = row as { compiled?: unknown; draft_errors?: unknown };
+  const errors = texts(draft_errors);
+  const out: Pick<Learning, "compiled" | "draft_errors"> = errors.length ? { draft_errors: errors } : {};
+  if (record && typeof record === "object" && typeof (record as { workflow?: unknown }).workflow === "string") {
+    const { workflow, from_notes, attempts, digest } = record as { workflow: string; from_notes?: unknown; attempts?: unknown; digest?: unknown };
+    const tries = Array.isArray(attempts) ? attempts.filter((one) => one && typeof one === "object" && typeof (one as { ok?: unknown }).ok === "boolean").map((one) => ({ ok: (one as { ok: boolean }).ok, errors: texts((one as { errors?: unknown }).errors) })) : [];
+    // `promoted` is never kept: runLearningOverStore reads it from the agent's promotion records (promotedOf).
+    out.compiled = { workflow, from_notes: texts(from_notes), attempts: tries, ...(typeof digest === "string" && /^[0-9a-f]{16}$/.test(digest) ? { digest } : {}) };
+  }
+  return out;
 }
 
 /** The learning end a kept row and its learning run's journal say. */
@@ -516,6 +535,11 @@ export function usedOnly(started: NonNullable<RunLaunch["learning"]>, terminal: 
 export async function runLearningOverStore(store: Store, runId: string, shown: Shown, secrets: readonly string[], statuses?: (agentId: string) => Promise<ReadonlyMap<string, ItemStatus> | undefined>) {
   const started = await learningStartOfRun(store, runId);
   const row = await store.runs.get(runId);
+  // A kept compile's promotion (learn/promote.ts), as the agent's records say now: unread, it stays undecided.
+  if (end.compiled?.digest && row) {
+    const promoted = promotedOf(await promotionsOf(store.settings, row.agentId).catch(() => []), end.compiled.workflow, end.compiled.digest);
+    if (promoted !== undefined) end.compiled = { ...end.compiled, promoted };
+  }
   const settled = row !== undefined && FINAL_STATES.includes(row.state);
   // A run that only uses what its agent learned keeps no proposal: its learning is its start (seeded, then dropped `use`
   // once it ended), the same words its run view gives.
