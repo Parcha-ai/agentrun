@@ -66,6 +66,20 @@ test('remote command leases fence workers, retain ordered events and reject chan
  assert.equal((await s.call('POST','/poll',{worker_id:'worker-2'})).body.commands.length,0);
 });
 
+test('remote import preserves large installed skill catalogs within a bounded metadata envelope',async t=>{
+ const s=await setup(t);
+ const installed={...target,configuration:Array.from({length:384},(_,i)=>({path:`/source-only/skills/skill-${i}/SKILL.md`,sha256:'a'.repeat(64)})),skills:Array.from({length:362},(_,i)=>`skill-${i}`)};
+ const result=await s.call('POST','/import',{target_id:'large-catalog',target:installed});
+ assert.equal(result.status,200,JSON.stringify(result.body));
+ const agent=(await s.api('GET',`/agents/${result.body.agent_id}`)).body;
+ assert.deepEqual(agent.definition.native.configuration,installed.configuration);
+ assert.deepEqual(agent.definition.native.skills,installed.skills);
+ const oversized={...installed,configuration:Array.from({length:2049},(_,i)=>({path:`/s/${i}`,sha256:'a'.repeat(64)}))};
+ assert.equal((await s.call('POST','/import',{target_id:'too-many-files',target:oversized})).status,422);
+ const tooManyBytes={...target,configuration:Array.from({length:100},(_,i)=>({path:`/${i}/`+'x'.repeat(4000),sha256:'a'.repeat(64)}))};
+ assert.equal((await s.call('POST','/import',{target_id:'too-many-bytes',target:tooManyBytes})).status,413);
+});
+
 test('expired remote dispatch is never replayed and cancellation reaches the source',async t=>{
  const s=await setup(t);let now=Date.now();const broker=new RemoteConnectors(s.store,()=>now);
  const first=broker.request(s.native,'send',{prompt:'Once only'});const rejected=assert.rejects(first,/expired|unknown/);

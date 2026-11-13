@@ -109,13 +109,13 @@ export class RemoteConnectors {
     catch(error) { return { ...binding, state: 'needs_attention', capabilities: { ...binding.capabilities, launch: false }, issues: [...binding.issues, error instanceof Error ? error.message : 'The remote source is unavailable.'] }; }
   }
   async importTarget(id: string, input: unknown) {
-    const b = object(input); bounded(b, 128_000);
+    const b = object(input); bounded(b, 256_000);
     if (!validId(b.target_id) || (b.name !== undefined && !text(b.name))) throw new ApiError('input_invalid', 'Choose a source-approved target and name.');
     const raw = object(b.target);
     if (raw.remote !== undefined) throw new ApiError('input_invalid', 'The connector cannot choose another connector binding.');
     let native: NativeBinding;
     try { native = nativeBindingOf({ ...raw, connected: true }); } catch { throw new ApiError('input_invalid', 'Invalid native target metadata.'); }
-    if (native.configuration.length > 256 || native.skills.length > 128 || native.mcp_servers.length > 128 || native.issues.length > 64 || !['ready','needs_attention','needs_verification'].includes(native.state) || !native.configuration.every(file => text(file.path, 4096) && /^[a-f0-9]{64}$/.test(file.sha256)) || !native.skills.every(s=>text(s,256)) || !native.mcp_servers.every(s=>text(s,256)) || !native.issues.every(s=>text(s,4096))) throw new ApiError('input_invalid', 'Invalid or excessive native metadata.');
+    if (native.configuration.length > 2048 || native.skills.length > 2048 || native.mcp_servers.length > 256 || native.issues.length > 64 || !['ready','needs_attention','needs_verification'].includes(native.state) || !native.configuration.every(file => text(file.path, 4096) && /^[a-f0-9]{64}$/.test(file.sha256)) || !native.skills.every(s=>text(s,256)) || !native.mcp_servers.every(s=>text(s,256)) || !native.issues.every(s=>text(s,4096))) throw new ApiError('input_invalid', 'Invalid or excessive native metadata.');
     const connector = await this.connector(id); if (connector.revoked) throw new ApiError('forbidden', 'Connector revoked.');
     native = { ...native, remote: { connector_id: id, target_id: b.target_id } };
     const agentId = `remote-${hash(`${id}:${b.target_id}`).slice(0,40)}`;
