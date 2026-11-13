@@ -8,7 +8,7 @@
 // A script survives a restart by pi-durable's replay: the VM starts again from its stored start data and is handed the
 // results it had, each global's outcome from its journal, so a computer call already answered is never made again.
 // The sandbox runs each script in a worker of its own: an idle sandbox holds nothing.
-import type { JsonValue } from "@earendil-works/chord";
+import type { JsonValue } from "@earendil-works/chord/json";
 import { CodemodeSandbox, type CodemodeExecuteOptions, type CodemodeRun, type CodemodeRunOptions, type CodemodeResult, type CodemodeSandboxOptions } from "@earendil-works/pi-codemode";
 import type { Extension } from "@earendil-works/pi-durable";
 import { CODEMODE_TOOL_NAME, createCodemodeExtension } from "@earendil-works/pi-durable/codemode";

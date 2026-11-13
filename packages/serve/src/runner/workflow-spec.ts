@@ -9,7 +9,7 @@
 // (CapModel.price = model.cost), and the proxy books an answered request at pi-ai's calculateCost, tiered (the provider's
 // `price`). So a hold and a booking past a model's tier threshold are never under what the provider bills.
 import { randomBytes } from "node:crypto";
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { defineExtension, type Extension, type Harness, ROOT_CONVERSATION_ID, type ToolRegistration, wrapTool } from "@earendil-works/pi-durable";

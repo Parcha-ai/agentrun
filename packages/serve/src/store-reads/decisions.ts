@@ -3,7 +3,7 @@
 // workflow wrote: either one `agentrun.decisions` document with a `receipts` array, or, when the run keeps them keyed, an
 // `agentrun.decisions.count` and the family rows in order. graph-view's ended-run path reads them this way instead of the
 // run's file.
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { decisionKey } from "../workflow/decisions.js";
 import type { JournalReads, Store } from "../store/store.js";
 

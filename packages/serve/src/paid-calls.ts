@@ -14,7 +14,7 @@
 // call node's effect by `bookedIn`, with the ledger the workflow's runner gives it (app.ts). The client deep inside a
 // tool books without the call passed down to it.
 import { AsyncLocalStorage } from "node:async_hooks";
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import type { Refusal } from "@parcha/agentrun-kernel";
 import { ROOT_CONVERSATION_ID, type ToolExecutionApi, type ToolRegistration } from "@earendil-works/pi-durable";
 import { TOOL_COST, TOOL_STARTED } from "./timeline/index.js";

@@ -14,7 +14,7 @@
 // the run's end sweeps). A program a signal ended answers 128 + its number, as pi's own environment does.
 import { randomBytes } from "node:crypto";
 import { posix } from "node:path";
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import type { ToolRegistration } from "@earendil-works/pi-durable";
 import { exitCodeOf } from "@parcha/agentrun-kernel/kernel";
 import {
