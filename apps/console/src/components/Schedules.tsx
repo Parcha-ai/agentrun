@@ -581,7 +581,9 @@ function WebhookForm({ v2, go }: { v2: Client; go: (hash: string) => void }) {
       <div className="max-w-2xl p-5 md:p-8">
         {back}
         <h1 className="mt-3 flex items-center gap-2 text-2xl font-semibold"><Webhook className="size-5 text-primary-text" aria-hidden />{made.name}</h1>
-        <p className="mt-2 text-body text-muted-foreground">Send each request to this URL, signed with {made.source.kind === "webhook" && made.source.signature === "composio" ? "the secret you gave" : "this secret"} ({SIGNATURE_WORDS[made.source.kind === "webhook" ? made.source.signature ?? "standard" : "standard"]}). Each one starts a run.</p>
+        <p className="mt-2 text-body text-muted-foreground">{made.source.kind === "webhook" && made.source.signature === "composio"
+          ? "Register this URL as your Composio project's webhook subscription, then set the secret Composio gives you on this trigger with Set secret. Until then every request is refused; after, each Composio event starts a run."
+          : `Send each request to this URL, signed with this secret (${SIGNATURE_WORDS[made.source.kind === "webhook" ? made.source.signature ?? "standard" : "standard"]}). Each one starts a run.`}</p>
         {made.signing_secret ? <SecretOnce label="The webhook's URL and secret" url={hookUrlOf(made)} secret={made.signing_secret} /> : (
           <section aria-label="The webhook's URL and secret" className="mt-4 space-y-3 border p-4 text-body">
             <Copyable title="URL" text={hookUrlOf(made)} label="Copy URL" hint={HOOK_URL_HINT} />
@@ -612,7 +614,7 @@ function WebhookForm({ v2, go }: { v2: Client; go: (hash: string) => void }) {
           </div>
           {issues["source.signature"] && <p className="mt-1 text-small text-destructive-text" role="alert" data-issue="source.signature">{issues["source.signature"]}</p>}
         </fieldset>
-        {draft.signature === "composio" && <p className="text-small text-muted-foreground">Composio makes this webhook's secret when you register its URL (shown once it is made) as its webhook subscription: set it on the trigger then.</p>}
+        {draft.signature === "composio" && <p className="text-small text-muted-foreground">Composio makes this webhook's secret when you register the trigger's URL as your project's webhook subscription: set it on the trigger then.</p>}
         <Field label="Agent" field="target.agent_id" issue={issues["target.agent_id"]}>
           <Picker name="agent" label="Agent" className="w-full" value={draft.agentId} onChange={(v) => set("agentId")(v)}
             options={[{ value: "", label: agents ? "Pick an agent" : "Loading the agents" },
