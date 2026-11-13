@@ -13,7 +13,7 @@ import { agentFolderOf } from "../dist/files.js";
 import { seedOf } from "../dist/learning.js";
 import * as learning from "../dist/learning.js";
 import { LEARNED_WORKFLOW_TOOL, learnedWorkflowDescription, learnedWorkflowTool } from "../dist/learned-workflow.js";
-import { REPLAY } from "../dist/host-tools.js";
+import { replayOf } from "../dist/tool-list.js";
 import { learningWorkspace, localWorkspace } from "../dist/workspace/index.js";
 import { readSnapshot } from "../dist/learn/folder.js";
 import { entriesOf, git, resnap } from "./learn-support.mjs";
@@ -99,7 +99,7 @@ async function upstreamAt(t) {
 
 test("learned_workflow is never run again after a crash, on any harness, and says each workflow and what it does", () => {
   assert.equal(LEARNED_WORKFLOW_TOOL, "learned_workflow");
-  assert.equal(REPLAY[LEARNED_WORKFLOW_TOOL], "never");
+  assert.equal(replayOf(LEARNED_WORKFLOW_TOOL), "never");
   const said = learnedWorkflowDescription([{ name: "answer", description: DESCRIPTION, workflow: "{}" }]);
   assert.match(said, /^- answer: Answers a question as a number/m);
 });

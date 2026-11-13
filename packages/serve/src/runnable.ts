@@ -4,7 +4,7 @@
 // provider's key, a default model, a tier's model) saves as a warning. Either refuses a run, 409 agent_not_runnable.
 import { WORKFLOW_ADAPTERS } from "./runner/workflow-adapters.js";
 import { DECISION_ADAPTER, decisionModelsNamed, providerMissing, providersNamed } from "./decisions.js";
-import { REPLAY } from "./host-tools.js";
+import { isHostTool } from "./tool-list.js";
 import { type InputIssue, sentence } from "./errors.js";
 import { DEFAULT_HARNESS, HARNESSES, type HarnessCapability, harnessOffers } from "./harness.js";
 import { builtinHarness, harnessOf, onAdapter } from "./harness-table.js";
@@ -181,7 +181,7 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
       // Another harness gets the host tools only (host-tools.ts: the file tools, web_fetch, web_search and
       // monid's): any other tool this host binds, ask_person among them, is pi's here and refuses the run, never runs
       // without it.
-      else if (onAdapter(env, harness) && !(tool in REPLAY)) out.push({ field: `definition.tools[${index}]`, reason: NOT_SET_UP, message: `${tool} runs on pi here; on ${harness} it is not bound yet.`, host: true, tool });
+      else if (onAdapter(env, harness) && !isHostTool(tool)) out.push({ field: `definition.tools[${index}]`, reason: NOT_SET_UP, message: `${tool} runs on pi here; on ${harness} it is not bound yet.`, host: true, tool });
       else {
         unset(`definition.tools[${index}]`, tool);
         // The browser of an agent whose computer is a browser is that computer (tools.ts browserComputer), on the keys
