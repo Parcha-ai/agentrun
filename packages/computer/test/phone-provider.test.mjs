@@ -1,16 +1,19 @@
-// The phone kind's provider (src/phone.ts) on the phone harness's cloud Android, against a fake of its HTTPS API (an
-// injected fetch) and of the phone it rents (an injected adb runner), test/fake-phone-harness.mjs. No port is opened, no
-// adb runs, and no test waits on the wall clock: the fake's clock moves on when the provider sleeps.
+// The phone kind's provider (src/phone-harness.ts) on the phone harness's cloud Android, against a fake of its HTTPS API
+// (an injected fetch) and of the phone it rents (an injected adb transport), test/fake-phone-harness.mjs: the phone's
+// phoned there is a stand-in, so these tests are the provider's own (the API, the ledger, adb, and phoned's start and
+// end); phoned's answers are its JVM tests' (daemon-android/) and test/phoned/'s. No port is opened, no adb runs, and no
+// test waits on the wall clock: the fake's clock moves on when the provider sleeps.
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { randomFillSync } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { duplexPair } from "node:stream";
 import test, { after } from "node:test";
-import { AdbUiSource, kindRefusals, PHONE_GROUPS, parseUiElements, UiEngine } from "../dist/index.js";
+import { kindRefusals, PHONE_GROUPS } from "../dist/index.js";
 import { PROTOCOL_VERSION } from "../dist/protocol.js";
-import { ADB_CODE, ADB_HOST, fakeClock, fakePhoneHarness, ITEMS, KEY, SCREEN, SEARCH_FIELD, SETTINGS } from "./fake-phone-harness.mjs";
+import { ADB_CODE, ADB_HOST, fakeClock, fakePhoneHarness, KEY, PHONED_JAR, PHONED_SERVICE } from "./fake-phone-harness.mjs";
 
 const phone = await import("../dist/phone-harness.js");
 const { create, MOUNT, memoryLedger, adbCli } = phone;
@@ -20,35 +23,15 @@ const dir = mkdtempSync(join(tmpdir(), "computer-phone-"));
 after(() => rmSync(dir, { recursive: true, force: true }));
 
 const SPEC = { image: "android", lifetimeMs: 10 * 60_000, network: "open" };
+/** Where the provider puts phoned on a phone: its jar, named by the jar's sha256. */
+const REMOTE = `/data/local/tmp/phoned-${createHash("sha256").update(readFileSync(PHONED_JAR)).digest("hex").slice(0, 16)}.jar`;
 
 /** A provider over a fresh fake, with its ledger. */
 async function setup(fakeOptions = {}, options = {}) {
 	const fake = fakePhoneHarness(fakeOptions);
 	const ledger = options.ledger ?? memoryLedger();
-	const provider = await create({ apiKey: KEY, fetch: fake.fetch, adb: fake.adb, ledger, now: fake.clock.now, sleep: fake.clock.sleep, ...options });
+	const provider = await create({ apiKey: KEY, fetch: fake.fetch, adb: fake.adb, ledger, now: fake.clock.now, sleep: fake.clock.sleep, phoned: PHONED_JAR, ...options });
 	return { fake, provider, ledger };
-}
-
-/** The width and height a PNG's IHDR names, and its first pixel's RGBA when it is 8-bit RGBA with filter 0. */
-function png(bytes) {
-	assert.deepEqual([...bytes.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10], "a PNG signature");
-	return { width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20) };
-}
-
-async function shot(client, params = {}) {
-	const first = await client.call("screen.shot", params);
-	assert.equal(first.ok, true, JSON.stringify(first));
-	const parts = [Buffer.from(first.value.data, "base64")];
-	let eof = first.value.eof;
-	while (!eof) {
-		const more = await client.call("screen.read", { id: first.value.id, offset: Buffer.concat(parts).length });
-		assert.equal(more.ok, true, JSON.stringify(more));
-		parts.push(Buffer.from(more.value.data, "base64"));
-		eof = more.value.eof;
-	}
-	const bytes = Buffer.concat(parts);
-	assert.equal(bytes.length, first.value.size, "the bytes read add up to size");
-	return { ...first.value, image: png(bytes), bytes };
 }
 
 const noKey = (value) => assert.ok(!JSON.stringify(value).includes(KEY), `the key is not in ${JSON.stringify(value).slice(0, 300)}`);
@@ -64,7 +47,7 @@ test("create(options) builds the phone-harness provider from its options alone: 
 		{ kind: caps.kind, os: caps.os, daemon: caps.daemon, lifetime: caps.lifetime, network: caps.network, release: caps.release, groups: caps.groups, isolation: caps.isolation },
 		{ kind: "android", os: "android", daemon: "none", lifetime: "vendor", network: ["open"], release: ["delete"], groups: PHONE_GROUPS, isolation: "vm" },
 	);
-	assert.deepEqual(PHONE_GROUPS, ["screen", "input.touch", "input.keys", "apps", "ui"]);
+	assert.deepEqual(PHONE_GROUPS, ["exec", "screen", "input.keys", "input.touch", "apps", "ui"]);
 	assert.equal(caps.maxLifetimeMs, 30 * 60_000, "30 min by default");
 	assert.deepEqual(kindRefusals(caps), []);
 	assert.equal(provider.extend, undefined, "the phone harness has no extend");
@@ -426,7 +409,7 @@ test("a create cancelled after the service admitted its POST recovers the phone 
 	assert.deepEqual(await ledger.list(), [], "and the ledger names none");
 });
 
-test("connect reaches the phone over adb with its unlock code, which no result or error ever holds; hello is the provider's", async () => {
+test("connect unlocks the phone, pushes phoned to it, starts it over exec: and answers with phoned's hello; no result or error holds the unlock code", async () => {
 	const { provider, fake } = await setup();
 	const { value: ref } = await provider.create(SPEC);
 	const connected = await provider.connect(ref);
@@ -436,20 +419,35 @@ test("connect reaches the phone over adb with its unlock code, which no result o
 	// socket the server bound to the phone (the fake's record keeps the code out); every spawned adb names the phone by
 	// its transport id.
 	const endpoint = `${ADB_HOST}:${22220 + 1}`;
-	// connect asks first (shell:echo ph-ok), unlocks only a transport that answers locked, then probes.
-	assert.deepEqual(fake.serverCalls().slice(0, 4), [`host:connect:${endpoint}`, "host:devices-l", "host:transport-id:1 shell:echo ph-ok", "host:transport-id:1 shell:unlock [code]"]);
-	assert.deepEqual(fake.adbCalls()[0], ["-t", "1", "shell", "echo ph-ok"]);
+	// connect asks first (shell:echo ph-ok), unlocks only a transport that answers locked, then probes; then phoned: the
+	// phone lacks its jar, so it is pushed beside its name, checked, moved there, and started.
+	const calls = fake.serverCalls();
+	assert.deepEqual(calls.slice(0, 8), [
+		`host:connect:${endpoint}`,
+		"host:devices-l",
+		"host:transport-id:1 shell:echo ph-ok",
+		"host:transport-id:1 shell:unlock [code]",
+		`host:transport-id:1 shell:sha256sum ${REMOTE} 2>/dev/null`,
+		`host:transport-id:1 shell:sha256sum ${REMOTE}.part`,
+		`host:transport-id:1 shell:mv ${REMOTE}.part ${REMOTE} && echo moved`,
+		`host:transport-id:1 exec:CLASSPATH=${REMOTE} app_process / ai.agentrun.phoned.android.Main 2>${REMOTE.replace(/\.jar$/, ".log")}`,
+	]);
+	assert.match(calls[7].slice("host:transport-id:1 ".length), PHONED_SERVICE);
+	assert.deepEqual(fake.adbCalls(), [
+		["-t", "1", "shell", "echo ph-ok"],
+		["-t", "1", "push", PHONED_JAR, `${REMOTE}.part`],
+	]);
 	assert.deepEqual(fake.shells().slice(0, 3), ["echo ph-ok", `unlock ${ADB_CODE}`, "echo ph-ok"]);
-	// Its Android release, as the phone's getprop says it; its screen in points; what its groups can do over adb.
-	const { features, ...hello } = connected.value.hello;
-	assert.deepEqual(hello, { protocol: PROTOCOL_VERSION, version: provider.version, os: "android", osVersion: "15", kind: "android", arch: "amd64", groups: PHONE_GROUPS, screen: { width: SCREEN.width, height: SCREEN.height, scale: 1 } });
-	assert.deepEqual(Object.keys(features).sort(), ["apps.background", "ui.background", "ui.foreground", "ui.image", "ui.nav", "ui.tree"]);
-	assert.deepEqual([features["ui.foreground"], features["ui.nav"]], [true, true]);
-	assert.ok(["apps.background", "ui.background", "ui.image"].every((name) => typeof features[name].off === "string" && features[name].off !== ""), "a feature that is off says why");
+	// phoned's own hello, as it said it; the provider checked its version and protocol.
+	assert.deepEqual(connected.value.hello, { protocol: PROTOCOL_VERSION, version: provider.version, os: "android", osVersion: "15", kind: "android", arch: "amd64", groups: [...PHONE_GROUPS] });
+	assert.equal(fake.phone.calls[0].method, "hello");
+	assert.match(fake.phone.calls[0].params.client, /^@parcha\/agentrun-computer /);
 	assert.deepEqual((await connected.value.client.call("hello", { client: "test" })).value, connected.value.hello);
 	assert.deepEqual(await connected.value.client.call("ping", {}), { ok: true, value: {} });
 	await connected.value.close();
 	assert.equal((await connected.value.client.call("ping", {})).error.code, "gone");
+	assert.deepEqual(fake.running(), [], "closing the last connection ends phoned");
+	assert.equal(fake.phone.connected.size, 0, "and lets the transport go");
 
 	const locked = await setup({ code: "ph_aaaaaaaaaaaaaaaaaaaaaaaaaa" });
 	const lockedRef = (await locked.provider.create(SPEC)).value;
@@ -458,6 +456,7 @@ test("connect reaches the phone over adb with its unlock code, which no result o
 	assert.match(refused.error.message, /refused its unlock code: wrong code$/);
 	assert.ok(!JSON.stringify(refused).includes(ADB_CODE), "the unlock code is never in an error");
 	assert.ok(!JSON.stringify(refused).includes("ph_"), "nor any part of it");
+	assert.deepEqual(locked.fake.phone.phoned, [], "no phoned starts on a phone that stayed locked");
 
 	// A reply that echoes the code twice: both are redacted.
 	const echo = await setup({ code: "ph_aaaaaaaaaaaaaaaaaaaaaaaaaa", unlockEcho: true });
@@ -465,21 +464,113 @@ test("connect reaches the phone over adb with its unlock code, which no result o
 	assert.equal(echoed.ok, false);
 	assert.match(echoed.error.message, /refused its unlock code: wrong code \[code\]: \[code\] is not this phone's$/);
 	assert.ok(!JSON.stringify(echoed).includes(ADB_CODE), "neither echo of the code is in the error");
-
-	const arm = await setup({ abi: "arm64-v8a" });
-	const armHello = (await arm.provider.connect((await arm.provider.create(SPEC)).value)).value.hello;
-	assert.equal(armHello.arch, "arm64");
-
-	// A phone that says no Android release: the hello carries none rather than an empty one.
-	const unsaid = await setup({ release: "" });
-	const unsaidHello = (await unsaid.provider.connect((await unsaid.provider.create(SPEC)).value)).value.hello;
-	assert.equal(Object.hasOwn(unsaidHello, "osVersion"), false);
 });
 
-test("two connections to one phone share its adb transport: the second does not unlock again, and closing one leaves the other working", async () => {
+test("a phone that holds phoned's jar already is not pushed it again: the jar's name on the phone is its sha256", async () => {
+	const { provider, fake } = await setup();
+	const { value: ref } = await provider.create(SPEC);
+	await (await provider.connect(ref)).value.close();
+	const again = await provider.connect(ref);
+	assert.equal(again.ok, true, JSON.stringify(again));
+	assert.equal(fake.adbCalls().filter((argv) => argv[2] === "push").length, 1, "one push, by the first connect");
+	assert.deepEqual([...fake.phone.files.keys()], [REMOTE], "and only the whole jar is left under its name");
+	assert.equal(fake.phone.phoned.length, 2, "each connect after the last close starts phoned afresh");
+	await again.value.close();
+});
+
+test("a push that fails or lands changed is refused in words, no phoned starts, and the transport is let go", async () => {
+	for (const [fault, words] of [
+		["pushFails", /^adb push of phoned to the phone failed: adb: error: failed to copy/],
+		["pushCorrupts", /^phoned reached the phone changed: its sha256 there is not the file's/],
+	]) {
+		const { provider, fake } = await setup({ [fault]: true });
+		const refused = await provider.connect((await provider.create(SPEC)).value);
+		assert.equal(refused.ok, false, fault);
+		assert.deepEqual([refused.error.code, refused.error.vendor], ["vendor", "phone-harness"], fault);
+		assert.match(refused.error.message, words, fault);
+		assert.deepEqual(fake.phone.phoned, [], `${fault}: phoned never starts from a jar that is not whole`);
+		assert.equal(fake.phone.files.has(REMOTE), false, `${fault}: nothing is left under the jar's own name`);
+		assert.equal(fake.phone.connected.size, 0, fault);
+	}
+});
+
+test("the apks option's APKs install once per phone before phoned starts, pushed under their sha256; a refused or missing one fails connect in words", async () => {
+	const apk = join(dir, "fixture.apk");
+	writeFileSync(apk, "an APK's bytes, which the fake phone never opens");
+	const sha = createHash("sha256").update(readFileSync(apk)).digest("hex");
+	const remote = `/data/local/tmp/apk-${sha.slice(0, 16)}.apk`;
+	const { provider, fake } = await setup({}, { apks: [apk] });
+	const { value: ref } = await provider.create(SPEC);
+	const first = await provider.connect(ref);
+	assert.equal(first.ok, true, JSON.stringify(first));
+	assert.deepEqual(fake.phone.installed, [sha], "the APK, whole, installed");
+	const shells = fake.shells();
+	assert.ok(shells.indexOf(`pm install -r ${remote} 2>&1`) < shells.indexOf(`sha256sum ${REMOTE} 2>/dev/null`), `installed before phoned's jar is placed: ${shells.join(" | ")}`);
+	assert.equal(fake.phone.phoned.length, 1);
+	await first.value.close();
+	const again = await provider.connect(ref);
+	assert.equal(again.ok, true, JSON.stringify(again));
+	assert.equal(fake.adbCalls().filter((argv) => argv[2] === "push" && argv[3] === apk).length, 1, "the phone held the APK under its name: one push");
+	assert.deepEqual(fake.phone.installed, [sha], "the phone's marker says it installed those bytes: a phoned started afresh installs nothing again");
+	assert.ok(fake.phone.files.has(`${remote}.installed`), "the marker beside the APK on the phone");
+	assert.equal(fake.phone.phoned.length, 2);
+	await again.value.close();
+
+	const refusing = await setup({ installFails: true }, { apks: [apk] });
+	const refused = await refusing.provider.connect((await refusing.provider.create(SPEC)).value);
+	assert.equal(refused.ok, false);
+	assert.deepEqual([refused.error.code, refused.error.vendor], ["vendor", "phone-harness"]);
+	assert.match(refused.error.message, /^the APK fixture\.apk did not install on the phone: Failure \[INSTALL_FAILED_UPDATE_INCOMPATIBLE: /);
+	assert.deepEqual(refusing.fake.phone.phoned, [], "no phoned starts on a phone that refused an APK");
+	assert.equal(refusing.fake.phone.connected.size, 0, "and the transport is let go");
+
+	const corrupt = await setup({ pushCorrupts: true }, { apks: [apk] });
+	const changed = await corrupt.provider.connect((await corrupt.provider.create(SPEC)).value);
+	assert.match(changed.error.message, /^the APK fixture\.apk reached the phone changed: /);
+	assert.deepEqual(corrupt.fake.phone.installed, [], "an APK that landed changed is never installed");
+
+	const gone = join(dir, "no-such.apk");
+	const missing = await setup({}, { apks: [gone] });
+	const notThere = await missing.provider.connect((await missing.provider.create(SPEC)).value);
+	assert.equal(notThere.error.code, "not_found");
+	assert.equal(notThere.error.message, `the APK no-such.apk, which the provider's apks option names, is not at ${gone} (ENOENT)`);
+	await assert.rejects(create({ apiKey: KEY, apks: apk }), /options\.apks .* is not a list of APK paths/);
+});
+
+test("without phoned's jar, connect is not_found in words naming the build; a phoned that never says hello is refused naming its log on the phone", async () => {
+	const missing = join(dir, "no-such-phoned.jar");
+	const { provider, fake } = await setup({}, { phoned: missing });
+	const refused = await provider.connect((await provider.create(SPEC)).value);
+	assert.equal(refused.error.code, "not_found");
+	assert.equal(refused.error.message, `phoned, the phone's driver, is not at ${missing} (ENOENT): build it with npm run build:phoned, or give the provider's phoned option`);
+	assert.equal(fake.phone.connected.size, 0);
+
+	// app_process that starts nothing: the stream closes with no hello.
+	const silent = await setup({
+		startPhoned: () => {
+			const [provider, phone] = duplexPair();
+			phone.end("Error: Could not find class 'ai.agentrun.phoned.android.Main'\n");
+			phone.resume();
+			return provider;
+		},
+	});
+	const quiet = await silent.provider.connect((await silent.provider.create(SPEC)).value);
+	assert.equal(quiet.ok, false);
+	assert.deepEqual([quiet.error.code, quiet.error.vendor], ["vendor", "phone-harness"]);
+	assert.match(quiet.error.message, new RegExp(`^phoned did not say hello on the phone \\(gone: .+\\); its log on the phone is ${REMOTE.replace(/\.jar$/, ".log").replaceAll(".", "\\.")}$`));
+	assert.equal(silent.fake.phone.connected.size, 0);
+});
+
+test("two connections to one phone share its transport and its one phoned: closing one cancels only its own calls, and the last close ends phoned, then disconnects", async () => {
 	// Live run 4: a second connect reused the adb server's transport, already unlocked; its `unlock` reached the phone's
 	// own sh ("not found"), and the disconnect after that failure dropped the transport the first connection used.
-	const { provider, fake } = await setup();
+	// phoned shares the transport's life: UiAutomation is one per phone, so one phoned answers every connection.
+	const endpoint = `${ADB_HOST}:${22220 + 1}`;
+	let runningAtDisconnect;
+	const onServer = (service, stage) => {
+		if (service === `host:disconnect:${endpoint}` && stage === "before") runningAtDisconnect = fake.running().length;
+	};
+	const { provider, fake } = await setup({ onServer });
 	const { value: ref } = await provider.create(SPEC);
 	const first = await provider.connect(ref);
 	assert.equal(first.ok, true, JSON.stringify(first));
@@ -490,21 +581,54 @@ test("two connections to one phone share its adb transport: the second does not 
 		[`unlock ${ADB_CODE}`],
 		"the transport is unlocked once: the second connection finds it unlocked",
 	);
-	for (const connection of [first.value, second.value]) assert.equal((await connection.client.call("apps.list", {})).ok, true);
-	const endpoint = `${ADB_HOST}:${22220 + 1}`;
+	assert.equal(fake.phone.phoned.length, 1, "one phoned for both");
+	assert.deepEqual(second.value.hello, first.value.hello);
+
+	// A call of the first connection that phoned holds; closing the first cancels it, and only it.
+	const held = first.value.client.call("exec.run", { argv: ["sleep", "30"], timeoutMs: 60_000 });
+	const theirs = second.value.client.call("exec.run", { argv: ["sleep", "30"], timeoutMs: 60_000 });
+	await new Promise((resolve) => setImmediate(resolve));
 	const disconnects = () => fake.serverCalls().filter((call) => call === `host:disconnect:${endpoint}`).length;
 	await first.value.close();
+	const cancelled = await held;
+	assert.equal(cancelled.error.code, "aborted", JSON.stringify(cancelled));
+	await new Promise((resolve) => setImmediate(resolve));
+	const cancels = fake.phone.calls.filter((call) => call.method === "$/cancelRequest");
+	assert.equal(cancels.length, 1, "phoned is told to cancel the first connection's call alone");
 	assert.equal(disconnects(), 0, "the second connection still holds the transport");
+	assert.equal(fake.running().length, 1, "and phoned");
 	const still = await second.value.client.call("apps.list", {});
 	assert.equal(still.ok, true, JSON.stringify(still));
 	await second.value.close();
+	assert.equal((await theirs).error.code, "aborted", "the last close cancels its own call too");
 	assert.equal(disconnects(), 1, "the last holder lets it go, once");
+	assert.equal(runningAtDisconnect, 0, "phoned ended before the transport was dropped");
 	assert.equal(fake.phone.connected.size, 0);
-	// A connection made after that connects and unlocks afresh: the vendor's lock is per connection.
+	// A connection made after that connects and unlocks afresh (the vendor's lock is per connection) and starts phoned.
 	const third = await provider.connect(ref);
 	assert.equal(third.ok, true, JSON.stringify(third));
 	assert.equal(fake.shells().filter((command) => /^unlock /.test(command)).length, 2);
+	assert.equal(fake.phone.phoned.length, 2);
 	await third.value.close();
+});
+
+test("a phoned that ends on its own fails its connections' calls with gone, and the next connect starts another", async () => {
+	const { provider, fake } = await setup();
+	const { value: ref } = await provider.create(SPEC);
+	const first = (await provider.connect(ref)).value;
+	// The phone kills phoned: its stream closes.
+	fake.phone.phoned[0].stream.destroy();
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal((await first.client.call("ping", {})).error.code, "gone");
+	const second = await provider.connect(ref);
+	assert.equal(second.ok, true, JSON.stringify(second));
+	assert.equal(fake.phone.phoned.length, 2, "a fresh phoned for the next connection");
+	assert.deepEqual(await second.value.client.call("ping", {}), { ok: true, value: {} });
+	await first.close();
+	assert.equal(fake.phone.connected.size, 1, "the second connection still holds the transport");
+	await second.value.close();
+	assert.equal(fake.phone.connected.size, 0);
+	assert.deepEqual(fake.running(), []);
 });
 
 /** A promise and its resolve: a gate a test opens. */
@@ -552,6 +676,7 @@ test("a connect and the last holder's release never race the transport: the hold
 	await works(after.value, "(b) the connect whose answer crossed the release");
 	await after.value.close();
 	assert.equal(fake.phone.connected.size, 0, "the last close lets the transport go");
+	assert.deepEqual(fake.running(), [], "and every phoned has ended");
 });
 
 test("no spawned adb's argv holds the unlock code or the phone's endpoint, which /proc shows to every user of the host", async () => {
@@ -559,10 +684,7 @@ test("no spawned adb's argv holds the unlock code or the phone's endpoint, which
 	const { value: ref } = await provider.create(SPEC);
 	const connected = await provider.connect(ref);
 	assert.equal(connected.ok, true, JSON.stringify(connected));
-	const { client } = connected.value;
-	assert.equal((await client.call("screen.shot", {})).ok, true);
-	assert.equal((await client.call("input.actions", { actions: [{ type: "tap", at: [10, 10] }] })).ok, true);
-	assert.equal((await client.call("ui.observe", {})).ok, true);
+	assert.equal((await connected.value.client.call("apps.list", {})).ok, true);
 	await connected.value.close();
 	const port = String(22220 + 1);
 	for (const argv of fake.adbCalls()) {
@@ -584,13 +706,30 @@ test("a connect that fails once adb reached the phone lets the transport go: the
 	assert.match(refused.error.message, /refused its unlock code/);
 	assert.equal(fake.phone.connected.size, 0, "no transport is left on the adb server");
 	assert.equal(fake.serverCalls().at(-1), `host:disconnect:${ADB_HOST}:${22220 + 1}`);
-	// A drifted phone, unlocked and then refused after its hello, lets it go too.
+	// A drifted phone, unlocked and refused after phoned's hello, ends phoned and lets the transport go too.
 	const other = fakePhoneHarness();
-	const drifted = await create({ apiKey: KEY, fetch: other.fetch, adb: other.adb, now: other.clock.now, sleep: other.clock.sleep, daemonVersion: "0.0.0-drift" });
+	const drifted = await create({ apiKey: KEY, fetch: other.fetch, adb: other.adb, now: other.clock.now, sleep: other.clock.sleep, phoned: PHONED_JAR, daemonVersion: "0.0.0-drift" });
 	const twin = (await drifted.create(SPEC)).value;
 	const refusedTwin = await drifted.connect(twin);
 	assert.equal(refusedTwin.error.code, "refused");
 	assert.equal(other.phone.connected.size, 0);
+	assert.deepEqual(other.running(), []);
+});
+
+test("a phoned of another version or protocol is refused at connect, in the drift check's words", async () => {
+	const fake = fakePhoneHarness();
+	const options = { apiKey: KEY, fetch: fake.fetch, adb: fake.adb, now: fake.clock.now, sleep: fake.clock.sleep, phoned: PHONED_JAR };
+	const provider = await create(options);
+	const drifted = await create({ ...options, daemonVersion: "0.0.0-drift" });
+	const { value: ref } = await drifted.create(SPEC);
+	const refused = await drifted.connect(ref);
+	assert.equal(refused.error.code, "refused");
+	assert.equal(refused.error.message, `hello: the daemon reports version ${provider.version}, expected 0.0.0-drift`);
+
+	const old = await setup({ phonedVersion: "0.0.1" });
+	const stale = await old.provider.connect((await old.provider.create(SPEC)).value);
+	assert.equal(stale.error.message, `hello: the daemon reports version 0.0.1, expected ${old.provider.version}`);
+	assert.deepEqual(old.fake.running(), []);
 });
 
 test("the adb server's answers are read as its socket protocol frames them: OKAY or FAIL, then a hex length and the message", () => {
@@ -616,483 +755,23 @@ test("without adb on this machine, connect says what to install", async () => {
 	assert.match(connected.error.message, /^the phone provider needs adb \(Android platform-tools\) on this machine/);
 });
 
-test("the client answers the phone groups over adb: a screenshot, touch, keys, buttons and apps; a pinch, a pointer and a shell are refused in words", async () => {
-	const { provider, fake } = await setup();
-	const { value: ref } = await provider.create(SPEC);
-	const { value: connection } = await provider.connect(ref);
-	const { client } = connection;
-	const call = async (method, params) => {
-		const result = await client.call(method, params);
-		assert.equal(result.ok, true, `${method}: ${JSON.stringify(result)}`);
-		return result.value;
-	};
-
-	const full = await shot(client);
-	assert.deepEqual([full.width, full.height, full.scale], [SCREEN.width, SCREEN.height, 1]);
-	assert.deepEqual([full.image.width, full.image.height], [SCREEN.width, SCREEN.height]);
-	const part = await shot(client, { region: [10, 20, 100, 50] });
-	assert.deepEqual([part.width, part.height, part.image.width, part.image.height], [100, 50, 100, 50]);
-	assert.equal((await client.call("screen.shot", { region: [300, 600, 100, 100] })).error.code, "invalid", "a region off the screen");
-
-	// Settings, launched and in front; its top list in ui.observe, flat, each node after its parent.
-	assert.deepEqual(await call("apps.launch", { id: SETTINGS }), {});
-	const listed = await call("apps.list", {});
-	assert.ok(listed.apps.some((app) => app.id === SETTINGS));
-	assert.equal(listed.foreground, SETTINGS);
-	const seen = await call("ui.observe", {});
-	assert.equal(seen.truncated, false);
-	assert.match(seen.state, /^s\d+$/);
-	assert.deepEqual(seen.app, { id: SETTINGS, name: SETTINGS });
-	assert.deepEqual(seen.window, { id: SETTINGS, bounds: [0, 0, SCREEN.width, SCREEN.height] });
-	const [root] = seen.nodes;
-	assert.deepEqual(root, { ref: root.ref, role: "generic", bounds: [0, 0, SCREEN.width, SCREEN.height] });
-	const list = seen.nodes.find((n) => n.role === "scrollarea");
-	assert.deepEqual(list, { ref: list.ref, role: "scrollarea", bounds: [0, 16, SCREEN.width, SCREEN.height - 16], parent: root.ref, actions: ["ACTION_SCROLL_FORWARD", "ACTION_SCROLL_BACKWARD"] });
-	const row = seen.nodes.find((n) => n.role === "button" && n.name === ITEMS[0]);
-	assert.deepEqual(row, { ref: row.ref, role: "button", name: ITEMS[0], bounds: [0, 96, SCREEN.width, 64], parent: list.ref, actions: ["ACTION_CLICK"] }, "a clickable row, named by its text");
-	const title = seen.nodes.find((n) => n.role === "text" && n.name === ITEMS[0]);
-	assert.deepEqual(title, { ref: title.ref, role: "text", name: ITEMS[0], id: "android:id/title", bounds: [72, 112, 240, 32], parent: row.ref });
-	const refs = seen.nodes.map((n) => n.ref);
-	assert.ok(refs.every((ref) => /^@e\d+$/.test(ref)), refs.join(" "));
-	assert.equal(new Set(refs).size, refs.length, "each node its own ref");
-	assert.ok(seen.nodes.every((n, i) => n.parent === undefined || refs.slice(0, i).includes(n.parent)), "a node comes after its parent");
-
-	const before = fake.shells().length;
-	assert.deepEqual(
-		await call("input.actions", {
-			actions: [
-				{ type: "tap", at: [40, 50] },
-				{ type: "tap", at: [5, 6], count: 2 },
-				{ type: "long_press", at: [7, 8] },
-				{ type: "swipe", path: [[180, 500], [180, 200]], ms: 300 },
-				{ type: "swipe", path: [[1, 2], [3, 4], [5, 6]] },
-				{ type: "button", name: "back" },
-				{ type: "button", name: "home" },
-				{ type: "button", name: "app_switch" },
-				{ type: "type", text: "Hello, it's 1\n" },
-				{ type: "key", keys: ["enter"], repeat: 2 },
-				{ type: "key", keys: ["a"] },
-				{ type: "key", keys: ["%"] },
-				{ type: "wait", ms: 250 },
-			],
-		}),
-		{ done: 13 },
-	);
-	assert.deepEqual(fake.shells().slice(before), [
-		"input tap 40 50",
-		"input tap 5 6",
-		"input tap 5 6",
-		"input swipe 7 8 7 8 800",
-		"input swipe 180 500 180 200 300",
-		"input motionevent DOWN 1 2;input motionevent MOVE 3 4;input motionevent MOVE 5 6;input motionevent UP 5 6",
-		"input keyevent KEYCODE_BACK",
-		"input keyevent KEYCODE_HOME",
-		"input keyevent KEYCODE_APP_SWITCH",
-		"input text 'Hello,%sit'\\''s%s1'",
-		"input keyevent KEYCODE_ENTER",
-		"input keyevent KEYCODE_ENTER KEYCODE_ENTER",
-		"input keyevent KEYCODE_A",
-		"input text '%'",
-	]);
-
-	// A batch is checked whole before anything runs: an unknown key, a pinch, a pointer action, a combo or a hold.
-	const ran = fake.shells().length;
-	for (const [action, kind, words] of [
-		[{ type: "key", keys: ["Hyper_Q"] }, "invalid", /"Hyper_Q" is not a key/],
-		[{ type: "pinch", at: [10, 10], scale: 2 }, "unsupported", /pinch: a cloud Android takes one finger through adb/],
-		[{ type: "click", at: [10, 10] }, "unsupported", /\(click\) needs input\.pointer, which this computer does not declare/],
-		[{ type: "key", keys: ["ctrl", "a"] }, "unsupported", /a combo of keys/],
-		[{ type: "hold", keys: ["shift"], ms: 100 }, "unsupported", /hold/],
-	]) {
-		const refused = await call("input.actions", { actions: [{ type: "tap", at: [1, 1] }, action] });
-		assert.equal(refused.done, 0, JSON.stringify(action));
-		assert.equal(refused.failed?.index, 1);
-		assert.equal(refused.failed?.kind, kind, JSON.stringify(refused));
-		assert.match(refused.failed.message, words);
-	}
-	assert.equal(fake.shells().length, ran, "nothing ran of a refused batch");
-
-	assert.deepEqual(await call("apps.terminate", { id: SETTINGS }), {});
-	assert.equal(fake.shells().at(-1), `am force-stop ${SETTINGS}`);
-	assert.notEqual((await call("apps.list", {})).foreground, SETTINGS);
-	const missing = await client.call("apps.launch", { id: "com.example.none" });
-	assert.equal(missing.error.code, "not_found");
-	assert.equal((await client.call("apps.launch", { id: "bad id; rm -rf /" })).error.code, "invalid", "an app id is checked before it reaches a shell");
-
-	for (const method of ["exec.run", "files.read", "process.start", "tar.pull.begin", "apps.install", "deadline.extend", "no.such.method"]) {
-		const refused = await client.call(method, {});
-		assert.equal(refused.error.code, "unsupported", method);
-		assert.ok(refused.error.message.length > 0);
-	}
-	assert.match((await client.call("exec.run", { argv: ["id"], timeoutMs: 1000 })).error.message, /a phone has no shell in the computer protocol/);
-});
-
-test("a swipe of more than two points takes its ms, spread over its segments by their length", async () => {
-	const { provider, fake } = await setup();
-	const { value: ref } = await provider.create(SPEC);
-	const { client } = (await provider.connect(ref)).value;
-	const swiped = await client.call("input.actions", { actions: [{ type: "swipe", path: [[100, 100], [100, 300], [100, 400]], ms: 600 }] });
-	assert.deepEqual(swiped, { ok: true, value: { done: 1 } });
-	const [first, ...rest] = fake.phone.touches;
-	assert.deepEqual(
-		[first, ...rest].map(({ action, at, ms }) => [action, at, ms - first.ms]),
-		[
-			["DOWN", [100, 100], 0],
-			["MOVE", [100, 300], 400],
-			["MOVE", [100, 400], 600],
-			["UP", [100, 400], 600],
-		],
-		"200 px of 300 take 400 ms of 600, and the last 100 px the other 200",
-	);
-	// adb's bound on a timed command leaves room for its own time: 30 s on top of the swipe's or the long press's ms.
-	await client.call("input.actions", { actions: [{ type: "swipe", path: [[10, 10], [10, 500]], ms: 45_000 }, { type: "long_press", at: [10, 10], ms: 40_000 }] });
-	const bound = (pattern) => fake.adbRuns().findLast((one) => pattern.test(one.args.at(-1))).timeoutMs;
-	assert.equal(bound(/^input motionevent DOWN 100 100;/), 30_600);
-	assert.equal(bound(/^input swipe 10 10 10 500 45000$/), 75_000);
-	assert.equal(bound(/^input swipe 10 10 10 10 40000$/), 70_000);
-});
-
-// The hang guard only bounds a failure: on a pass the batch answers in microtasks, with no timer.
-test("a cancelled input batch stops at the action it is on: a wait ends when the signal fires, and no later command runs", { timeout: 10_000 }, async () => {
-	// A wait the cancel interrupts: once armed, the clock's sleep never ends by itself, so only the signal can end it.
-	const clock = fakeClock();
-	let armed = false;
-	let began;
-	const waiting = new Promise((resolve) => (began = resolve));
-	const sleep = (ms) => (armed ? (began(ms), new Promise(() => {})) : clock.sleep(ms));
-	const { provider, fake } = await setup({ clock }, { sleep });
-	const { value: ref } = await provider.create(SPEC);
-	const { client } = (await provider.connect(ref)).value;
-	armed = true;
-	const controller = new AbortController();
-	const call = client.call("input.actions", { actions: [{ type: "wait", ms: 5000 }, { type: "tap", at: [100, 300] }] }, { signal: controller.signal });
-	assert.equal(await waiting, 5000, "the wait began");
-	controller.abort();
-	const waited = await call;
-	assert.equal(waited.ok, true, JSON.stringify(waited));
-	assert.equal(waited.value.done, 0);
-	assert.deepEqual([waited.value.failed?.index, waited.value.failed?.kind], [0, "aborted"]);
-	assert.match(waited.value.failed.message, /^action 0: .*aborted/);
-	assert.equal(fake.shells().filter((command) => command.startsWith("input tap")).length, 0, "no tap ran");
-
-	// A cancel during a command: the batch stops before the next one.
-	const other = fakePhoneHarness();
-	const cancel = new AbortController();
-	const adb = {
-		server: other.adb.server,
-		run: async (args, options) => {
-			const ran = await other.adb.run(args, options);
-			if (args.at(-1)?.startsWith("input tap")) cancel.abort();
-			return ran;
-		},
-	};
-	const second = await create({ apiKey: KEY, fetch: other.fetch, adb, ledger: memoryLedger(), now: other.clock.now, sleep: other.clock.sleep });
-	const { value: phone2 } = await second.create(SPEC);
-	const { client: client2 } = (await second.connect(phone2)).value;
-	const tapped = await client2.call("input.actions", { actions: [{ type: "tap", at: [100, 300] }, { type: "tap", at: [100, 300] }, { type: "button", name: "back" }] }, { signal: cancel.signal });
-	assert.equal(tapped.ok, true, JSON.stringify(tapped));
-	assert.equal(tapped.value.done, 1);
-	assert.deepEqual([tapped.value.failed?.index, tapped.value.failed?.kind], [1, "aborted"]);
-	assert.equal(other.shells().filter((command) => command.startsWith("input tap")).length, 1, "one tap ran, the second did not");
-	assert.equal(other.shells().filter((command) => command.startsWith("input keyevent")).length, 0, "nor the button after it");
-});
-
-/** Settings' search field in ui.observe: a searchbox, its text its value. */
-const searchField = async (client) => (await client.call("ui.observe", {})).value.nodes.find((n) => n.id === SEARCH_FIELD);
-
-test("typing into Settings' search reads back from ui.observe: the field is a searchbox, its text its value, its ref the same", async () => {
-	const { provider } = await setup();
-	const { value: ref } = await provider.create(SPEC);
-	const { client } = (await provider.connect(ref)).value;
-	await client.call("apps.launch", { id: SETTINGS });
-	await client.call("input.actions", { actions: [{ type: "tap", at: [100, 40] }] });
-	const empty = await searchField(client);
-	assert.deepEqual(empty, { ref: empty.ref, role: "searchbox", id: SEARCH_FIELD, bounds: [56, 16, 288, 56], parent: empty.parent, flags: ["focused"], actions: ["ACTION_CLICK"] }, "an empty field has no value");
-	await client.call("input.actions", { actions: [{ type: "type", text: "Hello, agentrun! 123" }] });
-	const typed = await searchField(client);
-	assert.equal(typed.value, "Hello, agentrun! 123");
-	assert.equal(typed.ref, empty.ref, "the field keeps its ref while its text changes");
-});
-
-test("a ui step the phone cannot finish runs nothing: a set to text adb cannot type leaves the field as it was", async () => {
-	const { provider, fake } = await setup();
-	const { value: ref } = await provider.create(SPEC);
-	const { client } = (await provider.connect(ref)).value;
-	await client.call("apps.launch", { id: SETTINGS });
-	await client.call("input.actions", { actions: [{ type: "tap", at: [100, 40] }, { type: "type", text: "wifi" }] });
-	const field = await searchField(client);
-	assert.equal(field.value, "wifi");
-	const before = fake.shells().length;
-	const set = await client.call("ui.act", { steps: [{ set: field.ref, value: "café" }], foreground: true });
-	assert.equal(set.value.steps[0].error?.kind, "unsupported", JSON.stringify(set));
-	assert.match(set.value.steps[0].error.message, /printable ASCII/);
-	assert.deepEqual(fake.shells().slice(before).filter((command) => command.startsWith("input ")), [], "no tap, no delete");
-	assert.equal((await searchField(client)).value, "wifi", "the field keeps its text");
-});
-
-test("a literal %s is typed as %s, not as a space: input text's escape never meets text that holds it", async () => {
-	const { provider } = await setup();
-	const { value: ref } = await provider.create(SPEC);
-	const { client } = (await provider.connect(ref)).value;
-	for (const text of ["format %s", "%s%s", "50% sure", "%%s and %", "s%", "%ss %"]) {
-		await client.call("apps.launch", { id: SETTINGS });
-		const typed = await client.call("input.actions", { actions: [{ type: "tap", at: [100, 40] }, { type: "type", text }] });
-		assert.deepEqual(typed, { ok: true, value: { done: 2 } }, text);
-		assert.equal((await searchField(client))?.value, text, "what the phone got");
-		await client.call("apps.terminate", { id: SETTINGS });
-	}
-});
-
-test("ui on a phone of 320 dpi: hello says its screen in points, ui.observe gives bounds in points (pixels / 2), and a press taps the element's centre in pixels", async () => {
-	const { provider, fake } = await setup({ density: 320 });
-	const { value: ref } = await provider.create(SPEC);
-	const { value: connection } = await provider.connect(ref);
-	const { client } = connection;
-	assert.deepEqual(connection.hello.screen, { width: SCREEN.width / 2, height: SCREEN.height / 2, scale: 2 });
-	assert.equal(connection.hello.features["ui.foreground"], true);
-	assert.equal(connection.hello.features["ui.nav"], true);
-	assert.match(connection.hello.features["ui.background"].off, /adb/);
-	await client.call("apps.launch", { id: SETTINGS });
-	const seen = (await client.call("ui.observe", {})).value;
-	assert.deepEqual(seen.window.bounds, [0, 0, SCREEN.width / 2, SCREEN.height / 2]);
-	const row = seen.nodes.find((n) => n.role === "button" && n.name === ITEMS[0]);
-	// The row is [0, 96, 360, 64] in pixels.
-	assert.deepEqual(row.bounds, [0, 48, SCREEN.width / 2, 32]);
-	const search = seen.nodes.find((n) => n.id === "com.android.settings:id/search_action_bar");
-
-	// No foreground allowed: the step is refused, and nothing reaches the phone.
-	const before = fake.shells().length;
-	const denied = await client.call("ui.act", { steps: [{ press: row.ref }] });
-	assert.equal(denied.ok, true, JSON.stringify(denied));
-	assert.equal(denied.value.steps.length, 1);
-	assert.equal(denied.value.steps[0].error.kind, "denied");
-	assert.match(denied.value.steps[0].error.message, /foreground: true/);
-	assert.equal(fake.shells().slice(before).filter((command) => command.startsWith("input ")).length, 0, "no input for a refused step");
-
-	// Allowed: one tap, at the row's centre in pixels, and the row's page opens.
-	const at = fake.shells().length;
-	const pressed = await client.call("ui.act", { steps: [{ press: row.ref }], foreground: true, expect: { text: ITEMS[0], timeoutMs: 1000 } });
-	assert.equal(pressed.ok, true, JSON.stringify(pressed));
-	assert.deepEqual(pressed.value.steps, [{ route: "foreground", verified: false }]);
-	assert.equal(pressed.value.changed, true);
-	assert.equal(pressed.value.expect, "met");
-	assert.deepEqual(fake.shells().slice(at).filter((command) => command.startsWith("input ")), ["input tap 180 128"]);
-	assert.equal(fake.phone.screen, "page");
-
-	// The search entry's element is gone from the page: a step naming it is refused as stale, and runs nothing.
-	const later = fake.shells().length;
-	const stale = await client.call("ui.act", { steps: [{ press: search.ref }], foreground: true });
-	assert.equal(stale.ok, true, JSON.stringify(stale));
-	assert.equal(stale.value.steps[0].error.kind, "stale");
-	assert.equal(fake.shells().slice(later).filter((command) => command.startsWith("input ")).length, 0, "no input for a stale ref");
-	await connection.close();
-});
-
-test("parseUiElements: Android's classes as the protocol's roles, an editable field's text as its value, a clickable row named by its texts, bounds in points", () => {
-	const node = (attrs, children = "") => {
-		const all = { index: "0", text: "", "resource-id": "", class: "android.widget.FrameLayout", package: "com.example", "content-desc": "", clickable: "false", enabled: "true", focused: "false", scrollable: "false", password: "false", selected: "false", checkable: "false", checked: "false", "long-clickable": "false", bounds: "[0,0][1080,2400]", ...attrs };
-		const body = Object.entries(all).map(([k, v]) => `${k}="${v}"`).join(" ");
-		return children === "" ? `<node ${body} />` : `<node ${body}>${children}</node>`;
-	};
-	const xml = (field) =>
-		`<?xml version='1.0' encoding='UTF-8' standalone='yes' ?><hierarchy rotation="0">${node({}, [
-			node({ index: "0", class: "android.widget.Button", text: "OK", clickable: "true", bounds: "[105,210][315,420]" }),
-			node({ index: "1", class: "android.widget.EditText", text: field, "content-desc": "Name", "resource-id": "com.example:id/name", focused: "true", bounds: "[0,420][1080,525]" }),
-			node({ index: "2", class: "android.widget.EditText", text: "hunter2", password: "true", bounds: "[0,525][1080,630]" }),
-			node({ index: "3", class: "android.widget.CheckBox", checkable: "true", checked: "true", text: "Remember", bounds: "[0,630][1080,735]" }),
-			node({ index: "4", class: "android.widget.Switch", checkable: "true", text: "Wi-Fi", enabled: "false", bounds: "[0,735][1080,840]" }),
-			node({ index: "5", class: "android.widget.ImageView", "content-desc": "Logo", bounds: "[0,840][105,945]" }),
-			node(
-				{ index: "6", class: "androidx.recyclerview.widget.RecyclerView", scrollable: "true", bounds: "[0,945][1080,2100]" },
-				node({ index: "0", class: "android.widget.LinearLayout", clickable: "true", "long-clickable": "true", bounds: "[0,945][1080,1155]" }, [
-					node({ index: "0", class: "android.widget.TextView", text: "Battery", bounds: "[0,945][540,1050]" }),
-					node({ index: "1", class: "android.widget.TextView", text: "80 %", bounds: "[0,1050][540,1155]" }),
-					node({ index: "2", class: "android.widget.TextView", text: "Charging", bounds: "[540,945][1080,1050]" }),
-					node({ index: "3", class: "android.widget.TextView", text: "Fast", bounds: "[540,1050][1080,1155]" }),
-				].join("")),
-			),
-			node({ index: "7", class: "android.widget.SearchView", bounds: "[0,2100][1080,2205]" }, node({ index: "0", class: "android.widget.AutoCompleteTextView", text: "wifi", clickable: "true", bounds: "[0,2100][1080,2205]" })),
-			node({ index: "8", class: "android.view.View", bounds: "[0,2205][1080,2400]" }),
-		].join(""))}</hierarchy>`;
-	// 420 dpi: 2.625 pixels a point.
-	const parsed = parseUiElements(xml("Ada"), 2.625, [1080, 2400]);
-	assert.equal(parsed.ok, true, JSON.stringify(parsed));
-	const { app, window, elements } = parsed.value;
-	assert.deepEqual(app, { id: "com.example", name: "com.example" });
-	assert.deepEqual(window, { id: "com.example", bounds: [0, 0, 411, 914] });
-	const [root, button, field, secret, check, toggle, image, list, row, ...rest] = elements;
-	const texts = rest.slice(0, 4);
-	const [bar, search, view] = rest.slice(4);
-	assert.deepEqual([root.role, button.role, field.role, secret.role, check.role, toggle.role, image.role, list.role, row.role, bar.role, search.role, view.role], ["generic", "button", "textbox", "textbox", "checkbox", "switch", "image", "scrollarea", "button", "group", "searchbox", "generic"]);
-	assert.ok(texts.every((one) => one.role === "text"));
-	assert.deepEqual({ ...button, key: undefined }, { key: undefined, role: "button", name: "OK", bounds: [40, 80, 80, 80], parent: root.key, actions: ["ACTION_CLICK"] }, "bounds are pixels over 2.625, rounded");
-	assert.deepEqual([field.name, field.value, field.id, field.flags], ["Name", "Ada", "com.example:id/name", ["focused"]], "an editable field's label is its name, its text its value");
-	assert.deepEqual([secret.value, secret.flags], ["hunter2", ["secure"]], "a password field is secure (the engine never sends its value)");
-	assert.deepEqual(check.flags, ["checked"]);
-	assert.deepEqual([toggle.name, toggle.flags], ["Wi-Fi", ["disabled"]]);
-	assert.equal(image.name, "Logo", "content-desc is a name");
-	assert.deepEqual(list.actions, ["ACTION_SCROLL_FORWARD", "ACTION_SCROLL_BACKWARD"]);
-	assert.deepEqual([row.name, row.parent, row.actions], ["Battery, 80 %, Charging", list.key, ["ACTION_CLICK", "ACTION_LONG_CLICK"]], "a clickable row with no name of its own: its first 3 texts");
-	assert.ok(texts.every((one) => one.parent === row.key));
-	assert.deepEqual([search.value, search.parent], ["wifi", bar.key], "a field inside a SearchView is a searchbox");
-	assert.equal(view.name, undefined);
-	assert.equal(new Set(elements.map((one) => one.key)).size, elements.length, "each element its own key");
-
-	// The same screen with other text in the field: every key stays, so the field's ref does.
-	const again = parseUiElements(xml("Grace"), 2.625, [1080, 2400]).value.elements;
-	assert.deepEqual(again.map((one) => one.key), elements.map((one) => one.key));
-	assert.equal(again[2].value, "Grace");
-	assert.equal(parseUiElements("<hierarchy/>", 1, [10, 10]).ok, false, "a dump with no node");
-});
-
-test("a list row in the same place showing other content, or the same layout in another app, is another element", () => {
-	const row = (app, label) => `<hierarchy><node index="0" class="android.widget.ListView" package="${app}" bounds="[0,0][100,200]"><node index="0" class="android.widget.LinearLayout" package="${app}" clickable="true" bounds="[0,0][100,50]"><node index="0" class="android.widget.TextView" package="${app}" text="${label}" bounds="[0,0][100,50]" /></node></node></hierarchy>`;
-	const keys = (xml) => parseUiElements(xml, 1, [100, 200]).value.elements.map((one) => one.key);
-	const [list, wifi, wifiLabel] = keys(row("com.android.settings", "Wi-Fi"));
-	const [sameList, bluetooth, bluetoothLabel] = keys(row("com.android.settings", "Bluetooth"));
-	assert.notEqual(wifi, bluetooth, "a scrolled list's next row in the old row's place: the old ref goes stale, never taps it");
-	assert.equal(sameList, list, "the list itself keeps its ref while its rows change, so a second scroll on it still runs");
-	assert.equal(bluetoothLabel, wifiLabel, "a label nothing taps keeps its ref while its text changes");
-	assert.deepEqual(keys(row("com.android.settings", "Wi-Fi")), keys(row("com.android.settings", "Wi-Fi")), "the same row read again keeps its key");
-	assert.notEqual(keys(row("com.example", "Wi-Fi"))[1], wifi, "another app's row is not this app's");
-});
-
-test("set clears a multiline field's whole text wherever the tap leaves the caret, then types the value", async () => {
-	// A field holding two lines, the caret left by the tap at the end of the first (where MOVE_END would stop).
-	let text = "first line\nsecond line";
-	let caret = text.indexOf("\n");
-	const phone = {
-		scale: () => 1,
-		dump: async () => ({ ok: false, error: { code: "unsupported", message: "unused" } }),
-		async input(actions) {
-			for (const action of actions) this.one(action);
-			return { ok: true, value: undefined };
-		},
-		one(action) {
-			if (action.type === "key") {
-				for (let i = 0; i < (action.repeat ?? 1); i++) {
-					const [key] = action.keys;
-					if (key === "backspace" && caret > 0) [text, caret] = [text.slice(0, caret - 1) + text.slice(caret), caret - 1];
-					else if (key === "delete") text = text.slice(0, caret) + text.slice(caret + 1);
-					else if (key === "end") caret = text.indexOf("\n", caret) === -1 ? text.length : text.indexOf("\n", caret);
-				}
-			}
-			if (action.type === "type") [text, caret] = [text.slice(0, caret) + action.text + text.slice(caret), caret + action.text.length];
-		},
-	};
-	const source = new AdbUiSource(phone, () => [400, 400]);
-	const element = { key: "k", role: "textbox", name: "Notes", value: text, bounds: [0, 0, 400, 200] };
-	const view = { app: { id: "com.example", name: "Example" }, window: { id: "w", bounds: [0, 0, 400, 400] }, elements: [element] };
-	const ran = await source.run({ set: "@e1", value: "new" }, { element, view, foreground: true }, new AbortController().signal);
-	assert.equal(ran.ok, true, JSON.stringify(ran));
-	assert.equal(text, "new");
-});
-
-test("an empty field's hint is not its value: an expect never meets it; a field holding other text keeps it", async () => {
-	const xml = (text) => `<hierarchy><node index="0" class="android.widget.EditText" package="com.example" text="${text}" hint="Search apps" bounds="[0,0][100,50]" /></hierarchy>`;
-	const [empty] = parseUiElements(xml("Search apps"), 1, [100, 50]).value.elements;
-	assert.equal(empty.value, undefined);
-	assert.equal(empty.name, undefined, "nor its name");
-	const engine = new UiEngine({ features: () => ({ "ui.tree": true }), look: async () => ({ ok: true, value: parseUiElements(xml("Search apps"), 1, [100, 50]).value }), image: async () => ({ ok: false, error: { code: "unsupported", message: "no" } }), run: async () => ({ ok: false, error: { code: "unsupported", message: "no" } }) });
-	assert.equal((await engine.act({ steps: [], expect: { text: "Search apps", timeoutMs: 100 } })).value.expect, "unmet");
-	const [typed] = parseUiElements(xml("maps"), 1, [100, 50]).value.elements;
-	assert.equal(typed.value, "maps");
-	// The dump cannot say the hint is showing, so the field may hold that very text: a set erases it anyway.
-	const ran = [];
-	const source = new AdbUiSource({ scale: () => 1, dump: async () => ({ ok: false, error: { code: "unsupported", message: "unused" } }), input: async (actions) => (ran.push(...actions), { ok: true, value: undefined }) }, () => [100, 50]);
-	const view = { app: { id: "com.example", name: "Example" }, window: { id: "w", bounds: [0, 0, 100, 50] }, elements: [empty] };
-	const set = await source.run({ set: "@e1", value: "maps" }, { element: empty, view, foreground: true }, new AbortController().signal);
-	assert.equal(set.ok, true, JSON.stringify(set));
-	assert.deepEqual(ran.slice(1), [
-		{ type: "key", keys: ["backspace"], repeat: 11 },
-		{ type: "key", keys: ["delete"], repeat: 11 },
-		{ type: "type", text: "maps" },
-	]);
-});
-
-test("a labeled control keeps the other text it shows as its desc; a step on a disabled one is refused with nothing sent", async () => {
-	const xml = `<hierarchy><node index="0" class="android.widget.Button" package="com.example" text="Pay $5" content-desc="Pay" clickable="true" bounds="[0,0][100,50]" /><node index="1" class="android.widget.EditText" package="com.example" text="old" enabled="false" bounds="[0,60][100,110]" /></hierarchy>`;
-	const [button, field] = parseUiElements(xml, 1, [100, 120]).value.elements;
-	assert.equal(button.name, "Pay");
-	assert.equal(button.desc, "Pay $5");
-	assert.deepEqual(field.flags, ["disabled"]);
-	const ran = [];
-	const source = new AdbUiSource({ scale: () => 1, dump: async () => ({ ok: false, error: { code: "unsupported", message: "unused" } }), input: async (actions) => (ran.push(...actions), { ok: true, value: undefined }) }, () => [100, 120]);
-	const view = { app: { id: "com.example", name: "Example" }, window: { id: "com.example", bounds: [0, 0, 100, 120] }, elements: [button, field] };
-	for (const step of [{ set: "@e2", value: "new" }, { type: "new", into: "@e2" }]) {
-		const refused = await source.run(step, { element: field, view, foreground: true }, new AbortController().signal);
-		assert.equal(refused.error?.code, "refused", JSON.stringify(refused));
-		assert.match(refused.error.message, /is disabled on this phone: a step on it would act on whatever has the focus instead, so nothing was sent/);
-	}
-	assert.deepEqual(ran, [], "no input reached the phone");
-});
-
-test("a field in a recycled list row is keyed by what its row shows: the row's next item makes its old ref another element; typing keeps it", () => {
-	const row = (name, typed) =>
-		`<hierarchy><node index="0" class="androidx.recyclerview.widget.RecyclerView" package="com.example" scrollable="true" bounds="[0,0][400,800]"><node index="0" class="android.widget.LinearLayout" package="com.example" bounds="[0,0][400,100]"><node index="0" class="android.widget.TextView" package="com.example" text="${name}" bounds="[0,0][200,50]" /><node index="1" class="android.widget.EditText" package="com.example" text="${typed}" content-desc="Quantity" bounds="[200,0][400,50]" /></node></node></hierarchy>`;
-	const fieldOf = (xml) => parseUiElements(xml, 1, [400, 800]).value.elements.find((element) => element.role === "textbox");
-	const apples = fieldOf(row("Apples", "1"));
-	assert.equal(fieldOf(row("Apples", "12")).key, apples.key, "typing in the field keeps its key");
-	assert.notEqual(fieldOf(row("Pears", "1")).key, apples.key, "the recycled row's field is another element");
-	const plain = `<hierarchy><node index="0" class="android.widget.LinearLayout" package="com.example" bounds="[0,0][400,100]"><node index="0" class="android.widget.EditText" package="com.example" text="a" content-desc="Name" bounds="[0,0][400,50]" /></node></hierarchy>`;
-	assert.equal(fieldOf(plain).key, fieldOf(plain.replace('text="a"', 'text="ab"')).key, "a field outside a list keeps its key as before");
-});
-
-test("a phone's set: a toggle takes on or off only, a field too long to clear in one step is refused before any input", async () => {
-	const ran = [];
-	const phone = { scale: () => 1, dump: async () => ({ ok: false, error: { code: "unsupported", message: "unused" } }), input: async (actions) => (ran.push(...actions), { ok: true, value: undefined }) };
-	const source = new AdbUiSource(phone, () => [400, 400]);
-	const view = { app: { id: "com.example", name: "Example" }, window: { id: "w", bounds: [0, 0, 400, 400] }, elements: [] };
-	const toggle = { key: "t", role: "switch", name: "Wi-Fi", bounds: [0, 0, 100, 40] };
-	const refused = await source.run({ set: "@e1", value: "true" }, { element: toggle, view, foreground: true }, new AbortController().signal);
-	assert.equal(refused.error?.code, "invalid");
-	assert.match(refused.error.message, /is set to "on" or "off", not "true"/);
-	const long = { key: "f", role: "textbox", name: "Notes", value: "x".repeat(5000), bounds: [0, 0, 400, 200] };
-	const tooLong = await source.run({ set: "@e2", value: "short" }, { element: long, view, foreground: true }, new AbortController().signal);
-	assert.equal(tooLong.error?.code, "limit");
-	assert.match(tooLong.error.message, /holds 5000 characters, more than the 4900/);
-	assert.deepEqual(ran, [], "no input for either");
-	const key = await source.run({ key: "shift++" }, { view, foreground: true }, new AbortController().signal);
-	assert.match(key.error?.message ?? "", /presses one key at a time/, "a chord ending in + is two keys, shift and +");
-});
-
-test("ui.observe never sends a secure field's value", async () => {
-	const xml = `<hierarchy><node index="0" class="android.widget.EditText" package="com.example" text="hunter2" password="true" bounds="[0,0][100,50]" /></hierarchy>`;
-	const view = parseUiElements(xml, 1, [100, 50]).value;
-	const engine = new UiEngine({ features: () => ({ "ui.tree": true }), look: async () => ({ ok: true, value: view }), image: async () => ({ ok: false, error: { code: "unsupported", message: "no" } }), run: async () => ({ ok: false, error: { code: "unsupported", message: "no" } }) });
-	const seen = await engine.observe({});
-	assert.equal(seen.ok, true, JSON.stringify(seen));
-	assert.deepEqual(seen.value.nodes.map(({ role, value, flags }) => ({ role, value, flags })), [{ role: "textbox", value: undefined, flags: ["secure"] }]);
-	const row = `<hierarchy><node index="0" class="android.widget.LinearLayout" package="com.example" clickable="true" bounds="[0,0][100,50]"><node index="0" class="android.widget.EditText" package="com.example" text="hunter2" content-desc="Password" password="true" bounds="[0,0][100,50]" /></node></hierarchy>`;
-	const [named] = parseUiElements(row, 1, [100, 50]).value.elements;
-	assert.equal(named.name, "Password", "a row is named by the field's label, never its text");
-	assert.ok(!named.key.includes("hunter2"), "nor is the text in its key");
-});
-
-test("apps.launch puts the named app in front, even when its task holds another app's activity on top", async () => {
-	// Android 15 (phone probe 2): Settings' search is another package's activity on top of Settings' task. After a
-	// force-stop of Settings, a plain `am start` resumes that task with search in front; a cleared task starts Settings.
-	const { provider, fake } = await setup();
-	const { value: ref } = await provider.create(SPEC);
-	const { client } = (await provider.connect(ref)).value;
-	await client.call("apps.launch", { id: SETTINGS });
-	await client.call("input.actions", { actions: [{ type: "tap", at: [100, 40] }] });
-	assert.equal((await client.call("apps.list", {})).value.foreground, "com.android.settings.intelligence", "search is in front");
-	await client.call("apps.terminate", { id: SETTINGS });
-	assert.deepEqual(await client.call("apps.launch", { id: SETTINGS }), { ok: true, value: {} });
-	assert.equal((await client.call("apps.list", {})).value.foreground, SETTINGS, "the app named is in front");
-	assert.match(fake.shells().filter((command) => command.startsWith("am start")).at(-1), /^am start -W --activity-clear-task -n com\.android\.settings\/\.Settings$/);
-});
-
-test("a drifted twin's phone is refused at connect, in the drift check's words", async () => {
+test("no phone error carries the phone's endpoint: adb's connect answer gets fixed words, and the adb server's words are redacted", async () => {
+	const endpoint = /phone-harness\.test|:2222\d/;
+	// adb's connect answer names the endpoint: the provider's error says what failed in its own words.
 	const fake = fakePhoneHarness();
-	const options = { apiKey: KEY, fetch: fake.fetch, adb: fake.adb, now: fake.clock.now, sleep: fake.clock.sleep };
-	const provider = await create(options);
-	const drifted = await create({ ...options, daemonVersion: "0.0.0-drift" });
-	const { value: ref } = await drifted.create(SPEC);
-	const refused = await drifted.connect(ref);
-	assert.equal(refused.error.code, "refused");
-	assert.match(refused.error.message, new RegExp(`hello: the daemon reports version 0\\.0\\.0-drift, expected ${provider.version.replaceAll(".", "\\.")}`));
+	const server = (service, options) => (service.startsWith("host:connect:") ? Promise.resolve({ ok: true, value: `failed to connect to '${service.slice("host:connect:".length)}': Connection refused` }) : fake.adb.server(service, options));
+	const provider = await create({ apiKey: KEY, fetch: fake.fetch, adb: { ...fake.adb, server }, ledger: memoryLedger(), now: fake.clock.now, sleep: fake.clock.sleep, phoned: PHONED_JAR });
+	const { value: ref } = await provider.create(SPEC);
+	const refused = await provider.connect(ref);
+	assert.equal(refused.ok, false);
+	assert.match(refused.error.message, /adb could not reach the phone/);
+	assert.doesNotMatch(refused.error.message, endpoint);
+	// The adb server's FAIL words, which may name the endpoint.
+	const frame = (status, message) => Buffer.from(`${status}${Buffer.byteLength(message).toString(16).padStart(4, "0")}${message}`);
+	const failed = phone.adbAnswer(frame("FAIL", `failed to connect to '${ADB_HOST}:22221'`), "host:connect");
+	assert.equal(failed.ok, false);
+	assert.doesNotMatch(failed.error.message, endpoint);
+	assert.match(failed.error.message, /^the adb server refused host:connect: failed to connect to/);
 });
 
 test("a ledger put that fails once the phone's id is known ends the phone and answers in words: at the first put, and at the last one once ready", async () => {
@@ -1320,360 +999,38 @@ test("the conformance module reads its own COMPUTER_PHONE_HARNESS_* names, never
 	assert.deepEqual(await conformance.fileLedger(path).list(), []);
 
 	const fake = fakePhoneHarness({ clock: fakeClock() });
-	const through = { fetch: fake.fetch, adb: fake.adb, now: fake.clock.now, sleep: fake.clock.sleep };
+	const through = { fetch: fake.fetch, adb: fake.adb, now: fake.clock.now, sleep: fake.clock.sleep, phoned: PHONED_JAR };
 	const built = await conformance.createProvider({ env: { COMPUTER_PHONE_HARNESS_API_KEY: KEY, AGENTRUN_COMPUTER_LIVE_PHONE_HARNESS: "1", COMPUTER_PHONE_HARNESS_LEDGER: path }, ...through });
 	assert.equal(built.id, "phone-harness");
 	assert.equal(built.capabilities().maxLifetimeMs, 10 * 60_000, "a conformance run's phones live at most 10 min");
 	const drifted = await conformance.createDriftedProvider({ env: { COMPUTER_PHONE_HARNESS_API_KEY: KEY, AGENTRUN_COMPUTER_LIVE_PHONE_HARNESS: "1", COMPUTER_PHONE_HARNESS_LEDGER: path }, ...through });
-	assert.equal(drifted.version, built.version, "the twin is the same provider; only its phone's hello reports another version");
+	assert.equal(drifted.version, built.version, "the twin is the same provider; only the version it expects of phoned is another");
 	const twin = (await drifted.create(SPEC)).value;
-	assert.match((await drifted.connect(twin)).error.message, /hello: the daemon reports version \S+, expected /);
+	assert.match((await drifted.connect(twin)).error.message, /hello: the daemon reports version \S+, expected 0\.0\.0-drift$/);
 	await drifted.release(twin, "delete");
 	assert.equal(await conformance.conformanceImage(), "android");
 });
 
-test("the phone answers screen.watch: PNG frames of the whole screen, read about once a second, the next only after the ack", async () => {
-	const { provider, fake } = await setup();
-	const { value: ref } = await provider.create(SPEC);
-	const { value: connection } = await provider.connect(ref);
-	const { client } = connection;
-	const screencaps = () => fake.adbCalls().filter((args) => args.includes("screencap")).length;
-	const first = await client.call("screen.watch", { after: 0 });
-	assert.equal(first.ok, true, JSON.stringify(first));
-	assert.deepEqual({ seq: first.value.seq, changed: first.value.changed, format: first.value.format, width: first.value.width, height: first.value.height, frameWidth: first.value.frameWidth, frameHeight: first.value.frameHeight }, { seq: 1, changed: true, format: "png", width: SCREEN.width, height: SCREEN.height, frameWidth: SCREEN.width, frameHeight: SCREEN.height });
-	// An unchanged screen: no frame once waitMs is over, read once a second meanwhile (the fake clock moves at once).
-	const before = screencaps();
-	const idle = await client.call("screen.watch", { after: 1, waitMs: 3000 });
-	assert.deepEqual(idle, { ok: true, value: { seq: 1, changed: false, width: SCREEN.width, height: SCREEN.height } });
-	assert.ok(screencaps() - before >= 3 && screencaps() - before <= 4, `read about once a second over 3 s: ${screencaps() - before} reads`);
-	// Settings in front changes the screen: the next frame.
-	assert.equal((await client.call("apps.launch", { id: SETTINGS })).ok, true);
-	const changed = await client.call("screen.watch", { after: 1, waitMs: 3000 });
-	assert.equal(changed.value.seq, 2);
-	assert.equal(changed.value.changed, true);
-	// An old ack gets the newest frame at once, with no read of the screen.
-	const reads = screencaps();
-	const again = await client.call("screen.watch", { after: 1 });
-	assert.equal(again.value.seq, 2);
-	assert.equal(screencaps(), reads);
-	// maxWidth scales the frame; the size stays the screen's. (A connection's watch keeps its frames' scale: a new one asks.)
-	const { value: other } = await provider.connect(ref);
-	const scaled = await other.client.call("screen.watch", { after: 0, maxWidth: 180 });
-	assert.deepEqual([scaled.value.frameWidth, scaled.value.frameHeight, scaled.value.width, scaled.value.height], [180, 320, SCREEN.width, SCREEN.height]);
-	await other.close();
-	for (const params of [{}, { after: -1 }, { after: 99 }, { after: 0, waitMs: 10_001 }, { after: 0, maxWidth: 0 }, { after: 0, quality: 101 }]) {
-		const refused = await client.call("screen.watch", params);
-		assert.equal(refused.ok, false, JSON.stringify(params));
-		assert.equal(refused.error.code, "invalid", JSON.stringify(params));
-	}
-	await connection.close();
-	await provider.release(ref, "delete");
-});
-
-test("the phone's watch() gives its PNG frames whole and upright, landscape too, and its input() taps where the frame says", async () => {
-	const { toAction } = await import("../dist/index.js");
-	const { provider, fake } = await setup();
-	const { value: ref } = await provider.create(SPEC);
-	const frames = [];
-	let ack;
-	let arrived;
-	const handlers = {
-		frame(frame, given) {
-			frames.push(frame);
-			ack = given;
-			arrived?.();
-		},
-		ended(error) {
-			assert.fail(`ended: ${JSON.stringify(error)}`);
-		},
+test("a conformance run installs the ui fixture's APK on its phones when it is built, and its notes say whether it is", async () => {
+	const env = { COMPUTER_PHONE_HARNESS_API_KEY: KEY, AGENTRUN_COMPUTER_LIVE_PHONE_HARNESS: "1", COMPUTER_PHONE_HARNESS_LEDGER: join(dir, "fixture-ledger.json") };
+	const apk = join(dir, "ui-fixture.apk");
+	writeFileSync(apk, "the fixture's bytes");
+	const installs = async (uiFixture) => {
+		const fake = fakePhoneHarness({ clock: fakeClock() });
+		const provider = await conformance.createProvider({ env, fetch: fake.fetch, adb: fake.adb, now: fake.clock.now, sleep: fake.clock.sleep, phoned: PHONED_JAR, uiFixture });
+		const ref = (await provider.create(SPEC)).value;
+		const connected = await provider.connect(ref);
+		assert.equal(connected.ok, true, JSON.stringify(connected));
+		await connected.value.close();
+		await provider.release(ref, "delete");
+		return fake.phone.installed;
 	};
-	const next = () => new Promise((resolve) => (arrived = resolve));
-	const waiting = next();
-	const watched = await provider.watch(ref, handlers);
-	assert.equal(watched.ok, true, JSON.stringify(watched));
-	await waiting;
-	assert.equal(frames[0].format, "png");
-	assert.deepEqual([frames[0].width, frames[0].height], [SCREEN.width, SCREEN.height]);
-	assert.deepEqual(png(Buffer.from(frames[0].bytes)), { width: SCREEN.width, height: SCREEN.height });
-	// Turned to landscape: screencap gives the display upright, so the frame's width and height are the turned ones,
-	// and a tap in them reaches input tap as it is (no rotation of ours).
-	fake.phone.landscape = true;
-	const turned = next();
-	ack();
-	await turned;
-	assert.deepEqual([frames[1].width, frames[1].height], [SCREEN.height, SCREEN.width]);
-	assert.deepEqual(png(Buffer.from(frames[1].bytes)), { width: SCREEN.height, height: SCREEN.width });
-	const tap = toAction({ type: "tap", x: SCREEN.height - 20, y: SCREEN.width - 10 }, "android");
-	assert.ok(Array.isArray(tap), JSON.stringify(tap));
-	assert.deepEqual(await watched.value.input(tap), { ok: true, value: { done: 1 } });
-	assert.ok(fake.shells().includes(`input tap ${SCREEN.height - 20} ${SCREEN.width - 10}`), fake.shells().join("\n"));
-	await watched.value.close();
-	await provider.release(ref, "delete");
-});
-
-// --- the live view's phone under a misbehaving phone or viewer (#2017's review and security read) ----------------------
-
-/** The fake's adb with each spawned run going through around(args, options, run): the test's own phone behaviour. */
-function aroundAdb(fake, around) {
-	const run = (args, options = {}) => around(args, options, () => fake.adb.run(args, options));
-	return Object.assign((args, options) => run(args, options), { run, server: fake.adb.server });
-}
-
-/** A run that answers only when its signal fires, as a stalled adb killed by it does; with no signal, never. */
-const stalled = (options) =>
-	new Promise((resolve) => {
-		const stop = () => resolve({ ok: false, error: { code: "aborted", message: "adb was aborted" } });
-		if (options.signal?.aborted) stop();
-		else options.signal?.addEventListener("abort", stop, { once: true });
-	});
-
-test("a phone watch's screencap and its poll sleep end when the watch is cancelled or the connection closed: neither waits for the phone", { timeout: 10_000 }, async (t) => {
-	// A watch that waits for the phone holds no timer: this one keeps the run alive so the test's bound can fail it.
-	const alive = setInterval(() => {}, 1_000);
-	t.after(() => clearInterval(alive));
-	const fake = fakePhoneHarness();
-	let stall = false;
-	let began;
-	const capturing = () => new Promise((resolve) => (began = resolve));
-	const adb = aroundAdb(fake, (args, options, run) => (stall && args.includes("screencap") ? (began(), stalled(options)) : run()));
-	let hang = false;
-	let slept;
-	const sleeping = () => new Promise((resolve) => (slept = resolve));
-	const sleep = (ms) => (hang ? (slept(ms), new Promise(() => {})) : fake.clock.sleep(ms));
-	const provider = await create({ apiKey: KEY, fetch: fake.fetch, adb, ledger: memoryLedger(), now: fake.clock.now, sleep });
-	const { value: ref } = await provider.create(SPEC);
-	const { value: connection } = await provider.connect(ref);
-	const { client } = connection;
-	assert.equal((await client.call("screen.watch", { after: 0 })).ok, true);
-
-	// A screencap that stalls: the watch's cancel ends it.
-	stall = true;
-	let cancel = new AbortController();
-	let started = capturing();
-	let call = client.call("screen.watch", { after: 0 }, { signal: cancel.signal });
-	// after 0 is older than the newest frame: answered at once, with no screencap. after 1 waits for a change.
-	assert.equal((await call).value.seq, 1);
-	call = client.call("screen.watch", { after: 1, waitMs: 3000 }, { signal: cancel.signal });
-	await started;
-	cancel.abort();
-	let ended = await call;
-	assert.equal(ended.ok, false, JSON.stringify(ended));
-	assert.equal(ended.error.code, "aborted");
-
-	// A poll sleep that never ends by itself: the watch's cancel ends it.
-	stall = false;
-	hang = true;
-	cancel = new AbortController();
-	const asleep = sleeping();
-	call = client.call("screen.watch", { after: 1, waitMs: 3000 }, { signal: cancel.signal });
-	await asleep;
-	cancel.abort();
-	ended = await call;
-	assert.equal(ended.ok, false, JSON.stringify(ended));
-	assert.equal(ended.error.code, "aborted");
-	hang = false;
-
-	// A screencap that stalls with no cancel: closing the connection ends it.
-	stall = true;
-	started = capturing();
-	call = client.call("screen.watch", { after: 1, waitMs: 3000 });
-	await started;
-	await connection.close();
-	ended = await call;
-	assert.equal(ended.ok, false, JSON.stringify(ended));
-
-	// watch() over a stalled screencap: close() comes back, the frame reader does not hold it.
-	stall = false;
-	const frames = [];
-	let ack;
-	let arrived;
-	const first = new Promise((resolve) => (arrived = resolve));
-	const watched = await provider.watch(ref, {
-		frame(frame, given) {
-			frames.push(frame);
-			ack = given;
-			arrived();
-		},
-		ended() {},
-	});
-	assert.equal(watched.ok, true, JSON.stringify(watched));
-	await first;
-	stall = true;
-	started = capturing();
-	ack();
-	await started;
-	await watched.value.close();
-	assert.equal(frames.length, 1);
-	await provider.release(ref, "delete");
-});
-
-test("an animated phone screen, acked at once, is read about once a second: the pace holds across calls", { timeout: 10_000 }, async () => {
-	const fake = fakePhoneHarness();
-	const reads = [];
-	let shade = 0;
-	const adb = aroundAdb(fake, async (args, options, run) => {
-		const ran = await run();
-		if (!args.includes("screencap") || !ran.ok) return ran;
-		// Each screencap differs from the last: an animation.
-		reads.push(fake.clock.now());
-		const stdout = Buffer.from(ran.value.stdout);
-		stdout[stdout.length - 2] = shade++ % 256;
-		return { ok: true, value: { ...ran.value, stdout } };
-	});
-	const provider = await create({ apiKey: KEY, fetch: fake.fetch, adb, ledger: memoryLedger(), now: fake.clock.now, sleep: fake.clock.sleep });
-	const { value: ref } = await provider.create(SPEC);
-	const { value: connection } = await provider.connect(ref);
-	for (let after = 0; after < 4; after++) {
-		const frame = await connection.client.call("screen.watch", { after });
-		assert.equal(frame.value.seq, after + 1, JSON.stringify(frame).slice(0, 200));
-	}
-	const gaps = reads.slice(1).map((at, i) => at - reads[i]);
-	assert.ok(gaps.length >= 3 && gaps.every((gap) => gap >= 1000), `screencaps ${gaps.join(", ")} ms apart`);
-	await connection.close();
-	await provider.release(ref, "delete");
-});
-
-test("a phone runs one input batch at a time: a second waits for the first, whole, and never cuts into it", { timeout: 10_000 }, async () => {
-	const fake = fakePhoneHarness();
-	let armed = false;
-	let wake;
-	let began;
-	const waiting = new Promise((resolve) => (began = resolve));
-	const sleep = (ms) => (armed ? (began(ms), new Promise((resolve) => (wake = resolve))) : fake.clock.sleep(ms));
-	const provider = await create({ apiKey: KEY, fetch: fake.fetch, adb: fake.adb, ledger: memoryLedger(), now: fake.clock.now, sleep });
-	const { value: ref } = await provider.create(SPEC);
-	const { value: connection } = await provider.connect(ref);
-	const { client } = connection;
-	armed = true;
-	const first = client.call("input.actions", { actions: [{ type: "wait", ms: 500 }, { type: "tap", at: [100, 300] }] });
-	await waiting;
-	const second = client.call("input.actions", { actions: [{ type: "button", name: "back" }] });
-	for (let turn = 0; turn < 5; turn++) await new Promise((resolve) => setImmediate(resolve));
-	assert.equal(fake.shells().filter((command) => command.startsWith("input keyevent")).length, 0, "the second batch waits for the first");
-	armed = false;
-	wake();
-	assert.deepEqual(await first, { ok: true, value: { done: 2 } });
-	assert.deepEqual(await second, { ok: true, value: { done: 1 } });
-	const order = fake.shells().filter((command) => /^input (tap|keyevent)/.test(command));
-	assert.deepEqual(order, ["input tap 100 300", "input keyevent KEYCODE_BACK"]);
-	await connection.close();
-	await provider.release(ref, "delete");
-});
-
-test("a batch cancelled while it waits its turn answers at once, aborted with none run; the batches before it run on, in order", { timeout: 10_000 }, async (t) => {
-	// A call that waits for the batch before it holds no timer: this keeps the run alive so the test's bound can fail it.
-	const alive = setInterval(() => {}, 1_000);
-	t.after(() => clearInterval(alive));
-	const fake = fakePhoneHarness();
-	let armed = false;
-	let wake;
-	let began;
-	const waiting = new Promise((resolve) => (began = resolve));
-	const sleep = (ms) => (armed ? (began(ms), new Promise((resolve) => (wake = resolve))) : fake.clock.sleep(ms));
-	const provider = await create({ apiKey: KEY, fetch: fake.fetch, adb: fake.adb, ledger: memoryLedger(), now: fake.clock.now, sleep });
-	const { value: ref } = await provider.create(SPEC);
-	const { value: connection } = await provider.connect(ref);
-	const { client } = connection;
-	armed = true;
-	const first = client.call("input.actions", { actions: [{ type: "wait", ms: 300_000 }, { type: "tap", at: [100, 300] }] });
-	await waiting;
-	const cancel = new AbortController();
-	const second = client.call("input.actions", { actions: [{ type: "button", name: "back" }] }, { signal: cancel.signal });
-	const third = client.call("input.actions", { actions: [{ type: "button", name: "home" }] });
-	cancel.abort();
-	const cancelled = await second;
-	assert.equal(cancelled.ok, true, JSON.stringify(cancelled));
-	assert.equal(cancelled.value.done, 0);
-	assert.deepEqual([cancelled.value.failed?.index, cancelled.value.failed?.kind], [0, "aborted"]);
-	assert.match(cancelled.value.failed.message, /^action 0: .*aborted/);
-	armed = false;
-	wake();
-	assert.deepEqual(await first, { ok: true, value: { done: 2 } });
-	assert.deepEqual(await third, { ok: true, value: { done: 1 } });
-	const order = fake.shells().filter((command) => /^input (tap|keyevent)/.test(command));
-	assert.deepEqual(order, ["input tap 100 300", "input keyevent KEYCODE_HOME"], "the cancelled batch never ran, and the others kept their order");
-	await connection.close();
-	await provider.release(ref, "delete");
-});
-
-test("a phone's watch frame over a chunk is held apart from a shot: a screen.shot between its first chunk and its screen.read evicts neither", async () => {
-	// A noisy screen, so its PNG is over a chunk.
-	const fake = fakePhoneHarness();
-	const adb = aroundAdb(fake, async (args, options, run) => {
-		const ran = await run();
-		if (!args.includes("screencap") || !ran.ok) return ran;
-		const stdout = Buffer.from(ran.value.stdout);
-		randomFillSync(stdout, 16);
-		return { ok: true, value: { ...ran.value, stdout } };
-	});
-	const provider = await create({ apiKey: KEY, fetch: fake.fetch, adb, ledger: memoryLedger(), now: fake.clock.now, sleep: fake.clock.sleep });
-	const { value: ref } = await provider.create(SPEC);
-	const { value: connection } = await provider.connect(ref);
-	const { client } = connection;
-	const frame = await client.call("screen.watch", { after: 0 });
-	assert.equal(frame.ok, true, JSON.stringify(frame).slice(0, 200));
-	assert.equal(frame.value.eof, false, "the frame is over a chunk");
-	const first = await client.call("screen.shot", {});
-	assert.equal(first.ok, true);
-	assert.equal(first.value.eof, false, "the shot is over a chunk");
-	// The frame's rest, after the shot: the frame's bytes, whole.
-	const parts = [Buffer.from(frame.value.data, "base64")];
-	for (let eof = false; !eof; ) {
-		const more = await client.call("screen.read", { id: frame.value.id, offset: Buffer.concat(parts).length });
-		assert.equal(more.ok, true, JSON.stringify(more).slice(0, 200));
-		parts.push(Buffer.from(more.value.data, "base64"));
-		eof = more.value.eof;
-	}
-	const bytes = Buffer.concat(parts);
-	assert.equal(bytes.length, frame.value.size);
-	assert.deepEqual(png(bytes), { width: SCREEN.width, height: SCREEN.height });
-	// The shot's rest is still held too.
-	const rest = await client.call("screen.read", { id: first.value.id, offset: Buffer.from(first.value.data, "base64").length });
-	assert.equal(rest.ok, true, JSON.stringify(rest).slice(0, 200));
-	await connection.close();
-	await provider.release(ref, "delete");
-});
-
-test("a phone types 65,536 characters at most in one type action, computerd's bound: one more is refused as limit, with nothing typed", async () => {
-	const { provider, fake } = await setup();
-	const { value: ref } = await provider.create(SPEC);
-	const { client } = (await provider.connect(ref)).value;
-	const over = await client.call("input.actions", { actions: [{ type: "type", text: "a".repeat(65_537) }] });
-	assert.equal(over.ok, true, JSON.stringify(over).slice(0, 300));
-	assert.equal(over.value.done, 0);
-	assert.deepEqual([over.value.failed?.index, over.value.failed?.kind], [0, "limit"]);
-	assert.match(over.value.failed.message, /65537 characters.*65536/);
-	assert.equal(fake.shells().filter((command) => command.startsWith("input text")).length, 0, "nothing typed");
-	const most = await client.call("input.actions", { actions: [{ type: "type", text: "a".repeat(65_536) }] });
-	assert.deepEqual(most, { ok: true, value: { done: 1 } });
-});
-
-test("no phone error carries the phone's endpoint: adb's connect answer gets fixed words, and the adb server's and a shell's words are redacted", async () => {
-	const endpoint = /phone-harness\.test|:2222\d/;
-	// adb's connect answer names the endpoint: the provider's error says what failed in its own words.
-	const fake = fakePhoneHarness();
-	const server = (service, options) => (service.startsWith("host:connect:") ? Promise.resolve({ ok: true, value: `failed to connect to '${service.slice("host:connect:".length)}': Connection refused` }) : fake.adb.server(service, options));
-	const adb = Object.assign((args, options) => fake.adb.run(args, options), { run: fake.adb.run, server });
-	const provider = await create({ apiKey: KEY, fetch: fake.fetch, adb, ledger: memoryLedger(), now: fake.clock.now, sleep: fake.clock.sleep });
-	const { value: ref } = await provider.create(SPEC);
-	const refused = await provider.connect(ref);
-	assert.equal(refused.ok, false);
-	assert.match(refused.error.message, /adb could not reach the phone/);
-	assert.doesNotMatch(refused.error.message, endpoint);
-	// The adb server's FAIL words, which may name the endpoint.
-	const frame = (status, message) => Buffer.from(`${status}${Buffer.byteLength(message).toString(16).padStart(4, "0")}${message}`);
-	const failed = phone.adbAnswer(frame("FAIL", `failed to connect to '${ADB_HOST}:22221'`), "host:connect");
-	assert.equal(failed.ok, false);
-	assert.doesNotMatch(failed.error.message, endpoint);
-	assert.match(failed.error.message, /^the adb server refused host:connect: failed to connect to/);
-	// A shell's stderr, which adb fills with the device's name.
-	const other = fakePhoneHarness();
-	const noisy = aroundAdb(other, (args, options, run) => (args.at(-1)?.startsWith("input tap") ? Promise.resolve({ ok: true, value: { exitCode: 1, stdout: Buffer.alloc(0), stderr: `error: device '${ADB_HOST}:22221' not found\n` } }) : run()));
-	const second = await create({ apiKey: KEY, fetch: other.fetch, adb: noisy, ledger: memoryLedger(), now: other.clock.now, sleep: other.clock.sleep });
-	const { value: ref2 } = await second.create(SPEC);
-	const { client } = (await second.connect(ref2)).value;
-	const tapped = await client.call("input.actions", { actions: [{ type: "tap", at: [100, 300] }] });
-	assert.equal(tapped.ok, true, JSON.stringify(tapped));
-	assert.match(tapped.value.failed.message, /input tap on the phone failed/);
-	assert.doesNotMatch(tapped.value.failed.message, endpoint);
+	assert.deepEqual(await installs(apk), [createHash("sha256").update(readFileSync(apk)).digest("hex")], "the fixture, installed on the run's phone");
+	assert.deepEqual(await installs(join(dir, "not-built.apk")), [], "no APK, nothing installed: the Full ui cases skip");
+	assert.match(conformance.UI_FIXTURE_APK, /[/\\]dist[/\\]ui-fixture\.apk$/);
+	const built = existsSync(conformance.UI_FIXTURE_APK);
+	assert.ok(
+		conformance.conformanceNotes.some((note) => note.includes(conformance.UI_FIXTURE_APK) && (built ? /gets the ui fixture installed/ : /npm run build:ui-fixture builds it/).test(note)),
+		conformance.conformanceNotes.join("\n"),
+	);
 });

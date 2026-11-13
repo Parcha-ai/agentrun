@@ -38,7 +38,7 @@ async function runWith(t, calls, { ended = true } = {}) {
     await add({ kind: "agentrun.ask", data: { callId: call.id, tool: call.tool, args: call.args, requestedAt: iso((at += 100)) } });
     if (!call.answer) continue;
     await add({ kind: "agentrun.answer", data: { callId: call.id, approved: call.answer.approved, ...(call.answer.note !== undefined ? { note: call.answer.note } : {}), ...(call.answer.by ? { by: call.answer.by } : {}) } });
-    await add({ kind: "pi.tool-result", model: [{ role: "toolResult", toolCallId: call.id, toolName: call.tool, content: [{ type: "text", text: call.result.text }], isError: call.result.isError, timestamp: (at += 100) }] });
+    await add({ kind: "pi.tool-result", model: [{ role: "toolResult", toolCallId: call.id, toolName: call.tool, content: [{ type: "text", text: call.result.text }], isError: call.result.isError, ...(call.result.details ? { details: call.result.details } : {}), timestamp: (at += 100) }] });
   }
   if (ended) await add({ kind: "pi.assistant", model: [{ role: "assistant", stopReason: "stop", content: [{ type: "text", text: "done" }], timestamp: (at += 100) }] });
   await commitWrites(j, writes, context);
@@ -164,3 +164,17 @@ test("served across reads, a call's approval row moves below the call's result o
   }
 });
 
+
+test("a denied call's result row alone is marked refused: the approval, the person's message and the outcome rows keep their own status", async (t) => {
+  const said = "use the cached copy instead";
+  const refused = (text) => ({ text, isError: true, details: { "agentrun.refused": true } });
+  const store = await runWith(t, [
+    fetchCall("c1", { approved: false, note: "no" }, refused("The user denied this web_fetch call. Reason: no")),
+    fetchCall("c2", { approved: false, note: said, by: "message" }, refused(`The user denied this web_fetch call. Reason: ${said}`)),
+  ]);
+  const rows = await timelineOverStore(store, "run-1", deps);
+  const marked = rows.filter((row) => row.refused === true);
+  assert.deepEqual(marked.map((row) => row.kind), ["tool_result", "tool_result"], JSON.stringify(rows.map((r) => [r.kind, r.summary, r.refused])));
+  for (const id of ["c1", "c2"]) for (const row of readFor(rows, id).after) assert.equal(row.refused, undefined, JSON.stringify(row));
+  assert.equal(rows.find((row) => row.summary === `You: ${said}`)?.refused, undefined, "the person's message row");
+});

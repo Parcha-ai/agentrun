@@ -1,6 +1,7 @@
-export type StartBody = { input: unknown; revision?: string; effort?: string; max_cost_usd?: number; file_ids?: string[] };
-/** `fileIds`: the files the run names (uploaded with POST /v2/files), copied into its `inputs/` before it starts. */
-export type StartForm = { text: string; revision?: string; effort?: string; maxCostUsd?: string; fileIds?: string[] };
+export type StartBody = { input: unknown; revision?: string; effort?: string; max_cost_usd?: number; file_ids?: string[]; repo?: string };
+/** `fileIds`: the files the run names (uploaded with POST /v2/files), copied into its `inputs/` before it starts.
+ *  `repo`: the GitHub repository (owner/name) the run reaches; empty takes the agent's one bound repository. */
+export type StartForm = { text: string; revision?: string; effort?: string; maxCostUsd?: string; fileIds?: string[]; repo?: string };
 
 /** The body of `POST /v2/agents/{id}/runs` from the form. An agentic run's input is its first message, `{content}`; a
  *  workflow run's is its typed input, as JSON. A workflow run takes no spend cap (the server refuses one). */
@@ -21,6 +22,13 @@ export function startBody(kind: "agentic" | "workflow", f: StartForm): { ok: tru
     body.max_cost_usd = cap;
   }
   if (f.fileIds?.length) body.file_ids = [...f.fileIds];
+  // The repository field is the agent form's alone; a workflow start never reads it (a value kept from the agent
+  // the person switched from is not sent, nor checked).
+  const repo = kind === "agentic" ? f.repo?.trim() : undefined;
+  if (repo) {
+    if (!/^[^/\s]+\/[^/\s]+$/.test(repo)) return { ok: false, field: "repo", message: "A repository is owner/name, like Parcha-ai/agentrun." };
+    body.repo = repo;
+  }
   return { ok: true, body };
 }
 
@@ -87,11 +95,12 @@ export { keeper };
 
 const sh = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 
-/** The request as cURL for the code pane. The token is `$AGENTRUN_TOKEN`: a value never appears. */
+/** The request as cURL for the code pane. The key is `$AGENTRUN_API_KEY`, an API client's (the server's own token is
+ *  AGENTRUN_TOKEN, never a client's): a value never appears. */
 export function curlFor(origin: string, agentId: string, body: StartBody, key: string): string {
   return [
     `curl -X POST ${sh(`${origin}/v2/agents/${agentId ? encodeURIComponent(agentId) : "{agent_id}"}/runs`)} \\`,
-    `  -H "Authorization: Bearer $AGENTRUN_TOKEN" \\`,
+    `  -H "Authorization: Bearer $AGENTRUN_API_KEY" \\`,
     `  -H 'Content-Type: application/json' \\`,
     `  -H ${sh(`Idempotency-Key: ${key}`)} \\`,
     `  -d ${sh(JSON.stringify(body))}`,

@@ -231,7 +231,7 @@ export class FakeUiDriver implements UiSource {
 	async look(target: UiTarget | undefined): Promise<Result<UiView>> {
 		const id = target?.app ?? this.#front;
 		const touch = this.kind === "android" || this.kind === "ios";
-		// A phone reads only the app in front, as its accessibility dump does (phone-ui.ts): an app behind is not found.
+		// A phone reads only the app in front, as its accessibility tree does: an app behind is not found.
 		const front = this.#front ?? "home";
 		if (touch && target?.app !== undefined && target.app !== front) return fail("not_found", `${target.app} is not in front on this phone (${front} is): launch it with apps.launch first`);
 		if (id === undefined || (id === "home" && this.#front === undefined)) {
@@ -346,11 +346,18 @@ export class FakeUiDriver implements UiSource {
 			return ok(landed);
 		}
 		if ("type" in step) {
+			const field = (one: FakeElement) => one.role === "textbox" || one.role === "searchbox";
+			if (target !== undefined && !field(target)) return fail("refused", `${step.into} is a ${target.role}, not a text field: type into a field`);
 			const into = target ?? scripted(state.focus);
 			const route = pointer(into);
 			if (!route.ok) return route;
-			if (into === undefined || !takes(into, route.value) || (into.role !== "textbox" && into.role !== "searchbox")) return ok({ route: route.value, verified: false });
-			state.focus = into.key;
+			if (into === undefined || !takes(into, route.value) || !field(into)) return ok({ route: route.value, verified: false });
+			// A field named by its ref is focused first, as a tap does, which runs what pressing it does: a field whose
+			// press opens another screen leaves the focus there, and nothing is typed.
+			if (target !== undefined) {
+				this.#press(state, target);
+				if (state.focus !== target.key) return fail("refused", `${step.into} did not take focus: nothing typed`);
+			}
 			state.values.set(into.key, `${state.values.get(into.key) ?? into.value ?? ""}${step.type}`);
 			return ok({ route: route.value, verified: true });
 		}

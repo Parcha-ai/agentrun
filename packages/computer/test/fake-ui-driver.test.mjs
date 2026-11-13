@@ -301,6 +301,31 @@ test("blind background input reaches no field or key effect that takes foregroun
 	await c.close();
 });
 
+test("type into a ref that is no field is refused; a field whose tap opens another screen takes no focus and gets nothing typed", async () => {
+	const app = {
+		id: "test.into",
+		name: "Into",
+		start: "a",
+		size: [300, 200],
+		screens: {
+			a: { elements: [{ key: "send", role: "button", name: "Send", bounds: [10, 10, 80, 28] }, { key: "search", role: "searchbox", name: "Search", bounds: [10, 50, 200, 28], press: { go: "b" } }, { key: "to", role: "textbox", name: "To", bounds: [10, 90, 200, 28] }] },
+			b: { elements: [{ key: "query", role: "textbox", name: "Query", bounds: [10, 10, 200, 28], flags: ["focused"] }] },
+		},
+	};
+	const c = await fakeUiConnection({ apps: [app] });
+	await c.client.call("apps.launch", { id: app.id });
+	const [send, search, to] = (await c.client.call("ui.observe", {})).value.nodes.map((node) => node.ref);
+	const notField = await c.client.call("ui.act", { steps: [{ type: "hello", into: send }] });
+	assert.deepEqual(notField.value.steps[0].error, { kind: "refused", message: `${send} is a button, not a text field: type into a field` }, JSON.stringify(notField));
+	const typed = await c.client.call("ui.act", { steps: [{ type: "hello", into: to }] });
+	assert.equal(typed.value.steps[0].verified, true, JSON.stringify(typed));
+	const opened = await c.client.call("ui.act", { steps: [{ type: "hello", into: search }] });
+	assert.deepEqual(opened.value.steps[0].error, { kind: "refused", message: `${search} did not take focus: nothing typed` }, JSON.stringify(opened));
+	const after = (await c.client.call("ui.observe", {})).value.nodes;
+	assert.deepEqual([after[0].name, after[0].value], ["Query", undefined], "the tap opened the other screen, and nothing reached its field");
+	await c.close();
+});
+
 test("a set honors the element's route as a press does: a foreground-only control is never set by the semantic route", async () => {
 	const app = { id: "test.fg", name: "Fg", start: "a", size: [300, 200], screens: { a: { elements: [{ key: "pin", role: "textbox", name: "PIN", bounds: [10, 10, 200, 28], route: "foreground" }, { key: "lock", role: "switch", name: "Lock", bounds: [10, 50, 80, 28], route: "foreground" }] } } };
 	const strict = await fakeUiConnection({ apps: [app] });

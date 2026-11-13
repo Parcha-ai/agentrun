@@ -14,6 +14,7 @@ import { anthropicMessagesApi } from "@earendil-works/pi-ai/api/anthropic-messag
 import { openAIResponsesApi } from "@earendil-works/pi-ai/api/openai-responses.lazy";
 import { createProvider } from "@earendil-works/pi-ai/models";
 import type { SessionPort } from "@parcha/agentrun-kernel";
+import { attachingImages } from "./attach-images.js";
 
 /** The provider id the port's one model is listed under. */
 export const PORT_PROVIDER = "agentrun-session";
@@ -56,14 +57,15 @@ export function sessionModel(api: SessionPort["api"], url: string, model: string
  *  credential (named `keyName`). The proxy knows a request by `authorization: Bearer <key>`: on Messages that header is set
  *  on the model, since pi-ai's Anthropic client sends its key as x-api-key, which the proxy does not forward; on Responses
  *  pi-ai sends the key as that bearer token itself. The one client every runner caller of a session proxy builds: pi's
- *  sessions, the learning grader, a workflow's model nodes. */
+ *  sessions, the learning grader, a workflow's model nodes. Each request's images are checked as they are attached
+ *  (attach-images.ts): one a provider would refuse goes as a text saying why. */
 export function sessionProvider(api: SessionPort["api"], proxy: { readonly url: string; readonly key: string }, model: string, options: { provider: string; keyName: string; like?: SessionLike; reasoning: boolean }): ReturnType<typeof createProvider> {
   return createProvider({
     id: options.provider,
     baseUrl: sessionBaseUrl(api, proxy.url),
     auth: { apiKey: { name: options.keyName, resolve: async () => ({ auth: { apiKey: proxy.key }, source: "session" }) } },
     models: [sessionModel(api, proxy.url, model, { provider: options.provider, ...(api === "anthropic-messages" ? { headers: { authorization: `Bearer ${proxy.key}` } } : {}), ...(options.like ? { like: options.like } : {}), reasoning: options.reasoning })],
-    api: api === "anthropic-messages" ? anthropicMessagesApi() : openAIResponsesApi(),
+    api: attachingImages(api === "anthropic-messages" ? anthropicMessagesApi() : openAIResponsesApi()),
   } as never);
 }
 
@@ -101,7 +103,7 @@ export async function portModels(port: () => SessionPort | undefined, like?: Par
       id: provider, baseUrl,
       auth: { apiKey: { name: "the session's side key", resolve: async () => ({ auth: { apiKey: now.key }, source: "session" }) } },
       models: [model as never],
-      api: now.api === "anthropic-messages" ? anthropicMessagesApi() : openAIResponsesApi(),
+      api: attachingImages(now.api === "anthropic-messages" ? anthropicMessagesApi() : openAIResponsesApi()),
     } as never));
     built = { at, models, model: models.getModel(provider, now.model) as Model<Api> };
     return built;

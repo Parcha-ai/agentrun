@@ -18,6 +18,7 @@
 import type { DraftAsk } from "./learn/skills.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { approve, buildIndex, CAPS, checkNote, draftProblems, frontKeys, INDEX_FILE, INDEX_LINES, isHeld, LEARNED_KEYS, type LearnedNote, learnedName, learnedPlace, learnedStatus, NOTE_FILE, NOTE_STATUSES, parseNoteFile, type Problem, printable, released, retire, retiredLearned, skillProblems, SKILLS_DIR, supersede, UNCLEAR_FRONT, unstorable, WORKFLOWS_DIR, unclearFront, restorable, restore, restoredLearned } from "./learn/index.js";
+import type { DraftDecisions } from "./learn/skills.js";
 import { blobOid, type FolderChange, FolderBusy, FolderRefused, FolderTooLarge, FolderUnreadable, heldOnMain, isBodyMismatch, type PersonKind, readLearning, PATCH_CAP, readRunDiff, readSnapshot, type SnapChange, type SnapHistory, type SnapLearned, type SnapNote, type Snapshot, snapshotNotes, writeLearning } from "./learn/folder.js";
 import { ApiError, invalid } from "./errors.js";
 import { type ItemStatus, detailShown, type Learning, learningFolderOf, type NoteRuns, notesView, reasonShown, secretsShown, type Shown, withAgentRepo } from "./learning.js";
@@ -361,7 +362,7 @@ const NOT_NOTE = "The folder's file by this name on main is no note (not a regul
  *  `Approved-Via: console` on an approval), main moved only from the main it read (computed again on a main that moved
  *  meanwhile), then the checked-out files and the snapshot. A note the checks refuse is never written to git. A retire
  *  of a note that is not active, and an edit that changes nothing, commit nothing. `refuse`: the host's secrets. */
-export async function writeNote(data: string, agentId: string, raw: string, input: { ifMatch?: string; ifNoneMatch?: string; body?: Buffer; refuse: readonly string[]; approve?: boolean; restore?: boolean; draftTools?: () => Promise<{ tools: string[]; gated: Record<string, string>; deniedBy?: Record<string, "agent" | "server" | "default">; ask?: DraftAsk }> }): Promise<{ status: 200 | 201; file: string; text: string; etag: string }> {
+export async function writeNote(data: string, agentId: string, raw: string, input: { ifMatch?: string; ifNoneMatch?: string; body?: Buffer; refuse: readonly string[]; approve?: boolean; restore?: boolean; draftTools?: () => Promise<{ tools: string[]; gated: Record<string, string>; deniedBy?: Record<string, "agent" | "server" | "default">; ask?: DraftAsk; decisions?: DraftDecisions }> }): Promise<{ status: 200 | 201; file: string; text: string; etag: string }> {
   const file = fileOf(raw, input.approve ? "approve" : input.restore ? "restore" : input.body === undefined ? "retire" : "write");
   // A skill's SKILL.md or a draft's README.md: only ever approved or retired here.
   const learned = learnedPlace(file);
@@ -445,9 +446,9 @@ export async function writeNote(data: string, agentId: string, raw: string, inpu
             // a restore never brings back a draft no run could run.
             const draft = changes.find(({ path }) => path === `${folder}workflow.json`);
             if (learned.kind !== "skill" && draft && input.draftTools) {
-              const { tools, gated, deniedBy, ask } = await input.draftTools();
+              const { tools, gated, deniedBy, ask, decisions } = await input.draftTools();
               const dsl = await import("@parcha/agentrun-dsl");
-              for (const { rule, detail } of draftProblems(dsl as never, draft.bytes.toString("utf8"), tools, gated, deniedBy ?? {}, ask)) problems.push(printable({ rule, path: draft.path, detail }, input.refuse));
+              for (const { rule, detail } of draftProblems(dsl as never, draft.bytes.toString("utf8"), tools, gated, deniedBy ?? {}, ask, decisions)) problems.push(printable({ rule, path: draft.path, detail }, input.refuse));
             }
             if (problems.length) throw refused(problems);
           } else {
@@ -529,7 +530,7 @@ export type Promotable = { name: string; description: string; workflow: Record<s
  *  its gate (draftProblems: the DSL's validation with no code run, no code node, no shell or executor call, no call node
  *  on a tool the agent does not have or the gate holds to ask or deny). Any of those is 400 with `problems`, printable.
  *  Reads only: the folder is never written. */
-export async function promotable(data: string, agentId: string, raw: string, input: { refuse: readonly string[]; draftTools: () => Promise<{ tools: string[]; gated: Record<string, string>; deniedBy?: Record<string, "agent" | "server" | "default"> }> }): Promise<Promotable> {
+export async function promotable(data: string, agentId: string, raw: string, input: { refuse: readonly string[]; draftTools: () => Promise<{ tools: string[]; gated: Record<string, string>; deniedBy?: Record<string, "agent" | "server" | "default">; decisions?: DraftDecisions }> }): Promise<Promotable> {
   let name: string;
   try {
     name = decodeURIComponent(raw);
@@ -553,8 +554,9 @@ export async function promotable(data: string, agentId: string, raw: string, inp
   if (!json) problems.push(printable({ rule: "workflow", path: file, detail: "the workflow's folder holds no workflow.json" }, input.refuse));
   const dsl = await import("@parcha/agentrun-dsl");
   if (json && !problems.length) {
-    const { tools, gated, deniedBy } = await input.draftTools();
-    for (const { rule, detail } of draftProblems(dsl as never, json.text, tools, gated, deniedBy ?? {})) problems.push(printable({ rule, path: file, detail }, input.refuse));
+    // A learned workflow's decision nodes (LS-07) are checked on this server's decision providers, as a restore checks them.
+    const { tools, gated, deniedBy, decisions } = await input.draftTools();
+    for (const { rule, detail } of draftProblems(dsl as never, json.text, tools, gated, deniedBy ?? {}, undefined, decisions)) problems.push(printable({ rule, path: file, detail }, input.refuse));
   }
   if (problems.length) throw new ApiError("bad_request", `The workflow does not pass the checks: ${[...new Set(problems.map((problem) => problem.rule))].join(", ")}.`, { problems });
   const workflow = JSON.parse(json!.text) as Record<string, unknown>;
