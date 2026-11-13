@@ -2205,7 +2205,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // A workflow this run already served or handed back on an earlier claim (its end on the root): recovered whatever the
         // money rule says now, so a crash before the handback never makes the agent redo finished work.
         const keptFirst = spec.workflowFirst || !spec.workflowRevise || followedUp || firstUnplaced || session!.state !== "new" ? undefined : findData<WorkflowFirstData>(await entriesOf(gate!.journal, root!.id, context), WORKFLOW_FIRST, () => true);
-        const recovered: WorkflowFirst | undefined = keptFirst && keptFirst.outcome !== "needs_revision" ? { name: keptFirst.workflow, digest: keptFirst.digest, revision: keptFirst.revision, input: {} } : undefined;
+        const recovered: WorkflowFirst | undefined = keptFirst && keptFirst.outcome !== "needs_revision" ? { name: keptFirst.workflow, digest: keptFirst.digest, revision: keptFirst.revision, input: {}, ...(spec.workflowRevise?.outputSchema !== undefined ? { outputSchema: spec.workflowRevise.outputSchema } : {}) } : undefined;
         const firstToServe = spec.workflowFirst ?? recovered;
         // A fitting workflow the money rule stopped: why, on the root, once for the run, as the agent takes it.
         if (spec.workflowRevise && !followedUp && !firstUnplaced && session!.state === "new") {
