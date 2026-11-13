@@ -60,6 +60,10 @@ export type CostRun = {
 
 /** The fewest runs after the takeover a "times cheaper" figure needs: fewer say too little. */
 export const CHEAPER_AFTER_RUNS = 20;
+
+/** How many of a learned workflow's newest runs served first at one version the money rule reads
+ *  (runner/workflow-first.ts costLineOf); under that many, it serves. */
+export const COST_WINDOW = 10;
 /** The latest runs the route answers by default, and at most. */
 export const COST_RUNS_DEFAULT = 1000;
 export const COST_RUNS_MAX = 10_000;

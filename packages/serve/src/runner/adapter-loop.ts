@@ -57,7 +57,7 @@ import { Fenced } from "../store/index.js";
 import { type ClaimMcp, parkedFollowUp } from "./mcp-run.js";
 import { budgetOf, TOOL_BUDGET_TEXT, WRAP_UP_TEXT, wrappingUp } from "../tool-budget.js";
 import { LEARNED_WORKFLOW_TOOL } from "../learned-workflow.js";
-import { handbackText, WORKFLOW_FIRST, WORKFLOW_FIRST_CALL, type WorkflowFirst, type WorkflowFirstData } from "./workflow-first.js";
+import { handbackText, WORKFLOW_FIRST, WORKFLOW_FIRST_CALL, type WorkflowFirst, type WorkflowFirstData, type WorkflowRevise } from "./workflow-first.js";
 
 /** A pause or resume row on an agentic run, refused in main's words (runs.ts pause): only a workflow run pauses. */
 export const AGENTIC_PAUSE_REFUSED = "Only a workflow run pauses here: an agentic run's turn is stopped with POST /runs/{id}/stop.";
@@ -132,6 +132,10 @@ export interface AdapterRunSpec {
    *  run once through the session's own learned_workflow tool (its gate, record, ledger and cap), its answer the run's
    *  answer, or its handback the agent's first input. Absent: the agent takes the run from its first turn. */
   readonly workflowFirst?: WorkflowFirst;
+  /** The learned workflow that fits the run but that the money rule stopped from running first (workflow-first.ts
+   *  costLineOf): the loop keeps why on the root (WORKFLOW_FIRST, outcome needs_revision, the two numbers) as the agent
+   *  takes the run, and the run's end-of-run turn asks for its revision. */
+  readonly workflowRevise?: WorkflowRevise;
   /** The run's end-of-run step, when its spec builds one (over the per-claim resources it holds, its Archil claim among
    *  them): it wins over LoopDeps.endOfRun and is asked where that one is, in the end turn while the claim is held, before
    *  a tool host's beforeRelease and the run's release, its rows in the end's commit. */
@@ -1768,6 +1772,17 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // the run's, or its handback is the agent's first input. Only while the session is new: a claim that finds a turn
         // under way (the handback sent) never runs it again.
         let served: Served | undefined;
+        // A fitting workflow the money rule stopped: why, on the root, once for the run, as the agent takes it.
+        if (spec.workflowRevise && !followedUp && !firstUnplaced && session!.state === "new") {
+          const [on, theRoot, theGate] = [harness!, root!, gate!];
+          if (!findData<WorkflowFirstData>(await entriesOf(theGate.journal, theRoot.id, context), WORKFLOW_FIRST, () => true)) {
+            const { workflow, digest, revision, served_usd, by_hand_usd, runs } = spec.workflowRevise;
+            const data: WorkflowFirstData = { workflow, digest, revision, outcome: "needs_revision", served_usd, by_hand_usd, runs };
+            await on.commit(async (tx) => {
+              await tx.appendEntry(theRoot.id, { kind: WORKFLOW_FIRST, data: data as unknown as JsonValue });
+            }, context);
+          }
+        }
         if (spec.workflowFirst && !followedUp && !firstUnplaced && session!.state === "new") {
           let release!: () => void;
           servingFirst = new Promise<void>((resolve) => (release = resolve));

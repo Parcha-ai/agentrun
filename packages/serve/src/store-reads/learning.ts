@@ -13,7 +13,7 @@ import { learningStartOf, readLaunchBody, type RunLaunch } from "../run-launch.j
 import { type Impact, type ImpactLearning, learningImpact, noteRuns, notesRead } from "../learning-run.js";
 import { costSummary, type CostRun, type CostSummary, RUN_PATHS, type RunPath, runCostOf } from "../learning-cost.js";
 import { runPathOf, workflowNameOf } from "../runner/learning-end.js";
-import { servedOf } from "../runner/workflow-first.js";
+import { servedOf, workflowCostsOf } from "../runner/workflow-first.js";
 import { type Reflect, reflects } from "../reflect-range.js";
 import type { NoteRuns } from "../learning.js";
 import { type NoteFiles, notesOf } from "../usage.js";
@@ -185,7 +185,7 @@ export async function agentLearningOverStore(store: Store, agentId: string): Pro
  *  (costSummary). A run still at work, an imported or archived one and a workflow revision's run are left out; a learning
  *  run (a run's grade and merge) is no run of the list, and its cost is its run's learning. `limit`: the latest runs
  *  shown, each keeping its number; the summary is over every run. */
-export async function agentCostOverStore(store: Store, agentId: string, limit = Infinity): Promise<{ runs: CostRun[]; summary: CostSummary; total_runs: number; unknown_cost_runs: number }> {
+export async function agentCostOverStore(store: Store, agentId: string, limit = Infinity): Promise<{ runs: CostRun[]; summary: CostSummary; total_runs: number; unknown_cost_runs: number; workflows: ReturnType<typeof workflowCostsOf> }> {
   const kinds = new Map<string, string | undefined>();
   const ended = (await store.runs.list({ agentId })).filter((run) => run.agentId === agentId && FINAL_STATES.includes(run.state) && !run.importedFrom && run.archivedAt === null).sort((a, b) => a.startedAt - b.startedAt || (a.id < b.id ? -1 : 1));
   const runs: CostRun[] = [];
@@ -197,7 +197,10 @@ export async function agentCostOverStore(store: Store, agentId: string, limit = 
     const { path, workflow } = pathOfRow(run.metrics, started);
     runs.push({ n: runs.length + 1, run_id: run.id, started_at: new Date(run.startedAt).toISOString(), path, workflow, learned_revision: started?.seed ?? null, ...runCostOf(run.costUsd, looked, grade) });
   }
-  return { runs: runs.slice(Math.max(0, runs.length - limit)), summary: costSummary(runs), total_runs: runs.length, unknown_cost_runs: runs.filter((run) => run.total_usd === null).length };
+  // Each learned workflow that ran first, where it stands against the money rule (workflow-first.ts workflowCostsOf), the
+  // one the run's launch reads: a workflow over the line shows `needs_revision` with its two numbers.
+  const workflows = workflowCostsOf(ended.filter((run) => kinds.get(run.revisionId) !== "workflow"));
+  return { runs: runs.slice(Math.max(0, runs.length - limit)), summary: costSummary(runs), total_runs: runs.length, unknown_cost_runs: runs.filter((run) => run.total_usd === null).length, workflows };
 }
 
 /** What run `runId`'s learning spent, as its cost per run counts it: what it kept as it answered (`looked`: answeredOf),

@@ -23,7 +23,7 @@ function draw(data: LearningCost, on = true) {
 }
 const text = (host: HTMLElement) => host.textContent ?? "";
 const run = (n: number, path: CostRun["path"], total: number | null): CostRun => ({ n, run_id: `run_${n}`, started_at: new Date(Date.UTC(2026, 9, 1, n)).toISOString(), path, workflow: path === "agent" ? null : "sort", learned_revision: "a".repeat(40), cost_usd: total, learning_usd: total === null ? null : 0, total_usd: total });
-const series = (runs: CostRun[], summary: Partial<LearningCost["summary"]> = {}): LearningCost => ({ agent: "a", runs, total_runs: runs.length, unknown_cost_runs: runs.filter((r) => r.total_usd === null).length, summary: { takeover: null, before: null, after: null, times_cheaper: null, ...summary } });
+const series = (runs: CostRun[], summary: Partial<LearningCost["summary"]> = {}): LearningCost => ({ agent: "a", runs, total_runs: runs.length, unknown_cost_runs: runs.filter((r) => r.total_usd === null).length, summary: { takeover: null, before: null, after: null, times_cheaper: null, ...summary }, workflows: [] });
 
 describe("the chart's arithmetic", () => {
   it("plots only runs whose all-in cost is known", () => {
@@ -114,6 +114,12 @@ describe("CostChart", () => {
     expect(text(host)).toContain("After takeover $0.128 · 7x cheaper");
     expect(text(host)).not.toContain("Workflow took over, run 21");
   });
+  it("says a learned workflow that costs more than the agent by hand no longer runs first, with the two levels", () => {
+    const host = draw({ ...sample, workflows: [{ workflow: "sort-invoice", digest: "0123456789abcdef", state: "needs_revision", served: { runs: 10, mean_usd: 0.95 }, by_hand: { runs: 19, mean_usd: 0.889921 } }] });
+    expect(text(host)).toContain("sort-invoice no longer runs first: $0.950 a run over its last 10 runs, at or over $0.890 a run by hand. Its next run asks the agent for a new version, which runs first again.");
+    act(() => root!.unmount()); document.body.innerHTML = "";
+    expect(text(draw({ ...sample, workflows: [{ workflow: "sort-invoice", digest: "0123456789abcdef", state: "serving", served: { runs: 10, mean_usd: 0.1 }, by_hand: { runs: 19, mean_usd: 0.889921 } }] }))).not.toContain("no longer runs first");
+  });
   it("says only the latest runs are drawn when the server sent fewer than there are", () => {
     const host = draw({ ...sample, total_runs: 1200 });
     expect(text(host)).toContain("The latest 80 of 1,200 runs.");
@@ -135,7 +141,7 @@ describe("CostPerRun", () => {
     expect(text(host)).toContain("Workflow took over, run 21");
   });
   it("shows nothing under the tab's empty state until two runs have a cost, then the chart", async () => {
-    const empty: LearningCost = { agent: "a", runs: [], total_runs: 0, unknown_cost_runs: 0, summary: { takeover: null, before: null, after: null, times_cheaper: null } };
+    const empty: LearningCost = { agent: "a", runs: [], total_runs: 0, unknown_cost_runs: 0, summary: { takeover: null, before: null, after: null, times_cheaper: null }, workflows: [] };
     for (const [answer, shown] of [[empty, false], [sample, true]] as const) {
       const v2 = { learningCost: async () => answer } as unknown as Client;
       const host = document.body.appendChild(document.createElement("div"));
