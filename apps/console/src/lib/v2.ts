@@ -91,7 +91,7 @@ export type RunLearningRead = Answer<"getRunLearning">;
  *  learning added for it, the path it took, and what the series shows (the takeover, the levels before and after it). */
 export type LearningCost = Answer<"getLearningCost">;
 /** One run of that series. `path`: `workflow` a learned workflow finished it alone, `handed_back` one ran and the agent
- *  went on, `agent` none ran. */
+ *  went on, `agent` none ran, `replay` a replay run deciding whether a learned workflow's new revision serves. */
 export type CostRun = LearningCost["runs"][number];
 export type RunPath = CostRun["path"];
 /** What the run's job did with the learned skills and workflows it was offered (`used`): each skill and whether its job

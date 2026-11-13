@@ -8,6 +8,8 @@ export const PATHS: readonly { path: RunPath; label: string; fill: string; strok
   { path: "agent", label: "By the agent", fill: "fill-chart-agent", stroke: "stroke-chart-agent" },
   { path: "handed_back", label: "Handed back", fill: "fill-chart-handed-back", stroke: "stroke-chart-handed-back" },
   { path: "workflow", label: "Learned workflow", fill: "fill-chart-workflow", stroke: "stroke-chart-workflow" },
+  // A replay run: a learned workflow's new revision run alone on a graded input before it serves (its cost is learning's).
+  { path: "replay", label: "Replay", fill: "fill-muted-foreground", stroke: "stroke-muted-foreground" },
 ];
 export const pathOf = (path: RunPath) => PATHS.find((p) => p.path === path)!;
 

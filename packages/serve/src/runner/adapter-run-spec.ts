@@ -59,6 +59,7 @@ import { type Claim, ClaimRefused, type Journal } from "./loop-contract.js";
 import { bookedSpend, cliRunMetrics, runEndCost, runMetrics } from "./metrics.js";
 import { journalEntries } from "./journal-reader.js";
 import { piShaped } from "../store-reads/journal.js";
+import { claimPromotion, promotionGate, replayLaid } from "./promotion.js";
 import { pastOf, pathMetrics, servedOf, workflowFirstOf } from "./workflow-first.js";
 import { runPathOverStore } from "../store-reads/learning.js";
 import { type SpecHolds, specBuilt } from "./spec-holds.js";
@@ -555,7 +556,8 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // chose them, scoped as the revision's own: each provider the run's gate does not deny, held by the run's one redactor,
   // onto the tools' environment alone. The model's route was built on the revision's keys above, so a decision key never
   // becomes its model's.
-  const workflows = seedLaid?.workflows ?? [];
+  // A replay run lays the workflow it replays record-only (runner/promotion.ts replayLaid).
+  const workflows = replayLaid(launch, seedLaid?.workflows ?? []);
   // A tier a learned workflow's node names and the host has a model of: none can't be reached is left as `why`, and its
   // node fails in those words (learnedWorkflowHostTool), never on another model.
   const tierUnreachable = new Map<Tier, string>();
@@ -598,8 +600,13 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   const nonHandTools = (await bindNonHandTools(host, revision.kind, granted, run, context, results, root, launch.plane, workflows, native, gate.permissions, tiers, mcp, () => route.model)).map((tool) => answersCut(tool, cut));
   const sessionTools = [...handTools, ...nonHandTools];
   // The learned workflow the run starts on, before its agent's first turn, when one fits its input (workflow-first.ts).
-  // Or the one the money rule stopped, over the agent's past runs (costLineOf): the run asks for its revision.
-  const { serve: workflowFirst, revise: workflowRevise } = learnsWorkflows(revision.kind, workflows) ? await workflowFirstOf(revision.kind, workflows, launch, log, pastOf(deps.store, runRow.agentId)) : {};
+  // Only a promoted digest serves (runner/promotion.ts: replayed on the agent's graded inputs first, or promoted on its
+  // dry run with fewer than five). Or the one the money rule stopped, over the agent's past runs (costLineOf): the run
+  // asks for its revision.
+  const { serve: workflowFirst, revise: workflowRevise } = learnsWorkflows(revision.kind, workflows) ? await workflowFirstOf(revision.kind, workflows, launch, log, pastOf(deps.store, runRow.agentId), promotionGate(claimPromotion({
+    store: deps.store, agentId: runRow.agentId, runId: claim.runId, revisionId: runRow.revisionId, launch, context, log,
+    folder: () => (archil === undefined ? learningFolderOf(deps.data, runRow.agentId) : learningWorkspace({ mode: "archil", agentId: runRow.agentId, archil })),
+  }))) : {};
 
   // The run's system prompt, as main's per-run process builds it (app.ts): the environment line first (environment.ts, as
   // pi installs it before every other section), then the revision's instructions with what the agent learned laid in
@@ -657,7 +664,8 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // Its learning folder is where the run's place keeps it — Mode 1 the agent's folder under the data directory, Mode 2 the
   // agent's folder on THIS claim's Archil disk (the proposal is checked against the seed on the disk, never this machine's
   // local path) — so the end-of-run step reads the run's own Workspace, the one the run worked in.
-  const endOfRun = learningEndOfRun(launch, {
+  // A replay run asks nothing at its end: it is the promotion's, never the agent's to learn from.
+  const endOfRun = launch.replay ? undefined : learningEndOfRun(launch, {
     store: deps.store,
     data: deps.data,
     ...(deps.env ? { env: deps.env } : {}),
