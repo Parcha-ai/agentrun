@@ -79,7 +79,7 @@ async function routeFor(t, harness) {
       },
     });
     t.after(() => fake.close());
-    withEnv(t, { ANTHROPIC_API_KEY: KEY, ANTHROPIC_BASE_URL: fake.url, AGENT_MODEL: "anthropic/claude-haiku-4-5" }, MODEL_VARS);
+    withEnv(t, { ANTHROPIC_API_KEY: KEY, ANTHROPIC_BASE_URL: fake.url, AGENT_MODEL: "anthropic/claude-haiku-5-5" }, MODEL_VARS);
     return { reached: () => fake.messages().filter((m) => m.tools.includes("submit")).length, ask: "Use the learned workflow answer." };
   }
   const gw = await startFauxGateway({ call: submitsAnswer });

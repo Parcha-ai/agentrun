@@ -18,10 +18,10 @@ import { agent, follow, serve, withEnv } from "./support.mjs";
 const KEY = (name) => `not-a-secret-${name}`;
 /** Every variable these tests set or clear, so one test's settings never reach the next. */
 const NAMES = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_API_KEY", "AGENT_MODEL_FAST", "AGENT_MODEL_STRONG", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_OAUTH_TOKEN", "ANTHROPIC_BASE_URL", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "NET_GUARD_LOG", "NODE_OPTIONS"];
-const MODEL = "anthropic/claude-haiku-4-5";
-/** Every answer's usage: 1000 tokens in, 100 out. claude-haiku-4-5 in serve's catalog: $1 in, $5 out per million. */
+const MODEL = "anthropic/claude-haiku-5-5";
+/** Every answer's usage: 1000 tokens in, 100 out. claude-haiku-5-5 in serve's catalog: $0.1 in, $0.5 out per million. */
 const USAGE = { input: 1000, output: 100 };
-const AT_PRICE = (USAGE.input * 1 + USAGE.output * 5) / 1e6;
+const AT_PRICE = (USAGE.input * 0.1 + USAGE.output * 0.5) / 1e6;
 // The net guard, loaded into this process (where a run's model requests leave from) with its log set first: every
 // connect or lookup off this machine is refused and written there. A case reads the lines written since it began.
 const GUARD_LOG = join(mkdtempSync(join(process.env.TMPDIR ?? "/tmp", "net-guard-")), "guard.jsonl");
@@ -72,7 +72,7 @@ test("pi through ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY: POST /v1/messages at 
   const run = (await api("GET", `/runs/${started.body.run_id}`)).body;
   const posts = gw.requests.filter((r) => r.method === "POST");
   const shapes = [...new Set(posts.map((r) => JSON.stringify([r.path, r.headers.authorization ?? null, r.headers["x-api-key"] ?? null, r.body?.model])))].map((s) => JSON.parse(s));
-  assert.deepEqual(shapes, [["/v1/messages", null, KEY("anthropic"), "claude-haiku-4-5"]], JSON.stringify({ requests: gw.requests, error: run.error }));
+  assert.deepEqual(shapes, [["/v1/messages", null, KEY("anthropic"), "claude-haiku-5-5"]], JSON.stringify({ requests: gw.requests, error: run.error }));
   assert.ok(posts.every((r) => typeof r.headers["anthropic-version"] === "string"), "each request names an anthropic-version");
   assert.equal(run.status, "completed", JSON.stringify(run.error));
   assert.deepEqual(rows.findLast((r) => r.kind === "usage")?.usage, { usd: Math.round(posts.length * AT_PRICE * 1e6) / 1e6, requests: posts.length }, "each answer once, from its usage, at the catalog's price");
