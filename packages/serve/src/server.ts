@@ -3236,7 +3236,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const answer = await idempotent(req, "/triggers", body, async () => {
           const { secret: shown, ...made } = await triggers.create(body);
           secret = shown;
-          return { status: 201, body: shown ? { ...made, note: `Its secret was shown once, in the first answer; POST /v2/triggers/${made.id}/secret makes a new one.` } : made, headers: { location: `/v2/triggers/${made.id}` } };
+          // A secret the sender gave is not shown: the trigger answers its metadata, as a read does.
+          return { status: 201, body: shown ? { ...made, note: `Its secret was shown once, in the first answer; POST /v2/triggers/${made.id}/secret makes a new one.` } : withSecretOf(made), headers: { location: `/v2/triggers/${made.id}` } };
         });
         const replayed = answer.headers?.["idempotent-replayed"] === "true";
         const { note: _, ...first } = answer.body as Json;
@@ -3274,11 +3275,19 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       case "rotateTriggerSecret":
         // A secret write: the dispatch's one check let only the owner's session this far (trigger-secrets-shown.ts).
-        return send(res, 200, triggerRotated(id, (await triggers.rotate(id)).secret!, new Date().toISOString()));
+        // A trigger whose sender gives its secret (Composio's) takes it as the body's `secret`; any other is made one.
+        return send(res, 200, await (async () => {
+          const empty = req.headers["transfer-encoding"] === undefined && !Number(req.headers["content-length"]);
+          const body = empty ? {} : await bodyOf(req);
+          const extra = Object.keys(body).filter((key) => key !== "secret");
+          if (extra.length) throw invalid(extra.map((field) => ({ field, reason: "unknown_field" as const, message: `${field} is not a field of this request: only secret` })));
+          return triggerRotated(id, (await triggers.rotate(id, body.secret)).secret, new Date().toISOString());
+        })());
       case "getTrigger":
         return send(res, 200, withSecretOf(await triggers.get(id)));
       case "updateTrigger":
-        return send(res, 200, await triggers.update(id, await bodyOf(req)));
+        // Its secret's metadata as a read answers it, so a page showing the changed trigger keeps saying it is set.
+        return send(res, 200, withSecretOf(await triggers.update(id, await bodyOf(req))));
       case "deleteTrigger":
         await triggers.remove(id);
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
