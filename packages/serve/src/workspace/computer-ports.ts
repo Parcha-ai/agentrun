@@ -1,11 +1,11 @@
 // A computer's narrow ports, as the kernel registry's kind tools reach them (run-adapters kernel/registry Hands: screen,
 // input, phone), over the computer's computerd client (@parcha/agentrun-computer's ComputerClient): a desktop's screen
 // is screen.shot, read to its end with screen.read; its input is input.actions; a phone's screen is the same shot, its
-// structure apps.ui_tree, its tap, swipe, typing and keys are input.actions (back and home its touch group's buttons,
+// structure ui.observe, its tap, swipe, typing and keys are input.actions (back and home its touch group's buttons,
 // enter a key), and its apps are apps.list and apps.launch. A phone with no
 // computerd (daemon none) answers the same methods in process, so one port fits both. A refusal throws the computer's
 // code and words, as the kernel's port says.
-import type { ComputerClient, InputAction as ComputerAction, Result, UiNode } from "@parcha/agentrun-computer";
+import { type ComputerClient, type InputAction as ComputerAction, type Rect, type Result, type UiNode, windowRectToPixels } from "@parcha/agentrun-computer";
 import type { Input, Phone, PhoneKey, PhoneNode, Screen, Shot } from "@parcha/agentrun-kernel/kernel";
 
 /** A computer call's value, or its refusal thrown with the computer's code and words. */
@@ -49,62 +49,70 @@ export const inputOf = (client: ComputerClient): Input => ({
   actions: (list) => act(client, list as unknown as readonly ComputerAction[]),
 });
 
-/** A node's platform class a model types into: Android's EditText (and its subclasses), iOS's text fields and views. */
-const EDITABLE = /(?:EditText|AutoCompleteTextView)$|^XCUIElementType(?:Secure)?Text(?:Field|View)$|^XCUIElementTypeSearchField$/;
+/** The roles a model types into. */
+const EDITABLE = new Set<string>(["textbox", "searchbox"]);
+/** The roles that take a tap by themselves, with or without a named action. */
+const ACTIONABLE = new Set<string>(["button", "link", "tab", "menuitem", "checkbox", "radio", "switch", "slider", "combobox", "textbox", "searchbox"]);
 
-/** The first text among `node`'s descendants, in document order, else their first label: the name of a node that has
- *  none of its own (an Android list row: a clickable layout whose title sits on a child TextView). */
-function innerName(node: UiNode): string | undefined {
-  let label: string | undefined;
-  const stack = [...(node.children ?? [])].reverse();
+/** The first name (else value) among `node`'s descendants, in order: the name of a node that has none of its own (a list
+ *  row whose title sits on a child text). `children` maps a ref to the nodes whose parent it is. */
+function innerName(node: UiNode, children: ReadonlyMap<string, readonly UiNode[]>): string | undefined {
+  let value: string | undefined;
+  const stack = [...(children.get(node.ref) ?? [])].reverse();
   while (stack.length) {
     const next = stack.pop()!;
-    if (next.text) return next.text;
-    label ??= next.label || undefined;
-    for (const child of [...(next.children ?? [])].reverse()) stack.push(child);
+    if (next.name) return next.name;
+    value ??= next.value || undefined;
+    for (const child of [...(children.get(next.ref) ?? [])].reverse()) stack.push(child);
   }
-  return label;
+  return value;
 }
 
-/** The screen's structure (apps.ui_tree), flattened in document order, each node with whether a model can tap it or type
- *  into it; a node the phone says is not enabled is neither. A clickable node with no text or label of its own is named
- *  by its first inner text (else label), as phone_tree shows it, marked so. */
-function flattened(root: UiNode): PhoneNode[] {
-  const out: PhoneNode[] = [];
-  const walk = (node: UiNode) => {
-    const [x, y, w, h] = node.bounds;
-    const editable = node.enabled && EDITABLE.test(node.role);
-    const clickable = node.enabled && node.clickable === true;
-    const inner = clickable && !node.text && !node.label ? innerName(node) : undefined;
-    out.push({
+/** The screen's structure (ui.observe's nodes, flat, a node after its parent), each node with whether a model can tap it
+ *  or type into it: tappable with an action or an actionable role, typeable as a textbox or searchbox; a disabled or
+ *  offscreen node is neither. A tappable node with no name of its own is named by its first inner name (else value), as
+ *  phone_tree shows it, marked so. Bounds arrive in window points and leave in screenshot PIXELS (windowRectToPixels:
+ *  the window's origin added, times hello.screen.scale), because phone_tap goes through input.actions. */
+function flattened(nodes: readonly UiNode[], window: Rect, scale: number): PhoneNode[] {
+  const children = new Map<string, UiNode[]>();
+  for (const node of nodes) if (node.parent) children.set(node.parent, [...(children.get(node.parent) ?? []), node]);
+  return nodes.map((node) => {
+    const [x, y, w, h] = windowRectToPixels(window, scale, node.bounds);
+    const usable = !node.flags?.includes("disabled") && !node.flags?.includes("offscreen");
+    const editable = usable && EDITABLE.has(node.role);
+    const clickable = usable && ((node.actions?.length ?? 0) > 0 || ACTIONABLE.has(node.role));
+    const own = node.name || node.value;
+    const inner = clickable && !own ? innerName(node, children) : undefined;
+    // Both, never one for the other: a labeled field shows its label and the text in it.
+    return {
       role: node.role,
       ...(node.id ? { id: node.id } : {}),
-      ...(node.text ? { text: node.text } : {}),
-      ...(node.label ? { label: node.label } : {}),
+      ...(node.name ? { label: node.name } : {}),
+      ...(node.value ? { text: node.value } : {}),
       bounds: { x, y, w, h },
       clickable,
       editable,
-      ...(node.focused ? { focused: true } : {}),
+      ...(node.flags?.includes("focused") ? { focused: true } : {}),
       ...(inner ? { inner } : {}),
-    });
-    for (const child of node.children ?? []) walk(child);
-  };
-  walk(root);
-  return out;
+    };
+  });
 }
 
 /** The keys a phone presses: back and home are its buttons (input.touch's button action), enter a key of the key table. */
 const keyAction = (name: PhoneKey): ComputerAction => (name === "enter" ? { type: "key", keys: ["enter"] } : { type: "button", name });
 
-/** A phone: its screen's shot and structure (apps.ui_tree), a tap, a swipe, typing and its keys as input.actions, its apps.
- *  `offers`: whether the phone declares its structure (apps.ui_tree) and its keys (input.keys); one it does not declare
+/** A phone: its screen's shot and structure (ui.observe), a tap, a swipe, typing and its keys as input.actions, its apps.
+ *  `offers`: whether the phone declares its structure (the ui group) and its keys (input.keys); one it does not declare
  *  is no method of the port (an iPhone offers neither until a live run proves them). Default both. */
 export const phoneOf = (client: ComputerClient, offers: { readonly tree?: boolean; readonly keys?: boolean } = {}): Phone => ({
   shot: () => shotOf(client),
   ...(offers.tree !== false ? {
     async tree() {
-      const tree = await valueOf(client.call("apps.ui_tree", {}));
-      return { nodes: flattened(tree.root), total: tree.nodes, truncated: tree.truncated };
+      const { screen } = await valueOf(client.call("hello", { client: "agentrun-serve" }));
+      // No scale, no pixels: a guess of 1 would aim every tap wrong on a screen of any other density.
+      if (screen === undefined) throw new Error("this phone's hello gives no screen (its size and scale), so its tree cannot be put in screenshot pixels for a tap");
+      const seen = await valueOf(client.call("ui.observe", {}));
+      return { nodes: flattened(seen.nodes, seen.window.bounds, screen.scale), total: seen.nodes.length, truncated: seen.truncated };
     },
   } : {}),
   tap: (at) => act(client, [{ type: "tap", at: [at.x, at.y] }]),
