@@ -38,6 +38,27 @@ test("the test driver passes every case of the attach binding, in order", { time
   assert.ok(lines.slice(1).every((line) => line.startsWith("PASS ")), lines.join("\n"));
 });
 
+test("a pairing body past the cap is refused 413 before it is parsed, and the pairing after it still works", { timeout: 120_000 }, async (t) => {
+  let driver;
+  t.after(() => driver?.stop());
+  let refused;
+  const results = await runAttachConformance({
+    scale: SCALE,
+    pairMs: 10_000,
+    say: () => {},
+    pair: async (address, code) => {
+      refused = await fetch(`${address}/v2/computers/pair`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code, junk: "x".repeat((1 << 20) + 1) }) });
+      const paired = await pairDriver({ address, code, name: "conformance" });
+      assert.equal(paired.status, 201, JSON.stringify(paired.body));
+      driver = attachDriver({ address, token: paired.body.token, scale: SCALE });
+      driver.start();
+    },
+  });
+  assert.equal(refused.status, 413);
+  assert.equal((await refused.json()).error.code, "payload_too_large");
+  assert.deepEqual(results.filter((result) => !result.ok), []);
+});
+
 test("a driver that keeps a socket a binary frame came on fails binary-frame by name, and passes the rest", { timeout: 120_000 }, async (t) => {
   const { results, lines } = await against(t, { takesBinary: true });
   assert.deepEqual(results.filter((result) => !result.ok).map((result) => result.name), ["binary-frame"], lines.join("\n"));

@@ -23,6 +23,9 @@ import { createAttachRoutes } from "./computer-attach.js";
 import { ApiError } from "./errors.js";
 import { openSqliteStore } from "./store/index.js";
 
+/** The most of a pairing request's body this server keeps (a code and a hello): a larger one is refused 413. */
+export const PAIR_BODY_MAX = 1 << 20;
+
 /** The cases, in the order they run: each later one needs the driver attached, and revoke ends it. */
 export const ATTACH_CASES = [
   "pair",
@@ -123,8 +126,15 @@ export async function runAttachConformance(options: ConformanceOptions): Promise
     };
     if (req.method !== "POST" || req.url !== "/v2/computers/pair") return send(404, { error: { code: "not_found", message: "the conformance server answers POST /v2/computers/pair and the attach socket only" } });
     try {
+      // Only up to PAIR_BODY_MAX bytes are kept (a code and a hello are small), the rest is read through and refused, so the
+      // client gets the answer and a body of any size cannot grow this process.
       const chunks: Buffer[] = [];
-      for await (const chunk of req) chunks.push(chunk as Buffer);
+      let size = 0;
+      for await (const chunk of req) {
+        size += (chunk as Buffer).length;
+        if (size <= PAIR_BODY_MAX) chunks.push(chunk as Buffer);
+      }
+      if (size > PAIR_BODY_MAX) throw new ApiError("payload_too_large", `the pairing body is over ${PAIR_BODY_MAX} bytes`);
       const body: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8") || "null");
       const made = await routes.pair(body, req.socket.remoteAddress ?? "unknown");
       paired = { ...made, hello: (body as { hello: HelloResult }).hello };
