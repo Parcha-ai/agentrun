@@ -663,7 +663,7 @@ fixtures of every evasion it catches.
 import { DockerProvider } from "@parcha/agentrun-computer/docker";
 
 const docker = new DockerProvider({ daemonPath: "dist/computerd-linux-amd64" });
-const made = await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none" }, { requestId: "r1.1" });
+const made = await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none" }, { requestId: "r1#3" });
 if (!made.ok) throw new Error(made.error.message);
 const connected = await docker.connect(made.value);
 if (connected.ok) {
@@ -773,7 +773,7 @@ daemon, or run past its deadline.
 ### An allowlist: the egress proxy
 
 ```ts
-const made = await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: { allow: ["pypi.org", "*.pythonhosted.org", "93.184.215.0/24"] } }, { requestId: "r1.1" });
+const made = await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: { allow: ["pypi.org", "*.pythonhosted.org", "93.184.215.0/24"] } }, { requestId: "r1#3" });
 // In the computer, HTTP_PROXY and HTTPS_PROXY name port 3128 on its own loopback for every program computerd starts.
 ```
 
@@ -858,7 +858,7 @@ import { DockerProvider } from "@parcha/agentrun-computer/docker";
 
 const docker = new DockerProvider({ daemonPath: "dist/computerd-linux-amd64" });
 // The run folder must exist, by its canonical path, and be writable by docker.user (below).
-const made = await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none", mount: { kind: "bind", path: "/data/runs/r1/work" } }, { requestId: "r1.1" });
+const made = await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none", mount: { kind: "bind", path: "/data/runs/r1/work" } }, { requestId: "r1#3" });
 // In the computer: files.read({ path: `${WORKSPACE}/notes.md` }), exec.run({ argv: ["make"], cwd: WORKSPACE, ... })
 ```
 
@@ -926,7 +926,7 @@ const docker = new DockerProvider({
 	daemonCache: "/data/computer-cache", // at or below volume.root
 	volume: { name: "agentrun_agentrun-data", root: "/data" },
 });
-await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none", mount: { kind: "bind", path: "/data/disk/agents/a1/runs/r1/work" } }, { requestId: "r1.1" });
+await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none", mount: { kind: "bind", path: "/data/disk/agents/a1/runs/r1/work" } }, { requestId: "r1#3" });
 ```
 
 - `volume: { name, root }`: `name` is the named volume, as `docker volume ls` names it; `root` is where this process
@@ -978,7 +978,7 @@ import { DockerProvider } from "@parcha/agentrun-computer/docker";
 const docker = new DockerProvider({ daemonPath: "dist/computerd-linux-amd64" }); // image: the default recipe
 const image = await docker.image({ signal });   // built once; one inspect when Docker has it
 if (!image.ok) throw new Error(image.error.message);
-const made = await docker.create({ image: image.value, lifetimeMs: 600_000, network: "none" }, { requestId: "r1.1" });
+const made = await docker.create({ image: image.value, lifetimeMs: 600_000, network: "none" }, { requestId: "r1#3" });
 ```
 
 - `ensureImage(source, { docker?, signal?, timeoutMs?, onWait? })` (`src/docker/image.ts`) gives the tag. `source` is
@@ -1160,7 +1160,7 @@ const docker = new DockerProvider({ daemonPath: "dist/computerd-linux-amd64" });
 // A claim at epoch 3 takes the run over: the computers of epochs 1 and 2 go first.
 const older = await releaseOlder(docker, "r1", 3);
 if (!older.ok) throw new Error(older.error.message); // fenced, or a computer that could not be released
-await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none", labels: runLabels("r1", 3) }, { requestId: "r1.3" });
+await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none", labels: runLabels("r1", 3) }, { requestId: "r1#3" });
 ```
 
 ### Waiting for a vendor: `waitUntil`
@@ -1186,7 +1186,7 @@ const modal = new ModalProvider({
 	app: "computers",
 	// daemonPath: the daemon to upload; default this package's dist/computerd-linux-amd64 (npm run build:daemon)
 });
-const made = await modal.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none" }, { requestId: "r1.1" });
+const made = await modal.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none" }, { requestId: "r1#3" });
 ```
 
 `ModalProvider` makes Modal sandboxes on the VM runtime, or on gVisor for a GPU computer (below), through the slice of Modal's JS SDK named by `ModalSdk`
@@ -1473,7 +1473,7 @@ named by any call.
 import { DaytonaProvider } from "@parcha/agentrun-computer/daytona";
 
 const daytona = new DaytonaProvider({ apiKey, daemonPath: "dist/computerd-linux-amd64" });
-const made = await daytona.create({ image: "my-snapshot", lifetimeMs: 600_000, network: "none" }, { requestId: "r1.1" });
+const made = await daytona.create({ image: "my-snapshot", lifetimeMs: 600_000, network: "none" }, { requestId: "r1#3" });
 ```
 
 A Daytona computer is a sandbox made through Daytona's v0 REST API with `fetch`: no SDK, and no package beyond this
@@ -1802,8 +1802,14 @@ import { providerFor } from "@parcha/agentrun-computer";
 
 // The key is the caller's to pass (serve's E2B_API_KEY), and the e2b package is the host's own (npm e2b 2.63.0).
 const e2b = await providerFor("e2b", { apiKey });
-const made = await e2b.create({ image: "desktop", lifetimeMs: 600_000, network: "none" }, { requestId: "r1.1" });
+const made = await e2b.create({ image: "desktop", lifetimeMs: 600_000, network: "none" }, { requestId: "r1#3" });
 ```
+
+E2B runs on the shared machine-host adapter ([PROVIDERS.md](PROVIDERS.md)): `src/e2b.ts` is E2B's `MachineHost`, its
+SDK slice and the mapping of a sandbox to a machine, and `src/hosted/provider.ts` does everything below that is not
+E2B's own. `create` takes the caller's request id (`{ requestId }`, serve's is the run's claim): the computer's name is
+`computer-` and the first 12 hex digits of its sha256, and a retry of the same request finds the computer the first
+made instead of making a second.
 
 An E2B computer is a sandbox made from an E2B template, by default `desktop`, E2B Desktop's (Ubuntu 22.04 with Xvfb,
 Xfce, x11vnc and noVNC, e2b-dev/desktop `template/template.py:3-65`). It is kind `desktop`: computerd starts the X
@@ -1844,14 +1850,14 @@ E2B's envd is the sandbox's first process, a systemd service with `Restart=alway
    passes, and the sandbox found is killed and read back gone, as release waits for one.
 2. `getInfo` reads the sandbox back (below).
 3. `files.write` uploads the daemon as root to `/tmp/agentrun-computerd-<random>` (`index.mjs:2332-2435`), and the
-   same install command as Daytona's (`src/child.ts`) moves it to `/opt/agentrun/computerd`, root-owned, and prints its
-   sha256, which must be the uploaded one's.
-4. `commands.run(init, { background: true, user: "root", timeoutMs: 0 })` starts `computerd init --deadline <time>
-   --user 2510:2510 --own-network --max-deadline <create's time plus the cap>` with `DISPLAY=:0`, in a clean
-   environment. envd runs
-   the command under `bash -l -c` (`index.mjs:5123-5146`). Its timeout is 0 because envd kills a command whose
-   timeout passes, and keeps one running when its stream ends (envd `process/start.go:39-44`); the SDK's default
-   would end init after 60 s (`index.mjs:4978`). Create disconnects from it after.
+   same install command as Daytona's (`src/hosted/scripts.ts`) moves it to `/opt/agentrun/computerd`, root-owned, and
+   prints its sha256, which must be the uploaded one's, and who installed it (a create note).
+4. The adapter's start command, a background command as root, starts `computerd init --deadline <time> --user
+   2510:2510 --own-network --max-deadline <create's time plus the cap>` with `DISPLAY=:0`, in a clean environment,
+   detached: in a session of its own (`setsid`), its output to `/run/agentrun-init.log`, so the command ends at once
+   and a daemon that never answers is reported with init's own words. envd runs every command under `bash -l -c`
+   (`index.mjs:5123-5146`), each with timeout 0, because envd kills a command whose timeout passes (envd
+   `process/start.go:39-44`); the SDK's default would end it after 60 s (`index.mjs:4978`).
 5. `connect()` starts `computerd stdio` the same way, as root, with `stdin: true` and `retainOutput: false` (so a long
    connection keeps no copy of its output, `index.mjs:2708-2711`, `5150-5153`): its stdout comes through `onStdout`
    (decoded as a stream, `index.mjs:2860`), and requests go in with `sendStdin`, one call after another.
@@ -1917,7 +1923,7 @@ hostname from the connection's first bytes, decides, and closes a denied connect
 E2B documents no stricter setting: `allowInternetAccess: false` is `denyOut 0.0.0.0/0`, and `dnsServers` matters only
 with a domain in `allowOut`. Under the shared rule only an answer refuses network none, so such a sandbox is kept, and
 create's and attach's `notes` name the accepted targets: `network: none; accepted with no answer (no bytes came back):
-1.1.1.1:443, 8.8.8.8:443`. The one live diagnostic (below) read that: every IPv4 target on 443/tcp and 80/tcp accepted
+1.1.1.1:443, 8.8.8.8:443`. The one live diagnostic (2026-11-07, a tool since removed) read that: every IPv4 target on 443/tcp and 80/tcp accepted
 and closed with 0 bytes, no answer on 53/udp, and, in the provider's own probe, no accept from the IPv6 target. UDP
 is not proxied: the same firewall drops non-TCP to the user deny set, which `denyOut` fills, in nftables
 (`e2b-dev/infra@ff3922213` `packages/orchestrator/pkg/sandbox/network/firewall.go`, `installRules`, rule 5), so the probe's UDP targets get no reply within the 10 s window
@@ -1930,14 +1936,6 @@ packets reach the destination, and that this may change. The answered check catc
 both ways, since the first byte back refuses network none; it does not catch a one-way leak, and nothing run from
 inside can. That is the rule for every provider, confirmed on 11-07, and why every
 accept is recorded in words rather than dropped.
-
-`dist/conformance/e2b-diagnose.js` (live switch
-`AGENTRUN_COMPUTER_LIVE_E2B=1`) makes one sandbox exactly as create does for network none, with a 10-minute E2B
-timeout, records the read-back and the provider's own check (`passed` with its `notes`, or its refusal), runs
-`computerd probe --diagnose` in it (each check judged as `--connect` judges a target: any byte back is answered),
-prints one JSON line, and kills the sandbox and reads it back gone, after an error or an abort too (SIGINT, SIGTERM,
-or its own 8-minute bound). Exit 0 when a diagnosis came back and the sandbox reads gone, 1 otherwise, 2 with no live
-switch or a refused setting.
 
 ### Extend and stream
 
@@ -2007,17 +2005,12 @@ computer capped at 30 minutes, Hobby's plan for conformance
 `test/e2b/conformance.e2b.test.mjs` runs the suite with `computerd-fixture` built for linux/amd64, and skips unless the
 switch and `COMPUTER_E2B_API_KEY` are both set; `E2B_API_KEY` never counts.
 
-`dist/conformance/e2b-sweep.js --before <file>` records every sandbox E2B lists with `agentrun.computer=1`; `--after
-<file>` kills every one not in the file whose metadata carries a conformance run's label (`agentrun.conformance`),
-leaving alone one another user of the account made during the run, reads each killed one back until `getInfo` no longer
-finds it and the listing no longer shows it, up to 60 s each, and prints
-`{"swept":n,"gone":m,"stillThere":[ids],"leftAlone":k}` (`leftAlone`: the new labelled sandboxes with no conformance
-label, which no call names). Exit 0 when every swept sandbox is
-gone, 1 when one is still there, 2 on a usage error, an unreadable before file, no key, or a refused listing (nothing is
-killed then). It reads `COMPUTER_E2B_API_KEY` and `COMPUTER_E2B_DOMAIN` as the conformance module does, and needs no
-live switch.
+The live sweep is the shared one, `dist/conformance/sweep.js --provider e2b --before <file>` and `--after <file>`
+([PROVIDERS.md](PROVIDERS.md), "The live sweep"): it prints `{"swept":n,"gone":m,"stillThere":[ids],"leftAlone":k}`
+and reads its settings through the conformance module's `createHost`, with no live switch. A conformance run of E2B
+also sweeps its own label through the host at its end (the report's `cleanup.sweep`).
 
-The conformance module's `settingsFromEnv` reads these names, and the sweep and `e2b-diagnose.js` read them through it,
+The conformance module's `settingsFromEnv` reads these names, and the sweep reads them through it (`createHost`),
 each passed to `create()` as the option in brackets: `COMPUTER_E2B_API_KEY` (`apiKey`, required),
 `COMPUTER_E2B_DOMAIN` (`domain`), `COMPUTER_E2B_DAEMON` (`daemonPath`), `COMPUTER_E2B_KIND` (`kind`),
 `COMPUTER_E2B_MAX_LIFETIME_MS` (`maxLifetimeMs`, a whole number of ms) and `COMPUTER_E2B_USER` (`daemonUser`). It
@@ -2231,7 +2224,7 @@ on the machine AgentRun runs on. No vendor, no key, nothing billed.
 import { LocalBrowserProvider } from "@parcha/agentrun-computer/local-chrome";
 
 const local = new LocalBrowserProvider({ env: { PATH: process.env.PATH } }); // or { executablePath: "/usr/bin/chromium" }
-const made = await local.create({ image: "chromium", lifetimeMs: 30 * 60_000, network: "open" }, { requestId: "r1.1" });
+const made = await local.create({ image: "chromium", lifetimeMs: 30 * 60_000, network: "open" }, { requestId: "r1#3" });
 const connected = await local.connect(made.value); // connected.value.cdp.url: ws://127.0.0.1:<port>/devtools/browser/<id>
 await local.release(made.value, "delete");
 ```
@@ -2305,7 +2298,7 @@ AGENTRUN_COMPUTER_LIVE_LOCAL_CHROME=1 [COMPUTER_LOCAL_CHROME_PATH=/usr/bin/chrom
 import { providerFor } from "@parcha/agentrun-computer";
 
 const phones = await providerFor("phone-harness", { apiKey }); // serve passes PHONE_HARNESS_API_KEY
-const made = await phones.create({ image: "android", lifetimeMs: 10 * 60_000, network: "open", labels: { run } }, { requestId: `${run}.1` });
+const made = await phones.create({ image: "android", lifetimeMs: 10 * 60_000, network: "open", labels: { run } }, { requestId: "r1#3" });
 ```
 
 `src/phone-harness.ts`, provider id `phone-harness`, rents a temporary cloud Android emulator from the phone harness

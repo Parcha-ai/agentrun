@@ -406,17 +406,28 @@ export interface CallContext {
 }
 
 /**
- * create's context. requestId names the request, not the computer: a retry of the same request (a timeout, a crash
- * between the vendor's answer and ours) passes the same id and gets the same computer, never a second one. Required,
- * with no generated fallback: serve passes the run's claim id, and conformance one per create.
+ * create's context: requestId is the caller's id of this request, not of the computer (serve passes the run's claim; a
+ * conformance run one per create). Required, with no generated fallback. Every provider names the computer from it
+ * (computerNameFor), so a retry of the same request (a timeout, a crash between the vendor's answer and ours) finds
+ * the computer the first one made instead of making a second; one that ended is refused as exists.
  */
 export interface CreateContext extends CallContext {
 	requestId: string;
 }
 
-/** The vendor-side name of the computer a request id makes: computer-<12 hex of sha256(requestId)>. */
+/** A request id's most characters: it is hashed into the name, never sent. */
+const REQUEST_ID_MAX = 1024;
+
+/** The name of the computer one create's request makes: computer- and the first 12 hex digits of its sha256. */
 export function computerNameFor(requestId: string): string {
-	return `computer-${createHash("sha256").update(requestId).digest("hex").slice(0, 12)}`;
+	return `computer-${createHash("sha256").update(requestId, "utf8").digest("hex").slice(0, 12)}`;
+}
+
+/** Why a create's request id is not one, or undefined: every provider's create refuses it as invalid. */
+export function requestIdProblem(requestId: unknown): string | undefined {
+	if (typeof requestId !== "string" || requestId === "") return "create needs context.requestId, the caller's id of this request (serve passes the run's claim): a retry with the same id finds the computer the first one made";
+	if (requestId.length > REQUEST_ID_MAX || requestId.includes("\0")) return `context.requestId is at most ${REQUEST_ID_MAX} characters, with no NUL byte`;
+	return undefined;
 }
 
 /** attach's context: with a claim, an agent's computer is brought back and taken by that run, under that epoch. */
