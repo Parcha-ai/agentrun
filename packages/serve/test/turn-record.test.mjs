@@ -155,6 +155,9 @@ test("pi: a cancel while a turn holds on a tool ends the run cancelled from the 
   await writeFile(join(dir, "one"), "");
   await watch(api, runId, terminal, "the cancel ends the run", { seen });
   await endsAs(api, runId, seen, "cancelled");
+  // The second fetch may still be held in this process (the cut turn's fetch ends only at its own timeout): let it go,
+  // so nothing keeps the test's process alive once its cases are done.
+  await writeFile(join(dir, "two"), "");
 });
 
 // ---- an answerless turn after failing parallel calls ----------------------------------------------------------------
