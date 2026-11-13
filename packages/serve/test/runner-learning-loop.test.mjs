@@ -231,6 +231,9 @@ test("a learning run stopped after its grade booked keeps that grade's cost on i
   assert.deepEqual([row.state, row.costUsd], ["stopped", 0.01], "the paid grade stays on the stopped run's row");
   const { learningSpendOverStore } = await import("../dist/store-reads/learning.js");
   assert.deepEqual((await learningSpendOverStore(store, { from: 0, to: Number.MAX_SAFE_INTEGER })).map((one) => [one.agent, one.cost]), [["agent-1", 0.01]], "what /v2/usage reads as learning's spend");
+  const { agentCostOverStore } = await import("../dist/store-reads/learning.js");
+  const [run] = (await agentCostOverStore(store, "agent-1")).runs;
+  assert.deepEqual([run.run_id, run.learning_usd], ["run-1", 0.01], "the cost per run books the stopped grade's cost to its run");
 });
 
 test("a learning run stopped while its grade request was cut keeps an unknown cost (null), and /v2/usage's learning spend says so", async (t) => {
@@ -245,6 +248,9 @@ test("a learning run stopped while its grade request was cut keeps an unknown co
   assert.deepEqual([row.state, row.costUsd], ["stopped", null], "a cut request may have been billed: unknown, never 0");
   const { learningSpendOverStore } = await import("../dist/store-reads/learning.js");
   assert.deepEqual((await learningSpendOverStore(store, { from: 0, to: Number.MAX_SAFE_INTEGER })).map((one) => [one.agent, one.cost]), [["agent-1", null]]);
+  const { agentCostOverStore } = await import("../dist/store-reads/learning.js");
+  const [run] = (await agentCostOverStore(store, "agent-1")).runs;
+  assert.deepEqual([run.run_id, run.learning_usd, run.total_usd], ["run-1", null, null], "the cost per run says the stopped grade's cost is unknown, never 0");
 });
 
 test("a learning run whose source kept nothing ends with nothing graded", async (t) => {

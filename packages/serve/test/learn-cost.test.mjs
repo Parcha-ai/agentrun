@@ -32,13 +32,18 @@ test("a run's path: a learned workflow alone, one the agent went on from (failed
 });
 
 test("a run's cost: its job's own, what learning added (its look-back and its grade), and all-in; unknown stays unknown", () => {
+  const at = "2026-11-12T00:00:00Z";
   assert.deepEqual(runCostOf(0.5, null), { cost_usd: 0.5, learning_usd: 0, total_usd: 0.5 }, "a run that does not learn");
-  assert.deepEqual(runCostOf(0.5, { state: "dropped", answered_at: "2026-11-12T00:00:00Z", job_cost_usd: 0.4, look_back_usd: 0.1 }), { cost_usd: 0.4, learning_usd: 0.1, total_usd: 0.5 }, "it looked back and kept nothing");
-  assert.deepEqual(runCostOf(0.5, { state: "merged", answered_at: "2026-11-12T00:00:00Z", job_cost_usd: 0.4, look_back_usd: 0.1, cost_usd: { grade: 0.03 } }), { cost_usd: 0.4, learning_usd: 0.13, total_usd: 0.53 }, "its grade is its learning too");
-  assert.deepEqual(runCostOf(0.5, { state: "proposed", answered_at: "2026-11-12T00:00:00Z", job_cost_usd: 0.4, look_back_usd: 0.1 }), { cost_usd: 0.4, learning_usd: 0.1, total_usd: 0.5 }, "a grade still running adds nothing yet");
-  assert.deepEqual(runCostOf(0.5, { state: "dropped", answered_at: "2026-11-12T00:00:00Z", job_cost_usd: 0.4, look_back_usd: 0.1, cost_usd: { grade: null } }), { cost_usd: 0.4, learning_usd: null, total_usd: null }, "a grade that failed spent what no one knows");
+  assert.deepEqual(runCostOf(0.5, { answered_at: at, job_cost_usd: 0.4, look_back_usd: 0.1 }), { cost_usd: 0.4, learning_usd: 0.1, total_usd: 0.5 }, "it looked back and kept nothing");
+  assert.deepEqual(runCostOf(0.5, { answered_at: at, job_cost_usd: 0.4, look_back_usd: 0.1 }, 0.03), { cost_usd: 0.4, learning_usd: 0.13, total_usd: 0.53 }, "its grade is its learning too");
+  assert.deepEqual(runCostOf(0.5, { answered_at: at, job_cost_usd: 0.4, look_back_usd: 0.1 }, 0), { cost_usd: 0.4, learning_usd: 0.1, total_usd: 0.5 }, "a grade still running adds nothing yet");
+  assert.deepEqual(runCostOf(0.5, { answered_at: at, job_cost_usd: 0.4, look_back_usd: 0.1 }, null), { cost_usd: 0.4, learning_usd: null, total_usd: null }, "a grade that failed, or was stopped mid-ask, spent what no one knows");
   assert.deepEqual(runCostOf(null, null), { cost_usd: null, learning_usd: 0, total_usd: null });
-  assert.deepEqual(runCostOf(0.2, { state: "dropped", answered_at: "2026-11-12T00:00:00Z", job_cost_usd: 0.2, look_back_usd: 0 }), { cost_usd: 0.2, learning_usd: 0, total_usd: 0.2 }, "a workflow run, not asked to look back");
+  assert.deepEqual(runCostOf(0.2, { answered_at: at, job_cost_usd: 0.2, look_back_usd: 0 }), { cost_usd: 0.2, learning_usd: 0, total_usd: 0.2 }, "a workflow run, not asked to look back");
+  // A person's follow-up after the answer: the row's cost grows past the job and its look-back, and that spend is the job's.
+  assert.deepEqual(runCostOf(0.8, { answered_at: at, job_cost_usd: 0.4, look_back_usd: 0.1 }, 0.03), { cost_usd: 0.7, learning_usd: 0.13, total_usd: 0.83 }, "a follow-up's spend is counted");
+  assert.deepEqual(runCostOf(null, { answered_at: at, job_cost_usd: 0.4, look_back_usd: 0.1 }), { cost_usd: null, learning_usd: 0.1, total_usd: null }, "a follow-up whose cost is unknown leaves the job's unknown");
+  assert.deepEqual(runCostOf(null, { answered_at: at, job_cost_usd: 0.4, look_back_usd: null }), { cost_usd: 0.4, learning_usd: null, total_usd: null }, "a look-back of unknown cost leaves the job's as it answered");
 });
 
 /** `paths` as a series, each run's job $ and learning $ given. */
