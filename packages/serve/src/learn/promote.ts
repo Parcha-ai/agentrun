@@ -176,20 +176,27 @@ export function servingOf(records: readonly PromotionRecord[]): { workflow: stri
   });
 }
 
-/** Keeps `record` as the newest of its workflow at its digest, when `still` holds of the one there now (none: undefined):
- *  so of two claims deciding the same digest at once only the first decision is kept. The record kept after. */
-export async function recordPromotion(settings: Pick<Settings, "get" | "putIfAbsent" | "replaceIf">, agentId: string, record: PromotionRecord, still: (now: PromotionRecord | undefined) => boolean): Promise<PromotionRecord> {
-  let kept = record;
+/** What a guarded promotion write did: `won`, whether this write kept its record (else `still` did not hold when it
+ *  wrote: another claim's decision came first); `record`, the newest record of its workflow at its digest after (the one
+ *  written when won, else the one there, undefined when none). A claim acts on a decision (starts replay runs, refits,
+ *  cancels) only when it won the write: the loser reads the winner's record, never its turn to act. */
+export type Recorded = { readonly record: PromotionRecord | undefined; readonly won: boolean };
+
+/** Keeps `record` as the newest of its workflow at its digest, when `still` holds of the one there now (none: undefined)
+ *  and of every record kept (`items`: a check across revisions, one challenger at a time, in the same guarded write): so
+ *  of two claims deciding at once only the first decision is kept, and only its claim acts on it (Recorded.won). */
+export async function recordPromotion(settings: Pick<Settings, "get" | "putIfAbsent" | "replaceIf">, agentId: string, record: PromotionRecord, still: (now: PromotionRecord | undefined, items: readonly PromotionRecord[]) => boolean): Promise<Recorded> {
+  let out: Recorded = { record, won: true };
   await updateKept<PromotionRecord>(settings, promotionsKey(agentId), (items) => {
     const now = promotionOf(items, record.workflow, record.digest);
-    if (!still(now)) {
-      kept = now!;
+    if (!still(now, items)) {
+      out = { record: now, won: false };
       return items;
     }
-    kept = record;
+    out = { record, won: true };
     return trimPromotions([...items, record]);
   });
-  return kept;
+  return out;
 }
 
 /** The newest PROMOTIONS_KEPT records, in order, never dropping a champion (championOf): each workflow's champion keeps
@@ -281,16 +288,22 @@ export function thresholdsOf(workflowText: string): Map<string, number> {
   return out;
 }
 
-/** Each node of a workflow document with a guard, by its label, in document order. */
-export function walkGuards(node: unknown, visit: (label: string, guard: Record<string, unknown>) => void): void {
+/** Each node of a workflow document with a guard, by its label as the DSL names its step when it runs, in document order:
+ *  a step of a child workflow (a `workflow` node's `workflow`) as `parent/child`, as the DSL prefixes its events and its
+ *  guard rows (scopeDepsToChild), so a nested guard's serving threshold and its refit read the rows it made. */
+export function walkGuards(node: unknown, visit: (label: string, guard: Record<string, unknown>) => void, prefix = ""): void {
   if (Array.isArray(node)) {
-    for (const one of node) walkGuards(one, visit);
+    for (const one of node) walkGuards(one, visit, prefix);
     return;
   }
   if (!node || typeof node !== "object") return;
   const object = node as Record<string, unknown>;
-  if (typeof object.label === "string" && object.guard && typeof object.guard === "object" && !Array.isArray(object.guard)) visit(object.label, object.guard as Record<string, unknown>);
-  for (const [key, value] of Object.entries(object)) if (key !== "guard") walkGuards(value, visit);
+  if (typeof object.label === "string" && object.guard && typeof object.guard === "object" && !Array.isArray(object.guard)) visit(`${prefix}${object.label}`, object.guard as Record<string, unknown>);
+  for (const [key, value] of Object.entries(object)) {
+    if (key === "guard") continue;
+    const child = key === "workflow" && object.node === "workflow" && typeof object.label === "string";
+    walkGuards(value, visit, child ? `${prefix}${object.label}/` : prefix);
+  }
 }
 
 /** The threshold a replay's guards read at: the least the DSL takes (a threshold is in (0, 1), exclusive), so a guard

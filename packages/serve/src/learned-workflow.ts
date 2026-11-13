@@ -29,7 +29,7 @@ import type { TSchema } from "typebox";
 import { defineTool, ROOT_CONVERSATION_ID, type ToolRegistration } from "@earendil-works/pi-durable";
 import { registerLabel, registerOutcome } from "./timeline/index.js";
 import { sideRequests } from "./cap.js";
-import { type GuardRow, LEARNED_NODES, LEARNED_NODES_MAX, type LearnedNode } from "./learned-nodes.js";
+import { type GuardRow, LEARNED_NODES, LEARNED_NODES_MAX, type LearnedEnded, type LearnedNode } from "./learned-nodes.js";
 import { guardJevOn, guardLine, rowOf, stepGuard } from "./runner/step-guard.js";
 import { draftProblems, LEARNED_MAX_TURNS } from "./learn/index.js";
 import { decisionsAsked, deniedDecisionWords } from "./learn/skills.js";
@@ -340,11 +340,13 @@ export function learnedWorkflowTool(run: LearnedWorkflowRun): ToolRegistration {
       // written outside the stopped call's context, and still ends as a stop.
       const trace: LearnedNode[] = [];
       const guards: GuardRow[] = [];
-      // A replay's write the recording did not have (learn/replay-calls.ts) rides on the same entry, ran a node or not.
-      const keep = (signal: Context) => {
+      // A replay's write the recording did not have (learn/replay-calls.ts) rides on the same entry, ran a node or not; so
+      // does how the workflow ended (`ended`, LearnedEnded), the one thing a replay's outcome reads (workflow-first.ts
+      // pathMetrics): a replay run keeps its entry whatever ran, so a refusal before any node is read as one.
+      const keep = (signal: Context, ended?: LearnedEnded) => {
         const skipped = run.replay?.skipped;
-        if (!trace.length && !guards.length && !skipped) return undefined;
-        return api.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: LEARNED_NODES, data: { call: ledger.call, workflow: flow.name, nodes: trace, ...(guards.length ? { guards } : {}), ...(skipped ? { replay_skipped: skipped } : {}) } as never })), signal).catch(() => undefined);
+        if (!trace.length && !guards.length && !skipped && !(run.replay && ended)) return undefined;
+        return api.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: LEARNED_NODES, data: { call: ledger.call, workflow: flow.name, nodes: trace, ...(guards.length ? { guards } : {}), ...(skipped ? { replay_skipped: skipped } : {}), ...(ended ? { ended } : {}) } as never })), signal).catch(() => undefined);
       };
       let said: Awaited<ReturnType<typeof runLearned>>;
       try {
@@ -353,7 +355,7 @@ export function learnedWorkflowTool(run: LearnedWorkflowRun): ToolRegistration {
         await keep(BACKGROUND_CONTEXT);
         throw error;
       }
-      await keep(context);
+      await keep(context, said.ended);
       return forModel(said.text, { isError: said.isError });
     },
   });
@@ -364,8 +366,8 @@ export function learnedWorkflowTool(run: LearnedWorkflowRun): ToolRegistration {
  *  which each call node's paid requests are booked under, as a call of its own within it. `nodes`: where each node is
  *  added as it ends, the caller's to keep when the call is aborted (and so throws) part way. `guards`: where every guard
  *  check is added as it is made, never capped (a map's checks past the trace's cap too), the caller's to keep likewise. */
-export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow, input: unknown, signal?: AbortSignal, ledger?: Ledger, nodes: LearnedNode[] = [], guards: GuardRow[] = []): Promise<{ text: string; isError: boolean; nodes: LearnedNode[] }> {
-  const refuse = (why: string) => ({ text: `The learned workflow ${flow.name} was not run: ${why}`, isError: true, nodes });
+export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow, input: unknown, signal?: AbortSignal, ledger?: Ledger, nodes: LearnedNode[] = [], guards: GuardRow[] = []): Promise<{ text: string; isError: boolean; nodes: LearnedNode[]; ended: LearnedEnded }> {
+  const refuse = (why: string) => ({ text: `The learned workflow ${flow.name} was not run: ${why}`, isError: true, nodes, ended: "failed" as const });
   if (!input || typeof input !== "object" || Array.isArray(input)) return refuse("its input must be a JSON object");
   const dsl = await import("@parcha/agentrun-dsl");
   // Checked again at the call, against the agent's own tools as its run has them, before any node runs: what merged under
@@ -466,7 +468,7 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
   const stopped = replay ? (signal ? AbortSignal.any([signal, replay.stop]) : replay.stop) : signal;
   const skippedWords = () => {
     const skipped = replay?.skipped;
-    return skipped ? { text: `The learned workflow ${flow.name} was not replayed on this input: its step "${skipped.step}" calls ${skipped.tool}, a write, and the graded run's recording has no call of it with these arguments, so it ${SKIPPED_WRITE}. Nothing was sent.${stepsLine(nodes, guards)}`, isError: true, nodes } : undefined;
+    return skipped ? { text: `The learned workflow ${flow.name} was not replayed on this input: its step "${skipped.step}" calls ${skipped.tool}, a write, and the graded run's recording has no call of it with these arguments, so it ${SKIPPED_WRITE}. Nothing was sent.${stepsLine(nodes, guards)}`, isError: true, nodes, ended: "failed" as const } : undefined;
   };
   // Its step guards (runner/step-guard.ts): a guard's Jev is a decision of the call, on the run's decisions (its judge,
   // its gate, its one cap); a run with no Jev provider has no Jev signal, so a guard that reads one hands back.
@@ -496,14 +498,14 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
     const result = await dsl.runWorkflow(doc, input as Record<string, unknown>, { runNode: runNode as never, runEffect: runEffect as never, guardStep, onEvent, ...judging, ...(stopped ? { signal: stopped } : {}) } as never);
     const skipped = skippedWords();
     if (skipped) return skipped;
-    if (result.status === "escalated") return { text: learnedText(handedBackText(flow.name, result.escalation, result.state, nodes, guards)), isError: true, nodes };
+    if (result.status === "escalated") return { text: learnedText(handedBackText(flow.name, result.escalation, result.state, nodes, guards)), isError: true, nodes, ended: "escalated" };
     if (result.status !== "complete") return refuse(`it ended ${(result as { status: string }).status}`);
-    return { text: learnedText(learnedOutput(result.output)), isError: false, nodes };
+    return { text: learnedText(learnedOutput(result.output)), isError: false, nodes, ended: "complete" };
   } catch (error) {
     if (signal?.aborted) throw error;
     const skipped = skippedWords();
     if (skipped) return skipped;
-    return { text: `The learned workflow ${flow.name} failed: ${String((error as Error)?.message ?? error).slice(0, 1000)}${stepsLine(nodes, guards)}`, isError: true, nodes };
+    return { text: `The learned workflow ${flow.name} failed: ${String((error as Error)?.message ?? error).slice(0, 1000)}${stepsLine(nodes, guards)}`, isError: true, nodes, ended: "failed" };
   }
 }
 

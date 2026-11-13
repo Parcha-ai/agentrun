@@ -138,9 +138,10 @@ test("grades and promotion records over the settings table: a run's newer grade 
   await putGrade(settings, "a", { run: "r1", correct: false, source: "feedback", at: "t3", path: "agent" });
   assert.deepEqual((await gradesOf(settings, "a")).map(({ run, correct }) => [run, correct]), [["r2", false], ["r1", false]]);
   const replaying = { workflow: "w", digest: "d1", at: "t", decided: "replaying", source: "replay", reason: "r", runs: ["x"] };
-  assert.equal((await recordPromotion(settings, "a", replaying, (now) => now === undefined)).decided, "replaying");
+  const first = await recordPromotion(settings, "a", replaying, (now) => now === undefined);
+  assert.deepEqual([first.won, first.record.decided], [true, "replaying"]);
   const second = await recordPromotion(settings, "a", { ...replaying, runs: ["y"] }, (now) => now === undefined);
-  assert.deepEqual(second.runs, ["x"], "the first claim's replay stands");
+  assert.deepEqual([second.won, second.record.runs], [false, ["x"]], "the first claim's replay stands; the second claim lost the write");
   await recordPromotion(settings, "a", { ...replaying, decided: "promote" }, (now) => now?.decided === "replaying");
   assert.equal(promotionOf(await promotionsOf(settings, "a"), "w", "d1").decided, "promote");
 });
