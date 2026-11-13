@@ -5,7 +5,8 @@
 // intent, the call and its result), and only then is its result written here, before the CLI starts again. A call
 // that has an effect is left as before: the CLI answers it "[Tool call interrupted]", and the recovery note says what
 // the log knows of it.
-import { type CallOutcome, type DanglingCall, resumeUnstartedCalls, type ToolBridge } from './host/process.js';
+import type { GateAnswer, GateCall } from '@parcha/agentrun-kernel';
+import { askGate, type CallOutcome, type DanglingCall, resumeUnstartedCalls, type ToolBridge, unstartedCalls } from './host/process.js';
 import type { DriveContext } from './host/kernel.js';
 import { uuidFrom } from './ids.js';
 import type { JournalSessionStore, TranscriptLine } from './store.js';
@@ -37,6 +38,43 @@ const isPrompt = (line: TranscriptLine) => line.type === 'user' && line.isSidech
  * are the CLI's own.
  */
 export function danglingCalls(lines: readonly TranscriptLine[]): DanglingCall[] {
+  return danglingOf(lines, (name) => (name.startsWith(BRIDGED) ? name.slice(BRIDGED.length) : undefined));
+}
+
+/** The CLI's own WebSearch calls the transcript's last turn left without a result, as `danglingCalls` finds host-tool
+ *  ones (tool: `WebSearch`). */
+export function danglingSearches(lines: readonly TranscriptLine[]): DanglingCall[] {
+  return danglingOf(lines, (name) => (name === WEB_SEARCH ? name : undefined));
+}
+
+/** The CLI's name for its own web search. */
+export const WEB_SEARCH = 'WebSearch';
+
+/** The answer a held WebSearch gets on the resume once the host's gate lets it run: the CLI ran nothing of it, and the
+ *  model's next search with the same input runs on that answer (resumeDanglingSearches). */
+export const SEARCH_RELEASED = 'Not searched yet: this search was held before it ran, and it may run now. Search again with the same query to run it.';
+
+/**
+ * Before the CLI resumes the transcript: each dangling WebSearch that never started (the host's gate held it: its run
+ * parked on a person) is put to the gate again, under the id the model gave it. A deny answers it in the gate's words; an
+ * allow answers it SEARCH_RELEASED, since the provider runs a search only inside the CLI's own model request, and the
+ * call is returned, so its drive lets the model's next search with the same input run on that answer, once. A gate that
+ * parks again rejects out of here; what it wrote is the same lines again on the next resume.
+ */
+export async function resumeDanglingSearches(ctx: DriveContext, store: JournalSessionStore, gate: (call: GateCall) => Promise<GateAnswer>): Promise<DanglingCall[]> {
+  const held = unstartedCalls(ctx, danglingSearches(store.lines()));
+  const released: DanglingCall[] = [];
+  for (const call of held) {
+    const refused = await askGate(gate, { callId: call.callId, tool: call.tool, args: (call.args ?? {}) as Record<string, unknown> }, ctx.signal);
+    if (!refused) released.push(call);
+    store.extend(resultLine(store.lines(), call, refused ? { text: refused.deny, isError: true } : { text: SEARCH_RELEASED, isError: true }));
+  }
+  if (held.length) await store.flush();
+  return released;
+}
+
+/** The tool uses after the last prompt that no result answers, each named by `named` (undefined: not one of these). */
+function danglingOf(lines: readonly TranscriptLine[], named: (name: string) => string | undefined): DanglingCall[] {
   let from = 0;
   for (let i = lines.length - 1; i >= 0; i--) {
     if (isPrompt(lines[i]!)) {
@@ -46,10 +84,10 @@ export function danglingCalls(lines: readonly TranscriptLine[]): DanglingCall[] 
   }
   const tail = lines.slice(from).filter((line) => line.isSidechain !== true);
   const answered = new Set(tail.flatMap((line) => toolResultIds(line)));
-  return tail
-    .flatMap(toolUses)
-    .filter((block) => block.name.startsWith(BRIDGED) && !answered.has(block.id))
-    .map((block) => ({ callId: block.id, tool: block.name.slice(BRIDGED.length), args: block.input ?? {} }));
+  return tail.flatMap(toolUses).flatMap((block) => {
+    const tool = answered.has(block.id) ? undefined : named(block.name);
+    return tool === undefined ? [] : [{ callId: block.id, tool, args: block.input ?? {} }];
+  });
 }
 
 /**

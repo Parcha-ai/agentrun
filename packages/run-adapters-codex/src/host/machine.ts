@@ -71,6 +71,9 @@ export interface LocalMachineOptions {
   /** Codex's own web search, live: Codex's config says `web_search = "live"` (`configure`), and the proxy admits the tool
    *  Codex then sends and adds each search to the price. Default off. */
   webSearch?: "live";
+  /** With `webSearch`: whether the host lets the session search now, asked before each request that offers it
+   *  (CodexPolicyOptions.searchAllowed). */
+  searchAllowed?: () => Promise<boolean>;
   /** The model proxy: the runner's hooks, the provider's price, and the session's tools and limits; its route comes
    *  from the harness. */
   proxy: {
@@ -263,7 +266,7 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
         tools: options.proxy.tools,
         ...(options.mcp ? { mcpTools: options.mcp.servers.flatMap((server) => server.tools.map((tool) => `mcp__${server.name}__${tool.name}`)) } : {}),
         ...(options.proxy.maxOutputTokens ? { maxOutputTokens: options.proxy.maxOutputTokens } : {}),
-        ...(search ? { webSearch: "live" as const } : {}),
+        ...(search ? { webSearch: "live" as const, ...(options.searchAllowed ? { searchAllowed: options.searchAllowed } : {}) } : {}),
         announce: {
           // The cost is liveness, not safety: after an overlap a never call is declined until the next single answer, which the model's
           // next wait or exec gives.

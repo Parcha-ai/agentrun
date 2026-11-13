@@ -201,6 +201,9 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
       const tools: HostTool[] = skills.length ? [...spec.tools, hostedTool(io, readSkillFileTool(join(sessionDir(dir, "codex-home"), SKILLS_DIR), skills.map((skill) => ({ name: skill.name, files: Object.keys(skill.files) }))))] : spec.tools;
 
       const effort = spec.effort ?? spec.thinking;
+      // The live search runs inside a model request, where no call reaches the gate: it is offered only while the host's
+      // web_search setting allows it, read before each request (a deny or ask set mid-run drops it from the next one).
+      const searchAllowed = options.webSearch && io.permission ? async () => (await io.permission!("web_search")) === "allow" : undefined;
       const harnessOptions: CodexHarnessOptions = {
         tools: tools.map(kernelTool),
         // The host's gate, asked about each host-tool call before its intent is written.
@@ -232,7 +235,7 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
             // The built-ins are off: Codex's own apply_patch, with no environment to run in, is offered to no model
             // (catalog.ts). A stand-in runs no Codex, so it has no catalog to read.
             ...(checked !== undefined ? { catalog: { command: checked, ...(options.log ? { log: options.log } : {}) } } : {}),
-            ...(options.webSearch ? { webSearch: options.webSearch } : {}),
+            ...(options.webSearch ? { webSearch: options.webSearch, ...(searchAllowed ? { searchAllowed } : {}) } : {}),
             // A granted MCP server's tools: Codex's own MCP client calls them at the proxy (mcp.ts).
             ...(spec.mcp?.servers.length ? { mcp: spec.mcp } : {}),
             proxy: {
@@ -311,7 +314,7 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
       // Started once the session's drive is open, the last step that can fail: an open that fails leaves no listener.
       const search = options.webSearch === "live";
       const hostPort = await startModelProxy({
-        policy: codexPolicy({ model: modelFor(spec), tools: [], ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}), ...(search ? { webSearch: "live" as const } : {}) }),
+        policy: codexPolicy({ model: modelFor(spec), tools: [], ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}), ...(search ? { webSearch: "live" as const, ...(searchAllowed ? { searchAllowed } : {}) } : {}) }),
         hooks: io.models,
         model: modelFor(spec),
         origin: options.provider.origin,

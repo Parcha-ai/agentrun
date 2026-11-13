@@ -9,6 +9,7 @@ import { dirname, join, posix } from 'node:path';
 import type { GateAnswer, GateCall } from '@parcha/agentrun-kernel';
 import { type DriveContext, type Harness, type HostTool, type ReplayPolicy, Restart, type SessionState, type Submission, Unavailable } from './host/kernel.js';
 import {
+  askGate,
   BuiltinCalls,
   CLAUDE_ROUTES,
   gatewayCredential,
@@ -26,6 +27,7 @@ import {
   type SessionMachine,
   type SessionProcess,
   toolBridge,
+  toolKey,
   waitForSubmissions,
 } from './host/process.js';
 import { durableEnv, nativeModelId } from './env.js';
@@ -33,7 +35,7 @@ import { uuidFrom } from './ids.js';
 import { MessageQueue } from './inbox.js';
 import { sandboxSpawn } from './spawn.js';
 import { MCP_OUTPUT_TOKENS, toolServer } from './host/tool-server.js';
-import { resumeDanglingCalls } from './resume.js';
+import { resumeDanglingCalls, resumeDanglingSearches, WEB_SEARCH } from './resume.js';
 import { JournalSessionStore } from './store.js';
 import { MCP_SERVER, TranscriptBuilder, type TurnEnd } from './transcript.js';
 import { CLAUDE_AGENT_CLI_SKILL_NAMES } from './cli-names.js';
@@ -261,7 +263,8 @@ export interface ClaudeCodeHarnessOptions {
   unsandboxedCommands?: boolean;
   /** Called with the child's stderr tail when it exits mid-turn, the gateway's refusals, and SDK diagnostics. */
   log?: (message: string, fields?: Record<string, unknown>) => void;
-  /** The host's gate (SessionIO.gate), asked by the tool bridge about each call of `tools` before its intent. */
+  /** The host's gate (SessionIO.gate), asked by the tool bridge about each call of `tools` before its intent, and by the
+   *  PreToolUse hook about each WebSearch (`providerTools: ['web_search']`) before its intent, by the CLI's name for it. */
   gate?: (call: GateCall) => Promise<GateAnswer>;
   /** The clock a user turn's day is read from (dateLine). Default the system's. */
   now?: () => Date;
@@ -563,11 +566,16 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
           },
         });
         const gate = options.gate;
+        // The host's gate before the intent, so a refused or parked call leaves nothing of its own written. The assistant
+        // line that made the call is in the log before the gate is asked: a park ends the claim, and the resume finds the
+        // call it held dangling in the transcript, under the same id (resumeDanglingCalls, resumeDanglingSearches).
+        const gated = gate ? async (call: GateCall) => (await store.barrier(call.callId, barrierMs), gate(call)) : undefined;
+        /** The inputs of WebSearch calls the gate held and let run on this resume (resumeDanglingSearches): the model's
+         *  next search with one of them runs on that answer, once. */
+        const released: string[] = [];
+        const searchKey = (input: unknown) => JSON.stringify(input ?? {});
         const bridge = toolBridge(ctx, tools, {
-          // The host's gate before the intent, so a refused or parked call leaves nothing of its own written. The
-          // assistant line that made the call is in the log before the gate is asked: a park ends the claim, and the
-          // resume finds the call it held dangling in the transcript, under the same id (resumeDanglingCalls).
-          ...(gate ? { gate: async (call: GateCall) => (await store.barrier(call.callId, barrierMs), gate(call)) } : {}),
+          ...(gated ? { gate: gated } : {}),
           // A `never` tool runs only once the assistant entry that asked for it is in the log.
           beforeNever: ({ callId }) => store.barrier(callId, barrierMs),
         });
@@ -645,6 +653,19 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
                     // WebSearch and a granted MCP tool too.
                     if (!builtinsOn && !(webSearch && hook.tool_name === 'WebSearch') && !mcpNames.has(hook.tool_name)) return deny("Not run: this session's only tools are its own.");
                     if (ctx.signal.aborted) return deny('the session stopped');
+                    // The host's gate decides every native search, as it does a host tool's call, before anything of it
+                    // is written: a deny refuses it in the gate's words, an ask holds it until the person answers (the
+                    // run parks), each read at this call, so a setting changed mid-run reaches the next search. One the
+                    // gate held and let run on this resume runs on that answer, once.
+                    if (webSearch && hook.tool_name === WEB_SEARCH && gated && !ctx.isMemoized(toolKey(hook.tool_use_id))) {
+                      const at = released.indexOf(searchKey(hook.tool_input));
+                      if (at >= 0) released.splice(at, 1);
+                      else {
+                        const replayed = ctx.state().effects.has(toolKey(hook.tool_use_id));
+                        const refused = await askGate(gated, { callId: hook.tool_use_id, tool: hook.tool_name, args: (hook.tool_input ?? {}) as Record<string, unknown>, ...(replayed ? { replayed: true as const } : {}) }, ctx.signal);
+                        if (refused) return deny(refused.deny);
+                      }
+                    }
                     let updated: Record<string, unknown> | undefined;
                     const field = FILE_TOOLS[hook.tool_name];
                     if (field) {
@@ -738,6 +759,8 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
         // its intent): it runs now, the host's gate first, and its result is in the transcript before the CLI resumes it.
         // One with an intent is left to the CLI's repair and the recovery note, as before; nothing ever runs one twice.
         if (store.hasSession) await resumeDanglingCalls(ctx, bridge, store);
+        // A WebSearch the gate held (an ask): put to it again, under its own id, before the CLI resumes.
+        if (store.hasSession && webSearch && gated) for (const call of await resumeDanglingSearches(ctx, store, gated)) released.push(searchKey(call.args));
         // A turn a crash cut off: the harness's own account of it (which calls completed, which may have half-run) goes
         // in this drive's system prompt, not in a user message the model might answer back to the user. A resumed
         // session sends the system prompt recorded at its start (`snapshot`), whatever a later launch passes, so this

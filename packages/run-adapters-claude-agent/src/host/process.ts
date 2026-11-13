@@ -9,8 +9,8 @@
 import type { DriveContext } from "./kernel.js";
 
 export {
-  BuiltinCalls, NativeJournal, openTurn, placeSubmissions, recoveryNote, replayBy, restartEvent, resumeUnstartedCalls, toolBridge,
-  waitForSubmissions, zodShapeFromJsonSchema,
+  askGate, BuiltinCalls, NativeJournal, openTurn, placeSubmissions, recoveryNote, replayBy, restartEvent, resumeUnstartedCalls, toolBridge,
+  toolKey, unstartedCalls, waitForSubmissions, zodShapeFromJsonSchema,
 } from "@parcha/agentrun-kernel/process";
 export type { CallOutcome, DanglingCall, JournalRecord, ToolBridge, TranscriptEntry } from "@parcha/agentrun-kernel/process";
 
