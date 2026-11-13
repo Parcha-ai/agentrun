@@ -61,6 +61,9 @@ describe("the ratio format", () => {
   it("says a tenth under 10x and a whole number from 10x, one format for the headline card and the chart", () => {
     expect([timesOf(7), timesOf(7.4), timesOf(6.953), timesOf(9.94), timesOf(9.96), timesOf(10), timesOf(12.4), timesOf(0.5), timesOf(104.6)]).toEqual(["7.0x", "7.4x", "7.0x", "9.9x", "10x", "10x", "12x", "0.5x", "105x"]);
   });
+  it("rounds once: 10.46 is 10x, not 11x", () => {
+    expect([timesOf(10.46), timesOf(9.96), timesOf(7.04)]).toEqual(["10x", "10x", "7.0x"]);
+  });
 });
 
 describe("the execution mix's arithmetic", () => {
