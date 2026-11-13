@@ -63,3 +63,35 @@ test("mcp_auth: a per_run server saved with the API token; sealed into the run's
     assert.equal(storeBytes(data).includes(Buffer.from(token)), false, "nor in the store's bytes in the clear");
   }
 });
+
+test("mcp_auth on a retry: a request its Idempotency-Key already answered replays that answer after its per_run server is changed or deleted; new work still checks the server", async (t) => {
+  const fake = await startFakeMcp({ token: (authorization) => [LIST, FIRST, SECOND].some((token) => authorization === `Bearer ${token}`) });
+  t.after(() => fake.close());
+  const server = await serve(t, { runner: false });
+  const { api } = server;
+  const saved = await api("PUT", "/settings/mcp-servers/gw", { url: fake.url, auth: { type: "per_run", headers: { authorization: `Bearer ${LIST}` } } }, { authorization: `Bearer ${server.token}` });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+
+  const started = await api("POST", "/runs", inline({ mcp_auth: bearer(FIRST) }), { "idempotency-key": "launch-2" });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const runId = started.body.run_id;
+  const sent = await api("POST", `/runs/${runId}/messages`, { content: "And then?", mcp_auth: bearer(SECOND) }, { "idempotency-key": "message-2" });
+  assert.equal(sent.status, 202, JSON.stringify(sent.body));
+
+  // The server no longer takes a run's credential: the requests already answered are not new work, so they replay.
+  const changed = await api("PUT", "/settings/mcp-servers/gw", { url: fake.url, auth: { type: "bearer", token: LIST } });
+  assert.equal(changed.status, 200, JSON.stringify(changed.body));
+  const retried = await api("POST", "/runs", inline({ mcp_auth: bearer(SECOND) }), { "idempotency-key": "launch-2" });
+  assert.deepEqual([retried.status, retried.body.run_id, retried.headers.get("idempotent-replayed")], [202, runId, "true"], JSON.stringify(retried.body));
+  const resent = await api("POST", `/runs/${runId}/messages`, { content: "And then?", mcp_auth: bearer(FIRST) }, { "idempotency-key": "message-2" });
+  assert.deepEqual([resent.status, resent.body.message_id, resent.headers.get("idempotent-replayed")], [202, sent.body.message_id, "true"], JSON.stringify(resent.body));
+
+  // New work under a new key is checked against the server as it is now.
+  const refused = await api("POST", `/runs/${runId}/messages`, { content: "Again", mcp_auth: bearer(FIRST) }, { "idempotency-key": "message-3" });
+  assert.deepEqual([refused.status, refused.body.error?.fields?.[0]?.field], [422, "mcp_auth.gw"], JSON.stringify(refused.body));
+  assert.equal((await api("DELETE", "/settings/mcp-servers/gw")).status, 204);
+  const gone = await api("POST", "/runs", inline({ mcp_auth: bearer(FIRST) }), { "idempotency-key": "launch-3" });
+  assert.deepEqual([gone.status, gone.body.error?.fields?.[0]?.field], [422, "mcp_auth.gw"], JSON.stringify(gone.body));
+  const replayedAfterDelete = await api("POST", "/runs", inline({ mcp_auth: bearer(FIRST) }), { "idempotency-key": "launch-2" });
+  assert.deepEqual([replayedAfterDelete.status, replayedAfterDelete.body.run_id], [202, runId], JSON.stringify(replayedAfterDelete.body));
+});

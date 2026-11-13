@@ -1899,29 +1899,34 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const linkOrigin = (req: IncomingMessage): string => (options.publicUrl ?? (req.headers.host ? ownOrigin(req) : url)).replace(/\/+$/, "");
 
   /** A run body's `mcp_auth` taken out of it, before anything else reads the body: the credentials a run's caller hands
-   *  its per_run MCP servers for this run alone (mcp-probe.ts mcpAuthOf). Each names a saved per_run server, else 422,
-   *  nothing written. They never reach the run's saved body, its timeline, an idempotency fingerprint (a retry with a
-   *  fresh credential replays its first answer) or a log: only `seal`, which seals them for the run's id into its launch
-   *  row (store/seal.ts sealRunMcpAuth), bound to each server's origin now. */
-  async function handedMcpAuth(body: Json): Promise<{ body: Json; seal?: (runId: string) => Uint8Array }> {
-    if (body.mcp_auth === undefined) return { body };
+   *  its per_run MCP servers for this run alone (mcp-probe.ts mcpAuthOf). They never reach the run's saved body, its
+   *  timeline, an idempotency fingerprint (a retry with a fresh credential replays its first answer) or a log: only the
+   *  seal `sealer` makes, which seals them for the run's id into its launch row (store/seal.ts sealRunMcpAuth), bound to
+   *  each server's origin then. The request calls `sealer` only for new work, inside its idempotent work: there each
+   *  entry must name a saved per_run server, else 422, nothing written. A retry its key already answered replays that
+   *  answer even when the server has since changed or gone, since it does no new work. */
+  function handedMcpAuth(body: Json): { body: Json; sealer: () => Promise<((runId: string) => Uint8Array) | undefined> } {
+    if (body.mcp_auth === undefined) return { body, sealer: async () => undefined };
     const { mcp_auth, ...rest } = body;
-    const issues: InputIssue[] = [];
-    const handed = mcpAuthOf(mcp_auth, issues);
-    const auth: Record<string, RunMcpAuth[string]> = {};
-    for (const [server, headers] of Object.entries(handed ?? {})) {
-      const row = await store.mcp.server(server);
-      if (row?.auth !== "per_run") issues.push({ field: `mcp_auth.${server}`, reason: "not_an_option", message: row ? `The MCP server ${server} keeps its own credential (auth ${row.auth}): only a per_run server takes one from a run.` : `No MCP server ${server} is saved here.` });
-      else auth[server] = { headers, origin: new URL(row.url).origin };
-    }
-    if (issues.length) throw invalid(issues);
-    return { body: rest, seal: (runId) => sealRunMcpAuth(sealKey, runId, auth) };
+    const sealer = async () => {
+      const issues: InputIssue[] = [];
+      const handed = mcpAuthOf(mcp_auth, issues);
+      const auth: Record<string, RunMcpAuth[string]> = {};
+      for (const [server, headers] of Object.entries(handed ?? {})) {
+        const row = await store.mcp.server(server);
+        if (row?.auth !== "per_run") issues.push({ field: `mcp_auth.${server}`, reason: "not_an_option", message: row ? `The MCP server ${server} keeps its own credential (auth ${row.auth}): only a per_run server takes one from a run.` : `No MCP server ${server} is saved here.` });
+        else auth[server] = { headers, origin: new URL(row.url).origin };
+      }
+      if (issues.length) throw invalid(issues);
+      return (runId: string) => sealRunMcpAuth(sealKey, runId, auth);
+    };
+    return { body: rest, sealer };
   }
 
   async function createRun(req: IncomingMessage, agentId: string) {
     const entry = await needAgent(agentId);
     if (entry.agent.archivedAt) throw new ApiError("agent_not_runnable", `The agent ${agentId} is archived: unarchive it to run it.`, { details: { archived_at: new Date(entry.agent.archivedAt).toISOString() } });
-    const { body, seal } = await handedMcpAuth(await bodyOf(req));
+    const { body, sealer } = handedMcpAuth(await bodyOf(req));
     return idempotent(req, `/agents/${agentId}/runs`, body, async (origin) => {
       // A run the store started under this key, though no answer was kept (its server went down first): that run, as it is now.
       const first = origin && (await agents.request(() => agents.store.runOfOrigin(origin.key)));
@@ -1930,6 +1935,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const headers: Record<string, string> = { location: `/v2/runs/${first.runId}`, "idempotent-replayed": "true" };
         return { status: 202, body: await viewOverStore(store, first.runId, viewDepsFor(linkOrigin(req))), headers };
       }
+      const seal = await sealer();
       const run = await startRunOf(entry, body, { ...(origin ? { origin } : {}), ...(seal ? { sealed: seal } : {}) });
       // Its view from the store: the run and its launch were inserted in one transaction, so the view reads it whole.
       return { status: 202, body: await viewOverStore(store, run.id, viewDepsFor(linkOrigin(req))), headers: { location: `/v2/runs/${run.id}` } };
@@ -1942,7 +1948,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  Its first run makes the agent, a version's first run its revision; a later run of the version reuses both
    *  (runs-over-store startInline). The answer is POST /agents/{agent_id}/runs' own: 202 and the run. */
   async function createInlineRun(req: IncomingMessage) {
-    const { body, seal } = await handedMcpAuth(await bodyOf(req));
+    const { body, sealer } = handedMcpAuth(await bodyOf(req));
     const { external, definition, skills, note, revision: pinned, ...run } = body;
     const given = { definition, ...(skills !== undefined ? { skills } : {}), ...(note !== undefined ? { note } : {}) };
     const issues: InputIssue[] = [
@@ -1974,6 +1980,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const headers: Record<string, string> = { location: `/v2/runs/${first.runId}`, "idempotent-replayed": "true" };
         return { status: 202, body: await viewOverStore(store, first.runId, viewDepsFor(linkOrigin(req))), headers };
       }
+      const seal = await sealer();
       const started = await startInline(store, startDeps, inline, run, { ...(origin ? { origin } : {}), ...(seal ? { sealed: seal } : {}) });
       return { status: 202, body: await viewOverStore(store, started.id, viewDepsFor(linkOrigin(req))), headers: { location: `/v2/runs/${started.id}` } };
     });
@@ -2694,8 +2701,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "sendMessage": {
         const run = await needRun(id);
         if (run.kind === "workflow") throw unsupported("messages.steer_workflow_runs", "A workflow run takes no messages here: its workflow runs to its end, or a cancel ends it.");
-        const { body, seal } = await handedMcpAuth(await bodyOf(req));
+        const { body, sealer } = handedMcpAuth(await bodyOf(req));
         const answer = await idempotent(req, `/runs/${id}/messages`, body, async () => {
+          const seal = await sealer();
           const extra = unknownFields(body, ["content"]);
           if (extra.length) throw invalid(extra);
           const content = body.content;
