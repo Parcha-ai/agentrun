@@ -111,6 +111,18 @@ describe("the Templates page", () => {
 });
 
 describe("applying a template", () => {
+  it("says before Apply that the github server is not set up, and links to adding it as a GitHub App; set up, it says nothing", async () => {
+    const missing = await open("pr-reviewer", { servers: [] });
+    const note = missing.host.querySelector('[data-missing-mcp="github"]')!;
+    expect(note.textContent).toContain("github is required and not set up here");
+    expect(note.querySelector("a")!.getAttribute("href")).toBe("#/settings/mcp?add=github&auth=github_app");
+    expect(missing.host.querySelector('[data-mcp="github"]')!.textContent).toContain("Not set up here");
+    const optional = await open("pr-reviewer", { servers: [], templates: [{ ...REVIEWER, mcp: [{ ...REVIEWER.mcp[0]!, required: false }] }] });
+    expect(optional.host.querySelector('[data-missing-mcp="github"]')!.textContent).toContain("Apply makes the agent without its tools (get_pull_request, create_review)");
+    const set = await open("pr-reviewer");
+    expect(set.host.querySelector("[data-missing-mcp]")).toBeNull();
+  });
+
   it("asks consent one tool at a time, none ticked until the owner ticks it, and says what an allow means", async () => {
     const t = await open("pr-reviewer");
     for (const tool of ["mcp:github/get_pull_request", "mcp:github/create_review"]) {

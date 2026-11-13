@@ -32,7 +32,7 @@ export function besideStopping(server: { runs: number; boundMs: number }, held: 
  *  (RunnerOptions), the CLI start's from the server's flags (besideRunnerOptions). `janitor`: run the computer janitor
  *  too (workspace/computer-janitor.ts), as the CLI's start asks. Returns the runner and a close() that stops both and
  *  closes its store. */
-export async function runnerBeside(dataDir: string, { loops, drainMs, env, janitor }: { loops?: number; drainMs?: number; env?: NodeJS.ProcessEnv; janitor?: boolean } = {}): Promise<{ runner: Awaited<ReturnType<typeof import("./runner.js")["startRunner"]>>; close: () => Promise<void> }> {
+export async function runnerBeside(dataDir: string, { loops, drainMs, env, janitor, onLine }: { loops?: number; drainMs?: number; env?: NodeJS.ProcessEnv; janitor?: boolean; onLine?: (line: string) => void } = {}): Promise<{ runner: Awaited<ReturnType<typeof import("./runner.js")["startRunner"]>>; close: () => Promise<void> }> {
   const { startRunner } = await import("./runner.js");
   const { dispatchRunner } = await import("./harness-loops.js");
   const { routeOf } = await import("./model-route.js");
@@ -69,7 +69,10 @@ export async function runnerBeside(dataDir: string, { loops, drainMs, env, janit
   // Before it claims: the scratch folders of runs that ended after their runner died (scratch-sweep.ts).
   const { sweepEndedScratch } = await import("./scratch-sweep.js");
   await sweepEndedScratch(store, dataDir, { log: (line) => console.error(`agentrun-serve runner: ${line}`) });
-  const runner = startRunner({ store, createLoop, memory: runnerMemory(store), ...(loops !== undefined ? { loops } : {}), ...(drainMs !== undefined ? { drainMs } : {}) });
+  // Its run start and end lines go where the server's lines do (print.ts runLine), the one stdout; `onLine` is where a
+  // launcher in this process (a test) reads them instead.
+  const { runLine } = await import("../print.js");
+  const runner = startRunner({ store, createLoop, memory: runnerMemory(store), onEvent: (event) => { const line = runLine(event); if (line) (onLine ?? console.log)(line); }, ...(loops !== undefined ? { loops } : {}), ...(drainMs !== undefined ? { drainMs } : {}) });
   // The computer janitor over the same computers, when the start asks for it: never under --faux. Its lines are the
   // runner's, on stderr (a stderr whose reader closed loses them, never the process: cli.ts).
   const { startJanitor } = await import("../workspace/computer-janitor.js");
@@ -89,7 +92,7 @@ export async function serveWithRunner(options: import("../server.js").ServeOptio
   const { besideRunEnv } = await import("./main.js");
   const { loops, drainMs } = besideRunnerOptions(options, process.env);
   const serve = await startServe(options);
-  const beside = await runnerBeside(options.data, { loops, drainMs, env: besideRunEnv(process.env, fauxEnvOf(options)) }).catch(async (error: unknown) => {
+  const beside = await runnerBeside(options.data, { loops, drainMs, env: besideRunEnv(process.env, fauxEnvOf(options)), ...(options.log ? { onLine: options.log } : {}) }).catch(async (error: unknown) => {
     await serve.close();
     throw error;
   });

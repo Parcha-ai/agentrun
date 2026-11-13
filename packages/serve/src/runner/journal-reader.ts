@@ -5,7 +5,7 @@
 import type { Context } from "@earendil-works/chord";
 import { type MessageOrigin, originOf } from "../timeline/index.js";
 import type { ConversationId, ConversationRecord, EntryRecord, SubmissionRecord, TaskRecord } from "@earendil-works/pi-durable";
-import { reflectFrom } from "./end-of-run.js";
+import { inReflect, reflectRanges } from "./end-of-run.js";
 import { type CallEndData, type CallStartData, KINDS, type MessageData, type MessageRole, type SessionKeyData } from "./journal-kinds.js";
 // Reads only (JournalReads): a run's live journal (journal(claim)) and the server's read-only view (store.readJournal) both
 // satisfy it, so the same reader runs over either. A full Journal is assignable, so the runner's callers are unchanged.
@@ -26,14 +26,14 @@ export interface MessageRecord {
   readonly role: MessageRole;
   readonly text: string;
   readonly entry: number;
-  /** The end-of-run turn's (end-of-run.ts reflectFrom): its message and its answer, never the run's own. */
+  /** The end-of-run turn's (end-of-run.ts reflectRanges), any round's: its message and its answer, never the run's own. */
   readonly learning?: true;
   /** Who wrote a message the person did not type (a trigger's): the Timeline's attribution, as the message carries it. */
   readonly origin?: MessageOrigin;
 }
 
 /** What the reader reads: every entry and every task of the run, and its submissions (where its end-of-run turn began:
- *  end-of-run.ts reflectFrom). */
+ *  end-of-run.ts reflectRanges). */
 export interface JournalRecords {
   readonly entries: readonly EntryRecord[];
   readonly tasks: readonly TaskRecord<unknown, unknown, unknown>[];
@@ -146,8 +146,8 @@ export function messagesOf(from: readonly EntryRecord[] | JournalRecords): Messa
   const out: MessageRecord[] = [];
   const records = asRecords(from);
   // The end-of-run turn's, from the entry its input placed on (the reader's tag, as the server's labelled() reads it).
-  const from_ = reflectFrom(records.submissions ?? [], records.entries);
-  const turn = (entry: number) => (from_ !== undefined && entry >= from_ ? { learning: true as const } : {});
+  const ranges = reflectRanges(records.submissions ?? [], records.entries);
+  const turn = (entry: number) => (inReflect(ranges, entry) ? { learning: true as const } : {});
   for (const entry of recordOf(records.entries)) {
     const at = entryNumber(entry);
     if (entry.kind === KINDS.message) {

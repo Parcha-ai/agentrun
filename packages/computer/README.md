@@ -40,7 +40,7 @@ full VM, a machine. The protocol has two layers:
   inside. It never runs commands itself: the daemon does. This package has four: Docker, Modal's VM runtime, Daytona
   and E2B (desktops), each one line of the provider registry (see [Adding a computer](#adding-a-computer)).
 
-The protocol is published as a spec, [`spec/computer/`](../../spec/computer/README.md), at protocol version 0.1
+The protocol is published as a spec, [`spec/computer/`](../../spec/computer/README.md), at protocol version 0.2
 (`PROTOCOL_VERSION`, which `hello` carries as `protocol`). Its JSON Schema and constants are generated from
 `src/protocol.ts` by `node scripts/generate-computer-spec.mjs`, and a test fails when they drift.
 
@@ -54,7 +54,7 @@ extension](#the-protocol-extension-kind-daemon-modes-screen-input-apps-lifetime)
 
 ```text
 → {"jsonrpc":"2.0","id":1,"method":"hello","params":{"client":"me"}}
-← {"jsonrpc":"2.0","id":1,"result":{"protocol":"0.1","version":"0.1.0-beta.30","os":"linux","kind":"linux","arch":"arm64","groups":["exec","files","processes"]}}
+← {"jsonrpc":"2.0","id":1,"result":{"protocol":"0.2","version":"0.1.0-beta.30","os":"linux","kind":"linux","arch":"arm64","groups":["exec","files","processes"]}}
 → {"jsonrpc":"2.0","id":2,"method":"exec.run","params":{"argv":["uname","-m"],"timeoutMs":5000}}
 ← {"jsonrpc":"2.0","id":2,"result":{"exitCode":0,"stdout":"YWFyY2g2NAo=","stderr":"","timedOut":false,"truncated":false}}
 ```
@@ -403,8 +403,8 @@ in the kernel's tool registry, keyed by these groups.
 | --- | --- | --- | --- |
 | `none` | | | (the run's folder only: no computer) |
 | `sandbox` | `linux` | `exec`, `files`, `processes` | |
-| `desktop` | `desktop` | `screen`, `input.pointer`, `input.keys` | `exec`, `files`, `processes`, `apps`, `stream` |
-| `phone` | `android`, `ios` | `screen`, `input.touch`, `apps` | `input.keys`, `apps.install`, `apps.ui_tree`, `stream` |
+| `desktop` | `desktop` | `screen`, `input.pointer`, `input.keys` | `exec`, `files`, `processes`, `apps`, `ui`, `stream` |
+| `phone` | `android`, `ios` | `screen`, `input.touch`, `apps` | `input.keys`, `apps.install`, `ui`, `stream` |
 | `browser` | `browser` | `cdp` | `stream`, `downloads` |
 
 - `serves(capabilities, kind)` is true when `capabilities().kind` is one of the kind's machine kinds and every required
@@ -486,7 +486,7 @@ itself, from our server (adb, a vendor API). Either way a connection's `client` 
 params, { signal })` and `close()`): `DaemonClient` over a stream, or a provider's in-process client.
 
 **Groups.** `capabilities().groups` is one flat list, repeated in hello's `groups`: `exec`, `files`, `processes`,
-`screen`, `input.pointer`, `input.keys`, `input.touch`, `apps`, `apps.install`, `apps.ui_tree`, and the provider's
+`screen`, `input.pointer`, `input.keys`, `input.touch`, `apps`, `apps.install`, `ui`, and the provider's
 `cdp`, `stream`, `downloads`. Each is optional unless kind makes it Core. The drift check and Docker's `connect` refuse a hello whose kind or groups differ from what the
 provider declares, either way.
 
@@ -496,8 +496,8 @@ provider declares, either way.
 | `input.pointer` | `input.actions`: `move`, `down`, `up`, `click` (`count` 1-3, held `keys`), `drag` (a path of 2 or more points), `scroll` (`unit` clicks or px) |
 | `input.keys` | `input.actions`: `key` (one key pressed, or a combo released in reverse; `repeat`), `hold` (`ms`), `type` |
 | `input.touch` | `input.actions`: `tap`, `long_press`, `swipe`, `pinch` (`scale` above 1 apart, below together), `button` (back, home, app_switch) |
-| `apps`, `apps.install` | `apps.list` (`{ apps, foreground }`), `apps.launch`, `apps.terminate`; `apps.install({ path })` of a file already in the computer |
-| `apps.ui_tree` | `apps.ui_tree`: `{ root: UiNode, nodes, truncated }`, at most 5000 nodes; a node has `role`, `id?`, `text?`, `label?`, `bounds` in screenshot pixels, `enabled`, the optional booleans and `children` |
+| `apps`, `apps.install` | `apps.list` (`{ apps, foreground }`), `apps.launch({ id, url?, background? })`, `apps.terminate`; `apps.install({ path })` of a file already in the computer |
+| `ui` | `ui.observe({ target?, full?, image?, since? })`: `{ state, app, window, nodes, diff?, image?, truncated }`, at most 5000 flat nodes, each `{ ref, role, name?, value?, id?, bounds, parent?, flags?, actions? }` with an ARIA role and bounds in window points. `ui.act({ target?, state?, steps, expect?, foreground? })`: `{ steps, state, changed, expect? }`, each step's `route` and `verified`, or its refusal (`stale`, `denied`, ...) as the last. The rules are in [`wire.md`](../../spec/computer/wire.md#the-ui-group); `UiEngine` (`src/ui-engine.ts`) keeps them over a `UiSource`, `UiSession` (`src/client.ts`) is the typed caller, and `@parcha/agentrun-computer/fake-ui-driver` answers them from scripted apps for tests |
 
 **The live view's seam** (`src/screen-watch.ts`). The runner's viewer reads a computer through
 `provider.watch?(ref, handlers, { signal?, maxWidth?, quality? })`:
@@ -663,7 +663,7 @@ fixtures of every evasion it catches.
 import { DockerProvider } from "@parcha/agentrun-computer/docker";
 
 const docker = new DockerProvider({ daemonPath: "dist/computerd-linux-amd64" });
-const made = await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none" });
+const made = await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none" }, { requestId: "r1#3" });
 if (!made.ok) throw new Error(made.error.message);
 const connected = await docker.connect(made.value);
 if (connected.ok) {
@@ -767,7 +767,7 @@ daemon, or run past its deadline.
 ### An allowlist: the egress proxy
 
 ```ts
-const made = await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: { allow: ["pypi.org", "*.pythonhosted.org", "93.184.215.0/24"] } });
+const made = await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: { allow: ["pypi.org", "*.pythonhosted.org", "93.184.215.0/24"] } }, { requestId: "r1#3" });
 // In the computer, HTTP_PROXY and HTTPS_PROXY name port 3128 on its own loopback for every program computerd starts.
 ```
 
@@ -852,7 +852,7 @@ import { DockerProvider } from "@parcha/agentrun-computer/docker";
 
 const docker = new DockerProvider({ daemonPath: "dist/computerd-linux-amd64" });
 // The run folder must exist, by its canonical path, and be writable by docker.user (below).
-const made = await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none", mount: { kind: "bind", path: "/data/runs/r1/work" } });
+const made = await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none", mount: { kind: "bind", path: "/data/runs/r1/work" } }, { requestId: "r1#3" });
 // In the computer: files.read({ path: `${WORKSPACE}/notes.md` }), exec.run({ argv: ["make"], cwd: WORKSPACE, ... })
 ```
 
@@ -920,7 +920,7 @@ const docker = new DockerProvider({
 	daemonCache: "/data/computer-cache", // at or below volume.root
 	volume: { name: "agentrun_agentrun-data", root: "/data" },
 });
-await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none", mount: { kind: "bind", path: "/data/disk/agents/a1/runs/r1/work" } });
+await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none", mount: { kind: "bind", path: "/data/disk/agents/a1/runs/r1/work" } }, { requestId: "r1#3" });
 ```
 
 - `volume: { name, root }`: `name` is the named volume, as `docker volume ls` names it; `root` is where this process
@@ -972,7 +972,7 @@ import { DockerProvider } from "@parcha/agentrun-computer/docker";
 const docker = new DockerProvider({ daemonPath: "dist/computerd-linux-amd64" }); // image: the default recipe
 const image = await docker.image({ signal });   // built once; one inspect when Docker has it
 if (!image.ok) throw new Error(image.error.message);
-const made = await docker.create({ image: image.value, lifetimeMs: 600_000, network: "none" });
+const made = await docker.create({ image: image.value, lifetimeMs: 600_000, network: "none" }, { requestId: "r1#3" });
 ```
 
 - `ensureImage(source, { docker?, signal?, timeoutMs?, onWait? })` (`src/docker/image.ts`) gives the tag. `source` is
@@ -1154,7 +1154,7 @@ const docker = new DockerProvider({ daemonPath: "dist/computerd-linux-amd64" });
 // A claim at epoch 3 takes the run over: the computers of epochs 1 and 2 go first.
 const older = await releaseOlder(docker, "r1", 3);
 if (!older.ok) throw new Error(older.error.message); // fenced, or a computer that could not be released
-await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none", labels: runLabels("r1", 3) });
+await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none", labels: runLabels("r1", 3) }, { requestId: "r1#3" });
 ```
 
 ### Waiting for a vendor: `waitUntil`
@@ -1180,7 +1180,7 @@ const modal = new ModalProvider({
 	app: "computers",
 	// daemonPath: the daemon to upload; default this package's dist/computerd-linux-amd64 (npm run build:daemon)
 });
-const made = await modal.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none" });
+const made = await modal.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none" }, { requestId: "r1#3" });
 ```
 
 `ModalProvider` makes Modal sandboxes on the VM runtime, or on gVisor for a GPU computer (below), through the slice of Modal's JS SDK named by `ModalSdk`
@@ -1467,7 +1467,7 @@ named by any call.
 import { DaytonaProvider } from "@parcha/agentrun-computer/daytona";
 
 const daytona = new DaytonaProvider({ apiKey, daemonPath: "dist/computerd-linux-amd64" });
-const made = await daytona.create({ image: "my-snapshot", lifetimeMs: 600_000, network: "none" });
+const made = await daytona.create({ image: "my-snapshot", lifetimeMs: 600_000, network: "none" }, { requestId: "r1#3" });
 ```
 
 A Daytona computer is a sandbox made through Daytona's v0 REST API with `fetch`, as pi-transport's Daytona box does:
@@ -1796,8 +1796,14 @@ import { providerFor } from "@parcha/agentrun-computer";
 
 // The key is the caller's to pass (serve's E2B_API_KEY), and the e2b package is the host's own (npm e2b 2.63.0).
 const e2b = await providerFor("e2b", { apiKey });
-const made = await e2b.create({ image: "desktop", lifetimeMs: 600_000, network: "none" });
+const made = await e2b.create({ image: "desktop", lifetimeMs: 600_000, network: "none" }, { requestId: "r1#3" });
 ```
+
+E2B runs on the shared machine-host adapter ([PROVIDERS.md](PROVIDERS.md)): `src/e2b.ts` is E2B's `MachineHost`, its
+SDK slice and the mapping of a sandbox to a machine, and `src/hosted/provider.ts` does everything below that is not
+E2B's own. `create` takes the caller's request id (`{ requestId }`, serve's is the run's claim): the computer's name is
+`computer-` and the first 12 hex digits of its sha256, and a retry of the same request finds the computer the first
+made instead of making a second.
 
 An E2B computer is a sandbox made from an E2B template, by default `desktop`, E2B Desktop's (Ubuntu 22.04 with Xvfb,
 Xfce, x11vnc and noVNC, e2b-dev/desktop `template/template.py:3-65`). It is kind `desktop`: computerd starts the X
@@ -1838,14 +1844,14 @@ E2B's envd is the sandbox's first process, a systemd service with `Restart=alway
    passes, and the sandbox found is killed and read back gone, as release waits for one.
 2. `getInfo` reads the sandbox back (below).
 3. `files.write` uploads the daemon as root to `/tmp/agentrun-computerd-<random>` (`index.mjs:2332-2435`), and the
-   same install command as Daytona's (`src/child.ts`) moves it to `/opt/agentrun/computerd`, root-owned, and prints its
-   sha256, which must be the uploaded one's.
-4. `commands.run(init, { background: true, user: "root", timeoutMs: 0 })` starts `computerd init --deadline <time>
-   --user 2510:2510 --own-network --max-deadline <create's time plus the cap>` with `DISPLAY=:0`, in a clean
-   environment. envd runs
-   the command under `bash -l -c` (`index.mjs:5123-5146`). Its timeout is 0 because envd kills a command whose
-   timeout passes, and keeps one running when its stream ends (envd `process/start.go:39-44`); the SDK's default
-   would end init after 60 s (`index.mjs:4978`). Create disconnects from it after.
+   same install command as Daytona's (`src/hosted/scripts.ts`) moves it to `/opt/agentrun/computerd`, root-owned, and
+   prints its sha256, which must be the uploaded one's, and who installed it (a create note).
+4. The adapter's start command, a background command as root, starts `computerd init --deadline <time> --user
+   2510:2510 --own-network --max-deadline <create's time plus the cap>` with `DISPLAY=:0`, in a clean environment,
+   detached: in a session of its own (`setsid`), its output to `/run/agentrun-init.log`, so the command ends at once
+   and a daemon that never answers is reported with init's own words. envd runs every command under `bash -l -c`
+   (`index.mjs:5123-5146`), each with timeout 0, because envd kills a command whose timeout passes (envd
+   `process/start.go:39-44`); the SDK's default would end it after 60 s (`index.mjs:4978`).
 5. `connect()` starts `computerd stdio` the same way, as root, with `stdin: true` and `retainOutput: false` (so a long
    connection keeps no copy of its output, `index.mjs:2708-2711`, `5150-5153`): its stdout comes through `onStdout`
    (decoded as a stream, `index.mjs:2860`), and requests go in with `sendStdin`, one call after another.
@@ -1911,7 +1917,7 @@ hostname from the connection's first bytes, decides, and closes a denied connect
 E2B documents no stricter setting: `allowInternetAccess: false` is `denyOut 0.0.0.0/0`, and `dnsServers` matters only
 with a domain in `allowOut`. Under the shared rule only an answer refuses network none, so such a sandbox is kept, and
 create's and attach's `notes` name the accepted targets: `network: none; accepted with no answer (no bytes came back):
-1.1.1.1:443, 8.8.8.8:443`. The one live diagnostic (below) read that: every IPv4 target on 443/tcp and 80/tcp accepted
+1.1.1.1:443, 8.8.8.8:443`. The one live diagnostic (2026-11-07, a tool since removed) read that: every IPv4 target on 443/tcp and 80/tcp accepted
 and closed with 0 bytes, no answer on 53/udp, and, in the provider's own probe, no accept from the IPv6 target. UDP
 is not proxied: the same firewall drops non-TCP to the user deny set, which `denyOut` fills, in nftables
 (`e2b-dev/infra@ff3922213` `packages/orchestrator/pkg/sandbox/network/firewall.go`, `installRules`, rule 5), so the probe's UDP targets get no reply within the 10 s window
@@ -1924,14 +1930,6 @@ packets reach the destination, and that this may change. The answered check catc
 both ways, since the first byte back refuses network none; it does not catch a one-way leak, and nothing run from
 inside can. That is the rule for every provider, confirmed on 11-07, and why every
 accept is recorded in words rather than dropped.
-
-`dist/conformance/e2b-diagnose.js` (live switch
-`AGENTRUN_COMPUTER_LIVE_E2B=1`) makes one sandbox exactly as create does for network none, with a 10-minute E2B
-timeout, records the read-back and the provider's own check (`passed` with its `notes`, or its refusal), runs
-`computerd probe --diagnose` in it (each check judged as `--connect` judges a target: any byte back is answered),
-prints one JSON line, and kills the sandbox and reads it back gone, after an error or an abort too (SIGINT, SIGTERM,
-or its own 8-minute bound). Exit 0 when a diagnosis came back and the sandbox reads gone, 1 otherwise, 2 with no live
-switch or a refused setting.
 
 ### Extend and stream
 
@@ -2001,17 +1999,12 @@ computer capped at 30 minutes, Hobby's plan for conformance
 `test/e2b/conformance.e2b.test.mjs` runs the suite with `computerd-fixture` built for linux/amd64, and skips unless the
 switch and `COMPUTER_E2B_API_KEY` are both set; `E2B_API_KEY` never counts.
 
-`dist/conformance/e2b-sweep.js --before <file>` records every sandbox E2B lists with `agentrun.computer=1`; `--after
-<file>` kills every one not in the file whose metadata carries a conformance run's label (`agentrun.conformance`),
-leaving alone one another user of the account made during the run, reads each killed one back until `getInfo` no longer
-finds it and the listing no longer shows it, up to 60 s each, and prints
-`{"swept":n,"gone":m,"stillThere":[ids],"leftAlone":k}` (`leftAlone`: the new labelled sandboxes with no conformance
-label, which no call names). Exit 0 when every swept sandbox is
-gone, 1 when one is still there, 2 on a usage error, an unreadable before file, no key, or a refused listing (nothing is
-killed then). It reads `COMPUTER_E2B_API_KEY` and `COMPUTER_E2B_DOMAIN` as the conformance module does, and needs no
-live switch.
+The live sweep is the shared one, `dist/conformance/sweep.js --provider e2b --before <file>` and `--after <file>`
+([PROVIDERS.md](PROVIDERS.md), "The live sweep"): it prints `{"swept":n,"gone":m,"stillThere":[ids],"leftAlone":k}`
+and reads its settings through the conformance module's `createHost`, with no live switch. A conformance run of E2B
+also sweeps its own label through the host at its end (the report's `cleanup.sweep`).
 
-The conformance module's `settingsFromEnv` reads these names, and the sweep and `e2b-diagnose.js` read them through it,
+The conformance module's `settingsFromEnv` reads these names, and the sweep reads them through it (`createHost`),
 each passed to `create()` as the option in brackets: `COMPUTER_E2B_API_KEY` (`apiKey`, required),
 `COMPUTER_E2B_DOMAIN` (`domain`), `COMPUTER_E2B_DAEMON` (`daemonPath`), `COMPUTER_E2B_KIND` (`kind`),
 `COMPUTER_E2B_MAX_LIFETIME_MS` (`maxLifetimeMs`, a whole number of ms) and `COMPUTER_E2B_USER` (`daemonUser`). It
@@ -2226,7 +2219,7 @@ on the machine AgentRun runs on. No vendor, no key, nothing billed.
 import { LocalBrowserProvider } from "@parcha/agentrun-computer/local-chrome";
 
 const local = new LocalBrowserProvider({ env: { PATH: process.env.PATH } }); // or { executablePath: "/usr/bin/chromium" }
-const made = await local.create({ image: "chromium", lifetimeMs: 30 * 60_000, network: "open" });
+const made = await local.create({ image: "chromium", lifetimeMs: 30 * 60_000, network: "open" }, { requestId: "r1#3" });
 const connected = await local.connect(made.value); // connected.value.cdp.url: ws://127.0.0.1:<port>/devtools/browser/<id>
 await local.release(made.value, "delete");
 ```
@@ -2300,17 +2293,24 @@ AGENTRUN_COMPUTER_LIVE_LOCAL_CHROME=1 [COMPUTER_LOCAL_CHROME_PATH=/usr/bin/chrom
 import { providerFor } from "@parcha/agentrun-computer";
 
 const phones = await providerFor("phone-harness", { apiKey }); // serve passes PHONE_HARNESS_API_KEY
-const made = await phones.create({ image: "android", lifetimeMs: 10 * 60_000, network: "open", labels: { run } });
+const made = await phones.create({ image: "android", lifetimeMs: 10 * 60_000, network: "open", labels: { run } }, { requestId: "r1#3" });
 ```
 
 `src/phone-harness.ts`, provider id `phone-harness`, rents a temporary cloud Android emulator from the phone harness
 (phone-harness.com). The phone harness bills it at 5 cents a minute from the account's credit. A cloud iPhone (driven by
 the API's control URL) is a later change: `platform: "ios"` is refused in words.
 
-- **No daemon.** Nothing runs on the phone. `connect()` asks the phone harness for the session's adb link, runs
-  connects to it, unlocks the phone with the session's code (never in a result or an error) and probes it. Its hello
-  carries what the probe read: `arch` from `getprop ro.product.cpu.abi`, and `osVersion`, the Android release from
-  `getprop ro.build.version.release` (such as `"15"`; absent when the phone says none).
+- **phoned, the phone's driver.** `connect()` asks the phone harness for the session's adb link, connects to it,
+  unlocks the phone with the session's code (never in a result or an error) and probes it. Then it starts phoned
+  (`daemon-android/`, one dex jar built by `npm run build:phoned` into `dist/phoned.jar`) and speaks the protocol to it:
+  - The jar goes to `/data/local/tmp/phoned-<sha256 prefix>.jar` only when the phone lacks it: pushed beside that name,
+    moved there and its sha256 checked, so a jar of that name is always whole.
+  - phoned runs as the shell user through `app_process`, scrcpy's way in, on adb's `exec:` service, whose socket
+    carries its stdin and stdout raw; its stderr goes to a log beside the jar, which a failed hello names.
+  - The hello is phoned's own, checked for this provider's version and protocol (`drift.version`'s words).
+  - UiAutomation is one per phone, so one phoned answers every connection to a phone. Closing a connection cancels
+    its own calls; the last close ends phoned (its stdin closes), then drops the adb transport. A phoned that ends on
+    its own fails its connections' calls with `gone`, and the next connect starts another.
   - Neither the endpoint nor the code is ever in a spawned adb's argv, which `/proc` shows to every user of the host.
     The endpoint goes to the local adb server over its socket protocol (`host:connect`, `host:devices-l`,
     `host:disconnect`). The unlock is the vendor's shell command `unlock <code>`, once per connection; every shell
@@ -2319,34 +2319,15 @@ the API's control URL) is a later change: `platform: "ios"` is refused in words.
     spawned adb names the phone by the adb server's transport id (`-t <id>`). A shell's stdin cannot carry the unlock:
     a shell with no command string is answered `locked` (live run 3); the socket path unlocked a phone live (probe 1).
 
-  Then it gives
-  a client in this process that answers each protocol method with adb commands:
-  - `screen.shot`/`screen.read`: a raw `screencap`, cropped to the region and encoded as an RGBA PNG; `scale` is the
-    density over 160;
-  - `screen.watch`: PNG frames (`format: "png"`) from `screencap`, read once a second at most, across calls too (an
-    animated screen acked at once is no faster), a new frame only when the pixels changed; `maxWidth` scales by the
-    nearest pixel, and `quality` has no effect on a PNG. A cancel or the connection's close ends a screencap and a
-    wait in flight;
-  - `input.actions`: checked whole first (`checkActions`). Then:
-    - tap and long press;
-    - swipe: `input swipe`, or `input motionevent` for a path of three points or more. Its `ms` is shared between the
-      moves as `sleep`s, by each segment's length, so it lasts `ms` at least;
-    - the back, home and app switch buttons;
-    - `type`, by `input text`: ASCII and line breaks. A literal `%s` is split across two calls, so it is not read as
-      a space;
-    - one key at a time (`input keyevent`), and `wait`.
-
-    A cancelled batch stops at the action it is on, a `wait` included, and answers failed, kind `aborted`, there;
-  - `apps.list` (`pm list packages`, and the app in front from `dumpsys activity activities`), `apps.launch` (its
-    launcher activity, `am start -W --activity-clear-task`, so the app named is in front and not what its task last
-    held: on Android 15 Settings' task keeps search, another package, on top) and `apps.terminate` (`am force-stop`);
-  - `apps.ui_tree`: `uiautomator dump`.
-
-  exec, files, processes and tar are refused in words: a phone has no shell in the computer protocol. So are pinch
-  (adb's `input` has one finger), hold, a combo of keys, `apps.install` and `deadline.extend`.
-- **Capabilities.** Kind and os `android`, daemon `none`, lifetime `vendor`, network `open`, release `delete` only.
-  Groups `screen`, `input.touch`, `input.keys`, `apps` and `apps.ui_tree`. `maxLifetimeMs` is 30 min by default. No
-  mount, no extend.
+  phoned answers on the phone itself (`daemon-android/README.md` has each method): `exec.run` as the shell user,
+  `screen.shot`/`screen.read`/`screen.watch` scaled on the phone, `input.actions` through InputManager (taps, swipes,
+  a pinch, key combos and holds, Unicode text through the clipboard), `apps.list`/`apps.launch`/`apps.terminate`, and
+  the UI tree from UiAutomation. files, processes and tar are refused in words, as are `apps.install` and
+  `deadline.extend`.
+- **Capabilities.** Kind and os `android`, daemon `none` (nothing is installed: phoned lives as long as the phone's
+  connections), lifetime `vendor`, network `open`, release `delete` only.
+  Groups `exec`, `screen`, `input.touch`, `input.keys`, `apps` and `apps.ui_tree`. `maxLifetimeMs` is 30 min by default.
+  No mount, no extend.
 - **create** asks for `timeout_seconds` = the lifetime, and the phone harness ends the session then, whatever happens.
   The lifetime includes the boot, so a phone ready past its deadline fails `timeout`.
   - Each POST carries an Idempotency-Key, and a create whose answer is uncertain is found by it, never sent twice.
@@ -2399,17 +2380,17 @@ Conformance (`src/conformance/phone-harness.ts`) reads `COMPUTER_PHONE_HARNESS_A
 `maxLifetimeMs`.
 
 With no fixture app (it takes no files), the touch, keys and apps cases drive the stock Settings app and read back
-through `apps.ui_tree` (`src/conformance/cases/settings.ts`):
+through `ui.observe` (`src/conformance/cases/settings.ts`):
 - `touch.tap`: a tap on a row opens its page: the row's title shows, as a text or a label (Android 15's page has it
   only as its toolbar's content-desc), and the next row is gone. Back comes back. When the page does not
   come, its words say what it saw: the screen in px and dp, what is in front, the tap point and the row's bounds,
   whether the title shows outside the list, and whether the next row is still shown;
 - `touch.swipe`: a swipe up moves the list up;
 - `input.type-text` and `input.key-table-refuses-unknown`: the text read back from the search field;
-- `apps.launch-terminate`, which needs the apps group alone: Settings is listed; once launched it is in front, and
-  shown, in `apps.ui_tree` when the phone has one, else in a screenshot other than the one before; once terminated it
-  is not in front;
-- `apps.ui-tree-shape`: the tree's shape, on Settings.
+- `apps.launch-terminate`, which needs the apps group alone: the ui fixture where it is installed, else Settings, is
+  listed; once launched it is in front, and shown, in `ui.observe` when the phone reads its elements, else in a
+  screenshot (or `ui.observe`'s image) other than the one before; once terminated it is not in front;
+- `ui.observe-shape`: the observation's shape, on the ui fixture where it is installed, else on Settings.
 
 `touch.pinch` skips in the provider's own refusal.
 
@@ -2436,7 +2417,7 @@ full lifetime  extend                                       - 1
 optional screen screenshot-size                              - 1
   - screen.screenshot-size: the provider does not declare screen
 ...
-core PASS 54/54 · 10 optional cases skipped, not declared · full 10/13 · mount:archil screen input.pointer input.keys input.touch apps.install apps apps.ui_tree extend not declared
+core PASS 54/54 · 10 optional cases skipped, not declared · full 10/13 · mount:archil screen input.pointer input.keys input.touch apps.install apps ui extend not declared
 ```
 
 An id is resolved through the provider registry, and only there; the usage lists every id it holds. A module path is
@@ -2531,8 +2512,8 @@ Core and Full follow the Kubernetes agent-sandbox conformance levels (KEP-539.2)
   kind `invalid`, and runs nothing), `input.actions-stops-at-first-failure` (move, left button down, move off the screen,
   click: `done` 2, the press released where it was, no click, and a later click lands, so nothing was left held), `touch.tap` and `touch.swipe` (the
   fixture app logs the tap at its point, and the swipe's start and end), `apps.install-launch` (installed, listed, in
-  front when launched and not when terminated) and `apps.ui-tree-shape` (every node typed as the protocol says, inside
-  the screenshot, with the fixture's button found by its id and text).
+  front when launched and not when terminated) and `ui.observe-shape` (every node typed as the protocol says, inside
+  its window, with the fixture's button found by its id and text).
 - **Full** is each optional capability a provider declares: network `open` (`network:open`), a network allowlist
   (`network:allow`), each with a change of a computer's network to it and back to `none`, refused or applied
   truthfully, on a computer of the case's own (`provider.network-switch`, `provider.network-switch-allow`), the janitor for a provider whose lifetime is `"janitor"` and that stops computers and keeps them
@@ -2577,8 +2558,8 @@ installed with `apps.install` and launched, logging to its files directory, with
 `ai.agentrun.fixture:id/button` that reads `agentrun fixture`). Each event is one JSON line (`ready`, `down`/`up` with
 button and point, `wheel`, `key`, `text`, `touch` with finger and phase); `src/conformance/fixture.ts` is the
 contract. A case that needs it and was given none skips, so Core cannot pass on a desktop or phone without it. The
-fixture is stopped when its case ends, once launched, even when it never logged ready. A phone that declares neither files nor `apps.ui_tree` skips the touch cases:
-`no way to observe the effect: declare files or apps.ui_tree`.
+fixture is stopped when its case ends, once launched, even when it never logged ready. A phone that declares neither files nor `ui` skips the touch cases:
+`no way to observe the effect: declare files or ui`.
 
 The suite makes every computer with the label `agentrun.conformance=<run id>`, image `--image`, a 30-minute lifetime
 and network `none` (`open` for a phone that declares no `none`, since its kind does not require it). It deletes each computer a case made when the case ends, and the shared one at the end; for a

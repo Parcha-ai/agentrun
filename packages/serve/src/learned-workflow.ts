@@ -12,6 +12,13 @@
 //     its paid requests booked under the tool's call (paid-calls.ts), each node's under a call of its own; web_search
 //     where it resolves native on the provider's hosted search through the run's models (hosted-search.ts), on a harness
 //     whose own search it is too (harness-app.ts gives that harness no host tool of the name).
+//   - a decision node (judge, pick, sift, a route by question, an ask predicate, a verify: LS-07), on a run handed its
+//     decisions (`run.decisions`: its decision providers on its own keys, and the adapter loop's ledger.decisions on
+//     the run's one cap), asked of the provider it names, else the run's default, held to the run's gate under that
+//     provider's bare id (tool-plane.ts DECISION_PROVIDER_KEYS: allow or deny), refused only on deny; each admitted on the run's cap before it is sent, priced as a
+//     workflow agent's decision is (runner/workflow-spec.ts decisionJudge), settled at what it charged, and one the cap
+//     has no room for never sent, the run paused on the cap's refusal (ledger.pause). A run handed none runs no
+//     decision node: the check refuses it before any node runs.
 // Each model request is a request on the run's one route, so what the workflow spends is the run's cost, under its cap:
 // on pi the run's models, as a side request (request-start.ts, cap.ts: marked, and costed on the run's timeline as
 // `learned_workflow`); on another harness the session's model proxy, under a side key (port-models.ts): the harness's
@@ -24,6 +31,8 @@ import { registerLabel, registerOutcome } from "./timeline/index.js";
 import { sideRequests } from "./cap.js";
 import { LEARNED_NODES, LEARNED_NODES_MAX, type LearnedNode } from "./learned-nodes.js";
 import { draftProblems, LEARNED_MAX_TURNS } from "./learn/index.js";
+import { decisionsAsked, deniedDecisionWords } from "./learn/skills.js";
+import { DEFAULT_DECISION_PROVIDER } from "./decisions.js";
 import { type LearnedWorkflow, workflowLine } from "./learning.js";
 import type { ModelRef } from "./model.js";
 import { type Ledger, ledgerOf } from "./paid-calls.js";
@@ -34,6 +43,11 @@ import { ARGS_PREVIEW_BYTES, deniedText, type SettingFrom } from "./tool-gate.js
 import type { DenyFrom } from "./refusal-words.js";
 import { allows, CALL_TOOLS, learnedDraftTools, toolOf, workflowTools } from "./tools.js";
 import type { Complete } from "./llm.js";
+import type { SearchOn } from "./web-search.js";
+import type { Workspace } from "./workspace/workspace.js";
+import type { DecisionProvider } from "@parcha/agentrun-dsl";
+import type { Refusal } from "@parcha/agentrun-kernel";
+import type { RunDecisions } from "@parcha/agentrun-kernel/kernel/cap";
 import { hostCalls } from "./host-calls.js";
 import { workflowNodes } from "./model.js";
 
@@ -168,6 +182,9 @@ export type LearnedWorkflowRun = {
   modelName?(tier: string | undefined): string | undefined;
   /** The `llm` tool's completion, for a call node that names it. */
   complete?: Complete;
+  /** The run's models a call node's native web_search goes through (EffectRun.search): on the runner, the session's
+   *  port. */
+  search?: SearchOn;
   /** The run's gate's permission of a tool now (tool-gate.ts RunGate policy): a call node's tool set to ask or deny is
    *  refused before any node runs, and asked again as each call node runs, a composed workflow's inner ones too, so one
    *  set to either since the call began is refused there, never run. Required: a learned workflow never runs a tool
@@ -180,6 +197,19 @@ export type LearnedWorkflowRun = {
    *  each call node runs, before `policy` is asked: a tool set to deny since the call began is then refused. None: the
    *  gate reads its settings live (main's process). */
   refresh?: () => Promise<void>;
+  /** The run's own Workspace (on the runner: its local folder in Mode 1, its folder on the run's disk in Mode 2), which
+   *  a decision node's images are read through. Absent: the local folder at `work`. */
+  workspace?: Workspace;
+  /** The run's decisions (LS-07): its decision providers (decisions.ts decisionProvidersIn over the run's keys) and the
+   *  one a node that names none is asked of; `book`, the run's decisions on its one cap (the adapter loop's
+   *  ledger.decisions: DECISION_SESSION); `pause`, the run's pause on a refusal of that cap (ledger.pause), so its next
+   *  request is refused in the cap's words and the run parks there. None: a decision node is refused before any node
+   *  runs. */
+  decisions?: {
+    readonly providers: { readonly providers: Readonly<Record<string, DecisionProvider>>; readonly default: string };
+    readonly book: RunDecisions;
+    readonly pause?: (refusal: Refusal) => Promise<void>;
+  };
   /** The run's MCP tools by catalog name (`mcp:<server>/<tool>`): those the claim's pin holds, which its revision grants.
    *  A call node may name one of these; it runs through the run's own MCP, as the loop wrapped it (host-calls.ts). */
   mcpTools?: readonly string[];
@@ -316,9 +346,10 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
       if (setting === "deny") deniedBy[name] = run.denyFrom(name) as DenyFrom;
     }
   }
-  const problems = draftProblems(dsl, flow.workflow, tools, gated, deniedBy);
+  const problems = draftProblems(dsl, flow.workflow, tools, gated, deniedBy, undefined, decisionsOf(run, dsl, flow.workflow));
   if (problems.length) return refuse(problems.map(({ detail }) => detail).join("; "));
   const doc = JSON.parse(flow.workflow);
+  const runJudge = run.decisions ? await learnedJudge(run, run.decisions) : undefined;
   // The host runner loads @earendil-works/pi-coding-agent and pi-agent-core, serve's own dependencies (package.json).
   const { createPiHostRunner } = await import("./workflow/host-session.js");
   const runners = new Map<string, NonNullable<Parameters<typeof dsl.runWorkflow>[2]["runNode"]>>();
@@ -382,7 +413,7 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
     if (permission === "ask") throw new Error(`This ${tool} call needs a person's approval, which a workflow's call node cannot wait for; it was not run.`);
     // Its paid requests booked under the tool's call, as a call of its own: the node, its execution path, its item in a map.
     const booked = ledger ? { ledger: { call: callId, record: ledger.record } } : {};
-    return effect(given, { signal: own, env: run.env, work: run.work, ...(run.complete ? { complete: run.complete } : {}), ...booked });
+    return effect(given, { signal: own, env: run.env, work: run.work, ...(run.complete ? { complete: run.complete } : {}), ...(run.search ? { search: run.search } : {}), ...booked });
   };
   // Each node as it ends, by the DSL's own event: what the call's timeline row shows of it.
   const onEvent = (event: { type: string; label: string; detail?: unknown; executionPath?: string }) => {
@@ -392,11 +423,63 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
     nodes.push({ label: String(event.label), kind: String(detail.kind ?? ""), status: String(detail.status ?? ""), duration_ms: typeof detail.duration_ms === "number" ? detail.duration_ms : 0, ...ran });
   };
   try {
-    const result = await dsl.runWorkflow(doc, input as Record<string, unknown>, { runNode: runNode as never, runEffect: runEffect as never, onEvent, ...(signal ? { signal } : {}) } as never);
+    const judging = runJudge && run.decisions ? { runJudge, decisionProviders: run.decisions.providers } : {};
+    const result = await dsl.runWorkflow(doc, input as Record<string, unknown>, { runNode: runNode as never, runEffect: runEffect as never, onEvent, ...judging, ...(signal ? { signal } : {}) } as never);
     if (result.status !== "complete") return refuse(`it ended ${result.status}`);
     return { text: learnedText(learnedOutput(result.output)), isError: false, nodes };
   } catch (error) {
     if (signal?.aborted) throw error;
     return { text: `The learned workflow ${flow.name} failed: ${String((error as Error)?.message ?? error).slice(0, 1000)}`, isError: true, nodes };
   }
+}
+
+/** The draft check's decisions for `run` (learn/skills.ts DraftDecisions): its providers, and the gate's setting of each
+ *  provider `text` asks (its bare id as the settings key) where it is not allow, with where a deny was set. A run handed
+ *  no decisions (its claim was handed no key: none named, or each denied) has no provider, so a decision node is refused
+ *  in the gate's words when its provider is denied, else as one the host does not have; never asked. */
+function decisionsOf(run: LearnedWorkflowRun, dsl: Parameters<typeof decisionsAsked>[0], text: string) {
+  const providers = run.decisions?.providers ?? { providers: {}, default: DEFAULT_DECISION_PROVIDER };
+  const gated: Record<string, string> = {};
+  // A deny comes from a layer or the default, never from approvals (learnedDraftTools' rule).
+  const deniedBy: Record<string, "agent" | "server" | "default"> = {};
+  let doc: unknown;
+  try {
+    doc = JSON.parse(text);
+  } catch {
+    return { providers: providers.providers, default: providers.default };
+  }
+  for (const { provider } of decisionsAsked(dsl, doc, providers.default)) {
+    const setting = run.policy(provider);
+    if (setting === "allow") continue;
+    gated[provider] = setting;
+    if (setting === "deny") deniedBy[provider] = run.denyFrom(provider) as "agent" | "server" | "default";
+  }
+  return { providers: providers.providers, default: providers.default, gated, deniedBy };
+}
+
+/** A learned workflow's judge (the DSL's runJudge) for `run`: its providers' judge (judgeFromProviders), each decision
+ *  first held to the run's gate as it is asked (a provider set to deny since the call began is refused, never sent, as
+ *  a call node's tool is at its effect; deny alone refuses, the rule the runner hands a claim its keys by), then admitted on the run's one cap and settled at what it charged
+ *  (decisionJudge, as a workflow agent's decision is). A refusal of the cap pauses the run (`decisions.pause`): the
+ *  decision node fails with the cap's words, and nothing is sent. */
+async function learnedJudge(run: LearnedWorkflowRun, decisions: NonNullable<LearnedWorkflowRun["decisions"]>) {
+  const [{ judgeFromProviders }, { decisionJudge }, { imageLoader }] = await Promise.all([import("@parcha/agentrun-dsl"), import("./runner/workflow-spec.js"), import("./pdf-pages.js")]);
+  type Judge = ReturnType<typeof judgeFromProviders>;
+  // A decision node's images (a page drawn by pdf_pages, a screenshot, an upload) are read through the run's own Workspace
+  // (Mode 2: its folder on the run's disk, never the runner's local path), as a workflow agent's are (pdf-pages.ts
+  // imageLoader).
+  const inner = judgeFromProviders({ providers: decisions.providers.providers, default: decisions.providers.default, loadImage: imageLoader(run.workspace ?? run.work) });
+  const capped = decisionJudge<Judge>(inner, {
+    getCap: () => decisions.book,
+    providers: decisions.providers as never,
+    park: (refusal) => {
+      void decisions.pause?.({ refuse: refusal.message, forGood: refusal.forGood, code: "spend_cap_reached", ...(refusal.figures ? { figures: refusal.figures as never } : {}) });
+    },
+  });
+  return (async (params: Parameters<Judge>[0]) => {
+    const provider = params.provider ?? decisions.providers.default;
+    await run.refresh?.();
+    if (run.policy(provider) === "deny") throw new Error(deniedDecisionWords(provider, run.denyFrom(provider) as "agent" | "server" | "default", "decision", params.label));
+    return capped(params);
+  }) as Judge;
 }

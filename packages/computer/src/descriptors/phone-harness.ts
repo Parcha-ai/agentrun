@@ -2,8 +2,8 @@
 import { defineProvider } from "../descriptor.js";
 import type { Group } from "../protocol.js";
 
-/** The groups a phone harness phone offers. */
-export const PHONE_GROUPS: readonly Group[] = ["screen", "input.touch", "input.keys", "apps", "apps.ui_tree"];
+/** The groups a phone harness phone offers: phoned's, the driver it runs (daemon-android/), in its hello's order. */
+export const PHONE_GROUPS: readonly Group[] = ["exec", "screen", "input.keys", "input.touch", "apps", "ui"];
 
 /** The phone harness's Android: a phone computer when its setting names no image. */
 export const PHONE_IMAGE = "android";

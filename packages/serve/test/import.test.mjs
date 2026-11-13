@@ -13,7 +13,6 @@ import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { runMetricsOf, timelineOf } from "../dist/timeline/index.js";
-import { startServe } from "../dist/index.js";
 import { agentIdOf, importCommand, planImport, runImport } from "../dist/import.js";
 import { ACTIVE_GAP_MS, readSession } from "../dist/import-sources.js";
 import { summaryLines } from "../dist/import-summary.js";
@@ -23,7 +22,7 @@ import { runEntries } from "../dist/store-reads/journal.js";
 import { toolKeysOverStore } from "../dist/tool-keys-store.js";
 import { at as minute, claudeSession, claudeSubagent, codexSession, piSession, sessionId, writeSession } from "./fixtures/import-sessions.mjs";
 import { schemaProblems } from "./schema-support.mjs";
-import { agent, client, FAUX, scratch, triggerStore } from "./support.mjs";
+import { agent, client, FAUX, scratch, startServe, triggerStore } from "./support.mjs";
 
 /** The server's store on a data directory: role "server" to import into, role "runner" to read what an import wrote. */
 const openData = (data, role = "server") => openSqliteStore({ dataDir: data, role });
