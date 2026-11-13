@@ -17,7 +17,7 @@ const learningLoopOf = (deps) => fn(dispatch, "learningLoopOf")(deps);
 const MODEL = "claude-sonnet-5-5";
 const price = (_model, usage) => (usage.input * 2 + usage.output * 10 + (usage.cacheRead ?? 0) * 0.1 + (usage.cacheWrite ?? 0) * 2.5) / 1e6;
 const NOTE = { file: "retries.md", text: "---\nname: Retries\ndescription: Retry a flaky fetch twice\ntype: reference\n---\nRetry a flaky fetch twice.\n" };
-const KEEP = JSON.stringify({ merge: true, reason: "Worth keeping.", items: [{ file: "retries.md", decision: "keep", why: "useful" }] });
+const KEEP = JSON.stringify({ merge: true, reason: "Worth keeping.", items: [{ file: "retries.md", decision: "keep", general: true, why: "useful" }] });
 const USED = { input: 1_200, output: 40 };
 const eight = (usd) => Math.round(usd * 1e8) / 1e8;
 

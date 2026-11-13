@@ -135,7 +135,7 @@ final class SchemaTests: XCTestCase {
 				UiObserveResult(state: "s2", app: UiApp(id: "a", name: "A", pid: 4), window: UiWindow(id: "1", title: "T", bounds: rect), nodes: [
 					UiNode(ref: "@e1", role: "button", name: "OK", value: "v", desc: "d", id: "ok", bounds: rect, parent: "@e0", flags: UiFlag.allCases, actions: ["AXPress"]),
 				], diff: UiDiff(added: ["@e1"], removed: [], changed: []), image: UiImage(format: "png", width: 1, height: 1, data: data), truncated: false),
-				UiObserveResult(state: "s2", app: UiApp(id: "a", name: "A", pid: 4), window: UiWindow(id: "1", title: "T", bounds: rect), nodes: [], image: UiImage(format: "jpeg", width: 1, height: 1, data: data), empty: "ui.tree is off here", truncated: false),
+				UiObserveResult(state: "s2", app: UiApp(id: "a", name: "A", pid: 4), window: UiWindow(id: "1", title: "T", role: "dialog", bounds: rect), nodes: [], image: UiImage(format: "jpeg", width: 1, height: 1, data: data), empty: "ui.tree is off here", truncated: false),
 				UiObserveResult(state: "s2", app: UiApp(id: "a", name: "A", pid: nil), window: UiWindow(id: "1", title: nil, bounds: rect), nodes: [UiNode(ref: "@e1", role: "generic", bounds: rect)], diff: nil, image: nil, truncated: true),
 			]),
 			Case(method: "ui.act", params: [
@@ -147,9 +147,11 @@ final class SchemaTests: XCTestCase {
 					.drag([point, point], ms: 100), .drag([point, point], ms: nil),
 				], expect: Expect(text: "Saved", ref: "@e1", gone: true, timeoutMs: 100), foreground: true),
 				UiActParams(steps: [], expect: Expect(text: "x")),
+				UiActParams(steps: [], expect: Expect(window: ExpectWindow(title: "Save", role: "dialog"), gone: true, timeoutMs: 100)),
 			], results: [
 				UiActResult(steps: [.ran(route: .background, verified: true), .error(StepError(kind: .stale, message: "gone"))], state: "s3", changed: true, expect: .met),
 				UiActResult(steps: [], state: "s3", changed: false, expect: nil),
+				UiActResult(steps: [.ran(route: .semantic, verified: true)], state: nil, window: "closed", changed: true, expect: .unmet),
 			]),
 		]
 	}
@@ -195,7 +197,7 @@ final class SchemaTests: XCTestCase {
 			"maxListDepth": Limits.maxListDepth, "maxListEntries": Limits.maxListEntries, "maxBatchWaitMs": Limits.maxBatchWaitMs,
 			"maxActions": Limits.maxActions, "maxKeyRepeat": Limits.maxKeyRepeat,
 			"maxUiNodes": Limits.maxUiNodes, "maxSteps": Limits.maxSteps, "maxExpectMs": Limits.maxExpectMs,
-			"defaultExpectMs": Limits.defaultExpectMs, "maxSettleMs": Limits.maxSettleMs, "minImageEdge": Limits.minImageEdge,
+			"defaultExpectMs": Limits.defaultExpectMs, "maxSettleMs": Limits.maxSettleMs, "setHoldMs": Limits.setHoldMs, "minImageEdge": Limits.minImageEdge,
 			"maxImageEdge": Limits.maxImageEdge, "defaultImageEdge": Limits.defaultImageEdge,
 		]
 		for (name, value) in ours { XCTAssertEqual(limits[name], .int(Int64(value)), name) }

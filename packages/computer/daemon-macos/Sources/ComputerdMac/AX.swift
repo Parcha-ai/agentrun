@@ -213,7 +213,9 @@ final class MacAccessibility: Accessibility, @unchecked Sendable {
 		guard let wid = sky.windowID(element) else { throw RPCError.notFound("\(id)'s window has no window server id") }
 		guard let bounds = AX.frame(element) else { throw RPCError.notFound("\(id)'s window has no frame") }
 		let title = AX.string(AX.copy(element, kAXTitleAttribute))
-		return ResolvedTarget(app: UiApp(id: id, name: app.localizedName ?? id, pid: Int(pid)), pid: pid, window: UiWindow(id: String(wid), title: title, bounds: bounds))
+		let kind = AX.copy(element, [kAXRoleAttribute, kAXSubroleAttribute])
+		let role = Roles.window(role: AX.string(kind[0]), subrole: AX.string(kind[1]))
+		return ResolvedTarget(app: UiApp(id: id, name: app.localizedName ?? id, pid: Int(pid)), pid: pid, window: UiWindow(id: String(wid), title: title, role: role, bounds: bounds))
 	}
 
 	// MARK: the tree

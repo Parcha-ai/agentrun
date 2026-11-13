@@ -32,8 +32,8 @@ public struct Timing: Sendable {
 	public var settleMaxMs = Double(Limits.maxSettleMs)
 	/// How often an expect looks again.
 	public var expectPollMs: Double = 100
-	/// How long a set value must hold after the settle to count as verified.
-	public var lastingMs: Double = 500
+	/// How long after the act's first final view a set value must still hold to count as verified.
+	public var setHoldMs = Double(Limits.setHoldMs)
 	/// Told one line per act: each step's route and ms with the looks its settle took, the expect's ms, and the time a
 	/// look takes. The Mac app writes it to its log.
 	public var trace: (@Sendable (String) -> Void)?
@@ -280,9 +280,20 @@ public actor UIEngine {
 			throw RPCError.limit("ui.act: the drags ask for \(dragMs) ms, more than the \(Limits.maxBatchWaitMs) ms one act may")
 		}
 		if let e = p.expect {
-			guard e.text != nil || e.ref != nil else { throw RPCError.invalid("ui.act: expect names neither text nor ref: it needs at least one") }
-			if case .off(let reason) = ax.feature {
-				throw RPCError.unsupported("ui.act: an expect reads the window's elements, and ui.tree is off here: \(reason)")
+			if let wanted = e.window {
+				guard e.text == nil && e.ref == nil else {
+					throw RPCError.invalid("ui.act: expect.window stands alone: an expect waits for a window, or for text or a ref in the act's window, not both")
+				}
+				guard wanted.title != nil || wanted.role != nil else { throw RPCError.invalid("ui.act: expect.window names neither title nor role: it needs at least one") }
+				if let role = wanted.role, !uiRoles.contains(role) {
+					throw RPCError.invalid("ui.act: expect.window.role is \(role.debugDescription), not one of the protocol's roles (uiRoles)")
+				}
+			} else {
+				guard e.text != nil || e.ref != nil else { throw RPCError.invalid("ui.act: expect names neither text, ref nor window: it needs one") }
+				// A window expect reads only the window's title and role, which the window list gives with the tree off too.
+				if case .off(let reason) = ax.feature {
+					throw RPCError.unsupported("ui.act: an expect reads the window's elements, and ui.tree is off here: \(reason)")
+				}
 			}
 			if let ref = e.ref, !isRef(ref) { throw RPCError.invalid("ui.act: expect.ref is \(ref.debugDescription), not a ref (\"@e12\")") }
 			if let t = e.timeoutMs {
@@ -301,31 +312,48 @@ public actor UIEngine {
 		let held = params.state.flatMap { store.view($0) }
 		let target = params.target ?? held.map { Target(app: $0.target.app.id, window: $0.target.window.id) }
 		let foreground = params.foreground ?? false
+		let waitsForWindow = params.expect?.window != nil
 
 		let started = clock.now()
 		(looks, lookMs, frameMs) = (0, 0, 0)
 		takeOver = TakeOverWatch(since: started, pointer: platform.capture.cursor())
 		var spent: [String] = []
-		let first = try await look(target)
-		// Every later look is of the window the first one found, even if another app comes to the front; when a step
-		// closes it, of the app's next main window (settleAfterStep).
-		var window = first.target.asTarget
+		// A wait for a window may begin with none: its app's window not there yet is what it waits for, never not_found.
+		let first: View?
+		do {
+			first = try await look(target)
+		} catch let none as RPCError where none.kind == .notFound && waitsForWindow && params.steps.isEmpty {
+			first = nil
+		}
+		let app = target?.app ?? first?.target.app.id
+		let appName = first?.target.app.name ?? app ?? "the app"
+		var aim = Aim(window: first?.target.asTarget ?? target, app: app, windowless: first == nil, waitsForWindow: waitsForWindow)
 		var view = first
+		/// The look the last step settled on: the act's first final read of its own window.
+		var settled: View?
 		var results: [StepResult] = []
 		var refused = false
 		for step in params.steps {
 			try Task.checkCancellation()
+			guard let current = view else {
+				results.append(.error(StepError(kind: .stale, message: "\(appName) has no window left: the step before closed its last one, so this step has nothing to act on")))
+				refused = true
+				spent.append("\(step.verb) refused: no window left")
+				break
+			}
 			let (at, looked) = (clock.now(), looks)
 			do {
 				if takeOver.armed { try checkTakeOver() }
-				let (route, verified, after) = try await run(step, view: view, state: params.state, held: held, foreground: foreground)
+				let (route, verified, after) = try await run(step, view: current, state: params.state, held: held, foreground: foreground)
 				results.append(.ran(route: route, verified: verified))
 				view = after
-				window = after.target.asTarget
+				settled = after
+				if let after { aim.window = after.target.asTarget } else { aim.closed = true }
 				spent.append("\(step.verb) \(route.rawValue)\(verified ? "" : " unverified") \(Int(clock.now() - at)) ms, \(looks - looked) looks")
 			} catch let error as RPCError where Self.stepKinds.contains(error.kind) {
 				results.append(.error(StepError(kind: error.kind, message: error.message)))
 				refused = true
+				settled = nil
 				spent.append("\(step.verb) refused \(error.kind.rawValue) \(Int(clock.now() - at)) ms")
 				break
 			} catch let taken as TakenOver {
@@ -335,54 +363,147 @@ public actor UIEngine {
 				break
 			}
 		}
-		if refused {
-			// A step refused because it closed the app's last window ends the call with that not_found, in its words.
-			view = try await settleAfterStep(view.target)
-		} else if params.steps.isEmpty {
-			view = try await settle(window)
+
+		var read = try await final(&aim, reuse: refused ? nil : settled)
+		// A set holds: the final view is read again setHoldMs after the first, where an app that took the value back (the
+		// Finder's name field outside its rename mode shows the new name, then the old one, and renames nothing) answers
+		// false. The hold is waited out even when the window closed: a value that cannot be read after it is not verified.
+		let sets = params.steps.indices.filter { index in
+			guard case .set = params.steps[index], index < results.count, case .ran(_, true) = results[index] else { return false }
+			return true
+		}
+		if !sets.isEmpty {
+			try await sleep(timing.setHoldMs)
+			read = try await final(&aim)
 		}
 		var outcome: ExpectOutcome?
 		let expectAt = clock.now()
 		if let expect = params.expect, !refused {
-			let settled = view
 			let until = clock.now() + Double(expect.timeoutMs ?? Limits.defaultExpectMs)
 			while true {
-				if holds(expect, view) {
+				// A window expect reads the app's main window; any other, the act's window.
+				if holds(expect, waitsForWindow ? read.front : read.own) {
 					outcome = .met
 					break
 				}
-				if clock.now() >= until {
+				// A window that closed shows nothing again: what it held is gone, and what it did not hold never comes.
+				if aim.closed || clock.now() >= until {
 					outcome = .unmet
 					break
 				}
-				try await sleep(min(timing.expectPollMs, max(1, until - clock.now())))
-				view = try await look(window)
+				// Poll with quick looks until one holds, the window closes or the time is up; then read the final view
+				// again, so a look caught mid-transition never decides the act.
+				while true {
+					try await sleep(min(timing.expectPollMs, max(1, until - clock.now())))
+					let looked = waitsForWindow ? try await frontLook(aim, settled: false) : try await aimed(&aim, settled: false)
+					if aim.closed || clock.now() >= until || holds(expect, looked) { break }
+				}
+				read = try await final(&aim)
 			}
-			// A poll can meet the expect mid-transition: the state handed back is the window once it settles.
-			if view.fingerprint != settled.fingerprint { view = try await settle(window) }
 			spent.append("expect \(outcome!.rawValue) \(Int(clock.now() - expectAt)) ms")
 		}
-		// A state keeps its image's hash, for a later point with no element under it.
-		view = await framed(view)
-		let state = store.add(view)
-		if let trace = timing.trace {
-			let app = view.target.app.id
-			let each = looks > 0 ? Int(lookMs / Double(looks)) : 0
-			trace("ui.act \(app): \(Int(clock.now() - started)) ms; \(spent.joined(separator: "; ")); \(looks) looks, \(each) ms each, \(Int(frameMs)) ms of image hashes")
+		let own = read.own
+		for index in sets {
+			guard case .set(let ref, let value) = params.steps[index], case .ran(let route, _) = results[index] else { continue }
+			if own.map({ setHolds(ref, value, $0) }) != true { results[index] = .ran(route: route, verified: false) }
 		}
-		return UiActResult(steps: results, state: state, changed: first.fingerprint != view.fingerprint, expect: outcome)
+		// A met window expect answers the window that met it; every other act answers its own window.
+		guard !aim.closed, let answered = waitsForWindow && outcome == .met ? read.front : own else {
+			trace(app ?? "the app in front", since: started, spent)
+			return UiActResult(steps: results, state: nil, window: "closed", changed: true, expect: outcome)
+		}
+		// A state keeps its image's hash, for a later point with no element under it.
+		let answer = await framed(answered)
+		let state = store.add(answer)
+		trace(answer.target.app.id, since: started, spent)
+		return UiActResult(steps: results, state: state, changed: first.map { $0.fingerprint != answer.fingerprint } ?? true, expect: outcome)
+	}
+
+	/// Tells timing.trace where the act's time went.
+	func trace(_ app: String, since started: Double, _ spent: [String]) {
+		guard let trace = timing.trace else { return }
+		let each = looks > 0 ? Int(lookMs / Double(looks)) : 0
+		trace("ui.act \(app): \(Int(clock.now() - started)) ms; \(spent.joined(separator: "; ")); \(looks) looks, \(each) ms each, \(Int(frameMs)) ms of image hashes")
+	}
+
+	/// Where an act's looks go after its first. Every later look is of the window the first one found, even if another
+	/// app comes to the front; once a step closes it, of the app's next main window (follow); once the app has no
+	/// window left, of none, and the act answers window "closed". A wait that began with no window keeps its target: it
+	/// never follows and never ends as closed.
+	struct Aim {
+		var window: Target?
+		/// The act's app: a window expect reads its main window, and a closed window hands the act to its next one.
+		let app: String?
+		var closed = false
+		let windowless: Bool
+		let waitsForWindow: Bool
+
+		init(window: Target?, app: String?, windowless: Bool, waitsForWindow: Bool) {
+			self.window = window
+			self.app = app
+			self.windowless = windowless
+			self.waitsForWindow = waitsForWindow
+		}
+
+		/// Where a window expect looks: the app's main window, whichever it is now, never the window the act aimed at.
+		var front: Target? { app.map { Target(app: $0, window: nil) } }
+	}
+
+	/// The act's own window, settled or one look: the aimed one, or the app's next main window once it closed (which
+	/// the act then follows); nil when none is left.
+	func aimed(_ aim: inout Aim, settled: Bool) async throws -> View? {
+		if aim.closed { return nil }
+		let window = aim.window
+		do {
+			return settled ? try await settle(window) : try await look(window)
+		} catch let none as RPCError where none.kind == .notFound {
+			if aim.windowless { return nil }
+			guard let app = aim.app else { throw none }
+			guard let next = try await follow(app, settled: settled) else {
+				aim.closed = true
+				return nil
+			}
+			aim.window = next.target.asTarget
+			return next
+		}
+	}
+
+	/// The app's main window, settled or one look; nil when the app shows none.
+	func frontLook(_ aim: Aim, settled: Bool) async throws -> View? {
+		let front = aim.front
+		do {
+			return settled ? try await settle(front) : try await look(front)
+		} catch let none as RPCError where none.kind == .notFound {
+			return nil
+		}
+	}
+
+	/// The act's final view, read after its last settle: its own window, and for a window expect the app's main window,
+	/// each settled. Every verdict of the act reads this one view: a set's hold, the expect, and the state it answers. A
+	/// look that is not final (a poll's) only says when to read it again. The first read takes the look the last step
+	/// settled on, when one did.
+	func final(_ aim: inout Aim, reuse: View? = nil) async throws -> (own: View?, front: View?) {
+		let own: View?
+		if let reuse { own = reuse } else { own = try await aimed(&aim, settled: true) }
+		guard aim.waitsForWindow, !aim.closed, aim.window?.window != nil else { return (own, own) }
+		return (own, try await frontLook(aim, settled: true))
+	}
+
+	/// Whether a set's value is still what it set in the act's final view: a switch's, checkbox's or radio's checked
+	/// flag, else the element's value.
+	func setHolds(_ ref: String, _ value: String, _ view: View) -> Bool {
+		guard let handle = store.handle(ref), let node = view.node(handle) else { return false }
+		if ["switch", "checkbox", "radio"].contains(node.role) { return (value == "on") == node.flags.contains(.checked) }
+		return node.value == value
 	}
 
 	/// The kinds a step's refusal carries; any other failure fails the whole call.
 	static let stepKinds: Set<ErrorKind> = [.notFound, .invalid, .timeout, .denied, .limit, .unsupported, .stale, .refused]
 
-	/// How a step's effect is checked once it settled: a readback, or a change in the window.
+	/// How a step's effect is checked once it settled: a readback, or a change in the window (a window that closed is
+	/// one). A set's readback is held again on the act's final view (setHolds).
 	enum Check {
 		case readback(@Sendable () -> Bool)
-		/// A readback that must still hold a moment after the settle: a set value an app takes into the field and then
-		/// throws away (Finder's name field outside its rename mode shows the new name, then the old one, and renames
-		/// nothing) is not the step's effect.
-		case lasting(@Sendable () -> Bool)
 		case change
 	}
 
@@ -396,8 +517,8 @@ public actor UIEngine {
 	}
 
 	/// Checks a step against the look it runs on, runs it by the first route that can, settles, and checks its effect.
-	/// Answers the route, whether the effect showed, and the settled look.
-	func run(_ step: Step, view: View, state: String?, held: View?, foreground: Bool) async throws -> (Route, Bool, View) {
+	/// Answers the route, whether the effect showed, and the settled look: nil when the step closed the app's last window.
+	func run(_ step: Step, view: View, state: String?, held: View?, foreground: Bool) async throws -> (Route, Bool, View?) {
 		let target = view.target
 		if case .nav(let nav) = step {
 			if case .off(let reason) = platform.navFeature { throw RPCError.unsupported("nav \(nav.rawValue): ui.nav is off here: \(reason)") }
@@ -440,7 +561,7 @@ public actor UIEngine {
 				semantic(node!.settable ? nil : refused) {
 					try self.ax.setValue(value, on: element!)
 					let ax = self.ax
-					return secure ? .readback { false } : .lasting { ax.value(element!) == value }
+					return secure ? .readback { false } : .readback { ax.value(element!) == value }
 				},
 			]
 
@@ -605,7 +726,7 @@ public actor UIEngine {
 	/// writes 300 ms on), so the act's expect waits for it up to its timeout, and no other route sends the step again,
 	/// which would press a button or submit a form twice. When the one route left is one the call does not allow, the
 	/// step is refused denied (the call can allow it); when no route reaches it here, unsupported.
-	func ladder(_ step: Step, view: View, _ attempts: [Attempt]) async throws -> (Route, Bool, View) {
+	func ladder(_ step: Step, view: View, _ attempts: [Attempt]) async throws -> (Route, Bool, View?) {
 		var reasons: [String] = []
 		var denied = false
 		for attempt in attempts {
@@ -633,13 +754,8 @@ public actor UIEngine {
 			switch check {
 			case .readback(let holds):
 				return (attempt.route, holds(), after)
-			case .lasting(let holds):
-				guard holds() else { return (attempt.route, false, after) }
-				try await sleep(timing.lastingMs)
-				guard holds() else { return (attempt.route, false, try await settle(after.target.asTarget)) }
-				return (attempt.route, true, after)
 			case .change:
-				return (attempt.route, view.fingerprint != after.fingerprint, after)
+				return (attempt.route, after.map { view.fingerprint != $0.fingerprint } ?? true, after)
 			}
 		}
 		let words = "no route could \(step.verb) here. " + reasons.joined(separator: "; ")
@@ -736,17 +852,27 @@ public actor UIEngine {
 	// MARK: settle and expect
 
 	/// The settled look after a step: of the step's window, or, when the step closed it (super+w on its last tab), of
-	/// the app's next main window, which the rest of the act follows, as a nav step follows the front window. With no
-	/// window left the step is refused not_found. (Once UiActResult.state is optional, this answers window "closed".)
-	func settleAfterStep(_ target: ResolvedTarget) async throws -> View {
+	/// the app's next main window, which the rest of the act follows, as a nav step follows the front window. nil when
+	/// the app has no window left: the act then answers window "closed".
+	func settleAfterStep(_ target: ResolvedTarget) async throws -> View? {
 		do {
 			return try await settle(target.asTarget)
 		} catch let error as RPCError where error.kind == .notFound {
-			do {
-				return try await settle(Target(app: target.app.id, window: nil))
-			} catch let next as RPCError where next.kind == .notFound {
-				throw RPCError.notFound("\(target.app.id) has no window left: the step closed window \(target.window.id), and no other is open (\(next.message))")
+			return try await follow(target.app.id, settled: true)
+		}
+	}
+
+	/// The app's main window once the act's window closed, settled or one look; nil when the app is running with no
+	/// window left. An app that quit has nothing to follow, and is not_found in words.
+	func follow(_ app: String, settled: Bool) async throws -> View? {
+		let next = Target(app: app, window: nil)
+		do {
+			return settled ? try await settle(next) : try await look(next)
+		} catch let none as RPCError where none.kind == .notFound {
+			guard platform.workspace.running(app) else {
+				throw RPCError.notFound("\(app) is no longer running: the act's window closed and the app quit (\(none.message))")
 			}
+			return nil
 		}
 	}
 
@@ -765,24 +891,30 @@ public actor UIEngine {
 	}
 
 	/// The expect holds in this look. text: some node's name, value or desc holds it (never a secure field's value). ref:
-	/// the element is there. Both: that element's name, value or desc holds the text. gone turns each around.
-	func holds(_ expect: Expect, _ view: View) -> Bool {
+	/// the element is there. Both: that element's name, value or desc holds the text. window: the window's title holds
+	/// its title and its role is its role (absent is "window"). gone turns each around. No look (no window) shows
+	/// nothing, so only a gone expect holds there.
+	func holds(_ expect: Expect, _ view: View?) -> Bool {
 		func has(_ node: RawNode, _ text: String) -> Bool {
 			node.name?.contains(text) == true || node.desc?.contains(text) == true
 				|| (!node.flags.contains(.secure) && node.value?.contains(text) == true)
 		}
-		let seen: Bool
+		let seen = view.map { shows(expect, $0, has) } ?? false
+		return expect.gone == true ? !seen : seen
+	}
+
+	/// What an expect looks for is in this look, gone or not.
+	func shows(_ expect: Expect, _ view: View, _ has: (RawNode, String) -> Bool) -> Bool {
+		if let wanted = expect.window {
+			let shown = view.target.window
+			return (wanted.title.map { shown.title?.contains($0) == true } ?? true) && (wanted.role.map { (shown.role ?? "window") == $0 } ?? true)
+		}
 		if let ref = expect.ref {
 			let handle = store.handle(ref)!
-			if let node = view.node(handle) {
-				seen = expect.text.map { has(node, $0) } ?? true
-			} else {
-				seen = expect.text == nil && view.truncated && ax.exists(handle)
-			}
-		} else {
-			seen = view.nodes.contains { has($0, expect.text!) }
+			if let node = view.node(handle) { return expect.text.map { has(node, $0) } ?? true }
+			return expect.text == nil && view.truncated && ax.exists(handle)
 		}
-		return expect.gone == true ? !seen : seen
+		return view.nodes.contains { has($0, expect.text!) }
 	}
 
 	func sleep(_ ms: Double) async throws {

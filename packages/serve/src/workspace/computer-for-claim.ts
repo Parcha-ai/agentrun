@@ -309,6 +309,7 @@ async function providerLaunch(
 ): Promise<LaunchedComputer & { machine: string; hello: ComputerSaid["hello"]; watch?: WatchOf }> {
   const older = await releaseOlder(provider, claim.runId, claim.epoch, signal ? { signal } : {});
   if (!older.ok) throw new Error(older.error.message);
+  // The claim is the request: a retry of this launch under the same epoch gets the computer it made, never a second.
   const created = await provider.create(spec, { requestId: claimRequestId(claim), ...(signal ? { signal } : {}) });
   if (!created.ok) throw new Error(created.error.message);
   const ref = { id: created.value.id, name: created.value.name };

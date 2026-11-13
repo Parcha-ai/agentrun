@@ -231,6 +231,47 @@ export const COMPUTER_TOOL_SCHEMAS: { readonly [tool in "computer_observe" | "co
           "ref": {
             "type": "string"
           },
+          "window": {
+            "type": "object",
+            "properties": {
+              "title": {
+                "type": "string"
+              },
+              "role": {
+                "enum": [
+                  "button",
+                  "cell",
+                  "checkbox",
+                  "combobox",
+                  "dialog",
+                  "generic",
+                  "group",
+                  "heading",
+                  "image",
+                  "link",
+                  "list",
+                  "listitem",
+                  "menu",
+                  "menuitem",
+                  "progressbar",
+                  "radio",
+                  "row",
+                  "scrollarea",
+                  "searchbox",
+                  "slider",
+                  "switch",
+                  "tab",
+                  "table",
+                  "text",
+                  "textbox",
+                  "toolbar",
+                  "window"
+                ],
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          },
           "gone": {
             "type": "boolean"
           },

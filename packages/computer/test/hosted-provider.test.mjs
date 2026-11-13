@@ -9,10 +9,10 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { checkLifetime } from "../dist/index.js";
+import { checkLifetime, computerNameFor as nameOf } from "../dist/index.js";
 import { DAEMON, DESKTOP_GROUPS, deferred, fakeHost, LINUX_GROUPS, VERSION } from "./fake-host.mjs";
 
-const { hostedProvider, nameOf } = await import("../dist/hosted/provider.js");
+const { hostedProvider } = await import("../dist/hosted/provider.js");
 const { hostedCommands } = await import("../dist/hosted/scripts.js");
 
 const COMPUTER = "agentrun.computer";
@@ -288,6 +288,18 @@ test("a retry of a request whose computer ended, stopped or was deleted is refus
 	const other = await provider.create({ ...SPEC, labels: { team: "a" } }, { requestId: "other" });
 	assert.equal(other.error?.code, "exists");
 	assert.match(other.error.message, /with another spec/);
+	assert.equal(fake.creates(), 1, "never a second machine under one name");
+});
+
+test("a retry is held to the size its computer reads back where the vendor takes one in a spec: another is refused as exists", async () => {
+	const { provider, fake } = setup({}, { facts: { specFields: ["cpus", "memoryMb"] }, size: { cpus: 2, memoryMb: 4096 } });
+	const spec = { ...SPEC, cpus: 2, memoryMb: 4096 };
+	const ref = made(await provider.create(spec, { requestId: "sized" }));
+	const bigger = await provider.create({ ...spec, cpus: 4 }, { requestId: "sized" });
+	assert.equal(bigger.error?.code, "exists");
+	assert.match(bigger.error.message, new RegExp(`${ref.name} was made for this request with another spec, so it is not returned: cpus: asked 4, read back 2`));
+	assert.equal(made(await provider.create(spec, { requestId: "sized" })).id, ref.id, "the same spec gets the same computer");
+	assert.equal(made(await provider.create(SPEC, { requestId: "sized" })).id, ref.id, "a size the spec leaves out is the vendor's default");
 	assert.equal(fake.creates(), 1, "never a second machine under one name");
 });
 
@@ -859,7 +871,7 @@ test("a host that takes a spec's user: attach reads the user back from inside, n
 	assert.equal(made(again).id, ref.id, "the same request finds the same computer");
 	const other = await provider.create({ ...SPEC, user: "2000:2000" }, { requestId });
 	assert.equal(other.error?.code, "exists");
-	assert.match(other.error.message, /user: asked 2000:2000, read back 1000:1000/);
+	assert.match(other.error.message, /user: asked "2000:2000", read back "1000:1000"/);
 	const m = only(fake);
 	m.box.uid = 0;
 	const root = await provider.attach({ id: ref.id });
