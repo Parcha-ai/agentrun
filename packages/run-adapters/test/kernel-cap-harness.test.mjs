@@ -222,6 +222,14 @@ test("the previous request stands only for a next request bounded the same way: 
   assert.equal(await prices(false, true), uncached.holdUsd, "a bytes previous, a counted next: a cache miss");
 });
 
+test("a request that is no answer of the turn (a title, a summary, a child's) is priced as a cache miss, and the turn's own from the previous request", async () => {
+  const cold = beforeRequestOf({ capUsd: () => 1, modelOf: () => SONNET, now: () => T0 });
+  const uncached = await cold(BIG_ASK);
+  const warm = beforeRequestOf({ capUsd: () => 1, modelOf: () => SONNET, now: () => T0, previousOf: () => WARM });
+  assert.ok((await warm(BIG_ASK)).holdUsd < uncached.holdUsd, "the turn's own: priced from the cache");
+  assert.equal((await warm({ ...BIG_ASK, unanswered: true })).holdUsd, uncached.holdUsd, "no answer of the turn: a cache miss");
+});
+
 // A request carrying the wrap-up's note is judged as its client sent it first (inputTokensMaxWithoutNote): refused so, it
 // is refused; admitted so, it goes with the note when the note's bytes fit too, and otherwise without it (withoutNote).
 // The note never refuses what fits. 10,000 tokens without the note, 20,000 with it, each priced at Sonnet's cache write

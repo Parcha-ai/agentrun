@@ -1,7 +1,7 @@
-// A side call on the session's own model (a title, a summary: a request the policy reads as no answer of the turn,
-// ProviderPolicy.answers) is a side call to the runner as one on another model is: its request carries `side`, so the
-// cap never prices the session's next request from it (expected pricing's previous request) and never counts it a typical
-// answer. The turn's answer request carries none. No network: the provider is a scripted fetch.
+// A request on the session's own model that is no answer of the turn (a title, a summary, a child's: the policy's
+// ProviderPolicy.answers reads it so) carries `unanswered` to the runner, so the cap never prices the session's next
+// request from it (expected pricing's previous request). It is not `side`: that one is left out of a turn's cost.
+// The turn's answer request carries neither. No network: the provider is a scripted fetch.
 import assert from 'node:assert/strict';
 import { request } from 'node:http';
 import { test } from 'node:test';
@@ -38,13 +38,15 @@ async function asked(t, body) {
   return seen[0];
 }
 
-test("a side call on the session's own model (no answer of the turn) is asked of the runner as a side call", async (t) => {
-  const side = await asked(t, { title: 'name this chat' });
-  assert.equal(side.model, 'session-model', 'on the session model');
-  assert.equal(side.side, true, `a side call: ${JSON.stringify(side)}`);
+test("a request on the session's own model that is no answer of the turn is asked of the runner as unanswered, not as a side call", async (t) => {
+  const other = await asked(t, { title: 'name this chat' });
+  assert.equal(other.model, 'session-model', 'on the session model');
+  assert.equal(other.unanswered, true, `no answer of the turn: ${JSON.stringify(other)}`);
+  assert.equal(other.side, undefined, `still the turn's to book, so no side call: ${JSON.stringify(other)}`);
 });
 
-test("the turn's answer request on the session's model is no side call", async (t) => {
+test("the turn's answer request on the session's model is neither unanswered nor a side call", async (t) => {
   const answer = await asked(t, { tools: true });
+  assert.equal(answer.unanswered, undefined, `the turn's own: ${JSON.stringify(answer)}`);
   assert.equal(answer.side, undefined, `the turn's own: ${JSON.stringify(answer)}`);
 });

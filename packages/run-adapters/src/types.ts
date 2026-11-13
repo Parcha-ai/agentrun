@@ -158,6 +158,9 @@ export interface ModelRequest {
   /** A side call, never its turn's own: on another model than the session's (a client's title, a summary), or the
    *  host's own request beside the harness's (`host`). */
   side?: true;
+  /** On the session's model but no answer of the turn (a title, a summary, a child's request): booked as any request, but
+   *  never the session's previous request for the cap's expected pricing, read or replaced. */
+  unanswered?: true;
   /** It carries the host's note (ModelPort.note) in its body: the note is delivered once this request is admitted.
    *  `inputTokensMaxWithoutNote`: its input measured as its client sent it, before the note was placed. */
   noted?: true;

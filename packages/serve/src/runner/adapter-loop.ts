@@ -1118,6 +1118,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           const asked = askedFor.get(turn);
           askedFor.delete(turn);
           if (!asked?.own || asked.bound === undefined || usage.cut || (how !== undefined && how.end !== "answered")) return;
+          // A conversation only grows between its own requests, so a smaller one on the same model is another's (a child of
+          // the run, whose requests the proxy cannot tell from the root's): it never replaces the session's previous request.
+          // After the cache goes cold the previous request prices nothing (price.ts), so a compaction costs only that window.
+          if (previous?.model === asked.model && previous.counted === asked.counted && asked.bound < previous.boundTokens) return;
           const cachedTokens = (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0);
           if (!(usage.input >= 0 && cachedTokens >= 0 && usage.input + cachedTokens > 0)) return;
           previous = { model: asked.model, cachedTokens, inputTokens: usage.input, boundTokens: asked.bound, counted: asked.counted, endedAt: (specNow?.runCap?.now ?? Date.now)() };
@@ -1282,7 +1286,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         };
         const beforeRequest: BeforeRequest = async (request) => {
           // Kept until it ends, so its answer can be the session's previous request (requestEnded).
-          askedFor.set(request.turn, { model: request.model, ...(request.inputTokensMax === undefined ? {} : { bound: request.inputTokensMax }), counted: request.inputTokensCounted === true, own: request.host === undefined && !request.side });
+          askedFor.set(request.turn, { model: request.model, ...(request.inputTokensMax === undefined ? {} : { bound: request.inputTokensMax }), counted: request.inputTokensCounted === true, own: request.host === undefined && !request.side && !request.unanswered });
           // A run whose booked spend passed its cap sends nothing more: it ends in the cap's words (overCap), never paused,
           // whatever else would pause it (a paid call's refusal, pendingPause).
           const over = await overCap();

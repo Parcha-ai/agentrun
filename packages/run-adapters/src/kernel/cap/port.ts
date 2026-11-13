@@ -48,11 +48,11 @@ export function beforeRequestOf(options: BeforeRequestOptions): BeforeRequest {
     // any paid step, so every refusable step after it sees it. Only a figure is money: one that is not goes to the rule.
     if (request.paid?.owed && isFigure(request.feeUsd ?? 0)) return { holdUsd: request.feeUsd ?? 0 };
     const model = options.modelOf(request.model, request.route) ?? unpriced(request.model);
-    // A request the host sends beside the harness's own (its host label: a learned workflow's node), or a side call (a
-    // title, a summary), is another conversation's prompt: nothing of the session's cache is read for it, so it is priced
-    // as a cache miss.
+    // A request the host sends beside the harness's own (its host label: a learned workflow's node), a side call, or one
+    // that is no answer of the turn (a title, a summary, a child's) is another conversation's prompt: nothing of the
+    // session's cache is read for it, so it is priced as a cache miss.
     // Its bound must be measured as the next request's is (a provider's count, or bytes): their difference is no growth.
-    const before = request.host === undefined && !request.side ? options.previousOf?.(request.model) : undefined;
+    const before = request.host === undefined && !request.side && !request.unanswered ? options.previousOf?.(request.model) : undefined;
     const previous = before && (before.counted === true) === (request.inputTokensCounted === true) ? before : undefined;
     const asked: ModelCapRequest = {
       kind: "model",
