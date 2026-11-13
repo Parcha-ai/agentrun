@@ -5,7 +5,8 @@
 The core checks must pass: hello, ping, exec, files, apps, the socket's peer check, and each grant-bound method either
 working or refused in words that name the grant. With the grants in place (seed-tcc.sh), it also drives TextEdit in the
 background: open a document without bringing it forward, observe it, type into it, and expect the text. Then the ui
-fixture (UIFixture.app, when installed): its elements, an expect, and its canvas, which only foreground input reaches.
+fixture (UIFixture.app, when installed): its elements, an expect, and its canvas, which only foreground input reaches;
+and input.actions on the keyboard and mouse against the same app as the desktop input fixture (--input-log).
 Those live results are reported, and fail the run only with SMOKE_STRICT_LIVE=1. A summary goes to $GITHUB_STEP_SUMMARY.
 """
 
@@ -76,6 +77,12 @@ def core(c):
     vague = [n for n, f in features.items() if f is not True and len((f or {}).get("off", "")) < 20]
     record("core", "every feature off says why", not vague, ", ".join(vague))
     record("core", "hello.screen", bool(h.get("screen")), json.dumps(h.get("screen")))
+    groups = h.get("groups") or []
+    desktop = ["screen", "input.pointer", "input.keys"]
+    record("core", "hello.groups make a desktop (screen, input.pointer, input.keys)", all(g in groups for g in desktop), ", ".join(groups))
+    refused = (c.call("input.actions", {"actions": [{"type": "click", "at": [1, 1]}, {"type": "key", "keys": ["Hyper_Q"]}]}).get("result") or {})
+    failed = refused.get("failed") or {}
+    record("core", "input.actions refuses a batch with an unknown key, running nothing", refused.get("done") == 0 and failed.get("index") == 1 and failed.get("kind") == "invalid", json.dumps(refused))
     record("core", "ping", c.call("ping").get("result") == {})
 
     run = c.call("exec.run", {"argv": ["/bin/echo", "hi"], "timeoutMs": 5000}).get("result") or {}
@@ -217,6 +224,57 @@ def fixture(c):
     c.call("apps.terminate", {"id": FIXTURE})
 
 
+def events(c, log):
+    read = c.call("files.read", {"path": log}).get("result")
+    if not read:
+        return []
+    lines = base64.b64decode(read.get("data", "")).decode(errors="replace").split("\n")[:-1]
+    return [json.loads(line) for line in lines if line.strip()]
+
+
+def raw_input(c):
+    """input.actions on the keyboard and mouse, against the desktop input fixture (UIFixture.app --input-log): a click
+    lands where asked, typed text arrives, and nothing is typed unless the fixture is in front."""
+    app = "/Applications/UIFixture.app"
+    if not os.path.isdir(app):
+        record("input", f"skipped: {app} is not installed", True)
+        return
+    log = os.path.join(home, "smoke-input.jsonl")
+    if os.path.exists(log):
+        os.remove(log)
+    opened = c.call("exec.run", {"argv": ["/usr/bin/open", "-n", "-a", app, "--args", "--input-log", log], "timeoutMs": 30000}).get("result") or {}
+    ready = None
+    for _ in range(50):
+        ready = next((e for e in events(c, log) if e.get("event") == "ready"), None)
+        if ready:
+            break
+        time.sleep(0.2)
+    record("input", "the input fixture comes to the front and logs ready", ready is not None, json.dumps(ready or opened))
+    if not ready:
+        return
+    try:
+        front = (c.call("apps.list").get("result") or {}).get("foreground")
+        if front != FIXTURE:
+            record("input", "the fixture is in front before any input", False, f"front is {front}: no input sent")
+            return
+        x, y, w, h = ready["bounds"]
+        at = [x + w // 4 + 1, y + h // 2 + 1]
+        clicked = c.call("input.actions", {"actions": [{"type": "click", "at": at}]}).get("result") or {}
+        typed = c.call("input.actions", {"actions": [{"type": "type", "text": "Hello, agentrun! 123"}]}).get("result") or {}
+        got = []
+        for _ in range(25):
+            got = events(c, log)
+            if "".join(e.get("text", "") for e in got if e.get("event") == "text") == "Hello, agentrun! 123":
+                break
+            time.sleep(0.2)
+        presses = [[e["event"], e["button"], *e["at"]] for e in got if e.get("event") in ("down", "up")]
+        record("input", "input.actions click lands where asked", clicked == {"done": 1} and presses == [["down", "left", *at], ["up", "left", *at]], f"{json.dumps(clicked)} {presses}")
+        text = "".join(e.get("text", "") for e in got if e.get("event") == "text")
+        record("input", "input.actions type arrives exactly", typed == {"done": 1} and text == "Hello, agentrun! 123", f"{json.dumps(typed)} {text!r}")
+    finally:
+        c.call("exec.run", {"argv": ["/bin/kill", str(ready["pid"])], "timeoutMs": 10000})
+
+
 def peer_check():
     path = wait_for_socket()
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -244,6 +302,7 @@ def main():
         if grant_bound(c, features):
             live(c)
             fixture(c)
+            raw_input(c)
         else:
             record("live", "skipped: ui.tree is off (Accessibility is not granted)", True)
     finally:
@@ -258,7 +317,7 @@ def main():
         with open(summary, "a") as f:
             f.write("### Computerd smoke\n\n" + "\n".join(lines) + "\n")
     strict_live = os.environ.get("SMOKE_STRICT_LIVE") == "1"
-    failed = [r for r in results if not r[2] and (r[0] not in ("live", "fixture") or strict_live)]
+    failed = [r for r in results if not r[2] and (r[0] not in ("live", "fixture", "input") or strict_live)]
     print(f"{len(results) - len([r for r in results if not r[2]])} of {len(results)} checks passed")
     sys.exit(1 if failed else 0)
 

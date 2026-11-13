@@ -17,10 +17,12 @@ public struct MachineInfo: Sendable {
 	}
 }
 
-/// One connection's methods: hello and ping, exec, files and tar, screen, apps, and the ui group, over one Platform and
-/// one claim's Policy. A driver makes one per connection, so states, refs, images and tar streams are the connection's.
+/// One connection's methods: hello and ping, exec, files and tar, screen, input, apps, and the ui group, over one
+/// Platform and one claim's Policy. A driver makes one per connection, so states, refs, images and tar streams are the
+/// connection's.
 public final class Driver: Sendable {
-	public static let groups: [Group] = [.exec, .files, .screen, .apps, .ui]
+	/// In protocol.json's order. screen, input.pointer and input.keys make it a desktop (kinds.md).
+	public static let groups: [Group] = [.exec, .files, .screen, .inputPointer, .inputKeys, .apps, .ui]
 
 	let platform: Platform
 	let policy: Policy
@@ -80,6 +82,10 @@ public final class Driver: Sendable {
 		r.on("screen.shot", ScreenShotParams.self) { try await self.shot($0) }
 		r.on("screen.read", ScreenReadParams.self) { try await self.shots.read($0.id, offset: $0.offset) }
 		r.on("screen.watch", ScreenWatchParams.self) { try await self.watch.next($0, capture: self.platform.capture, shots: self.shots, clock: self.platform.clock) }
+
+		r.on("input.actions", InputActionsParams.self) { p in
+			try await InputBatch(platform: self.platform, policy: self.policy, groups: Self.groups).run(p.actions)
+		}
 
 		r.on("apps.list", Empty.self) { _ in self.apps() }
 		r.on("apps.launch", AppsLaunchParams.self) { p in

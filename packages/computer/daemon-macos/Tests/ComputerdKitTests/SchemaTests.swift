@@ -34,6 +34,43 @@ final class SchemaTests: XCTestCase {
 
 	static let data = Data("hello".utf8)
 
+	static var everyAction: [JSON] {
+		let text = """
+		[{"type":"move","at":[1,2]},{"type":"down","button":"right"},{"type":"up","button":"left"},
+		 {"type":"click","at":[3,4],"button":"middle","count":2,"keys":["shift"]},{"type":"drag","path":[[0,0],[5,5]],"button":"left","keys":["alt"]},
+		 {"type":"scroll","at":[1,1],"dx":1,"dy":-2.5,"unit":"px","keys":["ctrl"]},{"type":"key","keys":["ctrl","s"],"repeat":2},
+		 {"type":"hold","keys":["alt"],"ms":100},{"type":"type","text":"hi"},{"type":"tap","at":[1,1],"count":2},
+		 {"type":"long_press","at":[1,1],"ms":500},{"type":"swipe","path":[[1,1],[2,2]],"ms":300},{"type":"pinch","at":[1,1],"scale":1.5,"ms":300},
+		 {"type":"button","name":"back"},{"type":"wait","ms":10}]
+		"""
+		guard case .array(let list) = try! JSONDecoder().decode(JSON.self, from: Data(text.utf8)) else { return [] }
+		return list
+	}
+
+	/// The setting kinds' required groups, from kinds.md's table: | `desktop` | `desktop` | `screen`, ... | ... |.
+	static func requiredGroups(forMachineKind kind: String) throws -> [String] {
+		let text = try String(contentsOf: specDir.appendingPathComponent("kinds.md"), encoding: .utf8)
+		for line in text.split(separator: "\n") where line.hasPrefix("| `") {
+			let cells = line.split(separator: "|", omittingEmptySubsequences: false).map { $0.trimmingCharacters(in: .whitespaces) }
+			guard cells.count >= 5 else { continue }
+			let names = { (cell: String) in cell.split(separator: ",").map { $0.trimmingCharacters(in: CharacterSet(charactersIn: " `")) }.filter { !$0.isEmpty } }
+			if names(cells[2]).contains(kind) { return names(cells[3]) }
+		}
+		throw RPCError.notFound("kinds.md has no setting kind for machine kind \(kind)")
+	}
+
+	/// hello's groups make the kind it declares: a desktop Mac declares every group the desktop setting kind requires,
+	/// or a run that asks for a desktop is refused it (it was, on the mini: no input.pointer, input.keys).
+	func testHellosGroupsMakeItsDeclaredKind() throws {
+		let hello = Driver(platform: FakeOS().platform(), policy: Policy(), machine: MachineInfo(os: "macos", osVersion: nil, device: nil)).hello()
+		XCTAssertEqual(hello.kind, "desktop")
+		let required = try Self.requiredGroups(forMachineKind: hello.kind)
+		XCTAssertEqual(required, ["screen", "input.pointer", "input.keys"], "kinds.md's desktop row")
+		for group in required { XCTAssertTrue(hello.groups.map(\.rawValue).contains(group), "hello declares \(group)") }
+		let order = try Self.load("protocol.json")["groups"]?.arrayStrings ?? []
+		XCTAssertEqual(hello.groups.map(\.rawValue), order.filter { hello.groups.map(\.rawValue).contains($0) }, "in protocol.json's order")
+	}
+
 	static var cases: [Case] {
 		let point = Point(3, 4)
 		let rect = Rect(1, 2, 3, 4)
@@ -81,6 +118,10 @@ final class SchemaTests: XCTestCase {
 			Case(method: "screen.watch", params: [ScreenWatchParams(after: 0, waitMs: 1, maxWidth: 100, quality: 50), ScreenWatchParams(after: 0)], results: [
 				ScreenWatchResult(seq: 1, changed: true, id: "img1", size: 5, data: data, eof: true, format: "jpeg", frameWidth: 10, frameHeight: 10, width: 20, height: 20, cursor: point),
 				ScreenWatchResult(seq: 1, changed: false, width: 20, height: 20),
+			]),
+			// Every action of the schema's, touch too: the driver refuses those by group, after the schema takes them.
+			Case(method: "input.actions", params: [InputActionsParams(actions: .array(Self.everyAction))], results: [
+				InputActionsResult(done: 2), InputActionsResult(done: 0, failed: InputFailure(1, .invalid, "action 1: no")),
 			]),
 			Case(method: "apps.list", params: [Empty()], results: [
 				AppsListResult(apps: [App(id: "a", name: "A", version: "1")], foreground: "a"), AppsListResult(apps: [App(id: "a")], foreground: nil),
@@ -152,6 +193,7 @@ final class SchemaTests: XCTestCase {
 		let ours: [String: Int] = [
 			"maxLineBytes": Limits.maxLineBytes, "maxOutputBytes": Limits.maxOutputBytes, "maxChunkBytes": Limits.maxChunkBytes,
 			"maxListDepth": Limits.maxListDepth, "maxListEntries": Limits.maxListEntries, "maxBatchWaitMs": Limits.maxBatchWaitMs,
+			"maxActions": Limits.maxActions, "maxKeyRepeat": Limits.maxKeyRepeat,
 			"maxUiNodes": Limits.maxUiNodes, "maxSteps": Limits.maxSteps, "maxExpectMs": Limits.maxExpectMs,
 			"defaultExpectMs": Limits.defaultExpectMs, "maxSettleMs": Limits.maxSettleMs, "minImageEdge": Limits.minImageEdge,
 			"maxImageEdge": Limits.maxImageEdge, "defaultImageEdge": Limits.defaultImageEdge,

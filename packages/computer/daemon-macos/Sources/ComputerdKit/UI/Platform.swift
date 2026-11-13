@@ -35,8 +35,11 @@ public struct RawNode: Sendable {
 	public var settable: Bool
 	/// It takes typed text: a text field, a text area, a search field, an editable combo box.
 	public var textInput: Bool
+	/// A document's text (a text area): it takes an edit as one only through the app's text system, so typed keys go
+	/// before an accessibility insert.
+	public var keysFirst: Bool
 
-	public init(handle: ElementHandle, role: String, name: String? = nil, value: String? = nil, desc: String? = nil, identifier: String? = nil, frame: Rect?, parent: Int? = nil, flags: Set<UiFlag> = [], actions: [String] = [], settable: Bool = false, textInput: Bool = false) {
+	public init(handle: ElementHandle, role: String, name: String? = nil, value: String? = nil, desc: String? = nil, identifier: String? = nil, frame: Rect?, parent: Int? = nil, flags: Set<UiFlag> = [], actions: [String] = [], settable: Bool = false, textInput: Bool = false, keysFirst: Bool = false) {
 		self.handle = handle
 		self.role = role
 		self.name = name
@@ -49,6 +52,7 @@ public struct RawNode: Sendable {
 		self.actions = actions
 		self.settable = settable
 		self.textInput = textInput
+		self.keysFirst = keysFirst
 	}
 }
 
@@ -87,6 +91,8 @@ public protocol Accessibility: Sendable {
 	/// The platform's name for an element's default action (AXPress), and for opening its menu (AXShowMenu).
 	var pressAction: String { get }
 	var menuAction: String { get }
+	/// The platform's name for opening an item (AXOpen): an item that offers it (a Finder file) is renamed by keys.
+	var openAction: String { get }
 	/// Actions nearly every element lists, which do not make it worth showing in a compact view.
 	var incidentalActions: Set<String> { get }
 	/// The app and window a target names. Throws not_found for an app that is not running or a window it lacks.
@@ -190,6 +196,21 @@ public protocol InputRoute: Sendable {
 	func key(_ chord: KeyChord, in target: ResolvedTarget) async throws
 }
 
+/// The computer's own keyboard and mouse, for input.actions: what a person's hands do, landing on the app in front.
+/// Points are screen points. Each call is one event or a few; the batch paces them and keeps what is held.
+public protocol RawInput: Sendable {
+	/// Moves the pointer; with buttons held it drags them.
+	func move(to point: Point, held: Set<InputButton>) async throws
+	/// A press or a release where the pointer is, the clickState'th of a multiple click.
+	func button(_ button: InputButton, down: Bool, at point: Point, clickState: Int) async throws
+	/// dx and dy above 0 show what is right and below: in points, or in wheel clicks.
+	func scroll(at point: Point, dx: Double, dy: Double, pixels: Bool) async throws
+	/// A key down or up: a name in the key table or one printable character, with the modifiers held as they are.
+	func key(_ key: String, down: Bool) async throws
+	/// Text as the keyboard types it: newlines and tabs as their keys.
+	func type(_ text: String) async throws
+}
+
 /// Apps: list, launch, end.
 public protocol Workspace: Sendable {
 	/// apps.launch with background: true works here, or why not.
@@ -233,9 +254,11 @@ public struct Platform: Sendable {
 	public var foregroundFeature: Feature
 	/// The nav step works here, or why not.
 	public var navFeature: Feature
+	/// input.actions' keyboard and mouse. It is foreground input by nature, so foregroundFeature gates it too.
+	public var raw: any RawInput
 	public var clock: any Clock
 
-	public init(accessibility: any Accessibility, capture: any Capture, workspace: any Workspace, background: any InputRoute, backgroundFeature: Feature, foreground: any InputRoute, foregroundFeature: Feature, navFeature: Feature, clock: any Clock = SystemClock()) {
+	public init(accessibility: any Accessibility, capture: any Capture, workspace: any Workspace, background: any InputRoute, backgroundFeature: Feature, foreground: any InputRoute, foregroundFeature: Feature, navFeature: Feature, raw: any RawInput, clock: any Clock = SystemClock()) {
 		self.accessibility = accessibility
 		self.capture = capture
 		self.workspace = workspace
@@ -244,6 +267,7 @@ public struct Platform: Sendable {
 		self.foreground = foreground
 		self.foregroundFeature = foregroundFeature
 		self.navFeature = navFeature
+		self.raw = raw
 		self.clock = clock
 	}
 }

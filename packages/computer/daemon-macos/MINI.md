@@ -75,10 +75,13 @@ The script:
    - The socket's peer check.
    - TextEdit driven in the background.
    - The ui fixture, including its canvas click.
+   - `input.actions`: a click and typed text on the fixture's input window (`UIFixture --input-log`), read back from
+     its log.
 
    The last line is `PASS` or `FAIL`.
 
-`--conformance` then runs the protocol's ui conformance cases too (`scripts/ui-conformance.sh`, the same as CI). These
+`--conformance` then runs the protocol's ui and input conformance cases too (`scripts/ui-conformance.sh`, the same as
+CI; the input cases use the fixture's input window). These
 need Node 24; the script runs `npm ci` and builds `packages/computer`.
 
 Run the script again after every `git pull`. The second run skips the identity and the grants and prints PASS in a
@@ -110,7 +113,7 @@ Automation grant.
 | mac.notes.new-note | Notes | press Continue on a first-run sheet, then super+n, type a title and a line, in one call | the note's line, then its title in the list |
 | mac.safari.follow-link | Safari | open a local page in the background, press the "Quarterly report" link by its ref, then the toolbar's Back button by its ref | the linked page's heading, then the first page's link |
 | mac.finder.rename-file | Finder | open a folder in the background, show it as a list, select draft.txt by its element, then rename it: enter, type "final", enter in the background, else the same with Finder brought forward. A file's name is an item that opens, not a field, so the driver refuses a set on it. Each way is judged by the disk, and the notes say which one renamed it | the folder holds final.txt and other.txt |
-| mac.textedit.edit-number | TextEdit | open totals.txt in the background, select all and type the text with 42 (the window marks it Edited), then save with super+s (the mark goes) | the saved file is the new text, the other lines kept |
+| mac.textedit.edit-number | TextEdit | open totals.txt in the background, select all and type the text with 42, by keys first (the window marks it Edited), then save with super+s (the mark goes) | the saved file is the new text, the other lines kept |
 | mac.calendar.new-event | Calendar | press Add Event, then type a title into the quick event field and enter, in one call | the event's title on the calendar, and gone after Delete |
 
 ```sh

@@ -1,0 +1,260 @@
+import Foundation
+
+/// One input.actions call: the batch checked whole, then run on the computer's own keyboard and mouse in order until
+/// the first failure. Raw input takes the person's real pointer and lands on the app in front, so it is foreground
+/// input: it needs the same grant as ui's foreground route (Platform.foregroundFeature), the app in front must be one
+/// the owner's Policy allows, and a person who moves the pointer during a batch stops it (aborted), with what it held
+/// released.
+public struct InputBatch: Sendable {
+	let platform: Platform
+	let policy: Policy
+	let groups: [Group]
+
+	public init(platform: Platform, policy: Policy, groups: [Group]) {
+		self.platform = platform
+		self.policy = policy
+		self.groups = groups
+	}
+
+	public func run(_ raw: JSON) async throws -> InputActionsResult {
+		let (actions, failed) = InputCheck.check(raw, groups: groups)
+		if let failed { return InputActionsResult(done: 0, failed: failed) }
+		if actions.isEmpty { return InputActionsResult(done: 0) }
+		if case .off(let reason) = platform.foregroundFeature {
+			throw RPCError.denied("input.actions is this computer's own keyboard and mouse, and \(reason)")
+		}
+		guard let screen = platform.capture.screenInfo() else { throw RPCError.unsupported("input.actions: no display is attached") }
+		let run = InputRun(platform: platform, policy: policy, screen: screen)
+		return try await InputGate.shared.serial { try await run.run(actions) }
+	}
+}
+
+/// One batch at a time on this computer: two interleaved would be one garbled gesture.
+actor InputGate {
+	static let shared = InputGate()
+	private var busy = false
+	private var waiting: [CheckedContinuation<Void, Never>] = []
+
+	func serial<T: Sendable>(_ body: @Sendable () async throws -> T) async throws -> T {
+		if busy {
+			await withCheckedContinuation { waiting.append($0) }
+		} else {
+			busy = true
+		}
+		defer {
+			if waiting.isEmpty { busy = false } else { waiting.removeFirst().resume() }
+		}
+		return try await body()
+	}
+}
+
+/// A failure of one action: its kind and why.
+struct InputStop: Error {
+	var kind: ErrorKind
+	var why: String
+
+	init(_ kind: ErrorKind, _ why: String) {
+		self.kind = kind
+		self.why = why
+	}
+}
+
+/// A batch running: the screen in pixels, what it pressed and has not released, and where it left the pointer.
+final class InputRun: @unchecked Sendable {
+	/// How far, in pixels, the pointer may sit from where the batch left it before a person is taken to have moved it.
+	static let takeOverPixels = 3.0
+	/// The longest leg one drag event moves, in points; a longer leg is cut into pieces about 8 ms apart.
+	static let dragStepPoints = 20.0
+
+	let platform: Platform
+	let policy: Policy
+	let raw: any RawInput
+	let clock: any Clock
+	let width: Int
+	let height: Int
+	let scale: Double
+	var buttons: [InputButton] = []
+	var keys: [String] = []
+	/// Where the batch's last pointer action left the pointer, in pixels.
+	var left: Pixel?
+
+	init(platform: Platform, policy: Policy, screen: ScreenInfo) {
+		self.platform = platform
+		self.policy = policy
+		raw = platform.raw
+		clock = platform.clock
+		scale = screen.scale > 0 ? screen.scale : 1
+		width = Int((screen.width * scale).rounded())
+		height = Int((screen.height * scale).rounded())
+	}
+
+	func run(_ actions: [InputAction]) async throws -> InputActionsResult {
+		for (i, a) in actions.enumerated() {
+			do {
+				try Task.checkCancellation()
+				try guardFront()
+				try guardTakeOver()
+				try await run(a)
+			} catch let stop as InputStop {
+				await release()
+				return InputActionsResult(done: i, failed: InputFailure(i, stop.kind, "action \(i) (\(a.type)): \(stop.why)"))
+			} catch is CancellationError {
+				await release()
+				throw RPCError(.aborted, "input.actions was cancelled in action \(i); what the batch held was released")
+			} catch let error as RPCError {
+				await release()
+				return InputActionsResult(done: i, failed: InputFailure(i, error.kind, "action \(i) (\(a.type)): \(error.message)"))
+			} catch {
+				await release()
+				return InputActionsResult(done: i, failed: InputFailure(i, .unsupported, "action \(i) (\(a.type)): \(error)"))
+			}
+		}
+		return InputActionsResult(done: actions.count)
+	}
+
+	/// Raw input lands on the app in front: with an owner's list of apps, that app must be on it.
+	func guardFront() throws {
+		guard let allowed = policy.apps else { return }
+		let front = platform.workspace.list().foreground
+		guard let front, policy.allows(front) else {
+			throw InputStop(.denied, "input goes to the app in front, \(front ?? "none"), and this computer's owner allows Computerd to touch only \(allowed.joined(separator: ", "))")
+		}
+	}
+
+	/// A person moving the pointer during a batch takes the computer back: the batch stops before its next action.
+	func guardTakeOver() throws {
+		guard let left, let now = platform.capture.cursor() else { return }
+		if abs(now.x - Double(left.x)) > Self.takeOverPixels || abs(now.y - Double(left.y)) > Self.takeOverPixels {
+			throw InputStop(.aborted, "someone moved the pointer to (\(Int(now.x)), \(Int(now.y))) while the batch ran (it left it at (\(left.x), \(left.y))): the person has the computer, so input.actions stopped; observe and try again")
+		}
+	}
+
+	func inside(_ p: Pixel) throws {
+		guard p.x >= 0, p.y >= 0, p.x < width, p.y < height else {
+			throw InputStop(.invalid, "(\(p.x), \(p.y)) is outside the \(width)x\(height) screen")
+		}
+	}
+
+	func point(_ p: Pixel) -> Point { Point(Double(p.x) / scale, Double(p.y) / scale) }
+
+	/// Where the pointer is now, in points.
+	var cursor: Point {
+		if let at = platform.capture.cursor() { return Point(at.x / scale, at.y / scale) }
+		return left.map(point) ?? Point(0, 0)
+	}
+
+	func pause(_ ms: Double) async throws { try await clock.sleep(ms: ms) }
+
+	func move(_ p: Pixel) async throws {
+		try inside(p)
+		try await raw.move(to: point(p), held: Set(buttons))
+		left = p
+	}
+
+	func press(_ button: InputButton, down: Bool, clickState: Int = 1) async throws {
+		try await raw.button(button, down: down, at: cursor, clickState: clickState)
+		if down { buttons.append(button) } else { buttons.removeAll { $0 == button } }
+	}
+
+	func key(_ name: String, down: Bool) async throws {
+		try await raw.key(name, down: down)
+		if down {
+			keys.append(name)
+		} else if let i = keys.lastIndex(of: name) {
+			keys.remove(at: i)
+		}
+	}
+
+	/// Presses names in order, runs then, and releases them in reverse.
+	func holding(_ names: [String], _ then: () async throws -> Void) async throws {
+		var pressed: [String] = []
+		for name in names where !pressed.contains(name) {
+			try await key(name, down: true)
+			pressed.append(name)
+		}
+		try await then()
+		for name in pressed.reversed() { try await key(name, down: false) }
+	}
+
+	func run(_ a: InputAction) async throws {
+		switch a.type {
+		case "move":
+			try await move(a.at!)
+		case "down":
+			try await press(a.button, down: true)
+		case "up":
+			try await press(a.button, down: false)
+		case "click":
+			if let at = a.at { try inside(at) }
+			try await holding(a.keys) {
+				if let at = a.at {
+					try await move(at)
+					try await pause(15)
+				}
+				for n in 1...a.count {
+					try Task.checkCancellation()
+					try await press(a.button, down: true, clickState: n)
+					try await pause(1)
+					try await press(a.button, down: false, clickState: n)
+					if n < a.count { try await pause(80) }
+				}
+			}
+		case "drag":
+			for p in a.path { try inside(p) }
+			try await holding(a.keys) {
+				try await move(a.path[0])
+				try await pause(15)
+				try await press(a.button, down: true)
+				var from = point(a.path[0])
+				for p in a.path.dropFirst() {
+					let to = point(p)
+					let pieces = max(1, Int((hypot(to.x - from.x, to.y - from.y) / Self.dragStepPoints).rounded(.up)))
+					for k in 1...pieces {
+						try Task.checkCancellation()
+						try await pause(8)
+						let t = Double(k) / Double(pieces)
+						try await raw.move(to: Point(from.x + (to.x - from.x) * t, from.y + (to.y - from.y) * t), held: Set(buttons))
+					}
+					left = p
+					from = to
+				}
+				try await pause(15)
+				try await press(a.button, down: false)
+			}
+		case "scroll":
+			if let at = a.at { try inside(at) }
+			try await holding(a.keys) {
+				if let at = a.at {
+					try await move(at)
+					try await pause(15)
+				}
+				// Pixels of the screenshot are points times scale; clicks are clicks.
+				let (dx, dy) = a.pixels ? (a.dx / scale, a.dy / scale) : (a.dx, a.dy)
+				try await raw.scroll(at: cursor, dx: dx, dy: dy, pixels: a.pixels)
+			}
+		case "key":
+			for _ in 0..<a.repeats {
+				try Task.checkCancellation()
+				try await holding(a.keys) {}
+				try await pause(2)
+			}
+		case "hold":
+			try await holding(a.keys) { try await pause(Double(a.ms)) }
+		case "type":
+			try await raw.type(a.text)
+		case "wait":
+			try await pause(Double(a.ms))
+		default:
+			throw InputStop(.unsupported, "\(a.type) is not an action this computer runs")
+		}
+	}
+
+	/// Lets go of every key and button the batch holds, keys last pressed first.
+	func release() async {
+		for name in keys.reversed() { try? await raw.key(name, down: false) }
+		let at = cursor
+		for button in buttons.reversed() { try? await raw.button(button, down: false, at: at, clickState: 1) }
+		keys = []
+		buttons = []
+	}
+}

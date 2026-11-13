@@ -17,6 +17,7 @@ final class FakeOS: @unchecked Sendable {
 		var settable = false
 		var textInput = false
 		var selectable = false
+		var keysFirst = false
 	}
 
 	let lock = NSRecursiveLock()
@@ -34,6 +35,10 @@ final class FakeOS: @unchecked Sendable {
 	var focusedID: Int?
 	/// The pid of the app in front; the fake app is pid 42.
 	var frontPID: Int32?
+	/// Where the pointer is, in screen pixels.
+	var cursor = Point(10, 10)
+	/// Raw input events the fake refuses, as their entries.
+	var rawFails: Set<String> = []
 	var frameHash = 0
 	var maxNodes: Int?
 	/// Called on every perform, set and post, so a test makes the UI react.
@@ -77,7 +82,7 @@ final class FakeOS: @unchecked Sendable {
 	var entries: [String] { with { $0.log } }
 
 	func platform(background: Feature = .on, foreground: Feature = .on, nav: Feature = .off("macOS has no system back, home or app switcher")) -> Platform {
-		Platform(accessibility: FakeAX(os: self), capture: FakeCapture(os: self), workspace: FakeWorkspace(os: self), background: FakeRoute(os: self, name: "bg"), backgroundFeature: background, foreground: FakeRoute(os: self, name: "fg"), foregroundFeature: foreground, navFeature: nav, clock: FakeClock(os: self))
+		Platform(accessibility: FakeAX(os: self), capture: FakeCapture(os: self), workspace: FakeWorkspace(os: self), background: FakeRoute(os: self, name: "bg"), backgroundFeature: background, foreground: FakeRoute(os: self, name: "fg"), foregroundFeature: foreground, navFeature: nav, raw: FakeRaw(os: self), clock: FakeClock(os: self))
 	}
 
 	func engine(policy: Policy = Policy(), background: Feature = .on, foreground: Feature = .on) -> UIEngine {
@@ -91,6 +96,7 @@ struct FakeAX: Accessibility {
 	var feature: Feature { os.with { $0.trusted } ? .on : .off("Accessibility is not granted to Computerd") }
 	var pressAction: String { "AXPress" }
 	var menuAction: String { "AXShowMenu" }
+	var openAction: String { "AXOpen" }
 	var incidentalActions: Set<String> { ["AXShowMenu", "AXScrollToVisible"] }
 
 	func resolve(_ target: Target?) throws -> ResolvedTarget {
@@ -118,7 +124,7 @@ struct FakeAX: Accessibility {
 				var flags = e.flags
 				if os.focusedID == id { flags.insert(.focused) }
 				index[id] = nodes.count
-				nodes.append(RawNode(handle: ElementHandle(id), role: e.role, name: e.name, value: e.value, desc: e.desc, frame: e.frame, parent: e.parent.flatMap { index[$0] }, flags: flags, actions: e.actions, settable: e.settable, textInput: e.textInput))
+				nodes.append(RawNode(handle: ElementHandle(id), role: e.role, name: e.name, value: e.value, desc: e.desc, frame: e.frame, parent: e.parent.flatMap { index[$0] }, flags: flags, actions: e.actions, settable: e.settable, textInput: e.textInput, keysFirst: e.keysFirst))
 			}
 			return Snapshot(nodes: nodes, truncated: os.order.count > cap)
 		}
@@ -218,7 +224,43 @@ struct FakeCapture: Capture {
 
 	func screenInfo() -> ScreenInfo? { ScreenInfo(width: 1440, height: 900, scale: 2) }
 
-	func cursor() -> Point? { Point(10, 10) }
+	func cursor() -> Point? { os.with { $0.cursor } }
+}
+
+/// The keyboard and mouse: each event recorded, the pointer kept (in pixels, at scale 2), and a raw.fail entry's event
+/// thrown instead.
+struct FakeRaw: RawInput {
+	let os: FakeOS
+
+	func num(_ d: Double) -> String { d == d.rounded() ? "\(Int(d))" : "\(d)" }
+
+	func fmt(_ p: Point) -> String { "\(num(p.x)),\(num(p.y))" }
+
+	func post(_ entry: String) throws {
+		if os.with({ $0.rawFails.contains(entry) }) { throw RPCError.invalid("the fake refused \(entry)") }
+		os.record(entry)
+	}
+
+	func move(to point: Point, held: Set<InputButton>) async throws {
+		try post("raw.move \(fmt(point))\(held.isEmpty ? "" : " " + held.map(\.rawValue).sorted().joined(separator: ","))")
+		os.with { $0.cursor = Point(point.x * 2, point.y * 2) }
+	}
+
+	func button(_ button: InputButton, down: Bool, at point: Point, clickState: Int) async throws {
+		try post("raw.\(down ? "down" : "up") \(button.rawValue) \(fmt(point)) \(clickState)")
+	}
+
+	func scroll(at point: Point, dx: Double, dy: Double, pixels: Bool) async throws {
+		try post("raw.scroll \(fmt(point)) \(num(dx)) \(num(dy)) \(pixels ? "px" : "clicks")")
+	}
+
+	func key(_ key: String, down: Bool) async throws {
+		try post("raw.key \(key) \(down ? "down" : "up")")
+	}
+
+	func type(_ text: String) async throws {
+		try post("raw.type \(text)")
+	}
 }
 
 struct FakeWorkspace: Workspace {

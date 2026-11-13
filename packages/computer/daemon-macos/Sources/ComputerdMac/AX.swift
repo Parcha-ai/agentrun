@@ -142,6 +142,7 @@ final class MacAccessibility: Accessibility, @unchecked Sendable {
 
 	let pressAction = kAXPressAction as String
 	let menuAction = kAXShowMenuAction as String
+	let openAction = "AXOpen"
 	let incidentalActions: Set<String> = [kAXShowMenuAction as String, "AXScrollToVisible", kAXRaiseAction as String]
 
 	// MARK: apps and windows
@@ -270,7 +271,8 @@ final class MacAccessibility: Accessibility, @unchecked Sendable {
 			let settable = !actions.contains("AXOpen") && AX.settable(element, kAXValueAttribute)
 			nodes.append(RawNode(
 				handle: ElementHandle(ax: element), role: role, name: name, value: value, desc: desc, identifier: AX.string(v[5]), frame: frame,
-				parent: parent, flags: flags, actions: actions, settable: settable, textInput: textInput
+				parent: parent, flags: flags, actions: actions, settable: settable, textInput: textInput,
+				keysFirst: axRole == kAXTextAreaRole as String
 			))
 			guard depth < 64 else { continue }
 			let me = nodes.count - 1

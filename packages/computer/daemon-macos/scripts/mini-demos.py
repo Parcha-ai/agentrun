@@ -344,9 +344,10 @@ def textedit_edit_number(t):
     t.wait_for("Pears: 41", "wait for the document")
     tree = t.observe()
     text = need(t, tree["nodes"], "text area", role="textbox", contains="Pears: 41")
-    # Typed, not set: a set replaces the text view's string without the document taking it as an edit (no "Edited"
-    # mark on the mini). Each expect reads the document, not the field's echo: TextEdit marks a document it took an
-    # edit into "Edited", and drops the mark once it saved it.
+    # Typed, not set: a set (or an accessibility insert) replaces the text view's string without the document taking it
+    # as an edit (no "Edited" mark on the mini and in CI), so the driver types a text area's text by keys first. Each
+    # expect reads the document, not the field's echo: TextEdit marks a document it took an edit into "Edited", and
+    # drops the mark once it saved it.
     t.act([{"key": "super+a"}, {"type": after, "into": text["ref"]}], "select all and type the new text", expect={"text": "Edited", "timeoutMs": 5000})
     t.act([{"key": "super+s"}], "save (super+s)", expect={"text": "Edited", "gone": True, "timeoutMs": 5000})
     deadline = time.monotonic() + 10

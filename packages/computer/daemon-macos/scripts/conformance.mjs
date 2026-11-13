@@ -1,8 +1,10 @@
 // A conformance module for this Mac's Computerd: each computer the suite makes is the Mac itself, connected through
 // Computerd.app's computerd command (the stdio binding over the app's socket). CI runs the ui cases with it, against
-// the ui fixture app (UIFixture.app, installed in /Applications):
+// the ui fixture app (UIFixture.app, installed in /Applications), and the input cases with the same app as the desktop
+// fixture (started with --input-log):
 //
 //   npm run conformance -w @parcha/agentrun-computer -- --provider "$PWD/packages/computer/daemon-macos/scripts/conformance.mjs" --only ui
+//   npm run conformance -w @parcha/agentrun-computer -- --provider "$PWD/packages/computer/daemon-macos/scripts/conformance.mjs" --only input --fixture /Applications/UIFixture.app
 //
 // COMPUTERD is the computerd command (default /Applications/Computerd.app/Contents/Helpers/computerd), and
 // COMPUTERD_HOME the app's folder, as the app was started with. It needs packages/computer built (npm run build).
@@ -25,7 +27,7 @@ export function createProvider(options = {}) {
 		isolation: "machine",
 		os: "macos",
 		daemon: "none",
-		groups: ["apps", "ui"],
+		groups: ["exec", "files", "screen", "input.pointer", "input.keys", "apps", "ui"],
 		maxLifetimeMs: 60 * 60_000,
 		release: ["delete"],
 	};

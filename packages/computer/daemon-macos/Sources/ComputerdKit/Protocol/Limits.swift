@@ -6,7 +6,9 @@ public enum Limits {
 	public static let maxChunkBytes = 512 * 1024
 	public static let maxListDepth = 16
 	public static let maxListEntries = 1000
+	public static let maxActions = 100
 	public static let maxBatchWaitMs = 300_000
+	public static let maxKeyRepeat = 100
 	public static let maxUiNodes = 5000
 	public static let maxSteps = 100
 	public static let maxExpectMs = 60_000

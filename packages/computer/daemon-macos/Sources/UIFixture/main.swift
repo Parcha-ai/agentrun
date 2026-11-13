@@ -7,6 +7,8 @@
 //   saved    home, plus the text "Saved", SAVED_MS after Save
 //   second   "Second page" heading and "Back", NEXT_MS after Next and a NEXT_ANIMATE_MS fade; Back returns home. Home's
 //            views leave the window, so their refs are stale there, and come back as the same elements.
+//
+// Started with --input-log PATH it is the desktop input fixture instead (InputFixture.swift).
 #if os(macOS)
 import AppKit
 
@@ -160,10 +162,13 @@ guard Bundle.main.bundleIdentifier == Spec.id else {
 	exit(1)
 }
 
+// --input-log PATH: the desktop input fixture instead (InputFixture.swift).
+let inputLog = CommandLine.arguments.firstIndex(of: "--input-log").flatMap { $0 + 1 < CommandLine.arguments.count ? CommandLine.arguments[$0 + 1] : nil }
+
 MainActor.assumeIsolated {
 	let app = NSApplication.shared
-	let fixture = Fixture()
-	app.delegate = fixture
+	let delegate: NSApplicationDelegate = inputLog.map { InputFixture(log: $0) } ?? Fixture()
+	app.delegate = delegate
 	app.setActivationPolicy(.regular)
 	app.run()
 }

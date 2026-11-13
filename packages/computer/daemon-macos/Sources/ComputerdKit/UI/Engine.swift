@@ -405,8 +405,13 @@ public actor UIEngine {
 
 		case .set(let ref, let value):
 			let secure = node!.flags.contains(.secure)
+			// An item that opens (a Finder file) is refused with the way that works, so a model takes it on the first try.
+			let opens = node!.actions.contains(ax.openAction)
+			let refused = opens
+				? "\(node!.name ?? ref) is a list item that opens: select it and press Return to edit its name, then type"
+				: "\(ref)'s value cannot be set: click it and type instead"
 			attempts = [
-				semantic(node!.settable ? nil : "\(ref)'s value cannot be set: click it and type instead") {
+				semantic(node!.settable ? nil : refused) {
 					try self.ax.setValue(value, on: element!)
 					let ax = self.ax
 					return secure ? .readback { false } : .lasting { ax.value(element!) == value }
@@ -474,16 +479,19 @@ public actor UIEngine {
 			} else if let node, !node.textInput {
 				reason = "\(into!) does not take text"
 			}
-			attempts = [
-				semantic(reason) {
-					try ax.insertText(text, on: typed!)
-					return readback
-				},
-			] + pointer(foreground, target) { route in
+			let insert = semantic(reason) {
+				try ax.insertText(text, on: typed!)
+				return readback
+			}
+			let keys = pointer(foreground, target) { route in
 				if let into, let element { try await self.focus(into, element, target: target, route: route) }
 				try await route.type(text, in: target)
 				return readback
 			}
+			// A document's text takes an edit as one only through the app's text system: TextEdit showed an inserted
+			// text and never marked the document edited, so saving kept the old file. Typed keys go first there.
+			let document = (node ?? typed.flatMap { view.node($0) })?.keysFirst == true
+			attempts = document ? keys + [insert] : [insert] + keys
 
 		case .key(let text):
 			let chord = try KeyChord.parse(text)
@@ -578,8 +586,15 @@ public actor UIEngine {
 				continue
 			}
 			let after = try await settleAfterStep(view.target)
+			let next = attempts[(i + 1)...].contains { $0.off == nil }
 			switch check {
-			case .readback(let holds): return (attempt.route, holds(), after)
+			case .readback(let holds):
+				if holds() { return (attempt.route, true, after) }
+				// Nothing showed (the keys reached no view): the next route tries. A route that changed something is
+				// never followed by another, which could do the step twice.
+				guard next, view.fingerprint == after.fingerprint else { return (attempt.route, false, after) }
+				climbed.append(attempt.route.rawValue)
+				unseen = (attempt.route, after)
 			case .lasting(let holds):
 				guard holds() else { return (attempt.route, false, after) }
 				try await sleep(timing.lastingMs)
@@ -587,7 +602,6 @@ public actor UIEngine {
 				return (attempt.route, true, after)
 			case .change:
 				if view.fingerprint != after.fingerprint { return (attempt.route, true, after) }
-				let next = attempts[(i + 1)...].contains { $0.off == nil }
 				guard let expect, next, !holds(expect, after) else { return (attempt.route, false, after) }
 				climbed.append(attempt.route.rawValue)
 				unseen = (attempt.route, after)

@@ -217,6 +217,15 @@ final class EngineTests: XCTestCase {
 		XCTAssertEqual(os.with { $0.elements[4]!.value }, "Groceries")
 	}
 
+	func testASetOnAnItemThatOpensSaysToRenameItByKeys() async throws {
+		os.add(10, "listitem", name: "report.txt", frame: Rect(120, 450, 200, 20), parent: 2, actions: ["AXOpen", "AXShowMenu"])
+		let engine = os.engine()
+		let r = try await engine.observe(UiObserveParams(full: true))
+		let result = try await engine.act(UiActParams(steps: [.set(ref(r, "report.txt"), value: "final.txt")]))
+		XCTAssertEqual(stepError(result, 0)?.kind, .unsupported)
+		XCTAssertEqual(stepError(result, 0)?.message, "no route could set here. semantic: report.txt is a list item that opens: select it and press Return to edit its name, then type")
+	}
+
 	func testPerformNamesThePlatformsAction() async throws {
 		let engine = os.engine()
 		let r = try await engine.observe(UiObserveParams())
@@ -241,6 +250,29 @@ final class EngineTests: XCTestCase {
 		XCTAssertEqual(ran(result, 0)?.1, true)
 		XCTAssertEqual(ran(result, 1)?.0, .background)
 		XCTAssertEqual(os.entries, ["ax.insert 4 milk", "ax.focus 7", "bg.type pw"])
+	}
+
+	/// A document's text area (TextEdit's) takes an edit as one only by typed keys: they go first, and an insert only
+	/// when the keys showed nothing.
+	func testADocumentsTextTakesTypedKeysFirst() async throws {
+		os.add(10, "textbox", name: "Body", value: "Pears: 41", frame: Rect(120, 450, 600, 100), parent: 2, settable: true, textInput: true)
+		os.with { $0.elements[10]?.keysFirst = true }
+		os.react = { entry, os in
+			if entry == "bg.type 42" { os.with { $0.elements[10]?.value = "Pears: 42" } }
+		}
+		let engine = os.engine()
+		let r = try await engine.observe(UiObserveParams())
+		let result = try await engine.act(UiActParams(steps: [.type("42", into: ref(r, "Body"))]))
+		XCTAssertEqual(ran(result, 0)?.0, .background)
+		XCTAssertEqual(ran(result, 0)?.1, true)
+		XCTAssertEqual(os.entries.filter { !$0.hasPrefix("ax.focus") }, ["bg.type 42"])
+
+		os.react = nil
+		let r2 = try await engine.observe(UiObserveParams())
+		let climbed = try await engine.act(UiActParams(steps: [.type(" more", into: ref(r2, "Body"))]))
+		XCTAssertEqual(ran(climbed, 0)?.0, .semantic, "the keys showed nothing, so the insert went")
+		XCTAssertEqual(ran(climbed, 0)?.1, true)
+		XCTAssertEqual(os.entries.filter { $0.contains("more") }, ["bg.type  more", "ax.insert 10  more"])
 	}
 
 	func testKeyChoosesTheMenuItemThenPosts() async throws {
@@ -607,7 +639,7 @@ final class EngineTests: XCTestCase {
 		let hello = driver.hello()
 		XCTAssertEqual(hello.device, Device(maker: "Apple", model: "MacBook Pro"))
 		XCTAssertEqual(hello.protocol, "0.2")
-		XCTAssertEqual(hello.groups, [.exec, .files, .screen, .apps, .ui])
+		XCTAssertEqual(hello.groups, [.exec, .files, .screen, .inputPointer, .inputKeys, .apps, .ui])
 		XCTAssertEqual(hello.screen, ScreenInfo(width: 1440, height: 900, scale: 2))
 	}
 
