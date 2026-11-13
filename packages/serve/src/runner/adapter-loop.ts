@@ -2304,6 +2304,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           if (cut?.kind === "command") return await writeEnd(harness, root, gate, stopEnd(cut.cancel), [cut.commandId], await cutRows(claim, spec, "stopped"));
           if (cut || deps.signal.aborted || waited === "cut") return await interrupted(cut?.kind ?? "its claim's signal aborted");
         }
+        // A stop or cancel the runner handed on as the turn was failing (it hands rows on as they are written) is taken by
+        // this end, which is the stop's own: with the turn's failure the end, its row would be handed on and never taken.
+        const failingStop = data.state === "failed" ? (stopReason as StopReason | undefined) : undefined;
+        if (failingStop?.kind === "command") return await writeEnd(harness, root, gate, stopEnd(failingStop.cancel), [failingStop.commandId], await cutRows(claim, spec, "stopped"));
         // The end-of-run step, once, before the end: its rows ride in the end commit. A stop or a lost claim during it
         // writes no end of the job's (a person's stop ends the run stopped; a lost claim leaves it for the next claim).
         const step = await endOfRunStep(claim, spec, data.state === "failed" ? "failed" : "completed");
