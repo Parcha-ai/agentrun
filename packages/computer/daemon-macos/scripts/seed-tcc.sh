@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# CI only, on a throwaway runner: grants Computerd.app Accessibility, Screen Recording, Post Event, and Automation of
-# the demos' five apps by writing rows to the TCC databases, and marks the screen capture alert as answered. Writing the system database works only where SIP
-# is off, as on GitHub's macOS runners; on a person's Mac the grants are theirs to give, in System Settings.
+# CI only, on a throwaway runner: grants Computerd.app Accessibility, Screen Recording, Post Event, calendar data, and
+# Automation of the demos' five apps by writing rows to the TCC databases, and marks the screen capture alert as
+# answered. Writing the system database works only where SIP is off, as on GitHub's macOS runners; on a person's Mac
+# the grants are theirs to give, in System Settings.
 #
 #   scripts/seed-tcc.sh PATH/TO/Computerd.app
 #
@@ -38,6 +39,9 @@ for service in kTCCServiceAccessibility kTCCServiceScreenCapture kTCCServicePost
 	seed "$system_db" "$service" sudo
 	seed "$user_db" "$service" ""
 done
+# Calendar data: without it the demos' first AppleScript to Calendar got no answer in 60 s on the runner, twice; with
+# it, it answered (mini-demos.py's can-automate.swift checks it as "calendars").
+seed "$user_db" kTCCServiceCalendar ""
 
 # Automation (Apple events) from Computerd to the demos' five apps: mini-demos.py makes and removes each task's sandbox
 # by AppleScript through Computerd's exec.run. A row names the target too, by bundle id and its code requirement.
