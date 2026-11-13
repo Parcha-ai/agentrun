@@ -1,6 +1,7 @@
 import { graphDiff, workflowGraph, type WorkflowGraph } from "@dsl/graph";
 import { drawnNodeCount, type GraphMarks, nodesWord } from "@/lib/wfGraph";
 import { metaOf } from "@/lib/runGraph";
+import { guardsOfText, type StepGuard } from "@/lib/learningLoop";
 import type { WorkflowRevision } from "@/lib/v2";
 
 // A learned workflow's replay: each revision of its workflow.json (GET /agents/{id}/learning/workflows/{name}/revisions)
@@ -24,6 +25,12 @@ export type ReplayStep = {
   removed: string[];
   /** The one line: what changed against the step before it. */
   line: string;
+  /** The revision's digest (what runs' metrics and promotion records name it by), null when its file did not read. */
+  digest: string | null;
+  /** Its guarded steps, by label, in document order. */
+  guards: StepGuard[];
+  /** Each guarded step's node path in the graph, by its label. */
+  guardPaths: Record<string, string>;
 };
 
 /** A node's name for a person: its label (a kind's own name when it has none). */
@@ -68,7 +75,10 @@ export function replaySteps(revisions: readonly WorkflowRevision[]): { steps: Re
     const labelAt = new Map(graph.nodes.map((n) => [n.path, n.label]));
     const removed = diff ? diff.removed.filter((n) => n.kind !== "chain").map((n) => n.label) : [];
     const rewired = diff ? diff.edges.added.length + diff.edges.removed.length : 0;
+    const guards = guardsOfText(rev.text);
+    const guardPaths = Object.fromEntries(guards.flatMap((g) => { const node = graph!.nodes.find((n) => n.label === g.label); return node ? [[g.label, node.path]] : []; }));
     steps.push({
+      digest: rev.digest ?? null, guards, guardPaths,
       commit: rev.commit, at: rev.at, run: "run" in rev.by ? rev.by.run : null, reason: rev.reason, graph,
       marks: {
         meta: metaOf(doc, graph),

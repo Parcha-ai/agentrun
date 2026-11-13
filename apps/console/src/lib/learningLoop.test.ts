@@ -1,0 +1,95 @@
+import { describe, expect, it } from "vitest";
+import { binsOf, compiledInto, guardsOfText, handBacks, kindOf, markersOf, replayLine, standingOf, storyOf } from "./learningLoop";
+import type { CostRun, LearningCost, LearningLoop, Promotion } from "./v2";
+
+// The loop's arithmetic for the Learning tab, on an invented invoice-sorter agent: promotion records on the run axis,
+// standings, the replay line, guards read from a workflow's JSON, p bins by grade, notes' compiled_into, and the story.
+
+const at = (h: number) => new Date(Date.UTC(2026, 10, 1) + h * 3_600_000).toISOString();
+const run = (n: number, path: CostRun["path"]): CostRun => ({ n, run_id: `r${n}`, started_at: at(n), path, workflow: path === "agent" ? null : "sort-invoice", learned_revision: null, cost_usd: 0.1, learning_usd: 0, total_usd: 0.1 });
+const record = (over: Partial<Promotion>): Promotion => ({ workflow: "sort-invoice", digest: "a".repeat(16), at: at(3), decided: "promote", source: "replay", reason: "as good as the agent", ...over } as Promotion);
+const REPLAY = { of: [], n: 20, agree: 19, agent_acc: 0.9, wf_acc: 0.95, delta: 0.05, handed_back: 2 };
+
+describe("markers on the run axis", () => {
+  const runs = [1, 2, 3, 4, 5, 6].map((n) => run(n, n < 4 ? "agent" : "workflow"));
+  it("puts each record on the first run started at or after it, by its kind", () => {
+    const records = [
+      record({ decided: "replaying", at: at(1.5) }),
+      record({ decided: "promote", at: at(3) }),
+      record({ decided: "promote", source: "refit", digest: "b".repeat(16), at: at(4.2) }),
+      record({ decided: "hold", source: "graded", at: at(5.5) }),
+      record({ decided: "hold", at: at(9) }),
+    ];
+    expect(markersOf(runs, records).map((m) => [m.kind, m.n])).toEqual([["revision", 2], ["promote", 3], ["refit", 5], ["hold", 6]]);
+  });
+  it("leaves out a record older than the runs read, and draws nothing without runs", () => {
+    expect(markersOf(runs, [record({ at: at(-5) })])).toEqual([]);
+    expect(markersOf([], [record({})])).toEqual([]);
+  });
+  it("names a kind from its record", () => {
+    expect([kindOf(record({ decided: "replaying" })), kindOf(record({ source: "refit" })), kindOf(record({ decided: "hold" }))]).toEqual(["revision", "refit", "hold"]);
+  });
+});
+
+describe("a revision's standing and numbers", () => {
+  it("says serving, held, replaying or not decided", () => {
+    expect([standingOf(record({})).word, standingOf(record({ decided: "hold" })).word, standingOf(record({ decided: "replaying" })).word, standingOf(undefined).word]).toEqual(["Serving", "Held", "Replaying", "Not decided"]);
+  });
+  it("puts the replay's numbers in one line, or the reason when there was no replay", () => {
+    expect(replayLine(record({ replay: REPLAY }))).toBe("Replay on 20 graded inputs: workflow 95% vs agent 90% (+5 pts), 2 handed back");
+    expect(replayLine(record({ source: "dry_run", reason: "no graded input it fits: promoted on its dry run" }))).toBe("no graded input it fits: promoted on its dry run");
+  });
+  it("counts hand-backs since the takeover over the runs the workflow ran first", () => {
+    const runs = [run(1, "agent"), run(2, "workflow"), run(3, "handed_back"), run(4, "replay"), run(5, "workflow")];
+    expect(handBacks(runs, 2)).toEqual({ ran: 3, back: 1 });
+    expect(handBacks(runs, null)).toBeNull();
+  });
+});
+
+describe("guards and p", () => {
+  const doc = JSON.stringify({ v: 2, root: { node: "chain", steps: [
+    { node: "extract", label: "classify", guard: { signal: "jev", threshold: 0.7 } },
+    { node: "decide", label: "pick", guard: { signal: "both", threshold: 0.82, fit: { w: [1], b: 0 } } },
+    { node: "extract", label: "no guard" },
+    { node: "extract", guard: { signal: "self", threshold: 0.5 } },
+    { node: "extract", label: "bad", guard: { signal: "vibes", threshold: 0.5 } },
+  ] } });
+  it("reads each labelled guarded step in order", () => {
+    expect(guardsOfText(doc)).toEqual([{ label: "classify", signal: "jev", threshold: 0.7, fitted: false }, { label: "pick", signal: "both", threshold: 0.82, fitted: true }]);
+    expect(guardsOfText("not json")).toEqual([]);
+    expect(guardsOfText(null)).toEqual([]);
+  });
+  it("bins p in tenths by grade, a missing p in the lowest", () => {
+    const bins = binsOf([{ run_id: "1", p: 0.95, escalated: false, correct: true }, { run_id: "2", p: 1, escalated: false, correct: false }, { run_id: "3", p: null, escalated: true, correct: null }, { run_id: "4", p: 0.7, escalated: false, correct: null }]);
+    expect(bins).toHaveLength(10);
+    expect(bins[9]).toMatchObject({ right: 1, wrong: 1, ungraded: 0 });
+    expect(bins[0]).toMatchObject({ ungraded: 1 });
+    expect(bins[7]).toMatchObject({ ungraded: 1 });
+  });
+});
+
+describe("notes and the story", () => {
+  it("reads a note's compiled_into from its front matter only", () => {
+    expect(compiledInto("---\nname: x\ncompiled_into: sort-invoice\n---\nbody")).toBe("sort-invoice");
+    expect(compiledInto("---\nname: x\n---\ncompiled_into: sort-invoice")).toBeNull();
+    expect(compiledInto("no front matter")).toBeNull();
+  });
+  const cost = (over: Partial<LearningCost["summary"]>, runs: CostRun[] = []): LearningCost => ({ agent: "a", runs, total_runs: runs.length, unknown_cost_runs: 0, unknown_path_runs: 0, summary: { takeover: null, before: null, after: null, times_cheaper: null, ...over }, workflows: [] });
+  const base = { notes: 0, compiledNotes: 0, runs: 0, workflows: [], cost: null, promotions: [], loop: null };
+  it("with nothing yet, says what happens next at each stage", () => {
+    const stages = storyOf(base);
+    expect(stages.map((s) => [s.key, s.state])).toEqual([["notes", "now"], ["compiled", "later"], ["took_over", "later"], ["cheaper", "later"]]);
+    expect(stages[1]!.detail).toBe("0 of 3 notes, 0 of 5 runs: a workflow compiles at 3 notes or 5 runs");
+  });
+  it("once it took over and got cheaper, tells it whole, with where it is unsure", () => {
+    const runs = [run(1, "agent"), run(2, "workflow"), run(3, "handed_back"), run(4, "workflow")];
+    const loop = { agent: "a", compiles: [{ run_id: "r1", at: at(1), workflow: "sort-invoice", from_notes: ["a", "b", "c"], attempts: [{ ok: true, errors: [] }], digest: "a".repeat(16), promoted: true, draft_errors: [], withheld: false }],
+      guards: [{ workflow: "sort-invoice", digest: "a".repeat(16), node: "classify", signal: "jev", threshold: 0.7, runs: 3, escalated: 1, points: [] }] } as LearningLoop;
+    const stages = storyOf({ ...base, notes: 3, compiledNotes: 3, runs: 4, workflows: [{ name: "sort-invoice", status: "active" }], loop, promotions: [record({ replay: REPLAY })],
+      cost: cost({ takeover: { n: 2, run_id: "r2" }, before: { runs: 1, mean_usd: 0.89 }, after: { runs: 25, mean_usd: 0.127 }, times_cheaper: 7 }, runs) });
+    expect(stages.map((s) => [s.key, s.value, s.state])).toEqual([
+      ["notes", "3 notes", "done"], ["compiled", "sort-invoice", "done"], ["took_over", "Run 2", "done"], ["cheaper", "7.0x cheaper", "done"], ["unsure", "33% handed back", "warn"],
+    ]);
+    expect(stages[4]!.detail).toBe('most at "classify": 1 of 3 under 0.70');
+  });
+});

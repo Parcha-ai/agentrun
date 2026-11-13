@@ -101,6 +101,13 @@ export type RunPath = CostRun["path"];
  *  workflow.json, oldest first, each with the text it had then. */
 export type WorkflowRevisions = Answer<"listLearnedWorkflowRevisions">;
 export type WorkflowRevision = WorkflowRevisions["revisions"][number];
+/** GET /v2/agents/{id}/learning/promotions: each learned workflow revision's promotion records, oldest first. */
+export type Promotions = Answer<"listLearningPromotions">;
+export type Promotion = Promotions["promotions"][number];
+/** GET /v2/agents/{id}/learning/loop: the agent's compile turns (newest first) and its learned workflows' guarded steps. */
+export type LearningLoop = Answer<"getLearningLoop">;
+export type LoopCompile = LearningLoop["compiles"][number];
+export type LoopGuard = LearningLoop["guards"][number];
 /** What the run's job did with the learned skills and workflows it was offered (`used`): each skill and whether its job
  *  read it, each learned workflow it called, how many times and how many of those failed. */
 export type LearnedUse = NonNullable<RunLearningRead>["used"];

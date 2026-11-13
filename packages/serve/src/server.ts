@@ -90,6 +90,8 @@ import { bootSealKey, withSealKey } from "./seal-key.js";
 import { ServerLockHeldError, takeServerLock } from "./server-lock.js";
 import { DRAIN_TIMEOUT } from "./runner/beside.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
+import { agentLoopOverStore } from "./store-reads/loop.js";
+import { printable } from "./learn/index.js";
 import { agentCostOverStore, agentLearningOverStore, learningCountsOverStore, learningSpendOverStore } from "./store-reads/learning.js";
 import { evalOf, evalsOf, recordEval } from "./learning-evals.js";
 import { costCsv, learningCostQuery, RUN_PATHS } from "./learning-cost.js";
@@ -493,6 +495,7 @@ export const ROUTES: readonly Route[] = [
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/evals$/, name: "listLearningEvals" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/learning\/evals$/, name: "recordLearningEval" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/promotions$/, name: "listLearningPromotions" },
+  { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/loop$/, name: "getLearningLoop" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/notes$/, name: "listLearningNotes" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/log$/, name: "listLearningLog" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/files\/([^/]+)$/, name: "readLearningFile" },
@@ -3170,6 +3173,25 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           return { status: 201, body: result };
         });
         return send(res, answer.status, answer.body, answer.headers);
+      }
+      case "getLearningLoop": {
+        await needAgent(id);
+        // The loop's own record over the one store (store-reads/loop.ts): compile turns and guarded steps, aggregates only.
+        // Names cut as the other learning reads cut them; a compile's error texts cut by its run's own cut as its run's
+        // learning read cuts them (run-learning-served.ts), and left out when that run's handed values can't be read.
+        const shown = await learningShown(id);
+        const values = await learningValues(id);
+        const read = await agentLoopOverStore(store, id);
+        const compiles = await Promise.all(read.compiles.map(async (one) => {
+          const cut = await runCutValues({ serverSecrets, signIns }, store, one.run_id).catch(() => "unreadable" as const);
+          const workflow = one.workflow === null ? null : shown.name(one.workflow);
+          if (cut === "unreadable") return { ...one, workflow, from_notes: one.from_notes.map(shown.name), attempts: one.attempts.map(({ ok }) => ({ ok, errors: [] })), draft_errors: [], withheld: true };
+          const all = [...values, ...cut.values];
+          const said = (error: string) => shown.text(printable({ rule: "workflow", detail: error }, all).detail);
+          return { ...one, workflow, from_notes: one.from_notes.map(shown.name), attempts: one.attempts.map(({ ok, errors }) => ({ ok, errors: errors.map(said) })), draft_errors: one.draft_errors.map(said), withheld: false };
+        }));
+        const guards = read.guards.map((one) => ({ ...one, workflow: shown.name(one.workflow), node: shown.text(one.node) }));
+        return send(res, 200, { agent: id, compiles, guards });
       }
       case "listLearningPromotions": {
         await needAgent(id);

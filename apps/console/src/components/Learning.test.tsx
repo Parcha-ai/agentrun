@@ -5,7 +5,7 @@ import { LearningTab, type LearningProps } from "./Learning";
 import type { Agent } from "@/lib/agentForm";
 import { ClientError } from "@/lib/client";
 import type { AgentLearning, LearningNote } from "@/lib/learning";
-import type { Run } from "@/lib/v2";
+import type { LearningCost, LearningLoop, Promotions, Run } from "@/lib/v2";
 
 // The agent's Learning tab: its notes with where each came from, edit (its version named), retire after a confirm, a
 // note a person adds, what runs did not keep and why, the before and after, and the switch.
@@ -50,7 +50,7 @@ let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 const settle = async () => { for (let i = 0; i < 8; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
 
-type Fake = { learning?: () => Promise<AgentLearning>; runs?: Run[]; read?: (file: string) => Promise<{ note: string; etag: string | null }>; write?: (file: string, text: string, on: unknown) => Promise<unknown>; retire?: (file: string, etag: string) => Promise<unknown>; approve?: (file: string, etag: string) => Promise<unknown>; restore?: (file: string, etag: string) => Promise<unknown>; caps?: unknown; notes?: (cursor: string) => Promise<{ items: LearningNote[]; total: number; next_cursor: string | null }>; log?: (cursor: string) => Promise<AgentLearning["log"]>; runsNext?: string | null; update?: (body: unknown, etag: string | null) => Promise<{ agent: Agent; etag: string }>; promote?: (name: string, key: string) => Promise<Agent> };
+type Fake = { learning?: () => Promise<AgentLearning>; runs?: Run[]; read?: (file: string) => Promise<{ note: string; etag: string | null }>; write?: (file: string, text: string, on: unknown) => Promise<unknown>; retire?: (file: string, etag: string) => Promise<unknown>; approve?: (file: string, etag: string) => Promise<unknown>; restore?: (file: string, etag: string) => Promise<unknown>; caps?: unknown; notes?: (cursor: string) => Promise<{ items: LearningNote[]; total: number; next_cursor: string | null }>; log?: (cursor: string) => Promise<AgentLearning["log"]>; runsNext?: string | null; update?: (body: unknown, etag: string | null) => Promise<{ agent: Agent; etag: string }>; promote?: (name: string, key: string) => Promise<Agent>; promotions?: () => Promise<Promotions>; loop?: () => Promise<LearningLoop>; cost?: () => Promise<LearningCost> };
 async function open(a: Agent, fake: Fake = {}, props: Partial<LearningProps> = {}) {
   const calls: string[] = [];
   const agents: Agent[] = [];
@@ -69,7 +69,10 @@ async function open(a: Agent, fake: Fake = {}, props: Partial<LearningProps> = {
     capabilities: async () => { calls.push("capabilities"); return fake.caps ?? {}; },
     // The cost per run chart's read (CostPerRun.test.tsx draws it): no run yet.
     learnedWorkflowRevisions: async (_id: string, name: string) => ({ name, revisions: [], total: 0, truncated: false }),
-    learningCost: async () => ({ agent: a.agent_id, runs: [], total_runs: 0, unknown_cost_runs: 0, unknown_path_runs: 0, summary: { takeover: null, before: null, after: null, times_cheaper: null }, workflows: [] }),
+    learningCost: async () => (fake.cost ?? (async () => ({ agent: a.agent_id, runs: [], total_runs: 0, unknown_cost_runs: 0, unknown_path_runs: 0, summary: { takeover: null, before: null, after: null, times_cheaper: null }, workflows: [] })))(),
+    // The loop's reads: none yet unless a test gives them; a failed one leaves its part out.
+    learningPromotions: async () => (fake.promotions ?? (async () => ({ agent: a.agent_id, promotions: [] })))(),
+    learningLoop: async () => (fake.loop ?? (async () => ({ agent: a.agent_id, compiles: [], guards: [] })))(),
     learningEvals: async () => ({ agent: a.agent_id, latest: null, evals: [] }),
     promoteWorkflow: async (_id: string, name: string, key: string) => { calls.push(`promote ${name}`); return (fake.promote ?? (async (n: string) => ({ ...a, agent_id: n, kind: "workflow", definition: { version: 1, name: n, workflow: {}, harness: "pi", skills: [], tools: [] } } as Agent)))(name, key); },
   };
@@ -1546,4 +1549,35 @@ describe("the before and after of an agent that learned only skills or workflows
       expect(t.text()).not.toContain("the next run starts with nothing learned");
     });
   }
+});
+
+describe("the loop on the Learning tab", () => {
+  const compiled = (name: string, file: string) => note(file, name, { text: `---\nname: ${name}\ndescription: d\ntype: feedback\ncompiled_into: sort-invoice\n---\nBody.\n` });
+  it("says on a note which workflow it was compiled into, and the story counts it", async () => {
+    const t = await open(agent(true), { learning: async () => view({ notes: { items: [compiled("Vendor codes", "vendor-codes.md"), note(MINE, "Keep it to three lines")], total: 2, next_cursor: null } }) });
+    expect(t.card("Vendor codes")!.textContent).toContain("Compiled into sort-invoice");
+    expect(t.card("Keep it to three lines")!.textContent).not.toContain("Compiled into");
+    const notes = t.host.querySelector('[data-testid="stage-notes"]')!;
+    expect(notes.textContent).toContain("2 notes");
+    expect(notes.textContent).toContain("1 compiled into a workflow");
+  });
+  it("early: says how far it is from a compile, at 3 notes or 5 runs", async () => {
+    const t = await open(agent(true), { learning: async () => view({ notes: { items: [note(MINE, "Keep it to three lines")], total: 1, next_cursor: null } }) });
+    const stage = t.host.querySelector('[data-testid="stage-compiled"]')!;
+    expect(stage.getAttribute("data-state")).toBe("now");
+    expect(stage.textContent).toContain("1 of 3 notes");
+    expect(stage.textContent).toContain("a workflow compiles at 3 notes or 5 runs");
+  });
+  it("a draft the checks refused shows in the feed in their words; a failed loop read leaves the feed out, not the tab", async () => {
+    const loop = { agent: "refunds", guards: [], compiles: [{ run_id: "run-x", at: "2026-11-05T10:00:00Z", workflow: null, from_notes: ["keep-it-to-three-lines"], attempts: [{ ok: false, errors: ["root: no node"] }], digest: null, promoted: null, draft_errors: ["the draft did not parse"], withheld: false }] } as LearningLoop;
+    const t = await open(agent(true), { loop: async () => loop });
+    const feed = t.host.querySelector('[data-testid="loop-feed"]')!;
+    expect(feed.textContent).toContain("Draft failed");
+    expect([...feed.querySelectorAll('[data-testid="draft-errors"] li')].map((li) => li.textContent)).toEqual(["Attempt 1: root: no node", "the draft did not parse"]);
+    expect(t.host.querySelector('[data-testid="stage-compiled"]')!.getAttribute("data-state")).toBe("warn");
+    act(() => root!.unmount());
+    const broken = await open(agent(true), { loop: async () => { throw new Error("down"); } });
+    expect(broken.host.querySelector('[data-testid="loop-feed"]')).toBeNull();
+    expect(broken.card("Keep it to three lines")).toBeTruthy();
+  });
 });

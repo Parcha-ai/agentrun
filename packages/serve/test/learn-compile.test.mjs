@@ -165,9 +165,9 @@ test("compileTurn: one that never passes stops after 1 + 3 attempts with its err
   assert.deepEqual(silent.record.attempts, [{ ok: false, errors: ["the turn ended before it answered"] }]);
 });
 
-test("each compile attempt is its own request id: never answered from the look-back's submission or an earlier attempt", () => {
-  const ids = [reflectRequestId("run-1"), reflectRequestId("run-1", true), reflectRequestId("run-1", false, "compile-1"), reflectRequestId("run-1", true, "compile-2")];
-  assert.deepEqual(ids, ["learn-reflect-run-1", "learn-reflect-run-1:again", "learn-reflect-run-1:compile-1", "learn-reflect-run-1:compile-2"]);
+test("each compile attempt is its own request id: never answered from the look-back's submission, an earlier attempt or an earlier round's", () => {
+  const ids = [reflectRequestId("run-1"), reflectRequestId("run-1", true), reflectRequestId("run-1", false, 1, "compile-1"), reflectRequestId("run-1", true, 1, "compile-2"), reflectRequestId("run-1", false, 2, "compile-1")];
+  assert.deepEqual(ids, ["learn-reflect-run-1", "learn-reflect-run-1:again", "learn-reflect-run-1:compile-1", "learn-reflect-run-1:compile-2", "learn-reflect-run-1:round-2:compile-1"]);
 });
 
 test("the three-offers draft ask is gone: no DRAFT_AFTER_RUNS, no draftForOf, and the look-back's prompt keeps no workflow", () => {

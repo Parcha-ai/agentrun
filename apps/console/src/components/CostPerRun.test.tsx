@@ -5,7 +5,7 @@ import { CostChart, CostPerRun, HOW } from "./CostPerRun";
 import SAMPLE from "./CostPerRun.sample.json";
 import { ClientError, type Client } from "@/lib/client";
 import { blocksOf, blockSizeOf, level, nearest, niceTop, pct, plotted, rollingMean, runTicks, timesOf, usd, windowOf, yTicksOf, yTopOf } from "@/lib/costPerRun";
-import type { CostRun, LearningCost } from "@/lib/v2";
+import type { CostRun, LearningCost, Promotion } from "@/lib/v2";
 
 // The cost per run chart (GET /v2/agents/{id}/learning/cost): the invented invoice-sorter agent's 80 runs, its cost
 // falling from about $0.89 by hand to about $0.13 once its learned workflow takes over at run 21.
@@ -15,10 +15,10 @@ const sample = SAMPLE as unknown as LearningCost;
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.innerHTML = ""; });
 
-function draw(data: LearningCost, on = true, width = 900) {
+function draw(data: LearningCost, on = true, width = 900, promotions: Promotion[] = []) {
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
-  act(() => root!.render(createElement(CostChart, { data, on, width })));
+  act(() => root!.render(createElement(CostChart, { data, on, width, promotions })));
   return host;
 }
 const text = (host: HTMLElement) => host.textContent ?? "";
@@ -87,10 +87,10 @@ describe("the execution mix's arithmetic", () => {
 describe("CostChart", () => {
   it("shows the drop: the levels before and after, the takeover, and how many times cheaper", () => {
     const host = draw(sample);
-    expect(text(host)).toContain("$0.890 a run before learning, $0.128 after takeover: 7.0x cheaper");
+    expect(text(host)).toContain("$0.890 a run before takeover, $0.128 all-in after: 7.0x cheaper · 5% handed back since");
     expect(text(host)).toContain("Workflow took over, run 21");
     expect(text(host)).toContain("After takeover $0.128 · 7.0x cheaper");
-    expect(text(host)).toContain("Before learning $0.890");
+    expect(text(host)).toContain("Before takeover $0.890");
     expect(text(host)).toContain("Rolling mean of 5 runs");
     expect(text(host)).toContain("1 run costs more than");
     expect(text(host)).toContain("1 run's cost is not known: left out.");
@@ -242,5 +242,37 @@ describe("CostPerRun", () => {
       expect(!!host.querySelector('[data-testid="cost-per-run"]'), `shown for ${answer.runs.length} runs`).toBe(shown);
       act(() => root!.unmount()); root = undefined; document.body.innerHTML = "";
     }
+  });
+});
+
+describe("the loop on the cost chart", () => {
+  const at = (n: number) => sample.runs.find((r) => r.n === n)!.started_at;
+  const record = (over: Partial<Promotion>): Promotion => ({ workflow: "sort-invoice", digest: "a12596c0a12596c0", at: at(18), decided: "replaying", source: "replay", reason: "replaying on graded inputs", ...over } as Promotion);
+  const promotions = [
+    record({}),
+    record({ decided: "promote", at: at(21), replay: { of: [], n: 20, agree: 19, agent_acc: 0.9, wf_acc: 0.95, delta: 0.05, handed_back: 2 } }),
+    record({ decided: "promote", source: "refit", digest: "1a48d30c1a48d30c", at: at(51), refit: { from: "a12596c0a12596c0", guards: [{ node: "classify", was: 0.7, threshold: 0.8 }] } }),
+  ];
+  it("flags each promotion record on its run, lettered, with a key and a table", () => {
+    const host = draw(sample, true, 900, promotions);
+    expect([...host.querySelectorAll('[data-testid^="marker-"]:not([data-testid^="marker-key"]):not([data-testid="marker-table"])')].map((g) => g.getAttribute("data-testid"))).toEqual(["marker-revision", "marker-promote", "marker-refit"]);
+    expect(host.querySelector('[data-testid="marker-key-promote"]')?.textContent).toBe("PPromoted 1");
+    const rows = [...host.querySelectorAll('[data-testid="marker-table"] tbody tr')].map((r) => r.textContent);
+    expect(rows[1]).toContain("21P Promotedsort-invoicea12596cReplay on 20 graded inputs: workflow 95% vs agent 90% (+5 pts), 2 handed back");
+    expect(text(host)).toContain("Markers: New revision · run 18");
+  });
+  it("draws no marker lane without records", () => {
+    const host = draw(sample);
+    expect(host.querySelector('[data-testid="marker-promote"]')).toBeNull();
+    expect(host.querySelector('[data-testid="marker-table"]')).toBeNull();
+  });
+  it("draws a replay run as a hollow ring out of the mean, and counts the unknown runs", () => {
+    const runs = [run(1, "agent", 1), run(2, "agent", 1), run(3, "replay", 9), run(4, "workflow", 0.1), run(5, "agent", null)];
+    const host = draw({ ...series(runs), unknown_path_runs: 2 });
+    expect(host.querySelectorAll("circle.fill-none.stroke-muted-foreground")).toHaveLength(1);
+    expect(text(host)).toContain("replay runs (hollow) left out");
+    expect(text(host)).toContain("3 runs unknown");
+    const path = host.querySelector("svg path.stroke-foreground[fill='none']")?.getAttribute("d") ?? "";
+    expect(path.split(/[ML]/).filter(Boolean)).toHaveLength(3);
   });
 });

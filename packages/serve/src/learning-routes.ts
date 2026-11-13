@@ -17,6 +17,7 @@
 // written) is cut of it, a file's name holding one reads "[redacted]" whole, and a diff's file holding one is withheld.
 import type { DraftAsk } from "./learn/skills.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { createHash } from "node:crypto";
 import { approve, buildIndex, CAPS, checkNote, draftProblems, frontKeys, INDEX_FILE, INDEX_LINES, isHeld, LEARNED_KEYS, type LearnedNote, learnedName, learnedPlace, learnedStatus, NOTE_FILE, NOTE_STATUSES, parseNoteFile, type Problem, printable, released, retire, retiredLearned, skillProblems, SKILLS_DIR, supersede, UNCLEAR_FRONT, unstorable, WORKFLOWS_DIR, unclearFront, restorable, restore, restoredLearned } from "./learn/index.js";
 import type { DraftDecisions } from "./learn/skills.js";
 import { blobOid, type FolderChange, FolderBusy, FolderRefused, FolderTooLarge, FolderUnreadable, heldOnMain, isBodyMismatch, type PersonKind, readLearning, PATCH_CAP, readRunDiff, readSnapshot, runDiffKey, type SnapChange, type SnapHistory, type SnapLearned, type SnapNote, type Snapshot, snapshotNotes, textsAt, writeLearning } from "./learn/folder.js";
@@ -259,7 +260,7 @@ const REVISIONS_MAX = 50;
 const REVISIONS_DEFAULT = 20;
 /** One revision of a learned workflow: a commit on main that changed its workflow.json, with that commit's text (null
  *  when the commit holds no such file: it was deleted there), cut of the host's secrets. */
-type WorkflowRevision = { commit: string; at: string; by: Change["by"]; reason: string; text: string | null };
+type WorkflowRevision = { commit: string; at: string; by: Change["by"]; reason: string; text: string | null; digest: string | null };
 
 /** GET /agents/{id}/learning/workflows/{name}/revisions?limit=: the latest revisions of learned workflow `name` (the
  *  commits on main's log that changed `workflows/<name>/workflow.json`), oldest first, each with the workflow's text at
@@ -279,7 +280,10 @@ export async function workflowRevisions(data: string, agentId: string, name: str
     const revisions: WorkflowRevision[] = [];
     for (const change of latest) {
       const texts = await textsAt(ws, change.commit, [path]).catch((error: unknown) => { throw routeFailure(error); });
-      revisions.push({ commit: change.commit, at: change.at, by: change.by, reason: shown.text(change.reason), text: texts?.[path] === undefined ? null : shown.text(texts[path]!) });
+      const raw = texts?.[path];
+      // Its digest, read from the text as it is (workflow-first.ts workflowDigest's): the one a run's metrics and the
+      // promotion records name, so a revision's runs, guards and promotion are found by it.
+      revisions.push({ commit: change.commit, at: change.at, by: change.by, reason: shown.text(change.reason), text: raw === undefined ? null : shown.text(raw), digest: raw === undefined ? null : createHash("sha256").update(raw).digest("hex").slice(0, 16) });
     }
     return { revisions, total: touched.length, truncated: snapshot.log_more };
   }, () => undefined);

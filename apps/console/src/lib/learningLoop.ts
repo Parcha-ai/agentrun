@@ -1,0 +1,192 @@
+// The self-learning loop as the Learning tab tells it: the agent learned notes, compiled them into a workflow, the
+// workflow took over (promoted by replay on graded inputs), and runs got cheaper, with where it is unsure (each guarded
+// step's hand-backs and p). The arithmetic here reads the server's records only (GET .../learning/cost, .../promotions,
+// .../loop, .../workflows/{name}/revisions); nothing is simulated and nothing says more than they do.
+import type { CostRun, LearningCost, LearningLoop, LoopGuard, Promotion } from "./v2";
+
+/** When a job compiles into a workflow (serve learn/compile.ts COMPILE_AFTER_NOTES, COMPILE_AFTER_RUNS): at this many
+ *  active notes, or this many completed runs, with no workflow yet. */
+export const COMPILE_AT_NOTES = 3;
+export const COMPILE_AT_RUNS = 5;
+/** A takeover's "N times cheaper" needs this many runs after it (serve learning-cost.ts CHEAPER_AFTER_RUNS). */
+export const CHEAPER_AFTER = 20;
+
+/** A marker on the cost chart's run axis, from a promotion record: a new revision replaying, promoted, held, or refit. */
+export type MarkerKind = "revision" | "promote" | "hold" | "refit";
+export type Marker = { kind: MarkerKind; n: number; at: string; workflow: string; digest: string; reason: string; record: Promotion };
+export const MARKER_WORDS: Record<MarkerKind, string> = { revision: "New revision", promote: "Promoted", hold: "Held", refit: "Refit" };
+/** One letter per kind, drawn in the marker's flag so a kind is never told by colour alone. */
+export const MARKER_LETTER: Record<MarkerKind, string> = { revision: "R", promote: "P", hold: "H", refit: "F" };
+
+/** A promotion record's kind of marker: a refit's own; a replay that started, a new revision; else its decision. */
+export const kindOf = (record: Promotion): MarkerKind => (record.source === "refit" ? "refit" : record.decided === "replaying" ? "revision" : record.decided);
+
+/** Each promotion record on the run axis: at the first run (of `runs`, in order) that started at or after it, the run it
+ *  first bore on. One newer than the last run is left out (no run of the axis is its), and so is one older than the first
+ *  run read. Two records of one kind on one run read as one, the newest. */
+export function markersOf(runs: readonly CostRun[], records: readonly Promotion[]): Marker[] {
+  if (!runs.length) return [];
+  const starts = runs.map((r) => Date.parse(r.started_at));
+  const first = starts[0]!;
+  const out = new Map<string, Marker>();
+  for (const record of records) {
+    const t = Date.parse(record.at);
+    if (!Number.isFinite(t) || t < first - 1) continue;
+    const i = starts.findIndex((s) => s >= t);
+    if (i < 0) continue;
+    const kind = kindOf(record);
+    const n = runs[i]!.n;
+    out.set(`${kind}:${n}`, { kind, n, at: record.at, workflow: record.workflow, digest: record.digest, reason: record.reason, record });
+  }
+  return [...out.values()].sort((a, b) => a.n - b.n);
+}
+
+/** A run that counts in what a job costs: every run but a replay (a revision run alone on a graded input before it serves). */
+export const counted = (r: CostRun) => r.path !== "replay";
+
+/** How often the workflow handed the run back since it took over: of the runs it ran first on (it answered alone, or
+ *  handed back), the share handed back. Null before a takeover or with none since. */
+export function handBacks(runs: readonly CostRun[], takeover: number | null): { ran: number; back: number } | null {
+  if (takeover === null) return null;
+  const since = runs.filter((r) => r.n >= takeover && (r.path === "workflow" || r.path === "handed_back"));
+  return since.length ? { ran: since.length, back: since.filter((r) => r.path === "handed_back").length } : null;
+}
+
+/** The newest promotion record of one revision (`workflow` at `digest`): what it is now. */
+export const recordOf = (records: readonly Promotion[], workflow: string, digest: string | null): Promotion | undefined =>
+  digest === null ? undefined : [...records].reverse().find((r) => r.workflow === workflow && r.digest === digest);
+
+/** A revision's standing in words a person reads: Serving, Held, Replaying, or not decided yet; for a revision that is not
+ *  the newest, Served once it was promoted, and Refit when a threshold refit of it serves in its place (`refit`). */
+export type Standing = { word: "Serving" | "Served" | "Refit" | "Held" | "Replaying" | "Not decided"; tone: "success" | "warning" | "active" | "muted" };
+export function standingOf(record: Promotion | undefined, { newest = true, refit }: { newest?: boolean; refit?: Promotion } = {}): Standing {
+  if (refit) return { word: "Refit", tone: "muted" };
+  if (!record) return { word: "Not decided", tone: "muted" };
+  if (record.decided === "promote") return newest ? { word: "Serving", tone: "success" } : { word: "Served", tone: "muted" };
+  if (record.decided === "hold") return { word: "Held", tone: "warning" };
+  return { word: "Replaying", tone: "active" };
+}
+
+/** The refit that replaced a revision (`workflow` at `digest`): a promoted record made from it, the newest. */
+export const refitOf = (records: readonly Promotion[], workflow: string, digest: string | null): Promotion | undefined =>
+  digest === null ? undefined : [...records].reverse().find((r) => r.workflow === workflow && r.source === "refit" && r.decided === "promote" && r.refit?.from === digest);
+
+const pctOf = (v: number) => `${Math.round(v * 100)}%`;
+const pts = (delta: number) => `${delta >= 0 ? "+" : ""}${Math.round(delta * 1000) / 10} pts`;
+
+/** A record's numbers in one line: "Replay on 20 graded inputs: workflow 95% vs agent 94% (+1 pts), 2 handed back". A
+ *  record without a replay (a dry run) says its reason. */
+export function replayLine(record: Promotion): string {
+  const r = record.replay;
+  if (!r || !r.n) return record.reason;
+  const how = record.source === "refit" ? "Refit on" : record.source === "graded" ? "Checked on" : "Replay on";
+  return `${how} ${r.n} graded ${r.n === 1 ? "input" : "inputs"}: workflow ${pctOf(r.wf_acc)} vs agent ${pctOf(r.agent_acc)} (${pts(r.delta)}), ${r.handed_back} handed back`;
+}
+
+/** A guarded step as a workflow's JSON says it: by label (the guard rows' `node`), its signal and threshold. */
+export type StepGuard = { label: string; signal: "self" | "jev" | "both"; threshold: number; fitted: boolean };
+
+/** Each node of a workflow document with a guard and a label, in document order (serve learn/promote.ts walkGuards). */
+export function guardsOfText(text: string | null): StepGuard[] {
+  const out: StepGuard[] = [];
+  let doc: unknown;
+  try { doc = text === null ? null : JSON.parse(text); } catch { return out; }
+  const walk = (node: unknown): void => {
+    if (Array.isArray(node)) { node.forEach(walk); return; }
+    if (!node || typeof node !== "object") return;
+    const o = node as Record<string, unknown>;
+    const g = o.guard as Record<string, unknown> | undefined;
+    if (typeof o.label === "string" && g && typeof g === "object" && !Array.isArray(g) && (g.signal === "self" || g.signal === "jev" || g.signal === "both") && typeof g.threshold === "number") {
+      out.push({ label: o.label, signal: g.signal, threshold: g.threshold, fitted: !!g.fit });
+    }
+    for (const [k, v] of Object.entries(o)) if (k !== "guard") walk(v);
+  };
+  walk(doc);
+  return out;
+}
+
+/** A guard's signal in words. */
+export const SIGNAL_WORDS: Record<StepGuard["signal"], string> = { self: "its own confidence", jev: "Jev", both: "its own confidence and Jev" };
+
+/** A step's p in bins of `width` from 0 to 1: per bin, the runs graded right, graded wrong and not graded (a hand-back
+ *  read nothing, a null p is the lowest bin: a missing signal always hands back). */
+export type Bin = { from: number; to: number; right: number; wrong: number; ungraded: number };
+export function binsOf(points: LoopGuard["points"], width = 0.1): Bin[] {
+  const count = Math.round(1 / width);
+  const bins: Bin[] = Array.from({ length: count }, (_, i) => ({ from: i * width, to: (i + 1) * width, right: 0, wrong: 0, ungraded: 0 }));
+  for (const point of points) {
+    const i = point.p === null ? 0 : Math.min(count - 1, Math.max(0, Math.floor(point.p / width + 1e-9)));
+    const bin = bins[i]!;
+    if (point.correct === true) bin.right += 1;
+    else if (point.correct === false) bin.wrong += 1;
+    else bin.ungraded += 1;
+  }
+  return bins;
+}
+
+/** A step's guard record for one revision (its digest), when that revision ran. */
+export const guardFor = (loop: LearningLoop | null, workflow: string, digest: string | null, label: string): LoopGuard | undefined =>
+  loop && digest ? loop.guards.find((g) => g.workflow === workflow && g.digest === digest && g.node === label) : undefined;
+
+/** The workflow a note was compiled into, from its front matter (`compiled_into: <workflow>`): null when none. */
+export function compiledInto(text: string): string | null {
+  const head = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text);
+  if (!head) return null;
+  const line = head[1]!.split(/\r?\n/).find((l) => /^compiled_into\s*:/.test(l));
+  const value = line?.replace(/^compiled_into\s*:\s*/, "").trim().replace(/^["']|["']$/g, "");
+  return value ? value : null;
+}
+
+/** Where the loop stands, as the story strip says it: each stage's state and its words, and what happens next. */
+export type Stage = { key: "notes" | "compiled" | "took_over" | "cheaper" | "unsure"; title: string; value: string; detail: string; state: "done" | "now" | "later" | "warn" | "watch" };
+export function storyOf(input: {
+  notes: number; compiledNotes: number; runs: number; workflows: { name: string; status: string }[];
+  cost: LearningCost | null; promotions: readonly Promotion[]; loop: LearningLoop | null;
+}): Stage[] {
+  const { notes, compiledNotes, runs, workflows, cost, promotions, loop } = input;
+  const active = workflows.filter((w) => w.status === "active");
+  const failedCompile = loop?.compiles.find((c) => c.digest === null && (c.draft_errors.length > 0 || c.attempts.length > 0));
+  // The newest compile that wrote a workflow the checks passed (a later refused draft says so in the feed).
+  const lastCompile = loop?.compiles.find((c) => c.digest !== null);
+  const s = cost?.summary;
+  const back = cost && s?.takeover ? handBacks(cost.runs, s.takeover.n) : null;
+  const newest = promotions.at(-1);
+  const stages: Stage[] = [];
+  stages.push({
+    key: "notes", title: "Learned", value: notes === 1 ? "1 note" : `${notes} notes`,
+    detail: compiledNotes ? `${compiledNotes} compiled into a workflow` : notes ? "kept from its runs, read by every later run" : "none yet: a run keeps what it learns at its end",
+    state: notes ? "done" : "now",
+  });
+  if (active.length || (lastCompile && lastCompile.digest)) {
+    const name = active[0]?.name ?? lastCompile?.workflow ?? "a workflow";
+    stages.push({ key: "compiled", title: "Compiled", value: name, detail: lastCompile ? `from ${lastCompile.from_notes.length} ${lastCompile.from_notes.length === 1 ? "note" : "notes"}, ${lastCompile.attempts.length} ${lastCompile.attempts.length === 1 ? "attempt" : "attempts"}` : "a learned workflow", state: "done" });
+  } else if (failedCompile) {
+    stages.push({ key: "compiled", title: "Compile", value: "Draft failed", detail: `${failedCompile.attempts.length} ${failedCompile.attempts.length === 1 ? "attempt" : "attempts"}, the checks refused it: it tries again on a later run`, state: "warn" });
+  } else {
+    stages.push({ key: "compiled", title: "Compile", value: "Not yet", detail: `${notes} of ${COMPILE_AT_NOTES} notes, ${Math.min(runs, COMPILE_AT_RUNS)} of ${COMPILE_AT_RUNS} runs: a workflow compiles at ${COMPILE_AT_NOTES} notes or ${COMPILE_AT_RUNS} runs`, state: notes || runs ? "now" : "later" });
+  }
+  if (s?.takeover) {
+    stages.push({ key: "took_over", title: "Took over", value: `Run ${s.takeover.n}`, detail: newest?.replay?.n ? replayLine(newest) : newest ? newest.reason : "the first run a learned workflow finished alone", state: newest?.decided === "hold" ? "warn" : "done" });
+  } else if (newest) {
+    const st = standingOf(newest);
+    stages.push({ key: "took_over", title: "Take over", value: st.word, detail: newest.decided === "replaying" ? "replaying on graded inputs before it serves; the agent takes the runs meanwhile" : replayLine(newest), state: newest.decided === "hold" ? "warn" : "now" });
+  } else {
+    stages.push({ key: "took_over", title: "Take over", value: "Not yet", detail: "a compiled workflow replays on graded runs, then serves first when it does as well as the agent", state: "later" });
+  }
+  if (s?.after && s.before) {
+    const words = `${dollars(s.before.mean_usd)} a run by the agent, ${dollars(s.after.mean_usd)} all-in since`;
+    stages.push({ key: "cheaper", title: "Cheaper", value: s.times_cheaper !== null ? `${timesWord(s.times_cheaper)} cheaper` : `${s.after.runs} ${s.after.runs === 1 ? "run" : "runs"} so far`, detail: s.times_cheaper !== null ? words : `${words}; how many times cheaper shows after ${CHEAPER_AFTER} runs`, state: s.times_cheaper !== null ? "done" : "now" });
+  } else {
+    stages.push({ key: "cheaper", title: "Cheaper", value: "Not yet", detail: "once a workflow takes over, each run's all-in cost against before", state: "later" });
+  }
+  const shaky = (loop?.guards ?? []).filter((g) => g.runs > 0).sort((a, b) => b.escalated / b.runs - a.escalated / a.runs)[0];
+  if (back || shaky) {
+    const rate = back ? `${Math.round((back.back / back.ran) * 100)}% handed back` : "no run since";
+    stages.push({ key: "unsure", title: "Unsure", value: rate, detail: shaky ? `most at "${shaky.node}": ${shaky.escalated} of ${shaky.runs} under ${shaky.threshold.toFixed(2)}` : `of ${back!.ran} runs it ran first`, state: back && back.back / back.ran > 0.25 ? "warn" : "watch" });
+  }
+  return stages;
+}
+
+/** A dollar level as the chart says it (costPerRun.ts level): three figures under a dollar. */
+const dollars = (v: number) => (v === 0 ? "$0" : v < 0.0001 ? "<$0.0001" : v >= 1 ? `$${v.toFixed(2)}` : `$${v.toPrecision(3)}`);
+const timesWord = (ratio: number) => { const t = Math.round(ratio * 10) / 10; return `${t >= 10 ? Math.round(ratio) : t.toFixed(1)}x`; };

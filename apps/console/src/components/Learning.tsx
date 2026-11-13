@@ -7,6 +7,9 @@ import { problem, ProblemCard } from "@/components/learningProblem";
 import { CostPerRun } from "@/components/CostPerRun";
 import { HeldOutTest } from "@/components/HeldOutTest";
 import { WorkflowReplay } from "@/components/WorkflowReplay";
+import { LoopFeed } from "@/components/LoopFeed";
+import { LoopStory } from "@/components/LoopStory";
+import { compiledInto, storyOf } from "@/lib/learningLoop";
 import { LearningSwitch } from "@/components/LearningSwitch";
 import { GraphLegend, WorkflowGraph } from "@/components/WorkflowGraph";
 import { Banner } from "@/components/ui/banner";
@@ -23,7 +26,7 @@ import { keeper } from "@/lib/idempotency";
 import type { Places } from "@/lib/place";
 import { metaOf } from "@/lib/runGraph";
 import { cn } from "@/lib/utils";
-import type { Run } from "@/lib/v2";
+import type { LearningCost, LearningLoop, Promotion, Run } from "@/lib/v2";
 
 /** `server`: the server's own learning switch (capabilities `features.learning`); "off" means no run learns there.
  *  `places`: the server's places (capabilities `places`), for where an agent that names no place runs.
@@ -49,6 +52,11 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places, on
   const [view, setView] = useState<AgentLearning | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [runs, setRuns] = useState<Run[]>([]);
+  // The loop's own reads, shared by the story, the cost chart, the workflow card and the feed: a read that fails leaves
+  // its part out (no marker, no standing, no feed), never the tab.
+  const [promotions, setPromotions] = useState<Promotion[]>([]);
+  const [loop, setLoop] = useState<LearningLoop | null>(null);
+  const [cost, setCost] = useState<LearningCost | null>(null);
   const [later, setLater] = useState<{ items: LearningNote[]; cursor: string | null; error?: unknown; pages: number }>({ items: [], cursor: null, pages: 0 });
   // The changes past the view's first page, read only while a note's source is not yet known.
   const [olderLog, setOlderLog] = useState<{ items: LearningChange[]; cursor: string | null; pages: number }>({ items: [], cursor: null, pages: 0 });
@@ -68,6 +76,9 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places, on
     }, (e) => { if (n === asked.current) setError(e ?? new Error("unknown")); });
     // The agent's latest runs: what each read and kept, the titles a note's source is named by, and the drops.
     v2.listAgentRuns(agent.agent_id, 50, null, !!agent.archived_at).then((r) => { if (n === asked.current) { setRuns(r.runs); } }, () => {});
+    // A client without the read (a fake in a test) is a failed read, never a thrown render.
+    Promise.resolve().then(() => v2.learningPromotions(agent.agent_id)).then((r) => { if (n === asked.current) setPromotions(r.promotions); }, () => {});
+    Promise.resolve().then(() => v2.learningLoop(agent.agent_id)).then((r) => { if (n === asked.current) setLoop(r); }, () => {});
     return learning;
   };
   useEffect(() => { void read(); }, [v2, agent.agent_id]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -141,6 +152,11 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places, on
     );
   }, [view, unknown, olderLog.cursor]); // eslint-disable-line react-hooks/exhaustive-deps
   const lookedBack = runs.filter((r) => r.learning && (r.learning.state === "merged" || r.learning.state === "dropped")).length;
+  // The loop at a glance: notes, the compile, the takeover, the money, where it is unsure; each says what comes next.
+  const story = storyOf({
+    notes: active.length, compiledNotes: all.filter((x) => x.status !== "retired" && compiledInto(x.text) !== null).length,
+    runs: cost?.total_runs ?? runs.filter((r) => r.status === "completed").length, workflows, cost, promotions, loop,
+  });
 
   if (error && !view) return <ProblemCard problem={problem(error, "what this agent learned")} onRetry={read} className="" />;
   if (!view) return <Skeleton />;
@@ -153,8 +169,10 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places, on
     <div className="space-y-6">
       {stale}
       <Empty on={on} lookedBack={lookedBack} switchRow={switchRow(true)} onAdd={readOnly ? undefined : () => setAdding(true)} />
+      {on && <LoopStory stages={story} />}
       <HeldOutTest v2={v2} agentId={agent.agent_id} quiet />
-      <CostPerRun v2={v2} agentId={agent.agent_id} on={on} quiet />
+      <CostPerRun v2={v2} agentId={agent.agent_id} on={on} quiet promotions={promotions} onCost={setCost} />
+      <LoopFeed loop={loop} promotions={promotions} />
       <NotKept runs={runs} />
     </div>
   );
@@ -177,10 +195,12 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places, on
           </ul>
         </section>
       )}
+      {/* The loop at a glance, under what waits for the owner (an action comes first). */}
+      <LoopStory stages={story} />
       <HeldOutTest v2={v2} agentId={agent.agent_id} />
       {shownImpact(view.impact) && <ImpactCard impact={view.impact} />}
-      <CostPerRun v2={v2} agentId={agent.agent_id} on={on} />
-      <WorkflowReplay v2={v2} agentId={agent.agent_id} workflows={workflows} />
+      <CostPerRun v2={v2} agentId={agent.agent_id} on={on} promotions={promotions} onCost={setCost} />
+      <WorkflowReplay v2={v2} agentId={agent.agent_id} workflows={workflows} promotions={promotions} loop={loop} />
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
         <div className="min-w-0 space-y-6">
         <section className="min-w-0 space-y-3" aria-label="Notes">
@@ -230,6 +250,7 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places, on
         </div>
         <aside className="min-w-0 space-y-6" aria-label="About learning">
           <Panel title="Learning">{switchRow(false)}</Panel>
+          <LoopFeed loop={loop} promotions={promotions} />
           <NotKept runs={runs} />
           <NextRun index={view.index} skills={skills.filter((s) => s.status === "active").map((s) => s.name)} off={!on || server === "off"} />
         </aside>
@@ -421,6 +442,8 @@ function NoteCard({ note, v2, agentId, readOnly, focused, from, runs, onChanged,
   // Its newest change by a person (or a run's other than the learning), as the server names it (last_change); none
   // when it names none.
   const person = lastChangeLine(note.last_change);
+  // The learned workflow this note was compiled into (its front matter's compiled_into), when one was.
+  const into = compiledInto(note.text);
   return (
     <article ref={ref} id={`note-${note.file}`} tabIndex={-1} aria-label={note.name} className={cn("border bg-card/40 outline-none focus-visible:border-primary transition-[border-color,box-shadow] duration-slow", flash && "border-primary ring-1 ring-primary")}>
       <header className="flex flex-col gap-x-3 gap-y-1 px-5 pt-4 sm:flex-row sm:items-start">
@@ -429,6 +452,7 @@ function NoteCard({ note, v2, agentId, readOnly, focused, from, runs, onChanged,
             <h3 className="min-w-0 break-words text-prose font-semibold leading-snug">{note.name}</h3>
             <Chip>{typeLabel(note.type)}</Chip>
             {note.origin === "you" && <Chip tone="muted">From you</Chip>}
+            {into && <Chip tone="success" label title={`This note went into the learned workflow ${into}`}>Compiled into {into}</Chip>}
             {saved && <span className="caps text-micro text-success-text" role="status">{saved}</span>}
           </div>
           <p className="mt-1 text-body text-muted-foreground">{note.description}</p>

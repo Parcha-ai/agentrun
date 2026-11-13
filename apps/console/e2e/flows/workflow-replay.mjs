@@ -18,7 +18,7 @@ const REVISIONS = [
   [{ run: "run_aaaaaaaa02" }, [SORT, step("check total", "Check the total against the lines.")]],
   [{ run: "run_aaaaaaaa03" }, [step("classify", "Sort the invoice into a ledger account by vendor."), step("check total", "Check the total against the lines.")]],
   [{ user: true }, [step("classify", "Sort the invoice into a ledger account by vendor."), step("check total", "Check the total against the lines."), step("file it", "Name the ledger account.")]],
-].map(([by, steps], i) => ({ commit: String(i + 1).repeat(40), at: new Date(Date.UTC(2026, 10, 3 + i, 14, 10)).toISOString(), by, reason: `Revision ${i + 1}, as the grader or a person said it.`, text: JSON.stringify(flow(steps)) }));
+].map(([by, steps], i) => ({ commit: String(i + 1).repeat(40), at: new Date(Date.UTC(2026, 10, 3 + i, 14, 10)).toISOString(), by, reason: `Revision ${i + 1}, as the grader or a person said it.`, text: JSON.stringify(flow(steps)), digest: String(i + 1).repeat(16) }));
 
 async function playToTheNewest(card, page, at) {
   await card.getByRole("button", { name: "Play the replay" }).focus();
@@ -26,7 +26,7 @@ async function playToTheNewest(card, page, at) {
   await card.getByText("Revision 4 of 4").waitFor({ timeout: 12_000 });
   check(await card.getByRole("button", { name: "Play the replay" }).isVisible(), `${at}: the replay did not stop on the newest revision`);
 }
-const tags = (page) => page.evaluate(() => [...document.querySelectorAll('[aria-label="How the workflow changed"] svg .tag')].map((t) => `${t.closest("g")?.getAttribute("data-path")}:${t.textContent}`));
+const tags = (page) => page.evaluate(() => [...document.querySelectorAll('[aria-label="Learned workflow"] svg .tag')].map((t) => `${t.closest("g")?.getAttribute("data-path")}:${t.textContent}`));
 
 export default {
   name: "workflow-replay",
@@ -49,7 +49,7 @@ export default {
         await page.setViewportSize({ width, height: 1100 });
         await page.goto(`${base}/#/agents/${encodeURIComponent(id)}/learning`);
         await page.reload();
-        const card = page.getByRole("region", { name: "How the workflow changed" });
+        const card = page.getByRole("region", { name: "Learned workflow" });
         await card.getByText("Revision 4 of 4").waitFor().catch(async (e) => { if (shots) await page.screenshot({ path: join(shots, "workflow-replay-failed.png"), fullPage: true }); throw e; });
         await page.evaluate(() => document.fonts.ready);
         check(await page.evaluate((t) => document.documentElement.classList.contains(t), theme), `${at}: the page is not in the ${theme} theme`);
