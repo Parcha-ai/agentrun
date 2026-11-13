@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## 0.1.0-beta.36 (2026-11-13)
+
+- Model defaults move to the current models. The OpenAI default (and OpenRouter's, for pi, codex and opencode) is now gpt-6.1-sol, where OpenRouter's was gpt-6-sol. The Claude Agent adapter's default is now claude-sonnet-5-5 (was claude-sonnet-4-5) and the Codex adapter's is openai/gpt-6-luna (was openai/gpt-5.4-mini). A host that relied on a default names its model; the READMEs' examples name the current ones.
+- The two harness adapters list `@parcha/agentrun-dsl` as a dev dependency, since only their tests import it, and serve's package keywords drop the retired `pi-durable`.
+
 ## 0.1.0-beta.35 (2026-11-11)
 
 - A capped run that reads screenshots is no longer refused at its cap after the first one. A model request's input bound counted an image's base64 as one token per byte, and then the image's billed maximum on top. A 1280x720 screenshot (about a megabyte of base64) read as some 1.3 million input tokens, so a Sonnet step under a $1.50 cap "needed at least $4.83" when Claude bills it a few cents.
