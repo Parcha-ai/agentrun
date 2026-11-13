@@ -8,18 +8,22 @@ export function answerRecord(text: string): { words: string; record: Record<stri
   const object = (raw: string): Record<string, unknown> | null => {
     try { const v: unknown = JSON.parse(raw); return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null; } catch { return null; }
   };
-  // The fenced block, read as serve's lastJsonBlock reads one (packages/serve/src/answer-json.ts): the last `json` block,
+  // The fenced block: the last block labeled `json` or unlabeled (the console has always shown an unlabeled one's fields),
   // opened by a line of three or more backticks or tildes (up to three spaces in) and closed by a line of the same
-  // character at least as long. It is the record only when it closes the answer.
+  // character at least as long. It is the record only when it closes the answer and its body is an object.
   const lines = answer.split("\n");
   let found: { open: number; end: number } | undefined;
+  // Every fenced block is walked whole (a block of another label, `sh`, is skipped with its closing fence, which would
+  // read as an unlabeled opener on its own); only the last one counts, and only when it is `json` or unlabeled.
   for (let i = 0; i < lines.length; i++) {
-    const fence = /^ {0,3}(`{3,}|~{3,})\s*json\s*$/i.exec(lines[i]!)?.[1];
-    if (!fence) continue;
+    const opened = /^ {0,3}(`{3,}|~{3,})([^`]*)$/.exec(lines[i]!);
+    if (!opened) continue;
+    const fence = opened[1]!;
     const closer = new RegExp(`^ {0,3}${fence[0] === "`" ? "`" : "~"}{${fence.length},}\\s*$`);
     const end = lines.findIndex((line, j) => j > i && closer.test(line));
     if (end < 0) break;
-    found = { open: i, end };
+    const label = opened[2]!.trim().toLowerCase();
+    found = label === "json" || label === "" ? { open: i, end } : undefined;
     i = end;
   }
   if (found && found.end === lines.length - 1) {

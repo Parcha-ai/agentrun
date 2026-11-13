@@ -95,6 +95,25 @@ describe("the closing record, wherever the answer's other blocks are", () => {
     });
   }
 
+  // The console showed an unlabeled block's fields before the fence rule was serve's: it still does, at any fence length.
+  for (const [what, open, close] of [
+    ["a plain three-backtick block", "```", "```"],
+    ["an unlabeled four-backtick block", "````", "````"],
+    ["an unlabeled tilde block", "~~~", "~~~"],
+  ] as const) {
+    it(`${what} with a JSON object reads as fields`, async () => {
+      const p = await report(`Here is the lead.\n\n${open}\n${JSON.stringify(RECORD, null, 2)}\n${close}`);
+      expect(p.fields(), "the fields").not.toBeNull();
+      expect(p.fields()!.textContent).toContain("Dana Whitfield");
+      expect(p.toggle()?.textContent).toBe("Show raw JSON");
+    });
+  }
+
+  it("an unlabeled closing block that is not a JSON object stays Markdown", async () => {
+    const p = await report("Run this:\n\n```\necho hi\n```");
+    expect(p.fields()).toBeNull();
+  });
+
   it("a shorter closing fence does not close a longer block: the answer stays Markdown", async () => {
     const p = await report(`Here:\n\n\`\`\`\`json\n${JSON.stringify(RECORD)}\n\`\`\``);
     expect(p.fields()).toBeNull();
