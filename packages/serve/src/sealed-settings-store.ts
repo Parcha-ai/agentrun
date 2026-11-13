@@ -164,6 +164,11 @@ class SealedSettingsOverStore {
     return this.unopened.has(pair(scope, field));
   }
 
+  /** The live scopes this store keeps (never a retired one), those whose values did not open here among them. */
+  scopes(): string[] {
+    return [...new Set([...Object.keys(this.opened), ...[...this.unopened].map((key) => key.slice(0, key.indexOf("\0")))])];
+  }
+
   /** A scope's settings gone (a deleted trigger's). Durable before it resolves. */
   remove(scope: string): Promise<void> {
     return this.serial(scope, () => this.removeNow(scope));
