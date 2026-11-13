@@ -161,13 +161,29 @@ export class McpServersOverStore {
       const name = String(body.name);
       const kept = await this.need(name);
       const url = new URL(kept.url);
-      return marked(kept.url, await this.listServer(url, await this.withAppToken(kept.auth, url, (await this.opened(name, kept, "name")).headers, stop), stop));
+      return marked(kept.url, await this.signInNoted(url, this.listServer(url, await this.withAppToken(kept.auth, url, (await this.opened(name, kept, "name")).headers, stop), stop), stop));
     }
     const { url, auth } = this.admit(body);
     // A github_app server's credential is a token of the App, minted here, as for a saved one: its static headers are optional.
     // A per_run server's are optional too: they only list its tools, for a server that lists them only to a caller it knows.
     if (auth.type !== "none" && auth.type !== "github_app" && auth.type !== "per_run" && !auth.headers) throw invalid([credentialMissing(auth.type, "A preview needs the credential it is to connect with.")]);
-    return marked(url.href, await this.listServer(url, await this.withAppToken(auth.type, url, auth.headers ?? {}, stop), stop));
+    return marked(url.href, await this.signInNoted(url, this.listServer(url, await this.withAppToken(auth.type, url, auth.headers ?? {}, stop), stop), stop));
+  }
+
+  /** `listing`, and when it is refused as a server that signs in with OAuth (auth_required, `auth: oauth`), whether that
+   *  sign-in can start with no Client ID entered (`details.oauth.registration`, McpSignIns.registration), so the console
+   *  asks for one up front. `stop`: the preview's, which cuts that discovery too. */
+  private async signInNoted(url: URL, listing: Promise<Listed>, stop?: AbortSignal): Promise<Listed> {
+    try {
+      return await listing;
+    } catch (error) {
+      const details = error instanceof ApiError && error.code === "auth_required" ? (error.extra.details as { auth?: string; oauth?: unknown } | undefined) : undefined;
+      if (details?.auth === "oauth") {
+        const registration = await this.signIns.registration(url, stop);
+        if (registration) details.oauth = registration;
+      }
+      throw error;
+    }
   }
 
   /** PUT: preview, then keep the server with the tools listed. A body with no credential keeps the sealed one, while the
