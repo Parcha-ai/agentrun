@@ -468,6 +468,7 @@ class ModalHost implements MachineHost {
 		try {
 			await sandbox.terminate();
 		} catch (error) {
+			if (codeOf(error) === "not_found") throw error;
 			const finished = await sandbox.poll().then(
 				(code) => code !== null,
 				(polled: unknown) => codeOf(polled) === "not_found",
