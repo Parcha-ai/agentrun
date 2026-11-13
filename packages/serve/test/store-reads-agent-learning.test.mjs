@@ -77,3 +77,20 @@ test("a run started from a seed of notes counts on the after side by the seed's 
   assert.equal(impact?.after.runs, 2, `both started from the seed's three notes: ${JSON.stringify(impact)}`);
   assert.equal(impact?.before.runs, 2);
 });
+
+test("runs that only use what the agent learned (learning: use, no proposal) count on the after side, with zero learning spend", async (t) => {
+  const { store, clock } = await storeOn(t);
+  await store.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read"], learning: true } });
+  await run(store, clock, { id: "r1", start: T0, seconds: 10, usd: 0.1 });
+  await run(store, clock, { id: "r2", start: T0 + 100_000, seconds: 20, usd: 0.3 });
+  // Two runs that used the seed's notes; a `use` run keeps no proposal.
+  const used = { given: [{ file: "a.md", name: "Alpha" }], seed: "a".repeat(40), section: "# Learned\n", seedNotes: 1, use: true };
+  await run(store, clock, { id: "r3", start: T0 + 1_000_000, seconds: 40, usd: 0.2, learning: used });
+  await run(store, clock, { id: "r4", start: T0 + 2_000_000, seconds: 60, usd: 0.4, learning: used });
+
+  const { impact } = await agentLearningOverStore(store, "agent-1");
+  assert.deepEqual(impact, {
+    before: { runs: 2, median_duration_s: 15, median_cost_usd: 0.2, cost_runs: 2, median_learning_usd: null },
+    after: { runs: 2, median_duration_s: 50, median_cost_usd: 0.3, cost_runs: 2, median_learning_usd: 0 },
+  });
+});
