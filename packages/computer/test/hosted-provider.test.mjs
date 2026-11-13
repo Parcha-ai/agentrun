@@ -630,6 +630,16 @@ test("connect checks hello against the provider: one that drifted is refused; a 
 	assert.equal((await provider.connect(ref)).error?.code, "refused");
 });
 
+test("connect to a machine the vendor reads as going (past its deadline or released, still being deleted) answers gone, not refused; releasing it again stays ok", async () => {
+	const { provider, fake } = setup();
+	const ref = made(await create(provider));
+	only(fake).state = "going";
+	const connected = await provider.connect(ref);
+	assert.equal(connected.error?.code, "gone");
+	assert.match(connected.error?.message ?? "", /going/);
+	assert.deepEqual(await provider.release(ref), { ok: true, value: undefined });
+});
+
 test("list finds this provider's machines by labels; attach by id or labels reads the spec back; one that drifted is refused and left running", async () => {
 	const { provider, fake } = setup();
 	const a = made(await create(provider, { ...SPEC, labels: { team: "a" } }));
