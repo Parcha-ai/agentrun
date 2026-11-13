@@ -81,6 +81,31 @@ test("process.start: a program that ends at once has its whole log, a missing on
 	c.close();
 });
 
+test("waitGroup: the process runs while a background job of its group runs, a signal reaches the job, and close() leaves nothing", async () => {
+	const c = computer();
+	const alive = (pid) => {
+		try {
+			process.kill(pid, 0);
+			return true;
+		} catch {
+			return false;
+		}
+	};
+	const started = await c.call("process.start", { argv: ["sh", "-c", "sleep 31 >/dev/null 2>&1 & echo $!"], cwd: "/workspace", waitGroup: true, orphans: "keep" });
+	assert.deepEqual(await c.call("process.wait", { id: started.id, timeoutMs: 600 }), { running: true, exitCode: null, signal: null }, "running while the job runs, though the shell exited");
+	const out = await c.call("process.read", { id: started.id, stream: "stdout", offset: 0 });
+	const sleepPid = Number(Buffer.from(out.data, "base64").toString().trim());
+	assert.ok(sleepPid > 0 && alive(sleepPid), "the job runs");
+	await c.call("process.signal", { id: started.id, signal: "TERM" });
+	assert.deepEqual(await c.call("process.wait", { id: started.id, timeoutMs: 10_000 }), { running: false, exitCode: 0, signal: null }, "the signal reached the job, and the end is the program's");
+	const second = await c.call("process.start", { argv: ["sh", "-c", "sleep 32 >/dev/null 2>&1 & echo $!"], cwd: "/workspace", waitGroup: true, orphans: "keep" });
+	assert.equal((await c.call("process.wait", { id: second.id, timeoutMs: 400 })).running, true);
+	const pid2 = Number(Buffer.from((await c.call("process.read", { id: second.id, stream: "stdout", offset: 0 })).data, "base64").toString().trim());
+	c.close();
+	for (let i = 0; i < 100 && alive(pid2); i++) await new Promise((resolve) => setTimeout(resolve, 50));
+	assert.equal(alive(pid2), false, "close() killed the background job");
+});
+
 test("a cancel reaches a request of its own connection, not another connection's with the same id", async () => {
 	const root = realpathSync(mkdtempSync(join(tmpdir(), "fake-computerd-serve-")));
 	dirs.push(root);

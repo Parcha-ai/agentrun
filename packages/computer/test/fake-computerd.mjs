@@ -300,12 +300,38 @@ export function computerd({ mounts, root, env = {} }) {
 			};
 			// The program's own exit ends the process: what it left running is killed unless orphans are kept, and a leftover
 			// holding the output pipes does not keep the program "running". Its output is read to the end, on close, first.
+			// With waitGroup the process runs until its whole process group is gone (and its output is read to the end): the
+			// group stays in everyChild, so a signal and close() still reach it.
+			let closed = false;
+			let groupTimer;
+			const groupGone = () => {
+				try {
+					process.kill(-child.pid, 0);
+					return false;
+				} catch {
+					return true;
+				}
+			};
+			const settle = () => {
+				if (closed && groupGone()) finish();
+			};
 			child.once("exit", (code, signal) => {
 				status = { code, signal };
-				if (!entry.keep) killGroup(child, "SIGKILL");
+				if (params.waitGroup === true) {
+					groupTimer = setInterval(() => {
+						if (!groupGone()) return;
+						clearInterval(groupTimer);
+						settle();
+					}, 25);
+					groupTimer.unref();
+				} else if (!entry.keep) killGroup(child, "SIGKILL");
 				else finish();
 			});
-			child.once("close", () => finish());
+			child.once("close", () => {
+				closed = true;
+				if (params.waitGroup === true) settle();
+				else finish();
+			});
 			await spawned.catch((error) => {
 				table.delete(entry.id);
 				everyChild.delete(child);
