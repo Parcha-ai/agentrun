@@ -29,7 +29,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { isMessageRow, type TimelineEvent } from "../timeline/index.js";
 import { Hearing } from "../heard.js";
 import { type LearningFolder, readLearning, readSnapshot } from "../learn/folder.js";
-import { type CompileAsk, type CompileTrace, compileDue, compileReference, COMPILE_AFTER_RUNS, COMPILE_QUIET_RUNS, COMPILE_TRACES, type HeldAsk } from "../learn/compile.js";
+import { type CompileAsk, type CompileTrace, compileDue, compileReference, COMPILE_AFTER_RUNS, COMPILE_QUIET_RUNS, COMPILE_TRACES, type HeldAsk, heldNamesOf } from "../learn/compile.js";
 import { type PromotionRecord, promotionOf, promotionsOf } from "../learn/promote.js";
 import { type DraftDecisions, draftDecisionProviders } from "../learn/skills.js";
 import { DECISION_PROVIDER_KEYS } from "../tool-plane.js";
@@ -270,7 +270,8 @@ export async function traceOf(store: Store, runId: string, refuse: readonly stri
 /** The compile turn's facts for run `runId` of agent `agentId` (learn/compile.ts): a revision of the learned workflow
  *  that handed the run back or that the money rule stopped (workflow-first.ts servedOf, reviseOf), its text as main holds
  *  it; or of the one that fits the run's input and whose promotion holds it at main's digest (runner/promotion.ts: its
- *  replay on the agent's graded inputs, or its graded served runs, fell under the bar; the run went by hand), with the
+ *  replay on the agent's graded inputs, or its graded served runs, fell under the bar; its champion served the run, or the
+ *  agent did by hand), with the
  *  hold's numbers, once per hold (none when a run since the hold compiled it); else, when the job is due (compileDue: the run completed, the agent has no learned workflow active or waiting, none
  *  of its last COMPILE_QUIET_RUNS runs compiled, and it keeps enough notes or has run enough), a new one. Either way the
  *  agent's active notes whole, the traces of its last COMPILE_TRACES completed runs before this one, the tools a call node
@@ -282,9 +283,10 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
   const served = servedOf(entries);
   const stopped = reviseOf(entries);
   let revising = served?.outcome === "handed_back" ? served.workflow : stopped?.workflow;
-  // The workflows whose newest promotion record holds them: the run's own may be one (it went by hand).
+  // The workflows whose newest revision other than their champion (learn/promote.ts championOf: it serves while that one
+  // is held) is held: the run's own may be one (its champion served it, or it went by hand).
   const records: PromotionRecord[] = revising ? [] : await promotionsOf(deps.store.settings, input.agentId).catch(() => []);
-  const heldNames = new Set([...new Set(records.map(({ workflow }) => workflow))].filter((name) => records.findLast((one) => one.workflow === name)?.decided === "hold"));
+  const heldNames = heldNamesOf(records);
   // The agent's latest runs, newest first: those after the ending one in the list started before it.
   const listed = await deps.store.runs.list({ agentId: input.agentId, limit: 200 });
   const at = listed.findIndex((run) => run.id === input.runId);
