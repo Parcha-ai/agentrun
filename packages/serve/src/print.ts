@@ -32,6 +32,15 @@ const value = (v: string | number) => {
 export const logLine = (event: string, fields: Record<string, string | number> = {}): string =>
   [`at=${new Date().toISOString()}`, `event=${event}`, ...Object.entries(fields).map(([k, v]) => `${k}=${value(v)}`)].join(" ");
 
+/** The log line of a runner's start or end event (runner.ts RunnerEvent): `run_started` (run, agent, kind) once a run's
+ *  first claim, `run_ended` (run, agent, status, cost_usd) once it is final. Any other event has none. Ids and numbers
+ *  only: no token or secret reaches a line. */
+export function runLine(event: { type: string; runId?: string; agent?: string; kind?: string; status?: string; costUsd?: number | null }): string | undefined {
+  if (event.type === "started") return logLine("run_started", { run: event.runId!, agent: event.agent!, kind: event.kind! });
+  if (event.type === "ended") return logLine("run_ended", { run: event.runId!, agent: event.agent!, status: event.status === "ended" ? "completed" : event.status!, cost_usd: event.costUsd ?? "unknown" });
+  return undefined;
+}
+
 /** A duration as --drain-timeout takes it ("8s", "500ms", "1m"), in milliseconds; undefined when it is not one. */
 export function durationMs(text: string): number | undefined {
   const m = /^(\d+(?:\.\d+)?)(ms|s|m)$/.exec(text.trim());

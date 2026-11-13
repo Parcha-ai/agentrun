@@ -393,7 +393,7 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
     if (stoppedLate) {
       answered.add(turn);
       await write([{ kind: RUNNER_RECORDS.turn, data: { turn, usd: 0, unsent: true } }]).catch(() => undefined);
-      emit({ type: "request_end", turn, usage: { input: 0, output: 0, cacheRead: 0, usd: 0 }, ...(host === undefined ? {} : { host }), ended: { end: "nothing", label: "never_left" } });
+      await emit({ type: "request_end", turn, usage: { input: 0, output: 0, cacheRead: 0, usd: 0 }, ...(host === undefined ? {} : { host }), ended: { end: "nothing", label: "never_left" } });
       throw stoppedLate;
     }
     open.push({ turn, model, inputTokensMax, ...(limited === undefined ? {} : { outputTokensMax: limited }), ...(hold === undefined ? {} : { holdUsd: hold }), ...(host === undefined ? {} : { host }), ...(route === undefined ? {} : { route }) });
@@ -460,7 +460,9 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
       }
       answered.add(turn);
       const hosted = hosts.get(turn);
-      emit({ type: "request_end", turn, usage, ...(hosted === undefined ? {} : { host: hosted }), ...(ended ? { ended } : {}) });
+      // Awaited: a host that marks the request's end on its record writes it before the booking counts as settled, so a
+      // run's end never lands ahead of the mark that says its request was cut.
+      await emit({ type: "request_end", turn, usage, ...(hosted === undefined ? {} : { host: hosted }), ...(ended ? { ended } : {}) });
     },
   };
   // One booking of the cut requests at a time: a call made while one is writing waits for it, never books them again.

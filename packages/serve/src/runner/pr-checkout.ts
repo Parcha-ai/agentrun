@@ -211,12 +211,12 @@ function checkoutNote(pull: GithubPull, mergeBase: string | undefined): string {
 export async function prCheckoutForClaim(
   deps: Pick<AdapterSpecDeps, "store" | "sealKey" | "githubApi" | "githubWeb">,
   workspace: Workspace,
-  launch: { readonly input: unknown; readonly inputOrigin?: { readonly kind: string; readonly source?: string } | undefined },
+  launch: { readonly input: unknown; readonly repo?: string | undefined; readonly inputOrigin?: { readonly kind: string; readonly source?: string } | undefined },
   redact: { hold(values: readonly string[]): void },
   signal?: AbortSignal,
   held?: (part: { end(): Promise<void> }) => void,
 ): Promise<PrCheckout> {
   const fromGitHub = launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github";
-  const access = await githubAppAccess(deps.store, deps.sealKey, launch.input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub, hold: (values) => redact.hold(values) });
+  const access = await githubAppAccess(deps.store, deps.sealKey, launch.input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub, hold: (values) => redact.hold(values), ...(launch.repo !== undefined ? { repo: launch.repo } : {}) });
   return prCheckout({ workspace, input: launch.input, fromGitHub, ...(access ? { mint: access.mint } : {}), ...(access?.revoke ? { revoke: access.revoke } : {}), hold: (secrets) => redact.hold(secrets), ...(deps.githubWeb ? { web: deps.githubWeb } : {}), ...(signal ? { signal } : {}), ...(held ? { held } : {}) });
 }
