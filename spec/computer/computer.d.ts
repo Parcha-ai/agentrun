@@ -114,11 +114,14 @@ type UiStep =
 /**
  * What the caller expects to see once the steps ran, checked on the computer against the whole window, polled until
  * it holds or timeoutMs passes. text: some node's name or value holds it. ref: the element exists. Both: that element's
- * name or value holds the text. gone: the opposite of each. At least one of text and ref.
+ * name or value holds the text. window: the act's app shows a window that matches it (its main one), whose state the
+ * act then answers. gone: the opposite of each. One of text and ref (or both), or window alone.
  */
 interface UiExpect {
   text?: string;
   ref?: UiRef;
+  /** A window of the act's app: its title holds title, and its role is role. At least one of the two. */
+  window?: { title?: string; role?: UiRole };
   gone?: boolean;
   /** Default DEFAULT_EXPECT_MS, at most MAX_EXPECT_MS. */
   timeoutMs?: number;

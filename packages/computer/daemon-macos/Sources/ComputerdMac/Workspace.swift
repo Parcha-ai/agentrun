@@ -14,6 +14,10 @@ final class MacWorkspace: Workspace, @unchecked Sendable {
 
 	var frontmost: Int32? { NSWorkspace.shared.frontmostApplication?.processIdentifier }
 
+	func running(_ id: String) -> Bool {
+		NSRunningApplication.runningApplications(withBundleIdentifier: id).contains { !$0.isTerminated }
+	}
+
 	/// Where installed apps are, as the Finder's Applications shows them.
 	static let folders = ["/Applications", "/Applications/Utilities", "/System/Applications", "/System/Applications/Utilities", NSHomeDirectory() + "/Applications"]
 

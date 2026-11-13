@@ -10,7 +10,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { isDeepStrictEqual } from "node:util";
+import { CreateRequests, endedWords, otherSpecWords, readBackDiffer } from "../create-requests.js";
 import { DESKTOP_GROUPS, type DesktopOptions, desktopOf, startDisplay } from "../desktop.js";
 import { COMPUTER_LABEL, DAEMON_IN_COMPUTER, DEADLINE_LABEL, helloDrift, type ProbeReport, probeNetworkDrift, probeNotes, probeReportOf, WORK } from "../drift.js";
 import type { HostCall, Machine, MachineHost, MachineRequest } from "../host.js";
@@ -155,8 +155,6 @@ const LISTED_ROUNDS = 2;
 const LISTED_POLL_MAX_MS = 1_000;
 const LISTEN_RETRY_MS = 250;
 const START_POLL_MS = 500;
-/** The most request names one provider remembers as ended (#ended), the oldest let go first: a bound, not a ledger. */
-const ENDED_MAX = 4_096;
 /** The longest a Node timer or AbortSignal.timeout holds. */
 const MAX_TIMER_MS = 2 ** 31 - 1;
 /** The longest timeout the adapter takes: the race of a call bounded by it must still fit a Node timer. */
@@ -170,25 +168,11 @@ const DEFAULT_PROBE_TARGETS = ["1.1.1.1:443", "8.8.8.8:443", "[2606:4700:4700::1
 /** A probe target: host:port, over TCP, or host:port/udp, a DNS query over UDP. */
 const TARGET = /^(?:\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+):[0-9]{1,5}(?:\/udp)?$/;
 const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "labels", "mount", "gpu", "owner"]);
-/** A request id's most characters: it is hashed into the name, never sent. */
-const REQUEST_ID_MAX = 1024;
 
 const isWhole = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value);
 const show = (value: unknown) => (value === undefined ? "nothing" : JSON.stringify(value));
 const policyWords = (policy: NetworkPolicy) => (typeof policy === "string" ? policy : "other" in policy ? policy.other : JSON.stringify(policy));
 const alive = (state: Machine["state"]) => state === "running" || state === "stopped" || state === "starting";
-
-/** The name of the computer one create's request makes: computer- and the first 12 hex digits of its sha256. */
-export function nameOf(requestId: string): string {
-	return `computer-${createHash("sha256").update(requestId, "utf8").digest("hex").slice(0, 12)}`;
-}
-
-/** Why a create's request id is not one, or undefined. */
-function requestIdProblem(requestId: unknown): string | undefined {
-	if (typeof requestId !== "string" || requestId === "") return "create needs context.requestId, the caller's id of this request (serve passes the run's claim): a retry with the same id finds the computer the first one made";
-	if (requestId.length > REQUEST_ID_MAX || requestId.includes("\0")) return `context.requestId is at most ${REQUEST_ID_MAX} characters, with no NUL byte`;
-	return undefined;
-}
 
 /** An ISO time a label holds, or undefined when it is missing or not the ISO time create writes. */
 function isoOf(written: string | undefined): Date | undefined {
@@ -274,12 +258,9 @@ export class HostedProvider implements ComputerProvider {
 	readonly #timeouts: HostedTimeouts;
 	readonly #probeTargets: string[];
 	readonly #onNote: ProviderNote | undefined;
-	/** Each create in flight, by the name its request id gives, with its spec: a second create of the same request and
-	 *  spec waits for the first; one of another spec is refused. */
-	readonly #creating = new Map<string, { spec: ComputerSpec; result: Promise<Result<CreatedComputer>> }>();
-	/** Names of computers this provider made and has given up on or deleted, the last ENDED_MAX of them: a retry of
-	 *  their request is refused. In memory alone: past it, and past this process, the vendor's listing is what holds. */
-	readonly #ended = new Set<string>();
+	/** Each create in flight, and the names of the computers this provider ended (create-requests.ts). In memory alone:
+	 *  past it, and past this process, the vendor's listing is what holds. */
+	readonly #requests = new CreateRequests();
 	/** Each computer's last extend, by machine id, while one runs: the next waits for it. */
 	readonly #extending = new Map<string, Promise<void>>();
 
@@ -427,43 +408,27 @@ export class HostedProvider implements ComputerProvider {
 	}
 
 	/**
-	 * Makes a computer, once per request: context.requestId names it (nameOf), and a create of a request already made
+	 * Makes a computer, once per request: context.requestId names it (computerNameFor), and a create of a request already made
 	 * finds that computer instead of making another. One still starting is waited for (within createMs); one up is
 	 * returned once its labels and daemon read back as attach reads them, else refused as exists; one that ended (or
 	 * that this provider gave up on) is refused as exists, in words. A second create of a request still in flight waits
 	 * for the first and answers what it does.
 	 */
 	async create(spec: ComputerSpec, context: CreateContext): Promise<Result<CreatedComputer>> {
-		const problem = requestIdProblem(context?.requestId);
-		if (problem) return this.#fail("invalid", problem);
 		const refusals = this.check(spec);
-		if (refusals.length > 0) return this.#fail("refused", refusals.map(({ field, message }) => `${field}: ${message}`).join("; "));
-		const name = nameOf(context.requestId);
-		const inFlight = this.#creating.get(name);
-		if (inFlight) {
-			// The checks #again makes of a computer listed already, made here of the spec in flight: what it gives is
-			// shared only with a create that asks the same.
-			const differ = this.#inFlightDiffer(spec, inFlight.spec, name);
-			if (differ.length > 0) return this.#fail("exists", `${name} is being made for this request with another spec, so it is not returned: ${differ.join("; ")}; create with a new request id`);
-			return inFlight.result;
-		}
-		const creating = { spec, result: this.#createOnce(spec, name, context.signal) };
-		this.#creating.set(name, creating);
-		try {
-			return await creating.result;
-		} finally {
-			if (this.#creating.get(name) === creating) this.#creating.delete(name);
-		}
+		return this.#requests.create(spec, context, {
+			refuse: (code, message) => this.#fail(code, message),
+			...(refusals.length > 0 ? { refused: refusals.map(({ field, message }) => `${field}: ${message}`).join("; ") } : {}),
+			// The checks #again makes of a computer listed already, made here of the spec in flight: what it gives is shared
+			// only with a create that asks the same.
+			userOf: (asked) => this.#userOf(asked),
+			make: (name) => this.#createOnce(spec, name, context.signal),
+		});
 	}
 
-	/** A request's computer given up on or deleted: its name remembered, the oldest let go past ENDED_MAX. */
+	/** A request's computer given up on or deleted: its request is refused from now on. */
 	#end(name: string): void {
-		this.#ended.delete(name);
-		this.#ended.add(name);
-		for (const oldest of this.#ended) {
-			if (this.#ended.size <= ENDED_MAX) break;
-			this.#ended.delete(oldest);
-		}
+		this.#requests.end(name);
 	}
 
 	/** How spec's labels differ from labels, a computer's of this request (seen: "read back", or "in flight"), in words. */
@@ -477,28 +442,7 @@ export class HostedProvider implements ComputerProvider {
 		return differ;
 	}
 
-	/**
-	 * How spec differs from pending, the spec of a create of the same request still in flight: the labels and the user,
-	 * as #again holds a listed computer to them, and every other field the host is given (facts.specFields, gpu), which
-	 * the spec in flight holds exactly.
-	 */
-	#inFlightDiffer(spec: ComputerSpec, pending: ComputerSpec, name: string): string[] {
-		const differ = this.#labelDiffer(spec, name, this.#labelsOf(pending, name, "", ""), "in flight");
-		const [asked, flying] = [this.#userOf(spec), this.#userOf(pending)];
-		if (asked !== flying) differ.push(`user: asked ${asked}, in flight ${flying}`);
-		const taken = new Set<string>(this.host.facts.specFields ?? []);
-		for (const field of ["cpus", "memoryMb", "workdir", "gpu"] as const) {
-			if ((field === "gpu" || taken.has(field)) && !isDeepStrictEqual(spec[field], pending[field])) differ.push(`${field}: asked ${show(spec[field])}, in flight ${show(pending[field])}`);
-		}
-		return differ;
-	}
-
-	#endedWords(name: string): string {
-		return `${name} was made for this request and has ended: create with a new request id`;
-	}
-
 	async #createOnce(spec: ComputerSpec, name: string, signal?: AbortSignal): Promise<Result<CreatedComputer>> {
-		if (this.#ended.has(name)) return this.#fail("exists", this.#endedWords(name));
 		const { listMs } = this.#timeouts;
 		const listed = await this.#call("the listing by the request's name", (ctx) => this.host.list({ [COMPUTER_LABEL]: "1", [NAME_LABEL]: name }, ctx), listMs, signal);
 		if (!listed.ok) return listed;
@@ -533,7 +477,7 @@ export class HostedProvider implements ComputerProvider {
 
 	/**
 	 * The one machine a request keeps. Two creates of one request on two provider instances can both find no machine by
-	 * the name and both make one: #creating holds within one instance alone, and a vendor's name or label need not be
+	 * the name and both make one: #requests holds within one instance alone, and a vendor's name or label need not be
 	 * unique. So after the vendor's answer the name's listing is read, with mine (read by get when not yet listed): where
 	 * more than one machine holds the name, the oldest (createdAt, or the lowest id where any has none) is kept, and every
 	 * other is deleted and read back gone, its Archil folder let go first. Every instance picks the same one from the
@@ -573,16 +517,18 @@ export class HostedProvider implements ComputerProvider {
 		let machine: Machine | undefined = first;
 		let last: { code: ComputerError["code"]; message: string } | undefined;
 		for (;;) {
-			if (machine === undefined || !alive(machine.state) || machine.state === "stopped") return this.#fail("exists", this.#endedWords(name));
+			if (machine === undefined || !alive(machine.state) || machine.state === "stopped") return this.#fail("exists", endedWords(name));
 			const deadline = deadlineOf(machine);
-			if (deadline !== undefined && deadline.getTime() <= Date.now()) return this.#fail("exists", this.#endedWords(name));
+			if (deadline !== undefined && deadline.getTime() <= Date.now()) return this.#fail("exists", endedWords(name));
 			if (machine.state === "running") {
 				const differ = this.#labelDiffer(spec, name, machine.labels, "read back");
-				if (differ.length > 0) return this.#fail("exists", `${name} was made for this request with another spec, so it is not returned: ${differ.join("; ")}; create with a new request id`);
+				if (differ.length > 0) return this.#fail("exists", otherSpecWords(name, "was made", differ));
 				const attached = await this.#attached(machine, signal);
-				if (attached.ok && attached.value.spec.user !== this.#userOf(spec)) {
-					return this.#fail("exists", `${name} was made for this request with another spec, so it is not returned: user: asked ${this.#userOf(spec)}, read back ${attached.value.spec.user}; create with a new request id`);
-				}
+				// The image and an Archil mount are in the labels; the user, the network, and a size where the vendor takes
+				// one in a spec, are read back.
+				const sizes = (["cpus", "memoryMb"] as const).filter((field) => this.host.facts.specFields?.includes(field));
+				const drift = attached.ok ? readBackDiffer({ ...spec, user: this.#userOf(spec) }, attached.value.spec, ["user", "network", ...sizes]) : [];
+				if (drift.length > 0) return this.#fail("exists", otherSpecWords(name, "was made", drift));
 				if (attached.ok) return ok({ id: attached.value.id, name: attached.value.name, ...(attached.value.notes ? { notes: attached.value.notes } : {}) });
 				if (attached.error.code === "aborted") return attached;
 				// Its daemon is not up yet, or not yet as declared (a desktop whose display the first create is still
@@ -689,7 +635,7 @@ export class HostedProvider implements ComputerProvider {
 			const swept = await this.#deleteNamed(name);
 			return this.#fail(code, `${this.#label} did not create the machine: ${message}${swept}`);
 		}
-		this.#ended.delete(name);
+		this.#requests.made(name);
 		return ok({ ref: { id: created.value.id, name }, made: { deadline, maxDeadline, labels, daemon, sha256, commands, user, ...(runtime === undefined ? {} : { runtime }) } });
 	}
 

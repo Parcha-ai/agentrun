@@ -342,10 +342,11 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 		/** Each create of the case is its own request: the run, the case and the create's count. */
 		let creates = 0;
 		/** create through by, kept: what it gives is deleted when the case ends, or as it comes after that. */
-		const attempt = (whole: ComputerSpec, by: ComputerProvider = provider) => {
-			const creating = by.create(whole, { signal: caseSignal, requestId: `${run}/${c.id}/${++creates}` }).then((created) => {
+		const attempt = (whole: ComputerSpec, by: ComputerProvider = provider, requestId = `${run}/${c.id}/${++creates}`) => {
+			const creating = by.create(whole, { signal: caseSignal, requestId }).then((created) => {
 				noteCreated(created, c.id);
-				if (created.ok) track(created.value, by);
+				// A retry of one request answers the computer the first attempt made: it is tracked once.
+				if (created.ok && !refs.some((one) => one.ref.id === created.value.id)) track(created.value, by);
 				return created;
 			});
 			keep(creating, `create (${c.id})`);
