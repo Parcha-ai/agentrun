@@ -6,6 +6,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { gunzipSync } from "node:zlib";
 import { ARCHIL_HELPER, ARCHIL_SYNC_SOCKET, ARCHIL_TOOL_USER, ARCHIL_TOOL_UID, DAEMON_IN_COMPUTER } from "../dist/index.js";
 
 const box = (name) => new URL(`../box/${name}`, import.meta.url);
@@ -113,4 +114,96 @@ test("the E2B build makes a template from the same Dockerfile, with the workspac
   const hashed = e2b.match(/const RECIPE = \[([^\]]*)\]/)?.[1].split(",").map((name) => name.trim().replace(/^"|"$/g, "")).filter(Boolean);
   assert.deepEqual(hashed?.sort(), ["Dockerfile", ...copied].sort());
   assert.ok(!/process\.env\.\w*KEY/.test(e2b) || e2b.includes("E2B_API_KEY"), "the key comes from E2B_API_KEY, the SDK's own, set by the caller for this one command");
+});
+
+// --- the Agent37 build (build-agent37.mjs), on a fake Agent37 ---
+
+const agent37Build = await import("../box/build-agent37.mjs");
+const AGENT37_KEY = "sk_live_fake_build_key_0123456789";
+const UPLOAD = "https://uploads.agent37.test/context?signed=1";
+
+/** The files of a gzipped ustar archive, by name: mode and body. */
+function untar(gz) {
+  const tar = gunzipSync(gz);
+  const files = {};
+  for (let at = 0; at + 512 <= tar.length; ) {
+    const block = tar.subarray(at, at + 512);
+    if (block.every((byte) => byte === 0)) break;
+    const field = (from, length) => block.subarray(from, from + length).toString("utf8").replace(/\0.*$/s, "").trim();
+    const size = Number.parseInt(field(124, 12), 8);
+    files[field(0, 100)] = { mode: Number.parseInt(field(100, 8), 8), body: tar.subarray(at + 512, at + 512 + size).toString("utf8") };
+    at += 512 + Math.ceil(size / 512) * 512;
+  }
+  return files;
+}
+
+/** Agent37's template and build API as a fetch: the template's description (none: 404), and a build that succeeds after two log reads. */
+function fakeBuilds({ description, fail } = {}) {
+  const calls = [];
+  const fetch = async (url, init = {}) => {
+    const method = init.method ?? "GET";
+    const { pathname, search } = new URL(url);
+    calls.push({ method, url, path: pathname + search, auth: init.headers?.Authorization, body: init.body });
+    const json = (status, body) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+    if (url === UPLOAD) return new Response(null, { status: 200 });
+    if (init.headers?.Authorization !== `Bearer ${AGENT37_KEY}`) return json(401, { error: { code: "invalid_api_key", message: "Invalid API key" } });
+    if (pathname === "/v1/templates/agentrun-box") return description === undefined ? json(404, { error: { code: "not_found", message: "No such template" } }) : json(200, { name: "agentrun-box", revision: 3, description, image_digest: "sha256:old" });
+    if (pathname === "/v1/template-builds" && method === "POST") return json(201, { id: "tb_0123456789abcdef0123", status: "created", upload_url: UPLOAD });
+    if (pathname.endsWith("/start")) return json(200, { id: "tb_0123456789abcdef0123", status: "building" });
+    if (pathname.endsWith("/logs")) {
+      const reads = calls.filter((call) => call.path.includes("/logs")).length;
+      if (fail) return json(200, { status: "failed", error: { code: "build_failed", message: "step 3 exited 100" }, data: "E: no xvfb\n", offset: 11 });
+      if (reads === 1) return json(200, { status: "building", data: "step 1\n", offset: 7 });
+      return json(200, { status: "succeeded", data: "step 2\n", offset: 14, template: { name: "agentrun-box", revision: 4, image_digest: "sha256:new" } });
+    }
+    return json(404, { error: { code: "not_found", message: "No such route" } });
+  };
+  return { fetch, calls };
+}
+
+test("the Agent37 build's recipe is box/Dockerfile plus Xvfb, named agentrun-box, its hash over every copied file and the desktop's lines", async () => {
+  const { AGENT37_BOX_TEMPLATE } = await import("../dist/index.js");
+  assert.equal(agent37Build.NAME, AGENT37_BOX_TEMPLATE, "the descriptor's desktop image is the template this builds");
+  const copied = INSTRUCTIONS.filter((line) => line.startsWith("COPY ")).map((line) => line.split(/\s+/)[1]);
+  assert.deepEqual([...agent37Build.RECIPE].sort(), ["Dockerfile", ...copied].sort());
+  assert.match(agent37Build.DESKTOP, /apt-get install -y -qq --no-install-recommends xvfb/);
+  assert.match(agent37Build.DESKTOP, /! command -v sudo/, "Xvfb brings no sudo, checked");
+  const recipe = agent37Build.recipeOf();
+  assert.match(recipe.hash, /^[0-9a-f]{12}$/);
+  const context = untar(agent37Build.contextOf(recipe));
+  assert.deepEqual(Object.keys(context).sort(), ["Dockerfile", "agentrun-archil"]);
+  assert.equal(context.Dockerfile.body, DOCKERFILE + agent37Build.DESKTOP, "the context's Dockerfile is box/Dockerfile, then the desktop's lines");
+  assert.equal(context.Dockerfile.mode, 0o644);
+  assert.equal(context["agentrun-archil"].body, HELPER);
+  assert.equal(context["agentrun-archil"].mode, 0o755);
+  assert.match(agent37Build.descriptionOf(recipe.hash), new RegExp(`recipe ${recipe.hash}$`));
+});
+
+test("the Agent37 build creates the build, uploads the context without the key, starts it and reads its log until the template is published", async () => {
+  const { fetch, calls } = fakeBuilds();
+  const logged = [];
+  const built = await agent37Build.build({ apiKey: AGENT37_KEY, fetch, apiUrl: "https://api.agent37.test", log: (text) => logged.push(text), pollMs: 1 });
+  assert.deepEqual(built, { name: "agentrun-box", revision: 4, digest: "sha256:new" });
+  assert.deepEqual(
+    calls.map(({ method, path }) => `${method} ${path}`),
+    ["GET /v1/templates/agentrun-box", "POST /v1/template-builds", "PUT /context?signed=1", "POST /v1/template-builds/tb_0123456789abcdef0123/start", "GET /v1/template-builds/tb_0123456789abcdef0123/logs?offset=0", "GET /v1/template-builds/tb_0123456789abcdef0123/logs?offset=7"],
+  );
+  const made = JSON.parse(calls[1].body);
+  assert.equal(made.name, "agentrun-box");
+  assert.equal(made.description, agent37Build.descriptionOf(agent37Build.recipeOf().hash));
+  assert.equal(made.size_bytes, calls[2].body.length, "size_bytes is the uploaded context's");
+  assert.equal(calls[2].auth, undefined, "the presigned upload gets no Agent37 key");
+  assert.ok(logged.join("").includes("step 1\nstep 2\n"), "the build's log, as it comes");
+});
+
+test("the Agent37 build builds nothing when the template already names this recipe, and a failed build fails in Agent37's words with no key", async () => {
+  const current = fakeBuilds({ description: agent37Build.descriptionOf(agent37Build.recipeOf().hash) });
+  assert.deepEqual(await agent37Build.build({ apiKey: AGENT37_KEY, fetch: current.fetch, apiUrl: "https://api.agent37.test", log: () => {} }), { name: "agentrun-box", revision: 3, digest: "sha256:old" });
+  assert.deepEqual(current.calls.map(({ method, path }) => `${method} ${path}`), ["GET /v1/templates/agentrun-box"]);
+  const stale = fakeBuilds({ description: agent37Build.descriptionOf("000000000000") });
+  assert.equal((await agent37Build.build({ apiKey: AGENT37_KEY, fetch: stale.fetch, apiUrl: "https://api.agent37.test", log: () => {}, pollMs: 1 })).revision, 4, "another recipe's template is built again");
+  const failing = fakeBuilds({ fail: true });
+  await assert.rejects(agent37Build.build({ apiKey: AGENT37_KEY, fetch: failing.fetch, apiUrl: "https://api.agent37.test", log: () => {}, pollMs: 1 }), /failed: build_failed: step 3 exited 100/);
+  await assert.rejects(agent37Build.build({ apiKey: "sk_live_wrong_key", fetch: failing.fetch, apiUrl: "https://api.agent37.test", log: () => {} }), (error) => /401 invalid_api_key/.test(error.message) && !error.message.includes("sk_live"));
+  await assert.rejects(agent37Build.build({ apiKey: "", fetch: failing.fetch }), /set AGENT37_API_KEY/);
 });
