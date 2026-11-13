@@ -297,7 +297,8 @@ test("the read-back: Daytona's states as the adapter's, its network in words, an
 		["started", "running"],
 		["creating", "starting"],
 		["pulling_snapshot", "starting"],
-		["stopping", "stopped"],
+		["stopping", "stopping"],
+		["pausing", "stopping"],
 		["stopped", "stopped"],
 		["archived", "stopped"],
 		["destroying", "going"],
@@ -316,7 +317,7 @@ test("the read-back: Daytona's states as the adapter's, its network in words, an
 	assert.deepEqual(await provider.host.get(REF.id, { timeoutMs: 1_000 }), { ok: true, value: undefined });
 });
 
-test("list: the adapter's label alone is asked for, every page followed, the rest filtered here; one whose listing leaves the network out is read back", async () => {
+test("list: the adapter's label alone is asked for, every page followed, destroyed ones left out; the adapter keeps the rest by labels and reads back one whose listing leaves the network out", async () => {
 	const mine = sandbox({ id: "sb-1", networkBlockAll: undefined, labels: { ...sandbox().labels, team: "a" } });
 	const other = sandbox({ id: "sb-2", labels: { ...sandbox().labels, team: "b" } });
 	const destroyed = sandbox({ id: "sb-3", state: "destroyed", labels: { ...sandbox().labels, team: "a" } });
@@ -325,10 +326,13 @@ test("list: the adapter's label alone is asked for, every page followed, the res
 		"GET /api/sandbox/sb-1": { body: { ...mine, networkBlockAll: true } },
 	});
 	const listed = await provider.host.list({ team: "a" }, { timeoutMs: 1_000 });
-	assert.deepEqual(listed.value.map((m) => [m.id, m.network]), [["sb-1", "none"]]);
+	assert.deepEqual(listed.value.map((m) => [m.id, m.network]), [["sb-1", undefined], ["sb-2", "none"]], "the listing as it reads, its network left out where it is");
 	const pages = rec.requests.filter((r) => r.path === "/api/sandbox");
 	assert.equal(pages.length, 2);
 	for (const page of pages) assert.deepEqual(JSON.parse(page.query.get("labels")), { [COMPUTER]: "1" });
+	const infos = await provider.list({ team: "a" });
+	assert.deepEqual(infos.value.map((info) => [info.ref.id, info.network]), [["sb-1", "none"]]);
+	assert.equal(rec.requests.filter((r) => r.path === "/api/sandbox/sb-1").length, 1, "read back by get once, by the adapter");
 });
 
 test("every request carries the key passed in, the source header and no redirect, whatever DAYTONA_ or COMPUTER_DAYTONA_ names hold; a refused key is never echoed", async () => {

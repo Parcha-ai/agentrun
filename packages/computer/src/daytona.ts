@@ -8,15 +8,13 @@ import { fileURLToPath } from "node:url";
 import { DAYTONA, DAYTONA_DEFAULT_SNAPSHOT, DAYTONA_GPU_REGION, DAYTONA_GPU_SNAPSHOT, type DaytonaGpuSnapshot, daytonaGpu, daytonaGpuSnapshot } from "./descriptors/daytona.js";
 import { COMPUTER_LABEL, DEADLINE_LABEL } from "./drift.js";
 import type { HostCall, HostFacts, Machine, MachineHost, MachineProcess, MachineRequest } from "./host.js";
-import { HostedProvider, type HostedOptions, type HostedTimeouts, IMAGE_LABEL, ours } from "./hosted/provider.js";
+import { HostedProvider, type HostedOptions, type HostedTimeouts, IMAGE_LABEL } from "./hosted/provider.js";
 import { shellLine } from "./hosted/scripts.js";
 import type { KindCapabilities } from "./kinds.js";
 import type { MountKind } from "./mount.js";
 import { MAX_LINE_BYTES } from "./protocol.js";
 import { type ComputerSpec, checkGpu, type NetworkPolicy, type Refusal } from "./provider.js";
 import { type ComputerError, type ComputerErrorCode, errorOf, failFor, ok, type Result, vendorFail } from "./result.js";
-import { countTested } from "./test-connection.js";
-import { waitUntil } from "./wait.js";
 
 /** This module's failures: one with code vendor names Daytona. */
 const fail = failFor("daytona");
@@ -156,9 +154,6 @@ const DEFAULT_RETRY_MS = 500;
 const DEFAULT_POLL_MS = 1_000;
 const RETRY_ATTEMPTS = 3;
 const DELETE_ATTEMPTS = 4;
-const LISTED_ROUNDS = 2;
-/** The longest pause between two reads while a stop waits: the pauses double from pollMs up to it. */
-const STOP_POLL_MAX_MS = 5_000;
 /** How long a command's log stream may trail its exit code before the host stops reading it. */
 const LOG_GRACE_MS = 5_000;
 const MAX_PAGES = 1000;
@@ -175,7 +170,6 @@ export const DAYTONA_SOCKETS: readonly string[] = ["/tmp/dbus-*"];
 const QUOTA = /quota|capacity|limit exceeded|too many/i;
 const STARTING = new Set(["creating", "restoring", "starting", "pending_build", "building_snapshot", "pulling_snapshot", "resizing", "snapshotting", "forking", "resuming", "unknown"]);
 const GONE = new Set(["destroyed", "destroying"]);
-const STOPPED = new Set(["stopped", "archived", "paused"]);
 /** On the way from started to stopped or paused. */
 const LEAVING = new Set(["stopping", "pausing"]);
 const FAILED = new Set(["error", "build_failed"]);
@@ -226,21 +220,14 @@ function networkOf(sb: Sandbox): NetworkPolicy {
 	return "open";
 }
 
-/** A sandbox's state as the adapter reads a machine's. A stopping one is on its way to stopped: its daemon is going. */
+/** A sandbox's state as the adapter reads a machine's: stopping and pausing are on the way to stopped. */
 function stateOf(sb: Sandbox): Machine["state"] {
 	const state = sb.state ?? "";
 	if (GONE.has(state) || sb.desiredState === "destroyed") return "going";
 	if (state === "started") return "running";
 	if (STARTING.has(state)) return "starting";
 	if (FAILED.has(state)) return "failed";
-	return "stopped";
-}
-
-/** A state as Daytona reported it, for words: the state, and the desired state when it differs. */
-function stateWords(sb: Sandbox | undefined): string {
-	if (sb === undefined) return "gone (404)";
-	const state = sb.state ?? "in no state";
-	return sb.desiredState !== undefined && sb.desiredState !== sb.state ? `${state} (desired ${sb.desiredState})` : state;
+	return LEAVING.has(state) ? "stopping" : "stopped";
 }
 
 function codeOf(status: number, text: string): ComputerErrorCode {
@@ -504,8 +491,7 @@ class DaytonaHost implements MachineHost {
 	 * A snapshot name has no control characters; a GPU computer is made from the provider's GPU snapshot, which a spec
 	 * names, or Daytona's default, never another. No call.
 	 */
-	check(spec: ComputerSpec): Refusal[] {
-		const given = (typeof spec === "object" && spec !== null ? spec : {}) as unknown as Record<string, unknown>;
+	check(given: Partial<ComputerSpec>): Refusal[] {
 		const { image } = given;
 		const refusals: Refusal[] = [];
 		if (typeof image === "string" && image !== "" && image.trim() === "") refusals.push({ field: "image", message: `an image is the id or name of a Daytona snapshot, or "${DAYTONA_DEFAULT_SNAPSHOT}" for Daytona's default snapshot` });
@@ -616,25 +602,22 @@ class DaytonaHost implements MachineHost {
 	}
 
 	/**
-	 * Every sandbox the listing shows with these labels (destroyed ones are gone), each read back where the listing leaves
-	 * its network out. Daytona's listing is asked for the adapter's label alone, as it always was, and filtered here.
+	 * Every sandbox the listing shows with the adapter's label (destroyed ones are gone): Daytona's listing is asked for
+	 * that label alone, as it always was, and the adapter keeps those with the rest. One whose listing leaves the network
+	 * out has none, and the adapter reads it back.
 	 */
 	async list(labels: Record<string, string>, ctx: HostCall): Promise<Result<Machine[]>> {
+		void labels;
 		const listed = await this.#listOwn(ctx.signal);
 		if (!listed.ok) return listed;
-		const machines: Machine[] = [];
-		for (const item of listed.value) {
-			if (item.state === "destroyed" || !Object.entries(labels).every(([key, value]) => item.labels?.[key] === value)) continue;
-			let sb: Sandbox = item;
-			if (item.networkBlockAll === undefined) {
-				const read = await this.#rest.get(item.id, ctx.signal);
-				if (!read.ok) return read;
-				if (read.value === undefined || read.value.state === "destroyed") continue;
-				sb = read.value;
-			}
-			machines.push(this.#machineOf(sb));
-		}
-		return ok(machines);
+		return ok(
+			listed.value
+				.filter((sb) => sb.state !== "destroyed")
+				.map((sb) => {
+					const { network, ...machine } = this.#machineOf(sb);
+					return sb.networkBlockAll === undefined ? machine : { ...machine, network };
+				}),
+		);
 	}
 
 	/**
@@ -861,83 +844,10 @@ class DaytonaHost implements MachineHost {
 		});
 	}
 
-	/**
-	 * Stops a sandbox (POST stop, unless Daytona reads it stopped already), then waits, through waitUntil, until Daytona
-	 * reads it as wanted, twice running, by its own read and by the listing alike: stopped, listed stopped; or gone, not
-	 * listed, when its stop deletes it (autoDeleteInterval 0, or a GPU sandbox). A stop not under way is asked for again.
-	 * Bounded by ctx.timeoutMs and ctx.signal; a failed read or listing, or a sandbox gone to error, ends the wait.
-	 */
+	/** POST stop. One Daytona refuses (invalid: not in a state it stops from) or no longer has is no failure: the adapter reads where it went. */
 	async stop(id: string, ctx: HostCall): Promise<Result<void>> {
-		const found = await this.#rest.get(id, ctx.signal);
-		if (!found.ok) return found;
-		const sb = found.value;
-		if (sb === undefined || sb.state === "destroyed") return ok(undefined);
-		const ask = async (signal?: AbortSignal) => {
-			const stopped = await this.#rest.call("POST", this.#rest.sandbox(id, "/stop"), {}, signal);
-			return stopped.ok || stopped.error.code === "invalid" || stopped.error.code === "not_found" ? ok(undefined) : stopped;
-		};
-		if (!STOPPED.has(sb.state ?? "")) {
-			const asked = await ask(ctx.signal);
-			if (!asked.ok) return asked;
-		}
-		const want = this.#autoDeleteFor(this.#made.get(id) ?? (isWhole(sb.gpu) && sb.gpu > 0)) === 0 ? "gone" : "stopped";
-		type Read = { failed: Result<never> } | { settled: true } | { last: string };
-		let agreed = 0;
-		let last = "unread";
-		const read = async (signal: AbortSignal): Promise<Read> => {
-			const got = await this.#rest.get(id, signal);
-			if (!got.ok) return got.error.code === "aborted" ? { last } : { failed: fail(got.error.code, `the stop of ${id}: reading it back failed (${got.error.message}); it last read ${last}`) };
-			const now = got.value;
-			last = stateWords(now);
-			if (now !== undefined && FAILED.has(now.state ?? "") && now.desiredState !== "destroyed") {
-				return { failed: vendorFail("daytona", `the stop of ${id}: it went to ${now.state}${now.errorReason ? `: ${now.errorReason}` : ""}`) };
-			}
-			const gone = now === undefined || now.state === "destroyed";
-			const reached = gone ? "gone" : want === "stopped" && STOPPED.has(now.state ?? "") ? "stopped" : undefined;
-			if (reached === undefined) {
-				agreed = 0;
-				if (now !== undefined && stateOf(now) !== "going" && !LEAVING.has(now.state ?? "")) {
-					const again = await ask(signal);
-					if (!again.ok && again.error.code !== "aborted") return { failed: again };
-				}
-				return { last };
-			}
-			const listed = await this.#listOwn(signal);
-			if (!listed.ok) return listed.error.code === "aborted" ? { last } : { failed: fail(listed.error.code, `the stop of ${id}: the listing failed (${listed.error.message}); it last read ${last}`) };
-			const item = listed.value.find((one) => one.id === id);
-			const shown = item === undefined || !ours(item.labels) || stateOf(item) === "going" ? undefined : STOPPED.has(item.state ?? "") ? "stopped" : (item.state ?? "in no state");
-			if (reached === "gone" ? shown === undefined : shown === "stopped") return ++agreed >= LISTED_ROUNDS ? { settled: true } : { last };
-			agreed = 0;
-			last = `${last}, listed ${shown ?? "not at all"}`;
-			return { last };
-		};
-		const waited = await waitUntil(read, (state) => !("last" in state), {
-			boundMs: ctx.timeoutMs,
-			...(ctx.signal ? { signal: ctx.signal } : {}),
-			minMs: Math.min(this.#pollMs, STOP_POLL_MAX_MS),
-			maxMs: STOP_POLL_MAX_MS,
-			what: `${id} to be ${want} after its stop`,
-			describe: (state) => ("last" in state ? `Daytona read it ${state.last}` : "done"),
-		});
-		if (!waited.ok) return waited;
-		return "failed" in waited.value ? waited.value.failed : ok(undefined);
-	}
-
-	/**
-	 * Settings' test: one page of the account's sandboxes by the adapter's own label, which makes nothing. The count is
-	 * read from the listing, with no read of each sandbox: a busy account answers as fast, and one sandbox's read never
-	 * fails a working key. A further page is "or more".
-	 */
-	async testConnection(ctx: HostCall): Promise<Result<{ detail: string }>> {
-		const query = new URLSearchParams({ labels: JSON.stringify({ [COMPUTER_LABEL]: "1" }), limit: "100" });
-		const answer = await this.#rest.json("GET", `${this.#rest.sandbox()}?${query}`, { retry: true }, ctx.signal);
-		if (!answer.ok) return countTested("Daytona", answer);
-		const value = answer.value as { items?: unknown; nextCursor?: unknown } | Sandbox[] | null;
-		const items = Array.isArray(value) ? value : Array.isArray(value?.items) ? (value.items as Sandbox[]) : undefined;
-		if (items === undefined) return countTested("Daytona", vendorFail("daytona", "GET /sandbox: the listing is not a page of sandboxes"));
-		const next = Array.isArray(value) ? undefined : value?.nextCursor;
-		const count = items.filter((item) => typeof item?.id === "string" && ours(item.labels) && stateOf(item) !== "going").length;
-		return countTested("Daytona", ok({ count, more: typeof next === "string" && next !== "" }));
+		const stopped = await this.#rest.call("POST", this.#rest.sandbox(id, "/stop"), {}, ctx.signal);
+		return stopped.ok || stopped.error.code === "invalid" || stopped.error.code === "not_found" ? ok(undefined) : stopped;
 	}
 }
 

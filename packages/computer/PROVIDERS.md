@@ -27,16 +27,16 @@ Seven members, each a call about the vendor's own machines:
 | `facts` | Static: `daemon` (`child` or `pid1`), `isolation`, `lifetime` (`vendor` timer or `janitor`), `maxLifetimeMs`, `arch`, `vendorAgentPorts`, `networkReadBack`, `network`, `mounts`, `release`; optional `vendorSockets` (the vendor's own path sockets outside `/run`, as shell patterns, which a child host's create closes to the computer's user before init starts), `gpu`, `user`, `specFields`, `labelRules`, `runtime`. `capabilities()` is built from these and the adapter's options alone. |
 | `create(req, ctx)` | Makes one machine from a `MachineRequest` (its name, image, labels, lifetime, network, and on a pid1 host its command) and answers once the vendor has its id. No wait for running or listed: the adapter waits. |
 | `get(id, ctx)` | One `Machine` as the vendor reads it now (labels, state, network, resolved image, the timer's end, the vendor's own drift in words), or `undefined` once the vendor no longer has it. |
-| `list(labels, ctx)` | Every machine carrying all of these labels, every page, each as `get` reads it, within `ctx.timeoutMs`. |
+| `list(labels, ctx)` | The machines the vendor's listing shows for these labels, every page, within `ctx.timeoutMs`, each as the listing reads it: a field it leaves out (the network, drift) is absent, and the adapter reads `get` where it needs one. It may answer more machines than carry all the labels: the adapter keeps those that do. |
 | `delete(id, ctx)` | Deletes; not found is ok; answers once the vendor took it. |
 | `exec(id, argv, { stdin }, ctx)` | Starts argv as root (or a user with passwordless sudo), outside the computer's tools, with no command timeout; a `MachineProcess` (stdout, stderr, write, end, wait, kill). |
 | `errorCode(error)` | The code of an error the vendor's client threw: one of `ComputerErrorCode`, `vendor` for anything else. |
 
 `upload` is optional: a vendor with no file API leaves it out, and the adapter streams the daemon through `exec`'s
 stdin. Six optional hooks exist, each for one vendor's need: `prepare` (settings once a machine runs), `stop` (with
-`release: ["stop"]`), `setTimer` (a vendor timer that extend moves), `setLabels` (a janitor deadline that extend
-moves), `check` (the vendor's own spec rules, such as an image name) and `testConnection` (where a list would make
-something).
+`release: ["stop"]`; it only asks, and the adapter waits), `setTimer` (a vendor timer that extend moves), `setLabels` (a janitor deadline that extend
+moves), `check` (the vendor's own spec rules, such as an image name, over a spec the adapter has read as an object)
+and `testConnection` (where a list would make something; else the adapter's one list, counted).
 
 A method answers a `Result`; one that throws is read through `errorCode`. The adapter bounds every call by
 `ctx.timeoutMs` and the caller's `ctx.signal`, and never cancels a create: one that answers after the caller gave up is
@@ -71,8 +71,9 @@ deleted as it lands, and one whose answer never comes is found by its name and d
   after the machine exists deletes it and waits until the vendor reads it gone.
 - `connect`, `attach` (the host's drift held as at create, the size read back reported), `list`, `network` (fixed at
   create: any change is refused), `extend` (where `setTimer` or `setLabels` lets the deadline follow), `release`
-  (delete, then wait until `get` reads it gone and the name's listing no longer shows it, twice running; a stop or a
-  delete of a running Archil computer lets go of its folder first), `watch` and `testConnection`.
+  (delete, then wait until `get` reads it gone and the name's listing no longer shows it, twice running; a stop waits
+  the same way until both read it stopped, or gone where a stop deletes it, and asks again while it reads running; a
+  stop or a delete of a running Archil computer lets go of its folder first), `watch` and `testConnection`.
 - Refusals use `ComputerErrorCode` alone: `invalid` for a malformed request, `unsupported` for a call or feature the
   provider does not have, `refused` for a value or state it does not serve, `exists` for a request already made;
   `vendor` carries the vendor's own words.

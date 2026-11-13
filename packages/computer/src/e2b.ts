@@ -6,14 +6,12 @@
 // used here is cited in the README's E2B section, from e2b@2.63.0 (dist/index.mjs) and e2b-dev/infra@ff3922213 (envd).
 import { E2B, E2B_BASE_TEMPLATE, E2B_DESKTOP_TEMPLATE } from "./descriptors/e2b.js";
 import type { HostCall, HostFacts, Machine, MachineHost, MachineProcess, MachineRequest } from "./host.js";
-import { deadlineOf, HostedProvider, type HostedOptions, type HostedTimeouts, IMAGE_LABEL, ours } from "./hosted/provider.js";
-import { words } from "./hosted/process.js";
+import { deadlineOf, HostedProvider, type HostedOptions, type HostedTimeouts, IMAGE_LABEL } from "./hosted/provider.js";
 import { shellLine } from "./hosted/scripts.js";
 import type { KindCapabilities } from "./kinds.js";
 import type { MountKind } from "./mount.js";
 import type { ComputerSpec, NetworkPolicy, Refusal } from "./provider.js";
 import { type ComputerErrorCode, failFor, ok, type Result } from "./result.js";
-import { countTested } from "./test-connection.js";
 
 /** This module's failures: one with code vendor names E2B. */
 const fail = failFor("e2b");
@@ -271,7 +269,7 @@ function machineOf(info: E2BSandboxInfo): Machine {
 	return {
 		id: info.sandboxId,
 		labels: metadata,
-		state: info.state === "running" ? "running" : info.state === "paused" ? "stopped" : "going",
+		state: stateOf(info.state),
 		network: networkOf(info),
 		image: { resolved: info.templateId },
 		...(info.startedAt instanceof Date && !Number.isNaN(info.startedAt.getTime()) ? { createdAt: new Date(info.startedAt) } : {}),
@@ -282,11 +280,14 @@ function machineOf(info: E2BSandboxInfo): Machine {
 	};
 }
 
-/** A listed sandbox whose read-back E2B no longer has: still listed, so it is going, not gone. */
-const listedOnly = (sb: E2BListedSandbox): Machine => ({
+/** E2B's state as the adapter's: a paused sandbox is stopped. */
+const stateOf = (state: string): Machine["state"] => (state === "running" ? "running" : state === "paused" ? "stopped" : "going");
+
+/** A sandbox as E2B's listing reads it: no network, which the adapter reads back by get. */
+const listedOf = (sb: E2BListedSandbox): Machine => ({
 	id: sb.sandboxId,
 	labels: { ...(sb.metadata ?? {}) },
-	state: "going",
+	state: stateOf(sb.state),
 	...(sb.startedAt instanceof Date && !Number.isNaN(sb.startedAt.getTime()) ? { createdAt: new Date(sb.startedAt) } : {}),
 });
 
@@ -360,8 +361,7 @@ class E2BHost implements MachineHost {
 	}
 
 	/** An E2B template is a name or id: letters, digits and ._:/- (no shell word, no path out). */
-	check(spec: ComputerSpec): Refusal[] {
-		const image = (spec as { image?: unknown } | null)?.image;
+	check({ image }: Partial<ComputerSpec>): Refusal[] {
 		if (typeof image === "string" && image !== "" && !TEMPLATE.test(image)) {
 			return [{ field: "image", message: `an image is the name or id of an E2B template, such as "${E2B_DESKTOP_TEMPLATE}" (E2B Desktop) or "${E2B_BASE_TEMPLATE}"` }];
 		}
@@ -401,8 +401,8 @@ class E2BHost implements MachineHost {
 	}
 
 	/**
-	 * Every sandbox E2B lists with these metadata pairs (running and paused, index.d.mts:10289), all pages, each read
-	 * back by getInfo, since a listing does not carry the network; one bound, ctx.timeoutMs, for every page and read.
+	 * Every sandbox E2B lists with these metadata pairs (running and paused, index.d.mts:10289), all pages within
+	 * ctx.timeoutMs, as the listing reads them: a listing does not carry the network, which the adapter reads by get.
 	 */
 	async list(labels: Record<string, string>, ctx: HostCall): Promise<Result<Machine[]>> {
 		const until = Date.now() + ctx.timeoutMs;
@@ -415,14 +415,7 @@ class E2BHost implements MachineHost {
 			if (!Array.isArray(items)) return fail("vendor", "Sandbox.list: a page that is not a list of sandboxes");
 			for (const sb of items) if (typeof sb?.sandboxId === "string") found.set(sb.sandboxId, sb);
 		}
-		const machines: Machine[] = [];
-		for (const sb of found.values()) {
-			if (Date.now() >= until) return fail("timeout", `${machines.length} sandboxes were read back, ${sb.sandboxId} and any after it were not`);
-			const read = await this.get(sb.sandboxId, { timeoutMs: left(), ...(ctx.signal ? { signal: ctx.signal } : {}) });
-			if (!read.ok) return read;
-			machines.push(read.value ?? listedOnly(sb));
-		}
-		return ok(machines);
+		return ok([...found.values()].map(listedOf));
 	}
 
 	/** Sandbox.kill, never signalled: a kill that cleans up after an abort must outlive it. Not found is done. */
@@ -533,23 +526,6 @@ class E2BHost implements MachineHost {
 		}
 		await this.#Sandbox.setTimeout(id, timerMs, this.#api(ctx.timeoutMs, ctx.signal));
 		return ok(undefined);
-	}
-
-	/**
-	 * Settings' test: one page of the account's sandboxes by the adapter's own metadata, which makes nothing. The count is
-	 * read from the listing, with no getInfo of each: a busy account answers as fast, and one sandbox's read never fails a
-	 * working key. A further page is "or more".
-	 */
-	async testConnection(ctx: HostCall): Promise<Result<{ detail: string }>> {
-		try {
-			const paginator = this.#Sandbox.list({ ...this.#connection, requestTimeoutMs: ctx.timeoutMs, query: { metadata: { "agentrun.computer": "1" } }, limit: PAGE });
-			const items = await paginator.nextItems({ requestTimeoutMs: ctx.timeoutMs, ...(ctx.signal ? { signal: ctx.signal } : {}) });
-			if (!Array.isArray(items)) return countTested("E2B", fail("vendor", "Sandbox.list: a page that is not a list of sandboxes"));
-			const count = items.filter((sb) => typeof sb?.sandboxId === "string" && ours(sb.metadata)).length;
-			return countTested("E2B", ok({ count, more: paginator.hasNext }));
-		} catch (error) {
-			return countTested("E2B", fail(codeOf(error), `Sandbox.list failed: ${words(error)}`));
-		}
 	}
 }
 

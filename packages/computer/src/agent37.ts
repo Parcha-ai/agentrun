@@ -493,9 +493,8 @@ class Agent37Host implements MachineHost {
 	}
 
 	/** An Agent37 template is a name, with an optional @<version>; a size is one of Agent37's four shapes; metadata fits 4 KB. */
-	check(spec: ComputerSpec): Refusal[] {
+	check(given: Partial<ComputerSpec>): Refusal[] {
 		const refusals: Refusal[] = [];
-		const given = (typeof spec === "object" && spec !== null ? spec : {}) as Partial<ComputerSpec>;
 		const { image, cpus, memoryMb } = given;
 		if (typeof image === "string" && image !== "" && !TEMPLATE.test(image)) {
 			refusals.push({ field: "image", message: `an image is the name of an Agent37 template, optionally pinned as name@version, such as "${AGENT37_BASE_TEMPLATE}"` });
@@ -552,22 +551,16 @@ class Agent37Host implements MachineHost {
 
 	/**
 	 * GET /v1/instances: the whole workspace in one answer, newest first, each the full instance object (docs:
-	 * instances/list). Agent37 filters nothing, so the labels are matched here; an answer that says it has more is refused.
+	 * instances/list). Agent37 filters nothing: the adapter matches the labels. An answer that says it has more is refused.
 	 */
 	async list(labels: Record<string, string>, ctx: HostCall): Promise<Result<Machine[]>> {
+		void labels;
 		const listed = await this.#rest<{ data?: unknown; has_more?: unknown; next_cursor?: unknown }>("GET", "/v1/instances", undefined, ctx);
 		if (!Array.isArray(listed.data)) throw new Agent37Error(200, undefined, "GET /v1/instances answered no data list");
 		if (listed.has_more === true || (listed.next_cursor !== undefined && listed.next_cursor !== null)) {
 			throw new Agent37Error(200, undefined, "GET /v1/instances answered a page with more after it, which Agent37 documents none of: this provider would miss machines");
 		}
-		const wanted = Object.entries(labels);
-		const machines: Machine[] = [];
-		for (const instance of listed.data as Agent37Instance[]) {
-			if (typeof instance?.id !== "string") continue;
-			const metadata = instance.metadata ?? {};
-			if (wanted.every(([key, value]) => metadata[key] === value)) machines.push(machineOf(instance, this.#declared));
-		}
-		return ok(machines);
+		return ok((listed.data as Agent37Instance[]).filter((instance) => typeof instance?.id === "string").map((instance) => machineOf(instance, this.#declared)));
 	}
 
 	/** DELETE /v1/instances/{id}, never signalled; a repeat answers 404, read as done (docs: instances/delete). */
