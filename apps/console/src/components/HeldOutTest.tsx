@@ -32,7 +32,9 @@ export function headlineOf(result: LearningEval) {
   };
 }
 
-export function HeldOutTest({ v2, agentId }: { v2: Client; agentId: string }) {
+/** The card for an agent, read when it shows. `quiet`: under the Learning tab's own empty state, it shows only once a
+ *  result is recorded (no "Not measured yet" beside "Nothing learned yet"). */
+export function HeldOutTest({ v2, agentId, quiet = false }: { v2: Client; agentId: string; quiet?: boolean }) {
   const [data, setData] = useState<LearningEvals | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [asked, setAsked] = useState(0);
@@ -42,6 +44,7 @@ export function HeldOutTest({ v2, agentId }: { v2: Client; agentId: string }) {
     Promise.resolve().then(() => v2.learningEvals(agentId)).then((r) => { if (live) setData(r); }, (e) => { if (live) setError(e ?? new Error("unknown")); });
     return () => { live = false; };
   }, [v2, agentId, asked]);
+  if (quiet && !data?.evals.length) return null;
   if (error && !data) return <ProblemCard problem={problem(error, "the held-out test")} onRetry={() => setAsked((n) => n + 1)} className="" />;
   if (!data) return <Bone className="h-[116px] w-full" />;
   return <HeldOutCard result={data.evals[0] ?? null} />;

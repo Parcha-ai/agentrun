@@ -55,4 +55,14 @@ describe("the held-out headline", () => {
     await act(async () => { host.querySelector<HTMLButtonElement>("[role=alert] button")!.click(); });
     expect(host.textContent).toContain("200 jobs it never learned from");
   });
+  it("quiet (under the tab's empty state) shows nothing until a result is recorded", async () => {
+    let evals: LearningEval[] = [];
+    const v2 = { learningEvals: async () => ({ agent: "a", evals }) } as unknown as Client;
+    const none = await mount(createElement(HeldOutTest, { v2, agentId: "a", quiet: true }));
+    expect(none.innerHTML).toBe("");
+    act(() => root!.unmount()); document.body.innerHTML = "";
+    evals = [RESULT];
+    const some = await mount(createElement(HeldOutTest, { v2, agentId: "a", quiet: true }));
+    expect(some.querySelector('[data-testid="held-out-test"]')!.textContent).toContain("94%");
+  });
 });

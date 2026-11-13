@@ -2,7 +2,7 @@
 // on, its GET /v2/agents/{id}/learning/cost answered with the console's invented sample (src/components/CostPerRun.sample.json:
 // 80 runs of an invoice-sorter agent whose learned workflow takes over at run 21). The chart lays out inside its card at
 // each width (no label past the plot's right edge), names the takeover and how many times cheaper, and a hover shows a
-// run's readout. The execution mix sits beside the chart at desktop width and under it below, fits the card, and a hover on a block names its runs and counts. E2E_SHOTS=<dir>
+// run's readout. The execution mix sits beside the chart at desktop width and under it below, fits the card, and a hover on a block names its runs and counts. A held-out result posted through the real API (POST /v2/agents/{id}/learning/evals) shows above it. E2E_SHOTS=<dir>
 // also saves each width and theme, before and during the hover.
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -38,6 +38,11 @@ export default {
     // The real read first: a fresh agent's series is empty, and says what to do.
     const fresh = await api("GET", `/agents/${encodeURIComponent(id)}/learning/cost`);
     check(fresh.status === 200 && fresh.body.runs.length === 0 && fresh.body.summary.takeover === null, `a fresh agent's cost read: ${fresh.status} ${JSON.stringify(fresh.body)}`);
+    // The held-out headline: none recorded reads nothing under the empty state; one posted through the real API shows.
+    const none = await api("GET", `/agents/${encodeURIComponent(id)}/learning/evals`);
+    check(none.status === 200 && none.body.evals.length === 0, `a fresh agent's evals: ${none.status} ${JSON.stringify(none.body)}`);
+    const posted = await api("POST", `/agents/${encodeURIComponent(id)}/learning/evals`, { source: "invoice bench, sealed test", n: 200, learned: { accuracy: 0.94, ci: [0.902, 0.968], usd_per_job: 0.12 }, by_hand: { accuracy: 0.81, ci: [0.75, 0.86], usd_per_job: 0.89 } });
+    check(posted.status === 201, `POST /learning/evals answered ${posted.status}: ${JSON.stringify(posted.body)}`);
     await page.route(new RegExp(`/v2/agents/${encodeURIComponent(id)}/learning/cost(\\?.*)?$`), (route) => route.fulfill({ json: { ...SAMPLE, agent: id } }));
     const shots = process.env.E2E_SHOTS;
     if (shots) mkdirSync(shots, { recursive: true });
@@ -52,6 +57,9 @@ export default {
         await card.getByText("Workflow took over, run 21").waitFor().catch(async (e) => { if (shots) await page.screenshot({ path: join(shots, "failed.png"), fullPage: true }); throw e; });
         await page.evaluate(() => document.fonts.ready);
         check(await page.evaluate((t) => document.documentElement.classList.contains(t), theme), `${theme} ${width}px: the page is not in the ${theme} theme`);
+        const heldOut = await page.getByTestId("held-out-test").textContent();
+        check(/200 jobs it never learned from/.test(heldOut ?? "") && /94%81% by hand, \+13 points/.test(heldOut ?? "") && /7\.4x cheaper/.test(heldOut ?? ""), `${theme} ${width}px: the held-out card says ${heldOut}`);
+        if (shots && width === WIDTHS[0]) await page.getByTestId("held-out-test").screenshot({ path: join(shots, `held-out-${theme}-${width}.png`) });
         const headline = await card.locator("h3 + p").textContent();
         check(/before learning, .* after takeover: 7x cheaper/.test(headline ?? ""), `${theme} ${width}px: the headline says ${headline}`);
         const m = await page.evaluate(measure);

@@ -153,6 +153,7 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places, on
     <div className="space-y-6">
       {stale}
       <Empty on={on} lookedBack={lookedBack} switchRow={switchRow(true)} onAdd={readOnly ? undefined : () => setAdding(true)} />
+      <HeldOutTest v2={v2} agentId={agent.agent_id} quiet />
       <CostPerRun v2={v2} agentId={agent.agent_id} on={on} quiet />
       <NotKept runs={runs} />
     </div>
