@@ -54,6 +54,20 @@ function jsonSecrets(text: string): string[] {
   return out;
 }
 
+/** A launch's sealed JSON: its own listed values (jsonSecrets), and each handed MCP credential's headers (store/seal.ts
+ *  sealRunMcpAuth: `{"mcp": {"<server>": {"headers": {...}}}}`), as a saved server's are listed. */
+function launchSecrets(text: string): string[] {
+  const out = jsonSecrets(text);
+  let mcp: unknown;
+  try {
+    mcp = (JSON.parse(text) as { mcp?: unknown } | null)?.mcp;
+  } catch {
+    return out;
+  }
+  if (mcp && typeof mcp === "object") for (const entry of Object.values(mcp)) out.push(...jsonSecrets(JSON.stringify(entry)));
+  return out;
+}
+
 /** A PEM key whole, and each of its base64 lines (the short last one too), as the server lists one (sealed-settings-store.ts). */
 const pemForms = (value: string): string[] => [value, ...value.split(/\r?\n/).map((line) => line.trim()).filter((line) => line && !line.startsWith("-----"))];
 
@@ -70,7 +84,7 @@ function secretsOf(row: SealedSecretRow, plain: string, adapters: readonly Trigg
     case "mcp_oauth_pending":
       return { listed: jsonSecrets(plain), whole: [] };
     case "run_launch":
-      return { listed: plain.trimStart().startsWith("{") ? jsonSecrets(plain) : [plain], whole: [] };
+      return { listed: plain.trimStart().startsWith("{") ? launchSecrets(plain) : [plain], whole: [] };
     default:
       return { listed: [plain], whole: [] };
   }

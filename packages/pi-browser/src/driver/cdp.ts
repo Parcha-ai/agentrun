@@ -241,9 +241,9 @@ export function cdpDriver(): DriverFactory<PageDriver> {
         return page.evaluate(`(${LOCATE_JS}).call(document, ${JSON.stringify(selector)})`) as Promise<Located>;
       },
 
-      screenshot: async ({ type = "png", quality, fullPage, clip }: ScreenshotOptions) => {
-        const data = await page.screenshot({ type, ...(quality === undefined ? {} : { quality }), ...(fullPage === undefined ? {} : { fullPage }), ...(clip ? { clip } : {}) });
-        return { data, mimeType: type === "jpeg" ? "image/jpeg" : "image/png" };
+      screenshot: async (options: ScreenshotOptions) => {
+        const data = await page.screenshot(options);
+        return { data, mimeType: options.type === "jpeg" ? "image/jpeg" : "image/png" };
       },
 
       // One evaluate reads all four, so they are one document's.

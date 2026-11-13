@@ -1,5 +1,5 @@
 // The one store (design 2.1), for the cutover: nothing on main imports it until then.
-export { AgentArchived, CommandTaken, endedReason, ExternalBodyConflict, FINAL_STATES, Fenced, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, RevisionMoved, RunFinal, SchemaVersionUnknown, SignInHandedTo, SignInMissing, StoreBusy, StoreClosed, StoreConstraint, StoreDeadline, StoreFromEarlierVersion, StoreLaunchMissing, StoreOwned, StoreWorkerLost, STORE_WRITE_DEADLINE_MS, stoppedByPerson, TriggerFull } from "./store.js";
+export { AgentArchived, AnswerTaken, CommandTaken, endedReason, ExternalBodyConflict, FINAL_STATES, Fenced, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, RevisionMoved, RunFinal, SchemaVersionUnknown, SignInHandedTo, SignInMissing, StoreBusy, StoreClosed, StoreConstraint, StoreDeadline, StoreFromEarlierVersion, StoreLaunchMissing, StoreOwned, StoreWorkerLost, STORE_WRITE_DEADLINE_MS, stoppedByPerson, TriggerFull } from "./store.js";
 export type {
   ConstraintRule,
   AgentRow, Agents, AlsoRow, ChannelPost, Claim, Command, ComputerLedger, ComputerLedgerRow, Firing, FiringChange, FiringRow, FiringStatus, FiringStreak, Journal, Live, LiveRow, Mcp, McpCredentialMark, McpOauth, McpOauthPendingRow, McpPinRow,
@@ -8,7 +8,7 @@ export type {
   TriggerSettings, Channels, ChannelAttemptRow, ChannelPostRow, ChannelToldRow, ImportedFrom, ImportSource, ImportRunInput, JournalReads, RunOrigin, RunOutcome, RunLaunchInput, RunLaunchRow, Learning,
   LearningProposal, LiveViewerRow, LiveViewers, SignIns, SignInRow, SignInTombstoneRow, UpdatedRun, ViewerKind,
 } from "./store.js";
-export { aadOf, type McpCredential, type OpenedMcpCredential, openMcpCredential, sealColumn, type SealedAt, sealedAt, sealMcpCredential, unsealColumn } from "./seal.js";
+export { aadOf, type McpCredential, type OpenedMcpCredential, openMcpCredential, openRunMcpAuth, type RunMcpAuth, sealColumn, type SealedAt, sealedAt, sealMcpCredential, sealRunMcpAuth, unsealColumn } from "./seal.js";
 export {
   AgentBodyInvalid, type AgenticBody, bodyOf, canonical, isObject, isSkillPath, type PromptVariant,
   type ModelTiers, type RevisionBodyInput, type RevisionComputer, type RevisionPlace, sha256, type ToolSettings, type WorkflowBody,

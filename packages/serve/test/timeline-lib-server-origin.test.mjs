@@ -9,7 +9,7 @@ import * as timeline from "../dist/timeline/index.js";
 import { assistant, custom, inConv, user } from "./timeline-lib-support.mjs";
 
 const { timelineOf } = timeline;
-/** The marker's kind, as the door writes it (pi-durable-disk's MESSAGE_ORIGIN_KIND): the module's own is checked below. */
+/** The marker's kind, as the door writes it (MESSAGE_ORIGIN_KIND): the module's own is checked below. */
 const MESSAGE_ORIGIN = "agentrun.message_origin";
 const RAISED = "The cap was raised to $5; continue the task.";
 const SERVER = { kind: "server", reason: "cap_raised" };

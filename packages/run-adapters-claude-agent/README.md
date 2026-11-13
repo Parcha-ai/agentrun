@@ -13,7 +13,7 @@ import { claudeAgentAdapter } from "@parcha/agentrun-harness-claude";
 
 const runNode = createHarnessRunner(
   claudeAgentAdapter({
-    model: "claude-sonnet-4-5",
+    model: "claude-sonnet-5-5",
     provider: { origin: "https://api.anthropic.com", credential: () => process.env.ANTHROPIC_API_KEY! },
     sessionsDir: "/var/lib/my-host/claude-agent-sessions",
     // Optional: the SDK module and its CLI from where the host installed them (checked against the pins).

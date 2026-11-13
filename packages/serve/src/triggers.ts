@@ -912,7 +912,7 @@ export class Triggers {
   }
 
   /** A run's title, from the trigger that starts it: "<its source> <its name>" (the word its Timeline row begins with,
-   *  pi-durable-agent's TRIGGER_LABELS), and the event its payload's tag names, when one does ("Webhook reviews:
+   *  TRIGGER_LABELS), and the event its payload's tag names, when one does ("Webhook reviews:
    *  pull_request opened"); never its input, which may be a sender's markup. */
   private titleOf(trigger: Trigger, firing: Pick<FiringRow, "by" | "nominalAt" | "payload"> & { attrs?: unknown }): string {
     const source = TRIGGER_LABELS[trigger.source.kind as TriggerSource] ?? trigger.source.kind;
@@ -922,7 +922,7 @@ export class Triggers {
     return `${source} ${trigger.name}${event ? `: ${event}${action ? ` ${action}` : ""}` : ""}`;
   }
 
-  /** Who a firing's input is from (pi-durable-agent's MessageOrigin): the trigger, by its definition as it fires, never
+  /** Who a firing's input is from (a MessageOrigin): the trigger, by its definition as it fires, never
    *  by its payload. Only a source whose words are its owner's (a schedule's, fired on time or by hand) gives owner true;
    *  a pushed source's come from outside, its body empty or not. */
   private originOf(trigger: Trigger): MessageOrigin {

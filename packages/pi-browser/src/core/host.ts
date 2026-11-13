@@ -64,12 +64,8 @@ export type AttachTarget = {
 };
 
 export type ProviderCaps = {
-  timeoutModel: "wall-clock" | "inactivity";
-  maxLifetimeS: number;
-  survivesDisconnect: boolean;
-  releaseIsAsync: boolean;
+  /** The provider can open a session on a saved sign-in (`SessionSpec.profile`); without it such a session is refused. */
   profiles: boolean;
-  extension: "uploaded-per-launch" | "preinstalled" | "loaded-locally";
   /** Every session attaches to the same browser (an endpoint the host named), so two at once would drive the same pages. */
   sharedBrowser?: boolean;
   /** The session settings this provider applies; a setting left out is applied. */
@@ -89,15 +85,7 @@ export type Recording = { id: string; startedAt: string | null; durationS: numbe
 export type RemoteFile = { name: string; sizeBytes: number; modifiedAt: string | null; downloading?: true };
 
 /** What a session vault may keep of this provider's sessions. Absent: nothing (a browser the package cannot read, or one the host shares). */
-export type ProviderVault =
-  | { kind: "cdp" }
-  | {
-      kind: "context"; provider: "browserbase" | "kernel";
-      /** True when this provider writes the context ids it makes to a clear file: a vault refuses such a provider, so an id never lands outside it. */
-      contextIdsInClear: boolean;
-      /** The context or profile this session runs on, or null. A capability: it goes to the host's vault only. */
-      contextOf(ref: LeaseRef): string | null;
-    };
+export type ProviderVault = { kind: "cdp" };
 
 export interface BrowserProvider {
   readonly name: string;

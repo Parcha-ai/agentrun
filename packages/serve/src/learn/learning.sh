@@ -340,6 +340,17 @@ case $op in
     printf 'agentrun-read 1 %s %s %s %s\n' "${main:-none}" "$(($(wc -c < "$tmp/tree")))" "$(($(wc -c < "$tmp/log")))" "$(($(wc -c < "$tmp/blobs")))"
     cat "$tmp/tree" "$tmp/log" "$tmp/blobs"
     ;;
+  show)
+    # The files `commit` holds at the paths after it, each alone (git cat-file over each commit:path, in order), never
+    # the whole tree or its log: a read bounded by what is asked.
+    commit=${2:-}
+    hex40 "$commit" || die "show takes a commit"
+    g cat-file -e "$commit^{commit}" 2> /dev/null || exit 1
+    shift 2
+    : > "$tmp/want"
+    for path in "$@"; do printf '%s:%s\n' "$commit" "$path" >> "$tmp/want"; done
+    g cat-file --batch < "$tmp/want" || die "cat-file failed"
+    ;;
   has)
     main=${2:-}
     path=${3:-}
@@ -348,6 +359,6 @@ case $op in
     g cat-file -e "$main:$path" 2> /dev/null || exit 1
     ;;
   *)
-    die "no op $op: init, commit, snapshot, read or has"
+    die "no op $op: init, commit, snapshot, read, show or has"
     ;;
 esac

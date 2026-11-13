@@ -22,20 +22,20 @@ const DROP = JSON.stringify({ merge: false, reason: "Too vague to help.", items:
 const MERGED = { ok: true, main: "c0ffee", commit: "c0ffee", files: ["retries.md"] };
 
 /** A source run that ended keeping PROPOSAL, and its queued learning run, claimed by a runner. */
-async function setUp(t) {
+async function setUp(t, proposal = PROPOSAL) {
   const { store, clock } = await storeOn(t);
   await agentWithRevision(store);
   await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
   const source = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
   // The row as the end-of-run hook keeps it (runner/reflect-hook.ts): its state and words, the kept Proposal inside.
-  const kept = { state: "proposed", notes: ["Retries"], skills: [], workflows: [], proposal: PROPOSAL, detail: "Proposed 1 note." };
+  const kept = { state: "proposed", notes: ["Retries"], skills: [], workflows: [], proposal, detail: "Proposed 1 note." };
   await store.runs.update(source, { state: "ended" }, { also: [{ table: "learning_proposals", row: { turn: { answer: "…" }, proposal: kept } }, { table: "learning_run", row: { id: "learn-1" } }] });
   const claim = await store.claim("learn-1", "runner-a", { leaseMs: 60_000 });
   return { store, clock, claim };
 }
 
 /** The learning loop over the store, with fakes for the grader, the folder and its write; `calls` counts each. */
-function loopOn(store, clock, { answers = [KEEP], commit = async () => MERGED, readMain = async () => MAIN } = {}) {
+function loopOn(store, clock, { answers = [KEEP], commit = async () => MERGED, readMain = async () => MAIN, mainTexts = async () => ({}), merged = async () => undefined } = {}) {
   const calls = { ask: [], commit: [], flush: 0 };
   const queue = [...answers];
   const factory = createLearningLoop({
@@ -52,6 +52,10 @@ function loopOn(store, clock, { answers = [KEEP], commit = async () => MERGED, r
       return { text: answer, usd: 0.01 };
     },
     commit: async (ws, change) => (calls.commit.push({ ws, change }), commit(ws, change)),
+    // A fake main that holds no note by any of these names.
+    mainTexts,
+    // A fake main that holds no merge of this run yet.
+    merged,
     now: () => clock.now,
   });
   const loop = factory({ journal: (claim) => store.journal(claim), flush: async () => (calls.flush++, store.flush()), signal: new AbortController().signal });
@@ -227,6 +231,9 @@ test("a learning run stopped after its grade booked keeps that grade's cost on i
   assert.deepEqual([row.state, row.costUsd], ["stopped", 0.01], "the paid grade stays on the stopped run's row");
   const { learningSpendOverStore } = await import("../dist/store-reads/learning.js");
   assert.deepEqual((await learningSpendOverStore(store, { from: 0, to: Number.MAX_SAFE_INTEGER })).map((one) => [one.agent, one.cost]), [["agent-1", 0.01]], "what /v2/usage reads as learning's spend");
+  const { agentCostOverStore } = await import("../dist/store-reads/learning.js");
+  const [run] = (await agentCostOverStore(store, "agent-1")).runs;
+  assert.deepEqual([run.run_id, run.learning_usd], ["run-1", 0.01], "the cost per run books the stopped grade's cost to its run");
 });
 
 test("a learning run stopped while its grade request was cut keeps an unknown cost (null), and /v2/usage's learning spend says so", async (t) => {
@@ -241,6 +248,9 @@ test("a learning run stopped while its grade request was cut keeps an unknown co
   assert.deepEqual([row.state, row.costUsd], ["stopped", null], "a cut request may have been billed: unknown, never 0");
   const { learningSpendOverStore } = await import("../dist/store-reads/learning.js");
   assert.deepEqual((await learningSpendOverStore(store, { from: 0, to: Number.MAX_SAFE_INTEGER })).map((one) => [one.agent, one.cost]), [["agent-1", null]]);
+  const { agentCostOverStore } = await import("../dist/store-reads/learning.js");
+  const [run] = (await agentCostOverStore(store, "agent-1")).runs;
+  assert.deepEqual([run.run_id, run.learning_usd, run.total_usd], ["run-1", null, null], "the cost per run says the stopped grade's cost is unknown, never 0");
 });
 
 test("a learning run whose source kept nothing ends with nothing graded", async (t) => {
@@ -272,4 +282,19 @@ test("a draft the proposal holds as unpriced is merged pending though the grader
     assert.deepEqual(await loop.start(claim), { state: "ended" });
     assert.deepEqual(calls.commit[0].change.held, want, JSON.stringify(calls.commit[0].change));
   }
+});
+
+// A draft held in code (LS-07: an MCP tool with no declared price) waits whatever the grade, and the grader is told so,
+// and why, under the draft: the learning run passes the proposal's `held` to the grade prompt (a main merge once dropped
+// it, and nothing caught it).
+test("a held draft's grade prompt says it waits for its owner's OK, and why", async (t) => {
+  const draft = "workflows/answer/workflow.json";
+  const files = [{ file: draft, text: JSON.stringify({ v: 2, name: "answer", schemas: {}, root: { node: "chain", steps: [] } }) }, { file: "workflows/answer/README.md", text: "---\nname: answer\ndescription: Answers a question\n---\n" }];
+  const why = "its step lookup calls the MCP tool billing.charge, which declares no price";
+  const { store, clock, claim } = await setUp(t, { ...PROPOSAL, files, held: { [draft]: [why] } });
+  const { loop, calls } = loopOn(store, clock, { answers: [JSON.stringify({ merge: true, reason: "Worth keeping.", items: [{ file: "retries.md", decision: "keep", why: "useful" }, { file: draft, decision: "keep", why: "useful" }] })] });
+  await loop.start(claim);
+  const prompt = calls.ask[0].request.prompt;
+  assert.match(prompt, /It waits for its owner's OK whatever you decide, for the reason below/, prompt.slice(-1500));
+  assert.ok(prompt.includes(why), "the hold's reason, under the draft");
 });
