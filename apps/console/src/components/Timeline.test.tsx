@@ -26,6 +26,15 @@ describe("Timeline, a tool result", () => {
     expect(h).not.toContain("border-destructive");
     expect(h).not.toMatch(/>Error</);
   });
+  it("a call refused before it ran (a deny, a person's, one held for an approval the run ended without) reads Refused in a neutral chip, never the red Error", () => {
+    for (const summary of ["Refused: web_fetch example.com/page: Permission denied: web_fetch is set to deny on this server.", "Refused: write deny.md: Not run: the run was stopped while it waited"]) {
+      const h = html(row({ tool_name: "web_fetch", tool_status: "failed", refused: true, summary }));
+      expect(h).toMatch(/>Refused</);
+      expect(h).not.toMatch(/>Error</);
+      expect(h).not.toContain("border-destructive");
+      expect(h).not.toContain("text-destructive-text");
+    }
+  });
 });
 
 // QA: a browser step read "run" or "snapshot" above what it did: the browser tool's wire name. It reads as the timeline
