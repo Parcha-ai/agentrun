@@ -83,8 +83,8 @@ export function Steps({ data, stepMs = STEP_MS }: { data: WorkflowRevisions; ste
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
           <Button size="sm" onClick={play} aria-label={playing ? "Pause the replay" : "Play the replay"} aria-pressed={playing}>{playing ? <Pause aria-hidden /> : <Play aria-hidden />}{playing ? "Pause" : "Play"}</Button>
           <Button size="icon" onClick={() => go(at - 1)} disabled={at <= 0} aria-label="Previous revision"><ChevronLeft aria-hidden /></Button>
-          <Slider min={1} max={n} value={at + 1} onChange={(v) => go(v - 1)} label="Revision" valueText={shown} className="min-w-[10rem] flex-1" />
           <Button size="icon" onClick={() => go(at + 1)} disabled={at >= n - 1} aria-label="Next revision"><ChevronRight aria-hidden /></Button>
+          <Slider min={1} max={n} value={at + 1} onChange={(v) => go(v - 1)} label="Revision" valueText={shown} className="basis-full sm:min-w-[10rem] sm:flex-1 sm:basis-0" />
         </div>
       )}
       <div className="min-w-0">

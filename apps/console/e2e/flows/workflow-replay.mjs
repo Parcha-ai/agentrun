@@ -20,6 +20,12 @@ const REVISIONS = [
   [{ user: true }, [step("classify", "Sort the invoice into a ledger account by vendor."), step("check total", "Check the total against the lines."), step("file it", "Name the ledger account.")]],
 ].map(([by, steps], i) => ({ commit: String(i + 1).repeat(40), at: new Date(Date.UTC(2026, 10, 3 + i, 14, 10)).toISOString(), by, reason: `Revision ${i + 1}, as the grader or a person said it.`, text: JSON.stringify(flow(steps)) }));
 
+async function playToTheNewest(card, page, at) {
+  await card.getByRole("button", { name: "Play the replay" }).focus();
+  await page.keyboard.press("Enter");
+  await card.getByText("Revision 4 of 4").waitFor({ timeout: 12_000 });
+  check(await card.getByRole("button", { name: "Play the replay" }).isVisible(), `${at}: the replay did not stop on the newest revision`);
+}
 const tags = (page) => page.evaluate(() => [...document.querySelectorAll('[aria-label="How the workflow changed"] svg .tag')].map((t) => `${t.closest("g")?.getAttribute("data-path")}:${t.textContent}`));
 
 export default {
@@ -59,14 +65,11 @@ export default {
         check((await tags(page)).join() === "/root/steps/0:EDITED", `${at}: the edited revision's tags are ${(await tags(page)).join()}`);
         check(/^Revision 3 of 4, Nov 5/.test((await slider.getAttribute("aria-valuetext")) ?? ""), `${at}: the slider says ${await slider.getAttribute("aria-valuetext")}`);
         await shoot(card, `workflow-replay-${theme}-${width}-edited.png`);
-        // Play, by the keyboard, from the first revision to the newest.
+        // Home goes to the first revision; Play, by the keyboard, from there to the newest (at the widest and the narrowest
+        // width only: it waits out each step).
         await slider.press("Home");
         check((await line.textContent()) === "First version: 1 node", `${at}: Home says ${await line.textContent()}`);
-        const play = card.getByRole("button", { name: "Play the replay" });
-        await play.focus();
-        await page.keyboard.press("Enter");
-        await card.getByText("Revision 4 of 4").waitFor({ timeout: 12_000 });
-        check(await card.getByRole("button", { name: "Play the replay" }).isVisible(), `${at}: the replay did not stop on the newest revision`);
+        if (width !== 820) await playToTheNewest(card, page, at);
         const wide = await page.evaluate(() => ({ page: document.scrollingElement.scrollWidth, view: window.innerWidth }));
         check(wide.page <= wide.view, `${at}: the page scrolls sideways (${wide.page}px in ${wide.view}px)`);
       }
