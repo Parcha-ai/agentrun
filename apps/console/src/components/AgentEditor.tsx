@@ -16,7 +16,8 @@ import { buildAgentPrompt, editAgentPrompt } from "@/lib/codingAgentPrompts";
 import { type Agent, type AgentFields, capOf, editBody, toolsOnSwitch, runsOn, notOn, DECISION, DEFAULT_INSTRUCTIONS, defaultTools, harnessOptions, defaultPlaceOf, isStarter, reachesWeb, same, sandboxReason, type SaveProblem, type ToolOffer, toolsFor, warningsFor } from "@/lib/agentForm";
 import type { WorkflowCheck } from "@/lib/client";
 import { markdown, when } from "@/lib/format";
-import { harnessDefault, modelLabel, NO_DEFAULT } from "@/lib/models";
+import { harnessDefault, harnessModels, modelLabel, NO_DEFAULT } from "@/lib/models";
+import { type PickerOption, Picker } from "@/components/ui/picker";
 import { SpendCapMinimum } from "@/lib/spendCap";
 import type { McpServer } from "@/lib/mcp";
 import { computerOfPlace, newAgentPlace, placeOf } from "@/lib/place";
@@ -37,7 +38,11 @@ export type Revision = { revision: string; version: number; current: boolean; no
  *  the server runs for it when a definition names none (null: none). */
 /** `computers`: the server's computers list (capabilities.computers.kinds), the Computer step's kinds; null on a server
  *  that lists none, where the step shows where runs go (places). */
-export type EditorCaps = { computers?: ComputerKindView[] | null; harnesses: { id: string; available: boolean; reason?: string; default_model?: string | null }[]; tools: ToolOffer[]; thinking: string[]; routePrefix?: string | null; decisionProvider?: string; places?: Places | null; learning?: "on" | "off"; mcp?: boolean; mcpHarnesses?: string[] };
+export type EditorCaps = { computers?: ComputerKindView[] | null; harnesses: { id: string; available: boolean; reason?: string; default_model?: string | null; models?: string[] }[]; tools: ToolOffer[]; thinking: string[]; routePrefix?: string | null; decisionProvider?: string; places?: Places | null; learning?: "on" | "off"; mcp?: boolean; mcpHarnesses?: string[] };
+/** The Model picker's value for "type a model": a model id always has a provider and a slash (the save's own rule), so no
+ *  id can be this. */
+const CUSTOM_MODEL = "custom";
+
 export type EditorProps = {
   /** The agent being edited, or null for a new one. */
   agent: Agent | null;
@@ -114,6 +119,8 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   // agent starts on the place the server gives new agents (a sandbox where it has a box: bash ticked too); else none.
   const startPlace = creating ? newAgentPlace(caps.places) : undefined;
   const [f, setF] = useState<AgentFields>({ name: d?.name ?? "", description: d?.description ?? "", instructions: d?.instructions ?? (creating ? DEFAULT_INSTRUCTIONS : ""), harness: d?.harness ?? "pi", thinking: d?.thinking, model: d?.model, tools: creating ? defaultTools("pi", caps.tools, startPlace) : d?.tools ?? [], maxCostText: typeof d?.max_cost_usd === "number" && d.max_cost_usd > 0 ? String(d.max_cost_usd) : "", ...(startPlace ? { place: startPlace } : {}), ...(agent?.kind === "workflow" ? { workflowText: draft ?? JSON.stringify(d!.workflow, null, 2) } : {}) });
+  // Whether the person picked Custom in the Model picker (the box shows too for any model the harness's list lacks).
+  const [customPicked, setCustomPicked] = useState(false);
   // The form as it is now, for a save's answer to compare with what that save sent.
   const formNow = useRef(f);
   formNow.current = f;
@@ -242,6 +249,11 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   // off, the full id in a title.
   const fallback = harnessDefault(f.harness ?? "pi", caps.harnesses);
   const modelDefault = fallback ? modelLabel(fallback, caps.routePrefix) : undefined;
+  // The Model picker lists what the server offers for this harness (harnesses[].models); a model it does not list, or Custom
+  // picked, shows the free-text box, so any model the server runs can still be named.
+  const offered = harnessModels(f.harness ?? "pi", caps.harnesses);
+  const customModel = customPicked || (f.model !== undefined && !offered.includes(f.model));
+  const modelOptions: PickerOption[] = [{ value: "", label: modelDefault ? `Server default (${modelDefault.text})` : "Server default" }, ...offered.map((id) => ({ value: id, label: modelLabel(id, caps.routePrefix).text })), { value: CUSTOM_MODEL, label: "Custom..." }];
   // The tools that reach the web which this agent's harness runs here, for the Tools step's hint when it has none of them.
   const webHere = toolsFor(f.harness ?? "pi", caps.tools).filter((t) => reachesWeb([t.name])).map((t) => t.name);
 
@@ -475,7 +487,13 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
               )}
               {!starting && (
                 <Field label="Model" id="agent-model" optional note={modelDefault ? <>Empty uses the server's default (<span title={modelDefault.title}>{modelDefault.text}</span>).</> : NO_DEFAULT} error={fieldError("model")} warning={fieldWarning("model")}>
-                  <Input id="agent-model" value={f.model ?? ""} onChange={(e) => set({ model: e.target.value || undefined })} placeholder="provider/model" />
+                  <Picker id="agent-model" label="Model" className="w-full" value={customModel ? CUSTOM_MODEL : f.model ?? ""} options={modelOptions}
+                    onChange={(v) => {
+                      // Custom keeps what is typed (or picked) so far; a listed model or the default closes the box.
+                      if (v === CUSTOM_MODEL) { setCustomPicked(true); return; }
+                      setCustomPicked(false); set({ model: v || undefined });
+                    }} />
+                  {customModel && <Input id="agent-model-custom" aria-label="Custom model" className="mt-2" value={f.model ?? ""} onChange={(e) => { setCustomPicked(true); set({ model: e.target.value || undefined }); }} placeholder="provider/model" />}
                 </Field>
               )}
               {!starting && (

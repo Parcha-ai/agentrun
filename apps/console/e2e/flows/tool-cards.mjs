@@ -2,7 +2,7 @@
 // tools printed their whole description (cards 60 lines tall) and the grid was ragged. Every card, a built-in tool's or
 // an MCP server's, is one fixed height; a long description is clamped and More opens that card alone; a 2000-character
 // unbroken string never widens a card. The MCP server list is this flow's own (routed), so no MCP server has to run.
-import { check } from "../harness.mjs";
+import { check, serverAnswer } from "../harness.mjs";
 
 const LONG = "Create attachment (deprecated): Deprecated fallback for tiny files only. Accepts base64 file content, verifies SHA-256 checksum, and uploads it through the MCP worker. Prefer `prepare_attachment_upload` plus direct PUT plus `create_attachment_from_upload`. ".repeat(6);
 const UNBROKEN = "QUJD".repeat(500);
@@ -28,7 +28,7 @@ export default {
     // The saved MCP servers, and an MCP client on this server for pi, so the Tools step lists Linear's tools.
     await page.route("**/v2/settings/mcp-servers", (route) => route.fulfill({ json: { servers: [SERVER] } }));
     await page.route("**/v2/capabilities", async (route) => {
-      const response = await route.fetch();
+      const response = await serverAnswer(route);
       const caps = await response.json();
       await route.fulfill({ response, json: { ...caps, features: { ...caps.features, mcp_client: { ...(caps.features?.mcp_client ?? {}), harnesses: ["pi"] } } } });
     });

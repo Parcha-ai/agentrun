@@ -49,8 +49,11 @@ import { journalSessions } from "./sessions.js";
 import { DECISION_SESSION, FIT_TOLERANCE, noteFor, overCapOf, paidRefusal, type Previous, previousAfter, requestFigures, runCap, typicalCost, wrapUpWords, type RunCap, type RunCapOptions, type RunDecisions, type RunTools, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
 import { PORT_PROVIDER, portModels, type PortModels, tierProvider } from "../port-models.js";
 
-/** The run's cap as its spec gives it: the kernel runCap's options but its sessions, which the loop's are. */
-export type RunCapConfig = Omit<RunCapOptions, "sessions">;
+/** The run's cap's config, as its spec gives it: the kernel runCap's options but its sessions (the loop's own), and
+ *  `beside`, what was spent beside the run's sessions on its behalf (Store.learning.spentBeside: its learning runs'
+ *  grades), which every gate of the run reads with its sessions' spend (runBooking's sessions.beside, overCap, the
+ *  wrap-ups). None: nothing is. */
+export type RunCapConfig = Omit<RunCapOptions, "sessions"> & { beside?(): Promise<number | null> };
 import { bookedIn } from "../paid-calls.js";
 import { type HostCalls, withHostCalls } from "../host-calls.js";
 import { sideEffect } from "./side-effects.js";
@@ -1256,7 +1259,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // made here, before the spec, so the spec's tool host binds them at its bind (a browser release's charge comes
         // outside any call). Each session is opened at its first step: a run that makes none writes nothing for it. A
         // handle not opened on this claim reads what the run's records held when the claim began.
-        const sessions = journalSessions(harness, context, { flush: () => deps.flush() });
+        // What was spent beside them on the run's behalf (its spec's runCap.beside) is read with them at each admission
+        // (runBooking), the spec's once it is known.
+        const besideNow = async (): Promise<number | null> => (specNow?.runCap?.beside ? await specNow.runCap.beside() : 0);
+        const sessions = Object.assign(journalSessions(harness, context, { flush: () => deps.flush() }), { beside: besideNow });
         let capBuilt: RunCap | undefined;
         /** The session's previous request, as the cap's `expected` pricing reads it (the kernel's Previous): the last of the
          *  harness's own requests on this claim that answered, its input as its usage reported it (read from or written to
@@ -1268,7 +1274,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           if (!specNow?.runCap) throw new Error("the run's spec gives no cap (AdapterRunSpec.runCap)");
           // The cap each admission reads is the run's now (capNow): a raise taken on this claim or an earlier one.
           // Its previous request is the session's own (requestEnded), unless the spec names one (a test's warm cache).
-          return (capBuilt ??= runCap({ sessions, previousOf: (model) => (previous?.model === model ? previous : undefined), ...specNow.runCap, capUsd: capNow }));
+          const { beside: _beside, ...config } = specNow.runCap;
+          return (capBuilt ??= runCap({ sessions, previousOf: (model) => (previous?.model === model ? previous : undefined), ...config, capUsd: capNow }));
         };
         /** A request of this claim ended (`request_end`): one of the harness's own (no host label, no side call) that
          *  answered with its input reported is the session's previous request from now. */
@@ -1410,7 +1417,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           if (!spec.cap || !spec.runCap) return undefined;
           const cap = capNow();
           if (cap === undefined) return undefined;
-          let others = 0;
+          // What was spent beside the run on its behalf counts as its other sessions' spend does.
+          const beside = await besideNow();
+          if (beside === null) return undefined;
+          let others = beside;
           for (const key of await sessions.keys()) {
             if (key === spec.session.key) continue;
             const spent = sessionSpendOf(await sessions.read(key)).spentUsd;
@@ -1430,7 +1440,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           const step = pending.figures?.step;
           const cap = capNow();
           if (!step || cap === undefined) return pending;
-          let spent = 0;
+          const beside = await besideNow();
+          if (beside === null) return pending;
+          let spent = beside;
           for (const key of await sessions.keys()) {
             const spend = sessionSpendOf(await sessions.read(key)).spentUsd;
             if (spend === null) return pending;
@@ -1521,7 +1533,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // earlier session's, a grade's), summed as overCap sums them; null while any is unknown. Read at the claim and again
         // after each request is admitted (the note is placed before its own request's admission, so it reads the last).
         const restOf = async (): Promise<number | null> => {
-          let rest = 0;
+          // And what was spent beside the run on its behalf (its learning runs' grades).
+          const beside = await besideNow();
+          if (beside === null) return null;
+          let rest = beside;
           for (const key of await sessions.keys()) {
             if (key === spec.session.key || key === DECISION_SESSION || key === TOOL_SESSION) continue;
             const spent = sessionSpendOf(await sessions.read(key)).spentUsd;
@@ -1670,7 +1685,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           if (!spec.runCap) return false;
           const capUsd = capNow();
           if (capUsd === undefined) return false;
-          let taken: number | null = 0;
+          // What was spent beside the run on its behalf counts as taken, as its sessions' spend does.
+          let taken: number | null = await besideNow();
           for (const key of await sessions.keys()) {
             const read = sessionSpendOf(await sessions.read(key));
             const reserved = [...read.openHolds].reduce((sum, turn) => sum + (read.held.get(turn) ?? 0), 0);

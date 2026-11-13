@@ -39,7 +39,7 @@ import { said, STOPPED } from "../learning-words.js";
 import { proposeRun } from "../propose.js";
 import { learningStartOf, readLaunchBody, type RunLaunch, seedFailed } from "../run-launch.js";
 import { costOf, type SignInReader } from "../run-view.js";
-import { FINAL_STATES, type McpServerRow, type Store } from "../store/store.js";
+import { type McpServerRow, type Store } from "../store/store.js";
 import { readApprovers } from "../server-approvers.js";
 import { runEntries, runReflect, runTimeline } from "../store-reads/journal.js";
 import { capNowOf } from "./journal-kinds.js";
@@ -89,10 +89,14 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
     // reflectSkip's facts: a run its cap stopped has no room left, and one whose spend is unknown under a cap cannot be
     // kept within it. The cap is the run's now (capNowOf: its newest raise's, else its launch's), the one its requests
     // were admitted under, never the launch's alone. A person's stop comes to the hook as its `cut`.
+    // What its earlier rounds' grades took beside it counts toward that cap as its own spend does (Learning.spentBeside, the
+    // figure its gates read): unknown, no room.
     facts: async (runId) => {
       const costUsd = costOf(await runTimeline(deps.store, runId, BACKGROUND_CONTEXT, { settled: false }));
       const capUsd = launch.maxCostUsd === undefined ? undefined : capNowOf(launch.maxCostUsd, await runEntries(deps.store, runId, BACKGROUND_CONTEXT));
-      return { learns: true, costUsd, ...(capUsd !== undefined ? { capUsd, capReached: costUsd !== null && costUsd >= capUsd } : {}) };
+      if (capUsd === undefined) return { learns: true, costUsd };
+      const beside = await deps.store.learning.spentBeside(runId);
+      return { learns: true, costUsd, capUsd, capReached: costUsd !== null && (beside === null || costUsd + beside >= capUsd) };
     },
     nothingNew: async (runId) => onlyLearnedWorkflows(await runTimeline(deps.store, runId, BACKGROUND_CONTEXT, { settled: false })),
     // A draft asked for or not never stops the turn: a count that can't be read asks for none.
@@ -162,28 +166,28 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
   };
 }
 
+/** What every cap gate of run `runId` reads as spent beside it on its behalf (adapter-loop.ts RunCapConfig.beside): its
+ *  learning runs' grades (Store.learning.spentBeside, the one figure), for a capped run that learns, the only run whose
+ *  ends queue them; none for any other, whose gates read only its own sessions. */
+export function spentBesideOf(launch: RunLaunch, store: Pick<Store, "learning">, runId: string): (() => Promise<number | null>) | undefined {
+  const start = learningStartOf(launch);
+  if (launch.maxCostUsd === undefined || !start || start.use) return undefined;
+  return () => store.learning.spentBeside(runId);
+}
+
 /** The cap the grade of round `round` of run `runId` runs under (its learning run's max_cost_usd), so the run's grades
  *  never take it past its cap: the cap the run is held to now (capNowOf: its newest raise's, else `launchCapUsd`), less
- *  what the run spent (its job, its follow-ups and every look-back, its timeline's cost) and what each earlier round's
- *  grade spent (that round's learning run: its cost once it ended, its own cap while it has not, its worst case). $0, no
- *  room, when any of those is unknown (a cost null, or a read that fails): a grade whose room can't be read is skipped,
- *  never run past the cap. */
+ *  what the run spent (its job, its follow-ups and every look-back, its timeline's cost) and what was spent beside it on its
+ *  behalf by its earlier rounds (Learning.spentBeside, the figure the run's own gates read: each earlier grade at its cost
+ *  once it ended, at its own cap while it has not). $0, no room, when any of those is unknown (a cost null, or a read that
+ *  fails): a grade whose room can't be read is skipped, never run past the cap. */
 export async function gradeCapOf(store: Store, runId: string, round: number, launchCapUsd: number): Promise<number> {
   try {
     const capUsd = capNowOf(launchCapUsd, await runEntries(store, runId, BACKGROUND_CONTEXT));
     const spent = costOf(await runTimeline(store, runId, BACKGROUND_CONTEXT, { settled: false }));
-    if (capUsd === undefined || spent === null || !Number.isFinite(spent)) return 0;
-    let graded = 0;
-    for (let earlier = 1; earlier < round; earlier++) {
-      const id = learningRunIdOf(runId, earlier);
-      const run = await store.runs.get(id);
-      // A round that queued no learning run (its learning dropped before a grade) spent nothing on one.
-      if (!run) continue;
-      const usd = FINAL_STATES.includes(run.state) ? run.costUsd : ((await store.runs.launch(id)).body as { max_cost_usd?: unknown } | null)?.max_cost_usd;
-      if (typeof usd !== "number" || !Number.isFinite(usd) || usd < 0) return 0;
-      graded += usd;
-    }
-    return Math.max(0, capUsd - spent - graded);
+    const beside = await store.learning.spentBeside(runId, { beforeRound: round });
+    if (capUsd === undefined || spent === null || !Number.isFinite(spent) || beside === null) return 0;
+    return Math.max(0, capUsd - spent - beside);
   } catch {
     return 0;
   }
