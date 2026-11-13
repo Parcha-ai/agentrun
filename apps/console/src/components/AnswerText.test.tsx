@@ -6,7 +6,7 @@ import { RunChanges } from "@/components/RunChanges";
 import { RunResult } from "@/components/RunResult";
 import { Timeline } from "@/components/Timeline";
 import { markdown } from "@/lib/format";
-import type { Run, TimelineRow } from "@/lib/v2";
+import type { Run, RunFile, TimelineRow } from "@/lib/v2";
 
 // What an agent writes reads as it wrote it. An answer asked for in three lines shows three lines (marked joined a
 // paragraph's single line breaks into one line), and the timeline's Answer row, which shows the answer's first line, says
@@ -79,6 +79,24 @@ describe("the timeline's Answer row, opened", () => {
     expect(host.textContent).not.toContain("```");
     expect(host.textContent).not.toContain("](");
     expect(host.querySelector("article.report script")).toBeNull();
+  });
+});
+
+describe("the timeline's Answer row, a link to a run file", () => {
+  it("is a clickable link that opens the file, and a path no file names reads as its text", () => {
+    const row = { id: "a", seq: 9, kind: "final_answer", summary: "Report ready.", text: "Report ready.\n\n[Download report](report.md) and [other](nope.md)", timestamp: "2026-11-04T20:36:00Z", tool_name: null } as unknown as TimelineRow;
+    const file = { path: "report.md" } as unknown as RunFile;
+    const opened: RunFile[] = [];
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(Timeline, { rows: [row], live: false, files: [file], onOpen: (f: RunFile) => opened.push(f) })));
+    act(() => host.querySelector<HTMLButtonElement>("li button")!.click());
+    const link = host.querySelector<HTMLButtonElement>("article.report button[data-run-file]")!;
+    expect(link.textContent).toBe("Download report");
+    act(() => link.click());
+    expect(opened).toEqual([file]);
+    expect(host.querySelector("article.report")!.textContent).toContain("other");
+    expect(host.querySelectorAll("article.report button[data-run-file]")).toHaveLength(1);
   });
 });
 
