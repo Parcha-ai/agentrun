@@ -446,11 +446,19 @@ public final class UiDriver {
 			// The state's app, not its window: an activity the steps open is a new window of the same app.
 			if (target.app == null && target.window == null && held != null && !held.app.isEmpty()) target.app = held.app;
 			Device.Accessibility a11y = device.accessibility();
-			Device.AxWindow aimed = window(a11y, target);
+			Device.AxWindow aimed;
+			try {
+				aimed = window(a11y, target);
+			} catch (RpcError none) {
+				// A wait for a window may begin with none: its app's window not there yet is what it waits for, never
+				// not_found (ui-engine.ts, the same rule).
+				if (!"not_found".equals(none.kind) || expect == null || !expect.window || !steps.isEmpty()) throw none;
+				aimed = null;
+			}
 			// An act with neither a state nor a target is aimed at the app in front as it begins: a step that opens
 			// another app never lets a later step reach it.
-			if (target.app == null && target.window == null) target.app = appOf(aimed);
-			String first = new Look(aimed, false).fingerprint();
+			if (target.app == null && target.window == null && aimed != null) target.app = appOf(aimed);
+			String first = aimed == null ? "" : new Look(aimed, false).fingerprint();
 			List<Object> answers = new ArrayList<>(steps.size());
 			boolean refused = false;
 			for (Step s : steps) {

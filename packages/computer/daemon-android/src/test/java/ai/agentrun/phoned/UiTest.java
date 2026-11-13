@@ -283,6 +283,25 @@ final class UiTest {
 		refuses("invalid", () -> phone.call("ui.act", "{\"steps\":[],\"expect\":{\"window\":{\"role\":\"pane\"}}}"));
 	}
 
+	static void testAWindowExpectMayBeginBeforeItsAppHasAWindow() throws Exception {
+		Check.Phone phone = new Check.Phone();
+		// The app is starting and its window is not in the tree yet: what a window expect alone waits for.
+		phone.device.windowLagMs = 600;
+		phone.device.apps().launch(FakeDevice.FIXTURE, null);
+		String target = "\"target\":{\"app\":\"" + FakeDevice.FIXTURE + "\"}";
+		refuses("not_found", () -> phone.call("ui.observe", "{" + target + "}"));
+		Map<String, Object> waited = phone.call("ui.act", "{" + target + ",\"steps\":[],\"expect\":{\"window\":{\"title\":\"UI fixture\"}}}");
+		eq("met", waited.get("expect"));
+		eq(true, waited.get("changed"));
+		Map<String, Object> answered = phone.call("ui.observe", "{" + target + ",\"since\":\"" + waited.get("state") + "\"}");
+		eq("UI fixture", map(answered.get("window")).get("title"));
+		eq(0, list(map(answered.get("diff")), "added").size());
+		// An act with steps needs its window to run them on: not_found, as before.
+		phone.device.apps().terminate(FakeDevice.FIXTURE);
+		phone.device.apps().launch(FakeDevice.FIXTURE, null);
+		refuses("not_found", () -> phone.call("ui.act", "{" + target + ",\"steps\":[{\"key\":\"enter\"}],\"expect\":{\"window\":{\"title\":\"UI fixture\"}}}"));
+	}
+
 	static void testRowNamingSkipsActionableChildren() {
 		FakeNode row = FakeNode.of("android.widget.LinearLayout").at(0, 0, 100, 100).tappable();
 		FakeNode box = FakeNode.of("android.widget.CheckBox").at(80, 10, 95, 30).text("Remember");
