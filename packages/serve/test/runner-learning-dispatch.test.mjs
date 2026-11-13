@@ -203,3 +203,86 @@ test("a named grader on the strong tier keeps every key the runner's environment
   assert.equal(named.model, "openai/gpt-grader");
   assert.equal(await named.provider.credential(), "fake-test-key", "the grade's request carries the held key");
 });
+
+// The generality pre-check's Jev requests are the grade's spend under the cap too (learning-dispatch.ts general): judged
+// at their worst case (decision-cap.ts holdOf) before they leave, and what they spent counted beside the grader's records,
+// both in each grader call's room and in what the grade ends with.
+/** This host's Jev, scripted: each note it is asked of scores 0.9, at `usd` a request. */
+function scriptedJev(asked, usd) {
+  return {
+    id: "jev", needs: ["TYPESAFE_API_KEY"], capabilities: { types: ["noul"], inputs: ["json"], evidence: "none", probability: "model", grounding: false, replay: "never", maxQuestions: null, maxStateBytes: null },
+    decide: async (request) => (asked.push(request), { answers: { general: { type: "noul", noul: 0.9 } }, evidence: [], model: "jev-test", usage: { input_tokens: 100, output_tokens: 0 }, cost_usd: usd, cost_basis: "estimate", provider_request_id: null }),
+  };
+}
+const GRADED_USD = (USED.input * 2 + USED.output * 10) / 1e6;
+const generalOf = async (store) => {
+  const { journalEntries } = await import("../dist/runner/journal-reader.js");
+  const { BACKGROUND_CONTEXT } = await import("@earendil-works/chord/context");
+  return (await journalEntries(store.readJournal("learn-1"), BACKGROUND_CONTEXT)).filter((entry) => entry.kind.startsWith("agentrun.learning.general"));
+};
+
+test("under a cap, a Jev check that fits and a grader that fits: both asked, and the grade ends with both, within the cap", async (t) => {
+  const { store, dir } = await ended(t, MODEL, 1);
+  const sent = [];
+  const asked = [];
+  const end = await runLearning(store, dir, { routeOf: async (grade) => routeTo(graderOrigin(sent), grade.model, CATALOG), jev: async () => scriptedJev(asked, 0.01) });
+  assert.deepEqual(end, { state: "ended" });
+  assert.deepEqual([asked.length, sent.length], [1, 1], "Jev asked once, the grader once");
+  const learning = await runLearningEnd(store, "run-1");
+  assert.equal(learning?.state, "merged", JSON.stringify(learning));
+  assert.equal(eight(learning.cost_usd.grade), eight(0.01 + GRADED_USD), "the grade's figure is Jev's kept dollars and the grader's booked ones");
+  const row = await store.runs.get("learn-1");
+  assert.equal(eight(row.costUsd), eight(0.01 + GRADED_USD), "the learning run's cost (what a later round's cap subtracts) holds both");
+  assert.ok(row.costUsd <= 1);
+});
+
+test("under a cap, a Jev check that fits and a grader that fits the cap only without it: the grader is never sent, skipped as no_budget, and the grade ends with Jev's dollars", async (t) => {
+  // The grader's worst case is about $0.17 (its whole 16,000-token output bound at $10 a million, its input uncached):
+  // under $0.2 alone, over the $0.1 left once Jev's $0.1 is counted.
+  const { store, dir } = await ended(t, MODEL, 0.2);
+  const sent = [];
+  const asked = [];
+  const end = await runLearning(store, dir, { routeOf: async (grade) => routeTo(graderOrigin(sent), grade.model, CATALOG), jev: async () => scriptedJev(asked, 0.1) });
+  assert.deepEqual(end, { state: "ended" });
+  assert.equal(asked.length, 1, "Jev fit and was asked");
+  assert.deepEqual(sent, [], "the grader did not fit what Jev left: never sent");
+  const learning = await runLearningEnd(store, "run-1");
+  assert.deepEqual([learning?.state, learning?.reason], ["dropped", "no_budget"], JSON.stringify(learning));
+  assert.equal(eight(learning.cost_usd.grade), 0.1, "what the grade spent is Jev's");
+  const row = await store.runs.get("learn-1");
+  assert.deepEqual([row.state, eight(row.costUsd)], ["ended", 0.1]);
+});
+
+test("under a cap with no room for Jev's worst case, the check is never sent: skipped as unchecked no_budget, said so, and the grader judged on its own", async (t) => {
+  const { store, dir } = await ended(t, MODEL, 0);
+  const sent = [];
+  const asked = [];
+  const lines = [];
+  const end = await runLearning(store, dir, { routeOf: async (grade) => routeTo(graderOrigin(sent), grade.model, CATALOG), jev: async () => scriptedJev(asked, 0.01), log: (line) => lines.push(line) });
+  assert.deepEqual(end, { state: "ended" });
+  assert.deepEqual([asked.length, sent.length], [0, 0], "neither Jev nor the grader was sent anything");
+  const general = await generalOf(store);
+  assert.deepEqual(general.map((entry) => entry.kind), ["agentrun.learning.general"], "no sent mark: nothing left");
+  assert.deepEqual([general[0].data.unchecked, general[0].data.usd], ["no_budget", 0], JSON.stringify(general[0].data));
+  assert.ok(lines.some((line) => /generality check .*no room under the cap/.test(line)), `said in the log: ${lines.join("\n")}`);
+  const learning = await runLearningEnd(store, "run-1");
+  assert.deepEqual([learning?.state, learning?.reason], ["dropped", "no_budget"], JSON.stringify(learning));
+  assert.match(learning.detail, /The generality check had no room under the cap, so the grader read every note\./, "the skip is said on the run's learning");
+  assert.equal(learning.cost_usd.grade, 0);
+});
+
+test("under a cap with room for the grader but not Jev beside it: Jev skipped (no_budget), the grader asked on its own and merged", async (t) => {
+  // Jev's worst case is TypeSafe's input price on its request's bytes, a fraction of a cent; a grader that fits a $1 cap
+  // still fits. The skip is shown here by a check whose worst case was refused: Jev priced at a request no cap holds.
+  const { store, dir } = await ended(t, MODEL, 1);
+  const sent = [];
+  const asked = [];
+  const jev = { ...scriptedJev(asked, 0.01), id: "http:unpriced" };
+  const end = await runLearning(store, dir, { routeOf: async (grade) => routeTo(graderOrigin(sent), grade.model, CATALOG), jev: async () => jev });
+  assert.deepEqual(end, { state: "ended" });
+  assert.deepEqual([asked.length, sent.length], [0, 1], "Jev never sent; the grader asked once");
+  const learning = await runLearningEnd(store, "run-1");
+  assert.equal(learning?.state, "merged", JSON.stringify(learning));
+  assert.match(learning.detail, /The generality check had no room under the cap/);
+  assert.equal(eight(learning.cost_usd.grade), eight(GRADED_USD));
+});
