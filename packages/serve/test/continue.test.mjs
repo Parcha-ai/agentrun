@@ -2,10 +2,11 @@
 // again, under the server's run cap. A failed run does not, and neither does an archived run or a run of an archived
 // agent: archiving closes it.
 import assert from "node:assert/strict";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { agent, follow, serve, startRun, storeRun } from "./support.mjs";
+import { agent, follow, scratch, serve, startRun, storeRun } from "./support.mjs";
 
 test("a failed run takes no follow-up, and archiving closes a completed one: an archived run, or a run of an archived agent, is 409 not_continuable", async (t) => {
   const { api, data } = await serve(t);
@@ -31,36 +32,69 @@ test("a failed run takes no follow-up, and archiving closes a completed one: an 
   for (const id of [archived.run_id, ofAgent.run_id]) assert.equal(storeRun(data, id).state, "completed", "a refused follow-up opens nothing");
 });
 
-// SKIP (follow-up #2058): a follow-up to a completed run is refused not_continuable on the runner; the one-door message() PR replaces this case
-test.skip("a completed run's follow-up takes a place under the run cap: with every place taken it is 429 rate_limited, and the run stays completed", { timeout: 60_000 }, async (t) => {
-  const { api, data } = await serve(t, { maxRuns: 1 });
+/** The runs the store holds a runner's claim on right now: the places in use. */
+function claimed(data) {
+  const db = new DatabaseSync(join(data, "store.sqlite"), { readOnly: true, timeout: 5_000 });
+  try {
+    return db.prepare("SELECT id FROM runs WHERE state = 'running' AND runner IS NOT NULL").all().map((row) => row.id);
+  } finally {
+    db.close();
+  }
+}
+
+// The run cap queues, as it does a new start (admission.test.mjs): nothing is refused for a place, a run past the cap waits.
+test("a completed run's follow-up takes a place under the run cap: with every place taken it is taken (202) and waits unclaimed, the run goes on when a place is free; a message to the run holding the place takes none", { timeout: 60_000 }, async (t) => {
+  const dir = await scratch(t);
+  const { api, data, runnerBeats } = await serve(t, { maxRuns: 1 });
   const done = await startRun(api, "calc", "What is six times seven?");
   await follow(api, done.run_id, ["completed"]);
-  const busy = await startRun(api, "slow", "Take your time.");
+  const busy = await startRun(api, "slow", `Answer once ${join(dir, "go")} exists.`);
   await follow(api, busy.run_id, ["working"]);
-  const refused = await api("POST", `/runs/${done.run_id}/messages`, { content: "go on" });
-  assert.deepEqual([refused.status, refused.body.error.code], [429, "rate_limited"], JSON.stringify(refused.body));
-  assert.equal((await api("GET", `/runs/${done.run_id}`)).body.status, "completed");
-  assert.equal(storeRun(data, done.run_id).state, "completed");
+  assert.deepEqual(claimed(data), [busy.run_id], "the one place is the working run's");
+  const queued = await api("POST", `/runs/${done.run_id}/messages`, { content: "go on" });
+  assert.equal(queued.status, 202, JSON.stringify(queued.body));
+  for (let since = runnerBeats(), i = 0; runnerBeats() < since + 3; i++) {
+    assert.ok(i < 400, "the runner polls");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.deepEqual(claimed(data), [busy.run_id], "the follow-up waits: the reopened run is not claimed past the cap");
+  assert.equal(storeRun(data, done.run_id).state, "running", "reopened, waiting for its place");
+  // A message to the run that holds the place is a steer: no second place.
+  assert.equal((await api("POST", `/runs/${busy.run_id}/messages`, { content: "still here" })).status, 202);
+  assert.deepEqual(claimed(data), [busy.run_id]);
   assert.equal((await api("POST", `/runs/${busy.run_id}/cancel`)).status, 202);
   await follow(api, busy.run_id, ["cancelled"]);
-  assert.equal((await api("POST", `/runs/${done.run_id}/messages`, { content: "go on" })).status, 202, "a place is free again");
   await follow(api, done.run_id, ["completed"]);
 });
 
-// SKIP (follow-up #2058): a follow-up to a completed run is refused not_continuable on the runner; the one-door message() PR replaces this case
-test.skip("a follow-up to a completed run and new starts sent together under one place: exactly one gets it, never two", { timeout: 60_000 }, async (t) => {
-  const { api } = await serve(t, { maxRuns: 1 });
+test("a follow-up to a completed run and new starts sent together under one place: all are taken, exactly one holds the place at a time, never two, and each runs in its turn", { timeout: 90_000 }, async (t) => {
+  const dir = await scratch(t);
+  const { api, data, runnerBeats } = await serve(t, { maxRuns: 1 });
   const done = await startRun(api, "calc", "What is six times seven?");
   await follow(api, done.run_id, ["completed"]);
   for (const id of ["one", "two", "three"]) assert.equal((await api("POST", "/agents", agent(id))).status, 201);
+  const hold = `Answer once ${join(dir, "go")} exists.`;
   const answers = await Promise.all([
-    api("POST", `/runs/${done.run_id}/messages`, { content: "Take your time." }),
-    ...["one", "two", "three"].map((id) => api("POST", `/agents/${id}/runs`, { input: { content: "Take your time." } })),
+    api("POST", `/runs/${done.run_id}/messages`, { content: hold }),
+    ...["one", "two", "three"].map((id) => api("POST", `/agents/${id}/runs`, { input: { content: hold } })),
   ]);
-  const statuses = answers.map((a) => a.status);
-  assert.equal(statuses.filter((s) => s === 202).length, 1, `one place, one start: ${statuses.join(", ")}`);
-  assert.equal(statuses.filter((s) => s === 429).length, 3, statuses.join(", "));
+  assert.deepEqual(answers.map((a) => a.status), [202, 202, 202, 202], JSON.stringify(answers.map((a) => a.body)));
+  const ids = [done.run_id, ...answers.slice(1).map((a) => a.body.run_id)];
+  // Sampled across polls of the runner while every run holds on the gate: one place, one claim, however the four raced.
+  for (let since = runnerBeats(), i = 0; runnerBeats() < since + 6; i++) {
+    assert.ok(i < 600, "the runner polls");
+    assert.ok(claimed(data).length <= 1, `never two places: ${claimed(data)}`);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  assert.equal(claimed(data).length, 1, "the place is taken by one of them");
+  await writeFile(join(dir, "go"), "");
+  for (const id of ids) {
+    for (let i = 0; storeRun(data, id).state !== "completed"; i++) {
+      assert.ok(i < 1_200, `run ${id} ends in its turn`);
+      assert.ok(claimed(data).length <= 1, `never two places: ${claimed(data)}`);
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
 });
 
 // SKIP (follow-up #2058): a follow-up to a completed run is refused not_continuable on the runner; the one-door message() PR replaces this case
