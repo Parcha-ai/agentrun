@@ -14,6 +14,9 @@ public enum Limits {
 	public static let maxExpectMs = 60_000
 	public static let defaultExpectMs = 5000
 	public static let maxSettleMs = 3000
+	/// How long after its first settle the act reads its final view again when a step set a value: an app that took
+	/// the value back by then did not keep it, so the set is not verified.
+	public static let setHoldMs = 500
 	public static let minImageEdge = 256
 	public static let maxImageEdge = 2048
 	public static let defaultImageEdge = 1568

@@ -479,15 +479,147 @@ final class EngineTests: XCTestCase {
 		XCTAssertEqual(after.window.id, "8", "the act's state is the next window's")
 	}
 
-	func testAStepThatClosesTheLastWindowIsNotFoundInWords() async throws {
+	/// super+w on the app's last window: the step ran and changed the window, and the act answers window "closed" with
+	/// no state. A step after it has nothing to act on; a text expect is unmet at once, and a gone one is met.
+	func testAStepThatClosesTheLastWindowAnswersClosed() async throws {
 		let engine = os.engine()
 		_ = try await engine.observe(UiObserveParams())
 		os.add(9, "menuitem", name: "super+w", actions: ["AXPress"])
 		os.react = { entry, os in
 			if entry == "ax.AXPress 9" { os.with { $0.hasWindow = false } }
 		}
-		let message = await throwsKind(.notFound) { try await engine.act(UiActParams(steps: [.key("super+w")])) }
-		XCTAssertTrue(message?.contains("has no window left: the step closed window 7") == true, message ?? "")
+		let closed = try await engine.act(UiActParams(steps: [.key("super+w")]))
+		XCTAssertEqual(closed.window, "closed")
+		XCTAssertNil(closed.state)
+		XCTAssertTrue(closed.changed)
+		XCTAssertEqual(ran(closed, 0)?.0, .semantic)
+		XCTAssertEqual(ran(closed, 0)?.1, true, "a window that closed is a change")
+
+		os.hasWindow = true
+		let r = try await engine.observe(UiObserveParams())
+		let next = try await engine.act(UiActParams(steps: [.key("super+w"), .press(ref(r, "Save"))]))
+		XCTAssertEqual(next.window, "closed")
+		XCTAssertEqual(stepError(next, 1)?.kind, .stale)
+		XCTAssertTrue(stepError(next, 1)?.message.contains("Notes has no window left: the step before closed its last one") == true, stepError(next, 1)?.message ?? "")
+
+		os.hasWindow = true
+		let start = os.now
+		let unmet = try await engine.act(UiActParams(steps: [.key("super+w")], expect: Expect(text: "Hello", timeoutMs: 5000)))
+		XCTAssertEqual(unmet.expect, .unmet)
+		XCTAssertLessThan(os.now - start, 5000, "a closed window shows nothing again: no wait for the timeout")
+		os.hasWindow = true
+		let gone = try await engine.act(UiActParams(steps: [.key("super+w")], expect: Expect(text: "Hello", gone: true, timeoutMs: 5000)))
+		XCTAssertEqual(gone.expect, .met)
+		XCTAssertEqual(gone.window, "closed")
+	}
+
+	func testAStepThatQuitsTheAppIsNotFoundInWords() async throws {
+		let engine = os.engine()
+		_ = try await engine.observe(UiObserveParams())
+		os.add(9, "menuitem", name: "super+q", actions: ["AXPress"])
+		os.react = { entry, os in
+			if entry == "ax.AXPress 9" { os.with { os in (os.hasWindow, os.running) = (false, false) } }
+		}
+		let message = await throwsKind(.notFound) { try await engine.act(UiActParams(steps: [.key("super+q")])) }
+		XCTAssertTrue(message?.contains("com.apple.Notes is no longer running") == true, message ?? "")
+	}
+
+	// MARK: window expects
+
+	func testAWindowExpectMayBeginBeforeItsAppHasAWindow() async throws {
+		let engine = os.engine()
+		os.hasWindow = false
+		os.after(300) { os in
+			os.hasWindow = true
+			os.window = UiWindow(id: "8", title: "Untitled", bounds: Rect(100, 50, 800, 600))
+		}
+		_ = await throwsKind(.notFound) { try await engine.observe(UiObserveParams(target: Target(app: "com.apple.Notes"))) }
+		let wait = UiActParams(target: Target(app: "com.apple.Notes"), steps: [], expect: Expect(window: ExpectWindow(title: "Untitled"), timeoutMs: 2000))
+		let result = try await engine.act(wait)
+		XCTAssertEqual(result.expect, .met)
+		XCTAssertTrue(result.changed)
+		let after = try await engine.observe(UiObserveParams(since: result.state))
+		XCTAssertEqual(after.window.id, "8", "the act answers the window it waited for")
+
+		// Only a wait begins windowless: with a step there is nothing to act on.
+		os.hasWindow = false
+		_ = await throwsKind(.notFound) {
+			try await engine.act(UiActParams(target: Target(app: "com.apple.Notes"), steps: [.key("super+s")], expect: Expect(window: ExpectWindow(title: "Untitled"), timeoutMs: 100)))
+		}
+		// A wait whose window never comes is unmet, and with no window to answer, closed.
+		let never = try await engine.act(UiActParams(target: Target(app: "com.apple.Notes"), steps: [], expect: Expect(window: ExpectWindow(title: "Untitled"), timeoutMs: 300)))
+		XCTAssertEqual(never.expect, .unmet)
+		XCTAssertEqual(never.window, "closed")
+	}
+
+	/// A step that opens a dialog in place of the window: the window expect reads the app's main window, title and role,
+	/// and the act answers that window.
+	func testAWindowExpectReadsTheAppsMainWindowAndAnswersIt() async throws {
+		let engine = os.engine()
+		let r = try await engine.observe(UiObserveParams())
+		os.react = { entry, os in
+			guard entry == "ax.AXPress 3" else { return }
+			os.after(200) { $0.window = UiWindow(id: "9", title: "Save As", role: "dialog", bounds: Rect(300, 200, 400, 200)) }
+		}
+		let result = try await engine.act(UiActParams(steps: [.press(ref(r, "Save"))], expect: Expect(window: ExpectWindow(title: "Save", role: "dialog"), timeoutMs: 2000)))
+		XCTAssertEqual(result.expect, .met)
+		let after = try await engine.observe(UiObserveParams(since: result.state))
+		XCTAssertEqual(after.window.id, "9")
+		XCTAssertEqual(after.window.role, "dialog")
+
+		let window = try await engine.act(UiActParams(steps: [], expect: Expect(window: ExpectWindow(role: "window"), timeoutMs: 0)))
+		XCTAssertEqual(window.expect, .unmet, "a dialog is not a window")
+		let gone = try await engine.act(UiActParams(steps: [], expect: Expect(window: ExpectWindow(title: "Notes"), gone: true, timeoutMs: 0)))
+		XCTAssertEqual(gone.expect, .met)
+		os.window = UiWindow(id: "7", title: "Notes", bounds: Rect(100, 50, 800, 600))
+		let plain = try await engine.act(UiActParams(steps: [], expect: Expect(window: ExpectWindow(role: "window"), timeoutMs: 0)))
+		XCTAssertEqual(plain.expect, .met, "a window with no role is a window")
+	}
+
+	func testAWindowExpectIsCheckedWholeAndNeedsNoTree() async throws {
+		let engine = os.engine()
+		let both = await throwsKind(.invalid) { try await engine.act(UiActParams(steps: [], expect: Expect(text: "x", window: ExpectWindow(title: "Notes")))) }
+		XCTAssertTrue(both?.contains("expect.window stands alone") == true, both ?? "")
+		let empty = await throwsKind(.invalid) { try await engine.act(UiActParams(steps: [], expect: Expect(window: ExpectWindow()))) }
+		XCTAssertTrue(empty?.contains("names neither title nor role") == true, empty ?? "")
+		let role = await throwsKind(.invalid) { try await engine.act(UiActParams(steps: [], expect: Expect(window: ExpectWindow(role: "sheet")))) }
+		XCTAssertTrue(role?.contains("\"sheet\", not one of the protocol's roles") == true, role ?? "")
+		let none = await throwsKind(.invalid) { try await engine.act(UiActParams(steps: [], expect: Expect(gone: true))) }
+		XCTAssertTrue(none?.contains("names neither text, ref nor window") == true, none ?? "")
+
+		os.trusted = false
+		let tree = os.engine()
+		let met = try await tree.act(UiActParams(steps: [], expect: Expect(window: ExpectWindow(title: "Notes"), timeoutMs: 0)))
+		XCTAssertEqual(met.expect, .met, "a window's title is in the window list")
+		_ = await throwsKind(.unsupported) { try await tree.act(UiActParams(steps: [], expect: Expect(text: "Hello", timeoutMs: 0))) }
+	}
+
+	// MARK: the final view
+
+	/// Each set is judged on the act's final view, read after its expect: a value the app throws away while the expect
+	/// waits was not kept, however long it held at the step.
+	func testASetIsJudgedOnTheFinalViewAfterTheExpect() async throws {
+		let engine = os.engine()
+		let r = try await engine.observe(UiObserveParams())
+		os.react = { entry, os in
+			guard entry.hasPrefix("ax.set 4") else { return }
+			os.after(1000) { $0.elements[4]?.value = "" }
+			os.after(1500) { $0.elements[5]?.name = "Done" }
+		}
+		let result = try await engine.act(UiActParams(steps: [.set(ref(r, "Title"), value: "draft")], expect: Expect(text: "Done", timeoutMs: 3000)))
+		XCTAssertEqual(result.expect, .met)
+		XCTAssertEqual(ran(result, 0)?.1, false, "the value was gone by the final view")
+	}
+
+	/// A poll that catches the expect mid-transition does not decide the act: the final view, read once the window
+	/// settles, does.
+	func testAnExpectSeenOnlyMidTransitionIsUnmet() async throws {
+		let engine = os.engine()
+		// The window settles by 150 ms; a poll's look at 650 catches the flash, and the final view after it does not.
+		os.after(600) { $0.elements[5]?.name = "Saved" }
+		os.after(680) { $0.elements[5]?.name = "Hello" }
+		let result = try await engine.act(UiActParams(steps: [], expect: Expect(text: "Saved", timeoutMs: 1000)))
+		XCTAssertEqual(result.expect, .unmet)
 	}
 
 	func testExpectUnmetAfterItsTimeout() async throws {
