@@ -131,10 +131,17 @@ struct BackgroundRoute: InputRoute {
 		return nil
 	}
 
-	/// Runs body with the app thinking it is active and, for keys, the window key inside it; nothing is raised. An
-	/// app already in front needs none of it.
+	/// Runs body with the app thinking it is active and, for keys, the window key inside it; nothing is raised. An app
+	/// already in front is active, but its key window may be another of its own: keys still make this one key first.
+	/// After keys the app keeps the focus it was given. Taking it away right after them raced their handling (TextEdit
+	/// dropped a super+a about one time in fifteen on the mini) and ended an edit they began: Finder's rename field
+	/// closed before the new name was typed. After a click the focus is taken back.
 	static func withFocus(_ sky: SkyLight, _ pid: pid_t, _ wid: CGWindowID, key: Bool, settleMs: Double, _ body: () throws -> Void) throws {
 		if NSWorkspace.shared.frontmostApplication?.processIdentifier == pid {
+			if key {
+				try sky.makeKey(try sky.psn(pid), window: wid)
+				InputQueue.pause(10)
+			}
 			try body()
 			return
 		}
@@ -151,7 +158,7 @@ struct BackgroundRoute: InputRoute {
 			try? sky.activate(psn, window: wid, focused: false)
 			throw error
 		}
-		try sky.activate(psn, window: wid, focused: false)
+		if !key { try sky.activate(psn, window: wid, focused: false) }
 	}
 
 	/// The fields that tell the window server which process and window a mouse event is for.
