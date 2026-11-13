@@ -90,8 +90,9 @@ const claudeLines = (records) =>
 const answers = (records, callId) =>
   claudeLines(records).filter((line) => line?.type === 'user' && Array.isArray(line.message?.content) && line.message.content.some((c) => c?.tool_use_id === callId));
 
-/** A WebSearch-on session over `store` whose "model" searches the same query at every message. */
-async function searchOn(t, store, { gate, signal, decided }) {
+/** A WebSearch-on session over `store` whose "model" searches the same query at every message (`script`: what it does
+ *  instead). */
+async function searchOn(t, store, { gate, signal, decided, script = () => SEARCH }) {
   const provider = await fakeAnthropic({ reply: () => ({ text: 'ok' }) });
   t.after(() => provider.close());
   const adapter = claudeAgentAdapter({
@@ -99,7 +100,7 @@ async function searchOn(t, store, { gate, signal, decided }) {
     provider: { origin: provider.url, credential: () => 'provider-secret' },
     price: () => 0,
     standIn: { command: process.execPath },
-    sdk: fakeSdk({ mirrorLagMs: 10, script: () => SEARCH, onDecision: (d) => decided.push(d) }),
+    sdk: fakeSdk({ mirrorLagMs: 10, script, onDecision: (d) => decided.push(d) }),
     webSearch: true,
   });
   const io = { writer: await store.open('s1'), models: { beforeRequest: async () => ({ turn: 0 }), afterRequest: async () => {} }, signal, dir: mkdtempSync(join(ROOT, 'd-')), onEvent: () => {}, gate };
@@ -133,19 +134,72 @@ test('ask set mid-run holds the next WebSearch until the person answers; an allo
   const held = await parkedSearch(t, store);
   const decided = [];
   const asked = [];
-  const second = await searchOn(t, store, { decided, signal: new AbortController().signal, gate: async (call) => (asked.push(call.callId), 'allow') });
+  const second = await searchOn(t, store, { decided, signal: new AbortController().signal, gate: personAllowed(held, asked) });
   try {
     await second.recover();
     await second.turnEnd();
   } finally {
     await second.close();
   }
-  assert.equal(asked[0], held, 'the held search is put to the gate again under the id the model gave it');
-  assert.equal(asked.length, 1, `one card for it: the search it released runs on that answer (${JSON.stringify(asked)})`);
+  assert.deepEqual(asked, [held, held], 'the held search, then the model searching again, each put to the gate under the held id: no second card');
   assert.deepEqual(decided.filter((d) => d.name === 'WebSearch').map((d) => d.decision), ['allow'], 'the search ran once, after the answer');
   const lines = answers(await store.read('s1'), held);
   assert.equal(lines.length, 1, 'one answer for the held call');
   assert.match(JSON.stringify(lines[0]), /Search again with the same query/);
+});
+
+/** The runner's gate after the person allowed `held`: that call's ask is answered (the journal holds the answer), any
+ *  other WebSearch would be a new card, refused here so the test sees it. Each call id asked about goes in `asked`. */
+const personAllowed = (held, asked) => async (call) => (asked.push(call.callId), call.callId === held ? 'allow' : { deny: 'a second card' });
+
+test("a release survives a restart before the model searches again: the next search with the same query is asked under the held call's id", { timeout: 60_000 }, async (t) => {
+  const store = memorySessionStore();
+  const held = await parkedSearch(t, store);
+  // The resume answers the held search, and the process stops before the model searches again (it says something else).
+  const asked = [];
+  const second = await searchOn(t, store, { decided: [], signal: new AbortController().signal, gate: personAllowed(held, asked), script: () => 'Not now.' });
+  try {
+    await second.recover();
+    await second.turnEnd();
+  } finally {
+    await second.close();
+  }
+  assert.deepEqual(asked, [held], 'the held search answered on the resume');
+  // A new process: the model searches with the same query.
+  const decided = [];
+  const third = await searchOn(t, store, { decided, signal: new AbortController().signal, gate: personAllowed(held, asked) });
+  try {
+    await third.send('search now');
+    await third.turnEnd();
+  } finally {
+    await third.close();
+  }
+  assert.deepEqual(asked, [held, held], 'asked under the held id, no second card');
+  assert.deepEqual(decided.filter((d) => d.name === 'WebSearch').map((d) => d.decision), ['allow'], 'the search ran');
+});
+
+test('a deny set after the person allowed a held WebSearch still refuses the search again', { timeout: 60_000 }, async (t) => {
+  const store = memorySessionStore();
+  const held = await parkedSearch(t, store);
+  const asked = [];
+  let denied = false;
+  const decided = [];
+  // The resume answers the held search; the operator then sets web_search to deny before the model searches again.
+  const gate = async (call) => {
+    asked.push(call.callId);
+    if (denied) return { deny: DENIED };
+    denied = true;
+    return 'allow';
+  };
+  const second = await searchOn(t, store, { decided, signal: new AbortController().signal, gate });
+  try {
+    await second.recover();
+    await second.turnEnd();
+  } finally {
+    await second.close();
+  }
+  assert.equal(asked[0], held);
+  assert.deepEqual(decided.filter((d) => d.name === 'WebSearch' && d.decision === 'allow'), [], 'no search ran');
 });
 
 test('ask set mid-run, then the person denies: the held WebSearch is answered in the gate words and no search runs', { timeout: 60_000 }, async (t) => {

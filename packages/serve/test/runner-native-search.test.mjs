@@ -16,6 +16,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { fakeAnthropic, fakeSdk } from "@parcha/agentrun-harness-claude/testing";
 import { findCodex } from "../../run-adapters-codex/dist/binary.js";
 import { verifyCodexBinary } from "../../run-adapters-codex/dist/verify.js";
@@ -29,6 +30,9 @@ const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { cliRunSpecFromLaunch } = await import("../dist/runner/cli-run-spec.js");
 const { CONFORMANCE_TIMING } = await import("../dist/runner/conformance/harness.js");
 const { saveToolSettings } = await import("../dist/tool-plane.js");
+const { adapterRunGate } = await import("../dist/runner/adapter-run-spec.js");
+const { sendCommand } = await import("../dist/runner/commands.js");
+const { journalRecords } = await import("../dist/runner/journal-reader.js");
 const { NATIVE_SEARCH_ALLOWANCE_TOKENS } = await import("../dist/cap.js");
 
 process.env.AGENTRUN_CLAUDE_AGENT_STANDIN = "1";
@@ -87,7 +91,8 @@ async function nativeRun(t, harness, setting) {
   const requests = [];
   const state = {
     opened: [],
-    claude: { provider, sdk: fakeSdk({ mirrorLagMs: 10, script: () => 'builtin WebSearch {"query":"agentrun"}', onDecision: (d) => decided.push(d) }) },
+    // Claude Code's "model" searches at the run's input and at a resume's nudge, and says it is done at anything else.
+    claude: { provider, sdk: fakeSdk({ mirrorLagMs: 10, script: (text) => (/Search for agentrun|^Continue\.$/.test(text) ? 'builtin WebSearch {"query":"agentrun"}' : "Done."), onDecision: (d) => decided.push(d) }) },
     codex: {
       sessionsDir: join(dir, "codex-sessions"),
       fetch: async (_url, init) => {
@@ -124,11 +129,20 @@ async function nativeRun(t, harness, setting) {
       resolve: (name, given) => (name === harness ? createAdapterLoop((claim, run) => cliRunSpecFromLaunch(given, run, deps, claim)) : undefined),
     }),
   });
-  const row = await until(async () => {
+  /** The run's row once it rests in one of `states`. */
+  const rest = (states = ["ended", "failed", "stopped", "parked"]) => until(async () => {
     const now = await server.runs.get(RUN);
-    return ["ended", "failed", "stopped", "parked"].includes(now.state) && now.runner === null && now;
-  }, "the run's rest");
-  return { row, opened: state.opened, searches: decided.filter((d) => d.name === "WebSearch"), requests };
+    return states.includes(now.state) && now.runner === null && now;
+  }, `the run's rest (${states.join(", ")})`);
+  const row = await rest();
+  return { row, opened: state.opened, searches: decided.filter((d) => d.name === "WebSearch"), decided, requests, server, rest };
+}
+
+/** The asks on the run's journal, as the person's cards: each call id asked about. */
+async function asksOf(server) {
+  const row = await server.runs.get(RUN);
+  const { entries } = await journalRecords(server.journal({ runId: RUN, runner: "reader", epoch: row.epoch, until: 0, from: row.state }), BACKGROUND_CONTEXT);
+  return entries.filter((entry) => entry.kind === "agentrun.ask").map((entry) => entry.data?.callId);
 }
 
 const describe = (row) => JSON.stringify({ state: row.state, summary: row.summary });
@@ -160,6 +174,39 @@ test("web_search set to ask after a claude-agent run was made with it native: th
   const { row, searches } = await nativeRun(t, "claude-agent", "ask");
   assert.equal(row.state, "parked", describe(row));
   assert.deepEqual(searches.filter((d) => d.decision === "allow"), [], `no search ran while the person had not answered: ${JSON.stringify(searches)}`);
+});
+
+test("web_search set to ask on a claude-agent run: the person's approval lets the held search run once, on its one card, and the run ends", { timeout: 120_000 }, async (t) => {
+  const { row, decided, server, rest } = await nativeRun(t, "claude-agent", "ask");
+  assert.equal(row.state, "parked", describe(row));
+  assert.deepEqual(decided.filter((d) => d.name === "WebSearch" && d.decision === "allow"), [], "nothing searched while it waits");
+  const parkedAt = decided.length;
+  const asks = await asksOf(server);
+  assert.equal(asks.length, 1, `one card: ${JSON.stringify(asks)}`);
+  await sendCommand(server, RUN, { kind: "approve", body: { approval: asks[0] } });
+  const ended = await rest(["ended", "failed", "stopped"]);
+  assert.equal(ended.state, "ended", describe(ended));
+  assert.deepEqual(decided.slice(parkedAt).filter((d) => d.name === "WebSearch").map((d) => d.decision), ["allow"], `the search ran once, after the approval: ${JSON.stringify(decided)}`);
+  assert.deepEqual(await asksOf(server), asks, "no second card");
+});
+
+test("the runner's read of a tool's setting for the session fails closed: a store that stops reading after an allow is a deny, never the last allow", { timeout: 30_000 }, async (t) => {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-native-search-read-"));
+  const server = await openSqliteStore({ dataDir: dir, role: "server" });
+  t.after(async () => {
+    await server.close().catch(() => {});
+    rmSync(dir, { recursive: true, force: true });
+  });
+  await saveToolSettings(server, { web_search: { permission: "allow" } });
+  let reads = true;
+  const store = { settings: { get: async (key) => { if (!reads) throw new Error("the store does not answer"); return server.settings.get(key); }, put: (key, value) => server.settings.put(key, value) } };
+  const gate = await adapterRunGate(store, { runId: RUN }, { kind: "agentic", body: {} }, dir);
+  assert.equal(await gate.permission("web_search"), "allow", "read from the store");
+  reads = false;
+  assert.equal(await gate.permission("web_search"), "deny", "a failed read is a deny");
+  reads = true;
+  await saveToolSettings(server, { web_search: { permission: "ask" } });
+  assert.equal(await gate.permission("web_search"), "ask", "read again once the store answers");
 });
 
 for (const setting of ["deny", "ask"]) {

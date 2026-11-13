@@ -310,11 +310,11 @@ export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick
   // The revision's tool-call budget (tool-budget.ts), which the adapter loop holds each conversation's calls to.
   const toolCalls = revision.body.maxToolCalls;
   // A tool's setting now, read from the store as each call's is (SessionIO.permission: Codex's live search, which runs
-  // inside a model request, is offered only while it says allow). Fails closed with the gate: an unread store holds its
-  // last good read, a deny it held still refuses, and settings never read ask.
+  // inside a model request, is offered only while it says allow). A read that fails is a deny, never the last good read's
+  // allow: a deny saved since may be in what did not read, and no call reaches the gate to say otherwise.
   const permission = async (tool: string): Promise<Permission> => {
     current = await storeSettings(store);
-    return gate.policy(tool);
+    return current.unreadable ? "deny" : gate.policy(tool);
   };
   return Object.assign(decide, { askedAs: (tool: string) => gate.askedAs(tool), askedFor, permissions, permission, learn: (flows: readonly LearnedWorkflow[]) => void (learned = flows), ...(toolCalls === undefined ? {} : { toolCalls }) });
 }

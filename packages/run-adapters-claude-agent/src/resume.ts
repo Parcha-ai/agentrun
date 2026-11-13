@@ -51,26 +51,57 @@ export function danglingSearches(lines: readonly TranscriptLine[]): DanglingCall
 export const WEB_SEARCH = 'WebSearch';
 
 /** The answer a held WebSearch gets on the resume once the host's gate lets it run: the CLI ran nothing of it, and the
- *  model's next search with the same input runs on that answer (resumeDanglingSearches). */
+ *  model's next search with the same input runs on that answer (resumeDanglingSearches, releasedSearches). */
 export const SEARCH_RELEASED = 'Not searched yet: this search was held before it ran, and it may run now. Search again with the same query to run it.';
 
 /**
  * Before the CLI resumes the transcript: each dangling WebSearch that never started (the host's gate held it: its run
  * parked on a person) is put to the gate again, under the id the model gave it. A deny answers it in the gate's words; an
- * allow answers it SEARCH_RELEASED, since the provider runs a search only inside the CLI's own model request, and the
- * call is returned, so its drive lets the model's next search with the same input run on that answer, once. A gate that
- * parks again rejects out of here; what it wrote is the same lines again on the next resume.
+ * allow answers it SEARCH_RELEASED, since the provider runs a search only inside the CLI's own model request: the
+ * model's next search with the same input is then put to the gate under this call's id (releasedSearches), which the
+ * person's answer covers, so it asks no second card. A gate that parks again rejects out of here; what it wrote is the
+ * same lines again on the next resume.
  */
-export async function resumeDanglingSearches(ctx: DriveContext, store: JournalSessionStore, gate: (call: GateCall) => Promise<GateAnswer>): Promise<DanglingCall[]> {
+export async function resumeDanglingSearches(ctx: DriveContext, store: JournalSessionStore, gate: (call: GateCall) => Promise<GateAnswer>): Promise<void> {
   const held = unstartedCalls(ctx, danglingSearches(store.lines()));
-  const released: DanglingCall[] = [];
   for (const call of held) {
     const refused = await askGate(gate, { callId: call.callId, tool: call.tool, args: (call.args ?? {}) as Record<string, unknown> }, ctx.signal);
-    if (!refused) released.push(call);
     store.extend(resultLine(store.lines(), call, refused ? { text: refused.deny, isError: true } : { text: SEARCH_RELEASED, isError: true }));
   }
   if (held.length) await store.flush();
-  return released;
+}
+
+/** The key a WebSearch's input is matched by: the model's next search "with the same query" is one with this input. */
+export const searchKey = (input: unknown): string => JSON.stringify(input ?? {});
+
+/**
+ * The WebSearch calls the transcript answered SEARCH_RELEASED that no later WebSearch with the same input has taken up
+ * yet, oldest first: each `{ callId, key }`, so the model's next search with that input is put to the gate under the held
+ * call's id. Read from the transcript, so a release survives a restart between its answer and the model's search.
+ */
+export function releasedSearches(lines: readonly TranscriptLine[]): { callId: string; key: string }[] {
+  const inputs = new Map<string, string>();
+  const pending: { callId: string; key: string }[] = [];
+  for (const line of lines) {
+    if (line.isSidechain === true) continue;
+    for (const block of toolUses(line)) {
+      if (block.name !== WEB_SEARCH) continue;
+      const key = searchKey(block.input);
+      inputs.set(block.id, key);
+      const taken = pending.findIndex((one) => one.key === key);
+      if (taken >= 0) pending.splice(taken, 1);
+    }
+    for (const id of toolResultIds(line)) if (inputs.has(id) && resultText(line, id) === SEARCH_RELEASED) pending.push({ callId: id, key: inputs.get(id)! });
+  }
+  return pending;
+}
+
+/** The text of the result `line` gives the call `id`. */
+function resultText(line: TranscriptLine, id: string): string | undefined {
+  const content = (line.message as { content?: unknown } | undefined)?.content;
+  const result = Array.isArray(content) ? content.find((c) => c?.type === 'tool_result' && c.tool_use_id === id) : undefined;
+  const body = result?.content;
+  return typeof body === 'string' ? body : Array.isArray(body) ? body.map((c) => (typeof c?.text === 'string' ? c.text : '')).join('') : undefined;
 }
 
 /** The tool uses after the last prompt that no result answers, each named by `named` (undefined: not one of these). */
