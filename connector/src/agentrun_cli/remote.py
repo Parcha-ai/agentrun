@@ -110,21 +110,25 @@ class Bridge:
                 for waiting in self.pending.values():
                     waiting.put({'error': 'The source bridge stopped; an uncertain native operation is not replayed.'})
 
-    def write(self, value):
+    def write(self, value, cancelled=None):
         line = json.dumps(value, separators=(',', ':'))
         if len(line.encode()) > MAX_BYTES:
             raise ValueError('Source bridge request exceeds its limit.')
         with self.write_lock:
+            if cancelled is not None and cancelled.is_set():
+                raise ValueError('The destination cancelled this native operation before dispatch.')
             self.process.stdin.write(line + '\n')
             self.process.stdin.flush()
 
-    def call(self, command, timeout=620):
+    def call(self, command, timeout=620, *, cancelled=None):
         command = {**command, 'id': command.get('id') or str(uuid4())}
         waiting = queue.Queue()
         with self.lock:
             self.pending[command['id']] = waiting
         try:
-            self.write(command)
+            # Under the write lock, either cancellation prevents this frame or the
+            # command frame is flushed before its following cancellation frame.
+            self.write(command, cancelled=cancelled)
             result = waiting.get(timeout=timeout)
             if 'error' in result:
                 raise ValueError(str(result['error']))
@@ -425,7 +429,7 @@ def worker(state, bridge_path=None, once=False):
     polled = False
     last_poll = time.time()
 
-    def dispatch(command):
+    def dispatch(command, cancelled):
         target = targets.get(command['target_id'])
         if target is None:
             raise ValueError('The destination requested a source target that was not approved locally.')
@@ -434,7 +438,7 @@ def worker(state, bridge_path=None, once=False):
         message = {'id': command['command_id'], 'type': command['type'], 'target': target, 'payload': command.get('payload', {})}
         if command.get('session_key'):
             message['session_key'] = identifier(command['session_key'])
-        return bridge.call(message)
+        return bridge.call(message, cancelled=cancelled)
 
     def receive(command):
         command_id = identifier(command.get('command_id'))
@@ -451,43 +455,62 @@ def worker(state, bridge_path=None, once=False):
         if not isinstance(lease, str) or not lease or len(lease) > 8192:
             raise ValueError('Invalid source command lease.')
         result = journal.begin(command)
-        record = {'command': command, 'expires': epoch(command['lease_expires_at']), 'deadline': epoch(command['deadline_at']), 'events': [], 'pending_batch': None, 'sequence': 0, 'result': result, 'saved': result is not None}
+        record = {'command': command, 'expires': epoch(command['lease_expires_at']), 'deadline': epoch(command['deadline_at']), 'events': [], 'pending_batch': None, 'sequence': 0, 'result': result, 'saved': result is not None, 'cancelled': threading.Event()}
         if result is None:
-            record['future'] = pool.submit(dispatch, command)
+            record['future'] = pool.submit(dispatch, command, record['cancelled'])
         active[command_id] = record
+
+    def stop_source(command_id, record):
+        if not record.get('source_cancelled'):
+            record['source_cancelled'] = True
+            record['cancelled'].set()
+            future = record.get('future')
+            if future is not None:
+                future.cancel()
+            bridge.cancel(command_id)
+
+    def poll():
+        nonlocal polled, last_poll, next_poll
+        now = time.time()
+        try:
+            reply = request(api_origin, token, 'POST', prefix + '/poll', {'worker_id': worker_id, 'active': [
+                {'command_id': key, 'lease_token': value['command']['lease_token']} for key, value in active.items()
+            ]})
+            polled = True
+            last_poll = time.time()
+            if not isinstance(reply.get('cancelled', []), list):
+                raise ValueError('Invalid remote cancellation list.')
+            for cancelled in reply.get('cancelled', []):
+                record = active.pop(cancelled, None)
+                if record is not None:
+                    stop_source(cancelled, record)
+                    # Retire delivery as well as execution. Never replace a result already
+                    # persisted for an identical completion retry after a lost reply.
+                    if not record['saved']:
+                        journal.finish(cancelled, {'error': 'The destination cancelled this native operation.'})
+            for record in active.values():
+                if record.get('lease_rejected'):
+                    # A 412 can also mean a sequence/protocol error. Only an explicit
+                    # authenticated cancellation authorizes discarding pending delivery.
+                    raise ValueError('The destination rejected the active command lease; execution stopped.')
+                record['expires'] = min(record['deadline'], now + 25)
+            commands = reply.get('commands', [])
+            if not isinstance(commands, list) or len(commands) > 16:
+                raise ValueError('Invalid remote command batch.')
+            for command in commands:
+                receive(command)
+        except APIError as error:
+            if 400 <= error.status < 500 and error.status != 429:
+                raise ValueError('The destination revoked or rejected this connector; source execution stopped.') from None
+        except OSError:
+            pass
+        next_poll = now + 1
 
     try:
         while not stopping.is_set():
             now = time.time()
             if now >= next_poll:
-                try:
-                    reply = request(api_origin, token, 'POST', prefix + '/poll', {'worker_id': worker_id, 'active': [
-                        {'command_id': key, 'lease_token': value['command']['lease_token']} for key, value in active.items()
-                    ]})
-                    polled = True
-                    last_poll = time.time()
-                    if not isinstance(reply.get('cancelled', []), list):
-                        raise ValueError('Invalid remote cancellation list.')
-                    for cancelled in reply.get('cancelled', []):
-                        if cancelled in active:
-                            bridge.cancel(cancelled)
-                            if active[cancelled]['result'] is None:
-                                active[cancelled]['result'] = {'error': 'The destination cancelled this native operation.'}
-                    # A successful poll renews all submitted active leases unless explicitly cancelled.
-                    for record in active.values():
-                        record['expires'] = min(record['deadline'], now + 25)
-                    commands = reply.get('commands', [])
-                    if not isinstance(commands, list) or len(commands) > 16:
-                        raise ValueError('Invalid remote command batch.')
-                    for command in commands:
-                        receive(command)
-                    next_poll = now + 1
-                except APIError as error:
-                    if 400 <= error.status < 500 and error.status != 429:
-                        raise ValueError('The destination revoked or rejected this connector; source execution stopped.') from None
-                    next_poll = now + 1
-                except OSError:
-                    next_poll = now + 1
+                poll()
             if time.time() - last_poll >= 30:
                 raise ValueError('The destination stopped renewing this worker; source sessions were closed.')
             while True:
@@ -507,18 +530,24 @@ def worker(state, bridge_path=None, once=False):
                             pieces = [{**native_event, 'text': value[offset:offset + 10_000]} for offset in range(0, len(value), 10_000)]
                         pending_events = record['pending_batch']['events'] if record['pending_batch'] is not None else []
                         if any(len(json.dumps(row).encode()) > 200_000 for row in pieces) or sum(len(json.dumps(row).encode()) for row in [*pending_events, *record['events'], *pieces]) > 2_000_000:
-                            bridge.cancel(command_id)
+                            stop_source(command_id, record)
                             record['result'] = {'error': 'Native event delivery exceeded the bounded source queue; execution stopped.'}
                             record['events'] = []
                         else:
                             record['events'].extend(pieces)
                         break
             for command_id, record in list(active.items()):
+                if active.get(command_id) is not record:
+                    continue
                 if min(record['expires'], record['deadline']) <= time.time():
-                    bridge.cancel(command_id)
+                    stop_source(command_id, record)
                     record['result'] = {'error': 'The remote lease expired; native execution stopped and was not replayed.'}
                     # Losing a source lease ends the worker and closes every native child/session.
                     raise ValueError('The source lease expired; inspect the destination before restarting the worker.')
+                if record.get('lease_rejected'):
+                    # A failed reconciliation never resumes source execution or uploads;
+                    # the original unrenewed lease/deadline still bounds the next poll.
+                    continue
                 future = record.get('future')
                 if future is not None and future.done() and record['result'] is None:
                     try:
@@ -557,8 +586,13 @@ def worker(state, bridge_path=None, once=False):
                             raise ValueError('The destination did not acknowledge the native result; it remains in the source journal.')
                         del active[command_id]
                 except APIError as error:
+                    if error.status == 412:
+                        stop_source(command_id, record)
+                        record['lease_rejected'] = True
+                        poll()
+                        continue
                     if 400 <= error.status < 500 and error.status != 429:
-                        bridge.cancel(command_id)
+                        stop_source(command_id, record)
                         raise ValueError('The destination rejected the active command lease; execution stopped.') from None
                 except OSError:
                     pass
@@ -567,8 +601,8 @@ def worker(state, bridge_path=None, once=False):
             stopping.wait(.1)
         return {'status': 'stopped', 'connector_id': connector_id}
     finally:
-        for command_id in active:
-            bridge.cancel(command_id)
+        for command_id, record in active.items():
+            stop_source(command_id, record)
         bridge.close()
         pool.shutdown(wait=True, cancel_futures=True)
         journal.close()

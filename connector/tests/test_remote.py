@@ -1,5 +1,6 @@
 """Remote commands preserve source consent and refuse uncertain execution replay."""
 import contextlib
+from concurrent.futures import ThreadPoolExecutor
 import io
 import json
 import os
@@ -26,7 +27,7 @@ import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from agentrun_cli.remote import Journal, request, epoch, safe_message, worker
+from agentrun_cli.remote import Bridge, Journal, request, epoch, safe_message, worker
 from agentrun_cli.state import State
 from agentrun_cli.network import APIError
 
@@ -51,12 +52,22 @@ class Peer:
     def __init__(self):
         self.requests=[];self.commands=[];self.completed=[];self.events=[];self.redirect=None;self.target=None;self.history=[]
         self.event_attempts=[];self.event_batches={};self.lose_event_reply=False;self.before_lost_event_reply=None
+        self.on_request=None
         peer=self
         class Handler(BaseHTTPRequestHandler):
             def log_message(self,*args): pass
             def do_POST(self):
                 body=json.loads(self.rfile.read(int(self.headers.get('Content-Length','0'))) or b'{}')
                 peer.requests.append((self.path,self.headers.get('Authorization'),body))
+                if peer.on_request:
+                    response=peer.on_request(self.path,body)
+                    if response is not None:
+                        status,result=response
+                        if status is None:
+                            self.close_connection=True
+                        else:
+                            self.respond(status,result)
+                        return
                 if peer.redirect:
                     self.send_response(302);self.send_header('Location',peer.redirect);self.end_headers();return
                 if self.path=='/v2/connectors':
@@ -85,7 +96,9 @@ class Peer:
                     peer.completed.append(body);result={'accepted':True}
                 else:
                     self.send_error(404);return
-                data=json.dumps(result).encode();self.send_response(200);self.send_header('Content-Type','application/json');self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
+                self.respond(200,result)
+            def respond(self,status,result):
+                data=json.dumps(result).encode();self.send_response(status);self.send_header('Content-Type','application/json');self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
         self.server=ThreadingHTTPServer(('127.0.0.1',0),Handler)
         self.thread=threading.Thread(target=self.server.serve_forever,daemon=True);self.thread.start()
         self.origin=f'http://127.0.0.1:{self.server.server_port}'
@@ -134,7 +147,7 @@ class RemoteBoundary(unittest.TestCase):
         class NativeSource:
             def __init__(self,path,on_event):
                 self.on_event=on_event;sources.append(self)
-            def call(self,message):
+            def call(self,message,**_options):
                 dispatched.append(message)
                 self.on_event({'session_key':command['session_key'],'event':first})
                 return {'answer':'Native task completed'}
@@ -179,6 +192,258 @@ class RemoteBoundary(unittest.TestCase):
         self.assertEqual(cancelled,[command['command_id']])
         self.assertEqual(len(dispatched),1)
         self.assertEqual(closed,[True])
+
+    def run_controlled_worker(self,call,cancel=lambda _command_id:None):
+        dispatched=[];cancelled=[];closed=[]
+        class NativeSource:
+            def __init__(self,path,on_event):self.on_event=on_event
+            def call(self,message,**_options):
+                dispatched.append(message)
+                return call(self,message)
+            def cancel(self,command_id):
+                cancelled.append(command_id)
+                cancel(command_id)
+            def close(self):
+                closed.append(True)
+                cancel(None)
+        with mock.patch('agentrun_cli.remote.Bridge',NativeSource):
+            result=worker(State(self.state),once=True)
+        return result,dispatched,cancelled,closed
+
+    def saved_command(self,command):
+        journal=Journal(self.state)
+        try:return journal.begin(command)
+        finally:journal.close()
+
+    def test_worker_retires_polled_cancellation_before_upload_and_runs_next_command(self):
+        state=self.connect();target=next(iter(state['targets']))
+        first=self.command(target);second=self.command(target,'command-2');second['session_key']='next-session'
+        self.peer.commands=[first]
+        released=threading.Event();sources=[];cancellation_poll=[]
+        def call(source,message):
+            sources.append(source)
+            if message['id']==first['command_id']:
+                if not released.wait(5):raise ValueError('Test source was not stopped')
+                return {'answer':'Late cancelled answer'}
+            source.on_event({'session_key':second['session_key'],'event':{'type':'text','text':'Next task'}})
+            return {'answer':'Next task'}
+        def reply(path,body):
+            if path.endswith('/poll') and body['active']:
+                cancellation_poll.append(body)
+                # Output queued just before the poll reply must not be delivered after cancellation.
+                sources[0].on_event({'session_key':first['session_key'],'event':{'type':'text','text':'Cancelled output'}})
+                return 200,{'commands':[second],'cancelled':[first['command_id']]}
+        self.peer.on_request=reply
+        result,dispatched,cancelled,closed=self.run_controlled_worker(call,lambda _id:released.set())
+        self.assertEqual(result['status'],'stopped')
+        self.assertEqual([message['id'] for message in dispatched],[first['command_id'],second['command_id']])
+        self.assertEqual(cancelled,[first['command_id']])
+        self.assertEqual(closed,[True])
+        self.assertEqual(len(cancellation_poll),1)
+        self.assertEqual(self.peer.completed,[{'lease_token':second['lease_token'],'result':{'answer':'Next task'}}])
+        self.assertEqual([event['text'] for batch in self.peer.events for event in batch['events']],['Next task'])
+        self.assertIn('cancelled',self.saved_command(first)['error'])
+        self.assertFalse(any(first['command_id'] in path and path.endswith(('/events','/complete')) for path,_,_ in self.peer.requests))
+
+    def test_worker_cancels_queued_dispatch_before_retiring_it(self):
+        state=self.connect();target=next(iter(state['targets']))
+        first=self.command(target);queued=self.command(target,'queued-command');last=self.command(target,'last-command')
+        self.peer.commands=[first,queued]
+        released=threading.Event()
+        def call(_source,message):
+            if message['id']==first['command_id']:
+                if not released.wait(5):raise ValueError('Test source was not stopped')
+            return {'answer':message['id']}
+        def reply(path,body):
+            if path.endswith('/poll') and body['active']:
+                # Cancel the queued future before releasing the only executor thread.
+                return 200,{'commands':[last],'cancelled':[queued['command_id'],first['command_id']]}
+        self.peer.on_request=reply
+        with mock.patch('agentrun_cli.remote.ThreadPoolExecutor',lambda **_options:ThreadPoolExecutor(max_workers=1)):
+            result,dispatched,cancelled,closed=self.run_controlled_worker(call,lambda _id:released.set())
+        self.assertEqual(result['status'],'stopped')
+        self.assertEqual([message['id'] for message in dispatched],[first['command_id'],last['command_id']])
+        self.assertEqual(cancelled,[queued['command_id'],first['command_id']])
+        self.assertIn('cancelled',self.saved_command(queued)['error'])
+        self.assertIn('cancelled',self.saved_command(first)['error'])
+        self.assertEqual(self.peer.completed,[{'lease_token':last['lease_token'],'result':{'answer':last['command_id']}}])
+
+    def test_worker_cancellation_prevents_a_running_dispatch_from_writing_later(self):
+        state=self.connect();target=next(iter(state['targets']))
+        first=self.command(target);second=self.command(target,'command-2');second['session_key']='next-session'
+        self.peer.commands=[first]
+        paused=threading.Event();released=threading.Event();attempted=threading.Event();pending_at_cancel=[]
+        class PausedBridge(Bridge):
+            def write(self,value,*args,**kwargs):
+                if value.get('id')==first['command_id'] and value.get('type')=='send':
+                    paused.set()
+                    if not released.wait(5):raise ValueError('Test dispatch was not released')
+                    try:return super().write(value,*args,**kwargs)
+                    finally:attempted.set()
+                return super().write(value,*args,**kwargs)
+            def cancel(self,command_id):
+                if command_id==first['command_id']:
+                    with self.lock:pending_at_cancel.append(command_id in self.pending)
+                super().cancel(command_id)
+                if command_id==first['command_id']:
+                    released.set()
+                    if not attempted.wait(5):raise ValueError('Test write did not finish')
+            def close(self):
+                released.set()
+                super().close()
+        def reply(path,body):
+            if path.endswith('/poll') and body['active']:
+                if not paused.wait(5):return 503,{'error':{'code':'test_dispatch_not_paused'}}
+                return 200,{'commands':[second],'cancelled':[first['command_id']]}
+        self.peer.on_request=reply
+        with mock.patch.dict(os.environ,{'REMOTE_TEST_LOG':str(self.log)}),mock.patch('agentrun_cli.remote.Bridge',PausedBridge):
+            result=worker(State(self.state),once=True)
+        self.assertEqual(result['status'],'stopped')
+        self.assertTrue(paused.is_set())
+        self.assertTrue(attempted.is_set())
+        self.assertEqual(pending_at_cancel,[True],'dispatch must already be running inside the actual Bridge.call')
+        calls=[json.loads(line) for line in self.log.read_text().splitlines()]
+        self.assertEqual([row['id'] for row in calls if row['type']=='send'],[second['command_id']],
+                         'a cancel written before registration must prevent the later command write')
+        self.assertEqual([row['command_id'] for row in calls if row['type']=='cancel'],[first['command_id']])
+        self.assertEqual(len(self.peer.completed),1)
+        self.assertEqual(self.saved_command(first),{'error':'The destination cancelled this native operation.'})
+
+    def cancellation_during_upload(self,endpoint,reconciliation_failure=False):
+        state=self.connect();target=next(iter(state['targets']))
+        first=self.command(target);second=self.command(target,'command-2');second['session_key']='next-session'
+        self.peer.commands=[first]
+        stopped=threading.Event();upload=[];polls=[];first_rejected=False
+        def call(source,message):
+            if message['id']==first['command_id']:
+                if endpoint=='events':
+                    source.on_event({'session_key':first['session_key'],'event':{'type':'text','text':'Pending answer'}})
+                    if not stopped.wait(5):raise ValueError('Test source was not stopped')
+                return {'answer':'First durable answer'}
+            return {'answer':'Next task'}
+        def reply(path,body):
+            nonlocal first_rejected
+            if first['command_id'] in path and path.endswith('/'+endpoint):
+                upload.append(body);first_rejected=True
+                return 412,{'error':{'code':'precondition_failed'}}
+            if path.endswith('/poll') and first_rejected:
+                polls.append((body,stopped.is_set()))
+                if reconciliation_failure is not False and len(polls)==1:
+                    return reconciliation_failure,{'error':{'code':'temporarily_unavailable'}}
+                return 200,{'commands':[second],'cancelled':[first['command_id']]}
+        self.peer.on_request=reply
+        result,dispatched,cancelled,closed=self.run_controlled_worker(call,lambda _id:stopped.set())
+        return result,first,second,dispatched,cancelled,closed,upload,polls
+
+    def test_worker_reconciles_cancellation_racing_pending_events_and_runs_next_command(self):
+        result,first,second,dispatched,cancelled,closed,upload,polls=self.cancellation_during_upload('events')
+        self.assertEqual(result['status'],'stopped')
+        self.assertEqual([message['id'] for message in dispatched],[first['command_id'],second['command_id']])
+        self.assertEqual(cancelled,[first['command_id']])
+        self.assertEqual(closed,[True])
+        self.assertEqual(len(upload),1,'a cancelled pending batch must not be retried')
+        self.assertEqual(len(polls),1)
+        self.assertEqual(self.peer.completed,[{'lease_token':second['lease_token'],'result':{'answer':'Next task'}}])
+        self.assertIn('cancelled',self.saved_command(first)['error'])
+
+    def test_worker_preserves_durable_result_when_cancellation_races_completion(self):
+        result,first,second,dispatched,cancelled,closed,upload,polls=self.cancellation_during_upload('complete')
+        self.assertEqual(result['status'],'stopped')
+        self.assertEqual(len(upload),1)
+        self.assertEqual(upload[0],{'lease_token':first['lease_token'],'result':{'answer':'First durable answer'}})
+        self.assertEqual(self.saved_command(first),{'result':{'answer':'First durable answer'}})
+        self.assertEqual([message['id'] for message in dispatched],[first['command_id'],second['command_id']])
+        self.assertEqual(cancelled,[first['command_id']])
+        self.assertEqual(self.peer.completed,[{'lease_token':second['lease_token'],'result':{'answer':'Next task'}}])
+
+    def test_worker_blocks_rejected_delivery_during_transient_cancellation_reconciliation(self):
+        for failure in (None,429,503):
+            # None drops the actual HTTP connection; each case uses a fresh journal.
+            with self.subTest(failure=failure):
+                self.state=self.root/('state-'+str(failure))
+                result,first,second,dispatched,cancelled,closed,upload,polls=self.cancellation_during_upload('events',failure)
+                self.assertEqual(result['status'],'stopped')
+                self.assertEqual(len(upload),1,'reconciliation must not resume a rejected upload')
+                self.assertEqual(len(polls),2)
+                self.assertTrue(all(source_stopped for _body,source_stopped in polls))
+                self.assertTrue(all(body['active']==[{'command_id':first['command_id'],'lease_token':first['lease_token']}] for body,_stopped in polls))
+                self.assertEqual(cancelled,[first['command_id']])
+                self.peer.completed.clear();self.peer.events.clear()
+
+    def test_worker_bounds_unresolved_cancellation_by_the_original_lease(self):
+        state=self.connect();command=self.command(next(iter(state['targets'])))
+        base=time.time();clock=[base];command['lease_expires_at']=base+3;self.peer.commands=[command]
+        uploads=[];reconciliations=[];stopped=[];dispatched=[]
+        def reply(path,body):
+            if path.endswith('/complete'):
+                uploads.append(body);clock[0]=base+1
+                return 412,{'error':{'code':'precondition_failed'}}
+            if path.endswith('/poll') and uploads:
+                reconciliations.append(body);clock[0]+=1
+                return 503,{'error':{'code':'temporarily_unavailable'}}
+        self.peer.on_request=reply
+        def call(_source,message):
+            dispatched.append(message)
+            return {'answer':'Durable answer'}
+        with mock.patch('agentrun_cli.remote.time',mock.Mock(time=lambda:clock[0])):
+            with self.assertRaisesRegex(ValueError,'source lease expired'):
+                self.run_controlled_worker(call,lambda command_id:stopped.append(command_id))
+        self.assertEqual(len(uploads),1,'an unresolved rejection must never retry delivery')
+        self.assertEqual(len(reconciliations),2)
+        self.assertEqual(len(dispatched),1)
+        self.assertIn(command['command_id'],stopped)
+        self.assertEqual(self.saved_command(command),{'result':{'answer':'Durable answer'}})
+
+    def test_worker_stops_when_cancellation_reconciliation_rejects_connector_credential(self):
+        for status in (401,403):
+            with self.subTest(status=status):
+                self.state=self.root/('state-'+str(status));state=self.connect()
+                command=self.command(next(iter(state['targets'])));self.peer.commands=[command];rejected=[]
+                def reply(path,body):
+                    if path.endswith('/complete'):
+                        rejected.append(body)
+                        return 412,{'error':{'code':'precondition_failed'}}
+                    if path.endswith('/poll') and rejected:
+                        return status,{'error':{'code':'unauthorized'}}
+                self.peer.on_request=reply
+                with self.assertRaisesRegex(ValueError,'revoked or rejected this connector'):
+                    self.run_controlled_worker(lambda _source,_message:{'answer':'Durable answer'})
+                self.assertEqual(len(rejected),1)
+                self.assertFalse(self.peer.completed)
+
+    def test_worker_rejects_non_cancellation_lease_and_auth_errors(self):
+        for status in (401,403,404,409,412):
+            with self.subTest(status=status):
+                self.state=self.root/('state-'+str(status));state=self.connect()
+                command=self.command(next(iter(state['targets'])));self.peer.commands=[command]
+                self.peer.on_request=lambda path,body:(status,{'error':{'code':'rejected'}}) if path.endswith('/complete') else None
+                with self.assertRaisesRegex(ValueError,'rejected the active command lease'):
+                    self.run_controlled_worker(lambda _source,_message:{'answer':'Durable answer'})
+                self.assertEqual(self.saved_command(command),{'result':{'answer':'Durable answer'}})
+                self.assertFalse(self.peer.completed)
+
+    def test_worker_retries_accepted_completion_unchanged_after_lost_reply(self):
+        state=self.connect();command=self.command(next(iter(state['targets'])));self.peer.commands=[command]
+        attempts=[];completion_renewals=[]
+        def reply(path,body):
+            if path.endswith('/poll') and attempts:
+                completion_renewals.append(body)
+            if path.endswith('/complete'):
+                attempts.append(body)
+                if len(attempts)==1:return None,{}
+                # The server renews an already completed command instead of cancelling
+                # it, allowing its exact durable result to be acknowledged after a poll.
+                return (200,{'accepted':True}) if completion_renewals else (503,{'error':{'code':'temporarily_unavailable'}})
+        self.peer.on_request=reply
+        result,dispatched,cancelled,closed=self.run_controlled_worker(lambda _source,_message:{'answer':'Durable answer'})
+        self.assertEqual(result['status'],'stopped')
+        self.assertGreaterEqual(len(attempts),2)
+        self.assertTrue(all(body==attempts[0] for body in attempts))
+        self.assertEqual(len(completion_renewals),1)
+        self.assertEqual(completion_renewals[0]['active'],[{'command_id':command['command_id'],'lease_token':command['lease_token']}])
+        self.assertEqual(len(dispatched),1)
+        self.assertEqual(cancelled,[])
+        self.assertEqual(self.saved_command(command),{'result':{'answer':'Durable answer'}})
 
     def test_server_cannot_select_an_unapproved_source_target(self):
         self.connect();self.peer.commands=[self.command('unapproved')]
