@@ -162,7 +162,8 @@ export async function agentLearningOverStore(store: Store, agentId: string): Pro
     if (!kinds.has(run.revisionId)) kinds.set(run.revisionId, (await store.agents.revision(run.revisionId))?.kind);
     const final = FINAL_STATES.includes(run.state);
     const started = await learningStartOfRun(store, run.id);
-    const end = await runLearningEnd(store, run.id);
+    // A run that only uses what its agent learned keeps no proposal: its end is its start's (usedOnly), as its run reads give it.
+    const end = (await runLearningEnd(store, run.id)) ?? (started?.use ? usedOnly(started, final, timeOf(run.endedAt ?? run.startedAt)) : null);
     const { read, laid } = await journalReadsOf(store, run, started);
     if (started || end) files.push(notesOf({ given: started?.given ?? [], read }));
     // The row learningImpact reads (the file path's RunRow): an ended run is a completed one.
