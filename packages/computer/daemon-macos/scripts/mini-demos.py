@@ -148,8 +148,9 @@ class Recorder(threading.Thread):
         super().__init__(daemon=True)
         self.folder, self.clock, self.aim, self.cropper = folder, clock, aim, cropper
         self.frames, self.captions, self.errors = [], [], []
-        # Frames not kept: no window yet, or the window list changed while the frame was taken.
-        self.dropped = 0
+        # Frames not kept, by why: the sequence's first, no window yet, the window moved, a window in front came or went,
+        # or the cut failed.
+        self.dropped = {}
         self.halt = threading.Event()
         os.makedirs(folder, exist_ok=True)
 
@@ -185,17 +186,25 @@ class Recorder(threading.Thread):
                         break
                 first, seq = seq is None, r["seq"]
                 after = self.place()
-                if first or before is None or before != after:
-                    self.dropped += 1
-                    continue
-                path = os.path.join(self.folder, f"{len(self.frames):05d}.jpg")
-                try:
-                    self.cropper.crop(data, before, path)
-                except RuntimeError as e:  # a window off the main display, say: that frame is not kept
-                    self.dropped += 1
-                    self.errors.append(str(e))
-                    continue
-                self.frames.append((at, path))
+                why = None
+                if first:
+                    why = "first"
+                elif before is None or after is None:
+                    why = "no window"
+                elif before["bounds"] != after["bounds"]:
+                    why = "moved"
+                elif before["above"] != after["above"]:
+                    why = "in front"
+                if why is None:
+                    path = os.path.join(self.folder, f"{len(self.frames):05d}.jpg")
+                    try:
+                        self.cropper.crop(data, before, path)
+                        self.frames.append((at, path))
+                    except RuntimeError as e:  # a window off the main display, say: that frame is not kept
+                        why = "cut failed"
+                        self.errors.append(str(e))
+                if why:
+                    self.dropped[why] = self.dropped.get(why, 0) + 1
         except Exception as e:  # the movie is a record, not a check: a dead recorder never fails the task
             self.errors.append(repr(e))
         finally:
@@ -310,6 +319,19 @@ MAKE_CALENDAR = """on run argv
   tell application "Calendar" to make new calendar with properties {name:item 1 of argv}
   return ""
 end run"""
+
+# A calendar with one event in it, now, titled as given: Calendar's setup (see calendar_prepare).
+MAKE_CALENDAR_EVENT = """on run argv
+  tell application "Calendar"
+    set c to make new calendar with properties {name:item 1 of argv}
+    set t0 to current date
+    make new event at end of events of c with properties {summary:item 2 of argv, start date:t0, end date:t0 + 30 * minutes}
+  end tell
+  return ""
+end run"""
+
+# The Notes folders' names (CI only: on a person's Mac they are theirs).
+FOLDER_NAMES = """tell application "Notes" to return name of every folder"""
 
 # The calendars, every event in them with them; then any event anywhere titled exactly as a task titles its event (one
 # made in the default calendar and not yet moved into the sandbox when the task failed or was killed).
@@ -912,6 +934,13 @@ def notes_new_note(t):
     title, line = f"{NAME} groceries", "oat milk and eggs"
     t.say("make the task's Notes folder (AppleScript)")
     t.run_exec(["/usr/bin/osascript", "-e", MAKE_FOLDER, NAME], "make the Notes folder")
+    # The folder list shows a folder made by AppleScript a moment later.
+    try:
+        t.wait_for(f"{NAME},", "wait for the task's folder in the folder list", seconds=15)
+    except Failed as e:
+        if CI:
+            raise Failed(f"{e}; Notes' folders: {osa(t.c, FOLDER_NAMES).strip()}") from None
+        raise
     tree = t.observe("observe Notes with the task's folder")
     # The folder list names each folder "<name>, <count> notes": the task's folder, opened by its cell, is where
     # super+n puts the new note.
@@ -949,12 +978,29 @@ def calendar_names(c):
     return [line.split("\t")[0] for line in osa(c, SNAPSHOT_CALENDARS).splitlines()]
 
 
+def ci_calendars(t, when):
+    """On CI, the calendars' names at a step, to see when Calendar adds one of its own (names are a person's
+    elsewhere)."""
+    if CI:
+        print(f"    calendars {when}: {calendar_names(t.c)}", flush=True)
+
+
 def calendar_prepare(t):
     """Calendar open, its first-run sheets answered, and its calendar list still: a fresh Calendar (CI's runner) adds
-    its own calendars (Scheduled Reminders) a moment after it opens, and one added after the snapshot would count as
-    the task's. The list is read until it has not changed for 8 s (at most 40 s)."""
+    its own calendar (Scheduled Reminders) a while after it opens, and one added after the snapshot would count as the
+    task's. A fresh Calendar's first one is made here, with an event, and removed, and the list is read until it has
+    not changed for 8 s (at most 40 s)."""
     t.launch()
     first_run(t, t.observe())
+    # Calendar shows no first-run sheet on CI, so this runs every time; the setup calendar is in the run's sandbox
+    # (the sweep removes one a killed run left).
+    setup = f"{NAME} setup"
+    t.say("make and remove a setup calendar with an event")
+    try:
+        t.run_exec(["/usr/bin/osascript", "-e", MAKE_CALENDAR_EVENT, setup, f"{event_title(RUN)}-setup"], "make a setup calendar")
+        ci_calendars(t, "after the setup calendar")
+    finally:
+        t.run_exec(["/usr/bin/osascript", "-e", REMOVE_CALENDARS, setup, f"{event_title(RUN)}-setup"], "remove the setup calendar")
     t.say("wait for Calendar's list of calendars to be still")
     start = time.monotonic()
     names, since = calendar_names(t.c), start
@@ -973,6 +1019,7 @@ def calendar_new_event(t):
     title = event_title(RUN)
     t.say("make the task's calendar (AppleScript)")
     t.run_exec(["/usr/bin/osascript", "-e", MAKE_CALENDAR, NAME], "make the calendar")
+    ci_calendars(t, "after the task's calendar")
     tree = t.observe()
     # The toolbar's Add Event button opens the quick event field: the title typed there and enter make the event, in
     # the default calendar, with its inspector open; the inspector's calendar menu moves it into the task's calendar.
@@ -990,6 +1037,11 @@ def calendar_new_event(t):
     tree = t.observe("observe the calendar menu", full=True)
     item = need(t, tree["nodes"], "the task's calendar in the menu", role="menuitem", name=NAME)
     t.act([{"press": item["ref"]}], "move the event into the task's calendar")
+    ci_calendars(t, "after the move")
+    # The event is saved when its inspector closes: on macOS 26 an event whose inspector is still open is in no
+    # calendar yet (AppleScript finds it nowhere).
+    t.act([{"key": "escape"}], "close the event's inspector (saves the event)")
+    ci_calendars(t, "after the inspector closed")
     count = """on run argv
   tell application "Calendar" to return count (events of calendar (item 1 of argv) whose summary is (item 2 of argv))
 end run"""
@@ -1215,7 +1267,7 @@ def main():
                 if t.rec.errors:
                     entry["recorderErrors"] = t.rec.errors[:5]
             report.append(entry)
-            dropped = f" ({t.rec.dropped} not kept)" if t.rec else ""
+            dropped = f" (not kept: {', '.join(f'{n} {why}' for why, n in t.rec.dropped.items()) or 'none'})" if t.rec else ""
             print(f"{'PASS' if error is None else 'FAIL'} {tid}: {took} ms, {entry['acts']} acts, {entry['steps']} steps, {frames} frames{dropped}, movie {t.movie}" + (f"\n  {error}" if error else ""), flush=True)
             if t.rec and t.rec.errors:
                 print(f"  recorder: {'; '.join(t.rec.errors[:3])}", flush=True)
