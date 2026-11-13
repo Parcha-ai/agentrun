@@ -108,7 +108,8 @@ export function blocksOf(runs: readonly CostRun[], size: number): Block[] {
   const blocks: Block[] = [];
   for (let i = 0; i < runs.length; i += size) {
     const slice = runs.slice(i, i + size);
-    const counts = { agent: 0, handed_back: 0, workflow: 0 } as Record<RunPath, number>;
+    // Every path the legend draws starts at 0 (a replay too): a path left out would count NaN and drop from the mix.
+    const counts = Object.fromEntries(PATHS.map(({ path }) => [path, 0])) as Record<RunPath, number>;
     for (const r of slice) counts[r.path]++;
     blocks.push({ from: slice[0]!.n, to: slice.at(-1)!.n, runs: slice.length, counts });
   }

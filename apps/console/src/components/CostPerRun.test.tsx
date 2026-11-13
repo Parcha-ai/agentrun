@@ -71,7 +71,9 @@ describe("the execution mix's arithmetic", () => {
     expect([blockSizeOf(3), blockSizeOf(20), blockSizeOf(21), blockSizeOf(80), blockSizeOf(400), blockSizeOf(1000)]).toEqual([1, 1, 5, 5, 20, 50]);
     const blocks = blocksOf(sample.runs, 5);
     expect(blocks).toHaveLength(16);
-    expect(blocks[4]).toEqual({ from: 21, to: 25, runs: 5, counts: { agent: 1, handed_back: 1, workflow: 3 } });
+    expect(blocks[4]).toEqual({ from: 21, to: 25, runs: 5, counts: { agent: 1, handed_back: 1, workflow: 3, replay: 0 } });
+    const mixed = blocksOf([run(1, "agent", 0.5), run(2, "replay", 0.1), run(3, "replay", 0.1)], 5);
+    expect(mixed[0]!.counts).toEqual({ agent: 1, handed_back: 0, workflow: 0, replay: 2 });
     const short = blocksOf(sample.runs.slice(0, 7), 5);
     expect(short.map((b) => [b.from, b.to, b.runs])).toEqual([[1, 5, 5], [6, 7, 2]]);
     expect([pct(3, 5), pct(1, 3), pct(0, 0)]).toEqual(["60%", "33%", "0%"]);
