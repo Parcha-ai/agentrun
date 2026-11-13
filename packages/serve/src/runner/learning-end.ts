@@ -97,7 +97,7 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
     nothingNew: async (runId) => onlyLearnedWorkflows(await runTimeline(deps.store, runId, BACKGROUND_CONTEXT, { settled: false })),
     promptFacts: async () => ({ active: start.seedNotes ?? start.given.length }),
     // A notes run (`learning: "notes"`) compiles nothing.
-    ...(start.notesOnly ? {} : { compileFacts: (input: { runId: string; agentId: string; outcome: "completed" | "failed"; refuse: readonly string[] }) => compileAskOf(deps, { ...input, input: launch.input }) }),
+    ...(start.notesOnly ? {} : { compileFacts: (input: { runId: string; agentId: string; outcome: "completed" | "failed"; refuse: readonly string[] }) => compileAskOf(deps, { ...input, input: launch.input, ...(start.seedNotes !== undefined ? { seedNotes: start.seedNotes } : {}), seedWorkflows: start.workflows?.length ?? 0 }) }),
     asked: async (runId) => {
       const [entries, reflect] = await Promise.all([runEntries(deps.store, runId, BACKGROUND_CONTEXT), runReflect(deps.store, runId, BACKGROUND_CONTEXT)]);
       const hearing = new Hearing();
@@ -274,11 +274,26 @@ export async function traceOf(store: Store, runId: string, refuse: readonly stri
  *  may run (draftTools) with what each takes and gives, its decision providers, the run's input (`input`, its fields for
  *  the workflow's input schema) and the DSL's language with this host's addendum. Undefined when it compiles nothing, or
  *  when the folder can't be read. */
-export async function compileAskOf(deps: LearningEndDeps, input: { runId: string; agentId: string; outcome: "completed" | "failed"; refuse: readonly string[]; input?: unknown }): Promise<CompileAsk | undefined> {
+export async function compileAskOf(deps: LearningEndDeps, input: { runId: string; agentId: string; outcome: "completed" | "failed"; refuse: readonly string[]; input?: unknown; seedNotes?: number; seedWorkflows?: number }): Promise<CompileAsk | undefined> {
   const entries = await runEntries(deps.store, input.runId, BACKGROUND_CONTEXT).catch(() => []);
   const served = servedOf(entries);
   const stopped = reviseOf(entries);
   const revising = served?.outcome === "handed_back" ? served.workflow : stopped?.workflow;
+  // The agent's latest runs, newest first: those after the ending one in the list started before it.
+  const listed = await deps.store.runs.list({ agentId: input.agentId, limit: 200 });
+  const at = listed.findIndex((run) => run.id === input.runId);
+  const earlier = (at < 0 ? listed : listed.slice(at + 1)).filter((run) => run.agentId === input.agentId);
+  const done = earlier.filter(completedRun);
+  let compiledLately = false;
+  const dueWith = (notes: number, workflows: number) => compileDue({ completed: input.outcome === "completed", notes, runs: Math.min(done.length, COMPILE_AFTER_RUNS) + (input.outcome === "completed" ? 1 : 0), workflows, compiledLately });
+  if (!revising) {
+    // A compile in the agent's last runs (a draft still waiting for its grade, or one that failed) asks none now.
+    const lately = await Promise.all(earlier.slice(0, COMPILE_QUIET_RUNS).map((run) => deps.store.learning.proposal(run.id).catch(() => undefined)));
+    compiledLately = lately.some((kept) => (kept?.proposal as { compiled?: unknown } | null | undefined)?.compiled !== undefined);
+    // First by what the run started from (its seed's notes and the workflows it was offered): a run not due by them
+    // opens no folder. Main is read below for the turn itself, and decides again.
+    if (!dueWith(input.seedNotes ?? 0, input.seedWorkflows ?? 0)) return undefined;
+  }
   const folder = deps.learningFolder(input.agentId);
   let read: { notes: { file: string; text: string }[]; workflows: number; current?: string };
   try {
@@ -298,18 +313,7 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
   }
   // A revision of a workflow main no longer holds (a person retired it) asks for none.
   if (revising && read.current === undefined) return undefined;
-  // The agent's latest runs, newest first: those after the ending one in the list started before it.
-  const listed = await deps.store.runs.list({ agentId: input.agentId, limit: 200 });
-  const at = listed.findIndex((run) => run.id === input.runId);
-  const earlier = (at < 0 ? listed : listed.slice(at + 1)).filter((run) => run.agentId === input.agentId);
-  const done = earlier.filter(completedRun);
-  if (!revising) {
-    // A compile in the agent's last runs (a draft still waiting for its grade, or one that failed) asks none now.
-    const lately = await Promise.all(earlier.slice(0, COMPILE_QUIET_RUNS).map((run) => deps.store.learning.proposal(run.id).catch(() => undefined)));
-    const compiledLately = lately.some((kept) => (kept?.proposal as { compiled?: unknown } | null | undefined)?.compiled !== undefined);
-    const due = compileDue({ completed: input.outcome === "completed", notes: read.notes.length, runs: Math.min(done.length, COMPILE_AFTER_RUNS) + (input.outcome === "completed" ? 1 : 0), workflows: read.workflows, compiledLately });
-    if (!due) return undefined;
-  }
+  if (!revising && !dueWith(read.notes.length, read.workflows)) return undefined;
   const traces = await Promise.all(done.slice(0, COMPILE_TRACES).reverse().map((run) => traceOf(deps.store, run.id, input.refuse).catch(() => undefined)));
   const { tools, decisions } = await draftTools(deps, input.runId);
   const judges = draftDecisionProviders(decisions).length > 0;
