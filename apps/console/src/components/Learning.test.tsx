@@ -1568,6 +1568,13 @@ describe("the loop on the Learning tab", () => {
     expect(stage.textContent).toContain("1 of 3 notes");
     expect(stage.textContent).toContain("a workflow compiles at 3 notes or 5 runs");
   });
+  it("counts only completed runs toward a compile, as the server does: failed and cancelled runs are in the cost series, not the count", async () => {
+    const runs = [runOf("run-ok", "kith.com", null), ...["run-f1", "run-f2", "run-f3"].map((id) => ({ ...runOf(id, id, null), status: "failed" as const })), { ...runOf("run-s", "run-s", null), status: "cancelled" as const }];
+    const cost = async (): Promise<LearningCost> => ({ agent: "refunds", runs: [], total_runs: 5, unknown_cost_runs: 0, unknown_path_runs: 0, summary: { takeover: null, before: null, after: null, times_cheaper: null, hand_backs: null }, workflows: [] });
+    const t = await open(agent(true), { learning: async () => view({ notes: { items: [note(MINE, "Keep it to three lines")], total: 1, next_cursor: null } }), runs, cost });
+    const stage = t.host.querySelector('[data-testid="stage-compiled"]')!;
+    expect(stage.textContent).toContain("1 of 5 runs");
+  });
   it("a draft the checks refused shows in the feed in their words; a failed loop read leaves the feed out, not the tab", async () => {
     const loop = { agent: "refunds", guards: [], compiles: [{ run_id: "run-x", round: 1, at: "2026-11-05T10:00:00Z", workflow: null, from_notes: ["keep-it-to-three-lines"], attempts: [{ ok: false, errors: ["root: no node"] }], digest: null, promoted: null, draft_errors: ["the draft did not parse"], withheld: false }] } as LearningLoop;
     const t = await open(agent(true), { loop: async () => loop });

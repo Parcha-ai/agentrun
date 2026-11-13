@@ -156,10 +156,12 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places, on
     );
   }, [view, unknown, olderLog.cursor]); // eslint-disable-line react-hooks/exhaustive-deps
   const lookedBack = runs.filter((r) => r.learning && (r.learning.state === "merged" || r.learning.state === "dropped")).length;
-  // The loop at a glance: notes, the compile, the takeover, the money, where it is unsure; each says what comes next.
+  // The loop at a glance: notes, the compile, the takeover, the money, where it is unsure; each says what comes next. Its
+  // compile counts completed runs only, as the server's trigger does (learn/compile.ts COMPILE_AFTER_RUNS): the cost
+  // series' total counts failed and cancelled runs too. The newest runs read hold enough: the count stops at the threshold.
   const story = storyOf({
     notes: active.length, compiledNotes: all.filter((x) => x.status !== "retired" && compiledInto(x.text) !== null).length,
-    runs: cost?.total_runs ?? runs.filter((r) => r.status === "completed").length, workflows, cost, promotions, serving, loop,
+    runs: runs.filter((r) => r.status === "completed").length, workflows, cost, promotions, serving, loop,
   });
 
   if (error && !view) return <ProblemCard problem={problem(error, "what this agent learned")} onRetry={read} className="" />;
