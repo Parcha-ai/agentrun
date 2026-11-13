@@ -14,6 +14,7 @@ import { CAPS, checkNote } from "./check.js";
 import { hiddenCharacter } from "./invisible.js";
 import { INDEX_FILE, INDEX_LINES, indexLine, type LearnedNote, NOTE_FILE, parseNoteFile, runMarkedRisky, withoutRiskyMark } from "./notes.js";
 import { draftMcpTools, learnedFront, learnedName, learnedPlace } from "./skills.js";
+import { mcpNameOf } from "../tool-names.js";
 
 /** What the grader asks of each new note, and when it keeps one. The one statement of it. */
 export const GRADE_RUBRIC = [
@@ -340,7 +341,7 @@ function dryRunLines(file: string, dryRuns: GradeInput["dryRuns"], fence: (label
 }
 
 /** What the grader is told of draft `file`'s MCP call nodes (LS-07), below its fence: each MCP tool they run, once, by its
- *  server and tool. The host's own words: each name is one skills.ts LEARNED_MCP_TOOL takes, so it holds nothing else.
+ *  server and tool. The host's own words: each name is one tool-names.ts mcpNameOf reads, so it holds nothing else.
  *  Nothing for a skill, or a draft with none, or one that does not parse. */
 function mcpLines(file: string, text: string): string[] {
   if (learnedPlace(file)?.kind !== "workflow") return [];
@@ -351,7 +352,7 @@ function mcpLines(file: string, text: string): string[] {
     return [];
   }
   const named = draftMcpTools(doc).map((name) => {
-    const [server, tool] = name.slice("mcp:".length).split("/") as [string, string];
+    const { server, tool } = mcpNameOf(name)!;
     return `\`${name}\` (server ${server}, tool ${tool})`;
   });
   return named.length ? [`Its call nodes run MCP tools, each a side effect on an outside server, unattended at every call: ${named.join(", ")}.`, ""] : [];

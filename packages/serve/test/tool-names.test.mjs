@@ -41,3 +41,20 @@ test("a server's wildcard is a settings key of a well-formed server only", () =>
   assert.equal(set("mcp:github/*"), true);
   assert.equal(set("mcp:My_Server/*"), false);
 });
+
+test("parseToolName reads each shape of a catalog name, and formatToolName writes it back", async () => {
+  const { formatToolName, isMcpName, mcpNameOf, parseToolName } = await import("../dist/tool-names.js");
+  const shapes = [
+    ["read", { kind: "plain", name: "read" }],
+    ["monid.discover", { kind: "plain", name: "monid.discover" }],
+    ["mcp:github/GITHUB_CREATE_AN_ISSUE", { kind: "mcp", server: "github", tool: "GITHUB_CREATE_AN_ISSUE" }],
+    ["mcp:linear-app/*", { kind: "mcp-server", server: "linear-app" }],
+  ];
+  for (const [name, parsed] of shapes) {
+    assert.deepEqual(parseToolName(name), parsed, name);
+    assert.equal(formatToolName(parsed), name);
+  }
+  for (const name of ["mcp:srv", "mcp:srv/a/b", "mcp:srv/a.b", "mcp:-srv/x", "Read", "mcp:srv/", ""]) assert.equal(parseToolName(name), undefined, name);
+  assert.equal(mcpNameOf("mcp:linear-app/*"), undefined, "a wildcard is no one tool");
+  assert.ok(isMcpName("mcp:srv/a.b") && !isMcpName("monid.run"), "the namespace holds a malformed MCP name too");
+});

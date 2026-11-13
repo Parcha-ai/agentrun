@@ -23,11 +23,9 @@ import { filedAnswer } from "./filed-answer.js";
 import { paidLedger, paidStep } from "./paid-calls.js";
 import { metaToolOf } from "./mcp-meta.js";
 import { SIGN_IN_AGAIN } from "./mcp-oauth.js";
-import { mcpToolName } from "./tool-gate.js";
+import { mcpNameOf, mcpToolName } from "./tool-names.js";
 import { type Workspace, workspaceAt, workspaceErrorWords } from "./workspace/index.js";
 
-/** A catalog name of an MCP tool: `mcp:<server>/<tool>`. A server name has no `_`, so `mcp__<server>__<tool>` splits one way. */
-export const MCP_NAME = /^mcp:([a-z][a-z0-9-]{0,31})\/([A-Za-z0-9_-]{1,64})$/;
 /** The longest answer the model reads whole; past it, the rest is filed in the run's work/ as lines read pages through
  *  (filed-answer.ts). Within the host's result bound (HOST_RESULT_MAX_CHARS), so every harness passes it whole. */
 export const MCP_CLIP = 60_000;
@@ -46,12 +44,6 @@ export type McpCredentials = Record<string, { url: string; headers?: Record<stri
 export interface McpServerSource {
   server(name: string): { url: string; tools: readonly McpTool[]; prices?: Readonly<Record<string, number>> } | undefined;
 }
-
-/** `mcp:<server>/<tool>` read, or undefined for a name that is not one. */
-export const mcpNameOf = (name: string): { server: string; tool: string } | undefined => {
-  const match = MCP_NAME.exec(name);
-  return match ? { server: match[1]!, tool: match[2]! } : undefined;
-};
 
 /** The most schema nodes, and the deepest nesting, a tool's declarations are checked through: past either the tool is
  *  refused, never walked further. */
