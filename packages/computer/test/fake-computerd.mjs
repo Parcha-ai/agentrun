@@ -11,7 +11,7 @@
 // no capability drop and no fence; no pty, no tar calls, no desktop methods (each answers `unsupported`). It ends, with
 // every process it started, at SIGTERM or once its socket is gone (the host's temp folder removed).
 import { spawn } from "node:child_process";
-import { chmodSync, constants, existsSync, mkdirSync, promises as fs, readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, constants, existsSync, mkdirSync, promises as fs, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { dirname, isAbsolute, join, normalize, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -470,4 +470,4 @@ function serve(socket, config) {
 	});
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) serve(process.argv[2], JSON.parse(process.argv[3]));
+if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) serve(process.argv[2], JSON.parse(process.argv[3]));
