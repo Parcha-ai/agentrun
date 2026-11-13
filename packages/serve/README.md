@@ -1473,6 +1473,35 @@ names a tool whose title, description, schemas or annotations differ. `DELETE ..
 credential. Capabilities' `features.mcp_client` says `transports: ["streamable-http"]`, the `auth` types and `at_rest:
 "sealed"`.
 
+### A credential handed with each run
+
+Some servers take a credential made for one run (a token scoped to that run's job and its person) that no saved
+server could hold. Save such a server with `auth: {type: "per_run", headers?}`: it keeps no credential, and `headers`,
+when sent, are used only to list its tools now. Then hand each run its own as `mcp_auth` on the run's start
+(`POST /v2/runs`, `POST /v2/agents/{agent_id}/runs`), one entry for each per_run server it calls:
+
+```sh
+curl -X PUT "$BASE/v2/settings/mcp-servers/gateway" -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"url": "https://gateway.example.com/mcp", "auth": {"type": "per_run", "headers": {"authorization": "Bearer <a token to list with>"}}}'
+curl -X POST "$BASE/v2/agents/$AGENT/runs" -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"input": {"content": "..."}, "mcp_auth": {"gateway": {"headers": {"authorization": "Bearer <this run'"'"'s token>"}}}}'
+```
+
+A per_run save keeps no secret, so the API token may make it, as it may preview a server with a credential: the
+credentials such a server receives are the ones each run's own caller hands it. The run's calls of that server carry
+those headers, and only to the origin the server had when the run was started. The
+credential is sealed into the run's launch record under `AGENTRUN_SEAL_KEY` (bound to the run's id), read at each claim, so
+a resume, a restart or a lost lease uses it again, and erased by the write that ends the run. It is never in the run's
+saved body, its timeline, its view, a log line or an `Idempotency-Key`'s fingerprint (a retry with a new credential
+answers the first request's run), and its values are cut from whatever the run shows. `POST /v2/runs/{run_id}/messages`
+takes `mcp_auth` too: it replaces the run's credentials in the message's own write, so the turn the message starts (a
+steer into a working run from its next model request, or a follow-up that opens an ended run again) calls with them. A
+name that is not a saved per_run server is `422` at `mcp_auth.<server>`, and no run starts. A run handed no credential
+for a per_run server it calls has those calls answered, unsent, that it was handed none. `POST .../{name}/refresh` lists
+a per_run server's tools with no credential: save it again with `headers` for a server that lists only to a caller it
+knows. The tools are those it listed at its save, so a server whose tool list varies by caller shows each run the saved
+list.
+
 ### Signing in with OAuth
 
 A server whose preview answers `details.auth: "oauth"` is signed in to by this server, which keeps the tokens: the
