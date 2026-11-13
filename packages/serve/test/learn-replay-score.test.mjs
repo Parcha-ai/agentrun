@@ -4,7 +4,7 @@
 // `both` guard only on 30 rows with 5 wrong.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { answerCorrect, clears, escalates, putGrade, gradesOf, promotionOf, recordOnly, recordPromotion, promotionsOf, replayScore, sameAnswer, thresholdsOf } from "../dist/learn/promote.js";
+import { answerCorrect, championOf, clears, escalates, putGrade, servingOf, gradesOf, promotionOf, recordOnly, recordPromotion, promotionsOf, replayScore, sameAnswer, thresholdsOf } from "../dist/learn/promote.js";
 import { FIT_MIN_ROWS, fitLogistic, refitGuards } from "../dist/learn/refit.js";
 
 const guard = (node, p, threshold = 0) => ({ node, signal: "self", self: p ?? undefined, p, threshold, escalated: false });
@@ -143,4 +143,34 @@ test("grades and promotion records over the settings table: a run's newer grade 
   assert.deepEqual(second.runs, ["x"], "the first claim's replay stands");
   await recordPromotion(settings, "a", { ...replaying, decided: "promote" }, (now) => now?.decided === "replaying");
   assert.equal(promotionOf(await promotionsOf(settings, "a"), "w", "d1").decided, "promote");
+});
+
+test("champion/challenger: the digest promoted last serves while a newer revision replays or is held; its own graded hold stops it; a promoted challenger takes over", () => {
+  const rec = (digest, decided, source = "replay", extra = {}) => ({ workflow: "answer", digest, at: "t", decided, source, reason: "r", ...extra });
+  const champion = rec("c1", "promote", "dry_run", { commit: "s1" });
+  // A wrong served grade asked for a revision: c2 replays. The champion serves; c2 is replaying.
+  let records = [champion, rec("c2", "replaying")];
+  assert.equal(championOf(records, "answer"), champion);
+  assert.deepEqual(servingOf(records), [{ workflow: "answer", digest: "c1", replaying: "c2" }]);
+  // The champion's graded check marks it again (a newer record of the same digest): still the champion.
+  const marked = { ...champion, checked: 20 };
+  records = [champion, rec("c2", "replaying"), marked];
+  assert.equal(championOf(records, "answer"), marked);
+  assert.deepEqual(servingOf(records), [{ workflow: "answer", digest: "c1", replaying: "c2" }]);
+  // c2's replay holds it: the champion keeps serving, nothing replays.
+  records = [champion, rec("c2", "replaying"), rec("c2", "hold")];
+  assert.equal(championOf(records, "answer")?.digest, "c1");
+  assert.deepEqual(servingOf(records), [{ workflow: "answer", digest: "c1", replaying: null }]);
+  // c2's replay promotes it: c2 is the champion from here on, even when c1 is marked checked after.
+  records = [champion, rec("c2", "replaying"), rec("c2", "promote"), marked];
+  assert.equal(championOf(records, "answer")?.digest, "c2");
+  assert.deepEqual(servingOf(records), [{ workflow: "answer", digest: "c2", replaying: null }]);
+  // The champion's own graded runs hold it (source graded): no champion; never the one before it.
+  records = [champion, rec("c2", "replaying"), rec("c2", "promote"), rec("c2", "hold", "graded")];
+  assert.equal(championOf(records, "answer"), undefined);
+  assert.deepEqual(servingOf(records), [{ workflow: "answer", digest: null, replaying: null }]);
+  // A refit's new revision is promoted on its rows: the champion. Another workflow's records are its own.
+  records = [champion, rec("c3", "promote", "refit", { refit: { from: "c1", guards: [] } }), { ...rec("x1", "replaying"), workflow: "other" }];
+  assert.equal(championOf(records, "answer")?.digest, "c3");
+  assert.deepEqual(servingOf(records), [{ workflow: "answer", digest: "c3", replaying: null }, { workflow: "other", digest: null, replaying: "x1" }]);
 });
