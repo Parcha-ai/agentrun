@@ -6,6 +6,7 @@
 //     sealed for the replay alone; nothing of it is printed or logged;
 //   - a write whose arguments the recording does not have is never sent: that input is skipped (skipped_write), neither
 //     wrong nor failed, and a replay whose every input was skipped holds the revision in those words.
+// The runner is a local install's (mcpLoopback): the fake MCP server listens on loopback.
 // The graded runs are real runs of the agent (no learning, so no workflow serves them): each calls the write itself, which
 // is what its journal records.
 import assert from "node:assert/strict";
@@ -109,7 +110,7 @@ async function world(t, { graded = 5, deletes = (id) => id } = {}) {
   const logs = [];
   const price = (_model, usage) => ((usage.input ?? 0) * 3 + (usage.output ?? 0) * 15) / 1e6;
   const route = { model: MODEL, provider: { api: "anthropic-messages", origin: gw.url, credential: () => `not-a-secret-${"pi"}` }, cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, outputCeiling: 8_192, price, fetch: globalThis.fetch };
-  const deps = { env: {}, data: dir, journal: (claim) => store.journal(claim), store, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim: async () => ({ release: async () => {} }), log: (line) => logs.push(line) };
+  const deps = { env: {}, data: dir, journal: (claim) => store.journal(claim), store, sealKey: SEAL_KEY, mcpLoopback: true, routeOf: async () => route, computerForClaim: async () => ({ release: async () => {} }), log: (line) => logs.push(line) };
   const specOf = async (claim, run) => adapterRunSpecFromLaunch(readLaunchBody((await store.runs.launch(claim.runId)).body), run, deps, claim);
   runner = startRunner({ store, name: "runner-a", ...TIMING, createLoop: createAdapterLoop(specOf) });
   const ended = (id) => until(async () => {
