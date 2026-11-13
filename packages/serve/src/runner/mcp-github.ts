@@ -1,8 +1,8 @@
 // A github_app MCP server's credential for one run (the runner's MCP claim step, runner/mcp-claim.ts): an installation
 // token the server's GitHub App mints (github.ts mintInstallationToken, given here as `mint`, its App id and key bound by
 // the runner), narrowed to the run's repository. It is minted at every launch (each claim), held in the step's memory
-// only (never sealed into mcp_servers, the journal or run_live: it lasts an hour and is minted again at will), joins the
-// redaction set, and is minted again with REFRESH_BEFORE_MS left, mid-run, so a long run's calls never carry an expired
+// only (never sealed into mcp_servers, the journal or run_live: it lasts an hour and is minted again at will), is held by
+// the run's one redactor as the claim step hands it over (each mint), and is minted again with REFRESH_BEFORE_MS left, mid-run, so a long run's calls never carry an expired
 // token. A token that could not be renewed answers its calls in words once it expires, never a crash. One claim per run
 // mints for itself: there is no stored token to share, so no refresh lease.
 import type { GithubPermissions } from "../github.js";
@@ -34,7 +34,7 @@ export const REFRESH_BEFORE_MS = 5 * 60_000;
 /** Why a github_app server's calls are refused unsent, in the words the gateway gives the model. */
 export const GITHUB_UNUSABLE = {
   noAccess: "this server has no GitHub App set up for its runs (Settings → GitHub)",
-  noRepo: "this run names no GitHub repository, so the GitHub App has no repository to make a token for",
+  noRepo: "this run names no GitHub repository, so the GitHub App has no repository to make a token for. The server is connected: start the run with a repository (`repo` in the start body, or https://github.com/<owner>/<repo> in its first message), or bind the agent to one repository with a GitHub trigger",
   notInstalled: (repo: string) => `the GitHub App is not installed on ${repo}: install it from Settings → GitHub`,
   failed: (message: string) => `GitHub did not make a token for this run (${message})`,
   expired: (message: string) => `its GitHub App token expired and a new one could not be made (${message})`,

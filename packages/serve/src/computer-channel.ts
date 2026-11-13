@@ -35,10 +35,10 @@ export const CHANNEL_POLL_MS = 250;
 
 /** The computer protocol's methods (spec/computer/protocol.json; a test keeps the two equal). A call names one of them. */
 export const PROTOCOL_METHODS: readonly string[] = [
-  "apps.install", "apps.launch", "apps.list", "apps.terminate", "apps.ui_tree", "deadline.extend", "exec.run", "files.list", "files.mkdir",
+  "apps.install", "apps.launch", "apps.list", "apps.terminate", "deadline.extend", "exec.run", "files.list", "files.mkdir",
   "files.move", "files.read", "files.remove", "files.stat", "files.write", "hello", "input.actions", "mount.sync", "ping", "process.list",
   "process.read", "process.resize", "process.signal", "process.start", "process.wait", "process.write", "screen.read", "screen.shot",
-  "screen.watch", "tar.pull.begin", "tar.pull.end", "tar.pull.read", "tar.push.begin", "tar.push.end", "tar.push.write",
+  "screen.watch", "tar.pull.begin", "tar.pull.end", "tar.pull.read", "tar.push.begin", "tar.push.end", "tar.push.write", "ui.act", "ui.observe",
 ];
 
 /** A call's answer, the computer's own: the method's result, or its error as the protocol gives it. */

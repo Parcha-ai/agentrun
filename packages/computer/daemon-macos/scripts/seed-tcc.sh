@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# CI only, on a throwaway runner: grants Computerd.app Accessibility, Screen Recording and Post Event by writing rows to
+# the TCC databases, and marks the screen capture alert as answered. Writing the system database works only where SIP
+# is off, as on GitHub's macOS runners; on a person's Mac the grants are theirs to give, in System Settings.
+#
+#   scripts/seed-tcc.sh PATH/TO/Computerd.app
+#
+# Each write is reported, and a refusal is not fatal: the smoke test then checks that hello says why a feature is off.
+# Never run this on a person's Mac.
+set -uo pipefail
+
+app="${1:?usage: seed-tcc.sh PATH/TO/Computerd.app}"
+id=ai.parcha.computerd
+[[ "${CI:-}" == "true" ]] || { echo "seed-tcc.sh runs on CI runners only" >&2; exit 2; }
+
+echo "SIP: $(csrutil status 2>&1)"
+# An ad-hoc signature's requirement is implicit, so codesign prints it as a comment: "# designated => cdhash H"…"".
+requirement="$(codesign --display --requirements - "$app" 2>&1 | sed -n 's/^#* *designated => //p')"
+echo "designated requirement: $requirement"
+blob="$(mktemp)"
+printf '%s' "$requirement" | csreq -r- -b "$blob" || { echo "csreq could not compile the requirement"; exit 0; }
+hex="$(xxd -p "$blob" | tr -d '\n')"
+now="$(date +%s)"
+
+seed() {
+	local db="$1" service="$2" sudo="$3"
+	local sql="INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version, csreq, indirect_object_identifier, flags, last_modified) VALUES ('$service', '$id', 0, 2, 4, 1, X'$hex', 'UNUSED', 0, $now);"
+	if $sudo sqlite3 "$db" "$sql" 2>&1; then
+		echo "seeded $service in $db"
+	else
+		echo "could not seed $service in $db"
+	fi
+}
+
+system_db="/Library/Application Support/com.apple.TCC/TCC.db"
+user_db="$HOME/Library/Application Support/com.apple.TCC/TCC.db"
+for service in kTCCServiceAccessibility kTCCServiceScreenCapture kTCCServicePostEvent; do
+	seed "$system_db" "$service" sudo
+	seed "$user_db" "$service" ""
+done
+
+# The capture alert (macOS 15 and later) keeps its schedule in replayd's approvals, by bundle id: a next-alert date far
+# ahead means it never shows. (Learned from Cua Driver's test runners; see NOTICE.)
+approvals="$HOME/Library/Group Containers/group.com.apple.replayd/ScreenCaptureApprovals.plist"
+mkdir -p "$(dirname "$approvals")"
+python3 -I - "$approvals" "$id" <<'PY' && echo "marked the capture alert answered" || echo "could not mark the capture alert"
+import datetime, os, plistlib, sys
+path, bundle = sys.argv[1], sys.argv[2]
+data = {}
+if os.path.exists(path):
+    with open(path, "rb") as f:
+        data = plistlib.load(f)
+far = datetime.datetime(3024, 1, 1)
+data[bundle] = {
+    "kScreenCaptureAlertableUsageCount": 0,
+    "kScreenCaptureApprovalLastAlerted": far,
+    "kScreenCaptureApprovalLastUsed": far,
+    "kScreenCapturePrivacyHintDate": far,
+    "kScreenCapturePrivacyHintPolicy": 2592000,
+}
+with open(path, "wb") as f:
+    plistlib.dump(data, f, fmt=plistlib.FMT_BINARY)
+PY
+killall replayd 2>/dev/null || true
+exit 0

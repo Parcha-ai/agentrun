@@ -57,7 +57,7 @@ const HARNESSES = {
     const fake = await fakeAnthropic({ reply: () => ({ text: "Answered." }) });
     t.after(() => fake.close());
     await linkHarnesses(dir);
-    return { model: { provider: "anthropic", modelId: "claude-haiku-4-5" }, env: { [DATA_ENV]: dir, ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}`, ANTHROPIC_BASE_URL: fake.url }, requests: () => fake.messages().length };
+    return { model: { provider: "anthropic", modelId: "claude-haiku-5-5" }, env: { [DATA_ENV]: dir, ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}`, ANTHROPIC_BASE_URL: fake.url }, requests: () => fake.messages().length, asked: () => fake.messages().map((one) => one.text) };
   },
   codex: async (t, dir) => {
     const was = process.env.AGENTRUN_CODEX_STANDIN;
@@ -66,7 +66,7 @@ const HARNESSES = {
     const gateway = await responsesGateway(t, "Answered.");
     const standIn = join(dir, "codex-stand-in.mjs");
     await copyStandIn(standIn);
-    return { model: { provider: "openai", modelId: "gpt-test" }, env: { [CODEX_STANDIN_ENV]: JSON.stringify({ command: process.execPath, args: [standIn], env: { FAKE_CODEX_MODEL: "remote" } }), AGENT_MODEL_BASE_URL: gateway.origin, AGENT_MODEL: "gpt-test", AGENT_MODEL_API_KEY: `not-a-secret-${"gateway"}`, AGENT_MODEL_PRICE: "1,2,0.5" }, requests: () => gateway.seen.length };
+    return { model: { provider: "openai", modelId: "gpt-test" }, env: { [CODEX_STANDIN_ENV]: JSON.stringify({ command: process.execPath, args: [standIn], env: { FAKE_CODEX_MODEL: "remote" } }), AGENT_MODEL_BASE_URL: gateway.origin, AGENT_MODEL: "gpt-test", AGENT_MODEL_API_KEY: `not-a-secret-${"gateway"}`, AGENT_MODEL_PRICE: "1,2,0.5" }, requests: () => gateway.seen.length, asked: () => [...gateway.seen] };
   },
 };
 
@@ -107,5 +107,41 @@ for (const harness of Object.keys(HARNESSES)) {
     const said = seen.filter(([kind]) => kind === "user_message").map(([, text]) => text);
     assert.deepEqual(said, ["Say hello.", "And once more?"], `both of the person's messages on the timeline: ${JSON.stringify(seen)}`);
     assert.equal(seen.filter(([kind]) => kind === "final_answer").length, 2, `an answer for each turn: ${JSON.stringify(seen)}`);
+  });
+
+  // pi's case is runner-message-while-working.test.mjs: a message sent as soon as the run's 202 came back is handed to the
+  // runner's first claim with the session still new, and must land after the run's own input.
+  test(`a message sent to a ${harness} run before the runner sent its input lands after the input, on the timeline and in what the model reads`, { timeout: 180_000 }, async (t) => {
+    const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "cli-first-"));
+    const server = await openSqliteStore({ dataDir: dir, role: "server" });
+    const store = await openSqliteStore({ dataDir: dir, role: "runner" });
+    let runner;
+    t.after(async () => {
+      await runner?.close().catch(() => {});
+      await store.close().catch(() => {});
+      await server.close().catch(() => {});
+      rmSync(dir, { recursive: true, force: true });
+    });
+    const { model, env, asked } = await HARNESSES[harness](t, dir);
+    await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer briefly.", harness, tools: ["read"] } });
+    await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "Say hello." }, title: "t", place: { mode: "runner" }, harness, model } });
+    const row = await server.command(RUN, { kind: "steer", body: { text: "And once more?" } });
+    await server.flush?.();
+    const deps = { env, data: dir, journal: (claim) => store.journal(claim), store, sealKey: Buffer.alloc(32, 7), routeOf: async () => assert.fail("a CLI run takes no pi route"), computerForClaim: async () => ({ release: async () => {} }) };
+    runner = startRunner({ store, name: "runner-a", ...CONFORMANCE_TIMING, leaseMs: 30_000, stopMarginMs: 5_000, createLoop: createDispatchLoop({ launchOf: (runId) => store.runs.launch(runId), resolve: (name, given) => (name === harness ? createAdapterLoop((claim, run) => cliRunSpecFromLaunch(given, run, deps, claim)) : undefined) }) });
+    const rows = async () => (await runTimeline(server, RUN, ctx)).map((one) => [one.kind, one.text ?? one.summary ?? one.tool_name]);
+
+    const end = await until(async () => { const now = await server.runs.get(RUN); return ["ended", "failed", "stopped"].includes(now.state) && now.runner === null && now; }, "the run's end");
+    assert.equal(end.state, "ended", `the run ended: ${JSON.stringify(end)} ${JSON.stringify(await rows())}`);
+    const taken = (await server.commands(RUN, 0)).find((one) => one.id === row.id);
+    assert.ok(taken && taken.takenAt !== null && taken.refused === null, `the message was taken, not refused or left: ${JSON.stringify(taken)}`);
+    const seen = await rows();
+    assert.deepEqual(seen.filter(([kind]) => kind === "user_message").map(([, text]) => text), ["Say hello.", "And once more?"], `the input, then the message: ${JSON.stringify(seen)}`);
+    // The model is asked the input first: in the first request that carries the message, the input comes before it, or an
+    // earlier request carried the input (a harness that sends each turn's words alone: codex's).
+    const said = asked();
+    const [input, message] = [said.findIndex((text) => text.includes("Say hello.")), said.findIndex((text) => text.includes("And once more?"))];
+    assert.ok(input >= 0 && message >= 0, `the model was asked the input and the message: ${said.length} requests`);
+    assert.ok(input < message || (input === message && said[input].indexOf("Say hello.") < said[input].indexOf("And once more?")), `the model reads the input before the message: ${said[message].slice(0, 400)}`);
   });
 }

@@ -7,13 +7,11 @@ import { existsSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { startServe } from "../dist/index.js";
-import { agent, client, FAUX, follow, scratch, serve, withEnv } from "./support.mjs";
+import { agent, follow, scratch, serve } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const WEB_HOLD = new URL("./fixtures/faux-web-hold.mjs", import.meta.url).pathname;
-const HELD_EXIT = new URL("./fixtures/faux-harness-held-exit.mjs", import.meta.url).pathname;
 const TERMINAL = ["completed", "failed", "cancelled"];
 const ADAPTERS = ["claude-agent", "codex"];
 const ALL = ["pi", ...ADAPTERS];
@@ -57,20 +55,20 @@ const until = async (what, check, ms = 30_000) => {
 
 // ---- a pi turn whose final stop shows no text (#1450, #1453) ------------------------------------------------------
 
-for (const [what, phrase] of [["one empty text block (#1450)", "Answer with one empty text block."], ["only a thinking block (#1453)", "Answer only by thinking."], ["no content at all (#1453)", "Answer with no content."]]) {
-  // SKIP (follow-up #2089): a final stop with only a thinking block, or with no content, does not complete the run with an empty answer
-  test(`pi: a final stop of the model's own with ${what} completes the run, its answer ""`, { timeout: 90_000, skip: what.startsWith("one empty") ? false : "SKIP (follow-up #2089)" }, async (t) => {
+// An empty text block is an answer of "" (the model ended its turn on purpose with nothing to say); a stop with no text
+// block at all has no answer, null (timeline.ts: a message with no text block shows none).
+for (const [what, phrase, answer] of [["one empty text block (#1450)", "Answer with one empty text block.", ""], ["only a thinking block (#1453)", "Answer only by thinking.", null], ["no content at all (#1453)", "Answer with no content.", null]]) {
+  test(`pi: a final stop of the model's own with ${what} completes the run, its answer ${JSON.stringify(answer)}`, { timeout: 90_000 }, async (t) => {
     const { api } = await serve(t);
     const runId = await start(api, "pi", phrase);
     const { seen } = await watch(api, runId, terminal, "the stop ends the turn");
     const view = await endsAs(api, runId, seen, "completed");
-    assert.equal(view.result?.final_answer, "", "the answer is the stop's own text: none");
+    assert.equal(view.result?.final_answer, answer, "the answer is the stop's own text: none");
   });
 }
 
 for (const [what, follow_up] of [["only a thinking block", "Now answer only by thinking."], ["no content at all", "Now answer with no content."]]) {
-  // SKIP (follow-up #2089): a pi follow-up whose final stop has no text does not complete the run with an empty answer
-  test.skip(`pi: a follow-up whose final stop has ${what} completes the run with "", never the earlier turn's answer`, { timeout: 90_000 }, async (t) => {
+  test(`pi: a follow-up whose final stop has ${what} completes the run with no answer, never the earlier turn's answer`, { timeout: 90_000 }, async (t) => {
     const { api } = await serve(t);
     const runId = await start(api, "pi", "hi");
     await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
@@ -78,30 +76,28 @@ for (const [what, follow_up] of [["only a thinking block", "Now answer only by t
     assert.equal((await api("POST", `/runs/${runId}/messages`, { content: follow_up })).status, 202);
     const { seen } = await watch(api, runId, (view) => terminal(view) && view.result?.final_answer !== "On hi: done.", "the follow-up's stop ends the run", { seen: [] });
     const view = await endsAs(api, runId, seen, "completed");
-    assert.equal(view.result?.final_answer, "", "the follow-up's own answer: no text, and not the earlier answer");
+    assert.equal(view.result?.final_answer, null, "the follow-up's own answer: no text, and not the earlier answer");
   });
 }
 
 // ---- an answerless claude-agent or codex turn (#1424: /compact, a cost-only request) ---------------------------------
 
 for (const harness of ADAPTERS) {
-  // SKIP (follow-up #2089): a follow-up turn that ends with nothing to show (a /compact) does not complete the run with an empty answer
-  test.skip(`${harness}: a follow-up whose turn ends with nothing to show (a /compact) completes the run at once, its answer ""`, { timeout: 90_000 }, async (t) => {
+  test(`${harness}: a follow-up whose turn ends with nothing to show (a /compact) completes the run at once, with no answer`, { timeout: 90_000 }, async (t) => {
     const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
     const runId = await start(api, harness, "The second turn answers nothing.", { input: "hi" });
     await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
     assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "/compact" })).status, 202);
     const { seen } = await watch(api, runId, (view) => terminal(view) && view.result?.final_answer !== "Answer 1.", "the answerless turn ends the run", { deadlineMs: 20_000 });
     const view = await endsAs(api, runId, seen, "completed");
-    assert.equal(view.result?.final_answer, "", "the turn's own answer: none, never the earlier turn's");
+    assert.equal(view.result?.final_answer, null, "the turn's own answer: none, never the earlier turn's");
   });
 }
 
 // ---- a cancel and the run's end ---------------------------------------------------------------------------------------
 
 for (const harness of ADAPTERS) {
-  // SKIP (follow-up #2089): a cancel after the turn's answer is in does not end the run cancelled from the 202 on
-  test.skip(`${harness}: a cancel after the turn's answer is in, before the turn is over, ends the run cancelled; it reads cancelled from the 202 on, never completed`, { timeout: 90_000 }, async (t) => {
+  test(`${harness}: a cancel after the turn's answer is in, before the turn is over, ends the run cancelled; it reads cancelled from the 202 on, never completed`, { timeout: 90_000 }, async (t) => {
     const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
     const signal = join(await scratch(t), "admitted");
     const runId = await start(api, harness, `Answer, then hold a request unanswered (signal ${signal}).`, { input: "hi" });
@@ -116,14 +112,14 @@ for (const harness of ADAPTERS) {
     assert.equal(view.result, null, JSON.stringify(view.result));
   });
 
-  // SKIP (follow-up #2089): a cancel followed by a cost over the cap does not end the run cancelled
+  // SKIP (needs a product decision): the run is visible live now and ends cancelled, but the cut request's cost never
+  // reaches its cost: a turn cut by a cancel books $0.002 on the way out, after the loop has settled the run's bookings, and
+  // the run reads cost.usd 0.0005 (the answer's), never over its $0.001 cap. The case waited for that cost in a run's own
+  // process held at its exit, a process the runner no longer has; whether a cancel waits for the cut request's booking is
+  // the open question.
   test.skip(`${harness}: a cancel, then a cost that takes the run over its cap, ends the run cancelled, never failed first`, { timeout: 90_000 }, async (t) => {
-    // The run's process cannot exit until the gate's file exists: the server reads the cost its cut turn writes on the
-    // way out while that process still lives.
-    const dir = await scratch(t);
-    const [signal, gate] = [join(dir, "admitted"), join(dir, "gate")];
-    withEnv(t, { EXIT_GATE: gate });
-    const { api } = await serve(t, { harnessTable: fauxTable(HELD_EXIT) });
+    const signal = join(await scratch(t), "admitted");
+    const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
     const runId = await start(api, harness, `Answer, then hold a request the cancel cuts and books (signal ${signal}).`, { input: "hi", max_cost_usd: 0.001 });
     await until("the second request is admitted", async () => existsSync(signal));
     await until("the answer's row is in, under the cap", async () => (await rowsOf(api, runId)).some((r) => r.kind === "final_answer" && r.text === "Done."));
@@ -133,17 +129,16 @@ for (const harness of ADAPTERS) {
     assert.deepEqual([cancel.status, cancel.body.cancel_requested], [202, true], JSON.stringify(cancel.body));
     seen.push(cancel.body.status);
     await watch(api, runId, terminal, "the cancel ends the run", { seen });
-    // The cost the cut request books on the way out, over the cap, while the process is held.
+    // The cost the cut request books on the way out, over the cap.
     await until("the cut request's cost is in", async () => ((await api("GET", `/runs/${runId}`)).body.cost?.usd ?? 0) > 0.001);
     await watch(api, runId, () => true, "", { seen });
-    await writeFile(gate, "");
     const view = await endsAs(api, runId, seen, "cancelled");
     assert.ok(typeof view.cost?.usd === "number" && view.cost.usd > 0.001, `the case: the cut request's cost came in after the cancel, over the cap: ${JSON.stringify(view.cost)}`);
   });
 }
 
 // SKIP (follow-up #2089): a cancel while a pi turn holds on a tool does not end the run cancelled
-test.skip("pi: a cancel while a turn holds on a tool ends the run cancelled from the 202 on, never completed", { timeout: 90_000 }, async (t) => {
+test("pi: a cancel while a turn holds on a tool ends the run cancelled from the 202 on, never completed", { timeout: 90_000 }, async (t) => {
   const { api } = await serve(t, { fauxWeb: WEB_HOLD });
   const dir = await scratch(t);
   const runId = await start(api, "pi", `Fetch the pages held until ${join(dir, "one")} and ${join(dir, "two")}.`, { tools: ["web_fetch"] });
@@ -155,29 +150,31 @@ test.skip("pi: a cancel while a turn holds on a tool ends the run cancelled from
   await writeFile(join(dir, "one"), "");
   await watch(api, runId, terminal, "the cancel ends the run", { seen });
   await endsAs(api, runId, seen, "cancelled");
+  // The second fetch may still be held in this process (the cut turn's fetch ends only at its own timeout): let it go,
+  // so nothing keeps the test's process alive once its cases are done.
+  await writeFile(join(dir, "two"), "");
 });
 
 // ---- an answerless turn after failing parallel calls ----------------------------------------------------------------
 
 for (const harness of ALL) {
   // SKIP (follow-up #2089): a turn whose two parallel calls fail and that stops with no text does not end the run
-  test.skip(`${harness}: a turn whose two parallel calls fail and that then stops with no text ends the run, never working for good`, { timeout: 90_000 }, async (t) => {
+  test(`${harness}: a turn whose two parallel calls fail and that then stops with no text ends the run, never working for good`, { timeout: 90_000 }, async (t) => {
     const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
     // On claude-agent the answer's cost comes in after its calls ran, as the Claude CLI's does: results before calls.
     const phrase = harness === "claude-agent" ? "Fetch two pages at once and both fail (booked late), then stop." : "Fetch two pages at once and both fail, then stop.";
-    const runId = await start(api, harness, phrase);
+    const runId = await start(api, harness, phrase, { tools: ["web_fetch"] });
     await until("both calls fail", async () => (await rowsOf(api, runId)).filter((r) => r.kind === "tool_result" && r.tool_status === "failed").length >= 2);
     const { seen } = await watch(api, runId, terminal, "the turn's end ends the run");
     const view = await endsAs(api, runId, seen, "completed");
-    assert.equal(view.result?.final_answer, "", "the turn said nothing");
+    assert.equal(view.result?.final_answer, null, "the turn said nothing: no answer");
   });
 }
 
 // ---- a turn the harness itself ends interrupted (no stop, no cancel) -------------------------------------------------
 
 for (const harness of ADAPTERS) {
-  // SKIP (follow-up #2089): a turn the harness ends interrupted does not wait for the person as input_required
-  test.skip(`${harness}: a turn the harness ends interrupted with no stop or cancel waits for the person (input_required), never working for good; a message goes on`, { timeout: 90_000 }, async (t) => {
+  test(`${harness}: a turn the harness ends interrupted with no stop or cancel waits for the person (input_required), never working for good; a message goes on`, { timeout: 90_000 }, async (t) => {
     const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
     const runId = await start(api, harness, "The turn ends interrupted.", { input: "hi", tools: ["read"] });
     const { seen } = await watch(api, runId, (view) => view.status === "input_required" || terminal(view), "the interrupted turn moves the run");
@@ -193,8 +190,7 @@ for (const harness of ADAPTERS) {
 // The run's status is its last turn's end: the queued message's turn ran and completed, so the run completed, and the
 // failed turn stays in its timeline as history, as an error in a chat followed by a good answer does.
 for (const harness of ADAPTERS) {
-  // SKIP (follow-up #2089): a failed turn with a message queued behind it does not end the run completed with the queued turn's answer
-  test.skip(`${harness}: a turn that fails with a message queued behind it, whose own turn then completes, ends the run completed with that turn's answer; the failure stays in the timeline`, { timeout: 90_000 }, async (t) => {
+  test(`${harness}: a turn that fails with a message queued behind it, whose own turn then completes, ends the run completed with that turn's answer; the failure stays in the timeline`, { timeout: 90_000 }, async (t) => {
     const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), fauxWeb: WEB_HOLD });
     const go = join(await scratch(t), "go");
     const runId = await start(api, harness, `Fail a turn held until ${go}, with a follow-up behind it.`, { input: "hi", tools: ["web_fetch"] });
@@ -216,8 +212,7 @@ for (const harness of ADAPTERS) {
 // ---- a working turn's liveness -----------------------------------------------------------------------------------
 
 for (const harness of ALL) {
-  // SKIP (follow-up #2089): a run in a long tool phase does not show its progress as the turn writes
-  test.skip(`${harness}: a run working through a long tool phase shows its last progress, advancing as the turn writes, and none once it ends`, { timeout: 90_000 }, async (t) => {
+  test(`${harness}: a run working through a long tool phase shows its last progress, advancing as the turn writes, and none once it ends`, { timeout: 90_000 }, async (t) => {
     const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), fauxWeb: WEB_HOLD });
     const dir = await scratch(t);
     const [one, two] = [join(dir, "one"), join(dir, "two")];
@@ -247,24 +242,21 @@ for (const harness of ALL) {
 
 // ---- a drain cuts a claude-agent turn (the server restarts): it is resumed, not read as a stop ---------------------
 
-// SKIP (follow-up #2089): a turn cut by the server's restart is not resumed to completed by the next server
-test.skip("claude-agent: a turn the server's restart drains mid-way is resumed by the next server and ends completed, never input_required", { timeout: 180_000 }, async (t) => {
+test("claude-agent: a turn the server's restart drains mid-way is resumed by the next server and ends completed, never input_required", { timeout: 180_000 }, async (t) => {
   const dir = await scratch(t);
   const data = join(dir, "agents");
   const go = join(dir, "go");
-  const options = { data, port: 0, faux: FAUX, harnessTable: fauxTable(FAUX_HARNESS), drainTimeout: "2s" };
-  const one = await startServe(options);
-  let closed = false;
-  t.after(() => (closed ? undefined : one.close()));
-  let api = client(one.baseUrl, one.token);
+  // The start is a server and the runner beside it on one data directory (serve): the restart stops both, the runner first
+  // (it lets its run go, cut mid-turn), and the next start's runner claims the run and resumes its session.
+  const options = { data, harnessTable: fauxTable(FAUX_HARNESS), drainTimeout: "2s" };
+  const one = await serve(t, options);
+  let api = one.api;
   const runId = await start(api, "claude-agent", `Hold mid-turn until ${go}.`, { input: "hi", tools: ["read"] });
   await until("the turn holds after its read", async () => (await rowsOf(api, runId)).some((r) => r.kind === "tool_result"));
-  await one.close();
-  closed = true;
+  await one.stop();
   await writeFile(go, "");
-  const two = await startServe(options);
-  t.after(() => two.close());
-  api = client(two.baseUrl, two.token);
+  const two = await serve(t, options);
+  api = two.api;
   const { seen } = await watch(api, runId, (view) => terminal(view) || view.status === "input_required", "the next server resumes the turn", { deadlineMs: 90_000 });
   const view = await endsAs(api, runId, seen, "completed");
   assert.equal(view.result?.final_answer, "Resumed and done.");

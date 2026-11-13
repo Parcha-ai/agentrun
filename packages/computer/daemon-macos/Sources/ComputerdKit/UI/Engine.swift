@@ -1,0 +1,806 @@
+import Foundation
+
+/// A route sent nothing for this step here, so the next route may try: the element takes no press, the
+/// window would not become key. A refusal that ends the step (stale, denied) is an RPCError instead.
+public struct RouteUnavailable: Error, Sendable {
+	public let reason: String
+
+	public init(_ reason: String) {
+		self.reason = reason
+	}
+}
+
+/// A person took the computer back during an act that takes, or took, the foreground route: the step it stops answers
+/// aborted and runs nothing, as input.actions stops at its next action.
+struct TakenOver: Error {
+	let message: String
+}
+
+/// What the take-over check of one act compares against: when the act began, and where the pointer was then or where
+/// the foreground route last left it. Armed once a step took the foreground route: from then on every step checks.
+struct TakeOverWatch {
+	var since: Double = 0
+	var pointer: Point?
+	var armed = false
+}
+
+/// The timings the engine settles and polls by.
+public struct Timing: Sendable {
+	/// Two looks this far apart that are the same count as settled.
+	public var quietMs: Double = 150
+	/// The longest one settle waits.
+	public var settleMaxMs = Double(Limits.maxSettleMs)
+	/// How often an expect looks again.
+	public var expectPollMs: Double = 100
+	/// How long a set value must hold after the settle to count as verified.
+	public var lastingMs: Double = 500
+	/// Told one line per act: each step's route and ms with the looks its settle took, the expect's ms, and the time a
+	/// look takes. The Mac app writes it to its log.
+	public var trace: (@Sendable (String) -> Void)?
+
+	public init(trace: (@Sendable (String) -> Void)? = nil) {
+		self.trace = trace
+	}
+}
+
+/// The ui group for one connection: observe and act on apps through a Platform, under the owner's Policy. The rules are
+/// the ones every driver keeps (spec/computer/wire.md, "The ui group"; packages/computer/src/ui-engine.ts): a ref stays
+/// good while its element exists; a point is bound to the state it was read from; every step settles before the next;
+/// an expect is polled on the computer; a feature that is off is refused with its reason. Calls run one at a time.
+public actor UIEngine {
+	let platform: Platform
+	let policy: Policy
+	let timing: Timing
+	var store = StateStore()
+	var busy = false
+	var waiting: [CheckedContinuation<Void, Never>] = []
+	/// Where an act's time went, for timing.trace: looks taken, their ms, and the ms of the image hashes among them.
+	var looks = 0
+	var lookMs = 0.0
+	var frameMs = 0.0
+	/// The act running now, for the take-over check.
+	var takeOver = TakeOverWatch()
+
+	public init(platform: Platform, policy: Policy, timing: Timing = Timing()) {
+		self.platform = platform
+		self.policy = policy
+		self.timing = timing
+	}
+
+	var ax: any Accessibility { platform.accessibility }
+	var clock: any Clock { platform.clock }
+
+	/// Runs calls one at a time in arrival order, so one act's steps never interleave with another's.
+	func inTurn<T: Sendable>(_ body: () async throws -> T) async throws -> T {
+		if busy {
+			await withCheckedContinuation { waiting.append($0) }
+		} else {
+			busy = true
+		}
+		defer {
+			if waiting.isEmpty { busy = false } else { waiting.removeFirst().resume() }
+		}
+		return try await body()
+	}
+
+	// MARK: looking
+
+	/// A look at the target's window, under the policy. With ui.tree off it is the window alone, found in the window
+	/// server's list, with no nodes; with ui.image off as well there is nothing to look with. The image's hash is read
+	/// when there are no nodes, or when framed (a look kept as a state): reading it is a window capture, the slow part.
+	func look(_ target: Target?, framed: Bool = false) async throws -> View {
+		let start = clock.now()
+		defer {
+			looks += 1
+			lookMs += clock.now() - start
+		}
+		if let app = target?.app { try policy.check(app) }
+		let resolved: ResolvedTarget
+		let snapshot: Snapshot
+		switch (ax.feature, platform.capture.feature) {
+		case (.on, _):
+			var found = try ax.resolve(target)
+			try policy.check(found.app.id)
+			do {
+				snapshot = try ax.snapshot(found, maxNodes: Limits.maxUiNodes)
+			} catch let gone as RPCError where gone.kind == .notFound && target?.window == nil {
+				// A target that names no window is the app's main one: when the app swapped it between finding and
+				// reading it (a first-run window giving way to the real one), the look follows the new main window.
+				found = try ax.resolve(target)
+				try policy.check(found.app.id)
+				snapshot = try ax.snapshot(found, maxNodes: Limits.maxUiNodes)
+			}
+			resolved = found
+		case (.off, .on):
+			resolved = try platform.capture.resolve(target)
+			try policy.check(resolved.app.id)
+			snapshot = Snapshot(nodes: [], truncated: false)
+		case (.off(let tree), .off(let image)):
+			throw RPCError.denied("ui.tree is off here: \(tree); and ui.image is off: \(image). Without either, Computerd cannot see a window")
+		}
+		let view = View(target: resolved, nodes: snapshot.nodes, truncated: snapshot.truncated, frame: nil)
+		return framed || snapshot.nodes.isEmpty ? await self.framed(view) : view
+	}
+
+	/// The look with its image's hash, read now if it has none.
+	func framed(_ view: View) async -> View {
+		guard view.frame == nil, platform.capture.feature.isOn else { return view }
+		let start = clock.now()
+		let frame = await platform.capture.windowHash(view.target)
+		frameMs += clock.now() - start
+		return view.with(frame: frame)
+	}
+
+	// MARK: observe
+
+	/// Room a reply keeps for everything but its nodes and image.
+	static let replyRoom = 16 * 1024
+
+	public func observe(_ params: UiObserveParams) async throws -> UiObserveResult {
+		try await inTurn { try await observeNow(params) }
+	}
+
+	func observeNow(_ params: UiObserveParams) async throws -> UiObserveResult {
+		var edge: Int?
+		if case .image(let given)? = params.image {
+			edge = given ?? Limits.defaultImageEdge
+			if let given, !(Limits.minImageEdge...Limits.maxImageEdge).contains(given) {
+				throw RPCError.limit("ui.observe: image.maxEdge \(given) is outside \(Limits.minImageEdge) to \(Limits.maxImageEdge) pixels")
+			}
+			if case .off(let reason) = platform.capture.feature {
+				throw RPCError.unsupported("ui.observe: ui.image is off here: \(reason)")
+			}
+		}
+		// With the tree off the image is all a caller has to act from, so it comes asked for or not.
+		var empty: String?
+		if case .off(let reason) = ax.feature {
+			empty = "ui.tree is off here: \(reason)"
+			edge = edge ?? Limits.defaultImageEdge
+		}
+		let view = try await look(params.target, framed: true)
+		var image: UiImage?
+		if let edge {
+			let shot = try await platform.capture.window(view.target, maxEdge: edge, maxBytes: Limits.maxChunkBytes)
+			guard shot.data.count <= Limits.maxChunkBytes else {
+				throw RPCError.limit("ui.observe: the window's image is \(shot.data.count) bytes, over \(Limits.maxChunkBytes): ask for a smaller maxEdge")
+			}
+			image = UiImage(format: shot.format, width: shot.width, height: shot.height, data: shot.data)
+		}
+		try Task.checkCancellation()
+		var (nodes, truncated) = self.nodes(view, full: params.full ?? false)
+		// The image is whole, so nodes give way to keep the reply within the line limit.
+		let room = Limits.maxLineBytes - Self.replyRoom - (image.map { ($0.data.count + 2) / 3 * 4 } ?? 0)
+		while !nodes.isEmpty, ((try? Coders.encode(nodes))?.count ?? 0) > room {
+			nodes = Array(nodes.prefix(nodes.count * 9 / 10))
+			truncated = true
+		}
+		let diff = params.since.flatMap { store.view($0) }.map { self.diff(from: $0, to: view, shown: nodes) }
+		let state = store.add(view)
+		return UiObserveResult(state: state, app: view.target.app, window: view.target.window, nodes: nodes, diff: diff, image: image, empty: empty, truncated: truncated || view.truncated)
+	}
+
+	/// Roles a person acts on: kept in a compact view even without a name.
+	static let actionable: Set<String> = ["button", "link", "textbox", "searchbox", "checkbox", "radio", "switch", "slider", "combobox", "menuitem", "tab", "listitem", "scrollarea"]
+
+	/// A compact view keeps what can be acted on and what has words, and every node above those, so each node's parent
+	/// is in the list.
+	func keeps(_ node: RawNode) -> Bool {
+		if node.flags.contains(.focused) || node.settable || node.textInput { return true }
+		if Self.actionable.contains(node.role) { return true }
+		if node.actions.contains(where: { !ax.incidentalActions.contains($0) }) { return true }
+		return !(node.name ?? "").isEmpty || !(node.value ?? "").isEmpty || !(node.desc ?? "").isEmpty
+	}
+
+	/// The view's nodes as the wire sends them, compact or full, at most maxUiNodes.
+	func nodes(_ view: View, full: Bool) -> ([UiNode], Bool) {
+		var kept = [Bool](repeating: full, count: view.nodes.count)
+		if !full {
+			for (i, node) in view.nodes.enumerated() where keeps(node) {
+				var at: Int? = i
+				while let j = at, !kept[j] {
+					kept[j] = true
+					at = view.nodes[j].parent
+				}
+			}
+		}
+		var out: [UiNode] = []
+		var refOf: [Int: String] = [:]
+		var truncated = false
+		let window = Rect(0, 0, view.target.window.bounds.w, view.target.window.bounds.h)
+		for (i, node) in view.nodes.enumerated() where kept[i] {
+			guard out.count < Limits.maxUiNodes else {
+				truncated = true
+				break
+			}
+			let ref = store.ref(for: node)
+			refOf[i] = ref
+			var parent = node.parent
+			while let p = parent, refOf[p] == nil { parent = view.nodes[p].parent }
+			let bounds = view.bounds(node)
+			var flags = node.flags
+			if node.frame == nil || !window.intersects(bounds) { flags.insert(.offscreen) }
+			out.append(UiNode(
+				ref: ref, role: node.role, name: Self.words(node.name),
+				value: flags.contains(.secure) ? nil : Self.words(node.value), desc: Self.words(node.desc), id: Self.words(node.identifier),
+				bounds: bounds, parent: parent.flatMap { refOf[$0] },
+				flags: flags.isEmpty ? nil : flags.sorted(), actions: node.actions.isEmpty ? nil : node.actions))
+		}
+		return (out, truncated)
+	}
+
+	static func words(_ s: String?) -> String? {
+		s.flatMap { $0.isEmpty ? nil : $0 }
+	}
+
+	/// What changed since an older look: nodes this result shows that are new or look different, and elements that had
+	/// refs then and are gone now.
+	func diff(from old: View, to new: View, shown: [UiNode]) -> UiDiff {
+		var before: [ElementHandle: String] = [:]
+		for node in old.nodes { before[node.handle] = old.looks(node) }
+		let now = Set(new.nodes.map(\.handle))
+		var added: [String] = []
+		var changed: [String] = []
+		var byRef: [String: RawNode] = [:]
+		for node in new.nodes { if let ref = store.known(node.handle) { byRef[ref] = node } }
+		for shownNode in shown {
+			guard let node = byRef[shownNode.ref] else { continue }
+			guard let was = before[node.handle] else {
+				added.append(shownNode.ref)
+				continue
+			}
+			if was != new.looks(node) { changed.append(shownNode.ref) }
+		}
+		let removed = old.nodes.filter { !now.contains($0.handle) }.compactMap { store.known($0.handle) }
+		return UiDiff(added: added, removed: removed, changed: changed)
+	}
+
+	// MARK: act
+
+	public func act(_ params: UiActParams) async throws -> UiActResult {
+		try validate(params)
+		return try await inTurn { try await actNow(params) }
+	}
+
+	/// The act's params checked whole, before any step runs.
+	func validate(_ p: UiActParams) throws {
+		guard p.steps.count <= Limits.maxSteps else {
+			throw RPCError.limit("ui.act: \(p.steps.count) steps, more than the \(Limits.maxSteps) one act holds")
+		}
+		var dragMs = 0
+		for (i, step) in p.steps.enumerated() {
+			if case .drag(_, let ms) = step { dragMs += ms ?? 0 }
+			if case .key(let chord) = step {
+				do { _ = try KeyChord.parse(chord) } catch let e as RPCError { throw RPCError.invalid("ui.act: steps[\(i)]: \(e.message)") }
+			}
+			if step.point != nil && p.state == nil {
+				throw RPCError.invalid("ui.act: steps[\(i)] is at a point, and a point needs the state it was read from: pass state")
+			}
+		}
+		guard dragMs <= Limits.maxBatchWaitMs else {
+			throw RPCError.limit("ui.act: the drags ask for \(dragMs) ms, more than the \(Limits.maxBatchWaitMs) ms one act may")
+		}
+		if let e = p.expect {
+			guard e.text != nil || e.ref != nil else { throw RPCError.invalid("ui.act: expect names neither text nor ref: it needs at least one") }
+			if case .off(let reason) = ax.feature {
+				throw RPCError.unsupported("ui.act: an expect reads the window's elements, and ui.tree is off here: \(reason)")
+			}
+			if let ref = e.ref, !isRef(ref) { throw RPCError.invalid("ui.act: expect.ref is \(ref.debugDescription), not a ref (\"@e12\")") }
+			if let t = e.timeoutMs {
+				guard t >= 0 else { throw RPCError.invalid("ui.act: expect.timeoutMs is not a whole number of milliseconds") }
+				guard t <= Limits.maxExpectMs else { throw RPCError.limit("ui.act: expect.timeoutMs \(t) is more than the \(Limits.maxExpectMs) ms an expect may wait") }
+			}
+		}
+		if p.steps.isEmpty && p.expect == nil { throw RPCError.invalid("ui.act has no steps and no expect: nothing to do") }
+	}
+
+	func actNow(_ params: UiActParams) async throws -> UiActResult {
+		let refs = params.steps.compactMap(\.ref) + [params.expect?.ref].compactMap { $0 }
+		if let unknown = refs.first(where: { store.handle($0) == nil }) {
+			throw RPCError.invalid("ui.act: \(unknown) is not a ref this connection was given: observe first")
+		}
+		let held = params.state.flatMap { store.view($0) }
+		let target = params.target ?? held.map { Target(app: $0.target.app.id, window: $0.target.window.id) }
+		let foreground = params.foreground ?? false
+
+		let started = clock.now()
+		(looks, lookMs, frameMs) = (0, 0, 0)
+		takeOver = TakeOverWatch(since: started, pointer: platform.capture.cursor())
+		var spent: [String] = []
+		let first = try await look(target)
+		// Every later look is of the window the first one found, even if another app comes to the front; when a step
+		// closes it, of the app's next main window (settleAfterStep).
+		var window = first.target.asTarget
+		var view = first
+		var results: [StepResult] = []
+		var refused = false
+		for step in params.steps {
+			try Task.checkCancellation()
+			let (at, looked) = (clock.now(), looks)
+			do {
+				if takeOver.armed { try checkTakeOver() }
+				let (route, verified, after) = try await run(step, view: view, state: params.state, held: held, foreground: foreground)
+				results.append(.ran(route: route, verified: verified))
+				view = after
+				window = after.target.asTarget
+				spent.append("\(step.verb) \(route.rawValue)\(verified ? "" : " unverified") \(Int(clock.now() - at)) ms, \(looks - looked) looks")
+			} catch let error as RPCError where Self.stepKinds.contains(error.kind) {
+				results.append(.error(StepError(kind: error.kind, message: error.message)))
+				refused = true
+				spent.append("\(step.verb) refused \(error.kind.rawValue) \(Int(clock.now() - at)) ms")
+				break
+			} catch let taken as TakenOver {
+				results.append(.error(StepError(kind: .aborted, message: taken.message)))
+				refused = true
+				spent.append("\(step.verb) aborted: a person took over")
+				break
+			}
+		}
+		if refused {
+			// A step refused because it closed the app's last window ends the call with that not_found, in its words.
+			view = try await settleAfterStep(view.target)
+		} else if params.steps.isEmpty {
+			view = try await settle(window)
+		}
+		var outcome: ExpectOutcome?
+		let expectAt = clock.now()
+		if let expect = params.expect, !refused {
+			let settled = view
+			let until = clock.now() + Double(expect.timeoutMs ?? Limits.defaultExpectMs)
+			while true {
+				if holds(expect, view) {
+					outcome = .met
+					break
+				}
+				if clock.now() >= until {
+					outcome = .unmet
+					break
+				}
+				try await sleep(min(timing.expectPollMs, max(1, until - clock.now())))
+				view = try await look(window)
+			}
+			// A poll can meet the expect mid-transition: the state handed back is the window once it settles.
+			if view.fingerprint != settled.fingerprint { view = try await settle(window) }
+			spent.append("expect \(outcome!.rawValue) \(Int(clock.now() - expectAt)) ms")
+		}
+		// A state keeps its image's hash, for a later point with no element under it.
+		view = await framed(view)
+		let state = store.add(view)
+		if let trace = timing.trace {
+			let app = view.target.app.id
+			let each = looks > 0 ? Int(lookMs / Double(looks)) : 0
+			trace("ui.act \(app): \(Int(clock.now() - started)) ms; \(spent.joined(separator: "; ")); \(looks) looks, \(each) ms each, \(Int(frameMs)) ms of image hashes")
+		}
+		return UiActResult(steps: results, state: state, changed: first.fingerprint != view.fingerprint, expect: outcome)
+	}
+
+	/// The kinds a step's refusal carries; any other failure fails the whole call.
+	static let stepKinds: Set<ErrorKind> = [.notFound, .invalid, .timeout, .denied, .limit, .unsupported, .stale, .refused]
+
+	/// How a step's effect is checked once it settled: a readback, or a change in the window.
+	enum Check {
+		case readback(@Sendable () -> Bool)
+		/// A readback that must still hold a moment after the settle: a set value an app takes into the field and then
+		/// throws away (Finder's name field outside its rename mode shows the new name, then the old one, and renames
+		/// nothing) is not the step's effect.
+		case lasting(@Sendable () -> Bool)
+		case change
+	}
+
+	/// One way to do a step: its route, why it can't be taken (nil when it can), and the doing. notAllowed: the route
+	/// works here but the call does not allow it (the foreground route without foreground: true).
+	struct Attempt {
+		let route: Route
+		let off: String?
+		var notAllowed = false
+		let run: () async throws -> Check
+	}
+
+	/// Checks a step against the look it runs on, runs it by the first route that can, settles, and checks its effect.
+	/// Answers the route, whether the effect showed, and the settled look.
+	func run(_ step: Step, view: View, state: String?, held: View?, foreground: Bool) async throws -> (Route, Bool, View) {
+		let target = view.target
+		if case .nav(let nav) = step {
+			if case .off(let reason) = platform.navFeature { throw RPCError.unsupported("nav \(nav.rawValue): ui.nav is off here: \(reason)") }
+			throw RPCError.unsupported("nav \(nav.rawValue): no route takes it here")
+		}
+		let (node, element) = try self.element(step.ref, in: view)
+		// A step on a disabled control is refused, so its text never goes to whatever has the focus.
+		if let ref = step.ref, let node, node.flags.contains(.disabled) {
+			throw RPCError(.refused, "\(node.name ?? ref) is disabled: a step on it does nothing")
+		}
+		if case .type(_, let into?) = step, let node, !node.textInput {
+			throw RPCError(.refused, "\(into) is not a text field: nothing was typed")
+		}
+		if let point = step.point { try await bind(point, view: view, state: state, held: held) }
+
+		let attempts: [Attempt]
+		switch step {
+		case .nav:
+			fatalError("handled above")
+
+		case .press(let ref):
+			attempts = [
+				semantic(node!.actions.contains(ax.pressAction) ? nil : "\(ref) has no \(ax.pressAction)") {
+					try self.ax.perform(self.ax.pressAction, on: element!)
+					return .change
+				},
+			] + pointer(foreground, target) { route in
+				try await route.click(at: try self.center(ref, element!, in: target), button: .left, count: 1, in: target)
+				return .change
+			}
+
+		case .set(let ref, let value):
+			let secure = node!.flags.contains(.secure)
+			// An item that opens (a Finder file) is refused with the way that works, so a model takes it on the first try.
+			let opens = node!.actions.contains(ax.openAction)
+			let refused = opens
+				? "\(node!.name ?? ref) is a list item that opens: select it and press Return to edit its name, then type"
+				: "\(ref)'s value cannot be set: click it and type instead"
+			attempts = [
+				semantic(node!.settable ? nil : refused) {
+					try self.ax.setValue(value, on: element!)
+					let ax = self.ax
+					return secure ? .readback { false } : .lasting { ax.value(element!) == value }
+				},
+			]
+
+		case .perform(let ref, let action):
+			let actions = node!.actions
+			attempts = [
+				semantic(actions.contains(action) ? nil : "\(ref) has no action \(action): it has \(actions.isEmpty ? "none" : actions.joined(separator: ", "))") {
+					try self.ax.perform(action, on: element!)
+					return .change
+				},
+			]
+
+		case .click(let at, let button, let count):
+			let button = button ?? .left
+			let count = count ?? 1
+			var first: [Attempt] = []
+			let point: () throws -> Point
+			switch at {
+			case .ref(let ref):
+				let actions = node!.actions
+				if button == .left && count == 1 && actions.contains(ax.pressAction) {
+					first.append(semantic(nil) {
+						try self.ax.perform(self.ax.pressAction, on: element!)
+						return .change
+					})
+				} else if button == .left && count == 1 {
+					// No AXPress (a Finder file, a table row): a click on it selects it, so the semantic route selects
+					// it and reads the selection back. A point only when Accessibility cannot select it (a canvas).
+					first.append(semantic(nil) {
+						let selected = try self.ax.select(element!)
+						let ax = self.ax
+						return .readback { ax.isSelected(selected) }
+					})
+				} else if button == .right && count == 1 {
+					first.append(semantic(actions.contains(ax.menuAction) ? nil : "\(ref) has no \(ax.menuAction)") {
+						try self.ax.perform(self.ax.menuAction, on: element!)
+						return .change
+					})
+				}
+				point = { try self.center(ref, element!, in: target) }
+			case .point(let p):
+				point = { target.toScreen(p) }
+			}
+			attempts = first + pointer(foreground, target) { route in
+				try await route.click(at: try point(), button: button, count: count, in: target)
+				return .change
+			}
+
+		case .type(let text, let into):
+			let typed = into == nil ? (ax.focused(target)) : element
+			let secure = node?.flags.contains(.secure) == true
+			let ax = self.ax
+			let readback: Check = {
+				guard let typed, !secure, ax.value(typed) != nil else { return .change }
+				return .readback { ax.value(typed)?.contains(text) == true }
+			}()
+			var reason: String?
+			if typed == nil {
+				reason = "no element has keyboard focus"
+			} else if secure {
+				reason = "a secure field takes typed keys only"
+			} else if into == nil, !ax.takesText(typed!) {
+				// A list, a canvas or a web view with the focus takes keys, never an inserted text: an insert there
+				// changed nothing, and was taken for the typing.
+				reason = "the element with keyboard focus takes no inserted text"
+			} else if into == nil, let key = ax.keyWindow(target), key != target.window.id {
+				reason = "\(target.app.id)'s keyboard focus is in its window \(key), not this one"
+			}
+			let insert = semantic(reason) {
+				try ax.insertText(text, on: typed!)
+				return readback
+			}
+			let keys = pointer(foreground, target) { route in
+				if let into, let element { try await self.focus(into, element, target: target, route: route) }
+				try await route.type(text, in: target)
+				return readback
+			}
+			// A document's text takes an edit as one only through the app's text system: TextEdit showed an inserted
+			// text and never marked the document edited, so saving kept the old file. Typed keys go first there.
+			let document = (node ?? typed.flatMap { view.node($0) })?.keysFirst == true
+			attempts = document ? keys + [insert] : [insert] + keys
+
+		case .key(let text):
+			let chord = try KeyChord.parse(text)
+			let menu = chord.modifiers.contains(.cmd) ? ax.menuItem(for: chord, in: target) : nil
+			// A menu item acts on the app's key window: pressed while another of its windows is key, it would close or
+			// save that one.
+			var off = menu == nil ? "no menu item takes \(chord.text)" : nil
+			if off == nil, let key = ax.keyWindow(target), key != target.window.id {
+				off = "the menu item for \(chord.text) acts on \(target.app.id)'s key window, \(key), not this one"
+			}
+			attempts = [
+				semantic(off) {
+					try self.ax.perform(self.ax.pressAction, on: menu!)
+					return .change
+				},
+			] + pointer(foreground, target, keys: true) { route in
+				try await route.key(chord, in: target)
+				return .change
+			}
+
+		case .scroll(let at, let dx, let dy):
+			let point: Point
+			switch at {
+			case .ref(let ref): point = try center(ref, element!, in: target)
+			case .point(let p): point = target.toScreen(p)
+			}
+			attempts = pointer(foreground, target) { route in
+				try await route.scroll(at: point, dx: Double(dx ?? 0), dy: Double(dy ?? 0), in: target)
+				return .change
+			}
+
+		case .drag(let path, let ms):
+			let window = Rect(0, 0, target.window.bounds.w, target.window.bounds.h)
+			if let outside = path.first(where: { !window.contains($0) }) {
+				throw RPCError.invalid("(\(Int(outside.x)), \(Int(outside.y))) is outside the window, which is \(Int(window.w)) by \(Int(window.h)) points")
+			}
+			// Every point of the path is held to the state, as much as the first.
+			for point in path.dropFirst() { try await bind(point, view: view, state: state, held: held) }
+			attempts = pointer(foreground, target) { route in
+				try await route.drag(path.map(target.toScreen), ms: ms ?? 300, in: target)
+				return .change
+			}
+		}
+		return try await ladder(step, view: view, attempts)
+	}
+
+	func semantic(_ off: String?, _ run: @escaping () async throws -> Check) -> Attempt {
+		if case .off(let reason) = ax.feature { return Attempt(route: .semantic, off: "ui.tree is off here: \(reason)", run: run) }
+		return Attempt(route: .semantic, off: off, run: run)
+	}
+
+	/// The background route, then the foreground one, for a step done by posting input. For a key chord, when the call
+	/// allows the foreground and the target's app is already in front, the foreground route goes first: the user's
+	/// focus is there already, and it raises the target's window and makes it key, which an app in front with several
+	/// windows (Finder, its desktop among them) needs for keys to reach that window. Pointer steps keep background
+	/// first: CI's canvas click did not land by the foreground route with the fixture in front.
+	func pointer(_ allowed: Bool, _ target: ResolvedTarget, keys: Bool = false, _ body: @escaping (any InputRoute) async throws -> Check) -> [Attempt] {
+		var background: String?
+		if case .off(let reason) = platform.backgroundFeature { background = "ui.background is off here: \(reason)" }
+		var foreground: String?
+		var notAllowed = false
+		if case .off(let reason) = platform.foregroundFeature {
+			foreground = "ui.foreground is off here: \(reason)"
+		} else if !allowed {
+			foreground = "it moves the user's pointer and focus, and this call does not allow it: pass foreground: true"
+			notAllowed = true
+		}
+		let bg = platform.background
+		let fg = platform.foreground
+		let routes = [
+			Attempt(route: .background, off: background) { try await body(bg) },
+			Attempt(route: .foreground, off: foreground, notAllowed: notAllowed) { try await body(fg) },
+		]
+		let inFront = keys && allowed && foreground == nil && platform.workspace.frontmost == target.pid
+		return inFront ? routes.reversed() : routes
+	}
+
+	/// Takes the first route that can do the step; settles; checks. Only a route that reports it sent nothing
+	/// (RouteUnavailable: the element takes no such action, the window is covered) lets the next route try. A route
+	/// that sent the step owns it, whether or not its effect showed by the settle: an effect can come late (a Save that
+	/// writes 300 ms on), so the act's expect waits for it up to its timeout, and no other route sends the step again,
+	/// which would press a button or submit a form twice. When the one route left is one the call does not allow, the
+	/// step is refused denied (the call can allow it); when no route reaches it here, unsupported.
+	func ladder(_ step: Step, view: View, _ attempts: [Attempt]) async throws -> (Route, Bool, View) {
+		var reasons: [String] = []
+		var denied = false
+		for attempt in attempts {
+			if let off = attempt.off {
+				reasons.append("\(attempt.route.rawValue): \(off)")
+				denied = denied || attempt.notAllowed
+				continue
+			}
+			// The foreground route takes the person's own pointer and keys: a person at them since the act began keeps
+			// them, and nothing is sent.
+			if attempt.route == .foreground { try checkTakeOver() }
+			let check: Check
+			do {
+				check = try await attempt.run()
+			} catch let unavailable as RouteUnavailable {
+				reasons.append("\(attempt.route.rawValue): \(unavailable.reason)")
+				continue
+			}
+			let after = try await settleAfterStep(view.target)
+			if attempt.route == .foreground {
+				// Read once the step settled: the pointer the route moved is where it reads by then.
+				takeOver.armed = true
+				takeOver.pointer = platform.capture.cursor()
+			}
+			switch check {
+			case .readback(let holds):
+				return (attempt.route, holds(), after)
+			case .lasting(let holds):
+				guard holds() else { return (attempt.route, false, after) }
+				try await sleep(timing.lastingMs)
+				guard holds() else { return (attempt.route, false, try await settle(after.target.asTarget)) }
+				return (attempt.route, true, after)
+			case .change:
+				return (attempt.route, view.fingerprint != after.fingerprint, after)
+			}
+		}
+		let words = "no route could \(step.verb) here. " + reasons.joined(separator: "; ")
+		throw denied ? RPCError.denied(words) : RPCError.unsupported(words)
+	}
+
+	/// A person who used the keyboard or the mouse since the act began, or whose pointer is no longer where it was
+	/// (where the foreground route left it, once it took it), has the computer: the act stops before its next step, as
+	/// input.actions stops before its next action.
+	func checkTakeOver() throws {
+		if let used = platform.person.lastInput(), used > takeOver.since {
+			throw TakenOver(message: "someone used the keyboard or the mouse while this act ran (\(Int(clock.now() - used)) ms ago): the person has the computer, so the act stopped before this step and sent it nothing; observe and try again")
+		}
+		let limit = InputRun.takeOverPixels
+		if let left = takeOver.pointer, let now = platform.capture.cursor(), abs(now.x - left.x) > limit || abs(now.y - left.y) > limit {
+			throw TakenOver(message: "someone moved the pointer to (\(Int(now.x)), \(Int(now.y))) while this act ran (it was at (\(Int(left.x)), \(Int(left.y)))): the person has the computer, so the act stopped before this step and sent it nothing; observe and try again")
+		}
+	}
+
+	// MARK: elements and points
+
+	/// The element a step's ref names, and its node, if the element is still in the window. A look capped short of it
+	/// asks the tree whether it still exists.
+	func element(_ ref: String?, in view: View) throws -> (RawNode?, ElementHandle?) {
+		guard let ref else { return (nil, nil) }
+		let handle = store.handle(ref)!
+		if let seen = view.node(handle) { return (seen, handle) }
+		if view.truncated, ax.exists(handle), let seen = store.lastSeen(ref) { return (seen, handle) }
+		throw RPCError.stale("\(ref) is gone: its element is no longer in the window. Observe again for fresh refs")
+	}
+
+	/// The middle of an element on screen, scrolled into its window's view when it is outside it.
+	func center(_ ref: String, _ element: ElementHandle, in target: ResolvedTarget) throws -> Point {
+		guard var frame = ax.frame(element), frame.area > 0 else {
+			throw RouteUnavailable("\(ref) has no frame on screen to point at")
+		}
+		if !target.window.bounds.contains(frame.center) {
+			try? ax.scrollToVisible(element)
+			if let moved = ax.frame(element) { frame = moved }
+		}
+		guard target.window.bounds.contains(frame.center) else {
+			throw RouteUnavailable("\(ref) is outside its window's visible area: scroll to it first")
+		}
+		return frame.center
+	}
+
+	/// Gives an element keyboard focus before typing into it: through the tree, else by clicking it on the same route.
+	func focus(_ ref: String, _ element: ElementHandle, target: ResolvedTarget, route: any InputRoute) async throws {
+		if (try? ax.focus(element)) != nil, try await tookFocus(element, target) { return }
+		try await route.click(at: try center(ref, element, in: target), button: .left, count: 1, in: target)
+		guard try await tookFocus(element, target) else {
+			throw RPCError(.refused, "\(ref) did not take the keyboard focus, so nothing was typed: a field's text never goes to whatever has the focus")
+		}
+	}
+
+	/// The element has keyboard focus, as it may take a moment to: a request an app ignores or delays is not focus.
+	func tookFocus(_ element: ElementHandle, _ target: ResolvedTarget) async throws -> Bool {
+		for look in 0..<4 {
+			if ax.focused(target) == element { return true }
+			if look < 3 { try await sleep(40) }
+		}
+		return false
+	}
+
+	/// A point is good while it still means what it meant in its state: the same window at the same size, and the same
+	/// element under it, looking the same. The window may have moved: points are the window's.
+	func bind(_ point: Point, view: View, state: String?, held: View?) async throws {
+		let (x, y) = (Int(point.x), Int(point.y))
+		guard let held else {
+			throw RPCError.stale("state \(state ?? "") is no longer held: observe again, and read the point from the new state")
+		}
+		guard held.target.window.id == view.target.window.id else {
+			throw RPCError.stale("the window of state \(state!) is not the act's window: observe again")
+		}
+		let (then, now) = (held.target.window.bounds, view.target.window.bounds)
+		guard then.w == now.w, then.h == now.h else {
+			throw RPCError.stale("the window changed size since state \(state!), so (\(x), \(y)) may not land on what it showed: observe again")
+		}
+		guard Rect(0, 0, now.w, now.h).contains(point) else {
+			throw RPCError.invalid("(\(x), \(y)) is outside the window, which is \(Int(now.w)) by \(Int(now.h)) points")
+		}
+		let before = held.under(point)
+		let after = view.under(point)
+		if before?.handle != after?.handle || (before.map(held.looks) != after.map(view.looks)) {
+			throw RPCError.stale("what is at (\(x), \(y)) changed since state \(state!): observe again")
+		}
+		// With no element under the point (always so with ui.tree off), only the window's image can say it still shows
+		// what the state did.
+		if before == nil, await held.frame != framed(view).frame {
+			throw RPCError.stale("the window shows something else than at state \(state!), so (\(x), \(y)) may not land on what it showed: observe again")
+		}
+	}
+
+	// MARK: settle and expect
+
+	/// The settled look after a step: of the step's window, or, when the step closed it (super+w on its last tab), of
+	/// the app's next main window, which the rest of the act follows, as a nav step follows the front window. With no
+	/// window left the step is refused not_found. (Once UiActResult.state is optional, this answers window "closed".)
+	func settleAfterStep(_ target: ResolvedTarget) async throws -> View {
+		do {
+			return try await settle(target.asTarget)
+		} catch let error as RPCError where error.kind == .notFound {
+			do {
+				return try await settle(Target(app: target.app.id, window: nil))
+			} catch let next as RPCError where next.kind == .notFound {
+				throw RPCError.notFound("\(target.app.id) has no window left: the step closed window \(target.window.id), and no other is open (\(next.message))")
+			}
+		}
+	}
+
+	/// Looks until two looks quietMs apart are the same, or settleMaxMs passed: the settled look.
+	func settle(_ target: Target?) async throws -> View {
+		let until = clock.now() + timing.settleMaxMs
+		var last = try await look(target)
+		while timing.quietMs > 0 && clock.now() < until {
+			try await sleep(min(timing.quietMs, max(0, until - clock.now())))
+			let next = try await look(target)
+			let quiet = next.fingerprint == last.fingerprint
+			last = next
+			if quiet { break }
+		}
+		return last
+	}
+
+	/// The expect holds in this look. text: some node's name, value or desc holds it (never a secure field's value). ref:
+	/// the element is there. Both: that element's name, value or desc holds the text. gone turns each around.
+	func holds(_ expect: Expect, _ view: View) -> Bool {
+		func has(_ node: RawNode, _ text: String) -> Bool {
+			node.name?.contains(text) == true || node.desc?.contains(text) == true
+				|| (!node.flags.contains(.secure) && node.value?.contains(text) == true)
+		}
+		let seen: Bool
+		if let ref = expect.ref {
+			let handle = store.handle(ref)!
+			if let node = view.node(handle) {
+				seen = expect.text.map { has(node, $0) } ?? true
+			} else {
+				seen = expect.text == nil && view.truncated && ax.exists(handle)
+			}
+		} else {
+			seen = view.nodes.contains { has($0, expect.text!) }
+		}
+		return expect.gone == true ? !seen : seen
+	}
+
+	func sleep(_ ms: Double) async throws {
+		do {
+			try await clock.sleep(ms: ms)
+		} catch {
+			throw RPCError.aborted
+		}
+	}
+}
+
+extension ResolvedTarget {
+	/// The target that finds this app and window again.
+	var asTarget: Target { Target(app: app.id, window: window.id) }
+}
+
+extension Rect {
+	func intersects(_ other: Rect) -> Bool {
+		x < other.x + other.w && other.x < x + w && y < other.y + other.h && other.y < y + h
+	}
+}

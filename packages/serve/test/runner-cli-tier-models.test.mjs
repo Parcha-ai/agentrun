@@ -49,11 +49,11 @@ const MODELS = {
     }),
   },
   "claude-agent": {
-    launch: { provider: "anthropic", modelId: "claude-sonnet-4-5" },
+    launch: { provider: "anthropic", modelId: "claude-sonnet-5-5" },
     env: (url, tiers) => ({
-      ANTHROPIC_BASE_URL: url, ANTHROPIC_API_KEY: fake("anthropic"), AGENT_MODEL: "anthropic/claude-sonnet-4-5",
-      ...(tiers.includes("fast") ? { AGENT_MODEL_FAST: "anthropic/claude-haiku-4-5" } : {}),
-      ...(tiers.includes("strong") ? { AGENT_MODEL_STRONG: "anthropic/claude-opus-4-5" } : {}),
+      ANTHROPIC_BASE_URL: url, ANTHROPIC_API_KEY: fake("anthropic"), AGENT_MODEL: "anthropic/claude-sonnet-5-5",
+      ...(tiers.includes("fast") ? { AGENT_MODEL_FAST: "anthropic/claude-haiku-5-5" } : {}),
+      ...(tiers.includes("strong") ? { AGENT_MODEL_STRONG: "anthropic/claude-opus-5-5" } : {}),
     }),
   },
 };

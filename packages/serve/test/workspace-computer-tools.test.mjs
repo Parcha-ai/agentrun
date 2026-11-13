@@ -1,19 +1,21 @@
 // A run's tools by its computer's kind (serve/src/workspace/run-tools.ts runTools, computer-ports.ts): the run folder
 // is attached only when the kind has files and exec AND the provider mounts it (a sandbox always; a desktop when its
 // provider mounts); otherwise it stays the no-computer Workspace with no computer's shell: none in Mode 1 (the folder is
-// one of this server's own: no bash family), Archil's exec in Mode 2 ("local", bash only). The kind's own tools come on
-// top, their ports filled from the computer's capabilities: a desktop's screen and input from computerd's screen.shot
-// and input.actions, a phone's from its touch and apps calls; a browser brings none (the run's browser tool drives it).
-// Screenshots go back as images. Every computer here is a loopback fake: nothing leaves this process.
+// one of this server's own: no bash family), Archil's exec in Mode 2 ("local", bash only). A desktop or a phone adds the
+// computer's tools on top, over its one surface: computer_observe and computer_act on the ui group (ui.observe, ui.act),
+// or on the screen and raw input without it; computer_screenshot; computer_script in serve's isolate; the hand-over. A
+// browser brings none (the run's browser tool drives it). Every computer here is a loopback fake: nothing leaves this
+// process.
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import { checkActions, KEYS, MAX_ACTIONS, readBackOf } from "@parcha/agentrun-computer";
-import { DESKTOP_ACTIONS, DESKTOP_KEYS, DESKTOP_MAX_ACTIONS, NO_SHELL } from "@parcha/agentrun-kernel/kernel";
-import { inputOf, localWorkspace, phoneOf, runTools, screenOf } from "../dist/workspace/index.js";
+import { readBackOf } from "@parcha/agentrun-computer";
+import { COMPUTER_TOOLS, NO_SHELL } from "@parcha/agentrun-kernel/kernel";
+import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import { computerMcp, localWorkspace, runTools } from "../dist/workspace/index.js";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
 
 const dirs = [];
@@ -33,220 +35,283 @@ const FILES = ["read", "write", "edit"];
 /** With Archil's exec (Mode 2, no computer's shell): bash only. */
 const LOCAL = [...FILES, "bash"];
 const COMPUTER = [...LOCAL, "bash_background", "bash_output", "bash_input", "bash_signal", "bash_list"];
-const DESKTOP = ["desktop_screen", "desktop_input", "computer_request_handoff"];
-const PHONE = ["phone_screen", "phone_tree", "phone_tap", "phone_swipe", "phone_type", "phone_key", "phone_apps", "phone_open", "computer_request_handoff"];
+/** The computer's tools, a desktop's and a phone's alike. */
+const TOOLS = [...COMPUTER_TOOLS];
 const DESKTOP_GROUPS = ["exec", "files", "processes", "screen", "input.pointer", "input.keys"];
 const PHONE_GROUPS = ["screen", "input.touch", "apps"];
 /** The hello a desktop or a phone answered when the claim connected it, offering `groups`. */
 const helloOf = (kind, groups) => ({ protocol: "0.2", version: "0", os: kind === "phone" ? "android" : "linux", kind: kind === "phone" ? "android" : "desktop", arch: "amd64", groups });
 const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64");
 
-/** A loopback desktop: computerd's screen.shot answers the PNG in two pieces (the rest by screen.read), input.actions
- *  runs every action, apps.list and apps.launch answer a phone's. */
-function fakeDesktop(root) {
+/** A loopback computer: computerd's screen.shot answers the PNG in two pieces (the rest by screen.read), input.actions
+ *  runs every action, apps.list and apps.launch answer; with `ui`, ui.observe answers a Notes window and ui.act runs its
+ *  steps. */
+function fakeScreen(root, { ui = false } = {}) {
   const computer = fakeComputer(root);
   const half = Math.floor(PNG.length / 2);
   computer.overrides["screen.shot"] = () => ({ id: "s1", size: PNG.length, data: PNG.subarray(0, half).toString("base64"), eof: false, width: 1280, height: 800, scale: 1 });
   computer.overrides["screen.read"] = ({ offset }) => ({ data: PNG.subarray(offset).toString("base64"), eof: true });
   computer.overrides["input.actions"] = ({ actions }) => ({ done: actions.length });
-  computer.overrides["apps.list"] = () => ({ apps: [{ id: "com.example.mail", name: "Mail" }], foreground: null });
+  computer.overrides["apps.list"] = () => ({ apps: [{ id: "com.example.notes", name: "Notes" }], foreground: "com.example.notes" });
   computer.overrides["apps.launch"] = () => ({});
+  if (ui) {
+    computer.overrides["ui.observe"] = () => ({
+      state: "s1",
+      app: { id: "com.example.notes", name: "Notes" },
+      window: { id: "w1", title: "Untitled", bounds: [0, 0, 400, 300] },
+      nodes: [
+        { ref: "@e1", role: "window", name: "Untitled", bounds: [0, 0, 400, 300] },
+        { ref: "@e2", role: "textbox", name: "Title", value: "", bounds: [10, 10, 380, 30], parent: "@e1", flags: ["focused"] },
+        { ref: "@e3", role: "button", name: "Save", bounds: [300, 250, 80, 30], parent: "@e1", actions: ["press"] },
+      ],
+      truncated: false,
+    });
+    computer.overrides["ui.act"] = ({ steps }) => ({ steps: steps.map(() => ({ route: "semantic", verified: true })), state: "s2", changed: true });
+  }
   return computer;
 }
 
-test("a desktop whose provider does not mount, in Mode 1: the run folder stays the runner's with no shell (no bash family, no processes), and the desktop's tools come on top", async () => {
+test("a desktop whose provider does not mount, in Mode 1: the run folder stays the runner's with no shell, and the computer's tools come on top, on its screen and raw input (no ui group)", async () => {
   const root = scratch();
-  const computer = fakeDesktop(root);
+  const computer = fakeScreen(root);
   const run = await runTools(localWorkspace(root), { kind: "desktop", computer, hello: helloOf("desktop", DESKTOP_GROUPS) }, { mode: 1, context: ctx });
-  assert.deepEqual(names(run), [...FILES, ...DESKTOP]);
+  assert.deepEqual(names(run), [...FILES, ...TOOLS]);
+  assert.deepEqual(run.kindTools, TOOLS);
   assert.equal(run.hands.processes, undefined, "no background processes on an unmounted desktop");
-  const tools = run.hostTools(["bash", ...DESKTOP]);
+  const tools = run.hostTools(["bash", ...TOOLS]);
   assert.ok(!tools.some((tool) => tool.name === "bash"), "bash is not bound, granted or not");
   assert.equal((await run.registry.invoke("bash", { command: "touch ran" }, { hands: run.hands })).error, NO_SHELL, "a call of it anyway says how to get a shell");
   assert.ok(!existsSync(join(root, "ran")), "and runs nothing");
-  assert.ok(!computer.methods().includes("exec.run") && !computer.methods().includes("process.start"), "nor on the desktop");
-  const shot = await call(tools, "desktop_screen", {});
-  assert.deepEqual(shot, { text: "A screenshot of the whole screen, 1280x800 pixels.", isError: false, images: [{ mimeType: "image/png", data: PNG.toString("base64") }] });
+  const shot = await call(tools, "computer_screenshot", {});
+  assert.deepEqual(shot, {
+    text: "screenshot 1280×800 px", isError: false,
+    images: [{ type: "image", mimeType: "image/png", data: PNG.toString("base64"), width: 1280, height: 800 }],
+    structured: { type: "image", mimeType: "image/png", width: 1280, height: 800 },
+  });
   assert.deepEqual(computer.calls.filter(([method]) => method.startsWith("screen.")), [["screen.shot", {}], ["screen.read", { id: "s1", offset: Math.floor(PNG.length / 2) }]]);
-  const part = await call(tools, "desktop_screen", { region: { x: 1, y: 2, w: 3, h: 4 } });
-  assert.equal(part.isError, false, part.text);
+  assert.equal((await call(tools, "computer_screenshot", { region: [1, 2, 3, 4] })).isError, false);
   assert.deepEqual(computer.calls.filter(([method]) => method === "screen.shot").at(-1), ["screen.shot", { region: [1, 2, 3, 4] }]);
-  const actions = [{ type: "click", at: [10, 20] }, { type: "type", text: "hi" }, { type: "key", keys: ["enter"] }];
-  assert.deepEqual(await call(tools, "desktop_input", { actions }), { text: "Ran 3 actions. desktop_screen shows what they did.", isError: false });
-  assert.deepEqual(computer.calls.filter(([method]) => method === "input.actions"), [["input.actions", { actions }]]);
+  // Without the ui group, observe is the screenshot, and act's steps go as raw input at its pixels.
+  const seen = await call(tools, "computer_observe", {});
+  assert.equal(seen.images.length, 1);
+  assert.match(seen.text, /^screen 1280×800 px · this computer has no ui group/);
+  const acted = await call(tools, "computer_act", { steps: [{ click: [10, 20] }, { type: "hi" }, { key: "enter" }] });
+  assert.deepEqual(acted, { text: "1. click: input\n2. type: input\n3. key: input", isError: false, structured: { steps: [{ route: "input", verified: false }, { route: "input", verified: false }, { route: "input", verified: false }] } });
+  assert.deepEqual(computer.calls.filter(([method]) => method === "input.actions"), [["input.actions", { actions: [{ type: "click", at: [10, 20] }, { type: "type", text: "hi" }, { type: "key", keys: ["enter"] }] }]]);
+  // An element step needs the ui group: refused before anything is sent.
+  const refused = await call(tools, "computer_act", { steps: [{ press: "@e3" }] });
+  assert.equal(refused.isError, true);
+  assert.match(refused.text, /needs the ui group/);
+  assert.equal(computer.calls.filter(([method]) => method === "input.actions").length, 1);
   assert.ok(!computer.methods().includes("readBack"), "nothing was attached");
   await run.end();
 });
 
-test("a desktop whose provider mounts: the run folder is attached (shell computer, the five background tools), with the desktop's tools on top", async () => {
+test("a desktop whose provider mounts: the run folder is attached (shell computer, the five background tools), with the computer's tools on top", async () => {
   const root = scratch();
-  const computer = fakeDesktop(root);
+  const computer = fakeScreen(root);
   const run = await runTools(localWorkspace(root), { kind: "desktop", computer, hello: helloOf("desktop", DESKTOP_GROUPS), check: { readBackOf } }, { mode: 1, context: ctx });
-  assert.deepEqual(names(run), [...COMPUTER, ...DESKTOP]);
-  assert.ok(run.hands.processes && run.hands.screen && run.hands.input);
+  assert.deepEqual(names(run), [...COMPUTER, ...TOOLS]);
+  assert.ok(run.hands.processes && run.hands.computer);
+  assert.deepEqual(run.hands.computer.groups, DESKTOP_GROUPS);
   assert.ok(computer.methods().includes("readBack"), "attach read the mount back");
   // A desktop with no exec or files (a screen alone) attaches nothing, mount or not.
-  const bare = await runTools(localWorkspace(scratch()), { kind: "desktop", computer: fakeDesktop(root), hello: helloOf("desktop", ["screen", "input.pointer"]), check: { readBackOf } }, { mode: 1, context: ctx });
-  assert.deepEqual(names(bare), [...FILES, ...DESKTOP]);
+  const bare = await runTools(localWorkspace(scratch()), { kind: "desktop", computer: fakeScreen(root), hello: helloOf("desktop", ["screen", "input.pointer"]), check: { readBackOf } }, { mode: 1, context: ctx });
+  assert.deepEqual(names(bare), [...FILES, ...TOOLS]);
 });
 
-test("a sandbox: today's computer list, attached; no kind tools", async () => {
+test("a sandbox: today's computer list, attached; no computer tools", async () => {
   const root = scratch();
   const run = await runTools(localWorkspace(root), { kind: "sandbox", computer: fakeComputer(root), check: { readBackOf } }, { mode: 1, context: ctx });
   assert.deepEqual(names(run), COMPUTER);
-  assert.equal(run.hands.screen, undefined);
+  assert.equal(run.hands.computer, undefined);
 });
 
-test("a phone: the runner's folder and shell, and the phone's tools on its touch and apps calls", async () => {
+test("a phone with the ui group: observe is the outline of its window, act its steps by ref, each with its route; the state goes with a step at a point", async () => {
   const root = scratch();
-  const phone = fakeDesktop(root);
-  const run = await runTools(localWorkspace(root), { kind: "phone", computer: phone, hello: helloOf("phone", [...PHONE_GROUPS, "apps.ui_tree", "input.keys"]) }, { mode: 2, context: ctx });
-  assert.deepEqual(names(run), [...LOCAL, ...PHONE]);
-  const tools = run.hostTools(PHONE);
-  assert.equal((await call(tools, "phone_screen", {})).images[0].data, PNG.toString("base64"));
-  await call(tools, "phone_tap", { x: 5, y: 6 });
-  await call(tools, "phone_swipe", { from: { x: 1, y: 900 }, to: { x: 1, y: 100 }, duration_ms: 400 });
-  await call(tools, "phone_type", { text: "hello" });
-  assert.deepEqual(await call(tools, "phone_apps", {}), { text: "1 app; none is in front.\ncom.example.mail (Mail)", isError: false });
-  await call(tools, "phone_open", { id: "com.example.mail" });
-  assert.deepEqual(phone.calls.filter(([method]) => method === "input.actions" || method.startsWith("apps.")), [
-    ["input.actions", { actions: [{ type: "tap", at: [5, 6] }] }],
-    ["input.actions", { actions: [{ type: "swipe", path: [[1, 900], [1, 100]], ms: 400 }] }],
-    ["input.actions", { actions: [{ type: "type", text: "hello" }] }],
-    ["apps.list", {}],
-    ["apps.launch", { id: "com.example.mail" }],
+  const phone = fakeScreen(root, { ui: true });
+  const run = await runTools(localWorkspace(root), { kind: "phone", computer: phone, hello: helloOf("phone", [...PHONE_GROUPS, "ui"]) }, { mode: 2, context: ctx });
+  assert.deepEqual(names(run), [...LOCAL, ...TOOLS]);
+  const tools = run.hostTools(TOOLS);
+  const seen = await call(tools, "computer_observe", {});
+  assert.deepEqual(seen.text.split("\n"), ['state s1 · com.example.notes "Notes" · window "Untitled" 400×300 pt', '@e1 window "Untitled"', '  @e2 textbox "Title" [focused]', '  @e3 button "Save"']);
+  assert.equal(seen.images, undefined, "no image unless asked");
+  assert.equal(seen.structured.id, "s1");
+  const acted = await call(tools, "computer_act", { steps: [{ set: "@e2", value: "Groceries" }, { press: "@e3" }] });
+  assert.deepEqual(acted.text.split("\n"), ["1. set: semantic, verified", "2. press: semantic, verified", "changed · state s2"]);
+  await call(tools, "computer_act", { steps: [{ click: [320, 260] }] });
+  assert.deepEqual(phone.calls.filter(([method]) => method === "ui.act").map(([, params]) => params), [
+    { steps: [{ set: "@e2", value: "Groceries" }, { press: "@e3" }] },
+    { state: "s1", steps: [{ click: [320, 260] }] },
   ]);
 });
 
-test("a phone that does not declare apps.ui_tree or input.keys (an iPhone today) is offered neither phone_tree nor phone_key, and a call of either is refused in words", async () => {
+test("a phone without the ui group (an iPhone today): observe falls back to the screenshot, and taps go as touch input", async () => {
   const root = scratch();
-  const iphone = fakeDesktop(root);
+  const iphone = fakeScreen(root);
   const run = await runTools(localWorkspace(root), { kind: "phone", computer: iphone, hello: helloOf("phone", PHONE_GROUPS) }, { mode: 2, context: ctx });
-  assert.deepEqual(names(run), [...LOCAL, ...PHONE.filter((name) => name !== "phone_tree" && name !== "phone_key")]);
-  assert.deepEqual(await run.registry.invoke("phone_tree", {}, { hands: run.hands, callId: "t", signal: new AbortController().signal }), { text: "", error: "this phone does not offer its UI tree" });
-  assert.deepEqual(await run.registry.invoke("phone_key", { key: "back" }, { hands: run.hands, callId: "k", signal: new AbortController().signal }), { text: "", error: "this phone does not offer its keys" });
-  assert.ok(!iphone.methods().includes("apps.ui_tree") && !iphone.calls.some(([method]) => method === "input.actions"), "nothing reached the phone");
-  // One declared, the other not: only that one is offered.
-  const android = await runTools(localWorkspace(scratch()), { kind: "phone", computer: fakeDesktop(root), hello: helloOf("phone", [...PHONE_GROUPS, "apps.ui_tree"]) }, { mode: 2, context: ctx });
-  assert.deepEqual(names(android).filter((name) => name === "phone_tree" || name === "phone_key"), ["phone_tree"]);
-});
-
-test("an Android list row (a clickable layout whose title sits on a child text) is named by its first inner text, marked so; the search bar by its inner text or label", async () => {
-  const root = scratch();
-  const phone = fakeDesktop(root);
-  const node = (role, extra) => ({ role, enabled: true, children: [], ...extra });
-  const text = (value, bounds) => node("android.widget.TextView", { text: value, bounds });
-  // Settings' top screen, as Android 15 gives it: each row a clickable LinearLayout, its title and summary child TextViews.
-  const row = (y, title, summary) => node("android.widget.LinearLayout", { bounds: [0, y, 720, 150], clickable: true, children: [
-    node("android.widget.ImageView", { bounds: [30, y + 45, 60, 60] }),
-    node("android.widget.RelativeLayout", { bounds: [120, y + 20, 560, 110], children: [text(title, [120, y + 20, 560, 50]), text(summary, [120, y + 75, 560, 40])] }),
-  ] });
-  phone.overrides["apps.ui_tree"] = () => ({
-    root: node("android.widget.FrameLayout", {
-      bounds: [0, 0, 720, 1600],
-      children: [
-        node("android.widget.LinearLayout", { id: "com.android.settings:id/search_action_bar", bounds: [20, 200, 680, 100], clickable: true, children: [node("android.widget.TextView", { label: "Search settings", bounds: [100, 220, 400, 60] })] }),
-        row(550, "Network & internet", "Mobile, Wi-Fi, hotspot"),
-        row(700, "Connected devices", "Bluetooth, pairing"),
-        row(850, "Apps", "Default apps, app management"),
-      ],
-    }),
-    nodes: 20,
-    truncated: false,
-  });
-  const run = await runTools(localWorkspace(root), { kind: "phone", computer: phone, hello: helloOf("phone", [...PHONE_GROUPS, "apps.ui_tree"]) }, { mode: 2, context: ctx });
-  const answer = await call(run.hostTools(["phone_tree"]), "phone_tree", {});
-  assert.deepEqual(answer.text.split("\n"), [
-    "4 nodes you can tap or type into, of 20 on the screen. Coordinates are a phone_screen screenshot's pixels.",
-    '- LinearLayout "Search settings" (inner text) [com.android.settings:id/search_action_bar]: center (360, 250), bounds 20,200 680x100',
-    '- LinearLayout "Network & internet" (inner text): center (360, 625), bounds 0,550 720x150',
-    '- LinearLayout "Connected devices" (inner text): center (360, 775), bounds 0,700 720x150',
-    '- LinearLayout "Apps" (inner text): center (360, 925), bounds 0,850 720x150',
-  ]);
-});
-
-test("a phone's tree is its apps.ui_tree, flattened to the nodes a model can tap or type into; its keys are back and home as the phone's buttons, enter as a key", async () => {
-  const root = scratch();
-  const phone = fakeDesktop(root);
-  const node = (role, extra) => ({ role, enabled: true, children: [], ...extra });
-  phone.overrides["apps.ui_tree"] = () => ({
-    root: node("android.widget.FrameLayout", {
-      bounds: [0, 0, 720, 1280],
-      children: [
-        node("android.widget.EditText", { id: "com.example.mail:id/to", text: "", label: "To", bounds: [20, 150, 680, 80], clickable: true, focused: true }),
-        node("android.widget.LinearLayout", { bounds: [0, 1100, 720, 180], children: [node("android.widget.Button", { text: "Send", bounds: [500, 1150, 200, 80], clickable: true })] }),
-        node("android.widget.TextView", { text: "New message", bounds: [20, 60, 400, 60] }),
-        node("android.widget.Button", { text: "Disabled", bounds: [20, 1150, 200, 80], clickable: true, enabled: false }),
-      ],
-    }),
-    nodes: 6,
-    truncated: false,
-  });
-  const run = await runTools(localWorkspace(root), { kind: "phone", computer: phone, hello: helloOf("phone", [...PHONE_GROUPS, "apps.ui_tree", "input.keys"]) }, { mode: 2, context: ctx });
-  const tools = run.hostTools(["phone_tree", "phone_key"]);
-  assert.deepEqual(await call(tools, "phone_tree", {}), { isError: false, text: [
-    "2 nodes you can tap or type into, of 6 on the screen. Coordinates are a phone_screen screenshot's pixels.",
-    '- EditText "To" [com.example.mail:id/to]: a field, focused; center (360, 190), bounds 20,150 680x80',
-    '- Button "Send": center (600, 1190), bounds 500,1150 200x80',
-  ].join("\n") });
-  for (const key of ["back", "home", "enter"]) await call(tools, "phone_key", { key });
-  assert.deepEqual(phone.calls.filter(([method]) => method === "input.actions" || method === "apps.ui_tree"), [
-    ["apps.ui_tree", {}],
-    ["input.actions", { actions: [{ type: "button", name: "back" }] }],
-    ["input.actions", { actions: [{ type: "button", name: "home" }] }],
-    ["input.actions", { actions: [{ type: "key", keys: ["enter"] }] }],
-  ]);
+  assert.deepEqual(names(run), [...LOCAL, ...TOOLS]);
+  const tools = run.hostTools(TOOLS);
+  const seen = await call(tools, "computer_observe", {});
+  assert.equal(seen.images[0].data, PNG.toString("base64"));
+  assert.match(seen.text, /com\.example\.notes in front/);
+  await call(tools, "computer_act", { steps: [{ click: [5, 6] }, { nav: "back" }] });
+  assert.deepEqual(iphone.calls.filter(([method]) => method === "input.actions").map(([, params]) => params.actions), [[{ type: "tap", at: [5, 6] }, { type: "button", name: "back" }]]);
+  assert.ok(!iphone.methods().includes("ui.observe"), "never asked for elements it does not declare");
 });
 
 test("a browser brings none of the registry's tools: the run's browser tool drives it (runner-browser-computer.test.mjs)", async () => {
   const run = await runTools(localWorkspace(scratch()), { kind: "browser", browser: { provider: "local-chrome" } }, { mode: 1, context: ctx });
   assert.deepEqual(names(run), FILES);
   assert.deepEqual(run.kindTools, []);
-  assert.equal(run.hands.browser, undefined, "no CDP port on the hands");
+  assert.equal(run.hands.computer, undefined);
 });
 
-test("a person's hold on the computer: runTools hands a desktop's or a phone's ports to the hold given, and only those", async () => {
+test("a person's hold on the computer: runTools hands a desktop's or a phone's port to the hold given, and only those", async () => {
   const root = scratch();
   const seen = [];
-  const takenOver = Object.assign(new Error("the person had the desktop: look at the screen again before acting"), { code: "taken_over" });
   const hold = (ports) => {
     seen.push(Object.keys(ports).sort());
-    return { ...ports, ...(ports.input ? { input: { actions: async () => { throw takenOver; } } } : {}), ...(ports.phone ? { phone: { ...ports.phone, tap: async () => { throw takenOver; } } } : {}) };
+    return { computer: { ...ports.computer, call: async (op, args, signal) => (op === "act" ? Promise.reject(new Error("the person had this computer: observe again before you act")) : ports.computer.call(op, args, signal)) } };
   };
-  const desktop = await runTools(localWorkspace(root), { kind: "desktop", computer: fakeDesktop(root), hello: helloOf("desktop", DESKTOP_GROUPS), check: { readBackOf } }, { mode: 1, context: ctx, hold });
-  const tools = desktop.hostTools(DESKTOP);
-  assert.equal((await call(tools, "desktop_screen", {})).isError, false, "a read runs through the hold");
-  assert.deepEqual(await call(tools, "desktop_input", { actions: [{ type: "move", at: [1, 1] }] }), { text: "the person had the desktop: look at the screen again before acting", isError: true });
+  const desktop = await runTools(localWorkspace(root), { kind: "desktop", computer: fakeScreen(root), hello: helloOf("desktop", DESKTOP_GROUPS), check: { readBackOf } }, { mode: 1, context: ctx, hold });
+  const tools = desktop.hostTools(TOOLS);
+  assert.equal((await call(tools, "computer_screenshot", {})).isError, false, "a look runs through the hold");
+  assert.deepEqual(await call(tools, "computer_act", { steps: [{ click: [1, 1] }] }), { text: "the person had this computer: observe again before you act", isError: true });
+  const script = await call(tools, "computer_script", { code: "await computer.input.act([{ type: 'move', at: [1, 1] }]); return (await computer.screen.shot()).width;" });
+  assert.equal(script.structured, 1280, "a script's calls go through the same hands");
   assert.ok(desktop.hands.processes, "the shell's processes never pass through the hold");
-  const phone = await runTools(localWorkspace(root), { kind: "phone", computer: fakeDesktop(root), hello: helloOf("phone", PHONE_GROUPS) }, { mode: 1, context: ctx, hold });
-  assert.equal((await call(phone.hostTools(["phone_tap"]), "phone_tap", { x: 1, y: 1 })).isError, true);
+  await runTools(localWorkspace(root), { kind: "phone", computer: fakeScreen(root), hello: helloOf("phone", PHONE_GROUPS) }, { mode: 1, context: ctx, hold });
   await runTools(localWorkspace(root), { kind: "browser", browser: { provider: "local-chrome" } }, { mode: 1, context: ctx, hold });
   await runTools(localWorkspace(root), { kind: "sandbox", computer: fakeComputer(root), check: { readBackOf } }, { mode: 1, context: ctx, hold });
-  assert.deepEqual(seen, [["input", "screen"], ["phone"]], "a browser and a sandbox never pass through it");
+  assert.deepEqual(seen, [["computer"], ["computer"]], "a browser and a sandbox never pass through it");
 });
 
-test("with no computer or a sandbox, a kind's tool is refused in words naming the setting", async () => {
+test("with no computer or a sandbox, a computer tool is refused in words naming the setting", async () => {
   const run = await runTools(localWorkspace(scratch()), undefined, { mode: 1, context: ctx });
-  assert.equal((await run.registry.invoke("desktop_screen", {}, { hands: run.hands })).error, "desktop_screen needs a desktop computer: set this agent's computer to desktop (Settings → Computers).");
+  assert.match((await run.registry.invoke("computer_observe", {}, { hands: run.hands })).error, /^computer_observe needs a desktop computer: set this agent's computer to desktop/);
 });
 
-test("the ports over computerd: a shot read to its end; a failed batch throws the computer's code and words, with how many ran", async () => {
+test("computer_script: the script's value is the per-step tool's value; text() and image() show beside it; a throw answers its words; the isolate has no network, no process and no require", async () => {
   const root = scratch();
-  const computer = fakeDesktop(root);
-  const shot = await screenOf(computer.client).shot();
-  assert.deepEqual([Buffer.from(shot.png).equals(PNG), shot.width, shot.height], [true, 1280, 800]);
-  computer.overrides["screen.read"] = () => ({ data: "", eof: false });
-  await assert.rejects(screenOf(computer.client).shot(), /the computer's screenshot stopped at byte \d+ of \d+/);
-  computer.overrides["input.actions"] = () => ({ done: 1, failed: { index: 1, kind: "unsupported", message: "action 1 (scroll): this computer scrolls by clicks, not pixels" } });
-  await assert.rejects(inputOf(computer.client).actions([{ type: "move", at: [1, 1] }, { type: "scroll", dy: 1, unit: "px" }]), (error) => error.code === "unsupported" && error.message === "action 1 (scroll): this computer scrolls by clicks, not pixels (1 of 2 actions ran)");
-  computer.overrides["apps.launch"] = { result: { ok: false, error: { code: "not_found", message: "no app com.nope" } } };
-  await assert.rejects(phoneOf(computer.client).apps.open("com.nope"), (error) => error.code === "not_found" && error.message === "no app com.nope");
+  const phone = fakeScreen(root, { ui: true });
+  const run = await runTools(localWorkspace(root), { kind: "phone", computer: phone, hello: helloOf("phone", [...PHONE_GROUPS, "ui"]) }, { mode: 2, context: ctx });
+  const tools = run.hostTools(TOOLS);
+  const byTool = await call(tools, "computer_observe", {});
+  const byScript = await call(tools, "computer_script", { code: "return await computer.app().observe();" });
+  assert.equal(JSON.stringify(byScript.structured), JSON.stringify(byTool.structured), "byte-identical values");
+  const found = await call(tools, "computer_script", { code: [
+    "const notes = computer.app('com.example.notes');",
+    "await notes.observe();",
+    "const save = notes.find({ role: 'button', text: 'save' })[0];",
+    "const done = await notes.press(save.ref);",
+    "text('pressed ' + save.ref);",
+    "image(await computer.screen.shot());",
+    "return { state: done.state, steps: done.steps.length };",
+  ].join("\n") });
+  assert.equal(found.isError, false, found.text);
+  assert.deepEqual(found.structured, { state: "s2", steps: 1 });
+  assert.equal(found.text, 'pressed @e3\n{"state":"s2","steps":1}');
+  assert.equal(found.images.length, 1);
+  assert.equal(found.images[0].data, PNG.toString("base64"));
+  const isolated = await call(tools, "computer_script", { code: "return [typeof fetch, typeof process, typeof require, typeof setTimeout, typeof computer.shell];" });
+  assert.deepEqual(isolated.structured, ["undefined", "undefined", "undefined", "undefined", "undefined"], "no network, no process, no modules, no timers; no shell on a phone without exec");
+  const thrown = await call(tools, "computer_script", { code: "text('before');\nthrow new Error('no Save button here');" });
+  assert.equal(thrown.isError, true);
+  assert.match(thrown.text, /no Save button here/);
+  assert.equal((await call(tools, "computer_script", { code: "" })).isError, true);
 });
 
-test("parity: the desktop's key names and batch limit are computerd's, and every action desktop_input offers is one computerd takes from a desktop", () => {
-  assert.deepEqual([...DESKTOP_KEYS], [...KEYS]);
-  assert.equal(DESKTOP_MAX_ACTIONS, MAX_ACTIONS);
-  const one = { move: { type: "move", at: [1, 2] }, click: { type: "click", at: [1, 2], button: "right", count: 2 }, drag: { type: "drag", path: [[1, 1], [2, 2]], button: "left" }, scroll: { type: "scroll", at: [1, 1], dx: 0, dy: 2, unit: "clicks" }, type: { type: "type", text: "x" }, key: { type: "key", keys: ["ctrl", "c"] } };
-  assert.deepEqual(Object.keys(one), [...DESKTOP_ACTIONS]);
-  assert.equal(checkActions(Object.values(one), ["screen", "input.pointer", "input.keys"]), undefined);
+test("a script that shows output and returns nothing answers its words and images with no value, so a Codex script's nested call keeps them", async () => {
+  const root = scratch();
+  const run = await runTools(localWorkspace(root), { kind: "phone", computer: fakeScreen(root, { ui: true }), hello: helloOf("phone", [...PHONE_GROUPS, "ui"]) }, { mode: 2, context: ctx });
+  const tools = run.hostTools(run.kindTools);
+  const shown = await call(tools, "computer_script", { code: "image(await computer.screen.shot()); text('hello');" });
+  assert.equal(shown.isError, false, shown.text);
+  assert.equal(shown.text, "hello");
+  assert.equal(shown.images.length, 1);
+  assert.equal(shown.structured, undefined, "no value: the words and images are the answer");
+  await run.end();
+});
+
+test("a script's returned image keeps its own pixels, apart from the images it showed", async () => {
+  const root = scratch();
+  const run = await runTools(localWorkspace(root), { kind: "phone", computer: fakeScreen(root, { ui: true }), hello: helloOf("phone", [...PHONE_GROUPS, "ui"]) }, { mode: 2, context: ctx });
+  const tools = run.hostTools(run.kindTools);
+  const returned = await call(tools, "computer_script", { code: "return await computer.screen.shot();" });
+  assert.equal(returned.isError, false, returned.text);
+  assert.deepEqual(returned.images, [{ data: PNG.toString("base64"), mimeType: "image/png" }]);
+  assert.ok(!JSON.stringify(returned.structured).includes(PNG.toString("base64")), "the value carries no pixels, the answer's images do");
+  const both = await call(tools, "computer_script", { code: "image({ type: 'image', mimeType: 'image/gif', data: 'R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7' });\nreturn await computer.screen.shot();" });
+  assert.equal(both.isError, false, both.text);
+  assert.deepEqual(both.images.map((image) => image.data), [PNG.toString("base64"), "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"], "the returned image first, with its own data, then the shown one");
+  await run.end();
+});
+
+test("a script's shell and files are held to the run's gate: a denied bash, a denied write and an ask refuse in the script, and an allow runs", async () => {
+  const root = scratch();
+  const computer = fakeScreen(root);
+  const run = await runTools(localWorkspace(root), { kind: "desktop", computer, hello: helloOf("desktop", DESKTOP_GROUPS), check: { readBackOf } }, { mode: 1, context: ctx });
+  const tools = run.hostTools(run.kindTools);
+  const code = "try { await computer.shell.run('echo hi'); return 'ran'; } catch (error) { return String(error.message); }";
+  const before = await call(tools, "computer_script", { code });
+  assert.match(before.structured, /not attached to its scripts yet/, "no gate installed: refused, never run");
+  const seen = [];
+  let verdict = "allow";
+  run.computer.guard.install(async (tool, args) => { seen.push([tool, args]); return verdict; });
+  assert.equal((await call(tools, "computer_script", { code })).structured, "ran");
+  assert.deepEqual(seen, [["bash", { command: "echo hi" }]]);
+  await call(tools, "computer_script", { code: "try { await computer.shell.run('cat passwd', { cwd: '/etc' }); } catch (error) {} return 1;" });
+  assert.deepEqual(seen.at(-1), ["bash", { command: "cat passwd", cwd: "/etc" }], "the directory it runs in is what the gate reads");
+  verdict = { deny: "bash is denied for this agent" };
+  assert.match((await call(tools, "computer_script", { code })).structured, /bash is denied for this agent/);
+  verdict = "ask";
+  assert.match((await call(tools, "computer_script", { code: "try { await computer.files.write('/workspace/a.txt', 'x'); return 'wrote'; } catch (error) { return String(error.message); }" })).structured, /write setting asks a person first/);
+  assert.deepEqual(seen.at(-1), ["write", { path: "/workspace/a.txt" }]);
+  assert.equal(computer.calls.filter(([method]) => method === "files.write").length, 0, "a refused write sent nothing");
+  await run.end();
+});
+
+test("under a bash policy a script's shell carries the policy's git lock-down as the bash tool's does, and no option of the script overrides it", async () => {
+  const root = scratch();
+  const computer = fakeScreen(root);
+  const run = await runTools(localWorkspace(root), { kind: "desktop", computer, hello: helloOf("desktop", DESKTOP_GROUPS), check: { readBackOf } }, { mode: 1, context: ctx, bashPolicy: "read-only" });
+  run.computer.guard.install(async () => "allow");
+  const tools = run.hostTools(run.kindTools);
+  await call(tools, "computer_script", { code: "try { await computer.shell.run('git status', { env: { GIT_CONFIG_COUNT: '0', MINE: '1' } }); } catch (error) {} return 1;" });
+  const [, sent] = computer.calls.filter(([method]) => method === "exec.run").at(-1);
+  assert.equal(sent.env.GIT_CONFIG_NOSYSTEM, "1");
+  assert.notEqual(sent.env.GIT_CONFIG_COUNT, "0", "the policy's value, not the script's");
+  assert.equal(sent.env.MINE, "1", "the script's other variables stay");
+  assert.match(sent.argv.at(-1), /^git\(\) \{ case .*\ngit status$/s, "the git floor check runs before the command");
+  await run.end();
+});
+
+test("the claim's MCP server: an MCP client lists the run's computer tools and its calls answer what the per-step tools and the script answer, with structuredContent and image blocks", async () => {
+  const root = scratch();
+  const phone = fakeScreen(root, { ui: true });
+  const run = await runTools(localWorkspace(root), { kind: "phone", computer: phone, hello: helloOf("phone", [...PHONE_GROUPS, "ui"]) }, { mode: 2, context: ctx });
+  const tools = run.hostTools(run.kindTools);
+  const mcp = computerMcp(tools);
+  const client = new Client({ name: "computer-mcp-test", version: "1.0.0" }, { capabilities: {}, versionNegotiation: { mode: "auto" } });
+  await client.connect(new StreamableHTTPClientTransport(new URL("http://claim.test/mcp"), { fetch: (url, init) => mcp.fetch(new Request(url, init)) }));
+  try {
+    const listed = await client.listTools();
+    assert.deepEqual(listed.tools.map((tool) => tool.name), run.kindTools);
+    const byTool = await call(tools, "computer_observe", {});
+    const observed = await client.callTool({ name: "computer_observe", arguments: {} });
+    assert.equal(observed.isError ?? false, false);
+    assert.deepEqual(observed.content, [{ type: "text", text: byTool.text }], "the same words");
+    assert.equal(JSON.stringify(observed.structuredContent), JSON.stringify(byTool.structured), "byte-identical values");
+    const scripted = await client.callTool({ name: "computer_script", arguments: { code: "return await computer.app().observe();" } });
+    assert.equal(JSON.stringify(scripted.structuredContent), JSON.stringify(byTool.structured), "the script's value is the tool's");
+    const shot = await client.callTool({ name: "computer_screenshot", arguments: {} });
+    assert.deepEqual(shot.content.filter((block) => block.type === "image"), [{ type: "image", data: PNG.toString("base64"), mimeType: "image/png" }], "the screenshot as an image block, whole");
+    const failed = await client.callTool({ name: "computer_script", arguments: { code: "throw new Error('no Save button here');" } });
+    assert.equal(failed.isError, true);
+    assert.equal(failed.structuredContent, undefined, "a failure carries no value");
+    assert.match(failed.content[0].text, /no Save button here/);
+  } finally {
+    await client.close();
+  }
 });

@@ -591,6 +591,32 @@ test('web search live: a model with no known search price, or an answer that doe
   assert.deepEqual([unknown.reports[0].webSearches, unknown.reports[0].usd, silent.reports[0].webSearches, silent.reports[0].usd], [1, null, null, null]);
 });
 
+test('web search live: a GPT-6 model (gpt-6-luna, gpt-6.1-sol, gpt-6.1-terra) books each search at $0.01, as GPT-5 does; a look-alike id is still unknown', async () => {
+  assert.deepEqual(['gpt-6-luna', 'gpt-6.1-sol', 'gpt-6.1-terra', 'gpt-6-sol', 'gpt-6'].map(webSearchUsd), [0.01, 0.01, 0.01, 0.01, 0.01]);
+  assert.deepEqual(['gpt-60', 'gpt-6x', 'openai/gpt-6-luna'].map(webSearchUsd), [undefined, undefined, undefined]);
+  assert.equal(withWebSearches(() => 0.5)('gpt-6.1-sol', { input: 1, output: 1, cacheRead: 0, webSearches: 2 }), 0.52);
+  const q = await proxy({ webSearch: 'live', model: 'gpt-6-luna', answer: streamed(searched(3)) });
+  assert.equal((await send(q.p.url, { body: { ...LIVE_REQUEST, model: 'gpt-6-luna' } })).status, 200);
+  await settled();
+  assert.equal(q.reports[0].webSearches, 3);
+  assert.ok(typeof q.reports[0].usd === 'number' && q.reports[0].usd >= 0.03, `a GPT-6 response that ran 3 searches has a known cost, $0.03 of it the searches': ${JSON.stringify(q.reports[0])}`);
+});
+
+test("web search live: a side request that offered no search (a learned workflow's submit-only node through the session's port) ran none, so its known token cost stays known", () => {
+  const policy = codexPolicy({ model: 'gpt-5.4-mini', tools: [], webSearch: 'live' });
+  // The answer says nothing of searches (no tool_usage), as an answer to a request with no search tool does.
+  const silent = sse([completed({ input_tokens: 10, output_tokens: 2 })]);
+  const submitOnly = { model: 'gpt-5.4-mini', input: [{ role: 'user', content: 'Answer by calling submit.' }], tools: [{ type: 'function', name: 'submit', parameters: { type: 'object' } }] };
+  const price = withWebSearches((_model, u) => (u.input + u.output) / 1e6);
+  const side = policy.usageOf(silent, submitOnly);
+  assert.equal(side.webSearches, 0, `no search offered, none ran: ${JSON.stringify(side)}`);
+  assert.ok(Math.abs(price('gpt-5.4-mini', side) - 12 / 1e6) < 1e-15, `its tokens, known: ${price('gpt-5.4-mini', side)}`);
+  // A request that offered the live search and whose answer does not say how many it ran stays unknown, as before.
+  const live = policy.usageOf(silent, LIVE_REQUEST);
+  assert.equal(live.webSearches, null, `offered, count unsaid: ${JSON.stringify(live)}`);
+  assert.equal(price('gpt-5.4-mini', live), null);
+});
+
 test("web search live: the runner books each search into the session's spend, and the host's cap refuses the next request once it is crossed", async () => {
   // A cap of $0.03: the recorded answer's tokens ($0.0139) are under it, and with two searches ($0.02) over it.
   const session = async (searches) => {

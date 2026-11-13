@@ -22,6 +22,9 @@ export interface RunLaunch {
   /** The start request's body, as the person or trigger gave it, or an object a built-in run names. */
   readonly input: unknown;
   readonly title: string;
+  /** The GitHub repository (owner/name) a person's run reaches, from the start body's `repo` or its agent's one bound
+   *  repository (run-repo.ts); a github trigger's run has none here, its event names it. */
+  readonly repo?: string;
   readonly place: Place;
   /** The loop's adapter, when not the revision's: a built-in learning run names "learning". */
   readonly harness?: string;
@@ -56,8 +59,9 @@ export interface RunLaunch {
    *  workflow draft at its end; `gradeModel`, the model the
    *  server names to grade what the run proposes (learning.ts gradeModelOf: --grade-model, else AGENTRUN_SERVE_GRADE_MODEL,
    *  else AGENT_MODEL_STRONG), absent when it names none and the agent's own grades it; and `seedFailed`, why it starts with
-   *  nothing learned when it does (SeedFailed). Absent when the run does not learn. */
-  readonly learning?: { readonly given: readonly { readonly file: string; readonly name: string }[]; readonly seed: string | null; readonly section: string; readonly seedNotes?: number; readonly skills?: readonly string[]; readonly workflows?: readonly string[]; readonly notesOnly?: true; readonly gradeModel?: string; readonly seedFailed?: SeedFailed };
+   *  nothing learned when it does (SeedFailed); `use`, a run started with `learning: "use"` (learning.ts RUN_LEARNING_USE):
+   *  it starts from all of the above and keeps nothing, never asked its end-of-run turn. Absent when the run does not learn. */
+  readonly learning?: { readonly given: readonly { readonly file: string; readonly name: string }[]; readonly seed: string | null; readonly section: string; readonly seedNotes?: number; readonly skills?: readonly string[]; readonly workflows?: readonly string[]; readonly notesOnly?: true; readonly gradeModel?: string; readonly seedFailed?: SeedFailed; readonly use?: true };
   /** The trigger and firing that started the run, or none for a person's run. */
   readonly trigger?: RunTrigger;
   /** Who the first message is from, when not the person: kept only through the fail-safe below. */
@@ -122,6 +126,7 @@ export function launchBody(launch: RunLaunch): Json {
   return {
     input: launch.input,
     title: launch.title,
+    ...(launch.repo !== undefined ? { repo: launch.repo } : {}),
     place: launch.place,
     ...(launch.harness !== undefined ? { harness: launch.harness } : {}),
     ...(launch.model ? { model: launch.model } : {}),
@@ -134,7 +139,7 @@ export function launchBody(launch: RunLaunch): Json {
     ...(launch.boxAllow !== undefined ? { box_allow: launch.boxAllow } : {}),
     ...(launch.boxAllowSet ? { box_allow_set: true } : {}),
     ...(launch.files?.length ? { files: launch.files } : {}),
-    ...(launch.learning ? { learning: { given: launch.learning.given.map((note) => ({ file: note.file, name: note.name })), seed: launch.learning.seed, section: launch.learning.section, ...(launch.learning.seedNotes !== undefined ? { seedNotes: launch.learning.seedNotes } : {}), ...(launch.learning.skills?.length ? { skills: [...launch.learning.skills] } : {}), ...(launch.learning.notesOnly ? { notesOnly: true } : {}), ...(launch.learning.workflows?.length ? { workflows: [...launch.learning.workflows] } : {}), ...(launch.learning.gradeModel ? { gradeModel: launch.learning.gradeModel } : {}), ...(launch.learning.seedFailed ? { seedFailed: launch.learning.seedFailed } : {}) } } : {}),
+    ...(launch.learning ? { learning: { given: launch.learning.given.map((note) => ({ file: note.file, name: note.name })), seed: launch.learning.seed, section: launch.learning.section, ...(launch.learning.seedNotes !== undefined ? { seedNotes: launch.learning.seedNotes } : {}), ...(launch.learning.skills?.length ? { skills: [...launch.learning.skills] } : {}), ...(launch.learning.notesOnly ? { notesOnly: true } : {}), ...(launch.learning.workflows?.length ? { workflows: [...launch.learning.workflows] } : {}), ...(launch.learning.gradeModel ? { gradeModel: launch.learning.gradeModel } : {}), ...(launch.learning.seedFailed ? { seedFailed: launch.learning.seedFailed } : {}), ...(launch.learning.use ? { use: true } : {}) } } : {}),
     ...(launch.trigger ? { trigger: launch.trigger } : {}),
     ...(launch.inputOrigin ? { input_origin: launch.inputOrigin } : {}),
     ...(launch.followUp ? { follow_up: true } : {}),
@@ -144,16 +149,17 @@ export function launchBody(launch: RunLaunch): Json {
 }
 
 /** The learning start a launch body names, as read back: its given notes (each {file, name}), its seed sha, its # Learned
- *  section text, the learned skills and workflows it was offered, its grade model and why its seed failed, or undefined
+ *  section text, the learned skills and workflows it was offered, its grade model, why its seed failed and whether it only
+ *  uses them (`use`), or undefined
  *  when the body names none (a run that does not learn). */
-function readLearning(value: unknown): { given: readonly { file: string; name: string }[]; seed: string | null; section: string; seedNotes?: number; skills?: readonly string[]; workflows?: readonly string[]; notesOnly?: true; gradeModel?: string; seedFailed?: SeedFailed } | undefined {
+function readLearning(value: unknown): { given: readonly { file: string; name: string }[]; seed: string | null; section: string; seedNotes?: number; skills?: readonly string[]; workflows?: readonly string[]; notesOnly?: true; gradeModel?: string; seedFailed?: SeedFailed; use?: true } | undefined {
   if (!isObject(value)) return undefined;
   const given = Array.isArray(value.given) ? value.given.flatMap((note) => (isObject(note) && typeof note.file === "string" && typeof note.name === "string" ? [{ file: note.file, name: note.name }] : [])) : [];
   const seed = typeof value.seed === "string" ? value.seed : null;
   const section = typeof value.section === "string" ? value.section : "";
   const names = (list: unknown) => (Array.isArray(list) ? list.filter((name): name is string => typeof name === "string") : []);
   const [skills, workflows] = [names(value.skills), names(value.workflows)];
-  return { given, seed, section, ...(typeof value.seedNotes === "number" ? { seedNotes: value.seedNotes } : {}), ...(skills.length ? { skills } : {}), ...(workflows.length ? { workflows } : {}), ...(value.notesOnly === true ? { notesOnly: true as const } : {}), ...(typeof value.gradeModel === "string" && value.gradeModel !== "" ? { gradeModel: value.gradeModel } : {}), ...(typeof value.seedFailed === "string" && SEED_FAILURES.includes(value.seedFailed) ? { seedFailed: value.seedFailed as SeedFailed } : {}) };
+  return { given, seed, section, ...(typeof value.seedNotes === "number" ? { seedNotes: value.seedNotes } : {}), ...(skills.length ? { skills } : {}), ...(workflows.length ? { workflows } : {}), ...(value.notesOnly === true ? { notesOnly: true as const } : {}), ...(typeof value.gradeModel === "string" && value.gradeModel !== "" ? { gradeModel: value.gradeModel } : {}), ...(typeof value.seedFailed === "string" && SEED_FAILURES.includes(value.seedFailed) ? { seedFailed: value.seedFailed as SeedFailed } : {}), ...(value.use === true ? { use: true as const } : {}) };
 }
 
 /** A launch body read back into a `RunLaunch`, with the input-origin fail-safe applied through the body's own trigger, or
@@ -170,6 +176,7 @@ export function readLaunchBody(stored: unknown): RunLaunch | undefined {
   return {
     input: stored.input,
     title: typeof stored.title === "string" ? stored.title : "",
+    ...(typeof stored.repo === "string" ? { repo: stored.repo } : {}),
     place,
     ...(typeof stored.harness === "string" ? { harness: stored.harness } : {}),
     ...(model ? { model } : {}),

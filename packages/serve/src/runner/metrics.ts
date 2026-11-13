@@ -38,14 +38,18 @@ function sessionConversations(entries: readonly EntryLike[]): Map<string, number
  *  or with no runner.turn yet (in flight, or cut off by a crash before its answer was booked), makes the sum unknown
  *  (null), its known part kept, as sessionSpendOf counts it. A CLI harness's own record carries no per-request cost, nor do
  *  a workflow's model nodes (pi-ai's $0 for a model it has no price for): their model requests' cost is this, the
- *  booking's. */
-export function bookedSpend(entries: readonly EntryLike[], which: "model" | "paid" | "decisions"): BookedSpend {
+ *  booking's. `side`: of the model requests, those booked as side calls (another model than the session's, or the host's
+ *  own, as a learned workflow's node is: the proxy's `side`/`host`), which no answer of a pi run carries. */
+export function bookedSpend(entries: readonly EntryLike[], which: "model" | "paid" | "decisions" | "side"): BookedSpend {
   const keyed = sessionConversations(entries);
   const paidConv = keyed.get(TOOL_SESSION);
   const decisionsConv = keyed.get(DECISION_SESSION);
   const conv = (e: EntryLike) => Number(e.conversationId);
-  const chosen = (e: EntryLike) => (which === "paid" ? conv(e) === paidConv : which === "decisions" ? conv(e) === decisionsConv : conv(e) !== paidConv && conv(e) !== decisionsConv);
   const turnOf = (e: EntryLike) => `${String(e.conversationId)}:${String((e.data as { turn?: unknown } | undefined)?.turn)}`;
+  const model = (e: EntryLike) => conv(e) !== paidConv && conv(e) !== decisionsConv;
+  // The side calls among the model requests: each request that says so, by its conversation and turn.
+  const sides = new Set(entries.filter((e) => e.kind === RUNNER_RECORDS.request && model(e) && ((e.data as { side?: unknown; host?: unknown } | undefined)?.side === true || typeof (e.data as { host?: unknown } | undefined)?.host === "string")).map(turnOf));
+  const chosen = (e: EntryLike) => (which === "paid" ? conv(e) === paidConv : which === "decisions" ? conv(e) === decisionsConv : which === "side" ? model(e) && sides.has(turnOf(e)) : model(e));
   const answered = new Set(entries.filter((e) => e.kind === RUNNER_RECORDS.turn && chosen(e)).map(turnOf));
   // The model each request was sent on, by its turn (its runner.request's `model`).
   const sentOn = new Map(entries.filter((e) => e.kind === RUNNER_RECORDS.request && chosen(e)).map((e) => [turnOf(e), (e.data as { model?: unknown } | undefined)?.model]));
@@ -83,6 +87,13 @@ export function bookedSpend(entries: readonly EntryLike[], which: "model" | "pai
     for (const key of Object.keys(tokens) as (keyof typeof tokens)[]) if (typeof d.usage?.[key] === "number") tokens[key] += d.usage[key] as number;
   }
   return { usd: unpriced ? null : known, known, unpriced, requests, unmetered, models, tokens };
+}
+
+/** An agent run's cost as its end commit stores it: its model requests' (`model`), its paid tool calls' (`paid`, the
+ *  run's ledger.paid) and its decisions' (`decisions`, a learned workflow's decision nodes, LS-07: bookedSpend over
+ *  their own session's records, so one that reported no cost is unknown, never the cap's hold for it), summed; null (unknown) when any of them is. Never a known figure that leaves an unknown part out. */
+export function runEndCost(parts: { readonly model: number | null; readonly paid: number | null; readonly decisions: number | null }): number | null {
+  return parts.model === null || parts.paid === null || parts.decisions === null ? null : parts.model + parts.paid + parts.decisions;
 }
 
 /** Whether a CLI harness's record (`entries`, its root's) shows the model at work: a model message, a tool call it made, or

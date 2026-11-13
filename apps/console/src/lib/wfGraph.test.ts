@@ -69,15 +69,15 @@ describe("drawWorkflowGraph, a run's model nodes and their models", () => {
     const run = {
       run: { id: "r", agent: "a", revision: "1", status: "completed", paused: false, startedAt: "2026-11-01T00:00:00Z", endedAt: "2026-11-01T00:00:02Z" },
       workflow: flow, graph, decisions: [], effects: [], totals: { cost_usd: null, decisions: 0, effects: 0, elapsed_ms: 2000 },
-      nodes: { "/root": { status: "done" }, "/root/steps/0": { status: "done", model: "gpt-5-mini", tier: "fast" }, "/root/steps/1": { status: "done", model: "gpt-5-4-mini" }, "/root/steps/2": { status: "done" } },
+      nodes: { "/root": { status: "done" }, "/root/steps/0": { status: "done", model: "gpt-6-luna", tier: "fast" }, "/root/steps/1": { status: "done", model: "gpt-6-1-sol" }, "/root/steps/2": { status: "done" } },
     } as never;
     const s = svg();
     drawWorkflowGraph(s, graph, runMarks(run, null));
     const kind = (p: string) => s.querySelector(`g[data-path="${p}"] .kind`)?.textContent;
-    expect(kind("/root/steps/0")).toBe("extract · fast · gpt-5-mini");
-    expect(kind("/root/steps/1")).toBe("extract · gpt-5-4-mini");
+    expect(kind("/root/steps/0")).toBe("extract · fast · gpt-6-luna");
+    expect(kind("/root/steps/1")).toBe("extract · gpt-6-1-sol");
     expect(kind("/root/steps/2")).toBe("call · web_fetch");
-    expect(s.querySelector('g[data-path="/root/steps/0"] title')?.textContent).toContain("ran on gpt-5-mini (the fast tier)");
+    expect(s.querySelector('g[data-path="/root/steps/0"] title')?.textContent).toContain("ran on gpt-6-luna (the fast tier)");
   });
 });
 

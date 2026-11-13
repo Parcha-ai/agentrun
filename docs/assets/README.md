@@ -36,6 +36,18 @@ repository's Apache-2.0 license.
 `pill-render.png` and `pill-local.png` are the README's two buttons, set in Inter 600 and JetBrains Mono 500 (both SIL Open
 Font License) on the same palette.
 
+## Tutorial screenshots
+
+`tutorials/cost-per-run.png` is the console's Cost per run chart on its invented sample
+(`apps/console/src/components/CostPerRun.sample.json`: an invoice-sorter agent's 80 runs, no live model run), captured
+by the `cost-per-run` real-browser flow at 1440 px in the light theme (`E2E_SHOTS=<dir> npm run test:e2e -- --only
+cost-per-run` from the repository's root).
+
+Both carry an "Example data" badge on the picture itself, drawn by the flow's shooting step (`markExample` in `apps/console/e2e/harness.mjs`), never by the product.
+
+`tutorials/held-out-test.png` is the Learning tab's Held-out test card for the same invented agent, from a record the
+`cost-per-run` flow posts through the API (200 jobs, 188 right), captured by that flow at 1440 px in the light theme.
+
 ## Case study cards and charts
 
 `case-studies/` holds the cards the README's Case studies section shows and the charts on the pages under
