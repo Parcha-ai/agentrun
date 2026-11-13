@@ -28,7 +28,7 @@ const ARGS = { to: "ops@example.com", subject: "weekly totals" };
 /** A run whose first step calls the asked tool with ARGS, parked on it; the loop's clock is the test's (`clock.at`), and
  *  the asked tool's approval price is `price`. `noResume`: the loop of any claim after the park cannot start (its start
  *  throws, as a harness that can't open), so the runner itself ends the run on a stop (resumeFailed). */
-async function parkedRun(t, { price, noResume = false } = {}) {
+async function parkedRun(t, { price, noResume = false, setting } = {}) {
   const opened = await stores({ runners: 1 });
   await queue(opened.server, "run-1");
   const { tools, ran } = suiteTools();
@@ -38,6 +38,8 @@ async function parkedRun(t, { price, noResume = false } = {}) {
   const loop = createAdapterLoop(async (claim, run) => ({
     ...(await spec(claim, run)),
     ...(price !== undefined ? { approvalPrice: (call) => (call.tool === "asked" ? price : undefined) } : {}),
+    // The tool's setting as `setting.now` reads it at each call (the server's gate): "ask", then perhaps "allow".
+    ...(setting ? { gate: async () => setting.now } : {}),
   }), { restartLimit: MAX_RESTARTS, now: () => clock.at });
   const createLoop = noResume
     ? (deps) => {
@@ -99,6 +101,18 @@ test("a stop while the call waits withdraws it: a withdrawn answer in the stop's
   assert.deepEqual(await w.answers(), [{ callId: ask.callId, approved: false, decision: "withdrawn", answeredAt: "2026-11-08T12:05:30.250Z" }]);
   assert.ok((await w.opened.server.commands("run-1", stop.id - 1)).find((command) => command.id === stop.id).takenAt !== null, "the stop row is taken");
   assert.match(row.summary ?? "", /stopped/);
+});
+
+test("a call the person declined, its tool's setting at allow by the next claim, never runs: the stored deny is read before the setting answers", async (t) => {
+  const setting = { now: "ask" };
+  const w = await parkedRun(t, { setting });
+  const [ask] = await w.asks();
+  setting.now = "allow";
+  w.clock.at = ANSWERED_AT;
+  await sendCommand(w.opened.server, "run-1", { kind: "deny", body: { approval: ask.callId, note: "not on a Friday" } });
+  await w.settled("ended");
+  assert.equal(w.ran.asked, 0, "the person's deny wins over the setting: it never ran");
+  assert.deepEqual(await w.answers(), [{ callId: ask.callId, approved: false, decision: "deny", answeredAt: "2026-11-08T12:05:30.250Z", note: "not on a Friday" }]);
 });
 
 test("a stop of a parked run whose loop cannot start: the runner's own stopped end withdraws the waiting call, in that end's commit, answered then", async (t) => {

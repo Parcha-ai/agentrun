@@ -6,7 +6,7 @@ import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { flowAgent, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
+import { flowAgent, follow, scratch, serve, withEnv } from "./support.mjs";
 import * as refusal from "../dist/key-refusal.js";
 
 const CUT_KEY = `not-a-secret-${"cut-key-0123456789abcdef"}`;
@@ -121,12 +121,13 @@ async function judgedRun(t, item = CUT_KEY) {
   return { api, data, runId: started.body.run_id };
 }
 
-/** The run's store held by another connection, as a run's own process holds it: an exclusive locking mode, which lets
- *  no locking reader in. The graph's read takes no lock (run-db.ts), so it never waits on it. */
+/** The one store held by another connection, as a runner mid-commit holds it: the write lock taken (BEGIN IMMEDIATE) and a
+ *  read open on the run's journal inside it. The graph reads the store in its own connection (WAL), so a held writer never
+ *  makes it wait or serve a stale view. */
 function hold(t, data, runId) {
-  const store = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { timeout: 0 });
-  store.exec("PRAGMA locking_mode=EXCLUSIVE; BEGIN EXCLUSIVE");
-  store.prepare("SELECT count(*) FROM sqlite_master").get();
+  const store = new DatabaseSync(join(data, "store.sqlite"), { timeout: 0 });
+  store.exec("BEGIN IMMEDIATE");
+  store.prepare("SELECT count(*) FROM pi_entries WHERE run_id = ?").get(runId);
   const release = () => store.isOpen && (store.isTransaction && store.exec("ROLLBACK"), store.close());
   t.after(release);
   return release;
@@ -147,7 +148,7 @@ test("a map item's label cut at 200 characters inside a held key, and a decision
   assert.equal(refusal.answerPasses.count, read, "a second read redacted no label or state again");
 });
 
-test("a graph read while another connection holds the run's store: read whole and lock-free, never stale, and no part of a held key", { timeout: 60_000, skip: "holds the run's own store file open (hold), a per-run file the switch doesn't keep: a file-path case, never reached over the one store" }, async (t) => {
+test("a graph read while another connection holds the run's store: read whole and lock-free, never stale, and no part of a held key", { timeout: 60_000 }, async (t) => {
   const { api, data, runId } = await judgedRun(t);
   const whole = (await api("GET", `/runs/${runId}/graph`)).body;
   const release = hold(t, data, runId);
@@ -186,7 +187,7 @@ test("a call's error and a decision's state, each long enough to be cut, with th
   assert.equal(refusal.answerPasses.count, read, "a second read redacted no error or state again");
 });
 
-test("a key saved after a graph read: the next read, while another connection holds the run's store, shows no part of it, a label's cut inside it included", { timeout: 60_000, skip: "holds the run's own store file open (hold), a per-run file the switch doesn't keep: a file-path case, never reached over the one store" }, async (t) => {
+test("a key saved after a graph read: the next read, while another connection holds the run's store, shows no part of it, a label's cut inside it included", { timeout: 60_000 }, async (t) => {
   // Not held when the run ran, nor when the graph was first read; no 8 characters of it are in CUT_KEY or LATER.
   const saved = ["later", "saved", "qponmlkjih"].join("-");
   const { api, data, runId } = await judgedRun(t, saved);
