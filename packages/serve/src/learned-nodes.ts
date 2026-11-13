@@ -3,7 +3,8 @@
 // call's result row as `learned_nodes`). Its own module, so the timeline's reader needs none of the tool's imports.
 
 /** The journal entry a learned_workflow call keeps beside itself: `{ call, workflow, nodes }`, its call's id, the
- *  workflow's name and each of its nodes that ran (LearnedNode). */
+ *  workflow's name and each of its nodes that ran (LearnedNode); on a replay run's call that a write stopped (learn/
+ *  replay-calls.ts: one the graded run's recording does not have), `replay_skipped: { tool, step }` too. */
 export const LEARNED_NODES = "agentrun.learned_nodes";
 /** The most nodes a call keeps: a map over a long list runs its body once per item. */
 export const LEARNED_NODES_MAX = 64;
@@ -33,4 +34,15 @@ export function guardsOf(entries: readonly { readonly kind: string; readonly dat
     }
   }
   return rows;
+}
+
+/** The write that stopped a replay run's workflow, from its root entries (a LEARNED_NODES entry's `replay_skipped`: a
+ *  write the graded run's recording does not have, learn/replay-calls.ts), or undefined when none did. */
+export function replaySkippedIn(entries: readonly { readonly kind: string; readonly data?: unknown }[]): { tool: string; step: string } | undefined {
+  for (const entry of entries) {
+    if (entry.kind !== LEARNED_NODES) continue;
+    const skipped = (entry.data as { replay_skipped?: { tool?: unknown; step?: unknown } } | undefined)?.replay_skipped;
+    if (skipped && typeof skipped.tool === "string" && typeof skipped.step === "string") return { tool: skipped.tool, step: skipped.step };
+  }
+  return undefined;
 }

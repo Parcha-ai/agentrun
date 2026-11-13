@@ -28,7 +28,7 @@ import { COST_WINDOW, type RunPath } from "../learning-cost.js";
 export { COST_WINDOW };
 import type { Store } from "../store/store.js";
 import { inputIssues, isObject, type Json } from "../validate.js";
-import { type GuardRow, guardsOf, LEARNED_NODES } from "../learned-nodes.js";
+import { type GuardRow, guardsOf, LEARNED_NODES, replaySkippedIn } from "../learned-nodes.js";
 
 /** The root entry a run served workflow-first keeps, once the workflow's call ended: which workflow, at which learned
  *  revision, under which call, and how it ended. A later claim that finds it never runs the workflow again. */
@@ -273,8 +273,10 @@ export function pathMetrics(launch: RunLaunch, classified: { path: RunPath; work
     const { of, workflow: name, digest: at } = launch.replay;
     // Handed back when it escalated (an escalate node or a guard: the workflow knowing its limits); a hand-back on a step
     // that failed (a credential or tool the replay ran without, a step's output off its schema) is failed: no evidence.
-    const outcome = path === "workflow" && workflow === name ? "answered" : path === "handed_back" && workflow === name && !stepFailedIn(entries) ? "handed_back" : "failed";
-    return { path: "replay", ...(launch.learning.seed ? { learned_revision: launch.learning.seed } : {}), workflow: name, workflow_digest: at, ...(guards.length ? { guards } : {}), replay: { of, outcome } };
+    // Skipped when a write it needed is not in the graded run's recording (learn/replay-calls.ts): never run, no evidence.
+    const skipped = replaySkippedIn(entries);
+    const outcome = skipped ? "skipped_write" : path === "workflow" && workflow === name ? "answered" : path === "handed_back" && workflow === name && !stepFailedIn(entries) ? "handed_back" : "failed";
+    return { path: "replay", ...(launch.learning.seed ? { learned_revision: launch.learning.seed } : {}), workflow: name, workflow_digest: at, ...(guards.length ? { guards } : {}), replay: { of, outcome, ...(skipped ? { skipped } : {}) } };
   }
   return { path, ...(launch.learning.seed ? { learned_revision: launch.learning.seed } : {}), ...(workflow ? { workflow } : {}), ...(digest ? { workflow_digest: digest } : {}), ...(guards.length ? { guards } : {}) };
 }
@@ -285,7 +287,10 @@ const stepFailedIn = (entries: readonly { readonly kind: string; readonly data?:
   entries.some((entry) => entry.kind === LEARNED_NODES && Array.isArray((entry.data as { nodes?: unknown } | undefined)?.nodes) && ((entry.data as { nodes: unknown[] }).nodes).some((node) => (node as { status?: unknown } | null)?.status === "failed"));
 
 /** A replay run's record (metrics.replay): the graded run it replayed and how its workflow ended there. */
-export type ReplayMetrics = { readonly of: string; readonly outcome: "answered" | "handed_back" | "failed" };
+export type ReplayMetrics = { readonly of: string; readonly outcome: ReplayOutcome; readonly skipped?: { readonly tool: string; readonly step: string } };
+/** How a replay run's workflow ended on its input: `skipped_write`, stopped at a write the graded run's recording does not
+ *  have (learn/replay-calls.ts SKIPPED_WRITE), never run. */
+export type ReplayOutcome = "answered" | "handed_back" | "failed" | "skipped_write";
 
 /** The agent's first input on a handback: the hand-back first (which workflow, and its own words for why, the trace the
  *  call answered), then the job as it was launched. The loop cuts it of every secret the runner holds before it is sent. */

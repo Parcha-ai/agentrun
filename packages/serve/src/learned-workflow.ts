@@ -50,6 +50,7 @@ import type { Refusal } from "@parcha/agentrun-kernel";
 import type { RunDecisions } from "@parcha/agentrun-kernel/kernel/cap";
 import { hostCalls } from "./host-calls.js";
 import { workflowNodes } from "./model.js";
+import { type ReplayCalls, SKIPPED_WRITE } from "./learn/replay-calls.js";
 
 /** What a learned_workflow call's approval card says of its MCP calls' arguments: the workflow decides them as it runs. */
 export const LEARNED_MCP_ARGUMENTS = "decided by the workflow while it runs, from its input and its earlier steps";
@@ -213,6 +214,10 @@ export type LearnedWorkflowRun = {
   /** The gate's whole decision of an MCP node's call with its arguments, as the run's own call of the tool gets it
    *  (RunGate.decide: deny, argument pins, ask, no approver). Required for an MCP node: one with none is never sent. */
   decide?: (tool: string, args: unknown) => Promise<"allow" | "ask" | { deny: string }>;
+  /** A replay run's (runner/promotion.ts): its call nodes go through the replay's rules (learn/replay-calls.ts: a read
+   *  live through a cache seeded from the graded run's recorded calls, a write only ever answered from that recording),
+   *  and a write the recording does not have stops the workflow there, skipped. Absent: every call node runs live. */
+  replay?: ReplayCalls;
 };
 
 /** The most characters of a learned workflow's output its answer holds, monid's bound (monid.ts CLIP): within the
@@ -327,7 +332,12 @@ export function learnedWorkflowTool(run: LearnedWorkflowRun): ToolRegistration {
       // that can't be kept never fails the call. A call stopped part way keeps the nodes that ended before it stopped,
       // written outside the stopped call's context, and still ends as a stop.
       const trace: LearnedNode[] = [];
-      const keep = (signal: Context) => (trace.length ? api.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: LEARNED_NODES, data: { call: ledger.call, workflow: flow.name, nodes: trace } as never })), signal).catch(() => undefined) : undefined);
+      // A replay's write the recording did not have (learn/replay-calls.ts) rides on the same entry, ran a node or not.
+      const keep = (signal: Context) => {
+        const skipped = run.replay?.skipped;
+        if (!trace.length && !skipped) return undefined;
+        return api.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: LEARNED_NODES, data: { call: ledger.call, workflow: flow.name, nodes: trace, ...(skipped ? { replay_skipped: skipped } : {}) } as never })), signal).catch(() => undefined);
+      };
       let said: Awaited<ReturnType<typeof runLearned>>;
       try {
         said = await runLearned(run, flow, input, context?.abortSignal, ledger, trace);
@@ -398,7 +408,8 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
     // Its own signal, which the DSL ties to the call's (a sibling's failure, a deadline, the call's stop).
     return (await runnerFor(request.tier as string | undefined))(request);
   };
-  const runEffect = async ({ node, input: given, signal: own, executionPath, item }: { node: { label: string; via: string; tool?: string }; input: Record<string, unknown>; signal: AbortSignal; executionPath?: string; item?: { index: number } }) => {
+  type EffectRequest = { node: { label: string; via: string; tool?: string }; input: Record<string, unknown>; signal: AbortSignal; executionPath?: string; item?: { index: number } };
+  const liveEffect = async ({ node, input: given, signal: own, executionPath, item }: EffectRequest) => {
     const tool = node.via === "tool" ? node.tool : undefined;
     // Its call id under the workflow's call: the node, its execution path, its item in a map. Its paid requests are booked
     // under it, as a call of its own.
@@ -436,6 +447,18 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
     const booked = ledger ? { ledger: { call: callId, record: ledger.record } } : {};
     return effect(given, { signal: own, env: run.env, work: run.work, ...(run.complete ? { complete: run.complete } : {}), ...booked });
   };
+  // A replay run's call nodes through the replay's rules (learn/replay-calls.ts); a live one runs as above, gate and all.
+  const replay = run.replay;
+  const runEffect = (request: EffectRequest) => {
+    const tool = request.node.via === "tool" ? request.node.tool : undefined;
+    return replay && tool ? replay.call({ label: request.node.label, tool }, request.input, () => liveEffect(request)) : liveEffect(request);
+  };
+  // A replay's write with no recording stops the whole workflow there: nothing after it runs.
+  const stopped = replay ? (signal ? AbortSignal.any([signal, replay.stop]) : replay.stop) : signal;
+  const skippedWords = () => {
+    const skipped = replay?.skipped;
+    return skipped ? { text: `The learned workflow ${flow.name} was not replayed on this input: its step "${skipped.step}" calls ${skipped.tool}, a write, and the graded run's recording has no call of it with these arguments, so it ${SKIPPED_WRITE}. Nothing was sent.${stepsLine(nodes)}`, isError: true, nodes } : undefined;
+  };
   // Its step guards (runner/step-guard.ts): a guard's Jev is a decision of the call, on the run's decisions (its judge,
   // its gate, its one cap); a run with no Jev provider has no Jev signal, so a guard that reads one hands back.
   const jevProvider = run.decisions?.providers.providers.jev;
@@ -458,12 +481,16 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
   };
   try {
     const judging = runJudge && run.decisions ? { runJudge, decisionProviders: run.decisions.providers } : {};
-    const result = await dsl.runWorkflow(doc, input as Record<string, unknown>, { runNode: runNode as never, runEffect: runEffect as never, guardStep, onEvent, ...judging, ...(signal ? { signal } : {}) } as never);
+    const result = await dsl.runWorkflow(doc, input as Record<string, unknown>, { runNode: runNode as never, runEffect: runEffect as never, guardStep, onEvent, ...judging, ...(stopped ? { signal: stopped } : {}) } as never);
+    const skipped = skippedWords();
+    if (skipped) return skipped;
     if (result.status === "escalated") return { text: learnedText(handedBackText(flow.name, result.escalation, result.state, nodes)), isError: true, nodes };
     if (result.status !== "complete") return refuse(`it ended ${(result as { status: string }).status}`);
     return { text: learnedText(learnedOutput(result.output)), isError: false, nodes };
   } catch (error) {
     if (signal?.aborted) throw error;
+    const skipped = skippedWords();
+    if (skipped) return skipped;
     return { text: `The learned workflow ${flow.name} failed: ${String((error as Error)?.message ?? error).slice(0, 1000)}${stepsLine(nodes)}`, isError: true, nodes };
   }
 }
