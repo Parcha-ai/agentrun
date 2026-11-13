@@ -341,10 +341,15 @@ export interface ChannelPostRow {
   readonly reason: string | null;
   /** Until when a sender's claim holds the post (state sending); null when none does. */
   readonly claimedUntil: number | null;
+  /** The try whose claim took the post last, and whose settle may write it (Channels.settle's fence); null once a write
+   *  outside every claim (a redelivery's landing, a drop, a start's release) took it from that try. */
+  readonly claim: string | null;
   readonly createdAt: number;
 }
-/** One try of a channel's post (store schema `channel_attempts`): its HTTP status, or null when none came back. */
+/** One try of a channel's post (store schema `channel_attempts`): its HTTP status, or null when none came back. `tryId`
+ *  names the try, once: a settle written again (its outcome unknown) logs it once. */
 export interface ChannelAttemptRow {
+  readonly tryId: string;
   readonly postId: string;
   readonly moment: string;
   readonly at: number;
@@ -374,18 +379,30 @@ export interface Channels {
   get(id: string): Promise<ChannelPostRow | undefined>;
   /** `channel`'s posts still to send (queued or sending), oldest first. */
   queued(channel: string): Promise<ChannelPostRow[]>;
-  /** The post `id` claimed for a try until `now + leaseMs` (state sending), by compare-and-set: it is queued and due
-   *  (`next_at` at or before `now`), or a claim on it ran out. True for the one caller that took it; false for any other
-   *  at the same time, and for a post sent, dropped or held. */
-  claim(id: string, now: number, leaseMs: number): Promise<boolean>;
-  /** Every claim on `channel`'s posts let go (sending back to queued): a server's start, when it is the store's one server
-   *  and no try of an earlier one is still out. Answers how many. */
+  /** The post `id` claimed by the try `token` until `now + leaseMs` (state sending, `claim` the token), by
+   *  compare-and-set: it is queued and due (`next_at` at or before `now`), or a claim on it ran out. The post as the claim
+   *  took it, for the one caller that took it; undefined for any other at the same time, and for a post sent, dropped or
+   *  held. */
+  claim(id: string, now: number, leaseMs: number, token: string): Promise<ChannelPostRow | undefined>;
+  /** Every claim on `channel`'s posts let go (sending back to queued, no try's claim): a server's start, when it is the
+   *  store's one server and no try of an earlier one is still out. Answers how many. */
   release(channel: string): Promise<number>;
-  /** The post's new state, with `attempt` added to its channel's tries in the same transaction; the channel keeps its
-   *  newest `kept` tries (50 by default), and of its sent or dropped posts only those a kept try names or `sending` lists
-   *  (a try of it still in flight, which a redelivery may send again). */
-  settle(id: string, to: { state: ChannelPostRow["state"]; attempts?: number; nextAt?: number; reason?: string | null }, attempt?: ChannelAttemptRow, options?: { kept?: number; sending?: readonly string[] }): Promise<void>;
-  /** Every queued or sending post of `channel` dropped, `reason` kept on each: how many. */
+  /** A try's outcome: the post's new state (`to`, none for a try that leaves it as it is), with `attempt` added to its
+   *  channel's tries in the same transaction, once by its tryId. Fenced by `claim`, the token of the claim that made the
+   *  try: the state is written only while the post still holds that claim (compare-and-set), so a write that comes late,
+   *  after a newer claim, a redelivery's landing or a drop, changes nothing; written again with the same fence (its
+   *  outcome unknown), it writes the same row. With no `claim`, the state is written whatever holds the post, and the
+   *  post's claim goes with it (a redelivery's landing: sent is final). Answers whether `to` was written; a try that
+   *  wrote nothing is logged with no retry_at. The channel keeps its newest `kept` tries (50 by default), and of its sent
+   *  or dropped posts only those a kept try names or `sending` lists (a try of it still in flight, which a redelivery may
+   *  send again). */
+  settle(
+    id: string,
+    to: { state: ChannelPostRow["state"]; attempts?: number; nextAt?: number; reason?: string | null } | undefined,
+    attempt?: ChannelAttemptRow,
+    options?: { kept?: number; sending?: readonly string[]; claim?: string },
+  ): Promise<boolean>;
+  /** Every queued or sending post of `channel` dropped, `reason` kept on each, no try's claim left on it: how many. */
   dropAll(channel: string, reason: string): Promise<number>;
   /** `channel`'s newest tries, newest first, at most `limit`. */
   attempts(channel: string, limit: number): Promise<ChannelAttemptRow[]>;

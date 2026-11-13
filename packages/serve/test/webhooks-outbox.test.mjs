@@ -757,12 +757,12 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     assert.equal(hook.got.length, 1);
   });
 
-  test("a failed delivery whose settle-time read of the message fails is tried again later, not stranded sending with no timer", async (t) => {
+  test("a failed delivery whose store refuses every read of the message after the try is tried again later, not stranded sending with no timer: its outcome is written from its claim, never from a read", async (t) => {
     const hook = await receiver(t, (n) => (n === 1 ? 503 : 200));
     const log = logged();
     const dir = await scratch(t);
     let refused = 0;
-    // The message's read fails, three times, once the receiver has the first try: the try's own read before settling.
+    // The message's read fails, three times, once the receiver has the first try.
     const on = await webhookOn(t, dir, { retryMs: [100], storeRetryMs: 50, wrap: seeing("channels", (channels) => ({
       get: async (id) => {
         if (hook.got.length >= 1 && refused < 3) throw (refused++, new Error("the store is busy"));
@@ -773,21 +773,26 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     const webhooks = await on.open(log.push);
     await webhooks.save({ url: hook.url });
     await webhooks.emit("run.ended", { run_id: "run_1", agent_id: "a", status: "completed", title: "t" }, new Date().toISOString());
-    await hook.when(2, "the second try, after the first one failed and its read of the message did too");
-    assert.equal(refused, 3, "the read was refused as many times as the try reads it");
+    await hook.when(2, "the second try, after the first one failed and the reads of the message did too");
+    assert.equal(refused, 3, "every refused read waited out");
     await onDisk(dir, () => outboxOf(dir).messages.every((m) => m.status === "delivered"), "the message delivered at its retry");
   });
 
-  test("a redelivery answered 410 whose settle-time read of the message fails still records the try and turns the webhook off", async (t) => {
+  test("a redelivery answered 410 whose write the store refuses and whose reads of the message fail still records the try and turns the webhook off", async (t) => {
     // The first try answers 503 (message queued, next try a minute away); the redelivery answers 410.
     const hook = await receiver(t, (n) => (n === 1 ? 503 : 410));
     const log = logged();
     const dir = await scratch(t);
     let refused = 0;
+    let refuse = 1;
     const on = await webhookOn(t, dir, { retryMs: [60_000], storeRetryMs: 50, wrap: seeing("channels", (channels) => ({
       get: async (id) => {
         if (hook.got.length >= 2 && refused < 3) throw (refused++, new Error("the store is busy"));
         return channels.get(id);
+      },
+      settle: async (...args) => {
+        if (args[2]?.redelivery && refuse > 0) throw ((refuse -= 1), new Error("the store stayed locked past its busy wait: database is locked"));
+        return channels.settle(...args);
       },
     })) });
     await on.runs("run_1");
@@ -798,9 +803,39 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     const id = hook.got[0].headers["webhook-id"];
     await webhooks.redeliver(id);
     await log.when("condition=webhook_disabled");
-    assert.equal(refused, 3, "the read was refused as many times as the try reads it");
+    assert.equal(refuse, 0, "its write was refused once");
     assert.equal(webhooks.view().disabled?.reason, "the receiver answered 410 Gone");
     await onDisk(dir, () => outboxOf(dir).attempts.some((a) => a.status_code === 410 && a.redelivery), "the redelivery's try recorded");
+  });
+
+  test("a failed redelivery whose write lands only after the message's own retry delivered it leaves it delivered: a late write never undoes a newer one", async (t) => {
+    // The first try answers 503 (queued, its retry about a second away); the redelivery 500; the retry 200.
+    const hook = await receiver(t, (n) => (n === 1 ? 503 : n === 2 ? 500 : 200));
+    const log = logged();
+    const dir = await scratch(t);
+    let refuse = 1;
+    // The redelivery's write refused once, and written again only after the retry has delivered the message.
+    const on = await webhookOn(t, dir, { retryMs: [1_000], storeRetryMs: 3_000, wrap: seeing("channels", (channels) => ({
+      settle: async (...args) => {
+        if (args[2]?.redelivery && refuse > 0) throw ((refuse -= 1), new Error("the store stayed locked past its busy wait: database is locked"));
+        return channels.settle(...args);
+      },
+    })) });
+    await on.runs("run_1");
+    const webhooks = await on.open(log.push);
+    await webhooks.save({ url: hook.url });
+    await webhooks.emit("run.ended", { run_id: "run_1", agent_id: "a", status: "completed", title: "t" }, new Date().toISOString());
+    await hook.when(1);
+    const id = hook.got[0].headers["webhook-id"];
+    assert.equal((await webhooks.redeliver(id)).status_code, 500);
+    await log.when("condition=attempt_unsaved");
+    await hook.when(3, "the message's own retry");
+    // The redelivery's try lands in the log after the retry's.
+    await onDisk(dir, () => outboxOf(dir).attempts.length === 3, "every try written, the redelivery's last");
+    assert.deepEqual(outboxOf(dir).attempts.map((a) => [a.status_code, a.redelivery]), [[503, false], [200, false], [500, true]]);
+    const message = outboxOf(dir).messages.find((m) => m.id === id);
+    assert.deepEqual([message.status, message.attempts], ["delivered", 2], "still delivered: the late write changed nothing");
+    assert.equal(hook.got.length, 3, "and it is not sent again");
   });
 
   // From the outbound webhook's first store-held form: a PUT, a DELETE and a try's 410 change the webhook one after
@@ -1208,7 +1243,7 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     const log = logged();
     let claims = 0;
     // The second try's claim made a little early, as a timer that fires before the message's next_at.
-    const on = await webhookOn(t, await scratch(t), { retryMs: [100, 100], wrap: seeing("channels", (channels) => ({ claim: async (id, at, lease) => channels.claim(id, ++claims === 2 ? at - 80 : at, lease) })) });
+    const on = await webhookOn(t, await scratch(t), { retryMs: [100, 100], wrap: seeing("channels", (channels) => ({ claim: async (id, at, lease, token) => channels.claim(id, ++claims === 2 ? at - 80 : at, lease, token) })) });
     await on.runs("run_1");
     const webhooks = await on.open(log.push);
     await webhooks.save({ url: down.url });

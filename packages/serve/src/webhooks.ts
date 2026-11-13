@@ -74,8 +74,6 @@ export function shownUrl(url: string): string {
 export type WebhooksOptions = { retryMs?: readonly number[]; privateTargets?: boolean; lookup?: (host: string) => Promise<string[]>; storeRetryMs?: number };
 /** How soon a try the store failed (its read or its claim threw) is tried again. */
 const STORE_RETRY_MS = 5_000;
-/** How many times a try's read of its message, before it settles, is tried (a wait of STORE_RETRY_MS between). */
-const STANDING_READS = 3;
 /** The least wait before a queued message whose claim was refused is tried again. */
 const RE_ARM_MS = 20;
 
@@ -579,14 +577,21 @@ export class Webhooks {
     const post = await this.store.channels.get(id);
     const attempt: Attempt = { webhook_id: id, type: (post?.moment ?? "webhook.test") as MessageType, at: iso(now), status_code: null, latency_ms: 0, error: null, retry_at: null, redelivery: how.redelivery };
     if (this.closed || !post) return attempt;
-    // A message's own try claims it first (compare-and-set): a try already out, or one that settled it, holds it.
-    if (!how.redelivery && !(await this.store.channels.claim(id, now, CLAIM_MS))) {
-      // Not taken. One still queued was not due yet (its timer fired a little before its time) or lost a race with a
-      // try that has settled it again since: armed again for its time, never left without a timer. One sent, dropped
-      // or held by another try is not this try's.
-      const standing = await this.store.channels.get(id);
-      if (standing?.state === "queued") this.schedule(id, Math.max(standing.nextAt - Date.now(), RE_ARM_MS));
-      return attempt;
+    // The try's own id: its claim's token, which fences its outcome's write (settleTry), and its row in the log, once.
+    const tryId = randomBytes(12).toString("hex");
+    // A message's own try claims it first (compare-and-set): a try already out, or one that settled it, holds it. The
+    // claim answers the message as it took it, which its outcome counts from; a redelivery claims nothing.
+    let claimed: ChannelPostRow | undefined;
+    if (!how.redelivery) {
+      claimed = await this.store.channels.claim(id, now, CLAIM_MS, tryId);
+      if (!claimed) {
+        // Not taken. One still queued was not due yet (its timer fired a little before its time) or lost a race with a
+        // try that has settled it again since: armed again for its time, never left without a timer. One sent, dropped
+        // or held by another try is not this try's.
+        const standing = await this.store.channels.get(id);
+        if (standing?.state === "queued") this.schedule(id, Math.max(standing.nextAt - Date.now(), RE_ARM_MS));
+        return attempt;
+      }
     }
     const config = this.config;
     // Signed with the secret this setting names: the URL and its secret, as the store holds them together.
@@ -625,44 +630,33 @@ export class Webhooks {
     if (this.closed) return attempt;
     // What the try found is settled against the webhook as it stands once every change asked for before it (a PUT, a
     // DELETE, another try's 410) has landed: a 410 never turns off a webhook a PUT is setting again meanwhile.
-    return this.change(() => this.settleTry(id, how, now, post, config, failure, attempt));
+    return this.change(() => this.settleTry(id, how, now, tryId, claimed, config, failure, attempt));
   }
 
   /** A try's outcome written: the message's new state and the try, in one transaction; its next try armed; a 410 that
-   *  still names the webhook as it stands turns it off. */
-  private async settleTry(id: string, how: { retry: boolean; redelivery: boolean }, now: number, post: ChannelPostRow, config: Config | undefined, failure: string | undefined, attempt: Attempt): Promise<Attempt> {
+   *  still names the webhook as it stands turns it off.
+   *
+   *  Every write of a message's state after a try is fenced, never worked out from a read of the message: a message's
+   *  own try writes under its claim (`claimed`, taken by `tryId`), and the store writes it only while the message still
+   *  holds that claim (Channels.settle), so a write that lands late, after a redelivery sent the message, a newer try
+   *  claimed it or a DELETE dropped it, changes nothing and arms nothing. A redelivery claims nothing: a landed one writes
+   *  sent, which no try's write undoes (sent is final), and a failed one writes no state at all, only its try. */
+  private async settleTry(id: string, how: { retry: boolean; redelivery: boolean }, now: number, tryId: string, claimed: ChannelPostRow | undefined, config: Config | undefined, failure: string | undefined, attempt: Attempt): Promise<Attempt> {
     if (this.closed) return attempt;
     attempt.error = failure ?? null;
-    // The message as it stands now: a redelivery may have sent it while this try waited. Its read is tried a few times. If
-    // the store still refuses it, the outcome is never settled from `post`, which was read before the claim and says queued:
-    // that skips the branch that sets the next try, and nothing would send the message again until a restart. It is written
-    // by resettle instead, which reads the message itself and writes only while it is still this try's (sending).
-    let read: ChannelPostRow | undefined;
-    let unread: Error | undefined;
-    for (let i = 0; i < STANDING_READS; i++) {
-      try {
-        read = await this.store.channels.get(id);
-        unread = undefined;
-        break;
-      } catch (error) {
-        unread = error as Error;
-        if (i < STANDING_READS - 1) await new Promise((resolve) => setTimeout(resolve, this.storeRetryMs));
-      }
-    }
-    // Unread: what the claim made it. Used only to work out this try's outcome; the write waits for resettle's own read.
-    const standingPost = unread ? { ...post, state: "sending" as const } : (read ?? post);
-    // The schedule counts the message's own tries: a redelivery is a try of its own, and leaves it as it was.
-    const attempts = standingPost.attempts + (how.redelivery ? 0 : 1);
+    // The schedule counts the message's own tries, from the count its claim took it at; a redelivery counts none.
+    const attempts = claimed ? claimed.attempts + 1 : undefined;
     // A 410 turns off the webhook as this try found it: one set again or removed while the try waited is not its to turn
     // off, and the 410 is then a failure like any other.
     const standing = this.config;
     const gone = attempt.status_code === 410 && config !== undefined && standing !== undefined && standing.url === config.url && standing.updated_at === config.updated_at && !standing.disabled;
-    const wait = how.retry && failure && config && !gone ? this.retryMs[attempts - 1] : undefined;
     let to: { state: ChannelPostRow["state"]; attempts?: number; nextAt?: number; reason?: string | null } | undefined;
     let delay: number | undefined;
-    if (!failure) to = { state: "sent", attempts, reason: null };
-    // A redelivery that failed leaves the message as it is, and so does a try that ends after one sent it.
-    else if (!how.redelivery && standingPost.state === "sending") {
+    if (attempts === undefined) {
+      if (!failure) to = { state: "sent", reason: null };
+    } else if (!failure) to = { state: "sent", attempts, reason: null };
+    else {
+      const wait = how.retry && config && !gone ? this.retryMs[attempts - 1] : undefined;
       if (wait !== undefined) {
         // Jitter, so messages that failed together do not all come back together.
         delay = Math.round(wait * (0.8 + 0.4 * Math.random()));
@@ -671,37 +665,41 @@ export class Webhooks {
       } else to = { state: "dropped", attempts, reason: failure };
     }
     const row: ChannelAttemptRow = {
-      postId: id, moment: attempt.type, at: now, statusCode: attempt.status_code, latencyMs: attempt.latency_ms, error: attempt.error,
+      tryId, postId: id, moment: attempt.type, at: now, statusCode: attempt.status_code, latencyMs: attempt.latency_ms, error: attempt.error,
       retryAt: attempt.retry_at === null ? null : Date.parse(attempt.retry_at), redelivery: how.redelivery,
     };
-    // A redelivery that failed leaves the message as it is; when its read failed, the state to leave is read again at the
-    // write, never taken from the claim-time guess.
-    const write = async () => {
-      const left = to ?? (unread ? await this.store.channels.get(id) : standingPost);
-      await this.store.channels.settle(id, to ?? { state: left?.state ?? standingPost.state, reason: left?.reason ?? standingPost.reason }, row, { kept: ATTEMPTS_KEPT, sending: [...this.sending.keys()] });
-    };
+    // The same write each time it is tried: its fence and its values fixed here, so one whose outcome is unknown (the store
+    // threw) is written again as it was, and lands once.
+    const write = () => this.store.channels.settle(id, to, row, { kept: ATTEMPTS_KEPT, sending: [...this.sending.keys()], ...(claimed ? { claim: tryId } : {}) });
+    const after = (written: boolean) => this.afterSettle(id, written, to, delay, attempt, attempts, failure, gone, standing);
+    let written: boolean;
     try {
-      if (unread) throw unread;
-      await write();
+      written = await write();
     } catch (error) {
       this.say({ condition: "attempt_unsaved", webhook_id: id, error: (error as Error).message });
-      // Not written. This try's own outcome is known, so only its write is tried again, soon and until it lands, never
-      // the send: a message its receiver has is not sent again when its claim runs out, and a failed one keeps its
-      // schedule. A redelivery's try is recorded the same way (the message's state left as it was), and its 410 still
-      // turns the webhook off once it lands.
-      if (to !== undefined || how.redelivery) this.resettle(id, how.redelivery, write, () => this.afterSettle(id, to, delay, attempt, attempts, failure, gone, standing));
+      // Not known to be written. This try's own outcome is known, so only its write is tried again, soon and until it
+      // lands, never the send: a message its receiver has is not sent again when its claim runs out, and a failed one
+      // keeps its schedule. A redelivery's try is recorded the same way, and its 410 still turns the webhook off.
+      this.resettle(id, write, after);
       return attempt;
     }
-    await this.afterSettle(id, to, delay, attempt, attempts, failure, gone, standing);
+    await after(written);
     return attempt;
   }
 
-  /** What follows a try's write: its next try armed, its failure said, and a 410's turn-off of the webhook as it stands.
-   *  The 410 is checked again against the webhook as it stands now: one whose write landed late (resettle), after a PUT set
-   *  another URL or a DELETE removed it, was the old URL's, and turns nothing off. */
-  private async afterSettle(id: string, to: { state: ChannelPostRow["state"]; nextAt?: number } | undefined, delay: number | undefined, attempt: Attempt, attempts: number, failure: string | undefined, gone: boolean, standing: Config | undefined): Promise<void> {
-    if (delay !== undefined) this.schedule(id, Math.max(0, (to?.nextAt ?? Date.now()) - Date.now()));
-    if (to?.state === "dropped") this.say({ condition: "delivery_failed", type: attempt.type, webhook_id: id, attempts, ...(attempt.status_code !== null ? { status_code: attempt.status_code } : {}), error: failure! });
+  /** What follows a try's write: its next try armed and its failure said, only when its state was written (`written`: a
+   *  fenced write that found the message taken by something newer arms nothing), and a 410's turn-off of the webhook as it
+   *  stands, whatever the message's state, since it is the receiver's answer. The 410 is checked again against the webhook
+   *  as it stands now: one whose write landed late (resettle), after a PUT set another URL or a DELETE removed it, was the
+   *  old URL's, and turns nothing off. */
+  private async afterSettle(id: string, written: boolean, to: { state: ChannelPostRow["state"]; nextAt?: number } | undefined, delay: number | undefined, attempt: Attempt, attempts: number | undefined, failure: string | undefined, gone: boolean, standing: Config | undefined): Promise<void> {
+    if (!written) {
+      attempt.retry_at = null;
+      if (to) this.say({ condition: "attempt_superseded", webhook_id: id, state: to.state });
+    } else {
+      if (delay !== undefined) this.schedule(id, Math.max(0, (to?.nextAt ?? Date.now()) - Date.now()));
+      if (to?.state === "dropped") this.say({ condition: "delivery_failed", type: attempt.type, webhook_id: id, attempts: attempts ?? 0, ...(attempt.status_code !== null ? { status_code: attempt.status_code } : {}), error: failure! });
+    }
     const current = this.config;
     const stillGone = gone && standing !== undefined && current !== undefined && !current.disabled && current.url === standing.url && current.secret_scope === standing.secret_scope && current.updated_at === standing.updated_at;
     if (stillGone) {
@@ -720,23 +718,23 @@ export class Webhooks {
   }
 
   /** A try's write the store refused (`write`), written again after the store's wait until it lands, then what follows it
-   *  (`after`), among the webhook's changes. Its own timer, beside the message's: the message keeps its schedule meanwhile.
-   *  A message's own try writes only while the message is still its (sending, its claim): one a DELETE dropped, or another
-   *  try settled, is not its to write. A redelivery, which claims nothing, writes its landing whatever the message's state
-   *  (a queued one reads sent, and its next try then finds nothing to send). One under way when the server closes is waited
-   *  for, and one waiting is written at the close (close); one refused again then is left as the store holds it, for the
-   *  next server. */
-  private resettle(id: string, redelivery: boolean, write: () => Promise<void>, after: () => Promise<void>): void {
+   *  (`after`, told whether the state was written), among the webhook's changes. Its own timer, beside the message's: the
+   *  message keeps its schedule meanwhile. The write is the same one, under the same fence (settleTry): it reads nothing
+   *  first, and a message's own try writes only while the message still holds its claim, so one a DELETE dropped, a
+   *  redelivery sent or a newer try claimed meanwhile is left as that left it. One under way when the server closes is
+   *  waited for, and one waiting is written at the close (close); one refused again then is left as the store holds it,
+   *  for the next server. */
+  private resettle(id: string, write: () => Promise<boolean>, after: (written: boolean) => Promise<void>): void {
     if (this.closed) return;
     const rewrite = (): Promise<void> => {
       const task = this.change(async () => {
+        let written: boolean;
         try {
-          if (!redelivery && (await this.store.channels.get(id))?.state !== "sending") return;
-          await write();
+          written = await write();
         } catch {
-          return this.resettle(id, redelivery, write, after);
+          return this.resettle(id, write, after);
         }
-        await after();
+        await after(written);
       }).catch((error: Error) => this.say({ condition: "attempt_unsaved", webhook_id: id, error: error.message }));
       this.rewrites.add(task);
       void task.finally(() => this.rewrites.delete(task));

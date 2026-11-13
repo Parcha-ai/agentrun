@@ -3,8 +3,8 @@
 // store_meta row holds the version); a runner refuses a version it does not know. Version 2 adds the computer ledger;
 // version 3 numbers each save of a sign-in (sign_ins.save); version 4 stamps an MCP token's end (mcp_servers.token_until);
 // version 5 maps an externally owned agent (agents.external_ref, revisions.external_version); version 6 tells a person's
-// stop from a cancel (runs.outcome 'stopped' or 'cancelled'); version 7 adds the run-change feed (run_changes) and each
-// channel post's tries (channel_attempts).
+// stop from a cancel (runs.outcome 'stopped' or 'cancelled'); version 7 adds the run-change feed (run_changes), each
+// channel post's tries (channel_attempts) and the claim a post's try settles under (channel_posts.claim).
 // Conventions: every time is INTEGER epoch milliseconds; JSON is TEXT checked by json_valid; money is REAL US dollars;
 // sealed columns hold ciphertext only (sealed with the server's key outside the store), so the store never sees a secret
 // in the clear. Foreign keys are on (the connection's pragma).
@@ -254,6 +254,7 @@ export const STORE_DDL: readonly string[] = [
     attempts INTEGER NOT NULL DEFAULT 0,
     next_at INTEGER NOT NULL,
     claimed_until INTEGER,
+    claim TEXT,
     state TEXT NOT NULL CHECK (state IN ('queued', 'sending', 'sent', 'dropped')),
     reason TEXT,
     created_at INTEGER NOT NULL
@@ -267,9 +268,11 @@ export const STORE_DDL: readonly string[] = [
     at INTEGER NOT NULL,
     PRIMARY KEY (channel, run_id, marker)
   ) STRICT`,
-  // Each try of a channel's post (the outbound webhook's deliveries log): kept to the newest few per channel.
+  // Each try of a channel's post (the outbound webhook's deliveries log): kept to the newest few per channel, each once by
+  // its try's id.
   `CREATE TABLE IF NOT EXISTS channel_attempts (
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    try_id TEXT NOT NULL UNIQUE,
     channel TEXT NOT NULL,
     post_id TEXT NOT NULL,
     moment TEXT NOT NULL,

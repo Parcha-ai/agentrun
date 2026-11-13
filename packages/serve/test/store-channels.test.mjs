@@ -6,7 +6,7 @@ import { agentWithRevision, storeOn } from "./store-helpers.mjs";
 
 const CHANNEL = "webhook-out";
 const post = (id, extra = {}) => ({ id, channel: CHANNEL, moment: "run.ended", body: `{"type":"run.ended","id":"${id}"}`, nextAt: 1_000, ...extra });
-const tried = (postId, at, extra = {}) => ({ postId, moment: "run.ended", at, statusCode: 500, latencyMs: 3, error: "answered 500", retryAt: null, redelivery: false, ...extra });
+const tried = (postId, at, extra = {}) => ({ tryId: `${postId}@${at}`, postId, moment: "run.ended", at, statusCode: 500, latencyMs: 3, error: "answered 500", retryAt: null, redelivery: false, ...extra });
 
 async function opened(t) {
   const { store } = await storeOn(t);
@@ -89,18 +89,66 @@ test("two senders claiming the same due post at once, on two connections: exactl
   for (const id of ["msg_1", "msg_2", "msg_3"]) await store.channels.post(post(id));
   await store.channels.post(post("msg_later", { nextAt: 9_000 }));
   for (const id of ["msg_1", "msg_2", "msg_3"]) {
-    const won = await Promise.all([store.channels.claim(id, 2_000, 60_000), other.channels.claim(id, 2_000, 60_000)]);
+    const won = await Promise.all([store.channels.claim(id, 2_000, 60_000, "try-a"), other.channels.claim(id, 2_000, 60_000, "try-b")]);
     assert.deepEqual(won.filter(Boolean).length, 1, `${id}: one claim of two (${won})`);
-    assert.deepEqual(await store.channels.get(id).then((p) => [p.state, p.claimedUntil]), ["sending", 62_000]);
+    const taken = won.find(Boolean);
+    assert.deepEqual([taken.id, taken.state, taken.claimedUntil, taken.attempts], [id, "sending", 62_000, 0], "the post as the claim took it");
+    assert.deepEqual(await store.channels.get(id).then((p) => [p.state, p.claimedUntil, p.claim]), ["sending", 62_000, taken.claim]);
   }
-  assert.equal(await store.channels.claim("msg_1", 30_000, 60_000), false, "held: its claim runs to 62 000");
-  assert.equal(await other.channels.claim("msg_1", 62_001, 60_000), true, "a claim that ran out is taken again");
-  assert.equal(await store.channels.claim("msg_later", 2_000, 60_000), false, "not due yet");
+  assert.equal(await store.channels.claim("msg_1", 30_000, 60_000, "try-c"), undefined, "held: its claim runs to 62 000");
+  assert.equal((await other.channels.claim("msg_1", 62_001, 60_000, "try-d"))?.claim, "try-d", "a claim that ran out is taken again");
+  assert.equal(await store.channels.claim("msg_later", 2_000, 60_000, "try-e"), undefined, "not due yet");
   await store.channels.settle("msg_2", { state: "sent", attempts: 1 }, tried("msg_2", 3, { statusCode: 200, error: null }));
-  assert.equal(await store.channels.claim("msg_2", 200_000, 60_000), false, "a sent post is never claimed");
+  assert.equal(await store.channels.claim("msg_2", 200_000, 60_000, "try-f"), undefined, "a sent post is never claimed");
   assert.equal((await store.channels.get("msg_2")).claimedUntil, null, "a settle ends the claim");
   assert.equal(await store.channels.release(CHANNEL), 2, "msg_1 and msg_3 let go");
-  assert.deepEqual((await store.channels.queued(CHANNEL)).map((p) => [p.id, p.state, p.claimedUntil]), [["msg_1", "queued", null], ["msg_3", "queued", null], ["msg_later", "queued", null]]);
+  assert.deepEqual((await store.channels.queued(CHANNEL)).map((p) => [p.id, p.state, p.claimedUntil, p.claim]), [["msg_1", "queued", null, null], ["msg_3", "queued", null, null], ["msg_later", "queued", null, null]]);
+});
+
+test("a try's settle is fenced on its claim: written again it lands once; written after a newer claim, a redelivery's landing or a drop it is a no-op, its try logged with no retry", async (t) => {
+  const { store, file, clock } = await storeOn(t);
+  await agentWithRevision(store);
+  const other = (await storeOn(t, { file, clock, role: "runner" })).store;
+  for (const id of ["msg_1", "msg_2", "msg_3"]) await store.channels.post(post(id));
+  const shape = (id) => store.channels.get(id).then((p) => [p.state, p.attempts, p.nextAt, p.reason, p.claimedUntil, p.claim]);
+  const logged = async (id) => (await store.channels.attempts(CHANNEL, 50)).filter((a) => a.postId === id).map((a) => [a.tryId, a.retryAt]);
+
+  // Its outcome unknown (the store threw after the commit), the same write under the same claim lands again as it was.
+  assert.equal((await store.channels.claim("msg_1", 2_000, 60_000, "a1")).claim, "a1");
+  const failedA = [{ state: "queued", attempts: 1, nextAt: 5_000, reason: "answered 500" }, tried("msg_1", 2_000, { tryId: "a1", retryAt: 5_000 })];
+  assert.equal(await store.channels.settle("msg_1", ...failedA, { claim: "a1" }), true);
+  assert.equal(await other.channels.settle("msg_1", ...failedA, { claim: "a1" }), true, "written again: the same row");
+  assert.deepEqual(await shape("msg_1"), ["queued", 1, 5_000, "answered 500", null, "a1"]);
+  assert.deepEqual(await logged("msg_1"), [["a1", 5_000]], "logged once");
+  // Its next try claims it: the first try's write, late, changes nothing.
+  assert.equal((await other.channels.claim("msg_1", 5_000, 60_000, "a2")).attempts, 1);
+  assert.equal(await store.channels.settle("msg_1", { state: "sent", attempts: 1, reason: null }, tried("msg_1", 2_001, { tryId: "a1-late", statusCode: 200, error: null }), { claim: "a1" }), false);
+  assert.deepEqual(await shape("msg_1"), ["sending", 1, 5_000, "answered 500", 65_000, "a2"], "still the newer try's, its claim deadline kept");
+
+  // A claim that ran out and was taken again: the first try's write, late, is a no-op; the newer one's lands.
+  await store.channels.claim("msg_2", 2_000, 60_000, "b1");
+  await other.channels.claim("msg_2", 62_001, 60_000, "b2");
+  assert.equal(await store.channels.settle("msg_2", { state: "queued", attempts: 1, nextAt: 9_000, reason: "answered 500" }, tried("msg_2", 2_000, { tryId: "b1", retryAt: 9_000 }), { claim: "b1" }), false);
+  assert.deepEqual(await shape("msg_2"), ["sending", 0, 1_000, null, 122_001, "b2"]);
+  assert.deepEqual(await logged("msg_2"), [["b1", null]], "the try was made, so it is logged, with no retry it did not set");
+  assert.equal(await other.channels.settle("msg_2", { state: "sent", attempts: 1, reason: null }, tried("msg_2", 62_001, { tryId: "b2", statusCode: 200, error: null }), { claim: "b2" }), true);
+  assert.equal((await store.channels.get("msg_2")).state, "sent");
+
+  // A redelivery's landing (no claim) takes the post from the try in flight: that try's write, after it, is a no-op, and
+  // a failed redelivery writes no state at all, only its try.
+  await store.channels.claim("msg_3", 2_000, 60_000, "c1");
+  assert.equal(await other.channels.settle("msg_3", undefined, tried("msg_3", 2_500, { tryId: "r0", redelivery: true })), false, "a failed redelivery writes no state");
+  assert.deepEqual(await shape("msg_3"), ["sending", 0, 1_000, null, 62_000, "c1"]);
+  assert.equal(await other.channels.settle("msg_3", { state: "sent", reason: null }, tried("msg_3", 3_000, { tryId: "r1", statusCode: 200, error: null, redelivery: true })), true);
+  assert.equal(await store.channels.settle("msg_3", { state: "queued", attempts: 1, nextAt: 9_000, reason: "answered 500" }, tried("msg_3", 2_000, { tryId: "c1", retryAt: 9_000 }), { claim: "c1" }), false);
+  assert.deepEqual(await shape("msg_3"), ["sent", 0, 1_000, null, null, null], "sent stays sent");
+
+  // A drop takes every claim: a try's write after it is a no-op.
+  await store.channels.post(post("msg_4"));
+  await store.channels.claim("msg_4", 2_000, 60_000, "d1");
+  assert.equal(await store.channels.dropAll(CHANNEL, "the webhook was removed"), 2, "msg_4, and msg_1 under its newer claim");
+  assert.equal(await store.channels.settle("msg_4", { state: "queued", attempts: 1, nextAt: 9_000, reason: "answered 500" }, tried("msg_4", 2_000, { tryId: "d1", retryAt: 9_000 }), { claim: "d1" }), false);
+  assert.deepEqual(await shape("msg_4"), ["dropped", 0, 1_000, "the webhook was removed", null, null]);
 });
 
 test("two posts to one channel at once, on two connections, then settles that trim the channel to its newest try: neither unread post is lost, whatever order they committed in (a trim drops only settled posts)", async (t) => {

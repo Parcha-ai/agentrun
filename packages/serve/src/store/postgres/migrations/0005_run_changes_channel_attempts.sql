@@ -1,5 +1,5 @@
--- The run-change feed (Runs.changedSince) and each channel post's tries (the outbound webhook's deliveries log), as
--- SQLite's schema version 7 has them.
+-- The run-change feed (Runs.changedSince), each channel post's tries (the outbound webhook's deliveries log) and the
+-- claim a post's try settles under, as SQLite's schema version 7 has them.
 --
 -- A change is a run reaching a final state, or let go by its runner (parked, or running with none), written by the
 -- trigger below in the transaction of the write that made it. Postgres has many writers, so a sequence alone does not
@@ -31,8 +31,14 @@ CREATE TRIGGER runs_changed AFTER UPDATE OF state, runner ON runs
     AND (NEW.state IN ('ended', 'stopped', 'failed', 'parked') OR (NEW.state = 'running' AND NEW.runner IS NULL)))
   EXECUTE FUNCTION run_changed();
 
+-- A post's try settles under the claim that made it (Channels.settle's fence): the claim's token, kept on the post until
+-- a newer claim or a write outside every claim takes it.
+ALTER TABLE channel_posts ADD COLUMN IF NOT EXISTS claim TEXT COLLATE "C";
+
+-- Each try once, by its id: a settle written again (its outcome unknown) logs it once.
 CREATE TABLE IF NOT EXISTS channel_attempts (
   seq BIGSERIAL PRIMARY KEY,
+  try_id TEXT COLLATE "C" NOT NULL UNIQUE,
   channel TEXT COLLATE "C" NOT NULL,
   post_id TEXT COLLATE "C" NOT NULL,
   moment TEXT COLLATE "C" NOT NULL,
