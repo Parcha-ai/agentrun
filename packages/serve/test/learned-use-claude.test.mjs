@@ -41,10 +41,10 @@ test("a claude-agent run that loads a learned skill with its own Skill tool read
     },
   });
   t.after(() => fake.close());
-  withEnv(t, { ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}`, ANTHROPIC_BASE_URL: fake.url, AGENT_MODEL: "anthropic/claude-haiku-4-5" }, ["AGENT_MODEL_BASE_URL"]);
+  withEnv(t, { ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}`, ANTHROPIC_BASE_URL: fake.url, AGENT_MODEL: "anthropic/claude-haiku-5-5" }, ["AGENT_MODEL_BASE_URL"]);
   const { api, data } = await serve(t, { faux: undefined });
   await learnedSkills(data, "native", ["check-units", "find-policies"]);
-  const created = await api("POST", "/agents", agent("native", { learning: true, harness: "claude-agent", model: "anthropic/claude-haiku-4-5", instructions: "Answer the question.", skills: [] }));
+  const created = await api("POST", "/agents", agent("native", { learning: true, harness: "claude-agent", model: "anthropic/claude-haiku-5-5", instructions: "Answer the question.", skills: [] }));
   assert.equal(created.status, 201, JSON.stringify(created.body));
   const run = await api("POST", "/agents/native/runs", { input: { content: "Use the check-units skill, then answer." } });
   assert.equal(run.status, 202, JSON.stringify(run.body));

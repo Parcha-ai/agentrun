@@ -161,8 +161,8 @@ test("both CLI adapters take the three as they are: names in their alphabet, sch
   withEnv(t, { AGENTRUN_CLAUDE_AGENT_STANDIN: "1" });
   const spec = { key: "run:x", label: "x", system: ["x"], context: "fresh", tools: hostToolsOf(RUN, ["read", ...MONID], ctx, new Map(), registrations()) };
   const provider = { origin: "https://api.example", credential: () => "" };
-  assert.deepEqual(codexAdapter({ model: "gpt-5.4-mini", provider, standIn: { command: "true" } }).check(spec), []);
-  assert.deepEqual(claudeAgentAdapter({ model: "claude-haiku-4-5", provider, standIn: { command: "true" }, sdk: {} }).check(spec), []);
+  assert.deepEqual(codexAdapter({ model: "gpt-6-luna", provider, standIn: { command: "true" } }).check(spec), []);
+  assert.deepEqual(claudeAgentAdapter({ model: "claude-haiku-5-5", provider, standIn: { command: "true" }, sdk: {} }).check(spec), []);
 });
 
 test("an error, a refusal and a write's result name a path in the run's directory relative to the workspace (../ beside it); a path outside the run's directory stays as given", () => {

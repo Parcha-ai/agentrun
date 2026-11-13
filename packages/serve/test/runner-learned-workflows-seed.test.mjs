@@ -91,7 +91,7 @@ async function cliSpec(t, harness, { seed = "landed" } = {}) {
     rmSync(dir, { recursive: true, force: true });
   });
   const sha = seed === "landed" ? await landWorkflows(dir, AGENT, FLOWS) : undefined;
-  const model = harness === "claude-agent" ? { provider: "anthropic", modelId: "claude-haiku-4-5" } : { provider: "openai", modelId: "gpt-5" };
+  const model = harness === "claude-agent" ? { provider: "anthropic", modelId: "claude-haiku-5-5" } : { provider: "openai", modelId: "gpt-6.1-sol" };
   await server.agents.create({ id: AGENT, name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", harness, tools: GRANTED, learning: true } });
   const launch = { input: { content: "Run what you learned." }, title: "t", place: { mode: "runner" }, harness, model, ...(sha !== undefined ? { learning: startAt(sha) } : {}) };
   await server.runs.create({ id: RUN, agentId: AGENT, revisionId: "rev-1" }, { body: launch });

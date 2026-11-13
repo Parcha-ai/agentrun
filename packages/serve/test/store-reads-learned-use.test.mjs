@@ -223,12 +223,12 @@ test("a run's use of learned skills and workflows sits apart from what it learne
 test("a learned_workflow call's result row carries the nodes its workflow ran, each label through the run's cut, and never a node's error text", async (t) => {
   const { store, clock } = await storeOn(t);
   await store.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read"], learning: true } });
-  const nodes = [{ label: "fetch", kind: "call", status: "ok", duration_ms: 12 }, { label: "answer", kind: "extract", status: "failed", duration_ms: 30, model: "gpt-5-mini", tier: "fast", error: `the model said ${HELD}` }];
+  const nodes = [{ label: "fetch", kind: "call", status: "ok", duration_ms: 12 }, { label: "answer", kind: "extract", status: "failed", duration_ms: 30, model: "gpt-6-luna", tier: "fast", error: `the model said ${HELD}` }];
   await run(store, clock, { id: "r1", start: T0, calls: [["learned_workflow", { name: "answer", input: {} }, false], ["read", { path: "x" }, true]], extra: [{ kind: LEARNED_NODES, data: { call: "c0", workflow: "answer", nodes } }] });
   const rows = await runTimeline(store, "r1", context, { settled: true, redact: (text) => text.replaceAll(HELD, "[redacted]") });
   const result = rows.find((row) => row.kind === "tool_result" && row.tool_use_id === "c0");
   // A model node's model and tier come through (the model through the run's cut, as every text); a call node has neither.
-  assert.deepEqual(result?.learned_nodes, [nodes[0], { label: "answer", kind: "extract", status: "failed", duration_ms: 30, model: "gpt-5-mini", tier: "fast" }], JSON.stringify(result));
+  assert.deepEqual(result?.learned_nodes, [nodes[0], { label: "answer", kind: "extract", status: "failed", duration_ms: 30, model: "gpt-6-luna", tier: "fast" }], JSON.stringify(result));
   assert.ok(!JSON.stringify(rows).includes(HELD.slice(0, 12)), "no part of the error's text, a secret's start among it");
   assert.equal(rows.find((row) => row.kind === "tool_result" && row.tool_use_id === "c1")?.learned_nodes, undefined, "another call's row carries none");
 });

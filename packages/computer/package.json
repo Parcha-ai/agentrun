@@ -46,6 +46,10 @@
       "types": "./dist/e2b.d.ts",
       "default": "./dist/e2b.js"
     },
+    "./agent37": {
+      "types": "./dist/agent37.d.ts",
+      "default": "./dist/agent37.js"
+    },
     "./orgo": {
       "types": "./dist/orgo.d.ts",
       "default": "./dist/orgo.js"

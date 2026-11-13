@@ -12,8 +12,8 @@ const { runLearningEnd } = await import("../dist/store-reads/learning.js");
 const fn = (module, name) => (typeof module[name] === "function" ? module[name] : () => assert.fail(`${name} is not there`));
 const learningLoopOf = (deps) => fn(dispatch, "learningLoopOf")(deps);
 
-const MODEL = "claude-sonnet-4-5";
-const price = (_model, usage) => (usage.input * 3 + usage.output * 15 + (usage.cacheRead ?? 0) * 0.3 + (usage.cacheWrite ?? 0) * 3.75) / 1e6;
+const MODEL = "claude-sonnet-5-5";
+const price = (_model, usage) => (usage.input * 2 + usage.output * 10 + (usage.cacheRead ?? 0) * 0.1 + (usage.cacheWrite ?? 0) * 2.5) / 1e6;
 const NOTE = { file: "retries.md", text: "---\nname: Retries\ndescription: Retry a flaky fetch twice\ntype: reference\n---\nRetry a flaky fetch twice.\n" };
 const KEEP = JSON.stringify({ merge: true, reason: "Worth keeping.", items: [{ file: "retries.md", decision: "keep", why: "useful" }] });
 const USED = { input: 1_200, output: 40 };
@@ -89,7 +89,7 @@ test("a learning run's grade goes where the runner's route sends it, for the gra
   assert.deepEqual(sent.map((body) => body.model), [MODEL], "one grade request, on that model");
   const learning = await runLearningEnd(store, "run-1");
   assert.equal(learning?.state, "merged", JSON.stringify(learning));
-  assert.equal(eight(learning.cost_usd.grade), eight((USED.input * 3 + USED.output * 15) / 1e6), "the grade's dollars, booked");
+  assert.equal(eight(learning.cost_usd.grade), eight((USED.input * 2 + USED.output * 10) / 1e6), "the grade's dollars, booked");
   // The learning run's own row keeps them as its cost: what GET /usage's learning meter reads (store learning.spend).
   assert.equal(eight((await store.runs.get("learn-1")).costUsd), eight(learning.cost_usd.grade), "the learning run's cost is the grade's");
   assert.deepEqual((await store.learning.spend({ from: 0, to: Number.MAX_SAFE_INTEGER })).map((one) => eight(one.costUsd)), [eight(learning.cost_usd.grade)]);

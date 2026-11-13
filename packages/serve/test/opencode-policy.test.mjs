@@ -18,7 +18,7 @@ const FIXTURES = new URL("./fixtures/", import.meta.url);
 const recorded = existsSync(FIXTURES) ? readdirSync(FIXTURES).filter((f) => /^opencode-responses-request-.*\.json$/.test(f)) : [];
 
 test("the session's model, nothing stored, the output clamped: whatever OpenCode asked", () => {
-  const out = policy({ maxOutputTokens: 1000 }).apply({ model: "gpt-5-other", input: [], store: true, stream: true, max_output_tokens: 50_000 }, route);
+  const out = policy({ maxOutputTokens: 1000 }).apply({ model: "gpt-6-other", input: [], store: true, stream: true, max_output_tokens: 50_000 }, route);
   assert.deepEqual([out.model, out.store, out.max_output_tokens, out.stream], ["gpt-test", false, 1000, true]);
   assert.equal(policy().apply({ model: "x", input: [] }, route).max_output_tokens, 32_000, "none asked: the default ceiling");
 });

@@ -278,7 +278,7 @@ test("a revision skill with a multi-line quoted description reaches OpenCode wit
   const { withEnv } = await import("./support.mjs");
   withEnv(t, { AGENTRUN_OPENCODE_STANDIN: "1" });
   const adapters = await import("../dist/adapters.js");
-  const needs = { model: { provider: "openai", modelId: "gpt-5.4-mini" }, models: { getModel: () => undefined }, skills: [{ name: "find-policies", files: { "SKILL.md": MULTI } }] };
+  const needs = { model: { provider: "openai", modelId: "gpt-6-luna" }, models: { getModel: () => undefined }, skills: [{ name: "find-policies", files: { "SKILL.md": MULTI } }] };
   const env = { OPENAI_API_KEY: "fake-test-key", [adapters.OPENCODE_STANDIN_ENV]: JSON.stringify({ command: process.execPath, args: ["-e", ""] }) };
   const adapter = await adapters.opencodeOf(env, needs);
   assert.ok(adapter, "the adapter starts: its own skill check passes the served SKILL.md");
