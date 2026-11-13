@@ -224,6 +224,11 @@ export function createSurface(client: ComputerClient, hello: HelloResult): Surfa
 			}
 			if ("key" in step) return { type: "key", keys: chordKeys(step.key) };
 			if ("nav" in step) return { type: "button", name: step.nav };
+			if ("scroll" in step && touchOnly) {
+				// A touch-only phone has no wheel: the finger moves the other way, over the distance (dy > 0 shows what is below).
+				const [x, y] = atPoint(step.scroll, index);
+				return { type: "swipe", path: [[x, y], [Math.max(0, x - (step.dx ?? 0)), Math.max(0, y - (step.dy ?? 0))]] };
+			}
 			// By wheel clicks: every driver takes them, and several (X11's, Orgo's) refuse pixels. A click is about 120 pixels.
 			if ("scroll" in step) return { type: "scroll", at: atPoint(step.scroll, index), unit: "clicks", ...(step.dx ? { dx: wheelClicks(step.dx) } : {}), ...(step.dy ? { dy: wheelClicks(step.dy) } : {}) };
 			if ("drag" in step) return touchOnly ? { type: "swipe", path: step.drag, ...(step.ms ? { ms: step.ms } : {}) } : { type: "drag", path: step.drag };
@@ -269,7 +274,7 @@ export function createSurface(client: ComputerClient, hello: HelloResult): Surfa
 			signal,
 		);
 		const done: ActResult = { steps: result.steps, ...(result.expect ? { expect: result.expect } : {}), changed: result.changed, state: result.state };
-		if (app) lastState.set(app, result.state);
+		// The default state of a later point step stays the last observation's (stateOf): a state this act returned was never seen.
 		// A script may ask observe as options ({ image: true }); the tool's schema offers only true.
 		const again: unknown = args.observe;
 		if (again) done.after = await observe({ ...(typeof again === "object" ? (again as ObserveArgs) : {}), ...(app ? { app } : {}) }, signal);

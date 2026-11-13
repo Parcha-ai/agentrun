@@ -155,6 +155,23 @@ test("a refused step throws in a script, so the steps after it never run", async
 	assert.equal(calls.filter((call) => call.method === "ui.act").length, 1, "the key after the refused press was never sent");
 });
 
+test("a touch-only phone: a scroll is a swipe the other way over the distance, never a pointer scroll", async () => {
+	const { surface, calls } = surfaceOf({ groups: ["screen", "input.touch", "apps"], os: "android", kind: "android" });
+	await surface.call("act", { steps: [{ scroll: [100, 400], dy: 300 }, { scroll: [100, 400], dy: -200, dx: 50 }] });
+	assert.deepEqual(calls.at(-1).params.actions, [
+		{ type: "swipe", path: [[100, 400], [100, 100]] },
+		{ type: "swipe", path: [[100, 400], [50, 600]] },
+	]);
+});
+
+test("a point step after an act takes the last observation's state, not the one the act returned unseen", async () => {
+	const { surface, calls } = surfaceOf();
+	await surface.call("observe", { app: "com.apple.Notes" });
+	await surface.call("act", { app: "com.apple.Notes", steps: [{ press: "@e3" }] });
+	await surface.call("act", { app: "com.apple.Notes", steps: [{ click: [20, 20] }] });
+	assert.equal(calls.at(-1).params.state, "s1", "the state the model saw, so the changed window refuses the click as stale");
+});
+
 test("input.act: a failed action is the last step, with its kind", async () => {
 	const { surface } = surfaceOf({ groups: ["screen", "input.touch"] });
 	const answer = await surface.call("input.act", { actions: [{ type: "tap", at: [1, 1] }, { type: "pinch", at: [1, 1], scale: 2 }, { type: "tap", at: [2, 2] }] });
