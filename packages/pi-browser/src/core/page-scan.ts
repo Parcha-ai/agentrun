@@ -409,8 +409,23 @@ export class HiddenDrop {
       if (!name) continue;
       if (tag.end) {
         const open = this.#open.get(name)?.pop();
-        if (open) this.#close(open, tag.gt + 1);
+        if (open) {
+          // An end tag closes what its element left open: a p or li opened after it ends here (HTML's optional end tags).
+          for (const implied of IMPLIED_END) {
+            const stack = this.#open.get(implied);
+            while (stack && stack.length > 0 && stack[stack.length - 1]!.lt > open.lt) this.#close(stack.pop()!, tag.lt);
+          }
+          this.#close(open, tag.gt + 1);
+        }
         continue;
+      }
+      // A start tag that closes an open p or li (optional end tags): that element ends here, so its hiding stops here and
+      // never reaches text a browser shows.
+      if (P_CLOSERS.has(name)) this.#closeImplied("p", tag.lt);
+      if (name === "li") {
+        const last = this.#open.get("li")?.at(-1);
+        // Only an li not inside a list opened after it.
+        if (last && !LISTS.some((list) => (this.#open.get(list)?.at(-1)?.lt ?? -1) > last.lt)) this.#closeImplied("li", tag.lt);
       }
       const { why, shows } = hides(name, insideOf(html, name, tag.lt, tag.gt), this.page, this.decode);
       // It shows itself inside a visibility-hidden element, and is shown (not display-hidden itself, and no display-hidden
@@ -437,6 +452,12 @@ export class HiddenDrop {
       if (why === "display") this.#displayOpen += 1;
     }
     return this.#done;
+  }
+
+  /** The innermost open `name` element, ended by a start tag at `at` that implies its end tag. */
+  #closeImplied(name: string, at: number): void {
+    const open = this.#open.get(name)?.pop();
+    if (open) this.#close(open, at);
   }
 
   /** `opened` closed by the end tag that ends at `end`: a display-hidden element goes; a visibility-hidden one goes
@@ -476,6 +497,15 @@ export class HiddenDrop {
     return kept.join("");
   }
 }
+
+/** Elements whose end tag HTML lets a page omit; an end tag of an element around one ends it too. */
+const IMPLIED_END = ["p", "li"];
+const LISTS = ["ul", "ol", "menu"];
+/** Start tags that close an open p. */
+const P_CLOSERS = new Set([
+  "address", "article", "aside", "blockquote", "details", "div", "dl", "fieldset", "figcaption", "figure", "footer", "form",
+  "h1", "h2", "h3", "h4", "h5", "h6", "header", "hgroup", "hr", "main", "menu", "nav", "ol", "p", "pre", "section", "table", "ul",
+]);
 
 /** An element HiddenDrop holds open: where its start tag is, why it hides (hides), and whether anything shown inside it
  *  has shown itself again. */

@@ -200,6 +200,19 @@ test("only a descendant that is shown keeps a visibility-hidden element: one dis
   for (const gone of ["Gone filing", "Gone unused", "Gone wrapped", "Gone deep", "Gone outer", "Gone nested"]) assert.ok(!text.includes(gone), `${gone} in: ${text}`);
 });
 
+test("an omitted end tag ends the hidden element where a browser does: a p or li closed by the next one, or by its parent's end tag, never takes shown text with it, and a real hidden block still goes", async () => {
+  const text = await textOf(page(`
+    <section style="visibility:hidden"><p hidden>Gone unused<p style="visibility:visible">Seen active</p></section>
+    <ul><li hidden>Gone item<li>Seen item two</ul>
+    <div><p hidden>Gone trailing</div>
+    <section style="visibility:hidden">Gone outer<div><p hidden>Gone inner</div><span style="visibility:visible">Seen after parent end</span></section>
+    <ul><li hidden>Gone outer item<ul><li>Seen nested item</li></ul></li></ul>
+    <p hidden>Gone before block<div>Seen block</div>
+    <p>Seen end.</p>`));
+  for (const seen of ["Seen active", "Seen item two", "Seen after parent end", "Seen block", "Seen end."]) assert.ok(text.includes(seen), `${seen} in: ${text}`);
+  for (const gone of ["Gone unused", "Gone item", "Gone trailing", "Gone inner", "Gone outer item", "Gone before block"]) assert.ok(!text.includes(gone), `${gone} in: ${text}`);
+});
+
 test("20,000 visibility-hidden elements of different names closed oldest first are dropped in one linear pass, well under a second, in a child so a stalled loop cannot stall this runner", async () => {
   const child = spawn(process.execPath, ["--input-type=module", "-e", `
     const { dropHidden } = await import(${JSON.stringify(new URL("../dist/core/page-scan.js", import.meta.url).href)});
