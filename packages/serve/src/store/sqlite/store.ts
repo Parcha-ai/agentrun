@@ -900,6 +900,12 @@ class SqliteStore implements Store {
         wakeCommands(this.where, { runId, what: "written" });
         return command;
       },
+      wake: async (runId) => {
+        // On the deadlines' clock (the database's on Postgres), as the claimable rule reads wake_at.
+        const n = clock();
+        const [result] = await db.write([{ sql: `UPDATE runs SET wake_at = ${n.sql} WHERE id = ? AND state = 'parked' RETURNING id`, params: [...n.params, runId] }]);
+        return (result?.rows.length ?? 0) > 0;
+      },
       claimable: async ({ limit } = {}) => {
         const claimable = claimableIn(d, clock());
         const bounded = typeof limit === "number" && Number.isSafeInteger(limit) && limit >= 0;

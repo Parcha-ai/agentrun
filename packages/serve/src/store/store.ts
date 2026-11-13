@@ -689,6 +689,11 @@ export interface Runs {
    *  'stopped'), not imported and not a learning run, reopens: a workflow, a failed or cancelled run, any other, or none
    *  is RunFinal, and nothing is written. */
   reopen(runId: string, command: { kind: string; body?: unknown }, options?: LaunchSealedWrite): Promise<Command>;
+  /** Wakes a parked run: its wake_at set to now on the deadlines' clock, so a runner claims it at its next poll (the
+   *  claimable rule's wake branch) and its loop reads what it waits on again. True when the run was parked; a run in any
+   *  other state (or none) is left as it is, false. Its claim, if one holds it while it parks, is let go as before: the
+   *  release sets wake_at as the loop's end says. */
+  wake(runId: string): Promise<boolean>;
   /** The runs a runner may claim, oldest first: queued; parked with an untaken command or its wake_at passed; running with
    *  no runner (released at a runner's shutdown: it stays running, a run that started keeps that fact) or its claim run
    *  out. */
