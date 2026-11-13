@@ -7,7 +7,6 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { REQUEST_STARTED } from "../dist/timeline/index.js";
 import { capBefore, paidCall, useSpend } from "../dist/cap.js";
-import { startServe } from "../dist/index.js";
 import { KEY } from "./fixtures/faux-monid.mjs";
 import { agent, follow, serve, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";

@@ -12,7 +12,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { after, describe, it } from "node:test";
 import { DaemonClient } from "../../dist/index.js";
-import { childCommands } from "../../dist/child.js";
+import { childCommands } from "../../dist/hosted/scripts.js";
 
 const LIVE = process.env.AGENTRUN_COMPUTER_LIVE_DOCKER === "1";
 const docker = (...args) => execFileSync("docker", args, { encoding: "utf8" });

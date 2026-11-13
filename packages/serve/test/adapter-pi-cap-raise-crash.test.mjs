@@ -31,6 +31,10 @@ const { MAX_RESTARTS } = await import("../dist/runner/conformance/harness.js");
 const CAP = 0.01;
 const RAISED = 5;
 const FOLLOW_UP = cap.followUpOf(RAISED).text;
+/** Whether `row` rests in `state`: let go by its runner, or, parked, with its claim run out before its runner let it go.
+ *  The store claims a parked run either way (sqlite store.ts: parked AND (runner IS NULL OR claimed_until < now)), so a
+ *  raise still wakes it. */
+const resting = (row, state) => row.state === state && (row.runner === null || (state === "parked" && typeof row.claimedUntil === "number" && row.claimedUntil < Date.now()));
 const isFollowUp = (write) => write.type === "submission" && String(write.value?.requestId ?? "").startsWith("agentrun:raise:");
 
 /** The server's store and two runners' stores in `dir`, all on one clock: real time plus `clock.skewMs`, so a case runs
@@ -115,7 +119,7 @@ async function crashedRaise(t, point, { short = false } = {}) {
     const from = Date.now();
     for (;;) {
       const row = await server.runs.get("run-1");
-      if (row.state === state && row.runner === null) return row;
+      if (resting(row, state)) return row;
       // A final state other than the one waited for fails at once; the one waited for waits for its release too.
       if ((row.state !== state && ["ended", "stopped", "failed"].includes(row.state)) || Date.now() - from > ms) throw new Error(`not ${state} within ${ms} ms: ${JSON.stringify(row)}; ${sent.length} requests sent`);
       await sleep(20);
@@ -203,7 +207,7 @@ test("a raised run whose runner is lost while its follow-up's request is out: th
     const from = Date.now();
     for (;;) {
       const row = await server.runs.get("run-1");
-      if (row.state === state && row.runner === null) return row;
+      if (resting(row, state)) return row;
       if ((row.state !== state && ["ended", "stopped", "failed"].includes(row.state)) || Date.now() - from > ms) throw new Error(`not ${state} within ${ms} ms: ${JSON.stringify(row)}; ${sent.length} requests sent`);
       await sleep(20);
     }
@@ -216,8 +220,14 @@ test("a raised run whose runner is lost while its follow-up's request is out: th
   runners[0].kill();
   runOut();
   runners.push(startRunner({ store: stores[1], createLoop: loop, name: "runner-b", ...STEADY }));
-  const row = await settled("ended");
+  // The first runner is gone but alive in-process (kill stops nothing): its request answers only once the second runner
+  // holds the run, so whatever it books then is a stale claim's, which the store's fence refuses (the claim's epoch, in the
+  // booking's own transaction). The lost request is booked once, by the claim that holds the run.
+  for (const from = Date.now(); (await server.runs.get("run-1")).runner !== "runner-b"; await sleep(20)) {
+    if (Date.now() - from > 20_000) throw new Error("the second runner did not take the run within 20 s");
+  }
   release();
+  const row = await settled("ended");
   assert.equal(row.summary, null, `ended with no words: ${JSON.stringify(row)}`);
   const followUps = sent.filter((body) => followUpsIn(body) > 0);
   assert.equal(followUps.length, 2, `the lost request and the next claim's, no more: ${JSON.stringify(sent.map((body) => body.messages))}`);
