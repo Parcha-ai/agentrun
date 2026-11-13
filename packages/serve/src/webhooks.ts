@@ -74,6 +74,8 @@ export function shownUrl(url: string): string {
 export type WebhooksOptions = { retryMs?: readonly number[]; privateTargets?: boolean; lookup?: (host: string) => Promise<string[]>; storeRetryMs?: number };
 /** How soon a try the store failed (its read or its claim threw) is tried again. */
 const STORE_RETRY_MS = 5_000;
+/** How many times a try's read of its message, before it settles, is tried (a wait of STORE_RETRY_MS between). */
+const STANDING_READS = 3;
 /** The least wait before a queued message whose claim was refused is tried again. */
 const RE_ARM_MS = 20;
 
@@ -631,8 +633,24 @@ export class Webhooks {
   private async settleTry(id: string, how: { retry: boolean; redelivery: boolean }, now: number, post: ChannelPostRow, config: Config | undefined, failure: string | undefined, attempt: Attempt): Promise<Attempt> {
     if (this.closed) return attempt;
     attempt.error = failure ?? null;
-    // The message as it stands now: a redelivery may have sent it while this try waited.
-    const standingPost = (await this.store.channels.get(id).catch(() => post)) ?? post;
+    // The message as it stands now: a redelivery may have sent it while this try waited. Its read is tried a few times. If
+    // the store still refuses it, the outcome is never settled from `post`, which was read before the claim and says queued:
+    // that skips the branch that sets the next try, and nothing would send the message again until a restart. It is written
+    // by resettle instead, which reads the message itself and writes only while it is still this try's (sending).
+    let read: ChannelPostRow | undefined;
+    let unread: Error | undefined;
+    for (let i = 0; i < STANDING_READS; i++) {
+      try {
+        read = await this.store.channels.get(id);
+        unread = undefined;
+        break;
+      } catch (error) {
+        unread = error as Error;
+        if (i < STANDING_READS - 1) await new Promise((resolve) => setTimeout(resolve, this.storeRetryMs));
+      }
+    }
+    // Unread: what the claim made it. Used only to work out this try's outcome; the write waits for resettle's own read.
+    const standingPost = unread ? { ...post, state: "sending" as const } : (read ?? post);
     // The schedule counts the message's own tries: a redelivery is a try of its own, and leaves it as it was.
     const attempts = standingPost.attempts + (how.redelivery ? 0 : 1);
     // A 410 turns off the webhook as this try found it: one set again or removed while the try waited is not its to turn
@@ -658,6 +676,7 @@ export class Webhooks {
     };
     const write = () => this.store.channels.settle(id, to ?? { state: standingPost.state, reason: standingPost.reason }, row, { kept: ATTEMPTS_KEPT, sending: [...this.sending.keys()] });
     try {
+      if (unread) throw unread;
       await write();
     } catch (error) {
       this.say({ condition: "attempt_unsaved", webhook_id: id, error: (error as Error).message });

@@ -757,6 +757,27 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     assert.equal(hook.got.length, 1);
   });
 
+  test("a failed delivery whose settle-time read of the message fails is tried again later, not stranded sending with no timer", async (t) => {
+    const hook = await receiver(t, (n) => (n === 1 ? 503 : 200));
+    const log = logged();
+    const dir = await scratch(t);
+    let refused = 0;
+    // The message's read fails, three times, once the receiver has the first try: the try's own read before settling.
+    const on = await webhookOn(t, dir, { retryMs: [100], storeRetryMs: 50, wrap: seeing("channels", (channels) => ({
+      get: async (id) => {
+        if (hook.got.length >= 1 && refused < 3) throw (refused++, new Error("the store is busy"));
+        return channels.get(id);
+      },
+    })) });
+    await on.runs("run_1");
+    const webhooks = await on.open(log.push);
+    await webhooks.save({ url: hook.url });
+    await webhooks.emit("run.ended", { run_id: "run_1", agent_id: "a", status: "completed", title: "t" }, new Date().toISOString());
+    await hook.when(2, "the second try, after the first one failed and its read of the message did too");
+    assert.equal(refused, 3, "the read was refused as many times as the try reads it");
+    await onDisk(dir, () => outboxOf(dir).messages.every((m) => m.status === "delivered"), "the message delivered at its retry");
+  });
+
   // From the outbound webhook's first store-held form: a PUT, a DELETE and a try's 410 change the webhook one after
   // another, a DELETE leaves nothing to send, a PUT that fails keeps no secret, and one server alone sends.
 
