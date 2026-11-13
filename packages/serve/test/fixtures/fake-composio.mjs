@@ -3,12 +3,14 @@
 // answers a request without the right x-api-key 401, and /v3/mcp/<id> without the /mcp suffix with a redirect.
 // `toolkits`: by slug, `{ no_auth, tools: [{ slug, name, description }] }`; as the real one, a toolkit's own answer says
 // no_auth only as `auth_config_details[].mode` "NO_AUTH" (only the toolkit list has a `no_auth` field). `authConfigs`: by toolkit slug, the auth configs
-// it already has. `active`: toolkit slugs the user already has an ACTIVE connected account for. `fail`: `{ path, status }`
+// it already has. `active`: toolkit slugs the user already has an ACTIVE connected account for, under the auth config the
+// call names. `accounts`: by toolkit slug, the user's accounts as `{ status, auth_config }` (an ACTIVE one under another
+// config, say); as the real one, `auth_config_ids` narrows the list to those under it. `fail`: `{ path, status }`
 // makes the call whose path ends in `path` answer that status.
 import { createServer } from "node:http";
 import { startFakeMcp } from "./fake-mcp-server.mjs";
 
-export async function startFakeComposio({ apiKey = "fake-test-key", toolkits, authConfigs = {}, active = [], fail } = {}) {
+export async function startFakeComposio({ apiKey = "fake-test-key", toolkits, authConfigs = {}, active = [], accounts = {}, fail } = {}) {
   const calls = [];
   const mcpKeys = [];
   const id = "srv_fake1";
@@ -37,7 +39,12 @@ export async function startFakeComposio({ apiKey = "fake-test-key", toolkits, au
     if (req.method === "POST" && url.pathname === "/api/v3.1/mcp/servers/custom") return reply(201, { id });
     if (req.method === "DELETE" && url.pathname === `/api/v3.1/mcp/${id}`) return reply(200, { id, deleted: true });
     if (req.method === "POST" && url.pathname === "/api/v3.1/mcp/servers/generate") return reply(200, { user_ids_url: body.user_ids.map((u) => `${mcpOrigin}/v3/mcp/${id}?user_id=${u}&include_composio_helper_actions=true`) });
-    if (req.method === "GET" && url.pathname === "/api/v3/connected_accounts") return reply(200, { items: active.includes(url.searchParams.get("toolkit_slugs")) ? [{ status: "ACTIVE" }] : [{ status: "INITIATED" }] });
+    if (req.method === "GET" && url.pathname === "/api/v3/connected_accounts") {
+      const kit = url.searchParams.get("toolkit_slugs");
+      const under = url.searchParams.get("auth_config_ids");
+      const listed = [...(accounts[kit] ?? []), active.includes(kit) ? { status: "ACTIVE", auth_config: under ?? "ac_unnamed" } : { status: "INITIATED", auth_config: under ?? "ac_unnamed" }];
+      return reply(200, { items: listed.filter((a) => !under || a.auth_config === under).map((a) => ({ status: a.status, auth_config: { id: a.auth_config } })) });
+    }
     if (req.method === "POST" && url.pathname === "/api/v3/connected_accounts/link") return reply(201, { redirect_url: `https://connect.composio.test/link/${body.auth_config_id}` });
     return reply(404, { error: { message: `no route ${req.method} ${url.pathname}` } });
   });

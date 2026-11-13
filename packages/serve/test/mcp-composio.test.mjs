@@ -23,6 +23,12 @@ async function setup(t, options = {}) {
   const server = await serve(t, { composioControl: { baseUrl: composio.baseUrl } });
   return { composio, log, server, api: server.api };
 }
+/** The address Composio's MCP endpoint was called at (its path and query), as the server sent it. */
+function sentTo(s) {
+  const last = s.composio.mcpLog.at(-1);
+  assert.ok(last, "the MCP endpoint was called");
+  return new URL(last.path, "http://composio.test");
+}
 /** Nothing the server answered, logged or stored holds the key. */
 function holdsNoKey({ composio, log, server }, ...answers) {
   const key = composio.apiKey;
@@ -54,7 +60,9 @@ test("a no-auth toolkit saves as an MCP server: no auth config, the URL ends in 
   assert.deepEqual({ ...custom, auth_config_ids: custom.auth_config_ids ?? [] }, { name: custom.name, toolkits: ["hackernews"], auth_config_ids: [], allowed_tools: ["add", "GITHUB_STAR_REPO"], managed_auth_via_composio: true });
   assert.deepEqual(s.composio.to("/api/v3.1/mcp/servers/generate", "POST")[0].body, { mcp_server_id: s.composio.mcpId, user_ids: ["agentrun"], managed_auth_by_composio: true });
   const saved = (await s.api("GET", "/settings/mcp-servers/hn")).body;
-  const url = new URL(saved.url);
+  // A read shows the address as its origin and /… (MCP custody): the address itself is the one the server was sent.
+  assert.equal(new URL(saved.url).pathname, "/%E2%80%A6", "the read holds back the path and query");
+  const url = sentTo(s);
   assert.equal(url.pathname, `/v3/mcp/${s.composio.mcpId}/mcp`);
   assert.equal(url.searchParams.get("user_id"), "agentrun");
   assert.ok(!url.searchParams.has("include_composio_helper_actions"), "the helper tools are dropped");
@@ -74,7 +82,16 @@ test("an auth toolkit with no active account answers connect_url, reusing an exi
   assert.deepEqual(s.composio.to("/api/v3/connected_accounts/link")[0].body, { auth_config_id: "ac_managed", user_id: "owner-1" });
   assert.equal(res.body.connect_url, "https://connect.composio.test/link/ac_managed");
   assert.equal(res.body.server.name, "gh");
-  assert.equal(new URL(res.body.server.url).searchParams.get("user_id"), "owner-1");
+  assert.equal(sentTo(s).searchParams.get("user_id"), "owner-1");
+  assert.equal(s.composio.to("/api/v3/connected_accounts")[0].query.auth_config_ids, "ac_managed", "the accounts asked for are the ones under its config");
+  holdsNoKey(s, res.body);
+});
+
+test("an ACTIVE account under another auth config still gets the connect link: the server serves only its own config's account", async (t) => {
+  const s = await setup(t, { authConfigs: { github: [{ id: "ac_managed", is_composio_managed: true }] }, accounts: { github: [{ status: "ACTIVE", auth_config: "ac_custom" }] } });
+  const res = await s.api("PUT", "/settings/mcp-servers/gh/composio", { api_key: s.composio.apiKey, toolkit: "github", tools: ["GITHUB_LIST_ISSUES"], user_id: "owner-1" });
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.equal(res.body.connect_url, "https://connect.composio.test/link/ac_managed", "an account under ac_custom doesn't serve a server tied to ac_managed");
   holdsNoKey(s, res.body);
 });
 

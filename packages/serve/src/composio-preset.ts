@@ -148,8 +148,9 @@ export async function composioSave<T extends { tools?: readonly { name: string }
     if (!address) throw new ApiError("upstream_failed", "Composio gave no address for the MCP server: nothing was saved.");
     let connect: string | undefined;
     if (authConfig) {
-      const accounts = await ask("checking the connected account", "GET", `/api/v3/connected_accounts?user_ids=${encodeURIComponent(user)}&toolkit_slugs=${encodeURIComponent(toolkit)}`);
-      if (!(Array.isArray(accounts.items) ? accounts.items : []).some((a) => isObject(a) && a.status === "ACTIVE")) {
+      // Only an account under this server's auth config serves it: one ACTIVE under another config (a custom one) doesn't.
+      const accounts = await ask("checking the connected account", "GET", `/api/v3/connected_accounts?user_ids=${encodeURIComponent(user)}&toolkit_slugs=${encodeURIComponent(toolkit)}&auth_config_ids=${encodeURIComponent(authConfig)}`);
+      if (!(Array.isArray(accounts.items) ? accounts.items : []).some((a) => isObject(a) && a.status === "ACTIVE" && isObject(a.auth_config) && a.auth_config.id === authConfig)) {
         const link = await ask("making the connect link", "POST", "/api/v3/connected_accounts/link", { auth_config_id: authConfig, user_id: user });
         connect = text(link.redirect_url) || undefined;
       }
