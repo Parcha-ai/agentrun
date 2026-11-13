@@ -4,7 +4,7 @@ import { BROWSER_TOOL_NAMES } from "@pi-browser/contract";
 import { nameOf } from "@timeline/labels";
 import { Chip } from "@/components/ui/chip";
 import { Spinner } from "@/components/ui/spinner";
-import { clock } from "@/lib/format";
+import { clock, markdown } from "@/lib/format";
 import { mcpToolLabel } from "@/lib/mcp";
 import { rowDetail, rowFailed, rowPaused, type Step, steps } from "@/lib/timeline";
 import { kindWithModel, ranOnWords } from "@/lib/nodeModel";
@@ -115,7 +115,9 @@ function Row({ step, last, waitingChip }: { step: Step; last: boolean; waitingCh
           <span className="caps shrink-0 pt-0.5 text-label text-muted-foreground">{clock(row.timestamp)}</span>
           {detail && <ChevronRight className={cn("mt-0.5 size-4 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")} aria-hidden />}
         </button>
-        {open && detail && <pre className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap break-words border bg-card p-3 font-mono text-small leading-[1.7]">{detail}</pre>}
+        {/* An answer opens as the Report reads it (the same markdown(): links as links, fences as code blocks, no raw HTML). */}
+        {open && detail && row.kind === "final_answer" && <article className="report mt-3 max-h-80 max-w-none overflow-auto border bg-card p-3" dangerouslySetInnerHTML={{ __html: markdown(detail) }} />}
+        {open && detail && row.kind !== "final_answer" && <pre className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap break-words border bg-card p-3 font-mono text-small leading-[1.7]">{detail}</pre>}
         {row.learned_nodes?.length ? <LearnedNodes nodes={row.learned_nodes} /> : null}
       </div>
     </li>

@@ -62,6 +62,26 @@ describe("the timeline's Answer row", () => {
   });
 });
 
+describe("the timeline's Answer row, opened", () => {
+  const FENCED = "Pricing moved.\n\n[Source: Stripe pricing](https://stripe.com/pricing)\n\n```json\n{\"plan\": \"pro\"}\n```\n\n<script>alert(1)</script>";
+  it("reads as the Report does: a link, a code block, no literal fence or link syntax, no raw HTML", () => {
+    const row: TimelineRow = { created_at: "2026-10-28T19:33:16.118Z", agent_label: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null, id: "a", kind: "final_answer", summary: "Pricing moved.", text: FENCED } as unknown as TimelineRow;
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(Timeline, { rows: [row], live: false })));
+    act(() => host.querySelector<HTMLButtonElement>("li button")!.click());
+    const a = host.querySelector("article.report a")!;
+    expect(a.textContent).toBe("Source: Stripe pricing");
+    expect(a.getAttribute("href")).toBe("https://stripe.com/pricing");
+    expect(a.getAttribute("target")).toBe("_blank");
+    expect(a.getAttribute("rel")).toBe("noopener noreferrer");
+    expect(host.querySelector("article.report pre code")!.textContent).toContain('"plan": "pro"');
+    expect(host.textContent).not.toContain("```");
+    expect(host.textContent).not.toContain("](");
+    expect(host.querySelector("article.report script")).toBeNull();
+  });
+});
+
 describe("text in angle brackets", () => {
   it("reads literally in Markdown: a placeholder is no tag", () => {
     const d = dom(markdown('The summary is three lines: "Customer: <name>" "Amount: $<amount>" and <customer_id>.'));
