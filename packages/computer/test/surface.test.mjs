@@ -172,6 +172,21 @@ test("a point step after an act takes the last observation's state, not the one 
 	assert.equal(calls.at(-1).params.state, "s1", "the state the model saw, so the changed window refuses the click as stale");
 });
 
+test("an act that names a state and no app observes that state's app afterwards, not the one in front", async () => {
+	const { surface, calls } = surfaceOf();
+	await surface.call("observe", { app: "com.example.background" });
+	await surface.call("act", { state: "s1", steps: [{ press: "@e3" }], observe: true });
+	assert.deepEqual(calls.at(-1), { method: "ui.observe", params: { target: { app: "com.example.background" } } });
+});
+
+test("a directory listing past its pages throws a limit error instead of returning part of it", async () => {
+	const fake = fakeComputer();
+	const call = fake.client.call.bind(fake.client);
+	fake.client.call = async (method, params, options) =>
+		method === "files.list" ? { ok: true, value: { entries: [{ path: `/d/f${params.offset ?? 0}`, type: "file", size: 1, mode: 0o644, mtimeMs: 1, uid: 0, gid: 0 }], truncated: true } } : call(method, params, options);
+	await assert.rejects(createSurface(fake.client, fake.hello).call("files.list", { path: "/d" }), /more than 10 entries/);
+});
+
 test("input.act: a failed action is the last step, with its kind", async () => {
 	const { surface } = surfaceOf({ groups: ["screen", "input.touch"] });
 	const answer = await surface.call("input.act", { actions: [{ type: "tap", at: [1, 1] }, { type: "pinch", at: [1, 1], scale: 2 }, { type: "tap", at: [2, 2] }] });

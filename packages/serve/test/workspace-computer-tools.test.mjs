@@ -249,6 +249,8 @@ test("a script's shell and files are held to the run's gate: a denied bash, a de
   run.computer.guard.install(async (tool, args) => { seen.push([tool, args]); return verdict; });
   assert.equal((await call(tools, "computer_script", { code })).structured, "ran");
   assert.deepEqual(seen, [["bash", { command: "echo hi" }]]);
+  await call(tools, "computer_script", { code: "try { await computer.shell.run('cat passwd', { cwd: '/etc' }); } catch (error) {} return 1;" });
+  assert.deepEqual(seen.at(-1), ["bash", { command: "cat passwd", cwd: "/etc" }], "the directory it runs in is what the gate reads");
   verdict = { deny: "bash is denied for this agent" };
   assert.match((await call(tools, "computer_script", { code })).structured, /bash is denied for this agent/);
   verdict = "ask";

@@ -45,7 +45,7 @@ export class ScriptGuard {
     if (tool === undefined) return undefined;
     if (!this.#decide) return `computer call ${op} was not run: this run's tool settings are not attached to its scripts yet`;
     const given = (args ?? {}) as Record<string, unknown>;
-    const decision = await this.#decide(tool, tool === "bash" ? { command: given.command } : { path: given.path });
+    const decision = await this.#decide(tool, tool === "bash" ? { command: given.command, ...(given.cwd !== undefined ? { cwd: given.cwd } : {}) } : { path: given.path });
     if (decision === "allow") return undefined;
     if (decision === "ask") return `computer call ${op} was not run: this agent's ${tool} setting asks a person first, and a script can't wait for one. Call the ${tool} tool itself, or ask for the setting to be allow.`;
     return `computer call ${op} was not run: ${decision.deny}`;

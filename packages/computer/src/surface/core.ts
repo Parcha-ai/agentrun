@@ -141,6 +141,8 @@ export function createSurface(client: ComputerClient, hello: HelloResult): Surfa
 	/** The last state observed, by app, and the last app: an act at points defaults to its app's last state. */
 	const lastState = new Map<string, string>();
 	let lastApp: string | undefined;
+	/** The app each observed state belongs to: an act that names a state and no app was run on that state's app. */
+	const appOfState = new Map<string, string>();
 
 	async function call<M extends DaemonMethod>(method: M, params: DaemonMethods[M]["params"], signal?: AbortSignal): Promise<DaemonMethods[M]["result"]> {
 		const result = await client.call(method, params, { signal });
@@ -169,6 +171,7 @@ export function createSurface(client: ComputerClient, hello: HelloResult): Surfa
 		const window = result.window;
 		const head = [`state ${result.state}`, `${result.app.id}${result.app.name ? ` "${result.app.name}"` : ""}`, `window${window.title ? ` "${window.title}"` : ""} ${window.bounds[2]}×${window.bounds[3]} pt`].join(" · ");
 		lastState.set(result.app.id, result.state);
+		appOfState.set(result.state, result.app.id);
 		lastApp = result.app.id;
 		const outline = outlineOf(head, result.nodes, result.truncated, result.empty);
 		const imageNote = result.image ? `\nimage: ${result.image.width}×${result.image.height} px of the window's ${window.bounds[2]}×${window.bounds[3]} points` : "";
@@ -277,7 +280,9 @@ export function createSurface(client: ComputerClient, hello: HelloResult): Surfa
 		// The default state of a later point step stays the last observation's (stateOf): a state this act returned was never seen.
 		// A script may ask observe as options ({ image: true }); the tool's schema offers only true.
 		const again: unknown = args.observe;
-		if (again) done.after = await observe({ ...(typeof again === "object" ? (again as ObserveArgs) : {}), ...(app ? { app } : {}) }, signal);
+		// The window the act finished on: its app, else the app of the state it named, never the one in front.
+		const target = app ?? (args.state ? appOfState.get(args.state) : undefined);
+		if (again) done.after = await observe({ ...(typeof again === "object" ? (again as ObserveArgs) : {}), ...(target ? { app: target } : {}) }, signal);
 		return done;
 	}
 
@@ -314,6 +319,8 @@ export function createSurface(client: ComputerClient, hello: HelloResult): Surfa
 			const result = await call("files.list", { path, ...(entries.length > 0 ? { offset: entries.length } : {}) }, signal);
 			entries.push(...result.entries);
 			if (!result.truncated || result.entries.length === 0) break;
+			// Pages used up with more behind: a partial listing is never returned as the whole.
+			if (page === MAX_LIST_PAGES - 1) throw new SurfaceError("limit", `${path} has more than ${entries.length} entries: list it with the shell in parts`);
 		}
 		return entries.map((entry) => infoOf(entry.path, entry));
 	}
