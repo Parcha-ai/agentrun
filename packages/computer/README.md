@@ -2543,7 +2543,9 @@ on neither loopback.
   which wakes on the next call) and the states on the way to running are `running`; `hibernated`, `stopped` and
   `failed` are `stopped`, so the janitor can sweep them.
 - `extend(ref, ttlMs)` moves init's deadline with `deadline.extend`, then the deadline label the janitor reads; never
-  earlier, and never past create's time plus the cap.
+  earlier, and never past create's time plus the cap. Two providers may extend one computer at once: the label never
+  moves back, and after writing it extend asks init again, so a deadline another extend moved later is the one the
+  label takes and the one extend answers.
 - `release(ref, "delete")` reads the machine back to check it is this provider's, deletes it, and waits until
   `machines.get` answers not found and the label listing no longer shows it, twice running, within `goneMs` (120 s).
   `release(ref, "stop")` is refused in words.

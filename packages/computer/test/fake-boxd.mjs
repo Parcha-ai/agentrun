@@ -185,7 +185,7 @@ export function fakeBoxd({ create = "ok", landMs = 30, snapshotLabels = {}, mach
 			const to = Date.parse(params.at);
 			if (!m.init.max) return error("unsupported", "this computer's deadline cannot move");
 			if (to > Date.parse(m.init.max)) return error("limit", `${params.at} is past the maximum deadline ${m.init.max}`);
-			if (to < Date.parse(m.init.deadline)) return error("invalid", `${params.at} is earlier than the deadline`);
+			if (to < Date.parse(m.init.deadline)) return error("invalid", `${params.at} is earlier than the deadline ${m.init.deadline}: deadline.extend only moves it later`);
 			m.init.deadline = new Date(to).toISOString();
 			return result({ at: m.init.deadline });
 		}
@@ -262,6 +262,7 @@ export function fakeBoxd({ create = "ok", landMs = 30, snapshotLabels = {}, mach
 		async updateLabels(id, { set }) {
 			record("machines.updateLabels", id, set);
 			const m = find(id);
+			await onStep("machines.updateLabels", m);
 			Object.assign(m.labels, set);
 			return { ...m.labels };
 		},

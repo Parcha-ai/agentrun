@@ -296,6 +296,8 @@ const DELETE_TIMER_SLACK_S = 300;
 const CLOCK_SKEW_S = 120;
 /** How many times the cleanup of a machine that landed late tries its delete before it reports the machine left. */
 const LATE_DELETE_TRIES = 3;
+/** How many times an extend writes the label and asks init again while other extends move the deadline later. */
+const EXTEND_ROUNDS = 3;
 /** Where init's own words go: root's, in /run, which only root writes. */
 const INIT_LOG = "/run/agentrun-computerd.log";
 /** Public anycast resolvers, by address: TCP to 443, and DNS over UDP to 53, over IPv4 and IPv6. */
@@ -437,6 +439,11 @@ const ours = (pattern: RegExp, machine: Pick<BoxdMachine, "name" | "labels"> | u
 function isoOf(written: string | undefined): Date | undefined {
 	const at = written === undefined ? Number.NaN : Date.parse(written);
 	return Number.isNaN(at) || new Date(at).toISOString() !== written ? undefined : new Date(at);
+}
+
+/** The deadline init holds, from its refusal of an earlier one ("... is earlier than the deadline <ISO time>: ..."). */
+function laterDeadline(refusal: string): Date | undefined {
+	return isoOf(/ is earlier than the deadline (\S+): /.exec(refusal)?.[1]);
 }
 
 /**
@@ -1188,9 +1195,11 @@ export class BoxdProvider implements ComputerProvider {
 	}
 
 	/**
-	 * Moves the deadline label to now + ttlMs, then init's own deadline there, and returns the deadline init took; never
-	 * earlier than the current deadline, never past create's time plus the cap, which init was given as its maximum. A
-	 * provider runs one extend of a computer at a time, each reading the deadline the one before it left.
+	 * Moves init's own deadline to now + ttlMs, then the deadline label to the time init took, and returns the deadline
+	 * the computer holds; never earlier than the current deadline, never past create's time plus the cap, which init was
+	 * given as its maximum. A provider runs one extend of a computer at a time, each reading the deadline the one before
+	 * it left. Another provider may extend the same computer meanwhile, so the label never moves back, and after writing
+	 * it extend asks init once more: a deadline another extend moved later is the one the label takes.
 	 */
 	async extend(ref: ComputerRef, ttlMs: number, { signal }: CallContext = {}): Promise<Result<{ deadline: Date }>> {
 		const problem = refProblem(this.#name, this.#prefix, ref);
@@ -1228,20 +1237,43 @@ export class BoxdProvider implements ComputerProvider {
 		const at = new Date(target).toISOString();
 		const opened = await this.#open(ref, signal);
 		if (!opened.ok) return fail(opened.error.code, `nothing moved: ${opened.error.message}`);
-		let took: Date;
 		try {
-			const extended = await opened.value.client.call("deadline.extend", { at }, { signal: this.#bounded(this.#timeouts.helloMs, signal) });
+			const { client } = opened.value;
+			const extended = await client.call("deadline.extend", { at }, { signal: this.#bounded(this.#timeouts.helloMs, signal) });
 			if (!extended.ok) return fail(extended.error.code, `init's deadline did not move, so nothing did: ${extended.error.message}`);
 			const answered = Date.parse(extended.value.at);
-			took = new Date(Number.isNaN(answered) ? at : answered);
+			let took = new Date(Number.isNaN(answered) ? at : answered);
+			// The label after init: the janitor reads it, and a label behind init's deadline only ends the computer earlier.
+			// Then init again, with the time just written. Init holding it still means every later extend writes its label
+			// after this one. Init refusing it as earlier means another extend moved init later, and this label may have
+			// landed on that one's: the label takes init's deadline, and the check runs again.
+			for (let round = 0; round < EXTEND_ROUNDS; round++) {
+				const moved = await this.#labelDeadline(ref, took, signal);
+				if (!moved.ok) return fail(moved.error.code, `init's deadline moved to ${took.toISOString()}, and the label ${DEADLINE_LABEL} did not: ${moved.error.message}; the janitor ends the computer at the deadline the label holds`);
+				const held = await client.call("deadline.extend", { at: took.toISOString() }, { signal: this.#bounded(this.#timeouts.helloMs, signal) });
+				const later = held.ok ? isoOf(held.value.at) : held.error.code === "invalid" ? laterDeadline(held.error.message) : undefined;
+				if (later === undefined) {
+					const why = held.ok ? `init answered ${show(held.value.at)}, not an ISO time` : held.error.message;
+					return fail(held.ok ? "refused" : held.error.code, `init's deadline and the label ${DEADLINE_LABEL} moved to ${took.toISOString()}, and init could not be asked whether another extend moved its deadline later: ${why}`);
+				}
+				if (later.getTime() <= took.getTime()) return ok({ deadline: took });
+				took = later;
+			}
+			return fail("refused", `other extends kept moving ${ref.name}'s deadline: init holds ${took.toISOString()}, and the label ${DEADLINE_LABEL} may be behind it, where the janitor ends the computer`);
 		} finally {
 			await opened.value.close();
 		}
-		// The label after init: the janitor reads it, and a label behind init's deadline only ends the computer earlier.
+	}
+
+	/** Writes the deadline label unless it already holds this time or a later one: the label never moves back. */
+	async #labelDeadline(ref: ComputerRef, at: Date, signal?: AbortSignal): Promise<Result<void>> {
+		const found = await this.#own(ref, signal);
+		if (!found.ok) return found;
+		const holds = isoOf(found.value.labels[DEADLINE_LABEL]);
+		if (holds !== undefined && holds.getTime() >= at.getTime()) return ok(undefined);
 		const { requestMs } = this.#timeouts;
-		const moved = await call(`machines.updateLabels of ${ref.name}`, () => this.#machines.updateLabels(ref.id, { set: { [DEADLINE_LABEL]: took.toISOString() } }), requestMs + CALL_SLACK_MS, signal);
-		if (!moved.ok) return fail(moved.error.code, `init's deadline moved to ${took.toISOString()}, and the label ${DEADLINE_LABEL} did not: ${moved.error.message}; the janitor ends the computer at the old deadline`);
-		return ok({ deadline: took });
+		const moved = await call(`machines.updateLabels of ${ref.name}`, () => this.#machines.updateLabels(ref.id, { set: { [DEADLINE_LABEL]: at.toISOString() } }), requestMs + CALL_SLACK_MS, signal);
+		return moved.ok ? ok(undefined) : moved;
 	}
 
 	/**

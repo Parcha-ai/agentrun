@@ -548,6 +548,80 @@ test("extend moves init's deadline and the label the janitor reads, never earlie
 	assert.ok(Date.parse(m.labels[MAX_LABEL]) > Date.now());
 });
 
+/** Two providers over one fake boxd, the first one's extend held at the nth call of a step until the test lets it go. */
+function twoExtenders(step, nth) {
+	let seen = 0;
+	let reached;
+	let go;
+	const atStep = new Promise((done) => (reached = done));
+	const gate = new Promise((done) => (go = done));
+	let holding = false;
+	const fake = fakeBoxd({
+		onStep: async (name) => {
+			if (!holding || name !== step || ++seen !== nth) return;
+			reached();
+			await gate;
+		},
+	});
+	const options = { apiKey: KEY, Boxd: fake.Boxd, org: "acme", daemonPath: DAEMON_PATH, timeouts: TIMEOUTS, maxLifetimeMs: 3_600_000 };
+	return { fake, first: new BoxdProvider(options), second: new BoxdProvider(options), hold: () => (holding = true), atStep, go };
+}
+
+test("two providers extending one computer leave the label at the later deadline when the earlier label lands last", async () => {
+	const { fake, first, second, hold, atStep, go } = twoExtenders("machines.updateLabels", 1);
+	const made = await first.create({ ...SPEC, lifetimeMs: 60_000 });
+	assert.ok(made.ok, made.ok ? "" : made.error.message);
+	const m = only(fake);
+	hold();
+	// The first extend moves init, reads the label, and its label write is held; the second runs whole meanwhile.
+	const earlier = first.extend(made.value, 120_000);
+	await atStep;
+	const later = await second.extend(made.value, 600_000);
+	assert.ok(later.ok, later.ok ? "" : later.error.message);
+	assert.equal(m.labels[DEADLINE], later.value.deadline.toISOString());
+	go();
+	const result = await earlier;
+	assert.ok(result.ok, result.ok ? "" : result.error.message);
+	assert.equal(m.init.deadline, later.value.deadline.toISOString());
+	assert.equal(m.labels[DEADLINE], later.value.deadline.toISOString(), "the janitor reads the deadline init holds, not the earlier one written last");
+	assert.equal(result.value.deadline.toISOString(), later.value.deadline.toISOString(), "extend answers the deadline the computer holds");
+});
+
+test("an extend leaves a label another provider already moved later", async () => {
+	// The first extend is held as it reads the label back before writing it (its second machines.get).
+	const { fake, first, second, hold, atStep, go } = twoExtenders("machines.get", 2);
+	const made = await first.create({ ...SPEC, lifetimeMs: 60_000 });
+	assert.ok(made.ok, made.ok ? "" : made.error.message);
+	const m = only(fake);
+	hold();
+	const earlier = first.extend(made.value, 120_000);
+	await atStep;
+	const later = await second.extend(made.value, 600_000);
+	assert.ok(later.ok, later.ok ? "" : later.error.message);
+	const writes = () => fake.calls.filter(([name]) => name === "machines.updateLabels").length;
+	const before = writes();
+	go();
+	const result = await earlier;
+	assert.ok(result.ok, result.ok ? "" : result.error.message);
+	assert.equal(writes(), before, "the earlier deadline is never written over the later one");
+	assert.equal(m.labels[DEADLINE], later.value.deadline.toISOString());
+	assert.equal(result.value.deadline.toISOString(), later.value.deadline.toISOString());
+});
+
+test("an extend that cannot ask init again says both moved and what is unknown", async () => {
+	// Init never answers the second deadline.extend, so the check ends at helloMs.
+	let asked = 0;
+	const onStep = (step) => (step === "deadline.extend" && ++asked === 2 ? new Promise(() => {}) : undefined);
+	const { fake, provider } = setup({ maxLifetimeMs: 3_600_000, timeouts: { ...TIMEOUTS, helloMs: 300 } }, { onStep });
+	const made = await provider.create({ ...SPEC, lifetimeMs: 60_000 });
+	assert.ok(made.ok);
+	const m = only(fake);
+	const extended = await provider.extend(made.value, 120_000);
+	assert.equal(extended.ok, false);
+	assert.match(extended.error.message, /init's deadline and the label .* moved to .*could not be asked whether another extend moved its deadline later/);
+	assert.equal(m.labels[DEADLINE], m.init.deadline);
+});
+
 test("testConnection lists by the provider's label and makes nothing", async () => {
 	const { fake, provider } = setup();
 	const tested = await provider.testConnection();
