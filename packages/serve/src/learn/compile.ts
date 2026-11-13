@@ -88,6 +88,9 @@ export const compileDue = (facts: { readonly completed: boolean; readonly notes:
 const LEARNED_KINDS = ["chain", "extract", "decide", "agent", "call", "escalate", "map", "parallel", "loop"] as const;
 const JUDGING_KINDS = ["judge", "pick", "sift", "route"] as const;
 
+/** The threshold a compiled step's guard starts at (SPEC: the guard shape), until the host fits one on graded runs. */
+export const GUARD_THRESHOLD = 0.7;
+
 /** This host's addendum to the DSL's author contract: the node kinds it runs, and its rules, each one the checks hold a
  *  draft to (learn/skills.ts draftProblems; propose.ts). */
 export function learnedHost(options: { readonly tools: readonly string[]; readonly judges: boolean }): AuthorHostAddendum {
@@ -104,8 +107,8 @@ export function learnedHost(options: { readonly tools: readonly string[]; readon
       "Give each model node `\"tier\": \"fast\"`; a step that needs the agent's own judgment names no tier, and runs on the agent's model.",
       "`input.schemaId` names a schema whose required fields are the run's own input fields, as a run is given them: then the workflow runs first on later runs, before the agent.",
       "`output.path` is required: the workflow's answer is the value there, the job's answer in the format the runs answered with.",
-      `Every decide and agent node's output schema has a required \`confidence\` number from 0 to 1: how sure the step is of its value.${judges ? " A judge node's confidence is its own yes-probability (`<as>$answers`); never add a confidence question to it." : ""}`,
-      "A step that can be unsure is followed by an escalate node on its confidence (`{\"predicate\": \"lt\", \"path\": \"<as>.confidence\", \"n\": 0.7}`): the case goes back to the agent with what the workflow found, never a guess.",
+      `Give every decide and agent step a guard, \`"guard": {"signal": "self", "threshold": ${GUARD_THRESHOLD}}\`: the step submits its confidence beside its record, so its output schema has no confidence field.${judges ? ` A judge, pick or sift step takes the same guard (it reads its weakest answer). This run has a decision provider, so a guard may read \`jev\` or \`both\` where the step's own confidence is not enough.` : " This run has no decision provider: a guard reads `self` alone, never `jev` or `both`."}`,
+      "An escalate step hands back a case the job's own rules send to a person, on a value a step wrote (`field_equals`, `in`); an unsure step is the guard's to hand back, not an escalate's.",
     ],
   };
 }
@@ -119,19 +122,21 @@ export const compileReference = (dsl: { readonly authorContract: (options: { hos
 export const EXAMPLE_INPUT = { content: "Refund request: order 1043, a $42 kettle that arrived broken, bought 9 days ago." } as const;
 /** The worked example: a whole job, input to answer, that the checks and the dry run pass (a test holds it to them).
  *  An extract step reads the facts, a judge asks one typed question of them (with a decision provider), a decide step
- *  answers with its confidence, and an escalate step hands an unsure case back. */
+ *  answers, each judgment step under a guard on its own confidence, and an escalate step hands back a case the policy
+ *  does not cover. */
 export function compileExample(judges: boolean): Record<string, unknown> {
+  const guard = { signal: "self", threshold: GUARD_THRESHOLD };
   const schemas: Record<string, unknown> = {
     Request: { type: "object", properties: { content: { type: "string" } }, required: ["content"] },
     Facts: { type: "object", properties: { item: { type: "string" }, amount_usd: { type: ["number", "null"] }, days_since_purchase: { type: ["number", "null"] }, damaged: { type: "boolean" } }, required: ["item", "amount_usd", "days_since_purchase", "damaged"] },
-    Answer: { type: "object", properties: { decision: { type: "string", enum: ["refund", "replace", "decline"] }, reply: { type: "string" }, confidence: { type: "number", minimum: 0, maximum: 1 } }, required: ["decision", "reply", "confidence"] },
+    Answer: { type: "object", properties: { decision: { type: "string", enum: ["refund", "replace", "decline", "needs_review"] }, reply: { type: "string" } }, required: ["decision", "reply"] },
     ...(judges ? { Policy: { type: "object", properties: { within_policy: { type: "boolean", description: "Is this request within a 30-day refund policy for a damaged item?" } }, required: ["within_policy"] } } : {}),
   };
   const steps: Record<string, unknown>[] = [
     { node: "extract", label: "facts", instructions: "Read the request: the item, its price in dollars, how many days ago it was bought, and whether it arrived damaged. Null for what it does not say.", state: { content: "{content}" }, out: "Facts", as: "facts", tier: "fast" },
-    ...(judges ? [{ node: "judge", label: "policy", state: { facts: "{facts}" }, out: "Policy", as: "policy" }] : []),
-    { node: "decide", label: "answer", instructions: "Decide refund, replace or decline by the refund policy, and write the reply to the customer. Say how sure you are as confidence.", state: judges ? { facts: "{facts}", policy: "{policy}" } : { facts: "{facts}" }, out: "Answer", as: "answer", tier: "fast" },
-    { node: "escalate", label: "unsure", when: { predicate: "lt", path: "answer.confidence", n: 0.7 }, kind: "low_confidence", stage: "answer", summary: "Not sure of the decision ({answer.decision}, confidence {answer.confidence}): hand the case back." },
+    ...(judges ? [{ node: "judge", label: "policy", state: { facts: "{facts}" }, out: "Policy", as: "policy", guard }] : []),
+    { node: "decide", label: "answer", instructions: "Decide refund, replace or decline by the refund policy, and write the reply to the customer. A request the policy does not cover is needs_review.", state: judges ? { facts: "{facts}", policy: "{policy}" } : { facts: "{facts}" }, out: "Answer", as: "answer", tier: "fast", guard },
+    { node: "escalate", label: "review", when: { predicate: "field_equals", path: "answer.decision", value: "needs_review" }, kind: "needs_review", stage: "answer", summary: "The policy does not cover this request: {answer.reply}" },
   ];
   return { v: 2, name: "refund-request", schemas, input: { schemaId: "Request" }, output: { schemaId: "Answer", path: "answer" }, root: { node: "chain", steps } };
 }
@@ -226,7 +231,7 @@ export function compilePrompt(ask: CompileAsk): string {
     "",
     "## A worked example",
     "",
-    "A whole job: the facts read, " + (ask.judges ? "a typed question asked of them, " : "") + "the answer decided with its confidence, and an unsure case handed back.",
+    "A whole job: the facts read, " + (ask.judges ? "a typed question asked of them, " : "") + "the answer decided, each judgment under a guard that hands back an unsure step, and a case the policy does not cover handed back.",
     "",
     exampleBlock(ask.judges),
     "",

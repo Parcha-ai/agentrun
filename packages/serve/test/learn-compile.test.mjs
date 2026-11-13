@@ -57,13 +57,15 @@ test("the compile reference is generated from the DSL's own author contract, wit
     assert.equal(host.nodeKinds.includes("judge"), judges);
     for (const kind of ["extract", "decide", "agent", "call", "escalate"]) assert.ok(host.nodeKinds.includes(kind), kind);
     assert.match(ref, /`web_fetch`/);
-    assert.match(ref, /required `confidence` number from 0 to 1/, "judgment steps carry a confidence (the step guards read it)");
-    assert.match(ref, /"predicate": "lt", "path": "<as>\.confidence", "n": 0\.7/);
+    assert.match(ref, /### Step guards/, "the DSL's own guard section, generated");
+    assert.ok(ref.includes(`"guard": {"signal": "self", "threshold": ${compile.GUARD_THRESHOLD}}`), "every judgment step is asked for a guard on its own confidence");
+    assert.equal(ref.includes("may read `jev` or `both`"), judges, "jev only with a decision provider");
+    assert.doesNotMatch(ref, /"predicate": "lt", "path": "<as>\.confidence"/, "no confidence-escalate stand-in: the guard hands back");
   }
   assert.match(compile.compileReference(dsl, { tools: [], judges: false }), /There is no tool for a call node to run: author no call node\./);
 });
 
-test("the worked example is a whole job the checks pass, with a decide step's confidence and an escalate step; with decision providers a judge node too", async (t) => {
+test("the worked example is a whole job the checks pass, its judgment steps guarded on their own confidence, with an escalate step; with decision providers a judge node too", async (t) => {
   const calls = join(await scratch(t), "jev.jsonl");
   withEnv(t, { AGENTRUN_TEST_FAUX_JEV_CALLS: calls, AGENTRUN_TEST_FAUX_JEV_COST: "0.00002" });
   const registry = await decisionProvidersIn({ TYPESAFE_API_KEY: CANARY, AGENTRUN_SERVE_FAUX: "1", AGENTRUN_SERVE_FAUX_JEV: FAUX_JEV });
@@ -79,7 +81,10 @@ test("the worked example is a whole job the checks pass, with a decide step's co
     for (const kind of ["extract", "decide", "escalate"]) assert.ok(kinds.includes(kind), `${kind} in ${kinds}`);
     assert.equal(kinds.includes("judge"), judges);
     const decide = doc.root.steps.find((step) => step.node === "decide");
-    assert.ok(doc.schemas[decide.out].required.includes("confidence"), "the decide step's output carries its confidence");
+    assert.deepEqual(decide.guard, { signal: "self", threshold: compile.GUARD_THRESHOLD }, "the decide step is guarded on its own confidence");
+    assert.ok(!("confidence" in doc.schemas[decide.out].properties), "its confidence goes beside its record, never in its value");
+    if (judges) assert.deepEqual(doc.root.steps.find((step) => step.node === "judge").guard, decide.guard);
+    assert.equal(dsl.validateWorkflow(doc, { executeCode: false, tools: [] }).ok, true);
   }
   // Without decision providers the judge example is refused: the example the prompt shows always fits the run.
   assert.notDeepEqual(draftProblems(dsl, JSON.stringify(compile.compileExample(true)), []), []);

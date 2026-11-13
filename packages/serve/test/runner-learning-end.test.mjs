@@ -453,7 +453,7 @@ test("on a run with decision providers the compile turn allows judge nodes and a
     const turn = await w.turnOf(row);
     const prompt = compileAskIn(turn.users).replace(/\s+/g, " ");
     assert.ok(prompt, "the run was asked its compile turn");
-    assert.equal(prompt.includes("A judge node's confidence is its own yes-probability"), decided, "the judge rule follows the run's decisions");
+    assert.equal(prompt.includes("may read `jev` or `both`"), decided, "the judge rule follows the run's decisions");
     const kept = await w.server.learning.proposal("run-1");
     assert.equal(kept?.proposal?.state, "proposed", JSON.stringify(kept?.proposal));
     assert.equal(kept.proposal.workflows, decided ? 1 : 0, `the judge draft is ${decided ? "kept" : "left out"}: ${JSON.stringify(kept.proposal).slice(0, 400)}`);
