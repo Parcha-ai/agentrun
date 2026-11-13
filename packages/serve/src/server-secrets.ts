@@ -2,8 +2,9 @@
 // sealed among its settings (sealed-settings-store.ts): each trigger source's, and the outbound webhook's signing secret. Each source is added as a reader, so a
 // secret made or rotated since is in the list at once. With the host's, they are the one list a server never shows
 // (server.ts serverSecrets): what a run shows, what learning keeps, what the server answers and what an import writes are
-// cut of it; none of them assembles its own. The trigger settings are store rows (server-secrets-store.ts); what stays
-// beside the store in the data directory is read here (besideTheStore), by the server and by a runner that shares it.
+// cut of it; none of them assembles its own. The trigger settings and the outbound webhook's secret are store rows
+// (server-secrets-store.ts); what stays beside the store in the data directory is read here (besideTheStore), by the
+// server and by a runner that shares it.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { TOKEN_FILE } from "./files.js";

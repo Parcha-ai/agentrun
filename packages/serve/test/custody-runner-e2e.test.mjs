@@ -93,7 +93,8 @@ async function usedKeys(t, { harness }) {
   const mcp = await startFakeMcp({ token: as.accepts, oauth: as.issuer });
   t.after(() => Promise.all([as.close(), mcp.close()]));
   // pi on its faux model; a CLI harness on the faux harness (every harness but pi runs on it), as the table module says.
-  const server = await serve(t, { fauxMonid: FAUX_MONID, harnesses: true, log: (line) => logs.push(line), ...(harness === "pi" ? { faux: FAUX_E2E } : { harnessTable: fauxTable(FAUX_HARNESS_E2E) }) });
+  // The receiver is on 127.0.0.1, so the operator's switch that lets the webhook send to this machine is on.
+  const server = await serve(t, { fauxMonid: FAUX_MONID, harnesses: true, webhookPrivateTargets: true, log: (line) => logs.push(line), ...(harness === "pi" ? { faux: FAUX_E2E } : { harnessTable: fauxTable(FAUX_HARNESS_E2E) }) });
   const { api, data } = server;
 
   // The owner's writes: a model key and a tool key from Settings, the webhook, and an OAuth sign-in.

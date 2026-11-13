@@ -18,16 +18,17 @@ import { dropSchema, freshSchema, PG_URL, postgresOnly } from "./store-target.mj
 const { openSqliteStore, openPostgresStore, sealColumn, sealedAt } = await import("../dist/store/index.js");
 const { startRunnerProcess } = await import("../dist/runner/main.js");
 const { importCommand } = await import("../dist/import.js");
-const { OUTBOUND_WEBHOOK } = await import("../dist/webhooks.js");
+const { WEBHOOK_CHANNEL } = await import("../dist/webhooks.js");
 const { unseal } = await import("../dist/sealing.js");
 
-/** Whether the outbound webhook's signing secret the store in `data` keeps (its sealed settings' row) opens under `key`. */
+/** Whether the outbound webhook's signing secret the store in `data` keeps (its sealed settings' row, under the scope its
+ *  setting names) opens under `key`. */
 function webhookSecretOpens(data, key) {
   const db = new DatabaseSync(join(data, "store.sqlite"), { readOnly: true });
   try {
-    const row = db.prepare("SELECT sealed FROM trigger_settings WHERE adapter = ? AND scope = 'server' AND field = 'secret'").get(OUTBOUND_WEBHOOK.id);
+    const row = db.prepare("SELECT scope, sealed FROM trigger_settings WHERE adapter = ? AND scope LIKE 'server:%' AND field = 'secret'").get(WEBHOOK_CHANNEL);
     assert.ok(row, `${data}: the store keeps the webhook's secret`);
-    unseal(key, Buffer.from(row.sealed, "base64"), `trigger_settings|${OUTBOUND_WEBHOOK.id}|server|secret`);
+    unseal(key, Buffer.from(row.sealed, "base64"), `trigger_settings|${WEBHOOK_CHANNEL}|${row.scope}|secret`);
     return true;
   } catch (error) {
     if (error instanceof assert.AssertionError) throw error;
@@ -223,15 +224,18 @@ test("a store whose only secret is the outbound webhook's signing secret (a seal
   process.env.AGENTRUN_SEAL_KEY = key;
   const server = await startServe({ data, port: 0 });
   const { client } = await import("./support.mjs");
-  assert.equal((await client(server.baseUrl, server.token)("PUT", "/settings/webhook", { url: "http://127.0.0.1:9/hook" })).status, 201);
+  assert.equal((await client(server.baseUrl, server.token)("PUT", "/settings/webhook", { url: "https://hooks.example/hook" })).status, 201);
   await server.close();
   delete process.env.AGENTRUN_SEAL_KEY;
   // The store's record of its key gone, and no other secret in the store: the webhook's is the only one.
   const db = new DatabaseSync(join(data, "store.sqlite"));
   db.prepare("DELETE FROM settings WHERE key = 'seal_key'").run();
   assert.equal(db.prepare("SELECT count(*) AS n FROM sealed_keys").get().n, 0, "no key in the store");
-  assert.deepEqual(db.prepare("SELECT adapter, scope, field FROM trigger_settings").all().map((row) => ({ ...row })), [{ adapter: OUTBOUND_WEBHOOK.id, scope: "server", field: "secret" }], "the webhook's secret its one sealed value");
+  const rows = db.prepare("SELECT adapter, scope, field FROM trigger_settings").all();
+  assert.deepEqual(rows.map((row) => [row.adapter, row.field]), [["webhook-out", "secret"]], "the webhook's secret its one sealed value");
+  assert.match(rows[0].scope, /^server:[0-9a-f]+$/, "under the scope its setting names");
   db.close();
+  assert.equal(existsSync(join(data, "webhook.json")), false, "nothing of the webhook is kept beside the store");
   await refuses(startServe({ data, port: 0 }));
   assert.equal(existsSync(keyFile(data)), false, "no key is made over the webhook's secret");
   process.env.AGENTRUN_SEAL_KEY = newKey();
@@ -269,7 +273,7 @@ test("two servers on two data directories in one process each keep their own key
   const [keyA, keyB] = [readFileSync(keyFile(a), "utf8").trim(), readFileSync(keyFile(b), "utf8").trim()];
   assert.notEqual(keyA, keyB, "two keys");
   // Each seals a secret while both are open, and reads it back under its own key.
-  for (const [server, url] of [[first, "http://127.0.0.1:9/a"], [second, "http://127.0.0.1:9/b"]]) {
+  for (const [server, url] of [[first, "https://hooks.example/a"], [second, "https://hooks.example/b"]]) {
     const api = client(server.baseUrl, server.token);
     assert.equal((await api("PUT", "/settings/webhook", { url })).status, 201);
     assert.equal((await api("GET", "/settings/webhook")).body.signing, "sealed", `${url}: sealed under its own key and read back`);

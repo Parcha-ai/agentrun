@@ -27,12 +27,14 @@ export function WebhookPage({ v2 }: { v2: Client }) {
   const [tested, setTested] = useState<WebhookAttempt | null>(null);
   const [removing, setRemoving] = useState(false);
   const [busy, setBusy] = useState(false);
+  // What the person types to save. The server shows a saved URL shortened (its origin and last four characters), so the
+  // field never takes it: a save sends only a URL typed here, never the shortened one, which would move the receiver.
   const [url, setUrl] = useState("");
   const asked = useRef(0);
   const load = () => {
     const n = ++asked.current;
     Promise.all([v2.webhook(), v2.webhookDeliveries()])
-      .then(([w, d]) => { if (n === asked.current) { setWebhook(w); setAttempts(d.attempts); setLoadError(null); if (w.configured) setUrl((u) => u || w.url); } })
+      .then(([w, d]) => { if (n === asked.current) { setWebhook(w); setAttempts(d.attempts); setLoadError(null); } })
       .catch((e) => { if (n === asked.current) setLoadError(apiError(e)); });
   };
   useEffect(load, [v2]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -86,12 +88,12 @@ export function WebhookPage({ v2 }: { v2: Client }) {
               : <span className="text-body text-muted-foreground">No webhook is set.</span>}
             {webhook.configured && (webhook.disabled ? <Chip tone="error">off</Chip> : webhook.signing === "sealed" ? <Chip tone="success">on</Chip> : <Chip tone="warning">not signing</Chip>)}
           </div>
-          {webhook.configured && webhook.disabled && <p className="mt-2 text-body text-destructive-text">Off: {webhook.disabled.reason}, {when(webhook.disabled.at)}. Nothing is sent until the URL is saved again.</p>}
+          {webhook.configured && webhook.disabled && <p className="mt-2 text-body text-destructive-text">Off: {webhook.disabled.reason}, {when(webhook.disabled.at)}. Nothing is sent until the URL is saved again: enter it below.</p>}
           {webhook.configured && webhook.signing !== "sealed" && (
             <p className="mt-2 flex gap-2 text-body text-warning-text"><TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden />{SIGNING[webhook.signing]}</p>
           )}
           <form className="mt-4 flex flex-wrap gap-2" onSubmit={save}>
-            <Input name="url" type="url" required maxLength={2048} placeholder="https://..." value={url} onChange={(e) => setUrl(e.target.value)}
+            <Input name="url" type="url" required maxLength={2048} placeholder={webhook.configured ? "The whole URL, to change it or save it again" : "https://..."} value={url} onChange={(e) => setUrl(e.target.value)}
               className="h-9 min-w-[280px] flex-1" aria-label="Webhook URL" />
             <Button type="submit" variant="solid" disabled={busy || !url.trim()}>Save</Button>
             {webhook.configured && <Button type="button" variant="outline" disabled={busy} onClick={() => act("The test was not sent", async () => setTested(await v2.testWebhook()))}>Send a test</Button>}
