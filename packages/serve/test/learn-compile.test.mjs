@@ -299,7 +299,7 @@ test("held by its replay: the revise ask says the replay's numbers and offers no
   const held = { workflow: "answer", digest: "0123456789abcdef", source: "replay", reason: "replayed ...", replay: { n: 20, agree: 14, agent_acc: 0.9, wf_acc: 0.75, delta: -0.15, handed_back: 3 } };
   const prompt = compile.compilePrompt(ASK({ mode: "revise", workflow: "answer", current: "{\"v\":2}", held }));
   assert.match(prompt, /^One more turn: revise your learned workflow `answer`\.\nYour learned workflow `answer` does not run first: replayed on 20 of the agent's graded inputs, it was right 75\.0% of the time \(3 handed back, each scored on the agent's answer\), against the agent's 90\.0%: -15\.0 pts, more than 2 pts under\./);
-  assert.match(prompt, /It stays held, and the agent does every run, until a new revision of it\./);
+  assert.match(prompt, /It stays held until a new revision of it\./);
   assert.doesNotMatch(prompt, /No change\./, "a held workflow stays held unchanged: no such answer offered");
   assert.equal(compile.askedForCompile(prompt), true);
   const graded = compile.compilePrompt(ASK({ mode: "revise", workflow: "answer", current: "{}", held: { workflow: "answer", digest: "0123456789abcdef", source: "graded", reason: "20 graded runs it served were right 70.0% of the time" } }));
@@ -308,6 +308,15 @@ test("held by its replay: the revise ask says the replay's numbers and offers no
 
 // CompiledRecord.promoted is the promotion step's (learn/promote.ts): the kept draft's digest, read against the agent's
 // promotion records when the run's learning is read.
+test("a held revision asks its compile turn for a revision while its champion serves, however often the champion is checked after; a champion's own graded hold asks too", () => {
+  const rec = (digest, decided, source = "replay", extra = {}) => ({ workflow: "answer", digest, at: "t", decided, source, reason: "r", ...extra });
+  const champion = rec("c1", "promote", "dry_run");
+  assert.deepEqual([...compile.heldNamesOf([champion, rec("c2", "replaying")])], [], "replaying: nothing to revise yet");
+  assert.deepEqual([...compile.heldNamesOf([champion, rec("c2", "replaying"), rec("c2", "hold"), { ...champion, checked: 20 }])], ["answer"], "held behind a champion checked after it");
+  assert.deepEqual([...compile.heldNamesOf([champion, rec("c1", "hold", "graded")])], ["answer"], "the champion's own graded hold");
+  assert.deepEqual([...compile.heldNamesOf([champion, rec("c2", "replaying"), rec("c2", "promote")])], [], "promoted: the new champion");
+});
+
 test("a kept compile records its draft's digest, and promotedOf reads it against the promotion records: promote, refit from it, hold, or not decided yet", async () => {
   const { workflowDigest } = await import("../dist/runner/workflow-first.js");
   const text = JSON.stringify(compile.compileExample(false));

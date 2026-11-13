@@ -35,7 +35,7 @@ test("a person grades an ended run; the agent's promotions read empty until a le
   assert.equal((await api("PUT", "/runs/nope/grade", { correct: true })).status, 404);
 
   const promotions = await api("GET", "/agents/grader/learning/promotions");
-  assert.deepEqual([promotions.status, promotions.body], [200, { agent: "grader", promotions: [] }]);
+  assert.deepEqual([promotions.status, promotions.body], [200, { agent: "grader", promotions: [], serving: [] }]);
   meets("/agents/{agent_id}/learning/promotions", "get", promotions.body);
   assert.equal((await api("GET", "/agents/nobody/learning/promotions")).status, 404);
 });

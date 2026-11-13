@@ -34,8 +34,10 @@ async function storeOf({ text, served, byHand = 10, threshold = 0.5 }) {
   const store = { settings, runs: { get: async (id) => rows.get(id) } };
   const commits = [];
   const logs = [];
-  const gate = promotionGate({ store, agentId: "a", runId: "now", revisionId: "rev", launch: { input: {}, title: "", place: { mode: "runner" } }, context: ctx, log: (line) => logs.push(line), commit: async (files, reason, id) => (commits.push({ files, reason, id }), true) });
-  return { gate, settings, digest, commits, logs };
+  const gate = promotionGate({ store, agentId: "a", runId: "now", revisionId: "rev", launch: { input: {}, title: "", place: { mode: "runner" } }, context: ctx, log: (line) => logs.push(line), commit: async (files, reason, id) => (commits.push({ files, reason, id }), `commit-${commits.length}`) });
+  // The gate answers the workflow that serves: this one, or none (the agent takes the run).
+  const serves = async (workflow, at) => { const got = await gate(workflow, at); assert.ok(got === undefined || got === workflow, "no champion here: the laid workflow or none"); return got === workflow; };
+  return { gate: serves, settings, digest, commits, logs };
 }
 
 test("a serving digest under REFIT_EVERY graded runs is not checked: it serves", async () => {
@@ -58,7 +60,7 @@ test("20 graded runs it served: its guard refit to the cheapest threshold within
   assert.equal(written.root.guard.threshold, 0.7);
   const records = await promotionsOf(settings, "a");
   const refit = records.at(-1);
-  assert.deepEqual({ decided: refit.decided, source: refit.source, digest: refit.digest, from: refit.refit.from, guards: refit.refit.guards }, { decided: "promote", source: "refit", digest: workflowDigest({ workflow: commits[0].files[0].text }), from: digest, guards: [{ node: "answer", was: 0.5, threshold: 0.7 }] });
+  assert.deepEqual({ decided: refit.decided, source: refit.source, digest: refit.digest, from: refit.refit.from, guards: refit.refit.guards, commit: refit.commit }, { decided: "promote", source: "refit", digest: workflowDigest({ workflow: commits[0].files[0].text }), from: digest, guards: [{ node: "answer", was: 0.5, threshold: 0.7 }], commit: "commit-1" }, "the refit's record names the learning commit its text landed as");
   assert.equal(records.filter((one) => one.digest === digest).at(-1).checked, REFIT_EVERY, "checked at 20");
   // The same 20 again: not checked twice.
   assert.equal(await gate({ name: "answer", workflow: text }, digest), true);
