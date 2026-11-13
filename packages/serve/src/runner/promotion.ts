@@ -19,6 +19,13 @@
 // none runs after: a replay run's claim refuses it unless its revision still replays (replayClaimed), so a cancel lost
 // to a crash or a failed write never leaves one running. Its record says superseded. The newer revision is compiled on
 // the folder's main, the challenger's own text, so it already carries that change.
+// A replay never repeats a side effect and runs with what a served run of the agent has (learn/replay-calls.ts, SPEC B4):
+// each call node's tool is a read or a write; a read runs live through a cache seeded from the graded run's recorded calls,
+// a write is answered only from that recording (same tool, same canonical arguments) and is never sent, and an input whose
+// workflow needs a write the recording does not have is skipped (counted in the record's replay.skipped_write, never
+// scored); a replay whose every input was skipped holds the revision in those words. Its credentials resolve at its claim
+// as any run's of the agent do: saved ones from the server's store, and the per_run MCP credentials the run whose claim
+// started it was handed, sealed anew for the replay run alone (startReplay), never opened outside the claim.
 import type { Context } from "@earendil-works/chord";
 import type { LearnedWorkflow } from "../learning.js";
 import { LEARNING_LABEL } from "../learning.js";
@@ -26,7 +33,10 @@ import type { GuardRow } from "../learned-nodes.js";
 import { launchBody, readLaunchBody, type RunLaunch } from "../run-launch.js";
 import { uuidv7 } from "../runs-over-store.js";
 import { FINAL_STATES, RunFinal, type RunRow, type Store, StoreConstraint } from "../store/store.js";
-import { runTimeline } from "../store-reads/journal.js";
+import { openRunMcpAuth, sealRunMcpAuth } from "../store/seal.js";
+import { isCliRecord, piShaped, runEntries, runTimeline } from "../store-reads/journal.js";
+import type { McpPin } from "../mcp-gateway.js";
+import { recordedCalls, type ReplayCalls, replayCalls, SKIPPED_WRITE, toolClassOf } from "../learn/replay-calls.js";
 import { isObject, type Json } from "../validate.js";
 import { championOf, clears, type Grade, gradesOf, PROMOTE_BAR, type PromotionRecord, promotionOf, promotionsOf, recordPromotion, REFIT_EVERY, REPLAY_INPUTS, REPLAY_MIN, type ReplayRow, replayingOf, replayScore, answerCorrect, scoredRows, thresholdsOf } from "../learn/promote.js";
 import { sendCommand } from "./commands.js";
@@ -63,6 +73,9 @@ export interface PromotionDeps {
   /** The digest of the learned workflow `name` the learning folder's main holds now (the newest revision), or undefined
    *  when it holds none by that name. Absent: no revision supersedes another. */
   readonly newest?: (name: string) => Promise<string | undefined>;
+  /** The server's seal key: a replay run is handed the per_run MCP credentials the claimed run was handed, sealed for it
+   *  (startReplay). Absent: a replay run is handed none (a per_run server's calls are refused unsent, the input failed). */
+  readonly sealKey?: Buffer;
   readonly now?: () => number;
 }
 
@@ -270,7 +283,19 @@ async function gradedInputs(deps: PromotionDeps, workflow: LearnedWorkflow): Pro
   return out;
 }
 
-/** Starts the replay of `workflow` at `digest` on graded input `one` (once: its origin key's run when there is one). */
+/** The per_run MCP credentials the claimed run was handed (its launch's sealed column, opened under the seal key), sealed
+ *  for the replay run `id` alone, as the server's start seals a run's mcp_auth (store/seal.ts sealRunMcpAuth): the replay's
+ *  claim reads them where any run's claim does (runner/mcp-claim.ts). None when the claimed run was handed none, or they
+ *  do not open. Never written anywhere else, never logged. */
+async function handedTo(deps: PromotionDeps, id: string): Promise<Uint8Array | undefined> {
+  if (!deps.sealKey) return undefined;
+  const sealed = await deps.store.runs.launch(deps.runId).then((one) => one.sealed ?? null, () => null);
+  const handed = sealed === null ? undefined : openRunMcpAuth(deps.sealKey, deps.runId, sealed);
+  return handed && Object.keys(handed).length ? sealRunMcpAuth(deps.sealKey, id, handed) : undefined;
+}
+
+/** Starts the replay of `workflow` at `digest` on graded input `one` (once: its origin key's run when there is one), with
+ *  the claimed run's handed credentials (handedTo). */
 async function startReplay(deps: PromotionDeps, workflow: LearnedWorkflow, digest: string, one: GradedInput): Promise<string> {
   const { store, agentId, launch } = deps;
   const key = `replay:${agentId}:${workflow.name}:${digest}:${one.grade.run}`;
@@ -292,8 +317,10 @@ async function startReplay(deps: PromotionDeps, workflow: LearnedWorkflow, diges
     ...(launch.archilDisk ? { archilDisk: launch.archilDisk } : {}),
     replay: { of: one.grade.run, workflow: workflow.name, digest },
   };
+  const id = uuidv7();
+  const sealed = await handedTo(deps, id);
   try {
-    return (await store.runs.create({ id: uuidv7(), agentId, revisionId: deps.revisionId, origin: { key } }, { body: launchBody(replay) as Json })).id;
+    return (await store.runs.create({ id, agentId, revisionId: deps.revisionId, origin: { key } }, { body: launchBody(replay) as Json, ...(sealed ? { sealed } : {}) })).id;
   } catch (error) {
     if (!(error instanceof StoreConstraint)) throw error;
     const existing = await store.runOfOrigin(key);
@@ -335,7 +362,7 @@ async function replayRows(deps: PromotionDeps, record: PromotionRecord): Promise
     const ended = FINAL_STATES.includes(run.state);
     cost = cost === null || !ended || run.costUsd === null ? null : cost + run.costUsd;
     const m = metricsOf(run);
-    const outcome = ended && run.state === "ended" && (m.replay?.outcome === "answered" || m.replay?.outcome === "handed_back") ? m.replay.outcome : "failed";
+    const outcome = ended && run.state === "ended" && (m.replay?.outcome === "answered" || m.replay?.outcome === "handed_back" || m.replay?.outcome === "skipped_write") ? m.replay.outcome : "failed";
     rows.push({
       of,
       recorded: { answer: await answerOf(store, of, context), correct: grade.correct, ...(grade.expected ? { expected: grade.expected } : {}) },
@@ -356,18 +383,24 @@ async function settle(deps: PromotionDeps, workflow: LearnedWorkflow, digest: st
   if (!read) return undefined;
   // Scored: the inputs the workflow answered or handed back on. One it failed on (a node failed: a credential or a tool the
   // replay ran without, say) is no evidence either way, never the agent's answer in its name.
+  // Skipped: the inputs whose workflow needed a write the graded run's recording does not have (learn/replay-calls.ts): a
+  // replay never runs one, so they are no evidence either, and never wrong.
   const scored = scoredRows(read.rows);
   const score = replayScore(scored, thresholdsOf(workflow.workflow));
   const ok = scored.length >= REPLAY_MIN && clears(score);
   const pts = (value: number) => `${(value * 100).toFixed(1)}%`;
-  const failed = read.rows.length - scored.length;
-  const said = `on ${plural(score.n, "graded input")}: the workflow ${pts(score.wf_acc)} (${score.handed_back} handed back, the agent's answer), the agent ${pts(score.agent_acc)}, ${score.delta >= 0 ? "+" : ""}${(score.delta * 100).toFixed(1)} pts${failed ? ` (${failed} more failed: no evidence)` : ""}`;
-  const reason = scored.length < REPLAY_MIN
-    ? `only ${plural(scored.length, "replay")} answered or handed back${failed ? ` (${failed} failed: a step failed, no evidence either way)` : ""}, fewer than ${REPLAY_MIN}`
-    : ok ? `replayed ${said}: within ${PROMOTE_BAR * 100} pts` : `replayed ${said}: more than ${PROMOTE_BAR * 100} pts under the agent`;
+  const skipped = read.rows.filter((row) => row.outcome === "skipped_write").length;
+  const failed = read.rows.length - scored.length - skipped;
+  const aside = [...(failed ? [`${failed} failed: a step failed, no evidence either way`] : []), ...(skipped ? [`${skipped} skipped: ${SKIPPED_WRITE}`] : [])].join("; ");
+  const said = `on ${plural(score.n, "graded input")}: the workflow ${pts(score.wf_acc)} (${score.handed_back} handed back, the agent's answer), the agent ${pts(score.agent_acc)}, ${score.delta >= 0 ? "+" : ""}${(score.delta * 100).toFixed(1)} pts${aside ? ` (${aside})` : ""}`;
+  const reason = read.rows.length && skipped === read.rows.length
+    ? `every one of its ${plural(skipped, "graded input")} ${SKIPPED_WRITE}: a replay never runs a write, so nothing was replayed`
+    : scored.length < REPLAY_MIN
+      ? `only ${plural(scored.length, "replay")} answered or handed back${aside ? ` (${aside})` : ""}, fewer than ${REPLAY_MIN}`
+      : ok ? `replayed ${said}: within ${PROMOTE_BAR * 100} pts` : `replayed ${said}: more than ${PROMOTE_BAR * 100} pts under the agent`;
   const decided = await recordPromotion(store.settings, agentId, {
     workflow: workflow.name, digest, at: iso(now()), decided: ok ? "promote" : "hold", source: "replay", reason,
-    replay: { ...score, of: read.rows.map((row) => row.of), cost_usd: read.cost }, ...(record.runs ? { runs: record.runs } : {}),
+    replay: { ...score, of: read.rows.map((row) => row.of), cost_usd: read.cost, skipped_write: skipped }, ...(record.runs ? { runs: record.runs } : {}),
     ...(record.commit ? { commit: record.commit } : seedOf(deps)),
   }, (was) => was?.decided === "replaying");
   if (decided.decided === "replaying") return undefined;
@@ -448,4 +481,22 @@ async function refitAndWrite(deps: PromotionDeps, workflow: LearnedWorkflow, dig
   }, (was) => was === undefined);
   deps.log(`workflow-first: ${reason}; the new revision (${next}) serves from the next run`);
   return true;
+}
+
+/** A replay run's call nodes (launch.replay; learn/replay-calls.ts): the graded run's recorded calls, read from its journal
+ *  (a CLI's record shaped as pi's), and each tool classed by the claim's MCP pin (`runId`'s, its servers' annotations as
+ *  they listed them) or the built-in list. Undefined for any other run. A recording that cannot be read is an empty one:
+ *  every write is then skipped, never run. */
+export async function replayCallsFor(store: Store, runId: string, launch: RunLaunch, context: Context): Promise<ReplayCalls | undefined> {
+  if (!launch.replay) return undefined;
+  const entries = await runEntries(store, launch.replay.of, context).catch(() => []);
+  const recorded = recordedCalls(isCliRecord(entries) ? piShaped(entries) : entries);
+  const pin = (await store.mcp.pin(runId).catch(() => undefined))?.body as McpPin | undefined;
+  const annotations = (tool: string) => {
+    const named = /^mcp:([^/]+)\/(.+)$/.exec(tool);
+    const server = named && pin && Object.hasOwn(pin, named[1]!) ? pin[named[1]!] : undefined;
+    const listed = server?.tools.find((one) => one.name === named![2]) as { annotations?: Record<string, unknown> } | undefined;
+    return listed?.annotations;
+  };
+  return replayCalls(recorded, (tool) => toolClassOf(tool, annotations));
 }

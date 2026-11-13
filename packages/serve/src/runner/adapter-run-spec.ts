@@ -61,7 +61,8 @@ import { type Claim, ClaimRefused, type Journal } from "./loop-contract.js";
 import { bookedSpend, cliRunMetrics, runEndCost, runMetrics } from "./metrics.js";
 import { journalEntries } from "./journal-reader.js";
 import { piShaped } from "../store-reads/journal.js";
-import { claimPromotion, promotionGate, replayClaimed, replayLaid } from "./promotion.js";
+import { claimPromotion, promotionGate, replayCallsFor, replayClaimed, replayLaid } from "./promotion.js";
+import type { ReplayCalls } from "../learn/replay-calls.js";
 import { laidFor, pastOf, pathMetrics, servedOf, workflowFirstOf } from "./workflow-first.js";
 import { runPathOverStore } from "../store-reads/learning.js";
 import { type SpecHolds, specBuilt } from "./spec-holds.js";
@@ -592,10 +593,13 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // five); while the folder's revision replays or is held, the champion (the digest promoted last) serves in its place
   // (laidFor). Or the one the money rule stopped, over the agent's past runs (costLineOf): the run asks for its revision.
   const firstChoice = learnsWorkflows(revision.kind, laidFlows) ? await workflowFirstOf(revision.kind, laidFlows, launch, log, pastOf(deps.store, runRow.agentId), promotionGate(claimPromotion({
-    store: deps.store, agentId: runRow.agentId, runId: claim.runId, revisionId: runRow.revisionId, launch, context, log, folder: learningFolder, shown,
+    store: deps.store, agentId: runRow.agentId, runId: claim.runId, revisionId: runRow.revisionId, launch, context, log, folder: learningFolder, shown, sealKey: deps.sealKey,
   })), (revision.body as { outputSchema?: unknown }).outputSchema) : {};
   // A replay run runs only its revision, while it still replays: else its claim is refused (the run ends failed, no agent).
   await replayClaimed(deps.store, runRow.agentId, launch, firstChoice);
+  // A replay run's call nodes: reads live through a cache seeded from the graded run's recorded calls, writes only ever
+  // answered from that recording (runner/promotion.ts replayCallsFor, learn/replay-calls.ts).
+  const replay = await replayCallsFor(deps.store, claim.runId, launch, context);
   const { serve: workflowFirst, revise: workflowRevise } = firstChoice;
   const workflows = laidFor(laidFlows, firstChoice);
   // A tier a learned workflow's node names and the host has a model of: none can't be reached is left as `why`, and its
@@ -637,7 +641,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   const tiers = new Map<string, LearnedTier>([...[...tierRoutes].filter(([tier]) => !isSubagentRoute(tier)).map(([tier, { model }]): [string, LearnedTier] => [tier, { model }]), ...[...tierUnreachable].map(([tier, why]): [string, LearnedTier] => [tier, { why }])]);
   // The gate asks a learned_workflow call about its workflow's MCP nodes (adapterRunGate).
   gate.learn(workflows);
-  const nonHandTools = (await bindNonHandTools(host, revision.kind, granted, run, context, results, root, launch.plane, workflows, native, gate.permissions, tiers, mcp, () => route.model)).map((tool) => answersCut(tool, cut));
+  const nonHandTools = (await bindNonHandTools(host, revision.kind, granted, run, context, results, root, launch.plane, workflows, native, gate.permissions, tiers, mcp, () => route.model, replay)).map((tool) => answersCut(tool, cut));
   const sessionTools = [...handTools, ...nonHandTools];
 
   // The run's system prompt, as main's per-run process builds it (app.ts): the environment line first (environment.ts, as
@@ -865,6 +869,8 @@ export async function learnedWorkflowHostTool(opts: {
   /** The model a node on the session's own port runs on (a node of no tier, or of a tier not in `tiers`), as the run's
    *  route names it: what its trace says it ran on. A node of a tier in `tiers` names that tier's model. */
   readonly modelName?: (tier: string | undefined) => string | undefined;
+  /** A replay run's call nodes (runner/promotion.ts replayCallsFor): never a write run, reads cached. Absent: live. */
+  readonly replay?: ReplayCalls;
 }): Promise<HostTool | undefined> {
   if (!learnsWorkflows(opts.kind, opts.workflows)) return undefined;
   const flows = opts.workflows;
@@ -884,7 +890,7 @@ export async function learnedWorkflowHostTool(opts: {
   const providers = await decisionProvidersIn(opts.env);
   const decisions = providers ? { decisions: { providers, book: opts.run.ledger.decisions, pause: (refusal: Refusal) => opts.run.ledger.pause(refusal) } } : {};
   // A call node's native web_search goes through the session's port too, labelled web_search, as the run's own does.
-  const tool = learnedWorkflowTool({ workflows: flows, granted: opts.granted, ...(opts.plane ? { plane: opts.plane } : {}), env: opts.env, work: opts.work, models: tieredModels(byProvider) as never, modelOf, search: () => opts.run.ledger.models(WEB_SEARCH_TOOL), policy: opts.permissions.policy, denyFrom: opts.permissions.denyFrom, refresh: opts.permissions.refresh, decide: opts.permissions.decide, mcpTools, ...decisions, ...(opts.workspace ? { workspace: opts.workspace } : {}), ...(opts.modelName ? { modelName: opts.modelName } : {}) });
+  const tool = learnedWorkflowTool({ workflows: flows, granted: opts.granted, ...(opts.plane ? { plane: opts.plane } : {}), env: opts.env, work: opts.work, models: tieredModels(byProvider) as never, modelOf, search: () => opts.run.ledger.models(WEB_SEARCH_TOOL), policy: opts.permissions.policy, denyFrom: opts.permissions.denyFrom, refresh: opts.permissions.refresh, decide: opts.permissions.decide, mcpTools, ...decisions, ...(opts.workspace ? { workspace: opts.workspace } : {}), ...(opts.modelName ? { modelName: opts.modelName } : {}), ...(opts.replay ? { replay: opts.replay } : {}) });
   return hostToolOf(LEARNED_WORKFLOW_TOOL, tool as never, opts.ctx) ?? undefined;
 }
 
@@ -999,7 +1005,7 @@ export async function webHostTools(host: ToolHost, granted: readonly string[], c
   return tools;
 }
 
-async function bindNonHandTools(host: ToolHost, kind: string, granted: readonly string[], run: AdapterRun, context: Context, results: ToolResults, root: string, plane: RunLaunch["plane"], workflows: readonly LearnedWorkflow[], native: Extension[], permissions: RunPermissions, tiers: ReadonlyMap<string, LearnedTier>, mcp?: ClaimMcp, modelName?: (tier: string | undefined) => string | undefined): Promise<AdapterRunSpec["session"]["tools"]> {
+async function bindNonHandTools(host: ToolHost, kind: string, granted: readonly string[], run: AdapterRun, context: Context, results: ToolResults, root: string, plane: RunLaunch["plane"], workflows: readonly LearnedWorkflow[], native: Extension[], permissions: RunPermissions, tiers: ReadonlyMap<string, LearnedTier>, mcp?: ClaimMcp, modelName?: (tier: string | undefined) => string | undefined, replay?: ReplayCalls): Promise<AdapterRunSpec["session"]["tools"]> {
   // Fail closed (browserListed): the browser binds only on the native route (BROWSER_ON_RUNNER) and with the claim's
   // one-ledger booking on its ToolHost (host.ledger.paid); otherwise its extension is not installed. learned_workflow
   // binds below with no web tool, so a learned run with no web tool still lists it.
@@ -1013,7 +1019,7 @@ async function bindNonHandTools(host: ToolHost, kind: string, granted: readonly 
   // the session's tools the harness is told of: its model nodes run on the session's proxied models (run.ledger.models),
   // each a request on the run's one route labelled learned_workflow. The agent's scoped keys (host.env) are its call
   // nodes'.
-  const learned = await learnedWorkflowHostTool({ run, kind, granted, plane, env: host.env, work: root, workflows, permissions, ctx, tiers, ...(mcp ? { mcp } : {}), ...(host.workspace ? { workspace: host.workspace } : {}), ...(modelName ? { modelName } : {}) });
+  const learned = await learnedWorkflowHostTool({ run, kind, granted, plane, env: host.env, work: root, workflows, permissions, ctx, tiers, ...(mcp ? { mcp } : {}), ...(host.workspace ? { workspace: host.workspace } : {}), ...(modelName ? { modelName } : {}), ...(replay ? { replay } : {}) });
   if (learned) tools.push(learned);
 
   // The browser (tl-browser), on pi's native route: tools.ts's own binding on this run's ToolHost (its store, claim and seal

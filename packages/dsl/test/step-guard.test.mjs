@@ -137,3 +137,48 @@ test('a dry run of a guarded workflow passes: a guard never hands back on synthe
   const dry = await dryRunWorkflow(flow({ signal: 'both', threshold: 0.99 }), { question: 'q' });
   assert.equal(dry.status, 'passed', JSON.stringify(dry));
 });
+
+/** A judge that answers every question it is asked yes at `noul(question id)`. */
+const answering = (noul, asked = []) => async (params) => {
+  asked.push(params);
+  return { answers: Object.fromEntries(Object.keys(params.questions).map((id) => [id, { type: 'noul', noul: noul(id) }])) };
+};
+const listed = { In: { type: 'object', required: ['question', 'items'], properties: { question: { type: 'string' }, items: { type: 'array' } } }, Sure: schemas.Sure, Any: { type: 'object' } };
+
+test('a sift\'s self is its weakest answer over every item (as.answers[i]), so a confident sift passes', async () => {
+  const siftFlow = (guard) => ({ v: 2, name: 's', schemas: listed, input: { schemaId: 'In' }, output: { schemaId: 'Any', path: 'sifted' },
+    root: { node: 'sift', label: 'sift', itemsPath: 'items', describe: '{item.name}', state: { q: '{question}' }, out: 'Sure', as: 'sifted', guard } });
+  const seen = [];
+  // Item 0 at noul 0.9 (confidence 0.8), item 1 at 0.85 (0.7): the sift's weakest answer is 0.7.
+  const confident = await runWorkflow(siftFlow({ signal: 'self', threshold: 0.6 }), { question: 'q', items: [{ name: 'a' }, { name: 'b' }] }, {
+    runJudge: answering((id) => (id.startsWith('1.') ? 0.85 : 0.9)),
+    guardStep: async (params) => { seen.push(params); return { p: params.self ?? Number.NaN }; },
+  });
+  assert.equal(confident.status, 'complete', JSON.stringify(confident.escalation ?? null));
+  assert.equal(seen[0].self, 0.7, 'the weakest of the items\' answers');
+  // The guard sees what the sift's judge saw: its state and the items it was asked about, by id.
+  assert.deepEqual(seen[0].input, { q: 'q', items: [{ id: 'item_0', summary: 'a', item: { name: 'a' } }, { id: 'item_1', summary: 'b', item: { name: 'b' } }] });
+  const unsure = await runWorkflow(siftFlow({ signal: 'self', threshold: 0.6 }), { question: 'q', items: [{ name: 'a' }, { name: 'b' }] }, {
+    runJudge: answering((id) => (id.startsWith('1.') ? 0.6 : 0.9)),
+    guardStep: async (params) => ({ p: params.self ?? Number.NaN }),
+  });
+  assert.equal(unsure.status, 'escalated', 'one unsure item (0.2) hands the sift back');
+  assert.match(unsure.escalation.summary, /its own confidence 0\.20/);
+});
+
+test('a pick\'s guard is asked with what its judge chose among: the candidates and the selection instructions', async () => {
+  const pickFlow = { v: 2, name: 'p', schemas: listed, input: { schemaId: 'In' }, output: { schemaId: 'Any', path: 'picked' },
+    root: { node: 'pick', label: 'pick', itemsPath: 'items', describe: '{item.name}', instructions: 'Pick the item that answers {question}.', state: { q: '{question}' }, allowNone: true, as: 'picked', guard: { signal: 'jev', threshold: 0.5 } } };
+  const judged = []; const seen = [];
+  const result = await runWorkflow(pickFlow, { question: 'q', items: [{ name: 'a' }, { name: 'b' }] }, {
+    runJudge: async (params) => { judged.push(params); return { answers: { pick: { type: 'choice', choice: 'none_of_these', probabilities: { item_0: 0.1, item_1: 0.1, none_of_these: 0.8 }, confidence: 0.8 } } }; },
+    guardStep: async (params) => { seen.push(params); return { p: 0.9, jev: 0.9 }; },
+  });
+  assert.equal(result.status, 'complete', JSON.stringify(result.escalation ?? null));
+  assert.deepEqual(seen[0].output, { index: null, item: null, none: true, option: null });
+  assert.deepEqual(seen[0].input.candidates, { item_0: 'a', item_1: 'b' }, 'the candidates the judge chose among');
+  assert.deepEqual(seen[0].input.candidates, judged[0].state.candidates);
+  assert.equal(seen[0].input.q, 'q');
+  assert.equal(seen[0].input.instructions, judged[0].questions.pick.instructions, 'the selection instructions');
+  assert.equal(seen[0].input.allow_none, true);
+});

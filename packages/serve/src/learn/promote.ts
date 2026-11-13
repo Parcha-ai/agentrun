@@ -62,7 +62,9 @@ export interface ReplayScore {
  *  while it replayed: one challenger at a time, so its replay runs were cancelled and it never serves). `source`: `replay` (decided on its replay), `dry_run` (fewer than REPLAY_MIN graded inputs: promoted on
  *  its passing dry run), `refit` (a threshold refit wrote this revision, decided on the rows it was fit on), `graded` (a
  *  serving revision's graded runs fell below the bar: held). `replay`: the numbers it was decided on, with the graded runs
- *  replayed (`of`) and what its replay runs cost (`cost_usd`, null when one's is unknown). `refit`: the guards a refit
+ *  replayed (`of`), what its replay runs cost (`cost_usd`, null when one's is unknown) and how many of its inputs were
+ *  skipped (`skipped_write`: each needed a write the graded run's recording does not have, learn/replay-calls.ts; never
+ *  run, never scored). `refit`: the guards a refit
  *  changed. `checked`: the newest grade (its seq) the last refit check read (refits run once per REFIT_EVERY more graded runs
  *  it served, counted by seq: a count of the grades kept stalls once the GRADES_KEPT trim holds it). */
 export interface PromotionRecord {
@@ -72,7 +74,7 @@ export interface PromotionRecord {
   readonly decided: "promote" | "hold" | "replaying" | "superseded";
   readonly source: "replay" | "dry_run" | "refit" | "graded";
   readonly reason: string;
-  readonly replay?: ReplayScore & { readonly of: readonly string[]; readonly cost_usd?: number | null };
+  readonly replay?: ReplayScore & { readonly of: readonly string[]; readonly cost_usd?: number | null; readonly skipped_write?: number };
   readonly runs?: readonly string[];
   readonly refit?: { readonly from: string; readonly guards: readonly RefitGuard[] };
   readonly checked?: number;
@@ -213,11 +215,13 @@ export function trimPromotions(items: readonly PromotionRecord[]): PromotionReco
  *  did on it: answered alone (`answer`), handed back (it escalated: an escalate node or a guard), or failed (a step failed,
  *  on a credential or tool the replay lacked among them, or its output off its schema; no workflow, a stale digest, a run
  *  that did not end completed); with its guard rows, read record-only (recordOnly) so each step's p is known. A failed
- *  row is no evidence either way (replayScore leaves it out): the replay ran without what the run it replays had. */
+ *  row is no evidence either way (replayScore leaves it out): the replay ran without what the run it replays had. A
+ *  skipped one (`skipped_write`) is none either: its workflow stopped at a write the graded run's recording does not have,
+ *  which a replay never runs (learn/replay-calls.ts). */
 export interface ReplayRow {
   readonly of: string;
   readonly recorded: { readonly answer: string | null; readonly correct: boolean; readonly expected?: Readonly<Record<string, unknown>> };
-  readonly outcome: "answered" | "handed_back" | "failed";
+  readonly outcome: "answered" | "handed_back" | "failed" | "skipped_write";
   readonly answer: string | null;
   readonly guards: readonly GuardRow[];
 }
@@ -320,11 +324,11 @@ export function escalates(row: Pick<ReplayRow, "outcome" | "guards">, thresholds
 
 const round = (value: number) => Math.round(value * 1e4) / 1e4;
 
-/** The replayed inputs a replay scores: those its workflow answered or handed back, never one it failed on. */
-export const scoredRows = (rows: readonly ReplayRow[]): ReplayRow[] => rows.filter((row) => row.outcome !== "failed");
+/** The replayed inputs a replay scores: those its workflow answered or handed back, never one it failed on or skipped. */
+export const scoredRows = (rows: readonly ReplayRow[]): ReplayRow[] => rows.filter((row) => row.outcome === "answered" || row.outcome === "handed_back");
 
-/** What a replay says at the serving `thresholds`, over the inputs it answered or handed back (scoredRows: a failed one is
- *  no evidence): each the workflow would have answered alone graded by answerCorrect, each it would have handed back the
+/** What a replay says at the serving `thresholds`, over the inputs it answered or handed back (scoredRows: a failed or
+ *  skipped one is no evidence): each the workflow would have answered alone graded by answerCorrect, each it would have handed back the
  *  agent's recorded answer and grade. */
 export function replayScore(all: readonly ReplayRow[], thresholds: ReadonlyMap<string, number>): ReplayScore {
   const rows = scoredRows(all);
