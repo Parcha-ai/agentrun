@@ -50,6 +50,10 @@ export type TimelineEvent = {
    *  server and its id ending NOTE_SUFFIX: the request was not sent and the run paused for a raise; a pause, never a
    *  failure, whether the run waits on its cap now or was raised since. */
   paused?: true;
+  /** `true` on the `tool_result` row of a call refused before it ran (its host's mark, CALL_REFUSED: a gate's deny, a
+   *  person's, a call held for an approval the run ended or stopped without): it never ran, so it never failed, though
+   *  `tool_status` stays `failed` (it did not do its work). A client shows it apart from a call that ran and failed. */
+  refused?: true;
   /** On the usage row, the run's cost. On a paid tool's charge row (a `phase` naming the tool), that charge alone. On a
    *  browser call's `tool_use` row, every browser charge booked under that call (BROWSER_CHARGE): its session's time
    *  since its last charge, and its release's when it was the session's last call. `requests` is 0 on all but the usage
@@ -650,7 +654,7 @@ function createProjector(options: TimelineOptions) {
     return make("tool_result", conv, rowId, {
       summary: !view.isError && pageChanged(tool.name, view) ? PAGE_CHANGED_ROW : view.isError ? failedSummary : worded ? `${named}: ${saidOf(worded.text)}` : outcome?.failed ? `${named}: failed` : `${named}: ok`, tool_name: tool.name, tool_use_id: tool.callId,
       tool_status: failedWith(view, outcome) ? "failed" : "success", tool_result_preview: shown.text ? cut(scrubUrls(shown.text), caps.preview) : null,
-      tool_result_size_bytes: utf8Bytes(view.text), round: tool.round, parent_tool_use_id: parent,
+      tool_result_size_bytes: utf8Bytes(view.text), round: tool.round, parent_tool_use_id: parent, ...(refused(view) ? { refused: true as const } : {}),
     });
   };
 
@@ -798,7 +802,7 @@ function createProjector(options: TimelineOptions) {
             const named = nameFor(name, args, before.view, before.shown);
             use.summary = clean(named, caps.summary);
             const fresh = resultRow(conv, before.row.id, { name, callId: id, round }, named, before.view, before.shown);
-            Object.assign(before.row, { summary: fresh.summary, tool_name: fresh.tool_name, tool_status: fresh.tool_status, seq: (use.seq ?? 0) + 0.5, ...(round === undefined ? {} : { round }) });
+            Object.assign(before.row, { summary: fresh.summary, tool_name: fresh.tool_name, tool_status: fresh.tool_status, seq: (use.seq ?? 0) + 0.5, ...(round === undefined ? {} : { round }), ...(fresh.refused ? { refused: true as const } : {}) });
             rows.splice(rows.indexOf(before.row), 1);
             rows.splice(rows.indexOf(use) + 1, 0, before.row);
             touch(before.row);
