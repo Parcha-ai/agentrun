@@ -118,7 +118,8 @@ function socketPair() {
 }
 
 test("a run's release closes its connection: the call in flight comes back aborted in the computer's words, and a later one is refused gone", async () => {
-  const driver = new FakeUiDriver();
+  // Attach refuses a desktop whose hello lacks a group the kind needs, so this one declares them.
+  const driver = new FakeUiDriver({ groups: ["screen", "input.pointer", "input.keys", "apps", "ui"] });
   const hub = new AttachHub();
   const paired = { id: "c-1", name: "Test Mac", hello: driver.hello(), labels: { owner: "test" } };
   const provider = attachedProvider(paired, hub);
@@ -126,7 +127,7 @@ test("a run's release closes its connection: the call in flight comes back abort
   serveUiSocket(driver, computer);
   assert.equal((await hub.accept(paired, serve)).ok, true);
   closing.push(async () => driver.close());
-  const held = (await provider.create({ image: "attached", lifetimeMs: 60_000, network: "open", labels: { run: "a" } })).value;
+  const held = (await provider.create({ image: "attached", lifetimeMs: 60_000, network: "open", labels: { run: "a" } }, { requestId: "release" })).value;
   const connected = (await provider.connect(held)).value;
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "computer-fake-ui-"));
   dirs.push(dir);
