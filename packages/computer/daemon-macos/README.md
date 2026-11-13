@@ -92,7 +92,10 @@ the token could not be kept, Computerd says so: remove the Mac in the console's 
   paired with may use besides apps: `"exec"` (run programs), `"files"` (read and write files, tar archives too) and
   `"screen"` (capture the whole screen, whichever apps are on it). Without `"server"` it gets none of them: its `hello`
   offers no `exec` or `files` group and says `screen.capture` is off, and each such call is refused, saying who can
-  switch it on and where. For example `{"apps": ["com.apple.TextEdit"], "server": ["screen"]}`. A file that does not
+  switch it on and where. For example `{"apps": ["com.apple.TextEdit"], "server": ["screen"]}`. `"exec"` or `"files"`
+  gives the server the run of your account, not a part of it: with either it can change what your login starts, or this
+  file itself, and so take the rest. Grant them only to a server you would give a shell. `"screen"` alone gives no more
+  than the screen. A file that does not
   parse (a value it does not know included) allows no app and grants the server nothing until it is fixed. Computerd
   reads the file at each connection, so a change applies from the next one.
 

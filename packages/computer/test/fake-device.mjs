@@ -78,7 +78,8 @@ const shift = ([x, y], dx, dy = 0) => [x + dx, y + dy];
  * the fixture's button its platform class as its role), extend-noop, extend-past-cap, extend-per-call,
  * extend-shortens, stream-http, fixture-never-ready, screen-huge-size, screen-endless,
  * launch-hidden (apps.list says Settings is in front, and neither the screen nor ui.observe shows it), watch-stale,
- * watch-size, watch-no-cursor, watch-corrupt-png and watch-corrupt-jpeg (screen.watch's).
+ * watch-size, watch-no-cursor, watch-corrupt-png and watch-corrupt-jpeg (screen.watch's), and capture-off-answers (a
+ * hello whose screen.capture is off, and screen.shot and screen.watch answered anyway).
  * `createMs` is how long each create takes on the clock, in turn (the last for every create after): a host slow to
  * start a computer. The lifetime counts from create's start, and a computer whose deadline passed before create
  * finished fails it as Docker's does, timeout.
@@ -255,6 +256,9 @@ export function fakeDevices({
 			},
 		};
 		const ui = new UiEngine(uiSource, { quietMs: 0 });
+		// A hello that says screen.capture off refuses screen.shot and screen.watch with its reason (broken:
+		// capture-off-answers answers them anyway).
+		const captureOff = typeof hello?.features?.["screen.capture"] === "object" && broken !== "capture-off-answers" ? hello.features["screen.capture"].off : undefined;
 
 		const methods = {
 			hello: () => ok({ protocol: PROTOCOL_VERSION, version: "1.0.0", os, kind, arch: "amd64", groups, ...(kind === "android" ? { screen: { width, height, scale: 1 }, features: ui.features() } : {}), ...hello }),
@@ -291,6 +295,7 @@ export function fakeDevices({
 			},
 			"process.wait": ({ id }) => (c.processes.has(id) ? ok({ running: c.processes.get(id), exitCode: null, signal: c.processes.get(id) ? null : "KILL" }) : fail("not_found", `no process ${id}`)),
 			"screen.shot": ({ region } = {}) => {
+				if (captureOff !== undefined) return fail("denied", captureOff);
 				const [x, y, w, h] = region && broken !== "screen-region" ? region : [0, 0, width, height];
 				const bad = broken === "screen-no-idat" || broken === "screen-corrupt-idat" || (broken === "screen-region-corrupt" && region !== undefined);
 				const bytes = bad ? undecodable(w, h, broken) : png(w, h, (px, py) => screenColor(x + px, y + py));
@@ -311,6 +316,7 @@ export function fakeDevices({
 			// watch-no-cursor gives no cursor; watch-corrupt-png's pixels do not inflate; watch-corrupt-jpeg is a JPEG of
 			// the right size with no scan).
 			"screen.watch": ({ after } = {}) => {
+				if (captureOff !== undefined) return fail("denied", captureOff);
 				c.watch ??= { seq: 0, key: "", bytes: undefined };
 				const w = c.watch;
 				if (!Number.isSafeInteger(after) || after < 0 || after > w.seq) return fail("invalid", `after ${JSON.stringify(after)} is not a seq up to ${w.seq}`);

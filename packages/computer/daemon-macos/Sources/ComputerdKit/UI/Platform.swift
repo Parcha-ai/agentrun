@@ -330,7 +330,8 @@ public struct Policy: Sendable, Equatable, Codable {
 }
 
 /// What the Mac's owner may grant the server it is paired with, as policy.json's "server" lists it. A value not here
-/// makes the file not a policy, which allows no app and grants nothing until it is fixed.
+/// makes the file not a policy, which allows no app and grants nothing until it is fixed. exec or files is the run of
+/// the account (either can rewrite policy.json, or what the login starts); screen alone is the screen alone.
 public enum ServerGrant: String, Sendable, Codable, CaseIterable {
 	/// exec.run.
 	case exec

@@ -335,6 +335,19 @@ test("a desktop that declares screen, pointer and keys passes every desktop case
 	assert.match(formatReport(report), /^computer conformance · fake-device · desktop, daemon pid1 · computerd 1\.0\.0 linux\/amd64\n/);
 });
 
+test("a desktop whose screen.capture is off (an attached Mac without its owner's grant) passes the screen cases by refusing both with its reason; one that answers anyway fails them", async () => {
+	const why = "seeing the whole screen (screen.shot, screen.watch) is off for the server this Mac is paired with";
+	const hello = { features: { "screen.capture": { off: why } } };
+	const report = await run(fakeDevices({ hello }).provider, ["screen.screenshot-size", "screen.watch"]);
+	assert.deepEqual(reasons(report), {});
+	assert.ok(report.results.every((r) => r.status === "pass"));
+	const answers = await run(fakeDevices({ hello, broken: "capture-off-answers" }).provider, ["screen.screenshot-size", "screen.watch"]);
+	for (const id of ["screen.screenshot-size", "screen.watch"]) {
+		assert.equal(statuses(answers)[id], "fail", id);
+		assert.match(reasons(answers)[id], new RegExp(`${id === "screen.watch" ? "screen\\.watch" : "screen\\.shot"} with screen\\.capture off`), id);
+	}
+});
+
 test("an Android phone with daemon none passes every phone case through its in-process client, on an open network", async () => {
 	const { provider, made } = fakeDevices({ kind: "android" });
 	const report = await run(provider, ["health.hello", "health.ping", ...PHONE_CASES]);
