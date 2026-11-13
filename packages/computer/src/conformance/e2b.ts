@@ -3,8 +3,8 @@
 // COMPUTER_E2B_API_KEY. The provider reads no environment: this module reads its own COMPUTER_E2B_* names (never
 // E2B_API_KEY, which may hold another team's key) and passes each to create() as its option; the provider gives the SDK
 // the key, domain and API URL explicitly, and refuses an ambient E2B_SANDBOX_URL (see create in ../e2b.ts). The live
-// switch is checked first, before any other setting is read. The sweep and the network diagnostic (e2b-sweep.ts,
-// e2b-diagnose.ts) read the same names through settingsFromEnv.
+// switch is checked first, before any other setting is read. The live sweep (sweep.ts, --provider e2b) reads the same
+// names through createHost, which needs no live switch: it makes nothing.
 //
 // The daemon is uploaded into each sandbox (dist/computerd-linux-amd64, `npm run build:daemon`), so a run publishes
 // nothing. The drifted provider uploads a daemon built with Go as version <version>-drift. Every computer of a run lives
@@ -17,6 +17,7 @@
 // are skipped. An Archil computer needs a provider whose daemon user is the tool user: COMPUTER_E2B_USER=2510:2510.
 import { E2B_BASE_TEMPLATE, E2B_DESKTOP_TEMPLATE } from "../descriptors/e2b.js";
 import { create, type E2BOptions, type E2BProvider } from "../e2b.js";
+import type { MachineHost } from "../host.js";
 import type { MountKind } from "../mount.js";
 import { type ArchilRunFolderOptions, archilRunFolder, archilSettings } from "./archil.js";
 import { buildDriftDaemon, DRIFT_VERSION } from "./drift-daemon.js";
@@ -121,6 +122,14 @@ export async function mountFor(kind: MountKind, { env = process.env, archil = {}
 	if (settings === undefined) return undefined;
 	live(env);
 	return archilRunFolder({ ...settings, ...archil });
+}
+
+/**
+ * The E2B host the live sweep (sweep.ts) lists and deletes through, from the same settings; it needs no live switch,
+ * since the sweep makes nothing, and it calls nothing until the sweep does.
+ */
+export async function createHost({ env = process.env, Sandbox }: Pick<E2BModuleOptions, "env" | "Sandbox"> = {}): Promise<MachineHost> {
+	return (await create({ ...settingsFromEnv(env), ...(Sandbox ? { Sandbox } : {}) })).host;
 }
 
 /** The same provider uploading a daemon that reports version <version>-drift, for the drift.version case. */

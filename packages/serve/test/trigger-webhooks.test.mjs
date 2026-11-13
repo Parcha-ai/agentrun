@@ -11,10 +11,9 @@ import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { seal } from "../dist/sealing.js";
 import { isMessageRow } from "../dist/timeline/index.js";
-import { startServe } from "../dist/index.js";
 import { ownSecrets } from "../dist/import.js";
 import { schemaProblems } from "./schema-support.mjs";
-import { follow, runDir, scratch, serve, withEnv } from "./support.mjs";
+import { follow, runDir, scratch, serve, startServe, withEnv } from "./support.mjs";
 import { MESSAGE_RUN, RUN_EXEC, firings, keyOf, made } from "./trigger-support.mjs";
 
 // The spec's own library, in the lockfile through the Anthropic SDK: what a sender would install.
