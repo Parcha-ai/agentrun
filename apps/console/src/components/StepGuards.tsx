@@ -87,9 +87,9 @@ export function Histogram({ guard, stats }: { guard: StepGuard; stats: LoopGuard
         })}
         <path d={`M0,${HH + 0.5}H${W}`} className="stroke-border-strong" strokeWidth={1} />
         <path d={`M${at(guard.threshold)},0V${HH + 3}`} className="stroke-foreground" strokeWidth={1.5} strokeDasharray="3 2" />
-        <text x={0} y={HH + 12} className="fill-muted-foreground text-[10px]">0</text>
-        <text x={W} y={HH + 12} textAnchor="end" className="fill-muted-foreground text-[10px]">1</text>
-        <text x={at(guard.threshold)} y={HH + 12} textAnchor="middle" className="fill-foreground text-[10px] font-semibold">{guard.threshold.toFixed(2)}</text>
+        <text x={0} y={HH + 12} className="fill-muted-foreground text-micro">0</text>
+        <text x={W} y={HH + 12} textAnchor="end" className="fill-muted-foreground text-micro">1</text>
+        <text x={at(guard.threshold)} y={HH + 12} textAnchor="middle" className="fill-foreground text-micro font-semibold">{guard.threshold.toFixed(2)}</text>
       </svg>
       <figcaption className="sr-only">{`${guard.label}: p by run. ${words.join(". ")}.`}</figcaption>
     </figure>

@@ -432,7 +432,7 @@ function Flag({ x, y, kind }: { x: number; y: number; kind: Marker["kind"] }) {
   return (
     <g>
       <rect x={x + 0.75} y={y + 0.75} width={12.5} height={12.5} className={cn("fill-card", FLAG_STROKE[kind])} strokeWidth={1.5} rx={2} />
-      <text x={x + 7} y={y + 7} dy="0.35em" textAnchor="middle" className={cn("text-[9px] font-semibold", FLAG_TEXT[kind])}>{MARKER_LETTER[kind]}</text>
+      <text x={x + 7} y={y + 7} dy="0.35em" textAnchor="middle" className={cn("text-micro font-semibold", FLAG_TEXT[kind])}>{MARKER_LETTER[kind]}</text>
     </g>
   );
 }
