@@ -16,10 +16,10 @@ import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/conte
 import type { Models } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { type Conversation, type ConversationId, type ConversationRetryPolicy, type ConversationStreamOptions, createRegistry, defineDoc, type EntryId, Harness, LiveDoc, ROOT_CONVERSATION_ID, type Tx } from "@earendil-works/pi-durable";
-import { answeredUnpriced, type AdapterSession, type AgentAdapter, type BeforeRequest, type Ended, type HostTool, type ModelUsage, modelPortFor, type Refusal, RUNNER_RECORDS, type SessionRecord, type SessionSpec, sessionSpendOf } from "@parcha/agentrun-kernel";
+import { answeredUnpriced, type AdapterSession, type AgentAdapter, type BeforeRequest, type Ended, type HostTool, type ModelBooking, type ModelUsage, modelPortFor, type NoteRequest, type Refusal, RUNNER_RECORDS, type SessionRecord, type SessionSpec, sessionSpendOf } from "@parcha/agentrun-kernel";
 import type { KernelHooks, ToolCall } from "./conformance/subject.js";
 import { type AnswerData, type ApprovalPrice, ASK_PERSON_WAITING, type AskData, type BudgetData, type CallEndData, type CallStartData, type CallStatus, capNowOf, endedAnswer, type EndData, KINDS, MESSAGE_SENT_AGAIN, type MessageData, type RaiseData, withdrawnAnswers } from "./journal-kinds.js";
-import { endedOnTurnEndingTool, HOST_PHASE, MESSAGE_ORIGIN, type MessageOrigin, originOf, REQUEST_ENDED, REQUEST_STARTED, RUN_RESUMED } from "../timeline/index.js";
+import { CAP_WRAPUP, endedOnTurnEndingTool, HOST_PHASE, MESSAGE_ORIGIN, type MessageOrigin, originOf, REQUEST_ENDED, REQUEST_STARTED, RUN_RESUMED } from "../timeline/index.js";
 import { raiseFollowUpId } from "../run-view.js";
 
 /** The root entries a claim writes before its turn, whatever the run's turns are (its session's key, a phase row, a
@@ -44,7 +44,7 @@ import { answerOnce, HAND_BACK, handBackOf } from "./hand-back.js";
 import { isComputerCommand, type JournalHold, journalHold, type RunComputerHold } from "./computer-journal.js";
 import { COMPUTER_HANDOVER_KIND, COMPUTER_HOLD_KIND } from "../computer-commands.js";
 import { journalSessions } from "./sessions.js";
-import { DECISION_SESSION, FIT_TOLERANCE, overCapOf, paidRefusal, type Previous, previousAfter, runCap, type RunCap, type RunCapOptions, type RunDecisions, type RunTools, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
+import { DECISION_SESSION, FIT_TOLERANCE, noteFor, overCapOf, paidRefusal, type Previous, previousAfter, requestFigures, runCap, typicalCost, wrapUpWords, type RunCap, type RunCapOptions, type RunDecisions, type RunTools, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
 import { PORT_PROVIDER, portModels, type PortModels, tierProvider } from "../port-models.js";
 
 /** The run's cap as its spec gives it: the kernel runCap's options but its sessions, which the loop's are. */
@@ -55,7 +55,7 @@ import { sideEffect } from "./side-effects.js";
 import { McpClaimRefused } from "./mcp-claim.js";
 import { Fenced } from "../store/index.js";
 import { type ClaimMcp, parkedFollowUp } from "./mcp-run.js";
-import { budgetOf, TOOL_BUDGET_TEXT, WRAP_UP_TEXT, wrappingUp } from "../tool-budget.js";
+import { budgetOf, type RequestFigures, reserveFor, TOOL_BUDGET_TEXT, WRAP_UP_TEXT, wrappingUp } from "../tool-budget.js";
 import { LEARNED_WORKFLOW_TOOL } from "../learned-workflow.js";
 import { handbackText, servedAnswerOf, servedAnswerText, WORKFLOW_FIRST, WORKFLOW_FIRST_CALL, type WorkflowFirst, type WorkflowFirstData, type WorkflowRevise } from "./workflow-first.js";
 
@@ -332,6 +332,10 @@ export function pendingPauseOf(entries: readonly { readonly kind?: string; reado
 }
 /** How long a turn's end waits for the runner to hand on the rows it has not yet (LoopDeps.deliverNow). */
 const DELIVER_NOW_MS = 5_000;
+/** How long the cap's wrap-up note, once a request took it, waits for that request's admission before a later request
+ *  may take it. A request that leaves before its admission gives it back as it goes (ModelPort.noteReturned): this is
+ *  only the backstop for a path that never does. A proxy's token count and admission take well under it. */
+const WRAP_UP_OFFER_MS = 30_000;
 
 /** `text` cut to at most `max` UTF-16 units, never inside a character: a high surrogate the cut leaves alone goes too. */
 const cutWhole = (text: string, max: number): string => {
@@ -1003,7 +1007,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     // The session idle with no wait taking messages yet: whether the last turn ended on a question to the person, read
     // first. It is an await, so a wait may start meanwhile: every path below is chosen after it, with nothing awaited
     // between that choice and the message's placing.
-    const askedLast = !reopen && session.state === "idle" && root !== undefined && endedOnTurnEndingTool((await entriesOf(gate.journal, root.id, context)) as never) !== undefined;
+    const reopenedBefore = reopen;
+    const endedOnAsk = session.state === "idle" && root !== undefined && endedOnTurnEndingTool((await entriesOf(gate.journal, root.id, context)) as never) !== undefined;
+    const askedLast = !reopenedBefore && endedOnAsk;
     // A reopen of a run its learned workflow answered alone (its session new: the agent never took the job): what the
     // workflow answered, said to the agent between the job and the message, which is a word on that answer.
     const servedAnswer = reopen && !reopen.sent && session.state === "new" && root !== undefined ? servedAnswerOf(await entriesOf(gate.journal, root.id, context)) : undefined;
@@ -1032,10 +1038,12 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       // The row is taken only once the session holds the prompt: pi's in its submission's commit; a CLI's (whose harness
       // writes no submission) in the record's follow-up entry, written right after the send, as sendAfterTurn takes its
       // row. A runner lost between the send and that entry leaves the row untaken, so the next claim sends it again: a
-      // follow-up may be sent twice after a crash, never lost. The answer to a wait in the claim: the row's waiting summary
-      // goes in that commit too.
+      // follow-up may be sent twice after a crash, never lost. The answer to an ask: the row's waiting summary goes in
+      // that commit too, for a wait in the claim and for a question a reopened run parked on (its journal holds its earlier
+      // end, so its claim reads as reopened). Left until the end commit, the answer's turn reads running, held and "Waiting
+      // for your reply", and the server tells that ask again.
       const placedBy = theRecord ? writesEntry(by ? KINDS.input : KINDS.message, (data) => data.requestId === requestId) : writesSubmission(sendId);
-      const taken = gate.expect(placedBy, { take: [command.id], ...(reopen === waitTurn ? { run: { summary: null } } : {}) });
+      const taken = gate.expect(placedBy, { take: [command.id], ...(reopen === waitTurn || endedOnAsk ? { run: { summary: null } } : {}) });
       taken.catch(() => undefined);
       reopen.sent = (async () => {
         await theSession.send(content, { id: sendId, ...(by ? { origin: by } : {}) });
@@ -1418,6 +1426,104 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             }
           }
         }
+        // The cap's wrap-up note (#2080): near its cap the run's next main-model request is told once, inside its own body
+        // (the session's model proxy places it: ModelPort.note), to finish now, by the kernel cap's rule (noteFor) over the
+        // run's cap now, what it spent and holds, and its own priced answers. Once per cap, as main's process told it
+        // (cap.ts wrapUpSentIn): a CAP_WRAPUP entry names the cap it was told under, read at each claim, so a raise's new
+        // cap is told again when it too comes near; written as the server's row only once a request carrying the note is
+        // admitted with it.
+        const wrapUpHarness = harness;
+        const wrapUpRoot = root ?? (await harness.root(context));
+        const toldCaps = (await entriesOf(gate.journal, wrapUpRoot.id, context))
+          .filter((entry) => entry.kind === CAP_WRAPUP)
+          .map((entry) => (entry.data as { capUsd?: unknown } | undefined)?.capUsd)
+          .filter((capUsd): capUsd is number => typeof capUsd === "number");
+        const toldAt = (capUsd: number | undefined): boolean => capUsd !== undefined && toldCaps.some((told) => Math.abs(told - capUsd) <= 1e-9);
+        // What the run spent on its sessions other than this claim's model session, its decisions' and its paid calls' (an
+        // earlier session's, a grade's), summed as overCap sums them; null while any is unknown. Read at the claim and again
+        // after each request is admitted (the note is placed before its own request's admission, so it reads the last).
+        const restOf = async (): Promise<number | null> => {
+          let rest = 0;
+          for (const key of await sessions.keys()) {
+            if (key === spec.session.key || key === DECISION_SESSION || key === TOOL_SESSION) continue;
+            const spent = sessionSpendOf(await sessions.read(key)).spentUsd;
+            if (spent === null) return null;
+            rest += spent;
+          }
+          return rest;
+        };
+        // The typical cost is of the harness's own main-model answers at what they cost: never a request the host sent beside
+        // them (`host`), nor the harness's own side call on a smaller model (`side`, a title request), nor one a crash cut
+        // (booked at its hold and bound, the worst case), one never sent, given back, owed or stopped.
+        const claimRecords = await writer.read();
+        const claimHosts = sessionSpendOf(claimRecords).hosts;
+        /** The turns of requests that are no main-model request of the harness's own: read from the records, then each
+         *  admitted side call's (its ticket's turn), so a live answer's cost is judged the same as a restart's. */
+        const notOwn = new Set<number>(claimHosts.keys());
+        for (const record of claimRecords) {
+          const data = (record.data ?? {}) as { turn?: unknown; side?: unknown };
+          if (record.kind === RUNNER_RECORDS.request && data.side === true && typeof data.turn === "number") notOwn.add(data.turn);
+        }
+        const capNote: { costs: number[]; restUsd: number | null; offered?: { words: string; leftUsd: number; capUsd: number; at: number }; live?: true; lastFigures?: RequestFigures } = {
+          costs: claimRecords.flatMap((record) => {
+            if (record.kind !== RUNNER_RECORDS.turn) return [];
+            const data = (record.data ?? {}) as { turn?: number; usd?: unknown; cut?: unknown; unsent?: unknown; givenBack?: unknown; estimated?: unknown; stopped?: unknown; rule?: unknown };
+            const own = typeof data.usd === "number" && data.usd > 0 && !data.cut && !data.unsent && !data.givenBack && !data.stopped && data.rule !== "owed";
+            return own && (data.turn === undefined || !notOwn.has(data.turn)) ? [data.usd as number] : [];
+          }),
+          restUsd: await restOf(),
+        };
+        /** A main-model request's figures as the run's cap prices them (kernel cap requestFigures), for what it keeps back. */
+        const figuresOf = (model: string, asked?: NoteRequest): RequestFigures | undefined => {
+          const config = specNow?.runCap;
+          const capModel = config?.modelOf(model);
+          if (!config || !capModel) return undefined;
+          return requestFigures(
+            { kind: "model", id: "reserve", model: capModel, inputTokens: asked?.inputTokensMax, ...(asked?.outputTokensAsked === undefined ? {} : { outputAsked: asked.outputTokensAsked }), ...(asked?.outputTokensLeast === undefined ? {} : { outputTokensLeast: asked.outputTokensLeast }) },
+            config.mode ?? "expected",
+            Date.now(),
+          );
+        };
+        /** What the run keeps back to answer (tool-budget.ts reserveFor), its typical step the run's own priced answers'. */
+        const reserveOf = (figures: RequestFigures | undefined): number | undefined => reserveFor(figures, (step0Usd) => typicalCost(capNote.costs, step0Usd));
+        let bookingNow: ModelBooking | undefined;
+        const wrapUpNote = (model: string, asked?: NoteRequest): string | undefined => {
+          const config = specNow?.runCap;
+          const capModel = config?.modelOf(model);
+          const sessionSpent = bookingNow?.spentUsd();
+          const decided = ledger.decisions.spentUsd();
+          const paidSpent = ledger.paid.spentUsd();
+          const rest = capNote.restUsd;
+          // The model session's requests in flight, at what is held for each (as the cap reads a flight); unknown gives none.
+          const inFlight = bookingNow?.heldUsd();
+          const capUsd = capNow();
+          // One request at a time carries it: while one offered it waits for its admission, an overlapping request is not
+          // offered it too (its admission tells it, or a refusal or a dropped note gives it back: below). A request that
+          // took it and left before its admission (its client gone while the proxy counted its tokens, a body the proxy
+          // refused) gives it back as it goes (noteReturned), so the next request takes it at once. WRAP_UP_OFFER_MS is
+          // only the backstop for a path that never gives it back: past it, a later request is offered it.
+          if (capNote.offered && Date.now() - capNote.offered.at < WRAP_UP_OFFER_MS) return undefined;
+          if (!config || !capModel || capUsd === undefined || toldAt(capUsd) || sessionSpent == null || decided === null || paidSpent === null || rest === null || inFlight == null) return undefined;
+          const spentUsd = sessionSpent + decided + paidSpent + rest;
+          // The tools' gate counts a request in flight at its hold and its bound (sessionSpendOf: a cache miss adds the bound),
+          // so the note counts it the same: it never comes later than the gate's first refusal.
+          const heldUsd = inFlight + (bookingNow?.boundUsd() ?? 0) + ledger.decisions.heldUsd() + ledger.paid.heldUsd();
+          const due = noteFor(
+            { kind: "model", id: "wrap-up", model: capModel, inputTokens: asked?.inputTokensMax, ...(asked?.outputTokensAsked === undefined ? {} : { outputAsked: asked.outputTokensAsked }), ...(asked?.outputTokensLeast === undefined ? {} : { outputTokensLeast: asked.outputTokensLeast }) },
+            { capUsd, spentUsd, heldUsd, costs: capNote.costs, told: false, mode: config.mode ?? "expected", now: Date.now() },
+          );
+          // The two wrap-ups read as one story: the note tells the model what is left; once what the run keeps back to
+          // answer (tool-budget.ts reserveFor) no longer fits, its tools stop. So the note comes due on that same rule too, if
+          // its own has not made it due before: told on the request whose tool call would be refused now, no later than the
+          // first refusal. The rule's figure here is the run's spend and holds as they stand at this take, and this request's
+          // own reserve. (The gate's reader, wrapUp, reads the records at each call and is async; a reading kept from an
+          // admission would count that request's own hold as taken after it answered.)
+          const atLine = wrappingUp(capUsd, spentUsd + heldUsd, reserveOf(figuresOf(model, asked)));
+          const leftUsd = capUsd - spentUsd - heldUsd;
+          const note = due ?? (atLine ? { words: wrapUpWords(leftUsd, capNote.costs.length === 0), leftUsd } : undefined);
+          capNote.offered = note ? { ...note, capUsd, at: Date.now() } : undefined;
+          return note?.words;
+        };
         // The rule before a side effect for every paid model request, on the path every adapter's requests take: the
         // booking writes the request's record, then awaits request_start before the request leaves, so the flush here
         // makes that record and everything before it durable first (each send, a retry's included).
@@ -1425,7 +1531,17 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           key: spec.session.key,
           label: spec.session.label,
           beforeRequest,
+          note: wrapUpNote,
+          // A request that took it and left before its admission gives it back: the next request may take it at once.
+          noteReturned: (note) => {
+            if (capNote.offered?.words === note) capNote.offered = undefined;
+          },
           onEvent: async (event) => {
+            // The run's own priced answers, the typical cost the wrap-up is worked out by (a request the host sent beside
+            // the harness's own is not one of them).
+            // (A price from the host's table, `estimated`, is a cost; what bookCut tells of an earlier claim's requests, owed
+            // at their hold or cut, comes before `capNote.live` and is never one.)
+            if (capNote.live && event.type === "request_end" && event.host === undefined && !notOwn.has(event.turn) && typeof event.usage.usd === "number" && event.usage.usd > 0 && !event.usage.cut && !event.usage.givenBack) capNote.costs.push(event.usage.usd);
             if (event.type === "request_end") requestEnded(event.turn, event.usage, event.ended);
             if (event.type === "request_start") {
               // A new request means the model's last message is over: what it said so far is on the record before the request,
@@ -1455,10 +1571,13 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             }
           },
         });
+        bookingNow = booking;
         // A paid request an earlier claim admitted and never saw answered (its runner lost while the request was out): the
         // provider may have billed it, so it is booked once, as cut, at its hold and bound, and told as any answered request
         // is, before this claim sends anything (the harness runner's bookCut, main's cut booking).
         await booking.bookCut();
+        // This claim's own answers count toward the typical cost from here (bookCut's owed and cut bookings came before).
+        capNote.live = true;
         // A paid tool call an earlier claim admitted and never saw settled is booked the same way, cut, at its hold, its
         // charge unknown: it may have run and been charged before the claim was lost. Its session opens only for a paid call
         // of this claim, and a replay the gate refuses makes none, so it is opened here for the cut alone, never read as free.
@@ -1479,7 +1598,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             const reserved = [...read.openHolds].reduce((sum, turn) => sum + (read.held.get(turn) ?? 0), 0);
             taken = taken === null || read.spentUsd === null ? null : taken + read.spentUsd + reserved;
           }
-          return wrappingUp(capUsd, taken);
+          // What the run keeps back to answer, priced on the main model's last request admitted on this claim (its next one
+          // is priced at least as high): none yet, no wrap-up, as no tool call comes before a request.
+          return wrappingUp(capUsd, taken, reserveOf(capNote.lastFigures));
         };
         const gateOf = preIntentGate(spec, hooks, wrapUp);
         // A CLI's run: the loop keeps its visible record (record: "loop"), every call a crash or a fault left open ended.
@@ -1576,8 +1697,36 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
               mcpStale = false;
               await mcp.fresh();
             }
+            // The wrap-up this request carries, taken off the offer now: its admission tells it; a refusal (the throw below)
+            // or a dropped note leaves it untold, to be offered to a later request.
+            const offer = (request as { noted?: boolean }).noted ? capNote.offered : undefined;
+            if (offer) capNote.offered = undefined;
             const ticket = await port.beforeRequest(request);
             unbooked += 1;
+            // The harness's own side call (a title request on its smaller model): never a typical cost of its main requests.
+            if (ticket && (request as { side?: boolean }).side) notOwn.add(ticket.turn);
+            // The main model's request as the cap prices it: what the run keeps back to answer is priced on it (wrapUp).
+            if (!(request as { side?: boolean }).side && (request as { host?: string }).host === undefined) capNote.lastFigures = figuresOf(request.model, request) ?? capNote.lastFigures;
+            // What follows is the wrap-up's own bookkeeping, after the request was admitted and its hold booked: it never fails
+            // the request (a throw here would leave it admitted and never sent, read as cut at its worst case).
+            try {
+              capNote.restUsd = await restOf();
+            } catch (error) {
+              capNote.restUsd = null;
+              console.warn(`[runner] the run's other sessions' spend was not read; no wrap-up until it is: ${said(error)}`);
+            }
+            // Told once a request carrying it is admitted with it (never one that went without the note's bytes): the server's
+            // row, once per cap, made durable before the request leaves, so a machine lost after it never tells that cap twice.
+            if (offer && ticket && !(ticket as { noteDropped?: true }).noteDropped && !toldAt(offer.capUsd)) {
+              const { words, leftUsd, capUsd } = offer;
+              toldCaps.push(capUsd);
+              try {
+                await wrapUpHarness.commit((tx) => tx.appendEntry(wrapUpRoot.id, { kind: CAP_WRAPUP, data: { words, leftUsd, capUsd } as unknown as JsonValue }), context);
+                await deps.flush();
+              } catch (error) {
+                console.warn(`[runner] the wrap-up's row was not written (the note went with the request): ${said(error)}`);
+              }
+            }
             return ticket;
           },
           afterRequest: async (...args) => {
@@ -1591,6 +1740,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           },
           ...(port.responded ? { responded: port.responded.bind(port) } : {}),
           ...(port.note ? { note: port.note.bind(port) } : {}),
+          ...(port.noteReturned ? { noteReturned: port.noteReturned.bind(port) } : {}),
         };
         // What the request that just answered cost, once the session's requests are booked (bookingOfAnswer): its own
         // booking's figure, null when unknown; a side request's is given and never read. A refused request's record is its $0.

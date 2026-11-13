@@ -26,7 +26,7 @@ export const baseTools = () => ({
 
 /** `inspect`: called with each request's headers, for a test that reads one of them (the credential a run sent, a static
  *  header beside it); the log itself never holds a header's value. */
-export async function startFakeMcp({ era = "modern", token, oauth = false, port = 0, name = "fake-mcp", inspect, hold } = {}) {
+export async function startFakeMcp({ era = "modern", token, oauth = false, port = 0, name = "fake-mcp", path = "/mcp", inspect, hold } = {}) {
   const tools = baseTools();
   const log = [];
   const factory = () => {
@@ -53,8 +53,8 @@ export async function startFakeMcp({ era = "modern", token, oauth = false, port 
       res.writeHead(200, { "content-type": "application/json" });
       return void res.end(JSON.stringify({ resource: `${base}/mcp`, authorization_servers: [typeof oauth === "function" ? oauth() : typeof oauth === "string" ? oauth : `${base}/auth`] }));
     }
-    // Its endpoint is /mcp, with any query of its own (?version=2).
-    if (new URL(req.url, base).pathname !== "/mcp") return void res.writeHead(404).end();
+    // Its endpoint is `path` (/mcp unless a test names another), with any query of its own (?version=2).
+    if (new URL(req.url, base).pathname !== path) return void res.writeHead(404).end();
     inspect?.(req.headers);
     // `hold`: awaited before a request to /mcp is answered, for a test that keeps a listing waiting at a point it chooses.
     if (hold) await hold(req.headers);
@@ -70,7 +70,7 @@ export async function startFakeMcp({ era = "modern", token, oauth = false, port 
     res.end();
   });
   await new Promise((resolve) => http.listen(port, "127.0.0.1", resolve));
-  const url = `http://127.0.0.1:${http.address().port}/mcp`;
+  const url = `http://127.0.0.1:${http.address().port}${path}`;
   return { url, log, tools, close: () => new Promise((resolve) => (http.close(resolve), http.closeAllConnections())) };
 }
 

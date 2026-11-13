@@ -363,6 +363,9 @@ export function resumeHead(request: Pick<ApprovalRequest, "tool" | "call_id">, s
   const args = shown.length > 300 ? `${shown.slice(0, 299)}…` : shown;
   return `${RESUME_PREFIX}This answers your ${request.tool} call ${request.call_id} (arguments ${args}), which waited for a person's approval; it is not a new message from them.`;
 }
+/** The last line of a CLI's resume message (one, after every call it answers): the message arrives as a new turn, and a
+ *  model that reads only results there answers about the approval, not the person's request (Claude Code, live). */
+export const RESUME_GO_ON = "Go on with the person's request from where you stopped, using these results; don't call these tools again for them.";
 export function resumeText(request: Pick<ApprovalRequest, "tool" | "call_id">, shown: string, decision: "allow" | "deny", result: ToolAnswer): string {
   const head = resumeHead(request, shown);
   return decision === "allow" ? `${head} They allowed it, and it ran${result.isError ? " and failed" : ""}. Its result:\n${result.text}` : `${head}\n${result.text}`;

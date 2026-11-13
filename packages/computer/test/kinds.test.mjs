@@ -127,7 +127,7 @@ test("PROVIDERS is the agreed table of ids, labels, key names, mounts and meteri
 		if (id !== "orgo") assert.equal(fields.parked, undefined, id);
 	}
 	const kinds = Object.fromEntries(PROVIDERS.map((entry) => [entry.id, entry.kinds]));
-	assert.deepEqual(kinds, { docker: ["sandbox", "desktop"], daytona: ["sandbox"], modal: ["sandbox"], e2b: ["sandbox", "desktop"], agent37: ["sandbox"], orgo: ["desktop"], "phone-harness": ["phone"], browserbase: ["browser"], kernel: ["browser"], "local-chrome": ["browser"] });
+	assert.deepEqual(kinds, { docker: ["sandbox", "desktop"], daytona: ["sandbox"], modal: ["sandbox"], e2b: ["sandbox", "desktop"], agent37: ["sandbox", "desktop"], orgo: ["desktop"], "phone-harness": ["phone"], browserbase: ["browser"], kernel: ["browser"], "local-chrome": ["browser"] });
 	const mounts = Object.fromEntries(PROVIDERS.map((entry) => [entry.id, entry.mounts]));
 	assert.deepEqual(mounts.docker, ["bind"]);
 	for (const id of ["orgo", "phone-harness", "browserbase", "kernel", "local-chrome"]) assert.deepEqual(mounts[id], [], id);
@@ -142,7 +142,7 @@ test("PROVIDERS' default images: each kind is one of the entry's own, and each v
 		daytona: { sandbox: daytona.DAYTONA_DEFAULT_SNAPSHOT },
 		modal: { sandbox: modal.MODAL_DEFAULT_IMAGE },
 		e2b: { sandbox: e2b.E2B_BASE_TEMPLATE, desktop: e2b.E2B_DESKTOP_TEMPLATE },
-		agent37: { sandbox: all.AGENT37_BASE_TEMPLATE },
+		agent37: { sandbox: all.AGENT37_BASE_TEMPLATE, desktop: all.AGENT37_BOX_TEMPLATE },
 		orgo: { desktop: orgo.ORGO_BASE_IMAGE },
 		"phone-harness": { phone: phone.PHONE_IMAGE },
 		browserbase: { browser: browser.BROWSER_IMAGE },
@@ -156,8 +156,8 @@ test("PROVIDERS' default images: each kind is one of the entry's own, and each v
 	}
 	// What each module's constant is: a constant that drifts shows here.
 	assert.deepEqual(
-		[daytona.DAYTONA_DEFAULT_SNAPSHOT, modal.MODAL_DEFAULT_IMAGE, e2b.E2B_BASE_TEMPLATE, e2b.E2B_DESKTOP_TEMPLATE, all.AGENT37_BASE_TEMPLATE, orgo.ORGO_BASE_IMAGE, phone.PHONE_IMAGE, browser.BROWSER_IMAGE],
-		["default", "debian:bookworm-slim", "base", "desktop", "agent37-base", "linux", "android", "chromium"],
+		[daytona.DAYTONA_DEFAULT_SNAPSHOT, modal.MODAL_DEFAULT_IMAGE, e2b.E2B_BASE_TEMPLATE, e2b.E2B_DESKTOP_TEMPLATE, all.AGENT37_BASE_TEMPLATE, all.AGENT37_BOX_TEMPLATE, orgo.ORGO_BASE_IMAGE, phone.PHONE_IMAGE, browser.BROWSER_IMAGE],
+		["default", "debian:bookworm-slim", "base", "desktop", "agent37-base", "agentrun-box", "linux", "android", "chromium"],
 	);
 	// Docker's sandbox has none: serve builds its own image (DOCKER_RECIPE).
 	assert.equal(PROVIDERS.find((entry) => entry.id === "docker").defaultImage, undefined);
@@ -250,7 +250,8 @@ const FAKE_SSH_KEY = keyPair().private;
 const BUILT = {
 	docker: [() => fakeDocker().provider, () => fakeDocker({ desktop: {} }).provider],
 	e2b: [() => new E2BProvider({ apiKey: "fake-test-key", Sandbox: E2B_SANDBOX, kind: "linux" }), () => new E2BProvider({ apiKey: "fake-test-key", Sandbox: E2B_SANDBOX })],
-	agent37: [() => new Agent37Provider({ apiKey: "fake-test-key", sshKey: FAKE_SSH_KEY, ssh2: AGENT37_SSH2, fetch: async () => new Response(null, { status: 500 }) })],
+	// Each configuration built by its own create() options, as serve builds the one a setting selects.
+	agent37: PROVIDERS.find((one) => one.id === "agent37").capabilities.map(({ options }) => () => new Agent37Provider({ ...options, apiKey: "fake-test-key", sshKey: FAKE_SSH_KEY, ssh2: AGENT37_SSH2, fetch: async () => new Response(null, { status: 500 }) })),
 	daytona: [() => new DaytonaProvider({ apiKey: "fake-test-key", apiUrl: "https://api.daytona.test/api", daemonPath: "/nonexistent/computerd", fetch: async () => new Response(null, { status: 500 }) })],
 	modal: [() => new ModalProvider({ sdk: fakeModal().sdk, app: "computers", daemonImage: `ghcr.io/example/computerd@sha256:${"a".repeat(64)}` })],
 	browserbase: [() => new BrowserbaseProvider({ apiKey: BROWSERBASE_KEY, apiUrl: BROWSERBASE_URL, fetch: fakeBrowserbase().fetch })],

@@ -221,6 +221,19 @@ export const FIRED_BY: Record<Firing["by"], string> = { schedule: "On schedule",
 /** When a github trigger fires, in one line: the GitHub events its filter takes, delivered to the server's GitHub App. */
 export const githubWhen = (source: Extract<TriggerSource, { kind: "github" }>): string => `On GitHub ${source.accept.map((a) => acceptWords(a, false)).join(" or ")}`;
 
+/** Why the server turned a trigger off itself (`disabled`): a failure streak, or a source it can't read; null for one that
+ *  is on, or that a person paused. The streak is named by the server's threshold (`failuresToPause`, capabilities'
+ *  features.triggers.failures_to_pause), the count that turned it off: the trigger's streak now keeps moving after (a
+ *  failed Run now raises it, a successful one resets it). */
+export function disabledWords(t: Pick<Trigger, "disabled">, failuresToPause?: number): string | null {
+  const off = t.disabled;
+  if (!off) return null;
+  if (off.reason === "source_unreadable") return `Turned off: its source can't be read (${off.detail}).`;
+  // The server's own words for the rest (its agent was archived, its connection was lost).
+  if (off.reason !== "auto_paused") return `Turned off: ${off.detail}`;
+  return failuresToPause ? `Turned off after ${failuresToPause} failures in a row.` : "Turned off after failures in a row.";
+}
+
 /** What came of a firing. A started one's run is linked beside it. */
 export function firingWords(f: Firing): string {
   const why = (head: string, text: string | null | undefined) => (text ? `${head}: ${text}` : head);
