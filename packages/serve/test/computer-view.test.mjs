@@ -44,6 +44,8 @@ test("a browser no step ever opened is unopened: a run that only fetched pages, 
   assert.equal(sessionIn("browser", []), "unopened");
   assert.equal(sessionIn("browser", [call("c1", "web_fetch"), result("c1"), call("c2", "ask_person")]), "unopened", "web_fetch and an open ask are no browser step");
   assert.equal(sessionIn("browser", [call("c1", "browser_release"), result("c1"), said]), "unopened", "a release opens nothing");
+  assert.equal(sessionIn("browser", [call("c1", "browser_request_handoff")]), "unopened", "nor a hand-over asked with no session open (refused: nothing to hold)");
+  assert.equal(sessionIn("browser", [call("c1", "browser_request_handoff"), result("c1")]), "unopened");
 });
 
 test("a browser step with no result yet is the browser opening; one answered, with no viewer now, is closed", () => {
@@ -54,7 +56,7 @@ test("a browser step with no result yet is the browser opening; one answered, wi
   assert.equal(sessionIn("browser", [call("c1", "snapshot", "error")]), "unopened", "nor an errored one's");
 });
 
-test("every browser step but its release opens a session: an upload or a relaunch first counts too", () => {
+test("every browser step but its release and its hand-over opens a session: an upload or a relaunch first counts too", () => {
   for (const name of ["browser_upload", "browser_relaunch", "browser_downloads", "browser_read"]) {
     assert.equal(sessionIn("browser", [call("c1", name)]), "opening", name);
     assert.equal(sessionIn("browser", [call("c1", name), result("c1")]), "closed", name);

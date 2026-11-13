@@ -48,9 +48,10 @@ export async function computerView(deps: {
   return { state: "none", kind: computer.kind, hold, session: deps.session(computer.kind) };
 }
 
-/** The browser's steps that open a session when none is open: every one of them but its release (a run, a snapshot, an
- *  upload or a relaunch alike goes through the session, which the first call launches). */
-const OPENS: ReadonlySet<string> = new Set([...BROWSER_STEPS].filter((name) => name !== "browser_release"));
+/** The browser's steps that open a session when none is open: every one of them but its release and its hand-over to a
+ *  person, which is refused with no session open (a run, a snapshot, an upload or a relaunch alike goes through the
+ *  session, which the first call launches). */
+const OPENS: ReadonlySet<string> = new Set([...BROWSER_STEPS].filter((name) => name !== "browser_release" && name !== "browser_request_handoff"));
 
 type Obj = Record<string, unknown>;
 const objOf = (value: unknown): Obj | undefined => (value && typeof value === "object" && !Array.isArray(value) ? (value as Obj) : undefined);
