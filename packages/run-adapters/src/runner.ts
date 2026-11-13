@@ -267,9 +267,12 @@ export function sessionSpendOf(records: readonly SessionRecord[]): { turns: numb
   return { turns, held, bounds, hosts, answered, openHolds, spentUsd, figures, cost: { usd: unpriced > 0 ? null : soFarUsd, soFarUsd, unpriced } };
 }
 
-/** Whether a request answered with no price of its own (bookRequest's rule `answered`, or `answered:<label>`, its usd
- *  null): booked at its hold for the cap, its cost unknown. */
-export const answeredUnpriced = (data: { usd?: unknown; rule?: unknown }): boolean => data.usd === null && typeof data.rule === "string" && (data.rule === "answered" || data.rule.startsWith("answered:"));
+/** Whether a request ended with no price of its own (usd null) under a rule that books it at a figure of the host's: an
+ *  answer with no cost (bookRequest's rule `answered`, or `answered:<label>`: its hold), or one our side stopped
+ *  (`stopped`: what streamed, an estimate) or lost (`lost`, `lost:<label>`: its hold). Each counts for the cap at that
+ *  figure, but as a cost it is unknown, never an estimate stored as a known charge (the provider may bill otherwise). */
+export const answeredUnpriced = (data: { usd?: unknown; rule?: unknown }): boolean =>
+  data.usd === null && typeof data.rule === "string" && (data.rule === "answered" || data.rule.startsWith("answered:") || data.rule === "stopped" || data.rule === "lost" || data.rule.startsWith("lost:"));
 
 /** Whether a request was booked lost (bookRequest's rule `lost`, or `lost:<label>`): billed or not, no cost came in. */
 const bookedLost = (rule: unknown): boolean => typeof rule === "string" && (rule === "lost" || rule.startsWith("lost:"));
@@ -390,7 +393,7 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
     if (stoppedLate) {
       answered.add(turn);
       await write([{ kind: RUNNER_RECORDS.turn, data: { turn, usd: 0, unsent: true } }]).catch(() => undefined);
-      emit({ type: "request_end", turn, usage: { input: 0, output: 0, cacheRead: 0, usd: 0 }, ...(host === undefined ? {} : { host }), ended: { end: "nothing", label: "never_left" } });
+      await emit({ type: "request_end", turn, usage: { input: 0, output: 0, cacheRead: 0, usd: 0 }, ...(host === undefined ? {} : { host }), ended: { end: "nothing", label: "never_left" } });
       throw stoppedLate;
     }
     open.push({ turn, model, inputTokensMax, ...(limited === undefined ? {} : { outputTokensMax: limited }), ...(hold === undefined ? {} : { holdUsd: hold }), ...(host === undefined ? {} : { host }), ...(route === undefined ? {} : { route }) });
@@ -457,7 +460,9 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
       }
       answered.add(turn);
       const hosted = hosts.get(turn);
-      emit({ type: "request_end", turn, usage, ...(hosted === undefined ? {} : { host: hosted }), ...(ended ? { ended } : {}) });
+      // Awaited: a host that marks the request's end on its record writes it before the booking counts as settled, so a
+      // run's end never lands ahead of the mark that says its request was cut.
+      await emit({ type: "request_end", turn, usage, ...(hosted === undefined ? {} : { host: hosted }), ...(ended ? { ended } : {}) });
     },
   };
   // One booking of the cut requests at a time: a call made while one is writing waits for it, never books them again.

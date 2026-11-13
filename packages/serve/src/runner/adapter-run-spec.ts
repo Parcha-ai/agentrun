@@ -309,7 +309,14 @@ export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick
   };
   // The revision's tool-call budget (tool-budget.ts), which the adapter loop holds each conversation's calls to.
   const toolCalls = revision.body.maxToolCalls;
-  return Object.assign(decide, { askedAs: (tool: string) => gate.askedAs(tool), askedFor, permissions, learn: (flows: readonly LearnedWorkflow[]) => void (learned = flows), ...(toolCalls === undefined ? {} : { toolCalls }) });
+  // A tool's setting now, read from the store as each call's is (SessionIO.permission: Codex's live search, which runs
+  // inside a model request, is offered only while it says allow). A read that fails is a deny, never the last good read's
+  // allow: a deny saved since may be in what did not read, and no call reaches the gate to say otherwise.
+  const permission = async (tool: string): Promise<Permission> => {
+    current = await storeSettings(store);
+    return current.unreadable ? "deny" : gate.policy(tool);
+  };
+  return Object.assign(decide, { askedAs: (tool: string) => gate.askedAs(tool), askedFor, permissions, permission, learn: (flows: readonly LearnedWorkflow[]) => void (learned = flows), ...(toolCalls === undefined ? {} : { toolCalls }) });
 }
 
 /** The server's tool settings from the store now; a read that throws is unread (no value of it said). A workflow's call
@@ -389,7 +396,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // words before the session opens. The seal key is the runner's own (deps.sealKey), not re-read from the environment.
   // A credential the claim opens mid-run (a GitHub App token, a per_run server's handed one) joins the run's redactor.
   const hold = (values: string[]) => cut.hold(values);
-  const mcp = await mcpForClaim({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, work: () => ws.workspace, launchInput: launch.input, hold, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}) });
+  const mcp = await mcpForClaim({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, work: () => ws.workspace, launchInput: launch.input, hold, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}) });
   // The claim's MCP goes to the loop, which lets it go; a build that throws lets it go itself.
   holds.hold({ passed: mcp });
 

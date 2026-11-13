@@ -343,6 +343,9 @@ function replyTo(context, faux) {
   // "Answer once <file> exists.": the test says when, by making the file.
   const once = /^Answer once (\S+) exists\.$/.exec(first);
   if (once && users.length === 1) return untilExists(once[1]).then(() => faux.message("Now."));
+  // "Hold the follow-up until <file>.": the first turn answers at once; a follow-up's turn waits for the file.
+  const followHeld = /^Hold the follow-up until (\S+)\.$/.exec(first);
+  if (followHeld) return users.length === 1 ? faux.message("First.") : untilExists(followHeld[1]).then(() => faux.message("Followed."));
   // "Fail once <file> exists.": works until the test makes the file, then the provider refuses the request.
   const failOnce = /^Fail once (\S+) exists\.$/.exec(first);
   if (failOnce && users.length === 1) return untilExists(failOnce[1]).then(() => faux.message("", { stopReason: "error", errorMessage: "the provider refused the request" }));

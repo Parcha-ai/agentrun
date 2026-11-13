@@ -257,6 +257,12 @@ export interface SessionIO {
    *  runs nothing; a park holds the call, writing nothing, until the session's signal is aborted (the run parks on a
    *  person). Absent: every call runs. */
   gate?(call: GateCall, context?: unknown): Promise<GateAnswer>;
+  /** The host's setting now for one of the harness's own tools, by the harness's name for it (Codex's `web_search`), read
+   *  again at each ask, so a permission set while the session runs reaches its next request. For a tool no call of which
+   *  reaches the gate before it runs: a provider-hosted search runs inside a model request, so the session offers it only
+   *  while this says "allow" (a throw reads as "deny"). Absent: the host keeps no per-tool permissions, and what the
+   *  session was opened with stands. */
+  permission?(tool: string): Promise<ToolPermission>;
   /** A tool the adapter adds of its own (read_skill_file over the session's skills), made the host's: its calls go the
    *  way the host's own tools' do (the run's record of the call and its result, which its Timeline shows, the rule before
    *  a side effect, the host's hooks on the result). An adapter hands every tool it adds through it. Absent: the host
@@ -279,6 +285,9 @@ export interface GateCall {
 
 /** The host's answer before a call's intent: run it, refuse it in these words, or park the run on it. */
 export type GateAnswer = "allow" | { readonly deny: string } | { readonly park: true };
+
+/** A tool's setting on the host (SessionIO.permission): it runs, it waits for a person's answer, or it is refused. */
+export type ToolPermission = "allow" | "ask" | "deny";
 
 /** An event of a session, as the adapter reports it. The runner adds the node it belongs to. A call's `tool_end` is sent
  *  only once its outcome is durable in the session's records, so a host never shows a result its store does not have;

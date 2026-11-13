@@ -64,8 +64,9 @@ export interface ProviderPolicy {
   header?(name: string, value: string): string | undefined;
   /** The body the provider gets for a request on `route`: throw a `ProxyRefusal` to refuse it. `context.host`: the
    *  request is the host's own, beside the harness's (ModelProxy.sideKey), whose tools are its own client-side ones, not
-   *  the session's. */
-  apply(body: unknown, route: ProxyRoute, context?: ProxyRequestContext): Record<string, unknown>;
+   *  the session's. A policy that reads something of the host's first (a tool's permission now) answers with a promise,
+   *  which may reject the same way. */
+  apply(body: unknown, route: ProxyRoute, context?: ProxyRequestContext): Record<string, unknown> | Promise<Record<string, unknown>>;
   /** The usage a completed response reports, if it reports one: from its whole text, or, for a long one, its first and
    *  last 64 KiB (a provider may report input tokens as a stream starts and output tokens as it ends). `body`: the body
    *  its request was sent with (`apply`'s), so what the request offered (a hosted tool it did not offer never ran) is
@@ -934,7 +935,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     let body: Record<string, unknown>;
     const headers: Record<string, string> = { "content-type": "application/json" };
     try {
-      body = policy.apply(parseStrict(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks))), route, host === undefined ? {} : { host });
+      body = await policy.apply(parseStrict(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks))), route, host === undefined ? {} : { host });
       // The listed headers, as the policy keeps them (or refuses them), before the runner is asked.
       for (const name of route.headers ?? []) {
         const value = req.headers[name.toLowerCase()];

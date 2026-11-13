@@ -20,6 +20,8 @@ import { redacted, redactedOutput } from "./key-refusal.js";
 import { chooseWorkflows, LEARNING_BUDGET, learnedParts, type LearningMode, learnsOf, type NoteUsed, type Seed, type Shown } from "./learning.js";
 import { thinkingLevel } from "./model.js";
 import { type Place, resolvePlace } from "./place.js";
+import { githubTargetOf } from "./github.js";
+import { type RepoBinding, repoOf } from "./run-repo.js";
 import { type LaunchDisk, launchBody, type RunLaunch, type SeedFailed } from "./run-launch.js";
 import { type ApprovalDecision, raiseFollowUpId, type RunMoment } from "./run-view.js";
 import { sendCommand } from "./runner/commands.js";
@@ -435,6 +437,9 @@ export interface StartDeps {
   /** The model the server names to grade what a run proposes (learning.ts gradeModelOf), put on each learning start; none,
    *  the agent's own grades it. */
   readonly gradeModel?: string;
+  /** What the agent's GitHub triggers bind it to (run-repo.ts bindingOf), read when a person's start names or defaults a
+   *  repository. Absent: the agent is bound to none. */
+  boundRepos?(agentId: string): Promise<RepoBinding>;
   /** The host's secrets as they are shown now (learning-run.ts shown), for cutting the notes a run is given. */
   shown?(): Shown;
 }
@@ -642,8 +647,15 @@ export async function prepareLaunch(deps: StartDeps, entry: AgentEntry, body: Js
   // else none). Nothing set: none, so the run gets no effort note and its harness's own default. Kept in its launch, so
   // its harness's thinking, its guidance and its metrics all read the one value.
   const effort = typeof body.effort === "string" ? body.effort : (thinkingLevel(rbody.thinking) ?? thinkingLevel(deps.planeEnv().AGENT_THINKING));
+  // The repository a person's run reaches (run-repo.ts): the one the body names when the agent is bound to it, else the
+  // agent's one repository when the first message names none. A trigger's run takes its repository from its event.
+  const namedRepo = typeof body.repo === "string" ? body.repo : undefined;
+  if (trigger && namedRepo !== undefined) throw invalid([{ field: "repo", reason: "not_allowed", message: "A run a trigger starts takes its repository from the event that fired it.", fix: "Remove repo." }]);
+  const picked = trigger ? {} : repoOf(await (deps.boundRepos?.(entry.agent.id) ?? { repos: [], open: false }), namedRepo, githubTargetOf(typeof input.content === "string" ? input.content : undefined) !== undefined);
+  if (picked.refused) throw invalid([{ field: "repo", reason: "not_allowed", message: picked.refused }]);
   const launch: RunLaunch = {
     input,
+    ...(picked.repo !== undefined ? { repo: picked.repo } : {}),
     title: clip(redacted(title.trim().replace(/\s+/g, " "), deps.serverSecrets()), 80),
     place,
     harness: harnessOfBody(revision.body),

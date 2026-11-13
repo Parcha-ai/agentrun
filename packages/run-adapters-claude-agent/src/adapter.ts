@@ -458,7 +458,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
         ...(options.mcp ? { toolServerModules: options.mcp } : {}),
         ...(options.log ? { log: options.log } : {}),
         ...(options.now ? { now: options.now } : {}),
-        // The host's gate, asked about each host-tool call before it is written or run.
+        // The host's gate, asked about each host-tool call and each WebSearch before it is written or run.
         ...(io.gate ? { gate: (call: GateCall) => io.gate!(call) } : {}),
       });
 
