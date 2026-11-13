@@ -11,7 +11,7 @@
 // agent's own bash policy (read-only) by that same gate. Its model is the agent's own, or a tier the agent declares when
 // the call names one (never a model the call names); it has no subagent tool of its own (depth 1), and at most
 // SUBAGENT_PARALLEL children of a run work at once; a call past that waits for one to end.
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { configure, defineTool, type ModelRef, ROOT_CONVERSATION_ID, type ToolRegistration } from "@earendil-works/pi-durable";
 import { HOST_RESULT_MAX_CHARS } from "@parcha/agentrun-kernel";
 import { ASK_TOOL } from "../tools.js";

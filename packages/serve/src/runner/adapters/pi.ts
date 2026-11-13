@@ -8,7 +8,8 @@
 // Messages or OpenAI's Responses), under that wire's CLI policy, and pi-ai's client speaks the same. The host's tools run through HostTool.call, where the kernel's rule
 // before a side effect sits (runner/adapter-loop.ts); the gate is asked before pi stores a call's intent (pi's beforeTool
 // hook), through io.gate.
-import type { Context, JsonValue } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
+import type { JsonValue } from "@earendil-works/chord/json";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";

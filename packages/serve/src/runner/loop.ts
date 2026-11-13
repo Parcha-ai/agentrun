@@ -13,7 +13,7 @@
 // Harness closed, so nothing moves the call on; the next claim's recovery reruns it from the start, and the gate finds
 // the answer. A lost claim or a shutdown seals the journal and ends the loop interrupted, writing nothing more, so the
 // next claim resumes where the journal stands.
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { type CommitResult, type ConversationId, type EntryRecord, ROOT_CONVERSATION_ID, type StorageWrite } from "@earendil-works/pi-durable";
 import type { KernelHooks, ToolCall } from "./conformance/subject.js";
 import { KINDS } from "./journal-kinds.js";

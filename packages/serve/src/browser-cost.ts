@@ -23,7 +23,7 @@
 // longer than a stretch, a release that takes longer than its allowance to be confirmed, and the time a run's process
 // was down while it held a session (spent before any process could hold it) can pass the cap, by that much, booked and
 // shown.
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import type { Refusal } from "@parcha/agentrun-kernel";
 import { type Harness, ROOT_CONVERSATION_ID, type Conversation, type Session, type ToolExecutionApi, type ToolRegistration, type Tx } from "@earendil-works/pi-durable";
 import { PROVIDERS } from "@parcha/agentrun-computer";

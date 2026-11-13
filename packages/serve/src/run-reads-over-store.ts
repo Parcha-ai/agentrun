@@ -4,7 +4,7 @@
 // (workspace/, not a run directory the server owns); its browser state and its timeline read the run's launch, revision and
 // journal. The live halves (a run's open browser viewer, the timeline's live stream) read the runner's live state through
 // the store (live/stream.ts watchRun) and the viewer handover, which the runner publishes.
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import type { TimelineEvent } from "./timeline/index.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { ApiError } from "./errors.js";

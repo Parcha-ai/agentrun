@@ -1,7 +1,7 @@
 // A workflow revision's run, on the run's journal in the one store: the DSL's durable runner (the workflow task, workflow/task.ts),
 // never the agent loop. It loads @parcha/agentrun-dsl only inside the functions that need
 // it.
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import type { Storage } from "@earendil-works/pi-durable";
 import type { Workflow } from "@parcha/agentrun-dsl";
 import type { GraphDiff, NodeState, WorkflowGraph } from "@parcha/agentrun-dsl/graph";
