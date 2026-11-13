@@ -8,7 +8,7 @@ import { mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
-import { kindRefusals, PHONE_GROUPS } from "../dist/index.js";
+import { AdbUiSource, kindRefusals, PHONE_GROUPS, parseUiElements, UiEngine } from "../dist/index.js";
 import { PROTOCOL_VERSION } from "../dist/protocol.js";
 import { ADB_CODE, ADB_HOST, fakeClock, fakePhoneHarness, ITEMS, KEY, SCREEN, SEARCH_FIELD, SETTINGS } from "./fake-phone-harness.mjs";
 
@@ -64,7 +64,7 @@ test("create(options) builds the phone-harness provider from its options alone: 
 		{ kind: caps.kind, os: caps.os, daemon: caps.daemon, lifetime: caps.lifetime, network: caps.network, release: caps.release, groups: caps.groups, isolation: caps.isolation },
 		{ kind: "android", os: "android", daemon: "none", lifetime: "vendor", network: ["open"], release: ["delete"], groups: PHONE_GROUPS, isolation: "vm" },
 	);
-	assert.deepEqual(PHONE_GROUPS, ["screen", "input.touch", "input.keys", "apps", "apps.ui_tree"]);
+	assert.deepEqual(PHONE_GROUPS, ["screen", "input.touch", "input.keys", "apps", "ui"]);
 	assert.equal(caps.maxLifetimeMs, 30 * 60_000, "30 min by default");
 	assert.deepEqual(kindRefusals(caps), []);
 	assert.equal(provider.extend, undefined, "the phone harness has no extend");
@@ -440,8 +440,12 @@ test("connect reaches the phone over adb with its unlock code, which no result o
 	assert.deepEqual(fake.serverCalls().slice(0, 4), [`host:connect:${endpoint}`, "host:devices-l", "host:transport-id:1 shell:echo ph-ok", "host:transport-id:1 shell:unlock [code]"]);
 	assert.deepEqual(fake.adbCalls()[0], ["-t", "1", "shell", "echo ph-ok"]);
 	assert.deepEqual(fake.shells().slice(0, 3), ["echo ph-ok", `unlock ${ADB_CODE}`, "echo ph-ok"]);
-	// Its Android release, as the phone's getprop says it.
-	assert.deepEqual(connected.value.hello, { protocol: PROTOCOL_VERSION, version: provider.version, os: "android", osVersion: "15", kind: "android", arch: "amd64", groups: PHONE_GROUPS });
+	// Its Android release, as the phone's getprop says it; its screen in points; what its groups can do over adb.
+	const { features, ...hello } = connected.value.hello;
+	assert.deepEqual(hello, { protocol: PROTOCOL_VERSION, version: provider.version, os: "android", osVersion: "15", kind: "android", arch: "amd64", groups: PHONE_GROUPS, screen: { width: SCREEN.width, height: SCREEN.height, scale: 1 } });
+	assert.deepEqual(Object.keys(features).sort(), ["apps.background", "ui.background", "ui.foreground", "ui.image", "ui.nav", "ui.tree"]);
+	assert.deepEqual([features["ui.foreground"], features["ui.nav"]], [true, true]);
+	assert.ok(["apps.background", "ui.background", "ui.image"].every((name) => typeof features[name].off === "string" && features[name].off !== ""), "a feature that is off says why");
 	assert.deepEqual((await connected.value.client.call("hello", { client: "test" })).value, connected.value.hello);
 	assert.deepEqual(await connected.value.client.call("ping", {}), { ok: true, value: {} });
 	await connected.value.close();
@@ -558,7 +562,7 @@ test("no spawned adb's argv holds the unlock code or the phone's endpoint, which
 	const { client } = connected.value;
 	assert.equal((await client.call("screen.shot", {})).ok, true);
 	assert.equal((await client.call("input.actions", { actions: [{ type: "tap", at: [10, 10] }] })).ok, true);
-	assert.equal((await client.call("apps.ui_tree", {})).ok, true);
+	assert.equal((await client.call("ui.observe", {})).ok, true);
 	await connected.value.close();
 	const port = String(22220 + 1);
 	for (const argv of fake.adbCalls()) {
@@ -630,24 +634,28 @@ test("the client answers the phone groups over adb: a screenshot, touch, keys, b
 	assert.deepEqual([part.width, part.height, part.image.width, part.image.height], [100, 50, 100, 50]);
 	assert.equal((await client.call("screen.shot", { region: [300, 600, 100, 100] })).error.code, "invalid", "a region off the screen");
 
-	// Settings, launched and in front; its top list in the tree.
+	// Settings, launched and in front; its top list in ui.observe, flat, each node after its parent.
 	assert.deepEqual(await call("apps.launch", { id: SETTINGS }), {});
 	const listed = await call("apps.list", {});
 	assert.ok(listed.apps.some((app) => app.id === SETTINGS));
 	assert.equal(listed.foreground, SETTINGS);
-	const tree = await call("apps.ui_tree", {});
-	assert.equal(tree.truncated, false);
-	const all = [];
-	const walk = (n) => {
-		all.push(n);
-		n.children.forEach(walk);
-	};
-	walk(tree.root);
-	assert.equal(tree.nodes, all.length);
-	assert.equal(tree.root.role, "android.widget.FrameLayout");
-	assert.deepEqual(tree.root.bounds, [0, 0, SCREEN.width, SCREEN.height]);
-	const display = all.find((n) => n.text === ITEMS[0]);
-	assert.deepEqual(display, { role: "android.widget.TextView", id: "android:id/title", text: ITEMS[0], bounds: [72, 112, 240, 32], enabled: true, clickable: false, focused: false, selected: false, checked: false, scrollable: false, children: [] });
+	const seen = await call("ui.observe", {});
+	assert.equal(seen.truncated, false);
+	assert.match(seen.state, /^s\d+$/);
+	assert.deepEqual(seen.app, { id: SETTINGS, name: SETTINGS });
+	assert.deepEqual(seen.window, { id: SETTINGS, bounds: [0, 0, SCREEN.width, SCREEN.height] });
+	const [root] = seen.nodes;
+	assert.deepEqual(root, { ref: root.ref, role: "generic", bounds: [0, 0, SCREEN.width, SCREEN.height] });
+	const list = seen.nodes.find((n) => n.role === "scrollarea");
+	assert.deepEqual(list, { ref: list.ref, role: "scrollarea", bounds: [0, 16, SCREEN.width, SCREEN.height - 16], parent: root.ref, actions: ["ACTION_SCROLL_FORWARD", "ACTION_SCROLL_BACKWARD"] });
+	const row = seen.nodes.find((n) => n.role === "button" && n.name === ITEMS[0]);
+	assert.deepEqual(row, { ref: row.ref, role: "button", name: ITEMS[0], bounds: [0, 96, SCREEN.width, 64], parent: list.ref, actions: ["ACTION_CLICK"] }, "a clickable row, named by its text");
+	const title = seen.nodes.find((n) => n.role === "text" && n.name === ITEMS[0]);
+	assert.deepEqual(title, { ref: title.ref, role: "text", name: ITEMS[0], id: "android:id/title", bounds: [72, 112, 240, 32], parent: row.ref });
+	const refs = seen.nodes.map((n) => n.ref);
+	assert.ok(refs.every((ref) => /^@e\d+$/.test(ref)), refs.join(" "));
+	assert.equal(new Set(refs).size, refs.length, "each node its own ref");
+	assert.ok(seen.nodes.every((n, i) => n.parent === undefined || refs.slice(0, i).includes(n.parent)), "a node comes after its parent");
 
 	const before = fake.shells().length;
 	assert.deepEqual(
@@ -682,8 +690,7 @@ test("the client answers the phone groups over adb: a screenshot, touch, keys, b
 		"input keyevent KEYCODE_APP_SWITCH",
 		"input text 'Hello,%sit'\\''s%s1'",
 		"input keyevent KEYCODE_ENTER",
-		"input keyevent KEYCODE_ENTER",
-		"input keyevent KEYCODE_ENTER",
+		"input keyevent KEYCODE_ENTER KEYCODE_ENTER",
 		"input keyevent KEYCODE_A",
 		"input text '%'",
 	]);
@@ -790,29 +797,356 @@ test("a cancelled input batch stops at the action it is on: a wait ends when the
 	assert.equal(other.shells().filter((command) => command.startsWith("input keyevent")).length, 0, "nor the button after it");
 });
 
-test("typing into Settings' search reads back from the tree", async () => {
+/** Settings' search field in ui.observe: a searchbox, its text its value. */
+const searchField = async (client) => (await client.call("ui.observe", {})).value.nodes.find((n) => n.id === SEARCH_FIELD);
+
+test("typing into Settings' search reads back from ui.observe: the field is a searchbox, its text its value, its ref the same", async () => {
 	const { provider } = await setup();
 	const { value: ref } = await provider.create(SPEC);
 	const { client } = (await provider.connect(ref)).value;
 	await client.call("apps.launch", { id: SETTINGS });
-	await client.call("input.actions", { actions: [{ type: "tap", at: [100, 40] }, { type: "type", text: "Hello, agentrun! 123" }] });
-	const tree = (await client.call("apps.ui_tree", {})).value;
-	const find = (n) => (n.id === SEARCH_FIELD ? n : n.children.map(find).find(Boolean));
-	assert.equal(find(tree.root)?.text, "Hello, agentrun! 123");
+	await client.call("input.actions", { actions: [{ type: "tap", at: [100, 40] }] });
+	const empty = await searchField(client);
+	assert.deepEqual(empty, { ref: empty.ref, role: "searchbox", id: SEARCH_FIELD, bounds: [56, 16, 288, 56], parent: empty.parent, flags: ["focused"], actions: ["ACTION_CLICK"] }, "an empty field has no value");
+	await client.call("input.actions", { actions: [{ type: "type", text: "Hello, agentrun! 123" }] });
+	const typed = await searchField(client);
+	assert.equal(typed.value, "Hello, agentrun! 123");
+	assert.equal(typed.ref, empty.ref, "the field keeps its ref while its text changes");
+});
+
+test("a ui step the phone cannot finish runs nothing: a set to text adb cannot type leaves the field as it was", async () => {
+	const { provider, fake } = await setup();
+	const { value: ref } = await provider.create(SPEC);
+	const { client } = (await provider.connect(ref)).value;
+	await client.call("apps.launch", { id: SETTINGS });
+	await client.call("input.actions", { actions: [{ type: "tap", at: [100, 40] }, { type: "type", text: "wifi" }] });
+	const field = await searchField(client);
+	assert.equal(field.value, "wifi");
+	const before = fake.shells().length;
+	const set = await client.call("ui.act", { steps: [{ set: field.ref, value: "café" }], foreground: true });
+	assert.equal(set.value.steps[0].error?.kind, "unsupported", JSON.stringify(set));
+	assert.match(set.value.steps[0].error.message, /printable ASCII/);
+	assert.deepEqual(fake.shells().slice(before).filter((command) => command.startsWith("input ")), [], "no tap, no delete");
+	assert.equal((await searchField(client)).value, "wifi", "the field keeps its text");
+});
+
+test("a set holds the phone's input from its tap to its text: an input.actions batch that arrives while it reads the focus waits until the set ends", { timeout: 10_000 }, async () => {
+	const fake = fakePhoneHarness();
+	// The set's read of the focus (the first dump after its tap) waits until the test lets it go. armed: where the set's shells start.
+	let armed = false;
+	let reading;
+	const read = new Promise((resolve) => (reading = resolve));
+	let release;
+	const released = new Promise((resolve) => (release = resolve));
+	const run = async (args, options) => {
+		if (armed !== false && args.includes("uiautomator dump /dev/tty") && fake.shells().slice(armed).some((command) => command.startsWith("input tap"))) {
+			armed = false;
+			reading();
+			await released;
+		}
+		return fake.adb.run(args, options);
+	};
+	const adb = Object.assign(run, { run, server: fake.adb.server });
+	const { provider } = await setup({}, { fetch: fake.fetch, adb, now: fake.clock.now, sleep: fake.clock.sleep });
+	const { value: ref } = await provider.create(SPEC);
+	const { value: connection } = await provider.connect(ref);
+	const { client } = connection;
+	await client.call("apps.launch", { id: SETTINGS });
+	await client.call("input.actions", { actions: [{ type: "tap", at: [100, 40] }] });
+	const field = await searchField(client);
+	const before = fake.shells().length;
+	armed = before;
+	const set = client.call("ui.act", { steps: [{ set: field.ref, value: "wifi" }], foreground: true });
+	await read;
+	const other = client.call("input.actions", { actions: [{ type: "button", name: "back" }] });
+	for (let turn = 0; turn < 5; turn++) await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(fake.shells().slice(before).filter((command) => command.startsWith("input keyevent KEYCODE_BACK")).length, 0, "the batch waits for the set");
+	release();
+	const done = await set;
+	assert.deepEqual(done.value.steps, [{ route: "foreground", verified: false }], JSON.stringify(done));
+	assert.deepEqual(await other, { ok: true, value: { done: 1 } });
+	const order = fake.shells().slice(before).filter((command) => /^input (tap|text|keyevent KEYCODE_BACK)/.test(command));
+	assert.deepEqual([order[0].split(" ")[1], order.at(-2), order.at(-1)], ["tap", "input text 'wifi'", "input keyevent KEYCODE_BACK"], JSON.stringify(order));
+	await connection.close();
+	await provider.release(ref, "delete");
 });
 
 test("a literal %s is typed as %s, not as a space: input text's escape never meets text that holds it", async () => {
 	const { provider } = await setup();
 	const { value: ref } = await provider.create(SPEC);
 	const { client } = (await provider.connect(ref)).value;
-	const find = (n) => (n.id === SEARCH_FIELD ? n : n.children.map(find).find(Boolean));
 	for (const text of ["format %s", "%s%s", "50% sure", "%%s and %", "s%", "%ss %"]) {
 		await client.call("apps.launch", { id: SETTINGS });
 		const typed = await client.call("input.actions", { actions: [{ type: "tap", at: [100, 40] }, { type: "type", text }] });
 		assert.deepEqual(typed, { ok: true, value: { done: 2 } }, text);
-		assert.equal(find((await client.call("apps.ui_tree", {})).value.root)?.text, text, "what the phone got");
+		assert.equal((await searchField(client))?.value, text, "what the phone got");
 		await client.call("apps.terminate", { id: SETTINGS });
 	}
+});
+
+test("ui on a phone of 320 dpi: hello says its screen in points, ui.observe gives bounds in points (pixels / 2), and a press taps the element's centre in pixels", async () => {
+	const { provider, fake } = await setup({ density: 320 });
+	const { value: ref } = await provider.create(SPEC);
+	const { value: connection } = await provider.connect(ref);
+	const { client } = connection;
+	assert.deepEqual(connection.hello.screen, { width: SCREEN.width / 2, height: SCREEN.height / 2, scale: 2 });
+	assert.equal(connection.hello.features["ui.foreground"], true);
+	assert.equal(connection.hello.features["ui.nav"], true);
+	assert.match(connection.hello.features["ui.background"].off, /adb/);
+	await client.call("apps.launch", { id: SETTINGS });
+	const seen = (await client.call("ui.observe", {})).value;
+	assert.deepEqual(seen.window.bounds, [0, 0, SCREEN.width / 2, SCREEN.height / 2]);
+	const row = seen.nodes.find((n) => n.role === "button" && n.name === ITEMS[0]);
+	// The row is [0, 96, 360, 64] in pixels.
+	assert.deepEqual(row.bounds, [0, 48, SCREEN.width / 2, 32]);
+	const search = seen.nodes.find((n) => n.id === "com.android.settings:id/search_action_bar");
+
+	// No foreground allowed: the step is refused, and nothing reaches the phone.
+	const before = fake.shells().length;
+	const denied = await client.call("ui.act", { steps: [{ press: row.ref }] });
+	assert.equal(denied.ok, true, JSON.stringify(denied));
+	assert.equal(denied.value.steps.length, 1);
+	assert.equal(denied.value.steps[0].error.kind, "denied");
+	assert.match(denied.value.steps[0].error.message, /foreground: true/);
+	assert.equal(fake.shells().slice(before).filter((command) => command.startsWith("input ")).length, 0, "no input for a refused step");
+
+	// Allowed: one tap, at the row's centre in pixels, and the row's page opens.
+	const at = fake.shells().length;
+	const pressed = await client.call("ui.act", { steps: [{ press: row.ref }], foreground: true, expect: { text: ITEMS[0], timeoutMs: 1000 } });
+	assert.equal(pressed.ok, true, JSON.stringify(pressed));
+	assert.deepEqual(pressed.value.steps, [{ route: "foreground", verified: false }]);
+	assert.equal(pressed.value.changed, true);
+	assert.equal(pressed.value.expect, "met");
+	assert.deepEqual(fake.shells().slice(at).filter((command) => command.startsWith("input ")), ["input tap 180 128"]);
+	assert.equal(fake.phone.screen, "page");
+
+	// The search entry's element is gone from the page: a step naming it is refused as stale, and runs nothing.
+	const later = fake.shells().length;
+	const stale = await client.call("ui.act", { steps: [{ press: search.ref }], foreground: true });
+	assert.equal(stale.ok, true, JSON.stringify(stale));
+	assert.equal(stale.value.steps[0].error.kind, "stale");
+	assert.equal(fake.shells().slice(later).filter((command) => command.startsWith("input ")).length, 0, "no input for a stale ref");
+	await connection.close();
+});
+
+test("parseUiElements: Android's classes as the protocol's roles, an editable field's text as its value, a clickable row named by its texts, bounds in points", () => {
+	const node = (attrs, children = "") => {
+		const all = { index: "0", text: "", "resource-id": "", class: "android.widget.FrameLayout", package: "com.example", "content-desc": "", clickable: "false", enabled: "true", focused: "false", scrollable: "false", password: "false", selected: "false", checkable: "false", checked: "false", "long-clickable": "false", bounds: "[0,0][1080,2400]", ...attrs };
+		const body = Object.entries(all).map(([k, v]) => `${k}="${v}"`).join(" ");
+		return children === "" ? `<node ${body} />` : `<node ${body}>${children}</node>`;
+	};
+	const xml = (field) =>
+		`<?xml version='1.0' encoding='UTF-8' standalone='yes' ?><hierarchy rotation="0">${node({}, [
+			node({ index: "0", class: "android.widget.Button", text: "OK", clickable: "true", bounds: "[105,210][315,420]" }),
+			node({ index: "1", class: "android.widget.EditText", text: field, "content-desc": "Name", "resource-id": "com.example:id/name", focused: "true", bounds: "[0,420][1080,525]" }),
+			node({ index: "2", class: "android.widget.EditText", text: "hunter2", password: "true", bounds: "[0,525][1080,630]" }),
+			node({ index: "3", class: "android.widget.CheckBox", checkable: "true", checked: "true", text: "Remember", bounds: "[0,630][1080,735]" }),
+			node({ index: "4", class: "android.widget.Switch", checkable: "true", text: "Wi-Fi", enabled: "false", bounds: "[0,735][1080,840]" }),
+			node({ index: "5", class: "android.widget.ImageView", "content-desc": "Logo", bounds: "[0,840][105,945]" }),
+			node(
+				{ index: "6", class: "androidx.recyclerview.widget.RecyclerView", scrollable: "true", bounds: "[0,945][1080,2100]" },
+				node({ index: "0", class: "android.widget.LinearLayout", clickable: "true", "long-clickable": "true", bounds: "[0,945][1080,1155]" }, [
+					node({ index: "0", class: "android.widget.TextView", text: "Battery", bounds: "[0,945][540,1050]" }),
+					node({ index: "1", class: "android.widget.TextView", text: "80 %", bounds: "[0,1050][540,1155]" }),
+					node({ index: "2", class: "android.widget.TextView", text: "Charging", bounds: "[540,945][1080,1050]" }),
+					node({ index: "3", class: "android.widget.TextView", text: "Fast", bounds: "[540,1050][1080,1155]" }),
+				].join("")),
+			),
+			node({ index: "7", class: "android.widget.SearchView", bounds: "[0,2100][1080,2205]" }, node({ index: "0", class: "android.widget.AutoCompleteTextView", text: "wifi", clickable: "true", bounds: "[0,2100][1080,2205]" })),
+			node({ index: "8", class: "android.view.View", bounds: "[0,2205][1080,2400]" }),
+		].join(""))}</hierarchy>`;
+	// 420 dpi: 2.625 pixels a point.
+	const parsed = parseUiElements(xml("Ada"), 2.625, [1080, 2400]);
+	assert.equal(parsed.ok, true, JSON.stringify(parsed));
+	const { app, window, elements } = parsed.value;
+	assert.deepEqual(app, { id: "com.example", name: "com.example" });
+	assert.deepEqual(window, { id: "com.example", bounds: [0, 0, 411, 914] });
+	const [root, button, field, secret, check, toggle, image, list, row, ...rest] = elements;
+	const texts = rest.slice(0, 4);
+	const [bar, search, view] = rest.slice(4);
+	assert.deepEqual([root.role, button.role, field.role, secret.role, check.role, toggle.role, image.role, list.role, row.role, bar.role, search.role, view.role], ["generic", "button", "textbox", "textbox", "checkbox", "switch", "image", "scrollarea", "button", "group", "searchbox", "generic"]);
+	assert.ok(texts.every((one) => one.role === "text"));
+	assert.deepEqual({ ...button, key: undefined }, { key: undefined, role: "button", name: "OK", bounds: [40, 80, 80, 80], parent: root.key, actions: ["ACTION_CLICK"] }, "bounds are pixels over 2.625, rounded");
+	assert.deepEqual([field.name, field.value, field.id, field.flags], ["Name", "Ada", "com.example:id/name", ["focused"]], "an editable field's label is its name, its text its value");
+	assert.deepEqual([secret.value, secret.flags], ["hunter2", ["secure"]], "a password field is secure (the engine never sends its value)");
+	assert.deepEqual(check.flags, ["checked"]);
+	assert.deepEqual([toggle.name, toggle.flags], ["Wi-Fi", ["disabled"]]);
+	assert.equal(image.name, "Logo", "content-desc is a name");
+	assert.deepEqual(list.actions, ["ACTION_SCROLL_FORWARD", "ACTION_SCROLL_BACKWARD"]);
+	assert.deepEqual([row.name, row.parent, row.actions], ["Battery, 80 %, Charging", list.key, ["ACTION_CLICK", "ACTION_LONG_CLICK"]], "a clickable row with no name of its own: its first 3 texts");
+	assert.ok(texts.every((one) => one.parent === row.key));
+	assert.deepEqual([search.value, search.parent], ["wifi", bar.key], "a field inside a SearchView is a searchbox");
+	assert.equal(view.name, undefined);
+	assert.equal(new Set(elements.map((one) => one.key)).size, elements.length, "each element its own key");
+
+	// The same screen with other text in the field: every key stays, so the field's ref does.
+	const again = parseUiElements(xml("Grace"), 2.625, [1080, 2400]).value.elements;
+	assert.deepEqual(again.map((one) => one.key), elements.map((one) => one.key));
+	assert.equal(again[2].value, "Grace");
+	assert.equal(parseUiElements("<hierarchy/>", 1, [10, 10]).ok, false, "a dump with no node");
+});
+
+test("a list row in the same place showing other content, or the same layout in another app, is another element", () => {
+	const row = (app, label) => `<hierarchy><node index="0" class="android.widget.ListView" package="${app}" bounds="[0,0][100,200]"><node index="0" class="android.widget.LinearLayout" package="${app}" clickable="true" bounds="[0,0][100,50]"><node index="0" class="android.widget.TextView" package="${app}" text="${label}" bounds="[0,0][100,50]" /></node></node></hierarchy>`;
+	const keys = (xml) => parseUiElements(xml, 1, [100, 200]).value.elements.map((one) => one.key);
+	const [list, wifi, wifiLabel] = keys(row("com.android.settings", "Wi-Fi"));
+	const [sameList, bluetooth, bluetoothLabel] = keys(row("com.android.settings", "Bluetooth"));
+	assert.notEqual(wifi, bluetooth, "a scrolled list's next row in the old row's place: the old ref goes stale, never taps it");
+	assert.equal(sameList, list, "the list itself keeps its ref while its rows change, so a second scroll on it still runs");
+	assert.equal(bluetoothLabel, wifiLabel, "a label nothing taps keeps its ref while its text changes");
+	assert.deepEqual(keys(row("com.android.settings", "Wi-Fi")), keys(row("com.android.settings", "Wi-Fi")), "the same row read again keeps its key");
+	assert.notEqual(keys(row("com.example", "Wi-Fi"))[1], wifi, "another app's row is not this app's");
+});
+
+test("set clears a multiline field's whole text wherever the tap leaves the caret, then types the value", async () => {
+	// A field holding two lines, the caret left by the tap at the end of the first (where MOVE_END would stop).
+	let text = "first line\nsecond line";
+	let caret = text.indexOf("\n");
+	const xml = `<hierarchy><node index="0" class="android.widget.EditText" package="com.example" text="first line&#10;second line" content-desc="Notes" focused="true" bounds="[0,0][400,200]" /></hierarchy>`;
+	const phone = {
+		scale: () => 1,
+		dump: async () => ({ ok: true, value: xml }),
+		check: () => ({ ok: true, value: undefined }),
+		hold(step) {
+			return step(async (actions) => {
+				for (const action of actions) this.one(action);
+				return { ok: true, value: undefined };
+			});
+		},
+		one(action) {
+			if (action.type === "key") {
+				for (let i = 0; i < (action.repeat ?? 1); i++) {
+					const [key] = action.keys;
+					if (key === "backspace" && caret > 0) [text, caret] = [text.slice(0, caret - 1) + text.slice(caret), caret - 1];
+					else if (key === "delete") text = text.slice(0, caret) + text.slice(caret + 1);
+					else if (key === "end") caret = text.indexOf("\n", caret) === -1 ? text.length : text.indexOf("\n", caret);
+				}
+			}
+			if (action.type === "type") [text, caret] = [text.slice(0, caret) + action.text + text.slice(caret), caret + action.text.length];
+		},
+	};
+	const source = new AdbUiSource(phone, () => [400, 400]);
+	const [element] = parseUiElements(xml, 1, [400, 400]).value.elements;
+	assert.equal(element.value, text);
+	const view = { app: { id: "com.example", name: "Example" }, window: { id: "w", bounds: [0, 0, 400, 400] }, elements: [element] };
+	const ran = await source.run({ set: "@e1", value: "new" }, { element, view, foreground: true }, new AbortController().signal);
+	assert.equal(ran.ok, true, JSON.stringify(ran));
+	assert.equal(text, "new");
+});
+
+test("an empty field's hint is not its value: an expect never meets it; a field holding other text keeps it", async () => {
+	const xml = (text) => `<hierarchy><node index="0" class="android.widget.EditText" package="com.example" text="${text}" hint="Search apps" bounds="[0,0][100,50]" /></hierarchy>`;
+	const [empty] = parseUiElements(xml("Search apps"), 1, [100, 50]).value.elements;
+	assert.equal(empty.value, undefined);
+	assert.equal(empty.name, undefined, "nor its name");
+	const engine = new UiEngine({ features: () => ({ "ui.tree": true }), look: async () => ({ ok: true, value: parseUiElements(xml("Search apps"), 1, [100, 50]).value }), image: async () => ({ ok: false, error: { code: "unsupported", message: "no" } }), run: async () => ({ ok: false, error: { code: "unsupported", message: "no" } }) });
+	assert.equal((await engine.act({ steps: [], expect: { text: "Search apps", timeoutMs: 100 } })).value.expect, "unmet");
+	const [typed] = parseUiElements(xml("maps"), 1, [100, 50]).value.elements;
+	assert.equal(typed.value, "maps");
+	// The dump cannot say the hint is showing, so the field may hold that very text: a set erases it anyway.
+	const ran = [];
+	const source = new AdbUiSource({ scale: () => 1, dump: async () => ({ ok: true, value: xml("Search apps").replace("<node ", '<node focused="true" ') }), check: () => ({ ok: true, value: undefined }), hold: (step) => step(async (actions) => (ran.push(...actions), { ok: true, value: undefined })) }, () => [100, 50]);
+	const view = { app: { id: "com.example", name: "Example" }, window: { id: "w", bounds: [0, 0, 100, 50] }, elements: [empty] };
+	const set = await source.run({ set: "@e1", value: "maps" }, { element: empty, view, foreground: true }, new AbortController().signal);
+	assert.equal(set.ok, true, JSON.stringify(set));
+	assert.deepEqual(ran.slice(1), [
+		{ type: "key", keys: ["backspace"], repeat: 11 },
+		{ type: "key", keys: ["delete"], repeat: 11 },
+		{ type: "type", text: "maps" },
+	]);
+});
+
+test("a labeled control keeps the other text it shows as its desc; a step on a disabled one is refused with nothing sent", async () => {
+	const xml = `<hierarchy><node index="0" class="android.widget.Button" package="com.example" text="Pay $5" content-desc="Pay" clickable="true" bounds="[0,0][100,50]" /><node index="1" class="android.widget.EditText" package="com.example" text="old" enabled="false" bounds="[0,60][100,110]" /></hierarchy>`;
+	const [button, field] = parseUiElements(xml, 1, [100, 120]).value.elements;
+	assert.equal(button.name, "Pay");
+	assert.equal(button.desc, "Pay $5");
+	assert.deepEqual(field.flags, ["disabled"]);
+	const ran = [];
+	const source = new AdbUiSource({ scale: () => 1, dump: async () => ({ ok: false, error: { code: "unsupported", message: "unused" } }), check: () => ({ ok: true, value: undefined }), hold: (step) => step(async (actions) => (ran.push(...actions), { ok: true, value: undefined })) }, () => [100, 120]);
+	const view = { app: { id: "com.example", name: "Example" }, window: { id: "com.example", bounds: [0, 0, 100, 120] }, elements: [button, field] };
+	for (const step of [{ set: "@e2", value: "new" }, { type: "new", into: "@e2" }]) {
+		const refused = await source.run(step, { element: field, view, foreground: true }, new AbortController().signal);
+		assert.equal(refused.error?.code, "refused", JSON.stringify(refused));
+		assert.match(refused.error.message, /is disabled on this phone: a step on it would act on whatever has the focus instead, so nothing was sent/);
+	}
+	assert.deepEqual(ran, [], "no input reached the phone");
+});
+
+test("a field in a recycled list row is keyed by what its row shows: the row's next item makes its old ref another element; typing keeps it", () => {
+	const row = (name, typed) =>
+		`<hierarchy><node index="0" class="androidx.recyclerview.widget.RecyclerView" package="com.example" scrollable="true" bounds="[0,0][400,800]"><node index="0" class="android.widget.LinearLayout" package="com.example" bounds="[0,0][400,100]"><node index="0" class="android.widget.TextView" package="com.example" text="${name}" bounds="[0,0][200,50]" /><node index="1" class="android.widget.EditText" package="com.example" text="${typed}" content-desc="Quantity" bounds="[200,0][400,50]" /></node></node></hierarchy>`;
+	const fieldOf = (xml) => parseUiElements(xml, 1, [400, 800]).value.elements.find((element) => element.role === "textbox");
+	const apples = fieldOf(row("Apples", "1"));
+	assert.equal(fieldOf(row("Apples", "12")).key, apples.key, "typing in the field keeps its key");
+	assert.notEqual(fieldOf(row("Pears", "1")).key, apples.key, "the recycled row's field is another element");
+	const plain = `<hierarchy><node index="0" class="android.widget.LinearLayout" package="com.example" bounds="[0,0][400,100]"><node index="0" class="android.widget.EditText" package="com.example" text="a" content-desc="Name" bounds="[0,0][400,50]" /></node></hierarchy>`;
+	assert.equal(fieldOf(plain).key, fieldOf(plain.replace('text="a"', 'text="ab"')).key, "a field outside a list keeps its key as before");
+});
+
+test("type into a ref that is no field is refused with nothing sent; a field that does not take the focus gets nothing typed", async () => {
+	const screen = (focused) =>
+		`<hierarchy><node index="0" class="android.widget.Button" package="com.example" text="Send" clickable="true" bounds="[0,0][100,50]" /><node index="1" class="android.widget.EditText" package="com.example" content-desc="To" ${focused === "to" ? 'focused="true" ' : ""}bounds="[0,60][100,110]" /><node index="2" class="android.widget.EditText" package="com.example" content-desc="Body" ${focused === "body" ? 'focused="true" ' : ""}bounds="[0,120][100,170]" /></hierarchy>`;
+	const [button, to] = parseUiElements(screen(), 1, [100, 180]).value.elements;
+	const view = { app: { id: "com.example", name: "Example" }, window: { id: "com.example", bounds: [0, 0, 100, 180] }, elements: parseUiElements(screen(), 1, [100, 180]).value.elements };
+	let ran = [];
+	let after = screen("to");
+	const source = new AdbUiSource({ scale: () => 1, dump: async () => ({ ok: true, value: after }), check: () => ({ ok: true, value: undefined }), hold: (step) => step(async (actions) => (ran.push(...actions), { ok: true, value: undefined })) }, () => [100, 180]);
+	const run = (step, element) => source.run(step, { element, view, foreground: true }, new AbortController().signal);
+	const notField = await run({ type: "hello", into: "@e1" }, button);
+	assert.equal(notField.error?.code, "refused", JSON.stringify(notField));
+	assert.equal(notField.error.message, "@e1 is a button, not a text field: type into a field");
+	assert.deepEqual(ran, [], "nothing reached the phone");
+	// The tap leaves the focus in another field (or opened another app): the tap ran, nothing was typed.
+	for (const elsewhere of [screen("body"), screen(), `<hierarchy><node index="0" class="android.widget.EditText" package="com.other" focused="true" bounds="[0,0][100,50]" /></hierarchy>`]) {
+		[ran, after] = [[], elsewhere];
+		for (const step of [{ type: "hello", into: "@e2" }, { set: "@e2", value: "hello" }]) {
+			const missed = await run(step, to);
+			assert.equal(missed.error?.code, "refused", JSON.stringify(missed));
+			assert.equal(missed.error.message, "@e2 did not take focus: nothing typed");
+		}
+		assert.deepEqual(ran, [{ type: "tap", at: [50, 85] }, { type: "tap", at: [50, 85] }], "only the taps ran");
+	}
+	// It takes the focus: the text follows the tap.
+	[ran, after] = [[], screen("to")];
+	assert.equal((await run({ type: "hello", into: "@e2" }, to)).ok, true);
+	assert.deepEqual(ran, [{ type: "tap", at: [50, 85] }, { type: "type", text: "hello" }]);
+	// At a point, the tap must leave a field focused.
+	[ran, after] = [[], screen()];
+	const point = await run({ type: "hello", into: [50, 25] }, undefined);
+	assert.equal(point.error?.message, "[50,25] did not take focus: nothing typed");
+	assert.deepEqual(ran, [{ type: "tap", at: [50, 25] }]);
+});
+
+test("a phone's set: a toggle takes on or off only, a field too long to clear in one step is refused before any input", async () => {
+	const ran = [];
+	const phone = { scale: () => 1, dump: async () => ({ ok: false, error: { code: "unsupported", message: "unused" } }), check: () => ({ ok: true, value: undefined }), hold: (step) => step(async (actions) => (ran.push(...actions), { ok: true, value: undefined })) };
+	const source = new AdbUiSource(phone, () => [400, 400]);
+	const view = { app: { id: "com.example", name: "Example" }, window: { id: "w", bounds: [0, 0, 400, 400] }, elements: [] };
+	const toggle = { key: "t", role: "switch", name: "Wi-Fi", bounds: [0, 0, 100, 40] };
+	const refused = await source.run({ set: "@e1", value: "true" }, { element: toggle, view, foreground: true }, new AbortController().signal);
+	assert.equal(refused.error?.code, "invalid");
+	assert.match(refused.error.message, /is set to "on" or "off", not "true"/);
+	const long = { key: "f", role: "textbox", name: "Notes", value: "x".repeat(5000), bounds: [0, 0, 400, 200] };
+	const tooLong = await source.run({ set: "@e2", value: "short" }, { element: long, view, foreground: true }, new AbortController().signal);
+	assert.equal(tooLong.error?.code, "limit");
+	assert.match(tooLong.error.message, /holds 5000 characters, more than the 4900/);
+	assert.deepEqual(ran, [], "no input for either");
+	const key = await source.run({ key: "shift++" }, { view, foreground: true }, new AbortController().signal);
+	assert.match(key.error?.message ?? "", /presses one key at a time/, "a chord ending in + is two keys, shift and +");
+});
+
+test("ui.observe never sends a secure field's value", async () => {
+	const xml = `<hierarchy><node index="0" class="android.widget.EditText" package="com.example" text="hunter2" password="true" bounds="[0,0][100,50]" /></hierarchy>`;
+	const view = parseUiElements(xml, 1, [100, 50]).value;
+	const engine = new UiEngine({ features: () => ({ "ui.tree": true }), look: async () => ({ ok: true, value: view }), image: async () => ({ ok: false, error: { code: "unsupported", message: "no" } }), run: async () => ({ ok: false, error: { code: "unsupported", message: "no" } }) });
+	const seen = await engine.observe({});
+	assert.equal(seen.ok, true, JSON.stringify(seen));
+	assert.deepEqual(seen.value.nodes.map(({ role, value, flags }) => ({ role, value, flags })), [{ role: "textbox", value: undefined, flags: ["secure"] }]);
+	const row = `<hierarchy><node index="0" class="android.widget.LinearLayout" package="com.example" clickable="true" bounds="[0,0][100,50]"><node index="0" class="android.widget.EditText" package="com.example" text="hunter2" content-desc="Password" password="true" bounds="[0,0][100,50]" /></node></hierarchy>`;
+	const [named] = parseUiElements(row, 1, [100, 50]).value.elements;
+	assert.equal(named.name, "Password", "a row is named by the field's label, never its text");
+	assert.ok(!named.key.includes("hunter2"), "nor is the text in its key");
 });
 
 test("apps.launch puts the named app in front, even when its task holds another app's activity on top", async () => {

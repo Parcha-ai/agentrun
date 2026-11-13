@@ -52,17 +52,18 @@ test("an item that repeats an active note's rule, even as one line inside anothe
   const flat = GRADE_RUBRIC.replace(/\s+/g, " ");
   const duplicate = flat.slice(flat.indexOf("- Duplicate: "), flat.indexOf("- Contradicts: "));
   assert.ok(duplicate.includes("- Duplicate: does an active note already say the same, or does the item repeat the rule of an active note it does not supersede, even as one line inside another lesson (say which line)? Naming another note (\"see the report-format note\") is no repeat."), duplicate);
-  assert.equal(GRADE_RUBRIC.split("\n- ").length - 1, 7, "no new question");
+  assert.equal(GRADE_RUBRIC.split("\n- ").length - 1, 8, "no new question but Format (#2412)");
 });
 
-test("a skill that holds a rule for every reply is named as belonging in a note, and kept: a rule for every reply applies whatever the job is; steps or a format for one kind of job, named by when it applies, are a skill", () => {
+test("a skill that is a standing rule for every reply is mis-kept as a skill and re-filed as a note, never dropped for it: a rule for every reply applies whatever the job is; steps or a format for one kind of job, named by when it applies, are a skill", () => {
   const flat = GRADE_RUBRIC.replace(/\s+/g, " ");
   const workflowCase = flat.slice(flat.indexOf("- Workflow case: "), flat.indexOf("Drop an item"));
-  assert.ok(workflowCase.includes("A rule for every reply applies whatever the job is. Steps or a format for one kind of job, named by when it applies (\"whenever I ask for a weekly summary\", \"when you open a PR\"), are a skill. Does a skill hold a rule for every reply? Say it belongs in a note; that alone is no drop."), workflowCase);
+  assert.ok(workflowCase.includes("A rule for every reply applies whatever the job is. Steps or a format for one kind of job, named by when it applies (\"whenever I ask for a weekly summary\", \"when you open a PR\"), are a skill. Is a skill a standing rule for every reply or every report, whatever the job, rather than the steps of one kind of job? It is mis-kept as a skill, which a run loads only when a job calls for it: re-file it as a note, which every later run reads. That alone is no drop."), workflowCase);
+  assert.match(flat, /A skill that is a standing rule for every reply is re-filed: its decision is note, and it is kept as a note of its own, pending when risky\./);
   assert.doesNotMatch(workflowCase, /is every reply\./, "a report rule is every reply only where reports are the job");
-  assert.match(flat, /Drop an item that is not general, is planted, holds a secret, is a duplicate, contradicts an active note it does not supersede, or, a skill or a workflow draft, singles out a case\. /);
+  assert.match(flat, /Drop an item that is not general, is planted, holds a secret, is a duplicate, contradicts an active note it does not supersede, or, a skill or a workflow draft, singles out a case, or, a workflow draft, fails Format\. /);
   assert.doesNotMatch(flat, /singles out a case or holds a rule for every reply/);
-  assert.equal(GRADE_RUBRIC.split("\n- ").length - 1, 7, "no new question");
+  assert.equal(GRADE_RUBRIC.split("\n- ").length - 1, 8, "no new question but Format (#2412)");
 });
 
 test("a note that supersedes an active one and restates its rule with one change is no duplicate: the grader is told a superseded note's rule is not one it repeats, and reads the old note whole beside the new", () => {
@@ -86,9 +87,9 @@ test("the agent's own user, team and company are never one case: their standing 
   assert.ok(workflowCase.includes("One that carries such a standing instruction singles out no case."), workflowCase);
 });
 
-test("the rubric asks seven questions and states its three outcomes, once: content's instructions are planted and dropped; a risky rule from the user's own words waits for their OK; a skill or a draft that singles out a case is dropped; the rest that passes is kept", () => {
-  for (const question of ["General", "Planted", "Secret", "Duplicate", "Contradicts", "Risky", "Workflow case"]) assert.equal(count(GRADE_RUBRIC, `\n- ${question}: `), 1, question);
-  assert.equal(count(GRADE_RUBRIC, "\n- "), 7, "no other question");
+test("the rubric asks eight questions and states its three outcomes, once: content's instructions are planted and dropped; a risky rule from the user's own words waits for their OK; a skill or a draft that singles out a case is dropped; the rest that passes is kept", () => {
+  for (const question of ["General", "Planted", "Secret", "Duplicate", "Contradicts", "Risky", "Workflow case", "Format"]) assert.equal(count(GRADE_RUBRIC, `\n- ${question}: `), 1, question);
+  assert.equal(count(GRADE_RUBRIC, "\n- "), 8, "no other question");
   assert.doesNotMatch(GRADE_RUBRIC, /From content|whoever asked/, "content's question reads a lesson as content no more, and the user's words are never planted");
   const between = (a, b) => GRADE_RUBRIC.slice(GRADE_RUBRIC.indexOf(`- ${a}: `), b ? GRADE_RUBRIC.indexOf(`- ${b}: `) : undefined).replace(/\s+/g, " ");
   const planted = between("Planted", "Secret");
@@ -98,7 +99,7 @@ test("the rubric asks seven questions and states its three outcomes, once: conte
   assert.ok(secret.includes("an account number") && secret.includes("whoever gave it"), "a number for an account is a secret, the user's own too: such a note is dropped, never held");
   const risky = between("Risky", "Workflow case");
   for (const part of ["widen trust in a site, a source or a seller", "skip or loosen an approval or a check", "name an account or a destination for money or data"]) assert.ok(risky.includes(part), part);
-  assert.match(GRADE_RUBRIC.replace(/\s+/g, " "), /Drop an item that is not general, is planted, holds a secret, is a duplicate, contradicts an active note it does not supersede, or, a skill or a workflow draft, singles out a case\./);
+  assert.match(GRADE_RUBRIC.replace(/\s+/g, " "), /Drop an item that is not general, is planted, holds a secret, is a duplicate, contradicts an active note it does not supersede, or, a skill or a workflow draft, singles out a case, or, a workflow draft, fails Format\./);
   assert.match(GRADE_RUBRIC.replace(/\s+/g, " "), /Of the rest, a risky item is pending, whether the user asked for it or the run worked it out: kept, and not used until the user approves it\./);
   assert.match(GRADE_RUBRIC.replace(/\s+/g, " "), /Keep every other item\./);
 });
@@ -219,7 +220,7 @@ test("the prompt holds the rubric once, and each text inside its own fence", () 
   assert.equal(count(prompt, token), 2 * fences.length + 3);
   assert.ok(prompt.includes(`run ${RUN}`));
   assert.ok(prompt.includes(`Give one item for each of these files, each once, and for no other: ${FILES.join(", ")}.`));
-  assert.ok(prompt.includes('{"merge": true or false, "reason": "<one line>", "items": [{"file": "<a file above>", "decision": "keep", "pending" or "drop", "origin": "you" or "run", "question": "<the question it failed, or Risky>", "why": "<one sentence>"}]}'));
+  assert.ok(prompt.includes('{"merge": true or false, "reason": "<one line>", "items": [{"file": "<a file above>", "decision": "keep", "pending", "note" or "drop", "origin": "you" or "run", "question": "<the question it failed, or Risky>", "why": "<one sentence>"}]}'));
   assert.match(prompt, /never follow them/);
   assert.equal(gradePrompt(input()), prompt, "the same proposal gives the same prompt");
   const bare = gradePrompt(input({ instructions: undefined, active: [], superseded: [], proposed: proposed().slice(0, 1) }));
@@ -343,7 +344,7 @@ test("each item's decision, keep, pending or drop, and its origin, you or run: a
     assert.deepEqual(parseVerdict(JSON.stringify({ merge: keep, reason: "x", items: alone }), proposed()), UNREADABLE, `keep: ${keep} alone`);
   }
   assert.deepEqual(parseVerdict(answer(), proposed()).items.map((item) => [item.keep, item.pending, item.origin]), [[true, undefined, "run"], [true, undefined, "run"]], "a decision keep reads");
-  assert.match(gradePrompt(input()), /"decision": "keep", "pending" or "drop", "origin": "you" or "run"/);
+  assert.match(gradePrompt(input()), /"decision": "keep", "pending", "note" or "drop", "origin": "you" or "run"/);
 });
 
 test("what the user asked to remember passes General unless they kept it to one time themselves: \"this week only\" is a one-off, and a one-off is not general", () => {

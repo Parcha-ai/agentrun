@@ -10,6 +10,8 @@ export const KERNEL = defineProvider({
 	mounts: [],
 	// Kernel's own network, open: it cannot be closed or narrowed.
 	network: ["open"],
+	// A server behind a gateway that fronts Kernel's API names it here.
+	hostEnv: ["KERNEL_BASE_URL"],
 	capabilities: [{ kind: "browser", groups: ["cdp", "stream"] }],
 	defaultImage: { browser: BROWSER_IMAGE },
 	load: () => import("../kernel.js"),

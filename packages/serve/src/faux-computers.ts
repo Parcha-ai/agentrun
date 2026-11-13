@@ -10,6 +10,7 @@
 //   (each action done, none performed). Its live view is a page serve itself answers on its own address, view-only or
 //   driving, so the run's take-over and hand-back have a viewer to open; after the release the page is gone.
 import { crc32, deflateSync } from "node:zlib";
+import type { HelloResult } from "@parcha/agentrun-computer";
 import type { KeyTable, ProviderFactories } from "./computer-keys.js";
 import type { ComputerKind } from "./computer-setting.js";
 import type { KindCapabilities, KindRegistry, ProviderEntry, SettingKindSpec } from "./computers.js";
@@ -20,8 +21,8 @@ import type { ComputerSettingKind, LaunchedComputer } from "./workspace/resolve-
 const SETTING_KINDS: Readonly<Record<ComputerKind, SettingKindSpec>> = {
   none: { machineKinds: [], required: [], optional: [] },
   sandbox: { machineKinds: ["linux"], required: ["exec", "files", "processes"], optional: [] },
-  desktop: { machineKinds: ["desktop"], required: ["screen", "input.pointer", "input.keys"], optional: ["exec", "files", "processes", "apps", "stream"] },
-  phone: { machineKinds: ["android", "ios"], required: ["screen", "input.touch", "apps"], optional: ["input.keys", "apps.install", "apps.ui_tree", "stream"] },
+  desktop: { machineKinds: ["desktop"], required: ["screen", "input.pointer", "input.keys"], optional: ["exec", "files", "processes", "apps", "ui", "stream"] },
+  phone: { machineKinds: ["android", "ios"], required: ["screen", "input.touch", "apps"], optional: ["input.keys", "apps.install", "ui", "stream"] },
   browser: { machineKinds: ["browser"], required: ["cdp"], optional: ["stream", "downloads"] },
 } as unknown as Readonly<Record<ComputerKind, SettingKindSpec>>;
 const KIND_NAMES = Object.keys(SETTING_KINDS) as ComputerKind[];
@@ -121,7 +122,9 @@ export function fauxComputers({ viewerBase }: { readonly viewerBase: string }): 
     const id = `faux-desktop-${++started}`;
     const png = greyPng(WIDTH, HEIGHT);
     live.add(id);
+    const hello: HelloResult = { protocol: "0.2", version: "faux", os: "linux", kind: "desktop", arch: "amd64", groups: [...DESKTOP_GROUPS] };
     const call = async (method: string, params: Record<string, unknown>) => {
+      if (method === "hello") return { ok: true, value: hello };
       if (method === "screen.shot") return { ok: true, value: { id: `${id}-shot`, data: png.toString("base64"), eof: true, size: png.length, width: WIDTH, height: HEIGHT } };
       if (method === "input.actions") return { ok: true, value: { done: Array.isArray(params.actions) ? params.actions.length : 0 } };
       return { ok: false, error: { code: "unsupported", message: `the faux desktop has no ${method}` } };
@@ -129,6 +132,7 @@ export function fauxComputers({ viewerBase }: { readonly viewerBase: string }): 
     return {
       id,
       groups: [...DESKTOP_GROUPS],
+      hello,
       client: { call } as unknown as LaunchedComputer["client"],
       stream: async ({ viewOnly }) => ({ url: new URL(`${FAUX_VIEW_PATH}/${id}/${viewOnly ? "view" : "drive"}`, viewerBase).href }),
       release: async () => void live.delete(id),

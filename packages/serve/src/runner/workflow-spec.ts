@@ -57,8 +57,10 @@ import { bookedSpend } from "./metrics.js";
 
 /** The one session key the workflow's model requests book under (the run's one booking sums it, runBooking). */
 const SESSION = WORKFLOW_SESSION;
-/** A call node's tool failure, as app.ts's runEffect completed it (the loop's `failing` reads it). */
+/** A call node's tool failure and a cap-held effect, as the runner's effect completed them (the loop's `failing` reads the
+ *  first; holdAtEffects reads the second). */
 const TOOL_FAILED = "agentrun_serve_tool_failed";
+const CAP_HELD = "agentrun_serve_cap_held";
 
 type RunJudge = NonNullable<WorkflowDeps["runJudge"]>;
 type JudgeParams = Parameters<RunJudge>[0];
@@ -361,12 +363,13 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
           // A person's pause holds a call node before its effect starts (before the engine admits it), as main's gate did;
           // a call node's tool failure the driver recorded as its effect's outcome is thrown past the driver
           // (failingEffects, main's `failing`), on the first run and on a resume that answers it from its receipt alike.
-          // Before admission too, each call's most cost is held on the run's one ledger (holdAtEffects): a hold the cap
-          // refuses for room parks the run there, never admitted.
+          // Once the engine has admitted it, each call's most cost is held on the run's one ledger (holdAtEffects): a hold
+          // the cap refuses for room ends the effect held, nothing sent, and parks the run once that end is durable.
           cap: pauseAtEffects(holdAtEffects(failingEffects(decisions ? decisionWorkflowCap(() => decisionCap, decisions, hooks) : identityWorkflowCap()), {
             paid: () => paidTools,
             holdOf: (tool, input) => callHoldOf(tool, input, callEnv, tierModel),
             park: (refusal) => hooks.park(refusal),
+            flush: () => deps.store.flush(),
           }), hooks, flight),
         };
         return workflowHost(hostDeps) as { extensions: readonly Extension[]; host: never };
@@ -550,7 +553,7 @@ function identityWorkflowCap(): WorkflowCap {
 /** A call node `via: "tool"`: the node-tool table's effect (toolOf(tool).effect) with the run's ctx, as app.ts ran it. Its
  *  paid requests (its `llm` call) book through the run's models under the cap. A cap-held request ends the effect held
  *  (CAP_HELD), a tool failure as the tool's own (TOOL_FAILED); the loop's `failing` reads both. */
-/** What a call node's request may cost at most, judged before the engine admits it (holdAtEffects): a Parallel search's
+/** What a call node's request may cost at most, judged once the engine has admitted it (holdAtEffects): a Parallel search's
  *  or extract's fee as paidRequest prices it (a fixed fee, what it may charge at most); an `llm` call's request at the
  *  cap's worst price for it (its model's tiered rates over an input bound of one token per UTF-8 byte of its prompt and
  *  system plus LLM_FRAMING_BYTES for the request's own framing, and the output it asks for, else its model's most);
@@ -582,7 +585,7 @@ export function callHoldOf(tool: string, input: Record<string, unknown>, env: No
   return NO_HOLD(tool);
 }
 
-/** A call node's hold on the run's one ledger, taken before its effect is admitted (holdAtEffects): the effect's paid
+/** A call node's hold on the run's one ledger, taken once its effect is admitted (holdAtEffects): the effect's paid
  *  request takes it over (reservedBooking), and an `llm` call gives it back the moment its own request is held by the
  *  cap (the model booking's beforeRequest). */
 type Reservation = { readonly id: string; readonly call: string; readonly hold: CallHold; readonly paid: RunTools; taken: boolean; settled: boolean };
@@ -622,35 +625,67 @@ function reservedBooking(held: Reservation): PaidBooking {
   };
 }
 
-/** `cap` with each call node's most cost held on the run's one ledger before the engine admits its effect: applied
- *  outside the cap's effect wrapper (and the engine's recovery wrapper, which admits it), as the pause is. A hold the cap
- *  refuses for room parks the run there (`hooks.park`, as a model request's refusal does) and the effect, never admitted,
- *  waits on the node's signal; one refused for good fails the call in the cap's words. Held, the effect runs with the
- *  hold as its reservation; what is not taken is given back at its end. After it, the net: a call whose answer cost more
- *  than its hold (an `llm` answer priced at its usage) fails in the cap's words. */
-export function holdAtEffects(cap: WorkflowCap, deps: { readonly paid: () => RunTools | undefined; readonly holdOf: (tool: string, input: Record<string, unknown>) => CallHold; readonly park: (refusal: CapRefusal) => void }): WorkflowCap {
+/** `cap` with each call node's most cost held on the run's one ledger, in two halves around the DSL driver's admission of
+ *  its effect (dsl recovery/driver.ts wrapEffect: the effect is committed admitted before it is dispatched, and one
+ *  admitted and never completed is never dispatched again):
+ *   - `admittedEffect`, the effect the driver runs once it has admitted it: the call is priced (`holdOf`) and its hold
+ *     taken (its record made durable before anything is sent), so a hold is never kept for an effect the driver did not
+ *     admit: a process that dies before the admission leaves nothing for the next claim to count beside running the call
+ *     again, and one that dies after it leaves the effect admitted, which the next claim never runs again, under the one
+ *     hold it counts. Held, the effect runs with the hold as its reservation; what is not taken is given back at its end.
+ *     A hold the cap refuses ends the effect completed with nothing sent: refused for room, as held (CAP_HELD); refused
+ *     for good, as the call's failure in the cap's words (TOOL_FAILED). So does the net: a call whose answer cost more
+ *     than its hold (an `llm` answer priced at its usage).
+ *   - `effect`, outside the driver: an effect this process ended held parks the run (`park`, as a model request's refusal
+ *     does) once that end is durable (`flush`), and waits on the node's signal. One an earlier claim ended held (its
+ *     receipt, replayed) is the park that claim made: the call goes again, a new effect judged at this claim's cap. */
+export function holdAtEffects(cap: WorkflowCap, deps: { readonly paid: () => RunTools | undefined; readonly holdOf: (tool: string, input: Record<string, unknown>) => CallHold; readonly park: (refusal: CapRefusal) => void; readonly flush: () => Promise<void> }): WorkflowCap {
   let seq = 0;
+  /** The held ends this process made, by the outcome the driver completed each effect with, and the cap's refusal. */
+  const heldHere = new WeakMap<object, CapRefused>();
+  // A returned failure (`ok: false`): a continuation never answers a call from it.
+  const failed = (label: string, words: string) => ({ ok: false, [TOOL_FAILED]: `call node "${label}": ${words}` });
   return {
     ...cap,
     effect: <F>(fn: F): F => {
       const inner = cap.effect(fn) as unknown as (params: unknown) => Promise<unknown>;
-      return (async (params: { node: { label: string; tool?: string }; input: Record<string, unknown>; signal?: AbortSignal; executionPath?: string }) => {
+      return (async (params: { signal?: AbortSignal }) => {
+        for (;;) {
+          const value = await inner(params);
+          if (!value || typeof value !== "object" || !Object.hasOwn(value, CAP_HELD)) return value;
+          const refused = heldHere.get(value);
+          // An earlier claim's park at this call (its receipt): the raise this claim took sends the call again.
+          if (!refused) continue;
+          heldHere.delete(value);
+          // The effect's held end lands before the run parks, so the next claim replays it and goes again.
+          await deps.flush();
+          deps.park({ message: refused.message, forGood: false, ...(refused.figures ? { figures: refused.figures } : {}) });
+          const signal = params.signal;
+          if (signal && !signal.aborted) await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+          throw signal?.reason ?? refused;
+        }
+      }) as unknown as F;
+    },
+    admittedEffect: <F>(fn: F): F => {
+      const inner = (cap.admittedEffect ? cap.admittedEffect(fn) : fn) as unknown as (params: unknown) => Promise<unknown>;
+      return (async (params: { node: { label: string; tool?: string }; input: Record<string, unknown>; executionPath?: string; effect?: { id: string } }) => {
         const tool = params.node.tool;
-        const hold = tool ? deps.holdOf(tool, params.input ?? {}) : undefined;
         const paid = deps.paid();
+        const hold = tool && paid ? deps.holdOf(tool, params.input ?? {}) : undefined;
         if (!hold || hold.usd <= 0 || !paid) return inner(params);
         const call = `${params.node.label}@${params.executionPath ?? ""}`;
-        const id = `${call}#hold${(seq += 1)}`;
+        // Keyed by the effect the driver admitted, so a later claim never writes a second hold under the same id.
+        const id = `${call}#${params.effect?.id ?? `hold${(seq += 1)}`}`;
         try {
           await paid.admit({ id, name: hold.name, holdUsd: hold.usd, basis: hold.basis, call, ...(hold.chargedBy ? { chargedBy: hold.chargedBy } : {}) });
         } catch (error) {
           if (error instanceof CapRefused && !error.forGood) {
-            deps.park({ message: error.message, forGood: false, ...(error.figures ? { figures: error.figures } : {}) });
-            const signal = params.signal;
-            if (signal && !signal.aborted) await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
-            throw signal?.reason ?? error;
+            // Held, nothing sent: an outcome a continuation never answers a call from (`ok: false`, a returned failure).
+            const outcome = { ok: false, [CAP_HELD]: error.message };
+            heldHere.set(outcome, error);
+            return outcome;
           }
-          throw new EffectFailure(`call node "${params.node.label}": ${(error as Error)?.message ?? String(error)}`, null, { code: null });
+          return failed(params.node.label, (error as Error)?.message ?? String(error));
         }
         const held: Reservation = { id, call, hold, paid, taken: false, settled: false };
         try {
@@ -659,7 +694,7 @@ export function holdAtEffects(cap: WorkflowCap, deps: { readonly paid: () => Run
           const usage = hold.llm?.price && value && typeof value === "object" ? (value as { usage?: { input_tokens?: number; output_tokens?: number } | null }).usage : undefined;
           if (usage && hold.llm?.price) {
             const charged = pricingOf(hold.llm.price)({ cached: 0, fresh: usage.input_tokens ?? 0 }, usage.output_tokens ?? 0);
-            if (charged > hold.usd + 1e-12) throw new EffectFailure(`call node "${params.node.label}": its answer cost ${money(charged)}, above the ${money(hold.usd)} it held before it ran.`, null, { code: null });
+            if (charged > hold.usd + 1e-12) return failed(params.node.label, `its answer cost ${money(charged)}, above the ${money(hold.usd)} it held before it ran.`);
           }
           return value;
         } finally {
@@ -763,7 +798,7 @@ function runEffectOf(claimed: Claimed, complete: ReturnType<typeof completer>, e
       // marked cut.
       await logged({ t: "effect.end", ...at, status: "failed", error: message.slice(0, 65_536), ...(message.length > 65_536 ? { error_truncated: true } : {}), at: new Date().toISOString() });
       if (signal.aborted || (error as Error)?.name === "AbortError") throw error;
-      return { [TOOL_FAILED]: `call node "${node.label}": ${node.tool} failed: ${message.slice(0, 500)}` };
+      return { ok: false, [TOOL_FAILED]: `call node "${node.label}": ${node.tool} failed: ${message.slice(0, 500)}` };
     }
   }) as never;
 }

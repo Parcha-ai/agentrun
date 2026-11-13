@@ -10,25 +10,25 @@ const { providerFromRoute, routeProviderOf } = await import("../dist/runner/work
 const FAUX = fileURLToPath(new URL("./fixtures/faux-route.mjs", import.meta.url));
 
 test("providerFromRoute maps a resolved route to the workflow provider: the proxy's provider, the booking's price, the cap's model", async () => {
-  const cost = { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5, tiers: [{ inputTokensAbove: 272_000, input: 4, output: 15, cacheRead: 0.4, cacheWrite: 5 }] };
+  const cost = { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5, tiers: [{ inputTokensAbove: 272_000, input: 4, output: 15, cacheRead: 0.2, cacheWrite: 5 }] };
   const route = {
     provider: { api: "anthropic-messages", origin: "https://example.test", credential: () => "a-key", headers: { "x-h": "v" } },
-    model: "openai/gpt-6-sol",
+    model: "openai/gpt-6.1-sol",
     price: (_m, u) => (u.input * 2 + u.output * 10) / 1e6,
     cost,
     outputCeiling: 128_000,
     fetch: async () => new Response(""),
   };
   const provider = await providerFromRoute(route);
-  assert.equal(provider.modelId, "openai/gpt-6-sol");
+  assert.equal(provider.modelId, "openai/gpt-6.1-sol");
   assert.equal(provider.api, "anthropic-messages");
   assert.equal(provider.origin, "https://example.test");
   assert.equal(await provider.credential(), "a-key");
   assert.deepEqual(provider.headers, { "x-h": "v" });
   assert.equal(typeof provider.fetch, "function");
   assert.ok(provider.policy && typeof provider.policy === "object", "the proxy's policy is built");
-  assert.equal(provider.price("openai/gpt-6-sol", { input: 1_000, output: 100 }), (1_000 * 2 + 100 * 10) / 1e6, "the booking's price is the route's");
-  assert.deepEqual(provider.capModel, { id: "openai/gpt-6-sol", api: "anthropic-messages", price: cost, outputCeiling: 128_000 }, "the cap's model is the catalog cost (tiers) and the output ceiling");
+  assert.equal(provider.price("openai/gpt-6.1-sol", { input: 1_000, output: 100 }), (1_000 * 2 + 100 * 10) / 1e6, "the booking's price is the route's");
+  assert.deepEqual(provider.capModel, { id: "openai/gpt-6.1-sol", api: "anthropic-messages", price: cost, outputCeiling: 128_000 }, "the cap's model is the catalog cost (tiers) and the output ceiling");
 });
 
 test("a route with no catalog cost or ceiling: the cap's model is unpriced with no ceiling", async () => {

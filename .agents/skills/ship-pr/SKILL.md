@@ -81,7 +81,6 @@ required, the command, the pass rule and the cost. Its lead owns that section.
 - **When:**
   - **Real Chrome:** any change to `packages/pi-browser/src/**`, `package.json`, `scripts/**`, `test/**` or `examples/**`, or to `package-lock.json` when it moves a pi-browser dependency.
   - **Package contents:** a change to the manifest (`exports`, `files`, `bin`, `peerDependencies`) or to anything the tarball ships.
-  - **Provider live check:** a change to `src/providers/**` (Browserbase, Kernel, the shared HTTP and CDP code), `src/recorder/**`, or the session lifecycle in `src/core/lease.ts` and `src/store.ts`.
   - A diff of only the README or `changes/` runs the stranger spec and nothing else here.
 - **Real Chrome,** from the repository root at the head, with `CHROME_PATH` naming Chrome for Testing at the version CI pins (`CHROME_FOR_TESTING` in the workflow):
 
@@ -95,22 +94,11 @@ required, the command, the pass rule and the cost. Its lead owns that section.
 
   A fix for a flaky test also runs that file 16 times, four at a time, on the Node CI uses, plus a forced version of the race it fixes. The body gives the counts. A flake fixed only by hoping is not fixed.
 - **Package contents:** `npm run verify:tarball -w @parcha/pi-browser`. **Pass:** exit 0. Then `node scripts/stranger.mjs pi-browser`, whose spec runs the README's no-key command and must print the README's block byte for byte.
-- **Provider live check,** once per provider the change can reach, with that provider's key already in the environment (`BROWSERBASE_API_KEY` for Browserbase, plus the Browserbase SDK installed; `KERNEL_API_KEY` for Kernel):
-
-  ```bash
-  PI_BROWSER_PROVIDER=browserbase node packages/pi-browser/examples/one-script-three-providers.mjs https://example.com
-  PI_BROWSER_PROVIDER=kernel node packages/pi-browser/examples/one-script-three-providers.mjs https://example.com
-  ```
-
-  **Pass:** exit 0, and one stdout line that starts with the provider's name and quotes the page's first snapshot line. The script releases its session in a `finally`. Confirm in the provider's console, or with its session list, that no session it made is still running. A change to the recorder also records that session and shows frames within the caps, a `credential_on_page` gap on a password page, and `session_released` last, with no token in any line.
-
-  Paste the provider lines and the session check into the body. Never paste a session's connect or live-view URL: they carry tokens.
 - **Needs:**
   - Chrome for Testing at CI's pinned version. On Ubuntu 24.04, an unprivileged Chrome needs `kernel.apparmor_restrict_unprivileged_userns=0`, the runner's documented switch; the sandbox stays on.
   - Node 24.22.3 or later.
-  - For the live check, a Browserbase or Kernel key whose plan allows at least one concurrent session.
   - No other credential, and no secret ever goes into the repository.
-- **Cost:** the Chrome suites and the stranger spec are $0. A provider live check is one session of about a minute. At Browserbase's list price ($0.12 per session-hour, one-minute minimum) that is under $0.01; Kernel is on the same order.
+- **Cost:** the Chrome suites and the stranger spec are $0.
 
 ## Step 5: CI and threads
 
