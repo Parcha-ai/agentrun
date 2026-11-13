@@ -10,29 +10,12 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { startServe } from "../dist/index.js";
 import { sealKeyOf } from "../dist/tool-keys.js";
-import { agent, FAUX, follow, runDir, scratch, serve, storeRun, withEnv } from "./support.mjs";
+import { agent, FAUX, follow, runDir, scratch, serve, storeRun } from "./support.mjs";
 
 const MiB = 2 ** 20;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 /** Instructions for the faux model to answer only once `dir`/`name` exists: a run that works until the test lets it go. */
 const busy = (dir, name = "never") => `Answer once ${join(dir, name)} exists.`;
-
-/** POST `body` to `path` under Idempotency-Key `key`, and return once the server holds it, still unanswered: a probe under
- *  the same key, with a body the route refuses before it does anything, is idempotency_mismatch only once the server has
- *  the request. `answer` is its answer; `at()` is when it came. */
-async function held(api, path, body, key) {
-  let at;
-  const answer = api("POST", path, body, { "idempotency-key": key }).then((reply) => ((at = Date.now()), reply));
-  for (let i = 0; ; i++) {
-    const probe = await api("POST", path, {}, { "idempotency-key": key });
-    if (probe.body?.error?.code === "idempotency_mismatch") break;
-    assert.equal(probe.body?.error?.code, "input_invalid", JSON.stringify(probe.body));
-    assert.ok(i < 400 && at === undefined, `the server holds the request: ${JSON.stringify(at && (await answer).body)}`);
-    await sleep(25);
-  }
-  assert.equal(at, undefined, `it waits: ${JSON.stringify(at && (await answer).body)}`);
-  return { answer, at: () => at };
-}
 
 test("the default cap on how many runs at once is pi's: the host's memory less the server's own, at a pi run's size, never under 1", async () => {
   const { defaultMaxRuns } = await import("../dist/index.js");
@@ -43,26 +26,29 @@ test("the default cap on how many runs at once is pi's: the host's memory less t
   assert.equal(defaultMaxRuns(100 * MiB), 1, "never under 1");
 });
 
-test("a run that has failed gives its place back once its process exits: a start meanwhile waits for it, never refused for a place the failed run is giving back", { timeout: 90_000 }, async (t) => {
-  const gate = join(await scratch(t), "exit");
-  withEnv(t, { EXIT_GATE: gate });
-  const { api } = await serve(t, { maxRuns: 1, faux: new URL("./fixtures/faux-slow-exit.mjs", import.meta.url).pathname });
-  assert.equal((await api("POST", "/agents", agent("fails"))).status, 201);
-  const first = await api("POST", "/agents/fails/runs", { input: { content: "hi" } });
-  assert.equal(first.status, 202, JSON.stringify(first.body));
-  // It reads failed (not yet final: its end waits for its process), and its process, told to stop, cannot exit yet:
-  // its place is still held.
-  for (let i = 0; (await api("GET", `/runs/${first.body.run_id}`)).body.status !== "failed"; i++) {
-    assert.ok(i < 400, "the run reads failed");
+test("a run that fails gives its one place back: a start made while it holds the place stays queued, then runs once the failed run is over", { timeout: 90_000 }, async (t) => {
+  const dir = await scratch(t);
+  const { api, data, runnerBeats } = await serve(t, { maxRuns: 1 });
+  assert.equal((await api("POST", "/agents", agent("calc"))).status, 201);
+  // A run that works until the test lets it go, and then fails: it holds the one place.
+  const { body: holder } = await api("POST", "/agents/calc/runs", { input: { content: `Fail once ${join(dir, "go")} exists.` } });
+  await follow(api, holder.run_id, ["working"]);
+  const second = await api("POST", "/agents/calc/runs", { input: { content: "hi" } });
+  assert.equal(second.status, 202, JSON.stringify(second.body));
+  // Three polls of the runner after the start: a runner with a free place would have claimed the run by now.
+  for (let since = runnerBeats(), i = 0; runnerBeats() < since + 3; i++) {
+    assert.ok(i < 400, "the runner polls");
     await sleep(50);
   }
-  const next = await held(api, "/agents/fails/runs", { input: { content: "hi" } }, "next-start");
-  const openedAt = Date.now();
-  await writeFile(gate, "");
-  const started = await next.answer;
-  assert.equal(started.status, 202, `the next start waited for the place the failed run gave back: ${JSON.stringify(started.body)}`);
-  assert.ok(next.at() >= openedAt, "admitted only once the failed run's process could exit, never two at once");
-  await follow(api, started.body.run_id, ["failed"]);
+  const db = new DatabaseSync(join(data, "store.sqlite"), { readOnly: true, timeout: 5_000 });
+  const waiting = db.prepare("SELECT state, runner FROM runs WHERE id = ?").get(second.body.run_id);
+  db.close();
+  assert.deepEqual({ ...waiting }, { state: "queued", runner: null }, "queued, not claimed, while the failing run holds the one place");
+  // The holder fails: its place is free, and the second run takes it and runs.
+  await writeFile(join(dir, "go"), "");
+  await follow(api, holder.run_id, ["failed"]);
+  const { last } = await follow(api, second.body.run_id, ["completed", "failed"]);
+  assert.equal(last.status, "completed", `the next start got the place the failed run gave back: ${JSON.stringify(last)}`);
 });
 
 test("two follow-ups to a completed run while its one place is held: both are taken at once and wait for the place to run, one reopens the run, the other waits for that; the reopen gives its place back when it ends again", { timeout: 90_000 }, async (t) => {
