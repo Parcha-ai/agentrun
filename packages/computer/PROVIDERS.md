@@ -60,7 +60,8 @@ deleted as it lands, and one whose answer never comes is found by its name and d
   one machine holds the name, the oldest (`Machine.createdAt`, or the lowest id where any has none) is kept, every
   other is deleted and read back gone, and both creates answer the one kept. Then: the machine made, read while it
   starts, the vendor's read-back held to the request (labels, network, state, a timer that reads moved, the host's
-  drift), the daemon uploaded and installed with its sha256 read back, an Archil folder mounted, init started from
+  drift), the daemon uploaded and installed with its sha256 read back, an Archil folder mounted (through
+  `archilEgress` when given), init started from
   its home with the display (detached on a child host; on a pid1 host, the entrypoint, which starts the daemon only
   once the marker install writes beside it holds this create's nonce, never one the image had there), the bridge opened, the display
   started on a desktop, the daemon's credentials, network and binary read back, the network-none probe run, and the
