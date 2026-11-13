@@ -242,7 +242,8 @@ test("a template's manifest takes checkout pull_request, shows it, and sets it o
   const dir = join(await scratch(t), "code-review");
   cpSync(new URL("../templates/code-review/", import.meta.url).pathname, dir, { recursive: true });
   const manifest = join(dir, "agent.md");
-  const original = readFileSync(manifest, "utf8");
+  // The manifest with no checkout of its own (code-review ships one), so each case below sets it, or none.
+  const original = readFileSync(manifest, "utf8").replace(/^checkout: .*\n/m, "");
   writeFileSync(manifest, original.replace("\nlearning: false\n", "\nlearning: false\ncheckout: pull_request\n"));
   const p = readPackage(dir);
   assert.equal(packageView(p).checkout, "pull_request");

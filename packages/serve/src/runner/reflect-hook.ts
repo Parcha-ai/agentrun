@@ -43,7 +43,7 @@ export interface ReflectDeps {
   readonly facts: (runId: string) => Promise<{ learns: boolean; cancelled?: boolean; capReached?: boolean; capUsd?: number; costUsd: number | null }>;
   /** The prompt's facts: how many notes the run started from, the tools a workflow draft may name, and the learned skills
    *  whose job the prompt asks for as a workflow draft (reflectPrompt's draftFor; none when absent). */
-  readonly promptFacts: (runId: string, agentId: string) => Promise<{ active: number; tools: readonly string[]; decisions?: DraftDecisions; draftFor?: readonly string[]; described?: readonly { readonly name: string; readonly does: string }[] }>;
+  readonly promptFacts: (runId: string, agentId: string) => Promise<{ active: number; tools: readonly string[]; decisions?: DraftDecisions; draftFor?: readonly string[]; described?: readonly { readonly name: string; readonly does: string }[]; workflows?: false }>;
   /** What the person said in the run, and a trigger's input, as the checks and the grader read them. */
   readonly asked: (runId: string) => Promise<{ asked: readonly string[]; triggered?: ReflectTurn["triggered"] }>;
   /** Every value the run must never learn (learning-run.ts refused): the host's secrets and what the run was handed, its
@@ -121,10 +121,10 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
     // string the kept rows hold, whatever looked adds now or later.
     const close = async (rows: AlsoRow[]) => ({ also: (await looked({ also: rows })).also.map((row) => cutRow(row, refuse)) });
     if (read === "unreadable") return close([droppedRow(null, "propose_failed", said.stopped(STOPPED.refuseUnread))]);
-    const { active, tools, draftFor, described, decisions } = await deps.promptFacts(input.runId, input.agentId);
+    const { active, tools, draftFor, described, decisions, workflows } = await deps.promptFacts(input.runId, input.agentId);
     const deadlineMs = deps.deadlineMs ?? REFLECT_TIMEOUT_MS;
     const started = now();
-    const end = await input.ask(reflectPrompt({ dir: LEARNED_DIR, active, tools, ...(decisions ? { decisions } : {}), ...(draftFor?.length ? { draftFor, ...(described?.length ? { described } : {}) } : {}) }), { origin: "reflect", deadlineMs });
+    const end = await input.ask(reflectPrompt({ dir: LEARNED_DIR, active, tools, ...(decisions ? { decisions } : {}), ...(workflows === false ? { workflows: false } : draftFor?.length ? { draftFor, ...(described?.length ? { described } : {}) } : {}) }), { origin: "reflect", deadlineMs });
     // closeLearning: how the turn ended.
     if ("timedOut" in end) return close([droppedRow(null, "reflect_timeout", said.stopped(STOPPED.timedOut))]);
     if ("failed" in end) return close([CAP_REFUSAL.test(end.failed.message) ? droppedRow(null, "no_budget", said.noBudget) : droppedRow(null, "reflect_failed", said.stopped(STOPPED.failed))]);
@@ -145,7 +145,7 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
     // within the turn's own deadline; a re-ask that times out or fails leaves the first answer's drop.
     if (checked.state === "dropped" && checked.reason === "unparsed") {
       const left = deadlineMs - (now() - started);
-      const again = left > 0 ? await input.ask(reflectAgain(checked.detail), { origin: "reflect", deadlineMs: left, again: true }) : undefined;
+      const again = left > 0 ? await input.ask(reflectAgain(checked.detail, ...(workflows === false ? [false as const] : [])), { origin: "reflect", deadlineMs: left, again: true }) : undefined;
       if (again && "ended" in again) {
         turn = turnOf(again.answer);
         checked = await checkOf(turn);

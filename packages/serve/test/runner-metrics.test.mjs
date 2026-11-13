@@ -1,7 +1,7 @@
 // The runner's end-of-run metrics mapping (runner/metrics.ts): the run's StoredMetrics and cost from its journal, the old
 // per-run end path (runs.ts storedMetrics + costOf) moved onto the runner. The token, request and tool counts are the
 // timeline's own; the cost is the run's usage row; effort and model enrich the count as storedMetrics did. The entries
-// are shaped as pi writes them (mirroring pi-durable-agent's agent-store-metrics fixtures).
+// are shaped as pi writes them.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { REQUEST_COST } from "../dist/timeline/index.js";

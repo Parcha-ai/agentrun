@@ -1,7 +1,7 @@
 // The /v2 API over the agent store in a data directory: the contract agentrun.v2/0, served on loopback with a bearer
 // token.
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { chmod, lstat, mkdir, readdir, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { Duplex } from "node:stream";
 import type { AddressInfo } from "node:net";
@@ -11,11 +11,11 @@ import { dirname, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
 import { once } from "node:events";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import type { Revision, RunOrigin } from "./agent-rows.js";
-import { type AgentEntry, agentRevision, agentRevisions, agentView, commitAgent, createAgent, definitionOf, etagOf, getAgent, listAgents, makeRevision, refuseExternal, revisionView, setAgentArchived, setCurrentRevision } from "./agents-store.js";
+import { type AgentEntry, agentRevision, agentRevisions, agentView, commitAgent, createAgent, etagOf, getAgent, listAgents, makeRevision, refuseExternal, revisionView, setAgentArchived, setCurrentRevision } from "./agents-store.js";
 import { WORKFLOW_ADAPTERS } from "./runner/workflow-adapters.js";
 import { DECISION_ADAPTER, decisionsOf, FAUX_JEV_ENV, FAUX_OPENROUTER_ENV, FAUX_PARALLEL_ENV, fauxFetch } from "./decisions.js";
 import { FAUX_WEB_ENV } from "./web-fetch-direct.js";
@@ -24,9 +24,9 @@ import { FAUX_EXA_ENV } from "./exa-keyless.js";
 import { FAUX_BROWSER_ENV, NODE_TOOLS, shellTools, toolingOf, toolOf, toolsView } from "./tools.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
 import { deref, explain } from "./explain.js";
-import { HOME_HOST_OWNED, SETUP_LOST } from "./files.js";
+import { HOME_HOST_OWNED } from "./files.js";
 import { DATA_ENV, readJson, syncDir, TOKEN_FILE, writeDurable } from "./server-fs.js";
-import { checkedPath, decodedPath, homePath, hostOwnedOf, type OwnedReadAt } from "./home-path.js";
+import { homePath, hostOwnedOf, type OwnedReadAt } from "./home-path.js";
 import { chooseModel, EFFORTS, FAUX_ENV, FAUX_UPSTREAM_ENV, MODEL_NODES, type ModelNeeds, modelSource, THINKING_LEVELS, unpricedModels, withoutFaux } from "./model.js";
 import { DEFAULT_HARNESS, HARNESSES, type HarnessCapability, harnessOfBody, harnessOffers } from "./harness.js";
 import { HARNESS_TABLE_ENV, harnessOf } from "./harness-table.js";
@@ -35,8 +35,7 @@ import { healthOf, hostMemory, maxRunsOf, MIN_FREE_MIB, runsThatFit } from "./ho
 import { IMPORT_ASKED } from "./import.js";
 import type { ImportAnswer, ImportTask } from "./import-worker.js";
 import { answerStoreCall, type StoreCall } from "./import-proxy.js";
-import type { MessageOrigin } from "./timeline/index.js";
-import { gradeModelOf, LEARNING_LABEL, learningBudgetOf, type LearningMode, learningOf, seedOf } from "./learning.js";
+import { gradeModelOf, LEARNING_LABEL, learningBudgetOf, type LearningMode, learningOf, learnsOf, seedOf } from "./learning.js";
 import { agentLearning, learningLog, learningNotes, noteBody, pendingCount, promotable, readNote, secretsShown, sendNote, statusesOf, writeNote } from "./learning-routes.js";
 import type { DraftDecisions } from "./learn/skills.js";
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
@@ -47,13 +46,13 @@ import { dockerLimitsOf } from "./workspace/computer-deps.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { answerPage, byOwnerSession, heldSessions, isJson, overHttps, ownerCookie, ownOrigin, sendHostRefused, signedIn } from "./page.js";
 import { hostFix, hostName, loopbackNames } from "./host-check.js";
-import { computerViewerLink, familyReaches, type LiveFamily, type LiveHandover, liveRest, liveViewer, liveViewerById, liveViewerFor, liveViewerLink, OpenViewers, proxyLiveUpgrade, serveViewerFile, viewerAnswers, viewerLink } from "./browser-live.js";
+import { computerViewerLink, familyReaches, type LiveFamily, liveViewerById, liveViewerFor, liveViewerLink, OpenViewers, proxyLiveUpgrade, serveViewerFile } from "./browser-live.js";
 import { browserHandBack, handBackTarget } from "./browser-commands.js";
 import { type ComputerOf, computerView } from "./computer-view.js";
 import { screenWaitEnded } from "./browser-wait-ended.js";
 import { durationMs, logLine } from "./print.js";
-import { knownToolCostOf, redactorOf, type RunMoment, type State, type Status, toolCostOf } from "./run-view.js";
-import { approve, archiveRun, cancel, message, pause as pauseRunOverStore, raiseCap, resume as resumeRunOverStore, type StartDeps, startInline, type StartOptions, startRun, stop as stopRunOverStore, WAITS_ON_A_PERSON } from "./runs-over-store.js";
+import { type RunMoment, type State, type Status } from "./run-view.js";
+import { approve, archiveRun, cancel, message, pause as pauseRunOverStore, raiseCap, resume as resumeRunOverStore, type StartDeps, startInline, type StartOptions, startRun, stop as stopRunOverStore } from "./runs-over-store.js";
 import { factsOverStore, momentOverStore, summaryOverStore, timelineOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
 import { HELD_WAITS } from "./runner/journal-kinds.js";
 import { servedTimelineRows } from "./run-timeline-served.js";
@@ -61,16 +60,16 @@ import { servedRunDiff, servedRunLearning } from "./run-learning-served.js";
 import { agentPointers, WITHHELD_LEARNING } from "./handed-values.js";
 import { runCutValues } from "./run-cut.js";
 import { readLaunchBody } from "./run-launch.js";
-import { listRunFiles as listRunFilesOverStore, readRunFile as readRunFileOverStore, runBrowserState, runGraphView, type RunReadsDeps, runTimelines } from "./run-reads-over-store.js";
+import { listRunFiles as listRunFilesOverStore, readRunFile as readRunFileOverStore, runGraphView, type RunReadsDeps, runTimelines } from "./run-reads-over-store.js";
 import { triggerTargets, type TriggerTargetDeps } from "./trigger-targets.js";
 import { listRuns as listRunsOverStore, readRun as readRunOverStore, runOfOrigin as runOfOriginOverStore } from "./store-reads/runs.js";
-import { runEntries, runTimeline } from "./store-reads/journal.js";
+import { runEntries } from "./store-reads/journal.js";
 import { metersOverStore } from "./store-reads/cap.js";
 import { watchRun } from "./live/stream.js";
 import { stats as statsOverStore } from "./store-reads/stats.js";
 import { analytics as analyticsOverStore } from "./store-reads/analytics.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { type AgenticBody, type McpCredentialMark, type NewRevision, openStore, type RevisionPlace, type RunRow, type Store, StoreConstraint, StoreOwned, storeTarget, type WorkflowBody } from "./store/index.js";
+import { type AgenticBody, type McpCredentialMark, type NewRevision, openStore, type RevisionPlace, type RunMcpAuth, type RunRow, sealRunMcpAuth, type Store, StoreOwned, storeTarget, type WorkflowBody } from "./store/index.js";
 import { answerOf, logged } from "./agents.js";
 import { FINAL_STATES } from "./store/store.js";
 import { runModelRef } from "./model.js";
@@ -82,21 +81,20 @@ import { dockerComputerRefusal, type DockerPaths, dockerPathsOf, FAUX_MOUNTINFO_
 import { dockerDaemonCheck, type DockerDaemon } from "./docker-daemon.js";
 import { hostAddressesOnce, noHostAddresses, unionOf } from "./docker-host-addresses.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
-import { CAP_MODES, type CapMode } from "./cap.js";
+import { CAP_MODES } from "./cap.js";
 import { type Blocker, blockersOf, CODE_NODES_ENV, issueOf, MCP_HARNESSES, NOT_SET_UP, type RevisionShape } from "./runnable.js";
 import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
 import { isSecretWriteOperation, SECRET_WRITE_REFUSAL, type SecretRequest, secretsWritableFields, secretWriterFacts, writesSecretFor, writesSecretsAllowed } from "./secret-writes.js";
 import { bootSealKey, withSealKey } from "./seal-key.js";
 import { ServerLockHeldError, takeServerLock } from "./server-lock.js";
 import { DRAIN_TIMEOUT } from "./runner/beside.js";
-import { redactedOutput } from "./key-refusal.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
 import { agentLearningOverStore, learningCountsOverStore, learningSpendOverStore } from "./store-reads/learning.js";
 import { keyOf, SEAL_KEY_ENV, TOOL_FIELDS } from "./tool-keys.js";
 import { toolKeysOverStore } from "./tool-keys-store.js";
 import { SIGN_INS_DIR, vendorsOver } from "./sign-ins.js";
 import { signInsOverStore } from "./sign-ins-store.js";
-import { MCP_AUTH_TYPES, type McpTool } from "./mcp-probe.js";
+import { MCP_AUTH_TYPES, mcpAuthOf, type McpTool } from "./mcp-probe.js";
 import { mcpServersOverStore } from "./mcp-servers-store.js";
 import { privateHostsRoute } from "./mcp-private-hosts.js";
 import { metaToolOf } from "./mcp-meta.js";
@@ -117,7 +115,7 @@ import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { webhook } from "./trigger-webhook.js";
 import { SCHEME_NAMES } from "./trigger-signatures.js";
 import { permissionFrom } from "./tool-gate.js";
-import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, PAYLOAD_KEPT_BYTES, type RunTrigger, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
+import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, PAYLOAD_KEPT_BYTES, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
 import { applyBodyOf, COMPUTER_FIX, compiled, githubTriggerUnconnected, githubTriggerWords, madeTriggerIssues, type Package, packageModel, packageTiers, packageView, pickComputer, readPackages, type ShellHere, type TemplatesDeps } from "./templates.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, type DefinitionBody, definitionBodyIssues, EXTERNAL_NAME, ID, IDEMPOTENCY_TTL_S, inputIssues, isObject, type Json, stable, unknownFields } from "./validate.js";
 import { agentTools, BROWSER_VENDOR_IDS, browserKeyRow, isUnavailable, keptVendor, type Plane, recheckPlane, settingsIssues, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
@@ -136,7 +134,7 @@ import { computerCapabilities, type ComputerRoutes, createComputerRoutes, folder
 import { FAUX_VIEW_PATH, type FauxComputers, fauxComputers } from "./faux-computers.js";
 import { runComputerField } from "./run-computer.js";
 import { writesHeld } from "./workspace.js";
-import { agentComputerOf, agentComputerView, agentHomeFolder, claimKinds, computerProviderFactories, computerProviderMakers, computerReadiness, dockerHostAddressesOf, isWorkspaceError, localWorkspace, reconcileAgentComputer, runFolder, runShellOf, serverRunWorkspace, type ShellPlace, storeLedger, type Workspace } from "./workspace/index.js";
+import { agentComputerOf, agentComputerView, agentHomeFolder, claimKinds, computerProviderFactories, computerProviderMakers, computerReadiness, dockerHostAddressesOf, isWorkspaceError, localWorkspace, reconcileAgentComputer, runShellOf, serverRunWorkspace, type ShellPlace, storeLedger, type Workspace } from "./workspace/index.js";
 import { keyReader } from "./key-meta.js";
 
 export const CONTRACT = "agentrun.v2/0";
@@ -155,12 +153,6 @@ const MAX_MESSAGE = 20_000;
 const MAX_WAIT_MS = 25_000;
 const PAGE_ROWS = 500;
 const FILE_LIST_CAP = 2_000;
-/** What a stopping server's record allows past its runs' kill bound, the cap a start waits under: the runs' carry backs,
- *  retried while the agent store is held (about 15.5 s), their boxes' cleanup (up to a minute), and the deliveries', the
- *  listener's and the stores' stop. A start stops waiting sooner once the stopping server's process is gone. */
-const STOP_MARGIN_MS = 120_000;
-/** A wait, as the stop's lines give it: whole seconds, rounded up, one at least. */
-const seconds = (ms: number) => `${Math.max(1, Math.ceil(ms / 1000))} s`;
 /** Where the stop's lines go (ServeOptions.notice). Best-effort: a notice that throws never stops a close or a start. */
 const noticeOf = (options: Pick<ServeOptions, "notice">) => (line: string): void => {
   try {
@@ -293,18 +285,6 @@ export type ServeOptions = {
   /** The lines a person reads about a stop on this data root: this server's, as its close begins and runs' processes are
    *  left to finish their turn. Default: standard error, after `agentrun-serve: `. */
   notice?: (line: string) => void;
-  /** A test's seam: awaited by a stop between its mark and its abort, so a test can hold a stop in flight there. */
-  beforeAbort?: (runId: string) => Promise<void> | void;
-  /** A test's seam: awaited by a completed run's reopen for a follow-up, after the run reads open again and before its
-   *  process is launched, so a test can hold a reopen there. */
-  beforeReopenLaunch?: (runId: string) => Promise<void> | void;
-  /** A test's seam: the host's memory, in bytes, that the runs' limit reads (host.ts), in place of this host's. */
-  hostMemory?: number;
-  /** A test's seam: told each run read in from its store (runs.ts onRunLoad). */
-  onRunLoad?: (runId: string) => void;
-  /** A test's seam: who wrote a message sent to a run through its messages route (`origin`, as a raised cap's follow-up
-   *  carries it), so a test sends a server-written message down the path a person's message takes. */
-  messageOrigin?: (runId: string, content: string) => MessageOrigin | undefined;
   /** The model the grader runs on (`--grade-model`; default AGENTRUN_SERVE_GRADE_MODEL, else the strong tier,
    *  AGENT_MODEL_STRONG, else each run's agent's own model). */
   gradeModel?: string;
@@ -374,8 +354,6 @@ async function tokenIn(file: string): Promise<{ token: string; made: boolean }> 
 }
 
 const digest = (text: string) => createHash("sha256").update(text).digest();
-/** Why a trigger never messages a run: it has no spend cap, and every turn a trigger drives is capped. */
-const NO_CAP = "The run has no spend cap: a trigger only messages a run with one, as every turn it drives is capped.";
 
 const sha256Hex = (text: string) => createHash("sha256").update(text).digest("hex");
 const SESSION_S = SESSION_MS / 1000;
@@ -515,9 +493,11 @@ export const ROUTES: readonly Route[] = [
  *  learning/); sign-ins/ only as the agent's `sign_ins`, never a pointer. */
 /** A run's computer as GET /computer reads it with no viewer open: kind browser where its agent has the browser tool, its
  *  kept plane's (a run from before the plane names none, and is Browserbase's where it grants the tool) checked again as a
- *  launch would be; off, saying why, where it has none or its browser resolves unavailable here.
+ *  launch would be; off, saying why, where it has none or its browser resolves unavailable here. Where the agent's
+ *  computer is a browser, that browser, whose keys are the computer's (checked at the run's start), never the plane's.
  *  TODO: the agent's own `computer: {kind, provider?}` setting once definitions carry it (desktop, phone). */
-function computerOf(kept: Plane["browser"], env: NodeJS.ProcessEnv, family: LiveFamily = "computer"): ComputerOf {
+function computerOf(kept: KeptBrowser, env: NodeJS.ProcessEnv, family: LiveFamily = "computer"): ComputerOf {
+  if (kept === ON_COMPUTER) return { kind: "browser" };
   const browser = kept === undefined ? undefined : recheckPlane({ browser: kept }, env).browser;
   if (browser === undefined) return { off: family === "browser" ? "this run's agent has no browser tool" : "this run's agent has no computer" };
   return isUnavailable(browser) ? { off: whyUnavailable(browser) } : { kind: "browser" };
@@ -526,17 +506,24 @@ function computerOf(kept: Plane["browser"], env: NodeJS.ProcessEnv, family: Live
 /** The run's kept browser vendor, over the store, as computerOf reads it: the vendor its launch plane resolved at start
  *  (the same source the runner's claim reads), normalized to the vendor name (keptVendor) so recheckPlane re-resolves it as
  *  a vendor, not a stored no-key sentinel; with no browser in the plane, the default vendor when the run's revision grants
- *  the browser tool, else none. */
-async function keptBrowserOf(store: Store, runId: string): Promise<Plane["browser"]> {
+ *  the browser tool, else none. A revision that grants the tool to an agent whose computer is a browser is ON_COMPUTER:
+ *  the tool's sessions are that computer's (tools.ts browserComputer), whatever the plane says. */
+async function keptBrowserOf(store: Store, runId: string): Promise<KeptBrowser> {
+  const runRow = await store.runs.get(runId);
+  const revision = runRow ? await store.agents.revision(runRow.revisionId) : undefined;
+  const body = revision?.body as { tools?: readonly string[]; computer?: { kind?: string } } | undefined;
+  const granted = (body?.tools ?? []).includes("browser");
+  if (granted && body?.computer?.kind === "browser") return ON_COMPUTER;
   const row = await store.runs.launch(runId).catch(() => undefined);
   const plane = row ? readLaunchBody(row.body)?.plane : undefined;
   const kept = plane ? keptVendor(plane).browser : undefined;
   if (kept !== undefined) return kept;
-  const runRow = await store.runs.get(runId);
-  const revision = runRow ? await store.agents.revision(runRow.revisionId) : undefined;
-  const granted = ((revision?.body as { tools?: readonly string[] } | undefined)?.tools ?? []).includes("browser");
   return granted ? "browserbase" : undefined;
 }
+
+/** keptBrowserOf's answer for a run whose browser is its agent's browser computer. */
+const ON_COMPUTER = Symbol("the agent's browser computer");
+type KeptBrowser = Plane["browser"] | typeof ON_COMPUTER;
 
 const ownedReadAt = (agentId: string): OwnedReadAt => (owned) => (owned === SIGN_INS_DIR ? `/v2/agents/${agentId}` : ROUTES.some((r) => r.method === "GET" && r.pattern.test(`/agents/${agentId}/${owned}`)) ? `/v2/agents/${agentId}/${owned}` : undefined);
 
@@ -812,7 +799,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  on this server (learning on, its current revision `learning: true`); none for another, or when the count cannot be
    *  read (the view never fails for it). */
   const learningOfAgent = async (entry: { agent: { id: string }; revision?: { kind: string; body: unknown } | null }): Promise<{ pending: number } | undefined> => {
-    if (learning === "off" || entry.revision?.kind !== "agentic" || (entry.revision.body as { learning?: unknown }).learning !== true) return undefined;
+    if (learning === "off" || entry.revision?.kind !== "agentic" || !learnsOf((entry.revision.body as { learning?: unknown }).learning)) return undefined;
     const pending = await pendingCount(data, entry.agent.id);
     return pending === undefined ? undefined : { pending };
   };
@@ -1305,8 +1292,6 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   };
   const targets = triggerTargets(store, triggerDeps);
   const expected = digest(`Bearer ${token}`);
-  // The old per-run-process test hooks (beforeAbort/beforeReopenLaunch/onRunLoad/messageOrigin …) are the runner's now
-  // (E2r), not the server's: a run executes in a runner process, not here. TODO(E2r): the equivalents on the runner's loop.
   // Answered keys are kept in the data directory for the retention capabilities state, and written before the answer
   // is sent, so a client that retries after a restart gets the first answer back.
   type Kept = { fingerprint: string; at: number; answer?: { status: number; body: unknown; headers: Record<string, string> } };
@@ -1617,9 +1602,6 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const v = await viewOverStore(store, runId, viewDepsFor(ownOriginOf()));
     return { status: (v?.status as Status) ?? "queued", state: (v?.state as State) ?? "idle" };
   };
-  /** The run read routes (timeline, files, graph, browser, live viewer) over the store are E2c's run-reads-over-store.ts
-   *  (watchRun + run-workspace + store-view), not committed yet. TODO(E2c): replace each call with its function on that sha. */
-  const runReadsTodo = (): never => { throw new ApiError("unsupported_here", "run reads over the store (timeline, files, graph, browser) are being wired (run-reads-over-store); not available on this build yet"); };
 
   const mismatch = () => new ApiError("idempotency_mismatch", "this Idempotency-Key was used with another body");
   /** Replays the first answer to a create with the same key and body; another body is a mismatch. `work` gets the key's
@@ -1931,10 +1913,35 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  at the public URL or the server's own address. */
   const linkOrigin = (req: IncomingMessage): string => (options.publicUrl ?? (req.headers.host ? ownOrigin(req) : url)).replace(/\/+$/, "");
 
+  /** A run body's `mcp_auth` taken out of it, before anything else reads the body: the credentials a run's caller hands
+   *  its per_run MCP servers for this run alone (mcp-probe.ts mcpAuthOf). They never reach the run's saved body, its
+   *  timeline, an idempotency fingerprint (a retry with a fresh credential replays its first answer) or a log: only the
+   *  seal `sealer` makes, which seals them for the run's id into its launch row (store/seal.ts sealRunMcpAuth), bound to
+   *  each server's origin then. The request calls `sealer` only for new work, inside its idempotent work: there each
+   *  entry must name a saved per_run server, else 422, nothing written. A retry its key already answered replays that
+   *  answer even when the server has since changed or gone, since it does no new work. */
+  function handedMcpAuth(body: Json): { body: Json; sealer: () => Promise<((runId: string) => Uint8Array) | undefined> } {
+    if (body.mcp_auth === undefined) return { body, sealer: async () => undefined };
+    const { mcp_auth, ...rest } = body;
+    const sealer = async () => {
+      const issues: InputIssue[] = [];
+      const handed = mcpAuthOf(mcp_auth, issues);
+      const auth: Record<string, RunMcpAuth[string]> = {};
+      for (const [server, headers] of Object.entries(handed ?? {})) {
+        const row = await store.mcp.server(server);
+        if (row?.auth !== "per_run") issues.push({ field: `mcp_auth.${server}`, reason: "not_an_option", message: row ? `The MCP server ${server} keeps its own credential (auth ${row.auth}): only a per_run server takes one from a run.` : `No MCP server ${server} is saved here.` });
+        else auth[server] = { headers, origin: new URL(row.url).origin };
+      }
+      if (issues.length) throw invalid(issues);
+      return (runId: string) => sealRunMcpAuth(sealKey, runId, auth);
+    };
+    return { body: rest, sealer };
+  }
+
   async function createRun(req: IncomingMessage, agentId: string) {
     const entry = await needAgent(agentId);
     if (entry.agent.archivedAt) throw new ApiError("agent_not_runnable", `The agent ${agentId} is archived: unarchive it to run it.`, { details: { archived_at: new Date(entry.agent.archivedAt).toISOString() } });
-    const body = await bodyOf(req);
+    const { body, sealer } = handedMcpAuth(await bodyOf(req));
     return idempotent(req, `/agents/${agentId}/runs`, body, async (origin) => {
       // A run the store started under this key, though no answer was kept (its server went down first): that run, as it is now.
       const first = origin && (await agents.request(() => agents.store.runOfOrigin(origin.key)));
@@ -1943,7 +1950,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const headers: Record<string, string> = { location: `/v2/runs/${first.runId}`, "idempotent-replayed": "true" };
         return { status: 202, body: await viewOverStore(store, first.runId, viewDepsFor(linkOrigin(req))), headers };
       }
-      const run = await startRunOf(entry, body, { ...(origin ? { origin } : {}) });
+      const seal = await sealer();
+      const run = await startRunOf(entry, body, { ...(origin ? { origin } : {}), ...(seal ? { sealed: seal } : {}) });
       // Its view from the store: the run and its launch were inserted in one transaction, so the view reads it whole.
       return { status: 202, body: await viewOverStore(store, run.id, viewDepsFor(linkOrigin(req))), headers: { location: `/v2/runs/${run.id}` } };
     });
@@ -1955,7 +1963,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  Its first run makes the agent, a version's first run its revision; a later run of the version reuses both
    *  (runs-over-store startInline). The answer is POST /agents/{agent_id}/runs' own: 202 and the run. */
   async function createInlineRun(req: IncomingMessage) {
-    const body = await bodyOf(req);
+    const { body, sealer } = handedMcpAuth(await bodyOf(req));
     const { external, definition, skills, note, revision: pinned, ...run } = body;
     const given = { definition, ...(skills !== undefined ? { skills } : {}), ...(note !== undefined ? { note } : {}) };
     const issues: InputIssue[] = [
@@ -1987,7 +1995,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const headers: Record<string, string> = { location: `/v2/runs/${first.runId}`, "idempotent-replayed": "true" };
         return { status: 202, body: await viewOverStore(store, first.runId, viewDepsFor(linkOrigin(req))), headers };
       }
-      const started = await startInline(store, startDeps, inline, run, { ...(origin ? { origin } : {}) });
+      const seal = await sealer();
+      const started = await startInline(store, startDeps, inline, run, { ...(origin ? { origin } : {}), ...(seal ? { sealed: seal } : {}) });
       return { status: 202, body: await viewOverStore(store, started.id, viewDepsFor(linkOrigin(req))), headers: { location: `/v2/runs/${started.id}` } };
     });
   }
@@ -2178,8 +2187,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     let meters = endedMeters.get(key);
     if (!meters) {
       // An ended run's meter figures over the one store: cap.ts meterFiguresFrom over A's journal, its paid tools' charges
-      // folded back from the paid-tools session (store-reads/journal withPaidCosts), as meterFiguresIn read a file-backed
-      // run's own database — the same figures (the money-parity rule).
+      // folded back from the paid-tools session (store-reads/journal withPaidCosts).
       meters = await metersOverStore(store, row.id, ctx);
       endedMeters.set(key, meters);
     }
@@ -2708,14 +2716,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "sendMessage": {
         const run = await needRun(id);
         if (run.kind === "workflow") throw unsupported("messages.steer_workflow_runs", "A workflow run takes no messages here: its workflow runs to its end, or a cancel ends it.");
-        const body = await bodyOf(req);
+        const { body, sealer } = handedMcpAuth(await bodyOf(req));
         const answer = await idempotent(req, `/runs/${id}/messages`, body, async () => {
+          const seal = await sealer();
           const extra = unknownFields(body, ["content"]);
           if (extra.length) throw invalid(extra);
           const content = body.content;
           if (typeof content !== "string" || !/\S/.test(content)) throw invalid([{ field: "content", reason: content === undefined ? "missing" : "wrong_type", message: "content is a non-empty string" }]);
           if (content.length > MAX_MESSAGE) throw invalid([{ field: "content", reason: "too_long", message: `content is at most ${MAX_MESSAGE} characters` }]);
-          const { mode, messageId } = await message(store, run, content);
+          // Its mcp_auth replaces the run's handed credentials in the steer's own write, so the turn it starts uses them.
+          const { mode, messageId } = await message(store, run, content, seal ? { launchSealed: seal(run.id) } : {});
           // The run's state after the command row is written (the run view): the runner applies the steer; the client polls.
           const { status, state } = await runStatusState(run.id);
           return { status: 202, body: { run_id: run.id, message_id: messageId, mode, status, state, poll_after_ms: 1000 } };

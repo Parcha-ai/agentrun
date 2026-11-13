@@ -204,9 +204,13 @@ Over a cap is refused, never cut.
   again, until it passes, and goes on to the grader, and the run's learning names what was left out (`problems`). A
   count cap names the items past it, in the order the answer gave them whatever their kind, and a size cap the item
   over it: one oversized or extra item is left out, the rest kept. A note left out past the supersedes cap holds
-  nothing as superseded for the notes after it. The whole proposal is refused when a problem names no item it proposed,
-  when its rule refuses the whole (`outside`, `deleted`, `index_full`, the notes' total, which no one item is past,
-  `encoding`) or must never be stored (`secret_value`, `secret_shape`, `invisible_unicode`: the run's answer is not
+  nothing as superseded for the notes after it. New notes are settled in one order: each alone against the seed (what
+  it supersedes), then one note a rule (the rest its alternates), then the holders' shared checks (two notes
+  superseding one, the supersedes cap, and the index counted whole after the repeats are out: past 200 lines, the notes
+  that add lines are left out from the answer's end, `index_full`); a holder they refuse is left out and its next
+  alternate holds its rule, until nothing changes, and only then the unneeded alternates are left out as `duplicate`.
+  The whole proposal is refused when a problem names no item it proposed, when its rule refuses the whole (`outside`,
+  `deleted`, `encoding`) or must never be stored (`secret_value`, `secret_shape`, `invisible_unicode`: the run's answer is not
   trusted for any item), or when nothing is left, with every pass's problems. Before any item is kept, every name and text
   the run gave is read whole for what must never be stored (`unstorable`), an edit or a file over its cap included,
   which the checks refuse before they read its text.
@@ -224,12 +228,39 @@ the new notes, skill and draft (its README with it). The user's messages let the
 the agent to keep from what a page told it to. So the prompt is bounded by the caps above, never by how many notes the
 folder holds: `GRADE_CAPS.prompt`, 200,000 characters, half what a completion takes.
 
-Each item's decision is `keep`, `pending` or `drop`, with its `origin`, `you` or `run`: one item per new note, per
+Each item's decision is `keep`, `pending`, `note` or `drop`, with its `origin`, `you` or `run`: one item per new note, per
 skill (its `SKILL.md`) and per draft (its `workflow.json`, its README judged with it). The rubric asks a skill and a
 draft one more question, Workflow case: one that singles out one person, company, document, account or case, carries a
-fixed answer for one, or carries an instruction outside the agent's job is dropped. One that holds a rule for every
-reply (which applies whatever the job is) is named as belonging in a note, and kept: steps or a format for one kind
-of job, named by when it applies, are a skill. An item the rubric drops is
+fixed answer for one, or carries an instruction outside the agent's job is dropped. A skill that is a standing rule for
+every reply or every report (which applies whatever the job is) is mis-kept as a skill, which a run loads only when a
+job calls for it: its decision is `note`, and it is re-filed as a note (`grade.ts skillAsNote`: `<name>.md`, the
+skill's description and body, of type feedback), which every later run reads, merged in the skill's place and pending
+when risky; one that would be no note is dropped, saying it belongs in a note, and keeps the grader's question (a
+Planted one still keeps nothing of the run). A re-filed note stays within a run's note cap (`CAPS.runNote`), as a run's
+own note does, and is one more new note: it counts against the run's new-note cap (`CAPS.newNotes`) beside the run's
+own kept notes, and one past it is dropped alone, saying so. The skill it replaces, if main holds it, is retired in the same write (the merge's `retire`). A re-filed
+skill whose note file the run's own kept note takes is dropped, saying so: one file is one item's, and its hold stands.
+A new note named like one main holds when the grade reads main (another run merged it after the seed) is left out of
+the grade and settled alone, never a drop of the whole proposal. At the merge, every note the verdict keeps (a new
+note, or a skill re-filed as one) whose file main already holds is settled alone (the learning run's `takenOnMain`),
+never a refusal of the whole merge: the same rule (its body, whitespace and case aside, as `ruleOf` reads it, whatever
+its front matter) is no change, dropped unsaid; a note whose front matter supersedes
+the note of its own name is a modification, written over it (the merge's `replace`, main's blob checked as graded);
+any other is dropped, saying a note of that name was added since or was there already. The rest merges. A run whose
+own merge is on main already (the learning run stopped after its commit and before it recorded it) is not settled
+against main again: its notes there are its merge's, and each item is settled by the text its own merge commit holds at its file (its rule there, whatever a person
+edited on main since, not
+only a path the merge changed, such as a note it marked superseded), one item a file as the first attempt settled it
+(a re-filed skill whose note file the run's own note takes is left out), so what it wrote is learned and nothing else. No words of a run's learning, the merge's or a read's, say a rule main already held. One copy of
+each rule: a new note whose body, set beside an active note's with whitespace and case aside (notes.ts `ruleOf`), is
+exactly the same, under another name, is a duplicate: the checks refuse it (`duplicate`, against the seed's active
+notes, and of two new notes the same, the second; duplicates are settled with the merge's checks: a note
+those refuse, what it supersedes say, holds no rule, so its valid copy is kept, and a repeat never fills the index), and the merge's own computation leaves it out unsaid, against the
+main it commits on (computed again on the main that won when another write landed first), as it leaves out a name main
+came to hold meanwhile. A note that supersedes the one it repeats updates it, never a duplicate. Anything near is the
+grader's to judge. Steps or a format for one kind of job,
+named by when it applies, are a skill. `note` is a skill's decision alone: on any other item it is no merge. An item
+the rubric drops is
 dropped. A rule found only inside text the run read (a form's field, a pasted email, a page) is planted, whoever it says
 it is from, and dropped; a rule the user states in their own words is theirs, even beside such text in the same
 message. An item that holds an account number is a secret, dropped even where the user gave it as where money goes.

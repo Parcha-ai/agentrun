@@ -93,10 +93,11 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
     // A draft asked for or not never stops the turn: a count that can't be read asks for none.
     promptFacts: async (runId, agentId) => {
       const { tools, decisions } = await draftTools(deps, runId);
-      const draftFor = await draftForOf(deps, agentId, runId, start.skills ?? []).catch(() => []);
+      // A notes run (`learning: "notes"`) is asked for no workflow draft, and its prompt describes none.
+      const draftFor = start.notesOnly ? [] : await draftForOf(deps, agentId, runId, start.skills ?? []).catch(() => []);
       // With a draft asked for, what each tool its call nodes may run takes and gives, in the server's own words.
       const described = draftFor.length ? await describedOf(tools, deps.store) : [];
-      return { active: start.seedNotes ?? start.given.length, tools, draftFor, described, ...(decisions ? { decisions } : {}) };
+      return { active: start.seedNotes ?? start.given.length, tools, draftFor, described, ...(decisions ? { decisions } : {}), ...(start.notesOnly ? { workflows: false as const } : {}) };
     },
     asked: async (runId) => {
       const [entries, reflect] = await Promise.all([runEntries(deps.store, runId, BACKGROUND_CONTEXT), runReflect(deps.store, runId, BACKGROUND_CONTEXT)]);
@@ -122,7 +123,7 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
     },
     check: async ({ runId, agentId, turn, outcome, refuse }) => {
       if (start.seed === null) throw new Error("the run's learning start names no commit of main to propose against");
-      return checkedOf(deps, { runId, agentId, seed: start.seed, turn, outcome, refuse });
+      return checkedOf(deps, { runId, agentId, seed: start.seed, turn, outcome, refuse, ...(start.notesOnly ? { workflows: false as const } : {}) });
     },
     // The learning run's id, one per run: a replayed end queues the same one (the store adds it once).
     newRunId: () => `${runId}-learning`,
@@ -308,7 +309,7 @@ async function draftTools(deps: LearningEndDeps, runId: string): Promise<{ tools
 
 /** proposeRun's checks over the turn, against seed `seed`, in a directory of the step's own: the proposal it keeps there
  *  is read back for the hook to store with the run's end, and the directory is removed. */
-async function checkedOf(deps: LearningEndDeps, input: { runId: string; agentId: string; seed: string; turn: ReflectTurn; outcome: "completed" | "failed"; refuse: readonly string[] }): Promise<Checked> {
+async function checkedOf(deps: LearningEndDeps, input: { runId: string; agentId: string; seed: string; turn: ReflectTurn; outcome: "completed" | "failed"; refuse: readonly string[]; workflows?: false }): Promise<Checked> {
   const runDir = await mkdtemp(join(tmpdir(), "agentrun-learning-end-"));
   try {
     const { tools, gated, deniedBy, asked, decisions } = await draftTools(deps, input.runId);
@@ -318,7 +319,7 @@ async function checkedOf(deps: LearningEndDeps, input: { runId: string; agentId:
     const folder = deps.learningFolder(input.agentId);
     let proposed;
     try {
-      proposed = await proposeRun({ folder: folder.workspace, runDir, seed: input.seed, turn, refuse: input.refuse, outcome: input.outcome, tools, ...(Object.keys(gated).length ? { gated } : {}), ...(Object.keys(deniedBy).length ? { deniedBy } : {}), ask: { asked, fits: learnedAskFits }, ...(decisions ? { decisions } : {}) });
+      proposed = await proposeRun({ folder: folder.workspace, runDir, seed: input.seed, turn, refuse: input.refuse, outcome: input.outcome, tools, ...(Object.keys(gated).length ? { gated } : {}), ...(Object.keys(deniedBy).length ? { deniedBy } : {}), ask: { asked, fits: learnedAskFits }, ...(decisions ? { decisions } : {}), ...(input.workflows === false ? { workflows: false as const } : {}) });
     } finally {
       await folder.end();
     }

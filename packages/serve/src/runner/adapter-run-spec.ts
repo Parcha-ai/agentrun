@@ -12,7 +12,7 @@
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { defineExtension, type Extension, ROOT_CONVERSATION_ID, type ToolExecutionApi, type ToolRegistration } from "@earendil-works/pi-durable";
-import { beforeRequestOf, type CapModel, type CapRefused, checkRaise, followUpOf, parkOf } from "@parcha/agentrun-kernel/kernel/cap";
+import { type CapModel, type CapRefused, checkRaise, followUpOf, parkOf } from "@parcha/agentrun-kernel/kernel/cap";
 import { inspectWorkflow, type Workflow } from "@parcha/agentrun-dsl";
 import type { BeforeRequest, HostTool, Refusal, SessionSpec, Wire } from "@parcha/agentrun-kernel";
 import { decisionProvidersIn } from "../decisions.js";
@@ -50,7 +50,6 @@ import { handedSignInReadsBack, signInReads } from "../sign-ins-store.js";
 import { UNREADABLE_SIGN_IN } from "../run-view.js";
 import { claimSecrets, hostDecisionKeys, learnedDecisionKeys, savedModelKeys, tierModelKeys, withModelKeys } from "./claim-secrets.js";
 import { type ClaimMcp, mcpForClaim } from "./mcp-run.js";
-import { join } from "node:path";
 import { type AdapterLoopOptions, type AdapterRun, type AdapterRunSpec, hostLifecycle, type RunCapConfig } from "./adapter-loop.js";
 import { piAdapter } from "./adapters/pi.js";
 import { agentEntriesOf } from "./loop.js";
@@ -388,7 +387,9 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // credentials opened under the server's seal key into this claim's memory, one gateway for the claim. First, before
   // anything the spec would have to let go: a refusal (a pin that cannot be made, a pinned meta tool) ends the run in its
   // words before the session opens. The seal key is the runner's own (deps.sealKey), not re-read from the environment.
-  const mcp = await mcpForClaim({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, work: () => ws.workspace, launchInput: launch.input, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold: (values) => cut.hold(values) }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}) });
+  // A credential the claim opens mid-run (a GitHub App token, a per_run server's handed one) joins the run's redactor.
+  const hold = (values: string[]) => cut.hold(values);
+  const mcp = await mcpForClaim({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, work: () => ws.workspace, launchInput: launch.input, hold, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}) });
   // The claim's MCP goes to the loop, which lets it go; a build that throws lets it go itself.
   holds.hold({ passed: mcp });
 
@@ -544,6 +545,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
       own: Object.keys(revisionRow.skills ?? {}),
       shown: async () => secretsShown(runnerSecrets(deps.env, await storeSecrets(deps.store, deps.sealKey, deps.data)), { local: true }),
       log,
+      ...(start.notesOnly ? { workflows: false as const } : {}),
     })
     : undefined;
   // The decision keys its learned workflows' typed questions need (claim-secrets.ts learnedDecisionKeys), read once the lay
