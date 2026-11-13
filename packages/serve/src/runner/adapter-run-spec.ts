@@ -20,6 +20,7 @@ import type { Approvals } from "../approvals.js";
 import type { installForClaim, installSettled } from "../harness-install.js";
 import type { LiveHandover, LiveViewerStore } from "../browser-live.js";
 import { dropLiveViewer, putLiveViewer } from "../browser-live.js";
+import { runnerLiveOf } from "../live-reach.js";
 import { llmTiers, nodeTiers, type PinnedModel, type Tier, thinkingLevel, TIERS, tierModelOf, workflowNodes } from "../model.js";
 import { firstMessage } from "../run-manifest.js";
 import { learningStartOf, seedFailed, type RunLaunch } from "../run-launch.js";
@@ -75,10 +76,12 @@ import { type Checkout, prCheckoutForClaim } from "./pr-checkout.js";
 import { holdStored, storeSecrets } from "./store-secrets.js";
 import { bashPolicyOf } from "../bash-read-only.js";
 
-/** What a claim gives the shared computerForClaim: the run, its epoch, its revision, its place and any computer choice. */
+/** What a claim gives the shared computerForClaim: the run, its epoch, the claim itself (a live view's row is fenced on it
+ *  and names its runner), its revision, its place and any computer choice. */
 export interface ClaimLaunch {
   readonly runId: string;
   readonly epoch: number;
+  readonly claim?: unknown;
   readonly revisionId: string;
   readonly place?: unknown;
   readonly computer?: unknown;
@@ -409,7 +412,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // Docker container for a sandbox, under the claim's epoch (the one fence). It throws computer_unavailable (nothing made)
   // when the computer cannot be had: the run fails in its words.
   const computer = await deps.computerForClaim(
-    { runId: claim.runId, epoch: claim.epoch, agentId: runRow.agentId, revisionId: runRow.revisionId, place: launch.place, ...((launch as { computer?: ComputerSetting }).computer !== undefined ? { computer: (launch as { computer?: ComputerSetting }).computer } : {}) },
+    { runId: claim.runId, epoch: claim.epoch, claim, agentId: runRow.agentId, revisionId: runRow.revisionId, place: launch.place, ...((launch as { computer?: ComputerSetting }).computer !== undefined ? { computer: (launch as { computer?: ComputerSetting }).computer } : {}) },
     deps.store,
     // revokeMount removes the run's Archil mount credential when the computer is released (and if a start fails after a mint);
     // the run's end revokes it too (below), so it goes on every outcome even when no computer is made. Idempotent. What
@@ -911,6 +914,7 @@ export function buildToolHost(opts: {
   readonly life: ReturnType<typeof hostLifecycle>;
   readonly redact: HeldRedact;
 }): ToolHost {
+  const liveAt = runnerLiveOf(opts.env, opts.sealKey);
   const { root, claim, run, life } = opts;
   return {
     // The run's directory and its per-claim environment: the hands come from runTools, so the non-hand tools get the run's
@@ -937,6 +941,8 @@ export function buildToolHost(opts: {
     // The run's one redactor: the browser's answers pass it inside their call, before pi stores them (tools.ts).
     redact: opts.redact,
     liveViewers: liveViewersOf(opts.store, opts.sealKey, claim, opts.redact),
+    // A runner on another host than its server (AGENTRUN_RUNNER_LIVE_HOST): its browser's viewer answers there.
+    ...(liveAt ? { liveAt } : {}),
     // What a tool files for the run's read (monid's whole answer past the model's cut) goes in the run's own Workspace, the
     // one its hands read: in Mode 2 its folder on the run's disk, never the local folder at `root`.
     workspace: opts.workspace,

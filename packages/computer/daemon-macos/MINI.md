@@ -89,32 +89,60 @@ few minutes.
 
 ## The two grants (a person, once)
 
-Connect with Screen Sharing (`vnc://<mini's tailnet name>`). In the Computerd window:
+Connect with Screen Sharing (`vnc://<mini's tailnet name>`). The Computerd window shows a Computerd tile for each
+System Settings pane that gives a grant, and opens the first pane still missing beside it:
 
-1. **Click each Allow….** Each one adds Computerd to its list and opens its pane.
-2. **Privacy & Security > Accessibility:** switch Computerd on. This also covers Post Event.
-3. **Privacy & Security > Screen & System Audio Recording:** switch Computerd on.
-4. **The window closes itself** once every grant is on, so it never covers the windows the demos work in.
-5. **Menu bar ⌘D > Grants and Pairing…, then Raise it now,** and answer Allow. The screen capture alert then never
+1. **Drag the tile into the pane's list** (Privacy & Security > Accessibility, called Device Control and Data Access
+   on macOS 27). Its rows tick, Accessibility and Post Event, and the next pane opens.
+2. **Drag the other tile into that list** (Privacy & Security > Screen & System Audio Recording). A click on a tile opens
+   its pane again.
+3. **The window says every grant is in and closes itself,** so it never covers the windows the demos work in.
+4. **Menu bar ⌘D > Grants and Pairing…, then Raise it now,** and answer Allow. The screen capture alert then never
    appears in the middle of a task. A window opened this way stays until you close it.
 
 The script notices the grants and goes on to the smoke check by itself. Opened by a person instead of the script, the
-window also waits for pairing: it closes once the Mac is paired, or after **Not now**.
+app shows its onboarding window once the grants are in, which waits for pairing: it closes once the Mac is paired, or
+after **Not now**.
 
 ## The demo tasks
 
 Five tasks, one per built-in app. They use the computer bench's mac-dev ids, so they become the bench's mac suite and
 the script for live QA's bundle 3. Each one is driven by `ui.observe` and `ui.act`, with its steps batched in one call
-where a person would do them in one go. It is checked through `ui.observe` or the file system, and needs no
-Automation grant.
+where a person would do them in one go.
+
+The mini is a person's own Mac with their own calendars, notes and files, so **a task leaves nothing behind and never
+touches anything it did not make.** Each task works in a sandbox named `AgentRun demo <run id>`: its own Calendar
+calendar, its own Notes folder, or its own folder under `/private/tmp/agentrun-demos`. Its window is found by its title
+and named in every call, so a person's own windows of the same app are never the target. AppleScript makes the
+sandbox and removes it, through Computerd's `exec.run`, not through the driver, so a broken driver cannot stop the
+cleanup. The teardown runs however the task ends (pass, failure, exception, Ctrl-C, SIGTERM; a stop signal during a
+teardown waits for it to finish). The calendar task's first teardown step is a driver step: escape closes Calendar's
+event inspector while its event is still there, since an inspector left open on a deleted event saves a new,
+untitled one when it is dismissed. The teardown then closes the windows and tabs on the task's files, and deletes the
+task's calendar, its Notes folder and their notes (Recently Deleted too), and its files. A run starts by sweeping any
+`AgentRun demo` sandbox an earlier run left, for example one killed in the middle of a task, along with that run's
+event if it was still in the default calendar. Only one run goes at a time on a Mac (a lock in `/private/tmp`), so a
+sweep never removes a live run's sandbox.
+
+Before each task the script takes a snapshot of what it can see. That's every calendar with its count of today's
+events, every Notes folder with its count of notes, the five apps' onscreen windows by id, and the sandbox root. It
+reads names, counts and ids, never what an event, note or file holds. After the teardown it takes the snapshot again,
+and any difference is the task's `left`. The run's last line is `5/5 pass, 0 left behind` only when every task passed
+and left nothing; otherwise it exits 1. The observations it writes have every name and value redacted to its length,
+unless it holds the run id or is a word the script looks for.
 
 | Task | App | What it does | How it is checked |
 | --- | --- | --- | --- |
-| mac.notes.new-note | Notes | press Continue on a first-run sheet, then super+n, type a title and a line, in one call | the note's line, then its title in the list |
-| mac.safari.follow-link | Safari | open a local page in the background, press the "Quarterly report" link by its ref, then the toolbar's Back button by its ref | the linked page's heading, then the first page's link |
-| mac.finder.rename-file | Finder | open a folder in the background, show it as a list, select draft.txt by its element, then rename it: enter, type "final", enter in the background, else the same with Finder brought forward. A file's name is an item that opens, not a field, so the driver refuses a set on it. Each way is judged by the disk, and the notes say which one renamed it | the folder holds final.txt and other.txt |
-| mac.textedit.edit-number | TextEdit | open totals.txt in the background, select all and type the text with 42, by keys first (the window marks it Edited), then save with super+s (the mark goes) | the saved file is the new text, the other lines kept |
-| mac.calendar.new-event | Calendar | press Add Event, then type a title into the quick event field and enter, in one call | the event's title on the calendar, and gone after Delete |
+| mac.notes.new-note | Notes | press Continue on a first-run sheet; open the task's folder by its cell; super+n, then type a title and a line, in one call | the note's line, its title in the list, and the folder holding it |
+| mac.safari.follow-link | Safari | open the task's local page in the background, press the "Quarterly report" link by its ref, then the toolbar's Back button by its ref | the linked page's heading, then the first page's link |
+| mac.finder.rename-file | Finder | open the task's folder in the background, show it as a list, select draft.txt by its element, then rename it: enter, type "final", enter in the background, else the same with Finder brought forward. A file's name is an item that opens, not a field, so the driver refuses a set on it. Each way is judged by the disk, and the notes say which one renamed it | the folder holds final.txt and other.txt |
+| mac.textedit.edit-number | TextEdit | open the task's totals file in the background, select all and type the text with 42, by keys first (the window marks it Edited), then save with super+s (the mark goes) | the saved file is the new text, the other lines kept |
+| mac.calendar.new-event | Calendar | press Add Event, type a title into the quick event field and enter; move the event into the task's calendar through the inspector's calendar menu; escape | the task's calendar holds the event |
+
+The sandbox needs Computerd's Automation grant for Calendar, Notes, Finder, TextEdit and Safari. Without it the script
+says which are missing and stops before it starts a task. To grant it, run the script once with `--ask-grants` while
+you are at the Mac and answer **OK** to each of the five prompts. They are listed afterwards in System Settings >
+Privacy & Security > Automation > Computerd. CI's runner has them seeded (`scripts/seed-tcc.sh`).
 
 ```sh
 python3 -I packages/computer/daemon-macos/scripts/mini-demos.py \
@@ -123,12 +151,12 @@ python3 -I packages/computer/daemon-macos/scripts/mini-demos.py \
 
 It writes these files under `/tmp/demos`:
 
-- `<task>.mp4`: the task recorded from `screen.watch`, with the current step written along the bottom. `frames-to-movie.swift` makes it, with AVFoundation, so Xcode is all it needs.
-- `demos.json`: every call with its latency in ms, the routes its steps took, and its expect.
-- `demos.md`: the table of tasks, calls, steps and ms.
+- `<task>.mp4`: the task recorded from `screen.watch`, with the current step written along the bottom. `frames-to-movie.swift` makes it, with AVFoundation, so Xcode is all it needs. The recording is the whole screen, the person's own windows included: `--no-movie` records nothing.
+- `demos.json`: every call with its latency in ms, the routes its steps took, its expect, and what each task left.
+- `demos.md`: the table of tasks, calls, steps, ms and what each left, then the run's line.
 
-Name one or more task ids to run only those. `--keep` leaves the note, event and files the tasks made. CI runs all
-five after the ui conformance cases, and reports them without failing the run.
+Name one or more task ids to run only those. CI runs all five after the ui conformance cases, and reports them without
+failing the run.
 
 ## When something is off
 

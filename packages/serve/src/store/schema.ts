@@ -1,4 +1,4 @@
-// The store's one schema, version 8 (design 2.1). Nothing migrates into it: the rewrite replaces the old stores, and a store
+// The store's one schema, version 10 (design 2.1). Nothing migrates into it: the rewrite replaces the old stores, and a store
 // an older build made is refused as a version this build does not know. The server sets it up once at its start (a
 // store_meta row holds the version); a runner refuses a version it does not know. Version 2 adds the computer ledger;
 // version 3 numbers each save of a sign-in (sign_ins.save); version 4 stamps an MCP token's end (mcp_servers.token_until);
@@ -6,7 +6,8 @@
 // stop from a cancel (runs.outcome 'stopped' or 'cancelled'); version 7 keeps a run's learning by round
 // (learning_proposals.round: a follow-up to a run that ended looks back again, a round of its own); version 8 adds the
 // run-change feed (run_changes), each channel post's tries (channel_attempts) and the claim a post's try settles under
-// (channel_posts.claim).
+// (channel_posts.claim); version 9 adds where a live viewer answers (computer_viewers.host, a runner's live host,
+// live-reach.ts); version 10 pairs a person's own computer (paired_computers, pairing_codes).
 // Conventions: every time is INTEGER epoch milliseconds; JSON is TEXT checked by json_valid; money is REAL US dollars;
 // sealed columns hold ciphertext only (sealed with the server's key outside the store), so the store never sees a secret
 // in the clear. Foreign keys are on (the connection's pragma).
@@ -18,7 +19,7 @@
 // journal tables, keyed by run_id (store/journal): one schema for every run's journal, so a query joins runs and their
 // journals.
 
-export const SCHEMA_VERSION = 8;
+export const SCHEMA_VERSION = 10;
 
 /** One answer per approval of a run: a second approve or deny command naming the same approval is refused
  *  (StoreConstraint), so the first answer a person gives wins from the moment it is written, before the runner takes it
@@ -321,6 +322,29 @@ export const STORE_DDL: readonly string[] = [
     updated_at INTEGER NOT NULL,
     PRIMARY KEY (provider, session_id)
   ) STRICT`,
+  // A person's own machine paired with this server (spec/computer/attach.md): its driver dials the attach socket with the
+  // token pairing gave it, of which only the SHA-256 is kept (hex). `hello`: the driver's hello at pairing, what it paired
+  // as; `driver`: the build its last hello named. `seen_at`: its last socket's hello; `revoked_at`: when it was removed,
+  // after which its token dials no more (the row stays, so a run that names it is told it was removed).
+  `CREATE TABLE IF NOT EXISTS paired_computers (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    ${json("hello")},
+    driver TEXT NOT NULL,
+    ${json("labels")},
+    token_sha256 TEXT NOT NULL UNIQUE,
+    pairing_id TEXT NOT NULL UNIQUE,
+    created_at INTEGER NOT NULL,
+    seen_at INTEGER,
+    revoked_at INTEGER
+  ) STRICT`,
+  // A pairing code, by its SHA-256 alone (hex): good once, until expires_at. A used one is deleted as it pairs. `id` names
+  // the pairing (not the code): the console that made it reads it back on the computer the code made (paired_computers.pairing_id).
+  `CREATE TABLE IF NOT EXISTS pairing_codes (
+    id TEXT NOT NULL UNIQUE,
+    code_sha256 TEXT PRIMARY KEY,
+    expires_at INTEGER NOT NULL
+  ) STRICT`,
   `CREATE TABLE IF NOT EXISTS learning (
     agent_id TEXT NOT NULL REFERENCES agents (id),
     key TEXT NOT NULL,
@@ -439,6 +463,7 @@ export const STORE_DDL: readonly string[] = [
     at INTEGER NOT NULL,
     runner TEXT NOT NULL,
     epoch INTEGER NOT NULL,
+    host TEXT,
     PRIMARY KEY (run_id, kind, tag)
   ) STRICT`,
 

@@ -231,7 +231,7 @@ export class FakeUiDriver implements UiSource {
 	async look(target: UiTarget | undefined): Promise<Result<UiView>> {
 		const id = target?.app ?? this.#front;
 		const touch = this.kind === "android" || this.kind === "ios";
-		// A phone reads only the app in front, as its accessibility dump does (phone-ui.ts): an app behind is not found.
+		// A phone reads only the app in front, as its accessibility tree does: an app behind is not found.
 		const front = this.#front ?? "home";
 		if (touch && target?.app !== undefined && target.app !== front) return fail("not_found", `${target.app} is not in front on this phone (${front} is): launch it with apps.launch first`);
 		if (id === undefined || (id === "home" && this.#front === undefined)) {

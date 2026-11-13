@@ -18,7 +18,7 @@ import {
   FINAL_STATES, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, type Learning, type LearningProposal, type LearningSpend, type Live, type LiveRow, type LiveViewerRow, type LiveViewers, type Mcp, type McpCredentialMark, type McpPinRow, type McpRemoved, type McpServerRow, type McpServerWrite,
   type McpOauth, type McpOauthPendingRow, type SealedKeyRow, type SealedKeys, type SealedSecretRow, type SealedSecrets, type Settings, type SettingRow, type TriggerSettingRow, type TriggerSettings, type Channels, type ChannelAttemptRow, type ChannelPostRow,
   RevisionMoved, SignInHandedTo, SignInMissing, type SignIns, type SignInRow, type SignInTombstoneRow, type ViewerKind,
-  type ComputerLedger, type ComputerLedgerRow, RUN_CHANGES_PAGE, type RunChangeCursor,
+  type ComputerLedger, type ComputerLedgerRow, type PairedComputerRow, type PairedComputers, RUN_CHANGES_PAGE, type RunChangeCursor,
 } from "../store.js";
 
 /** The seq a run-change cursor names (Runs.changedSince): only a cursor this store handed back, a whole number. */
@@ -170,6 +170,8 @@ type SealedKeyRecord = { name: string; sealed: Uint8Array; updated_at: number };
 const sealedKeyOf = (r: SealedKeyRecord): SealedKeyRow => ({ name: r.name, sealed: Uint8Array.from(r.sealed), updatedAt: r.updated_at });
 type ComputerLedgerRecord = { provider: string; session_id: string; labels: string; detail: string; updated_at: number };
 const ledgerRowOf = (r: ComputerLedgerRecord): ComputerLedgerRow => ({ provider: r.provider, sessionId: r.session_id, labels: JSON.parse(r.labels), detail: JSON.parse(r.detail), updatedAt: r.updated_at });
+type PairedRecord = { id: string; name: string; hello: string; driver: string; labels: string; pairing_id: string; created_at: number; seen_at: number | null; revoked_at: number | null };
+const pairedOf = (r: PairedRecord): PairedComputerRow => ({ id: r.id, name: r.name, hello: JSON.parse(r.hello), driver: r.driver, labels: JSON.parse(r.labels), pairingId: r.pairing_id, createdAt: r.created_at, seenAt: r.seen_at, revokedAt: r.revoked_at });
 type TriggerSettingRecord = { adapter: string; scope: string; field: string; sealed: string; updated_at: number };
 const triggerSettingOf = (r: TriggerSettingRecord): TriggerSettingRow => ({ adapter: r.adapter, scope: r.scope, field: r.field, sealed: r.sealed, updatedAt: r.updated_at });
 type McpOauthRecord = { state: string; server: string; sealed: Uint8Array; working: string | null; expires_at: number };
@@ -375,6 +377,7 @@ class SqliteStore implements Store {
   readonly settings: Settings;
   readonly sealedKeys: SealedKeys;
   readonly computerLedger: ComputerLedger;
+  readonly pairedComputers: PairedComputers;
   readonly triggerSettings: TriggerSettings;
   readonly channels: Channels;
   readonly mcpOauth: McpOauth;
@@ -1122,9 +1125,9 @@ class SqliteStore implements Store {
           const at = now();
           const fence = claimFence(claim, storeNow(d, () => at));
           const changed = await tx.runCounted(
-            `INSERT INTO computer_viewers (run_id, kind, tag, port, viewer_id, sealed, at, runner, epoch) SELECT id, ?, ?, ?, ?, ?, ?, ?, ? FROM runs WHERE ${fence.where}${d.shareLock}
-              ON CONFLICT (run_id, kind, tag) DO UPDATE SET port = excluded.port, viewer_id = excluded.viewer_id, sealed = excluded.sealed, at = excluded.at, runner = excluded.runner, epoch = excluded.epoch`,
-            viewer.kind, viewer.tag, viewer.port, viewer.id, viewer.sealed, at, claim.runner, claim.epoch, ...fence.params,
+            `INSERT INTO computer_viewers (run_id, kind, tag, host, port, viewer_id, sealed, at, runner, epoch) SELECT id, ?, ?, ?, ?, ?, ?, ?, ?, ? FROM runs WHERE ${fence.where}${d.shareLock}
+              ON CONFLICT (run_id, kind, tag) DO UPDATE SET host = excluded.host, port = excluded.port, viewer_id = excluded.viewer_id, sealed = excluded.sealed, at = excluded.at, runner = excluded.runner, epoch = excluded.epoch`,
+            viewer.kind, viewer.tag, viewer.host ?? null, viewer.port, viewer.id, viewer.sealed, at, claim.runner, claim.epoch, ...fence.params,
           );
           return changed > 0;
         }),
@@ -1141,12 +1144,12 @@ class SqliteStore implements Store {
       // The server's read: only the run's epoch, under a live lease on the store's clock, written by the run's runner.
       of: async (runId) => {
         const live = clock();
-        const rows = await db.all<{ kind: ViewerKind; tag: string; port: number; viewer_id: string; sealed: Uint8Array; at: number; runner: string }>(
-          `SELECT v.kind, v.tag, v.port, v.viewer_id, v.sealed, v.at, v.runner FROM computer_viewers v JOIN runs r ON r.id = v.run_id
+        const rows = await db.all<{ kind: ViewerKind; tag: string; host: string | null; port: number; viewer_id: string; sealed: Uint8Array; at: number; runner: string }>(
+          `SELECT v.kind, v.tag, v.host, v.port, v.viewer_id, v.sealed, v.at, v.runner FROM computer_viewers v JOIN runs r ON r.id = v.run_id
             WHERE v.run_id = ? AND v.epoch = r.epoch AND r.claimed_until >= ${live.sql} AND v.runner = r.runner ORDER BY v.at DESC, v.tag`,
           runId, ...live.params,
         );
-        return rows.map((row): LiveViewerRow => ({ kind: row.kind, tag: row.tag, port: row.port, id: row.viewer_id, sealed: new Uint8Array(row.sealed), at: row.at, runner: row.runner }));
+        return rows.map((row): LiveViewerRow => ({ kind: row.kind, tag: row.tag, ...(row.host !== null ? { host: row.host } : {}), port: row.port, id: row.viewer_id, sealed: new Uint8Array(row.sealed), at: row.at, runner: row.runner }));
       },
     };
 
@@ -1251,6 +1254,44 @@ class SqliteStore implements Store {
           sql: "UPDATE computer_ledger SET labels = ?, detail = ?, updated_at = ? WHERE provider = ? AND session_id = ? AND labels = ? AND detail = ?",
           params: [JSON.stringify(labels), JSON.stringify(detail), now(), provider, sessionId, JSON.stringify(was.labels), JSON.stringify(was.detail)],
         }]);
+        return (result?.changes ?? 0) === 1;
+      },
+    };
+
+    const PAIRED = "SELECT id, name, hello, driver, labels, pairing_id, created_at, seen_at, revoked_at FROM paired_computers";
+    this.pairedComputers = {
+      addCode: async (id, codeSha256, expiresAt) => {
+        await db.write([
+          { sql: "DELETE FROM pairing_codes WHERE expires_at <= ?", params: [now()] },
+          { sql: "INSERT INTO pairing_codes (id, code_sha256, expires_at) VALUES (?, ?, ?)", params: [id, codeSha256, expiresAt] },
+        ]);
+      },
+      // The code is burned and the computer written in one transaction: a code two drivers send at once pairs one.
+      pair: (codeSha256, computer) =>
+        db.transaction(async (tx) => {
+          const at = now();
+          const code = await tx.get<{ id: string }>("SELECT id FROM pairing_codes WHERE code_sha256 = ? AND expires_at > ?", codeSha256, at);
+          if (code === undefined || (await tx.runCounted("DELETE FROM pairing_codes WHERE code_sha256 = ? AND expires_at > ?", codeSha256, at)) !== 1) return false;
+          await tx.run(
+            "INSERT INTO paired_computers (id, name, hello, driver, labels, token_sha256, pairing_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            computer.id, computer.name, JSON.stringify(computer.hello), String(computer.hello.version ?? ""), JSON.stringify(computer.labels), computer.tokenSha256, code.id, at,
+          );
+          return true;
+        }),
+      get: async (id) => {
+        const row = await db.get<PairedRecord>(`${PAIRED} WHERE id = ?`, id);
+        return row === undefined ? undefined : pairedOf(row);
+      },
+      byToken: async (tokenSha256) => {
+        const row = await db.get<PairedRecord>(`${PAIRED} WHERE token_sha256 = ? AND revoked_at IS NULL`, tokenSha256);
+        return row === undefined ? undefined : pairedOf(row);
+      },
+      list: async () => (await db.all<PairedRecord>(`${PAIRED} WHERE revoked_at IS NULL ORDER BY created_at, id`)).map(pairedOf),
+      seen: async (id, hello) => {
+        await db.write([{ sql: "UPDATE paired_computers SET seen_at = ?, hello = ?, driver = ? WHERE id = ? AND revoked_at IS NULL", params: [now(), JSON.stringify(hello), String(hello.version ?? ""), id] }]);
+      },
+      revoke: async (id) => {
+        const [result] = await db.write([{ sql: "UPDATE paired_computers SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL", params: [now(), id] }]);
         return (result?.changes ?? 0) === 1;
       },
     };

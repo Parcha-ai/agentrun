@@ -555,3 +555,19 @@ test("queued scrolls are combined only when they are at the same point with the 
   assert.equal(c.ws.closedWith(), null);
   c.ws.destroy();
 });
+
+test("a live view on another host than its host's server: it listens on the address given and names that host in the viewer's link; admit refuses a page or an upgrade it does not take, before any WebSocket", { skip: process.platform === "linux" ? false : "127.0.0.2 answers as loopback on Linux alone" }, async (t) => {
+  const r = await rig(t, { listen: { bind: "127.0.0.2", host: "127.0.0.2" }, admit: (req) => req.headers["x-admit"] === "yes" });
+  const u = new URL(r.url);
+  assert.equal(u.hostname, "127.0.0.2");
+  assert.equal(r.origin, `http://127.0.0.2:${u.port}`);
+  const page = (headers) => new Promise((resolve, reject) => http.get({ host: "127.0.0.2", port: u.port, path: u.pathname, headers }, (res) => { res.resume(); resolve(res.statusCode); }).on("error", reject));
+  assert.equal(await page({}), 403);
+  assert.equal(await page({ "x-admit": "yes" }), 200);
+  assert.equal((await connect(r.wsUrl, { origin: r.origin })).status, 403, "not admitted: no WebSocket");
+  const c = await connect(r.wsUrl, { origin: r.origin, headers: { "x-admit": "yes" } });
+  assert.equal(c.status, 101);
+  c.ws.sendJson(hello(r.token));
+  assert.equal(JSON.parse((await c.ws.next()).data).type, "ready");
+  c.ws.destroy();
+});

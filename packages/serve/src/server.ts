@@ -36,7 +36,7 @@ import { IMPORT_ASKED } from "./import.js";
 import type { ImportAnswer, ImportTask } from "./import-worker.js";
 import { answerStoreCall, type StoreCall } from "./import-proxy.js";
 import { gradeModelOf, LEARNING_LABEL, learningBudgetOf, type LearningMode, learningOf, learnsOf, RUN_LEARNING_USE, seedOf } from "./learning.js";
-import { agentLearning, learningLog, learningNotes, noteBody, pendingCount, promotable, readNote, secretsShown, sendNote, statusesOf, writeNote } from "./learning-routes.js";
+import { agentLearning, learningLog, learningNotes, noteBody, pendingCount, promotable, readNote, secretsShown, sendNote, statusesOf, workflowRevisions, writeNote } from "./learning-routes.js";
 import type { DraftDecisions } from "./learn/skills.js";
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
 import { openapiDocument, servedOpenapi, UNSUPPORTED } from "./openapi.js";
@@ -46,9 +46,10 @@ import { dockerLimitsOf } from "./workspace/computer-deps.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { answerPage, byOwnerSession, ConsoleSessions, heldSessions, isJson, overHttps, ownerCookie, ownOrigin, sendHostRefused, signedIn } from "./page.js";
 import { hostFix, hostName, loopbackNames } from "./host-check.js";
-import { computerViewerLink, familyReaches, type LiveFamily, liveViewerById, liveViewerFor, liveViewerLink, OpenViewers, proxyLiveUpgrade, serveViewerFile } from "./browser-live.js";
+import { computerViewerLink, familyReaches, type LiveFamily, type LiveHandover, liveViewerById, liveViewerFor, liveViewerLink, OpenViewers, proxyLiveUpgrade, serveViewerFile, viewerAnswers } from "./browser-live.js";
 import { browserHandBack, handBackTarget } from "./browser-commands.js";
 import { type ComputerOf, computerView } from "./computer-view.js";
+import { liveReachOf } from "./live-reach.js";
 import { screenWaitEnded } from "./browser-wait-ended.js";
 import { durationMs, logLine } from "./print.js";
 import { type RunMoment, type State, type Status } from "./run-view.js";
@@ -91,6 +92,7 @@ import { DRAIN_TIMEOUT } from "./runner/beside.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
 import { agentCostOverStore, agentLearningOverStore, learningCountsOverStore, learningSpendOverStore } from "./store-reads/learning.js";
 import { costCsv, learningCostQuery } from "./learning-cost.js";
+import { evalOf, evalsOf, recordEval } from "./learning-evals.js";
 import { keyOf, SEAL_KEY_ENV, TOOL_FIELDS } from "./tool-keys.js";
 import { toolKeysOverStore } from "./tool-keys-store.js";
 import { SIGN_INS_DIR, vendorsOver } from "./sign-ins.js";
@@ -127,14 +129,16 @@ import { readApprovers, writeApprovers } from "./server-approvers.js";
 import type { DraftAsk } from "./learn/skills.js";
 import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./uploads.js";
 import { entryAt, listFiles, sendFile as sendWorkspaceFile, viewOf } from "./run-files.js";
-import { COMPUTER_ROUTES, computerHoldOf, computerRoute } from "./computer-routes.js";
-import { PROVIDERS as COMPUTER_PROVIDERS, SETTING_KINDS, servingRefusals } from "@parcha/agentrun-computer";
+import { COMPUTER_ROUTES, computerHoldOf, computerRoute, runViewedKind } from "./computer-routes.js";
+import { ATTACH_PATH, AttachHub, PROVIDERS as COMPUTER_PROVIDERS, SETTING_KINDS, servingRefusals } from "@parcha/agentrun-computer";
+import { createAttachRoutes, pairedView } from "./computer-attach.js";
+import { pairedRefusal, withPaired } from "./workspace/attached-computers.js";
 import { COMPUTER_TOOLS, hostToolDefs } from "@parcha/agentrun-kernel/kernel";
 import { archilRoute, createArchilRoutes, liveRunsOnDisk } from "./archil-routes.js";
 import { agentDiskOf, ARCHIL_DISK_ID, archilSettingsFromEnv, inArchilMode } from "./archil-settings.js";
 import { computerOfPlace, type ComputerKind, type ComputerSetting, type PlaceView } from "./computer-setting.js";
 import { computerCapabilities, type ComputerRoutes, createComputerRoutes, folderModeOf, hostCommandRefusals, type KindRegistry, settingsComputerRoute } from "./computers.js";
-import { FAUX_VIEW_PATH, type FauxComputers, fauxComputers } from "./faux-computers.js";
+import { type FauxComputers, fauxComputers } from "./faux-computers.js";
 import { runComputerField } from "./run-computer.js";
 import { writesHeld } from "./workspace.js";
 import { agentComputerOf, agentComputerView, agentHomeFolder, claimKinds, computerProviderFactories, computerProviderMakers, computerReadiness, dockerHostAddressesOf, isWorkspaceError, localWorkspace, reconcileAgentComputer, runShellOf, serverRunWorkspace, type ShellPlace, storeLedger, type Workspace } from "./workspace/index.js";
@@ -353,6 +357,9 @@ export function fauxEnvOf(options: ServeOptions): NodeJS.ProcessEnv {
 /** `launchCode`: with no accounts, the code of the console's link this start prints (`/?launch=<code>`), which gives the
  *  browser that opens it a console session (page.ts ConsoleSessions). */
 export type Serve = { url: string; baseUrl: string; port: number; token: string; tokenFile: string | null; tokenMade: boolean; setupUrl?: string; setupOpen?: boolean; launchCode?: string; boxesLine: string; close(): Promise<void>;
+  /** The live sockets of the computers paired with this server (computer-attach.ts): a runner beside the server in this
+   *  process takes it (runner/beside.ts), so its runs can use them. */
+  attachHub: AttachHub;
   /** Whether this server is a local install (listening on loopback, reached at no address off it): the one kind whose own
    *  runner beside it may reach an MCP server's URL on loopback (runner/beside.ts mcpLoopback). Only that runner is told:
    *  it is this process's finding, never a store's, so another host's runner on a shared store never inherits it. */
@@ -442,6 +449,13 @@ export const ROUTES: readonly Route[] = [
   { method: "GET", pattern: /^\/computers$/, name: "listComputers" },
   { method: "PUT", pattern: /^\/computers\/([^/]+)\/keys$/, name: "saveComputerKeys" },
   { method: "POST", pattern: /^\/computers\/([^/]+)\/test$/, name: "testComputer" },
+  // A person's own computer paired with this server (computer-attach.ts): the owner's code, the driver's trade of it for
+  // its token (no token of the server's: the code is the credential), the attach socket (a WebSocket: the server's
+  // upgrade takes it; a plain GET is told so), and a computer's removal.
+  { method: "POST", pattern: /^\/computers\/pairings$/, name: "createPairing" },
+  { method: "POST", pattern: /^\/computers\/pair$/, name: "pairComputer" },
+  { method: "GET", pattern: /^\/computers\/attach$/, name: "attachComputer" },
+  { method: "DELETE", pattern: /^\/computers\/([^/]+)$/, name: "deleteComputer" },
   { method: "GET", pattern: /^\/workspace\/archil$/, name: "getWorkspaceArchil" },
   { method: "PUT", pattern: /^\/workspace\/archil$/, name: "putWorkspaceArchil" },
   { method: "DELETE", pattern: /^\/workspace\/archil$/, name: "deleteWorkspaceArchil" },
@@ -502,6 +516,8 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/mcp$/, name: "callMcp" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning$/, name: "getAgentLearning" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/cost$/, name: "getLearningCost" },
+  { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/evals$/, name: "listLearningEvals" },
+  { method: "POST", pattern: /^\/agents\/([^/]+)\/learning\/evals$/, name: "recordLearningEval" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/notes$/, name: "listLearningNotes" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/log$/, name: "listLearningLog" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/files\/([^/]+)$/, name: "readLearningFile" },
@@ -509,6 +525,7 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/agents\/([^/]+)\/learning\/files\/([^/]+)\/retire$/, name: "retireLearningFile" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/learning\/files\/([^/]+)\/approve$/, name: "approveLearningFile" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/learning\/files\/([^/]+)\/restore$/, name: "restoreLearningFile" },
+  { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/workflows\/([^/]+)\/revisions$/, name: "listLearnedWorkflowRevisions" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/learning\/workflows\/([^/]+)\/promote$/, name: "promoteLearnedWorkflow" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/learning$/, name: "getRunLearning" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/learning\/diff$/, name: "getRunLearningDiff" },
@@ -870,6 +887,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     ...(options.onStoreLost ? { onOwnerLost: options.onStoreLost } : {}),
   }), (error) => onSqlite && error instanceof StoreOwned, replacedUntil, waitingForReplaced);
   stops.push(() => store.close());
+  // The person's own computers paired with this server (computer-attach.ts): their live sockets are this process's hub,
+  // which the runner beside the server shares (Serve.attachHub), so one process holds them. A second server on this
+  // store is refused above (its owner lock).
+  const attachHub = new AttachHub();
+  const attach = createAttachRoutes({ store, hub: attachHub, log: (event, fields) => (log ? log(logLine(event, fields)) : void process.stderr.write(`agentrun-serve: ${logLine(event, fields)}\n`)) });
   // The data root's own lock, once the store is held (so a deploy on Postgres waits at the store's owner lock first): the
   // store's lock holds one store, but the data root also holds what the server writes beside it (its token, its seal key,
   // uploads, harness installs, learning folders), which two servers on two stores (two Postgres schemas, or SQLite and
@@ -1021,6 +1043,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const adapters = options.triggerAdapters ?? TRIGGER_ADAPTERS;
   const openapi = openapiDocument((operationId) => ROUTES.find((r) => r.name === operationId)?.capability, adapters);
   const sealKey = seal.key;
+  // Its runners on other hosts (AGENTRUN_RUNNER_HOSTS): a viewer's row naming one of their hosts is dialled there, with
+  // the proxy's proof under the seal key (live-reach.ts); any other host is never dialled.
+  const reach = liveReachOf(env, sealKey);
+  const answers = (handover: LiveHandover): Promise<boolean> => viewerAnswers(handover, reach);
   // Settings → Computers and the owner's Archil settings, over the one store (computers.ts, archil-routes.ts), built once
   // at the first request, when the server's own address is known (--faux's desktop view is a page on it). The real kind
   // registry and each provider's create() are the computer package's (kinds.ts, providers.ts providerFor); under --faux,
@@ -1032,7 +1058,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     kind === "none" ? [] : kind === "sandbox" ? hostToolDefs({ maxExecS: 600, shell: "computer" }).map((def) => def.name).filter((name) => !localTools.has(name))
       : kind === "browser" ? browserToolNames : [...COMPUTER_TOOLS];
   let faux: FauxComputers | undefined;
-  const fauxOf = (): FauxComputers => (faux ??= fauxComputers({ viewerBase: ownOriginOf() }));
+  const fauxOf = (): FauxComputers => (faux ??= fauxComputers());
   /** Whether a computer on a provider that binds a folder of this machine (Docker) can be had here now: Settings →
    *  Computers' view and a run's start check (below) both ask it. Where AGENTRUN_BOXES lists Docker and it is no faux
    *  Docker, its daemon is asked (docker-daemon.ts: a short `docker version`, its answer kept a while and asked again, so a
@@ -1058,6 +1084,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const hostWhy = hostCommandRefusals(COMPUTER_PROVIDERS, process.env.PATH);
   const computersOf = (): ComputerRoutes => (computerRoutes ??= createComputerRoutes({
     store, sealKey, tools: kindTools, mode: folderModeOf(store, process.env), env: process.env,
+    paired: { rows: () => store.pairedComputers.list(), viewOf: (row, serves) => pairedView(row, attachHub, serves) },
     ...(options.faux
       // --faux's providers stand in for every vendor's, a local one's daemon included.
       ? { kinds: fauxOf().kinds, factories: fauxOf().factories, keyTable: fauxOf().keyTable }
@@ -1071,19 +1098,29 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   }));
   /** Whether an agent's computer setting can be had here now, by the answers the runner's claim gives (resolve-computer.ts
    *  computerReadiness): over the registry the claim reads (workspace/computer-deps.ts claimKinds, asked with what the
-   *  runner composes with: runner/main.ts gives it no faux, so the package's, under --faux too), in the folder mode of
-   *  now, with keys read as the runner reads them (the secrets this process was started with, withSecrets "own", as
+   *  runner composes with: under --faux, faux's, as runner/main.ts runnerComputers gives its runs' faux; else the
+   *  package's), in the folder mode of now, with keys read as the runner reads them (the secrets this process was started with, withSecrets "own", as
    *  runner/main.ts runEnv hands them; else the saved one). What runnable.ts checks for an agent with
    *  a computer setting, in place of the box check; whether Docker answers here is dockerAnswers', and whether a
    *  provider's program is on this machine is hostWhy's, read at the start. */
   /** The server's folder mode now: 2 when the owner's Archil settings are saved (the run's folder on the disk), else 1. */
   const modeNow = async (): Promise<1 | 2> => ((await folderModeOf(store, process.env)()) === "disk" ? 2 : 1);
-  const computerReady = async (setting: { kind: string; provider?: string; image?: string; gpu?: { type: string; count: number } }) =>
-    computerReadiness(setting, await modeNow(), claimKinds({}), keyReader(store, sealKey, own(withSecrets(process.env, "own"))), dockerAnswers, boxAllow, (provider) => (Object.hasOwn(hostWhy, provider) ? hostWhy[provider] : undefined));
+  /** The registry a run's claim resolves against (claimKinds), as its runner composes it. */
+  const claimRegistry = () => claimKinds(options.faux ? { faux: fauxOf() } : {});
+  // A paired computer is one more provider of the registry (workspace/attached-computers.ts), ready while its driver is
+  // attached to this process's hub.
+  const computerReady = async (setting: { kind: string; provider?: string; image?: string; gpu?: { type: string; count: number } }) => {
+    const paired = await store.pairedComputers.list();
+    const row = paired.find((one) => one.id === setting.provider);
+    const offline = row ? pairedRefusal(row, attachHub) : undefined;
+    if (offline) return { refused: offline };
+    return computerReadiness(setting, await modeNow(), withPaired(claimRegistry(), paired), keyReader(store, sealKey, own(withSecrets(process.env, "own"))), dockerAnswers, boxAllow, (provider) => (Object.hasOwn(hostWhy, provider) ? hostWhy[provider] : undefined));
+  };
   /** Where a run of an agent with computer `setting` has its shell here now (resolve-computer.ts runShellOf, in the
    *  folder mode of now, over the registry the claim reads): what runnable.ts lets a sandbox-only tool on the runner by,
    *  and capabilities show bash by. In Mode 2 a run with no computer has bash on Archil's serverless exec. */
-  const shellOf = async (setting: { kind: string; provider?: string; image?: string }) => runShellOf(setting, await modeNow(), claimKinds({}));
+  const shellOf = async (setting: { kind: string; provider?: string; image?: string }) =>
+    runShellOf(setting, await modeNow(), setting.provider === undefined ? claimRegistry() : withPaired(claimRegistry(), await store.pairedComputers.list()));
   /** The shell this server can give a template's agent now (templates.ts pickComputer's `shell`), by the rules a run
    *  has it by (shellOf): Archil's serverless exec on the runner in Mode 2 (bash alone); else the box a new agent is saved
    *  with (Docker), where it answers now (computerReady asks the daemon, not the start's offers: a Docker stopped since
@@ -1297,7 +1334,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     withheld: (_store, runId) => withheldOverStore(store, runId, viewDepsFor(ownOriginOf())),
     cutValues: (_store, runId) => runCutValues({ serverSecrets, signIns }, store, runId),
     context: ctx,
-    liveViewer: (runId: string) => liveViewerLink(store, sealKey, runId),
+    liveViewer: (runId: string) => liveViewerLink(store, sealKey, runId, answers),
   };
   // The run timeline reader over the store (run-reads-over-store runTimelines): one change-numbered RowLog per run, synced
   // from its journal (store-reads) on each read, its view (viewOverStore) for status/state/cost and whether it is final.
@@ -2522,6 +2559,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const answer = await receivePush({ adapters, hooked: (id) => triggers.hookSource(id), ...(options.hookBodyMs !== undefined ? { bodyMs: options.hookBodyMs } : {}), ignored: (id, eventId) => triggers.ignored(id, eventId), listening: (kind) => triggers.listening(kind), notice: async (adapterId, event, body) => (adapterId === "github" && event === "installation" ? githubConnect.installationEvent(body, (detail) => triggers.turnOff("github", detail)) : undefined), receive: (id, eventId, payload, attrs) => triggers.receive(id, eventId, payload, attrs), scoped: (kind, scope) => triggers.scoped(kind, scope), setting: (adapterId, scope, field) => triggerSettings.get(adapterId)?.get(scope, field), refused: authFailed, say: (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`)) }, req, /^\/hooks\/([^/]+)$/.exec(path)![1]!);
       return send(res, answer.status, answer.body, answer.headers ?? {});
     }
+    // A paired computer's driver trading its pairing code for its token: the code is its credential (computer-attach.ts),
+    // limited by source address before anything in the body is checked.
+    if (found.name === "pairComputer") return send(res, 201, await attach.pair(await bodyOf(req), clientOf(req)), { "cache-control": "no-store" });
     // An MCP server's OAuth sign-in: the browser coming back from its authorization server carries no token (the state
     // it brings is the check, mcp-oauth.ts), and the client metadata document is for that server to fetch.
     if (found.name === "mcpOAuthCallback") {
@@ -2828,15 +2868,18 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // liveViewerLink/computerViewerLink, under the seal key); who drives, from the cut's computerHoldOf over the store.
         const hold = await computerHoldOf(store, run.id);
         const kept = await keptBrowserOf(store, run.id);
+        // A desktop or a phone (the run's revision's computer) whose screen is not open now is still the run's computer:
+        // none with its kind, never off as if the agent had none (#2170).
+        const viewed = family === "computer" ? await runViewedKind(store, run.id) : undefined;
         const view = await computerView({
           viewer: async () => {
             if (family === "browser") {
-              const link = await liveViewerLink(store, sealKey, run.id);
+              const link = await liveViewerLink(store, sealKey, run.id, answers);
               return link === undefined ? undefined : { kind: "browser" as const, viewer: link.viewer };
             }
-            return computerViewerLink(store, sealKey, run.id);
+            return computerViewerLink(store, sealKey, run.id, answers);
           },
-          computer: () => computerOf(kept, env, family),
+          computer: () => (viewed ? { kind: viewed } : computerOf(kept, env, family)),
           hold: () => hold,
           // A going run's browser let go while it waited for its person: the Screen tab says so, with when. One settings
           // row (browser-wait-ended.ts), never the run's journal: this is read on every Screen poll.
@@ -2874,6 +2917,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         }, store, { context: ctx });
         return send(res, 200, answer, { "cache-control": "no-store" });
       }
+      case "createPairing":
+        return send(res, 201, await attach.createPairing(), { "cache-control": "no-store" });
+      case "attachComputer":
+        throw new ApiError("bad_request", `${ATTACH_PATH} is the attach WebSocket: a paired computer's driver dials it with Upgrade: websocket and its own token`);
+      case "deleteComputer":
+        await attach.remove(id);
+        return void res.writeHead(204, { "cache-control": "no-store" }).end();
       case "listComputers":
       case "saveComputerKeys":
       case "testComputer": {
@@ -3158,6 +3208,22 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         }
         return send(res, 200, { agent: id, ...cost });
       }
+      case "listLearningEvals": {
+        await needAgent(id);
+        // The agent's eval records (learning-evals.ts), newest first, the latest the one shown: only ever what was posted.
+        const evals = await evalsOf(store, id);
+        return send(res, 200, { agent: id, latest: evals[0] ?? null, evals });
+      }
+      case "recordLearningEval": {
+        const body = await bodyOf(req);
+        await needAgent(id);
+        const answer = await idempotent(req, `/agents/${id}/learning/evals`, body, async () => {
+          const result = evalOf(body, new Date());
+          await recordEval(store, id, result);
+          return { status: 201, body: result };
+        });
+        return send(res, answer.status, answer.body, answer.headers);
+      }
       case "listLearningNotes":
       case "listLearningLog":
         await needAgent(id);
@@ -3167,6 +3233,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           return send(res, 200, await learningNotes(data, id, url.searchParams, await learningShown(id), notes));
         }
         return send(res, 200, await learningLog(data, id, url.searchParams, await learningShown(id)));
+      case "listLearnedWorkflowRevisions":
+        await needAgent(id);
+        return send(res, 200, await workflowRevisions(data, id, second!, url.searchParams, await learningShown(id)));
       case "readLearningFile":
         await needAgent(id);
         return sendNote(res, 200, await readNote(data, id, second!, await learningShown(id)));
@@ -3327,7 +3396,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // them), a /browser/live path a browser's alone (familyReaches).
     const handover = await liveViewerFor(store, sealKey, runId, rest);
     if (handover === undefined || !familyReaches(family, handover)) throw new ApiError("not_found", `this run's ${family} has no live view at that address`);
-    await serveViewerFile(req, res, rest);
+    // A desktop's or a phone's viewer gets the computer viewer's page (computer-viewer.ts), a browser's pi-browser's.
+    await serveViewerFile(req, res, rest, (handover.kind ?? "browser") === "browser" ? "browser" : "computer");
   }
 
   /** The origin of the address people open (`publicUrl`, AGENTRUN_PUBLIC_URL), lowercased; none, undefined. */
@@ -3381,14 +3451,6 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (raw === MCP_PATH) return void mcp(req, res).catch(fail);
     if (raw === "/llms.txt") return void answerLlms(req, res).catch(fail);
     if (answerPage(req, res, raw, { token, authFailed, console: options.console, takesBytes, ...(owner ? { owner } : {}), ...(consoleSessions ? { sessions: consoleSessions } : {}), ...(options.publicUrl ? { publicUrl: options.publicUrl } : {}) })) return;
-    // Under --faux only: a faux desktop's live view, a page on this server's own address (faux-computers.ts viewPage), so
-    // a run's take-over has a viewer to open in the console's real-browser flows. Gone after the computer's release.
-    if (options.faux && raw.startsWith(`${FAUX_VIEW_PATH}/`)) {
-      const page = fauxOf().viewPage(raw);
-      if (page === undefined) return fail(new ApiError("not_found", `no faux desktop at ${raw}`));
-      res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }).end(req.method === "HEAD" ? undefined : page);
-      return;
-    }
     if (!raw.startsWith("/v2/")) return fail(new ApiError("not_found", `no route ${raw}; the API is under /v2`));
     // A run's id needs no decoding: one that is not an id as sent (a stray or malformed escape) is no run's, and is never
     // decoded here, where a throw would leave the request listener.
@@ -3410,8 +3472,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // address sends its own name as Origin too, which the Origin check below would take, so its Host is what gives it
     // away. Its name alone, on any port, as the HTTP routes check it.
     if (names && !names.has(hostName(req.headers.host) ?? "")) return deny("403 Forbidden");
-    // API-only: a run's live view is the console's, and refused with it.
+    // API-only: a run's live view is the console's, and refused with it; so are paired computers (Settings).
     if (options.apiOnly) return deny("404 Not Found");
+    // A paired computer's driver dialing its attach socket (computer-attach.ts): its token, not the owner's, lets it in.
+    if (raw === ATTACH_PATH) {
+      return attach.upgrade(req, socket, head, (status, words = "", headers = {}) => {
+        if (status.startsWith("401")) authFailed(raw, "attach_token");
+        const lines = Object.entries({ ...headers, "content-type": "text/plain; charset=utf-8", "content-length": String(Buffer.byteLength(words)) }).map(([name, value]) => `${name}: ${value}\r\n`).join("");
+        socket.end(`HTTP/1.1 ${status}\r\nConnection: close\r\n${lines}\r\n${words}`);
+      });
+    }
     if (!viewing || !ID.test(viewing[1]!) || !/^\/v\/[A-Za-z0-9_-]{22}\/ws$/.test(viewing[3]!)) return deny("404 Not Found");
     // A browser always sends its page's origin on a WebSocket, which no other page's script can forge: this server's own
     // (as this request reaches it, or its public address, which a TLS proxy that rewrites Host or drops
@@ -3436,7 +3506,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const admitted = () => held.some((value) => owner.valid(value));
       if (!admitted()) return deny("401 Unauthorized");
       viewers.watch(socket, admitted);
-      proxyLiveUpgrade(req, socket, head, handover, viewing[3]!, () => { piping = true; });
+      proxyLiveUpgrade(req, socket, head, handover, viewing[3]!, () => { piping = true; }, reach);
     })().catch(() => (piping ? void socket.destroy() : deny("500 Internal Server Error")));
   });
   const first = options.port ?? DEFAULT_PORT;
@@ -3713,6 +3783,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     await webhooks.close();
     // An upgraded socket is no connection closeAllConnections ends, and server.close waits for it.
     viewers.close();
+    await attach.close();
     await new Promise((done) => (server.close(done), server.closeAllConnections()));
     await mcpStopped;
     await githubStopped;
@@ -3733,6 +3804,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     ...(setupUrl ? { setupUrl, setupOpen: openSetup } : {}),
     ...(consoleSessions ? { launchCode: consoleSessions.code } : {}),
     boxesLine: boxesLine(boxOffers, enabledBoxes(env), boxAllow, boxesByDefault(env)),
+    attachHub,
     localInstall,
     // Once: a second call, at any time, is the first one's promise, so a close repeated after the next server started
     // never writes this data root's record again (the next server's, by then).

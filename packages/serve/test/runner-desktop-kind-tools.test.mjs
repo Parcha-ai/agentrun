@@ -36,7 +36,7 @@ const DENY_DESKTOP = { desktop: { permission: "deny" } };
 const CLICK = { steps: [{ click: [10, 10] }] };
 
 /** The runner's one composer over --faux's computers: a faux desktop for a claim whose agent names one. */
-const fauxComposer = ({ store, sealKey }) => computerDepsFrom({ env: {}, store, sealKey, faux: fauxComputers({ viewerBase: "http://127.0.0.1:9" }) });
+const fauxComposer = ({ store, sealKey }) => computerDepsFrom({ env: {}, store, sealKey, faux: fauxComputers() });
 const callOf = (spec, name) => spec.session.tools.find((tool) => tool.name === name);
 const ctx = (callId) => ({ callId, signal: new AbortController().signal, attempt: 0 });
 

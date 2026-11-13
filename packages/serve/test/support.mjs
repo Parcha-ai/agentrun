@@ -24,7 +24,7 @@ import { maxRunsOf } from "../dist/host.js";
 import { claimInstallsStopped } from "../dist/harness-install.js";
 import { runnerMemory } from "../dist/runner/memory-claim.js";
 import { dispatchRunner } from "../dist/runner/harness-loops.js";
-import { computerDepsFrom } from "../dist/workspace/index.js";
+import { runnerComputers } from "../dist/runner/main.js";
 import { routeOf } from "../dist/runner/model-route.js";
 import { withoutFaux } from "../dist/model.js";
 import { runLine } from "../dist/print.js";
@@ -305,8 +305,9 @@ const FAST_MODEL_RETRY = { retry: { enabled: true, maxRetries: 8, baseDelayMs: 1
  *  harnesses' sizes the host's memory holds together (memory-claim.ts runnerMemory), as the CLI's runner does; a run past
  *  either waits queued. Returns a close() that
  *  stops the runner and closes its store handle, and whose `beats()` counts the runner's polls and renewal passes
- *  (RunnerOptions.onBeat), so a test can wait for polls to pass without a clock. */
-export async function startInProcessRunner(data, { faux, githubApi, githubWeb, githubMcpOrigin, gradeTimeoutMs, computerForClaim, harnessLocks, runnerTiming, modelRetry = FAST_MODEL_RETRY, log, failRunsUpdate, fauxVendorApi, ...switches } = {}) {
+ *  (RunnerOptions.onBeat), so a test can wait for polls to pass without a clock. `computers`: a test's kind registry and
+ *  provider loader for the run's claim-time computer. */
+export async function startInProcessRunner(data, { faux, githubApi, githubWeb, githubMcpOrigin, gradeTimeoutMs, computerForClaim, computers: own, harnessLocks, runnerTiming, modelRetry = FAST_MODEL_RETRY, log, failRunsUpdate, fauxVendorApi, ...switches } = {}) {
   const opened = await openSqliteStore({ dataDir: data, role: "runner" });
   // The runner's store, as a crash would leave its writes: once kill() has run, a journal commit of its loops never
   // lands while the test runs (a dead process writes nothing more), and fails when the runner's handle is closed.
@@ -360,11 +361,12 @@ export async function startInProcessRunner(data, { faux, githubApi, githubWeb, g
     await store.close();
     throw error;
   }
-  // The run's claim-time computer, composed once the one way (workspace/computer-deps.ts computerDepsFrom): none for the
-  // runner's place, the real kinds otherwise, keys read from this env then the store's sealed rows; a Docker computer's
-  // mounts by where the Docker has the data directory, as the CLI's runner reads it (box-paths.ts dockerPathsForRuns).
+  // The run's claim-time computer, composed once the one way, as the CLI's runner composes it (main.ts runnerComputers, a
+  // desktop's or a phone's live view with it): none for the runner's place, the real kinds otherwise, keys read from this
+  // env then the store's sealed rows; a Docker computer's mounts by where the Docker has the data directory, as the CLI's
+  // runner reads it (box-paths.ts dockerPathsForRuns). `computers`: a test's kind registry and provider loader.
   const sealKey = seal.key;
-  const computers = computerDepsFrom({ env, store, sealKey, dockerPaths: () => dockerPathsForRuns(env, data), hostAddresses: () => hostAddressesOnce(env) });
+  const computers = runnerComputers(store, env, sealKey, { dockerPaths: () => dockerPathsForRuns(env, data), hostAddresses: () => hostAddressesOnce(env), ...own });
   let runner;
   let beats = 0;
   try {

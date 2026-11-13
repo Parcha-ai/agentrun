@@ -2,15 +2,16 @@ import { type KeyboardEvent, type PointerEvent, useEffect, useMemo, useRef, useS
 import { Bone } from "@/components/Skeleton";
 import { problem, ProblemCard } from "@/components/learningProblem";
 import type { Client } from "@/lib/client";
-import { level, nearest, PATHS, pathOf, plotted, type Point, rollingMean, runTicks, usd, windowOf, yTopOf } from "@/lib/costPerRun";
+import { type Block, blockSizeOf, blocksOf, level, nearest, PATHS, pathOf, pct, plotted, type Point, rollingMean, runTicks, timesOf, usd, windowOf, yTicksOf, yTopOf } from "@/lib/costPerRun";
 import { when } from "@/lib/format";
 import { cn } from "@/lib/utils";
-import type { LearningCost } from "@/lib/v2";
+import type { CostRun, LearningCost } from "@/lib/v2";
 
 // An agent's cost per run, run after run (GET /v2/agents/{id}/learning/cost): every run's all-in $ (its own cost and what
 // learning spent for it) as a faint dot coloured by the path it took, a rolling mean through them, the agent's level
 // before learning as a dashed line, a marker where a learned workflow first finished a run alone, and the level held
 // after it, with "N times cheaper" once 20 runs or more stand behind it. One y axis, in dollars; a table of every run.
+// Under it, on the same run axis, the execution mix: in blocks of runs, the share each path took.
 
 /** How many runs the chart reads: the server's default. */
 const LIMIT = 1000;
@@ -45,10 +46,10 @@ export function CostChart({ data, on, width: fixed }: { data: LearningCost; on: 
   const window = windowOf(points.length);
   const mean = useMemo(() => rollingMean(points, window), [points, window]);
   const { summary: s } = data;
-  const box = useRef<HTMLDivElement>(null);
+  const fig = useRef<HTMLElement>(null);
   const [room, setRoom] = useState(fixed ?? 720);
   useEffect(() => {
-    const el = box.current;
+    const el = fig.current;
     if (fixed || !el || typeof ResizeObserver === "undefined") return;
     const ro = new ResizeObserver(([e]) => { if (e && e.contentRect.width > 0) setRoom(e.contentRect.width); });
     ro.observe(el);
@@ -69,17 +70,31 @@ export function CostChart({ data, on, width: fixed }: { data: LearningCost; on: 
           <p className="font-mono text-body">{points.length ? "One run so far." : "No run with a known cost yet."}</p>
           <p className="mx-auto mt-1 max-w-prose text-body text-muted-foreground">{HOW}</p>
         </div>
+        {/* Who finished each run does not need a cost: the strip draws on the runs' own axis whenever there are runs. */}
+        {data.runs.length > 0 && (() => {
+          const w = Math.max(300, room), slot = (w - M.left - M.right) / (data.runs.at(-1)!.n - data.runs[0]!.n + 1);
+          return (
+            <figure ref={fig} className="px-4 pb-3">
+              <Mix runs={data.runs} width={w} x={(n) => M.left + (n - data.runs[0]!.n + 0.5) * slot} step={slot} plot={[M.left, w - M.right]} takeover={s.takeover?.n ?? null} />
+            </figure>
+          );
+        })()}
       </Card>
     );
   }
 
+  // The mix sits under the plot at the card's width, on the plot's own run axis: a run's column is under its dot, and the
+  // takeover's marker runs through both.
   const width = Math.max(300, room);
   const plotW = width - M.left - M.right;
-  const first = points[0]!.n, last = points.at(-1)!.n;
-  const x = (n: number) => M.left + (last === first ? plotW / 2 : ((n - first) / (last - first)) * plotW);
+  // The axis is every run read (the mix draws the ones whose cost is unknown too), each run one equal slot of the plot and
+  // its dot at the slot's middle: a block of runs in the mix is then whole slots, its edges on slot edges.
+  const first = data.runs[0]!.n, last = data.runs.at(-1)!.n;
+  const slot = plotW / (last - first + 1);
+  const x = (n: number) => M.left + (n - first + 0.5) * slot;
   const { top, above } = yTopOf(points, mean, s.before?.mean_usd ?? null);
   const y = (v: number) => M.top + H - (Math.min(v, top) / top) * H;
-  const yTicks = [0, top / 4, top / 2, (3 * top) / 4, top];
+  const yTicks = yTicksOf(top);
   const xTicks = runTicks(first, last, width < 520 ? 5 : 7);
   // The takeover's marker shows when its run is on the plot; the level after it shows either way, from the plot's left
   // edge when the takeover is older than the runs read.
@@ -87,13 +102,13 @@ export function CostChart({ data, on, width: fixed }: { data: LearningCost; on: 
   const afterFrom = s.takeover ? Math.max(s.takeover.n, first) : null;
   const line = points.map((p, i) => `${i ? "L" : "M"}${x(p.n).toFixed(1)},${y(mean[i]!).toFixed(1)}`).join("");
   const at = active === null ? null : points[active]!;
-  const cheaper = s.times_cheaper !== null ? `${s.times_cheaper}x cheaper` : null;
+  const cheaper = s.times_cheaper !== null ? `${timesOf(s.times_cheaper)} cheaper` : null;
   const headline = s.before && s.after ? `${level(s.before.mean_usd)} a run before learning, ${level(s.after.mean_usd)} after takeover${cheaper ? `: ${cheaper}` : ""}` : null;
 
   const pick = (e: PointerEvent<SVGSVGElement>) => {
     const r = e.currentTarget.getBoundingClientRect();
     const px = ((e.clientX - r.left) / r.width) * width;
-    setActive(nearest(points, first + ((px - M.left) / plotW) * (last - first)));
+    setActive(nearest(points, first + (px - M.left) / slot - 0.5));
   };
   const step = (e: KeyboardEvent<HTMLDivElement>) => {
     const moves: Record<string, (i: number) => number> = { ArrowRight: (i) => i + 1, ArrowLeft: (i) => i - 1, Home: () => 0, End: () => points.length - 1, PageUp: (i) => i + 10, PageDown: (i) => i - 10 };
@@ -113,7 +128,7 @@ export function CostChart({ data, on, width: fixed }: { data: LearningCost; on: 
 
   return (
     <Card title="Cost per run" headline={headline}>
-      <figure className="px-4 pb-2 pt-3">
+      <figure ref={fig} className="px-4 pb-2 pt-3">
         <figcaption className="mb-2 flex flex-wrap items-center gap-x-4 gap-y-1 font-mono text-small text-muted-foreground">
           {counts.filter((c) => c.runs > 0).map((c) => (
             <span key={c.path} className="inline-flex items-center gap-1.5">
@@ -132,7 +147,7 @@ export function CostChart({ data, on, width: fixed }: { data: LearningCost; on: 
             </span>
           )}
         </figcaption>
-        <div ref={box} className="relative" tabIndex={0} onKeyDown={step} onBlur={() => setActive(null)}
+        <div className="relative shrink-0" tabIndex={0} onKeyDown={step} onBlur={() => setActive(null)}
           aria-label={`Cost per run, runs ${first} to ${last}. ${headline ?? ""} Arrow keys step through the runs.`}>
           <svg width={width} height={M.top + H + M.bottom} className="block select-none font-mono" onPointerMove={pick} onPointerLeave={() => setActive(null)} aria-hidden>
             {yTicks.map((t) => (
@@ -165,7 +180,7 @@ export function CostChart({ data, on, width: fixed }: { data: LearningCost; on: 
             {afterFrom !== null && s.after && (
               <g>
                 <path d={`M${x(afterFrom)},${y(s.after.mean_usd)}H${M.left + plotW}`} className="stroke-foreground" strokeWidth={1} strokeDasharray="2 3" />
-                <Label x={M.left + plotW - 4} y={y(s.after.mean_usd) - 8} anchor="end" strong>After takeover {level(s.after.mean_usd)}{cheaper ? ` · ${cheaper}` : ""}</Label>
+                <Label x={M.left + plotW - 4} y={y(s.after.mean_usd) - 8} anchor="end" strong>{width < 520 ? "After" : "After takeover"} {level(s.after.mean_usd)}{cheaper ? ` · ${cheaper}` : ""}</Label>
               </g>
             )}
             <path d={line} fill="none" className="stroke-foreground" strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
@@ -185,6 +200,7 @@ export function CostChart({ data, on, width: fixed }: { data: LearningCost; on: 
           )}
           <p className="sr-only" aria-live="polite">{at ? readout(at).join(", ") : ""}</p>
         </div>
+        <Mix runs={data.runs} width={width} x={x} step={slot} plot={[M.left, M.left + plotW]} takeover={s.takeover?.n ?? null} />
         <p className="mt-1 text-small text-muted-foreground">
           Each dot is a run: its own cost plus what learning spent for it (the look-back and the grade). The line is the mean of the last {window} runs.
           {above ? ` ${above === 1 ? "1 run costs" : `${above} runs cost`} more than ${usd(top)} and ${above === 1 ? "is" : "are"} drawn at the top.` : ""}
@@ -211,6 +227,91 @@ export function CostChart({ data, on, width: fixed }: { data: LearningCost; on: 
         <p className="mt-2 text-small text-muted-foreground">As CSV: <code className="font-mono">agentrun learning cost {data.agent} --format csv</code></p>
       </details>
     </Card>
+  );
+}
+
+const MIX_H = 64;
+const MIX_M = { top: 4, bottom: 6 };
+/** Bottom to top: the learned workflow on the baseline, so its share grows from it. */
+const STACK = [...PATHS].reverse();
+/** A block's runs, as a person reads them. */
+const runsOf = (b: Block) => (b.from === b.to ? `Run ${b.from}` : `Runs ${b.from} to ${b.to}`);
+
+/** The execution mix: the runs in blocks (blocksOf), each a column of the share each path took, under the plot on its run
+ *  axis (`x`: a run's position, `step`: one run's width, `plot`: the plot's left and right edges, which a column never
+ *  passes), with the takeover's marker. A hover names a block's runs and counts. */
+function Mix({ runs, width, x, step, plot, takeover }: { runs: readonly CostRun[]; width: number; x: (n: number) => number; step: number; plot: [number, number]; takeover: number | null }) {
+  const height = MIX_H;
+  const size = blockSizeOf(runs.length);
+  const blocks = useMemo(() => blocksOf(runs, size), [runs, size]);
+  const [hover, setHover] = useState<number | null>(null);
+  if (!blocks.length) return null;
+  const [left, right] = plot;
+  const clamp = (v: number) => Math.min(right, Math.max(left, v));
+  /** A block's whole slots on the axis: from half a run before its first to half a run after its last, inside the plot. */
+  const span = (b: Block) => ({ from: clamp(x(b.from) - step / 2), to: clamp(x(b.to) + step / 2) });
+  const y = (share: number) => MIX_M.top + height * (1 - share);
+  const last = blocks.at(-1)!;
+  const edges = (b: Block) => {
+    const { from, to } = span(b);
+    // A 2px card gap between columns, when a column is wide enough to give it.
+    const gap = to - from > 4 ? 1 : 0;
+    return { x0: from + gap, w: Math.max(1, to - from - 2 * gap) };
+  };
+  const words = (b: Block) => `${runsOf(b)}: ${PATHS.filter((p) => b.counts[p.path]).map((p) => `${p.label.toLowerCase()} ${b.counts[p.path]}`).join(", ")}`;
+  // The last block's share by the learned workflow; before any workflow has finished a run, who did finish it.
+  const lastShare = blocks.some((b) => b.counts.workflow)
+    ? `${pct(last.counts.workflow, last.runs)} by the learned workflow`
+    : PATHS.filter((p) => last.counts[p.path]).map((p) => `${pct(last.counts[p.path], last.runs)} ${p.label.toLowerCase()}`).join(", ");
+  const lastWords = `Last ${last.runs === 1 ? "run" : `${last.runs} runs`}: ${lastShare}`;
+  const shown = hover === null ? null : blocks[hover]!;
+  const tipLeft = shown ? edges(shown).x0 > width / 2 : false;
+  const onPlot = takeover !== null && x(takeover) >= left && x(takeover) <= right;
+  return (
+    <div className="relative min-w-0" style={{ width }} data-testid="execution-mix">
+      <div className="font-mono text-label" style={{ paddingLeft: left }}>
+        <span className="caps block text-muted-foreground">Who finished each run{size > 1 ? `, by ${size}` : ""}</span>
+        <span className="block text-foreground">{lastWords}</span>
+      </div>
+      <svg width={width} height={MIX_M.top + height + MIX_M.bottom} className="mt-2 block select-none font-mono" aria-hidden onPointerLeave={() => setHover(null)}>
+        {[0, 0.5, 1].map((t) => (
+          <text key={t} x={left - 6} y={y(t)} dy="0.32em" textAnchor="end" className="fill-muted-foreground text-label">{t * 100}%</text>
+        ))}
+        {blocks.map((b, i) => {
+          const { x0, w } = edges(b);
+          let top = MIX_M.top + height;
+          return (
+            <g key={b.from} onPointerEnter={() => setHover(i)} opacity={hover === null || hover === i ? 1 : 0.55}>
+              {/* The hover's target spans the block's whole step, its gaps included, so no point between columns is dead. */}
+              <rect x={span(b).from} y={MIX_M.top} width={Math.max(1, span(b).to - span(b).from)} height={height} className="fill-card" fillOpacity={0} />
+              {STACK.map((p) => {
+                const h = (b.counts[p.path] / b.runs) * height;
+                if (!h) return null;
+                top -= h;
+                // A 2px card gap between segments: one with a segment above it starts 2px lower; the lowest sits on the baseline.
+                const gap = top > MIX_M.top + 0.5 ? Math.min(2, h) : 0;
+                return <rect key={p.path} x={x0} y={top + gap} width={w} height={h - gap} className={p.fill} fillOpacity={0.8} />;
+              })}
+            </g>
+          );
+        })}
+        {/* The takeover marker carried down from the plot, on the left edge of the takeover run's slot: the edge of its block when
+            the block starts there, in the gap the columns leave between them. */}
+        {onPlot && (
+          <g data-testid="mix-takeover">
+            <path d={`M${x(takeover!) - step / 2},${MIX_M.top}V${MIX_M.top + height}`} className="stroke-chart-workflow" strokeWidth={1.5} />
+          </g>
+        )}
+      </svg>
+      {shown && (
+        <div className={cn("pointer-events-none absolute z-raised whitespace-nowrap border bg-card px-2 py-1 font-mono text-label shadow-float", tipLeft && "-translate-x-full")}
+          style={{ left: tipLeft ? edges(shown).x0 - 6 : edges(shown).x0 + edges(shown).w + 6, top: 40 }}>
+          <span className="block font-semibold">{runsOf(shown)}</span>
+          {PATHS.filter((p) => shown.counts[p.path]).map((p) => <span key={p.path} className="block text-muted-foreground">{p.label} {shown.counts[p.path]} ({pct(shown.counts[p.path], shown.runs)})</span>)}
+        </div>
+      )}
+      <p className="sr-only">{`Execution mix in blocks of ${size} runs. ${blocks.map(words).join(". ")}. ${lastWords}.`}</p>
+    </div>
   );
 }
 
