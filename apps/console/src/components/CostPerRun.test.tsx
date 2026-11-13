@@ -203,6 +203,13 @@ describe("CostChart", () => {
     expect(text(host)).toContain("No run with a known cost yet.");
     expect(text(host)).toContain("run the same job about 20 times");
   });
+  it("says how many runs were left out in the empty card too, when none has a known cost", () => {
+    const host = draw({ ...series([]), total_runs: 3, unknown_cost_runs: 1, unknown_path_runs: 2 });
+    expect(host.querySelector("svg[aria-hidden] path")).toBeNull();
+    expect(text(host)).toContain("No run with a known cost yet.");
+    expect(text(host)).toContain("2 runs' path and cost are not known: left out.");
+    expect(text(host)).toContain("1 run's cost is not known: left out.");
+  });
   it("draws the mix even when no run has a known cost: the chart says what is needed, the strip still shows who finished each run", () => {
     const host = draw(series([run(1, "agent", null), run(2, "workflow", null), run(3, "workflow", null)]));
     expect(text(host)).toContain("No run with a known cost yet.");
