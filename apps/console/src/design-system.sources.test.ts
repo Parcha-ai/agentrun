@@ -45,7 +45,6 @@ const RULES: Rule[] = [
 const ALLOWED: { rule: string; file: string; has: string; why: string }[] = [
   { rule: "rounded", file: "components/BuildAgent.tsx", has: "!rounded-composer", why: "The build composer has a scoped softer edge to group the prompt and its coding-agent action." },
   { rule: "rounded", file: "components/ui/button.tsx", has: "!rounded-action", why: "Every action button uses the shared action radius, including links and menu triggers." },
-  { rule: "rounded", file: "components/CodingAgentAction.tsx", has: "!rounded-action", why: "The coding-agent action and chooser share one outer edge with the same radius as every action button." },
   { rule: "palette-colour", file: "components/NodeDrawer.tsx", has: "bg-white", why: "A page of a document is shown on paper white in both themes, as the document is." },
   { rule: "focus-removed", file: "components/ui/field.tsx", has: "bareFieldClass", why: "A bare control sits in a fieldBoxClass box, which draws the ring while the control has the focus." },
   { rule: "focus-removed", file: "components/ui/menu.tsx", has: "shadow-float outline-none", why: "An open menu holds the focus itself and shows it on the active item (data-[focus]:bg-accent)." },

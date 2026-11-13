@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyTemplatePrompt, buildAgentPrompt, connectAgentPrompt, connectExistingAgentsPrompt, connectRemoteAgentsPrompt, editAgentPrompt, importAgentsPrompt, playgroundPrompt, queryRunsPrompt, runAgentPrompt } from "./codingAgentPrompts";
+import { applyTemplatePrompt, buildAgentPrompt, connectAgentPrompt, connectExistingAgentsPrompt, connectRemoteAgentsPrompt, editAgentPrompt, importAgentsPrompt, playgroundPrompt, queryRunsPrompt, runAgentPrompt, runTemplatePrompt } from "./codingAgentPrompts";
 import type { TemplateView } from "./v2";
 
 const template: TemplateView = {
@@ -160,6 +160,26 @@ describe("coding-agent handoffs", () => {
     expect(prompt).toContain("separately approved revision after applying");
     expect(prompt).toContain("If-Match");
     expect(applyTemplatePrompt("https://console.example.test", template, "  ")).not.toContain("My additional requirements");
+  });
+
+  it("runs the canonical package with the selected setup and existing consent, asking only for missing task inputs", () => {
+    const selection = { parameters: { repo: "acme/web" }, grants: [], overrides: { approvals: "ask" as const } };
+    const before = JSON.stringify(selection);
+    const prompt = runTemplatePrompt("https://console.example.test", template, selection);
+    expect(prompt).toContain('template "review/kit", version "1.2.0"');
+    expect(prompt).toContain("/v2/templates/review%2Fkit/apply");
+    expect(prompt).toContain("instructions, rules, skills, schemas, learning and triggers");
+    expect(prompt).toContain(JSON.stringify(selection, null, 2));
+    expect(prompt).toContain("Ask for missing run inputs, files or output requirements");
+    expect(prompt).toContain("Carry out my requested run with the permissions already given");
+    expect(prompt).toContain("without adding a cap unless I asked for one");
+    expect(prompt).toContain("Do not add tool grants or broaden approvals");
+    expect(prompt).toContain("/v2/agents/{created_agent_id}/runs");
+    expect(prompt).toContain("avoid duplicating a task already started by a trigger");
+    expect(prompt).toContain("reconcile an uncertain response before retrying");
+    expect(prompt).toContain("Never print credentials");
+    expect(prompt).not.toContain("Do not start a run");
+    expect(JSON.stringify(selection)).toBe(before);
   });
 
   it("edits the exact agent using a new revision and preserves unrelated configuration", () => {

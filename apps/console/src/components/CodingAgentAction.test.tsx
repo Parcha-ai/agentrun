@@ -38,6 +38,15 @@ describe("CodingAgentAction", () => {
     const group = document.querySelector('[role="group"][aria-label="Import agents options"]')!;
     const action = button("Import agents");
     const trigger = group.querySelector<HTMLButtonElement>('[aria-haspopup="menu"]')!;
+    expect(group.classList.contains("bg-primary")).toBe(true);
+    expect(group.classList.contains("text-primary-foreground")).toBe(true);
+    expect(group.classList.contains("hover:bg-primary/90")).toBe(true);
+    expect(group.classList.contains("data-[state=open]:bg-primary/90")).toBe(true);
+    expect(group.classList.contains("has-[:focus-visible]:bg-primary/90")).toBe(true);
+    expect(group.classList.contains("!rounded-action")).toBe(true);
+    expect(action.classList.contains("text-inherit")).toBe(true);
+    expect(trigger.classList.contains("text-inherit")).toBe(true);
+    expect(group.querySelector('[role="separator"]')).toBeNull();
     expect(group.contains(action)).toBe(true);
     expect(action.tabIndex).toBe(0);
     expect(trigger.tabIndex).toBe(0);
@@ -147,6 +156,9 @@ describe("CodingAgentAction", () => {
     root = createRoot(host);
     act(() => root!.render(createElement(CodingAgentAction, { label: "Run agent", prompt, compact: true })));
     const action = host.querySelector<HTMLButtonElement>('button[aria-label="Run agent"]')!;
+    const group = action.closest('[role="group"]')!;
+    expect(group.classList.contains("bg-background")).toBe(true);
+    expect(group.classList.contains("bg-primary")).toBe(false);
     expect(action.title).toBe("Run agent · Copy prompt for Claude Code CLI");
     expect(action.querySelector(".sr-only")?.textContent).toBe("Run agent");
     await click(action);

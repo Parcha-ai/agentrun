@@ -5,6 +5,7 @@ import { App, route } from "./App";
 import { pick, picker } from "@/test/picker";
 import { agentFixture } from "@/fixtures";
 import type { TemplateView } from "@/lib/v2";
+import { templatePlaygroundHref } from "@/lib/templatePackages";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: Root | undefined;
@@ -44,9 +45,10 @@ async function open(hash: string) {
 }
 
 describe("template requests in the API playground", () => {
-  it("keeps only the selected template when routing an apply request", () => {
-    expect(route("#/playground?operation=apply-template&template=review%20kit&agent=old&draft=%7B%7D&status=failed&archived=true"))
-      .toEqual({ section: "playground", operation: "apply-template", template: "review kit" });
+  it("keeps the selected template's prepared request and drops unrelated agent/run fields", () => {
+    const draft = JSON.stringify({ template: template.name, version: template.version, body: { parameters: { repo: "example/project" }, overrides: { approvals: "ask" } } });
+    expect(route(`${templatePlaygroundHref(template, JSON.parse(draft).body)}&agent=old&status=failed&archived=true`))
+      .toEqual({ section: "playground", operation: "apply-template", template: template.name, draft });
     expect(route("#/playground?operation=apply-template")).toEqual({ section: "playground", operation: "apply-template" });
     expect(route("#/playground?operation=create-agent&template=review-kit")).toEqual({ section: "playground", operation: "create-agent" });
   });
@@ -75,8 +77,8 @@ describe("template requests in the API playground", () => {
   it("keeps the template catalog in the playground and drops stale fields when switching operation", async () => {
     const { host, writes } = await open("#/playground?operation=apply-template");
     expect(host.textContent).toContain("/v2/templates/{template}/apply");
-    const apply = [...host.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Apply")!;
-    await act(async () => apply.click()); await settle();
+    const configure = [...host.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Configure")!;
+    await act(async () => configure.click()); await settle();
     expect(location.hash).toBe("#/playground?operation=apply-template&template=review-kit");
     expect(host.querySelector('a[href="#/playground?operation=apply-template"]')).not.toBeNull();
     await pick(picker(host, "API operation")!, "create-agent"); await settle();
@@ -84,5 +86,17 @@ describe("template requests in the API playground", () => {
     await pick(picker(host, "API operation")!, "apply-template"); await settle();
     expect(location.hash).toBe("#/playground?operation=apply-template");
     expect(writes).toEqual([]);
+  });
+
+  it("loads the handoff's setup choices into the real API form without sending a request", async () => {
+    const body = { parameters: { repo: "example/project" }, overrides: { approvals: "never" as const } };
+    const { host, writes } = await open(templatePlaygroundHref(template, body));
+    expect(host.querySelector<HTMLInputElement>('[data-field="parameters.repo"] input')!.value).toBe("example/project");
+    expect(host.querySelector<HTMLInputElement>('input[name="approvals"][value="never"]')!.checked).toBe(true);
+    expect(writes).toEqual([]);
+    const apply = [...host.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Apply")!;
+    await act(async () => apply.click());
+    expect(writes).toHaveLength(1);
+    expect(writes[0].body).toEqual(body);
   });
 });

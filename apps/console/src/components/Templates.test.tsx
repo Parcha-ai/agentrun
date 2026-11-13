@@ -29,7 +29,7 @@ const REVIEWER: TemplateView = {
 };
 const NOTES: TemplateView = { ...REVIEWER, name: "meeting-notes", display_name: null, version: "0.2.0", description: "Turns a transcript into notes.", mcp: [], parameters: {}, secrets: [], budget: null, triggers: [] };
 
-type Fake = { apply?: (name: string, body: unknown, key: string) => Promise<unknown>; servers?: string[]; templates?: TemplateView[]; triggers?: Record<string, unknown>; stallTriggers?: boolean; triggersAfter?: Promise<void> };
+type Fake = { apply?: (name: string, body: unknown, key: string) => Promise<unknown>; servers?: string[]; templates?: TemplateView[]; triggers?: Record<string, unknown>; stallTriggers?: boolean; triggersAfter?: Promise<void>; playground?: boolean };
 async function open(name?: string, fake: Fake = {}) {
   const went: string[] = [];
   const sent: { name: string; body: { parameters?: Record<string, unknown>; grants?: string[]; overrides?: Record<string, unknown> }; key: string }[] = [];
@@ -48,7 +48,8 @@ async function open(name?: string, fake: Fake = {}) {
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
   // Under StrictMode, as the console renders every page (main.tsx): effects run setup, cleanup, then setup again.
-  await act(async () => { root!.render(createElement(StrictMode, null, createElement(TemplatesPage, { v2: v2 as never, name, go: (h: string) => went.push(h) }))); });
+  // Named pages in this suite exercise the manual API apply operation; coding-agent Run has its own behavior suite.
+  await act(async () => { root!.render(createElement(StrictMode, null, createElement(TemplatesPage, { v2: v2 as never, name, playground: fake.playground ?? name !== undefined, go: (h: string) => went.push(h) }))); });
   const settle = async () => { for (let i = 0; i < 6; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
   await settle();
   const button = (label: RegExp) => [...host.querySelectorAll("button")].find((b) => label.test((b.getAttribute("aria-label") ?? b.textContent ?? "").trim()));
@@ -78,7 +79,7 @@ describe("the Templates page", () => {
     expect(reviewer).toContain("$0.50 a run");
     // No display name: the template's name.
     expect(cards[1].textContent).toContain("meeting-notes");
-    await t.click(cards[0].querySelector("button"));
+    await t.click([...cards[0].querySelectorAll("button")].find((b) => b.textContent === "Configure"));
     expect(t.went).toEqual(["#/templates/pr-reviewer"]);
   });
 
@@ -90,7 +91,7 @@ describe("the Templates page", () => {
     expect(card.getAttribute("aria-label")).toBe("Code review: …");
     expect(list.host.textContent).not.toContain("${");
     act(() => root?.unmount()); document.body.innerHTML = "";
-    const apply = await open("code-review", { templates: [CODE] });
+    const apply = await open("code-review", { templates: [CODE], playground: false });
     const title = () => apply.host.querySelector("h1")!.textContent ?? "";
     expect(title()).toContain("Code review: …");
     await apply.type(apply.host.querySelector('[data-field="parameters.repo"] input'), "acme/web");
@@ -237,7 +238,7 @@ describe("applying a template", () => {
     await t.type(repo(), "acme/api");
     await act(async () => { answer({ template: "code-review", version: "1.0.0", agent_id: "cr-1", trigger_ids: [], warnings: [{ field: "mcp.github", reason: "not_set_up_here", message: "github is not set up here." }] }); });
     await t.settle();
-    expect(t.host.querySelector('section[aria-label="Applied"] h1')!.textContent).toContain("Code review: acme/web applied");
+    expect(t.host.querySelector('section[aria-label="Applied"] h2')!.textContent).toContain("Code review: acme/web applied");
   });
 
   it("a webhook trigger the apply made: the server's warning in its words, with a link to that trigger for its signing secret", async () => {

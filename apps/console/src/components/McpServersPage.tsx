@@ -49,7 +49,7 @@ export function McpServersPage({ v2, signIn, writable, whyNot = "sign_in", open 
             <h1 className="mt-1 text-2xl font-semibold">MCP servers</h1>
             <p className="mt-2 text-lead text-muted-foreground">A remote MCP server's tools, for any agent you grant them to in its Tools step. A saved credential is never shown again.</p>
           </div>
-          {!form && <Button size="sm" variant="primary" onClick={() => setForm({})}>Add server</Button>}
+          {!form && <Button size="sm" variant="solid" onClick={() => setForm({})}>Add server</Button>}
         </div>
         {signIn && (
           <p className={`border p-4 text-body ${signIn.ok ? "border-success/50 text-success-text" : "border-warning/50 text-warning-text"}`} role="status">

@@ -11,7 +11,7 @@ export const buttonVariants = cva(
       variant: {
         /** The default: any action that is not the page's one main action. */
         outline: "border-border bg-background hover:border-border-strong hover:bg-accent",
-        /** The main action where a filled button would be too loud (a toolbar, a card). */
+        /** A secondary action that needs emphasis without the main action's fill. */
         primary: "border-primary text-primary-text hover:bg-primary/10",
         /** The page's one main action. */
         solid: "border-primary bg-primary text-primary-foreground hover:bg-primary/90",
