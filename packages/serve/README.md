@@ -698,6 +698,23 @@ one computer that it keeps between runs, instead of a fresh one for each run:
   the run's folder from its disk with a mount credential minted for that run alone; Docker's sandbox is refused, since
   it cannot mount the disk.
 
+  The PUT is a secret write, so it takes the owner's signed-in session. A server with none to give it (API only, or
+  `AGENTRUN_ACCOUNTS=0` reached beyond loopback) is set where it is started instead: `AGENTRUN_ARCHIL_REGION` and
+  `AGENTRUN_ARCHIL_S3_URL` together, and `AGENTRUN_ARCHIL_IMAGE` for a pinned exec image, with the account key in
+  `ARCHIL_API_KEY`. Each agent's disk is then made on its first run, as with saved settings:
+
+  ```sh
+  AGENTRUN_ARCHIL_REGION=aws-us-east-1 AGENTRUN_ARCHIL_S3_URL=https://s3.example.com \
+  ARCHIL_API_KEY=... node packages/serve/dist/cli.js
+  ```
+
+  Each value is checked as the PUT checks it. One of the region and S3 URL without the other, or a value the PUT would refuse,
+  stops the start, in words naming each variable. Set, they win over saved settings, as `ARCHIL_API_KEY` wins over a
+  saved key, and nothing is written to the store: `GET /v2/workspace/archil` says `source: "env"` (saved ones say
+  `"console"`), and `PUT` and `DELETE` are `409 key_set_by_server`, since they are changed where the server is started.
+  Unset, the saved settings, if any, hold again. A runner started on its own (`agentrun-serve runner`) reads them from its
+  own environment, as it reads `ARCHIL_API_KEY`, so give it the same values.
+
 **Archil disks: one per agent.** In Mode 2 every agent has its own disk. It is made on the agent's first run that uses
 it, never when the agent is made, in the account key's region, named `agentrun-<server id>-i-<agent id>` (an id with
 characters Archil doesn't take, or past 46 of them, is `h-` with its first 21 safe characters and 24 hex digits of its
@@ -1472,6 +1489,35 @@ tools again with the saved URL and credential, keeps them, and answers `{added, 
 names a tool whose title, description, schemas or annotations differ. `DELETE .../{name}` forgets the server and its
 credential. Capabilities' `features.mcp_client` says `transports: ["streamable-http"]`, the `auth` types and `at_rest:
 "sealed"`.
+
+### A credential handed with each run
+
+Some servers take a credential made for one run (a token scoped to that run's job and its person) that no saved
+server could hold. Save such a server with `auth: {type: "per_run", headers?}`: it keeps no credential, and `headers`,
+when sent, are used only to list its tools now. Then hand each run its own as `mcp_auth` on the run's start
+(`POST /v2/runs`, `POST /v2/agents/{agent_id}/runs`), one entry for each per_run server it calls:
+
+```sh
+curl -X PUT "$BASE/v2/settings/mcp-servers/gateway" -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"url": "https://gateway.example.com/mcp", "auth": {"type": "per_run", "headers": {"authorization": "Bearer <a token to list with>"}}}'
+curl -X POST "$BASE/v2/agents/$AGENT/runs" -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"input": {"content": "..."}, "mcp_auth": {"gateway": {"headers": {"authorization": "Bearer <this run'"'"'s token>"}}}}'
+```
+
+A per_run save keeps no secret, so the API token may make it, as it may preview a server with a credential: the
+credentials such a server receives are the ones each run's own caller hands it. The run's calls of that server carry
+those headers, and only to the origin the server had when the run was started. The
+credential is sealed into the run's launch record under `AGENTRUN_SEAL_KEY` (bound to the run's id), read at each claim, so
+a resume, a restart or a lost lease uses it again, and erased by the write that ends the run. It is never in the run's
+saved body, its timeline, its view, a log line or an `Idempotency-Key`'s fingerprint (a retry with a new credential
+answers the first request's run), and its values are cut from whatever the run shows. `POST /v2/runs/{run_id}/messages`
+takes `mcp_auth` too: it replaces the run's credentials in the message's own write, so the turn the message starts (a
+steer into a working run from its next model request, or a follow-up that opens an ended run again) calls with them. A
+name that is not a saved per_run server is `422` at `mcp_auth.<server>`, and no run starts. A run handed no credential
+for a per_run server it calls has those calls answered, unsent, that it was handed none. `POST .../{name}/refresh` lists
+a per_run server's tools with no credential: save it again with `headers` for a server that lists only to a caller it
+knows. The tools are those it listed at its save, so a server whose tool list varies by caller shows each run the saved
+list.
 
 ### Signing in with OAuth
 

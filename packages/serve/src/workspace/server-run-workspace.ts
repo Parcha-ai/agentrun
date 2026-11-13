@@ -31,7 +31,8 @@ export interface ServerRunWorkspaceOptions {
   readonly sealKey: Buffer | undefined;
   /** Makes the Archil disk (default archilDisk): a test's fake. */
   readonly makeDisk?: (options: ArchilDiskOptions) => ArchilDisk;
-  /** The server's environment: an ARCHIL_API_KEY there is the account key, over a saved one. */
+  /** The server's environment: an ARCHIL_API_KEY there is the account key, over a saved one, and the Archil settings
+   *  there (ARCHIL_SETTINGS_ENV) the region and S3 URL, over the saved row. */
   readonly env?: KeyEnv;
 }
 
@@ -72,7 +73,7 @@ async function runDiskIdOf(store: Pick<Store, "runs" | "settings">, runId: strin
 export async function serverRunWorkspace(store: Pick<Store, "runs" | "settings" | "sealedKeys">, runId: string, options: ServerRunWorkspaceOptions): Promise<Workspace | null> {
   const run = await store.runs.get(runId);
   if (run === undefined) return null;
-  const settings = await loadArchilSettings(store);
+  const settings = await loadArchilSettings(store, options.env);
   // The run's disk (Mode 2): the one its launch record names, else its agent's; none yet when its agent has no disk (its
   // first run was not claimed), so it has no folder.
   const diskId = settings === undefined ? undefined : await runDiskIdOf(store, runId, run.agentId);

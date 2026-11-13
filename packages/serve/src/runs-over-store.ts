@@ -150,7 +150,7 @@ export async function message(
   store: RunsStore,
   moment: RunMoment,
   content: string,
-  { requestId, answers = true, origin, queue }: { requestId?: string; answers?: boolean; origin?: unknown; queue?: (command: SteerCommand) => Promise<{ skipped: string } | void> } = {},
+  { requestId, answers = true, origin, queue, launchSealed }: { requestId?: string; answers?: boolean; origin?: unknown; queue?: (command: SteerCommand) => Promise<{ skipped: string } | void>; launchSealed?: Uint8Array } = {},
 ): Promise<{ mode: MessageMode; messageId: string; skipped?: string }> {
   if (moment.importedSource !== undefined) throw importedRefusal(moment);
   // Archiving closes a run: it, or a run of its archived agent, takes no message, said as archived (never as finished).
@@ -167,7 +167,7 @@ export async function message(
   // approval): the message is then a message like any other, below.
   if (answers && moment.kind === "agentic" && moment.waitingApprovalId !== undefined) {
     const messageId = newMessageId();
-    const declined = await sendCommand(store, moment.id, { kind: "deny", body: { approval: moment.waitingApprovalId, note: content, by: "message" } }).then(
+    const declined = await sendCommand(store, moment.id, { kind: "deny", body: { approval: moment.waitingApprovalId, note: content, by: "message" } }, launchSealed ? { launchSealed } : undefined).then(
       () => true,
       (error: unknown) => {
         if (error instanceof AnswerTaken) return false;
@@ -192,7 +192,7 @@ export async function message(
     const queued = await queue({ kind: "steer", body });
     return { mode, messageId, ...(queued ? { skipped: queued.skipped } : {}) };
   }
-  await steerOrReopen(store, moment, { kind: "steer", body });
+  await steerOrReopen(store, moment, { kind: "steer", body }, launchSealed);
   return { mode, messageId };
 }
 
@@ -203,19 +203,21 @@ export type SteerCommand = { kind: "steer"; body: Record<string, unknown> };
  *  through runs.reopen, which opens the run again with the steer in one transaction when the store says it may
  *  (reopenableWhere: an agentic run that completed, or that a person stopped, as the console offers a follow-up to both).
  *  Any other (cancelled, failed, a workflow's, an imported or a learning run) answers 409 finished, nothing written. */
-async function steerOrReopen(store: RunsStore, moment: RunMoment, command: SteerCommand): Promise<void> {
+async function steerOrReopen(store: RunsStore, moment: RunMoment, command: SteerCommand, launchSealed?: Uint8Array): Promise<void> {
+  // The message's launch secrets (its mcp_auth, sealed) ride in the same write as its steer, whichever door takes it.
+  const sealed = launchSealed ? { launchSealed } : undefined;
   try {
-    await sendCommand(store, moment.id, command);
+    await sendCommand(store, moment.id, command, sealed);
   } catch (error) {
     if (!(error instanceof RunFinal)) throw error;
     try {
-      await store.runs.reopen(moment.id, command);
+      await store.runs.reopen(moment.id, command, sealed);
     } catch (again) {
       if (!(again instanceof RunFinal)) throw again;
       // Refused: another message may have opened the run again meanwhile, so the steer is sent once more, to the run now
       // running. Refused that too, the run takes no message.
       try {
-        await sendCommand(store, moment.id, command);
+        await sendCommand(store, moment.id, command, sealed);
       } catch (last) {
         if (!(last instanceof RunFinal)) throw last;
         // Worded by the run's end as the store holds it now: the moment may have been read before that end (a race).
@@ -439,6 +441,8 @@ export interface StartDeps {
  *  it must have a cap (a trigger's), and who its first message is from when the person did not write it. */
 export interface StartOptions {
   readonly trigger?: RunTrigger;
+  /** The run's launch secrets, sealed for its id once it has one (the create body's mcp_auth, server.ts). */
+  readonly sealed?: (runId: string) => Uint8Array;
   /** The run's title when its starter names one (a trigger's: "<Source> <name>"), else it is made from its input. */
   readonly title?: string;
   readonly origin?: RunOrigin;
@@ -489,11 +493,11 @@ async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Re
  *  (store.runs.create), which a runner reads at its claim. No process, no door, no setup file: where the run runs is the
  *  runner's. Under `origin`, a key that already started a run gets that run (the store's one-run-per-key), so a retry never
  *  starts a second. */
-export async function startRun(store: Pick<Store, "runs" | "runOfOrigin">, deps: StartDeps, entry: AgentEntry, body: Json, { trigger, origin, capped = false, from, title }: StartOptions = {}): Promise<RunRow> {
+export async function startRun(store: Pick<Store, "runs" | "runOfOrigin">, deps: StartDeps, entry: AgentEntry, body: Json, { trigger, origin, capped = false, from, title, sealed }: StartOptions = {}): Promise<RunRow> {
   const { launch, revision } = await prepareLaunch(deps, entry, body, { ...(trigger ? { trigger } : {}), capped, ...(from ? { from } : {}), ...(title !== undefined ? { title } : {}) });
   const runId = (deps.newRunId ?? uuidv7)();
   try {
-    return await withHeldFiles(deps, runId, launch, () => store.runs.create({ id: runId, agentId: entry.agent.id, revisionId: revision.id, ...(origin ? { origin } : {}) }, { body: launchBody(launch) }));
+    return await withHeldFiles(deps, runId, launch, () => store.runs.create({ id: runId, agentId: entry.agent.id, revisionId: revision.id, ...(origin ? { origin } : {}) }, { body: launchBody(launch), ...(sealed ? { sealed: sealed(runId) } : {}) }));
   } catch (error) {
     // Only another writer of the store got here first under the same origin key: its run is the one asked for.
     if (origin && error instanceof StoreConstraint) {
@@ -536,7 +540,7 @@ export interface InlineAgent {
  *  agent already mapped to the reference is the run's (its id, its learning), so a run of a later version learns from the
  *  earlier ones. A different definition under a version already run is 409 external_body_conflict, nothing written; under
  *  `origin`, a key that already started a run gets that run, as startRun's. */
-export async function startInline(store: Pick<Store, "runs" | "runOfOrigin" | "agents">, deps: StartDeps, inline: InlineAgent, body: Json, { origin }: { origin?: RunOrigin } = {}): Promise<RunRow> {
+export async function startInline(store: Pick<Store, "runs" | "runOfOrigin" | "agents">, deps: StartDeps, inline: InlineAgent, body: Json, { origin, sealed }: Pick<StartOptions, "origin" | "sealed"> = {}): Promise<RunRow> {
   const { external, revision } = inline;
   const ref = externalKey(external);
   const mapped = await store.agents.byExternal(ref);
@@ -560,7 +564,7 @@ export async function startInline(store: Pick<Store, "runs" | "runOfOrigin" | "a
       agent: { id: entry.agent.id, name: inline.name, description: inline.description, ref },
       revision: { id: revision.id, version: external.version, kind: revision.kind, body: revision.body, skills: revision.skills, ...(revision.note !== undefined ? { note: revision.note } : {}) },
       run: { id: runId, ...(origin ? { origin } : {}) },
-      launch: { body: launchBody(launch) },
+      launch: { body: launchBody(launch), ...(sealed ? { sealed: sealed(runId) } : {}) },
     }));
   } catch (error) {
     if (error instanceof ExternalBodyConflict) {
