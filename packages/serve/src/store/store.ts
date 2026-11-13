@@ -1161,8 +1161,9 @@ export class SchemaVersionUnknown extends Error {
         ? `${store} has no schema yet: the server sets it up at its start`
         : found < known
           ? `${store} is schema version ${found}, and this release (version ${known}) can't open a store an earlier release set up.\n` +
-            "Start the server on a new, empty data folder with --data <new folder> (on the Docker image: --data /data/<new folder> --listen 0.0.0.0 --port 7340 --drain-timeout 6s), then add your agents, MCP servers, keys and sign-ins again.\n" +
-            'Keep the old folder as it is: the earlier release still opens it. See "Before you upgrade" in the release notes.'
+            "Start the server on a new, empty data folder with --data <new folder> (docker run or compose arguments: --data /data/<new folder> --listen 0.0.0.0 --port 7340 --drain-timeout 6s), then add your agents, MCP servers, keys and sign-ins again.\n" +
+            'On Render the Docker Command replaces the image\'s entrypoint too, so it must be the whole start command shown in "Before you upgrade" in the release notes.\n' +
+            "Keep the old folder as it is: the earlier release still opens it."
           : `${store} is schema version ${found}, set up by a later release than this one (this release knows version ${known}). Run that release or a later one.`,
     );
     this.name = "SchemaVersionUnknown";

@@ -49,7 +49,7 @@ test("a runner refuses a store with no schema yet, and one of a schema version i
   const earlier = new DatabaseSync(file);
   earlier.exec("UPDATE store_meta SET schema_version = 2");
   earlier.close();
-  await assert.rejects(openSqliteStore({ file, role: "server" }), (error) => error instanceof SchemaVersionUnknown && error.found === 2 && error.known === SCHEMA_VERSION && error.message.includes("schema version 2") && error.message.includes(`version ${SCHEMA_VERSION}) can't open a store an earlier release set up`) && error.message.includes("--data <new folder>") && error.message.includes("--data /data/<new folder> --listen 0.0.0.0 --port 7340 --drain-timeout 6s") && error.message.includes("Keep the old folder as it is") && error.message.includes('"Before you upgrade"'));
+  await assert.rejects(openSqliteStore({ file, role: "server" }), (error) => error instanceof SchemaVersionUnknown && error.found === 2 && error.known === SCHEMA_VERSION && error.message.includes("schema version 2") && error.message.includes(`version ${SCHEMA_VERSION}) can't open a store an earlier release set up`) && error.message.includes("--data <new folder>") && error.message.includes("--data /data/<new folder> --listen 0.0.0.0 --port 7340 --drain-timeout 6s") && error.message.includes("Keep the old folder as it is") && error.message.includes('"Before you upgrade"') && error.message.includes("On Render the Docker Command replaces the image's entrypoint too"));
 });
 
 test("a server and a runner given the same data directory open the same store, whose file the store names; a second server on it is refused", async (t) => {

@@ -107,7 +107,9 @@ test("the bin on a store an earlier release set up says what to do, once, with n
   assert.match(err, new RegExp(`^agentrun-serve: the store at .*store\\.sqlite is schema version ${SCHEMA_VERSION - 1}, and this release \\(version ${SCHEMA_VERSION}\\) can't open a store an earlier release set up\\.$`, "m"));
   assert.match(err, /--data <new folder>/);
   assert.match(err, /--data \/data\/<new folder> --listen 0\.0\.0\.0 --port 7340 --drain-timeout 6s/);
-  assert.match(err, /Keep the old folder as it is: the earlier release still opens it\./);
+  assert.match(err, /\(docker run or compose arguments: --data/);
+  assert.match(err, /^On Render the Docker Command replaces the image's entrypoint too, so it must be the whole start command shown in "Before you upgrade" in the release notes\.$/m);
+  assert.match(err, /^Keep the old folder as it is: the earlier release still opens it\.$/m);
   assert.equal(err.match(/agentrun-serve:/g).length, 1, err);
   assert.doesNotMatch(err, /\n\s+at /);
 });
