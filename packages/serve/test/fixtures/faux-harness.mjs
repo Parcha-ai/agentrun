@@ -153,6 +153,18 @@ export function script(spec, session = {}) {
   // The wrap-up due after a $0.40 request; the next request, which takes the note, has a side call admitted and answered
   // between that take and its own admission; then one request more.
   if (/Wrap up with a side call in between\./.test(text)) return [{ call: "read", args: { path: "a.txt" }, usd: 0.4, outputTokensAsked: 1_024 }, { call: "read", args: { path: "b.txt" }, usd: 0.01, sideAfterNote: { usd: 0.0001 } }, { say: "Done.", usd: 0.01 }];
+  // A job of two requests ($0.001 each), then its end-of-run turn: a request admitted and never answered (`cut`) or one
+  // answered at $0.004 and the turn held after it (`answered`), writing the signal, until <file> exists; then the turn's
+  // answer, at $0.008, saying nothing to keep, and its end ($0.001). A runner killed in the hold leaves the turn sent and
+  // unfinished. Any turn after that one is a look-back asked twice: it says so, at $0.016.
+  const lookBack = /Look back, (cut|answered) and held until (\S+) \(signal (\S+)\)\./.exec(text);
+  if (lookBack) {
+    const [, how, until, signal] = lookBack;
+    // The answered request keeps its place (its faux.request): a later process goes on after it. A cut one has none.
+    const answered = how === "answered" ? [{ say: "Looking back.", usd: 0.004 }] : [];
+    const held = existsSync(until) ? answered : how === "cut" ? [cutSignalled(signal)] : [...answered, hangSignalled(signal)];
+    return [{ say: "Answered.", usd: 0.001 }, { end: true, usd: 0.001 }, ...held, { say: "Nothing new.", usd: 0.008 }, { end: true, usd: 0.001 }, { say: "Asked twice.", usd: 0.016 }];
+  }
   // One request of 1,000 input tokens, due at step 0 under a small cap so it carries the note, then the answer.
   if (/Hold the request that carries the note\./.test(text)) return [{ say: "Done.", inputTokensMax: 1_000, usd: 0.01 }];
   // A request of 1,000 input tokens, due at step 0 under a small cap so it carries the note, that the provider does not
