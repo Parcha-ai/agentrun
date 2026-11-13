@@ -2,7 +2,8 @@
 // value), saving a provider's keys sealed in the store, testing a provider's account, and the refusal a run meets at its
 // claim when its agent's computer cannot be had here, with the options its provider is made with. createComputerRoutes
 // takes the server's Store and the computer package's kind registry by its own names (SETTING_KINDS, PROVIDERS,
-// servingRefusals); the tools each kind brings come from the kernel's tool registry (capabilityToolDefs). Keys go by
+// servingRefusals); the tools each kind brings are the server's to say (server.ts kindTools: a sandbox's shell tools from
+// the kernel's hostToolDefs, a browser's from pi-browser, a desktop's or a phone's the kernel's COMPUTER_TOOLS). Keys go by
 // their names only: a provider declares them, Settings takes only those, and the store keeps each sealed under the
 // server's seal key (server-keys.ts); a provider is handed its keys only at the claim, or for its test, both through
 // computer-keys.ts (providerOptions, testConnection), which maps a key's name onto the option it fills.
@@ -119,7 +120,7 @@ export interface ComputerRoutesOptions {
   readonly settings?: ProviderSettings;
   /** The map from a provider's key names to its options: serve's own unless given (--faux gives its own). */
   readonly keyTable?: KeyTable;
-  /** The model-visible tools a kind brings (the kernel registry's capabilityToolDefs), by name. */
+  /** The model-visible tools a kind brings, by name (server.ts kindTools). */
   readonly tools: (kind: ComputerKind) => readonly string[];
   /** This server's folder mode, or how to read it at each call (folderModeOf: the Archil settings, the environment's or the saved row), so turning
    *  Archil on or off takes effect without building the routes again. */

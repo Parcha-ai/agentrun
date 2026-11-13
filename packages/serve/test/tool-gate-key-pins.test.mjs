@@ -19,8 +19,8 @@ const ROWS = [
   ["pi", [], "snapshot", "browser", "allow", "deny"],
   ["claude-agent", [], "mcp__hands__browser_read", "browser", "allow", "deny"],
   // a computer kind's tools: the kind's key, a shared one the first's
-  ["claude-agent", [], "desktop_screen", "desktop", "allow", "deny"],
-  ["claude-agent", [], "mcp__hands__phone_tap", "phone", "allow", "allow"],
+  ["claude-agent", [], "computer_screenshot", "desktop", "allow", "deny"],
+  ["claude-agent", [], "mcp__hands__computer_act", "desktop", "allow", "deny"],
   ["claude-agent", [], "computer_request_handoff", "desktop", "allow", "deny"],
   // a CLI's own tools (nativeTools)
   ["claude-agent", [], "Bash", "bash", "allow", "deny"],

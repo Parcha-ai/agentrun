@@ -95,7 +95,8 @@ import { keyOf, SEAL_KEY_ENV, TOOL_FIELDS } from "./tool-keys.js";
 import { toolKeysOverStore } from "./tool-keys-store.js";
 import { SIGN_INS_DIR, vendorsOver } from "./sign-ins.js";
 import { signInsOverStore } from "./sign-ins-store.js";
-import { MCP_AUTH_TYPES, mcpAuthOf, type McpTool } from "./mcp-probe.js";
+import { MCP_AUTH_TYPES, mcpAuthOf, type McpTool, nameOf as mcpNameOf } from "./mcp-probe.js";
+import { type ComposioControl, composioSave, composioTools } from "./composio-preset.js";
 import { mcpServersOverStore } from "./mcp-servers-store.js";
 import { privateHostsRoute } from "./mcp-private-hosts.js";
 import { metaToolOf } from "./mcp-meta.js";
@@ -128,7 +129,7 @@ import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./upl
 import { entryAt, listFiles, sendFile as sendWorkspaceFile, viewOf } from "./run-files.js";
 import { COMPUTER_ROUTES, computerHoldOf, computerRoute } from "./computer-routes.js";
 import { PROVIDERS as COMPUTER_PROVIDERS, SETTING_KINDS, servingRefusals } from "@parcha/agentrun-computer";
-import { capabilityToolDefs, hostToolDefs } from "@parcha/agentrun-kernel/kernel";
+import { COMPUTER_TOOLS, hostToolDefs } from "@parcha/agentrun-kernel/kernel";
 import { archilRoute, createArchilRoutes, liveRunsOnDisk } from "./archil-routes.js";
 import { agentDiskOf, ARCHIL_DISK_ID, archilSettingsFromEnv, inArchilMode } from "./archil-settings.js";
 import { computerOfPlace, type ComputerKind, type ComputerSetting, type PlaceView } from "./computer-setting.js";
@@ -225,6 +226,8 @@ export type ServeOptions = {
   /** Another Archil control plane than the key's region's, and its fetch: a test's fake, for the server's own Archil calls
    *  (a launch's disk read, the settings' test, an agent's disk removed). */
   archilControl?: { readonly baseUrl?: string; readonly fetch?: typeof fetch };
+  /** Another Composio than the real one, and its fetch: a test's fake, for the Composio preset's calls (composio-preset.ts). */
+  composioControl?: ComposioControl;
   /** With `faux` only: a module whose default export gives the `browser` tool's `{ provider, driver }` (the tests' fake
    *  backend), in place of Browserbase's or Kernel's. */
   fauxBrowser?: string;
@@ -454,8 +457,10 @@ export const ROUTES: readonly Route[] = [
   { method: "DELETE", pattern: /^\/settings\/tool-keys\/([^/]+)$/, name: "deleteToolKey" },
   { method: "GET", pattern: /^\/settings\/mcp-servers$/, name: "listMcpServers" },
   { method: "POST", pattern: /^\/settings\/mcp-servers\/preview$/, name: "previewMcpServer" },
+  { method: "POST", pattern: /^\/settings\/mcp-servers\/composio\/tools$/, name: "listComposioTools" },
   { method: "GET", pattern: /^\/settings\/mcp-servers\/([^/]+)$/, name: "getMcpServer" },
   { method: "PUT", pattern: /^\/settings\/mcp-servers\/([^/]+)$/, name: "saveMcpServer" },
+  { method: "PUT", pattern: /^\/settings\/mcp-servers\/([^/]+)\/composio$/, name: "saveComposioServer" },
   { method: "DELETE", pattern: /^\/settings\/mcp-servers\/([^/]+)$/, name: "deleteMcpServer" },
   { method: "POST", pattern: /^\/settings\/mcp-servers\/([^/]+)\/refresh$/, name: "refreshMcpServer" },
   { method: "POST", pattern: /^\/settings\/mcp-servers\/([^/]+)\/oauth\/start$/, name: "startMcpOAuth" },
@@ -1022,7 +1027,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const localTools = new Set(hostToolDefs({ maxExecS: 600, shell: "local" }).map((def) => def.name));
   const kindTools = (kind: ComputerKind): readonly string[] =>
     kind === "none" ? [] : kind === "sandbox" ? hostToolDefs({ maxExecS: 600, shell: "computer" }).map((def) => def.name).filter((name) => !localTools.has(name))
-      : kind === "browser" ? browserToolNames : capabilityToolDefs(kind).map((def) => def.name);
+      : kind === "browser" ? browserToolNames : [...COMPUTER_TOOLS];
   let faux: FauxComputers | undefined;
   const fauxOf = (): FauxComputers => (faux ??= fauxComputers({ viewerBase: ownOriginOf() }));
   /** Whether a computer on a provider that binds a folder of this machine (Docker) can be had here now: Settings →
@@ -3049,6 +3054,17 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const saved = await mcpServers.save(id, await bodyOf(req), stopping.signal, secretSeen as McpCredentialMark | undefined);
         await refreshMcpMeta();
         return send(res, 200, saved);
+      }
+      // Composio makes the managed MCP server; what is kept is the ordinary MCP save, so the key is a sealed header.
+      case "listComposioTools":
+        return send(res, 200, await composioTools(await bodyOf(req), options.composioControl ?? {}, stopping.signal), { "cache-control": "no-store" });
+      case "saveComposioServer": {
+        // The name is checked before Composio is called: a refused name leaves nothing made there.
+        mcpNameOf(id);
+        const body = await bodyOf(req);
+        const answer = await composioSave(body, options.composioControl ?? {}, (mcp) => mcpServers.save(id, mcp, stopping.signal), id, stopping.signal, async () => (await mcpServers.get(id)).url);
+        await refreshMcpMeta();
+        return send(res, 200, answer, { "cache-control": "no-store" });
       }
       case "refreshMcpServer": {
         const refreshed = await mcpServers.refresh(id, stopping.signal);

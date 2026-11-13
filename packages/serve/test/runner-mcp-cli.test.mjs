@@ -21,7 +21,7 @@ const { openSqliteStore, sealMcpCredential } = await import("../dist/store/index
 const { startRunner } = await import("../dist/runner/runner.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { permissionOf } = await import("../dist/tool-gate.js");
-const { waitingText } = await import("../dist/tool-gate.js");
+const { waitingText, RESUME_GO_ON } = await import("../dist/tool-gate.js");
 const { deniedText } = await import("../dist/runner/loop-contract.js");
 const { deniedText: setToDenyText } = await import("../dist/refusal-words.js");
 const { KINDS } = await import("../dist/runner/journal-kinds.js");
@@ -229,7 +229,9 @@ test("C2: a call set to ask parks the run with nothing sent, the CLI answered ma
   assert.equal(toolCalls(run.fake).length, 1, "run exactly once");
   assert.equal(run.seen.followUps?.length, 1, "one resume message");
   assert.ok(run.seen.followUps[0].startsWith(`[tool approval] This answers your mcp:fake/add call ${CALL_ID} (arguments {"a":2,"b":3})`), run.seen.followUps[0]);
-  assert.ok(run.seen.followUps[0].endsWith("They allowed it, and it ran. Its result:\n5"), run.seen.followUps[0]);
+  // Then the one line that sends the agent back to the person's request: Claude Code read the result alone as a note about
+  // the approval and answered that, never the question (live, a Composio MCP call, 2 of 3 runs).
+  assert.ok(run.seen.followUps[0].endsWith(`They allowed it, and it ran. Its result:\n5\n\n${RESUME_GO_ON}`), run.seen.followUps[0]);
   assert.equal(entries.find((entry) => entry.kind === KINDS.callEnd)?.data.output, "5", "the approved call on the run's record");
 });
 
@@ -240,7 +242,7 @@ test("C4: a parked call the owner denies is told in their words, and nothing is 
   const { row } = await run.settled((row) => row.state === "ended" && row.runner === null);
   assert.equal(row.state, "ended", JSON.stringify(row));
   assert.equal(toolCalls(run.fake).length, 0, "nothing sent");
-  assert.ok(run.seen.followUps?.[0]?.endsWith(`\n${deniedText("mcp:fake/add", "not today")}`), run.seen.followUps?.[0]);
+  assert.ok(run.seen.followUps?.[0]?.endsWith(`\n${deniedText("mcp:fake/add", "not today")}\n\n${RESUME_GO_ON}`), run.seen.followUps?.[0]);
 });
 
 test("C3: a call set to deny is refused in the gate's words, nothing sent", async (t) => {
@@ -272,7 +274,7 @@ test("C5: a parked call across a new runner: the runner that parked it goes, ano
   assert.equal(row.state, "ended", JSON.stringify(row));
   assert.equal(row.runner, null);
   assert.equal(toolCalls(run.fake).length, 1, "run exactly once");
-  assert.ok(run.seen.followUps?.[0]?.endsWith("They allowed it, and it ran. Its result:\n5"), run.seen.followUps?.[0]);
+  assert.ok(run.seen.followUps?.[0]?.endsWith(`They allowed it, and it ran. Its result:\n5\n\n${RESUME_GO_ON}`), run.seen.followUps?.[0]);
 });
 
 test("C7: a door call that carries no call id is refused in words: never asked of the gate, never sent", async (t) => {
@@ -336,7 +338,7 @@ test("P1: a parked call is on the record from its park, unsent; Allow sends it o
   await reached(async () => (await run.server.runs.get("run-1")).state === "ended", "the run ends");
   const { entries } = await run.settled();
   assert.equal(toolCalls(run.fake).length, 1, "sent once");
-  assert.ok(run.seen.followUps?.[0]?.endsWith("\n5"), run.seen.followUps?.[0]);
+  assert.ok(run.seen.followUps?.[0]?.endsWith(`\n5\n\n${RESUME_GO_ON}`), run.seen.followUps?.[0]);
   assert.deepEqual([ofCall(entries, KINDS.callStart).length, ofCall(entries, SENT).length], [1, 1], "one start, one sent mark");
   assert.deepEqual(ofCall(entries, KINDS.callEnd).map((data) => [data.status, data.output]), [["done", "5"]]);
 });
@@ -353,7 +355,7 @@ test("P2: an allowed parked call whose runner dies before its sent mark is sent 
   const { entries } = await run.settled();
   assert.equal(toolCalls(run.fake).length, 1, "sent once, by the next runner");
   assert.deepEqual(ofCall(entries, KINDS.callEnd).map((data) => [data.status, data.output]), [["done", "5"]], "its real result, not interrupted");
-  assert.ok(run.seen.followUps?.at(-1)?.endsWith("\n5"), run.seen.followUps?.at(-1));
+  assert.ok(run.seen.followUps?.at(-1)?.endsWith(`\n5\n\n${RESUME_GO_ON}`), run.seen.followUps?.at(-1));
 });
 
 test("P6: an allowed parked call whose runner dies after its sent mark, before the send, ends interrupted and is never sent again", async (t) => {

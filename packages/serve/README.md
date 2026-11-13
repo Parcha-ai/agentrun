@@ -619,9 +619,21 @@ Settings → Computers. The kind says what the agent is given, and the provider 
 |---|---|---|
 | `none` | The run's folder alone: no computer, and no provider (`{"kind": "none"}`) | |
 | `sandbox` | A Linux shell, with files and processes | `docker`, `daytona`, `modal`, `e2b` |
-| `desktop` | A screen, a pointer and keys (`desktop_screen`, `desktop_input`), and a shell where its provider mounts the run's folder | `docker` (with an image that has an X server), `e2b`, `orgo` |
-| `phone` | A rented Android: its screen, touch and apps (the `phone_*` tools) | `phone-harness` |
+| `desktop` | The computer's tools (`computer_observe`, `computer_act`, `computer_screenshot`, `computer_script`), and a shell where its provider mounts the run's folder | `docker` (with an image that has an X server), `e2b`, `orgo` |
+| `phone` | A rented Android, through the same computer tools | `phone-harness` |
 | `browser` | A hosted browser (the browser tools) | `browserbase`, `kernel` |
+
+A desktop's and a phone's tools are one set over the computer's groups. With the `ui` group, `computer_observe` returns
+the app window's elements as compact lines (`@e12 button "Save"`), and `computer_act` runs steps on them by ref (press,
+set, click, type, key, scroll, drag, nav), each step saying its route and whether a readback verified it, and the answer
+ending with the window's new state. Without it, observe is a screenshot and act's steps are raw input at its pixels.
+`computer_script` runs JavaScript in an isolate in this server, with a typed `computer` object as its only binding (no
+network, no keys): a known sequence of steps is one script, and it returns only what the next decision needs. Its
+declarations are `spec/computer/computer.d.ts`, generated from `packages/computer/src/surface/api.ts`. On pi, a run
+with a desktop or a phone also has pi's code mode (`codemode`), whose scripts call the run's tools and have the same
+`computer` bound; the call is held to the kind's setting. In Codex's code mode, a script's call of a computer tool
+answers the tool's value as JSON. `computerMcp` (`src/workspace/computer-mcp.ts`) serves the same tools to an MCP
+client, each answer with its value as `structuredContent`.
 
 A kind with no provider, a provider that does not serve the kind, or a provider whose required keys are not saved is
 refused before anything starts, in words that name the fix in Settings → Computers. A Docker computer needs a Docker
@@ -1457,6 +1469,21 @@ Streamable HTTP with the official MCP SDK client (`@modelcontextprotocol/client`
 (or absent), `{type: "bearer", token}` (sent as `Authorization: Bearer <token>`) or `{type: "headers", headers: {Name:
 value}}` (up to 8). An `oauth` server is signed in to first ([below](#signing-in-with-oauth)), then previewed by name.
 `url` is `https`, or `http` on loopback.
+
+### Composio
+
+Composio is an MCP server like any other, so it needs no adapter of its own. Settings → MCP servers has a Composio
+preset: you give your Composio API key, a toolkit (`github`, `slack`...), the actions to grant (picked from the
+toolkit's list) and a server name, and the server has Composio make a managed MCP server for them, then saves it as an
+ordinary MCP server with the key sealed as an `x-api-key` header. `POST /v2/settings/mcp-servers/composio/tools`
+`{api_key, toolkit}` lists the actions; `PUT /v2/settings/mcp-servers/{name}/composio` `{api_key, toolkit, tools,
+user_id?}` makes and saves the server. When the toolkit needs your account and `user_id` (default `agentrun`) has none
+active, the answer's `connect_url` is Composio's page to connect it; nothing here signs in. Composio's server can leave
+out an action it was allowed (it did for `HACKERNEWS_GET_FRONTPAGE`), so the answer's `not_served` names any chosen
+action the saved server doesn't list. Both routes are the owner's
+session alone, and a saved Composio server is gated, approved and shown on the Timeline as any MCP server's tools are,
+"not metered" until you price them. Composio's own meta tools stay refused, and the helper actions that connect an
+account are left off the server's address.
 
 What can go wrong, told apart:
 
@@ -2900,7 +2927,7 @@ screenshots, then the answer), spending about $0.04 in all:
 
 | Cap mode | Route | First request needs | Five-step run needs | Each further step |
 | --- | --- | --- | --- | --- |
-| `strict` | Through a gateway (OpenRouter): the byte bound | $0.05 | $0.11 | about $0.013 |
+| `strict` | Through a gateway (OpenRouter): the byte bound | $0.06 | $0.12 | about $0.013 |
 | `strict` | Straight to Anthropic: Anthropic's count | $0.03 | $0.09 | about $0.012 |
 | `expected` (the default) | Either | as `strict` | $0.06 | about $0.007 |
 
