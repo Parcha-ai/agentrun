@@ -7,7 +7,6 @@ import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { apply } from "@earendil-works/chord/delta";
 import type { RecoveryEffect, RecoveryNote } from "@parcha/agentrun-dsl/recovery";
-import { decisionKey } from "./decisions.js";
 import { effectKey } from "./store.js";
 import { walHasCommit } from "./wal.js";
 
