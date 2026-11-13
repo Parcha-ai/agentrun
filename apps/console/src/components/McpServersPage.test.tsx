@@ -435,9 +435,101 @@ describe("Settings → MCP servers, the saved ones", () => {
     const p = await open(server([[]]).v2);
     await p.click(/^Add server$/);
     const radios = [...p.host.querySelectorAll('input[name="mcp-auth"]')] as HTMLInputElement[];
-    expect(radios.map((r) => r.value)).toEqual(["none", "bearer", "headers", "oauth"]);
+    expect(radios.map((r) => r.value)).toEqual(["none", "bearer", "headers", "oauth", "github_app"]);
     expect(radios.every((r) => !r.disabled)).toBe(true);
     expect(p.text()).not.toContain("seal key");
+  });
+});
+
+describe("Settings → MCP servers, GitHub App", () => {
+  const GITHUB = "https://api.githubcopilot.com/mcp/";
+  const app = (extra: Partial<McpServer> = {}) => saved({ name: "github", url: GITHUB, auth: { type: "github_app" }, credential: null, ...extra });
+
+  it("offers GitHub App, fills GitHub's address, and saves auth {type: github_app} with no token", async () => {
+    const s = server([[], [app()]], (c) => (c.path.endsWith("/preview") ? json(200, PREVIEW) : c.method === "PUT" ? json(200, app()) : undefined));
+    const p = await open(s.v2);
+    await p.click(/^Add server$/);
+    await p.type("mcp-name", "github");
+    await p.pick("github_app");
+    expect(p.input("mcp-url").value).toBe(GITHUB);
+    expect(p.text()).toContain("this server's GitHub App");
+    await p.click(/^Preview$/);
+    await p.click(/^Save$/);
+    expect(s.writes()).toEqual([
+      { method: "POST", path: "/v2/settings/mcp-servers/preview", body: { url: GITHUB, auth: { type: "github_app" } } },
+      { method: "PUT", path: "/v2/settings/mcp-servers/github", body: { url: GITHUB, auth: { type: "github_app" } } },
+    ]);
+    expect(p.row("github").textContent).toContain("GitHub App");
+  });
+
+  it("sends optional static headers with a github_app save", async () => {
+    const s = server([[]], (c) => (c.path.endsWith("/preview") ? json(200, PREVIEW) : c.method === "PUT" ? json(200, app({ auth: { type: "github_app", headers: ["X-GitHub-Toolsets"] } })) : undefined));
+    const p = await open(s.v2);
+    await p.click(/^Add server$/);
+    await p.type("mcp-name", "github");
+    await p.pick("github_app");
+    await p.type("mcp-header-name-0", "X-GitHub-Toolsets");
+    await p.type("mcp-header-value-0", "repos");
+    await p.click(/^Preview$/);
+    await p.click(/^Save$/);
+    expect(s.writes()[1]).toEqual({ method: "PUT", path: "/v2/settings/mcp-servers/github", body: { url: GITHUB, auth: { type: "github_app", headers: { "X-GitHub-Toolsets": "repos" } } } });
+  });
+
+  it("shows a saved github_app server as GitHub App and edits it as one, not as None", async () => {
+    const s = server([[app()]], (c) => (c.method === "PUT" ? json(200, app()) : undefined));
+    const p = await open(s.v2);
+    expect(p.row("github").textContent).toContain("GitHub App");
+    await p.click(/^Change$/, p.row("github"));
+    expect((p.host.querySelector('input[name="mcp-auth"][value="github_app"]') as HTMLInputElement).checked).toBe(true);
+    expect((p.host.querySelector('input[name="mcp-auth"][value="none"]') as HTMLInputElement).checked).toBe(false);
+    expect(p.input("mcp-url").value).toBe(GITHUB);
+    await p.click(/^Save$/);
+    expect(s.writes()).toEqual([{ method: "PUT", path: "/v2/settings/mcp-servers/github", body: { url: GITHUB, auth: { type: "github_app" } } }]);
+  });
+
+  it("routes #/settings/mcp?add=github&auth=github_app to the add form, and ignores a name no server can have", () => {
+    expect(route("#/settings/mcp?add=github&auth=github_app")).toMatchObject({ settings: "mcp", add: { name: "github", auth: "github_app" } });
+    expect(route("#/settings/mcp?add=Not_A_Name")).not.toHaveProperty("add");
+    expect(route("#/settings/mcp")).not.toHaveProperty("add");
+  });
+
+  it("opens the add form for a server a template needs, its name and GitHub App filled", async () => {
+    const p = await open(server([[]]).v2, { add: { name: "github", auth: "github_app" } });
+    expect(p.host.querySelector('form[aria-label="Add an MCP server"]')).toBeTruthy();
+    expect(p.input("mcp-name").value).toBe("github");
+    expect(p.input("mcp-url").value).toBe(GITHUB);
+    expect((p.host.querySelector('input[name="mcp-auth"][value="github_app"]') as HTMLInputElement).checked).toBe(true);
+  });
+
+  it("opens the add form again when Back returns to a setup URL while the page stays mounted", async () => {
+    const { v2 } = server([[]]);
+    const p = await open(v2, { add: { name: "github", auth: "github_app" } });
+    const show = async (add?: { name: string; auth?: "github_app" }) => {
+      await act(async () => { root!.render(createElement(McpServersPage, { v2, writable: true, ...(add ? { add } : {}) })); });
+    };
+    expect(p.host.querySelector('form[aria-label="Add an MCP server"]')).toBeTruthy();
+    await show(undefined);
+    expect(p.host.querySelector('form[aria-label="Add an MCP server"]')).toBeFalsy();
+    await show({ name: "github", auth: "github_app" });
+    expect(p.host.querySelector('form[aria-label="Add an MCP server"]')).toBeTruthy();
+    expect(p.input("mcp-name").value).toBe("github");
+  });
+
+  it("says in words when GitHub is not connected, pointing at Settings → GitHub", async () => {
+    const s = server([[]], (c) => (c.path.endsWith("/preview") ? refusal(409, "github_not_connected", "This server has no GitHub App") : undefined));
+    const p = await open(s.v2, { add: { name: "github", auth: "github_app" } });
+    await p.click(/^Preview$/);
+    expect(p.text()).toContain("GitHub is not connected on this server.");
+    expect(p.text()).toContain("Settings → GitHub");
+  });
+
+  it("keeps the server's own words when the App is connected but has no repository", async () => {
+    const why = "The GitHub App is installed but no repository is selected: add one in the installation's settings on GitHub.";
+    const s = server([[]], (c) => (c.path.endsWith("/preview") ? refusal(409, "github_not_connected", why) : undefined));
+    const p = await open(s.v2, { add: { name: "github", auth: "github_app" } });
+    await p.click(/^Preview$/);
+    expect(p.text()).toContain(why);
+    expect(p.text()).toContain("Settings → GitHub");
   });
 });
 

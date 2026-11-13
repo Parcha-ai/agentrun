@@ -445,6 +445,14 @@ test("a string parameter can say what its value is: market-monitor's schedule is
   }
 });
 
+test("market-monitor's lookback_days help says what the number does (the days a run looks back, equal to the gap between runs), not a note about changing cron", async (t) => {
+  const { api } = await serve(t);
+  const help = (await api("GET", "/templates")).body.templates.find((x) => x.name === "market-monitor").parameters.lookback_days.description;
+  assert.doesNotMatch(help, /change cron/);
+  assert.match(help, /how many days back a run looks/);
+  assert.match(help, /equal to the gap between runs/);
+});
+
 test("every package this server ships applies on a server with nothing saved: no key, no MCP server, no box; what it lacks is a warning, and no tool it grants needs a key; one with a shell is refused in words, nothing made", { timeout: 120_000 }, async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, ["PARALLEL_API_KEY", "MONID_API_KEY", "BROWSERBASE_API_KEY", "KERNEL_API_KEY", "TYPESAFE_API_KEY"]);
   const { api } = await serve(t);

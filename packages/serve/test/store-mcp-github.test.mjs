@@ -16,6 +16,7 @@ import { queued, storeOn } from "./store-helpers.mjs";
 const listed = ({ inputSchema, ...tool }) => ({ ...tool, input_schema: inputSchema });
 const { mcpClaim } = await import("../dist/runner/mcp-claim.js");
 const { mcpGateway } = await import("../dist/mcp-gateway.js");
+const { GITHUB_UNUSABLE } = await import("../dist/runner/mcp-github.js");
 
 const HOUR = 3_600_000;
 /** The runner's seal key: a github_app server keeps nothing sealed, and a runner always has one. */
@@ -129,7 +130,7 @@ test("G4: an App not installed on the run's repository, a run with no repository
   const notInstalled = await claimOf();
   assert.equal((await call(notInstalled)).content[0].text, "The MCP server gh's credential can't be used right now: the GitHub App is not installed on acme/widgets: install it from Settings → GitHub.");
   const noRepo = await claimOf({ mint, target: undefined });
-  assert.equal((await call(noRepo)).content[0].text, "The MCP server gh's credential can't be used right now: this run names no GitHub repository, so the GitHub App has no repository to make a token for.");
+  assert.equal((await call(noRepo)).content[0].text, `The MCP server gh's credential can't be used right now: ${GITHUB_UNUSABLE.noRepo}.`);
   const noApp = await claimOf(null);
   assert.equal((await call(noApp)).content[0].text, "The MCP server gh's credential can't be used right now: this server has no GitHub App set up for its runs (Settings → GitHub).");
   assert.deepEqual(calls(fake), [], "nothing was sent");

@@ -28,7 +28,7 @@ const TOKEN_MS = 60 * 60_000;
 export async function startFauxGitHub(): Promise<FauxGitHub> {
   const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { type: "pkcs1", format: "pem" }, publicKeyEncoding: { type: "spki", format: "pem" } });
   const app = { id: FAUX_GITHUB.appId, slug: FAUX_GITHUB.slug, clientId: `Iv1.faux${randomBytes(6).toString("hex")}`, pem: privateKey, webhookSecret: randomBytes(24).toString("hex"), settingsUrl: `https://github.com/organizations/${FAUX_GITHUB.account}/settings/apps/${FAUX_GITHUB.slug}` };
-  const installation = { id: FAUX_GITHUB.installation, account: { login: FAUX_GITHUB.account, type: "Organization" }, app_id: Number(FAUX_GITHUB.appId), suspended_at: null };
+  const installation = { id: FAUX_GITHUB.installation, account: { login: FAUX_GITHUB.account, type: "Organization" }, app_id: Number(FAUX_GITHUB.appId), suspended_at: null, permissions: { metadata: "read", contents: "read", pull_requests: "write", issues: "read" } };
   /** Each token minted, by its value: the repositories it was narrowed to (by name), or every one the installation covers. */
   const tokens = new Map<string, string[] | undefined>();
   const covered = (names: string[] | undefined) => FAUX_GITHUB.repositories.filter((full) => !names || names.includes(full.split("/")[1]!));

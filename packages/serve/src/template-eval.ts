@@ -762,7 +762,8 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
     const { fauxEnvOf } = await import("./server.js");
     const { withoutFaux } = await import("./model.js");
     const serveOptions = options.serve ?? {};
-    const beside = await runnerBeside(join(scratch!, "data"), { mcpLoopback: serve.localInstall, ...(serveOptions.faux ? { env: { ...withoutFaux(process.env), ...fauxEnvOf({ data: join(scratch!, "data"), ...serveOptions } as Parameters<typeof fauxEnvOf>[0]) } } : {}) }).catch(async (error: unknown) => {
+    // Its run lines go to stderr: stdout is the eval's report.
+    const beside = await runnerBeside(join(scratch!, "data"), { mcpLoopback: serve.localInstall, onLine: (line) => console.error(line), ...(serveOptions.faux ? { env: { ...withoutFaux(process.env), ...fauxEnvOf({ data: join(scratch!, "data"), ...serveOptions } as Parameters<typeof fauxEnvOf>[0]) } } : {}) }).catch(async (error: unknown) => {
       await serve.close();
       removeTree(scratch!);
       throw error;
