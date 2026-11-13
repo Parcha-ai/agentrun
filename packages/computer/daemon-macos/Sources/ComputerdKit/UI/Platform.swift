@@ -266,15 +266,13 @@ public struct Platform: Sendable {
 	public var foreground: any InputRoute
 	/// Foreground input works here (the grant), apart from whether a call allows it.
 	public var foregroundFeature: Feature
-	/// The nav step works here, or why not.
-	public var navFeature: Feature
 	/// input.actions' keyboard and mouse. It is foreground input by nature, so foregroundFeature gates it too.
 	public var raw: any RawInput
 	/// A person's keyboard and mouse, for the take-over check of a ui act that takes the foreground route.
 	public var person: any PersonInput
 	public var clock: any Clock
 
-	public init(accessibility: any Accessibility, capture: any Capture, workspace: any Workspace, background: any InputRoute, backgroundFeature: Feature, foreground: any InputRoute, foregroundFeature: Feature, navFeature: Feature, raw: any RawInput, person: any PersonInput, clock: any Clock = SystemClock()) {
+	public init(accessibility: any Accessibility, capture: any Capture, workspace: any Workspace, background: any InputRoute, backgroundFeature: Feature, foreground: any InputRoute, foregroundFeature: Feature, raw: any RawInput, person: any PersonInput, clock: any Clock = SystemClock()) {
 		self.accessibility = accessibility
 		self.capture = capture
 		self.workspace = workspace
@@ -282,7 +280,6 @@ public struct Platform: Sendable {
 		self.backgroundFeature = backgroundFeature
 		self.foreground = foreground
 		self.foregroundFeature = foregroundFeature
-		self.navFeature = navFeature
 		self.raw = raw
 		self.person = person
 		self.clock = clock
