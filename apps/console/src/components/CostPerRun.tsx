@@ -6,7 +6,7 @@ import type { Client } from "@/lib/client";
 import { type Block, blockSizeOf, blocksOf, level, nearest, PATHS, pathOf, pct, plotted, type Point, rollingMean, runTicks, timesOf, usd, windowOf, yTicksOf, yTopOf } from "@/lib/costPerRun";
 import { when } from "@/lib/format";
 import { cn } from "@/lib/utils";
-import { counted, handBacks, type Marker, MARKER_LETTER, MARKER_WORDS, markersOf, replayLine } from "@/lib/learningLoop";
+import { counted, handBacksOf, type Marker, MARKER_LETTER, MARKER_WORDS, markersOf, replayLine } from "@/lib/learningLoop";
 import type { CostRun, LearningCost, Promotion } from "@/lib/v2";
 
 // An agent's cost per run, run after run (GET /v2/agents/{id}/learning/cost): every run's all-in $ (its own cost and what
@@ -64,7 +64,7 @@ export function CostChart({ data, on, width: fixed, promotions = [] }: { data: L
   const mean = useMemo(() => rollingMean(job, window), [job, window]);
   const markers = useMemo(() => markersOf(data.runs, promotions), [data.runs, promotions]);
   const { summary: s } = data;
-  const back = useMemo(() => handBacks(data.runs, s.takeover?.n ?? null), [data.runs, s.takeover]);
+  const back = handBacksOf(data);
   const fig = useRef<HTMLElement>(null);
   const [room, setRoom] = useState(fixed ?? 720);
   useEffect(() => {

@@ -19,13 +19,15 @@ const runOf = (id, n, metrics, extra = {}) => ({ id, agentId: "sorter", state: "
 const guarded = (path, digest, rows) => ({ path, workflow: "sort-invoice", workflow_digest: digest, guards: rows });
 const row = (node, p, threshold = 0.7, signal = "jev") => ({ node, signal, p, threshold, escalated: p === null || p < threshold });
 
-/** A store with just what the read reads: the agent's runs, its settings (grades, promotions) and each run's kept learning. */
+/** A store with just what the read reads: the agent's runs, its settings (grades, promotions) and each run's kept learning
+ *  (a row, or a list of rounds' rows `{ at, row }` oldest first). proposal(id) is the newest round, as the store's. */
 function storeOf({ runs, grades = [], promotions = [], kept = {} }) {
   const settings = new Map([["learning.grades.sorter", { v: 1, items: grades }], ["learning.promotions.sorter", { v: 1, items: promotions }]]);
+  const roundsOf = (id) => (kept[id] === undefined ? [] : Array.isArray(kept[id]) ? kept[id].map(({ at, row }, i) => ({ round: i + 1, createdAt: at, proposal: row })) : [{ round: 1, createdAt: T0 + 3_600_000, proposal: kept[id] }]);
   return {
     runs: { list: async () => runs },
     settings: { get: async (key) => settings.get(key) },
-    learning: { proposal: async (id) => (kept[id] ? { createdAt: T0 + 3_600_000, proposal: kept[id] } : undefined) },
+    learning: { proposal: async (id, round) => (round === undefined ? roundsOf(id).at(-1) : roundsOf(id)[round - 1]) },
   };
 }
 
@@ -61,12 +63,11 @@ test("the loop's read: compile turns newest first with their standing, a failed 
 
   const at = (digest, node) => guards.find((g) => g.digest === digest && g.node === node);
   const classify = at(D1, "classify");
-  assert.deepEqual([classify.signal, classify.threshold, classify.runs, classify.escalated], ["jev", 0.7, 3, 1], "r2 (replay), r3, r4; r6's row is out of shape; other agents', live and archived runs are not read");
+  assert.deepEqual([classify.signal, classify.threshold, classify.runs, classify.escalated, classify.right, classify.wrong, classify.replays], ["jev", 0.7, 2, 1, 1, 0, 1], "r3, r4 served (r2 a replay, counted apart); r6's row is out of shape; other agents', live and archived runs are not read");
   assert.deepEqual(classify.points, [
-    { run_id: "r2", p: 0.91, escalated: false, correct: null },
     { run_id: "r3", p: 0.82, escalated: false, correct: true },
     { run_id: "r4", p: null, escalated: true, correct: null },
-  ], "a grade is the step's only where the workflow answered alone: a replay and a hand-back carry none");
+  ], "a grade is the step's only where the workflow answered alone: a hand-back carries none");
   assert.deepEqual([at(D1, "Pick the code").signal, at(D1, "Pick the code").escalated], ["both", 1]);
   assert.deepEqual(at(D2, "classify").points.map((p) => p.run_id), ["r5"], "each revision its own step");
 });
@@ -77,6 +78,38 @@ test("a guarded step keeps its newest LOOP_POINTS_MAX runs' p", async () => {
   assert.equal(guards[0].runs, LOOP_POINTS_MAX + 5);
   assert.equal(guards[0].points.length, LOOP_POINTS_MAX);
   assert.deepEqual([guards[0].points[0].run_id, guards[0].points[0].p], ["r5", 0.1235], "the oldest left out; p to four places");
+});
+
+test("a guarded step's graded counts are over every run it served, not only the newest LOOP_POINTS_MAX it draws", async () => {
+  // Five old runs graded wrong, then LOOP_POINTS_MAX ungraded: the points hold no grade, the counts hold all five.
+  const runs = Array.from({ length: LOOP_POINTS_MAX + 5 }, (_, i) => runOf(`r${i}`, i, guarded("workflow", D1, [row("classify", 0.8)])));
+  const grades = Array.from({ length: 5 }, (_, i) => ({ run: `r${i}`, correct: false }));
+  const { guards } = await agentLoopOverStore(storeOf({ runs, grades }), "sorter");
+  assert.equal(guards[0].points.filter((p) => p.correct !== null).length, 0);
+  assert.deepEqual([guards[0].runs, guards[0].right, guards[0].wrong], [LOOP_POINTS_MAX + 5, 0, 5]);
+});
+
+test("a replay's record-only rows never count as served: a revision only replayed hands back nothing it says, and has no threshold", async () => {
+  // A replay reads every guard at RECORD_ONLY_THRESHOLD: p 0.3 under the real 0.7 records escalated false.
+  const replay = (id, n, p) => runOf(id, n, guarded("replay", D2, [row("classify", p, 1e-9)]));
+  const runs = [replay("x1", 1, 0.3), replay("x2", 2, 0.2), replay("x3", 3, 0.95)];
+  const { guards } = await agentLoopOverStore(storeOf({ runs }), "sorter");
+  assert.deepEqual(guards.map((g) => [g.digest, g.threshold, g.runs, g.escalated, g.replays, g.points.length]), [[D2, null, 0, 0, 3, 0]]);
+  const served = [...runs, runOf("s1", 4, guarded("workflow", D2, [row("classify", 0.8)]))];
+  const [step] = (await agentLoopOverStore(storeOf({ runs: served }), "sorter")).guards;
+  assert.deepEqual([step.threshold, step.runs, step.escalated, step.replays, step.points.map((p) => p.run_id)], [0.7, 1, 0, 3, ["s1"]], "the threshold is a served run's, never a replay's 1e-9");
+});
+
+test("each round of a run lists its own compile: a follow-up's round that only kept a note leaves the first round's compile in the feed", async () => {
+  const runs = [runOf("r1", 1, { path: "agent" }), runOf("r2", 2, { path: "agent" })];
+  const compiled = (digest) => ({ compiled: { workflow: "sort-invoice", from_notes: ["vendor-codes"], attempts: [{ ok: true, errors: [] }], digest } });
+  const kept = {
+    // r1 compiled in round 1; a follow-up ended round 2 with a note, then round 3 compiled again, after r2's.
+    r1: [{ at: T0 + 10, row: compiled(D1) }, { at: T0 + 20, row: { state: "proposed" } }, { at: T0 + 40, row: compiled(D2) }],
+    r2: [{ at: T0 + 30, row: { draft_errors: ["the draft did not parse"] } }],
+  };
+  const { compiles } = await agentLoopOverStore(storeOf({ runs, kept }), "sorter");
+  assert.deepEqual(compiles.map((one) => [one.run_id, one.round, one.digest]), [["r1", 3, D2], ["r2", 1, null], ["r1", 1, D1]], "newest first by when each round kept it");
 });
 
 test("GET /agents/{id}/learning/loop: empty before any compile, in the schema's shape; 404 for an agent that is not there", async (t) => {

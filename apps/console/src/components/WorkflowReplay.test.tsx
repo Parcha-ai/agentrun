@@ -140,7 +140,7 @@ describe("the workflow card: standing, guards and where it is unsure", () => {
   const record = (over: Partial<Promotion>): Promotion => ({ workflow: "sorter", digest: "1".repeat(16), at: "2026-11-02T10:00:00Z", decided: "promote", source: "replay", reason: "as good as the agent on its graded inputs", replay: { of: [], n: 20, agree: 19, agent_acc: 0.9, wf_acc: 0.95, delta: 0.05, handed_back: 2 }, ...over } as Promotion);
   const point = (p: number | null, correct: boolean | null, i: number) => ({ run_id: `r${i}`, p, escalated: p === null || p < 0.7, correct });
   const loop: LearningLoop = { agent: "a", compiles: [], guards: [
-    { workflow: "sorter", digest: "1".repeat(16), node: "classify", signal: "jev", threshold: 0.7, runs: 5, escalated: 2, points: [point(0.95, true, 1), point(0.91, true, 2), point(0.75, false, 3), point(0.4, null, 4), point(null, null, 5)] },
+    { workflow: "sorter", digest: "1".repeat(16), node: "classify", signal: "jev", threshold: 0.7, runs: 5, escalated: 2, right: 2, wrong: 1, replays: 0, points: [point(0.95, true, 1), point(0.91, true, 2), point(0.75, false, 3), point(0.4, null, 4), point(null, null, 5)] },
   ] } as LearningLoop;
 
   it("says where each revision stands, with its replay in one line; scrubbing moves it", () => {
@@ -185,6 +185,25 @@ describe("the workflow card: standing, guards and where it is unsure", () => {
     expect(rows[1]).toContain("No run of this revision yet.");
     expect(host.querySelectorAll('[data-testid="guard-histogram"]')).toHaveLength(1);
     expect(host.querySelector('[data-testid="guard-histogram"] figcaption')?.textContent).toContain("p 0.0 to 0.1: 1 not graded");
+  });
+
+  it("a step's graded counts are every run's (the server's), and its p is said to be the newest runs' once older ones are left out", () => {
+    const many: LearningLoop = { agent: "a", compiles: [], guards: [
+      { workflow: "sorter", digest: "1".repeat(16), node: "classify", signal: "jev", threshold: 0.7, runs: 205, escalated: 5, right: 0, wrong: 5, replays: 0, points: Array.from({ length: 200 }, (_, i) => point(0.9, null, i)) },
+    ] } as LearningLoop;
+    const host = mount(createElement(Steps, { data: read([REVS2[0]!]), promotions: [record({})], loop: many }));
+    const row = host.querySelector('[data-testid="guard-row"]')!.textContent;
+    expect(row).toContain("2% handed back (5 of 205 runs) · graded 0 right, 5 wrong");
+    expect(row).not.toContain("none graded");
+    expect(row).toContain("p of the newest 200 runs");
+  });
+
+  it("a revision only replayed says so, never a hand-back rate read at the replay's record-only threshold", () => {
+    const replayed: LearningLoop = { agent: "a", compiles: [], guards: [
+      { workflow: "sorter", digest: "1".repeat(16), node: "classify", signal: "jev", threshold: null, runs: 0, escalated: 0, right: 0, wrong: 0, replays: 3, points: [] },
+    ] } as LearningLoop;
+    const host = mount(createElement(Steps, { data: read([REVS2[0]!]), promotions: [record({ decided: "replaying", replay: undefined })], loop: replayed }));
+    expect(host.querySelector('[data-testid="guard-row"]')!.textContent).toContain("Replayed on 3 graded inputs; no run served yet.");
   });
 
   it("a revision with no record yet says it replays before it serves; one with no guard has no list", () => {

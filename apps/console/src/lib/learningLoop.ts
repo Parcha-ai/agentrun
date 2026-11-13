@@ -45,13 +45,10 @@ export function markersOf(runs: readonly CostRun[], records: readonly Promotion[
 /** A run that counts in what a job costs: every run but a replay (a revision run alone on a graded input before it serves). */
 export const counted = (r: CostRun) => r.path !== "replay";
 
-/** How often the workflow handed the run back since it took over: of the runs it ran first on (it answered alone, or
- *  handed back), the share handed back. Null before a takeover or with none since. */
-export function handBacks(runs: readonly CostRun[], takeover: number | null): { ran: number; back: number } | null {
-  if (takeover === null) return null;
-  const since = runs.filter((r) => r.n >= takeover && (r.path === "workflow" || r.path === "handed_back"));
-  return since.length ? { ran: since.length, back: since.filter((r) => r.path === "handed_back").length } : null;
-}
+/** How often the workflow handed the run back since it took over: the server's count over every run since (the cost
+ *  summary's `hand_backs`), never the latest runs a read lists. Null before a takeover or with none since. */
+export const handBacksOf = (cost: Pick<LearningCost, "summary"> | null): { ran: number; back: number } | null =>
+  cost?.summary.hand_backs?.ran ? cost.summary.hand_backs : null;
 
 /** The newest promotion record of one revision (`workflow` at `digest`): what it is now. */
 export const recordOf = (records: readonly Promotion[], workflow: string, digest: string | null): Promotion | undefined =>
@@ -153,7 +150,7 @@ export function storyOf(input: {
   // The newest compile that wrote a workflow the checks passed (a later refused draft says so in the feed).
   const lastCompile = loop?.compiles.find((c) => c.digest !== null);
   const s = cost?.summary;
-  const back = cost && s?.takeover ? handBacks(cost.runs, s.takeover.n) : null;
+  const back = handBacksOf(cost);
   const newest = promotions.at(-1);
   // What the newest record's workflow serves: its champion keeps serving while a newer revision replays or after it is held.
   const now = newest ? serving.find((one) => one.workflow === newest.workflow) : undefined;
@@ -191,7 +188,7 @@ export function storyOf(input: {
   } else {
     stages.push({ key: "cheaper", title: "Cheaper", value: "Not yet", detail: "once a workflow takes over, each run's all-in cost against before", state: "later" });
   }
-  const shaky = (loop?.guards ?? []).filter((g) => g.runs > 0).sort((a, b) => b.escalated / b.runs - a.escalated / a.runs)[0];
+  const shaky = (loop?.guards ?? []).filter((g): g is typeof g & { threshold: number } => g.runs > 0 && g.threshold !== null).sort((a, b) => b.escalated / b.runs - a.escalated / a.runs)[0];
   if (back || shaky) {
     const rate = back ? `${Math.round((back.back / back.ran) * 100)}% handed back` : "no run since";
     stages.push({ key: "unsure", title: "Unsure", value: rate, detail: shaky ? `most at "${shaky.node}": ${shaky.escalated} of ${shaky.runs} under ${shaky.threshold.toFixed(2)}` : `of ${back!.ran} runs it ran first`, state: back && back.back / back.ran > 0.25 ? "warn" : "watch" });

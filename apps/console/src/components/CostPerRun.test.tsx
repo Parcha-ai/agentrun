@@ -23,7 +23,7 @@ function draw(data: LearningCost, on = true, width = 900, promotions: Promotion[
 }
 const text = (host: HTMLElement) => host.textContent ?? "";
 const run = (n: number, path: CostRun["path"], total: number | null): CostRun => ({ n, run_id: `run_${n}`, started_at: new Date(Date.UTC(2026, 9, 1, n)).toISOString(), path, workflow: path === "agent" ? null : "sort", learned_revision: "a".repeat(40), cost_usd: total, learning_usd: total === null ? null : 0, total_usd: total });
-const series = (runs: CostRun[], summary: Partial<LearningCost["summary"]> = {}): LearningCost => ({ agent: "a", runs, total_runs: runs.length, unknown_cost_runs: runs.filter((r) => r.total_usd === null).length, unknown_path_runs: 0, summary: { takeover: null, before: null, after: null, times_cheaper: null, ...summary }, workflows: [] });
+const series = (runs: CostRun[], summary: Partial<LearningCost["summary"]> = {}): LearningCost => ({ agent: "a", runs, total_runs: runs.length, unknown_cost_runs: runs.filter((r) => r.total_usd === null).length, unknown_path_runs: 0, summary: { takeover: null, before: null, after: null, times_cheaper: null, hand_backs: null, ...summary }, workflows: [] });
 
 describe("the chart's arithmetic", () => {
   it("plots only runs whose all-in cost is known", () => {
@@ -94,6 +94,11 @@ describe("CostChart", () => {
     expect(text(host)).toContain("Rolling mean of 5 runs");
     expect(text(host)).toContain("1 run costs more than");
     expect(text(host)).toContain("1 run's cost is not known: left out.");
+  });
+  it("the hand-back rate is the server's, over every run since the takeover, never the latest runs the chart read", () => {
+    // The chart read only runs it answered alone; the summary counts the hand-backs before them.
+    const host = draw(series([run(1, "agent", 0.9), run(2, "workflow", 0.1), run(3, "workflow", 0.1)], { takeover: { n: 1, run_id: "r1" }, hand_backs: { ran: 40, back: 10 } }));
+    expect(text(host)).toContain("25% handed back since");
   });
   it("before any workflow has finished a run, the mix's last words say who did, not 0% by the workflow", () => {
     const host = draw(series([run(1, "agent", 0.002), run(2, "agent", 0.003), run(3, "handed_back", 0.002)]));
@@ -233,7 +238,7 @@ describe("CostPerRun", () => {
     expect(text(host)).toContain("Workflow took over, run 21");
   });
   it("shows nothing under the tab's empty state until two runs have a cost, then the chart", async () => {
-    const empty: LearningCost = { agent: "a", runs: [], total_runs: 0, unknown_cost_runs: 0, unknown_path_runs: 0, summary: { takeover: null, before: null, after: null, times_cheaper: null }, workflows: [] };
+    const empty: LearningCost = { agent: "a", runs: [], total_runs: 0, unknown_cost_runs: 0, unknown_path_runs: 0, summary: { takeover: null, before: null, after: null, times_cheaper: null, hand_backs: null }, workflows: [] };
     for (const [answer, shown] of [[empty, false], [sample, true]] as const) {
       const v2 = { learningCost: async () => answer } as unknown as Client;
       const host = document.body.appendChild(document.createElement("div"));

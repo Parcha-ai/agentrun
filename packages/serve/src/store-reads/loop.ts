@@ -8,15 +8,18 @@ import { FINAL_STATES, type Store } from "../store/store.js";
 import type { GuardRow } from "../learned-nodes.js";
 import { gradesOf, promotionsOf } from "../learn/promote.js";
 import { promotedOf } from "../learn/compile.js";
+import { roundsOf } from "./learning.js";
 
 /** How many compile turns the read gives, the newest. */
 export const LOOP_COMPILES_MAX = 50;
 /** How many runs' p a guarded step gives, its newest. */
 export const LOOP_POINTS_MAX = 200;
 
-/** One compile turn of a run: `errors` its draft's when none passed (never silent). */
+/** One compile turn of a run, in the round of it that compiled (a follow-up opens a round past the first, and each
+ *  round's end may compile): `errors` its draft's when none passed (never silent). */
 export type LoopCompile = {
   run_id: string;
+  round: number;
   at: string;
   workflow: string | null;
   from_notes: string[];
@@ -28,15 +31,22 @@ export type LoopCompile = {
 /** One run's guard outcome on a step: its p (null when a signal was missing: it handed back), whether it handed back,
  *  and, when the run's answer was the workflow's own and it was graded, whether that was right. */
 export type LoopPoint = { run_id: string; p: number | null; escalated: boolean; correct: boolean | null };
-/** One guarded step of one revision of a learned workflow, over the runs that ran it (served and replayed). */
+/** One guarded step of one revision of a learned workflow, over the runs it served first on: its threshold as those runs
+ *  read it (null when only replays ran it), how many it guarded and handed back, how many of those the workflow answered
+ *  alone were graded right and wrong, each over every such run, and the newest runs' p. A replay run reads its guards at
+ *  RECORD_ONLY_THRESHOLD (learn/promote.ts: it hands back on nothing it reads), so its row says nothing of a hand-back
+ *  at the serving threshold: it is counted apart (`replays`) and in none of the others. */
 export type LoopGuard = {
   workflow: string;
   digest: string;
   node: string;
   signal: GuardRow["signal"];
-  threshold: number;
+  threshold: number | null;
   runs: number;
   escalated: number;
+  right: number;
+  wrong: number;
+  replays: number;
   points: LoopPoint[];
 };
 
@@ -53,15 +63,15 @@ function guardRowsOf(metrics: unknown): GuardRow[] {
   });
 }
 
-/** The agent's compile turns (newest first, LOOP_COMPILES_MAX) and its learned workflows' guarded steps, over its ended
- *  runs (not imported, not archived). A compile's `promoted` is its revision's promotion as the records say now (null
- *  while undecided). A step's `correct` is the run's grade only on a run its workflow answered alone (path `workflow`): a
+/** The agent's compile turns (every round of each run, roundsOf: newest first, LOOP_COMPILES_MAX) and its learned
+ *  workflows' guarded steps, over its ended runs (not imported, not archived). A compile's `promoted` is its revision's
+ *  promotion as the records say now (null while undecided): whether it serves now is the promotions read's `serving`. A step's `correct` is the run's grade only on a run its workflow answered alone (path `workflow`): a
  *  hand-back's answer was the agent's, and a replay run is never graded. */
 export async function agentLoopOverStore(store: Store, agentId: string): Promise<{ compiles: LoopCompile[]; guards: LoopGuard[] }> {
   const ended = (await store.runs.list({ agentId })).filter((run) => run.agentId === agentId && FINAL_STATES.includes(run.state) && !run.importedFrom && run.archivedAt === null).sort((a, b) => a.startedAt - b.startedAt || (a.id < b.id ? -1 : 1));
   const [grades, promotions] = await Promise.all([gradesOf(store.settings, agentId).catch(() => []), promotionsOf(store.settings, agentId).catch(() => [])]);
   const graded = new Map(grades.map((grade) => [grade.run, grade.correct]));
-  const compiles: LoopCompile[] = [];
+  const compiles: (LoopCompile & { createdAt: number })[] = [];
   const steps = new Map<string, LoopGuard>();
   for (const run of ended) {
     const metrics = run.metrics as { path?: unknown; workflow?: unknown; workflow_digest?: unknown } | null | undefined;
@@ -71,27 +81,39 @@ export async function agentLoopOverStore(store: Store, agentId: string): Promise
       const alone = metrics?.path === "workflow";
       for (const row of guardRowsOf(run.metrics)) {
         const key = `${workflow}\u0000${digest}\u0000${row.node}`;
-        const step = steps.get(key) ?? { workflow, digest, node: row.node, signal: row.signal, threshold: row.threshold, runs: 0, escalated: 0, points: [] };
+        const step = steps.get(key) ?? { workflow, digest, node: row.node, signal: row.signal, threshold: null, runs: 0, escalated: 0, right: 0, wrong: 0, replays: 0, points: [] };
+        steps.set(key, step);
+        if (metrics?.path === "replay") {
+          step.replays += 1;
+          continue;
+        }
+        const correct = alone ? (graded.get(run.id) ?? null) : null;
+        step.threshold = row.threshold;
         step.runs += 1;
         if (row.escalated) step.escalated += 1;
-        step.points.push({ run_id: run.id, p: row.p === null ? null : round4(row.p), escalated: row.escalated, correct: alone ? (graded.get(run.id) ?? null) : null });
-        steps.set(key, step);
+        if (correct === true) step.right += 1;
+        if (correct === false) step.wrong += 1;
+        step.points.push({ run_id: run.id, p: row.p === null ? null : round4(row.p), escalated: row.escalated, correct });
       }
     }
-    const kept = await store.learning.proposal(run.id).catch(() => undefined);
-    const row = (kept?.proposal ?? null) as { compiled?: unknown; draft_errors?: unknown } | null;
-    if (!kept || !row) continue;
-    const errors = texts(row.draft_errors);
-    const record = row.compiled as { workflow?: unknown; from_notes?: unknown; attempts?: unknown; digest?: unknown } | undefined;
-    const named = record && typeof record === "object" && typeof record.workflow === "string" ? record : undefined;
-    if (!named && !errors.length) continue;
-    const attempts = Array.isArray(named?.attempts) ? named.attempts.filter((one) => one && typeof one === "object" && typeof (one as { ok?: unknown }).ok === "boolean").map((one) => ({ ok: (one as { ok: boolean }).ok, errors: texts((one as { errors?: unknown }).errors) })) : [];
-    const kept16 = typeof named?.digest === "string" && /^[0-9a-f]{16}$/.test(named.digest) ? named.digest : null;
-    compiles.push({
-      run_id: run.id, at: new Date(kept.createdAt).toISOString(), workflow: named ? (named.workflow as string) : null, from_notes: texts(named?.from_notes), attempts,
-      digest: kept16, promoted: named && kept16 ? (promotedOf(promotions, named.workflow as string, kept16) ?? null) : null, draft_errors: errors,
-    });
+    for (const kept of await roundsOf(store, run.id).catch(() => [])) {
+      const row = (kept.proposal ?? null) as { compiled?: unknown; draft_errors?: unknown } | null;
+      if (!row) continue;
+      const errors = texts(row.draft_errors);
+      const record = row.compiled as { workflow?: unknown; from_notes?: unknown; attempts?: unknown; digest?: unknown } | undefined;
+      const named = record && typeof record === "object" && typeof record.workflow === "string" ? record : undefined;
+      if (!named && !errors.length) continue;
+      const attempts = Array.isArray(named?.attempts) ? named.attempts.filter((one) => one && typeof one === "object" && typeof (one as { ok?: unknown }).ok === "boolean").map((one) => ({ ok: (one as { ok: boolean }).ok, errors: texts((one as { errors?: unknown }).errors) })) : [];
+      const kept16 = typeof named?.digest === "string" && /^[0-9a-f]{16}$/.test(named.digest) ? named.digest : null;
+      compiles.push({
+        createdAt: kept.createdAt, run_id: run.id, round: kept.round, at: new Date(kept.createdAt).toISOString(), workflow: named ? (named.workflow as string) : null, from_notes: texts(named?.from_notes), attempts,
+        digest: kept16, promoted: named && kept16 ? (promotedOf(promotions, named.workflow as string, kept16) ?? null) : null, draft_errors: errors,
+      });
+    }
   }
   const guards = [...steps.values()].map((step) => ({ ...step, points: step.points.slice(-LOOP_POINTS_MAX) }));
-  return { compiles: compiles.reverse().slice(0, LOOP_COMPILES_MAX), guards };
+  // Newest first by when each round kept it (a later round of an earlier run can be newer than a later run's), the run's
+  // start and its round breaking a tie.
+  const newest = compiles.map((one, i) => ({ one, i })).sort((a, b) => b.one.createdAt - a.one.createdAt || b.i - a.i).slice(0, LOOP_COMPILES_MAX);
+  return { compiles: newest.map(({ one: { createdAt: _createdAt, ...one } }) => one), guards };
 }

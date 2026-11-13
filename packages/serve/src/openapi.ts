@@ -989,6 +989,7 @@ const LEARNING_COST = closed({
     before: COST_MEAN("The mean of the job's own cost (`cost_usd`, learning left out) over the `agent` runs before the takeover (all of them when there is none yet) whose cost is known; null when there is none."),
     after: COST_MEAN("The mean all-in cost (`total_usd`, learning included) of every run from the takeover on whose total is known; null before a takeover."),
     times_cheaper: { type: ["number", "null"], minimum: 0, description: `\`before\` over \`after\`, to a tenth, once \`after\` counts ${CHEAPER_AFTER_RUNS} runs or more; else null. Learning is left out of the before side and kept in the after side, so it never flatters learning.` },
+    hand_backs: { oneOf: [closed({ ran: COUNT, back: COUNT }), { type: "null" }], description: "Of the runs a learned workflow ran first on from the takeover on (`path` `workflow` or `handed_back`), how many (`ran`) and how many it handed back to the agent (`back`); null before a takeover." },
   }, "What the series shows, over every run it counts, `limit` aside."),
 });
 
@@ -1065,18 +1066,19 @@ const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
   "/agents/{agent_id}/learning/loop": {
     get: {
       operationId: "getLearningLoop", tags: ["agents"], summary: "The self-learning loop's own record: each compile turn, and each guarded step of the learned workflows",
-      description: `What the console's Learning tab tells of the loop beside the cost series. \`compiles\`: the agent's compile turns, newest first (the newest ${LOOP_COMPILES_MAX}): the workflow a run's compile turn wrote, the notes it absorbed, each attempt and what the checks refused, its draft's digest and whether that revision serves now; a turn whose draft never passed is listed with its \`draft_errors\`, never silent. \`guards\`: each guarded step of each learned workflow revision that ran (served first or replayed), with its signal and threshold, how many runs it guarded and how many it handed back, and each run's p (its newest ${LOOP_POINTS_MAX}), with whether the run was right when its answer was the workflow's own and was graded. Aggregates and the checks' own words only: no input or answer. Each text cut of the host's secrets and of its run's handed values; a run whose handed values can't be read here shows no error text (\`withheld\`).`,
+      description: `What the console's Learning tab tells of the loop beside the cost series. \`compiles\`: the agent's compile turns, newest first (the newest ${LOOP_COMPILES_MAX}): the workflow a run's compile turn wrote, the notes it absorbed, each attempt and what the checks refused, its draft's digest and whether that revision was promoted; a follow-up's round compiles on its own, so a run can list one turn a round; a turn whose draft never passed is listed with its \`draft_errors\`, never silent. \`guards\`: each guarded step of each learned workflow revision that ran (served first or replayed), with its signal and threshold, how many runs it served first on and how many it handed back, how many the workflow answered alone were graded right and wrong (each over every run), and each run's p (its newest ${LOOP_POINTS_MAX}), with whether the run was right when its answer was the workflow's own and was graded. A replay run reads its guards at a record-only threshold, so it is counted apart (\`replays\`) and in none of the others. Aggregates and the checks' own words only: no input or answer. Each text cut of the host's secrets and of its run's handed values; a run whose handed values can't be read here shows no error text (\`withheld\`).`,
       parameters: [AGENT_ID],
       responses: { "200": json(closed({
         agent: { type: "string" },
         compiles: { type: "array", items: closed({
           run_id: { type: "string", description: "The run whose end compiled it." },
+          round: { type: "integer", minimum: 1, description: "The run's round that compiled it: 1 its first end, more for an end after a follow-up opened it again." },
           at: DATE_TIME,
           workflow: { ...NULL_STRING, description: "The workflow it wrote or revised; null when no attempt named one." },
           from_notes: { type: "array", items: { type: "string" }, description: "The notes it absorbed, by file name (each marked \`compiled_into\` once it merged)." },
           attempts: { type: "array", items: closed({ ok: { type: "boolean" }, errors: { type: "array", items: { type: "string" } } }), description: "Each attempt in order: whether its checks and dry run passed, and what they refused." },
           digest: { ...NULL_STRING, description: "The kept draft's digest; null when none passed." },
-          promoted: { type: ["boolean", "null"], description: "Whether that revision serves first now: true promoted, false held, null undecided or none passed." },
+          promoted: { type: ["boolean", "null"], description: "Whether that revision was promoted, as its records say now: true promoted (or a refit of it was), false held or superseded, null undecided or none passed. It may no longer serve: the promotions read's \`serving\` says which revision does." },
           draft_errors: { type: "array", items: { type: "string" }, description: "A draft that never passed: its last errors. Empty when one passed." },
           withheld: { type: "boolean", description: "The run's handed values can't be read here: its error texts are left out (the counts stand)." },
         }), description: "Newest first." },
@@ -1085,10 +1087,13 @@ const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
           digest: { type: "string", description: "The revision the step ran in." },
           node: { type: "string", description: "The step's label." },
           signal: { enum: ["self", "jev", "both"], description: "\`self\`: the step's own confidence; \`jev\`: one Jev call over its input and output; \`both\`: their fitted logistic (min of the two before a fit)." },
-          threshold: { type: "number", minimum: 0, maximum: 1, description: "Under it the step hands the run back to the agent." },
-          runs: { ...COUNT, description: "Runs this step guarded in this revision." },
+          threshold: { type: ["number", "null"], minimum: 0, maximum: 1, description: "Under it the step hands the run back to the agent, as the runs it served first on read it; null when only replays ran it." },
+          runs: { ...COUNT, description: "Runs this revision served first on that this step guarded (replays left out)." },
           escalated: { ...COUNT, description: "How many of them it handed back." },
-          points: { type: "array", items: closed({ run_id: { type: "string" }, p: { type: ["number", "null"], minimum: 0, maximum: 1, description: "Its p, to 4 places; null when a signal was missing (always handed back)." }, escalated: { type: "boolean" }, correct: { type: ["boolean", "null"], description: "The run's grade, on a run the workflow answered alone; null otherwise." } }), description: "Oldest first." },
+          right: { ...COUNT, description: "How many of them the workflow answered alone and were graded right." },
+          wrong: { ...COUNT, description: "How many of them the workflow answered alone and were graded wrong." },
+          replays: { ...COUNT, description: "Replay runs of this revision that read this step: in none of the other counts, nor in \`points\` (a replay reads its guards at a record-only threshold, so its row says nothing of a hand-back)." },
+          points: { type: "array", items: closed({ run_id: { type: "string" }, p: { type: ["number", "null"], minimum: 0, maximum: 1, description: "Its p, to 4 places; null when a signal was missing (always handed back)." }, escalated: { type: "boolean" }, correct: { type: ["boolean", "null"], description: "The run's grade, on a run the workflow answered alone; null otherwise." } }), description: `The runs it served first on, oldest first: the newest ${LOOP_POINTS_MAX}.` },
         }) },
       }), "The loop's compile turns and guarded steps."), ...errors(401, 403, 404, 429, 500) },
       "x-agentrun-serve": "learningloop/1",

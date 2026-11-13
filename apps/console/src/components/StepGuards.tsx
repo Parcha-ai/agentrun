@@ -35,9 +35,10 @@ export function StepGuards({ guards, workflow, digest, loop }: { guards: readonl
 }
 
 function GuardRow({ guard, stats }: { guard: StepGuard; stats: LoopGuard | undefined }) {
-  const graded = stats ? stats.points.filter((p) => p.correct !== null) : [];
-  const right = graded.filter((p) => p.correct).length;
-  const wrong = graded.length - right;
+  // Every count is the server's over every run this revision served first on; the histogram draws the newest of them.
+  const right = stats?.right ?? 0;
+  const wrong = stats?.wrong ?? 0;
+  const replays = stats?.replays ?? 0;
   return (
     <li className="grid grid-cols-1 gap-x-4 gap-y-2 px-3 py-2.5 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center" data-testid="guard-row">
       <div className="min-w-0 space-y-1">
@@ -48,8 +49,10 @@ function GuardRow({ guard, stats }: { guard: StepGuard; stats: LoopGuard | undef
         </div>
         <p className="font-mono text-small text-muted-foreground">
           {stats && stats.runs
-            ? <><span className={cn("font-semibold", stats.escalated / stats.runs > 0.25 ? "text-warning-text" : "text-foreground")}>{pct(stats.escalated, stats.runs)} handed back</span> ({stats.escalated} of {stats.runs} runs){graded.length ? ` · graded ${right} right, ${wrong} wrong` : " · none graded"}</>
-            : "No run of this revision yet."}
+            ? <><span className={cn("font-semibold", stats.escalated / stats.runs > 0.25 ? "text-warning-text" : "text-foreground")}>{pct(stats.escalated, stats.runs)} handed back</span> ({stats.escalated} of {stats.runs} runs){right + wrong ? ` · graded ${right} right, ${wrong} wrong` : " · none graded"}{replays ? ` · ${replays} replay ${replays === 1 ? "run" : "runs"} apart` : ""}</>
+            : replays
+              ? `Replayed on ${replays} graded ${replays === 1 ? "input" : "inputs"}; no run served yet.`
+              : "No run of this revision yet."}
         </p>
       </div>
       {stats && stats.points.length > 0 && <Histogram guard={guard} stats={stats} />}
@@ -91,7 +94,8 @@ export function Histogram({ guard, stats }: { guard: StepGuard; stats: LoopGuard
         <text x={W} y={HH + 12} textAnchor="end" className="fill-muted-foreground text-micro">1</text>
         <text x={at(guard.threshold)} y={HH + 12} textAnchor="middle" className="fill-foreground text-micro font-semibold">{guard.threshold.toFixed(2)}</text>
       </svg>
-      <figcaption className="sr-only">{`${guard.label}: p by run. ${words.join(". ")}.`}</figcaption>
+      {stats.points.length < stats.runs && <p className="m-0 font-mono text-micro text-muted-foreground">p of the newest {stats.points.length} runs</p>}
+      <figcaption className="sr-only">{`${guard.label}: p by run${stats.points.length < stats.runs ? `, the newest ${stats.points.length} of ${stats.runs}` : ""}. ${words.join(". ")}.`}</figcaption>
     </figure>
   );
 }

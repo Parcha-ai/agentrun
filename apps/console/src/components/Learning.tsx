@@ -173,7 +173,7 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places, on
       {on && <LoopStory stages={story} />}
       <HeldOutTest v2={v2} agentId={agent.agent_id} quiet />
       <CostPerRun v2={v2} agentId={agent.agent_id} on={on} quiet promotions={promotions} onCost={setCost} />
-      <LoopFeed loop={loop} promotions={promotions} />
+      <LoopFeed loop={loop} promotions={promotions} serving={serving} />
       <NotKept runs={runs} />
     </div>
   );
@@ -251,7 +251,7 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places, on
         </div>
         <aside className="min-w-0 space-y-6" aria-label="About learning">
           <Panel title="Learning">{switchRow(false)}</Panel>
-          <LoopFeed loop={loop} promotions={promotions} />
+          <LoopFeed loop={loop} promotions={promotions} serving={serving} />
           <NotKept runs={runs} />
           <NextRun index={view.index} skills={skills.filter((s) => s.status === "active").map((s) => s.name)} off={!on || server === "off"} />
         </aside>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { binsOf, compiledInto, guardsOfText, handBacks, kindOf, markersOf, replayLine, standingOf, storyOf } from "./learningLoop";
+import { binsOf, compiledInto, guardsOfText, kindOf, markersOf, replayLine, standingOf, storyOf } from "./learningLoop";
 import type { CostRun, LearningCost, LearningLoop, Promotion } from "./v2";
 
 // The loop's arithmetic for the Learning tab, on an invented invoice-sorter agent: promotion records on the run axis,
@@ -39,11 +39,6 @@ describe("a revision's standing and numbers", () => {
     expect(replayLine(record({ replay: REPLAY }))).toBe("Replay on 20 graded inputs: workflow 95% vs agent 90% (+5 pts), 2 handed back");
     expect(replayLine(record({ source: "dry_run", reason: "no graded input it fits: promoted on its dry run" }))).toBe("no graded input it fits: promoted on its dry run");
   });
-  it("counts hand-backs since the takeover over the runs the workflow ran first", () => {
-    const runs = [run(1, "agent"), run(2, "workflow"), run(3, "handed_back"), run(4, "replay"), run(5, "workflow")];
-    expect(handBacks(runs, 2)).toEqual({ ran: 3, back: 1 });
-    expect(handBacks(runs, null)).toBeNull();
-  });
 });
 
 describe("guards and p", () => {
@@ -74,7 +69,7 @@ describe("notes and the story", () => {
     expect(compiledInto("---\nname: x\n---\ncompiled_into: sort-invoice")).toBeNull();
     expect(compiledInto("no front matter")).toBeNull();
   });
-  const cost = (over: Partial<LearningCost["summary"]>, runs: CostRun[] = []): LearningCost => ({ agent: "a", runs, total_runs: runs.length, unknown_cost_runs: 0, unknown_path_runs: 0, summary: { takeover: null, before: null, after: null, times_cheaper: null, ...over }, workflows: [] });
+  const cost = (over: Partial<LearningCost["summary"]>, runs: CostRun[] = []): LearningCost => ({ agent: "a", runs, total_runs: runs.length, unknown_cost_runs: 0, unknown_path_runs: 0, summary: { takeover: null, before: null, after: null, times_cheaper: null, hand_backs: null, ...over }, workflows: [] });
   const base = { notes: 0, compiledNotes: 0, runs: 0, workflows: [], cost: null, promotions: [], serving: [], loop: null };
   it("champion/challenger: while a revision replays, or after its replay held it, the one promoted before keeps serving and the story says both", () => {
     const champion = record({ replay: REPLAY });
@@ -92,6 +87,11 @@ describe("notes and the story", () => {
     const four = storyOf({ ...base, ...took, promotions: [held], serving: [{ workflow: "sort-invoice", digest: null, replaying: null }] }).find((s) => s.key === "took_over")!;
     expect(four.state).toBe("warn");
   });
+  it("the unsure stage's rate is the summary's, over every run since the takeover, not the runs the read listed", () => {
+    const runs = [run(1, "workflow"), run(2, "workflow")];
+    const stages = storyOf({ ...base, runs: 2, cost: cost({ takeover: { n: 1, run_id: "r1" }, after: { runs: 2, mean_usd: 0.1 }, hand_backs: { ran: 40, back: 30 } }, runs) });
+    expect(stages.find((s) => s.key === "unsure")?.value).toBe("75% handed back");
+  });
   it("with nothing yet, says what happens next at each stage", () => {
     const stages = storyOf(base);
     expect(stages.map((s) => [s.key, s.state])).toEqual([["notes", "now"], ["compiled", "later"], ["took_over", "later"], ["cheaper", "later"]]);
@@ -99,10 +99,10 @@ describe("notes and the story", () => {
   });
   it("once it took over and got cheaper, tells it whole, with where it is unsure", () => {
     const runs = [run(1, "agent"), run(2, "workflow"), run(3, "handed_back"), run(4, "workflow")];
-    const loop = { agent: "a", compiles: [{ run_id: "r1", at: at(1), workflow: "sort-invoice", from_notes: ["a", "b", "c"], attempts: [{ ok: true, errors: [] }], digest: "a".repeat(16), promoted: true, draft_errors: [], withheld: false }],
-      guards: [{ workflow: "sort-invoice", digest: "a".repeat(16), node: "classify", signal: "jev", threshold: 0.7, runs: 3, escalated: 1, points: [] }] } as LearningLoop;
+    const loop = { agent: "a", compiles: [{ run_id: "r1", round: 1, at: at(1), workflow: "sort-invoice", from_notes: ["a", "b", "c"], attempts: [{ ok: true, errors: [] }], digest: "a".repeat(16), promoted: true, draft_errors: [], withheld: false }],
+      guards: [{ workflow: "sort-invoice", digest: "a".repeat(16), node: "classify", signal: "jev", threshold: 0.7, runs: 3, escalated: 1, right: 0, wrong: 0, replays: 0, points: [] }] } as LearningLoop;
     const stages = storyOf({ ...base, notes: 3, compiledNotes: 3, runs: 4, workflows: [{ name: "sort-invoice", status: "active" }], loop, promotions: [record({ replay: REPLAY })],
-      cost: cost({ takeover: { n: 2, run_id: "r2" }, before: { runs: 1, mean_usd: 0.89 }, after: { runs: 25, mean_usd: 0.127 }, times_cheaper: 7 }, runs) });
+      cost: cost({ takeover: { n: 2, run_id: "r2" }, before: { runs: 1, mean_usd: 0.89 }, after: { runs: 25, mean_usd: 0.127 }, times_cheaper: 7, hand_backs: { ran: 3, back: 1 } }, runs) });
     expect(stages.map((s) => [s.key, s.value, s.state])).toEqual([
       ["notes", "3 notes", "done"], ["compiled", "sort-invoice", "done"], ["took_over", "Run 2", "done"], ["cheaper", "7.0x cheaper", "done"], ["unsure", "33% handed back", "warn"],
     ]);
