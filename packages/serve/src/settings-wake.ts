@@ -14,13 +14,13 @@ import type { ToolSettingsMap, ToolSettingsRead } from "./tool-plane.js";
 /** The store slice a wake reads and writes: the parked runs, their pinned revisions and journals, and the wake itself. */
 export type WakeStore = Pick<Store, "runs" | "agents" | "readJournal">;
 
-/** Whether a save moved some tool's permission to one that can read allow: a key whose permission changed and is now allow,
- *  or is no longer set (the tool's default, which may be allow). Only such a save can answer an ask by the setting. */
-export function turnedTowardAllow(before: ToolSettingsMap, after: ToolSettingsMap): boolean {
+/** Whether a save changed any tool key's permission (added, removed or changed). It does not predict which edit flips a
+ *  call's answer (an exact `ask` under a wildcard `deny` flips when only the wildcard moves): it only skips a save that
+ *  touches no permission at all (a provider alone, a pin). The per-run decision is permissionFrom's. Approvals live on the
+ *  run's revision, not in the server's settings, so a save cannot change them. */
+export function permissionsChanged(before: ToolSettingsMap, after: ToolSettingsMap): boolean {
   for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
-    const was = before[key]?.permission;
-    const now = after[key]?.permission;
-    if (was !== now && (now === "allow" || now === undefined)) return true;
+    if (before[key]?.permission !== after[key]?.permission) return true;
   }
   return false;
 }
@@ -38,8 +38,8 @@ export function turnedTowardAllow(before: ToolSettingsMap, after: ToolSettingsMa
  */
 export async function wakeAnsweredBySetting(store: WakeStore, read: ToolSettingsRead, before: ToolSettingsMap): Promise<string[]> {
   if (read.unreadable) return [];
-  // A save that turned no tool toward allow (a provider alone, a pin, a deny kept) answers no ask: no run is listed, no journal read.
-  if (!turnedTowardAllow(before, read.settings)) return [];
+  // A save that changed no permission (a provider alone, a pin) answers no ask: no run is listed, no journal read.
+  if (!permissionsChanged(before, read.settings)) return [];
   const server = read.settings as unknown as PermissionSettings;
   const woken: string[] = [];
   for (const run of await store.runs.list({ state: "parked" })) {

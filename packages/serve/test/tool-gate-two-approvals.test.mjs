@@ -136,6 +136,30 @@ test("a settings save that turns no tool toward allow reads no journal; one that
   assert.deepEqual(counts, { list: 1, scanEntries: 1, scanConversations: 1, scanTasks: 0, scanSubmissions: 0, wake: 1 }, "an allow reads the entries alone");
 });
 
+// The reviewer's case: an MCP call parks under its exact key's ask with the server wildcard on deny (the deny stands behind the
+// ask, so approvals "never" does not lift it). Changing only the wildcard to ask removes that block, so the call reads allow:
+// a save that touched a permission must reach the gate, whichever key moved.
+test("a save that moves only a server wildcard from deny to ask wakes a run whose exact-key ask waited behind it, approvals never", async () => {
+  const { wakeAnsweredBySetting } = await import("../dist/settings-wake.js");
+  let woken = 0;
+  const page = (items = []) => async () => ({ items });
+  const store = {
+    runs: { list: async () => [{ id: "r1", revisionId: "v1" }], wake: async () => { woken += 1; return true; } },
+    agents: { revision: async () => ({ body: { approvals: "never" } }) },
+    readJournal: () => ({
+      scanConversations: page([{ id: 1 }]),
+      scanEntries: page([{ id: 1, conversationId: 1, kind: "agentrun.ask", data: { callId: "c1", tool: "mcp:fake/add", args: {}, requestedAt: "" } }]),
+      scanTasks: page(),
+      scanSubmissions: page(),
+    }),
+  };
+  const read = (settings) => ({ settings, problems: [] });
+  const before = { "mcp:fake/add": { permission: "ask" }, "mcp:fake/*": { permission: "deny" } };
+  assert.deepEqual(await wakeAnsweredBySetting(store, read(before), before), [], "nothing changed: not woken");
+  assert.deepEqual(await wakeAnsweredBySetting(store, read({ "mcp:fake/add": { permission: "ask" }, "mcp:fake/*": { permission: "ask" } }), before), ["r1"]);
+  assert.equal(woken, 1);
+});
+
 // A person's deny already sent wins over the setting: the owner declines the second call, then web_fetch's setting goes
 // back to allow, which wakes the run if it is still parked. Whichever claim reads the ask, the stored deny is its answer:
 // the call is never run, and its rows say it was declined.
