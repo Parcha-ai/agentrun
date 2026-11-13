@@ -274,6 +274,12 @@ export interface Learning {
    *  before it was proposed ended when it was kept; a proposal ended when its learning run ended (ended or failed), whose
    *  row keeps the grade's spend as its cost. One still waiting for its grade is none of them. */
   spend(window: { from: number; to: number }): Promise<LearningSpend[]>;
+  /** What was spent beside run `runId` on its behalf, the one figure every cap gate of the run reads with its own
+   *  sessions (and its grade's cap, learning-end.ts gradeCapOf): each learning run its rounds queued (`beforeRound`: only
+   *  those of the rounds before it), one that ended at its cost, one not ended at its own cap (the most its grade may
+   *  take), and one that ended at an unknown cost at that cap too, the most it could have taken. Null: unknown (one with
+   *  neither). 0 for a run that queued none. */
+  spentBeside(runId: string, options?: { beforeRound?: number }): Promise<number | null>;
 }
 
 /** One run's learning end as GET /usage's learning meter counts it (Learning.spend). */

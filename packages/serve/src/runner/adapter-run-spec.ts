@@ -38,7 +38,7 @@ import { effortGuidance } from "../effort-guidance.js";
 import { laidLearned, type LearnedWorkflow, learningFolderOf, secretsShown } from "../learning.js";
 import { laidOf, layLearningSeed } from "./learning-seed.js";
 import { learningWorkspace } from "../learn/folder.js";
-import { learningEndOfRun } from "./learning-end.js";
+import { learningEndOfRun, spentBesideOf } from "./learning-end.js";
 import { learnedAskFits, learnedAskShown, LEARNED_WORKFLOW_TOOL, learnedMcpTools, learnedWorkflowTool } from "../learned-workflow.js";
 import { PORT_PROVIDER, tieredModels, tierProvider } from "../port-models.js";
 import { promptOf, readsFiles } from "../skills.js";
@@ -532,6 +532,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   const capModel = capModelOf(route);
   // And each tier's model (tierRoutes, filled below), by the route its request names (its tier's proxy, ModelRequest.route),
   // priced as that route books it: one id the run's model and a tier share is priced apart, never at the other's price.
+  const besideOf = spentBesideOf(launch, deps.store, claim.runId);
   const runCap: RunCapConfig = {
     capUsd: () => launch.maxCostUsd,
     modelOf: (id, by) => {
@@ -540,6 +541,8 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
       return tierRoute && tierRoute.model === id ? capModelOf(tierRoute) : undefined;
     },
     ...(launch.capMode === "strict" ? { mode: "strict" as const } : {}),
+    // What its learning runs' grades took beside it, read by every gate with its own sessions (none: it queues none).
+    ...(besideOf ? { beside: besideOf } : {}),
   };
   // The run's cap figure and what a refusal does to it (parkOf, with the kernel's raise rule): present only when the run
   // has a cap. A park names the cap the loop holds the run to then (a raise's, else this one).

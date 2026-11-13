@@ -12,6 +12,7 @@
 import type { Wire } from "@parcha/agentrun-kernel";
 import { chooseModel, FAUX_ENV, hostModel, type ModelNeeds, type ModelRef } from "./model.js";
 import { WIRES } from "./wires.js";
+import { modelFormWhy } from "./model-form.js";
 
 // Each wire's own settings live in a leaf module (wires.ts), which the harness table reads as it loads.
 export { WIRES };
@@ -166,12 +167,12 @@ export async function modelOn(wire: Wire, env: NodeJS.ProcessEnv, ref: string | 
     if (env[FAUX_ENV] || !openRouterOnly(wire, env) || !named?.startsWith(`${vendor}/`)) return chooseModel(env, ref, "default", harness);
     const modelId = named.slice(vendor.length + 1);
     const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
-    if (!builtinModels().getModel(vendor, modelId)) return { why: `pi-ai knows no model ${modelId} of ${vendor}. Name one of its models, or route every model through a gateway with AGENT_MODEL_BASE_URL.`, host: ref === undefined, needs: "model" };
+    if (!builtinModels().getModel(vendor, modelId)) return { why: modelFormWhy(env, harness, named, ref === undefined), host: ref === undefined, needs: "model" };
     return { model: { provider: vendor, modelId } };
   }
   if (!named) return { why: `No model yet for ${harness}: add an OpenRouter or ${label} key in Settings → Model keys, or set OPENROUTER_API_KEY or ${WIRES[wire].key} where AgentRun starts.`, host: true };
   const slash = named.indexOf("/");
-  if (slash < 1) return { why: `${harness} runs a model named ${vendor}/<model-id>; the run's model is ${named}.`, host: ref === undefined };
+  if (slash < 1) return { why: modelFormWhy(env, harness, named, ref === undefined), host: ref === undefined };
   const [provider, modelId] = [named.slice(0, slash), named.slice(slash + 1)];
   // OpenRouter's name for a model is OpenRouter's provider, then the vendor's model; another vendor's is providerFor's
   // to refuse.

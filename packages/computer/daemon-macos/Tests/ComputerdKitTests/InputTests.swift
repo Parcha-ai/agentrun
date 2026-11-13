@@ -214,6 +214,27 @@ final class InputTests: XCTestCase {
 		XCTAssertEqual(raw.count, 3, "nothing after the person moved it")
 	}
 
+	/// The batch's own keys are not a person's (the fake's raw input, as Computerd's posted events, never counts): a key
+	/// the person presses partway through stops the batch before its next action, in the words a ui act's stop uses.
+	func testAPersonPressingAKeyStopsTheBatch() async throws {
+		os.react = { entry, os in
+			if entry == "raw.key a up" { os.with { $0.now += 5; $0.personPressed = $0.now } }
+		}
+		let result = try await batch(#"[{"type":"key","keys":["a"]},{"type":"key","keys":["b"]},{"type":"type","text":"cd"}]"#)
+		XCTAssertEqual(result.done, 1)
+		XCTAssertEqual(result.failed?.index, 1)
+		XCTAssertEqual(result.failed?.kind, .aborted)
+		XCTAssertTrue(result.failed?.message.contains("someone used the keyboard or the mouse while this batch ran") == true, result.failed?.message ?? "")
+		XCTAssertTrue(result.failed?.message.contains("the person has the computer, so the batch stopped before this action and sent it nothing") == true, result.failed?.message ?? "")
+		XCTAssertEqual(raw, ["raw.key a down", "raw.key a up"], "nothing after the person pressed a key")
+	}
+
+	func testAKeyPressedBeforeTheBatchBeganIsNoTakeOver() async throws {
+		os.with { $0.personPressed = $0.now; $0.now += 5 }
+		let result = try await batch(#"[{"type":"key","keys":["a"]},{"type":"type","text":"b"}]"#)
+		XCTAssertEqual(result, InputActionsResult(done: 2))
+	}
+
 	func testRawInputLandsOnlyOnAnAppTheOwnerAllows() async throws {
 		// The fake's app in front is Safari.
 		let result = try await batch(#"[{"type":"key","keys":["a"]}]"#, policy: Policy(apps: ["com.apple.Notes"]))
