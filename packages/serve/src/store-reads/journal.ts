@@ -60,7 +60,7 @@ function parkedUnsent(entries: readonly EntryLike[]): Set<string> {
   return parked;
 }
 
-function piShaped(entries: readonly EntryLike[]): EntryLike[] {
+export function piShaped(entries: readonly EntryLike[]): EntryLike[] {
   const waiting = parkedUnsent(entries);
   return entries.flatMap((entry) => {
     const data = (entry.data ?? {}) as Record<string, unknown>;

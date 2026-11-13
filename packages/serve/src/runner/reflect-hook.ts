@@ -8,6 +8,7 @@
 import { cutStrings } from "../key-refusal.js";
 import type { DraftDecisions } from "../learn/skills.js";
 import { DRY_RUN_FAILED, reflectAgain, reflectDryRun, reflectPrompt, redactSecrets } from "../learn/index.js";
+import type { ReviseAsk } from "../learn/reflect.js";
 import { said, STOPPED } from "../learning-words.js";
 import type { AlsoRow, EndOfRunTurn } from "./loop-contract.js";
 
@@ -43,7 +44,7 @@ export interface ReflectDeps {
   readonly facts: (runId: string) => Promise<{ learns: boolean; cancelled?: boolean; capReached?: boolean; capUsd?: number; costUsd: number | null }>;
   /** The prompt's facts: how many notes the run started from, the tools a workflow draft may name, and the learned skills
    *  whose job the prompt asks for as a workflow draft (reflectPrompt's draftFor; none when absent). */
-  readonly promptFacts: (runId: string, agentId: string) => Promise<{ active: number; tools: readonly string[]; decisions?: DraftDecisions; draftFor?: readonly string[]; described?: readonly { readonly name: string; readonly does: string }[]; workflows?: false }>;
+  readonly promptFacts: (runId: string, agentId: string) => Promise<{ active: number; tools: readonly string[]; decisions?: DraftDecisions; draftFor?: readonly string[]; described?: readonly { readonly name: string; readonly does: string }[]; workflows?: false; handedBack?: string; revise?: ReviseAsk }>;
   /** What the person said in the run, and a trigger's input, as the checks and the grader read them. */
   readonly asked: (runId: string) => Promise<{ asked: readonly string[]; triggered?: ReflectTurn["triggered"] }>;
   /** Every value the run must never learn (learning-run.ts refused): the host's secrets and what the run was handed, its
@@ -138,11 +139,11 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
     // string the kept rows hold, whatever looked adds now or later.
     const close = async (rows: AlsoRow[]) => ({ also: (await looked({ also: rows })).also.map((row) => cutRow(row, refuse)) });
     if (read === "unreadable") return close([droppedRow(null, "propose_failed", said.stopped(STOPPED.refuseUnread))]);
-    const { active, tools, draftFor, described, decisions, workflows } = await deps.promptFacts(input.runId, input.agentId);
+    const { active, tools, draftFor, described, decisions, workflows, handedBack, revise } = await deps.promptFacts(input.runId, input.agentId);
     const deadlineMs = deps.deadlineMs ?? REFLECT_TIMEOUT_MS;
     const started = now();
     const ask = { origin: "reflect", ...(round > 1 ? { round } : {}) } as const;
-    const end = await input.ask(reflectPrompt({ dir: LEARNED_DIR, active, tools, ...(decisions ? { decisions } : {}), ...(workflows === false ? { workflows: false } : draftFor?.length ? { draftFor, ...(described?.length ? { described } : {}) } : {}), ...(round > 1 && deps.before?.looked !== false ? { later: true } : {}) }), { ...ask, deadlineMs });
+    const end = await input.ask(reflectPrompt({ dir: LEARNED_DIR, active, tools, ...(decisions ? { decisions } : {}), ...(workflows === false ? { workflows: false } : { ...(draftFor?.length ? { draftFor, ...(described?.length ? { described } : {}) } : {}), ...(handedBack ? { handedBack } : {}), ...(revise ? { revise } : {}) }), ...(round > 1 && deps.before?.looked !== false ? { later: true } : {}) }), { ...ask, deadlineMs });
     // closeLearning: how the turn ended.
     if ("timedOut" in end) return close([droppedRow(null, "reflect_timeout", said.stopped(STOPPED.timedOut))]);
     if ("failed" in end) return close([CAP_REFUSAL.test(end.failed.message) ? droppedRow(null, "no_budget", said.noBudget) : droppedRow(null, "reflect_failed", said.stopped(STOPPED.failed))]);

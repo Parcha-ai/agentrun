@@ -56,8 +56,11 @@ import { agentEntriesOf } from "./loop.js";
 import { SUBAGENT_TIERS, SUBAGENT_TOOL, type SubagentTier, subagentTool } from "./subagent.js";
 import { wireName } from "../catalog.js";
 import { type Claim, ClaimRefused, type Journal } from "./loop-contract.js";
-import { bookedSpend, runEndCost, runMetrics } from "./metrics.js";
+import { bookedSpend, cliRunMetrics, runEndCost, runMetrics } from "./metrics.js";
 import { journalEntries } from "./journal-reader.js";
+import { piShaped } from "../store-reads/journal.js";
+import { pastOf, pathMetrics, servedOf, workflowFirstOf } from "./workflow-first.js";
+import { runPathOverStore } from "../store-reads/learning.js";
 import { type SpecHolds, specBuilt } from "./spec-holds.js";
 import type { ModelRoute, RouteCost } from "./model-route.js";
 import { archilClaim, type ArchilClaimOptions, MOUNT_TTL_MS } from "../workspace/archil-claim.js";
@@ -605,6 +608,9 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   gate.learn(workflows);
   const nonHandTools = (await bindNonHandTools(host, revision.kind, granted, run, context, results, root, launch.plane, workflows, native, gate.permissions, tiers, mcp, () => route.model)).map((tool) => answersCut(tool, cut));
   const sessionTools = [...handTools, ...nonHandTools];
+  // The learned workflow the run starts on, before its agent's first turn, when one fits its input (workflow-first.ts).
+  // Or the one the money rule stopped, over the agent's past runs (costLineOf): the run asks for its revision.
+  const { serve: workflowFirst, revise: workflowRevise } = learnsWorkflows(revision.kind, workflows) ? await workflowFirstOf(revision.kind, workflows, launch, log, pastOf(deps.store, runRow.agentId)) : {};
 
   // The run's system prompt, as main's per-run process builds it (app.ts): the environment line first (environment.ts, as
   // pi installs it before every other section), then the revision's instructions with what the agent learned laid in
@@ -695,6 +701,8 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     // The run's end-of-run step, when it learns (the spec's, which the loop prefers over its deps': adapter-loop.ts stepOf).
     ...(endOfRun ? { endOfRun } : {}),
     ...(start ? { learningLaid: laidOf(seedLaid) } : {}),
+    ...(workflowFirst ? { workflowFirst } : {}),
+    ...(workflowRevise ? { workflowRevise } : {}),
     // The tool host's install lifecycle (its bindings' onConversation/beforeResume/beforeRelease), run by the adapter loop.
     lifecycle: life,
     agentId: runRow.agentId,
@@ -707,18 +715,26 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     endPatch: async () => {
       // The root's entries and every conversation a task of the run owns (a subagent's): a child's requests are the run's.
       const entries = await agentEntriesOf(deps.journal(claim), context);
-      const { metrics } = runMetrics(entries as never, { ...(launch.effort !== undefined ? { effort: launch.effort } : {}) });
+      // The path it took and the learned revision it ran on, for a run that learns (workflow-first.ts pathMetrics), by the
+      // one classifier the cost per run reads back (runPathOverStore).
+      const path = pathMetrics(launch, launch.learning ? await runPathOverStore(deps.store, claim.runId, launch.learning) : undefined);
       // Its cost is its booking's, as a CLI run's is (metrics.ts bookedSpend, the one reader): every model request its
       // session's proxy booked, pi's own answers and its side calls (a learned workflow's nodes, web_search's hosted search
       // with its fee) alike, and its decisions (a learned workflow's decision nodes, LS-07; one that reported none is
       // unknown, never the cap's hold for it). A request a cancel or a stop cut while it streamed is booked at no known cost
       // (the provider may bill what it streamed), so the run's cost is unknown, never the $0 its cut answer carries.
       const all = (await journalEntries(deps.journal(claim), context)) as never;
+      const booked = bookedSpend(all, "model");
       // Its paid tool calls (a Parallel search's, a monid call's, a person's browser time), booked on the run's one ledger
       // (each on its cap, in its own session, not on the root), are the run's cost too; any part unknown leaves the run's unknown.
-      const total = runEndCost({ model: bookedSpend(all, "model").usd, paid: run.ledger?.paid ? run.ledger.paid.spentUsd() : 0, decisions: bookedSpend(all, "decisions").usd });
+      const total = runEndCost({ model: booked.usd, paid: run.ledger?.paid ? run.ledger.paid.spentUsd() : 0, decisions: bookedSpend(all, "decisions").usd });
+      // A run its learned workflow served first: that call is on the loop's record (no pi answer carries its tokens), so its
+      // metrics are its booking's, as a CLI harness's run reads them: the workflow's nodes and the agent's own after a handback.
+      const { metrics } = servedOf(entries as never)
+        ? { metrics: cliRunMetrics(piShaped(entries as never), booked, { ...(launch.effort !== undefined ? { effort: launch.effort } : {}), model: launch.model ? `${launch.model.provider}/${launch.model.modelId}` : route.model }) }
+        : runMetrics(entries as never, { ...(launch.effort !== undefined ? { effort: launch.effort } : {}) });
       // An unknown cost is written as null, never left out: a follow-up's end clears the cost an earlier end stored.
-      return { costUsd: total, metrics };
+      return { costUsd: total, metrics: { ...metrics, ...path } };
     },
     // The pass's resources go once the loop writes nothing more through them: its tools' end (background processes ended,
     // scratch swept), its computer let go, then its Workspace's end (Mode 2 sweeps the exec spill).

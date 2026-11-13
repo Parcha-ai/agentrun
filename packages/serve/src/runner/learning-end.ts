@@ -43,6 +43,7 @@ import type { McpServerRow, Store } from "../store/store.js";
 import { readApprovers } from "../server-approvers.js";
 import { runEntries, runReflect, runTimeline } from "../store-reads/journal.js";
 import { capNowOf } from "./journal-kinds.js";
+import { reviseOf, servedOf } from "./workflow-first.js";
 import type { EndOfRunTurn } from "./loop-contract.js";
 import { type Checked, createReflectHook, type ReflectDeps, type ReflectTurn } from "./reflect-hook.js";
 import { runnerSecrets } from "./redact.js";
@@ -101,7 +102,16 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
       const draftFor = start.notesOnly ? [] : await draftForOf(deps, agentId, runId, start.skills ?? []).catch(() => []);
       // With a draft asked for, what each tool its call nodes may run takes and gives, in the server's own words.
       const described = draftFor.length ? await describedOf(tools, deps.store) : [];
-      return { active: start.seedNotes ?? start.given.length, tools, draftFor, described, ...(decisions ? { decisions } : {}), ...(start.notesOnly ? { workflows: false as const } : {}) };
+      // A run its learned workflow handed back (workflow-first.ts): the prompt asks for that workflow's next revision, by
+      // its name alone. A deopt is the signal the next revision learns from, never a failure that keeps it from learning.
+      // A run whose learned workflow the money rule stopped from running first: the prompt asks for its revision, with the
+      // two numbers that stopped it.
+      const entries = start.notesOnly ? [] : await runEntries(deps.store, runId, BACKGROUND_CONTEXT).catch(() => []);
+      const served = servedOf(entries);
+      const handedBack = served?.outcome === "handed_back" ? served.workflow : undefined;
+      const stopped = reviseOf(entries);
+      const revise = stopped ? { workflow: stopped.workflow, served_usd: stopped.served_usd, by_hand_usd: stopped.by_hand_usd, runs: stopped.runs } : undefined;
+      return { active: start.seedNotes ?? start.given.length, tools, draftFor, described, ...(decisions ? { decisions } : {}), ...(start.notesOnly ? { workflows: false as const } : {}), ...(handedBack ? { handedBack } : {}), ...(revise ? { revise } : {}) };
     },
     asked: async (runId) => {
       const [entries, reflect] = await Promise.all([runEntries(deps.store, runId, BACKGROUND_CONTEXT), runReflect(deps.store, runId, BACKGROUND_CONTEXT)]);
