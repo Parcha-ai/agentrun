@@ -752,6 +752,21 @@ owner's.
 - **Later, narrower tokens.** Archil's tokens reach a whole disk; nothing narrower exists today. If Archil ships
   path-scoped tokens, a run's token narrows from its disk to its own folder with no other change.
 
+**A Daytona computer's snapshot.** The mount runs as root through the image's root helper and its pinned archil client,
+so a Daytona computer that mounts the run's folder must start from a snapshot of the computer package's
+`box/Dockerfile`; Daytona's default snapshot, whose user is not root, is refused before anything mounts. Build one in
+the organization of `DAYTONA_API_KEY` with Daytona's Python SDK (`pip install daytona`), which prints its name, a hash
+of the recipe:
+
+```sh
+DAYTONA_API_KEY=... python3 packages/computer/box/build-daytona.py   # prints snapshot=agentrun-archil-<12 hex>
+```
+
+and name it in the server's environment, `AGENTRUN_DAYTONA_SNAPSHOT=agentrun-archil-<12 hex>` (the id or name of any
+Daytona snapshot), as `AGENTRUN_DOCKER_IMAGE` names Docker's image. Every Daytona computer is then made from it. Unset,
+it is Daytona's default snapshot, as before. A changed recipe is a new name, so build again after an upgrade that
+changes `box/`. The [Daytona box](#a-run-in-a-daytona-box) never reads it.
+
 A desktop, a phone and a browser run in either mode. The run's folder is at `/workspace` in every computer that mounts
 it: a sandbox always, and a desktop whose provider mounts the mode's folder (Docker's in Mode 1, E2B's in Mode 2). A
 phone and a browser never mount it.
@@ -1474,6 +1489,35 @@ tools again with the saved URL and credential, keeps them, and answers `{added, 
 names a tool whose title, description, schemas or annotations differ. `DELETE .../{name}` forgets the server and its
 credential. Capabilities' `features.mcp_client` says `transports: ["streamable-http"]`, the `auth` types and `at_rest:
 "sealed"`.
+
+### A credential handed with each run
+
+Some servers take a credential made for one run (a token scoped to that run's job and its person) that no saved
+server could hold. Save such a server with `auth: {type: "per_run", headers?}`: it keeps no credential, and `headers`,
+when sent, are used only to list its tools now. Then hand each run its own as `mcp_auth` on the run's start
+(`POST /v2/runs`, `POST /v2/agents/{agent_id}/runs`), one entry for each per_run server it calls:
+
+```sh
+curl -X PUT "$BASE/v2/settings/mcp-servers/gateway" -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"url": "https://gateway.example.com/mcp", "auth": {"type": "per_run", "headers": {"authorization": "Bearer <a token to list with>"}}}'
+curl -X POST "$BASE/v2/agents/$AGENT/runs" -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"input": {"content": "..."}, "mcp_auth": {"gateway": {"headers": {"authorization": "Bearer <this run'"'"'s token>"}}}}'
+```
+
+A per_run save keeps no secret, so the API token may make it, as it may preview a server with a credential: the
+credentials such a server receives are the ones each run's own caller hands it. The run's calls of that server carry
+those headers, and only to the origin the server had when the run was started. The
+credential is sealed into the run's launch record under `AGENTRUN_SEAL_KEY` (bound to the run's id), read at each claim, so
+a resume, a restart or a lost lease uses it again, and erased by the write that ends the run. It is never in the run's
+saved body, its timeline, its view, a log line or an `Idempotency-Key`'s fingerprint (a retry with a new credential
+answers the first request's run), and its values are cut from whatever the run shows. `POST /v2/runs/{run_id}/messages`
+takes `mcp_auth` too: it replaces the run's credentials in the message's own write, so the turn the message starts (a
+steer into a working run from its next model request, or a follow-up that opens an ended run again) calls with them. A
+name that is not a saved per_run server is `422` at `mcp_auth.<server>`, and no run starts. A run handed no credential
+for a per_run server it calls has those calls answered, unsent, that it was handed none. `POST .../{name}/refresh` lists
+a per_run server's tools with no credential: save it again with `headers` for a server that lists only to a caller it
+knows. The tools are those it listed at its save, so a server whose tool list varies by caller shows each run the saved
+list.
 
 ### Signing in with OAuth
 

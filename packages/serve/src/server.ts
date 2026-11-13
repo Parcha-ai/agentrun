@@ -68,7 +68,7 @@ import { watchRun } from "./live/stream.js";
 import { stats as statsOverStore } from "./store-reads/stats.js";
 import { analytics as analyticsOverStore } from "./store-reads/analytics.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { type AgenticBody, type McpCredentialMark, type NewRevision, openStore, type RevisionPlace, type RunRow, type Store, StoreOwned, storeTarget, type WorkflowBody } from "./store/index.js";
+import { type AgenticBody, type McpCredentialMark, type NewRevision, openStore, type RevisionPlace, type RunMcpAuth, type RunRow, sealRunMcpAuth, type Store, StoreOwned, storeTarget, type WorkflowBody } from "./store/index.js";
 import { answerOf, logged } from "./agents.js";
 import { FINAL_STATES } from "./store/store.js";
 import { runModelRef } from "./model.js";
@@ -93,7 +93,7 @@ import { keyOf, SEAL_KEY_ENV, TOOL_FIELDS } from "./tool-keys.js";
 import { toolKeysOverStore } from "./tool-keys-store.js";
 import { SIGN_INS_DIR, vendorsOver } from "./sign-ins.js";
 import { signInsOverStore } from "./sign-ins-store.js";
-import { MCP_AUTH_TYPES, type McpTool } from "./mcp-probe.js";
+import { MCP_AUTH_TYPES, mcpAuthOf, type McpTool } from "./mcp-probe.js";
 import { mcpServersOverStore } from "./mcp-servers-store.js";
 import { privateHostsRoute } from "./mcp-private-hosts.js";
 import { metaToolOf } from "./mcp-meta.js";
@@ -492,9 +492,11 @@ export const ROUTES: readonly Route[] = [
  *  learning/); sign-ins/ only as the agent's `sign_ins`, never a pointer. */
 /** A run's computer as GET /computer reads it with no viewer open: kind browser where its agent has the browser tool, its
  *  kept plane's (a run from before the plane names none, and is Browserbase's where it grants the tool) checked again as a
- *  launch would be; off, saying why, where it has none or its browser resolves unavailable here.
+ *  launch would be; off, saying why, where it has none or its browser resolves unavailable here. Where the agent's
+ *  computer is a browser, that browser, whose keys are the computer's (checked at the run's start), never the plane's.
  *  TODO: the agent's own `computer: {kind, provider?}` setting once definitions carry it (desktop, phone). */
-function computerOf(kept: Plane["browser"], env: NodeJS.ProcessEnv, family: LiveFamily = "computer"): ComputerOf {
+function computerOf(kept: KeptBrowser, env: NodeJS.ProcessEnv, family: LiveFamily = "computer"): ComputerOf {
+  if (kept === ON_COMPUTER) return { kind: "browser" };
   const browser = kept === undefined ? undefined : recheckPlane({ browser: kept }, env).browser;
   if (browser === undefined) return { off: family === "browser" ? "this run's agent has no browser tool" : "this run's agent has no computer" };
   return isUnavailable(browser) ? { off: whyUnavailable(browser) } : { kind: "browser" };
@@ -503,17 +505,24 @@ function computerOf(kept: Plane["browser"], env: NodeJS.ProcessEnv, family: Live
 /** The run's kept browser vendor, over the store, as computerOf reads it: the vendor its launch plane resolved at start
  *  (the same source the runner's claim reads), normalized to the vendor name (keptVendor) so recheckPlane re-resolves it as
  *  a vendor, not a stored no-key sentinel; with no browser in the plane, the default vendor when the run's revision grants
- *  the browser tool, else none. */
-async function keptBrowserOf(store: Store, runId: string): Promise<Plane["browser"]> {
+ *  the browser tool, else none. A revision that grants the tool to an agent whose computer is a browser is ON_COMPUTER:
+ *  the tool's sessions are that computer's (tools.ts browserComputer), whatever the plane says. */
+async function keptBrowserOf(store: Store, runId: string): Promise<KeptBrowser> {
+  const runRow = await store.runs.get(runId);
+  const revision = runRow ? await store.agents.revision(runRow.revisionId) : undefined;
+  const body = revision?.body as { tools?: readonly string[]; computer?: { kind?: string } } | undefined;
+  const granted = (body?.tools ?? []).includes("browser");
+  if (granted && body?.computer?.kind === "browser") return ON_COMPUTER;
   const row = await store.runs.launch(runId).catch(() => undefined);
   const plane = row ? readLaunchBody(row.body)?.plane : undefined;
   const kept = plane ? keptVendor(plane).browser : undefined;
   if (kept !== undefined) return kept;
-  const runRow = await store.runs.get(runId);
-  const revision = runRow ? await store.agents.revision(runRow.revisionId) : undefined;
-  const granted = ((revision?.body as { tools?: readonly string[] } | undefined)?.tools ?? []).includes("browser");
   return granted ? "browserbase" : undefined;
 }
+
+/** keptBrowserOf's answer for a run whose browser is its agent's browser computer. */
+const ON_COMPUTER = Symbol("the agent's browser computer");
+type KeptBrowser = Plane["browser"] | typeof ON_COMPUTER;
 
 const ownedReadAt = (agentId: string): OwnedReadAt => (owned) => (owned === SIGN_INS_DIR ? `/v2/agents/${agentId}` : ROUTES.some((r) => r.method === "GET" && r.pattern.test(`/agents/${agentId}/${owned}`)) ? `/v2/agents/${agentId}/${owned}` : undefined);
 
@@ -1892,10 +1901,35 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  at the public URL or the server's own address. */
   const linkOrigin = (req: IncomingMessage): string => (options.publicUrl ?? (req.headers.host ? ownOrigin(req) : url)).replace(/\/+$/, "");
 
+  /** A run body's `mcp_auth` taken out of it, before anything else reads the body: the credentials a run's caller hands
+   *  its per_run MCP servers for this run alone (mcp-probe.ts mcpAuthOf). They never reach the run's saved body, its
+   *  timeline, an idempotency fingerprint (a retry with a fresh credential replays its first answer) or a log: only the
+   *  seal `sealer` makes, which seals them for the run's id into its launch row (store/seal.ts sealRunMcpAuth), bound to
+   *  each server's origin then. The request calls `sealer` only for new work, inside its idempotent work: there each
+   *  entry must name a saved per_run server, else 422, nothing written. A retry its key already answered replays that
+   *  answer even when the server has since changed or gone, since it does no new work. */
+  function handedMcpAuth(body: Json): { body: Json; sealer: () => Promise<((runId: string) => Uint8Array) | undefined> } {
+    if (body.mcp_auth === undefined) return { body, sealer: async () => undefined };
+    const { mcp_auth, ...rest } = body;
+    const sealer = async () => {
+      const issues: InputIssue[] = [];
+      const handed = mcpAuthOf(mcp_auth, issues);
+      const auth: Record<string, RunMcpAuth[string]> = {};
+      for (const [server, headers] of Object.entries(handed ?? {})) {
+        const row = await store.mcp.server(server);
+        if (row?.auth !== "per_run") issues.push({ field: `mcp_auth.${server}`, reason: "not_an_option", message: row ? `The MCP server ${server} keeps its own credential (auth ${row.auth}): only a per_run server takes one from a run.` : `No MCP server ${server} is saved here.` });
+        else auth[server] = { headers, origin: new URL(row.url).origin };
+      }
+      if (issues.length) throw invalid(issues);
+      return (runId: string) => sealRunMcpAuth(sealKey, runId, auth);
+    };
+    return { body: rest, sealer };
+  }
+
   async function createRun(req: IncomingMessage, agentId: string) {
     const entry = await needAgent(agentId);
     if (entry.agent.archivedAt) throw new ApiError("agent_not_runnable", `The agent ${agentId} is archived: unarchive it to run it.`, { details: { archived_at: new Date(entry.agent.archivedAt).toISOString() } });
-    const body = await bodyOf(req);
+    const { body, sealer } = handedMcpAuth(await bodyOf(req));
     return idempotent(req, `/agents/${agentId}/runs`, body, async (origin) => {
       // A run the store started under this key, though no answer was kept (its server went down first): that run, as it is now.
       const first = origin && (await agents.request(() => agents.store.runOfOrigin(origin.key)));
@@ -1904,7 +1938,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const headers: Record<string, string> = { location: `/v2/runs/${first.runId}`, "idempotent-replayed": "true" };
         return { status: 202, body: await viewOverStore(store, first.runId, viewDepsFor(linkOrigin(req))), headers };
       }
-      const run = await startRunOf(entry, body, { ...(origin ? { origin } : {}) });
+      const seal = await sealer();
+      const run = await startRunOf(entry, body, { ...(origin ? { origin } : {}), ...(seal ? { sealed: seal } : {}) });
       // Its view from the store: the run and its launch were inserted in one transaction, so the view reads it whole.
       return { status: 202, body: await viewOverStore(store, run.id, viewDepsFor(linkOrigin(req))), headers: { location: `/v2/runs/${run.id}` } };
     });
@@ -1916,7 +1951,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  Its first run makes the agent, a version's first run its revision; a later run of the version reuses both
    *  (runs-over-store startInline). The answer is POST /agents/{agent_id}/runs' own: 202 and the run. */
   async function createInlineRun(req: IncomingMessage) {
-    const body = await bodyOf(req);
+    const { body, sealer } = handedMcpAuth(await bodyOf(req));
     const { external, definition, skills, note, revision: pinned, ...run } = body;
     const given = { definition, ...(skills !== undefined ? { skills } : {}), ...(note !== undefined ? { note } : {}) };
     const issues: InputIssue[] = [
@@ -1948,7 +1983,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const headers: Record<string, string> = { location: `/v2/runs/${first.runId}`, "idempotent-replayed": "true" };
         return { status: 202, body: await viewOverStore(store, first.runId, viewDepsFor(linkOrigin(req))), headers };
       }
-      const started = await startInline(store, startDeps, inline, run, { ...(origin ? { origin } : {}) });
+      const seal = await sealer();
+      const started = await startInline(store, startDeps, inline, run, { ...(origin ? { origin } : {}), ...(seal ? { sealed: seal } : {}) });
       return { status: 202, body: await viewOverStore(store, started.id, viewDepsFor(linkOrigin(req))), headers: { location: `/v2/runs/${started.id}` } };
     });
   }
@@ -2668,14 +2704,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "sendMessage": {
         const run = await needRun(id);
         if (run.kind === "workflow") throw unsupported("messages.steer_workflow_runs", "A workflow run takes no messages here: its workflow runs to its end, or a cancel ends it.");
-        const body = await bodyOf(req);
+        const { body, sealer } = handedMcpAuth(await bodyOf(req));
         const answer = await idempotent(req, `/runs/${id}/messages`, body, async () => {
+          const seal = await sealer();
           const extra = unknownFields(body, ["content"]);
           if (extra.length) throw invalid(extra);
           const content = body.content;
           if (typeof content !== "string" || !/\S/.test(content)) throw invalid([{ field: "content", reason: content === undefined ? "missing" : "wrong_type", message: "content is a non-empty string" }]);
           if (content.length > MAX_MESSAGE) throw invalid([{ field: "content", reason: "too_long", message: `content is at most ${MAX_MESSAGE} characters` }]);
-          const { mode, messageId } = await message(store, run, content);
+          // Its mcp_auth replaces the run's handed credentials in the steer's own write, so the turn it starts uses them.
+          const { mode, messageId } = await message(store, run, content, seal ? { launchSealed: seal(run.id) } : {});
           // The run's state after the command row is written (the run view): the runner applies the steer; the client polls.
           const { status, state } = await runStatusState(run.id);
           return { status: 202, body: { run_id: run.id, message_id: messageId, mode, status, state, poll_after_ms: 1000 } };
