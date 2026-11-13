@@ -16,12 +16,11 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { commitWrites } from "@earendil-works/pi-durable/testing";
 import { openSqliteStore } from "../dist/store/index.js";
 import { STORE_FILE } from "../dist/store/sqlite/store.js";
-import { startServe } from "../dist/index.js";
 import { sealedSettingsOverStore } from "../dist/sealed-settings-store.js";
 import { ATTEMPTS_KEPT, OUTBOUND_WEBHOOK, OUTBOX_SETTING, signatureOf, waitMarkerOf, WEBHOOK_SETTING, Webhooks } from "../dist/webhooks.js";
 import { verify } from "../dist/standard-webhooks.js";
 import { schemaProblems } from "./schema-support.mjs";
-import { client, FAUX, follow, printed, scratch, secretWritePath, serve, startInProcessRunner, startRun, withEnv } from "./support.mjs";
+import { client, FAUX, follow, printed, scratch, secretWritePath, serve, startInProcessRunner, startRun, startServe, withEnv } from "./support.mjs";
 
 // Removing the outbound webhook takes its secret with it: the client sends it from the owner's session, as the console does.
 secretWritePath(["DELETE"], /^\/settings\/webhook$/);

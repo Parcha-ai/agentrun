@@ -39,14 +39,18 @@ function sessionConversations(entries: readonly EntryLike[]): Map<string, number
  *  or with no runner.turn yet (in flight, or cut off by a crash before its answer was booked), makes the sum unknown
  *  (null), its known part kept, as sessionSpendOf counts it. A CLI harness's own record carries no per-request cost, nor do
  *  a workflow's model nodes (pi-ai's $0 for a model it has no price for): their model requests' cost is this, the
- *  booking's. */
-export function bookedSpend(entries: readonly EntryLike[], which: "model" | "paid" | "decisions"): BookedSpend {
+ *  booking's. `side`: of the model requests, those booked as side calls (another model than the session's, or the host's
+ *  own, as a learned workflow's node is: the proxy's `side`/`host`), which no answer of a pi run carries. */
+export function bookedSpend(entries: readonly EntryLike[], which: "model" | "paid" | "decisions" | "side"): BookedSpend {
   const keyed = sessionConversations(entries);
   const paidConv = keyed.get(TOOL_SESSION);
   const decisionsConv = keyed.get(DECISION_SESSION);
   const conv = (e: EntryLike) => Number(e.conversationId);
-  const chosen = (e: EntryLike) => (which === "paid" ? conv(e) === paidConv : which === "decisions" ? conv(e) === decisionsConv : conv(e) !== paidConv && conv(e) !== decisionsConv);
   const turnOf = (e: EntryLike) => `${String(e.conversationId)}:${String((e.data as { turn?: unknown } | undefined)?.turn)}`;
+  const model = (e: EntryLike) => conv(e) !== paidConv && conv(e) !== decisionsConv;
+  // The side calls among the model requests: each request that says so, by its conversation and turn.
+  const sides = new Set(entries.filter((e) => e.kind === RUNNER_RECORDS.request && model(e) && ((e.data as { side?: unknown; host?: unknown } | undefined)?.side === true || typeof (e.data as { host?: unknown } | undefined)?.host === "string")).map(turnOf));
+  const chosen = (e: EntryLike) => (which === "paid" ? conv(e) === paidConv : which === "decisions" ? conv(e) === decisionsConv : which === "side" ? model(e) && sides.has(turnOf(e)) : model(e));
   const answered = new Set(entries.filter((e) => e.kind === RUNNER_RECORDS.turn && chosen(e)).map(turnOf));
   // The model each request was sent on, by its turn (its runner.request's `model`).
   const sentOn = new Map(entries.filter((e) => e.kind === RUNNER_RECORDS.request && chosen(e)).map((e) => [turnOf(e), (e.data as { model?: unknown } | undefined)?.model]));

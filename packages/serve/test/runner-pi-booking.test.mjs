@@ -77,13 +77,13 @@ async function piRun(t, { tools, learned }) {
   });
   await server.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools, ...(learned ? { learning: true } : {}) } });
   const seed = learned ? await landWorkflows(dir, "agent-1", [{ name: "answer", description: "Answers a question as a number", workflow: answerFlow }]) : undefined;
-  const launch = { input: { content: "Do the task." }, title: "t", place: { mode: "runner" }, model: { provider: "anthropic", modelId: "claude-sonnet-4-5" }, ...(learned ? { learning: startAt(seed) } : {}) };
+  const launch = { input: { content: "Do the task." }, title: "t", place: { mode: "runner" }, model: { provider: "anthropic", modelId: "claude-sonnet-5-5" }, ...(learned ? { learning: startAt(seed) } : {}) };
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
   await server.flush?.();
   // The run's one model route: pi's model and the node's both go through the session proxy to the loopback gateway, priced
   // at the route's catalog cost.
-  const price = (_model, usage) => ((usage.input ?? 0) * 3 + (usage.output ?? 0) * 15 + (usage.cacheRead ?? 0) * 0.3 + (usage.cacheWrite ?? 0) * 3.75) / 1e6;
-  const route = { model: "claude-sonnet-4-5", provider: { api: "anthropic-messages", origin: gw.url, credential: () => `not-a-secret-${"pi"}` }, cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, outputCeiling: 8_192, price, fetch: globalThis.fetch };
+  const price = (_model, usage) => ((usage.input ?? 0) * 2 + (usage.output ?? 0) * 10 + (usage.cacheRead ?? 0) * 0.1 + (usage.cacheWrite ?? 0) * 2.5) / 1e6;
+  const route = { model: "claude-sonnet-5-5", provider: { api: "anthropic-messages", origin: gw.url, credential: () => `not-a-secret-${"pi"}` }, cost: { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5 }, outputCeiling: 8_192, price, fetch: globalThis.fetch };
   const deps = { env: {}, data: dir, journal: (claim) => store.journal(claim), store, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim: async () => ({ release: async () => {} }) };
   runner = startRunner({ store, name: "runner-a", ...TIMING, createLoop: createAdapterLoop((claim, run) => adapterRunSpecFromLaunch(launch, run, deps, claim)) });
   const row = await until(async () => {

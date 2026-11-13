@@ -11,7 +11,7 @@ import type { Place, Places } from "@/lib/place";
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 
-const PLACES: Places = { modes: ["runner", "sandbox"], boxes: [{ id: "bwrap", available: false, reason: "fixture: bwrap is not here" }, { id: "docker", available: true }], defaultPlace: { mode: "runner" } };
+const PLACES: Places = { modes: ["runner", "sandbox"], boxes: [{ id: "modal", available: false, reason: "fixture: modal is not here" }, { id: "docker", available: true }], defaultPlace: { mode: "runner" } };
 const TOOLS: ToolOffer[] = [{ name: "read", available: true, harnesses: ["pi", "claude-agent", "codex", "opencode"] }, { name: "bash", available: true, sandbox_only: true, harnesses: ["pi"] }];
 
 function mount(props: { value?: Place; saved?: unknown; picked?: string[]; places?: Places }) {
@@ -46,14 +46,14 @@ describe("PlaceSetting", () => {
     act(() => radio("place", "sandbox")!.click());
     expect(changes.at(-1)).toEqual({ place: { mode: "sandbox", box: "docker" } });
     expect(radio("box", "docker")!.checked).toBe(true);
-    expect(radio("box", "bwrap")!.disabled).toBe(true);
-    expect(host.textContent).toContain("fixture: bwrap is not here");
+    expect(radio("box", "modal")!.disabled).toBe(true);
+    expect(host.textContent).toContain("fixture: modal is not here");
   });
 
   it("an agent saved in a box keeps it picked, though this server lacks it", () => {
-    const { radio } = mount({ saved: { mode: "sandbox", box: "bwrap" } });
+    const { radio } = mount({ saved: { mode: "sandbox", box: "modal" } });
     expect(radio("place", "sandbox")!.checked).toBe(true);
-    expect(radio("box", "bwrap")!.checked).toBe(true);
+    expect(radio("box", "modal")!.checked).toBe(true);
   });
 
   it("going back to the server takes away bash, which the runner refuses, and keeps the other tools", () => {
@@ -76,7 +76,7 @@ describe("PlaceSetting", () => {
 
 describe("PlaceSetting, a server with no box it can run", () => {
   it("keeps the server picked: Sandbox can't be picked, and each box's reason says why", () => {
-    const none: Places = { modes: ["runner", "sandbox"], boxes: [{ id: "bwrap", available: false, reason: "fixture: no bwrap" }, { id: "docker", available: false, reason: "fixture: docker isn't set up" }], defaultPlace: { mode: "runner" } };
+    const none: Places = { modes: ["runner", "sandbox"], boxes: [{ id: "modal", available: false, reason: "fixture: no modal" }, { id: "docker", available: false, reason: "fixture: docker isn't set up" }], defaultPlace: { mode: "runner" } };
     const changes: { place: Place }[] = [];
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);

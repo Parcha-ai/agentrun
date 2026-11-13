@@ -10,7 +10,7 @@ import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
 import { agent, follow, scratch, serve } from "./support.mjs";
 import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
 
-const CLAUDE_MODEL = "claude-haiku-4-5";
+const CLAUDE_MODEL = "claude-haiku-5-5";
 
 /** serve's gateway on loopback: every request it gets, and a short Responses answer to each. */
 async function gateway(t) {
@@ -72,7 +72,9 @@ test("one server offers pi, claude-agent and codex, each on its own settings: a 
   const asked = anthropic.messages();
   assert.ok(asked.length > 0 && asked.every((m) => m.path === "/v1/messages" && m.model === CLAUDE_MODEL), "Claude's requests reach the Anthropic endpoint, with its native id");
   assert.deepEqual(gw.seen, ["/v1/responses"], "the gateway gets codex's one request, and none of Claude's");
-  // claude-haiku-4-5 at the catalog's $1 in and $5 out per million: never the gateway's AGENT_MODEL_PRICE.
-  const expected = asked.reduce((sum, m) => sum + Math.ceil(JSON.stringify(m.body).length / 4) * 1 + 12 * 5, 0) / 1e6;
-  assert.deepEqual(usageOf(done.rows), { usd: Math.round(expected * 1e6) / 1e6, requests: asked.length });
+  // claude-haiku-5-5 at the catalog's $0.1 in and $0.5 out per million: never the gateway's AGENT_MODEL_PRICE.
+  const expected = asked.reduce((sum, m) => sum + Math.ceil(JSON.stringify(m.body).length / 4) * 0.1 + 12 * 0.5, 0) / 1e6;
+  const booked = usageOf(done.rows);
+  assert.equal(booked.requests, asked.length);
+  assert.ok(Math.abs(booked.usd - expected) < 1e-9, `booked ${booked.usd}, priced ${expected}`);
 });
