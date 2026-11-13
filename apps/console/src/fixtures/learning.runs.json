@@ -10,7 +10,7 @@
   "body": {
     "runs": [
       {
-        "run_id": "01a1a2bf-c440-7e22-ac0d-b11aa7be56e9",
+        "run_id": "01a1addb-8924-7c7f-8240-99adcf332605",
         "agent_id": "refund-finder",
         "agent_version": 1,
         "revision": "c5556e160672df38c594257f29053130d928130c0c4c850337bc5254db369b6f",
@@ -19,24 +19,25 @@
         "status": "completed",
         "state": "idle",
         "title": "Find this shop's refund policy page: https://www.everlane.com",
-        "created_at": "2026-11-03T18:50:39.053Z",
-        "ended_at": "2026-11-03T18:50:42.758Z",
+        "created_at": "2026-11-05T22:36:48.304Z",
+        "ended_at": "2026-11-05T22:36:51.162Z",
         "error": null,
         "review": null,
         "pending": null,
         "cost": {
-          "usd": 0.011444,
+          "usd": 0.017113,
           "basis": "estimate",
           "charge_state": null,
           "cap_usd": null
         },
         "archived_at": null,
         "imported_from": null,
+        "trigger": null,
         "learning": {
           "state": "dropped",
           "reason": "empty",
           "detail": "Nothing new to remember from this run.",
-          "used": [
+          "given": [
             {
               "file": "keep-it-to-three-lines.md",
               "name": "Keep the summary to three lines"
@@ -49,7 +50,7 @@
         }
       },
       {
-        "run_id": "01a1a2bf-b045-7754-8fa1-2862d6507f6f",
+        "run_id": "01a1addb-7cdd-7045-b1e3-69b449ffc3b6",
         "agent_id": "refund-finder",
         "agent_version": 1,
         "revision": "c5556e160672df38c594257f29053130d928130c0c4c850337bc5254db369b6f",
@@ -58,24 +59,25 @@
         "status": "completed",
         "state": "idle",
         "title": "Find this shop's refund policy page: https://www.kith.com",
-        "created_at": "2026-11-03T18:50:33.936Z",
-        "ended_at": "2026-11-03T18:50:38.523Z",
+        "created_at": "2026-11-05T22:36:45.162Z",
+        "ended_at": "2026-11-05T22:36:48.038Z",
         "error": null,
         "review": null,
         "pending": null,
         "cost": {
-          "usd": 0.013437,
+          "usd": 0.017924,
           "basis": "estimate",
           "charge_state": null,
           "cap_usd": null
         },
         "archived_at": null,
         "imported_from": null,
+        "trigger": null,
         "learning": {
           "state": "dropped",
           "reason": "grader",
           "detail": "Not kept: It's about one shop's returns portal, not a rule other shops share.",
-          "used": [
+          "given": [
             {
               "file": "keep-it-to-three-lines.md",
               "name": "Keep the summary to three lines"
@@ -88,7 +90,7 @@
         }
       },
       {
-        "run_id": "01a1a2bf-a037-772b-af55-a290a195670d",
+        "run_id": "01a1addb-708f-7818-b34c-1ed897acdfa0",
         "agent_id": "refund-finder",
         "agent_version": 1,
         "revision": "c5556e160672df38c594257f29053130d928130c0c4c850337bc5254db369b6f",
@@ -97,24 +99,25 @@
         "status": "completed",
         "state": "idle",
         "title": "Find this shop's refund policy page: https://www.allbirds.com",
-        "created_at": "2026-11-03T18:50:29.823Z",
-        "ended_at": "2026-11-03T18:50:33.590Z",
+        "created_at": "2026-11-05T22:36:42.014Z",
+        "ended_at": "2026-11-05T22:36:44.905Z",
         "error": null,
         "review": null,
         "pending": null,
         "cost": {
-          "usd": 0.011444,
+          "usd": 0.017113,
           "basis": "estimate",
           "charge_state": null,
           "cap_usd": null
         },
         "archived_at": null,
         "imported_from": null,
+        "trigger": null,
         "learning": {
           "state": "dropped",
           "reason": "empty",
           "detail": "Nothing new to remember from this run.",
-          "used": [
+          "given": [
             {
               "file": "keep-it-to-three-lines.md",
               "name": "Keep the summary to three lines"
@@ -127,7 +130,7 @@
         }
       },
       {
-        "run_id": "01a1a2bf-8ddd-71cc-b780-5e9b78b9f063",
+        "run_id": "01a1addb-61d4-7bef-9908-3be8d605a371",
         "agent_id": "refund-finder",
         "agent_version": 1,
         "revision": "c5556e160672df38c594257f29053130d928130c0c4c850337bc5254db369b6f",
@@ -136,24 +139,25 @@
         "status": "completed",
         "state": "idle",
         "title": "Find this shop's refund policy page: https://www.brooklinen.com",
-        "created_at": "2026-11-03T18:50:25.126Z",
-        "ended_at": "2026-11-03T18:50:29.276Z",
+        "created_at": "2026-11-05T22:36:38.244Z",
+        "ended_at": "2026-11-05T22:36:41.234Z",
         "error": null,
         "review": null,
         "pending": null,
         "cost": {
-          "usd": 0.013566,
+          "usd": 0.018522,
           "basis": "estimate",
           "charge_state": null,
           "cap_usd": null
         },
         "archived_at": null,
         "imported_from": null,
+        "trigger": null,
         "learning": {
           "state": "merged",
           "reason": null,
           "detail": "Learned: Try /policies/refund-policy first (replaces 1 older note)",
-          "used": [
+          "given": [
             {
               "file": "shopify-refund-policy-path.md",
               "name": "Shopify refund policy path"
@@ -171,7 +175,37 @@
         }
       },
       {
-        "run_id": "01a1a2bf-600d-7a8b-b32a-0db5b1d7559c",
+        "run_id": "01a1addb-35d8-7bae-996b-6f808de7467a",
+        "agent_id": "refund-finder",
+        "agent_version": 1,
+        "revision": "c5556e160672df38c594257f29053130d928130c0c4c850337bc5254db369b6f",
+        "kind": "agentic",
+        "sha": null,
+        "status": "completed",
+        "state": "idle",
+        "title": "Find this shop's refund policy page: https://www.patagonia.com",
+        "created_at": "2026-11-05T22:36:26.976Z",
+        "ended_at": "2026-11-05T22:36:37.516Z",
+        "error": null,
+        "review": null,
+        "pending": null,
+        "cost": {
+          "usd": 0.059678,
+          "basis": "estimate",
+          "charge_state": null,
+          "cap_usd": null
+        },
+        "archived_at": null,
+        "imported_from": null,
+        "trigger": null,
+        "learning": {
+          "state": "dropped",
+          "reason": "empty",
+          "detail": "Nothing new to remember from this run."
+        }
+      },
+      {
+        "run_id": "01a1addb-3581-7b75-97f6-f1e7066e7ac7",
         "agent_id": "refund-finder",
         "agent_version": 1,
         "revision": "c5556e160672df38c594257f29053130d928130c0c4c850337bc5254db369b6f",
@@ -180,19 +214,20 @@
         "status": "completed",
         "state": "idle",
         "title": "Find this shop's refund policy page: https://www.taylorstitch.com",
-        "created_at": "2026-11-03T18:50:13.398Z",
-        "ended_at": "2026-11-03T18:50:24.543Z",
+        "created_at": "2026-11-05T22:36:26.914Z",
+        "ended_at": "2026-11-05T22:36:37.514Z",
         "error": null,
         "review": null,
         "pending": null,
         "cost": {
-          "usd": 0.055238,
+          "usd": 0.061088,
           "basis": "estimate",
           "charge_state": null,
           "cap_usd": null
         },
         "archived_at": null,
         "imported_from": null,
+        "trigger": null,
         "learning": {
           "state": "merged",
           "reason": null,
@@ -204,35 +239,6 @@
               "supersedes": []
             }
           ]
-        }
-      },
-      {
-        "run_id": "01a1a2bf-5fa1-72a3-a143-aaea6c2a7fad",
-        "agent_id": "refund-finder",
-        "agent_version": 1,
-        "revision": "c5556e160672df38c594257f29053130d928130c0c4c850337bc5254db369b6f",
-        "kind": "agentic",
-        "sha": null,
-        "status": "completed",
-        "state": "idle",
-        "title": "Find this shop's refund policy page: https://www.patagonia.com",
-        "created_at": "2026-11-03T18:50:13.376Z",
-        "ended_at": "2026-11-03T18:50:23.674Z",
-        "error": null,
-        "review": null,
-        "pending": null,
-        "cost": {
-          "usd": 0.051923,
-          "basis": "estimate",
-          "charge_state": null,
-          "cap_usd": null
-        },
-        "archived_at": null,
-        "imported_from": null,
-        "learning": {
-          "state": "dropped",
-          "reason": "empty",
-          "detail": "Nothing new to remember from this run."
         }
       }
     ],

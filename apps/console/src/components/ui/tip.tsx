@@ -10,7 +10,7 @@ export function Tip({ tip, children, className, align = "start" }: { tip: ReactN
     <span className={cn("group/tip relative inline-flex", className)}>
       {cloneElement(children, { "aria-describedby": id })}
       <span role="tooltip" id={id}
-        className={cn("pointer-events-none absolute top-full z-30 mt-1.5 hidden w-max max-w-[min(20rem,80vw)] border border-border-strong bg-card px-3 py-2 text-left font-sans text-[12px] normal-case leading-snug tracking-normal text-card-foreground shadow-lg group-hover/tip:block group-focus-within/tip:block",
+        className={cn("pointer-events-none absolute top-full z-popover mt-1.5 hidden w-max max-w-[min(20rem,80vw)] border border-border-strong bg-card px-3 py-2 text-left font-sans text-small normal-case leading-snug tracking-normal text-card-foreground shadow-float group-hover/tip:block group-focus-within/tip:block",
           align === "end" ? "right-0" : "left-0")}>
         {tip}
       </span>

@@ -45,7 +45,7 @@ test("the words: notes counted as a person counts them, what was learned by name
   const all = [
     said.seeded(0), said.seeded(2), said.reflecting, said.proposed(2), said.merged([{ name: "A", supersedes: ["b.md"] }]), said.merged([{ name: "A", supersedes: [] }], [{ name: "B" }]), said.merged([], [{ name: "B" }]), said.empty, said.unparsed, said.grader("Too narrow."),
     ...["secret_value", "secret_shape", "invisible_unicode", "too_many_files", "outside", "file_name", "file_mode", "encoding", "edited", "deleted", "exists", "too_large", "too_many_notes", "note", "status", "supersedes", "index_full"].flatMap((rule) => [said.checker([{ rule }]), said.stale([{ rule }])]),
-    said.noWriteTool, said.noBudget, said.unknownCost, said.screen, ...Object.values(STOPPED).map(said.stopped),
+    said.noBudget, said.unknownCost, ...Object.values(STOPPED).map(said.stopped),
   ];
   // A read says a name and a reason again from their parts, each cut first: a value inside them is found whole.
   const cut = (text) => text.replaceAll("SECRET-VALUE", "[redacted]");

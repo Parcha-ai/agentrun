@@ -3,9 +3,15 @@ import { type InputIssue, invalid } from "./errors.js";
 import { HARNESSES } from "./harness.js";
 import { THINKING_LEVELS } from "./model.js";
 import { placeIssues } from "./place.js";
+import { computerIssues, settingConflict } from "./computer-setting.js";
 import { settingsIssues } from "./tool-plane.js";
+import { CAP_MODES } from "./cap.js";
+import { APPROVALS } from "./approvals.js";
+import { schemaCheck } from "./answer-json.js";
 
 export const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+/** An inline agent's source or kind in its external reference (POST /runs): no colon, which the reference's key splits on. */
+export const EXTERNAL_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const SKILL_PATH = /^(?!.*(?:^|\/)\.{1,2}(?:\/|$))(?!.*\/\/)(?!.*\/$)[^/\\\u0000][^\\\u0000]*$/;
 
 export type Json = Record<string, unknown>;
@@ -17,12 +23,21 @@ export const IDEMPOTENCY_TTL_S = 86_400;
 export const stable = (value: unknown): string =>
   Array.isArray(value) ? `[${value.map(stable).join(",")}]` : isObject(value) ? `{${Object.keys(value).sort().map((k) => `${JSON.stringify(k)}:${stable(value[k])}`).join(",")}}` : JSON.stringify(value);
 
-export const DEFINITION_FIELDS = ["id", "version", "name", "description", "instructions", "workflow", "model", "thinking", "harness", "place", "learning", "skills", "tools", "tool_settings", "max_cost_usd"];
+export const DEFINITION_FIELDS = ["id", "version", "name", "description", "instructions", "workflow", "model", "model_tiers", "thinking", "harness", "place", "computer", "learning", "skills", "tools", "tool_settings", "approvals", "max_cost_usd", "cap_mode", "output_schema", "max_tool_calls", "checkout"];
+/** What an agentic definition may ask the server to check out in each run's folder before its first turn
+ *  (runner/pr-checkout.ts): `pull_request`, the pull request the run's GitHub event names, at its head, read-only, in
+ *  `repo/`; `none` clears it on an edit. */
+export const CHECKOUTS = ["pull_request", "none"] as const;
 /** Why a field a definition may have elsewhere has no place in an agent store's revision. */
 export const NOT_KEPT: Record<string, string> = {
   input_schema: "The agent store keeps no input_schema: an agentic run takes {content}, and a workflow checks its input against its own schema.",
-  output_schema: "The agent store keeps no output_schema: a workflow run's output is its workflow's.",
 };
+/** The most tool calls an agent's budget (max_tool_calls, tool-budget.ts) may name. */
+export const MAX_TOOL_CALLS = 1_000;
+/** The most bytes an agent's output_schema takes, as JSON. */
+export const MAX_OUTPUT_SCHEMA_BYTES = 64 * 1024;
+/** The tiers an agentic revision may name a model for (`model_tiers`): those a subagent runs on (runner/subagent.ts). */
+export const MODEL_TIER_NAMES = ["fast", "strong"] as const;
 /** `provider/model-id`. */
 export const MODEL_REF = /^[^/\s]+\/\S+$/;
 const SKILL_FILE = "/SKILL.md";
@@ -66,25 +81,68 @@ export function definitionIssues(definition: unknown, { at = "definition", creat
     if (d.workflow !== undefined) out.push(issue(`${at}.model`, "not_allowed", "A workflow revision keeps no model: its model nodes run on this host's default.", `Remove ${at}.model.`));
     else if (typeof d.model !== "string" || !MODEL_REF.test(d.model)) out.push(issue(`${at}.model`, "bad_format", `${at}.model is "provider/model-id"`));
   }
+  if (d.model_tiers !== undefined) {
+    if (d.workflow !== undefined) out.push(issue(`${at}.model_tiers`, "not_allowed", "A workflow revision keeps no model tiers: each model node names its tier, run on this host's model for it.", `Remove ${at}.model_tiers.`));
+    else if (!isObject(d.model_tiers) || !Object.keys(d.model_tiers).length) out.push(issue(`${at}.model_tiers`, "wrong_type", `${at}.model_tiers is an object of ${MODEL_TIER_NAMES.join(", ")} to "provider/model-id"`));
+    else {
+      for (const [tier, ref] of Object.entries(d.model_tiers)) {
+        if (!(MODEL_TIER_NAMES as readonly string[]).includes(tier)) out.push(issue(`${at}.model_tiers.${tier}`, "not_allowed", `${at}.model_tiers names ${MODEL_TIER_NAMES.join(" and ")} alone`, `Remove ${at}.model_tiers.${tier}.`));
+        else if (typeof ref !== "string" || !MODEL_REF.test(ref)) out.push(issue(`${at}.model_tiers.${tier}`, "bad_format", `${at}.model_tiers.${tier} is "provider/model-id"`));
+      }
+    }
+  }
   if (d.harness !== undefined && !(HARNESSES as readonly unknown[]).includes(d.harness)) out.push(issue(`${at}.harness`, "not_an_option", `${at}.harness is one of ${HARNESSES.join(", ")}`));
   if (d.place !== undefined) out.push(...placeIssues(d.place, `${at}.place`));
+  if (d.computer !== undefined) out.push(...computerIssues(d.computer, `${at}.computer`), ...settingConflict(d.computer, d.place, at));
   if (d.thinking !== undefined) {
     if (d.workflow !== undefined) out.push(issue(`${at}.thinking`, "not_allowed", "A workflow revision keeps no thinking level: each model node carries its own.", `Remove ${at}.thinking.`));
     else if (!(THINKING_LEVELS as readonly unknown[]).includes(d.thinking)) out.push(issue(`${at}.thinking`, "not_an_option", `${at}.thinking is one of ${THINKING_LEVELS.join(", ")}: thinking is never off`));
   }
   if (d.learning !== undefined) {
     if (d.workflow !== undefined) out.push(issue(`${at}.learning`, "not_allowed", "A workflow revision does not learn: only an agentic run reflects on its work.", `Remove ${at}.learning.`));
-    else if (typeof d.learning !== "boolean") out.push(issue(`${at}.learning`, "wrong_type", `${at}.learning is true or false`));
+    else if (typeof d.learning !== "boolean" && d.learning !== "notes") out.push(issue(`${at}.learning`, "wrong_type", `${at}.learning is true, false or "notes": true learns notes, skills and workflows, "notes" notes and skills alone`));
+  }
+  // An agentic revision's structured answer: the JSON Schema its final answer's last fenced json block meets, read into a
+  // completed run's result.output (answer-json.ts structuredAnswer). A workflow's output is its workflow's own.
+  if (d.output_schema !== undefined) {
+    if (d.workflow !== undefined) out.push(issue(`${at}.output_schema`, "not_allowed", "A workflow revision keeps no output_schema: its run's output is its workflow's.", `Remove ${at}.output_schema.`));
+    else if (!isObject(d.output_schema)) out.push(issue(`${at}.output_schema`, "wrong_type", `${at}.output_schema is a JSON Schema object`));
+    else if (Buffer.byteLength(JSON.stringify(d.output_schema)) > MAX_OUTPUT_SCHEMA_BYTES) out.push(issue(`${at}.output_schema`, "too_long", `${at}.output_schema is over ${MAX_OUTPUT_SCHEMA_BYTES} bytes as JSON`));
+    else {
+      const compiled = schemaCheck(d.output_schema);
+      if ("why" in compiled) out.push(issue(`${at}.output_schema`, "bad_format", `${at}.output_schema ${compiled.why}`));
+    }
   }
   if (d.skills !== undefined) names(d.skills, `${at}.skills`, out);
   if (d.tools !== undefined) names(d.tools, `${at}.tools`, out);
   // The agent's own tool settings, over the server's (tool-plane.ts); an edit that leaves them out keeps none.
-  if (d.tool_settings !== undefined) out.push(...settingsIssues(d.tool_settings, `${at}.tool_settings`));
+  if (d.tool_settings !== undefined) {
+    // An agent's own pin among them, kept as given (the gate holds its runs to it).
+    out.push(...settingsIssues(d.tool_settings, `${at}.tool_settings`, "agent"));
+  }
+  // Whether the agent's runs ask a person (the gate as its settings say) or run unattended, an ask allowed: never over a
+  // deny. An edit that leaves it out asks, as one that leaves out tool_settings keeps none: no edit makes an agent
+  // unattended by saying nothing.
+  if (d.approvals !== undefined && !(APPROVALS as readonly unknown[]).includes(d.approvals)) out.push(issue(`${at}.approvals`, "not_an_option", `${at}.approvals is one of ${APPROVALS.join(", ")}: ask, the default, waits for a person where a tool is set to ask; never runs the agent unattended, each such tool allowed, while a deny still refuses`));
   // The agent's default cap of each run started without one of its own: above 0 sets it, 0 clears it (no default), and
-  // an edit that leaves it out keeps the agent's (agents.ts), so leaving a field out never removes a spend limit.
+  // an edit that leaves it out keeps the agent's (agents-store.ts), so leaving a field out never removes a spend limit.
   if (d.max_cost_usd !== undefined) {
     if (!(typeof d.max_cost_usd === "number" && Number.isFinite(d.max_cost_usd) && d.max_cost_usd >= 0)) out.push(issue(`${at}.max_cost_usd`, "wrong_type", `${at}.max_cost_usd is a number of at least 0, in US dollars: above 0 sets the agent's default cap, 0 clears it`));
-    else if (d.workflow !== undefined && d.max_cost_usd > 0) out.push(issue(`${at}.max_cost_usd`, "not_allowed", "A workflow run's spend is not capped here, so a workflow revision keeps no max_cost_usd.", `Remove ${at}.max_cost_usd.`));
+  }
+  // The server's checkout before each run's first turn: kept by an edit that leaves it out, cleared by `none`.
+  if (d.checkout !== undefined) {
+    if (d.workflow !== undefined) out.push(issue(`${at}.checkout`, "not_allowed", "A workflow revision keeps no checkout: only an agentic run starts in a checkout.", `Remove ${at}.checkout.`));
+    else if (!(CHECKOUTS as readonly unknown[]).includes(d.checkout)) out.push(issue(`${at}.checkout`, "not_an_option", `${at}.checkout is one of ${CHECKOUTS.join(", ")}: pull_request checks out the pull request the run's GitHub event names, at its head, in repo/ before the first turn; none clears it`));
+  }
+  // The tool calls each conversation of an agentic run may make (tool-budget.ts): above 0 sets the budget, 0 clears it, and
+  // an edit that leaves it out keeps the agent's, as the default cap is kept.
+  if (d.max_tool_calls !== undefined) {
+    if (d.workflow !== undefined) out.push(issue(`${at}.max_tool_calls`, "not_allowed", "A workflow revision keeps no tool-call budget: its nodes are its steps.", `Remove ${at}.max_tool_calls.`));
+    else if (!(Number.isSafeInteger(d.max_tool_calls) && (d.max_tool_calls as number) >= 0 && (d.max_tool_calls as number) <= MAX_TOOL_CALLS)) out.push(issue(`${at}.max_tool_calls`, "wrong_type", `${at}.max_tool_calls is a whole number from 0 to ${MAX_TOOL_CALLS}: above 0, the tool calls each conversation of a run may make before every further call is refused with words that say to answer now; 0 clears it`));
+  }
+  // How a run's cap prices its requests (cap.ts CapMode): kept, as the default cap is, by an edit that leaves it out.
+  if (d.cap_mode !== undefined) {
+    if (!(CAP_MODES as readonly unknown[]).includes(d.cap_mode)) out.push(issue(`${at}.cap_mode`, "not_an_option", `${at}.cap_mode is one of ${CAP_MODES.join(", ")}: expected prices a request's input from the previous request's cache, strict prices all of it uncached`));
   }
   return out;
 }
@@ -111,17 +169,23 @@ export function skillIssues(named: unknown, files: Iterable<string>): InputIssue
 
 export type DefinitionBody = { definition: Json; skills?: Record<string, string>; note?: string };
 
+/** What is wrong with `{definition, skills?, note?}`, as checkDefinitionBody refuses it: every field issue. */
+export function definitionBodyIssues(body: Json, { creating = true } = {}): InputIssue[] {
+  const out: InputIssue[] = [];
+  for (const key of Object.keys(body)) if (!["definition", "skills", "note"].includes(key)) out.push(issue(key, "not_allowed", `The body keeps no field ${key}.`, `Remove ${key}.`));
+  out.push(...definitionIssues(body.definition, { creating }));
+  if (body.skills !== undefined || creating) skillFileIssues(body.skills ?? {}, out);
+  if (body.note !== undefined && !(typeof body.note === "string" && body.note.length <= 2_000)) out.push(issue("note", "wrong_type", "note is text of at most 2000 characters"));
+  return out;
+}
+
 /**
  * `{definition, skills?, note?}`, as `POST /agents` and `PUT .../definition` take it. `skills` are the revision's skill
  * files (absent on an edit: the current revision's); `note` says what the revision changes. Throws `422 input_invalid`
  * naming every field that is wrong.
  */
 export function checkDefinitionBody(body: Json, { creating = true } = {}): DefinitionBody {
-  const out: InputIssue[] = [];
-  for (const key of Object.keys(body)) if (!["definition", "skills", "note"].includes(key)) out.push(issue(key, "not_allowed", `The body keeps no field ${key}.`, `Remove ${key}.`));
-  out.push(...definitionIssues(body.definition, { creating }));
-  if (body.skills !== undefined || creating) skillFileIssues(body.skills ?? {}, out);
-  if (body.note !== undefined && !(typeof body.note === "string" && body.note.length <= 2_000)) out.push(issue("note", "wrong_type", "note is text of at most 2000 characters"));
+  const out = definitionBodyIssues(body, { creating });
   if (out.length) throw invalid(out);
   return { definition: body.definition as Json, ...(body.skills !== undefined || creating ? { skills: (body.skills ?? {}) as Record<string, string> } : {}), ...(typeof body.note === "string" ? { note: body.note } : {}) };
 }

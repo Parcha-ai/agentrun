@@ -1,22 +1,23 @@
-import type { Place } from "./place";
+import { type Place, type Places, placeOf } from "./place";
 import type { ClientError } from "./client";
 import type { NoteProblem } from "./learning";
-import type { AgentTool, ToolSettings } from "./v2";
+import type { AgentTool, Approvals, Computer, ToolSettings } from "./v2";
 import { decisionStarter, STARTER_PROVIDERS } from "./decisionStarter";
 import { workflowStarter } from "./workflowStarter";
 
 export type HarnessId = "pi" | "claude-agent" | "codex" | "opencode";
-/** `learning`: whether the agent's runs learn (an agentic revision's switch; absent is off). */
+/** `learning`: whether the agent's runs learn, and what (an agentic revision's; absent is off): true, notes, skills and
+ *  learned workflows; "notes", notes and skills alone. */
 /** `max_cost_usd`: the agent's default spend cap per run, in dollars, for a run (or a trigger) with no cap of its own; an
  *  agentic revision's only. Absent or 0 is none, and an edit clears it only with an explicit 0. */
-export type Definition = { version: number; name: string; description?: string; instructions?: string; workflow?: unknown; harness?: string; thinking?: string; model?: string; learning?: boolean; max_cost_usd?: number; skills: string[]; tools: string[]; tool_settings?: ToolSettings; [field: string]: unknown };
+export type Definition = { version: number; approvals?: Approvals; name: string; description?: string; instructions?: string; workflow?: unknown; harness?: string; thinking?: string; model?: string; learning?: boolean | "notes"; max_cost_usd?: number; skills: string[]; tools: string[]; tool_settings?: ToolSettings; [field: string]: unknown };
 /** What a save's answer says this host lacks to run the revision (`reason` not_set_up_here, say): it saved, and a run of it
  *  is refused until the host has it. `field` names the definition's field (`definition.model`, `definition.tools[2]`). */
 export type SaveWarning = { field: string; reason: string; message: string };
 /** `warnings`: on a create's or an edit's answer only (never on a read of the agent); the console keeps a create's for
  *  the agent's page that opens after it (client.ts). */
-export type Agent = { agent_id: string; kind: "agentic" | "workflow"; revision: string; revisions: number; definition: Definition; archived_at: string | null; runs?: { count: number; live: number }; warnings?: SaveWarning[]; tools?: AgentTool[] };
-export type AgentFields = Partial<Pick<Definition, "name" | "description" | "instructions" | "harness" | "thinking" | "model" | "tools" | "workflow" | "learning" | "tool_settings" | "max_cost_usd">> & { workflowText?: string; maxCostText?: string; place?: Place };
+export type Agent = { agent_id: string; kind: "agentic" | "workflow"; revision: string; revisions: number; definition: Definition; archived_at: string | null; runs?: { count: number; live: number }; warnings?: SaveWarning[]; tools?: AgentTool[]; learning?: { pending: number } };
+export type AgentFields = Partial<Pick<Definition, "name" | "description" | "instructions" | "harness" | "thinking" | "model" | "tools" | "workflow" | "learning" | "tool_settings" | "max_cost_usd" | "approvals">> & { workflowText?: string; maxCostText?: string; place?: Place; computer?: Computer };
 
 /** The body of a definition edit: the current definition with the edited fields; name and
  *  description stay as the agent was created. Every field the
@@ -26,6 +27,10 @@ export function editBody(agent: Agent, fields: AgentFields, note: string): { def
   // The agent store keeps an agent's id, name and description from its creation: an edit never sends a changed one.
   const { name: _name, description: _description, ...editable } = fields as AgentFields & { id?: string };
   const edited: Definition = { ...agent.definition, ...editable };
+  // The computer is the setting; place is the server's view of it. A definition with a computer goes without its place,
+  // which would still say the old computer after a change (the server writes place from computer).
+  const current: Definition = { ...agent.definition };
+  if (edited.computer !== undefined) { delete edited.place; delete current.place; }
   // A workflow revision takes no instructions, model or thinking beside its workflow (validate.ts refuses each).
   if (agent.kind === "workflow") { delete edited.thinking; delete edited.instructions; delete edited.model; }
   // An empty model is no model: the server's default. No tool settings of its own are none: the server's.
@@ -34,7 +39,7 @@ export function editBody(agent: Agent, fields: AgentFields, note: string): { def
   for (const key of Object.keys(edited)) if (edited[key] === undefined) delete edited[key];
   // serve makes no revision for a definition equal to the current one (a note alone changes nothing): then the version
   // is the current one's. A changed definition is the next revision, number revisions + 1.
-  const unchanged = same({ ...edited, version: 0 }, { ...agent.definition, version: 0 });
+  const unchanged = same({ ...edited, version: 0 }, { ...current, version: 0 });
   edited.version = unchanged ? agent.definition.version : agent.revisions + 1;
   return { definition: edited, ...(note.trim() ? { note: note.trim() } : {}), unchanged };
 }
@@ -72,18 +77,24 @@ export function decisionProvider(workflows: { adapters?: string[]; decisions?: {
   return STARTER_PROVIDERS.find((id) => providers.some((p) => p.id === id && p.available));
 }
 
+/** A new agent's instructions until the person writes their own: the field is required, so the form opens with these
+ *  to edit, never empty. Harness-neutral, one sentence. */
+export const DEFAULT_INSTRUCTIONS = "You are a helpful agent. Do the task you're given and report what you found.";
+
 /** The body that creates an agent: its first revision, with what the form names and no skills yet. A starter choice
  *  (Decision, Workflow) makes a workflow agent from that starter (Decision's on the server's decision provider), with no
  *  instructions, harness, thinking, model or tools: a workflow revision keeps none of those beside its workflow. */
-export function createBody(f: { name: string; description: string; instructions: string; harness: string; tools: string[]; thinking?: string; model?: string; learning?: boolean; decisionProvider?: string; tool_settings?: ToolSettings; place?: Place; max_cost_usd?: number }): { definition: Definition } {
+export function createBody(f: { name: string; description: string; instructions: string; harness: string; tools: string[]; approvals?: Approvals; thinking?: string; model?: string; learning?: boolean | "notes"; decisionProvider?: string; tool_settings?: ToolSettings; computer?: Computer; max_cost_usd?: number }): { definition: Definition } {
   if (isStarter(f.harness)) {
     return { definition: { version: 1, name: f.name, ...(f.description.trim() ? { description: f.description } : {}), workflow: STARTERS[f.harness]!(f.decisionProvider), skills: [], tools: [] } };
   }
   return {
     definition: {
       version: 1, name: f.name, ...(f.description.trim() ? { description: f.description } : {}), instructions: f.instructions, harness: f.harness,
-      ...(f.thinking ? { thinking: f.thinking } : {}), ...(f.model?.trim() ? { model: f.model.trim() } : {}), ...(f.place ? { place: f.place } : {}), ...(f.learning ? { learning: true } : {}), ...(f.max_cost_usd !== undefined ? { max_cost_usd: f.max_cost_usd } : {}), skills: [], tools: f.tools,
+      ...(f.thinking ? { thinking: f.thinking } : {}), ...(f.model?.trim() ? { model: f.model.trim() } : {}), ...(f.computer ? { computer: f.computer } : {}), ...(f.learning ? { learning: f.learning } : {}), ...(f.max_cost_usd !== undefined ? { max_cost_usd: f.max_cost_usd } : {}), skills: [], tools: f.tools,
       ...(f.tool_settings && Object.keys(f.tool_settings).length ? { tool_settings: f.tool_settings } : {}),
+      // Approvals: sent only when it never asks (ask is the server's default).
+      ...(f.approvals === "never" ? { approvals: "never" as const } : {}),
     },
   };
 }
@@ -101,26 +112,55 @@ export function capOf(text: string | undefined): { ok: true; value: number | und
 
 /** One tool the server offers (`GET /v2/capabilities` `tools`): whether it can run here, what it lacks, what it does
  *  (`summary`), and, when the server says, which harnesses run it. */
-export type ToolOffer = { name: string; available: boolean; summary?: string; missing?: string[]; reason?: string; harnesses?: string[]; call_only?: true; sandbox_only?: true; nodes?: boolean };
+export type ToolOffer = { name: string; available: boolean; summary?: string; /** One line for people, served beside the model-facing `summary`; an MCP server's tool has none. */ blurb?: string; missing?: string[]; reason?: string; /** The harnesses that run it here (served on every tool). */ harnesses: string[]; call_only?: true; sandbox_only?: true; nodes?: boolean };
 
 export function toolOffers(raw: unknown): ToolOffer[] {
   return (Array.isArray(raw) ? raw : []).flatMap((t): ToolOffer[] => {
     if (!t || typeof t !== "object" || typeof (t as { name?: unknown }).name !== "string") return [];
-    const { name, available, summary, missing, reason, harnesses, call_only, sandbox_only, nodes } = t as { name: string; available?: boolean; summary?: unknown; missing?: string[]; reason?: unknown; harnesses?: string[]; call_only?: unknown; sandbox_only?: unknown; nodes?: unknown };
+    const { name, available, summary, blurb, missing, reason, harnesses, call_only, sandbox_only, nodes } = t as { name: string; available?: boolean; summary?: unknown; blurb?: unknown; missing?: string[]; reason?: unknown; harnesses?: string[]; call_only?: unknown; sandbox_only?: unknown; nodes?: unknown };
     return [{
-      name, available: available !== false, ...(typeof summary === "string" && summary ? { summary } : {}), ...(missing?.length ? { missing } : {}), ...(typeof reason === "string" && reason ? { reason } : {}), ...(harnesses ? { harnesses } : {}),
+      name, available: available !== false, ...(typeof summary === "string" && summary ? { summary } : {}), ...(typeof blurb === "string" && blurb.trim() ? { blurb: blurb.trim() } : {}), ...(missing?.length ? { missing } : {}), ...(typeof reason === "string" && reason ? { reason } : {}), harnesses: Array.isArray(harnesses) ? harnesses : [],
       ...(call_only === true ? { call_only: true as const } : {}), ...(sandbox_only === true ? { sandbox_only: true as const } : {}), ...(typeof nodes === "boolean" ? { nodes } : {}),
     }];
   });
 }
 
-/** The tools a harness runs here. The server says per tool when it can (`harnesses`); until it does, its own rule
- *  (serve's runnable.ts): pi binds every tool, another harness only the file tools, and any other tool refuses its run. */
-const FILE_TOOLS = ["read", "write", "edit"];
+/** The tools a harness runs here: the server says per tool which harnesses run it (`capabilities.tools[].harnesses`). */
 export function toolsFor(harness: string, offers: ToolOffer[]): ToolOffer[] {
   // A call-only tool (capabilities' `call_only`) runs only in a workflow's call node: no harness binds it, and no
   // revision names it in its tools.
-  return offers.filter((t) => !t.call_only && (t.harnesses ? t.harnesses.includes(harness) : harness === "pi" || FILE_TOOLS.includes(t.name)));
+  return offers.filter((t) => !t.call_only && t.harnesses.includes(harness));
+}
+
+/** Whether a granted tool (a built-in's name, or an MCP grant `mcp:<server>/<tool>`) runs on `harness` here. A built-in
+ *  is capabilities' `tools[].harnesses` (toolsFor); a call-only one runs in a workflow's call node, whatever its harness;
+ *  an MCP grant runs on the harnesses `features.mcp_client.harnesses` lists (none listed: the server says at the save).
+ *  A name capabilities don't list is the server's to judge, and kept. */
+export function runsOn(harness: string, tool: string, offers: ToolOffer[], { mcpHarnesses, workflow = false }: { mcpHarnesses?: readonly string[]; workflow?: boolean } = {}): boolean {
+  if (tool.startsWith("mcp:")) return !mcpHarnesses || mcpHarnesses.includes(harness);
+  const offer = offers.find((t) => t.name === tool);
+  if (!offer) return true;
+  if (offer.call_only) return workflow;
+  return toolsFor(harness, offers).some((t) => t.name === tool);
+}
+
+/** A harness by the name the Harness step shows ("Claude" for claude-agent); one the console doesn't name, by its id. */
+export const harnessLabel = (id: string): string => (LABEL as Record<string, string>)[id] ?? id;
+const named = (ids: readonly string[]) => ids.map(harnessLabel).join(" and ");
+
+/** Why a granted tool doesn't run on `harness` here (runsOn says it doesn't): the harnesses that do run it, by their names. */
+export function notOn(harness: string, tool: string, offers: ToolOffer[], mcpHarnesses?: readonly string[]): string {
+  if (tool.startsWith("mcp:")) return `${harnessLabel(harness)} doesn't run MCP tools here${mcpHarnesses?.length ? `: ${named(mcpHarnesses)} do` : ""}`;
+  const runs = offers.find((t) => t.name === tool)?.harnesses ?? [];
+  return runs.length ? `Runs on ${named(runs)} here, not on ${harnessLabel(harness)}` : `No harness runs it here`;
+}
+
+/** A harness switch's tools: of the ticked ones and those an earlier switch took off (`held`), the ones `harness` runs
+ *  here stay ticked, in their order, and the rest are taken off and held, so switching back ticks them again. A tool
+ *  unticked by hand is in neither, and stays off. */
+export function toolsOnSwitch(harness: string, tools: readonly string[], held: readonly string[], offers: ToolOffer[], opts: { mcpHarnesses?: readonly string[]; workflow?: boolean } = {}): { tools: string[]; held: string[] } {
+  const all = [...tools, ...held.filter((t) => !tools.includes(t))];
+  return { tools: all.filter((t) => runsOn(harness, t, offers, opts)), held: all.filter((t) => !runsOn(harness, t, offers, opts)) };
 }
 
 /** Why `tool` cannot be ticked on an agent whose definition names `place`: a sandbox-only tool (bash) runs in a box, and
@@ -132,14 +172,34 @@ export const sandboxReason = (tool: ToolOffer, place: unknown): string | undefin
  *  work/ from the server by path. The server's own rule, until its capabilities mark them. */
 const RUNNER_ONLY: ReadonlySet<string> = new Set(["browser"]);
 
+/** Where a revision that names no place runs, as the server resolves it at each run: this mirrors the server's
+ *  defaultPlaceOf (packages/serve/src/place.ts), which the server does not report per revision. The runner for a workflow,
+ *  and for one that names a tool that runs only there (the browser); else this server's default_place. The editor's
+ *  picker and its tool checks both read it, so they agree with the server and with each other. */
+export const defaultPlaceOf = (workflow: boolean, tools: readonly string[], places: Places | null | undefined): Place =>
+  workflow || tools.some((tool) => RUNNER_ONLY.has(tool)) || !places ? { mode: "runner" } : places.defaultPlace;
+
+/** Where an agent's current revision runs: its own place, else where the server resolves one that names none
+ *  (defaultPlaceOf), with `byDefault` saying so. Undefined for a revision that names no place while the server's places are
+ *  not read yet (and it names no runner-only tool), whose place is not known. The agent page's fact and the Learning
+ *  tab's host-bash line both read it. */
+export function runsWhere(agent: Pick<Agent, "kind" | "definition">, places: Places | null | undefined): { place: Place; byDefault: boolean } | undefined {
+  const own = placeOf(agent.definition.place);
+  if (own) return { place: own, byDefault: false };
+  const workflow = agent.kind === "workflow";
+  const tools = agent.definition.tools ?? [];
+  if (!workflow && !tools.some((tool) => RUNNER_ONLY.has(tool)) && !places) return undefined;
+  return { place: defaultPlaceOf(workflow, tools, places), byDefault: true };
+}
+
 /** A new agent's tools: on by default, every tool its harness runs here that the server can run now. In a sandbox `place`
  *  (the server's default for a new agent, where it has a box) a sandbox-only one (bash) too, and never a runner-only one
  *  (browser); on the runner, no sandbox-only one, since the runner has no shell. */
 export const defaultTools = (harness: string, offers: ToolOffer[], place?: Place) => toolsFor(harness, offers).filter((t) => t.available && (place?.mode === "sandbox" ? !RUNNER_ONLY.has(t.name) : !t.sandbox_only)).map((t) => t.name);
 
-/** The tools that reach the web: a page read (fetch_page, web_fetch) or a search (web_search). The server's capabilities
+/** The tools that reach the web: a page read (web_fetch) or a search (web_search). The server's capabilities
  *  mark no tool as one, so they are named here. */
-export const WEB_TOOLS: readonly string[] = ["fetch_page", "web_fetch", "web_search"];
+export const WEB_TOOLS: readonly string[] = ["web_fetch", "web_search"];
 /** Whether an agent with these tools can reach the web: through any of WEB_TOOLS. */
 export const reachesWeb = (tools: readonly string[]) => tools.some((t) => WEB_TOOLS.includes(t));
 

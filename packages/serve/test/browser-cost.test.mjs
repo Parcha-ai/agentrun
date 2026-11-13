@@ -6,14 +6,19 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
-import { BROWSER_PRICES, browserPrice, browserSpend } from "../dist/browser-cost.js";
-import { paidHolds, useSpend } from "../dist/cap.js";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { TOOL_COST } from "../dist/timeline/index.js";
+import { BROWSER_CHARGED, BROWSER_PRICES, browserPrice, browserSpend, priceEnvOf } from "../dist/browser-cost.js";
+import { journalRecords } from "../dist/runner/journal-reader.js";
+import { paidCall, paidHolds, takePaidRefusal, useSpend } from "../dist/cap.js";
 import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
 
 const START = "https://example.test/start";
 const T0 = Date.UTC(2026, 10, 5, 12, 0, 0);
 const BROWSERBASE = { usdPerHour: 0.12, minimumS: 60 };
 const KEYS = { BROWSERBASE_API_KEY: "fake-test-key", BROWSERBASE_PROJECT_ID: "fake-project" };
+/** The operator's Browserbase price, in USD an hour (browser-cost.ts BROWSER_PRICE_ENV). */
+const PRICE_ENV = priceEnvOf("browserbase");
 
 /** A pi run in this process whose model calls browser_read `reads` times, thinking `thinkS` between calls, each read
  *  taking `readS`, on a `provider` browser at `price`, under `cap` (none: no cap). `seen()` runs at every moment the
@@ -114,7 +119,7 @@ test("capped: what the run spent plus what it holds never passes the cap; the ca
   const refusal = results.find((text) => text.includes("spend_cap_reached"));
   // One sentence, the call named mid-sentence in lower case: what the run spent and holds of its cap, what the call could
   // cost and why, and the cap that would run it.
-  assert.match(refusal, /spend_cap_reached: Not sent: the run has spent \$0\.00086667 and holds \$0\.009 for calls still answering of its \$0\.028 cap, and this browser call could cost up to \$0\.018667 \(browserbase's session time at \$0\.12 an hour: the 20 s its session ran since its last charge, and twice the next stretch of 270 s \(its 60 s minimum, the 180 s idle window and 30 s for its release\)\)\. Raise the cap to at least \$0\.03 to run it\./);
+  assert.match(refusal, /spend_cap_reached: Not sent: this run has spent less than a cent and holds \$0\.01 for steps still running, of its \$0\.028 cap, and the next step, this browser call, could cost up to \$0\.018667 \(browserbase's session time at \$0\.12 an hour: the 20 s its session ran since its last charge, and twice the next stretch of 270 s \(its 60 s minimum, the 180 s idle window and 30 s for its release\)\)\. Raise the cap to at least \$0\.03 to continue\./);
   assert.equal(releases.length, 1, "its session was released");
   assert.deepEqual([backend.tally().creates, backend.tally().releases, backend.liveCount()], [1, 1, 0]);
   // 3 s, 23 s, and at the refusal 20 s more, topped up to the minute.
@@ -223,8 +228,119 @@ test("a charge joins the run's spend and moves its holds only once the commit th
   assert.deepEqual([Math.round(spent * 1e12) / 1e12, paidHolds()], [0.002, 0]);
 });
 
+test("a person's time carried for a session stays held until the session's next charge books it, and goes then", async (t) => {
+  const [{ BACKGROUND_CONTEXT: ctx }, durable, { createModels }] = await Promise.all([import("@earendil-works/chord/context"), import("@earendil-works/pi-durable"), import("@earendil-works/pi-ai/models")]);
+  let spent = 0;
+  useSpend({ cap: 1, spent: () => spent, add: (usd) => void (spent += usd) });
+  t.after(() => useSpend(undefined));
+  const harness = await durable.Harness.open(new durable.MemoryStorage(), { models: createModels(), registry: durable.createRegistry(), onReport: () => {} }, ctx);
+  t.after(() => harness.close(ctx));
+  await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
+  const spend = browserSpend("browserbase", BROWSERBASE, 180, async () => undefined);
+  spend.watch(harness);
+  const base = paidHolds();
+  spend.carry("ar-run-2", 600);
+  assert.ok(Math.abs(paidHolds() - base - 0.02) < 1e-12, "10 minutes at $0.12 an hour, held");
+  spend.carry("ar-run-3", 300);
+  await harness.commit((tx) => spend.onCharge({ conversationId: 1, tag: "ar-run-2", provider: "browserbase", at: new Date(T0).toISOString(), seconds: 600, usd: 0.02, final: true, state: "priced" }, tx), ctx);
+  assert.ok(Math.abs(paidHolds() - base - 0.01) < 1e-12, "booked: that session's carried time goes, another's stays");
+  assert.equal(Math.round(spent * 1e12) / 1e12, 0.02);
+  await harness.commit((tx) => spend.onCharge({ conversationId: 1, tag: "ar-run-3", provider: "browserbase", at: new Date(T0).toISOString(), seconds: 300, usd: 0.01, final: true, state: "priced" }, tx), ctx);
+  assert.ok(Math.abs(paidHolds() - base) < 1e-12, "and the other's goes with its own charge: nothing is left held");
+});
+
+test("a person's minutes are held once: the next browser call's hold leaves out the carried time it would cover, so under a $0.05 cap it fits; a charge books carried time only up to its own through", async (t) => {
+  const [{ BACKGROUND_CONTEXT: ctx }, durable, { createModels }] = await Promise.all([import("@earendil-works/chord/context"), import("@earendil-works/pi-durable"), import("@earendil-works/pi-ai/models")]);
+  t.mock.timers.enable({ apis: ["Date"], now: T0 });
+  let spent = 0;
+  useSpend({ cap: 0.05, spent: () => spent, add: (usd) => void (spent += usd ?? 0) });
+  t.after(() => useSpend(undefined));
+  const harness = await durable.Harness.open(new durable.MemoryStorage(), { models: createModels(), registry: durable.createRegistry(), onReport: () => {} }, ctx);
+  t.after(() => harness.close(ctx));
+  await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
+  const releases = [];
+  const spend = browserSpend("browserbase", BROWSERBASE, 180, async (conversation) => void releases.push(conversation.id));
+  spend.watch(harness);
+  const base = paidHolds();
+  const tag = "ar-run-4";
+  const charge = (seconds, usd, final = false) => ({ conversationId: 1, tag, provider: "browserbase", at: new Date(Date.now()).toISOString(), seconds, usd, final, state: "priced" });
+  // The session's first charge: its $0.009 reserve held from here.
+  await harness.commit((tx) => spend.onCharge(charge(0, 0), tx), ctx);
+  // Ten minutes the person had, given back: $0.02 carried.
+  t.mock.timers.tick(600_000);
+  spend.carry(tag, 600);
+  assert.ok(Math.abs(paidHolds() - base - 0.029) < 1e-9, `the reserve and the carried time: ${paidHolds() - base}`);
+  // Greptile's numbers: the next call needs the ten minutes once ($0.02, carried) and its two stretches ($0.018) beside the
+  // reserve: $0.047 under the $0.05 cap.
+  let ran = 0;
+  const tool = spend.capped({ name: "snapshot", execute: async () => { ran += 1; return { content: [{ type: "text", text: "ran" }] }; } });
+  const api = { conversationId: 1, callId: "c1", commit: async (change) => harness.commit(change, ctx) };
+  const out = await tool.execute({}, api, ctx);
+  assert.deepEqual([ran, releases, out.content[0].text], [1, [], "ran"], "it fits: the minutes are held once");
+  // Five more minutes the person had (T0+10 to T0+15 min, $0.01 carried), then a charge computed through T0+12.5 min that
+  // lands after: it books the first ten minutes and half of these, and the rest ($0.005) stays held.
+  t.mock.timers.tick(300_000);
+  spend.carry(tag, 300);
+  assert.ok(Math.abs(paidHolds() - base - 0.039) < 1e-9, `the reserve and both carried stretches: ${paidHolds() - base}`);
+  await harness.commit((tx) => spend.onCharge({ ...charge(750, 0.025), at: new Date(T0 + 750_000).toISOString() }, tx), ctx);
+  assert.ok(Math.abs(paidHolds() - base - 0.014) < 1e-9, `the reserve, and the carried time after the charge's own through: ${paidHolds() - base}`);
+  await harness.commit((tx) => spend.onCharge(charge(150, 0.005, true), tx), ctx);
+  assert.ok(Math.abs(paidHolds() - base) < 1e-9, "the release's charge books the rest: nothing left held");
+});
+
+test("a person's minutes are held once while they still have the browser: ten minutes into a take-over, the call's hold leaves out what the take-over holds, so under a $0.06 cap it fits; a charge books those minutes off the take-over's hold", async (t) => {
+  const [{ BACKGROUND_CONTEXT: ctx }, durable, { createModels }] = await Promise.all([import("@earendil-works/chord/context"), import("@earendil-works/pi-durable"), import("@earendil-works/pi-ai/models")]);
+  t.mock.timers.enable({ apis: ["Date"], now: T0 });
+  let spent = 0;
+  useSpend({ cap: 0.06, spent: () => spent, add: (usd) => void (spent += usd ?? 0) });
+  t.after(() => useSpend(undefined));
+  const harness = await durable.Harness.open(new durable.MemoryStorage(), { models: createModels(), registry: durable.createRegistry(), onReport: () => {} }, ctx);
+  t.after(() => harness.close(ctx));
+  await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
+  const releases = [];
+  const spend = browserSpend("browserbase", BROWSERBASE, 180, async (conversation) => void releases.push(conversation.id));
+  spend.watch(harness);
+  const base = paidHolds();
+  const tag = "ar-run-5";
+  const charge = (seconds, usd, final = false) => ({ conversationId: 1, tag, provider: "browserbase", at: new Date(Date.now()).toISOString(), seconds, usd, final, state: "priced" });
+  // The session's first charge: its $0.009 reserve held from here. Then the owner takes over: fifteen minutes, $0.03, held up front.
+  await harness.commit((tx) => spend.onCharge(charge(0, 0), tx), ctx);
+  const take = await spend.personTime("taking over the browser", 900, { pauses: false, tag, from: Date.now() });
+  assert.equal(take.refused, undefined);
+  t.mock.timers.tick(600_000);
+  // Greptile's numbers: ten minutes in, the call needs its two stretches ($0.018) beside the take-over's $0.03 and the
+  // reserve's $0.009: $0.057 under the $0.06 cap. The ten minutes are inside the take-over's hold already.
+  let ran = 0;
+  const tool = spend.capped({ name: "snapshot", execute: async () => { ran += 1; return { content: [{ type: "text", text: "ran" }] }; } });
+  const api = { conversationId: 1, callId: "c1", commit: async (change) => harness.commit(change, ctx) };
+  const out = await tool.execute({}, api, ctx);
+  assert.deepEqual([ran, releases, out.content[0].text], [1, [], "ran"], "it fits: the person's minutes are held once");
+  // A charge through T0+10 min books those ten minutes ($0.02): the take-over's hold keeps only the five minutes after it.
+  await harness.commit((tx) => spend.onCharge(charge(600, 0.02), tx), ctx);
+  assert.ok(Math.abs(paidHolds() - base - 0.019) < 1e-9, `the reserve and the take-over's five minutes left: ${paidHolds() - base}`);
+  take.drop();
+  assert.ok(Math.abs(paidHolds() - base - 0.009) < 1e-9, "handed back: the reserve alone");
+  await harness.commit((tx) => spend.onCharge(charge(0, 0, true), tx), ctx);
+  assert.ok(Math.abs(paidHolds() - base) < 1e-9, "the release's charge: nothing left held");
+});
+
+test("a person's time the cap refuses pauses the run only when it is the agent's own step: an ask's does, the owner's take-over's does not", async (t) => {
+  const spend = { cap: 0.01, spent: () => 0, add: () => {} };
+  useSpend(spend);
+  t.after(() => useSpend(undefined));
+  const browser = browserSpend("browserbase", BROWSERBASE, 180, async () => undefined);
+  const take = await browser.personTime("taking over the browser", 900, { pauses: false });
+  assert.match(take.refused ?? "", /taking over the browser/);
+  assert.equal(takePaidRefusal(spend), undefined, "the owner's refused take-over leaves the run's next request alone");
+  const ask = await browser.personTime("handing the browser to you", 900);
+  assert.match(ask.refused ?? "", /handing the browser to you/);
+  assert.match(takePaidRefusal(spend)?.words ?? "", /handing the browser to you/, "the agent's refused ask pauses the run at its next request");
+});
+
 test("prices by provider: Browserbase, Kernel and local Chrome, each overridden by its own variable; one unknown or unreadable has none", async (t) => {
   assert.deepEqual(BROWSER_PRICES, { browserbase: { usdPerHour: 0.12, minimumS: 60 }, kernel: { usdPerHour: 0.06, minimumS: 0 }, cdp: { usdPerHour: 0, minimumS: 0 } });
+  // A computer provider whose descriptor bills nothing (Local Chrome) is free, by its descriptor, never by a list here.
+  assert.deepEqual(browserPrice("local-chrome", {}), { usdPerHour: 0, minimumS: 0 });
   assert.deepEqual(browserPrice("kernel", {}), { usdPerHour: 0.06, minimumS: 0 });
   assert.deepEqual(browserPrice("kernel", { AGENTRUN_BROWSER_USD_PER_HOUR_KERNEL: "0.48" }), { usdPerHour: 0.48, minimumS: 0 });
   assert.deepEqual(browserPrice("browserbase", { AGENTRUN_BROWSER_USD_PER_HOUR_BROWSERBASE: " 0.1 " }), { usdPerHour: 0.1, minimumS: 60 }, "a contract price keeps the minimum");
@@ -262,7 +378,7 @@ test("after a reopen, a kept session's down time is held once: its first call fi
   const releases = [];
   const spend = browserSpend("browserbase", BROWSERBASE, 180, async (conversation) => void releases.push(conversation.id));
   let listener;
-  spend.watch({ subscribeCommits: (fn) => (listener = fn) });
+  spend.watch({ observeCommits: (observer) => ((listener = (publication) => observer.advance(publication)), { detach: () => {} }) });
   const docs = { Inventory: "inventory", Sessions: "sessions" };
   const store = (final) => ({ snapshot: async (token) => (token === "inventory" ? { rows: { k: { tag: "ar-kept", conversationId: 1 } } } : { sessions: [{ tag: "ar-kept", spent: { chargedThrough: new Date(T0).toISOString(), ...(final ? { final: true } : {}) } }] }) });
   // A session whose final charge landed before `kept` read it: nothing to hold, and nothing would ever drop the hold.
@@ -287,6 +403,163 @@ test("after a reopen, a kept session's down time is held once: its first call fi
   assert.ok(Math.abs(held[0] - 0.077) < 1e-6, `spent and held as the call runs: ${held[0]}`);
   for (const figure of [...held, spent + paidHolds() - base]) assert.ok(figure <= cap, `${figure} is over the cap of ${cap}`);
   assert.ok(Math.abs(paidHolds() - base - 0.009) < 1e-9, "after its charge the session holds one stretch again");
+});
+
+// ---- pi 1.5's commit observers detach on a throw (observeCommits) ----
+
+/** pi 1.5's observeCommits as the Session runs it: an `advance` that throws is reported, the observer is detached and
+ *  ended `listener_error`, and it hears no later commit (pi-durable types.d.ts, Session.observeCommits). */
+function piObserver() {
+  const state = { detached: false, observer: undefined };
+  // The Session's own end (`closed`), settled by `closeAs` as pi's close settles it.
+  let closeAs;
+  const closed = new Promise((resolve) => (closeAs = resolve));
+  return {
+    state,
+    closeAs,
+    harness: { closed, observeCommits: (observer) => ((state.observer = observer), { detach: () => void (state.detached = true) }) },
+    publish(changes) {
+      if (state.detached) return;
+      try {
+        state.observer.advance({ seq: 1, changes }, undefined);
+      } catch (error) {
+        state.detached = true;
+        state.observer.end({ kind: "listener_error", error });
+      }
+    },
+    end: (end) => state.observer.end(end),
+  };
+}
+/** A browser charge's commit, as onCharge books it: a session's last (final), so it leaves no session open and no reserve
+ *  held. A charge that is not final would keep its session's reserve in cap.ts's holds, which belong to the process and
+ *  so to every later test in this file: enough of them refused the restart tests' first browser call for room. */
+const chargeOf = (tag, usd) => [{ type: "entry", value: { kind: TOOL_COST, data: { tool: "browser", charged_by: "browserbase", call: null, usd, seconds: 60, tag, conversation: 1, at: new Date(T0).toISOString(), final: true } } }];
+/** A run's spend whose count fails `failures` times, then adds; an unknown figure (null) makes it unknown for good. The
+ *  test ends with the process's holds as it found them: cap.ts keeps them for the process, one run's in serve. */
+function countingSpend(t, cap, failures = 0) {
+  const base = paidHolds();
+  t.after(() => assert.equal(paidHolds(), base, "the test leaves no hold behind for the next"));
+  const spend = { spent: 0, adds: [] };
+  useSpend({ cap, spent: () => spend.spent, add: (usd) => {
+    spend.adds.push(usd);
+    if (failures-- > 0) throw new Error("the count failed");
+    spend.spent = spend.spent === null || usd === null ? null : spend.spent + usd;
+  } });
+  return spend;
+}
+/** The cap's refusal of a spend no one knows (cap-unknown.test.mjs). */
+const UNKNOWN = /^spend_cap_reached: .*spent is unknown.*out of budget/;
+
+test("a browser charge the process fails to count (pi 1.5 detaches an observer that throws): the observer stays attached, a later charge still reaches the count, and the run's spend reads unknown, logged once: never silently uncounted", (t) => {
+  t.after(() => useSpend(undefined));
+  const spend = countingSpend(t, 5, 1);
+  const lines = [];
+  const pi = piObserver();
+  browserSpend("browserbase", BROWSERBASE, 180, async () => {}, (line) => lines.push(line)).watch(pi.harness);
+  pi.publish(chargeOf("ar-1", 0.01));
+  pi.publish(chargeOf("ar-1", 0.02));
+  assert.equal(pi.state.detached, false, "the observer stays attached");
+  assert.ok(spend.adds.includes(0.02), `the later charge still reaches the count: ${JSON.stringify(spend.adds)}`);
+  assert.equal(spend.spent, null, "the run's spend reads unknown, never the later charge alone");
+  assert.equal(lines.filter((line) => line.includes("browser_spend_uncounted")).length, 1, lines.join("\n"));
+});
+
+test("on a capped run, a browser charge the process failed to count refuses the run's next paid call as unknown spend, in the cap's own words", async (t) => {
+  t.after(() => useSpend(undefined));
+  countingSpend(t, 5, 1);
+  const pi = piObserver();
+  browserSpend("browserbase", BROWSERBASE, 180, async () => {}, () => {}).watch(pi.harness);
+  pi.publish(chargeOf("ar-1", 0.01));
+  let sent = 0;
+  const answer = await paidCall("a paid call", async () => (sent += 1), () => 0, { usd: 0.001, basis: "a test's" });
+  assert.match(answer.refused ?? "", UNKNOWN, JSON.stringify(answer));
+  assert.equal(sent, 0, "not sent");
+});
+
+/** pi 1.5's end for a Session that closed normally: `failed` with "session closed" (session/session.js closeEnds). */
+const SESSION_CLOSED = () => ({ kind: "failed", error: new Error("session closed") });
+
+test("an observer end with a Session that failed, or a listener error, leaves the run's browser spend unknown, never silently uncounted, whatever words pi's end carries", async (t) => {
+  t.after(() => useSpend(undefined));
+  const FAILED = { kind: "failed", error: new Error("the disk is gone") };
+  for (const [end, closedAs] of [[{ kind: "listener_error", error: new Error("a listener threw") }, undefined], [FAILED, FAILED], [SESSION_CLOSED(), FAILED]]) {
+    const spend = countingSpend(t, 5);
+    const pi = piObserver();
+    browserSpend("browserbase", BROWSERBASE, 180, async () => {}, () => {}).watch(pi.harness);
+    pi.publish(chargeOf("ar-1", 0.01));
+    pi.end(end);
+    if (closedAs) pi.closeAs(closedAs);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(spend.spent, null, `${end.kind} ${end.error?.message ?? ""}, the Session ${closedAs?.kind ?? "open"}: unknown`);
+  }
+});
+
+test("an observer end with a Session that closed normally (pi's `closed`) keeps the count, silently, whatever words pi's end carries", async (t) => {
+  t.after(() => useSpend(undefined));
+  const closed = countingSpend(t, 5);
+  const lines = [];
+  const pi = piObserver();
+  const spend = browserSpend("browserbase", BROWSERBASE, 180, async () => {}, (line) => lines.push(line));
+  spend.watch(pi.harness);
+  pi.publish(chargeOf("ar-1", 0.01));
+  pi.end(SESSION_CLOSED());
+  pi.closeAs({ kind: "closed" });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(closed.spent, 0.01, "the count stands");
+  assert.deepEqual(lines, [], "no line");
+  assert.equal("closing" in spend, false, "no flag of our own: pi's end decides");
+});
+
+test("a real Harness: a charge booked, the Harness closed by the run's own close: the count stands, with no line", async (t) => {
+  const [{ BACKGROUND_CONTEXT: ctx }, durable, { createModels }] = await Promise.all([import("@earendil-works/chord/context"), import("@earendil-works/pi-durable"), import("@earendil-works/pi-ai/models")]);
+  t.after(() => useSpend(undefined));
+  const counted = countingSpend(t, 5);
+  const lines = [];
+  const harness = await durable.Harness.open(new durable.MemoryStorage(), { models: createModels(), registry: durable.createRegistry(), onReport: () => {} }, ctx);
+  await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
+  const spend = browserSpend("browserbase", BROWSERBASE, 180, async () => undefined, (line) => lines.push(line));
+  spend.watch(harness);
+  const charge = { conversationId: 1, tag: "ar-run-1", provider: "browserbase", at: new Date(T0).toISOString(), seconds: 3, usd: 0.0001, final: true, state: "priced" };
+  await harness.commit((tx) => spend.onCharge(charge, tx), ctx);
+  await harness.close(ctx);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(counted.spent, 0.0001, "the count stands after the close");
+  assert.deepEqual(lines, [], "no line");
+});
+
+/** A real Harness over memory with one browser charge booked and counted: `storage` to fail it with. */
+async function chargedHarness(t, lines) {
+  const [{ BACKGROUND_CONTEXT: ctx }, durable, { createModels }] = await Promise.all([import("@earendil-works/chord/context"), import("@earendil-works/pi-durable"), import("@earendil-works/pi-ai/models")]);
+  t.after(() => useSpend(undefined));
+  const counted = countingSpend(t, 5);
+  const storage = new durable.MemoryStorage();
+  const harness = await durable.Harness.open(storage, { models: createModels(), registry: durable.createRegistry(), onReport: () => {} }, ctx);
+  const root = await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
+  const spend = browserSpend("browserbase", BROWSERBASE, 180, async () => undefined, (line) => lines.push(line));
+  spend.watch(harness);
+  const charge = { conversationId: 1, tag: "ar-run-1", provider: "browserbase", at: new Date(T0).toISOString(), seconds: 3, usd: 0.0001, final: true, state: "priced" };
+  await harness.commit((tx) => spend.onCharge(charge, tx), ctx);
+  return { ctx, durable, counted, storage, harness, root };
+}
+
+test("a real Harness closed by a path that never says the run's close began (a drain without resume, a fence, pi closing it): its normal close keeps the count, with no line", async (t) => {
+  const lines = [];
+  const { ctx, counted, harness } = await chargedHarness(t, lines);
+  await harness.close(ctx);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(counted.spent, 0.0001, "the count stands after a normal close");
+  assert.deepEqual(lines, [], "no line: nothing went uncounted");
+});
+
+test("a real Harness whose store fails: the Session's failed end leaves the run's spend unknown, with one line", async (t) => {
+  const lines = [];
+  const { ctx, durable, counted, storage, harness, root } = await chargedHarness(t, lines);
+  storage.commit = async () => { throw new Error("the disk is gone"); };
+  await harness.commit(async (tx) => { (await tx.doc(durable.AgentDoc, root.id)).thinkingLevel = "high"; }, ctx).catch(() => undefined);
+  assert.equal((await harness.closed).kind, "failed", "the Session failed");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(counted.spent, null, "the run's spend is unknown");
+  assert.equal(lines.filter((line) => line.includes("browser_spend_uncounted")).length, 1, lines.join("\n"));
 });
 
 // Last of this process's runs: its first process's reserve stays in this process's holds (a real one would be gone).
@@ -366,14 +639,11 @@ test("capped, a reopened run holds every session its custody still tracks, not o
   await second.harness.close(ctx);
 });
 
-/** Every TOOL_COST in a run's store, as written. */
-const toolCosts = (data, runId) => {
-  const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true });
-  try {
-    return db.prepare("SELECT record FROM entries ORDER BY rowid").all().map((row) => JSON.parse(String(row.record))).filter((entry) => entry.kind === "agentrun.tool_cost").map((entry) => entry.data);
-  } finally {
-    db.close();
-  }
+/** Every browser charge a run's journal holds, as written: on the runner, each on the root as BROWSER_CHARGED (its money
+ *  the run's ledger step), read from the one store the server and the runner share (serve's own handle on it). */
+const toolCosts = async (store, runId) => {
+  const { entries } = await journalRecords(store.readJournal(runId), BACKGROUND_CONTEXT);
+  return entries.filter((entry) => (entry.kind === "agentrun.tool_cost" || entry.kind === BROWSER_CHARGED) && entry.data?.tool === "browser").map((entry) => entry.data);
 };
 
 /** The browser charges `booked` summed by the call each names, against the rows: each call's tool_use row carries what
@@ -388,15 +658,15 @@ function assertFolded(rows, booked) {
   for (const row of carrying) assert.equal(row.usage.requests, 0);
 }
 
-test("through the API: an uncapped run's browser minutes are its cost, folded into its browser calls' rows on its timeline, and /usage's browser_time meter in seconds and dollars", async (t) => {
+test("through the API: an uncapped run's browser minutes are its cost, folded into its browser calls' rows on its timeline, and /usage's browser_time meter in seconds and dollars", { timeout: 120_000 }, async (t) => {
   withEnv(t, KEYS, ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "FAUX_BROWSER_PROVIDER"]);
-  const { api, data } = await serve(t, { faux: new URL("./fixtures/faux-browse-many.mjs", import.meta.url).pathname, fauxBrowser: new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname });
+  const { api, store } = await serve(t, { faux: new URL("./fixtures/faux-browse-many.mjs", import.meta.url).pathname, fauxBrowser: new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname });
   assert.deepEqual((await api("GET", "/capabilities")).body.features.usage.meters, ["tokens", "tools", "browser_time", "learning"]);
   assert.equal((await api("POST", "/agents", agent("browse", { tools: ["browser"] }))).status, 201);
   const started = await api("POST", "/agents/browse/runs", { input: { content: "Browse the example page 3 times." } });
   assert.equal(started.status, 202, JSON.stringify(started.body));
-  const { rows } = await follow(api, started.body.run_id, ["completed"]);
-  const booked = toolCosts(data, started.body.run_id);
+  const { rows } = await follow(api, started.body.run_id, ["completed"], { deadlineMs: Infinity });
+  const booked = await toolCosts(store, started.body.run_id);
   assert.ok(booked.length >= 4, JSON.stringify(booked));
   assertFolded(rows, booked);
   // The release's charge is booked under the session's last call: it lands on the last browser call's row.
@@ -417,9 +687,12 @@ test("through the API: an uncapped run's browser minutes are its cost, folded in
 });
 
 test("through the API, live: each browser call's row carries its charge as it runs, /usage reads it as browser time, and the release's charge after the answer is an update of the last call's row, never a row of its own", { timeout: 120_000 }, async (t) => {
-  withEnv(t, KEYS, ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "FAUX_BROWSER_PROVIDER"]);
+  // The calls' charges are what their sessions ran, a few milliseconds here: at the list price ($0.12 an hour) two of
+  // them can come to less than half a micro-dollar, which the run's cost rounds to $0, and /usage then has no meters to
+  // split. At $36 an hour every millisecond is $0.00001, so what the live run has spent is never rounded away.
+  withEnv(t, { ...KEYS, [PRICE_ENV]: "36" }, ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "FAUX_BROWSER_PROVIDER", PRICE_ENV]);
   const gate = join(await scratch(t), "gate");
-  const { api, data } = await serve(t, { faux: new URL("./fixtures/faux-browse-gated.mjs", import.meta.url).pathname, fauxBrowser: new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname });
+  const { api, store } = await serve(t, { faux: new URL("./fixtures/faux-browse-gated.mjs", import.meta.url).pathname, fauxBrowser: new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname });
   assert.equal((await api("POST", "/agents", agent("browse", { tools: ["browser"] }))).status, 201);
   const started = await api("POST", "/agents/browse/runs", { input: { content: `Browse the example page 2 times, then answer once ${gate} exists.` } });
   assert.equal(started.status, 202, JSON.stringify(started.body));
@@ -452,38 +725,39 @@ test("through the API, live: each browser call's row carries its charge as it ru
   assert.equal(lines.find((line) => line.meter === "tools"), undefined, JSON.stringify(lines));
   // The answer, then the run is let go and its session released: that charge changes the last call's row, by its id.
   await writeFile(gate, "");
-  const { rows, pages } = await follow(api, runId, ["completed"], { after });
+  const { rows, pages } = await follow(api, runId, ["completed"], { after, deadlineMs: Infinity });
   const updates = pages.flatMap((page) => page.rows).filter((row) => row.id === last.id);
   assert.ok(updates.length >= 1, "the follow saw the last call's row again");
   assert.ok(updates.at(-1).usage.usd > before, JSON.stringify([before, updates.map((row) => row.usage)]));
   assert.ok(!pages.some((page) => page.reset), "no reset: an update of the row it had");
   assert.ok(!pages.flatMap((page) => page.rows).some((row) => /^Tool cost/.test(row.summary ?? "")), "no row of its own");
-  const booked = toolCosts(data, runId);
+  const booked = await toolCosts(store, runId);
   assert.equal(booked.at(-1).final, true);
   assertFolded([...new Map([...view.values(), ...rows].map((row) => [row.id, row])).values()], booked);
-  assert.equal(pico(booked.reduce((sum, charge) => sum + charge.usd, 0)), 0.002);
-  assert.equal((await api("GET", `/runs/${runId}`)).body.cost.usd, 0.002, "the run's cost counts each charge once");
+  // One session of well under a minute, topped up to Browserbase's 60 s minimum: $0.60 at $36 an hour.
+  assert.equal(pico(booked.reduce((sum, charge) => sum + charge.usd, 0)), 0.6);
+  assert.equal((await api("GET", `/runs/${runId}`)).body.cost.usd, 0.6, "the run's cost counts each charge once");
 });
 
-test("through the API: a capped run whose next browser call would pass its cap is refused before it in the cap's words, its session released and its booked spend within the cap", async (t) => {
+test("through the API: a capped run whose next browser call would pass its cap is refused before it in the cap's words, its session released and its booked spend within the cap", { timeout: 120_000 }, async (t) => {
   withEnv(t, KEYS, ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "FAUX_BROWSER_PROVIDER"]);
-  const { api, data } = await serve(t, { faux: new URL("./fixtures/faux-browse-many.mjs", import.meta.url).pathname, fauxBrowser: new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname });
+  const { api, store } = await serve(t, { faux: new URL("./fixtures/faux-browse-many.mjs", import.meta.url).pathname, fauxBrowser: new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname });
   assert.equal((await api("POST", "/agents", agent("capped", { tools: ["browser"] }))).status, 201);
   // The first call holds $0.018 (two stretches of 270 s at $0.12 an hour); the second would hold that again beside the
   // session's $0.009 reserve, past $0.02.
   const started = await api("POST", "/agents/capped/runs", { input: { content: "Browse the example page 3 times." }, max_cost_usd: 0.02 });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   // Refused for room, the run pauses at its cap (paid-pause.test.mjs), in the call's words: no answer echoes them now.
-  await follow(api, started.body.run_id, ["input_required", "completed", "failed"]);
+  await follow(api, started.body.run_id, ["input_required", "completed", "failed"], { deadlineMs: Infinity });
   const view = (await api("GET", `/runs/${started.body.run_id}`)).body;
   assert.deepEqual([view.status, view.state, view.pending?.kind], ["input_required", "waiting", "budget"], JSON.stringify(view));
-  assert.match(view.pending.said, /^Not sent: the run has spent \$[\d.]+( and holds \$[\d.]+ for calls still answering)? of its \$0\.02 cap, and this browser call could cost up to \$0\.018\d* \(.*\)\. Raise the cap to at least \$0\.03 to run it\.$/);
+  assert.match(view.pending.said, /^Not sent: this run has spent (?:\$[\d.]+|less than a cent)( and holds \$[\d.]+ for steps still running,)? of its \$0\.02 cap, and the next step, this browser call, could cost up to \$0\.018\d* \(.*\)\. Raise the cap to at least \$0\.03 to continue\.$/);
   // Paused, its process lets go of the browser session as it lets go of the run: the release's booking lands then, not
   // at the pause, and the store is that process's until it has. Read until it is in, up to 30 s.
   let booked = [];
   for (const deadline = Date.now() + 30_000; ; await new Promise((resolve) => setTimeout(resolve, 100))) {
     try {
-      booked = toolCosts(data, started.body.run_id);
+      booked = await toolCosts(store, started.body.run_id);
     } catch (error) {
       if (!/database is locked/.test(error.message)) throw error;
     }
@@ -494,14 +768,14 @@ test("through the API: a capped run whose next browser call would pass its cap i
   assert.ok(view.cost.usd <= 0.02, `the run's cost ${view.cost.usd} is within its cap`);
 });
 
-test("through the API: a provider with no price books its time as an unknown cost, counted unpriced on browser_time with its seconds, never as $0 or under tools", async (t) => {
+test("through the API: a provider with no price books its time as an unknown cost, counted unpriced on browser_time with its seconds, never as $0 or under tools", { timeout: 120_000 }, async (t) => {
   withEnv(t, { ...KEYS, FAUX_BROWSER_PROVIDER: "steel" }, ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "FAUX_BROWSER_PROVIDER"]);
-  const { api, data } = await serve(t, { faux: new URL("./fixtures/faux-browse-many.mjs", import.meta.url).pathname, fauxBrowser: new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname });
+  const { api, store } = await serve(t, { faux: new URL("./fixtures/faux-browse-many.mjs", import.meta.url).pathname, fauxBrowser: new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname });
   assert.equal((await api("POST", "/agents", agent("unpriced", { tools: ["browser"] }))).status, 201);
   const started = await api("POST", "/agents/unpriced/runs", { input: { content: "Browse the example page 2 times." } });
   assert.equal(started.status, 202, JSON.stringify(started.body));
-  await follow(api, started.body.run_id, ["completed"]);
-  const booked = toolCosts(data, started.body.run_id);
+  await follow(api, started.body.run_id, ["completed"], { deadlineMs: Infinity });
+  const booked = await toolCosts(store, started.body.run_id);
   assert.ok(booked.length >= 2 && booked.every((row) => row.usd === null && row.charged_by === "steel"), JSON.stringify(booked));
   assert.equal((await api("GET", `/runs/${started.body.run_id}`)).body.cost.usd, null, "its cost is unknown");
   const lines = (await api("GET", "/usage?group_by=meter")).body.lines;
@@ -510,4 +784,98 @@ test("through the API: a provider with no price books its time as an unknown cos
   assert.deepEqual([browser.usd, browser.unpriced_runs, browser.unit], [0, 1, "second"]);
   assert.ok(browser.quantity > 0, "its seconds");
   assert.equal(lines.find((line) => line.meter === "tools"), undefined, "no other tool charged anything");
+});
+
+test("through the API: a browser call counts once among the run's paid tool calls, its release's charge included: one call is 1, two are 2", { timeout: 120_000 }, async (t) => {
+  withEnv(t, KEYS, ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "FAUX_BROWSER_PROVIDER"]);
+  const { api, store } = await serve(t, { faux: new URL("./fixtures/faux-browse-many.mjs", import.meta.url).pathname, fauxBrowser: new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname });
+  assert.equal((await api("POST", "/agents", agent("browse", { tools: ["browser"] }))).status, 201);
+  for (const [times, said] of [[1, "1 paid tool call"], [2, "2 paid tool calls"]]) {
+    const started = await api("POST", "/agents/browse/runs", { input: { content: `Browse the example page ${times} times.` } });
+    assert.equal(started.status, 202, JSON.stringify(started.body));
+    const { rows } = await follow(api, started.body.run_id, ["completed"], { deadlineMs: Infinity });
+    const booked = await toolCosts(store, started.body.run_id);
+    // Each call's own charge, and the release's under the last call: one charge more than calls, never a call more.
+    assert.equal(booked.length, times + 1, JSON.stringify(booked));
+    assert.equal(new Set(booked.map((charge) => charge.call)).size, times);
+    const usage = rows.find((row) => row.kind === "usage");
+    assert.ok(usage.summary.endsWith(` and ${said}`), usage.summary);
+    assert.deepEqual(usage.usage, { usd: 0.002, requests: times + 1 }, "the charges still count in full: the session's 60 s minimum");
+  }
+});
+
+test("a run that mixes browser and monid charges, as serve books them, reads from its rows as booked: $0.0448 in all, $0.0018 browser time, $0.003 monid's, each charge once", async () => {
+  const [{ timelineOf, TOOL_COST }, { costOf, knownToolCostOf, toolCostOf }] = await Promise.all([import("../dist/timeline/index.js"), import("../dist/run-view.js")]);
+  let id = 1;
+  const at = (s) => Date.UTC(2026, 10, 5, 12, 0, s);
+  // Each model request costs $0.01; four of them.
+  const answer = (content, s) => ({ kind: "pi.assistant", id: id++, conversationId: 1, model: [{ role: "assistant", content, stopReason: content.some((c) => c.type === "toolCall") ? "toolUse" : "stop", usage: { input: 10, output: 5, cost: { total: 0.01 } }, timestamp: at(s) }] });
+  const callOf = (callId, name, args = {}) => ({ type: "toolCall", id: callId, name, arguments: args });
+  const resultOf = (callId, name, text, s) => ({ kind: "pi.tool-result", id: id++, conversationId: 1, model: [{ role: "toolResult", toolCallId: callId, toolName: name, content: [{ type: "text", text }], isError: false, timestamp: at(s) }] });
+  // browser-cost.ts's Booked, and monid.ts's settle: the TOOL_COSTs serve writes on the root.
+  const browser = (usd, call, final = false) => ({ kind: TOOL_COST, id: id++, conversationId: 1, data: { tool: "browser", charged_by: "browserbase", call, usd, seconds: final ? 48 : 3, tag: "run-1-s1", conversation: 1, at: new Date(at(0)).toISOString(), final } });
+  const monid = (usd, call) => ({ kind: TOOL_COST, id: id++, conversationId: 1, data: { tool: "monid.run", charged_by: "monid", call, usd } });
+  const rows = timelineOf([
+    answer([callOf("b1", "snapshot")], 1), browser(0.0001, "b1"), resultOf("b1", "snapshot", "[1-1] page", 2),
+    answer([callOf("m1", "monid_run", { endpoint: "company" })], 3), monid(0.003, "m1"), resultOf("m1", "monid_run", "{\"ok\":true}", 4),
+    answer([callOf("b2", "browser_read", { what: "markdown" })], 5), browser(0.0001, "b2"), resultOf("b2", "browser_read", "url: https://example.test/\n---\nbody", 6),
+    answer([{ type: "text", text: "Done." }], 7), browser(0.0016, "b2", true),
+  ], { settled: true });
+  assert.equal(costOf(rows), 0.0448, "$0.04 of requests and $0.0048 of charges");
+  assert.equal(rows.at(-1).summary, "Cost so far: $0.0448 over 4 model requests and 3 paid tool calls", "b1, monid and b2: three calls, the release under b2 adding a charge, never a call");
+  assert.equal(pico(toolCostOf(rows)), 0.0048);
+  assert.equal(pico(toolCostOf(rows, "browser")), 0.0018, "the browser's rows: /usage's browser_time");
+  assert.equal(pico(toolCostOf(rows, "browser", true)), 0.003, "every other tool's: /usage's tools");
+  assert.deepEqual([pico(knownToolCostOf(rows, "browser")), pico(knownToolCostOf(rows, "browser", true))], [0.0018, 0.003]);
+  assert.deepEqual(rows.filter((row) => /^Tool cost/.test(row.summary ?? "")).map((row) => [row.summary, row.usage.usd]), [["Tool cost: monid charged $0.0030 for monid.run", 0.003]], "monid's own row; no browser Tool cost row");
+  assert.deepEqual(rows.filter((row) => row.kind === "tool_use" && row.usage).map((row) => [row.tool_name, row.usage.usd]), [["snapshot", 0.0001], ["browser_read", 0.0017]]);
+});
+
+test("a kept session's non-final charge books a person's carried minutes off the session, not twice off the live call's hold", async (t) => {
+  const [{ BACKGROUND_CONTEXT: ctx }, durable, { createModels }] = await Promise.all([import("@earendil-works/chord/context"), import("@earendil-works/pi-durable"), import("@earendil-works/pi-ai/models")]);
+  t.mock.timers.enable({ apis: ["Date"], now: T0 });
+  let spent = 0;
+  useSpend({ cap: 1, spent: () => spent, add: (usd) => void (spent += usd ?? 0) });
+  t.after(() => useSpend(undefined));
+  const harness = await durable.Harness.open(new durable.MemoryStorage(), { models: createModels(), registry: durable.createRegistry(), onReport: () => {} }, ctx);
+  t.after(() => harness.close(ctx));
+  await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
+  const spend = browserSpend("browserbase", BROWSERBASE, 180, async () => undefined);
+  spend.watch(harness);
+  const base = paidHolds();
+  const S = spend.stretch;
+  const r = 0.12 / 3600;
+  const microUsd = (usd) => Math.ceil(Math.round(usd * 1e12) / 1e6) / 1e6;
+  const tag = "ar-run-booked-a";
+  const charge = (seconds, usd, final, at) => ({ conversationId: 1, tag, provider: "browserbase", at: new Date(at).toISOString(), seconds, usd, final, state: "priced" });
+  // The session's first charge at T0: its reserve held, its last charge now T0.
+  await harness.commit((tx) => spend.onCharge(charge(0, 0, false, T0), tx), ctx);
+  assert.ok(Math.abs(paidHolds() - base - S) < 1e-12, "the reserve alone");
+  // A person had the session for its first minute (T0..T0+60 s), given back: $0.002 carried.
+  t.mock.timers.tick(60_000);
+  spend.carry(tag, 60);
+  assert.ok(Math.abs(paidHolds() - base - (S + 60 * r)) < 1e-12, "the reserve and the carried minute");
+  // At T0+100 s the agent's browser call holds ranS - carried + two stretches = 40 s + 2 stretches.
+  t.mock.timers.tick(40_000);
+  let seen;
+  const tool = spend.capped({ name: "snapshot", execute: async () => {
+    // A non-final charge computed through T0+120 s bills the whole 120 s (r*120), of which the carried minute (r*60) is a
+    // person's. The call's hold left that carried minute out, so the charge must take only r*60 off the call's hold, not
+    // the whole r*120 (which would cut what the call still holds a second time).
+    t.mock.timers.tick(20_000);
+    await harness.commit((tx) => spend.onCharge(charge(120, 120 * r, false, T0 + 120_000), tx, { callId: "c1" }), ctx);
+    seen = paidHolds() - base;
+    return { content: [{ type: "text", text: "ran" }] };
+  } });
+  const api = { conversationId: 1, callId: "c1", commit: async (change) => harness.commit(change, ctx) };
+  await tool.execute({}, api, ctx);
+  // The call still runs: its hold is the two stretches it held minus the 20 s past the carried minute the charge billed
+  // (2S - 20 s), beside the session's one-stretch reserve; the carried minute is booked and dropped. The bug booked the
+  // whole r*120 off the call's hold, leaving 2S - 80 s.
+  const expected = microUsd(40 * r + 2 * S) - (120 * r - 60 * r) + S;
+  assert.ok(Math.abs(seen - expected) < 1e-9, `the call keeps 2S - 20 s beside the reserve (${expected}), not 2S - 80 s (${microUsd(40 * r + 2 * S) - 120 * r + S}): ${seen}`);
+  // The call returns, its hold let go; the release books the rest.
+  assert.ok(Math.abs(paidHolds() - base - S) < 1e-12, "the reserve alone once the call returns, the carried minute booked");
+  await harness.commit((tx) => spend.onCharge(charge(0, 0, true, T0 + 120_000), tx, { callId: "c1" }), ctx);
+  assert.ok(Math.abs(paidHolds() - base) < 1e-12, "nothing left held");
 });

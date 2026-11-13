@@ -1,34 +1,36 @@
-// The host tools a run on another harness gets are pi's, each with the replay the kernel keeps: read, fetch_page,
+// The host tools a run on another harness gets are pi's, each with the replay the kernel keeps: read,
 // web_fetch and web_search, and monid's discover and inspect, may run again after a crash; write, edit and monid.run
 // never (the faux harness does not consult it, so it is checked here, where it is set). Each goes to the harness under
 // its wire name.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import { claudeAgentAdapter } from "@parcha/agentrun-harness-claude";
+import { CLAUDE_AGENT_MAX_IMAGE_BYTES, claudeAgentAdapter } from "@parcha/agentrun-harness-claude";
 import { codexAdapter } from "@parcha/agentrun-harness-codex";
-import { hostTools, workspaceRelative } from "../dist/host-tools.js";
+import { workspaceRelative } from "../dist/host-tools.js";
+import { monidRegistration } from "../dist/monid.js";
+import { webFetchTool } from "../dist/web-fetch.js";
+import { webSearchTool } from "../dist/web-search.js";
+import { localWorkspace } from "../dist/workspace/index.js";
+import { bashTool, fileTools, READ_IMAGE_MAX_BYTES } from "../dist/workspace/pi-env.js";
+import { hostToolsOf } from "./host-tools-of.mjs";
 import { rowPaths } from "../dist/workspace-paths.js";
 import { withEnv } from "./support.mjs";
 
-/** The run a host tool is built for: only its work directory is read, and nothing here calls a tool. */
-const RUN = { claim: { work: "/nonexistent/work" } };
+/** The run a host tool is built for: nothing here calls a tool. */
+const RUN = {};
 const MONID = ["monid.discover", "monid.inspect", "monid.run"];
+/** monid's three registrations, as the tool table binds them (monid.ts monidRegistration). */
+const monid = () => ["discover", "inspect", "run"].map((kind) => monidRegistration(kind, {}, () => localWorkspace("/nonexistent/work")));
+/** A registration named `name` that is no tool a host runs: what it would bind is never asked. */
+const named = (name) => ({ name, description: name, parameters: { type: "object" }, execute: async () => ({}) });
+/** The tools a run on another harness may name here, as their registrations. */
+const registrations = () => [...fileTools(), bashTool(), webFetchTool(process.env), webSearchTool(process.env), ...monid(), named("ask_person"), named("browser")];
 
-test("read, fetch_page, web_fetch and web_search are replay-safe; write and edit never replay; a name pi has no tool for, ask_person or browser, gives none", () => {
-  const tools = hostTools(RUN, ["read", "write", "edit", "fetch_page", "web_fetch", "web_search", "ask_person", "browser", "bash"], ctx, new Map());
-  assert.deepEqual(tools.map((tool) => [tool.name, tool.replay]), [["read", "safe"], ["write", "never"], ["edit", "never"], ["fetch_page", "safe"], ["web_fetch", "safe"], ["web_search", "safe"]]);
+test("read, web_fetch and web_search are replay-safe; write, edit and bash never replay; a tool a host runs none of, ask_person or browser, gives none", () => {
+  const tools = hostToolsOf(RUN, ["read", "write", "edit", "web_fetch", "web_search", "ask_person", "browser", "bash"], ctx, new Map(), registrations());
+  assert.deepEqual(tools.map((tool) => [tool.name, tool.replay]), [["read", "safe"], ["write", "never"], ["edit", "never"], ["web_fetch", "safe"], ["web_search", "safe"], ["bash", "never"]]);
   for (const tool of tools) assert.equal(tool.inputSchema.type, "object", `${tool.name} keeps pi's parameters`);
-});
-
-test("in a box the coding source gives read, write, edit and bash (never replayed); the network tools stay this machine's, and a source holding another tool is refused", async () => {
-  const { codingSource } = await import("../dist/coding-tools.js");
-  const source = codingSource({ mode: "sandbox", box: "docker" }, { env: async () => ({}) });
-  const tools = hostTools({}, ["read", "write", "edit", "bash", "fetch_page", "web_fetch"], ctx, new Map(), source.tools);
-  assert.deepEqual(tools.map((tool) => [tool.name, tool.replay]), [["read", "safe"], ["write", "never"], ["edit", "never"], ["bash", "never"], ["fetch_page", "safe"], ["web_fetch", "safe"]]);
-  assert.equal(tools.find((tool) => tool.name === "bash").inputSchema.properties.command.type, "string", "pi's bash schema");
-  const stray = { ...source.tools[0], name: "fetch_page" };
-  assert.throws(() => hostTools({}, ["fetch_page"], ctx, new Map(), [stray]), /holds fetch_page, which is no coding tool/);
 });
 
 test("a host tool's answer keeps the tail of a long output within pi's limits, then its diagnostics, also when the tool failed", async () => {
@@ -44,7 +46,7 @@ test("a host tool's answer keeps the tail of a long output within pi's limits, t
   };
   for (const fail of [false, true]) {
     const results = new Map();
-    const [tool] = hostTools(run, ["bash"], ctx, results, [chatty]);
+    const [tool] = hostToolsOf(run, ["bash"], ctx, results, [chatty]);
     const answer = await tool.call({ fail }, { callId: `c-${fail}`, signal: new AbortController().signal });
     assert.equal(answer.isError, fail);
     assert.ok(Buffer.byteLength(answer.text) < 52 * 1024, `bounded: ${Buffer.byteLength(answer.text)} bytes`);
@@ -56,12 +58,63 @@ test("a host tool's answer keeps the tail of a long output within pi's limits, t
   }
 });
 
+test("a host tool reads snapshot and waitForTask from its own run's Harness, never another run's; memo and taskId stay refused by name", async () => {
+  // Two runs, each with a Harness whose two members answer with that run's own value and say what they were asked.
+  const harnessOf = (name) => {
+    const asked = [];
+    return {
+      asked,
+      harness: {
+        snapshot(...args) { asked.push(["snapshot", args.slice(0, -1)]); return Promise.resolve({ doc: name }); },
+        waitForTask(id) { asked.push(["waitForTask", [id]]); return Promise.resolve({ state: { status: "terminal" }, of: name }); },
+      },
+    };
+  };
+  const a = harnessOf("run-a");
+  const b = harnessOf("run-b");
+  const read = {
+    name: "bash", description: "d", parameters: { type: "object" },
+    async execute(_args, api) {
+      const said = {
+        snapshot: await api.snapshot("Doc", api.conversationId, ctx),
+        waitForTask: await api.waitForTask("task-1", ctx),
+      };
+      for (const member of ["memo", "taskId"]) {
+        try {
+          void api[member];
+          said[member] = "given";
+        } catch (error) {
+          said[member] = error.message;
+        }
+      }
+      api.output(JSON.stringify(said));
+      return {};
+    },
+  };
+  const [tool] = hostToolsOf({ env: async () => ({}), harness: a.harness }, ["bash"], ctx, new Map(), [read]);
+  hostToolsOf({ env: async () => ({}), harness: b.harness }, ["bash"], ctx, new Map(), [read]);
+  const said = JSON.parse((await tool.call({}, { callId: "c", signal: new AbortController().signal })).text);
+  assert.deepEqual([said.snapshot, said.waitForTask], [{ doc: "run-a" }, { state: { status: "terminal" }, of: "run-a" }], "each member answers with its own run's value");
+  assert.deepEqual(a.asked, [["snapshot", ["Doc", 1]], ["waitForTask", ["task-1"]]], "asked of its own run's Harness, as the tool asked");
+  assert.deepEqual(b.asked, [], "never of another run's");
+  for (const member of ["memo", "taskId"]) assert.match(said[member], new RegExp(`a host tool's api has no ${member}`), `${member} is refused by name`);
+});
+
+test("a remote executor's api gives the members a host tool's does but those only a run's Harness has", async () => {
+  const { HOST_API_MEMBERS, RUN_ONLY_MEMBERS } = await import("../dist/host-tools.js");
+  const { piExecutor } = await import("../dist/workspace/executors.js");
+  let keys;
+  const tool = { name: "bash", description: "d", parameters: { type: "object" }, async execute(_args, api) { keys = Reflect.ownKeys(api); return {}; } };
+  await piExecutor(tool, {}, ctx)({}, {});
+  assert.deepEqual([...keys].sort(), HOST_API_MEMBERS.filter((member) => !RUN_ONLY_MEMBERS.includes(member)).sort());
+});
+
 test("a long output of multi-byte characters is cut at a character boundary, within maxBytes: its tail, its head, an exact boundary, and a character split across two chunks", async () => {
   const run = { env: async () => ({}) };
   /** The text a host tool answers when its tool writes `chunks` under `limits`. */
   const answer = async (limits, chunks) => {
     const tool = { name: "bash", description: "d", parameters: { type: "object" }, outputLimits: limits, async execute(_args, api) { for (const chunk of chunks) api.output(chunk); return {}; } };
-    const [host] = hostTools(run, ["bash"], ctx, new Map(), [tool]);
+    const [host] = hostToolsOf(run, ["bash"], ctx, new Map(), [tool]);
     return (await host.call({}, { callId: "c", signal: new AbortController().signal })).text;
   };
   const kept = (text, marker) => text.replace(marker, "");
@@ -93,24 +146,20 @@ test("a tool answering as pi 1.2's bash does (its retained output asked for, its
       return { structuredOutput: { output: retained.text, truncated: retained.truncated, exitCode: 2 }, isError: true, diagnostics: [{ severity: "error", code: "exit_code", message: "Command exited with code 2" }] };
     },
   };
-  const [tool] = hostTools(run, ["bash"], ctx, new Map(), [bash12]);
+  const [tool] = hostToolsOf(run, ["bash"], ctx, new Map(), [bash12]);
   assert.deepEqual(await tool.call({}, { callId: "c", signal: new AbortController().signal }), { text: "first line\nlast line\n\n\nCommand exited with code 2", isError: true });
 });
 
-test("a run naming no monid tool never reads its claim: the other tools are built from a run with none", () => {
-  assert.deepEqual(hostTools({}, ["read", "fetch_page", "web_fetch"], ctx, new Map()).map((tool) => tool.name), ["read", "fetch_page", "web_fetch"]);
-});
-
 test("monid's three go under their wire names: discover and inspect replay-safe, run never; a wire name is not a catalog name", () => {
-  const tools = hostTools(RUN, MONID, ctx, new Map());
+  const tools = hostToolsOf(RUN, MONID, ctx, new Map(), monid());
   assert.deepEqual(tools.map((tool) => [tool.name, tool.replay]), [["monid_discover", "safe"], ["monid_inspect", "safe"], ["monid_run", "never"]]);
   assert.deepEqual(tools.map((tool) => tool.inputSchema.required), [["query"], ["provider", "endpoint"], ["provider", "endpoint"]], "monid's own parameters");
-  assert.deepEqual(hostTools(RUN, ["monid_run", "monid"], ctx, new Map()), [], "a revision names the catalog name, never the wire name");
+  assert.deepEqual(hostToolsOf(RUN, ["monid_run", "monid"], ctx, new Map(), monid()), [], "a revision names the catalog name, never the wire name");
 });
 
 test("both CLI adapters take the three as they are: names in their alphabet, schemas their own checks pass", (t) => {
   withEnv(t, { AGENTRUN_CLAUDE_AGENT_STANDIN: "1" });
-  const spec = { key: "run:x", label: "x", system: ["x"], context: "fresh", tools: hostTools(RUN, ["read", ...MONID], ctx, new Map()) };
+  const spec = { key: "run:x", label: "x", system: ["x"], context: "fresh", tools: hostToolsOf(RUN, ["read", ...MONID], ctx, new Map(), registrations()) };
   const provider = { origin: "https://api.example", credential: () => "" };
   assert.deepEqual(codexAdapter({ model: "gpt-5.4-mini", provider, standIn: { command: "true" } }).check(spec), []);
   assert.deepEqual(claudeAgentAdapter({ model: "claude-haiku-4-5", provider, standIn: { command: "true" }, sdk: {} }).check(spec), []);
@@ -165,4 +214,8 @@ test("a row's file path is named as a whole path: in the run's directory relativ
   for (const [given, shown] of cases) assert.equal(named(given), shown, given);
   // A run directory that is not absolute names nothing differently.
   assert.equal(rowPaths("runs/r1")("/data/runs/r1/work/a.md"), "/data/runs/r1/work/a.md");
+});
+
+test("the largest image the runner's read answers (pi-env READ_IMAGE_MAX_BYTES) is still one the claude-agent adapter sends: its base64 within the adapter's cap", () => {
+  assert.ok(Math.ceil(READ_IMAGE_MAX_BYTES / 3) * 4 <= CLAUDE_AGENT_MAX_IMAGE_BYTES, `${READ_IMAGE_MAX_BYTES} bytes is over ${CLAUDE_AGENT_MAX_IMAGE_BYTES} as base64`);
 });

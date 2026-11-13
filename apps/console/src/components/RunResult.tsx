@@ -8,7 +8,7 @@ export function RunResult({ run, rows, files = [], onOpen }: { run: Run; rows: T
   const answer = run.result?.final_answer ?? rows.findLast((r) => r.kind === "final_answer")?.text ?? null;
   const linked = onOpen ? { paths: files.map((f) => f.path) } : undefined;
   const open = openLinkedFile((path) => { const f = files.find((x) => x.path === path); if (f) onOpen?.(f); });
-  if (answer) return <article className="report max-w-none" onClick={open} dangerouslySetInnerHTML={{ __html: markdown(answer, linked) }} />;
+  if (answer?.trim()) return <article className="report max-w-none" onClick={open} dangerouslySetInnerHTML={{ __html: markdown(answer, linked) }} />;
   if (run.result?.output !== undefined && run.result.output !== null) {
     // A workflow's output can carry written reports (a text field of several lines): each reads as Markdown under its
     // field's name, and the rest of the output stays JSON.
@@ -20,14 +20,14 @@ export function RunResult({ run, rows, files = [], onOpen }: { run: Run; rows: T
       <div className="space-y-8">
         {written.map(([k, text]) => (
           <section key={k}>
-            <p className="caps mb-2 text-[11px] text-muted-foreground">{k.replace(/_/g, " ")}</p>
+            <p className="caps mb-2 text-label text-muted-foreground">{k.replace(/_/g, " ")}</p>
             <article className="report max-w-none border bg-card p-5" onClick={open} dangerouslySetInnerHTML={{ __html: markdown(text, linked) }} />
           </section>
         ))}
         {(!written.length || Object.keys(rest as object).length > 0) && (
           <section>
-            <p className="caps mb-2 text-[11px] text-muted-foreground">{written.length ? "The rest of the output" : "Output"}</p>
-            <pre className="overflow-auto border bg-card p-4 font-mono text-[12px] leading-[1.8]">{JSON.stringify(rest, null, 2)}</pre>
+            <p className="caps mb-2 text-label text-muted-foreground">{written.length ? "The rest of the output" : "Output"}</p>
+            <pre className="overflow-auto border bg-card p-4 font-mono text-small leading-[1.8]">{JSON.stringify(rest, null, 2)}</pre>
           </section>
         )}
       </div>

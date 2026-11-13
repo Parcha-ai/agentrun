@@ -6,6 +6,9 @@
 //   POST /v1/chat/completions   OpenAI Chat Completions
 // A base with a path (`/api/v1/...`, as OpenRouter serves them) is answered the same: the route is the path's end. Any
 // other path is recorded and answered 404, so a request sent to the wrong place shows in `requests` and fails its run.
+// A POST whose body is not JSON is answered 400 and not recorded. A GET under the API's paths (`/v1/models`) is recorded and
+// answered 404, as any other request; one outside them (a stranger's bare `GET /` probing loopback ports, F2/F3) is
+// answered 404 and not recorded.
 // Streams when the request asks to (`stream: true`), else one JSON answer. A Responses or Chat Completions stream ends
 // with `data: [DONE]`, as Chat Completions streams do: pi's OpenAI client stops on it in either, and codex's stand-in
 // app-server reads to it.
@@ -24,9 +27,10 @@ export const RECORDED_HEADERS = Object.freeze(["authorization", "x-api-key", "an
 
 /**
  * Starts the gateway on 127.0.0.1, on a port of its own.
- * @param {{ text?: string | ((request: GatewayRequest) => string), usage?: { input?: number, output?: number } }} [options]
- *   `text`: what every answer says (or a function of the request); `usage`: the input and output tokens every answer
- *   reports (default 10 in, 2 out).
+ * @param {{ text?: string | ((request: GatewayRequest) => string), call?: (request: GatewayRequest) => { name: string, input: unknown } | undefined, usage?: { input?: number, output?: number }, port?: number }} [options]
+ *   `text`: what every answer says (or a function of the request); `call`: a tool call to answer with instead, when it
+ *   returns one (Messages' tool_use, Responses' function_call; not on Chat Completions); `usage`: the input and output
+ *   tokens every answer reports (default 10 in, 2 out); `port`: the port to listen on (default: one the system picks).
  * @returns {Promise<{ url: string, requests: GatewayRequest[], close(): Promise<void> }>} `url` is the origin
  *   (`http://127.0.0.1:<port>`), with no path.
  * @typedef {{ method: string, path: string, query: string, headers: Record<string, string | undefined>, body: any }} GatewayRequest
@@ -44,20 +48,28 @@ export async function startFauxGateway(options = {}) {
       try {
         body = raw ? JSON.parse(raw) : null;
       } catch {
+        // A POST whose body is not JSON is no model request: answered 400 and never recorded among a test's requests.
+        if (req.method === "POST") return void res.writeHead(400, { "content-type": "application/json" }).end(JSON.stringify({ error: { message: "not a model request: its body is not JSON" } }));
         body = raw;
       }
       const [path, ...rest] = (req.url ?? "/").split("?");
+      // A request outside the API's own paths (none under /v1/) that is no POST is no client's: a stranger's probe of a
+      // loopback port (a bare `GET /`, F2/F3). Answered 404 and never recorded among a test's requests.
+      if (req.method !== "POST" && !path.includes("/v1/")) return void res.writeHead(404, { "content-type": "application/json" }).end(JSON.stringify({ error: { message: `no ${req.method} ${path} here` } }));
       const request = { method: req.method ?? "", path, query: rest.join("?"), headers: Object.fromEntries(RECORDED_HEADERS.map((name) => [name, req.headers[name]])), body };
       requests.push(request);
       const stream = body?.stream === true;
       if (req.method !== "POST") return void res.writeHead(404, { "content-type": "application/json" }).end(JSON.stringify({ error: { message: `no ${req.method} ${path} here` } }));
+      const call = options.call?.(request);
+      if (call && path.endsWith(ROUTES.responses)) return responsesCall(res, body, call, usage, stream);
+      if (call && path.endsWith(ROUTES.messages)) return messagesCall(res, body, call, usage, stream);
       if (path.endsWith(ROUTES.responses)) return responses(res, body, textOf(request), usage, stream);
       if (path.endsWith(ROUTES.messages)) return messages(res, body, textOf(request), usage, stream);
       if (path.endsWith(ROUTES.chat)) return chat(res, body, textOf(request), usage, stream);
       res.writeHead(404, { "content-type": "application/json" }).end(JSON.stringify({ error: { message: `no route ${path} here` } }));
     });
   });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await new Promise((resolve, reject) => server.once("error", reject).listen(options.port ?? 0, "127.0.0.1", resolve));
   const url = `http://127.0.0.1:${server.address().port}`;
   return {
     url,
@@ -99,6 +111,38 @@ function messages(res, body, text, usage, stream) {
     { type: "content_block_delta", index: 0, delta: { type: "text_delta", text } },
     { type: "content_block_stop", index: 0 },
     { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: counts },
+    { type: "message_stop" },
+  ], { named: true });
+}
+
+/** A Responses answer that is one function call: `call.name` with `call.input` as its arguments. */
+function responsesCall(res, body, call, usage, stream) {
+  const args = JSON.stringify(call.input ?? {});
+  const item = { type: "function_call", id: "fc_faux_1", call_id: "call_faux_1", name: call.name, arguments: args, status: "completed" };
+  const response = { id: "resp_faux_1", object: "response", status: "completed", model: body?.model, output: [item], usage: { input_tokens: usage.input, output_tokens: usage.output, total_tokens: usage.input + usage.output, input_tokens_details: { cached_tokens: 0 }, output_tokens_details: { reasoning_tokens: 0 } } };
+  if (!stream) return json(res, response);
+  sse(res, [
+    { type: "response.created", response: { ...response, status: "in_progress", output: [], usage: null } },
+    { type: "response.output_item.added", output_index: 0, item: { ...item, status: "in_progress", arguments: "" } },
+    { type: "response.function_call_arguments.delta", item_id: item.id, output_index: 0, delta: args },
+    { type: "response.function_call_arguments.done", item_id: item.id, output_index: 0, arguments: args },
+    { type: "response.output_item.done", output_index: 0, item },
+    { type: "response.completed", response },
+  ], { done: true });
+}
+
+/** A Messages answer that is one tool_use block: `call.name` with `call.input`. */
+function messagesCall(res, body, call, usage, stream) {
+  const counts = { input_tokens: usage.input, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: usage.output };
+  const block = { type: "tool_use", id: "toolu_faux_1", name: call.name, input: call.input ?? {} };
+  const message = { id: "msg_faux_1", type: "message", role: "assistant", model: body?.model, content: [block], stop_reason: "tool_use", stop_sequence: null, usage: counts };
+  if (!stream) return json(res, message);
+  sse(res, [
+    { type: "message_start", message: { ...message, content: [], stop_reason: null, usage: { ...counts, output_tokens: 1 } } },
+    { type: "content_block_start", index: 0, content_block: { ...block, input: {} } },
+    { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: JSON.stringify(block.input) } },
+    { type: "content_block_stop", index: 0 },
+    { type: "message_delta", delta: { stop_reason: "tool_use", stop_sequence: null }, usage: counts },
     { type: "message_stop" },
   ], { named: true });
 }

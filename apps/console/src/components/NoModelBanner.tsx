@@ -1,7 +1,7 @@
 /** The bar every page but the first screen shows while capabilities' `models.ready` is false (the first screen has the key
  *  card, ModelKeyCard): no agent that names no model runs here yet, and what would fix it. `needs` `model`: the server's
- *  AGENT_MODEL names a model it does not run, which no key fixes. `settings`: the server keeps keys (its key routes, and a
- *  seal key: `at_rest` "sealed"), so one can be added in Settings, which the bar leads with: a saved key reaches the next
+ *  AGENT_MODEL names a model it does not run, which no key fixes. `settings`: the server keeps keys (its key routes), so
+ *  one can be added in Settings, which the bar leads with: a saved key reaches the next
  *  run with no restart. `model`: the server's default model (`models.default`); when one is named, only its provider's key
  *  runs it, so the bar names it and makes no OpenRouter promise, and no Settings one: Settings holds only some providers'
  *  keys. `source` `gateway` (`models.source`: the server sends its
@@ -9,7 +9,7 @@
  *  AGENT_MODEL, or add a model key in Settings (its default goes to the gateway), with no OpenRouter promise. */
 export function NoModelBanner({ needs, settings, model, source }: { needs?: "key" | "model" | null; settings: boolean; model?: string | null; source?: "faux" | "gateway" | "providers" }) {
   return (
-    <p role="status" aria-label="No model" className="border-b bg-card px-5 py-3 text-[13px] text-warning-text md:px-8">
+    <p role="status" aria-label="No model" className="border-b bg-card px-5 py-3 text-body text-warning-text md:px-8">
       {needs === "model" ? (
         "This server's default model doesn't run here: set AGENT_MODEL to a model it knows, and restart."
       ) : (

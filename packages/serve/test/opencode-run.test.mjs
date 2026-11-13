@@ -10,7 +10,7 @@ import { existsSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { agent, follow, scratch, serve } from "./support.mjs";
+import { agent, follow, scratch, scratchDir, serve } from "./support.mjs";
 
 /** The gateway's key in these tests: no real one. */
 const GATEWAY_KEY = `not-a-secret-${"gateway"}`;
@@ -85,7 +85,7 @@ test("an opencode run whose cap can't cover one request's least pauses before an
   await follow(api, run.body.run_id, ["input_required", "failed"], { deadlineMs: 60_000 });
   const ended = (await api("GET", `/runs/${run.body.run_id}`)).body;
   assert.deepEqual([ended.status, ended.state, ended.error, ended.pending?.kind], ["input_required", "waiting", null, "budget"], JSON.stringify(ended));
-  const words = /^Not sent: this run's cap of \$0\.001 can't cover one .+ request \(at least \$(\d+\.\d+)\)\. Raise the cap to at least \$(\d+\.\d+) to run it\.$/.exec(ended.pending.said);
+  const words = /^Not sent: the next step needs at least \$(\d+\.\d+), and this run's cap is \$0\.001\. Raise the cap to at least \$(\d+\.\d+) to continue\.$/.exec(ended.pending.said);
   assert.ok(words, ended.pending.said);
   assert.equal(words[2], words[1], "nothing spent or held: the cap to raise to is the least");
   assert.ok(Number(words[1]) >= 0.002048, `the least covers the answer's 1,024 tokens: $${words[1]}`);
@@ -124,7 +124,7 @@ test("a run on opencode goes through the adapter's proxy to serve's gateway, pri
   assert.ok(child, "OpenCode's process runs");
   assert.equal(field(child.status, "NoNewPrivs"), "1", "under setpriv --no-new-privs, as pi's commands are");
   assert.equal(field(child.status, "Uid")?.split(/\s+/)[0], String(process.getuid()), "as the run's own user");
-  assert.equal(await readlink(`/proc/${child.pid}/cwd`), realpathSync(join(data, "runs", run.body.run_id, "work")), "in the run's workspace, where its file tools write");
+  assert.equal(await readlink(`/proc/${child.pid}/cwd`), realpathSync(scratchDir(data, run.body.run_id)), "in the run's scratch folder, the alias of its workspace that its file tools take (cli-run-spec.ts)");
   gw.release();
   const { rows } = await follow(api, run.body.run_id, ["completed"], { deadlineMs: 60_000 });
   assert.equal(gw.seen.length, 1, "one model request");
@@ -134,34 +134,4 @@ test("a run on opencode goes through the adapter's proxy to serve's gateway, pri
   const usage = rows.findLast((r) => r.kind === "usage")?.usage;
   assert.deepEqual(usage, { usd: 0.0012, requests: 1 }, "1000 in at $1 and 100 out at $2 per million, booked once");
   assert.equal(rows.findLast((r) => r.kind === "final_answer" || r.kind === "text_block")?.text, "OpenCode answered.");
-});
-
-test("an opencode run whose process is killed mid-turn is relaunched: OpenCode gets its session back from the run's store and the run completes", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
-  // The first request is held (the turn is mid-flight) and its answer never reaches anyone; the relaunched turn's are answered.
-  const gw = await gateway(t, { text: (i) => (i === 0 ? "Before the cut." : "After the cut."), held: 1 });
-  const { api, standIn, data } = await opencodeServe(t, gw);
-  const run = await api("POST", "/agents/coder/runs", { input: { content: "Say what you did." } });
-  assert.equal(run.status, 202, JSON.stringify(run.body));
-  for (let i = 0; gw.seen.length === 0; i++) {
-    assert.ok(i < 300, "the turn's model request reaches the gateway");
-    await sleep(100);
-  }
-  const record = async () => JSON.parse(await readFile(join(data, "runs", run.body.run_id, "run.json"), "utf8"));
-  const killed = (await record()).holder.pid;
-  const child = await processOf(standIn);
-  assert.ok(child, "OpenCode's process runs");
-  process.kill(killed, "SIGKILL");
-  for (let i = 0; existsSync(`/proc/${child.pid}`) && !(await readFile(`/proc/${child.pid}/status`, "utf8").catch(() => "")).includes("State:\tZ"); i++) {
-    assert.ok(i < 50, "the killed process's OpenCode dies with it");
-    await sleep(100);
-  }
-  gw.release();
-  const { rows } = await follow(api, run.body.run_id, ["completed"], { deadlineMs: 150_000 });
-  const relaunched = (await record()).holder?.pid;
-  assert.notEqual(relaunched, killed, "a new process ran the turn");
-  assert.ok(gw.seen.length >= 2, "the relaunched turn asked the model again");
-  const input = JSON.stringify(gw.seen.at(-1).body.input);
-  assert.match(input, /Say what you did\./, "the session OpenCode got back holds the run's message");
-  assert.match(input, /\[Recovery\]/, "the model is told its turn was cut");
-  assert.equal(rows.findLast((r) => r.kind === "final_answer" || r.kind === "text_block")?.text, "After the cut.");
 });

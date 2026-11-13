@@ -19,6 +19,8 @@ const STAND_IN_RETRY_MS = 1_000;
 const STAND_IN_TRIES = 6;
 /** Chrome sends a page's address when it moves but not its title when the document sets it, so the title is asked for at the end of a load and now and then. */
 const TITLE_POLL_MS = 1_500;
+/** How long after the browser lists its pages the stream looks whether it follows one: none, and the viewer is told there is no page yet. */
+const NO_PAGE_LOOK_MS = 250;
 /** A text message is one paste or one typed run: bound it so a viewer cannot make the browser take an unbounded insert. */
 const MAX_TEXT = 100_000;
 const BUTTON_BITS = { left: 1, right: 2, middle: 4 } as const;
@@ -142,7 +144,14 @@ export const openStream: StreamFactory = (cdpUrl: string, handlers: StreamHandle
     if (best) follow(best.id);
   };
 
-  socket.onopen = () => { post("Target.setDiscoverTargets", { discover: true }); };
+  // A browser with no page once its pages are listed (a headless one that starts with none) has none to show yet. The list may come just before or just after
+  // the answer, so the stream looks a moment after the answer.
+  socket.onopen = () => {
+    void request("Target.setDiscoverTargets", { discover: true }).then(() => {
+      const look = setTimeout(() => { if (!current && !closing) handlers.noPage?.(); }, NO_PAGE_LOOK_MS);
+      look.unref?.();
+    }, () => {});
+  };
   socket.onmessage = (event) => {
     let message: { id?: number; method?: string; params?: any; sessionId?: string; result?: any; error?: { message?: string } };
     try { message = JSON.parse(String(event.data)); } catch { return; }
@@ -201,6 +210,7 @@ export const openStream: StreamFactory = (cdpUrl: string, handlers: StreamHandle
         pages.delete(params.targetId);
         if (params.targetId === current?.targetId) { current = null; handlers.dialog(null); }
         choose();
+        if (!current) handlers.noPage?.();
       }
     } catch { /* a handler that throws must not end the browser's socket */ }
   };
@@ -248,14 +258,15 @@ export const openStream: StreamFactory = (cdpUrl: string, handlers: StreamHandle
       } else return bad();
     },
 
-    async nav(message: NavMessage): Promise<void> {
+    async nav(message: NavMessage, live: () => boolean = () => true): Promise<void> {
       const sessionId = page();
       if (message === null || typeof message !== "object" || message.type !== "nav") return bad();
       if (message.action === "reload") { await request("Page.reload", {}, sessionId); return; }
       if (message.action === "back") {
         const history = await request("Page.getNavigationHistory", {}, sessionId);
         const entry = history?.entries?.[Number(history?.currentIndex) - 1];
-        if (!entry || !Number.isInteger(entry.id)) return;
+        // A command let go meanwhile (handed back, and the agent's call went on past the bound) does not move the page under it.
+        if (!entry || !Number.isInteger(entry.id) || !live()) return;
         await request("Page.navigateToHistoryEntry", { entryId: entry.id }, sessionId);
         return;
       }

@@ -17,7 +17,7 @@
 import { lookup as dnsLookup } from "node:dns";
 import type { LookupFunction } from "node:net";
 import type { Agent } from "undici";
-import { clip, TITLE_CAP } from "./fetch-page.js";
+import { clip, TITLE_CAP } from "./web-fetch-direct.js";
 import { type Hit, type Search, snippetOf } from "./web-search.js";
 
 export const EXA_MCP_URL = "https://mcp.exa.ai/mcp";

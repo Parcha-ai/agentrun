@@ -1,9 +1,11 @@
 // A remote MCP server for tests, on loopback: Streamable HTTP through the official SDK (@modelcontextprotocol/server),
 // speaking the 2026-07-28 revision (with the SDK's 2025 fallback) or, with `era: "legacy"`, 2025-era `initialize` only.
 // With a `token` it answers 401 to a request without `Authorization: Bearer <token>`; with `oauth` too, its 401 names
-// protected-resource metadata, as a server behind OAuth does. Every request is logged: method, tool, and whether an
-// Authorization header came, never its value; a tool call whose client closed its request before the answer is logged
-// again as `closed` (its tool under `closed`, so a count of a tool's calls is not changed by it).
+// protected-resource metadata, as a server behind OAuth does: `oauth` may name its authorization server's URL (or be a
+// function answering it, read at each request, for a server that moves to another), and `token`
+// may be a check of the Authorization header (fake-oauth-server.mjs `accepts`). Every request is logged: method, tool, and
+// whether an Authorization header came, never its value; a tool call whose client closed its request before the answer is
+// logged again as `closed` (its tool under `closed`, so a count of a tool's calls is not changed by it).
 import { createServer } from "node:http";
 import { createMcpHandler, fromJsonSchema, legacyStatelessFallback, McpServer } from "@modelcontextprotocol/server";
 
@@ -15,12 +17,16 @@ const answer = (value) => ({ content: [{ type: "text", text: String(value) }] })
 /** The tools every fake serves, by name; a test may add, change or drop one, and the next list shows it. */
 export const baseTools = () => ({
   add: { title: "Add", description: "Add two numbers.", input: object({ a: number, b: number }), annotations: { readOnlyHint: true }, run: ({ a, b }) => answer(a + b) },
-  slow_write: { description: "Write a line after a wait.", input: object({ line: text, seconds: number }), run: async ({ line, seconds }) => (await new Promise((done) => setTimeout(done, seconds * 1000)), answer(`wrote ${line}`)) },
+  // Its wait never holds the test's process open (unref'd) and ends with the call (the SDK's signal): a cut call's timer
+  // is gone, so a file that cuts one exits when its tests end, not when the wait would have.
+  slow_write: { description: "Write a line after a wait.", input: object({ line: text, seconds: number }), run: async ({ line, seconds }, extra) => (await new Promise((done) => { const timer = setTimeout(done, seconds * 1000); timer.unref(); extra?.signal?.addEventListener("abort", () => clearTimeout(timer), { once: true }); }), answer(`wrote ${line}`)) },
   delete_thing: { description: "Delete a thing by id.", input: object({ id: text }), annotations: { destructiveHint: true }, run: ({ id }) => answer(`deleted ${id}`) },
   paid: { description: "A call the server bills.", input: object({ query: text }), run: ({ query }) => answer(`paid for ${query}`) },
 });
 
-export async function startFakeMcp({ era = "modern", token, oauth = false, port = 0, name = "fake-mcp" } = {}) {
+/** `inspect`: called with each request's headers, for a test that reads one of them (the credential a run sent, a static
+ *  header beside it); the log itself never holds a header's value. */
+export async function startFakeMcp({ era = "modern", token, oauth = false, port = 0, name = "fake-mcp", inspect, hold } = {}) {
   const tools = baseTools();
   const log = [];
   const factory = () => {
@@ -37,7 +43,7 @@ export async function startFakeMcp({ era = "modern", token, oauth = false, port 
     try {
       message = JSON.parse(body.toString("utf8"));
     } catch {}
-    for (const one of [message ?? {}].flat()) log.push({ http: req.method, path: req.url, method: one.method, tool: one.method === "tools/call" ? one.params?.name : undefined, authorization: req.headers.authorization !== undefined });
+    for (const one of [message ?? {}].flat()) log.push({ http: req.method, path: req.url, method: one.method, tool: one.method === "tools/call" ? one.params?.name : undefined, authorization: req.headers.authorization !== undefined, id: one.id, at: Date.now() });
     // A tool call whose client went away before its answer (on 2026-07-28 a client cancels a call by closing its request).
     const called = [message ?? {}].flat().find((one) => one.method === "tools/call");
     if (called) res.once("close", () => { if (!res.writableFinished) log.push({ http: req.method, path: req.url, method: "closed", closed: called.params?.name }); });
@@ -45,10 +51,13 @@ export async function startFakeMcp({ era = "modern", token, oauth = false, port 
     if (req.url === "/.well-known/oauth-protected-resource" || req.url === "/.well-known/oauth-protected-resource/mcp") {
       if (!oauth) return void res.writeHead(404).end();
       res.writeHead(200, { "content-type": "application/json" });
-      return void res.end(JSON.stringify({ resource: `${base}/mcp`, authorization_servers: [`${base}/auth`] }));
+      return void res.end(JSON.stringify({ resource: `${base}/mcp`, authorization_servers: [typeof oauth === "function" ? oauth() : typeof oauth === "string" ? oauth : `${base}/auth`] }));
     }
     if (req.url !== "/mcp") return void res.writeHead(404).end();
-    if (token !== undefined && req.headers.authorization !== `Bearer ${token}`) {
+    inspect?.(req.headers);
+    // `hold`: awaited before a request to /mcp is answered, for a test that keeps a listing waiting at a point it chooses.
+    if (hold) await hold(req.headers);
+    if (token !== undefined && !(typeof token === "function" ? token(req.headers.authorization) : req.headers.authorization === `Bearer ${token}`)) {
       res.writeHead(401, { "content-type": "application/json", "www-authenticate": oauth ? `Bearer resource_metadata="${base}/.well-known/oauth-protected-resource/mcp"` : 'Bearer realm="fake"' });
       return void res.end('{"error":"unauthorized"}');
     }

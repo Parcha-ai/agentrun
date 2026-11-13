@@ -13,7 +13,10 @@ export type BrowserFailure = {
   ok: false;
   code: FailureCode;
   retryable: boolean;
-  effect: "none" | "possibly_effected";
+  /** `partial`: a run of several actions stopped partway, the first `completed` of them done. */
+  effect: "none" | "possibly_effected" | "partial";
+  /** With `partial`: how many of the run's actions ran before it stopped. */
+  completed?: number;
   message: string;
   /** Provider or page text, at most 2,000 characters; redacted before it reaches the model. */
   detail?: string;
@@ -24,6 +27,16 @@ export type BrowserFailure = {
 };
 
 export type Next = { action: "drive_page" | "other_source" | "browser_relaunch"; note: string };
+
+/** A run of several actions that stopped partway on an error a call's own handling must still see as it is (a dropped
+ *  connection, whose driver is let go): the error is passed on as it is, marked with how many of the run's actions ran. */
+export const PARTIAL = Symbol.for("pi-browser.partial");
+export type PartialRun = { completed: number; of: number };
+/** The mark PARTIAL left on `error`, if any. */
+export const partialOf = (error: unknown): PartialRun | undefined => (error !== null && typeof error === "object" ? (error as { [PARTIAL]?: PartialRun })[PARTIAL] : undefined);
+/** `failure` as a run stopped partway says it: partial, with how many ran, before its own words. */
+export const asPartial = (failure: BrowserFailure, partial: PartialRun): BrowserFailure =>
+  ({ ...failure, effect: "partial", completed: partial.completed, message: `${partial.completed} of the ${partial.of} actions ran, then this one failed: ${failure.message}` });
 
 export const browserFailure = (code: FailureCode, message: string, options: { retryable?: boolean; effect?: BrowserFailure["effect"]; detail?: string } = {}): BrowserFailure =>
   ({ ok: false, code, retryable: options.retryable ?? false, effect: options.effect ?? "none", message, ...(options.detail === undefined ? {} : { detail: options.detail }) });

@@ -27,27 +27,37 @@ export function openLineUrl(line, publicUrl) {
   return publicUrl !== undefined && URL.canParse(publicUrl) && url.origin === new URL(publicUrl).origin ? word : undefined;
 }
 
+/** The line an API-only server (AGENTRUN_API_ONLY=1) prints in place of its "Open " line: it has no console to open, so
+ *  the address this command names is the server's API, from the AGENTRUN_BASE_URL line before it. */
+export const API_ONLY_LINE = /^API only \(AGENTRUN_API_ONLY=1\)/;
+
 /** How many of the server's last output lines a start that fails shows. */
 export const TAIL_LINES = 20;
 
 /** The server's lines this command says too, as they come: its banner's boxes line (whether new agents get the Docker
- *  box, or why not) and the Docker box image's first build, as it starts and ends. */
-export const SAID = /^(Boxes: |Preparing the Docker box image |The Docker box image )/;
+ *  box, or why not), and, on a server with a public address and no password yet, the setup link with its code, which
+ *  setup at that address asks for. */
+export const SAID = /^(Boxes: |Set up this server: )/;
 
 /** The address a person opens first, as the server says it: the URL of the first "Open " line of its output that names
  *  one (openLineUrl). That line is the server's interface for it (the plain address today, a single-use sign-in link
- *  once the server prints one), so this command never builds the address itself. Resolves undefined when the output ends
- *  without one. Until then, the last TAIL_LINES lines before it are kept in `seen`: what a start that fails shows. Every
- *  whole line after it goes to `onLine`; the rest of the output is read and dropped, so the server never blocks on a full
- *  pipe. */
-export function openUrl(stdout, publicUrl, seen = [], onLine = () => {}) {
+ *  once the server prints one), so this command never builds the address itself. An API-only server prints no such line:
+ *  its API-only line (API_ONLY_LINE) stands for it, and the address is its AGENTRUN_BASE_URL line's, held to the same
+ *  hosts as an "Open " line's. Resolves undefined when the output ends
+ *  without one. Until then, the last TAIL_LINES lines before it are kept in `seen`: what a start that fails shows, and each
+ *  goes to `onBefore`. Every whole line after it goes to `onLine`; the rest of the output is read and dropped, so the
+ *  server never blocks on a full pipe. */
+export function openUrl(stdout, publicUrl, seen = [], onLine = () => {}, onBefore = () => {}) {
   const keep = (line) => {
+    onBefore(line);
     seen.push(line);
     if (seen.length > TAIL_LINES) seen.shift();
   };
   return new Promise((resolve) => {
     let pending = "";
     let found;
+    // The API's address, from the banner's AGENTRUN_BASE_URL line: what an API-only server's line stands for.
+    let base;
     stdout.setEncoding("utf8");
     stdout.on("data", (chunk) => {
       pending += chunk;
@@ -56,7 +66,12 @@ export function openUrl(stdout, publicUrl, seen = [], onLine = () => {}) {
         pending = pending.slice(end + 1);
         if (found !== undefined) onLine(line);
         else if ((found = openLineUrl(line, publicUrl)) !== undefined) resolve(found);
-        else keep(line);
+        else if (base !== undefined && API_ONLY_LINE.test(line)) resolve((found = base));
+        else {
+          const named = /^AGENTRUN_BASE_URL=(\S+)$/.exec(line)?.[1];
+          if (named !== undefined && openLineUrl(`Open ${named}`, publicUrl) !== undefined) base = named;
+          keep(line);
+        }
       }
     });
     stdout.on("end", () => {
@@ -99,7 +114,7 @@ export function npmExecOf(env, from = process.ppid) {
 }
 
 export const USAGE = `Usage: npx @parcha/agentrun [--port N] [--data DIR] [--no-open]   start the server
-       npx @parcha/agentrun import|reset-password [--data DIR]   a server command
+       npx @parcha/agentrun import|reset-password|runner [--data DIR]   a server command (runner: one more runner on this store)
        npx @parcha/agentrun <command> [args]   the server's API: agents, runs, triggers, ..., api (npx @parcha/agentrun help)`;
 
 /** The server's launcher, installed with this package (its dependency), or undefined. */
@@ -115,8 +130,61 @@ export function installedServer(resolve = createRequire(import.meta.url).resolve
  *  --open, which itself skips a CI run and a machine with no display). */
 export const serverArgs = (argv) => (argv.includes("--no-open") ? argv.filter((arg) => arg !== "--no-open") : ["--open", ...argv]);
 
+/** The server's own commands (its CLI's first word), which this command runs on its store: every other first word is
+ *  the CLI's, which names a command it has or says it has none. */
+export const SERVER_COMMANDS = ["eval-template", "import", "reset-password", "runner", "validate-template"];
+
+/** How many of the server's refusals and ignored deliveries a start says, each route and reason once, before one line
+ *  that says the rest are not: under this command the server's log goes nowhere else (its stdout is read here and dropped). */
+export const TOLD_MAX = 20;
+
+/** Why a request was refused, in words, by the server's reason; any other reason is said as the server names it. */
+const REFUSED = new Map([
+  ["wrong_token", "the API token is not this server's"],
+  ["no_credential", "it carried no API token"],
+  ["wrong_password", "the password is wrong"],
+  ["sign_in_table_full", "a sign-in from more addresses than the limit counts one by one"],
+]);
+
+/** The fields of one of the server's log lines (print.ts: `key=value` or `key="value"`); a repeated key keeps its first
+ *  value, the line's own event. */
+function fieldsOf(line) {
+  const fields = {};
+  for (const [, key, quoted, plain] of line.matchAll(/(?:^| )([\w-]+)=(?:"([^"]*)"|(\S+))/g)) if (!(key in fields)) fields[key] = quoted ?? plain;
+  return fields;
+}
+
+/** A teller for one start: given a line of the server's output, what to say of it to the person, or undefined. A refused
+ *  request (auth_failed) and a verified webhook delivery its trigger does not take (hook_ignored) are said in words, with
+ *  their route and reason and never what was sent, each route and reason once, at most TOLD_MAX. With AGENTRUN_LOG=quiet,
+ *  as this command starts the server, those lines are all an operator would otherwise miss. */
+export function tellerOf() {
+  const said = new Set();
+  let full = false;
+  return (line) => {
+    const fields = fieldsOf(line);
+    let words;
+    let key;
+    if (fields.event === "auth_failed" && fields.route) {
+      key = `auth ${fields.route} ${fields.reason}`;
+      words = `AgentRun refused a request to ${fields.route}: ${REFUSED.get(fields.reason) ?? fields.reason}.`;
+    } else if (fields.event === "trigger" && fields.condition === "hook_ignored" && fields.route) {
+      const hookEvent = [...line.matchAll(/ event=(\S+)/g)][1]?.[1];
+      key = `hook ${fields.route} ${fields.reason}`;
+      words = `AgentRun ignored a webhook delivery to ${fields.route} (${fields.source}${hookEvent ? `, event ${hookEvent}` : ""}): ${fields.reason}.`;
+    } else return undefined;
+    if (said.has(key) || full) return undefined;
+    if (said.size >= TOLD_MAX) return (full = true), "AgentRun refuses more requests than this terminal shows; it says no more of them here.";
+    said.add(key);
+    return said.size === 1 ? `${words} (Each route and reason is said once.)` : words;
+  };
+}
+
 export async function main(argv, env = process.env) {
-  if (NOUNS.has(words(argv)[0])) return cli(argv, env);
+  // The first argument, past --data and its value: a word there names a command (the server's own, or else the CLI's),
+  // and a flag starts the server, whose flags with values (--listen ADDR) follow.
+  const first = argv.find((arg, i) => arg !== "--data" && !arg.startsWith("--data=") && argv[i - 1] !== "--data");
+  if (NOUNS.has(words(argv)[0]) || (first !== undefined && !first.startsWith("-") && !SERVER_COMMANDS.includes(first))) return cli(argv, env);
   if (argv.includes("--help") || argv.includes("-h")) return console.log(USAGE), 0;
   if (process.platform === "win32") return console.error("AgentRun's server runs on macOS and Linux; on Windows, use WSL or its container."), 1;
   const launcher = installedServer();
@@ -144,7 +212,21 @@ export async function main(argv, env = process.env) {
   // A name that starts with a dash keeps the equals form: the server's parser reads "--data -x" as a missing value.
   const data = dataDir.startsWith("-") ? [`--data=${dataDir}`] : ["--data", dataDir];
   if (rest[0] && !rest[0].startsWith("-")) {
-    return new Promise((resolve) => spawn(launcher, [rest[0], ...data, ...rest.slice(1)], { stdio: "inherit", env: childEnv }).on("exit", (code) => resolve(code ?? 1)));
+    // A server command (an eval among them, which spends while it runs): a stop sent to this command alone (a job
+    // runner's SIGTERM, a SIGHUP) is passed on, and this waits for the command to clean up and end. A hangup is passed
+    // on as a SIGTERM, which every server command stops on.
+    const child = spawn(launcher, [rest[0], ...data, ...rest.slice(1)], { stdio: "inherit", env: childEnv });
+    const codes = { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 };
+    const pass = Object.fromEntries(Object.keys(codes).map((signal) => [signal, () => child.kill(signal === "SIGHUP" ? "SIGTERM" : signal)]));
+    for (const [signal, on] of Object.entries(pass)) process.on(signal, on);
+    return new Promise((resolve) => {
+      const done = (code) => {
+        for (const [signal, on] of Object.entries(pass)) process.off(signal, on);
+        resolve(code);
+      };
+      child.on("error", () => done(1));
+      child.on("exit", (code, signal) => done(code ?? codes[signal] ?? 1));
+    });
   }
   // The server's banner and request lines stay out of this terminal: one line here says where to go, the URL of the
   // server's own "Open " line; the lines SAID names go to stderr after it, for the person, so stdout stays that one line.
@@ -175,14 +257,20 @@ export async function main(argv, env = process.env) {
   let timer;
   let told = false;
   const held = [];
-  const tell = (line) => SAID.test(line) && (told ? console.error(line) : held.push(line));
+  const teller = tellerOf();
+  const tell = (line) => {
+    const said = SAID.test(line) ? line : teller(line);
+    if (said !== undefined) told ? console.error(said) : held.push(said);
+  };
+  // A SAID line can come before the "Open " line too (the setup link is printed as the server attaches its owner, before
+  // its banner): it is held and said first, in order.
   const seen = [];
-  const url = await Promise.race([openUrl(child.stdout, env.AGENTRUN_PUBLIC_URL, seen, tell), new Promise((resolve) => { timer = setTimeout(resolve, 60_000); })]);
+  const url = await Promise.race([openUrl(child.stdout, env.AGENTRUN_PUBLIC_URL, seen, tell, tell), new Promise((resolve) => { timer = setTimeout(resolve, 60_000); })]);
   clearTimeout(timer);
   if (url === undefined) {
     child.kill("SIGTERM");
     // Its stdout is kept out of this terminal, so its last lines are shown here: with its stderr above, they say why.
-    console.error(seen.length > 0 ? `AgentRun did not start. The server's last lines:\n${seen.map((line) => `  ${line}`).join("\n")}` : "AgentRun did not start, and the server printed nothing.");
+    console.error(seen.length > 0 ? `AgentRun did not start. The server's last lines:\n${seen.map((line) => `  ${line}`).join("\n")}` : "AgentRun did not start; the server's own message, if it gave one, is above.");
     return (await exited) || 1;
   }
   console.log(`AgentRun is running at ${url}`);

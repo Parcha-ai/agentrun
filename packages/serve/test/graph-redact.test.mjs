@@ -37,30 +37,48 @@ const flow = (second) => ({
 });
 
 async function graphed(t, id, second, extra = {}, cleared = []) {
-  withEnv(t, { AGENT_MODEL: "openai/gpt-6-sol", OPENAI_API_KEY: CUT_KEY, ...extra }, [...NAMES, ...Object.keys(extra), ...cleared]);
-  const { api } = await serve(t);
+  withEnv(t, { AGENT_MODEL: "openai/gpt-6.1-sol", OPENAI_API_KEY: CUT_KEY, ...extra }, [...NAMES, ...Object.keys(extra), ...cleared]);
+  const { api, data } = await serve(t);
   assert.equal((await api("POST", "/agents", flowAgent(id, flow(second), { tools: ["llm"] }))).status, 201);
   const started = await api("POST", `/agents/${id}/runs`, { input: { question: "x" } });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   await follow(api, started.body.run_id, ["completed", "failed"], { deadlineMs: 50_000 });
-  return { api, runId: started.body.run_id };
+  return { api, data, runId: started.body.run_id };
 }
 
 test("a workflow run's graph shows its llm call's output and a failed call's error with the held key redacted, 0 times whole or in part", { timeout: 60_000 }, async (t) => {
-  const { api, runId } = await graphed(t, "graph-keyed", true);
+  const { api, data, runId } = await graphed(t, "graph-keyed", true);
   const graph = (await api("GET", `/runs/${runId}/graph`)).body;
   assert.deepEqual(graph.effects.map((e) => [e.tool, e.status]), [["llm", "done"], ["llm", "failed"]], JSON.stringify(graph.effects.map((e) => [e.tool, e.status, e.error])));
   noKey(JSON.stringify(graph), "the graph");
+  // Cut at write too: the node log the graph reads keeps no part of the key in the store.
+  const db = new DatabaseSync(join(data, "store.sqlite"), { readOnly: true, timeout: 5_000 });
+  t.after(() => db.close());
+  const logged = db.prepare("SELECT record FROM pi_entries WHERE run_id = ?").all(runId).map((row) => String(row.record)).filter((record) => record.includes("agentrun.node.effect"));
+  assert.equal(logged.length, 4, "each call's start and end are on the node log");
+  noKey(logged.join("\n"), "the node log in the store");
   assert.equal(graph.effects[0].output.text, `Graph: [redacted] here, and ${LATER} too.`);
   assert.match(graph.effects[1].error, /\[redacted\]/, graph.effects[1].error);
 });
 
 test("a workflow run's graph is redacted once per held key set: a second read reads nothing again, and a key saved after redacts on the next read", { timeout: 60_000 }, async (t) => {
   const { api, runId } = await graphed(t, "graph-again", false, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, ["PARALLEL_API_KEY"]);
-  await api("GET", `/runs/${runId}/graph`);
-  const read = refusal.answerPasses.count;
-  const second = (await api("GET", `/runs/${runId}/graph`)).body;
-  assert.equal(refusal.answerPasses.count, read, "the second read redacted nothing again");
+  // A read of the same graph with the same held set redacts nothing again. The count is the process's own: on a loaded
+  // machine the run's view can still settle after it reads ended (a field that changes is a new part, cut once), and the
+  // runner beside the server shares the count. So the graph is read again until one read redacts nothing; a graph that
+  // is cut on every read never gets there.
+  let before = (await api("GET", `/runs/${runId}/graph`)).body;
+  let second;
+  for (const end = Date.now() + 20_000; ; ) {
+    const read = refusal.answerPasses.count;
+    second = (await api("GET", `/runs/${runId}/graph`)).body;
+    const passes = refusal.answerPasses.count - read;
+    if (passes === 0) break;
+    const changed = Object.keys(second).filter((key) => key !== "read_at" && JSON.stringify(second[key]) !== JSON.stringify(before[key]));
+    assert.ok(Date.now() < end, `every read of the graph redacted again (${passes} passes on the last, its changed fields: ${JSON.stringify(changed)})`);
+    before = second;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
   assert.equal(second.effects[0].output.text, `Graph: [redacted] here, and ${LATER} too.`);
   assert.equal((await api("PUT", "/settings/tool-keys/parallel", { values: { PARALLEL_API_KEY: LATER } })).status, 204);
   const third = (await api("GET", `/runs/${runId}/graph`)).body;
@@ -94,7 +112,7 @@ const judged = {
  *  judge saw the key in its state. */
 async function judgedRun(t, item = CUT_KEY) {
   const calls = join(await scratch(t), "decisions.jsonl");
-  withEnv(t, { AGENT_MODEL: "openai/gpt-6-sol", OPENAI_API_KEY: CUT_KEY, TYPESAFE_API_KEY: STAND_IN, AGENTRUN_SMOKE_DECISION_CALLS: calls, AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, [...NAMES, "PARALLEL_API_KEY"]);
+  withEnv(t, { AGENT_MODEL: "openai/gpt-6.1-sol", OPENAI_API_KEY: CUT_KEY, TYPESAFE_API_KEY: STAND_IN, AGENTRUN_SMOKE_DECISION_CALLS: calls, AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, [...NAMES, "PARALLEL_API_KEY"]);
   const { api, data } = await serve(t, { fauxJev: FAUX_DECISIONS });
   assert.equal((await api("POST", "/agents", flowAgent("graph-judged", judged, { tools: ["llm"] }))).status, 201);
   const started = await api("POST", "/agents/graph-judged/runs", { input: { question: `Is ${CUT_KEY} a question?`, items: [`${"x".repeat(190)}${item}`] } });
@@ -103,12 +121,13 @@ async function judgedRun(t, item = CUT_KEY) {
   return { api, data, runId: started.body.run_id };
 }
 
-/** The run's store held by another connection with no reader allowed, so the graph's read of it is busy. The store is in
- *  WAL mode, where an exclusive transaction still lets readers in: the connection's exclusive locking mode does not. */
+/** The one store held by another connection, as a runner mid-commit holds it: the write lock taken (BEGIN IMMEDIATE) and a
+ *  read open on the run's journal inside it. The graph reads the store in its own connection (WAL), so a held writer never
+ *  makes it wait or serve a stale view. */
 function hold(t, data, runId) {
-  const store = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { timeout: 0 });
-  store.exec("PRAGMA locking_mode=EXCLUSIVE; BEGIN EXCLUSIVE");
-  store.prepare("SELECT count(*) FROM sqlite_master").get();
+  const store = new DatabaseSync(join(data, "store.sqlite"), { timeout: 0 });
+  store.exec("BEGIN IMMEDIATE");
+  store.prepare("SELECT count(*) FROM pi_entries WHERE run_id = ?").get(runId);
   const release = () => store.isOpen && (store.isTransaction && store.exec("ROLLBACK"), store.close());
   t.after(release);
   return release;
@@ -117,7 +136,7 @@ function hold(t, data, runId) {
 test("a map item's label cut at 200 characters inside a held key, and a decision whose state holds one: the graph shows no part of either", { timeout: 60_000 }, async (t) => {
   const { api, runId } = await judgedRun(t);
   const graph = (await api("GET", `/runs/${runId}/graph`)).body;
-  assert.equal(graph.stale, false);
+  assert.equal(graph.stale, undefined, "no stale view: the store is read lock-free");
   const item = graph.nodes["/root/steps/0"].items[0];
   assert.ok(item && item.label.startsWith("x".repeat(190)), JSON.stringify(graph.nodes["/root/steps/0"]));
   assert.equal(graph.decisions.length, 1, JSON.stringify(graph.decisions));
@@ -129,30 +148,21 @@ test("a map item's label cut at 200 characters inside a held key, and a decision
   assert.equal(refusal.answerPasses.count, read, "a second read redacted no label or state again");
 });
 
-test("a graph read while the run's store is busy, from the last whole view: stale, and no part of a held key", { timeout: 60_000 }, async (t) => {
+test("a graph read while another connection holds the run's store: read whole and lock-free, never stale, and no part of a held key", { timeout: 60_000 }, async (t) => {
   const { api, data, runId } = await judgedRun(t);
-  assert.equal((await api("GET", `/runs/${runId}/graph`)).body.stale, false, "a whole read first, which the server keeps");
+  const whole = (await api("GET", `/runs/${runId}/graph`)).body;
   const release = hold(t, data, runId);
-  const graph = (await api("GET", `/runs/${runId}/graph`)).body;
+  const held = await api("GET", `/runs/${runId}/graph`);
   release();
-  assert.equal(graph.stale, true, JSON.stringify(Object.keys(graph)));
-  assert.equal(graph.decisions.length, 1, "the kept view holds the decision");
-  noKey(JSON.stringify(graph), "the stale graph");
-});
-
-test("a graph read while the run's store is busy and no whole view was kept: its live view, stale, and no part of a held key", { timeout: 60_000 }, async (t) => {
-  const { api, data, runId } = await judgedRun(t);
-  const release = hold(t, data, runId);
-  const graph = (await api("GET", `/runs/${runId}/graph`)).body;
-  release();
-  assert.equal(graph.stale, true, JSON.stringify(Object.keys(graph)));
-  assert.ok(graph.effects.length >= 1, JSON.stringify(graph.effects));
-  noKey(JSON.stringify(graph), "the live-only graph");
+  assert.equal(held.status, 200, JSON.stringify(held.body));
+  assert.deepEqual(Object.keys(held.body).sort(), Object.keys(whole).sort(), "the same view: no stale field, no live view in its place");
+  assert.deepEqual([held.body.nodes, held.body.decisions, held.body.effects], [whole.nodes, whole.decisions, whole.effects]);
+  noKey(JSON.stringify(held.body), "the graph read while held");
 });
 
 test("a call's error and a decision's state, each long enough to be cut, with the held key across the cut: the graph shows no part of it", { timeout: 60_000 }, async (t) => {
   const calls = join(await scratch(t), "decisions.jsonl");
-  withEnv(t, { AGENT_MODEL: "openai/gpt-6-sol", OPENAI_API_KEY: CUT_KEY, TYPESAFE_API_KEY: STAND_IN, AGENTRUN_SMOKE_DECISION_CALLS: calls }, [...NAMES, "PARALLEL_API_KEY"]);
+  withEnv(t, { AGENT_MODEL: "openai/gpt-6.1-sol", OPENAI_API_KEY: CUT_KEY, TYPESAFE_API_KEY: STAND_IN, AGENTRUN_SMOKE_DECISION_CALLS: calls }, [...NAMES, "PARALLEL_API_KEY"]);
   const { api } = await serve(t, { fauxJev: FAUX_DECISIONS });
   // A judge's state past 64 KB is kept cut (state_truncated); the key repeats, so a copy sits across that cut too.
   const flow = {
@@ -177,18 +187,17 @@ test("a call's error and a decision's state, each long enough to be cut, with th
   assert.equal(refusal.answerPasses.count, read, "a second read redacted no error or state again");
 });
 
-test("a key saved after the graph was kept: a busy read from the kept view shows no part of it, a label's cut inside it included", { timeout: 60_000 }, async (t) => {
-  // Not held when the run ran, nor when the graph was first read and kept; no 8 characters of it are in CUT_KEY or LATER.
+test("a key saved after a graph read: the next read, while another connection holds the run's store, shows no part of it, a label's cut inside it included", { timeout: 60_000 }, async (t) => {
+  // Not held when the run ran, nor when the graph was first read; no 8 characters of it are in CUT_KEY or LATER.
   const saved = ["later", "saved", "qponmlkjih"].join("-");
   const { api, data, runId } = await judgedRun(t, saved);
   const first = (await api("GET", `/runs/${runId}/graph`)).body;
-  assert.equal(first.stale, false);
   assert.ok(JSON.stringify(first.nodes).includes(saved.slice(0, 10)), "not held yet: the label shows it, cut at 200");
   assert.equal((await api("PUT", "/settings/tool-keys/parallel", { values: { PARALLEL_API_KEY: saved } })).status, 204);
   const release = hold(t, data, runId);
   const graph = (await api("GET", `/runs/${runId}/graph`)).body;
   release();
-  assert.equal(graph.stale, true);
+  assert.equal(graph.stale, undefined, "read whole, lock-free");
   const shown = JSON.stringify(graph);
-  for (let i = 0; i + 8 <= saved.length; i++) assert.ok(!shown.includes(saved.slice(i, i + 8)), `the kept view holds ${saved.slice(i, i + 8)}: ${JSON.stringify(graph.nodes)}`);
+  for (let i = 0; i + 8 <= saved.length; i++) assert.ok(!shown.includes(saved.slice(i, i + 8)), `the graph holds ${saved.slice(i, i + 8)}: ${JSON.stringify(graph.nodes)}`);
 });

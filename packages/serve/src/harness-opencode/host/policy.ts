@@ -16,7 +16,7 @@
 // `input_tokens`; they are booked apart. The watch reads each `function_call` item of an answer before OpenCode has it:
 // its call id, name and arguments, which tie the MCP call OpenCode makes next (it carries no call id) to the model's own.
 import type { IncomingHttpHeaders } from "node:http";
-import { providerInputOverhead, ProxyRefusal, type ProviderPolicy, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-kernel/host";
+import { providerInputOverhead, ProxyRefusal, responsesImagesIn, type ProviderPolicy, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-kernel/host";
 
 /** The prefix OpenCode gives the adapter's MCP tools: the server is `hands`. */
 export const TOOL_PREFIX = "hands_";
@@ -246,7 +246,7 @@ function itemsIn(value: unknown, type: string): number {
  *  input has no stated bound, so a body with one cannot be measured. */
 export function responsesServerInputOverhead(body: Record<string, unknown>): number {
   if (itemsIn(body.input, "input_file") > 0) throw new Error("a file input's billed size has no stated bound");
-  return providerInputOverhead("openai-responses", { tools: Array.isArray(body.tools) && body.tools.length > 0, images: itemsIn(body.input, "input_image") }) as number;
+  return providerInputOverhead("openai-responses", { tools: Array.isArray(body.tools) && body.tools.length > 0, images: responsesImagesIn(body.input), ...(typeof body.model === "string" ? { model: body.model } : {}) }) as number;
 }
 
 /** An event that is not whole by this many characters is not read. */
@@ -383,13 +383,21 @@ export function openCodePolicy(options: OpenCodePolicyOptions): ProviderPolicy {
   return {
     id: "opencode",
     routes: OPENCODE_RESPONSES_ROUTES,
+    // The spend cap's wrap-up note, as on Codex's route (the Responses API): one developer message after OpenCode's input.
+    addNote(body, text) {
+      const input = Array.isArray(body.input) ? body.input : [];
+      return { ...body, input: [...input, { type: "message", role: "developer", content: [{ type: "input_text", text }] }] };
+    },
     keyOf(headers: IncomingHttpHeaders) {
       const auth = String(headers.authorization ?? "");
       return auth.startsWith("Bearer ") ? auth.slice(7) : "";
     },
     authHeaders: (credential) => ({ authorization: `Bearer ${credential}` }),
-    apply(body) {
+    apply(body, _route, context) {
       if (!isPlain(body)) throw new ProxyRefusal(400, "the body is not a JSON object");
+      // The host's own request beside OpenCode's (ProxyRequestContext.host) offers its own function tools (a learned
+      // workflow node's `submit`); every other rule is the session's.
+      const own: ReadonlySet<string> = context?.host !== undefined ? new Set(Array.isArray(body.tools) ? body.tools.filter((tool) => isPlain(tool) && tool.type === "function" && typeof tool.name === "string").map((tool) => (tool as { name: string }).name) : []) : allowed;
       const out: Record<string, unknown> = {};
       for (const [key, value] of Object.entries(body)) {
         if (!BODY_KEYS.has(key)) throw new ProxyRefusal(400, "the body has a field the OpenCode policy does not allow");
@@ -401,13 +409,13 @@ export function openCodePolicy(options: OpenCodePolicyOptions): ProviderPolicy {
       if (out.stream !== undefined && typeof out.stream !== "boolean") throw new ProxyRefusal(400, "stream is not a boolean");
       if (out.reasoning !== undefined && !isPlain(out.reasoning)) throw new ProxyRefusal(400, "reasoning is not an object");
       if (out.text !== undefined) out.text = textOptions(out.text);
-      if (out.tools !== undefined) out.tools = ownTools(out.tools, allowed);
+      if (out.tools !== undefined) out.tools = ownTools(out.tools, own);
       if (Array.isArray(out.tools) && out.tools.length === 0) {
         // No tool of the session's left: none is offered, and no choice of one.
         delete out.tools;
         delete out.tool_choice;
       }
-      if (out.tool_choice !== undefined) out.tool_choice = toolChoice(out.tool_choice, allowed);
+      if (out.tool_choice !== undefined) out.tool_choice = toolChoice(out.tool_choice, own);
       const asked = typeof out.max_output_tokens === "number" && out.max_output_tokens > 0 ? out.max_output_tokens : maxOutputTokens;
       return { ...out, model: options.model, store: false, max_output_tokens: Math.min(asked, maxOutputTokens) };
     },

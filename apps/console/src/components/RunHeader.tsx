@@ -2,25 +2,25 @@ import { Archive, ArchiveRestore, ArrowLeft, Ban, CircleDollarSign, Square } fro
 import { useState } from "react";
 import { agentHash } from "@/components/AgentPage";
 import { LearningChips } from "@/components/LearningChips";
-import { capWords, RaiseCap, suggestedCap } from "@/components/NeedsYou";
+import { capWords, leastCap, RaiseCap, suggestedCap } from "@/components/NeedsYou";
 import { ScheduleChip } from "@/components/ScheduleChip";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { goBack } from "@/lib/back";
-import { cost, isEstimate, runLabel, soFar, soFarNote, when } from "@/lib/format";
+import { costOfCap, isEstimate, runEnded, runLabel, soFar, soFarNote, when, runTitle } from "@/lib/format";
 import { NO_MESSAGES, runState } from "@/lib/runState";
 import type { RaiseAnswer, Run } from "@/lib/v2";
-import { placeOf, runPlaceWords } from "@/lib/place";
+import { runPlaceWords } from "@/lib/place";
 
 /** `onRaiseCap`: raises the run's spend cap (PATCH /v2/runs/{id}) and reads the run again; offered on a capped agentic
  *  run that has not ended, here and beside a budget pause's banner. */
 export type RunActions = { onStop?: () => void; onCancel?: () => void; onArchive?: () => void; onRaiseCap?: (usd: number) => Promise<RaiseAnswer>; busy?: "stop" | "cancel" | "archive" | null };
 
 /** The cost's hover note: a known estimate is not a bill; a cost known so far is not the whole cost. */
-const costTitle = (c: Run["cost"]): string | undefined => {
+const costTitle = (c: Run["cost"], ended: boolean): string | undefined => {
   const known = soFar(c);
-  if (known) return soFarNote(known);
+  if (known) return soFarNote(known, { ended });
   return c && c.usd !== null && isEstimate(c) ? "A local estimate, not a bill" : undefined;
 };
 
@@ -29,18 +29,21 @@ const costTitle = (c: Run["cost"]): string | undefined => {
  *  Archive hides the run from the runs list and keeps it; the server takes it in any state, as serve's own page offers it. */
 export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run; agentName: string; actions?: RunActions; costText?: string }) {
   // Where it ran, as its start resolved it.
-  const ranIn = runPlaceWords(placeOf((run as { place?: unknown }).place));
+  const ranIn = runPlaceWords(run.place);
   const view = runState(run.status, run.state, run.kind, NO_MESSAGES, true, run.error, run.review);
   const [confirming, setConfirming] = useState(false);
   const archived = !!run.archived_at;
-  // A capped agentic run that has not ended takes a raise here too, so a working one is raised before it pauses.
+  // A capped run that has not ended, agentic or workflow, takes a raise here too, so a working one is raised before it pauses.
   const cap = run.cost?.cap_usd;
-  const raisable = !!actions.onRaiseCap && run.kind === "agentic" && !view.final && typeof cap === "number";
+  // A run that waits on the person for something other than its cap (its served `pending`: an approval, a question, its
+  // browser or computer) is not held by its cap: a raise changes nothing it waits on, so none is offered there.
+  const waitsOnOther = !!run.pending && run.pending.kind !== "budget";
+  const raisable = !!actions.onRaiseCap && !view.final && typeof cap === "number" && !waitsOnOther;
   const [raising, setRaising] = useState(false);
   const budget = run.pending?.kind === "budget" ? run.pending : null;
   return (
-    <header className="border-b px-5 py-4 md:px-8">
-      <nav className="caps flex min-w-0 items-center gap-2 text-[11px] text-muted-foreground" aria-label="Breadcrumb">
+    <header className="border-b px-5 py-4 max-sm:py-3 md:px-8">
+      <nav className="caps flex min-w-0 items-center gap-2 text-label text-muted-foreground" aria-label="Breadcrumb">
         {/* Back where the person came from in the console (the runs list, the agent's page), else to the run's agent. */}
         <button type="button" aria-label="Back" title="Back" onClick={() => goBack(agentHash(run.agent_id))} className="-m-1 shrink-0 p-1 hover:text-foreground">
           <ArrowLeft className="size-3.5" aria-hidden />
@@ -49,22 +52,26 @@ export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run
         <span aria-hidden>/</span>
         <span className="truncate">Run {runLabel(run.run_id)}</span>
       </nav>
-      <div className="mt-3 flex flex-col items-start gap-x-6 gap-y-3 sm:flex-row">
-        <div className="min-w-0 flex-1 self-stretch">
+      {/* On a phone the title's column and the facts' box step aside (display: contents), so the facts and the actions
+          share one wrapping row under a two-line title. 640 px and up keep the column and the actions beside it. */}
+      <div data-phone-row className="mt-3 flex flex-col items-start gap-x-6 gap-y-3 max-sm:mt-2 max-sm:flex-row max-sm:flex-wrap max-sm:items-center max-sm:gap-x-3 max-sm:gap-y-2 sm:flex-row">
+        <div className="min-w-0 flex-1 self-stretch max-sm:contents">
           {/* A workflow run's title can be its input as JSON: then the agent's name reads better. */}
-          <h1 className="break-words text-2xl font-semibold leading-tight" title={run.title}>{run.kind === "workflow" && /^[[{]/.test(run.title.trim()) ? agentName : run.title}</h1>
-          <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2 text-[12px] text-muted-foreground">
+          <h1 className="break-words text-2xl font-semibold leading-tight max-sm:line-clamp-2 max-sm:basis-full max-sm:text-lg" title={runTitle(run)}>{run.kind === "workflow" && /^[[{]/.test(run.title.trim()) ? agentName : runTitle(run)}</h1>
+          <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2 text-small text-muted-foreground max-sm:contents">
             <StatusBadge run={run} />
             {archived && <Chip tone="muted">Archived</Chip>}
+            {run.approvals === "never" && <Chip tone="warning" title="This run's agent never asks: no call of it waits for you.">Unattended</Chip>}
             <span className="font-mono">{run.kind} · rev {run.agent_version}{ranIn && ` · ${ranIn}`}</span>
             <span className="font-mono">{when(run.created_at)}</span>
-            {/* A workflow run's cost is its graph's totals (`costText`), the same the totals bar shows. */}
-            {costText !== undefined ? <span className="font-mono" title="The run's decisions and model calls, as the providers priced them">{costText}</span>
-              : <span className="font-mono" title={costTitle(run.cost)}>{cost(run.cost)}</span>}
+            {/* A workflow run's cost is its graph's totals (`costText`), the same the totals bar shows. Beside it, the run's
+                spend cap when it has one, as the run is read now (a raise reads the run again, so the new cap shows). */}
+            {costText !== undefined ? <span className="font-mono" title="The run's decisions and model calls, as the providers priced them">{costOfCap(run.cost, cap, { text: costText })}</span>
+              : <span className="font-mono" title={costTitle(run.cost, runEnded(run.status))}>{costOfCap(run.cost, cap, { ended: runEnded(run.status) })}</span>}
             <LearningChips run={run} link />
             <ScheduleChip run={run} />
           </div>
-          {run.status === "completed" && run.review && <p className="mt-2 text-[13px] text-warning-text">Needs review: {run.review.reason}</p>}
+          {run.status === "completed" && run.review && <p className="mt-2 text-body text-warning-text max-sm:mt-0 max-sm:basis-full">Needs review: {run.review.reason}</p>}
         </div>
         {(view.canStop || view.canCancel || actions.onArchive || raisable) && (
           <div className="flex shrink-0 items-center gap-2">
@@ -84,7 +91,7 @@ export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run
               </Button>
             )}
             {confirming && (
-              <span className="flex items-center gap-2 border border-destructive/50 px-2 py-1 text-[12px]" role="alertdialog" aria-label="Cancel this run?">
+              <span className="flex items-center gap-2 border border-destructive/50 px-2 py-1 text-small" role="alertdialog" aria-label="Cancel this run?">
                 <span>Cancel for good?</span>
                 <Button size="sm" variant="destructive" onClick={() => { setConfirming(false); actions.onCancel?.(); }}>Yes, cancel</Button>
                 <Button size="sm" variant="ghost" onClick={() => setConfirming(false)}>Keep</Button>
@@ -101,7 +108,7 @@ export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run
       {raisable && raising && (
         <div className="mt-3 max-w-xl">
           {/* Keyed on the pause, as the banner's form is: a new pause (or the first, on a working run) brings its suggestion. */}
-          <RaiseCap key={budget ? `${run.run_id}:${budget.at}` : `${run.run_id}:working`} cap={cap!} suggested={suggestedCap(budget)} paused={!!budget} onRaise={actions.onRaiseCap!} />
+          <RaiseCap key={budget ? `${run.run_id}:${budget.at}` : `${run.run_id}:working`} cap={cap!} suggested={suggestedCap(budget)} least={leastCap(budget)} paused={!!budget} onRaise={actions.onRaiseCap!} />
         </div>
       )}
     </header>

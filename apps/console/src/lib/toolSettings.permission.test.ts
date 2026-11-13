@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ownSettings, toolChoices, toolGates, withPermission, withProvider } from "./toolSettings";
+import type { ToolSettings } from "./v2";
 
 // Each tool's permission (serve's tool gate): allow runs it, ask waits for the owner's approval, deny refuses it. The
 // server's settings and an agent's own carry it beside a provider, by settings key, catalog tools (monid.<tool>,
@@ -12,13 +13,12 @@ const CAPS_TOOLS = [
 ];
 
 describe("tool permissions", () => {
-  it("reads each tool's permission, the owner's default and those offered, in the server's order; none from an older server", () => {
+  it("reads each tool's permission, the owner's default and those offered, in the server's order; none before capabilities answer", () => {
     expect(toolGates(CAPS_TOOLS)).toEqual([
       { name: "read", permission: "allow", default_permission: "allow", permissions: ["allow", "ask", "deny"] },
       { name: "ask_person", permission: "allow", default_permission: "allow", permissions: ["allow", "deny"] },
       { name: "web_search", permission: "ask", default_permission: "allow", permissions: ["allow", "ask", "deny"] },
     ]);
-    expect(toolGates([{ name: "read", available: true }])).toEqual([]);
     expect(toolGates(undefined)).toEqual([]);
   });
 
@@ -27,7 +27,7 @@ describe("tool permissions", () => {
   });
 
   it("a permission equal to the layer's default is no setting, and setting one keeps the tool's provider", () => {
-    const start = { web_search: { provider: "parallel" } };
+    const start: ToolSettings = { web_search: { provider: "parallel" } };
     expect(withPermission(start, "web_search", "deny", "allow")).toEqual({ web_search: { provider: "parallel", permission: "deny" } });
     expect(withPermission({ web_search: { provider: "parallel", permission: "deny" } }, "web_search", "allow", "allow")).toEqual({ web_search: { provider: "parallel" } });
     expect(withPermission({ bash: { permission: "deny" } }, "bash", undefined, "allow")).toEqual({});
@@ -35,7 +35,7 @@ describe("tool permissions", () => {
   });
 
   it("a provider change keeps the tool's permission, and a provider reset leaves the permission set", () => {
-    const start = { web_search: { provider: "parallel", permission: "ask" as const } };
+    const start: ToolSettings = { web_search: { provider: "parallel", permission: "ask" } };
     expect(withProvider(start, "web_search", "native", "auto")).toEqual({ web_search: { provider: "native", permission: "ask" } });
     expect(withProvider(start, "web_search", undefined, "auto")).toEqual({ web_search: { permission: "ask" } });
   });
@@ -47,7 +47,7 @@ describe("tool permissions", () => {
   });
 
   it("the server's own settings keep every permission it holds, a catalog tool's and an MCP server's wildcard included", () => {
-    const answer = {
+    const answer: ToolSettings = {
       web_search: { provider: "auto", permission: "ask" as const },
       web_fetch: { provider: "parallel" },
       bash: { permission: "deny" as const },

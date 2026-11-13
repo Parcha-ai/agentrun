@@ -1,0 +1,21 @@
+# Applied with these parameters (POST /v2/templates/release-notes/apply). Pass: 3 of 3 runs.
+parameters:
+  repo: "acme/lantern"
+# The runner serves fixtures/github-mcp.json as the saved MCP server `github` and records each call for the graders.
+mcp:
+  github: fixtures/github-mcp.json
+# The owner's answer at apply: the reads, set to allow. issue_write is left at the owner's setting (ask): the message
+# asks for the notes only, so it is never called.
+grants:
+  - mcp:github/list_releases
+  - mcp:github/get_latest_release
+  - mcp:github/get_release_by_tag
+  - mcp:github/list_tags
+  - mcp:github/get_tag
+  - mcp:github/list_commits
+  - mcp:github/get_commit
+  - mcp:github/search_pull_requests
+  - mcp:github/pull_request_read
+  - mcp:github/get_file_contents
+  - mcp:github/search_issues
+  - mcp:github/get_label

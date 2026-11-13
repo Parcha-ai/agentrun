@@ -10,6 +10,7 @@ import { type Agent, type AgentFields, editBody } from "@/lib/agentForm";
 import { ClientError } from "@/lib/client";
 import type { Effect } from "@/lib/runGraph";
 import { callNodeTools, toolBlockers, toolGates } from "@/lib/toolSettings";
+import { pick } from "@/test/picker";
 
 // A workflow whose call node calls a tool set to deny, or to ask (a call node can't wait for an approval), is refused at
 // its start: 409 agent_not_runnable, `details.denied` and `details.asks` each the settings keys of those tools (arrays,
@@ -42,7 +43,7 @@ describe("the start blockers a 409 names", () => {
 
   it("a workflow's call nodes' tools: each node's tool at its settings key, once, wherever the node sits", () => {
     const workflow = { v: 2, name: "f", root: { node: "sequence", label: "s", steps: [
-      { node: "call", label: "a", via: "tool", tool: "fetch_page", args: {} },
+      { node: "call", label: "a", via: "tool", tool: "web_fetch", args: {} },
       { node: "map", label: "m", itemsPath: "xs", as: "x", body: { node: "call", label: "b", via: "tool", tool: "web_search", args: {} } },
       { node: "call", label: "c", via: "tool", tool: "web_fetch", args: {} },
       { node: "call", label: "d", via: "shell", command: "echo hi" },
@@ -51,14 +52,11 @@ describe("the start blockers a 409 names", () => {
     expect(callNodeTools(undefined)).toEqual([]);
   });
 
-  it("holds a legacy name to its settings key, as the server does: fetch_page is web_fetch's", () => {
-    expect(toolBlockers({ asks: ["fetch_page"], denied: ["fetch_page", "web_fetch"] })).toEqual({ denied: ["web_fetch"], asks: ["web_fetch"] });
-  });
 });
 
 const workflowAgent = (toolSettings?: Agent["definition"]["tool_settings"]): Agent => ({
   agent_id: "fetch-flow", kind: "workflow", revision: "rv1", revisions: 1, archived_at: null,
-  definition: { version: 1, name: "Fetch flow", workflow: { v: 2, name: "f", root: { node: "call", label: "get", tool: "fetch_page", input: {} } }, skills: [], tools: ["fetch_page", "bash"], ...(toolSettings ? { tool_settings: toolSettings } : {}) },
+  definition: { version: 1, name: "Fetch flow", workflow: { v: 2, name: "f", root: { node: "call", label: "get", tool: "web_fetch", input: {} } }, skills: [], tools: ["web_fetch", "bash"], ...(toolSettings ? { tool_settings: toolSettings } : {}) },
 });
 
 function runBar(e: ClientError) {
@@ -119,11 +117,10 @@ describe("the editor's address for one tool", () => {
 describe("a workflow agent's tool permissions in its editor", () => {
   const ALL = ["allow", "ask", "deny"];
   const RAW = [
-    { name: "bash", available: true, permission: "allow", default_permission: "allow", permissions: ALL },
-    { name: "fetch_page", available: true, permission: "allow", default_permission: "allow", permissions: ALL },
+    { name: "bash", available: true, permission: "allow", default_permission: "allow", permissions: ALL, harnesses: ["pi"] },
     { name: "web_fetch", available: true, permission: "ask", default_permission: "allow", permissions: ALL, providers: ["kernel", "parallel"], provider: "kernel", default_provider: "kernel", resolves: { pi: "kernel" } },
   ];
-  const caps = { harnesses: [{ id: "pi", available: true }], tools: RAW.map(({ name }) => ({ name, available: true, nodes: true })), thinking: [] };
+  const caps = { harnesses: [{ id: "pi", available: true }], tools: RAW.map(({ name }) => ({ name, available: true, nodes: true, harnesses: ["pi"] })), thinking: [] };
   async function open(agent: Agent, focus?: string) {
     const saves: AgentFields[] = [];
     const host = document.body.appendChild(document.createElement("div"));
@@ -134,26 +131,26 @@ describe("a workflow agent's tool permissions in its editor", () => {
     return { host, saves, scope };
   }
 
-  it("shows the permission of each tool its call nodes call, fetch_page as web_fetch's, and no provider column", async () => {
+  it("shows the permission of each tool its call nodes call, and no provider column", async () => {
     const page = await open(workflowAgent());
     const scope = page.scope()!;
     // bash is granted but no call node calls it; a call node runs only the server's built-in call tools.
     expect([...scope.querySelectorAll("tr[data-tool]")].map((r) => r.getAttribute("data-tool"))).toEqual(["web_fetch"]);
-    expect(scope.querySelector("select[aria-label='web_fetch permission']")).toBeTruthy();
-    expect(scope.querySelector("select[aria-label$=' provider']")).toBeNull();
+    expect(scope.querySelector("button[aria-haspopup=listbox][aria-label='web_fetch permission']")).toBeTruthy();
+    expect(scope.querySelector("button[aria-haspopup=listbox][aria-label$=' provider']")).toBeNull();
     expect([...scope.querySelectorAll("thead th")].map((th) => th.textContent)).toEqual(["Tool", "Permission", "Reset"]);
   });
 
   it("no row for a catalog tool, which no call node runs, even when the agent grants it and its read names a permission", async () => {
     const base = workflowAgent();
-    const agent: Agent = { ...base, definition: { ...base.definition, tools: ["fetch_page", "monid.run"] }, tools: [{ name: "monid.run", permission: "ask", permission_from: "default", default_permission: "ask", permissions: ["allow", "ask", "deny"] }] };
+    const agent: Agent = { ...base, definition: { ...base.definition, tools: ["web_fetch", "monid.run"] }, tools: [{ name: "monid.run", permission: "ask", permission_from: "default", default_permission: "ask", permissions: ["allow", "ask", "deny"] }] };
     const page = await open(agent);
     expect([...page.scope()!.querySelectorAll("tr[data-tool]")].map((r) => r.getAttribute("data-tool"))).toEqual(["web_fetch"]);
   });
 
-  it("the address's tool is the one focused, a legacy name at its settings key's row", async () => {
-    const page = await open(workflowAgent(), "fetch_page");
-    expect(document.activeElement).toBe(page.scope()!.querySelector("select[aria-label='web_fetch permission']"));
+  it("the address's tool is the one focused, at its own row", async () => {
+    const page = await open(workflowAgent(), "web_fetch");
+    expect(document.activeElement).toBe(page.scope()!.querySelector("button[aria-haspopup=listbox][aria-label='web_fetch permission']"));
   });
 
   it("an address naming a tool with no row here opens the Tools step, focuses nothing, and doesn't fail", async () => {
@@ -166,8 +163,8 @@ describe("a workflow agent's tool permissions in its editor", () => {
   it("a permission set here is saved in tool_settings, and the workflow is kept whole", async () => {
     const agent = workflowAgent({ bash: { permission: "deny" } });
     const page = await open(agent, "web_fetch");
-    const s = page.scope()!.querySelector<HTMLSelectElement>("select[aria-label='web_fetch permission']")!;
-    await act(async () => { Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(s, "allow"); s.dispatchEvent(new Event("change", { bubbles: true })); });
+    const s = page.scope()!.querySelector<HTMLButtonElement>("button[aria-haspopup=listbox][aria-label='web_fetch permission']")!;
+    await pick(s, "allow");
     await settle();
     await act(async () => { [...page.host.querySelectorAll("button")].find((b) => /^Save revision$/.test(b.textContent?.trim() ?? ""))!.click(); });
     await settle();
@@ -175,7 +172,7 @@ describe("a workflow agent's tool permissions in its editor", () => {
     expect(fields.tool_settings).toEqual({ bash: { permission: "deny" }, web_fetch: { permission: "allow" } });
     const body = editBody(agent, fields, "").definition;
     expect(body.workflow).toEqual(agent.definition.workflow);
-    expect(body.tools).toEqual(["fetch_page", "bash"]);
+    expect(body.tools).toEqual(["web_fetch", "bash"]);
     expect(body.tool_settings).toEqual({ bash: { permission: "deny" }, web_fetch: { permission: "allow" } });
   });
 });

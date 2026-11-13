@@ -1,4 +1,4 @@
-// fetch_page's network in the run's process, for the tests: the fake network, each dial appended to $FAUX_WEB_LOG.
+// web_fetch's network in the run's process, for the tests: the fake network, each dial appended to $FAUX_WEB_LOG.
 import { appendFileSync } from "node:fs";
 import { network } from "./fake-network.mjs";
 

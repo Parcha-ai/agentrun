@@ -10,7 +10,7 @@ import { existsSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
+import { agent, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 
 /** A held tool key, made at runtime: distinct per run, and no credential-shaped literal for the source export. */
 const KEY = ["not-a-secret", "parallel-tool-key", randomBytes(6).toString("hex")].join("-");
@@ -36,7 +36,7 @@ for (const [how, content] of CASES) {
     assert.equal((await api("POST", "/agents", agent("echoes", { tools: ["read"] }))).status, 201);
     const started = await api("POST", "/agents/echoes/runs", { input: { content: `Read these paths once ${go} exists: ${JSON.stringify(["found.txt"])}` } });
     assert.equal(started.status, 202, JSON.stringify(started.body));
-    const work = join(data, "runs", started.body.run_id, "work");
+    const work = join(runDir(data, started.body.run_id), "work");
     for (let i = 0; !existsSync(work); i++) {
       assert.ok(i < 300, "the run's workspace");
       await new Promise((resolve) => setTimeout(resolve, 100));

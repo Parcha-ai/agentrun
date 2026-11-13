@@ -9,7 +9,7 @@ import { capBefore, leastMoney, paidCall, raiseTo, useSpend } from "../dist/cap.
 
 // Output at $100 a million: 3,072 tokens, a request's least, are $0.3072.
 const model = { id: "gpt-6-luna", name: "gpt-6-luna", api: "openai-responses", provider: "p", maxTokens: 64000, contextWindow: 400000, cost: { input: 0, output: 100, cacheRead: 0, cacheWrite: 0 } };
-const named = (refusal) => Number(/Raise the cap to at least \$(\d+\.\d\d) to run it\.$/.exec(refusal ?? "")?.[1]);
+const named = (refusal) => Number(/Raise the cap to at least \$(\d+\.\d\d) to continue\.$/.exec(refusal ?? "")?.[1]);
 
 test("a total a hair past a whole cent names the cent above it: raiseTo(0.30, 0.31 + 5e-12) is $0.32", () => {
   assert.equal(raiseTo(0.3, 0.31 + 5e-12), "$0.32");

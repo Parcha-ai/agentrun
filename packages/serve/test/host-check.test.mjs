@@ -54,6 +54,8 @@ test("a refused Host gets a page that names the fix in a browser, and the same f
   assert.match(api.type, /^application\/json/);
   const { message } = JSON.parse(api.body).error;
   assert.match(message, /^unexpected Host header/);
+  assert.match(message, new RegExp(`ssh -L ${port}:localhost:${port}`), "the tunnel example names this server's own port");
+  assert.match(page.body, new RegExp(`ssh -L ${port}:localhost:${port}`), "and so does the page");
   assert.match(message, /localhost or 127\.0\.0\.1/);
   assert.match(message, /AGENTRUN_PUBLIC_URL/);
   assert.doesNotMatch(message, /evil\.example/);

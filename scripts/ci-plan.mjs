@@ -1,7 +1,7 @@
 // CI's test plan: every test suite of the repository, its files, and their assignment to shards by time.
 //
 // A suite is a workspace's `test` script or one of the root scripts scripts/ci-shards.json names. A suite whose script is
-// `node --test [--test-concurrency=<n>] [--test-timeout=<ms>] <files or globs>`, or pi-transport's `vitest --run`, is split
+// `node --test [--test-concurrency=<n>] [--test-timeout=<ms>] <files or globs>`, or `vitest --run`, is split
 // by file; any other script ci-shards.json lists under `whole` runs as it is, as one unit. A script of any other shape is
 // refused, so a script that changes shape is looked at here instead of running unseen.
 //
@@ -10,7 +10,7 @@
 // weights come from scripts/ci-timings.json (seconds on a GitHub-hosted runner, from CI's own logs: `node
 // scripts/ci-timings.mjs`). A file it does not list weighs its suite's median; nothing is dropped for a missing weight.
 // The plan is a pure function of the checkout, so every job of a run computes the same one.
-//   node scripts/ci-plan.mjs [--pool <name>]   prints the test shards and their modelled seconds (the pi legs': pi-leg.mjs --plan --shard)
+//   node scripts/ci-plan.mjs [--pool <name>]   prints the test shards and their modelled seconds
 import { spawnSync } from 'node:child_process';
 import { existsSync, globSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -210,6 +210,15 @@ export function pools(suites, config) {
 /** The test shards: `{ '<pool>-<k>': { pool, suites, units, seconds } }`, every pool planned, the cover checked. */
 export function testShards(root, { config, timings } = readConfig(root)) {
   const byPool = pools(readSuites(root, { config }), config);
+  // A file a named pool's suite lists (a root suite pins serve's workflow tests to lean) is that pool's alone: the pool that
+  // takes the rest drops it from its own suite, so the shards run it once.
+  const pathOf = (suite, file) => (suite.cwd === '.' ? file : `${suite.cwd}/${file}`);
+  const pinned = new Set();
+  for (const [pool, { suites }] of Object.entries(byPool)) if (config.pools[pool].suites) for (const suite of suites) for (const file of suite.files) pinned.add(pathOf(suite, file));
+  for (const [pool, entry] of Object.entries(byPool)) {
+    if (config.pools[pool].suites) continue;
+    entry.suites = entry.suites.map((suite) => (suite.whole ? suite : { ...suite, files: suite.files.filter((file) => !pinned.has(pathOf(suite, file))) })).filter((suite) => suite.whole || suite.files.length);
+  }
   const shards = {};
   for (const [pool, { shards: n, suites }] of Object.entries(byPool)) {
     const units = unitsOf(suites, timings);

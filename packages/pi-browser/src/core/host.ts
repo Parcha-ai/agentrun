@@ -57,16 +57,15 @@ export type AttachTarget = {
   sdkCdpUrl: string;
   /** `expiresAt` (epoch ms): the dial's credential ends then, so a socket opened on it is closed at that moment. */
   dial?: { url: string; headers?: Record<string, string>; expiresAt?: number };
-  extensionId?: string;
+  /** The browser's own DevTools URL, which Stagehand's extension inside the browser dials for its own connection; absent, it
+   *  dials `sdkCdpUrl`. A proxy in front of the driver then carries both, and a drop that cuts both leaves the extension
+   *  holding a client it can no longer see leave: Stagehand 4.4 then refuses every attach until its worker restarts. */
+  extensionCdpUrl?: string;
 };
 
 export type ProviderCaps = {
-  timeoutModel: "wall-clock" | "inactivity";
-  maxLifetimeS: number;
-  survivesDisconnect: boolean;
-  releaseIsAsync: boolean;
+  /** The provider can open a session on a saved sign-in (`SessionSpec.profile`); without it such a session is refused. */
   profiles: boolean;
-  extension: "uploaded-per-launch" | "preinstalled" | "loaded-locally";
   /** Every session attaches to the same browser (an endpoint the host named), so two at once would drive the same pages. */
   sharedBrowser?: boolean;
   /** The session settings this provider applies; a setting left out is applied. */
@@ -82,25 +81,11 @@ export type SessionSettingsSupport = { proxies: boolean; verified: boolean; geol
 
 export type LiveView = { fullscreen: string | null; framed: string | null; pages: Array<{ id: string | null; url: string | null; title: string | null; fullscreen: string | null }> };
 export type Recording = { id: string; startedAt: string | null; durationS: number | null };
-export type RemoteFile = { name: string; sizeBytes: number; modifiedAt: string | null };
-
-export type FetchRequest = { url: string; format: "markdown" | "raw"; proxies: boolean };
-export type FetchResult = { finalUrl: string | null; statusCode: number | null; contentType: string | null; content: string; usage?: ToolUsage };
-export type SearchRequest = { query: string; n: number };
-/** `snippet`: an excerpt of the page the search provider chose, when it gives one; web_search bounds it before the model sees it. */
-export type SearchHit = { url: string; title: string | null; author?: string | null; published?: string | null; snippet?: string | null };
-export type SearchResult = { results: SearchHit[]; usage?: ToolUsage };
+/** `downloading`: the browser is still writing it; it is listed so the caller can say so, and is not read. */
+export type RemoteFile = { name: string; sizeBytes: number; modifiedAt: string | null; downloading?: true };
 
 /** What a session vault may keep of this provider's sessions. Absent: nothing (a browser the package cannot read, or one the host shares). */
-export type ProviderVault =
-  | { kind: "cdp" }
-  | {
-      kind: "context"; provider: "browserbase" | "kernel";
-      /** True when this provider writes the context ids it makes to a clear file: a vault refuses such a provider, so an id never lands outside it. */
-      contextIdsInClear: boolean;
-      /** The context or profile this session runs on, or null. A capability: it goes to the host's vault only. */
-      contextOf(ref: LeaseRef): string | null;
-    };
+export type ProviderVault = { kind: "cdp" };
 
 export interface BrowserProvider {
   readonly name: string;
@@ -120,25 +105,11 @@ export interface BrowserProvider {
   liveView?(ref: LeaseRef): Promise<LiveView | null>;
   recordings?: { list(ref: LeaseRef): Promise<Recording[]>; open(ref: LeaseRef, id: string): Promise<ReadableStream<Uint8Array>> };
   downloads?: { list(ref: LeaseRef): Promise<RemoteFile[]>; read(ref: LeaseRef, name: string, maxBytes: number): Promise<AsyncIterable<Uint8Array>> };
-  fetch?(request: FetchRequest, signal?: AbortSignal): Promise<FetchResult>;
-  search?(request: SearchRequest, signal?: AbortSignal): Promise<SearchResult>;
 }
 
 /** The host owns the file boundary for `browser_upload`: a path the model names is resolved here or refused. */
 export interface WorkspaceFiles {
   resolve(rel: string): Promise<{ bytes: Uint8Array; name: string; mime: string } | { refused: string }>;
-}
-
-/** A site use_website can open: configuration, never model input. */
-export type SiteInfo = { site: string; title: string; description: string };
-/** Runs one child agent that has the browser tools and no use_website, and answers its final text. The adapter supplies
- *  it: a pi session for the coding agent, a task-owned conversation for pi-durable. */
-export type ChildRunner = (task: { site: string; requestId: string; prompt: string }, signal: AbortSignal) => Promise<string>;
-/** Runs a granted site's task and reports it, idempotent by `requestId`: exactly one of `run` (a task started elsewhere)
- *  or `report` (the result). A port that runs the child itself uses `ctx.runChild`; a broker ignores it. */
-export interface SiteRunPort {
-  list(signal: AbortSignal): Promise<SiteInfo[]>;
-  use(input: { site: string; requestId: string; instructions: string }, ctx: { signal: AbortSignal; runChild: ChildRunner }): Promise<{ run: { id: string; state: string } } | { report: string }>;
 }
 
 export type HandoffOutcome = "done" | "cancelled" | "expired";
@@ -149,7 +120,8 @@ export interface HandoffPort {
   /** Idempotent by `requestId`. `sessionId` is the provider's id for the held session, by which a host finds the
    *  session's own grants. `liveView` reaches the host only, never the model. */
   request(ask: { requestId: string; sessionTag: string; sessionId: string; liveView: LiveView | null; instruction: string; completionCondition: string }, signal: AbortSignal): Promise<{ interactionId: string } | { refused: string }>;
-  outcome(interactionId: string, signal: AbortSignal): Promise<"pending" | HandoffOutcome>;
+  /** With `reason`: why, in the host's words, for the model (an ask the host ended at its spend cap). */
+  outcome(interactionId: string, signal: AbortSignal): Promise<"pending" | HandoffOutcome | { outcome: HandoffOutcome; reason: string }>;
 }
 
 export type ReleaseReason = "tool" | "idle" | "relaunch" | "close" | "ended" | "lost" | "create_failed";

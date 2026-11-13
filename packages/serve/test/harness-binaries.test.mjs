@@ -1,7 +1,8 @@
 // Each harness's binary is checked against its pins (its sha256, then its --version) once per binary per process: the
 // start's probe of the harnesses, then a save and a run check of a codex revision, share one check of codex's binary and
-// one of claude-agent's. Counted at the one call every check makes, `<binary> --version`: Node's own execFileSync,
-// wrapped here (syncBuiltinESMExports carries the wrap to every module's named import of it). Since the start's probe is
+// one of claude-agent's. Counted at the one call every check makes, `<binary> --version`: Node's own execFile (a host's
+// check, off the event loop) and execFileSync (an adapter's own), wrapped here (syncBuiltinESMExports carries the wrap to
+// every module's named import of them). Since the start's probe is
 // the one that makes the offers, a harness missing or off its pins then stays unavailable until a restart, and says so.
 import assert from "node:assert/strict";
 import childProcess from "node:child_process";
@@ -18,14 +19,21 @@ test("the start's probe of the harnesses, a save and a run check of a codex revi
   // A gateway's model for codex (nothing is sent to it) and an Anthropic key for claude-agent: no real key.
   withEnv(t, { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9", AGENT_MODEL: "gpt-test", AGENT_MODEL_API_KEY: `not-a-secret-${"gateway"}`, AGENT_MODEL_PRICE: "1,2,0.5", ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}` }, ["AGENT_MODEL_FAST", "AGENT_MODEL_STRONG", "AGENT_MODEL_GATEWAY_IDS", "OPENAI_API_KEY", "CODEX_BIN", "AGENTRUN_SERVE_CODEX_STANDIN", "AGENTRUN_CLAUDE_AGENT_EXECUTABLE", "MONID_API_KEY"]);
   const asked = new Map();
-  const real = childProcess.execFileSync;
-  childProcess.execFileSync = function (file, args, ...rest) {
+  const real = { execFile: childProcess.execFile, execFileSync: childProcess.execFileSync };
+  const count = (file, args) => {
     if (Array.isArray(args) && args[0] === "--version" && ["codex", "claude"].includes(basename(String(file)))) asked.set(basename(String(file)), (asked.get(basename(String(file))) ?? 0) + 1);
-    return real.call(this, file, args, ...rest);
+  };
+  childProcess.execFile = function (file, args, ...rest) {
+    count(file, args);
+    return real.execFile.call(this, file, args, ...rest);
+  };
+  childProcess.execFileSync = function (file, args, ...rest) {
+    count(file, args);
+    return real.execFileSync.call(this, file, args, ...rest);
   };
   syncBuiltinESMExports();
   t.after(() => {
-    childProcess.execFileSync = real;
+    Object.assign(childProcess, real);
     syncBuiltinESMExports();
   });
   const { api } = await serve(t, { faux: undefined });
@@ -56,12 +64,21 @@ test("the start's probe, a save and a run check of an opencode revision check Op
   let asked = 0;
   let read = 0;
   const isOpenCode = (path) => path === bin;
-  const real = { execFileSync: childProcess.execFileSync, openSync: fs.openSync, readFileSync: fs.readFileSync };
+  const real = { execFile: childProcess.execFile, execFileSync: childProcess.execFileSync, openSync: fs.openSync, readFileSync: fs.readFileSync, open: fs.promises.open };
+  childProcess.execFile = function (file, args, ...rest) {
+    if (Array.isArray(args) && args[0] === "--version" && isOpenCode(String(file))) asked += 1;
+    return real.execFile.call(this, file, args, ...rest);
+  };
   childProcess.execFileSync = function (file, args, ...rest) {
     if (Array.isArray(args) && args[0] === "--version" && isOpenCode(String(file))) asked += 1;
     return real.execFileSync.call(this, file, args, ...rest);
   };
-  // Its sha256, read a chunk at a time (an open) or whole (a read of the file): either counts as one read of its bytes.
+  // Its sha256, read a chunk at a time (an open, off the loop or on it) or whole (a read of the file): each counts as one
+  // read of its bytes.
+  fs.promises.open = function (path, ...rest) {
+    if (isOpenCode(path)) read += 1;
+    return real.open.call(this, path, ...rest);
+  };
   fs.openSync = function (path, ...rest) {
     if (isOpenCode(path)) read += 1;
     return real.openSync.call(this, path, ...rest);
@@ -72,8 +89,9 @@ test("the start's probe, a save and a run check of an opencode revision check Op
   };
   syncBuiltinESMExports();
   t.after(() => {
-    Object.assign(childProcess, { execFileSync: real.execFileSync });
+    Object.assign(childProcess, { execFile: real.execFile, execFileSync: real.execFileSync });
     Object.assign(fs, { openSync: real.openSync, readFileSync: real.readFileSync });
+    fs.promises.open = real.open;
     syncBuiltinESMExports();
   });
   const { api } = await serve(t, { faux: undefined });
@@ -96,28 +114,26 @@ test("a harness whose binary is missing or off its pins at the start says to res
   const keys = { OPENAI_API_KEY: `not-a-secret-${"openai"}`, ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}` };
   withEnv(t, keys, ["AGENT_MODEL_BASE_URL", "AGENT_MODEL_FAST", "AGENT_MODEL_STRONG", "AGENT_MODEL_GATEWAY_IDS", "CODEX_BIN", "AGENTRUN_SERVE_CODEX_STANDIN", "AGENTRUN_CLAUDE_AGENT_EXECUTABLE"]);
   /** GET /v2/capabilities' harnesses by id, from a server started with `vars` set. */
-  const offers = async (vars) => {
+  const offers = async (vars, harnesses = true) => {
     Object.assign(process.env, vars);
-    const { api } = await serve(t, { faux: undefined });
+    const { api } = await serve(t, { faux: undefined, harnesses });
     return Object.fromEntries((await api("GET", "/capabilities")).body.harnesses.map((offer) => [offer.id, offer]));
   };
-  const INSTALL = /; once it is installed, restart AgentRun to pick it up\.$/;
   const PINS = /; once the pinned build is installed, restart AgentRun\.$/;
-  // claude-agent's reason is its CLI's, or its SDK's where the SDK here is missing or off its pin.
-  const restartOf = (reason) => (/not installed/.test(reason) ? INSTALL : PINS);
-  // Not installed: no file where each binary is named.
-  const missing = await offers({ CODEX_BIN: join(dir, "nothing"), AGENTRUN_CLAUDE_AGENT_EXECUTABLE: join(dir, "nothing") });
-  assert.equal(missing.codex.available, false, JSON.stringify(missing.codex));
-  assert.match(missing.codex.reason, /is not installed/);
-  assert.match(missing.codex.reason, INSTALL, "codex not installed: restart once it is installed");
-  assert.equal(missing["claude-agent"].available, false, JSON.stringify(missing["claude-agent"]));
-  assert.match(missing["claude-agent"].reason, restartOf(missing["claude-agent"].reason), "claude-agent not installed: the restart is named");
+  // Not installed: no file where each binary is. Claude Code without its CLI, or Codex without its binary, is not whole: it
+  // installs again on first use, so each runs and names no restart.
+  const missing = await offers({}, { cli: join(dir, "nothing"), codexBin: join(dir, "nothing") });
+  assert.deepEqual([missing.codex.available, missing.codex.installs, missing.codex.reason], [true, "on_first_use", undefined], "codex's tree without its binary installs again");
+  assert.deepEqual([missing["claude-agent"].available, missing["claude-agent"].installs, missing["claude-agent"].reason], [true, "on_first_use", undefined], "claude-agent's tree without its CLI installs again");
   // Off its pins: a binary that is not the pinned build.
-  const off = await offers({ CODEX_BIN: unpinned, AGENTRUN_CLAUDE_AGENT_EXECUTABLE: unpinned });
+  const off = await offers({}, { cli: unpinned, codexBin: unpinned });
   assert.match(off.codex.reason, /is not the pinned build/);
   assert.match(off.codex.reason, PINS, "codex off its pins: restart once the pinned build is installed");
   assert.equal(off["claude-agent"].available, false, JSON.stringify(off["claude-agent"]));
-  assert.match(off["claude-agent"].reason, restartOf(off["claude-agent"].reason), "claude-agent off its pins: the restart is named");
+  assert.match(off["claude-agent"].reason, PINS, "claude-agent's CLI off its pins: the restart is named");
+  // Claude Code and Codex not installed in the data at all: each installs on first use, so it runs, and names no restart.
+  const fresh = await offers({}, false);
+  for (const id of ["claude-agent", "codex"]) assert.deepEqual([fresh[id].available, fresh[id].installs, fresh[id].reason], [true, "on_first_use", undefined], id);
   // A setting fixes it, and a save of a key checks the harnesses again (server.ts): no restart named.
   delete process.env.OPENAI_API_KEY;
   const keyless = await offers({ AGENTRUN_SERVE_CODEX_STANDIN: JSON.stringify({ command: unpinned }) });

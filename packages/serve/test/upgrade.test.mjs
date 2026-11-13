@@ -7,7 +7,7 @@ import { mkdir, readdir, symlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { startServe } from "../dist/server.js";
-import { FAUX, client, follow, scratch, serve, startRun } from "./support.mjs";
+import { FAUX, client, scratch, serve } from "./support.mjs";
 
 /** The error startServe refused with, or null after closing the server it should not have started. */
 const refusal = (options) => startServe(options).then(async (server) => (await server.close(), null), (error) => error);
@@ -23,9 +23,9 @@ test("a data directory with beta.26 agent homes is refused at start, each home n
   await oldHome(data, "triage");
   const error = await refusal({ data, port: 0, faux: FAUX });
   assert.ok(error, "refused");
-  assert.match(error.message, /0\.1\.0-beta\.26 or earlier/);
-  assert.ok(error.message.includes(join(data, "old", "agent.sqlite")) && error.message.includes(join(data, "triage", "agent.sqlite")), error.message);
-  assert.match(error.message, /upgrad/i);
+  assert.match(error.message, /holds an earlier version's data/);
+  assert.ok(error.message.includes(join("old", "agent.sqlite")) && error.message.includes(join("triage", "agent.sqlite")), error.message);
+  assert.match(error.message, /Keep this directory with the earlier version, or start this version on a new, empty directory/);
   assert.deepEqual((await readdir(data)).sort(), ["old", "triage"], "nothing is made beside the old homes: no store, no token");
 });
 
@@ -41,28 +41,28 @@ test("a volume already started on this version starts again on its own data, and
   assert.deepEqual((await client(again.baseUrl, again.token)("GET", "/agents")).body.agents.map((a) => a.agent_id), ["kept"], "this version's volume is not refused");
   await closeAgain();
   await oldHome(data, "old");
-  assert.match((await refusal({ data, port: 0, faux: FAUX }))?.message ?? "started", /agent homes from AgentRun Server 0\.1\.0-beta\.26 or earlier/);
+  assert.match((await refusal({ data, port: 0, faux: FAUX }))?.message ?? "started", /holds an earlier version's data \(old\/agent\.sqlite\)/);
 });
 
 test("an old home under any name is refused: an agent named runs, a symlinked home, and a symlinked agent.sqlite", async (t) => {
   const root = await scratch(t);
   const named = join(root, "named");
   await oldHome(named, "runs");
-  assert.match((await refusal({ data: named, port: 0, faux: FAUX }))?.message ?? "started", new RegExp(join(named, "runs", "agent.sqlite").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.match((await refusal({ data: named, port: 0, faux: FAUX }))?.message ?? "started", new RegExp(join("runs", "agent.sqlite").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   const linked = join(root, "linked");
   await oldHome(join(root, "elsewhere"), "kept");
   await mkdir(linked, { recursive: true });
   await symlink(join(root, "elsewhere", "kept"), join(linked, "kept"));
-  assert.match((await refusal({ data: linked, port: 0, faux: FAUX }))?.message ?? "started", /0\.1\.0-beta\.26 or earlier/, "a symlinked home is refused too");
+  assert.match((await refusal({ data: linked, port: 0, faux: FAUX }))?.message ?? "started", /holds an earlier version's data/, "a symlinked home is refused too");
   const file = join(root, "file");
   await mkdir(join(file, "kept"), { recursive: true });
   await symlink(join(root, "elsewhere", "kept", "agent.sqlite"), join(file, "kept", "agent.sqlite"));
-  assert.match((await refusal({ data: file, port: 0, faux: FAUX }))?.message ?? "started", /0\.1\.0-beta\.26 or earlier/, "a symlinked agent.sqlite is refused too");
+  assert.match((await refusal({ data: file, port: 0, faux: FAUX }))?.message ?? "started", /holds an earlier version's data/, "a symlinked agent.sqlite is refused too");
 });
 
-test("this version's own runs/ and a directory with no agent.sqlite start as before", async (t) => {
+test("this version's own disk/ and a directory with no agent.sqlite start as before", async (t) => {
   const data = join(await scratch(t), "agents");
-  await mkdir(join(data, "runs", "01a1-example"), { recursive: true });
+  await mkdir(join(data, "disk", "agents", "notes-0123456789abcdef", "runs", "01a1-example"), { recursive: true });
   await mkdir(join(data, "notes"), { recursive: true });
   const { api } = await serve(t, { data });
   assert.equal((await api("GET", "/agents")).status, 200);
@@ -79,5 +79,5 @@ test("the bin prints the refusal and exits 1", { timeout: 20_000 }, async (t) =>
   for await (const chunk of child.stderr) err += chunk;
   const code = child.exitCode ?? (await new Promise((resolve) => child.once("exit", resolve)));
   assert.equal(code, 1, err);
-  assert.match(err, /^agentrun-serve: this data directory holds agent homes/m);
+  assert.match(err, /^agentrun-serve: .* holds an earlier version's data \(old\/agent\.sqlite\)/m);
 });

@@ -5,7 +5,7 @@ import { stat } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { capabilities, ERROR_STATUS, startServe } from "../dist/index.js";
-import { EFFORT_ENV, thinkingOf } from "../dist/model.js";
+import { thinkingLevel } from "../dist/model.js";
 import { agent, answerFlow, client, flowAgent, scratch, serve, withEnv } from "./support.mjs";
 
 test("capabilities answer without a credential and say what this server offers: local, no quotes, no home moves, uploads up to their limits", async (t) => {
@@ -17,7 +17,7 @@ test("capabilities answer without a credential and say what this server offers: 
   assert.equal(body.contract, "agentrun.v2/0");
   assert.equal(body.limits.max_upload_bytes, 50 * 2 ** 20);
   assert.equal(body.limits.max_files_per_run, 20);
-  assert.deepEqual(body.models, { source: "faux", route_prefix: null, fast: "faux/faux-1", default: "faux/faux-1", strong: "faux/faux-1", ready: true, needs: null });
+  assert.deepEqual(body.models, { source: "faux", route_prefix: null, fast: "faux/faux-1", default: "faux/faux-1", strong: "faux/faux-1", ready: true, needs: null, priced: true });
   assert.equal(body.features.quotes, false);
   assert.deepEqual(body.features.home, { export: false, import: false, check: false });
   assert.deepEqual(body.features.runs, { stop: true, cancel: true, kill: false, list: true, kinds: ["agentic", "workflow"], pause_workflow_runs: true, graph: true });
@@ -27,13 +27,13 @@ test("capabilities answer without a credential and say what this server offers: 
   assert.equal(body.features.tool_permissions, true, "a tool setting carries a permission, which the tool gate holds every call to");
   const keyed = ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"].filter((name) => !process.env[name]).length === 0 || !!process.env.KERNEL_API_KEY;
   const monid = !!process.env.MONID_API_KEY;
-  assert.deepEqual(body.tools.map((t) => [t.name, t.available, t.nodes, t.calls]), [["read", true, true, false], ["write", true, true, false], ["edit", true, true, false], ["bash", false, false, false], ["bash_background", false, false, false], ["bash_output", false, false, false], ["bash_input", false, false, false], ["bash_signal", false, false, false], ["bash_list", false, false, false], ["ask_person", true, false, false], ["web_fetch", true, true, true], ["web_search", true, true, true], ["browser", keyed, true, false], ["monid.discover", monid, false, false], ["monid.inspect", monid, false, false], ["monid.run", monid, false, false], ["pdf_pages", true, false, true], ["llm", true, false, true]], "the table, in order: what a revision may name, what a workflow's model node may, and what its call node may run; bash and the background tools run in no box on a server that has none");
+  assert.deepEqual(body.tools.map((t) => [t.name, t.available, t.nodes, t.calls]), [["read", true, true, false], ["write", true, true, false], ["edit", true, true, false], ["bash", false, false, false], ["bash_background", false, false, false], ["bash_output", false, false, false], ["bash_input", false, false, false], ["bash_signal", false, false, false], ["bash_list", false, false, false], ["ask_person", true, false, false], ["web_fetch", true, true, true], ["web_search", true, true, true], ["browser", keyed, false, false], ["monid.discover", monid, false, false], ["monid.inspect", monid, false, false], ["monid.run", monid, false, false], ["subagent", true, false, false], ["pdf_pages", true, false, true], ["llm", true, false, true]], "the table, in order: what a revision may name, what a workflow's model node may, and what its call node may run; bash and the background tools run in no box on a server that has none");
   assert.ok(body.tools.every((t) => typeof t.summary === "string" && t.summary));
   // The browser runs on either vendor's keys, which no one list of variables says: its reason names both (tool-plane.ts).
   assert.match(body.tools.find((t) => t.name === "browser").reason ?? "", keyed ? /^$/ : /BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID.*KERNEL_API_KEY/, "what browser lacks here, by name");
-  assert.deepEqual(body.workflows.node_tools, ["read", "write", "edit", "web_fetch", "web_search", "browser"]);
+  assert.deepEqual(body.workflows.node_tools, ["read", "write", "edit", "web_fetch", "web_search"]);
   // This server's environment sets no Jev key (the test clears both): typed questions do not run, and say why.
-  assert.deepEqual({ ...body.workflows, decisions: undefined }, { nodes: ["agent", "decide", "extract", "report"], node_tools: ["read", "write", "edit", "web_fetch", "web_search", "browser"], adapters: ["runNode", "runEffect"], decisions: undefined });
+  assert.deepEqual({ ...body.workflows, decisions: undefined }, { nodes: ["agent", "decide", "extract", "report"], node_tools: ["read", "write", "edit", "web_fetch", "web_search"], adapters: ["runNode", "runEffect"], decisions: undefined });
   assert.deepEqual(body.workflows.decisions.providers.map((p) => [p.id, p.available]), [["jev", false], ["parallel", false], ["openrouter", false]]);
   // And with TYPESAFE_API_KEY set, they do: runJudge is an adapter, and jev is available.
   process.env.TYPESAFE_API_KEY = "fake-test-key";
@@ -47,8 +47,8 @@ test("capabilities answer without a credential and say what this server offers: 
 test("without a default model a revision that names none is refused before it starts, and so is one whose model has no key here (409)", async (t) => {
   // No model key either: a provider's key gives the host a default (model.ts' MODEL_KEYS).
   withEnv(t, {}, ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY"]);
-  assert.deepEqual((await capabilities({})).models, { source: "providers", route_prefix: null, fast: null, default: null, strong: null, ready: false, needs: "key" });
-  assert.deepEqual((await capabilities({ AGENT_MODEL_BASE_URL: "http://127.0.0.1:9", AGENT_MODEL: "m-1", AGENT_MODEL_FAST: "m-fast" })).models, { source: "gateway", route_prefix: "agent-model", fast: "agent-model/m-fast", default: "agent-model/m-1", strong: "agent-model/m-1", ready: true, needs: null }, "a tier with no model of its own takes the default");
+  assert.deepEqual((await capabilities({})).models, { source: "providers", route_prefix: null, fast: null, default: null, strong: null, ready: false, needs: "key", priced: null });
+  assert.deepEqual((await capabilities({ AGENT_MODEL_BASE_URL: "http://127.0.0.1:9", AGENT_MODEL: "m-1", AGENT_MODEL_FAST: "m-fast" })).models, { source: "gateway", route_prefix: "agent-model", fast: "agent-model/m-fast", default: "agent-model/m-1", strong: "agent-model/m-1", ready: true, needs: null, priced: false }, "a tier with no model of its own takes the default; m-1 has no price here");
   const { api } = await serve(t, { faux: undefined });
   assert.equal((await api("POST", "/agents", agent("plain"))).status, 201);
   const refused = await api("POST", "/agents/plain/runs", { input: { content: "hi" } });
@@ -126,6 +126,21 @@ test("a token given in place of the data directory's is the one required, and no
   await assert.rejects(startServe({ data: join(data, "other"), port: 0, token: `${token} spaced` }), /no whitespace/);
 });
 
+test("a token given on a data directory that has a .token from an earlier start removes that file, so nothing reads a token this server refuses", async (t) => {
+  const data = join(await scratch(t), "agents");
+  const first = await serve(t, { data });
+  const old = first.token;
+  await first.close();
+  const token = `given_${createHash("sha256").update("another token").digest("hex")}`;
+  const given = await serve(t, { data, token });
+  assert.equal((await client(given.baseUrl, old)("GET", "/agents")).status, 401, "the earlier token is refused");
+  await assert.rejects(stat(join(data, ".token")), { code: "ENOENT" }, "and the file that held it is gone");
+  await given.close();
+  const again = await serve(t, { data });
+  assert.notEqual(again.token, old, "a start without one makes a new token and file");
+  assert.equal((await stat(join(data, ".token"))).mode & 0o777, 0o600);
+});
+
 test("an agent is created from a definition and skills, read back with its ETag, and listed newest first, page by page", async (t) => {
   const { api, data } = await serve(t);
   const created = await api("POST", "/agents", { ...agent("reporter", { description: "Writes reports.", skills: ["cite"], model: "faux/faux-1", thinking: "high" }), skills: { "cite/SKILL.md": "# Cite\n" } });
@@ -135,10 +150,10 @@ test("an agent is created from a definition and skills, read back with its ETag,
   assert.deepEqual(created.body.runs, { count: 0, live: 0 });
   assert.deepEqual(created.body.skills, [{ path: "cite/SKILL.md", sha256: createHash("sha256").update("# Cite\n").digest("hex"), size_bytes: 7 }]);
   assert.equal(created.body.kind, "agentic");
-  assert.match(created.body.revision, /^[0-9a-f]{64}$/);
+  assert.match(created.body.revision, /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/, "the store's revision id, a UUIDv7");
   assert.equal(created.body.revisions, 1);
   assert.equal(created.body.home_etag, `"${created.body.revision}"`, "the ETag is the current revision");
-  assert.deepEqual(created.body.definition, { id: "reporter", version: 1, name: "reporter", description: "Writes reports.", instructions: "Answer.", model: "faux/faux-1", thinking: "high", harness: "pi", skills: ["cite"], tools: [] });
+  assert.deepEqual(created.body.definition, { id: "reporter", version: 1, name: "reporter", description: "Writes reports.", instructions: "Answer.", model: "faux/faux-1", thinking: "high", harness: "pi", skills: ["cite"], tools: [], approvals: "ask" });
   const read = await api("GET", "/agents/reporter");
   assert.equal(read.status, 200);
   assert.equal(read.headers.get("etag"), read.body.home_etag);
@@ -159,10 +174,10 @@ test("an agent is created from a definition and skills, read back with its ETag,
 
 test("a definition field the store does not keep is refused by name, and an id already here is agent_exists", async (t) => {
   const { api } = await serve(t);
-  const kept = await api("POST", "/agents", agent("m", { input_schema: {}, output_schema: {} }));
+  const kept = await api("POST", "/agents", agent("m", { input_schema: {} }));
   assert.equal(kept.status, 422);
   assert.equal(kept.body.error.code, "input_invalid");
-  assert.deepEqual(kept.body.error.fields.map((f) => [f.field, f.reason]), [["definition.input_schema", "not_allowed"], ["definition.output_schema", "not_allowed"]]);
+  assert.deepEqual(kept.body.error.fields.map((f) => [f.field, f.reason]), [["definition.input_schema", "not_allowed"]]);
   assert.deepEqual((await api("POST", "/agents", agent("m", { thinking: "off" }))).body.error.fields.map((f) => [f.field, f.reason]), [["definition.thinking", "not_an_option"]], "thinking is never off");
   assert.deepEqual((await api("POST", "/agents", flowAgent("fm", answerFlow(), { thinking: "high" }))).body.error.fields.map((f) => [f.field, f.reason]), [["definition.thinking", "not_allowed"]]);
   assert.deepEqual((await api("POST", "/agents", agent("m", { model: "gpt" }))).body.error.fields.map((f) => [f.field, f.reason]), [["definition.model", "bad_format"]]);
@@ -218,21 +233,23 @@ test("the error envelope: each code with its one status, 405 with Allow, 404 out
   check(await api("GET", "/agents?limit=0"), "bad_request");
 });
 
-test("every feature declared off answers 501 unsupported_here naming it, before any lookup", async (t) => {
+test("quotes, declared off, answer 501 unsupported_here naming it, before any lookup; the contract's routes this server does not serve are 404 and declared off", async (t) => {
   const { api, baseUrl } = await serve(t);
   const caps = (await client(baseUrl)("GET", "/capabilities")).body;
-  const probes = [
-    ["quotes", "POST", "/quotes", { agent_id: "x" }],
+  assert.equal(caps.features.quotes, false, "quotes are declared off");
+  const quote = await api("POST", "/quotes", { agent_id: "x" });
+  assert.equal(quote.status, 501);
+  assert.deepEqual([quote.body.error.code, quote.body.error.capability], ["unsupported_here", "quotes"]);
+  const gone = [
     ["runs.kill", "POST", "/runs/x/kill", {}],
     ["home.export", "GET", "/agents/x/home", undefined, { accept: "application/json" }],
     ["home.import", "PUT", "/agents/x/home", {}],
   ];
-  for (const [capability, method, path, body, headers] of probes) {
+  for (const [capability, method, path, body, headers] of gone) {
     const [group, name] = capability.split(".");
-    assert.equal(name ? caps.features[group][name] : caps.features[group], false, `${capability} is declared off`);
+    assert.equal(caps.features[group][name], false, `${capability} is declared off`);
     const res = await api(method, path, body, headers);
-    assert.equal(res.status, 501, `${method} ${path}`);
-    assert.deepEqual([res.body.error.code, res.body.error.capability], ["unsupported_here", capability]);
+    assert.deepEqual([res.status, res.body.error.code], [404, "not_found"], `${method} ${path}`);
   }
 });
 
@@ -249,22 +266,15 @@ test("a run's input is checked against the default schema {content: string} befo
   assert.deepEqual((await api("GET", "/agents/plain/runs")).body, { runs: [], next_cursor: null });
 });
 
-test("a run thinks at its effort, else its revision's thinking level, else the host's AGENT_THINKING, else medium; never off", () => {
-  assert.equal(thinkingOf({ [EFFORT_ENV]: "low", AGENT_THINKING: "max" }, "high"), "low");
-  assert.equal(thinkingOf({ AGENT_THINKING: "max" }, "high"), "high");
-  assert.equal(thinkingOf({ AGENT_THINKING: "max" }, undefined), "max");
-  assert.equal(thinkingOf({}, undefined), "medium");
-  assert.equal(thinkingOf({ AGENT_THINKING: "off" }, "off"), "medium");
+test("a thinking level is one of the levels, exactly; never off", () => {
+  assert.deepEqual(["low", "medium", "high", "xhigh", "max"].map(thinkingLevel), ["low", "medium", "high", "xhigh", "max"]);
+  for (const value of ["off", "minimal", " high", "HIGH", "", undefined, 3]) assert.equal(thinkingLevel(value), undefined, String(value));
 });
 
-test("the tool table is closed: a name outside it is refused by name, and a tool's missing variables are named, never their values", async () => {
-  const { toolRefusal, toolsView, TOOLS } = await import("../dist/tools.js");
+test("a tool's missing variables are named, never their values", async () => {
+  const { toolsView, TOOLS } = await import("../dist/tools.js");
   assert.ok(Object.isFrozen(TOOLS));
-  assert.equal(toolRefusal(["read", "ask_person"], {}), undefined);
-  assert.deepEqual(toolRefusal(["read", "shell", "constructor"], {}).unbound, ["shell", "constructor"], "nothing outside the table, not even a name every object has");
-  assert.deepEqual(toolRefusal(["bash"], {}, "nodes").unbound, ["bash"], "a workflow's model node runs no shell");
-  assert.deepEqual(toolRefusal(["ask_person"], {}, "nodes").unbound, ["ask_person"], "a workflow's model node cannot ask the person");
-  assert.deepEqual(toolsView({}).map((t) => [t.name, t.missing]), [["read", undefined], ["write", undefined], ["edit", undefined], ["bash", undefined], ["bash_background", undefined], ["bash_output", undefined], ["bash_input", undefined], ["bash_signal", undefined], ["bash_list", undefined], ["ask_person", undefined], ["web_fetch", undefined], ["web_search", undefined], ["browser", undefined], ["monid.discover", ["MONID_API_KEY"]], ["monid.inspect", ["MONID_API_KEY"]], ["monid.run", ["MONID_API_KEY"]], ["pdf_pages", undefined], ["llm", undefined]]);
+  assert.deepEqual(toolsView({}).map((t) => [t.name, t.missing]), [["read", undefined], ["write", undefined], ["edit", undefined], ["bash", undefined], ["bash_background", undefined], ["bash_output", undefined], ["bash_input", undefined], ["bash_signal", undefined], ["bash_list", undefined], ["ask_person", undefined], ["web_fetch", undefined], ["web_search", undefined], ["browser", undefined], ["monid.discover", ["MONID_API_KEY"]], ["monid.inspect", ["MONID_API_KEY"]], ["monid.run", ["MONID_API_KEY"]], ["subagent", undefined], ["pdf_pages", undefined], ["llm", undefined]]);
   // web_search needs no key: Codex's own search; claude-agent on auto and pi with no model named, Exa's keyless search
   // (Claude's own search is an explicit pick); Parallel picked
   // without its key, missing.
@@ -276,7 +286,4 @@ test("the tool table is closed: a name outside it is refused by name, and a tool
   assert.equal(toolsView({}, { web_search: { provider: "parallel" } }).find((t) => t.name === "web_search").reason, "parallel is picked, and it needs a Parallel key: save one in Settings → Tool keys (or set PARALLEL_API_KEY where the server starts)");
   assert.equal(toolsView({}).find((t) => t.name === "monid.discover").reason, "Needs a Monid key: save one in Settings → Tool keys (or set MONID_API_KEY where the server starts)");
   for (const t of toolsView({}, { web_search: { provider: "off" } })) assert.equal(typeof t.reason === "string" && t.reason.length > 0, !t.available, `${t.name}: a reason exactly when it is unavailable`);
-  assert.deepEqual(toolRefusal(["fetch_page", "read"], {}, "calls").unbound, ["read"], "a call node runs only a tool the table gives an effect, fetch_page as web_fetch's legacy name");
-  assert.equal(toolRefusal(["fetch_page"], {}), undefined, "fetch_page, no longer listed, is still a name a revision may grant");
-  assert.equal(toolRefusal(["browser"], {}), undefined, "the browser needs either vendor's keys: whether it runs is its plane's (tool-plane.ts), as web_search's is");
 });

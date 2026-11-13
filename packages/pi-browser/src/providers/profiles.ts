@@ -1,9 +1,4 @@
-import { randomBytes } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
 import { refusedError } from "../core/custody.js";
-import { withLock } from "../core/downloads.js";
 import { profileHoldings } from "./shared.js";
 
 const writers = profileHoldings.writers;
@@ -23,7 +18,7 @@ async function waitFor(work: Promise<void>, signal: AbortSignal | undefined, ms:
   } finally { clearTimeout(timer); if (abort) signal?.removeEventListener("abort", abort); }
 }
 
-/** Both vendors keep the last writer's state and neither locks, so within this process one session at a time may save to a
+/** A profile keeps the last writer's state and nothing locks it, so within this process one session at a time may save to a
  *  profile. A holder that is no longer running is replaced; the same owner's successor (a relaunch asks for its replacement
  *  while the old session is still being released) waits for the release; anyone else is refused. */
 export async function claimWriter(key: string, name: string, tag: string, owner: string, signal?: AbortSignal): Promise<void> {
@@ -55,65 +50,4 @@ export function freeWriter(tag: string): void {
 export function isWriter(tag: string): boolean {
   for (const held of writers.values()) if (held.tag === tag) return true;
   return false;
-}
-
-/** Context ids are not secrets, and Browserbase has no way to look a context up by name, so the name to id map is the host's.
- *  `resolve` returns the name's context, calling `make` only when there is none, and no two callers may both make one. */
-export type ProfileStore = {
-  resolve(key: string, make: (signal: AbortSignal) => Promise<string>): Promise<string>;
-  /** True when the store writes the ids it holds to a clear file (the default one does). A session vault refuses a provider whose store does. */
-  readonly clear?: boolean;
-};
-
-/** Context ids kept in this process only: for a host that moves them into its own vault, so none lands on disk. */
-export function memoryProfileStore(): ProfileStore {
-  const ids = new Map<string, Promise<string>>();
-  return { clear: false, resolve: (key, make) => { let known = ids.get(key); if (!known) { known = make(AbortSignal.timeout(20_000)); ids.set(key, known); known.catch(() => ids.delete(key)); } return known; } };
-}
-
-const SCHEMA = "pi-browser.profiles.v1";
-type ProfilesFile = { schema: typeof SCHEMA; contexts: Record<string, string> };
-
-const defaultProfilesFile = (): string => path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"), "pi-browser", "profiles.json");
-const notOurs = (file: string) => new Error(`the profiles file ${path.basename(file)} is not a pi-browser profiles file, so it was left as it is`);
-
-async function readProfiles(file: string): Promise<ProfilesFile> {
-  let text: string;
-  try { text = await readFile(file, "utf8"); } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { schema: SCHEMA, contexts: {} };
-    throw error;
-  }
-  try {
-    const parsed = JSON.parse(text) as ProfilesFile;
-    const contexts = parsed?.contexts;
-    if (parsed?.schema === SCHEMA && contexts && typeof contexts === "object" && !Array.isArray(contexts) && Object.values(contexts).every((id) => typeof id === "string" && id !== "")) return parsed;
-  } catch { /* not JSON */ }
-  throw notOurs(file);
-}
-
-/** A JSON file, read, extended and written under one lock, so two processes' first uses of a name make one context; a file that is
- *  not this format, or cannot be read, is never overwritten. */
-export function fileProfileStore(file: string = defaultProfilesFile(), options: { makeLimitMs?: number } = {}): ProfileStore {
-  // The lock is taken over once it is 30 s old (core/downloads.ts's rule), so `make` must end well before: a slower one is cut here, never left
-  // to run past the lock that protects it.
-  const makeLimitMs = options.makeLimitMs ?? 20_000;
-  return {
-    clear: true,
-    async resolve(key, make) {
-      await mkdir(path.dirname(file), { recursive: true });
-      return withLock(`${file}.lock`, async () => {
-        const current = await readProfiles(file);
-        const known = current.contexts[key];
-        if (known) return known;
-        const limit = AbortSignal.timeout(makeLimitMs);
-        // Listening before `make` does, so the cut's own words are what the caller hears.
-        const cut = new Promise<never>((_, reject) => limit.addEventListener("abort", () => reject(new Error(`making the profile's context took longer than ${makeLimitMs} ms, so it was cut before the profiles file's lock could be taken over`)), { once: true }));
-        const id = await Promise.race([make(limit), cut]);
-        const next = `${file}.${randomBytes(4).toString("hex")}.tmp`;
-        await writeFile(next, `${JSON.stringify({ schema: SCHEMA, contexts: { ...current.contexts, [key]: id } }, null, 2)}\n`);
-        await rename(next, file);
-        return id;
-      }, "the profiles file");
-    },
-  };
 }

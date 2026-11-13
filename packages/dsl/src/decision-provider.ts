@@ -2,6 +2,7 @@
 // and without an agent harness, and judgeFromProvider makes one the interpreter's runJudge. Jev is one provider and a
 // third-party API another; each passes the conformance suite in `@parcha/agentrun-dsl/testing`.
 import { createHash } from "node:crypto";
+import { evidenceOf } from "./evidence.js";
 import { completeConfidence, validateAnswers, type SystemOneAnswer, type SystemOneQuestion } from "./system-one.js";
 import type { DecisionImageDigest } from "./decision-receipts.js";
 import type { WorkflowDeps } from "./workflow.js";
@@ -242,7 +243,8 @@ export function judgeFromProvider(provider: DecisionProvider, options: JudgeFrom
     }
     const result: JudgeResult = {
       answers, model: outcome.model, usage: outcome.usage, cost_usd: outcome.cost_usd, cost_basis: outcome.cost_basis,
-      evidence: outcome.evidence, provider_request_id: outcome.provider_request_id, confidence_source,
+      // Every provider's evidence, a third party's too, through the one sanitizer (evidence.ts).
+      evidence: evidenceOf(outcome.evidence), provider_request_id: outcome.provider_request_id, confidence_source,
       ...(digests ? { images: digests } : {}),
     };
     return result;

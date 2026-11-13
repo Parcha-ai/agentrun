@@ -3,15 +3,13 @@
 // a claude-agent run complete on the same server. Codex's requests go to the gateway; Claude's go to the Anthropic
 // endpoint only, never the gateway, priced at the catalog's Anthropic price, never the gateway's.
 import assert from "node:assert/strict";
-import { copyFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
 import { agent, follow, scratch, serve } from "./support.mjs";
+import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
 
-const STAND_IN = fileURLToPath(new URL("../../run-adapters-codex/test/fake-app-server.mjs", import.meta.url));
 const CLAUDE_MODEL = "claude-haiku-4-5";
 
 /** serve's gateway on loopback: every request it gets, and a short Responses answer to each. */
@@ -38,7 +36,7 @@ test("one server offers pi, claude-agent and codex, each on its own settings: a 
   t.after(() => anthropic.close());
   const dir = await scratch(t);
   const standIn = join(dir, "codex-stand-in.mjs");
-  await copyFile(STAND_IN, standIn);
+  await copyStandIn(standIn);
   const saved = { ...process.env };
   t.after(() => {
     for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];

@@ -7,8 +7,9 @@
 import { readFile } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { Readable, Writable } from "node:stream";
-import { homeBusy, storeBusy } from "./agents.js";
+import { answerOf, logged } from "./agents.js";
 import { ApiError, invalid } from "./errors.js";
+import { DEFAULT_HARNESS, HARNESSES } from "./harness.js";
 import { isJson, ownOrigin } from "./page.js";
 import { isObject, type Json } from "./validate.js";
 
@@ -47,16 +48,14 @@ const optionalText = (args: Json, name: string): string | undefined => (args[nam
 const id = encodeURIComponent;
 const pick = (args: Json, keys: string[]): Json => Object.fromEntries(keys.filter((k) => args[k] !== undefined).map((k) => [k, args[k]]));
 const without = (args: Json, keys: string[]): Json => Object.fromEntries(Object.entries(args).filter(([k]) => !keys.includes(k)));
-const runLink = (origin: string, run: string) => `${origin}/#/runs/${id(run)}`;
 
 /** A route's JSON answer as a tool's result: the body as structured content and, for a client without it, as text; a
- *  refusal (4xx, 5xx) as an error result holding the route's error envelope. `extra` is added to a body that is no
- *  refusal. */
-function resultOf(answer: Answered, extra: Json = {}): Json {
+ *  refusal (4xx, 5xx) as an error result holding the route's error envelope. */
+function resultOf(answer: Answered): Json {
   if (answer.tooBig) return { content: [{ type: "text", text: `The answer is over ${MAX_ANSWER >> 20} MiB.` }], isError: true };
   const refused = answer.status >= 400;
   const parsed = answer.bytes.length ? (JSON.parse(answer.bytes.toString("utf8")) as unknown) : {};
-  const body = isObject(parsed) ? { ...parsed, ...(refused ? {} : extra) } : { value: parsed };
+  const body = isObject(parsed) ? parsed : { value: parsed };
   return { content: [{ type: "text", text: JSON.stringify(body) }], structuredContent: body, ...(refused ? { isError: true } : {}) };
 }
 const json = (answer: Answered): Json => JSON.parse(answer.bytes.toString("utf8")) as Json;
@@ -69,7 +68,7 @@ const AGENT_ID = { type: "string", description: "The agent's id." };
 const RUN_ID = { type: "string", description: "The run's id." };
 const DEFINITION = {
   instructions: { type: "string", description: "What the agent does and how: its system prompt." },
-  harness: { type: "string", enum: ["pi", "claude-agent", "codex", "opencode"], description: "What runs it (default pi). whoami says which this server runs." },
+  harness: { type: "string", enum: [...HARNESSES], description: `What runs it (default ${DEFAULT_HARNESS}). whoami says which this server runs.` },
   model: { type: ["string", "null"], description: "provider/model-id. Absent, this server's default (whoami names it)." },
   thinking: { type: ["string", "null"], description: "How hard the model thinks: one of whoami's thinking levels. Absent, the model's own." },
   tools: { type: "array", items: { type: "string" }, description: "The tools it may use, by name (whoami lists them); [] for none. It writes files only with a tool like write." },
@@ -126,7 +125,7 @@ export const TOOLS: Tool[] = [
   },
   {
     name: "agents_revise", title: "Revise an agent", annotations: WRITE,
-    description: "Makes the agent's next revision from its current definition with these fields changed, and any other field in definition (GET /v2/agents/{agent_id}, then PUT /v2/agents/{agent_id}/definition on that revision): fields you leave out stay; null clears model or thinking. definition.max_cost_usd sets the agent's default spend cap of each run started without one; 0 clears it (null is refused), and a revise that leaves it out keeps it. Its next run runs the new revision. A revision saved in between is refused (precondition_failed), never overwritten. Its name and description stay as it was created.",
+    description: "Makes the agent's next revision from its current definition with these fields changed, and any other field in definition (GET /v2/agents/{agent_id}, then PUT /v2/agents/{agent_id}/definition on that revision): fields you leave out stay; null clears model or thinking. definition.computer and definition.place are one setting: give either one alone to change it (the other is set from it), or give both only when they name the same thing. definition.max_cost_usd sets the agent's default spend cap of each run started without one; 0 clears it (null is refused), and a revise that leaves it out keeps it. Its next run runs the new revision. A revision saved in between is refused (precondition_failed), never overwritten. Its name and description stay as it was created.",
     inputSchema: { type: "object", required: ["agent_id"], properties: { agent_id: AGENT_ID, ...DEFINITION, note: { type: "string", description: "Optional: what this revision changes." } } },
     run: async (args, context) => {
       const agent = text(args, "agent_id");
@@ -138,6 +137,11 @@ export const TOOLS: Tool[] = [
       // The revision's number is the server's to give, and new instructions make an agentic revision.
       delete merged.version;
       if ("instructions" in changes) delete merged.workflow;
+      // The computer and its place are one setting, and the read shows both (computer-setting.ts). A revise that names
+      // only one replaces the setting: the other, as the old revision said it, is not carried beside it. Only a revise
+      // that names both has the route check that they agree.
+      if ("place" in changes && !("computer" in changes)) delete merged.computer;
+      if ("computer" in changes && !("place" in changes)) delete merged.place;
       // null clears model or thinking (the server's default then); any other null goes to the route, which checks it.
       for (const key of ["model", "thinking"]) if (merged[key] === null) delete merged[key];
       const etag = read.headers.etag;
@@ -160,14 +164,9 @@ export const TOOLS: Tool[] = [
   },
   {
     name: "runs_get", title: "Get a run", annotations: READ,
-    description: "A run's status and outcome (GET /v2/runs/{run_id}), and console_url (added here), the run's page. pending is what it waits on while its status is input_required, by kind: {kind: \"question\", question} for a question it asked, {kind: \"budget\", cap_usd, spent_usd, needs_usd, suggested_cap_usd, said, at} for a run paused at its spend cap (it waits for its cap to be raised, PATCH /v2/runs/{run_id} {max_cost_usd}, which a person decides; suggested_cap_usd is a raise that resumes it; said is why), else null. status is queued, working, input_required, completed, failed, cancelled or paused. A completed run's answer is result.final_answer (agentic) or result.output (workflow); a failed run's reason is error; cost.usd is null while unknown, never $0.",
+    description: "A run's status and outcome (GET /v2/runs/{run_id}), with console_url, the run's page. pending is what it waits on while its status is input_required, by kind: {kind: \"question\", question} for a question it asked, {kind: \"budget\", cap_usd, spent_usd, needs_usd, suggested_cap_usd, said, at} for a run paused at its spend cap (it waits for its cap to be raised, PATCH /v2/runs/{run_id} {max_cost_usd}, which a person decides; suggested_cap_usd is a raise that resumes it; said is why), else null. status is queued, working, input_required, completed, failed, cancelled or paused. A completed run's answer is result.final_answer (agentic) or result.output (workflow); a failed run's reason is error; cost.usd is null while unknown, never $0.",
     inputSchema: { type: "object", required: ["run_id"], properties: { run_id: RUN_ID } },
-    run: async (args, context) => {
-      const run = text(args, "run_id");
-      const answer = await context.call({ method: "GET", path: `/runs/${id(run)}` });
-      if (answer.status >= 400) return resultOf(answer);
-      return resultOf(answer, { console_url: runLink(context.origin, run) });
-    },
+    run: routed((args) => ({ method: "GET", path: `/runs/${id(text(args, "run_id"))}` })),
   },
   {
     name: "runs_events", title: "Read a run's events", annotations: READ,
@@ -275,13 +274,15 @@ export function mcpEndpoint({ route, authorized, authFailed, version }: { route:
     res.end(body === undefined ? undefined : JSON.stringify(body));
   }
 
-  /** A route's answer to `call`, made with the caller's own Authorization: a synthetic request into `route`, and a
-   *  response that captures what it writes. A refusal is the route's error envelope, as it would have gone out. */
-  async function dispatch(call: Call, authorization: string, requestId: string, limit = MAX_ANSWER): Promise<Answered> {
+  /** A route's answer to `call`, made with the caller's own Authorization, and its Host and scheme (so a link in the
+   *  answer is at the address the caller reached): a synthetic request into `route`, and a response that captures what
+   *  it writes. A refusal is the route's error envelope, as it would have gone out. */
+  async function dispatch(call: Call, caller: IncomingMessage, requestId: string, limit = MAX_ANSWER): Promise<Answered> {
     const search = new URLSearchParams(Object.entries(call.query ?? {}).map(([k, v]) => [k, String(v)]));
     const target = `/v2${call.path}${search.size ? `?${search}` : ""}`;
     const body = call.body === undefined ? [] : [Buffer.from(JSON.stringify(call.body))];
-    const headers = { authorization, accept: "application/json", ...(call.body === undefined ? {} : { "content-type": "application/json" }), ...call.headers };
+    const from = Object.fromEntries((["authorization", "host", "x-forwarded-proto"] as const).flatMap((name) => (caller.headers[name] === undefined ? [] : [[name, String(caller.headers[name])]])));
+    const headers = { ...from, accept: "application/json", ...(call.body === undefined ? {} : { "content-type": "application/json" }), ...call.headers };
     const req = Object.assign(Readable.from(body), { method: call.method, url: target, headers }) as unknown as IncomingMessage;
     const res = new Answer(limit);
     try {
@@ -289,8 +290,9 @@ export function mcpEndpoint({ route, authorized, authFailed, version }: { route:
       if (!res.writableEnded && !res.destroyed) throw new Error(`${call.method} ${target} gave no answer`);
       await res.settled;
     } catch (error) {
-      const known = error instanceof ApiError ? error : storeBusy(error) ? homeBusy() : new ApiError("internal", (error as Error)?.message ?? String(error));
-      if (!(error instanceof ApiError) && !storeBusy(error)) process.stderr.write(`agentrun-serve: mcp: ${(error as Error)?.stack ?? String(error)}\n`);
+      // The same answer the HTTP route gives (answerOf): a store busy or past a write's deadline is home_busy, never 500.
+      const known = answerOf(error);
+      if (logged(error)) process.stderr.write(`agentrun-serve: mcp: ${(error as Error)?.stack ?? String(error)}\n`);
       return { status: known.status, headers: { "content-type": "application/json" }, bytes: Buffer.from(JSON.stringify(known.body(requestId))), tooBig: false };
     }
     return res.answered();
@@ -312,8 +314,7 @@ export function mcpEndpoint({ route, authorized, authFailed, version }: { route:
         if (!isObject(params) || typeof params.name !== "string") return { error: { code: -32602, message: "tools/call takes {name, arguments}" } };
         const tool = TOOLS.find((t) => t.name === params.name);
         if (!tool) return { error: { code: -32602, message: `no tool ${params.name}: tools/list names them` } };
-        const authorization = String(req.headers.authorization);
-        const context: Context = { call: (call, limit) => dispatch(call, authorization, requestId, limit), origin: ownOrigin(req), version, requestId };
+        const context: Context = { call: (call, limit) => dispatch(call, req, requestId, limit), origin: ownOrigin(req), version, requestId };
         try {
           if (params.arguments !== undefined && !isObject(params.arguments)) throw new ArgumentError("arguments", "wrong_type", "arguments is an object");
           return { result: await tool.run((params.arguments as Json | undefined) ?? {}, context) };

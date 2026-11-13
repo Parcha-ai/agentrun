@@ -8,8 +8,8 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { note } from "./fixtures/faux-learn.mjs";
 import { CAPS } from "../dist/learn/check.js";
-import { ended, git, learner, LEARN, made, mergesOf, reflectRows, repoOf, savedOf, sleep, started } from "./learn-support.mjs";
-import { scratch, serve, withEnv } from "./support.mjs";
+import { ended, git, learnedOnMain, learner, LEARN, made, mergesOf, reflectRows, repoOf, resnap, savedOf, sleep, started } from "./learn-support.mjs";
+import { runDir, scratch, serve, withEnv } from "./support.mjs";
 
 /** A SKILL.md whose steps hold a fenced code block: a ``` line inside its four-backtick block closes nothing. */
 const SKILL = "---\nname: find-policies\ndescription: Find a store's refund and shipping policies; use when a case asks what they say\n---\n# Find policies\n\n1. Open the policies page first:\n\n```sh\ncurl -s https://shop.example/policies/\n```\n\n2. Then the footer links.\n";
@@ -190,7 +190,9 @@ test("a retire is a person's call and sticks: the next run that gives the same s
   const { api, data } = await server(t);
   const only = (skill) => ["Keeping a skill.", `\`\`\`\`skill find-policies\n${skill}\`\`\`\``, "Reflected."].join("\n\n");
   await made(api, answering("sticky", only(SKILL)));
-  assert.equal((await ended(api, await started(api, "sticky"))).view.learning?.state, "merged");
+  const first = await started(api, "sticky");
+  await ended(api, first);
+  assert.equal((await learnedOnMain({ api, data }, "sticky", first)).result?.ok, true);
   const file = encodeURIComponent("skills/find-policies/SKILL.md");
   const read = await api("GET", `/agents/sticky/learning/files/${file}`);
   assert.equal((await api("POST", `/agents/sticky/learning/files/${file}/retire`, undefined, { "if-match": read.headers.get("etag") })).status, 200);
@@ -207,18 +209,22 @@ test("a skill is laid into a run with its name and description alone in its fron
   const { api, data } = await server(t);
   const only = (skill) => ["Keeping a skill.", `\`\`\`\`skill find-policies\n${skill}\`\`\`\``, "Reflected."].join("\n\n");
   await made(api, answering("laid", only(SKILL)));
-  assert.equal((await ended(api, await started(api, "laid"))).view.learning?.state, "merged");
+  const first = await started(api, "laid");
+  await ended(api, first);
+  assert.equal((await learnedOnMain({ api, data }, "laid", first)).result?.ok, true);
   // main's SKILL.md given a hook by hand (an older server's, or anyone with the folder): the run is never given it.
   const repo = repoOf(data, "laid");
   const hooked = show(repo, "skills/find-policies/SKILL.md").replace("description:", "hooks:\n  PreToolUse:\n    - hooks:\n        - type: command\n          command: \"touch /tmp/never\"\ndescription:");
   writeFileSync(join(repo, "skills/find-policies/SKILL.md"), `${hooked}\n`);
   git(repo, ["add", "skills/find-policies/SKILL.md"]);
   git(repo, ["commit", "-q", "-m", "a hand edit"]);
+  await resnap(data, "laid");
   const runId = await started(api, "laid");
   await ended(api, runId);
-  const given = readFileSync(join(data, "runs", runId, "work", ".agents", "skills", "find-policies", "SKILL.md"), "utf8");
+  const given = readFileSync(join(runDir(data, runId), "work", ".agents", "skills", "find-policies", "SKILL.md"), "utf8");
   assert.ok(!given.includes("hooks:") && !given.includes("touch /tmp/never"), given);
-  assert.match(given, /^---\nname: find-policies\ndescription: [^\n]+\n---\n/);
+  // Served as servedSkill writes it: name and description, each quoted (#2255), and nothing else.
+  assert.match(given, /^---\nname: "find-policies"\ndescription: "[^\n]+"\n---\n/);
 });
 
 test("a skill left out unread for its size that hides a secret's shape refuses the whole answer: the note and the draft beside it are not kept", { timeout: 120_000 }, async (t) => {
@@ -246,6 +252,8 @@ test("a draft whose call node calls a tool the agent sets to ask is left out by 
   });
   await made(api, answering("asking", answer({ json }), [], { tools: ["web_fetch"], tool_settings: { web_fetch: { permission: "ask" } } }));
   const asked = await ended(api, await started(api, "asking"));
+  assert.equal((await learnedOnMain({ api, data }, "asking", asked.view.run_id)).result?.ok, true, "the run's other learning stands");
+  // What the checks left out, kept with the run's learning (the store's end; the view names it once the learning ends).
   const saved = await savedOf(data, asked.view.run_id);
   assert.match((saved.learning.problems ?? []).map((problem) => problem.detail).join("\n"), /This workflow's call node calls web_fetch, which is set to ask, and a workflow's call node can't wait for an approval: set it to allow for this agent/, JSON.stringify(saved.learning));
   const onMain = git(repoOf(data, "asking"), ["ls-tree", "-r", "--name-only", "main"]);

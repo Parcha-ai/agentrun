@@ -10,7 +10,7 @@ import type { TimelineRow } from "@/lib/v2";
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.innerHTML = ""; });
 
-const phases = (n: number): TimelineRow[] => Array.from({ length: n }, (_, i) => ({ id: `row_${i}`, seq: i, kind: "phase", summary: `Phase: step ${i}`, text: null, timestamp: `2026-11-06T10:00:${String(i).padStart(2, "0")}.000Z`, tool_name: null }));
+const phases = (n: number): TimelineRow[] => Array.from({ length: n }, (_, i) => ({ id: `row_${i}`, seq: i, kind: "phase", summary: `Phase: step ${i}`, text: null, timestamp: `2026-11-06T10:00:${String(i).padStart(2, "0")}.000Z`, tool_name: null, created_at: "2026-11-06T10:00:00.000Z", agent_label: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null }));
 function fold(n: number) {
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);

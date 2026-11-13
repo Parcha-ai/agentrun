@@ -4,7 +4,7 @@ import http from "node:http";
 
 /** Anything else on this port (another program probing it) gets a 404 and is never counted. */
 const PATHS = new Set(["/a", "/b", "/c", "/d", "/e", "/e2", "/f", "/f-inner", "/g", "/w.js", "/api/data", "/submit", "/submit-blank",
-  "/api/order", "/api/popup", "/api/iframe", "/f-form", "/api/iframe-form", "/api/put", "/api/del", "/api/beacon", "/api/worker", "/api/xorigin", "/api/loaded"]);
+  "/api/order", "/api/popup", "/api/iframe", "/f-form", "/api/iframe-form", "/api/put", "/api/del", "/api/beacon", "/api/worker", "/api/xorigin", "/api/loaded", "/api/redirect"]);
 
 const page = (title, body, head = "") => `<!doctype html><html><head><meta charset="utf-8"><title>${title}</title>${head}</head><body><h1>${title}</h1>${body}</body></html>`;
 
@@ -13,18 +13,31 @@ export async function startServer() {
   const held = new Set();
   const waiting = [];
   const watchers = [];
+  /** By path, how many more preflights (OPTIONS) to refuse (a 403 with no CORS headers): the browser then drops the request
+   *  it precedes, and never tries that preflight again itself, as it may after a connection the server cut. */
+  const failPreflights = new Map();
+  /** By path, how long to keep the next preflight's answer back, once: the request it precedes waits that long to be sent. */
+  const slowPreflights = new Map();
+  /** By path, what to run when the next preflight arrives, once, before it is answered. */
+  const onPreflights = new Map();
+  // A delayed reply's timer, cancelled at close so it never outlives the test or answers a closed connection.
+  const delayed = new Set();
   let port = 0;
   const server = http.createServer((req, res) => {
     let url = null;
     try { url = new URL(req.url, "http://x"); } catch {}
     if (!url || !PATHS.has(url.pathname)) { req.resume(); res.writeHead(404); return res.end(); }
+    if (req.method === "OPTIONS" && onPreflights.has(url.pathname)) { const run = onPreflights.get(url.pathname); onPreflights.delete(url.pathname); run(); }
+    if (req.method === "OPTIONS" && (failPreflights.get(url.pathname) ?? 0) > 0) { failPreflights.set(url.pathname, failPreflights.get(url.pathname) - 1); req.resume(); res.writeHead(403); return res.end(); }
     req.resume();
     req.on("end", () => {
       const key = `${req.method} ${url.pathname}`;
       counts.set(key, (counts.get(key) ?? 0) + 1);
       for (const w of watchers.splice(0)) if (!w.done()) watchers.push(w);
       const answer = () => respond(req, res, url, `http://localhost:${port}`);
-      if (held.has(url.pathname)) waiting.push(answer); else answer();
+      const slow = req.method === "OPTIONS" ? slowPreflights.get(url.pathname) : undefined;
+      if (slow !== undefined) { slowPreflights.delete(url.pathname); const timer = setTimeout(() => { delayed.delete(timer); answer(); }, slow); delayed.add(timer); }
+      else if (held.has(url.pathname)) waiting.push(answer); else answer();
     });
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -41,8 +54,11 @@ export async function startServer() {
     }),
     reset: () => counts.clear(),
     hold: (path) => held.add(path),
+    failPreflights: (path, n) => failPreflights.set(path, n),
+    slowPreflight: (path, ms) => slowPreflights.set(path, ms),
+    onPreflight: (path, run) => onPreflights.set(path, run),
     release: () => { held.clear(); for (const answer of waiting.splice(0)) answer(); },
-    close: () => new Promise((resolve) => { held.clear(); waiting.length = 0; server.closeAllConnections?.(); server.close(() => resolve()); }),
+    close: () => new Promise((resolve) => { for (const timer of delayed) clearTimeout(timer); delayed.clear(); held.clear(); waiting.length = 0; server.closeAllConnections?.(); server.close(() => resolve()); }),
   };
 }
 
@@ -54,6 +70,8 @@ function respond(req, res, url, xbase) {
     return res.end();
   }
   if (req.method !== "GET") {
+    // A POST the server sends on, 307 (method and body kept), to the other origin.
+    if (url.pathname === "/api/redirect") { res.writeHead(307, { location: `${xbase}/api/xorigin` }); return res.end(); }
     if (url.pathname === "/submit" || url.pathname === "/submit-blank") return html(page("Confirmed", "<p>received</p>"));
     res.writeHead(200, { "content-type": "application/json", "access-control-allow-origin": req.headers.origin ?? "*" });
     return res.end("{}");
@@ -70,6 +88,7 @@ function respond(req, res, url, xbase) {
     case "/f-inner": return html(page("Inner", "<p>inner</p>", `<script>fetch('/api/iframe',{method:'POST',body:'now'}); setTimeout(()=>fetch('/api/iframe',{method:'POST',body:'late'}),150);</script>`));
     case "/g": return html(page("Page G", `<button id="put" onclick="x('PUT','/api/put')">PUT</button><button id="del" onclick="x('DELETE','/api/del')">DELETE</button>
       <button id="beacon" onclick="navigator.sendBeacon('/api/beacon','b')">beacon</button><button id="worker" onclick="new Worker('/w.js')">worker</button>
+      <button id="redirect" onclick="fetch('/api/redirect',{method:'POST',body:'r'})">redirect</button>
       <button id="xorigin" onclick="fetch('${xbase}/api/xorigin',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({a:1})})">xorigin</button>
       <form method="POST" action="/submit-blank" target="_blank"><button id="formblank" type="submit">form blank</button></form>
       <script>function x(m,u){const r=new XMLHttpRequest();r.open(m,u);r.send('p');}</script>`));
@@ -93,4 +112,6 @@ export const CASES = [
   { name: "G2 worker fetch POST", steps: [{ goto: "/g" }, { click: "#worker" }, { wait: 500 }], expected: ["POST /api/worker"] },
   { name: "G3 cross-origin JSON POST", steps: [{ goto: "/g" }, { click: "#xorigin" }, { wait: 500 }], expected: ["POST /api/xorigin"] },
   { name: "G4 form target=_blank", steps: [{ goto: "/g" }, { click: "#formblank" }, { wait: 700 }], expected: ["POST /submit-blank"] },
+  // Under deny the first hop is refused, so there is no second.
+  { name: "G5 POST redirected 307 to another origin", steps: [{ goto: "/g" }, { click: "#redirect" }, { wait: 700 }], expected: ["POST /api/redirect", "POST /api/xorigin"], denied: ["POST /api/redirect"] },
 ];

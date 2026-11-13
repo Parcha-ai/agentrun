@@ -9,7 +9,8 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { MAX_UPLOAD_BYTES, Uploads, uploadTestHooks } from "../dist/uploads.js";
 import { schemaProblems } from "./schema-support.mjs";
-import { agent, call, cookieOf, follow, scratch, serve } from "./support.mjs";
+import { agent, call, cookieOf, follow, runDir, scratch, serve } from "./support.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -128,7 +129,7 @@ test("a file sent in one call takes an Idempotency-Key: the same bytes replay th
   assert.deepEqual((await readdir(join(server.data, "files"))).filter((name) => name.startsWith(".")), [], "the replays' bytes dropped");
 });
 
-test("GET /v2/files lists the server's uploads newest first a page at a time, GET one reads its record, and DELETE removes it; a run that copied it keeps its copy", async (t) => {
+test("GET /v2/files lists the server's uploads newest first a page at a time, GET one reads its record, and DELETE removes it; a run started with it keeps its copy", async (t) => {
   const server = await served(t);
   const { api } = server;
   const sent = (await sendFile(server, { path: "kept.txt" }, Buffer.from("kept bytes"))).json.file;
@@ -148,7 +149,12 @@ test("GET /v2/files lists the server's uploads newest first a page at a time, GE
   server.check("File", read.body);
   assert.deepEqual(read.body, sent);
   assert.equal((await api("GET", "/files/no-such-file")).status, 404);
-  // A run that copied the file keeps its copy when the upload goes.
+  // A run started with the file keeps its copy when the upload goes, even one deleted before the runner's claim copies it:
+  // the copy waits here until the delete is done.
+  let deleted;
+  const afterDelete = new Promise((resolve) => (deleted = resolve));
+  uploadTestHooks.beforeCopy = () => afterDelete;
+  t.after(() => void (uploadTestHooks.beforeCopy = undefined));
   assert.equal((await api("POST", "/agents", agent("keeper"))).status, 201);
   const run = await api("POST", "/agents/keeper/runs", { input: { content: "Hello." }, file_ids: [sent.file_id] });
   assert.equal(run.status, 202, JSON.stringify(run.body));
@@ -157,8 +163,10 @@ test("GET /v2/files lists the server's uploads newest first a page at a time, GE
   assert.equal((await api("GET", `/files/${sent.file_id}`)).status, 404);
   assert.equal((await send(server.port, "DELETE", `/v2/files/${sent.file_id}`, undefined, bearer(server))).status, 404, "deleted once");
   assert.equal(await stat(join(server.data, "files", sent.file_id)).catch(() => null), null, "its bytes are gone");
-  assert.equal(await readFile(join(server.data, "runs", run.body.run_id, "work", "inputs", "kept.txt"), "utf8"), "kept bytes", "the run's copy stays");
+  deleted();
   await follow(api, run.body.run_id, ["completed"]);
+  assert.equal(await readFile(join(runDir(server.data, run.body.run_id), "work", "inputs", "kept.txt"), "utf8"), "kept bytes", "the run's copy stays");
+  assert.deepEqual(await readdir(join(server.data, "files", ".held")), [], "the run's hold went once its copy was made");
   // A run started after names it in vain; a pending one deleted takes no bytes.
   const late = await api("POST", "/agents/keeper/runs", { input: { content: "Hello." }, file_ids: [sent.file_id] });
   assert.deepEqual([late.status, late.body.error.fields[0].field], [422, "file_ids[0]"]);
@@ -178,7 +186,7 @@ export default function reply(context, faux) {
   return faux.message(faux.toolCall("read", { path }), { stopReason: "toolUse" });
 }
 `);
-  const server = await served(t, { faux: reader, fauxHarness: FAUX_HARNESS });
+  const server = await served(t, { faux: reader, harnessTable: fauxTable(FAUX_HARNESS) });
   const { api } = server;
   const words = "The upload reached the run.\n";
   const file = (await sendFile(server, { path: "brief/notes.txt" }, Buffer.from(words))).json.file;
@@ -192,6 +200,23 @@ export default function reply(context, faux) {
     assert.deepEqual([listed?.size_bytes, listed?.content_type], [words.length, "text/plain; charset=utf-8"], `${harness}: in the run's files`);
     const result = rows.find((r) => r.kind === "tool_result");
     assert.ok(result?.tool_status === "success" && String(result.tool_result_preview).includes("The upload reached the run."), `${harness}: its read tool read the file: ${JSON.stringify(result)}`);
+  }
+});
+
+test("an image sent to a run on claude-agent or codex is read by pi's read tool as a host tool: an image read asks the calling agent for its model, which a host tool's api answers", { timeout: 180_000 }, async (t) => {
+  // pi 1.5's read, on an image, reads the calling agent's model for its image limits (api.agent(), api.models).
+  const server = await served(t, { harnessTable: fauxTable(FAUX_HARNESS) });
+  const { api } = server;
+  const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=", "base64");
+  const file = (await sendFile(server, { path: "brief/pixel.png" }, png)).json.file;
+  for (const harness of ["claude-agent", "codex"]) {
+    const id = `image-${harness}`;
+    assert.equal((await api("POST", "/agents", agent(id, { harness, tools: ["read"], instructions: "Read the upload inputs/brief/pixel.png." }))).status, 201, harness);
+    const run = await api("POST", `/agents/${id}/runs`, { input: { content: "Read the upload inputs/brief/pixel.png." }, file_ids: [file.file_id] });
+    assert.equal(run.status, 202, `${harness}: ${JSON.stringify(run.body)}`);
+    const { rows } = await follow(api, run.body.run_id, ["completed"], { deadlineMs: 55_000 });
+    const result = rows.find((r) => r.kind === "tool_result");
+    assert.equal(result?.tool_status, "success", `${harness}: its read tool read the image: ${JSON.stringify(result)}`);
   }
 });
 

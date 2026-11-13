@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-process/src/zod.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, patches: 005-comments-name-the-agent-sdk
+// Changed by Parcha, and AgentRun's own since the port from upstream froze on 2026-11-07.
 /**
  * JSON Schema to zod, for harness SDKs whose tool APIs take zod (the Claude
  * Agent SDK's in-process MCP tools, OpenCode's plugin tools). `HostTool`s carry
@@ -33,11 +33,6 @@ export interface JsonSchemaObject {
   oneOf?: JsonSchemaObject[];
   anyOf?: JsonSchemaObject[];
   nullable?: boolean;
-}
-
-/** A zod object for a JSON Schema object (extra properties allowed unless `additionalProperties: false`). */
-export function zodFromJsonSchema(schema: unknown, z: Z): ZodType {
-  return toZodObject(isSchema(schema) ? schema : {}, z);
 }
 
 /** The raw shape (`{ key: zodType }`) of a JSON Schema object, for APIs that take a shape. */

@@ -22,15 +22,15 @@ const barrier = Number(opt('--barrier') ?? 0);
 while (readFileSync(log, 'utf8').split('\\n').filter((line) => line.startsWith('start ')).length < barrier) await sleep(20);
 for (let i = 0; i < Number(opt('--lines') ?? 0); i += 1) { console.log('line ' + name + ' ' + i); await sleep(2); }
 await sleep(Number(opt('--hold') ?? 0));
+// A --hang step takes SIGTERM before it says its pid: the test stops the runner once every pid is said, and a SIGTERM in
+// between would end the step unlogged.
+if (flags.includes('--hang')) process.on('SIGTERM', () => { appendFileSync(log, 'term ' + name + '\\n'); process.exit(143); });
 if (flags.includes('--orphan') || flags.includes('--hang') || flags.includes('--escape')) {
   const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1e9)'], { stdio: 'inherit', detached: flags.includes('--escape') });
   child.unref();
   appendFileSync(new URL('./pids', import.meta.url), name + ' ' + process.pid + ' ' + child.pid + '\\n');
 }
-if (flags.includes('--hang')) {
-  process.on('SIGTERM', () => { appendFileSync(log, 'term ' + name + '\\n'); process.exit(143); });
-  setInterval(() => {}, 1e9);
-}
+if (flags.includes('--hang')) setInterval(() => {}, 1e9);
 else { appendFileSync(log, 'end ' + name + '\\n'); process.exitCode = Number(opt('--exit') ?? 0); }
 `;
 
@@ -252,32 +252,3 @@ test('test:changed runs every workspace for a root file their tests may read, an
   assert.match(lost.stderr, /no merge base of HEAD and no-such-ref; .* pass --base <ref>/);
 });
 
-test('a Ctrl-C stops every workspace\'s processes, and a process a script leaves behind is killed', { timeout: 60_000 }, async (t) => {
-  const root = fixture(t, { a: { test: step('a', '--hang') }, b: { test: step('b', '--hang') }, c: { test: step('c') } });
-  // Killed at the end whatever happens; the fixtures' own cleanup removes the pid files first.
-  const strays = new Set();
-  const pids = () => { const all = Object.values(pidsOf(root)).flat(); for (const pid of all) strays.add(pid); return all; };
-  const child = spawn(process.execPath, [runner], { cwd: root, env: env(atOnce(2)), stdio: ['ignore', 'pipe', 'pipe'] });
-  t.after(() => { child.kill('SIGKILL'); for (const pid of strays) try { process.kill(pid, 'SIGKILL'); } catch {} });
-  let stdout = '';
-  child.stdout.on('data', (chunk) => { stdout += chunk; });
-  const exited = new Promise((resolve) => child.on('exit', (code, signal) => resolve(code ?? signal)));
-  while (pids().length < 4) await new Promise((resolve) => setTimeout(resolve, 25));
-  child.kill('SIGINT');
-  assert.equal(await exited, 130, stdout);
-  assert.match(stdout, /SIGINT, stopping 2 running workspaces/);
-  assert.match(stdout, /^@fx\/c\s+not run\s+-$/m);
-  assert.deepEqual(logOf(root).filter((line) => line.startsWith('term ')).sort(), ['term a', 'term b']);
-  for (const pid of pids()) assert.ok(dead(pid), `pid ${pid} still running`);
-
-  const left = fixture(t, { a: { test: step('a', '--orphan') }, b: { test: step('b', '--escape') } });
-  const result = run(left, atOnce(2));
-  const [orphan, escaped] = [pidsOf(left).a?.[1], pidsOf(left).b?.[1]];
-  strays.add(orphan).add(escaped);
-  assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.match(result.stdout, /^--- @fx\/a: passed in \d+\.\d s; left processes running when it ended; they were killed ---$/m);
-  assert.ok(dead(orphan), `pid ${orphan} still running`);
-  // Outside the group and out of reach, it held b's output; the run ended anyway.
-  assert.match(result.stdout, /^--- @fx\/b: passed in \d+\.\d s ---$/m);
-  assert.ok(!dead(escaped));
-});

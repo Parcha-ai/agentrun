@@ -8,18 +8,18 @@
 //
 // The host's skills (`skills`) are listed in the session's instructions by name and description, and the model reads a
 // skill's files with `read_skill_file`: OpenCode's own skills are off.
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { join } from "node:path";
-import { READ_SKILL_FILE, readSkillFileTool, skillProblems, toolSchemaProblems, type HostSkill } from "@parcha/agentrun-kernel";
-import type { AdapterEvent, AdapterSession, AgentAdapter, HostTool, SessionSpec, TurnStatus } from "@parcha/agentrun-kernel";
+import { READ_SKILL_FILE, hostedTool, readSkillFileTool, skillProblems, toolSchemaProblems, type HostSkill } from "@parcha/agentrun-kernel";
+import type { AdapterEvent, AdapterSession, AgentAdapter, GateCall, HostTool, SessionSpec, TurnStatus } from "@parcha/agentrun-kernel";
 import { abortedOutcome, openDrive, pendingSubmissions, SessionHalt, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-kernel/kernel";
 import { recoveryNote, settleTurn, transcriptOf } from "@parcha/agentrun-kernel/process";
-import { serialWriter, type ModelProxyOptions } from "@parcha/agentrun-kernel/host";
-import { OPENCODE_VERSION } from "./binary.js";
+import { serialWriter, startModelProxy, type ModelProxyOptions } from "@parcha/agentrun-kernel/host";
 import { openCodeHarness, sentSubmissions, type DriveControl } from "./harness.js";
-import { TOOL_PREFIX } from "./host/policy.js";
+import { openCodePolicy, TOOL_PREFIX } from "./host/policy.js";
 import type { ConfineChild } from "./host/server.js";
 import { verifyOpenCode } from "./verify.js";
+import { learnedFront } from "../learn/skills.js";
 
 /** A name OpenCode keeps whole for an MCP tool (it turns anything else into `_`), short enough that `hands_<name>` is a
  *  function name the Responses API takes (at most 64). */
@@ -96,15 +96,31 @@ function adapterEvent(event: unknown): AdapterEvent | undefined {
 
 const turnsIn = (drive: Drive) => transcriptOf(drive.state()).filter((r) => r.data?.type === "turn");
 
-/** The skills as the instructions list them: each by name and description, read with `read_skill_file`. */
-function skillsNote(skills: readonly HostSkill[]): string {
+/** The skills as the instructions list them: each by name and description, read with `read_skill_file`. The
+ *  description as YAML reads it (learnedFront, the one front-matter reader: a quoted one's escapes decoded), so a quote
+ *  in it reaches the model as a quote, never as `\"`; on one line. A SKILL.md that reader can't read whole is a
+ *  revision's own skill the adapter's check accepted (skillProblems reads its name and description lines alone; a
+ *  learned one never reaches a run unread, as the learning checker refuses it): its description is that line's
+ *  (descriptionLine). */
+export function skillsNote(skills: readonly Pick<HostSkill, "name" | "files">[]): string {
   const lines = ["You have these skills. Read a skill's SKILL.md with read_skill_file before you use it, and the files it names the same way."];
   for (const skill of skills) {
-    const head = /^---\n([\s\S]*?)\n---/.exec(skill.files["SKILL.md"] ?? "")?.[1] ?? "";
-    const description = /^description:\s*(.+)$/m.exec(head)?.[1]?.trim().replace(/^["']|["']$/g, "") ?? "";
+    const md = skill.files["SKILL.md"] ?? "";
+    const front = learnedFront(md);
+    const description = ((front ? front.description : descriptionLine(md)) ?? "").replace(/\s+/g, " ").trim();
     lines.push(`- ${skill.name}: ${description}`);
   }
   return lines.join("\n");
+}
+
+/** A SKILL.md's `description:` line as the adapter's check reads it (skillProblems: the front matter's first
+ *  `description:` line), its value without one pair of surrounding quotes; undefined with none. */
+function descriptionLine(md: string): string | undefined {
+  const front = /^---\r?\n([\s\S]*?)\r?\n---\r?\n/.exec(md)?.[1];
+  const value = front === undefined ? undefined : /^description:[ \t]*(\S.*?)\s*$/m.exec(front)?.[1];
+  if (value === undefined) return undefined;
+  const quoted = /^(['"])(.*)\1$/.exec(value);
+  return quoted ? quoted[2] : value;
 }
 
 export function openCodeAdapter(options: OpenCodeAdapterOptions): AgentAdapter {
@@ -115,7 +131,8 @@ export function openCodeAdapter(options: OpenCodeAdapterOptions): AgentAdapter {
   // any run starts (OpenCodePinMismatch, OpenCodeNotInstalled). A test's stand-in runs no OpenCode.
   if (options.standIn) {
     if (process.env.AGENTRUN_OPENCODE_STANDIN !== "1") throw new TypeError("opencode: a stand-in for OpenCode needs AGENTRUN_OPENCODE_STANDIN=1");
-    if (!process.env.NODE_TEST_CONTEXT && process.env.NODE_ENV !== "test") throw new TypeError("opencode: a stand-in for OpenCode runs only under a test runner");
+    // A test runner's own mark (node --test's NODE_TEST_CONTEXT), never NODE_ENV=test, which a production server can carry.
+    if (!process.env.NODE_TEST_CONTEXT) throw new TypeError("opencode: a stand-in for OpenCode runs only under a test runner");
   }
   const checked = options.standIn ? undefined : verifyOpenCode().path;
   const modelFor = (spec: SessionSpec): string => {
@@ -125,8 +142,7 @@ export function openCodeAdapter(options: OpenCodeAdapterOptions): AgentAdapter {
 
   return {
     id: "opencode",
-    version: OPENCODE_VERSION,
-    capabilities: () => ({ fork: false }),
+    capabilities: () => ({}),
     check(spec) {
       const problems: string[] = [];
       if (spec.context === "fork") problems.push("OpenCode sessions cannot fork another session's transcript; declare context: \"fresh\"");
@@ -152,7 +168,7 @@ export function openCodeAdapter(options: OpenCodeAdapterOptions): AgentAdapter {
 
       // With skills the model also reads their files (read_skill_file), from the session's own copy of them.
       const skillsDir = join(dir, "skills");
-      const tools: HostTool[] = skills.length ? [...spec.tools, readSkillFileTool(skillsDir, skills.map((skill) => ({ name: skill.name, files: Object.keys(skill.files) })))] : spec.tools;
+      const tools: HostTool[] = skills.length ? [...spec.tools, hostedTool(io, readSkillFileTool(skillsDir, skills.map((skill) => ({ name: skill.name, files: Object.keys(skill.files) }))))] : spec.tools;
       if (skills.length) {
         const { mkdirSync, writeFileSync } = await import("node:fs");
         const { dirname } = await import("node:path");
@@ -185,6 +201,8 @@ export function openCodeAdapter(options: OpenCodeAdapterOptions): AgentAdapter {
         ...(options.eventConnectMs ? { eventConnectMs: options.eventConnectMs } : {}),
         ...(options.log ? { log: options.log } : {}),
         ...(options.fetch ? { fetch: options.fetch } : {}),
+        // The host's gate, asked by the kernel's tool bridge before anything of a call is written.
+        ...(io.gate ? { gate: (call: GateCall) => io.gate!(call) } : {}),
       }, (c) => void (control = c));
 
       const live = (event: unknown) => {
@@ -214,9 +232,12 @@ export function openCodeAdapter(options: OpenCodeAdapterOptions): AgentAdapter {
         interrupted = false;
         running = (async () => {
           let outcome: { status: TurnStatus; error?: string };
+          // The turn's answer cut at the model's output limit, as its end in the records says: told on its turn_end.
+          let cut: { stopReason: "length"; outputTokens?: number } | undefined;
           try {
             await harness.drive(current);
-            const ended = turnsIn(current).slice(before).at(-1)?.data as { status?: TurnStatus; error?: string } | undefined;
+            const ended = turnsIn(current).slice(before).at(-1)?.data as { status?: TurnStatus; error?: string; stopReason?: unknown; outputTokens?: unknown } | undefined;
+            if (ended?.stopReason === "length") cut = { stopReason: "length", ...(typeof ended.outputTokens === "number" ? { outputTokens: ended.outputTokens } : {}) };
             // A turn its interrupt stopped has no end in the records (it stays open): interrupted.
             outcome = ended?.status ? { status: ended.status, ...(ended.error ? { error: ended.error } : {}) } : interrupted ? { status: "interrupted" } : { status: "failed", error: "the turn ended with no outcome in the session's records" };
           } catch (error) {
@@ -229,7 +250,7 @@ export function openCodeAdapter(options: OpenCodeAdapterOptions): AgentAdapter {
             // codex's adapter does).
             if (current.signal.aborted) state = holdsTurn(current.state()) ? "open_turn" : "idle";
           }
-          io.onEvent({ type: "turn_end", status: outcome.status });
+          io.onEvent({ type: "turn_end", status: outcome.status, ...(cut && outcome.status === "completed" ? cut : {}) });
           return outcome;
         })();
         return running;
@@ -241,6 +262,29 @@ export function openCodeAdapter(options: OpenCodeAdapterOptions): AgentAdapter {
         if (drive.signal.aborted && !io.signal.aborted) drive = await open();
       };
 
+      // The session's host port (AdapterSession.port): the host's own requests beside OpenCode's (a learned workflow's
+      // node) on the session's route, built from the drive proxy's own pieces (the same policy, origin, credential, price
+      // and the session's booking, io.models), on a listener the session holds: a drive's proxy closes with its drive, and
+      // an approved call runs before any turn. Side keys only; its policy object is its own. Closed with the session.
+      // Started once the session's drive is open, the last step that can fail: an open that fails leaves no listener.
+      const hostPort = await startModelProxy({
+        policy: openCodePolicy({ model: modelFor(spec), tools: [], ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}) }),
+        hooks: io.models as never,
+        model: modelFor(spec),
+        origin: options.provider.origin,
+        credential: async () => (await options.provider.credential()) ?? "",
+        ...(options.price ? { price: options.price } : {}),
+        ...(options.log ? { log: options.log } : {}),
+        ...(options.fetch ? { fetch: options.fetch } : {}),
+      }, randomBytes(32).toString("base64url"));
+      let hostClosed = false;
+      const closeHost = async () => {
+        if (hostClosed) return;
+        hostClosed = true;
+        await hostPort.close().catch(() => {});
+      };
+      io.signal.addEventListener("abort", () => void closeHost(), { once: true });
+      if (io.signal.aborted) await closeHost();
       return {
         get state() { return state; },
         async send(text) {
@@ -287,7 +331,11 @@ export function openCodeAdapter(options: OpenCodeAdapterOptions): AgentAdapter {
           closed = true;
           drive.halt?.(new SessionHalt("closed"));
           await running?.catch(() => {});
+          await closeHost();
         },
+        // The session's one model route, for the host's own request beside OpenCode's: the session's host port, which
+        // never restarts once closed.
+        port: (label: string) => (closed || hostClosed ? undefined : { url: `${hostPort.url}`, key: hostPort.sideKey(label), model: modelFor(spec), api: "openai-responses" as const }),
       };
     },
   };

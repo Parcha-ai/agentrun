@@ -5,24 +5,24 @@ import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { homeOf } from "../dist/files.js";
-import { seedOf } from "../dist/learning.js";
+import { learningRepo, seedOf } from "../dist/learning.js";
 import { pendingTestHooks } from "../dist/learning-routes.js";
 import { note, skill } from "./learn-format-support.mjs";
-import { git } from "./learn-support.mjs";
+import { git, resnap } from "./learn-support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { agent, serve } from "./support.mjs";
 
 /** Agent `id`'s learning folder made as a first run makes it, then `files` committed on main. */
 async function commit(data, id, files) {
   await seedOf(data, id);
-  const repo = join(homeOf(data, id), "learning");
+  const repo = learningRepo(data, id);
   for (const [path, text] of Object.entries(files)) {
     mkdirSync(dirname(join(repo, path)), { recursive: true });
     writeFileSync(join(repo, path), text);
   }
   git(repo, ["add", "--", ...Object.keys(files)]);
   git(repo, ["commit", "-q", "-m", "learned"]);
+  await resnap(data, id);
 }
 const held = (text) => text.replace(/\n---\n/, "\nstatus: pending\n---\n");
 
@@ -77,18 +77,13 @@ test("pendingCount: a folder it cannot read counts as unknown (undefined), not 0
   const data = mkdtempSync(join(tmpdir(), "pending-"));
   t.after(() => rmSync(data, { recursive: true, force: true }));
   assert.equal(await pendingCount(data, "never-made"), 0, "a folder never made: nothing waits");
-  // A folder whose .git is not a repository git can read.
-  const broken = join(homeOf(data, "broken"), "learning", ".git");
+  // A folder whose snapshot (what every read reads) is not one the server can read.
+  const broken = join(learningRepo(data, "broken"), ".agentrun");
   mkdirSync(broken, { recursive: true });
-  writeFileSync(join(broken, "HEAD"), "not a ref\n");
+  writeFileSync(join(broken, "snapshot.json"), "not a snapshot\n");
   assert.equal(await pendingCount(data, "broken"), undefined, "a folder that can't be read: unknown, so the field is left out");
   // Two calls on a commit not yet counted read it once.
-  const repo = join(homeOf(data, "two"), "learning");
-  mkdirSync(repo, { recursive: true });
-  git(repo, ["init", "-q", "-b", "main"]);
-  writeFileSync(join(repo, "MEMORY.md"), "");
-  git(repo, ["add", "-A"]);
-  git(repo, ["commit", "-q", "-m", "seed"]);
+  await seedOf(data, "two");
   const before = pendingTestHooks.reads;
   const [a, b] = await Promise.all([pendingCount(data, "two"), pendingCount(data, "two")]);
   assert.deepEqual([a, b], [0, 0]);
