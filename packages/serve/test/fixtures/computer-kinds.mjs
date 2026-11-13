@@ -6,7 +6,7 @@ import { ARCHIL_KINDS, KINDS, PROVIDERS, SETTING_KINDS, servingRefusals } from "
 
 export { ARCHIL_KINDS, KINDS, PROVIDERS, SETTING_KINDS, servingRefusals };
 
-const TOOLS = { none: [], sandbox: ["bash_background"], desktop: ["screenshot", "computer_input"], phone: ["phone_screenshot", "phone_tap"], browser: ["browser"] };
+const TOOLS = { none: [], sandbox: ["bash_background"], desktop: ["computer_observe", "computer_act"], phone: ["computer_observe", "computer_act"], browser: ["browser"] };
 export const tools = (kind) => TOOLS[kind];
 
 /**

@@ -12,15 +12,15 @@ export const HANDOFF_DEFAULT_S = 600;
 export const HANDOFF_MIN_S = 30;
 export const HANDOFF_MAX_S = 3600;
 
-const DESCRIPTION = `Hand the computer to the person for a step you cannot or should not do yourself: a sign-in with their own password, a captcha, a payment, a choice only they can make. Say what they should do (instruction) and how you both will know it is done (completion_condition). You wait until they answer, done or cancelled, or the ask expires (expires_in_s, ${HANDOFF_DEFAULT_S} s when absent). Look at the screen again after it: the person may have changed it.`;
+const DESCRIPTION = `Hand the computer to the person for a step only they should do (their password, a captcha, a payment, their choice), and wait until they answer or the ask expires. The screen may have changed after.`;
 
 const PARAMETERS = {
   type: "object",
   additionalProperties: false,
   properties: {
-    instruction: { type: "string", minLength: 1, description: "What the person should do, in words they can follow." },
-    completion_condition: { type: "string", minLength: 1, description: "How you and the person will know the step is done: what the screen shows then." },
-    expires_in_s: { type: "integer", minimum: HANDOFF_MIN_S, maximum: HANDOFF_MAX_S, description: `How long the person has, in seconds: ${HANDOFF_DEFAULT_S} when absent.` },
+    instruction: { type: "string", minLength: 1, description: "What the person should do." },
+    completion_condition: { type: "string", minLength: 1, description: "What the screen shows once it is done." },
+    expires_in_s: { type: "integer", minimum: HANDOFF_MIN_S, maximum: HANDOFF_MAX_S, description: `Default ${HANDOFF_DEFAULT_S}.` },
   },
   required: ["instruction", "completion_condition"],
 };
