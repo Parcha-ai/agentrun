@@ -41,7 +41,7 @@ import { learningStartOf, readLaunchBody, type RunLaunch, seedFailed } from "../
 import { costOf, type SignInReader } from "../run-view.js";
 import type { McpServerRow, Store } from "../store/store.js";
 import { readApprovers } from "../server-approvers.js";
-import { runEntries, runReflect, runTimeline } from "../store-reads/journal.js";
+import { runEntries, runReflect, runTimeline, withFeedback } from "../store-reads/journal.js";
 import { capNowOf } from "./journal-kinds.js";
 import { reviseOf, servedOf } from "./workflow-first.js";
 import type { EndOfRunTurn } from "./loop-contract.js";
@@ -116,7 +116,8 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
     asked: async (runId) => {
       const [entries, reflect] = await Promise.all([runEntries(deps.store, runId, BACKGROUND_CONTEXT), runReflect(deps.store, runId, BACKGROUND_CONTEXT)]);
       const hearing = new Hearing();
-      for (const entry of entries) hearing.note(entry);
+      // A grade's feedback round's words (feedback-round.ts) are heard as the reviewer's, as its Timeline shows them.
+      for (const entry of withFeedback(entries)) hearing.note(entry);
       const heard = [...hearing.heard].filter(([id]) => !reflects(reflect as Reflect | undefined, id)).sort(([a], [b]) => a - b).map(([, one]) => one);
       const triggered = heard.flatMap(({ text, source }) => (source === undefined ? [] : [{ source, text }]));
       return { asked: heard.filter((one) => one.source === undefined).map(({ text }) => text), ...(triggered.length ? { triggered } : {}) };

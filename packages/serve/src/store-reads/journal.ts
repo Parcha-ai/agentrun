@@ -181,6 +181,16 @@ const inWorkspace = (cwd: string) => (path: string): string => {
   return path.startsWith(`${root}/`) && path.length > root.length + 1 ? path.slice(root.length + 1) : path;
 };
 
+/** A grade's feedback round's words (runner/feedback-round.ts, KINDS.feedback) as the reviewer's message: a host's
+ *  user entry, which the Timeline shows and pi never reads (the entry on the journal carries no model message). */
+export function withFeedback(entries: readonly EntryLike[]): EntryLike[] {
+  return entries.map((entry) => {
+    if (entry.kind !== KINDS.feedback) return entry;
+    const data = (entry.data ?? {}) as { text?: unknown; at?: unknown };
+    return { ...entry, model: [{ role: "user", content: typeof data.text === "string" ? data.text : "", ...(typeof data.at === "number" ? { timestamp: data.at } : {}) }] } as EntryLike;
+  });
+}
+
 /** A run's timeline rows, the renderer (timelineOf) unchanged, over the one store's entries, with a CLI harness's record
  *  rendered as its pi-shaped entries (piShaped) and its paid tool charges read back from the paid-tools session
  *  (withPaidCosts). A run whose record carries no per-request cost (a CLI harness's, a workflow's: metrics.ts
@@ -194,7 +204,7 @@ export async function runTimeline(store: Store, runId: string, context: Context,
   // A CLI names a file by its absolute path under its working directory (CallStartData.cwd): the rows name it by its
   // name in the workspace, never a path on the runner's machine. Its arguments, as the harness sent them, stay.
   const cwd = cli && !options.path ? entries.find((entry) => entry.kind === KINDS.callStart && typeof (entry.data as { cwd?: unknown } | undefined)?.cwd === "string")?.data as { cwd: string } | undefined : undefined;
-  const rendered = timelineOf(withPaidCosts(cli ? piShaped(entries) : entries), cwd ? { ...options, path: inWorkspace(cwd.cwd) } : options);
+  const rendered = timelineOf(withPaidCosts(withFeedback(cli ? piShaped(entries) : entries)), cwd ? { ...options, path: inWorkspace(cwd.cwd) } : options);
   const rows = costIsBooked(entries, cli) ? bookedUsage(rendered, entries, options) : withSideUsage(rendered, entries);
   return labelled((await runReflect(store, runId, context)) as Reflect | undefined, withLearnedNodes(await datedRows(store, runId, rows), entries, options.redact));
 }

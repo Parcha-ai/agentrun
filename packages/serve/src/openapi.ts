@@ -15,6 +15,7 @@ import { HARNESSES } from "./harness.js";
 import { LEARNING_LABEL, LEARNING_MODES, LEARNING_REASONS, LEARNING_STATES, RUN_LEARNING_USE } from "./learning.js";
 import { CHEAPER_AFTER_RUNS, COST_CSV_COLUMNS, COST_WINDOW, COST_RUNS_DEFAULT, COST_RUNS_MAX, RUN_PATHS } from "./learning-cost.js";
 import { GRADE_SOURCES, GRADES_KEPT, PROMOTE_BAR, REFIT_EVERY, REPLAY_INPUTS, REPLAY_MIN } from "./learn/promote.js";
+import { FEEDBACK_ROUNDS, LABEL_MAX } from "./runner/feedback-round.js";
 import { MODEL_SOURCES, THINKING_LEVELS } from "./model.js";
 import { BOX_IDS, BOX_NETWORKS, BOX_STATES } from "./place-offers.js";
 import { PLACE_MODES } from "./place.js";
@@ -989,6 +990,7 @@ const GRADE = closedWith({
   path: { enum: [...RUN_PATHS], description: "The path the run took, read from its record when it was graded." },
   workflow: { ...NULL_STRING, description: "The learned workflow that served it, when one did." },
   workflow_digest: { ...NULL_STRING, description: "That workflow's digest (the first 16 hex of its workflow.json's sha256), when it was served first." },
+  feedback: { enum: [...FEEDBACK_ROUNDS, null], description: "What the grade asked of the run's learning, a round the run opened again on (no turn of the job's: its end-of-run turn alone, learning spend): `revise`, a wrong grade of a run its learned workflow answered alone, a revision ask for that workflow with the job, its answer and the grade's words; `look_back`, a run the agent finished graded with a `label`, a look-back on it. null: nothing more (a right grade of a run its workflow answered alone costs $0), or a run that does not learn or that can't be opened again." },
 }, { expected: { type: "object", description: "The fields a right answer's JSON holds, when the grade gave them." } });
 const REPLAY_SCORE = {
   n: { ...COUNT, description: "The graded inputs it was decided on." },
@@ -1016,9 +1018,9 @@ const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
   "/runs/{run_id}/grade": {
     put: {
       operationId: "gradeRun", tags: ["runs"], summary: "Grade an ended run's answer: right or wrong, and the fields a right answer holds",
-      description: `A person's feedback or an eval's label on a run that ended, kept for its agent (one grade a run: a later one replaces it; the newest ${GRADES_KEPT} are kept). Promotion by replay reads them: a learned workflow's new revision serves first only after a replay on the agent's last ${REPLAY_INPUTS} graded inputs it fits is within ${PROMOTE_BAR * 100} points of the agent's own answers on them; with fewer than ${REPLAY_MIN}, on its passing dry run. With \`expected\`, a replay's answer is right when its JSON holds each of those fields; else when it says what the graded answer said. A replay run is never graded.`,
+      description: `A person's feedback or an eval's label on a run that ended, kept for its agent (one grade a run: a later one replaces it; the newest ${GRADES_KEPT} are kept). Promotion by replay reads them: a learned workflow's new revision serves first only after a replay on the agent's last ${REPLAY_INPUTS} graded inputs it fits is within ${PROMOTE_BAR * 100} points of the agent's own answers on them; with fewer than ${REPLAY_MIN}, on its passing dry run. With \`expected\`, a replay's answer is right when its JSON holds each of those fields; else when it says what the graded answer said. A replay run is never graded. The run's path never changes on a grade: a right grade of a run its learned workflow answered alone is kept and nothing more ($0); a wrong one opens the run again on a revision ask for that workflow; a run the agent finished, graded with a \`label\`, opens again on a look-back on it. Either round asks the agent no turn of the job's, only its end-of-run turn, and its spend is the run's learning (\`feedback\`).`,
       parameters: [ref("parameters/RunId")],
-      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["correct"], properties: { correct: { type: "boolean" }, expected: { type: "object", description: "The fields a right answer's JSON holds." }, source: { enum: [...GRADE_SOURCES], default: "feedback" } } } } } },
+      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["correct"], properties: { correct: { type: "boolean" }, expected: { type: "object", description: "The fields a right answer's JSON holds." }, source: { enum: [...GRADE_SOURCES], default: "feedback" }, label: { type: "string", maxLength: LABEL_MAX, description: "The grade's words (a teacher's label, a reviewer's note): what the run's look-back or its workflow's revision ask reads." } } } } } },
       responses: { "200": json(GRADE, "The run's grade."), ...errors(400, 401, 404, 429, 500) },
       "x-agentrun-serve": "promotion/1",
     },

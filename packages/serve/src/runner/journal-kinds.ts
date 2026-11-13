@@ -78,6 +78,11 @@ export const KINDS = {
    *  workflows its learned_workflow tool runs (`workflows`, by name). Written once per claim, on the root; the newest is
    *  what the run was given. Neither a call nor a message. */
   learningLaid: "agentrun.learning.laid",
+  /** A grade's feedback round (runner/feedback-round.ts): the run opened again on a grade's words, asked no turn of the
+   *  job's; its next end's end-of-run turn reads them (`text`, the `round`, whether the grade said right, the workflow a
+   *  revision is asked of). Written on the root by the commit that takes the round's steer row. Neither a call nor a
+   *  message: pi never reads it, and the Timeline shows its words as the reviewer's. */
+  feedback: "agentrun.feedback",
   /** A workflow run's model node's execution, as the runner kept it before running it (workflow-spec.ts onModelNode):
    *  `{ path, tier?, model }`, its execution path, the tier it asked for (absent for none) and the model id the run's route
    *  sent it to. On the node log (NODE_LOG_SESSION), for GET /runs/{id}/graph's nodes' `model` (graph-view.ts). Neither a
