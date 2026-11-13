@@ -39,7 +39,7 @@ async function show(agent: Agent, forget: (id: string, key: string) => Promise<u
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
   // The page holds the agent: a fresh read replaces it, as AgentPage's setAgent does.
-  const render = (a: Agent) => root!.render(createElement(SignIns, { agent: a, v2: v2 as never, onAgent: (next: Agent) => render(next), poll: () => { void v2.getAgent(agent.agent_id).then((r) => render(r.agent)); } }));
+  const render = (a: Agent) => root!.render(createElement(SignIns, { agent: a, v2: v2 as never, onAgent: (next: Agent) => render(next), poll: () => { void v2.getAgent(agent.agent_id).then((r) => render(r.agent)); }, refresh: () => v2.getAgent(agent.agent_id).then((r) => { render(r.agent); return true; }, () => false) }));
   await act(async () => { render(agent); });
   const section = () => host.querySelector('section[aria-label="Sign-ins"]') as HTMLElement | null;
   const rows = () => [...host.querySelectorAll("[data-sign-in]")] as HTMLElement[];
@@ -130,6 +130,14 @@ describe("the agent page's sign-ins", () => {
     expect(p.rows()).toHaveLength(1);
   });
 
+  it("a forget refused because the run it was handed is still going (details.handed_to) links that run", async () => {
+    const p = await show(agentWith([kernel]), async () => { throw Object.assign(new ClientError(409, "sign_in_held", "handed", false), { details: { handed_to: RUN } }); });
+    await p.click(p.forgets()[0]);
+    await p.click(p.button(/^Yes, forget/));
+    expect(p.section()!.textContent).toContain("A run is using this sign-in");
+    expect(p.section()!.querySelector(`a[href="#/runs/${RUN}"]`)).toBeTruthy();
+  });
+
   it("a vendor's not-deleted warning stays after its last sign-in is forgotten, even for an agent with no vendor browser now", async () => {
     const gone = "unavailable: no browser key";
     const notDeleted = async (_id: string, key: string): Promise<Removed> => ({ key, removed: [{ provider: "kernel", at_vendor: "not_deleted", message: "Kernel said 503." }] });
@@ -155,7 +163,7 @@ describe("the agent page's sign-ins", () => {
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);
     const handed: Agent[] = [];
-    const render = (a: Agent) => root!.render(createElement(SignIns, { agent: a, v2: v2 as never, onAgent: (next: Agent) => { handed.push(next); render(next); }, poll: () => {} }));
+    const render = (a: Agent) => root!.render(createElement(SignIns, { agent: a, v2: v2 as never, onAgent: (next: Agent) => { handed.push(next); render(next); }, poll: () => {}, refresh: () => v2.getAgent().then(() => true, () => false) }));
     const first = agentWith([bb]);
     await act(async () => { render(first); });
     const forgetButton = [...host.querySelectorAll("button")].find((b) => /^Forget/.test(b.getAttribute("aria-label") ?? ""))!;

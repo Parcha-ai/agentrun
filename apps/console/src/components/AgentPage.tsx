@@ -92,18 +92,21 @@ export function AgentPage({ v2, agentId, routePrefix, harnesses, efforts = [], g
   const landed = useRef(0);
   const floor = useRef(0);
   const [stale, setStale] = useState(false);
-  // `quiet`: the held sign-in poll's read, which waits for the next tick on a failure rather than say so.
-  const reread = (quiet = false) => {
+  // `quiet`: a read that waits for the next tick (or says so itself) on a failure rather than raise the page's retry.
+  // `raise`: a write's read, which lifts the floor. It answers whether the read succeeded.
+  const reread = (quiet = false, raise = !quiet): Promise<boolean> => {
     const n = ++rereads.current;
-    if (!quiet) floor.current = n;
-    v2.getAgent(agentId).then(
-      (r) => { if (n > landed.current && n >= floor.current) { landed.current = n; setAgent((cur) => (cur && cur.agent_id === r.agent.agent_id ? r.agent : cur)); setStale(false); } },
-      () => { if (n === rereads.current && !quiet) setStale(true); },
+    if (raise) floor.current = n;
+    return v2.getAgent(agentId).then(
+      (r) => { if (n > landed.current && n >= floor.current) { landed.current = n; setAgent((cur) => (cur && cur.agent_id === r.agent.agent_id ? r.agent : cur)); setStale(false); } return true; },
+      () => { if (n === rereads.current && !quiet) setStale(true); return false; },
     );
   };
-  const onAgent = (saved: Agent) => { setAgent((cur) => ({ ...saved, tools: cur?.tools ?? saved.tools })); reread(); };
-  const onChanged = () => reread();
-  const poll = () => reread(true);
+  const onAgent = (saved: Agent) => { setAgent((cur) => ({ ...saved, tools: cur?.tools ?? saved.tools })); void reread(); };
+  const onChanged = () => void reread();
+  const poll = () => void reread(true, false);
+  // The agent read again after a Forget: through the same guarded read, and quiet, since the Forget says a failed one itself.
+  const afterForget = () => reread(true, true);
   const analytics = stats === undefined ? undefined : stats !== null;
   if (error) return error.cause instanceof ClientError && error.cause.status === 404
     ? <NotHere what="agent" id={agentId} list={{ href: "#/agents", label: "Open the agents list" }} />
@@ -196,7 +199,7 @@ export function AgentPage({ v2, agentId, routePrefix, harnesses, efforts = [], g
           </p>
         )}
         {offText && <p className="mt-3 font-mono text-small text-warning-text" role="status" aria-label="Harness not available">{offText}</p>}
-        <SignIns agent={agent} v2={v2} onAgent={setAgent} poll={poll} />
+        <SignIns agent={agent} v2={v2} onAgent={setAgent} poll={poll} refresh={afterForget} />
       </header>
       {!agent.archived_at && <RunBar agent={agent} efforts={efforts} v2={v2} go={go} blocked={offText} limits={limits} />}
       <Tabs tabs={tabs.map((t) => (t.id === "learning" ? { ...t, label: <>{t.label}<WaitingCount n={itemsWaiting} className="ml-1.5" /></> } : t))} value={at.id} onChange={(id) => go(agentHash(agent.agent_id, id))} />

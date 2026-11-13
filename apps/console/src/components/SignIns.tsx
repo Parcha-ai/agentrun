@@ -24,7 +24,7 @@ const names = (list: readonly string[]) => (list.length < 2 ? list.join("") : `$
  *  key's sign-ins is named on its row, and the key's Forget waits for it to end; one that takes it meanwhile is said from
  *  the 409. Each vendor's result is named: a delete it didn't confirm, with its message. With none saved, a line only for an
  *  agent whose browser is a vendor's (its `tools` entry resolves to one). */
-export function SignIns({ agent, v2, onAgent, poll }: { agent: Agent; v2: Pick<Client, "forgetSignIn" | "getAgent">; onAgent: (agent: Agent) => void; poll: () => void }) {
+export function SignIns({ agent, v2, onAgent, poll, refresh }: { agent: Agent; v2: Pick<Client, "forgetSignIn">; onAgent: (agent: Agent) => void; poll: () => void; refresh: () => Promise<boolean> }) {
   const [asking, setAsking] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [said, setSaid] = useState<{ text: string; run?: string; tone: "warn" | "error" } | null>(null);
@@ -58,14 +58,15 @@ export function SignIns({ agent, v2, onAgent, poll }: { agent: Agent; v2: Pick<C
       setSaid(known);
       setAsking(null);
       // The forget went through: a read of the agent that fails after it keeps that, with the key's rows gone here.
-      try { onAgent((await v2.getAgent(agent.agent_id)).agent); }
-      catch (e) {
+      // The read goes through the page's guarded one (a newer save is never put back), which says whether it landed.
+      if (!(await refresh())) {
         const now = latest.current;
         onAgent({ ...now, sign_ins: (now.sign_ins ?? []).filter((s) => s.key !== key) });
-        setSaid({ tone: "warn", text: `${known ? `${known.text} ` : "Forgotten. "}The agent couldn't be read again: ${problemOf(e)}` });
+        setSaid({ tone: "warn", text: `${known ? `${known.text} ` : "Forgotten. "}The agent couldn't be read again.` });
       }
     } catch (e) {
-      const held = e instanceof ClientError && e.code === "sign_in_held" ? (e.details?.held_by as string | undefined) : undefined;
+      // serve names the run in `held_by` (its save lease) or `handed_to` (a run it was handed that is still going).
+      const held = e instanceof ClientError && e.code === "sign_in_held" ? ((e.details?.held_by ?? e.details?.handed_to) as string | undefined) : undefined;
       setSaid(e instanceof ClientError && e.code === "sign_in_held"
         ? { tone: "warn", text: "A run is using this sign-in; you can forget it when that run ends.", ...(held ? { run: held } : {}) }
         : { tone: "error", text: `Not forgotten: ${problemOf(e)}` });
