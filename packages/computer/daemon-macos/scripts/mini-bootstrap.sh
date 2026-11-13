@@ -127,8 +127,9 @@ if ! launchctl print "$domain/$label" 2>&1 | grep -E '^[[:space:]]*state = runni
 	die "launchd has the agent but it is not running (above)"
 fi
 
-# The grants window, opened as a person would: --until-granted closes it once every grant is on, so it never covers the
-# windows the demos work in. (Opened by a person, the app writes the same plist; it finds it in place and leaves it.)
+# The grants window: --until-granted opens the pane of the first grant still missing beside it, the next when that one is
+# in, and closes once every grant is on, so it never covers the windows the demos work in. It leaves the LaunchAgent to
+# this script.
 open -n "$app" --args --until-granted
 for _ in $(seq 1 100); do
 	[[ -S "$home/computerd.sock" ]] && "$computerd" hello >/dev/null 2>&1 && break
@@ -159,14 +160,11 @@ if [[ -n "$off" ]]; then
 	cat <<EOF
 
 A person must switch these on, once (Screen Sharing over Tailscale works):
-  1. In the Computerd window, click each "Allow…": it adds Computerd to the list and opens its pane.
-  2. Privacy & Security > Accessibility: switch Computerd on (this also gives it Post Event).
-  3. Privacy & Security > Screen & System Audio Recording: switch Computerd on.
-  4. Back in the Computerd window, click "Raise it now" and answer Allow, so the capture alert never pops mid-task.
-Both panes are open now. This waits up to 15 minutes, restarting the agent every 30 s so a new grant takes hold.
+  1. Drag the Computerd tile in the Computerd window into the System Settings list beside it. The next pane opens
+     once that list's grants are in; drag the tile into it too.
+  2. Menu bar ⌘D > Grants and Pairing…: click "Raise it now" and answer Allow, so the capture alert never pops mid-task.
+This waits up to 15 minutes, restarting the agent every 30 s so a new grant takes hold.
 EOF
-	open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
-	open "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
 	waited=0
 	while [[ -n "$off" && "$waited" -lt 900 ]]; do
 		sleep 30
