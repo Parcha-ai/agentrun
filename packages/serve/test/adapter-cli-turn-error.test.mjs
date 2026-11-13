@@ -118,6 +118,32 @@ test("a CLI turn that ends on a provider error journals main's error row: pi's e
   assert.ok(String(served?.error?.message ?? "").includes("Failed to authenticate. API Error: 401"), JSON.stringify(served?.error));
 });
 
+test("a cancel the runner has not handed on when a CLI turn fails ends the run cancelled, never failed", async (t) => {
+  const opened = await stores({ runners: 1 });
+  await queue(opened.server, "run-1");
+  const cli = failingCli("failed", "codex: the turn broke");
+  const open = cli.open;
+  // The cancel lands in the store as the turn fails, before the runner's next command poll reads it.
+  cli.open = async (spec, io) => {
+    const session = await open(spec, io);
+    const send = session.send.bind(session);
+    session.send = async (...args) => {
+      await send(...args);
+      await opened.server.command("run-1", { kind: "cancel" });
+    };
+    return session;
+  };
+  const createLoop = createAdapterLoop(() => ({ adapter: cli, session: { key: "root", label: "root", system: [], tools: [], context: "fresh" }, input: "Answer.", record: "loop", hooks: quiet }));
+  const runner = startRunner({ store: observed(opened.runners[0], recorder()), createLoop, name: "runner-a", ...{ ...TIMING, commandPollMs: 400, pollMs: 400 } });
+  t.after(() => runner.close());
+  const row = await until(async () => {
+    const now = await opened.server.runs.get("run-1");
+    return ["ended", "failed", "stopped"].includes(now.state) && now.runner === null && now;
+  }, "the run settled and released", 30_000);
+  assert.notEqual(row.state, "failed", JSON.stringify(row));
+  assert.equal(row.summary, "cancelled", JSON.stringify(row));
+});
+
 test("a CLI turn that fails with no words of its own still ends the run failed in the loop's words", async (t) => {
   const row = await runOnce(t, "failed", undefined);
   assert.equal(row.state, "failed", JSON.stringify(row));

@@ -4,7 +4,7 @@
 // model sees do not change. runs.ts still answers the API from files; this is the store-backed path the server cut switches
 // onto. viewOverStore answers the run read, summaryOverStore the run list, momentOverStore the one acceptance each act reads.
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { CAPS, type TimelineEvent } from "./timeline/index.js";
+import { CAPS, isMessageRow, type TimelineEvent } from "./timeline/index.js";
 import { runLink } from "./console-links.js";
 import { redacted, redactedAnswer, redactedOutput, withoutLoopback } from "./key-refusal.js";
 import { structuredAnswer } from "./answer-json.js";
@@ -114,8 +114,8 @@ function servedOnce(store: Store, runId: string, input: string, values: readonly
  *  never an earlier turn's: a final answer row before the person's last message belongs to the turn that message
  *  followed, so a follow-up whose own stop said nothing (no text block: a thinking-only stop) has no answer, null, not
  *  the answer before it. */
-const answerOf = (rows: readonly TimelineEvent[]): string | null => {
-  const asked = rows.findLastIndex((r) => r.kind === "user_message" && r.agent_label === null && r.text !== null);
+export const answerOf = (rows: readonly TimelineEvent[]): string | null => {
+  const asked = rows.findLastIndex((r) => isMessageRow(r) && r.agent_label === null && r.text !== null);
   const row = rows.findLast((r) => r.kind === "final_answer" && r.agent_label !== LEARNING_LABEL);
   return row && rows.lastIndexOf(row) > asked ? row.text ?? null : null;
 };
