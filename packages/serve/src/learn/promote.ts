@@ -54,8 +54,9 @@ export interface ReplayScore {
 }
 
 /** A learned workflow's promotion record at one digest. `decided`: `promote` (it serves first), `hold` (it does not: the
- *  champion, championOf, takes its runs, else the agent, until a new revision), or `replaying` (its replay runs, `runs`,
- *  are at work; the champion serves meanwhile, else the agent). `source`: `replay` (decided on its replay), `dry_run` (fewer than REPLAY_MIN graded inputs: promoted on
+ *  champion, championOf, takes its runs, else the agent, until a new revision), `replaying` (its replay runs, `runs`,
+ *  are at work; the champion serves meanwhile, else the agent), or `superseded` (a newer revision, `superseded_by`, came
+ *  while it replayed: one challenger at a time, so its replay runs were cancelled and it never serves). `source`: `replay` (decided on its replay), `dry_run` (fewer than REPLAY_MIN graded inputs: promoted on
  *  its passing dry run), `refit` (a threshold refit wrote this revision, decided on the rows it was fit on), `graded` (a
  *  serving revision's graded runs fell below the bar: held). `replay`: the numbers it was decided on, with the graded runs
  *  replayed (`of`) and what its replay runs cost (`cost_usd`, null when one's is unknown). `refit`: the guards a refit
@@ -64,13 +65,15 @@ export interface PromotionRecord {
   readonly workflow: string;
   readonly digest: string;
   readonly at: string;
-  readonly decided: "promote" | "hold" | "replaying";
+  readonly decided: "promote" | "hold" | "replaying" | "superseded";
   readonly source: "replay" | "dry_run" | "refit" | "graded";
   readonly reason: string;
   readonly replay?: ReplayScore & { readonly of: readonly string[]; readonly cost_usd?: number | null };
   readonly runs?: readonly string[];
   readonly refit?: { readonly from: string; readonly guards: readonly RefitGuard[] };
   readonly checked?: number;
+  /** A superseded revision's newer one: the digest whose claim cancelled its replay. */
+  readonly superseded_by?: string;
   /** The learning commit whose workflows/<workflow>/workflow.json is this digest's text: the seed of the claim that
    *  recorded it, or a refit's own commit. What the digest serves from as the champion (championOf) once a newer revision
    *  is on the folder's main. */
@@ -140,17 +143,26 @@ export function championOf(records: readonly PromotionRecord[], workflow: string
   return now?.decided === "promote" ? now : undefined;
 }
 
+/** The revisions of `workflow` other than `digest` whose newest record still says replaying, newest first: at most one
+ *  once each new revision supersedes the one replaying (runner/promotion.ts). */
+export function replayingOf(records: readonly PromotionRecord[], workflow: string, digest: string | null): PromotionRecord[] {
+  const out: PromotionRecord[] = [];
+  for (const one of [...records].reverse()) {
+    if (one.workflow !== workflow || one.digest === digest || out.some((seen) => seen.digest === one.digest)) continue;
+    if (promotionOf(records, workflow, one.digest) === one && one.decided === "replaying") out.push(one);
+  }
+  return out;
+}
+
 /** What each learned workflow with a record serves, by name: `digest`, its champion's (championOf; null: none serves,
- *  the agent takes its runs), and `replaying`, the newest revision other than it, when its replay is at work (null: none). What the
- *  promotions list says beside the records (GET /agents/{id}/learning/promotions). */
+ *  the agent takes its runs), and `replaying`, the revision other than it whose replay is at work (null: none; a
+ *  superseded one's replay was cancelled, never at work). What the promotions list says beside the records
+ *  (GET /agents/{id}/learning/promotions). */
 export function servingOf(records: readonly PromotionRecord[]): { workflow: string; digest: string | null; replaying: string | null }[] {
   const names = [...new Set(records.map((one) => one.workflow))].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
   return names.map((workflow) => {
     const digest = championOf(records, workflow)?.digest ?? null;
-    // The newest revision other than the champion: replaying, or decided (then none replays).
-    const newest = records.findLast((one) => one.workflow === workflow && one.digest !== digest);
-    const replaying = newest && promotionOf(records, workflow, newest.digest)?.decided === "replaying" ? newest.digest : null;
-    return { workflow, digest, replaying };
+    return { workflow, digest, replaying: replayingOf(records, workflow, digest)[0]?.digest ?? null };
   });
 }
 

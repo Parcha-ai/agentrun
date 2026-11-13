@@ -27,13 +27,13 @@ describe("markers on the run axis", () => {
     expect(markersOf([], [record({})])).toEqual([]);
   });
   it("names a kind from its record", () => {
-    expect([kindOf(record({ decided: "replaying" })), kindOf(record({ source: "refit" })), kindOf(record({ decided: "hold" }))]).toEqual(["revision", "refit", "hold"]);
+    expect([kindOf(record({ decided: "replaying" })), kindOf(record({ source: "refit" })), kindOf(record({ decided: "hold" })), kindOf(record({ decided: "superseded", superseded_by: "b".repeat(16) }))]).toEqual(["revision", "refit", "hold", "superseded"]);
   });
 });
 
 describe("a revision's standing and numbers", () => {
-  it("says serving, held, replaying or not decided", () => {
-    expect([standingOf(record({}), { serving: "a".repeat(16) }).word, standingOf(record({})).word, standingOf(record({ decided: "hold" })).word, standingOf(record({ decided: "replaying" })).word, standingOf(undefined).word]).toEqual(["Serving", "Served", "Held", "Replaying", "Not decided"]);
+  it("says serving, held, replaying, superseded or not decided", () => {
+    expect([standingOf(record({}), { serving: "a".repeat(16) }).word, standingOf(record({})).word, standingOf(record({ decided: "hold" })).word, standingOf(record({ decided: "replaying" })).word, standingOf(record({ decided: "superseded" })).word, standingOf(undefined).word]).toEqual(["Serving", "Served", "Held", "Replaying", "Superseded", "Not decided"]);
   });
   it("puts the replay's numbers in one line, or the reason when there was no replay", () => {
     expect(replayLine(record({ replay: REPLAY }))).toBe("Replay on 20 graded inputs: workflow 95% vs agent 90% (+5 pts), 2 handed back");

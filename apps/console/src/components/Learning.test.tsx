@@ -1580,4 +1580,22 @@ describe("the loop on the Learning tab", () => {
     expect(broken.host.querySelector('[data-testid="loop-feed"]')).toBeNull();
     expect(broken.card("Keep it to three lines")).toBeTruthy();
   });
+  it("a revision a newer one superseded while it replayed reads Superseded in the feed, its compile too, never Held or Replaying", async () => {
+    const [old, newer] = ["a".repeat(16), "b".repeat(16)];
+    const loop = { agent: "refunds", guards: [], compiles: [{ run_id: "run-x", at: "2026-11-05T10:00:00Z", workflow: "sort-invoice", from_notes: ["vendor-codes"], attempts: [{ ok: true, errors: [] }], digest: old, promoted: false, draft_errors: [], withheld: false }] } as LearningLoop;
+    const base = { workflow: "sort-invoice", source: "replay" as const };
+    const promotions = [
+      { ...base, digest: old, at: "2026-11-05T10:01:00Z", decided: "replaying" as const, reason: "replaying on the agent's last 6 graded inputs it fits", runs: ["r1"] },
+      { ...base, digest: old, at: "2026-11-05T10:02:00Z", decided: "superseded" as const, reason: `superseded by ${newer}, a newer revision, while it replayed: its replay runs were cancelled`, runs: ["r1"], superseded_by: newer },
+      { ...base, digest: newer, at: "2026-11-05T10:02:00Z", decided: "replaying" as const, reason: "replaying on the agent's last 6 graded inputs it fits", runs: ["r2"] },
+    ];
+    const t = await open(agent(true), { loop: async () => loop, promotions: async () => ({ agent: "refunds", promotions, serving: [{ workflow: "sort-invoice", digest: null, replaying: newer }] }) as Promotions });
+    const feed = t.host.querySelector('[data-testid="loop-feed"]')!;
+    const decided = [...feed.querySelectorAll('[data-testid="feed-promotion"]')].map((li) => li.textContent ?? "");
+    expect(decided.filter((text) => text.includes("S · Superseded"))).toHaveLength(1);
+    expect(decided.find((text) => text.includes("S · Superseded"))).toContain(`superseded by ${newer}, a newer revision, while it replayed`);
+    const compiled = feed.querySelector('[data-testid="feed-compile"]')!.textContent ?? "";
+    expect(compiled).toContain("Superseded");
+    expect(compiled).not.toContain("Held");
+  });
 });

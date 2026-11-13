@@ -11,12 +11,13 @@ export const COMPILE_AT_RUNS = 5;
 /** A takeover's "N times cheaper" needs this many runs after it (serve learning-cost.ts CHEAPER_AFTER_RUNS). */
 export const CHEAPER_AFTER = 20;
 
-/** A marker on the cost chart's run axis, from a promotion record: a new revision replaying, promoted, held, or refit. */
-export type MarkerKind = "revision" | "promote" | "hold" | "refit";
+/** A marker on the cost chart's run axis, from a promotion record: a new revision replaying, promoted, held, refit, or
+ *  superseded (a newer revision came while it replayed: its replay runs were cancelled and it never serves). */
+export type MarkerKind = "revision" | "promote" | "hold" | "refit" | "superseded";
 export type Marker = { kind: MarkerKind; n: number; at: string; workflow: string; digest: string; reason: string; record: Promotion };
-export const MARKER_WORDS: Record<MarkerKind, string> = { revision: "New revision", promote: "Promoted", hold: "Held", refit: "Refit" };
+export const MARKER_WORDS: Record<MarkerKind, string> = { revision: "New revision", promote: "Promoted", hold: "Held", refit: "Refit", superseded: "Superseded" };
 /** One letter per kind, drawn in the marker's flag so a kind is never told by colour alone. */
-export const MARKER_LETTER: Record<MarkerKind, string> = { revision: "R", promote: "P", hold: "H", refit: "F" };
+export const MARKER_LETTER: Record<MarkerKind, string> = { revision: "R", promote: "P", hold: "H", refit: "F", superseded: "S" };
 
 /** A promotion record's kind of marker: a refit's own; a replay that started, a new revision; else its decision. */
 export const kindOf = (record: Promotion): MarkerKind => (record.source === "refit" ? "refit" : record.decided === "replaying" ? "revision" : record.decided);
@@ -57,14 +58,16 @@ export const recordOf = (records: readonly Promotion[], workflow: string, digest
   digest === null ? undefined : [...records].reverse().find((r) => r.workflow === workflow && r.digest === digest);
 
 /** A revision's standing in words a person reads: Serving (it is the champion: `serving`, the digest the server says
- *  serves), Served (promoted once, a newer one serves now), Held, Replaying, or not decided yet; Refit when a threshold
- *  refit of it serves in its place (`refit`). A held or replaying revision never stops its champion serving. */
-export type Standing = { word: "Serving" | "Served" | "Refit" | "Held" | "Replaying" | "Not decided"; tone: "success" | "warning" | "active" | "muted" };
+ *  serves), Served (promoted once, a newer one serves now), Held, Replaying, Superseded (a newer revision came while it
+ *  replayed), or not decided yet; Refit when a threshold refit of it serves in its place (`refit`). A held, replaying or
+ *  superseded revision never stops its champion serving. */
+export type Standing = { word: "Serving" | "Served" | "Refit" | "Held" | "Replaying" | "Superseded" | "Not decided"; tone: "success" | "warning" | "active" | "muted" };
 export function standingOf(record: Promotion | undefined, { serving = null, refit }: { serving?: string | null; refit?: Promotion } = {}): Standing {
   if (refit) return { word: "Refit", tone: "muted" };
   if (!record) return { word: "Not decided", tone: "muted" };
   if (record.decided === "promote") return record.digest === serving ? { word: "Serving", tone: "success" } : { word: "Served", tone: "muted" };
   if (record.decided === "hold") return { word: "Held", tone: "warning" };
+  if (record.decided === "superseded") return { word: "Superseded", tone: "muted" };
   return { word: "Replaying", tone: "active" };
 }
 

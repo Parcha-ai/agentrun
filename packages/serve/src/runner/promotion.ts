@@ -13,16 +13,21 @@
 // digest promoted last (learn/promote.ts championOf) serves the run, read from the learning commit its record names, so
 // a wrong served grade asks for a revision and never stops the workflow serving. The challenger serves once its replay
 // promotes it. Only the money rule (workflow-first.ts) and a graded hold of the champion itself stop it.
+// One challenger at a time: a newer revision (a claim launched after the replaying one's replay started, so its seed is
+// at least as new) supersedes the revision still replaying: that one's replay runs are cancelled (in-flight ones stop as
+// any cancelled run does, what they spent stays booked on their rows), none starts again, and its record says superseded.
+// The newer revision is compiled on the folder's main, the challenger's own text, so it already carries that change.
 import type { Context } from "@earendil-works/chord";
 import type { LearnedWorkflow } from "../learning.js";
 import { LEARNING_LABEL } from "../learning.js";
 import type { GuardRow } from "../learned-nodes.js";
 import { launchBody, readLaunchBody, type RunLaunch } from "../run-launch.js";
 import { uuidv7 } from "../runs-over-store.js";
-import { FINAL_STATES, type RunRow, type Store, StoreConstraint } from "../store/store.js";
+import { FINAL_STATES, RunFinal, type RunRow, type Store, StoreConstraint } from "../store/store.js";
 import { runTimeline } from "../store-reads/journal.js";
 import { isObject, type Json } from "../validate.js";
-import { championOf, clears, type Grade, gradesOf, PROMOTE_BAR, type PromotionRecord, promotionOf, promotionsOf, recordPromotion, REFIT_EVERY, REPLAY_INPUTS, REPLAY_MIN, type ReplayRow, replayScore, answerCorrect, thresholdsOf } from "../learn/promote.js";
+import { championOf, clears, type Grade, gradesOf, PROMOTE_BAR, type PromotionRecord, promotionOf, promotionsOf, recordPromotion, REFIT_EVERY, REPLAY_INPUTS, REPLAY_MIN, type ReplayRow, replayingOf, replayScore, answerCorrect, thresholdsOf } from "../learn/promote.js";
+import { sendCommand } from "./commands.js";
 import { type RefitRow, refitGuards } from "../learn/refit.js";
 import { fits, workflowDigest } from "./workflow-first.js";
 import { learningCommit } from "../learn/commit.js";
@@ -129,6 +134,10 @@ async function promoted(deps: PromotionDeps, workflow: LearnedWorkflow, digest: 
     log(`workflow-first: ${workflow.name} at ${digest} is held (${record.reason}); it does not serve this run`);
     return false;
   }
+  if (record?.decided === "superseded") {
+    log(`workflow-first: ${workflow.name} at ${digest} was superseded by ${record.superseded_by ?? "a newer revision"} while it replayed; it does not serve this run`);
+    return false;
+  }
   if (record?.decided === "replaying") {
     const decided = await settle(deps, workflow, digest, record);
     if (!decided) {
@@ -136,6 +145,18 @@ async function promoted(deps: PromotionDeps, workflow: LearnedWorkflow, digest: 
       return false;
     }
     return decided.decided === "promote";
+  }
+  // A new revision. One challenger at a time: one still replaying is superseded by it, when this run was launched after
+  // that replay started (its seed is at least as new); a run launched before may lay an older text, and starts nothing.
+  const rivals = replayingOf(await promotionsOf(store.settings, agentId), workflow.name, digest);
+  if (rivals.length) {
+    const claimed = (await store.runs.get(deps.runId))?.startedAt;
+    const since = Math.min(...(await Promise.all(rivals.map((one) => replayStartOf(deps, one)))));
+    if (claimed === undefined || claimed < since) {
+      log(`workflow-first: ${workflow.name} at ${digest} came on a run launched before ${rivals[0]!.digest}'s replay started; it does not serve this run`);
+      return false;
+    }
+    for (const rival of rivals) await supersede(deps, rival, digest);
   }
   const graded = await gradedInputs(deps, workflow);
   if (graded.length < REPLAY_MIN) {
@@ -151,6 +172,39 @@ async function promoted(deps: PromotionDeps, workflow: LearnedWorkflow, digest: 
   const kept = await recordPromotion(store.settings, agentId, { workflow: workflow.name, digest, at: iso(now()), decided: "replaying", source: "replay", reason: `replaying on the agent's last ${plural(graded.length, "graded input")} it fits`, runs, ...seedOf(deps) }, (was) => was === undefined);
   log(`workflow-first: ${workflow.name} at ${digest} is new: replaying it on the agent's last ${plural(graded.length, "graded input")} before it serves`);
   return kept.decided === "promote";
+}
+
+/** When `record`'s replay started: its first replay run's launch, else its record's time. */
+async function replayStartOf(deps: PromotionDeps, record: PromotionRecord): Promise<number> {
+  const first = record.runs?.[0] ? await deps.store.runs.get(record.runs[0]) : undefined;
+  return first?.startedAt ?? Date.parse(record.at);
+}
+
+/** Supersedes `record`, a revision still replaying, by the newer revision at `by`: its record decided superseded (kept only
+ *  while it still says replaying: a replay that settled first keeps its decision), then each of its replay runs not ended
+ *  is cancelled, as a person's cancel is (a queued one never runs; an in-flight one stops, what it spent booked on its row). */
+async function supersede(deps: PromotionDeps, record: PromotionRecord, by: string): Promise<void> {
+  const { store, agentId, log } = deps;
+  const now = deps.now ?? Date.now;
+  const runs = record.runs ?? [];
+  const reason = `superseded by ${by}, a newer revision, while it replayed: its replay runs were cancelled`;
+  const kept = await recordPromotion(store.settings, agentId, {
+    workflow: record.workflow, digest: record.digest, at: iso(now()), decided: "superseded", source: "replay", reason, superseded_by: by,
+    ...(runs.length ? { runs } : {}), ...(record.commit ? { commit: record.commit } : {}),
+  }, (was) => was?.decided === "replaying");
+  if (kept.decided !== "superseded" || kept.superseded_by !== by) return;
+  let cancelled = 0;
+  for (const id of runs) {
+    const row = await store.runs.get(id);
+    if (!row || FINAL_STATES.includes(row.state)) continue;
+    try {
+      await sendCommand(store, id, { kind: "cancel", body: {} });
+      cancelled += 1;
+    } catch (error) {
+      if (!(error instanceof RunFinal)) throw error;
+    }
+  }
+  log(`workflow-first: ${record.workflow} at ${record.digest} superseded by ${by} while it replayed; ${plural(cancelled, "replay run")} cancelled`);
 }
 
 /** A graded input a replay runs on: the graded run, its grade, its launch. */

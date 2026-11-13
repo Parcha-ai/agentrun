@@ -423,9 +423,9 @@ function Card({ title, headline, unknown = 0, children }: { title: string; headl
 }
 
 /** Each marker kind's line and flag border: the workflow's own colour for a promotion, the warning pair for a hold, ink
- *  for a refit, muted for a new revision; its letter says the kind, never the colour alone. */
-const FLAG_STROKE: Record<Marker["kind"], string> = { promote: "stroke-chart-workflow", hold: "stroke-warning", refit: "stroke-foreground", revision: "stroke-muted-foreground" };
-const FLAG_TEXT: Record<Marker["kind"], string> = { promote: "fill-foreground", hold: "fill-warning-text", refit: "fill-foreground", revision: "fill-muted-foreground" };
+ *  for a refit, muted for a new revision and a superseded one; its letter says the kind, never the colour alone. */
+const FLAG_STROKE: Record<Marker["kind"], string> = { promote: "stroke-chart-workflow", hold: "stroke-warning", refit: "stroke-foreground", revision: "stroke-muted-foreground", superseded: "stroke-muted-foreground" };
+const FLAG_TEXT: Record<Marker["kind"], string> = { promote: "fill-foreground", hold: "fill-warning-text", refit: "fill-foreground", revision: "fill-muted-foreground", superseded: "fill-muted-foreground" };
 
 /** A marker's flag: a 14px card square with the kind's border and letter. */
 function Flag({ x, y, kind }: { x: number; y: number; kind: Marker["kind"] }) {
