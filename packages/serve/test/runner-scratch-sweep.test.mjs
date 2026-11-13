@@ -94,7 +94,7 @@ test("a data directory with no scratch folder, or a store that fails on a row, n
   assert.equal(existsSync(join(dir, "scratch", "agent-a", "run-ended")), true, "nothing is deleted on a failed read");
 });
 
-test("an earlier claim's folder that cannot be swept never keeps the current claim's own folder", async (t) => {
+test("an earlier claim's folder that cannot be swept never keeps the current claim's own folder", { skip: process.getuid?.() === 0 && "root can remove read-only folders" }, async (t) => {
   const { sweepScratch } = await import("../dist/runner/cli-run-spec.js");
   const { dir, lay } = laid(t);
   lay("agent-a", "run-x", 1);
