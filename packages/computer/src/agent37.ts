@@ -13,9 +13,10 @@ import { Duplex, PassThrough } from "node:stream";
 import { AGENT37, AGENT37_BASE_TEMPLATE } from "./descriptors/agent37.js";
 import { DEADLINE_LABEL } from "./drift.js";
 import type { HostCall, HostFacts, Machine, MachineHost, MachineProcess, MachineRequest } from "./host.js";
-import { bounded } from "./hosted/process.js";
+import { bounded, boundOf } from "./hosted/process.js";
 import { HostedProvider, type HostedOptions, type HostedTimeouts, IMAGE_LABEL, MAX_LABEL, NAME_LABEL } from "./hosted/provider.js";
 import { shellLine } from "./hosted/scripts.js";
+import { dateOf, driftOf, isWhole, show, sizeOf } from "./hosted/values.js";
 import type { KindCapabilities } from "./kinds.js";
 import type { MountKind } from "./mount.js";
 import { type ArchilMount, archilLabels } from "./mount-archil.js";
@@ -208,9 +209,6 @@ export const MOUNT: readonly MountKind[] = AGENT37.mounts;
 /** The machine kind and groups of each configuration: kind linux (the default), and kind desktop on the box template. */
 export const CAPABILITIES: readonly KindCapabilities[] = AGENT37.capabilities;
 
-const show = (value: unknown) => (value === undefined ? "nothing" : JSON.stringify(value));
-const isWhole = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value);
-
 /** An answer of Agent37's REST API that is not a success: its HTTP status and the envelope's stable code (docs: errors). */
 export class Agent37Error extends Error {
 	override name = "Agent37Error";
@@ -256,9 +254,7 @@ const CODES: Record<string, ComputerErrorCode> = {
 };
 
 function codeOf(error: unknown): ComputerErrorCode {
-	const { name, code, status, level } = (error ?? {}) as { name?: unknown; code?: unknown; status?: unknown; level?: unknown };
-	if (name === "AbortError") return "aborted";
-	if (name === "TimeoutError") return "timeout";
+	const { code, status, level } = (error ?? {}) as { code?: unknown; status?: unknown; level?: unknown };
 	if (error instanceof Agent37Error) {
 		const known = typeof code === "string" ? CODES[code] : undefined;
 		if (known !== undefined) return known;
@@ -308,8 +304,7 @@ interface Declared {
 /** An instance as the adapter reads a machine: its state, labels, network, template, size, and its create's drift. */
 function machineOf(instance: Agent37Instance, declared: Declared): Machine {
 	const labels = { ...(instance.metadata ?? {}) };
-	const drift: string[] = [];
-	const mismatch = (field: string, want: unknown, got: unknown) => drift.push(`${field}: declared ${show(want)}, read back ${show(got)}`);
+	const { found: drift, mismatch } = driftOf();
 	const asked = labels[IMAGE_LABEL];
 	if (asked !== undefined && instance.template !== asked) mismatch("template", asked, instance.template);
 	if (instance.type !== declared.type) mismatch("type", declared.type, instance.type);
@@ -318,15 +313,16 @@ function machineOf(instance: Agent37Instance, declared: Declared): Machine {
 	if (instance.auto_sleep !== false) mismatch("auto_sleep", false, instance.auto_sleep);
 	const state = stateOf(instance.status);
 	const why = instance.status_reason?.message ?? (state === undefined ? `Agent37 reads the status ${show(instance.status)}, which this provider does not know` : undefined);
-	const { cpu, memory } = instance.resources ?? {};
+	const created = dateOf(instance.created, "s");
+	const size = sizeOf(instance.resources?.cpu, instance.resources?.memory);
 	return {
 		id: instance.id,
 		labels,
 		state: state ?? "failed",
 		network: networkOf(instance),
 		image: { resolved: instance.image_digest ?? instance.template },
-		...(isWhole(instance.created) ? { createdAt: new Date(instance.created * 1000) } : {}),
-		...(isWhole(cpu) || isWhole(memory) ? { size: { ...(isWhole(cpu) ? { cpus: cpu } : {}), ...(isWhole(memory) ? { memoryMb: memory * 1024 } : {}) } } : {}),
+		...(created ? { createdAt: created } : {}),
+		...(size ? { size } : {}),
 		...(drift.length > 0 ? { drift } : {}),
 		...(why === undefined ? {} : { why }),
 	};
@@ -400,24 +396,6 @@ function tunnelOf(ws: WebSocketLike, host: string): { duplex: Duplex; opened: Pr
 	});
 	opened.catch(() => {});
 	return { duplex, opened };
-}
-
-/** A promise that rejects with the abort's or the bound's error once ms pass or signal aborts. */
-function deadline(ms: number, signal: AbortSignal | undefined, what: string): { promise: Promise<never>; clear: () => void } {
-	const bound = bounded(ms, signal);
-	let onAbort: () => void = () => {};
-	const promise = new Promise<never>((_, reject) => {
-		onAbort = () => {
-			const timedOut = !signal?.aborted;
-			const error = new Error(timedOut ? `${what} did not answer within ${ms / 1000} s` : `${what} was aborted`);
-			error.name = timedOut ? "TimeoutError" : "AbortError";
-			reject(error);
-		};
-		if (bound.aborted) onAbort();
-		else bound.addEventListener("abort", onAbort, { once: true });
-	});
-	promise.catch(() => {});
-	return { promise, clear: () => bound.removeEventListener("abort", onAbort) };
 }
 
 /** Agent37's instances as a MachineHost (../host.ts). */
@@ -540,14 +518,9 @@ class Agent37Host implements MachineHost {
 		return ok({ id: made.id });
 	}
 
-	/** GET /v1/instances/{id}; 404 is none (docs: instances/get). */
+	/** GET /v1/instances/{id}; 404 is not_found, which the adapter reads as none (docs: instances/get). */
 	async get(id: string, ctx: HostCall): Promise<Result<Machine | undefined>> {
-		try {
-			return ok(machineOf(await this.#rest<Agent37Instance>("GET", this.#path(id), undefined, ctx), this.#declared));
-		} catch (error) {
-			if (codeOf(error) === "not_found") return ok(undefined);
-			throw error;
-		}
+		return ok(machineOf(await this.#rest<Agent37Instance>("GET", this.#path(id), undefined, ctx), this.#declared));
 	}
 
 	/**
@@ -570,13 +543,9 @@ class Agent37Host implements MachineHost {
 		return ok(machines);
 	}
 
-	/** DELETE /v1/instances/{id}, never signalled; a repeat answers 404, read as done (docs: instances/delete). */
+	/** DELETE /v1/instances/{id}, never signalled; a repeat answers 404, which the adapter reads as done (docs: instances/delete). */
 	async delete(id: string, ctx: HostCall): Promise<Result<void>> {
-		try {
-			await this.#rest("DELETE", this.#path(id), undefined, { timeoutMs: ctx.timeoutMs });
-		} catch (error) {
-			if (codeOf(error) !== "not_found") throw error;
-		}
+		await this.#rest("DELETE", this.#path(id), undefined, { timeoutMs: ctx.timeoutMs });
 		return ok(undefined);
 	}
 
@@ -597,7 +566,7 @@ class Agent37Host implements MachineHost {
 	async #ssh(id: string, ctx: HostCall): Promise<Ssh2Client> {
 		if (!INSTANCE_ID.test(id)) throw new Agent37Error(404, "not_found", `${JSON.stringify(id)} is not an Agent37 instance id (ten lowercase letters and digits)`);
 		const host = `${id}-${AGENT37_SSH_PORT}.${this.#proxyDomain}`;
-		const bound = deadline(ctx.timeoutMs, ctx.signal, `the SSH connection to ${id}`);
+		const bound = boundOf(ctx.timeoutMs, ctx.signal, `the SSH connection to ${id}`);
 		// Ends the handshake in flight when this call gives up on it (its bound passed, or the caller aborted).
 		const givenUp = new AbortController();
 		try {
@@ -670,7 +639,7 @@ class Agent37Host implements MachineHost {
 	 * the exit and the close together (seen live), and they are emitted before an await after it would resume.
 	 */
 	async #channel(client: Ssh2Client, command: string, ms: number, signal: AbortSignal | undefined, what: string): Promise<{ channel: Ssh2Channel; closed: Promise<number> }> {
-		const bound = deadline(ms, signal, what);
+		const bound = boundOf(ms, signal, what);
 		try {
 			return await Promise.race([
 				new Promise<{ channel: Ssh2Channel; closed: Promise<number> }>((resolve, reject) => {
@@ -742,7 +711,7 @@ class Agent37Host implements MachineHost {
 					killer.channel.resume();
 					killer.channel.stderr.resume();
 					killer.channel.eof();
-					const grace = deadline(KILL_GRACE_MS, undefined, `the kill in ${id}`);
+					const grace = boundOf(KILL_GRACE_MS, undefined, `the kill in ${id}`);
 					await Promise.race([killer.closed, grace.promise]).finally(grace.clear);
 				} catch {
 					// The connection is gone, or the kill did not answer in time: closing it below is what is left.

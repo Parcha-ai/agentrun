@@ -63,7 +63,8 @@ import { type ComputerError, ok, type Result } from "../result.js";
 import { daemonWatch, type ScreenWatch, type ScreenWatchHandlers, type WatchOptions } from "../screen-watch.js";
 import { countTested } from "../test-connection.js";
 import { waitUntil } from "../wait.js";
-import { bounded, CALL_SLACK_MS, failOf, hostCall, type Opened, openBridge, pause, race, rootOf, runToExit, seconds, uploadThroughExec, words } from "./process.js";
+import { bounded, CALL_SLACK_MS, codeOfError, failOf, hostCall, type Opened, openBridge, pause, race, rootOf, runToExit, seconds, uploadThroughExec, words } from "./process.js";
+import { isWhole, show } from "./values.js";
 import { ARCHIL_GATE, closedSocketsOf, type DaemonExpected, daemonDrift, type HostedCommands, hostedCommands, installerOf } from "./scripts.js";
 
 /** The longest each kind of call may take, and the pauses between polls. */
@@ -177,8 +178,6 @@ const DEFAULT_PROBE_TARGETS = ["1.1.1.1:443", "8.8.8.8:443", "[2606:4700:4700::1
 const TARGET = /^(?:\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+):[0-9]{1,5}(?:\/udp)?$/;
 const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "labels", "mount", "gpu", "owner"]);
 
-const isWhole = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value);
-const show = (value: unknown) => (value === undefined ? "nothing" : JSON.stringify(value));
 const policyWords = (policy: NetworkPolicy) => (typeof policy === "string" ? policy : "other" in policy ? policy.other : JSON.stringify(policy));
 const alive = (state: Machine["state"]) => state === "running" || state === "stopped" || state === "starting";
 
@@ -628,7 +627,7 @@ export class HostedProvider implements ComputerProvider {
 		try {
 			creating = Promise.resolve(this.host.create(request, { timeoutMs: createMs }));
 		} catch (error) {
-			return this.#fail(this.host.errorCode(error), `${this.#label}'s create failed: ${words(error)}`);
+			return this.#fail(codeOfError(this.host, error), `${this.#label}'s create failed: ${words(error)}`);
 		}
 		const raced = await race(this.host, creating, `${this.#label}'s create`, createMs + CALL_SLACK_MS, signal);
 		const created: Result<{ id: string }> = raced.ok ? raced.value : raced;
@@ -708,9 +707,10 @@ export class HostedProvider implements ComputerProvider {
 		return Math.min(START_POLL_MS, this.#timeouts.pollMs * 10);
 	}
 
-	/** The host's get, bounded by requestMs. */
-	#get(id: string, signal?: AbortSignal): Promise<Result<Machine | undefined>> {
-		return this.#call(`the read of ${id}`, (ctx) => this.host.get(id, ctx), this.#timeouts.requestMs, signal);
+	/** The host's get, bounded by requestMs; a machine the vendor reports as not found is none, as release and settleGone read it. */
+	async #get(id: string, signal?: AbortSignal): Promise<Result<Machine | undefined>> {
+		const read = await this.#call(`the read of ${id}`, (ctx) => this.host.get(id, ctx), this.#timeouts.requestMs, signal);
+		return !read.ok && read.error.code === "not_found" ? ok(undefined) : read;
 	}
 
 	/** The machine running, read while it starts (within createMs); gone or failed is refused in words. */
