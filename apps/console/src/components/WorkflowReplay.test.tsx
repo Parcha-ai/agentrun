@@ -1,4 +1,4 @@
-import { act, createElement } from "react";
+import { act, createElement, type ReactElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Steps, WorkflowReplay } from "./WorkflowReplay";
@@ -24,10 +24,10 @@ const REVS: WorkflowRevision[] = [
 ];
 const read = (revisions: WorkflowRevision[], extra: Partial<WorkflowRevisions> = {}): WorkflowRevisions => ({ name: "sorter", revisions, total: revisions.length, truncated: false, ...extra });
 
-function mount(node: Parameters<typeof createElement>[0], props: Record<string, unknown>) {
+function mount(element: ReactElement) {
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
-  act(() => root!.render(createElement(node as never, props)));
+  act(() => root!.render(element));
   return host;
 }
 const line = (host: HTMLElement) => host.querySelector('[data-testid="replay-line"]')?.textContent;
@@ -57,7 +57,7 @@ describe("the replay's steps", () => {
 
 describe("the replay", () => {
   it("opens on the newest revision with its date, its author and its NEW node, and steps back to the EDITED one", () => {
-    const host = mount(Steps, { data: read(REVS) });
+    const host = mount(createElement(Steps, { data: read(REVS) }));
     expect(host.textContent).toContain("Revision 3 of 3");
     expect(host.textContent).toContain("Nov 3");
     expect(host.textContent).toContain("a person");
@@ -72,7 +72,7 @@ describe("the replay", () => {
     expect(host.querySelector<HTMLButtonElement>('button[aria-label="Previous revision"]')!.disabled).toBe(false);
   });
   it("plays from the first revision to the newest and stops there, and Pause stops it", () => {
-    const host = mount(Steps, { data: read(REVS), stepMs: 100 });
+    const host = mount(createElement(Steps, { data: read(REVS), stepMs: 100 }));
     const play = () => host.querySelector<HTMLButtonElement>('button[aria-pressed]')!;
     act(() => play().click());
     expect(line(host)).toBe("First version: 1 node");
@@ -88,15 +88,15 @@ describe("the replay", () => {
     expect(play().getAttribute("aria-pressed")).toBe("false");
   });
   it("shows a lone revision as a graph with no controls", () => {
-    const host = mount(Steps, { data: read([REVS[0]!]) });
+    const host = mount(createElement(Steps, { data: read([REVS[0]!]) }));
     expect(host.querySelector('input[type="range"]')).toBeNull();
     expect(host.textContent).toContain("One revision");
     expect(tags(host).every((t) => t.endsWith(":NEW"))).toBe(true);
   });
   it("says when it shows only the latest revisions, and when none reads", () => {
-    expect(mount(Steps, { data: read(REVS, { total: 90, truncated: true }) }).textContent).toContain("The latest 3 of 90 revisions. Older changes are past the log this server keeps.");
+    expect(mount(createElement(Steps, { data: read(REVS, { total: 90, truncated: true }) })).textContent).toContain("The latest 3 of 90 revisions. Older changes are past the log this server keeps.");
     act(() => root!.unmount());
-    expect(mount(Steps, { data: read([rev(1, "{}")]) }).textContent).toContain("can't be read as a workflow: 1 revision did not read");
+    expect(mount(createElement(Steps, { data: read([rev(1, "{}")]) })).textContent).toContain("can't be read as a workflow: 1 revision did not read");
   });
 });
 
@@ -105,12 +105,12 @@ describe("the replay of an agent's learned workflows", () => {
   const flush = async () => { await act(async () => { await Promise.resolve(); await Promise.resolve(); }); };
   it("reads the first active workflow and draws it; draws nothing when none is active", async () => {
     const v2 = client(async () => read(REVS));
-    const none = mount(WorkflowReplay, { v2, agentId: "a", workflows: [{ name: "old", status: "retired" }, { name: "held", status: "pending" }] });
+    const none = mount(createElement(WorkflowReplay, { v2, agentId: "a", workflows: [{ name: "old", status: "retired" }, { name: "held", status: "pending" }] }));
     await flush();
     expect(none.textContent).toBe("");
     expect(v2.learnedWorkflowRevisions).not.toHaveBeenCalled();
     act(() => root!.unmount());
-    const host = mount(WorkflowReplay, { v2, agentId: "a", workflows: [{ name: "old", status: "retired" }, { name: "sorter", status: "active" }] });
+    const host = mount(createElement(WorkflowReplay, { v2, agentId: "a", workflows: [{ name: "old", status: "retired" }, { name: "sorter", status: "active" }] }));
     await flush();
     expect(v2.learnedWorkflowRevisions).toHaveBeenCalledWith("a", "sorter", 50);
     expect(host.textContent).toContain("How the workflow changed");
@@ -120,7 +120,7 @@ describe("the replay of an agent's learned workflows", () => {
   it("names a failed read and reads again on Try again", async () => {
     let fail = true;
     const v2 = client(async () => { if (fail) throw new ClientError(503, "unavailable", "The folder is busy.", true); return read(REVS); });
-    const host = mount(WorkflowReplay, { v2, agentId: "a", workflows: [{ name: "sorter", status: "active" }] });
+    const host = mount(createElement(WorkflowReplay, { v2, agentId: "a", workflows: [{ name: "sorter", status: "active" }] }));
     await flush();
     expect(host.textContent).toContain("Try again");
     fail = false;
