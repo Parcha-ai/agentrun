@@ -214,6 +214,25 @@ test("the run's cut on the browser's answers (c): another tool's key the claim h
   noPieceOf(r, key, "Parallel's key");
 });
 
+/** Every image block of every tool result the model was sent, as its source. */
+const imagesSent = (requests) => requests.flatMap((body) => (body.messages ?? []).flatMap((message) => (Array.isArray(message.content) ? message.content : [])
+  .filter((block) => block.type === "tool_result" && Array.isArray(block.content)).flatMap((block) => block.content.filter((part) => part.type === "image").map((part) => part.source))));
+
+test("the run's cut on the browser's answers leaves a screenshot whole: with the claim's key held, the model is sent the capture's own base64, never \"[redacted]\"", { timeout: 120_000 }, async (t) => {
+  // A real PNG of a page, its base64 well past the 8,192 characters the cut reads as one piece of text.
+  const fixture = new URL("./fixtures/screenshot.png", import.meta.url).pathname;
+  const data = readFileSync(fixture).toString("base64");
+  assert.ok(data.length > 8_192);
+  switches(t, { FAUX_BROWSER_SCREENSHOT: fixture });
+  const key = `bb_live_${shapeless(32)}`;
+  const r = await piRun(t, { body: { tools: ["browser"] }, keys: { BROWSERBASE_API_KEY: key, BROWSERBASE_PROJECT_ID: "fake-project" }, script: [{ call: "screenshot" }, { say: "done" }] });
+  assert.equal(r.row.state, "ended", JSON.stringify(r.row));
+  const sent = imagesSent(r.requests);
+  assert.ok(sent.length >= 1, `the screenshot reached the model: ${JSON.stringify(r.requests.at(-1)?.messages?.at(-1)).slice(0, 600)}`);
+  for (const source of sent) assert.deepEqual({ ...source, data: source.data === data ? "the capture's own" : source.data.slice(0, 40) }, { type: "base64", media_type: "image/png", data: "the capture's own" });
+  noPieceOf(r, key, "the Browserbase key");
+});
+
 test("the agent's hand-over on the runner: browser_request_handoff writes its waiting ask while the run holds its claim and session; the person's hand-back (a browser_hand_back row) answers it, first answer wins, and the call returns done", { timeout: 120_000 }, async (t) => {
   const answered = { row: undefined, second: undefined };
   const r = await piRun(t, {

@@ -1,5 +1,5 @@
 // A run's host phase rows from its spec (AdapterRun.phase): a step of the host's own that the run's timeline shows as one
-// `phase` row (pi-durable-agent's HOST_PHASE, "such as a box waiting for its image"). A spec says a phase while it is
+// `phase` row (HOST_PHASE, "such as a box waiting for its image"). A spec says a phase while it is
 // built, before the session opens (the claim's computer waiting on its image): the phase makes the run's root then, so the
 // row is on the timeline a person reads WHILE the step runs, exactly once, and the spec's own writes for the root
 // (onConversation) still land once. A step that fails after it keeps its row, and the run's end on that root reads the

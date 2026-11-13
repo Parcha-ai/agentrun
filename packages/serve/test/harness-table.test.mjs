@@ -83,15 +83,15 @@ test("facts decide, not names: thinking clamps at a harness's highest level, nat
 test("providerFor goes by the wire: opencode and codex, both on the Responses API, take one route, key and model; claude-agent's wire never takes the gateway", async () => {
   const [{ providerFor }, { runKeyOf }] = await Promise.all([import("../dist/provider.js"), import("../dist/key-refusal.js")]);
   const view = (p) => ({ origin: p.origin, auth: p.auth, modelId: p.modelId, priceModel: p.priceModel, key: p.credential() });
-  const openai = { provider: "openai", modelId: "gpt-6-sol" };
+  const openai = { provider: "openai", modelId: "gpt-6.1-sol" };
   for (const env of [{ OPENAI_API_KEY: `not-a-secret-${"o"}` }, { OPENROUTER_API_KEY: `not-a-secret-${"r"}` }, { AGENT_MODEL_BASE_URL: "http://127.0.0.1:4000/v1", AGENT_MODEL_API_KEY: `not-a-secret-${"g"}` }]) {
     assert.deepEqual(view(providerFor("openai-responses", env, openai, "opencode")), view(providerFor("openai-responses", env, openai, "codex")), JSON.stringify(Object.keys(env)));
-    assert.deepEqual(runKeyOf(env, "opencode", "openai/gpt-6-sol"), runKeyOf(env, "codex", "openai/gpt-6-sol"), JSON.stringify(Object.keys(env)));
+    assert.deepEqual(runKeyOf(env, "opencode", "openai/gpt-6.1-sol"), runKeyOf(env, "codex", "openai/gpt-6.1-sol"), JSON.stringify(Object.keys(env)));
   }
   const both = { ANTHROPIC_API_KEY: `not-a-secret-${"a"}`, AGENT_MODEL_BASE_URL: "http://127.0.0.1:4000", AGENT_MODEL_API_KEY: `not-a-secret-${"g"}` };
   assert.equal(providerFor("anthropic-messages", both, { provider: "anthropic", modelId: "claude-sonnet-5.5" }, "claude-agent").origin, "https://api.anthropic.com", "the gateway serves the Responses wire alone");
   assert.equal(runKeyOf(both, "claude-agent", "anthropic/claude-sonnet-5-5").field, "ANTHROPIC_API_KEY");
-  assert.equal(runKeyOf(both, "codex", "openai/gpt-6-sol").field, "AGENT_MODEL_API_KEY");
+  assert.equal(runKeyOf(both, "codex", "openai/gpt-6.1-sol").field, "AGENT_MODEL_API_KEY");
 });
 
 test("a test's table module (HARNESS_TABLE_ENV) merges its entries over the built-ins by id, and the server's own environment never names one", async (t) => {
@@ -102,8 +102,8 @@ test("a test's table module (HARNESS_TABLE_ENV) merges its entries over the buil
   writeFileSync(module, "export const entries = (builtins) => ({ codex: { runs: () => false, refusal: async () => ({ reason: `stood in for ${builtins.codex.facts.label}` }) } });\n");
   // Under a test runner, as a test's server and runs are (harnessTable reads NODE_TEST_CONTEXT).
   const env = { [HARNESS_TABLE_ENV]: module, NODE_TEST_CONTEXT: "child-v8" };
-  assert.equal(harnessRuns(env, "openai/gpt-6-sol", "codex"), false, "the module's entry decides");
-  assert.equal(harnessRuns({}, "openai/gpt-6-sol", "codex"), true, "the built-in one, without it");
+  assert.equal(harnessRuns(env, "openai/gpt-6.1-sol", "codex"), false, "the module's entry decides");
+  assert.equal(harnessRuns({}, "openai/gpt-6.1-sol", "codex"), true, "the built-in one, without it");
   assert.deepEqual(await harnessOf(env, "codex").refusal(env, undefined, { atStart: false }), { reason: "stood in for Codex" });
   assert.equal(harnessOf(env, "codex").facts, harnessOf({}, "codex").facts, "an entry merged over keeps the facts it does not name");
   assert.equal(harnessOf(env, "claude-agent"), harnessOf({}, "claude-agent"), "an id the module names not is the built-in entry");

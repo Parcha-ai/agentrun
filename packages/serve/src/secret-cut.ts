@@ -12,7 +12,7 @@ import { keyShaped } from "./secret-name.js";
 
 /** Whether a name is a secret's, whatever list names it or none does: one of its `_`-separated segments, in any case, is
  *  KEY, TOKEN, SECRET, PASSWORD, PASSWD, PASS, PAT, CREDENTIAL, CREDENTIALS or DSN, or its last is PWD after another.
- *  The one rule, pi-durable-disk's own: this cut, the harness log's and a run's environment (secrets.ts' withoutSecrets)
+ *  The one rule: this cut, the harness log's and a run's environment (secrets.ts' withoutSecrets)
  *  take it, so what one leaves out the others do. */
 export { keyShaped };
 export const REDACTED = "[redacted]";

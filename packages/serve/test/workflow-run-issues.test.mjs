@@ -1,6 +1,5 @@
 // workflowIssues and readWorkflowRun (workflow-run.ts): what a save of a workflow revision would refuse, each issue at its node's path, and
-// a call node whose tool the revision does not list. Ported with workflow-run.ts from @parcha/pi-durable-agent's
-// workflow-body.test.mjs, whose checkWorkflowBody wrapped it; the cases read the issues it answers.
+// a call node whose tool the revision does not list. The cases read the issues it answers.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";

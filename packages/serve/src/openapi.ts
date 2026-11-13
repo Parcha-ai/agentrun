@@ -13,6 +13,7 @@ import { TAKE_OVER_MINUTES } from "./computer-routes.js";
 import { LAUNCH_LOST, SETUP_LOST } from "./files.js";
 import { HARNESSES } from "./harness.js";
 import { LEARNING_LABEL, LEARNING_MODES, LEARNING_REASONS, LEARNING_STATES } from "./learning.js";
+import { CHEAPER_AFTER_RUNS, COST_CSV_COLUMNS, COST_RUNS_DEFAULT, COST_RUNS_MAX, RUN_PATHS } from "./learning-cost.js";
 import { MODEL_SOURCES, THINKING_LEVELS } from "./model.js";
 import { BOX_IDS, BOX_NETWORKS, BOX_STATES } from "./place-offers.js";
 import { PLACE_MODES } from "./place.js";
@@ -27,7 +28,7 @@ import { DEFAULT_SCHEME, SCHEME_NAMES, SIGNATURE_SCHEMES } from "./trigger-signa
 import { HOOK_BODY_MS } from "./push-handler.js";
 import { CATCHUP_WINDOW_S, DUE_KEPT, MAX_ACTIVE_RUNS, SEEN_KEPT, FAILURES_TO_PAUSE, FIRING_STATUSES, PAYLOAD_KEPT_BYTES, HISTORY_KEPT, MAX_EVERY_S, SOURCE_KINDS, TARGET_KINDS } from "./triggers.js";
 import { DEFINITION_FIELDS, EXTERNAL_NAME, MAX_TOOL_CALLS, MODEL_REF, NOT_KEPT } from "./validate.js";
-import { GRADER_TYPES, MODEL_TIERS, PARAMETER_TYPES } from "./templates.js";
+import { COMPUTER_ENTRIES, GRADER_TYPES, MODEL_TIERS, PARAMETER_TYPES } from "./templates.js";
 import { NOT_SET_UP } from "./runnable.js";
 import { APPROVAL_ROW, ARGS_PREVIEW_BYTES, MAX_PIN_ARGS, MAX_PIN_CHOICES, PERMISSIONS } from "./tool-gate.js";
 import { BROWSER_VENDOR_IDS, KIND_KEYS, MAX_PIN_TEXT, permissionsOf, type Pickable, PICKABLE, PROVIDERS, TABLE_TOOLS } from "./tool-plane.js";
@@ -290,7 +291,7 @@ const MCP_SERVER_VIEW = {
 const MCP_AUTH = {
   type: "object", additionalProperties: false, required: ["type"],
   properties: {
-    type: { enum: [...MCP_AUTH_TYPES], description: `\`none\`; \`bearer\` (\`token\`, sent as \`Authorization: Bearer <token>\`); \`headers\` (each named header and its value); \`oauth\`, with no credential in the body: the server is signed in to first (POST /settings/mcp-servers/{name}/oauth/start), and a PUT keeps the sealed token set.` },
+    type: { enum: [...MCP_AUTH_TYPES], description: `\`none\`; \`bearer\` (\`token\`, sent as \`Authorization: Bearer <token>\`); \`headers\` (each named header and its value); \`oauth\`, with no credential in the body: the server is signed in to first (POST /settings/mcp-servers/{name}/oauth/start), and a PUT keeps the sealed token set; \`github_app\`: the connected GitHub App's installation token, minted for each run; \`per_run\`: nothing kept, each run's caller hands the run its credential (\`mcp_auth\` on POST /runs, POST /agents/{agent_id}/runs and POST /runs/{run_id}/messages), and \`headers\`, when sent, only list the server's tools now.` },
     token: { type: "string", minLength: 1, maxLength: 8192, "x-agentrun-secret": true },
     headers: { type: "object", minProperties: 1, maxProperties: 8, additionalProperties: { type: "string", minLength: 1, maxLength: 8192, "x-agentrun-secret": true }, description: "Header names a credential may go in: not Host, Content-Type, Accept, Content-Length, Connection, Transfer-Encoding, Last-Event-ID or an Mcp- header the transport sets." },
   },
@@ -693,6 +694,7 @@ const ARCHIL_VIEW = closedWith({
   on: { type: "boolean", description: "Whether Mode 2 is on: run folders on Archil disks, each agent's own (made on its first run that needs one) unless a run's launch names another. Off, they are on this server's own disk (Mode 1)." },
   secret: { ...SECRET_ITEM("\"workspace:archil\": the Archil account key, which PUT /workspace/archil takes as keys.ARCHIL_API_KEY and the environment variable ARCHIL_API_KEY sets."), description: "The account key as its SecretMeta: never a value." },
 }, {
+  source: { enum: ["env", "console"], description: "While on, where the settings come from: `env`, the server's environment (AGENTRUN_ARCHIL_REGION, AGENTRUN_ARCHIL_S3_URL and AGENTRUN_ARCHIL_IMAGE), which wins over saved ones and is changed where the server is started; `console`, saved with PUT /workspace/archil." },
   region: { type: "string", description: "The account key's region: every disk is made, read and minted on its control plane." },
   s3Url: { type: "string", format: "uri", description: "The region's S3 endpoint (the disks' file API)." },
   image: { type: "string", description: "The exec image, pinned by digest (`<name>@sha256:<64 hex>`); absent, serve's default (`buildpack-deps:trixie-scm` pinned by digest, git 2.47)." },
@@ -818,6 +820,8 @@ const GITHUB_CONNECTION = closed({ connected: { const: true }, app_id: { type: "
 const GITHUB_STATUS = { oneOf: [closed({ connected: { const: false } }, "No GitHub App is connected to this server: Connect GitHub in Settings."), GITHUB_CONNECTION] };
 /** templates/1: template packages, listed and applied (templates.ts; the format is templates/README.md). */
 const TEMPLATE_MARK = { "x-agentrun-serve": "templates/1" };
+/** template-computer/1: a package's computer preference list, and what this server would pick of it. */
+const TEMPLATE_COMPUTER_MARK = { "x-agentrun-serve": "template-computer/1" };
 const NULLABLE_STRING = { type: ["string", "null"] };
 const TEMPLATE_PARAMETER = closedWith({ type: { enum: [...PARAMETER_TYPES] }, required: { type: "boolean" }, description: { type: "string" } }, { pattern: { type: "string", description: "A regular expression (Unicode) a string's value matches." }, enum: { type: "array", minItems: 1, items: { type: ["string", "number", "boolean"] }, description: "The values it may take, a closed set (a form shows a choice); never beside a pattern." }, format: { enum: ["cron", "timezone"], description: "What a string's value is, for a form to ask for it as such: `cron`, a schedule's cron line (a schedule picker); `timezone`, an IANA time zone. The value is the same text either way." }, default: { type: ["string", "number", "boolean"], description: "Its value when apply leaves it out (of its type; never on a required one). A parameter that sets a schedule's cron or timezone has one, and the package's own schedule is checked with it." } });
 const TEMPLATE = closed({
@@ -835,6 +839,19 @@ const TEMPLATE = closed({
   tools: { type: ["array", "null"], items: { type: "string" }, description: "The tools its agent is granted; null: those a new agent gets." },
   checkout: { enum: ["pull_request", null], description: "What the server checks out in each run's folder before its first turn, set as the agent definition's `checkout` at apply: `pull_request`, the pull request the run's GitHub event names, at its head, in `repo/`, fetched with a read-only token the agent never holds. Null: none." },
   tool_policy: { type: ["object", "null"], additionalProperties: false, required: ["bash"], properties: { bash: BASH_POLICY }, description: "A policy by tool, bash's alone: apply writes it as the tool's policy in the agent's tool_settings, so the tool gate refuses any command it does not allow, whatever bash's permission. Null: none.", "x-agentrun-serve": "bash-policy/1" },
+  computer: { type: ["array", "null"], items: { enum: [...COMPUTER_ENTRIES] }, description: "The computers it prefers, in order: `shell`, a computer that gives the agent a shell here (Docker's sandbox, or Archil's serverless exec on the runner in Mode 2); `none`, no shell. Apply takes the first this server meets now and writes it as the agent's `computer`; with `none`, the shell tools in `tools` are not granted, said in a `computer` warning. Null: where this server puts a new agent.", ...TEMPLATE_COMPUTER_MARK },
+  computer_here: {
+    type: ["object", "null"], additionalProperties: false, required: ["entry", "computer", "shell", "dropped", "note"],
+    properties: {
+      entry: { enum: [...COMPUTER_ENTRIES, null], description: "The entry an apply here would take now; null: none is met, and an apply is refused (409)." },
+      computer: { type: ["object", "null"], additionalProperties: false, required: ["kind"], properties: { kind: { type: "string" }, provider: { type: "string" } }, description: "The agent's `computer` it would be saved with." },
+      shell: { type: ["string", "null"], description: "Its shell, in words; null: no shell." },
+      dropped: { type: "array", items: { type: "string" }, description: "The shell tools in `tools` it would not grant: that computer does not run them." },
+      note: { type: ["string", "null"], description: "What an apply here would say of it: the `computer` warning (a fallback, or a tool dropped), or the refusal." },
+    },
+    description: "What this server would pick of `computer` now: its readiness, read on each listing. Null: the package names no list.",
+    ...TEMPLATE_COMPUTER_MARK,
+  },
   mcp: {
     type: "array",
     items: closed({
@@ -926,12 +943,52 @@ const WRITE_ERRORS = { ...errors(400, 401, 403, 404, 412, 429, 500), "428": PREC
  *  withheld when one of them can't be read here. */
 const SIGN_IN_WITHHELD = "Every text is cut of the agent's own browser sign-in pointers too, live or forgotten, and a note holding one is refused as one holding a host secret; when one of them does not open on this server (its seal key changed or is missing, or the sign-in is damaged), every learning route of the agent answers 403 `forbidden`, so nothing is shown over a shorter list.";
 const WRITE_DESCRIPTION = "As a person, with no grader: one host commit on main in the agent's queue, `learning: <edited|created|retired> by a person: <file>` with a `Changed-By: user` trailer, MEMORY.md rebuilt from the active notes, and the folder's files brought in line. A note that fails the structural checks a run's notes pass (front matter, the 4 KB cap, UTF-8, hidden characters, text shaped like a secret or holding one of the host's) is 400 `bad_request` with `problems`, and nothing is written; so is an index past 200 lines. MEMORY.md is 400: the server builds it. Answers the note as it now is, with its new ETag. An archived agent's notes are written as its definition is. " + SIGN_IN_WITHHELD;
+/** GET /agents/{agent_id}/learning/cost (learning-cost.ts, store-reads/learning.ts agentCostOverStore). */
+const COST_USD = (description: string) => ({ type: ["number", "null"], minimum: 0, description: `${description} Rounded to 1e-6; null when unknown, never 0 for unknown.` });
+const COST_MEAN = (description: string) => ({ oneOf: [closed({ runs: { ...COUNT, minimum: 1, description: "How many runs the mean is over." }, mean_usd: { type: "number", minimum: 0, description: "Their mean, rounded to 1e-6." } }), { type: "null" }], description });
+const COST_RUN = closed({
+  n: { type: "integer", minimum: 1, description: "The run's number among the agent's runs counted here, oldest first: 1 is its first." },
+  run_id: { type: "string" },
+  started_at: DATE_TIME,
+  path: { enum: [...RUN_PATHS], description: "The path the run took: `workflow`, a learned workflow finished it alone (its job's only tool calls were learned_workflow calls, each answering, and nothing was said after its first message, so it was not asked to look back); `handed_back`, a learned workflow ran and the agent went on (it failed or escalated, or the agent worked on after it); `agent`, no learned workflow ran." },
+  workflow: { ...NULL_STRING, description: "The learned workflow the job called last, by name; null when it called none." },
+  learned_revision: { ...NULL_STRING, description: "The commit of the agent's learning folder the run started from: the learned revision that served it. Null for a run that does not learn." },
+  cost_usd: COST_USD("The job's own cost: what the run had cost when its answer was final, before it looked back; for a run that did not look back, its whole cost."),
+  learning_usd: COST_USD("What learning cost for the run: its end-of-run look-back and the grade of what it proposed, outside the run. 0 for a run that does not learn or kept nothing to grade; a grade still running adds nothing yet."),
+  total_usd: COST_USD("The run's all-in cost, `cost_usd` and `learning_usd` together; null when either is."),
+});
+const LEARNING_COST = closed({
+  agent: { type: "string" },
+  runs: { type: "array", items: COST_RUN, description: "The agent's agentic runs that ended (completed, stopped or failed), oldest first: the last `limit` of them, each keeping its number. A run still at work, an imported or archived run and a workflow revision's run are left out; a run's grade is no run here, and its cost is that run's `learning_usd`." },
+  total_runs: { ...COUNT, description: "How many runs the series counts in all, `limit` aside." },
+  unknown_cost_runs: { ...COUNT, description: "How many of them have no known all-in cost (`total_usd` null)." },
+  summary: closed({
+    takeover: { oneOf: [closed({ n: { type: "integer", minimum: 1 }, run_id: { type: "string" } }), { type: "null" }], description: "The first run a learned workflow finished alone (`path` `workflow`); null before one." },
+    before: COST_MEAN("The mean of the job's own cost (`cost_usd`, learning left out) over the `agent` runs before the takeover (all of them when there is none yet) whose cost is known; null when there is none."),
+    after: COST_MEAN("The mean all-in cost (`total_usd`, learning included) of every run from the takeover on whose total is known; null before a takeover."),
+    times_cheaper: { type: ["number", "null"], minimum: 0, description: `\`before\` over \`after\`, to a tenth, once \`after\` counts ${CHEAPER_AFTER_RUNS} runs or more; else null. Learning is left out of the before side and kept in the after side, so it never flatters learning.` },
+  }, "What the series shows, over every run it counts, `limit` aside."),
+});
+
 const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
   "/agents/{agent_id}/learning": {
     get: {
       operationId: "getAgentLearning", tags: ["agents"], summary: "What the agent has learned: its index, notes, log of changes and counts",
       description: "Read at main's head with git's plumbing; every text cut of the host's secrets as they are now, and a file name holding one `[redacted]` whole. An agent whose learning was never on has no folder: `main` null and every page empty. An archived agent's is readable." + " " + SIGN_IN_WITHHELD,
       parameters: [AGENT_ID], responses: { "200": json(AGENT_LEARNING, "The agent's learning."), ...errors(401, 403, 404, 429, 500) }, ...MARK,
+    },
+  },
+  "/agents/{agent_id}/learning/cost": {
+    get: {
+      operationId: "getLearningCost", tags: ["agents"], summary: "The agent's cost per run, run after run: its own cost, what learning added and the path it took",
+      description: "Each of the agent's ended agentic runs in the order they started, with its own cost, what learning cost for it and its all-in cost, the path it took (a learned workflow alone, a learned workflow that handed back, or the agent with none) and the learned revision that served it, plus what the series shows: the first run a learned workflow finished alone, the mean cost before it and the mean all-in cost from it on. What the console's Cost per run chart draws. Aggregates only: no run's input, answer or tool text. Read from the runs' rows, launches, learning ends and timelines in the store; an agent with learning never on has every run on the `agent` path. `format=csv` answers the same runs as CSV (`text/csv`, a header line, an unknown figure empty), to plot elsewhere.",
+      parameters: [
+        AGENT_ID,
+        { name: "limit", in: "query", required: false, description: `The latest runs to answer, each keeping its number. At most ${COST_RUNS_MAX}.`, schema: { type: "integer", minimum: 1, maximum: COST_RUNS_MAX, default: COST_RUNS_DEFAULT } },
+        { name: "format", in: "query", required: false, description: "`csv`: the runs as CSV, columns " + COST_CSV_COLUMNS.join(", ") + ".", schema: { enum: ["json", "csv"], default: "json" } },
+      ],
+      responses: { "200": { description: "The agent's cost per run.", content: { "application/json": { schema: LEARNING_COST }, "text/csv": { schema: { type: "string" } } } }, ...errors(400, 401, 404, 429, 500) },
+      "x-agentrun-serve": "learningcost/1",
     },
   },
   "/agents/{agent_id}/learning/notes": {
@@ -1345,7 +1402,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     put: {
       operationId: "putWorkspaceArchil", tags: ["local"], summary: "Turn Mode 2 on: run folders on Archil disks, one per agent",
-      description: "Replaces the Archil settings (the account key's region and its S3 URL, and an exec image pinned by digest when given) and seals the account key (ARCHIL_API_KEY) under the server's seal key when given; null removes it, and a key not given is kept. There is no server-wide disk: each agent gets its own, made in this region on its first run that uses it (`agentrun-<server id>-i-<agent id>`), and a run may name another (`archil_disk` on its start), so `diskId` is refused. No disk token is kept: a computer's mount credential is minted per run from the account key, so ARCHIL_DISK_TOKEN is refused like any field Archil does not take. Any PUT here is a secret write, whatever its body: it takes the owner's signed-in session, and the API token is 403, since the region and S3 URL say where every run's files go. A field that is not right, or an image not pinned by digest, is 422 input_invalid with its fields, and nothing is saved. The answer never holds a key.",
+      description: "Replaces the Archil settings (the account key's region and its S3 URL, and an exec image pinned by digest when given) and seals the account key (ARCHIL_API_KEY) under the server's seal key when given; null removes it, and a key not given is kept. There is no server-wide disk: each agent gets its own, made in this region on its first run that uses it (`agentrun-<server id>-i-<agent id>`), and a run may name another (`archil_disk` on its start), so `diskId` is refused. No disk token is kept: a computer's mount credential is minted per run from the account key, so ARCHIL_DISK_TOKEN is refused like any field Archil does not take. Any PUT here is a secret write, whatever its body: it takes the owner's signed-in session, and the API token is 403, since the region and S3 URL say where every run's files go. A field that is not right, or an image not pinned by digest, is 422 input_invalid with its fields, and nothing is saved. While the server's environment sets the settings (GET's `source` is `env`), it is 409 key_set_by_server naming its variables, and nothing is saved. The answer never holds a key.",
       requestBody: {
         required: true,
         content: { "application/json": { schema: closedWith({ region: { type: "string", minLength: 1 }, s3Url: { type: "string", format: "uri", pattern: "^https://" } }, {
@@ -1353,13 +1410,13 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
           keys: { type: "object", additionalProperties: false, properties: Object.fromEntries(ARCHIL_KEY_NAMES.map((name) => [name, { type: ["string", "null"], minLength: 1, "x-agentrun-secret": true }])) },
         }) } },
       },
-      responses: { "200": json(ARCHIL_VIEW, "The Archil settings, saved."), ...errors(401, 403, 422, 429, 500) },
+      responses: { "200": json(ARCHIL_VIEW, "The Archil settings, saved."), ...errors(401, 403, 409, 422, 429, 500) },
       ...ARCHIL_MARK,
     },
     delete: {
       operationId: "deleteWorkspaceArchil", tags: ["local"], summary: "Turn Mode 2 off: run folders on this server's own disk",
-      description: "Removes the Archil settings. Its saved keys, and each agent's disk, are kept, for turning it on again.",
-      responses: { "200": json(ARCHIL_VIEW, "The Archil settings, off."), ...errors(401, 429, 500) },
+      description: "Removes the Archil settings. Its saved keys, and each agent's disk, are kept, for turning it on again. While the server's environment sets the settings (GET's `source` is `env`), it is 409 key_set_by_server naming its variables, and nothing is removed.",
+      responses: { "200": json(ARCHIL_VIEW, "The Archil settings, off."), ...errors(401, 409, 429, 500) },
       ...ARCHIL_MARK,
     },
   },
@@ -1970,12 +2027,27 @@ const SO_FAR = {
   so_far_usd: { type: "number", minimum: 0, description: "Set only while `usd` is null: the sum of the charges whose cost is known (model requests, a workflow's decisions, paid tool calls). Never the cost: the charges counted in `unpriced` are not in it, and nothing bounds them.", "x-agentrun-serve": "costsofar/1" },
   unpriced: { type: "integer", minimum: 1, description: "Set only while `usd` is null: how many charges have no known cost (a model request cut, stopped, still pending or with no price; a decision whose cost is unknown; a paid tool call charged an unknown amount or cut).", "x-agentrun-serve": "costsofar/1" },
 };
+/** mcpperrun/1: the credentials a run's caller hands its per_run MCP servers, for that run alone. */
+const MCP_RUN_AUTH: Json = {
+  type: "object", minProperties: 1, maxProperties: 8,
+  additionalProperties: closed({ headers: { type: "object", minProperties: 1, maxProperties: 8, additionalProperties: { type: "string", minLength: 1, maxLength: 8192 } } }, "The headers this run's calls of that server carry, e.g. {\"authorization\": \"Bearer <token>\"}."),
+  propertyNames: { pattern: "^[a-z][a-z0-9-]{0,31}$" },
+  // Not x-agentrun-secret: that marks a write of a secret the server keeps for every run (an owner's alone). This one is
+  // the run's own, handed by whoever may start it, and kept only for that run.
+  description: "The credential each per_run MCP server this run calls is called with, by server name: `{\"<server>\": {\"headers\": {...}}}`. A credential for this run alone, from whoever starts it: the server keeps it sealed for the run's life and redacts its values from what the run shows.",
+  "x-agentrun-serve": "mcpperrun/1",
+};
+
 const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
+  MessageCreate: {
+    mcp_auth: { ...MCP_RUN_AUTH, description: `${MCP_RUN_AUTH.description as string} Replaces the run's handed credentials in the message's own write (a follow-up that opens an ended run again hands its turn's), so the turn the message starts calls with them. A run handed none calls a per_run server's tools refused, nothing sent.` },
+  },
   Cost: {
     ...SO_FAR,
     overshoot_bound_usd: { type: "number", minimum: 0, description: "Set when the run has a cap: the most its model requests in flight could cost beyond what its cap holds them at, when one misses the cache (`cap_mode` expected: each one's input uncached less its input expected, rounded up to a millionth). 0 with none in flight, under strict, and for a request priced with nothing cached. The cap never lets output pass it, so this is all a run can go over its cap by.", "x-agentrun-serve": "capmode/1" },
   },
   RunCreate: {
+    mcp_auth: { ...MCP_RUN_AUTH, description: `${MCP_RUN_AUTH.description as string} Each names a saved MCP server whose \`auth.type\` is per_run (422 at \`mcp_auth.<server>\` otherwise, no run made). Sealed into the run's launch for its life, read at each claim, and erased by the write that ends it; never in its saved body, its timeline, its view or an Idempotency-Key's fingerprint (a retry with a new credential answers the first request's run).` },
     cap_mode: { ...CAP_MODE, description: `${CAP_MODE.description as string} Absent: the agent's (its definition's \`cap_mode\`), else expected. 422 not_allowed for a run with no cap.` },
     archil_disk: {
       type: "object", additionalProperties: false, required: ["disk_id"],
@@ -2114,7 +2186,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     tool_settings: { ...AGENT_TOOL_SETTINGS, description: "The agent's own tool settings (web_search's, web_fetch's and browser's provider, any tool's permission, an MCP server's wildcard mcp:<server>/*, an MCP tool's pin, bash's policy), over the server's (GET /settings/tools), except a deny set on the server, which is absolute: the tool is refused on this server whatever this agent sets; absent, the server's. A pin is not over the server's: both hold. A grant in tools names the capability, never a provider.", "x-agentrun-serve": "providers/1" },
     approvals: { enum: ["ask", "never"], default: "ask", description: "Whether the agent's runs ask a person or run unattended. `ask`, the default: a tool set to ask parks the run for an approval, as its tool settings say. `never`: the agent runs unattended, and each tool that would ask is allowed instead, decided by the tool gate at each call, so a tool granted later and an MCP tool (`mcp:<server>/<tool>`, which asks by default) are covered on every harness. It never lifts a deny, whether set on this server or in the agent's own tool_settings, nor a pin, nor anything else the gate refuses before it decides between running and asking. A workflow's call node on a tool set to ask runs under `never`. Absent on a request: ask. An edit that leaves it out asks, so no edit makes an agent unattended by saying nothing. Every answer names it.", "x-agentrun-serve": "unattended/1" },
-    learning: { type: "boolean", default: false, description: "Whether an agentic revision's runs learn: each starts from what its agent has learned, its notes in its instructions under `# Learned` (each whole within the server's learning budget, else the index and the notes changed last, whole) and in `.learning/` in its working directory, and once it answers or fails is asked one more turn to add notes there, which are checked, graded and merged. Kept when a definition says so, true or false; absent, off, and an answer shows none. An edit that leaves it out keeps the agent's. A workflow revision keeps none. On a server whose learning is off (`capabilities.features.learning`), no run learns, whatever this says.", "x-agentrun-serve": "learning/1" },
+    learning: { enum: [true, false, "notes"], default: false, description: "Whether an agentic revision's runs learn, and what: `true`, notes, skills and learned workflows; `\"notes\"`, notes and skills alone (a run is never given a learned workflow nor asked to draft one); `false`, nothing. A run that learns starts from what its agent has learned, its notes in its instructions under `# Learned` (each whole within the server's learning budget, else the index and the notes changed last, whole) and in `.learning/` in its working directory, and once it answers or fails is asked one more turn to add notes there, which are checked, graded and merged. Kept when a definition says so, true, false or `\"notes\"`; absent, off, and an answer shows none. An edit that leaves it out keeps the agent's. A workflow revision keeps none. On a server whose learning is off (`capabilities.features.learning`), no run learns, whatever this says.", "x-agentrun-serve": "learning/1" },
     checkout: { enum: ["pull_request", "none"], description: "What the server checks out in each run's folder before its first turn, an agentic definition's alone. `pull_request`: the pull request the run's GitHub event names (a GitHub trigger's firing: its repository, number, head and base), at its head, detached, in `repo/`, with its base and their merge base fetched beside it (refs `pr/head`, `pr/base`, `pr/merge-base`). The fetch is the server's own, one command on the run's folder, with an installation token of the server's GitHub App narrowed to that repository and `contents: read`, which the agent never holds: it is never in the folder, the checkout's git config, its remote's URL, the agent's environment or the log. With no App, or one not installed there, the fetch is anonymous, which a public repository answers. The run's system prompt says what was checked out, or why nothing was (no pull request named, the fetch failed), so it can read the change another way, such as the GitHub MCP. The checkout is removed when the run's claim ends. An edit that leaves it out keeps the agent's; `none` clears it. A template sets it from its manifest's `checkout`.", "x-agentrun-serve": "checkout/1" },
     max_tool_calls: { type: "integer", minimum: 0, maximum: MAX_TOOL_CALLS, description: "An agentic revision's tool-call budget, on pi: the tool calls each conversation of its runs may make (the run's own, and each one a tool opens, counted apart). Past it, every call is refused before it runs with words that tell the model to answer now from what it has; that refusal is not counted, and the run is never ended by it. Counted from the conversation's journal, so a restart or a moved claim keeps the count. Above 0 sets it, 0 clears it, and an edit that leaves it out keeps the agent's. On another harness it is refused: 422 `definition.max_tool_calls` at the save. A template's `budget.tool_calls` sets it at apply.", "x-agentrun-serve": "toolbudget/1" },
     cap_mode: { ...CAP_MODE, description: `The cap mode of each run of this agent that has a cap and names none of its own. ${CAP_MODE.description as string} An edit that leaves it out keeps the agent's. An agentic definition's or a workflow's alike.` },
@@ -2548,7 +2620,7 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   definition.required = definition.required.filter((field) => !DEFINITION_INPUT_OPTIONAL.includes(field));
   const definitionRead = schemas.Definition as Json & { required: string[] };
   definitionRead.required = definitionRead.required.filter((field) => !DEFINITION_OPTIONAL.includes(field));
-  // A row's usage: the contract's shape, on more rows here than the usage row (pi-durable-agent's timeline, BROWSER_CHARGE).
+  // A row's usage: the contract's shape, on more rows here than the usage row (timeline/, BROWSER_CHARGE).
   const timelineRow = schemas.TimelineRow as Json & { properties: Record<string, Json> };
   timelineRow.properties.usage = { ...timelineRow.properties.usage, "x-agentrun-serve-note": "On the `usage` row, the run's cost so far. On a paid tool's charge row (a `phase` row, \"Tool cost: monid charged $0.0030 for monid.run\", `tool_name` the tool, `tool_use_id` the call), that charge alone. On a browser call's `tool_use` row (`tool_name` one of the browser's tools: snapshot, run, browser_read, ...), the browser session time booked under that call: what the session ran since its last charge, and, on the session's last call, its release's charge topped up to the provider's minimum. A browser charge has no row of its own. A charge booked after the row was served (a release after the answer) is served as a change of that row, with the same `id` and its new `usage`. `requests` is 0 on every row but the usage row; `usd` is null once a charge on the row has no price, with `so_far_usd` and `unpriced` saying what is known. The run's cost counts each charge once, wherever it shows: summing every row's `usage` but the usage row's gives what its paid tools charged." };
   // ErrorBody.fields beyond `input_invalid`: a 409 agent_not_runnable names each thing that keeps the run from starting.

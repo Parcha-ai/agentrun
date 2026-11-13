@@ -191,7 +191,9 @@ export type UpdatedRun = RunRow & { readonly save?: boolean };
 
 /** A run's launch, as the server writes it at start: its JSON `body` (run-launch.ts: the first input, title, place, effort,
  *  cap, trigger and origin), and `sealed` ciphertext for any secret it carries (sealed with the server's key outside the
- *  store, AAD `run_launch|<run_id>|sealed`), or none. Written once, in the same transaction as the queued run. */
+ *  store, AAD `run_launch|<run_id>|sealed`: the MCP credentials its caller handed it, store/seal.ts sealRunMcpAuth), or
+ *  none. The body is written once, in the same transaction as the queued run. `sealed` is the run's for its life only: a
+ *  message may replace it (runs.command and runs.reopen, `launchSealed`), and the write that ends the run erases it. */
 export interface RunLaunchInput {
   readonly body: unknown;
   readonly sealed?: Uint8Array | null;
@@ -204,6 +206,12 @@ export interface RunLaunchRow {
   readonly body: unknown;
   readonly sealed: Uint8Array | null;
   readonly createdAt: number;
+}
+
+/** A message's new launch secrets (runs.command, runs.reopen): `launchSealed` replaces the run's launch `sealed` in the
+ *  command's own transaction, so the runner that takes the command reads them, and a run already final takes neither. */
+export interface LaunchSealedWrite {
+  readonly launchSealed?: Uint8Array;
 }
 
 /** A run imported from another harness's session: an ended run with where it came from, its launch (built from the
@@ -583,7 +591,7 @@ export interface Runs {
    *  Only an agentic run that ended completed (state 'ended') or that a person stopped (state 'stopped', outcome
    *  'stopped'), not imported and not a learning run, reopens: a workflow, a failed or cancelled run, any other, or none
    *  is RunFinal, and nothing is written. */
-  reopen(runId: string, command: { kind: string; body?: unknown }): Promise<Command>;
+  reopen(runId: string, command: { kind: string; body?: unknown }, options?: LaunchSealedWrite): Promise<Command>;
   /** The runs a runner may claim, oldest first: queued; parked with an untaken command or its wake_at passed; running with
    *  no runner (released at a runner's shutdown: it stays running, a run that started keeps that fact) or its claim run
    *  out. */
@@ -1032,7 +1040,7 @@ export interface Store {
    *  not run twice, at a run's end and when a claim is released. */
   flush(): Promise<void>;
   /** Writes a command for the run. RunFinal when the run is final; unknown runs are refused the same way. */
-  command(runId: string, command: { kind: string; body?: unknown }): Promise<Command>;
+  command(runId: string, command: { kind: string; body?: unknown }, options?: LaunchSealedWrite): Promise<Command>;
   /** The run's commands with an id above `after`, in id order. */
   commands(runId: string, after: number): Promise<Command[]>;
   /** Every run's commands with an id above its own cursor, in id order, in one read: a runner's poll of all it holds. A run
@@ -1175,15 +1183,30 @@ export type ConstraintRule = "check" | "unique" | "foreign_key" | "not_null";
 
 /** A row the store's constraints refuse (a duplicate id or name, a revision of an unknown agent, a bad kind). When the
  *  database said which rule refused it, `rule`; for a duplicate, `unique`: the table and the columns whose values were
- *  taken already (a primary key's or a UNIQUE's), so a caller tells "the name is taken" from any other refusal. */
+ *  taken already (a primary key's or a UNIQUE's), so a caller tells "the name is taken" from any other refusal. `index`:
+ *  the unique index (or constraint) the database named, when it named one: an index on an expression (one answer per
+ *  approval, schema.ts ONE_ANSWER_INDEX) has no plain columns to name, only its name. */
 export class StoreConstraint extends Error {
   readonly rule?: ConstraintRule;
   readonly unique?: { readonly table: string; readonly columns: readonly string[] };
-  constructor(message: string, details: { rule?: ConstraintRule; unique?: { table: string; columns: readonly string[] } } = {}) {
+  readonly index?: string;
+  constructor(message: string, details: { rule?: ConstraintRule; unique?: { table: string; columns: readonly string[] }; index?: string } = {}) {
     super(message);
     this.name = "StoreConstraint";
     if (details.rule) this.rule = details.rule;
     if (details.unique) this.unique = details.unique;
+    if (details.index) this.index = details.index;
+  }
+}
+
+/** An approve or deny command refused because its approval is answered already: an unrefused answer naming it was
+ *  written first (the one-answer index, schema.ts ONE_ANSWER_INDEX), so this one lost. Both stores raise it from that
+ *  index's unique violation alone, at the command's insert; any other refusal stays a plain StoreConstraint. Its caller
+ *  reads the answer that won: approve's 409 already_answered, or nothing to do. */
+export class AnswerTaken extends StoreConstraint {
+  constructor(message: string, index: string) {
+    super(message, { rule: "unique", index });
+    this.name = "AnswerTaken";
   }
 }
 

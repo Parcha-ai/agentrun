@@ -1,0 +1,79 @@
+name: Star notifications
+
+on:
+  watch:
+    types: [started]
+  workflow_dispatch:
+
+# The event payload supplies all repository details; no checkout or GitHub token is needed.
+permissions: {}
+
+jobs:
+  notify:
+    if: github.repository == 'Parcha-ai/agentrun'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Send Slack notification
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_STARS_BOT_TOKEN }}
+          SLACK_CHANNEL: ${{ vars.SLACK_STARS_CHANNEL }}
+        run: |
+          python3 <<'PY'
+          import json
+          import os
+          import urllib.error
+          import urllib.request
+
+          token = os.environ.get("SLACK_BOT_TOKEN", "").strip()
+          channel = os.environ.get("SLACK_CHANNEL", "").strip()
+          if not token or not channel:
+              raise SystemExit("Configure SLACK_STARS_BOT_TOKEN and SLACK_STARS_CHANNEL first.")
+
+          with open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8") as source:
+              event = json.load(source)
+          repository = event["repository"]
+          name = repository["full_name"]
+          repo_link = "https://github.com/" + name
+          if os.environ["GITHUB_EVENT_NAME"] == "workflow_dispatch":
+              text = (
+                  ":white_check_mark: Slack delivery test for "
+                  f"<{repo_link}|{name}> star notifications. "
+                  "This is a setup test; no GitHub star was added."
+              )
+          elif os.environ["GITHUB_EVENT_NAME"] == "watch" and event.get("action") == "started":
+              login = event["sender"]["login"]
+              count = repository["stargazers_count"]
+              text = (
+                  f":star: <https://github.com/{login}|{login}> starred "
+                  f"<{repo_link}|{name}>!\n*{count:,} stars*"
+              )
+          else:
+              raise SystemExit("Only new stars and explicit setup tests send notifications.")
+
+          payload = json.dumps({
+              "channel": channel,
+              "text": text,
+              "unfurl_links": False,
+              "unfurl_media": False,
+          }).encode("utf-8")
+          request = urllib.request.Request(
+              "https://slack.com/api/chat.postMessage",
+              data=payload,
+              headers={
+                  "Authorization": "Bearer " + token,
+                  "Content-Type": "application/json; charset=utf-8",
+              },
+              method="POST",
+          )
+          try:
+              with urllib.request.urlopen(request, timeout=20) as response:
+                  result = json.load(response)
+          except urllib.error.HTTPError as error:
+              raise SystemExit(f"Slack returned HTTP {error.code}.") from None
+          except urllib.error.URLError:
+              raise SystemExit("Slack could not be reached; check delivery before retrying.") from None
+          if not result.get("ok"):
+              raise SystemExit("Slack rejected the notification: " + result.get("error", "unknown_error"))
+          print("Slack notification sent.")
+          PY
