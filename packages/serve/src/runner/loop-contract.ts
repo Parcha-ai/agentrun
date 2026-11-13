@@ -47,6 +47,10 @@ export type EndOfRunTurn = (input: {
    *  turn an earlier claim asked answers with that claim's (`kept`), never this one's, so a restart mid-turn never moves
    *  what the earlier attempt spent into the job's. A loop that keeps no record of its own (pi's) keeps none. */
   ask(prompt: string, opts: { readonly origin: "reflect"; readonly deadlineMs: number; readonly again?: true; readonly round?: number; readonly keep?: EndOfRunKept }): Promise<EndOfRunAnswer>;
+  /** What round `round`'s turn kept as it was first asked (its ask's `keep`), when it was asked already: a look-back an
+   *  earlier claim (or this one) started, readable before `ask`, so a step that skips or is cut never asks, and still
+   *  closes that look-back with its first ask's figures. Undefined when none asked it, or the loop keeps no record (pi's). */
+  keptOf?(round: number): EndOfRunKept | undefined;
   readonly signal: AbortSignal;
 }) => Promise<{ readonly also: readonly AlsoRow[] } | undefined>;
 

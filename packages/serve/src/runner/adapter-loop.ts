@@ -458,8 +458,9 @@ interface CliRecord {
   answering(requestId: string, prompt: string, keep?: EndOfRunKept): Promise<EndOfRunKept | undefined>;
   /** What the end-of-run turn `requestId` kept as it was first asked (answering's `keep`), this claim's or an earlier one's. */
   keptOf(requestId: string): EndOfRunKept | undefined;
-  /** Whether an end-of-run turn the record asked has no submission: sent, on this claim or an earlier one, and never seen
-   *  to end (a crash or a lost claim cut it). */
+  /** Whether the session's last turn is an end-of-run turn with no submission: its prompt the last turn the record opened
+   *  (no job turn, follow-up or message after it), sent on this claim or an earlier one and never seen to end (a crash or
+   *  a lost claim cut it). An older one a person stopped, with a turn of the job's after it, is not. */
   lookingBack(): Promise<boolean>;
   /** The end-of-run turn ended (`status`, its turn's): its prompt and answer as the submission `requestId` names, the same
    *  record pi's adapter writes (done with its answer entry, or unanswered with why), written once. */
@@ -483,6 +484,7 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
       await tx.appendEntry(root.id, { kind: KINDS.turnStart, data: { at: now() } as unknown as JsonValue });
     }, context);
     turnsOpen += 1;
+    lastAsked = undefined;
   };
   // Each call started on the record: whether it has its end; and each end, by call id.
   const started = new Map<string, boolean>();
@@ -502,13 +504,17 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
   // claim, after a crash in the turn) reuses it, never writes a second. And what each kept as it was first asked.
   const askedAt = new Map<string, EntryId>();
   const askedKept = new Map<string, EndOfRunKept>();
+  // The end-of-run turn asked last, while no turn of the job's (its input, a message, a follow-up) opened after it.
+  let lastAsked: string | undefined;
   for (const entry of await entriesOf(journal, root.id, context)) {
     const data = (entry.data ?? {}) as { callId?: unknown; role?: unknown; status?: CallStatus; output?: unknown; parked?: unknown; requestId?: unknown; commandId?: unknown; kept?: unknown };
     if (entry.kind === KINDS.messageSending && typeof data.commandId === "number") sending.add(data.commandId);
     if (entry.kind === KINDS.endOfRunTurn && data.role === "person" && typeof data.requestId === "string") {
       askedAt.set(data.requestId, entry.id as EntryId);
+      lastAsked = data.requestId;
       if (data.kept && typeof data.kept === "object" && !Array.isArray(data.kept)) askedKept.set(data.requestId, data.kept as EndOfRunKept);
     }
+    if (entry.kind === KINDS.turnStart || (entry.kind === KINDS.message && data.role === "person") || entry.kind === KINDS.input) lastAsked = undefined;
     if (entry.kind === KINDS.callEnd && typeof data.callId === "string") ends.set(data.callId, { status: data.status ?? "done", ...(typeof data.output === "string" ? { output: data.output } : {}) });
     if (entry.kind === KINDS.callStart && typeof data.callId === "string" && data.parked === true) parked.add(data.callId);
     if (entry.kind === KINDS.callSent && typeof data.callId === "string") sent.add(data.callId);
@@ -564,6 +570,7 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
         if (personWritten) return;
         if (opens) await startsTurn({ kind: KINDS.message, data: { role: "person", text: input } });
         else await append(KINDS.message, { role: "person", text: input });
+        lastAsked = undefined;
         personWritten = true;
       }),
     input: (input, origin, opens = true) =>
@@ -572,6 +579,7 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
         const entry = { kind: KINDS.input, data: { origin } as unknown as JsonValue, model: [{ role: "user", content: input, timestamp: now() }] };
         if (opens) await startsTurn({ entry });
         else await harness.commit((tx) => tx.appendEntry(root.id, entry as never), context);
+        lastAsked = undefined;
         personWritten = true;
       }),
     followUp: (input, requestId, origin) =>
@@ -666,6 +674,7 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
           // (that request's flush), so a later claim that asks the turn again reads the first ask's, never its own.
           const asked = await tx.appendEntry(root.id, { kind: KINDS.endOfRunTurn, data: { role: "person", text: prompt, requestId, ...(keep ? { kept: keep } : {}) }, model: [{ role: "user", content: prompt, timestamp: now() }] as never });
           askedAt.set(requestId, asked.id);
+          lastAsked = requestId;
           if (keep) askedKept.set(requestId, keep);
         }, context);
       });
@@ -673,10 +682,8 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
     },
     keptOf: (requestId) => askedKept.get(requestId),
     async lookingBack() {
-      for (const requestId of askedAt.keys()) {
-        if (!(await harness.commit((tx) => tx.submissionByRequest(root.id, requestId), context))) return true;
-      }
-      return false;
+      const requestId = lastAsked;
+      return requestId !== undefined && !(await harness.commit((tx) => tx.submissionByRequest(root.id, requestId), context));
     },
     answered: (requestId, prompt, status) =>
       inTurn(async () => {
@@ -2121,13 +2128,14 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // A reopen of a session still new whose message was never placed (the run stopped, parked or was lost meanwhile):
         // nothing is sent, least of all the input the person stopped.
         const firstUnplaced = firstInputPlaced !== undefined && !followedUp;
-        // A CLI's end-of-run turn an earlier claim sent and never saw end (its prompt on the record, no submission): the
-        // job's turn had ended before it, so the session's open turn is that look-back. It is settled, never recovered:
+        // A CLI's end-of-run turn an earlier claim sent and never saw end (its prompt the last turn on the record, no
+        // submission): the job's turn had ended before it, so the session's open turn is that look-back. One a person
+        // stopped with a follow-up after it is not: the open turn is the follow-up's, recovered as the job's. It is settled, never recovered:
         // recovered, it ran as the job's turn, its answer lost, and the end-of-run step then asked the CLI again, a paid
         // look-back twice on one claim. The step asks it again once, under the run's cap (an earlier request of it booked
         // at its hold, bookCut), or skips it, reading what the first ask kept (EndOfRunTurn ask's `kept`).
         if (!followedUp && !firstUnplaced && session!.state === "open_turn" && (await record?.lookingBack())) await session!.settleOpenTurn();
-        const placed =followedUp || (session!.state !== "idle" && !firstUnplaced);
+        const placed = followedUp || (session!.state !== "idle" && !firstUnplaced);
         if (followedUp || firstUnplaced) {
           // The follow-up is the turn this claim runs, or there is none.
         } else if (session!.state === "new") {
@@ -2747,6 +2755,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     await release?.().catch((error: unknown) => console.warn(`[runner] its run's release failed: ${said(error)}`));
   }
 
+  /** What round `round`'s end-of-run turn kept as it was first asked (EndOfRunTurn's keptOf), on the CLI's record. */
+  const keptOf = (claim: Claim) => (round: number): EndOfRunKept | undefined => cliRecord?.keptOf(reflectRequestId(claim.runId, false, round));
+
   /** The run's end-of-run step: its spec's (AdapterRunSpec.endOfRun) when it has one, else the loop's deps'. */
   const stepOf = (spec: AdapterRunSpec): EndOfRunTurn | undefined => spec.endOfRun ?? deps.endOfRun;
 
@@ -2763,7 +2774,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     if (!step) return { kind: "rows", also: [] };
     if (!spec.agentId) throw new Error("the run's spec names no agent, so its end-of-run step cannot be asked");
     try {
-      const rows = await step({ runId: claim.runId, agentId: spec.agentId, claim, outcome, signal: deps.signal, ask: (prompt, opts) => askEndOfRun(claim, prompt, opts.deadlineMs, opts.again === true, opts.round ?? 1, opts.keep) });
+      const rows = await step({ runId: claim.runId, agentId: spec.agentId, claim, outcome, signal: deps.signal, ask: (prompt, opts) => askEndOfRun(claim, prompt, opts.deadlineMs, opts.again === true, opts.round ?? 1, opts.keep), keptOf: keptOf(claim) });
       return cut() ?? { kind: "rows", also: rows?.also ?? [] };
     } catch (error) {
       return cut() ?? (console.warn(`[runner] ${claim.runId}: its end-of-run step failed: ${said(error)}`), { kind: "rows", also: [] });
@@ -2780,7 +2791,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     let timer: NodeJS.Timeout | undefined;
     const late = new Promise<"late">((resolve) => (timer = setTimeout(() => resolve("late"), CUT_STEP_MS)));
     try {
-      const rows = await Promise.race([step({ runId: claim.runId, agentId: spec.agentId, claim, outcome: "failed", cut, signal: deps.signal, ask: refuse }), late]);
+      const rows = await Promise.race([step({ runId: claim.runId, agentId: spec.agentId, claim, outcome: "failed", cut, signal: deps.signal, ask: refuse, keptOf: keptOf(claim) }), late]);
       if (rows === "late") {
         console.warn(`[runner] ${claim.runId}: its end-of-run step gave no answer within ${CUT_STEP_MS / 1000} s; the end is written without it`);
         return [];

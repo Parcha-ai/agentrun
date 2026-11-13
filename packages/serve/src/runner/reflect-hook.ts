@@ -103,24 +103,20 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
   const hook: EndOfRunTurn = async (input) => {
     const facts = await deps.facts(input.runId);
     if (!facts.learns) return undefined;
-    // closeLearning for a run cut before it could look back: a person's stop, before or during the turn, or a fault.
-    if (input.cut === "stopped") return { also: [droppedRow(null, "cancelled", said.stopped(STOPPED.cancelled))] };
-    if (input.cut === "stopped-looking") return { also: [droppedRow(null, "cancelled", said.stopped(STOPPED.cancelledLooking))] };
-    if (input.cut === "faulted") return { also: [droppedRow(null, "crashed", said.stopped(STOPPED.crashed))] };
-    // reflectSkip: the cap keeps no reserve; a run its cap stopped has no room left, and one whose spend is unknown
-    // cannot be kept within its cap.
-    if (facts.cancelled) return { also: [droppedRow(null, "cancelled", said.stopped(STOPPED.cancelled))] };
-    if (facts.capReached) return { also: [droppedRow(null, "no_budget", said.noBudget)] };
-    if (facts.capUsd !== undefined && facts.costUsd === null) return { also: [droppedRow(null, "unknown_cost", said.unknownCost)] };
     const now = deps.now ?? Date.now;
     // When the job answered and what it cost (learning-run.ts setLearning "reflecting"): as the turn starts, the run's
     // spend so far is the job's. A turn an earlier claim asked first (cut by a crash or a lost claim) reads that ask's,
     // which it kept with its prompt (the ask's `kept`): what the earlier attempt spent is the look-back's, never the job's.
     let answeredAt = new Date(now()).toISOString();
     let job = facts.costUsd;
-    const firstAsk = (kept: EndOfRunKept | undefined) => {
-      if (typeof kept?.answered_at === "string" && (typeof kept.job_cost_usd === "number" || kept.job_cost_usd === null)) [answeredAt, job] = [kept.answered_at, kept.job_cost_usd];
+    const firstAsk = (kept: EndOfRunKept | undefined): boolean => {
+      if (typeof kept?.answered_at !== "string" || (typeof kept.job_cost_usd !== "number" && kept.job_cost_usd !== null)) return false;
+      [answeredAt, job] = [kept.answered_at, kept.job_cost_usd];
+      return true;
     };
+    // A look-back already started (its first ask's figures on the record, keptOf), read before any skip or cut: one this
+    // claim closes without asking still keeps when the job answered, its cost, and what looking back spent since.
+    const begun = firstAsk(input.keptOf?.(round));
     // A later round's: the follow-up's own spend, the run's spend now less what the round before it kept (its job's and
     // its look-back's), unknown when any is.
     const earlier = deps.before;
@@ -132,6 +128,17 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
       const answered = { answered_at: answeredAt, job_cost_usd: job, look_back_usd: total === null || job === null ? null : Math.max(0, Math.round((total - job) * 1e9) / 1e9), ...followUp() };
       return { also: rows.also.map((row): AlsoRow => (row.table === "learning_proposals" ? { ...row, row: { ...row.row, proposal: { ...(row.row as { proposal: object }).proposal, ...answered } } } : row)) };
     };
+    // A run cut or skipped here asks nothing: its drop alone, or with looked's figures when its look-back had started.
+    const unasked = async (row: AlsoRow) => (begun ? looked({ also: [row] }) : { also: [row] });
+    // closeLearning for a run cut before it could look back: a person's stop, before or during the turn, or a fault.
+    if (input.cut === "stopped") return unasked(droppedRow(null, "cancelled", said.stopped(STOPPED.cancelled)));
+    if (input.cut === "stopped-looking") return unasked(droppedRow(null, "cancelled", said.stopped(STOPPED.cancelledLooking)));
+    if (input.cut === "faulted") return unasked(droppedRow(null, "crashed", said.stopped(STOPPED.crashed)));
+    // reflectSkip: the cap keeps no reserve; a run its cap stopped has no room left, and one whose spend is unknown
+    // cannot be kept within its cap.
+    if (facts.cancelled) return unasked(droppedRow(null, "cancelled", said.stopped(STOPPED.cancelled)));
+    if (facts.capReached) return unasked(droppedRow(null, "no_budget", said.noBudget));
+    if (facts.capUsd !== undefined && facts.costUsd === null) return unasked(droppedRow(null, "unknown_cost", said.unknownCost));
     // A job that only ran its learned workflows, each answering, with nothing said after its first message, gave nothing
     // new to learn: it is not asked (no model request), and looking back cost nothing, $0 whether or not the job's own
     // cost is known. Its words are the server's own.
