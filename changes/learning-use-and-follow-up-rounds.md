@@ -1,9 +1,0 @@
----
-packages: @parcha/agentrun-serve
-kind: feature
----
-A run can start with `learning: "use"` (POST /agents/{agent_id}/runs and POST /runs). It starts from what its agent learned (notes, learned skills and learned workflows, as a run that learns is given them) and keeps nothing: no end-of-run turn, no proposal, no grade and no merge, at its end or after a follow-up. Its `learning` reads `seeded` while it runs, then `dropped` with the new reason `use`. Many runs of one agent then read one learned state, frozen, however many run at once (a held-out evaluation). A server whose learning is off still gives it nothing. Any other value is a 422 at the field.
-
-A follow-up message to a finished run of an agent that learns now learns from the follow-up. Before, the run answered the message, but its new end reused the first end-of-run turn's answer, and the store dropped the new proposal and learning run, so a reviewer's correction never reached learning. Now each end after a follow-up is a new round. It asks the model again, with the follow-up in what the person said and a prompt saying it looked back before. It keeps its own proposal beside the earlier rounds', and its own learning run (`<run>-learning-<n>`) grades and merges it. The run's `learning` reads its newest round. A later round's proposal also keeps `follow_up_usd`: what the follow-up's own turn cost, kept apart from the job and the look-backs.
-
-- **Breaking for a SQLite data directory.** Upgrading: the store's SQLite schema is now version 7 (a run's learning is kept by run and round). A server or runner of this release refuses a data directory an earlier release set up, with `SchemaVersionUnknown`: start this release on a new, empty data directory, or keep the old directory with the earlier release. A Postgres store migrates itself (migration 0005).
