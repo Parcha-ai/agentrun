@@ -48,7 +48,7 @@ function detailOf(rest: string): string {
 }
 
 /** The most of a run's error or a tool's output serve ever shows: a Timeline row's text, cut at 2000 characters
- *  (pi-durable-agent's CAPS.text; a summary and a tool result's preview at 500), which the error box reads too. */
+ *  (`CAPS.text` in timeline/; a summary and a tool result's preview at 500), which the error box reads too. */
 const SHOWN = 2000;
 
 /** `text`, a run's error as serve shows it, with no held secret in it: the one rule learning's checker uses
@@ -134,7 +134,7 @@ export function redactedOutput(value: unknown, secrets: readonly string[]): unkn
   return value;
 }
 
-/** What a thinking or text block may show while it streams (pi-durable-agent's `redactLive`): what has streamed so far,
+/** What a thinking or text block may show while it streams: what has streamed so far,
  *  redacted by the same rule as redacted(), less a fixed tail held back until the block ends, when its settled row
  *  replaces this one whole. A key whose head has streamed but not its tail cannot be found by any redactor, and a key
  *  ending inside the tail would show its head. So the tail is the most a held value takes in its widest form (6 times it,

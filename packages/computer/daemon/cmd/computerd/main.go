@@ -43,6 +43,13 @@
 //	                    answers one request byte with the exit code of `archil sync <mountpoint>`, coalesced, until the
 //	                    mount goes or the socket is taken away. Exits 0 once it serves (or one served already), 2 for
 //	                    other arguments, 3 with no archil mount there, 4 when it cannot listen. It holds no token.
+//	computerd archil-relay --gateway <IPv4 address> --mount-lane <port> --data-lane <port>
+//	                    as root, from the Archil helper's mount alone, when the provider names an egress gateway: listen
+//	                    on the computer's loopback (127.0.0.1:3129, where the helper redirects root's TCP to 8100 and
+//	                    32050) and leave a server there, in a session of its own, that carries each connection to the
+//	                    gateway's lane for its original port with a PROXY v2 header naming the original destination
+//	                    (internal/archilrelay). Exits 0 once it serves (or root's relay serves already), 2 for other
+//	                    arguments, 4 when it cannot listen. It holds no token.
 //
 // Each exec.run and process.start starts itself again as `computerd guard`, with no other caller (see execrun.Guard).
 package main
@@ -53,6 +60,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -60,6 +68,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/archilrelay"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/archilsync"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/daemon"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/egress"
@@ -73,7 +82,7 @@ var version = "0.0.0-dev"
 
 func main() {
 	logger := log.New(os.Stderr, "computerd: ", log.LstdFlags)
-	if len(os.Args) < 2 || (os.Args[1] != "init" && os.Args[1] != daemon.UserNamespaceInitArg && os.Args[1] != "probe" && os.Args[1] != "sync-serve" && os.Args[1] != syncServeRun && len(os.Args) != 2) {
+	if len(os.Args) < 2 || (os.Args[1] != "init" && os.Args[1] != daemon.UserNamespaceInitArg && os.Args[1] != "probe" && os.Args[1] != "sync-serve" && os.Args[1] != syncServeRun && os.Args[1] != "archil-relay" && os.Args[1] != archilRelayRun && len(os.Args) != 2) {
 		usage()
 	}
 	switch os.Args[1] {
@@ -81,6 +90,10 @@ func main() {
 		os.Exit(syncServe(logger, os.Args[2:]))
 	case syncServeRun:
 		os.Exit(syncServeRunning(logger, os.Args[2:]))
+	case "archil-relay":
+		os.Exit(archilRelay(logger, os.Args[2:]))
+	case archilRelayRun:
+		os.Exit(archilRelayRunning(logger, os.Args[2:]))
 	case "version":
 		fmt.Println(version)
 	case "stdio":
@@ -260,8 +273,86 @@ func syncServeRunning(logger *log.Logger, args []string) int {
 	return 0
 }
 
+// archilRelayRun is the server archil-relay leaves behind: itself again, given the listener as fd 3.
+const archilRelayRun = "archil-relay-run"
+
+// archilRelay listens on the computer's loopback, then starts the relay in a session of its own with the listener, and
+// returns once it is started: the helper's mount goes on to the archil client, and the relay stays.
+func archilRelay(logger *log.Logger, args []string) int {
+	config, err := archilrelay.ConfigOf(args)
+	if err != nil {
+		logger.Printf("%v", err)
+		return 2
+	}
+	l, err := archilrelay.Listen(archilrelay.Address)
+	switch {
+	case errors.Is(err, archilrelay.ErrServing):
+		logger.Printf("archil-relay: %v", err)
+		return 0
+	case err != nil:
+		logger.Printf("archil-relay: %v", err)
+		return 4
+	}
+	file, err := l.(*net.TCPListener).File()
+	_ = l.Close()
+	if err != nil {
+		logger.Printf("archil-relay: %v", err)
+		return 4
+	}
+	defer file.Close()
+	null, err := os.Open(os.DevNull)
+	if err != nil {
+		logger.Printf("archil-relay: %v", err)
+		return 4
+	}
+	defer null.Close()
+	// The relay's log: root's alone, appended to, so a mount that fails at the gateway can be read back afterwards
+	// without holding the helper's session pipes open.
+	relayLog, err := os.OpenFile(archilrelay.LogPath, os.O_WRONLY|os.O_APPEND|os.O_CREATE|syscall.O_NOFOLLOW, 0o600)
+	if err != nil {
+		logger.Printf("archil-relay: the relay's log %s: %v", archilrelay.LogPath, err)
+		return 4
+	}
+	defer relayLog.Close()
+	self, err := os.Executable()
+	if err != nil {
+		logger.Printf("archil-relay: %v", err)
+		return 4
+	}
+	process, err := os.StartProcess(self, append([]string{"computerd", archilRelayRun}, config.Args()...), &os.ProcAttr{
+		Env:   []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin"},
+		Files: []*os.File{null, null, relayLog, file},
+		Sys:   &syscall.SysProcAttr{Setsid: true},
+	})
+	if err != nil {
+		logger.Printf("archil-relay: starting the relay: %v", err)
+		return 4
+	}
+	_ = process.Release()
+	return 0
+}
+
+// archilRelayRunning is the relay: the listener on fd 3, until the computer ends.
+func archilRelayRunning(logger *log.Logger, args []string) int {
+	config, err := archilrelay.ConfigOf(args)
+	if err != nil {
+		logger.Printf("%v", err)
+		return 2
+	}
+	l, err := net.FileListener(os.NewFile(3, archilrelay.Address))
+	if err != nil {
+		logger.Printf("archil-relay: %v", err)
+		return 4
+	}
+	if err := archilrelay.Serve(l, config, archilrelay.OriginalDestination, logger); err != nil {
+		logger.Printf("archil-relay: %v", err)
+		return 1
+	}
+	return 0
+}
+
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: computerd init --deadline <RFC 3339 time> [--max-deadline <RFC 3339 time>] [--user <uid:gid>] [--own-network] [--egress <socket>] | stdio | probe [--sockets] [--connect <host:port>[/udp]]... | probe --diagnose | sync-serve --socket <path> --mountpoint <path> --mounts <path> --archil <path> --gid <gid> | version")
+	fmt.Fprintln(os.Stderr, "usage: computerd init --deadline <RFC 3339 time> [--max-deadline <RFC 3339 time>] [--user <uid:gid>] [--own-network] [--egress <socket>] | stdio | probe [--sockets] [--connect <host:port>[/udp]]... | probe --diagnose | sync-serve --socket <path> --mountpoint <path> --mounts <path> --archil <path> --gid <gid> | archil-relay --gateway <IPv4 address> --mount-lane <port> --data-lane <port> | version")
 	os.Exit(2)
 }
 

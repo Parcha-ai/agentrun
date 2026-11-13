@@ -11,7 +11,7 @@ type Story = StoryObj;
 const values = readTokens(tokensCss);
 
 const GROUP: Record<keyof typeof COLOR_TOKENS, string> = {
-  surface: "Surfaces", text: "Text", brand: "Brand", tone: "Tones: the bare name fills, -text is words", line: "Lines", run: "A run", workflow: "The workflow graph: who does a step's work",
+  surface: "Surfaces", text: "Text", brand: "Brand", tone: "Tones: the bare name fills, -text is words", line: "Lines", run: "A run", workflow: "The workflow graph: who does a step's work", chart: "A chart's series: the path a run took",
 };
 
 export const Colours: Story = {

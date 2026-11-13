@@ -47,6 +47,19 @@ test("the ledger keeps a provider's whole session entry by its id, read back as 
   assert.deepEqual((await other.list()).map((one) => [one.id, one.labels]), [["sess-a", { "agentrun.run": "run-9" }]], "another provider's rows are its own");
 });
 
+test("swap puts an entry in place of the one read only while the ledger still keeps that one", async (t) => {
+  const { store } = await storeOn(t);
+  const ledger = storeLedger(store.computerLedger, "orgo");
+  await ledger.put(A);
+  const read = await ledger.get("sess-a");
+  const next = { ...read, labels: { ...read.labels, "agentrun.epoch": "3" } };
+  assert.equal(await ledger.swap(read, next), true, "the entry as read: swapped");
+  assert.equal(await ledger.swap(read, { ...read, labels: { ...read.labels, "agentrun.epoch": "1" } }), false, "the same read again: the entry changed since");
+  assert.deepEqual(await ledger.get("sess-a"), next);
+  assert.equal(await ledger.swap({ ...next, id: "sess-none" }, { ...next, id: "sess-none" }), false, "no such entry: nothing put");
+  assert.equal(await ledger.get("sess-none"), undefined);
+});
+
 test("an entry read back is the caller's to change: the ledger's copy stays as put", async (t) => {
   const { store } = await storeOn(t);
   const phone = storeLedger(store.computerLedger, "phone-harness");

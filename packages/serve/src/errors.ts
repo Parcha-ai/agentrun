@@ -33,11 +33,11 @@ export const ERROR_STATUS = {
   internal: 500,
   unsupported_here: 501,
   unavailable: 503,
-  // This server's own, beside the contract's list (openapi.ts marks them): a tool key its launcher sets, a send to a
-  // webhook a 410 turned off, a write to a learning note that names no version it read, a remote MCP server that asks
-  // for a credential, does not speak MCP, or fails, a message to a run paused at its cap, which takes one once its cap is
-  // raised, a saved sign-in forgotten while a run holds its save lease (sign-ins-store.ts), and an answer to a browser
-  // hand-over that already has a different one (browser-person.ts).
+  // This server's own, beside the contract's list (openapi.ts marks them): a tool key or the Archil settings its launcher
+  // sets, a send to a webhook a 410 turned off, a write to a learning note that names no version it read, a remote MCP
+  // server that asks for a credential, does not speak MCP, or fails, a message to a run paused at its cap, which takes
+  // one once its cap is raised, a saved sign-in forgotten while a run holds its save lease (sign-ins-store.ts), and an
+  // answer to a browser hand-over that already has a different one (browser-person.ts).
   key_set_by_server: 409,
   budget_reached: 409,
   webhook_off: 409,

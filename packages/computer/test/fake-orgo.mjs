@@ -36,9 +36,10 @@ const json = (status, body, headers = {}) => new Response(body === undefined ? n
  *  - extra: ({ method, path, query, body, form, record }) => a Response for a route this fake has not (a Windows or macOS
  *    desktop's screenshot and input calls, fake-orgo-desktop.mjs), or undefined;
  *  - upload: (form) => what an upload with destPath does in the computer (fake-orgo-desktop.mjs puts the file there);
+ *  - power: (record, verb) => what a stop, suspend, start or resume does inside (a stop's cold start loses init);
  * fake.requests holds every request: { method, path, headers, body, form }; fake.computers each computer's record.
  */
-export function fakeOrgoApi({ create = "ok", creatingReads = 1, waking = 0, lingers = 0, bash = () => ({ exit_code: 0, output: "" }), hold, extra, upload, deleteRefused = () => undefined } = {}) {
+export function fakeOrgoApi({ create = "ok", creatingReads = 1, waking = 0, lingers = 0, bash = () => ({ exit_code: 0, output: "" }), hold, extra, upload, power, deleteRefused = () => undefined } = {}) {
 	const computers = new Map();
 	const requests = [];
 	let wakingLeft = waking;
@@ -112,6 +113,30 @@ export function fakeOrgoApi({ create = "ok", creatingReads = 1, waking = 0, ling
 			record.ends_at = new Date(from + body.hours * 3_600_000).toISOString();
 			return json(200, { success: true, ends_at: record.ends_at });
 		}
+		// Orgo's power calls, by its docs: stop (Linux and Windows) archives the disk and reads frozen; suspend (Linux)
+		// keeps memory too and reads suspended; start brings back a frozen or stopped one, resume a suspended one.
+		if ((match = /^\/computers\/([^/]+)\/(stop|suspend|start|resume)$/.exec(path)) && method === "POST") {
+			const record = computers.get(match[1]);
+			if (!visible(record) || record.deleted) return json(404, { error: "Computer not found", code: "computer_not_found" });
+			const verb = match[2];
+			if (verb === "stop") {
+				if (!["linux", "windows"].includes(record.os)) return json(400, { error: "Only Linux and Windows computers can be stopped.", code: "STOP_UNSUPPORTED" });
+				if (record.status !== "running" && record.status !== "frozen") return json(409, { error: `Computer is ${record.status}` });
+				record.status = "frozen";
+			} else if (verb === "suspend") {
+				if (record.os !== "linux") return json(400, { error: "Suspend is available for Linux computers.", code: "SUSPEND_UNSUPPORTED" });
+				if (record.status !== "running" && record.status !== "suspended") return json(409, { error: `Computer is ${record.status}` });
+				record.status = "suspended";
+			} else if (verb === "start") {
+				if (!["frozen", "stopped", "suspended"].includes(record.status)) return json(409, { error: `Computer is ${record.status}` });
+				record.status = "running";
+			} else {
+				if (record.status !== "suspended") return json(409, { error: `Computer is ${record.status}` });
+				record.status = "running";
+			}
+			power?.(record, verb);
+			return json(200, { success: true, status: record.status });
+		}
 		if ((match = /^\/computers\/([^/]+)\/bash$/.exec(path)) && method === "POST") {
 			const record = computers.get(match[1]);
 			if (!visible(record) || record.deleted) return json(404, { error: "Computer not found", code: "computer_not_found" });
@@ -165,7 +190,8 @@ export function markOf(argv) {
  *  - sockets: the path sockets of Orgo's desktop the lockdown script makes root's alone, as it prints them (default
  *    root's D-Bus buses, as live run 4 found them);
  *  - lockdown: { exitCode, output } the lockdown script answers instead (a socket it could not lock).
- * The status script answers what the computer holds: init running or not, its socket, its log's tail. The daemon holds
+ * The status script answers what the computer holds: init running or not, its socket, its log's tail. The stop-init
+ * script ends init (box.stopped counts them). A test sets box.init.version for a daemon of another version. The daemon holds
  * its programs to their own loopback when init was started with --own-network, and else shares Orgo's network.
  * channel.calls holds every call, { op, computer, argv | path, how }; channel.boxes each computer's state, its
  * probes' targets in box.probes.
@@ -209,6 +235,13 @@ export function fakeOrgoChannel({ install = 0, sha = "ok", x11 = true, box: boxP
 			if (mark?.kind === "orgo-labels-read") return box.labels === undefined ? done(1, `cat: ${mark.args[0]}: No such file or directory`) : done(0, box.labels);
 			if (mark?.kind === "orgo-ports") return done(0, rootPorts.map((port) => `${port}\n`).join(""));
 			if (mark?.kind === "orgo-lockdown") return lockdown ? done(lockdown.exitCode, lockdown.output) : done(0, sockets.map((path) => `locked ${path}\n`).join(""));
+			if (mark?.kind === "orgo-stop-init") {
+				// Init stopped by its process, its programs with it; the daemon's binary stays installed.
+				const up = box.init !== undefined;
+				box.init = undefined;
+				box.stopped = (box.stopped ?? 0) + 1;
+				return done(0, up ? "stopped 4242\n" : "no init running\n");
+			}
 			if (mark?.kind === "orgo-status") {
 				const up = box.init !== undefined;
 				return done(0, [`init ${up ? "running" : "not running"}`, `socket ${up ? "present" : "absent"}`, `log ${box.log ?? (up ? "computerd: init: listening" : "")}`].join("\n"));
@@ -274,7 +307,7 @@ function answer(box, { method, params }, patch) {
 		const text = netDevText(interfaces);
 		return result({ data: Buffer.from(text).toString("base64"), size: text.length, eof: true });
 	}
-	if (method === "hello") return result({ protocol: PROTOCOL_VERSION, version: VERSION, os: "linux", arch: "amd64", kind: reaches ? "desktop" : "linux", groups: reaches ? [...DESKTOP_GROUPS] : DESKTOP_GROUPS.slice(0, 3), fence: "netns", ...patch.hello });
+	if (method === "hello") return result({ protocol: PROTOCOL_VERSION, version: box.init.version ?? VERSION, os: "linux", arch: "amd64", kind: reaches ? "desktop" : "linux", groups: reaches ? [...DESKTOP_GROUPS] : DESKTOP_GROUPS.slice(0, 3), fence: "netns", ...patch.hello });
 	if (method === "ping") return result({});
 	if (method === "files.read" && params.path === "/proc/self/status") {
 		const fields = { Uid: `${uid}\t${uid}\t${uid}\t${uid}`, Gid: `${gid}\t${gid}\t${gid}\t${gid}`, Groups: "", NoNewPrivs: "1", CapInh: NO_CAPS, CapPrm: NO_CAPS, CapEff: NO_CAPS, CapBnd: NO_CAPS, CapAmb: NO_CAPS, Seccomp: "2", ...patch.status };

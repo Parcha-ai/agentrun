@@ -47,6 +47,9 @@ import { type Entry, isWorkspaceError, type Workspace, WorkspaceError, workspace
  *  default: a run learns when its agent's definition says `learning: true`. `off`: no run this server starts does. */
 export const LEARNING_MODES = ["on", "off"] as const;
 export type LearningMode = (typeof LEARNING_MODES)[number];
+/** Whether a revision's `learning` (its definition's: true, false or "notes") has its runs learn: true learns notes, skills
+ *  and workflows; "notes" learns notes and skills alone, never given a learned workflow nor asked to draft one. */
+export const learnsOf = (learning: unknown): boolean => learning === true || learning === "notes";
 export const LEARNING_ENV = "AGENTRUN_SERVE_LEARNING";
 /** The switch: `given`, else AGENTRUN_SERVE_LEARNING, else on. Any other value is an error, and the server does not start. */
 export function learningOf(env: NodeJS.ProcessEnv, given?: string): LearningMode {
@@ -79,7 +82,6 @@ export type LearningReason = (typeof LEARNING_REASONS)[number];
 /** Tokens by the platform's names, as a run's metrics and /v2/stats count them: `input` is the input neither read from
  *  nor written to the cache. */
 export type Tokens = { input: number; cache_read: number; cache_write: number; output: number };
-export const NO_TOKENS: Tokens = { input: 0, cache_read: 0, cache_write: 0, output: 0 };
 /** The variable that names the grader's model, as `--grade-model` does. */
 export const GRADE_MODEL_ENV = "AGENTRUN_SERVE_GRADE_MODEL";
 /** The model this server grades on, by name: `given` (`--grade-model`), else GRADE_MODEL_ENV, else its strong tier
@@ -215,8 +217,9 @@ export const LEARNING_LABEL = "learning";
  *  secrets, then shortened to its head and tail, shortMessage; absent in a proposal kept before the grader read them). */
 export const PROPOSAL = "learning-proposal.json";
 /** A run's proposal: its notes, skill and drafts, each draft's dry run by its workflow.json's path (learn/skills.ts
- *  draftDryRun: passed, or not run and why), and what was said in the run. */
-export type Proposal = { seed: string; notes: { file: string; text: string }[]; files?: { file: string; text: string }[]; dryRuns?: Record<string, DraftDryRun>; asked?: string[]; triggered?: Triggered[] };
+ *  draftDryRun: passed, or not run and why), the skill of each draft's name as the folder holds it at the seed
+ *  (`drafted`, its SKILL.md: shown to the grader beside the draft, never graded or merged), and what was said in the run. */
+export type Proposal = { seed: string; notes: { file: string; text: string }[]; files?: { file: string; text: string }[]; dryRuns?: Record<string, DraftDryRun>; drafted?: { file: string; text: string }[]; asked?: string[]; triggered?: Triggered[] };
 /** A message a trigger sent the run that its owner did not write (a webhook body, a Slack or GitHub event), by its
  *  source: never what the user said. */
 export type Triggered = { source: string; text: string };

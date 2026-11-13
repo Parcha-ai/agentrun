@@ -23,3 +23,6 @@ export * from "./core/tools.js";
 export * from "./core/usage.js";
 export * from "./core/web.js";
 export * from "./core/vault.js";
+// One CDP call over its own socket, kept open for a setting that lasts as long as it (Browser.setDownloadBehavior): what a
+// host holding a vendor's browser for the tool needs beside the driver.
+export { cdpCall, type CdpSession } from "./core/cdp-call.js";

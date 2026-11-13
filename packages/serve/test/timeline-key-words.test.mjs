@@ -80,7 +80,7 @@ test("pi: a gateway that refuses its key (401): the Timeline row says what the r
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve) => server.close(resolve)));
-  withEnv(t, { AGENT_MODEL_BASE_URL: `http://127.0.0.1:${server.address().port}/api`, AGENT_MODEL: "openai/gpt-6-sol", AGENT_MODEL_API_KEY: KEY, AGENT_MODEL_PRICE: "1,2,0.5" }, NAMES);
+  withEnv(t, { AGENT_MODEL_BASE_URL: `http://127.0.0.1:${server.address().port}/api`, AGENT_MODEL: "openai/gpt-6.1-sol", AGENT_MODEL_API_KEY: KEY, AGENT_MODEL_PRICE: "1,2,0.5" }, NAMES);
   const { api } = await serve(t, { faux: undefined });
   assert.equal((await api("POST", "/agents", agent("refused"))).status, 201);
   const started = await api("POST", "/agents/refused/runs", { input: { content: "Say hi." } });
@@ -100,7 +100,7 @@ test("pi: a gateway that refuses its key (401): the Timeline row says what the r
 // tier on OpenAI and the strong tier on Anthropic, a strong node's 401 must not read as OpenAI refusing OPENAI_API_KEY:
 // the row keeps the provider's own words (no loopback address) rather than name a key that may be the wrong one.
 test("a workflow whose tiers send different keys: a node's 401 keeps its own words on the Timeline, never another tier's key", { timeout: 60_000 }, async (t) => {
-  withEnv(t, { AGENT_MODEL: "openai/gpt-6-sol", AGENT_MODEL_STRONG: "anthropic/claude-sonnet-5-5", OPENAI_API_KEY: `not-a-secret-${"openai-key"}`, ANTHROPIC_API_KEY: `not-a-secret-${"anthropic-key"}` }, [...NAMES, "AGENT_MODEL_STRONG", "AGENT_MODEL_FAST"]);
+  withEnv(t, { AGENT_MODEL: "openai/gpt-6.1-sol", AGENT_MODEL_STRONG: "anthropic/claude-sonnet-5-5", OPENAI_API_KEY: `not-a-secret-${"openai-key"}`, ANTHROPIC_API_KEY: `not-a-secret-${"anthropic-key"}` }, [...NAMES, "AGENT_MODEL_STRONG", "AGENT_MODEL_FAST"]);
   const { api } = await serve(t);
   const flow = answerFlow("Fail with a refused key.");
   flow.root.steps[0].tier = "strong";
@@ -130,7 +130,7 @@ test("a refused key's plain words carry no loopback address either: a gateway th
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve) => server.close(resolve)));
-  withEnv(t, { AGENT_MODEL_BASE_URL: `http://127.0.0.1:${server.address().port}/api`, AGENT_MODEL: "openai/gpt-6-sol", AGENT_MODEL_API_KEY: KEY, AGENT_MODEL_PRICE: "1,2,0.5" }, NAMES);
+  withEnv(t, { AGENT_MODEL_BASE_URL: `http://127.0.0.1:${server.address().port}/api`, AGENT_MODEL: "openai/gpt-6.1-sol", AGENT_MODEL_API_KEY: KEY, AGENT_MODEL_PRICE: "1,2,0.5" }, NAMES);
   const { api } = await serve(t, { faux: undefined });
   assert.equal((await api("POST", "/agents", agent("rejected"))).status, 201);
   const started = await api("POST", "/agents/rejected/runs", { input: { content: "Say hi." } });
@@ -150,7 +150,7 @@ test("a refused key's plain words carry no loopback address either: a gateway th
 const ECHOED = `not-a-secret-${"echoed-key-0123"}`;
 
 test("a workflow node's 401 that echoes a held key: the Timeline and the run say [redacted], never the key", { timeout: 60_000 }, async (t) => {
-  withEnv(t, { AGENT_MODEL: "openai/gpt-6-sol", OPENAI_API_KEY: ECHOED }, NAMES);
+  withEnv(t, { AGENT_MODEL: "openai/gpt-6.1-sol", OPENAI_API_KEY: ECHOED }, NAMES);
   const { api } = await serve(t);
   assert.equal((await api("POST", "/agents", flowAgent("echoes", answerFlow("Fail echoing a held key.")))).status, 201);
   const started = await api("POST", "/agents/echoes/runs", { input: { question: "x" } });
@@ -164,7 +164,7 @@ test("a workflow node's 401 that echoes a held key: the Timeline and the run say
 });
 
 test("an agentic run's error that is no 401 but echoes a held key: the Timeline and the run's error say [redacted]", { timeout: 60_000 }, async (t) => {
-  withEnv(t, { AGENT_MODEL: "openai/gpt-6-sol", OPENAI_API_KEY: ECHOED }, NAMES);
+  withEnv(t, { AGENT_MODEL: "openai/gpt-6.1-sol", OPENAI_API_KEY: ECHOED }, NAMES);
   const { api } = await serve(t);
   assert.equal((await api("POST", "/agents", agent("echoes-too"))).status, 201);
   const started = await api("POST", "/agents/echoes-too/runs", { input: { content: "Fail echoing a held key." } });
@@ -185,7 +185,7 @@ const pieces = (value) => Array.from({ length: value.length - 7 }, (_, i) => val
 
 for (const [what, content] of [["across the summary's and the text's cut", "Fail across the cut."], ["base64-encoded", "Fail echoing an encoded key."], ["with a line break in its middle (its summary is its first line)", "Fail with a wrapped key."], ["on line after line, past what a row shows", "Fail repeating a held key."]]) {
   test(`an agentic run's error echoing a held key ${what}: no 8 characters of it on the Timeline or in the run's error`, { timeout: 60_000 }, async (t) => {
-    withEnv(t, { AGENT_MODEL: "openai/gpt-6-sol", OPENAI_API_KEY: CUT_KEY }, NAMES);
+    withEnv(t, { AGENT_MODEL: "openai/gpt-6.1-sol", OPENAI_API_KEY: CUT_KEY }, NAMES);
     const { api } = await serve(t);
     assert.equal((await api("POST", "/agents", agent("cut"))).status, 201);
     const started = await api("POST", "/agents/cut/runs", { input: { content } });

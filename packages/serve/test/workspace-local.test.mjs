@@ -1,6 +1,6 @@
 // LocalWorkspace (serve/src/workspace/local.ts): the conformance suite over a temporary folder, the folder layout
 // (paths.ts) pinned to where runs and learning keep their folders today, and what only a local folder has: modes,
-// pipes, a missing root, and durability on return, shown with pi-durable-disk's fsync-snapshot shim.
+// pipes, a missing root, and durability on return, shown with the fsync-snapshot shim.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";

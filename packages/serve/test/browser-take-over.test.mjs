@@ -222,7 +222,7 @@ test("cap: Take over holds the owner's 15 minutes of session time first, and wit
   const { ws } = await tight.viewer();
   ws.sendJson({ type: "take" });
   const refused = await tight.next(ws, "take_refused");
-  assert.match(refused?.message ?? "", /^spend_cap_reached: Not sent: this run has spent \$[\d.]+( and holds \$[\d.]+ for steps still running,)? of its \$0\.03 cap, and the next step, taking over the browser, could cost up to \$0\.03 \(browserbase's session time at \$0\.12 an hour for the 15 minutes it may last\)\. Raise the cap to at least \$0\.04 to continue\.$/);
+  assert.match(refused?.message ?? "", /^spend_cap_reached: Not sent: this run has spent (?:\$[\d.]+|less than a cent)( and holds \$[\d.]+ for steps still running,)? of its \$0\.03 cap, and the next step, taking over the browser, could cost up to \$0\.03 \(browserbase's session time at \$0\.12 an hour for the 15 minutes it may last\)\. Raise the cap to at least \$0\.04 to continue\.$/);
   ws.sendJson({ type: "text", text: "x" });
   assert.deepEqual(await tight.next(ws, "held"), { type: "held", reason: "not_taken" }, "no hold started");
   assert.ok(!summaries(await tight.rows()).includes("You took over the browser"));

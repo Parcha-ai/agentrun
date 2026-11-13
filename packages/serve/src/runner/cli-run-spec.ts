@@ -59,7 +59,7 @@ import { TOOL_PLANE_ENV } from "../tool-plane.js";
 import { resolveHarness } from "./adapters/index.js";
 import { entriesOf } from "./loop.js";
 import type { Claim } from "./loop-contract.js";
-import { bookedSpend, cliRunMetrics } from "./metrics.js";
+import { bookedSpend, cliModelWorked, cliRunMetrics } from "./metrics.js";
 import { journalEntries } from "./journal-reader.js";
 import { type SpecHolds, specBuilt } from "./spec-holds.js";
 import { heldRedactor, holdClaimed, runnerSecrets, secretRedactor } from "./redact.js";
@@ -265,14 +265,16 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // The run's MCP for this claim (mcp-run.ts mcpForClaim): its pin made at the first claim or read as written, its
   // credentials opened under the runner's seal key (deps.sealKey) into this claim's memory, one gateway for the claim.
   // Before the session opens: a refusal (a pin that cannot be made, a pinned meta tool) ends the run in its words.
-  const mcp = await mcpForClaim({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, work: () => runFolder(deps.data, runRow.agentId, claim.runId), launchInput: launch.input, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold: (values) => { for (const redact of [...(run.redact ? [heldRedactor(run.redact)] : []), cut]) redact.hold(values); } }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}) });
+  // A credential the claim opens mid-run (a GitHub App token, a per_run server's handed one) joins the run's redactors.
+  const hold = (values: string[]) => { for (const redact of [...(run.redact ? [heldRedactor(run.redact)] : []), cut]) redact.hold(values); };
+  const mcp = await mcpForClaim({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, work: () => runFolder(deps.data, runRow.agentId, claim.runId), launchInput: launch.input, hold, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}) });
   // The claim's MCP goes to the loop, which lets it go; a build that throws lets it go itself.
   holds.hold({ passed: mcp });
 
   // The run's mode is the server's: Mode 2 where its Archil settings are saved (archil-settings.ts), the run's folder then
   // on the claim's Archil disk (archil-claim.ts: its keys from the store's sealed rows, under the runner's seal key, in
   // this claim's memory only, dropped at the release); else Mode 1, the run's local folder.
-  const archilSettings = await loadArchilSettings(deps.store);
+  const archilSettings = await loadArchilSettings(deps.store, deps.env);
   const mode: 1 | 2 = archilSettings === undefined ? 1 : 2;
   const archil = archilSettings === undefined
     ? undefined
@@ -280,7 +282,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     // named for the run and this claim's epoch; revoke at the run's end (below). mountControl (a test's loopback control-plane
     // fake) is spread into the mount, so no test reaches the real control plane. TODO(k2 lazy mint): the mint moves into
     // computerForClaim (a mounting computer only), with the ttl the run's lifetime bound (not this fixed figure). As pi does.
-    : await archilClaim({ settings: archilSettings, keys: deps.store.sealedKeys, sealKey: deps.sealKey, signal: run.signal ?? new AbortController().signal, env: deps.env, mount: { runId: claim.runId, epoch: claim.epoch, ttlMs: MOUNT_TTL_MS, ...(deps.mountControl ?? {}) }, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) });
+    // The disk is the run's (run-disk.ts): its launch record's, else its agent's, made on its first run that needs one.
+    : await archilClaim({ settings: archilSettings, keys: deps.store.sealedKeys, sealKey: deps.sealKey, signal: run.signal ?? new AbortController().signal, env: deps.env, mount: { runId: claim.runId, epoch: claim.epoch, ttlMs: MOUNT_TTL_MS, ...(deps.mountControl ?? {}) }, run: { agentId: runRow.agentId, ...(launch.archilDisk ? { launch: launch.archilDisk } : {}), store: deps.store }, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) });
   // Each resource is held the moment it exists (spec-holds.ts): a throw after it lets it go. The claim's Archil keys go
   // from memory last, once nothing more reads the disk.
   holds.hold({ archil, keys: archil });
@@ -296,13 +299,14 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // The run's computer, from the one shared claim-time function (the pi spec takes the same): none for a runner place.
   // It throws computer_unavailable (nothing made) when the computer cannot be had: the run fails in its words.
   const computer = await deps.computerForClaim(
-    { runId: claim.runId, epoch: claim.epoch, revisionId: runRow.revisionId, place: launch.place, ...((launch as { computer?: ComputerSetting }).computer !== undefined ? { computer: (launch as { computer?: ComputerSetting }).computer } : {}) },
+    { runId: claim.runId, epoch: claim.epoch, agentId: runRow.agentId, revisionId: runRow.revisionId, place: launch.place, ...((launch as { computer?: ComputerSetting }).computer !== undefined ? { computer: (launch as { computer?: ComputerSetting }).computer } : {}) },
     deps.store,
     // revokeMount removes the run's Archil mount credential at the computer's release (and if a start fails after a mint); the
-    // run's end revokes it too, so it goes on every outcome even with no computer. Idempotent. As the pi spec does.
+    // run's end revokes it too, so it goes on every outcome even with no computer. Idempotent. As the pi spec does, with
+    // what became of the agent's own computer said on the run's timeline.
     // A browser computer is driven by the browser tool, which runs on pi's native route alone: a CLI's run of an agent
     // whose computer is a browser is refused in words at its claim, before anything is made.
-    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, refuseKind: cliRefusesKind, ...(archil ? { revokeMount: () => archil.revoke() } : {}), ...(run.phase ? { onImageWait: (making, image) => run.phase?.(imageWaitWords(making, image)), onConnected: (said) => run.phase?.(computerReadyWords(said)) } : {}) },
+    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, refuseKind: cliRefusesKind, ...(archil ? { revokeMount: () => archil.revoke() } : {}), ...(run.phase ? { onImageWait: (making, image) => run.phase?.(imageWaitWords(making, image)), onConnected: (said) => run.phase?.(computerReadyWords(said)), onComputerNote: (words) => run.phase?.(words) } : {}) },
   );
   holds.hold({ computer });
 
@@ -358,6 +362,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
       own: Object.keys(revisionRow.skills ?? {}),
       shown: async () => secretsShown(runnerSecrets(deps.env, await storeSecrets(deps.store, deps.sealKey, deps.data)), { local: true }),
       log,
+      ...(start.notesOnly ? { workflows: false as const } : {}),
     })
     : undefined;
   const { system: instructions, native } = await systemOf(laid, [...Object.keys(body.skills ?? {}), ...(seedLaid?.skills ?? [])], ws.workspace, check, { onDemand: readsFiles(granted) });
@@ -572,6 +577,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     // The web tools' install lifecycle, run by the adapter loop, as the pi spec's (they register none today).
     ...(life ? { lifecycle: life } : {}),
     agentId: runRow.agentId,
+    // The run's desktop or phone and the person's hold on it, as the claim made them (as the pi spec gives them).
+    ...(computer.held ? { computer: computer.held } : {}),
     workRoot: root,
     // Where the CLI works (its working directory, the run's folder to its file tools): what its absolute paths are read
     // against on the run's rows.
@@ -587,14 +594,17 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
       const all = (await journalEntries(deps.journal(claim), context)) as never;
       const booked = bookedSpend(all, "model");
       const metrics = cliRunMetrics(entries as never, booked, { ...(thinking ? { effort: thinking } : {}), model: `${chosen.model.provider}/${chosen.model.modelId}` });
-      const model = booked.usd;
+      // A run whose model answered or called a tool with no request booked (its requests went past its model proxy) spent
+      // what no booking read: unknown, never the $0 an empty booking sums to.
+      const model = booked.requests === 0 && cliModelWorked(entries as never) ? null : booked.usd;
       const decisions = bookedSpend(all, "decisions").usd;
       const costUsd = model === null || decisions === null ? null : model + decisions;
       // Its paid tool calls (a Parallel extract or search, a monid call), booked on the run's one ledger in their own
       // session, are the run's cost too, as the pi spec's.
       const paid = run.ledger?.paid ? run.ledger.paid.spentUsd() : 0;
       const total = costUsd === null || paid === null ? null : costUsd + paid;
-      return { ...(total !== null ? { costUsd: total } : {}), metrics };
+      // An unknown cost is written as null, never left out: a follow-up's end clears the cost an earlier end stored.
+      return { costUsd: total, metrics };
     },
     // The run's Archil mount credential is revoked at its end on every outcome, even with no computer (idempotent with
     // the computer's release). A run that minted none revokes nothing.

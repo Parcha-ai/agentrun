@@ -13,6 +13,8 @@ export const BROWSERBASE = defineProvider({
 	mounts: [],
 	// Browserbase's own network, open: it cannot be closed or narrowed.
 	network: ["open"],
+	// A server behind a gateway that fronts Browserbase's API or its sessions' sockets names it here.
+	hostEnv: ["BROWSERBASE_BASE_URL", "BROWSERBASE_CONNECT_BASE_URL"],
 	capabilities: [{ kind: "browser", groups: ["cdp", "stream"] }],
 	defaultImage: { browser: BROWSER_IMAGE },
 	load: () => import("../browserbase.js"),

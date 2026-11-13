@@ -37,10 +37,11 @@ export function boxAvailability(registry: readonly BoxOffer[]): BoxOffer[] {
 
 /** The place a new agentic definition that names none is saved with: the Docker box where this server has it; else none, so the agent runs on the runner as it did before, with
  *  `reason` saying why, in docker's own words. A workflow is never given one. */
-export function newAgentPlace(registry: readonly BoxOffer[]): { place: Place } | { reason: string } {
+export function newAgentPlace(registry: readonly BoxOffer[]): { place: Place } | { reason: string; why: string } {
   const docker = boxAvailability(registry).find((box) => box.id === "docker");
   if (docker?.available) return { place: { mode: "sandbox", box: "docker" } };
-  return { reason: `new agents run on the runner, because the docker box is unavailable here: ${docker?.reason ?? "it is not set up"}` };
+  const why = docker?.reason ?? "it is not set up";
+  return { reason: `new agents run on the runner, because the docker box is unavailable here: ${why}`, why };
 }
 
 /** The place a revision that names none resolves to, at its create and at each run alike: this server's default place
