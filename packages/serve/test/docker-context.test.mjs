@@ -41,7 +41,7 @@ test("the image's build context holds the workspace and the console's sources, a
 test("every stage builds on one digest-pinned debian trixie base, its Node the verified 24.22.3 alone, and the runtime has git 2.40 or newer", async () => {
   const dockerfile = await readFile(join(ROOT, "packages/serve/docker/Dockerfile"), "utf8");
   const stages = [...dockerfile.matchAll(/^FROM (\S+)(?: AS (\S+))?$/gm)].map(([, image, name]) => ({ image, name }));
-  assert.deepEqual(stages.map((stage) => stage.name), ["node", "build", "adb", undefined], "a node stage, a build stage, the adb stage and a runtime stage");
+  assert.deepEqual(stages.map((stage) => stage.name), ["node", "android", "build", "adb", undefined], "a node stage, the Android SDK's stage, a build stage, the adb stage and a runtime stage");
   assert.match(stages[0].image, /^debian:trixie-slim@sha256:[0-9a-f]{64}$/, "plain Debian, pinned by digest: no other Node in any layer");
   for (const stage of stages) assert.equal(stage.image, stages[0].image, "one base for every stage");
   // The node stage installs the release through install-node.sh, which verifies it against the pinned signer.
@@ -77,6 +77,25 @@ test("the amd64 image carries adb from Android platform-tools r35.0.2, its zip p
   const runtime = dockerfile.slice(dockerfile.lastIndexOf("\nFROM "));
   assert.match(runtime, /^COPY --from=adb \/opt\/adb\/ \/usr\/local\/bin\/$/m, "the runtime has it on PATH");
   assert.match(runtime, /^RUN \[ "\$\(dpkg --print-architecture\)" != amd64 \] \|\| \[ "\$\(command -v adb\)" = \/usr\/local\/bin\/adb \]$/m, "an amd64 image without it fails the build");
+});
+
+test("the build stage builds phoned after the daemon, with a digest-pinned JDK 17 and the Android SDK's files from zips pinned by sha256", async () => {
+  const dockerfile = await readFile(join(ROOT, "packages/serve/docker/Dockerfile"), "utf8");
+  const stage = /^FROM \S+ AS android\n([\s\S]*?)\n\nFROM /m.exec(dockerfile)?.[1] ?? "";
+  assert.match(stage, /^COPY --from=eclipse-temurin:17\.\S+@sha256:[0-9a-f]{64} \/opt\/java\/openjdk \/opt\/jdk-17$/m, "Temurin 17, pinned by digest");
+  assert.match(stage, /^ADD --checksum=sha256:[0-9a-f]{64} https:\/\/dl\.google\.com\/android\/repository\/platform-35_r02\.zip \/tmp\/platform\.zip$/m, "platforms;android-35, from Google, by sha256");
+  assert.match(stage, /^ADD --checksum=sha256:[0-9a-f]{64} https:\/\/dl\.google\.com\/android\/repository\/build-tools_r35_linux\.zip \/tmp\/build-tools\.zip$/m, "build-tools;35.0.0, from Google, by sha256");
+  const build = /^FROM \S+ AS build\n([\s\S]*?)\n\nFROM /m.exec(dockerfile)?.[1] ?? "";
+  assert.match(build, /^COPY --from=android \/opt\/jdk-17 \/opt\/jdk-17$/m);
+  assert.match(build, /^COPY --from=android \/opt\/android-sdk \/opt\/android-sdk$/m);
+  const at = (text) => build.indexOf(text);
+  const phoned = at("JAVA_HOME=/opt/jdk-17 ANDROID_HOME=/opt/android-sdk npm run build:phoned -w @parcha/agentrun-computer");
+  assert.ok(phoned > at("npm run build:daemon"), "phoned builds after the daemon");
+  assert.ok(at("npm run check:phoned -w @parcha/agentrun-computer") > phoned, "the build fails without phoned's dex jar, stamped with the package version");
+  // CI's phoned job lays out the same SDK files from the same zips: one pair of pins.
+  const action = await readFile(join(ROOT, ".github/actions/android-toolchain/action.yml"), "utf8");
+  const pins = (text) => [...new Set(text.match(/\b[0-9a-f]{64}\b/g))].sort();
+  assert.deepEqual(pins(action), pins(stage.split("\n").filter((line) => line.startsWith("ADD ")).join("\n")), "the action's zips are the Dockerfile's");
 });
 
 test("the build stage builds the console before the server, so the server's dist carries it, and keeps none of its sources", async () => {
