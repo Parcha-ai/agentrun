@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # CI: starts Computerd.app the way its LaunchAgent does (launchd, in the runner's Aqua session), headless, checks that
 # its socket refuses a client not signed as Computerd, then runs the protocol's conformance cases (ui-conformance.mjs)
-# against it through the app's own computerd command, (a missing build fails the run).
+# against it through the app's own computerd command; a missing build fails the run.
 #
 #   scripts/smoke.sh PATH/TO/Computerd.app
 set -euo pipefail
@@ -59,7 +59,7 @@ peer=0
 reply="$(printf '{"jsonrpc":"2.0","id":1,"method":"ping"}\n' | nc -U -w 5 "$home/computerd.sock" 2>&1 || true)"
 if [[ "$reply" == *"refused this client"* ]]; then echo "PASS the socket refuses a client not signed as Computerd"; else echo "FAIL the socket answered an unsigned client: $reply"; peer=1; fi
 
-# The protocol's conformance cases, on the same running app, (a missing build fails the run).
+# The protocol's conformance cases, on the same running app (a missing build fails the run).
 conformance=0
 if [[ -f "$here/../../dist/conformance/cli.js" ]]; then
 	node "$here/ui-conformance.mjs" "$app/Contents/Helpers/computerd" "$home" || conformance=$?
