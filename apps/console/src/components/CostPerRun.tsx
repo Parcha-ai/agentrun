@@ -145,7 +145,7 @@ export function CostChart({ data, on, width: fixed }: { data: LearningCost; on: 
             <text x={M.left - 8} y={M.top + H + 18} textAnchor="end" className="caps fill-muted-foreground text-label">Run</text>
             {/* The runs: faint dots, a run past the top drawn on it. */}
             {points.map((p, i) => (
-              <circle key={p.run_id} cx={x(p.n)} cy={y(p.total_usd)} r={i === active ? 0 : 3} className={cn(pathOf(p.path).fill)} fillOpacity={0.5} />
+              <circle key={p.run_id} cx={x(p.n)} cy={y(p.total_usd)} r={i === active ? 0 : 3} className={cn(pathOf(p.path).fill)} fillOpacity={0.65} />
             ))}
             {s.before && (
               <g>
