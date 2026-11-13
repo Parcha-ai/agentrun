@@ -8,6 +8,7 @@ import { ApiError, invalid } from "./errors.js";
 import { appJwt, GITHUB_FIELDS, GITHUB_SCOPE, GITHUB_WEB, githubCall, githubTargetOf, mintInstallationToken } from "./github.js";
 import type { SealedSettingsOverStore } from "./sealed-settings-store.js";
 import { registerSecretWrite } from "./secret-writes.js";
+import type { Held } from "./template-github-permissions.js";
 import { isObject, type Json } from "./validate.js";
 
 // Connecting a GitHub App seals its key and webhook secret (the webhook secret signs every GitHub delivery this server
@@ -16,8 +17,8 @@ registerSecretWrite("connectGitHub", () => true);
 registerSecretWrite("disconnectGitHub", () => true);
 
 /** What every GitHub App Connect GitHub makes asks of the repositories it is installed on (its manifest's
- *  default_permissions): the least its templates need. A tool that needs more is warned of when a template granting it is
- *  applied (template-github-permissions.ts), never quietly refused at its first call. */
+ *  default_permissions): the least its templates need. Applying a template warns from each installation's real permissions
+ *  (installationPermissions, template-github-permissions.ts), never from this. */
 export const APP_PERMISSIONS = { pull_requests: "write", contents: "read", metadata: "read", issues: "read" } as const satisfies Record<string, "read" | "write">;
 
 /** How long a Connect's state is good for, and the most kept at once. */
@@ -547,6 +548,35 @@ export class GitHubConnect {
     } catch (error) {
       return { unusable: `GitHub did not give a token: ${(error as Error).message}.` };
     }
+  }
+
+  /** What each installation of the App holds now, as GitHub says (GET /app/installations/{id} with the App's JWT: its
+   *  `permissions` map, `admin` read as `write`, which it includes). Never a guess: no App, no installation, GitHub out of
+   *  reach, an answer that is not a 200 or has no map, or a level it does not know is `unreadable`, with why. */
+  async installationPermissions(signal?: AbortSignal): Promise<Held> {
+    const credentials = this.connection.credentials();
+    const view = this.connection.view();
+    if (!credentials || !view) return { unreadable: "this server has no GitHub App" };
+    if (!view.installations.length) return { unreadable: "the GitHub App is not installed on any account yet" };
+    const installations: { account: string; permissions: Record<string, "read" | "write"> }[] = [];
+    for (const installation of view.installations) {
+      let answer: Awaited<ReturnType<typeof githubCall>>;
+      try {
+        const jwt = appJwt(credentials.appId, credentials.pem, this.options.now?.() ?? Date.now());
+        answer = await githubCall(this.options.api, `/app/installations/${installation.id}`, { jwt, ...(signal ? { signal } : {}) });
+      } catch (error) {
+        return { unreadable: (error as Error).message };
+      }
+      const map = isObject(answer.json) ? answer.json.permissions : undefined;
+      if (answer.status !== 200 || !isObject(map)) return { unreadable: `GitHub gave no permissions for the installation on ${installation.account} (HTTP ${answer.status})` };
+      const permissions: Record<string, "read" | "write"> = {};
+      for (const [name, level] of Object.entries(map)) {
+        if (level !== "read" && level !== "write" && level !== "admin") return { unreadable: `GitHub gave a level this server does not know for ${name} on ${installation.account}` };
+        permissions[name] = level === "read" ? "read" : "write";
+      }
+      installations.push({ account: installation.account, permissions });
+    }
+    return { installations };
   }
 
   /** The first repository installation `id` covers, if any: asked with a metadata-read token that never leaves this
