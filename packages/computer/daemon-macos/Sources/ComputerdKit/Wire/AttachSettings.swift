@@ -144,7 +144,7 @@ public struct AttachSettings: Sendable, Codable, Equatable {
 }
 
 extension Policy {
-	/// The policy file, or the default (any app) when there is none.
+	/// The policy file, or the default (any app, and nothing granted to the paired server) when there is none.
 	public static func load(_ path: String = Paths.policy) throws -> Policy {
 		guard let data = FileManager.default.contents(atPath: path) else { return Policy() }
 		do {
