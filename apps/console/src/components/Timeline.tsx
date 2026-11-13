@@ -4,12 +4,12 @@ import { BROWSER_TOOL_NAMES } from "@pi-browser/contract";
 import { nameOf } from "@timeline/labels";
 import { Chip } from "@/components/ui/chip";
 import { Spinner } from "@/components/ui/spinner";
-import { clock } from "@/lib/format";
+import { clock, markdown, openLinkedFile } from "@/lib/format";
 import { mcpToolLabel } from "@/lib/mcp";
 import { rowDetail, rowFailed, rowPaused, rowRefused, type Step, steps } from "@/lib/timeline";
 import { kindWithModel, ranOnWords } from "@/lib/nodeModel";
 import { cn } from "@/lib/utils";
-import type { LearnedNode, TimelineRow } from "@/lib/v2";
+import type { LearnedNode, RunFile, TimelineRow } from "@/lib/v2";
 import { NO_ANSWER } from "@/lib/viewing";
 
 const ICON: Record<string, typeof Brain> = {
@@ -108,7 +108,7 @@ const WAITING_CHIP: Record<string, string> = { budget: "Paused at cap" };
 
 /** One step: a failed one reads as failed. A server row marked `paused` (the run paused at its cap) shows a pause icon,
  *  muted like any server row. */
-function Row({ step, last, waitingChip }: { step: Step; last: boolean; waitingChip?: string }) {
+function Row({ step, last, waitingChip, files, onOpen }: { step: Step; last: boolean; waitingChip?: string; files?: RunFile[]; onOpen?: (file: RunFile) => void }) {
   // The row a step shows, and so its label: the one place a row is read for display.
   const row = step.row;
   const [open, setOpen] = useState(false);
@@ -153,7 +153,9 @@ function Row({ step, last, waitingChip }: { step: Step; last: boolean; waitingCh
         </button>
         {/* A tool step opens to the tool's own id too: its label is a word, and the id is what a log or the API says. */}
         {open && detail && row.tool_name && <p className="mt-3 font-mono text-small text-muted-foreground">{row.tool_name}</p>}
-        {open && detail && <pre className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap break-words border bg-card p-3 font-mono text-small leading-[1.7]">{detail}</pre>}
+        {/* An answer opens as the Report reads it (the same markdown(): links as links, fences as code blocks, no raw HTML); a link naming one of the run's files opens that file, as in the Report. */}
+        {open && detail && row.kind === "final_answer" && <article className="report mt-3 max-h-80 max-w-none overflow-auto border bg-card p-3" onClick={openLinkedFile((path) => { const f = files?.find((x) => x.path === path); if (f) onOpen?.(f); })} dangerouslySetInnerHTML={{ __html: markdown(detail, onOpen && files ? { paths: files.map((f) => f.path) } : undefined) }} />}
+        {open && detail && row.kind !== "final_answer" && <pre className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap break-words border bg-card p-3 font-mono text-small leading-[1.7]">{detail}</pre>}
         {row.learned_nodes?.length ? <LearnedNodes nodes={row.learned_nodes} /> : null}
       </div>
     </li>
@@ -194,7 +196,9 @@ function LearnedNodes({ nodes }: { nodes: LearnedNode[] }) {
 /** The run's live timeline as a step list (lib/timeline's `steps`: each tool once, from either of the server's shapes;
  *  a question once; repeated failures once): newest last, older steps folded behind "N earlier steps". `asking`: the
  *  waiting row of the question the page shows above while the run waits on it; its step points there. */
-export function Timeline({ rows, live, fold = 6, asking, waitingOn }: { rows: TimelineRow[]; live: boolean; fold?: number; asking?: string;
+export function Timeline({ rows, live, fold = 6, asking, waitingOn, files, onOpen }: { rows: TimelineRow[]; live: boolean; fold?: number; asking?: string;
+  /** The run's files and the handler that opens one: a link in an opened Answer that names a file opens it. */
+  files?: RunFile[]; onOpen?: (file: RunFile) => void;
   /** What the run waits on now (its `pending.kind`): the newest waiting row's chip says so. */
   waitingOn?: string }) {
   // The cap's own waiting row: the newest after the server's newest pause row (`paused`), so while the pages still arrive
@@ -213,7 +217,7 @@ export function Timeline({ rows, live, fold = 6, asking, waitingOn }: { rows: Ti
           <ChevronRight className="size-3" aria-hidden /> {hidden} earlier steps
         </button>
       )}
-      <ol>{shown.map((step, i) => <Row key={step.row.id} step={step} last={i === shown.length - 1 && !live} waitingChip={step.row.id === current && waitingOn ? WAITING_CHIP[waitingOn] : undefined} />)}</ol>
+      <ol>{shown.map((step, i) => <Row key={step.row.id} step={step} last={i === shown.length - 1 && !live} waitingChip={step.row.id === current && waitingOn ? WAITING_CHIP[waitingOn] : undefined} files={files} onOpen={onOpen} />)}</ol>
       {live && <Working title="Working" note="Steps appear as the agent takes them." spin />}
     </div>
   );
