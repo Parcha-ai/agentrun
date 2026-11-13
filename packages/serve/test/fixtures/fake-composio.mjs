@@ -8,7 +8,7 @@
 import { createServer } from "node:http";
 import { startFakeMcp } from "./fake-mcp-server.mjs";
 
-export async function startFakeComposio({ apiKey = "ck_test_key", toolkits, authConfigs = {}, active = [], fail } = {}) {
+export async function startFakeComposio({ apiKey = "fake-test-key", toolkits, authConfigs = {}, active = [], fail } = {}) {
   const calls = [];
   const mcpKeys = [];
   const id = "srv_fake1";

@@ -101,12 +101,12 @@ test("the API token never writes it: both routes are 403 to a token", async (t) 
 
 test("a Composio refusal answers in words naming the step, never the key", async (t) => {
   const wrong = await setup(t);
-  const bad = await wrong.api("POST", "/settings/mcp-servers/composio/tools", { api_key: "ck_wrong_key_value", toolkit: "github" });
+  const bad = await wrong.api("POST", "/settings/mcp-servers/composio/tools", { api_key: "not-a-secret", toolkit: "github" });
   assert.equal(bad.status, 422, JSON.stringify(bad.body));
   assert.match(bad.body.error.message, /Composio/);
   assert.match(bad.body.error.message, /API key/i);
-  assert.ok(!JSON.stringify(bad.body).includes("ck_wrong_key_value"));
-  assert.ok(!wrong.log.text().includes("ck_wrong_key_value"));
+  assert.ok(!JSON.stringify(bad.body).includes("not-a-secret"));
+  assert.ok(!wrong.log.text().includes("not-a-secret"));
 
   const failing = await setup(t, { fail: { path: "/mcp/servers/custom", status: 400 } });
   const res = await failing.api("PUT", "/settings/mcp-servers/gh/composio", { api_key: failing.composio.apiKey, toolkit: "github", tools: ["GITHUB_STAR_REPO"] });
