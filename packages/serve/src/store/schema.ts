@@ -1,10 +1,11 @@
-// The store's one schema, version 7 (design 2.1). Nothing migrates into it: the rewrite replaces the old stores, and a store
+// The store's one schema, version 8 (design 2.1). Nothing migrates into it: the rewrite replaces the old stores, and a store
 // an older build made is refused as a version this build does not know. The server sets it up once at its start (a
 // store_meta row holds the version); a runner refuses a version it does not know. Version 2 adds the computer ledger;
 // version 3 numbers each save of a sign-in (sign_ins.save); version 4 stamps an MCP token's end (mcp_servers.token_until);
 // version 5 maps an externally owned agent (agents.external_ref, revisions.external_version); version 6 tells a person's
-// stop from a cancel (runs.outcome 'stopped' or 'cancelled'); version 7 pairs a person's own computer (paired_computers,
-// pairing_codes).
+// stop from a cancel (runs.outcome 'stopped' or 'cancelled'); version 7 keeps a run's learning by round
+// (learning_proposals.round: a follow-up to a run that ended looks back again, a round of its own); version 8 pairs a
+// person's own computer (paired_computers, pairing_codes).
 // Conventions: every time is INTEGER epoch milliseconds; JSON is TEXT checked by json_valid; money is REAL US dollars;
 // sealed columns hold ciphertext only (sealed with the server's key outside the store), so the store never sees a secret
 // in the clear. Foreign keys are on (the connection's pragma).
@@ -16,7 +17,7 @@
 // journal tables, keyed by run_id (store/journal): one schema for every run's journal, so a query joins runs and their
 // journals.
 
-export const SCHEMA_VERSION = 7;
+export const SCHEMA_VERSION = 8;
 
 /** One answer per approval of a run: a second approve or deny command naming the same approval is refused
  *  (StoreConstraint), so the first answer a person gives wins from the moment it is written, before the runner takes it
@@ -429,15 +430,18 @@ export const STORE_DDL: readonly string[] = [
 
   // Learning on the runner: what a run's end-of-run turn kept (the turn it asked and answered, and the proposal checked from
   // it), written in the same commit as the run's end, beside the learning run that grades and merges it (learning_run_id,
-  // none for a learning dropped before it was proposed). Read by the learning routes (the pre-merge view), by the
-  // learning run, and by the reader of a run's learning end (store-reads/learning.ts).
+  // none for a learning dropped before it was proposed). One row a round: a run's first end is round 1, and each end
+  // after a follow-up opened it again is the next. Read by the learning routes (the pre-merge view), by the learning run,
+  // and by the reader of a run's learning end (store-reads/learning.ts), which reads the newest round.
   `CREATE TABLE IF NOT EXISTS learning_proposals (
-    run_id TEXT PRIMARY KEY REFERENCES runs (id),
+    run_id TEXT NOT NULL REFERENCES runs (id),
+    round INTEGER NOT NULL CHECK (round >= 1),
     agent_id TEXT NOT NULL REFERENCES agents (id),
     ${json("turn")},
     ${json("proposal")},
     learning_run_id TEXT,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (run_id, round)
   ) STRICT`,
   `CREATE INDEX IF NOT EXISTS learning_proposals_by_agent ON learning_proposals (agent_id, created_at DESC)`,
 ];

@@ -1,5 +1,5 @@
--- The store's schema on Postgres, version 5: a person's own computer paired with this server (spec/computer/attach.md),
--- and the codes that pair one, as store/schema.ts keeps them on SQLite. Applied once, after 0004, inside the transaction
+-- The store's schema on Postgres, version 8: a person's own computer paired with this server (spec/computer/attach.md),
+-- and the codes that pair one, as store/schema.ts keeps them on SQLite. Applied once, after 0005, inside the transaction
 -- migrate.ts opens. Never edit this file once applied: a change is a new file.
 --
 -- paired_computers: the token's SHA-256 alone is kept (hex); revoked_at marks a removed computer, whose token dials no more.
