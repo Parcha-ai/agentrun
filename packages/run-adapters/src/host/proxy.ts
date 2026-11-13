@@ -68,8 +68,10 @@ export interface ProviderPolicy {
    *  which may reject the same way. */
   apply(body: unknown, route: ProxyRoute, context?: ProxyRequestContext): Record<string, unknown> | Promise<Record<string, unknown>>;
   /** The usage a completed response reports, if it reports one: from its whole text, or, for a long one, its first and
-   *  last 64 KiB (a provider may report input tokens as a stream starts and output tokens as it ends). */
-  usageOf(text: string): ProxyUsage | undefined;
+   *  last 64 KiB (a provider may report input tokens as a stream starts and output tokens as it ends). `body`: the body
+   *  its request was sent with (`apply`'s), so what the request offered (a hosted tool it did not offer never ran) is
+   *  read from the request, never guessed from the answer's words. */
+  usageOf(text: string, body?: Record<string, unknown>): ProxyUsage | undefined;
   /** Whether the provider stopped a completed answer on its content filter (a refusal), read from its text as `usageOf`
    *  reads it, never by matching its words, and from `lineStarts`, the start of each of its last whole lines (16 KiB of
    *  each, for a line longer than the text kept). Absent: the policy cannot tell, and no answer is read as stopped. */
@@ -101,6 +103,11 @@ export interface ProviderPolicy {
    *  below 0 is no bound (unmeasured). Undefined: the body has no input bound the policy can state (a hosted tool that
    *  reads pages into the input), so `inputTokensMax` is undefined, never 0 or the body's bytes alone. Absent: none. */
   serverInputOverhead?(body: Record<string, unknown>): number | undefined;
+  /** What the body `apply` returned may charge beside its tokens at most, in USD: a hosted tool's per-use fees, at the
+   *  most uses the body allows it. Held with its tokens (ProxyRequest.feeUsd), so a cap reserves the fees before the
+   *  request leaves, not only once its answer reports them. A figure that is not finite (the body allows its tool any
+   *  number of uses), or a throw: the request's worst case is unknown, as an unmeasured input's is. Absent: none. */
+  feeMaxUsd?(body: Record<string, unknown>): number;
   /** The output tokens the body `apply` returned asks for at most (its own limit, as `apply` shaped it). Absent or
    *  undefined: the body does not say. */
   outputAsked?(body: Record<string, unknown>): number | undefined;
@@ -488,6 +495,8 @@ export interface ProxyRequest {
   outputTokensAsked?: number;
   /** The least output it may be limited to and still answer (the policy's `outputLeast`). */
   outputTokensLeast?: number;
+  /** What it may charge beside its tokens at most (the policy's `feeMaxUsd`), in USD: held with them. */
+  feeUsd?: number;
   /** A side call, never its turn's own: on another model than the session's (a client's small-model call: a title, a
    *  summary), or the host's own request beside the harness's (`host`). */
   side?: true;
@@ -1018,6 +1027,17 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       say(`model proxy (${policy.id}): the policy could not read the body's output; its worst case is unmeasured`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
       inputTokensMax = undefined;
     }
+    // What it may charge beside its tokens (a hosted tool's per-use fees), held with them. One the policy cannot bound
+    // leaves its worst case unknown, as an unmeasured input does.
+    let feeUsd = 0;
+    try {
+      const fee = policy.feeMaxUsd ? policy.feeMaxUsd(body) : 0;
+      if (figure(fee) === undefined) throw new Error(`no bound on its fees (${String(fee)})`);
+      feeUsd = fee;
+    } catch (error) {
+      say(`model proxy (${policy.id}): the request's fees have no bound; its worst case is unmeasured`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
+      inputTokensMax = undefined;
+    }
     // The provider's credential and its headers come before the runner is asked: a request that could not be sent is
     // refused without being admitted, so it is never booked and spends no turn.
     let credential = "";
@@ -1088,6 +1108,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
         ...(noted ? { noted: true as const, ...(inputTokensMaxWithoutNote === undefined ? {} : { inputTokensMaxWithoutNote }) } : {}),
         ...(outputTokensAsked === undefined ? {} : { outputTokensAsked }),
         ...(outputTokensLeast === undefined ? {} : { outputTokensLeast }),
+        ...(feeUsd > 0 ? { feeUsd } : {}),
         ...(host === undefined ? {} : { host }),
         ...(inputTokensCounted ? { inputTokensCounted: true as const } : {}),
         ...(options.route === undefined ? {} : { route: options.route }),
@@ -1408,7 +1429,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     } else {
       let unread = false;
       try {
-        usage = policy.usageOf(length <= USAGE_WINDOW ? tail : `${head}\n${lastOf(tail)}`);
+        usage = policy.usageOf(length <= USAGE_WINDOW ? tail : `${head}\n${lastOf(tail)}`, body);
       } catch (error) {
         say(`model proxy (${policy.id}): the usage could not be read; the request is booked at an unknown cost`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
         usage = { input: 0, output: 0, cacheRead: 0 };
