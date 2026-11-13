@@ -70,7 +70,11 @@ final class ScreenTest {
 		Map<String, Object> same = phone.call("screen.watch", "{\"after\":1,\"waitMs\":3000,\"maxWidth\":540}");
 		eq(Json.obj("seq", 1L, "changed", false, "width", 1080L, "height", 2400L), same);
 		// A caller behind the newest frame gets it at once.
-		eq(first, phone.call("screen.watch", "{\"after\":0}"));
+		eq(first, phone.call("screen.watch", "{\"after\":0,\"maxWidth\":540}"));
+		// A caller that asks another width is never given the first's frame: it gets one at its own width, at the same seq.
+		Map<String, Object> wide = phone.call("screen.watch", "{\"after\":0}");
+		eq(1L, wide.get("seq"));
+		eq(1080L, wide.get("frameWidth"));
 		phone.device.internet();
 		Map<String, Object> next = phone.call("screen.watch", "{\"after\":1,\"maxWidth\":540}");
 		eq(2L, next.get("seq"));

@@ -137,7 +137,10 @@ public final class UiDriver {
 			for (Outline.Entry e : look.outline.entries) nodes.add(e.json(look.frame));
 			boolean truncated = look.outline.truncated;
 			// The reply stays within the line limit: the image is whole, so nodes give way.
-			int room = Wire.MAX_LINE_BYTES - REPLY_ROOM - (image == null ? 0 : ((String) image.get("data")).length());
+			// The diff is part of the reply too, and is not cut: nodes give way for it as for the image.
+			Map<String, Object> diff = before == null ? null : diff(before, state);
+			int room = Wire.MAX_LINE_BYTES - REPLY_ROOM - (image == null ? 0 : ((String) image.get("data")).length())
+					- (diff == null ? 0 : Json.write(diff).getBytes(StandardCharsets.UTF_8).length);
 			while (!nodes.isEmpty() && Json.write(nodes).getBytes(StandardCharsets.UTF_8).length > room) {
 				nodes = new ArrayList<>(nodes.subList(0, nodes.size() * 9 / 10));
 				truncated = true;
@@ -150,7 +153,7 @@ public final class UiDriver {
 					"app", Json.obj("id", look.app, "name", titled ? title : look.app),
 					"window", Json.obj("id", String.valueOf(look.window.id()), "title", titled ? title : Json.OMIT, "bounds", screen.points(look.bounds)),
 					"nodes", nodes,
-					"diff", before == null ? Json.OMIT : diff(before, state),
+					"diff", diff == null ? Json.OMIT : diff,
 					"image", image == null ? Json.OMIT : image,
 					"truncated", truncated);
 		}
@@ -433,13 +436,23 @@ public final class UiDriver {
 			// The state's app, not its window: an activity the steps open is a new window of the same app.
 			if (target.app == null && target.window == null && held != null && !held.app.isEmpty()) target.app = held.app;
 			Device.Accessibility a11y = device.accessibility();
-			String first = new Look(window(a11y, target), false).fingerprint();
+			Device.AxWindow aimed = window(a11y, target);
+			// An act with neither a state nor a target is aimed at the app in front as it begins: a step that opens
+			// another app never lets a later step reach it.
+			if (target.app == null && target.window == null) target.app = appOf(aimed);
+			String first = new Look(aimed, false).fingerprint();
 			List<Object> answers = new ArrayList<>(steps.size());
 			boolean refused = false;
 			for (Step s : steps) {
 				cancel.check();
 				try {
 					answers.add(run(s, stateId, held, target, foreground, a11y, cancel));
+					// After a nav step the act follows the window in front: the steps after it, the settle, the
+					// expect and the answered state are that window's.
+					if (s.kind.equals("nav")) {
+						target.app = null;
+						target.window = null;
+					}
 				} catch (Refused r) {
 					answers.add(Json.obj("error", Json.obj("kind", r.kind, "message", r.getMessage())));
 					refused = true;
@@ -448,7 +461,11 @@ public final class UiDriver {
 			}
 			Settle.quiet(a11y, clock, after(a11y, target).id(), MAX_SETTLE_MS, cancel);
 			String met = null;
-			if (expect != null && !refused) met = holdsWithin(expect, a11y, target, clock, cancel) ? "met" : "unmet";
+			if (expect != null && !refused) {
+				met = holdsWithin(expect, a11y, target, clock, cancel) ? "met" : "unmet";
+				// The answered state is the window once it settles after the expect, never a frame of a transition.
+				Settle.quiet(a11y, clock, after(a11y, target).id(), MAX_SETTLE_MS, cancel);
+			}
 			Look last = new Look(after(a11y, target), false);
 			State now = record(last);
 			return Json.obj("steps", answers, "state", now.id, "changed", !first.equals(last.fingerprint()), "expect", met == null ? Json.OMIT : met);
@@ -565,11 +582,24 @@ public final class UiDriver {
 	private Map<String, Object> run(Step s, String stateId, State held, Target target, boolean foreground, Device.Accessibility a11y, Wire.Cancel cancel) throws Refused, InterruptedException {
 		Device.Clock clock = device.clock();
 		try {
-			Device.AxWindow window = window(a11y, target);
+			Device.AxWindow window;
+			try {
+				window = window(a11y, target);
+			} catch (RpcError gone) {
+				// The act began on this window, so one that is no longer there was taken away by an earlier step.
+				if (!"not_found".equals(gone.kind)) throw gone;
+				throw new Refused("stale", "the window this act is aimed at is gone (an earlier step took it away): observe again");
+			}
 			Rect where = boundsOf(window);
 			Outline.Frame frame = new Outline.Frame(where.left, where.top, device.display().scale);
 			AxNode node = s.ref == null ? null : resolve(s.ref);
-			if (s.point != null) checkPoint(s.point, stateId, held, window, frame);
+			if (node != null && !node.enabled()) throw new Refused("refused", s.kind + " " + s.ref + ": the control is disabled, and a disabled control takes nothing");
+			// Every point a step touches is held to the point rule, each point of a drag's path as much as its first.
+			if (s.path != null) {
+				for (long[] at : s.path) checkPoint(at, stateId, held, window, frame);
+			} else if (s.point != null) {
+				checkPoint(s.point, stateId, held, window, frame);
+			}
 			Sign sign = new Sign(a11y, target, window, cancel);
 			switch (s.kind) {
 				case "press":
@@ -700,6 +730,8 @@ public final class UiDriver {
 	}
 
 	private Map<String, Object> type(Step s, AxNode into, boolean foreground, Device.AxWindow window, Sign sign) throws Refused, InterruptedException {
+		// A field's text never goes to whatever has the focus: a ref that is not a text field is refused, nothing sent.
+		if (into != null && !into.editable()) throw new Refused("refused", "type into " + s.ref + ": it is not a text field, so nothing was typed");
 		AxNode field = into != null ? into : focusedField(window.root(), 0);
 		if (field != null && field.editable() && !field.password()) {
 			// Semantic: the field's text with this text after it, set by the app's own action. It types at the end of the
@@ -709,6 +741,12 @@ public final class UiDriver {
 		}
 		foreground(foreground, "type" + (into == null ? "" : " into " + s.ref) + (field == null ? " with no text field focused" : "") + ": the keyboard");
 		if (into != null && !into.focused() && !into.perform("ACTION_FOCUS", null)) device.input().touch(new int[][] {center(into, s.ref)}, 0);
+		boolean focusedNow = into == null;
+		for (int tries = 0; !focusedNow && tries < 10; tries++) {
+			focusedNow = into.refresh() && into.focused();
+			if (!focusedNow) device.clock().sleep(50);
+		}
+		if (!focusedNow) throw new Refused("refused", "type into " + s.ref + ": the field did not take the focus, so nothing was typed");
 		Device.Input input = device.input();
 		if (!(ascii(s.text) && input.typeKeys(s.text))) input.paste(s.text);
 		if (field != null && field.editable() && !field.password()) return answer("foreground", readback(field, s.text, false));
@@ -733,7 +771,7 @@ public final class UiDriver {
 		}
 		foreground(foreground, "scroll " + (s.ref != null ? s.ref : "at a point") + ": a swipe");
 		Device.Display d = device.display();
-		Rect area = (node != null ? node.bounds() : window.bounds()).intersect(new Rect(0, 0, d.width, d.height));
+		Rect area = (node != null ? node.bounds() : boundsOf(window)).intersect(new Rect(0, 0, d.width, d.height));
 		if (area.empty()) throw new Refused("invalid", "scroll " + s.ref + ": the element is off the screen");
 		int[] at = node != null ? new int[] {area.centerX(), area.centerY()} : onScreen(frame.pixels(s.point[0], s.point[1]));
 		long leftX = Math.round(s.dx * frame.scale);

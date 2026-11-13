@@ -105,18 +105,38 @@ final class PhoneInput implements Device.Input {
 
 		long down = SystemClock.uptimeMillis();
 		injectMotion(down, MotionEvent.ACTION_DOWN, xy(points[0]));
-		if (ms <= 0) {
-			for (int i = 1; i < n; i++) injectMotion(down, MotionEvent.ACTION_MOVE, xy(points[i]));
-		} else if (total > 0) {
-			long steps = Math.max(1, ms / STEP_MS);
-			for (long k = 1; k <= steps; k++) {
-				sleepUntil(down + ms * k / steps);
-				injectMotion(down, MotionEvent.ACTION_MOVE, along(points, cum, total * k / steps));
+		float[] last = xy(points[0]);
+		try {
+			if (ms <= 0) {
+				for (int i = 1; i < n; i++) {
+					last = xy(points[i]);
+					injectMotion(down, MotionEvent.ACTION_MOVE, last);
+				}
+			} else if (total > 0) {
+				long steps = Math.max(1, ms / STEP_MS);
+				for (long k = 1; k <= steps; k++) {
+					sleepUntil(down + ms * k / steps);
+					last = along(points, cum, total * k / steps);
+					injectMotion(down, MotionEvent.ACTION_MOVE, last);
+				}
+			} else {
+				sleepUntil(down + ms); // a press held in place
 			}
-		} else {
-			sleepUntil(down + ms); // a press held in place
+		} catch (RuntimeException e) {
+			// A cancel or a refused move ends the touch: the app must not keep a finger held down.
+			releaseAfterFailure(down, MotionEvent.ACTION_CANCEL, last);
+			throw e;
 		}
 		injectMotion(down, MotionEvent.ACTION_UP, xy(points[n - 1]));
+	}
+
+	/** Best effort: end a touch the request could not finish, so the app sees a cancel, not a press held forever. */
+	private void releaseAfterFailure(long down, int action, float[] at) {
+		try {
+			injectMotion(down, action, at);
+		} catch (RuntimeException e) {
+			Log.w("could not cancel an interrupted gesture", e);
+		}
 	}
 
 	private void injectMotion(long down, int action, float[] at) {
@@ -143,12 +163,23 @@ final class PhoneInput implements Device.Input {
 		motion(down, MotionEvent.ACTION_POINTER_DOWN | second, two,
 				new MotionEvent.PointerCoords[] {coords(xy(from[0])), coords(xy(from[1]))}, MODE_ASYNC);
 		long steps = Math.max(1, Math.max(0, ms) / STEP_MS);
-		for (long k = 1; k <= steps; k++) {
-			if (ms > 0) sleepUntil(down + ms * k / steps);
-			float f = (float) k / steps;
-			motion(down, MotionEvent.ACTION_MOVE, two,
-					new MotionEvent.PointerCoords[] {coords(lerp(from[0], to[0], f)), coords(lerp(from[1], to[1], f))},
-					MODE_ASYNC);
+		try {
+			for (long k = 1; k <= steps; k++) {
+				if (ms > 0) sleepUntil(down + ms * k / steps);
+				float f = (float) k / steps;
+				motion(down, MotionEvent.ACTION_MOVE, two,
+						new MotionEvent.PointerCoords[] {coords(lerp(from[0], to[0], f)), coords(lerp(from[1], to[1], f))},
+						MODE_ASYNC);
+			}
+		} catch (RuntimeException e) {
+			// Both fingers end in a cancel, so the app does not keep a pinch held.
+			try {
+				motion(down, MotionEvent.ACTION_CANCEL, two,
+						new MotionEvent.PointerCoords[] {coords(xy(from[0])), coords(xy(from[1]))}, MODE_ASYNC);
+			} catch (RuntimeException inner) {
+				Log.w("could not cancel an interrupted pinch", inner);
+			}
+			throw e;
 		}
 		motion(down, MotionEvent.ACTION_POINTER_UP | second, two,
 				new MotionEvent.PointerCoords[] {coords(xy(to[0])), coords(xy(to[1]))}, MODE_ASYNC);

@@ -7,7 +7,7 @@ import java.util.Map;
 
 /**
  * JSON for the wire, with no library: parse() gives Map (LinkedHashMap), List, String, Long, Double, Boolean or null;
- * write() takes those, plus int, long[] and any Number. A whole number parses as a Long, any other as a Double.
+ * write() takes those, plus int, long[] and any Number. A whole number parses as a Long (1.0 and 1e0 too), any other as a Double.
  */
 public final class Json {
 	private Json() {}
@@ -294,7 +294,10 @@ public final class Json {
 						return Double.parseDouble(n);
 					}
 				}
-				return Double.parseDouble(n);
+				// 1.0 and 1e0 are the whole number 1 in JSON: a field that wants a whole number takes them as one.
+				double d = Double.parseDouble(n);
+				if (d == Math.rint(d) && Math.abs(d) <= (1L << 53)) return (long) d;
+				return d;
 			} catch (NumberFormatException x) {
 				throw error("not a number: " + n);
 			}

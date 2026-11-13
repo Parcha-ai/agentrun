@@ -28,9 +28,20 @@ public final class Shots {
 	private final Device device;
 	private final SecureRandom random = new SecureRandom();
 
-	/** The shot screen.read reads, and the watch frame it reads; each is dropped once read to its end. */
-	private Held shot;
-	private Held frame;
+	/**
+	 * The shots and watch frames screen.read reads, by id: each is dropped once read to its end, and the oldest goes
+	 * when more than MAX_HELD wait. Phones' connections share one phoned, so a second shot never replaces a first one
+	 * still being read.
+	 */
+	private static final int MAX_HELD = 16;
+	private final Map<String, Held> held = new java.util.LinkedHashMap<>();
+	/** The frame the cached newest answer holds, so a watch that asks another size or quality is not given it. */
+	private String newestKey = "";
+
+	private void hold(Held h) {
+		held.put(h.id, h);
+		while (held.size() > MAX_HELD) held.remove(held.keySet().iterator().next());
+	}
 
 	/** screen.watch's state: the newest frame's seq, its digest, and when the screen was last read. */
 	private long seq;
@@ -85,7 +96,7 @@ public final class Shots {
 		Device.Shot s = take(crop, 0, "png", 0);
 		String id = newId();
 		synchronized (this) {
-			shot = new Held(id, s.bytes);
+			hold(new Held(id, s.bytes));
 		}
 		byte[] first = Arrays.copyOf(s.bytes, Math.min(s.bytes.length, MAX_CHUNK_BYTES));
 		return Json.obj("id", id, "size", (long) s.bytes.length, "data", b64(first), "eof", first.length == s.bytes.length,
@@ -106,15 +117,13 @@ public final class Shots {
 	/** screen.read: the rest of the held shot or watch frame, from offset. */
 	public synchronized Map<String, Object> read(Params p) {
 		String id = p.str("id");
-		boolean isFrame = frame != null && frame.id.equals(id);
-		Held held = isFrame ? frame : shot;
-		if (held == null || !held.id.equals(id)) throw RpcError.notFound("no shot \"" + id + "\" is held: take one with screen.shot");
-		long offset = p.whole("offset", 0, held.bytes.length);
-		int end = (int) Math.min(held.bytes.length, offset + MAX_CHUNK_BYTES);
-		byte[] data = Arrays.copyOfRange(held.bytes, (int) offset, end);
-		boolean eof = end >= held.bytes.length;
-		if (eof && isFrame) frame = null;
-		else if (eof) shot = null;
+		Held one = held.get(id);
+		if (one == null) throw RpcError.notFound("no shot \"" + id + "\" is held: take one with screen.shot");
+		long offset = p.whole("offset", 0, one.bytes.length);
+		int end = (int) Math.min(one.bytes.length, offset + MAX_CHUNK_BYTES);
+		byte[] data = Arrays.copyOfRange(one.bytes, (int) offset, end);
+		boolean eof = end >= one.bytes.length;
+		if (eof) held.remove(id);
 		return Json.obj("data", b64(data), "eof", eof);
 	}
 
@@ -130,7 +139,18 @@ public final class Shots {
 		Device.Clock clock = device.clock();
 		synchronized (watching) {
 			if (after > seq) throw RpcError.invalid("after " + after + " is past the newest frame, " + seq);
-			if (after < seq && newest != null) return answer();
+			String key = maxWidth + "|" + quality;
+			if (after < seq && newest != null) {
+				if (key.equals(newestKey)) return answer();
+				// Another watcher's frame is at another size or quality: this caller gets one of its own at the
+				// newest seq, and the cached frame stays the other's.
+				Device.Display d = device.display();
+				int frameWidth = Math.min(d.width, maxWidth);
+				int frameHeight = Math.max(1, (int) ((long) d.height * frameWidth / Math.max(1, d.width)));
+				Device.Shot s = take(null, Math.max(frameWidth, frameHeight), "jpeg", quality);
+				cancel.check();
+				return frameAnswer(s, d, seq);
+			}
 			long deadline = clock.now() + waitMs;
 			for (;;) {
 				long wait = lastRead + WATCH_POLL_MS - clock.now();
@@ -143,19 +163,12 @@ public final class Shots {
 				Device.Shot s = take(null, Math.max(frameWidth, frameHeight), "jpeg", quality);
 				cancel.check();
 				// The size is in the digest: a phone turned to landscape may give the same bytes, the other way round.
-				byte[] now = sha256(s.width + "x" + s.height + "|" + d.width + "x" + d.height, s.bytes);
+				byte[] now = sha256(s.width + "x" + s.height + "|" + d.width + "x" + d.height + "|" + key, s.bytes);
 				if (seq == 0 || !Arrays.equals(now, digest)) {
 					seq++;
 					digest = now;
-					String id = newId();
-					boolean whole = s.bytes.length <= MAX_CHUNK_BYTES;
-					synchronized (this) {
-						frame = whole ? null : new Held(id, s.bytes);
-					}
-					byte[] first = Arrays.copyOf(s.bytes, Math.min(s.bytes.length, MAX_CHUNK_BYTES));
-					newest = Json.obj("seq", seq, "changed", true, "id", whole ? Json.OMIT : id, "size", (long) s.bytes.length,
-							"data", b64(first), "eof", whole, "format", "jpeg", "frameWidth", (long) s.width,
-							"frameHeight", (long) s.height, "width", (long) d.width, "height", (long) d.height);
+					newestKey = key;
+					newest = frameAnswer(s, d, seq);
 					return answer();
 				}
 				long left = deadline - clock.now();
@@ -166,6 +179,19 @@ public final class Shots {
 				}
 			}
 		}
+	}
+
+	/** A watch answer carrying frame s as seq, its rest held for screen.read when it is over one chunk. */
+	private Map<String, Object> frameAnswer(Device.Shot s, Device.Display d, long seq) {
+		String id = newId();
+		boolean whole = s.bytes.length <= MAX_CHUNK_BYTES;
+		synchronized (this) {
+			if (!whole) hold(new Held(id, s.bytes));
+		}
+		byte[] first = Arrays.copyOf(s.bytes, Math.min(s.bytes.length, MAX_CHUNK_BYTES));
+		return Json.obj("seq", seq, "changed", true, "id", whole ? Json.OMIT : id, "size", (long) s.bytes.length,
+				"data", b64(first), "eof", whole, "format", "jpeg", "frameWidth", (long) s.width,
+				"frameHeight", (long) s.height, "width", (long) d.width, "height", (long) d.height);
 	}
 
 	private Map<String, Object> answer() {

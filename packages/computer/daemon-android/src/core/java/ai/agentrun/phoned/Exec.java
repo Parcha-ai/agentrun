@@ -72,6 +72,10 @@ public final class Exec {
 				env.put(e.getKey(), (String) e.getValue());
 			}
 		}
+		// Every process the program starts carries this mark, so the run's guard finds what a shell left running and
+		// reparented (a "sleep 600 &" has no parent to walk from once its shell is gone).
+		String mark = "PHONED_RUN=" + java.util.UUID.randomUUID();
+		env.put("PHONED_RUN", mark.substring("PHONED_RUN=".length()));
 		Process process;
 		try {
 			process = builder.start();
@@ -109,6 +113,8 @@ public final class Exec {
 			killTree(process);
 			process.waitFor(5, TimeUnit.SECONDS);
 		}
+		// The run's guard: whatever carries the run's mark ends with the run, however the program ended.
+		killMarked(mark);
 		out.join(5000);
 		err.join(5000);
 		cancel.check();
@@ -139,6 +145,57 @@ public final class Exec {
 		} catch (InterruptedException e) {
 			Thread.currentThread().interrupt();
 		}
+	}
+
+	/** SIGKILLs every process whose environment holds mark (NAME=value), read from /proc/<pid>/environ. */
+	static void killMarked(String mark) {
+		byte[] needle = (mark + "\0").getBytes(java.nio.charset.StandardCharsets.UTF_8);
+		byte[] last = mark.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+		List<String> found = new ArrayList<>();
+		File[] entries = new File("/proc").listFiles();
+		if (entries == null) return;
+		for (File entry : entries) {
+			String name = entry.getName();
+			if (name.isEmpty() || !name.chars().allMatch(Character::isDigit)) continue;
+			byte[] env;
+			try {
+				env = java.nio.file.Files.readAllBytes(new File(entry, "environ").toPath());
+			} catch (IOException | RuntimeException e) {
+				continue;
+			}
+			if (holds(env, needle) || endsWith(env, last)) found.add(name);
+		}
+		if (found.isEmpty()) return;
+		List<String> argv = new ArrayList<>();
+		argv.add("kill");
+		argv.add("-9");
+		argv.addAll(found);
+		try {
+			Process kill = new ProcessBuilder(argv).redirectErrorStream(true).start();
+			kill.waitFor(2, TimeUnit.SECONDS);
+		} catch (IOException e) {
+			// No kill on PATH: nothing more to do.
+		} catch (InterruptedException e) {
+			Thread.currentThread().interrupt();
+		}
+	}
+
+	private static boolean holds(byte[] hay, byte[] needle) {
+		outer:
+		for (int i = 0; i + needle.length <= hay.length; i++) {
+			if (i > 0 && hay[i - 1] != 0) continue;
+			for (int j = 0; j < needle.length; j++) if (hay[i + j] != needle[j]) continue outer;
+			return true;
+		}
+		return false;
+	}
+
+	private static boolean endsWith(byte[] hay, byte[] tail) {
+		if (hay.length < tail.length) return false;
+		int off = hay.length - tail.length;
+		if (off > 0 && hay[off - 1] != 0) return false;
+		for (int j = 0; j < tail.length; j++) if (hay[off + j] != tail[j]) return false;
+		return true;
 	}
 
 	/** A started program's pid: Process.pid() where the JVM has it, else the Android process class's own field. */

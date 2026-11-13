@@ -71,3 +71,49 @@ test("exec.run runs a program on the phone side and answers its output in base64
 		await end();
 	}
 });
+
+test("exec.run ends a program's background child with the run, the shell that started it gone already", async () => {
+	const { client, end } = phoned();
+	try {
+		const ran = await client.call("exec.run", { argv: ["sh", "-c", "sleep 613 >/dev/null 2>&1 & echo started"], timeoutMs: 10_000 });
+		assert.equal(ran.ok, true, JSON.stringify(ran));
+		assert.equal(ran.value.exitCode, 0);
+		const left = await client.call("exec.run", { argv: ["sh", "-c", "for f in /proc/[0-9]*/cmdline; do tr '\\0' ' ' < $f 2>/dev/null; echo; done | grep -c 'slee[p] 613'; true"], timeoutMs: 10_000 });
+		assert.equal(left.ok, true, JSON.stringify(left));
+		assert.equal(Buffer.from(left.value.stdout, "base64").toString().trim(), "0", "the background child is gone with its run");
+		const mark = await client.call("exec.run", { argv: ["sh", "-c", "echo $PHONED_RUN"], timeoutMs: 10_000 });
+		assert.equal(mark.ok, true, JSON.stringify(mark));
+		assert.match(Buffer.from(mark.value.stdout, "base64").toString(), /^[0-9a-f-]{36}\n$/, "a run carries its own mark");
+	} finally {
+		await end();
+	}
+});
+
+test("two shots are both held: reading the first after the second still answers it", async () => {
+	const { client, end } = phoned();
+	try {
+		const first = await client.call("screen.shot", {});
+		const second = await client.call("screen.shot", {});
+		assert.equal(first.ok && second.ok, true, JSON.stringify([first, second]));
+		assert.notEqual(first.value.id, second.value.id);
+		for (const shot of [first.value, second.value]) {
+			if (shot.eof) continue;
+			const rest = await client.call("screen.read", { id: shot.id, offset: Buffer.from(shot.data, "base64").length });
+			assert.equal(rest.ok, true, JSON.stringify(rest));
+		}
+	} finally {
+		await end();
+	}
+});
+
+test("a key chord's last key may be + itself: shift++ and + are keys, not an empty name", async () => {
+	const { client, end } = phoned();
+	try {
+		const seen = await client.call("ui.observe", {});
+		const acted = await client.call("ui.act", { state: seen.value.state, foreground: true, steps: [{ key: "shift++" }, { key: "+" }] });
+		assert.equal(acted.ok, true, JSON.stringify(acted));
+		for (const step of acted.value.steps) assert.equal(step.error, undefined, JSON.stringify(step));
+	} finally {
+		await end();
+	}
+});

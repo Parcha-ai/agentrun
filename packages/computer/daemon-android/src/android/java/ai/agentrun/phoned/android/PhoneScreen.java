@@ -110,8 +110,16 @@ final class PhoneScreen implements Device.Screen {
 			List<AccessibilityWindowInfo> windows = ax.ui().getWindows();
 			for (AccessibilityWindowInfo w : windows) {
 				if (w.getType() != AccessibilityWindowInfo.TYPE_APPLICATION || !(w.isFocused() || w.isActive())) continue;
+				// The window's own bounds can lie in another space than the screen's pixels (UiDriver.boundsOf); its
+				// root's are the screen's, so they stand first.
 				android.graphics.Rect r = new android.graphics.Rect();
-				w.getBoundsInScreen(r);
+				android.view.accessibility.AccessibilityNodeInfo root = w.getRoot();
+				if (root != null) {
+					root.getBoundsInScreen(r);
+					root.recycle();
+				} else {
+					w.getBoundsInScreen(r);
+				}
 				Rect in = new Rect(r.left, r.top, r.right, r.bottom).intersect(all);
 				if (!in.empty()) return in;
 			}

@@ -80,7 +80,17 @@ public final class Keys {
 
 	/** A chord's keys, from names joined by "+" ("ctrl+shift+t"): each {key code, meta of its own}. */
 	public static int[][] chord(String chord) {
-		String[] parts = chord.split("\\+", -1);
+		// The last name may be "+" itself ("+", "shift++"), as ui-engine's chordKeys reads it.
+		String[] parts;
+		if (chord.equals("+")) {
+			parts = new String[] {"+"};
+		} else if (chord.endsWith("++")) {
+			String[] head = chord.substring(0, chord.length() - 2).split("\\+", -1);
+			parts = java.util.Arrays.copyOf(head, head.length + 1);
+			parts[head.length] = "+";
+		} else {
+			parts = chord.split("\\+", -1);
+		}
 		int[][] keys = new int[parts.length][];
 		for (int i = 0; i < parts.length; i++) {
 			if (parts[i].isEmpty()) throw RpcError.invalid("key " + quote(chord) + ": each name joined by \"+\" is one of the key table's (protocol.json keys) or one printable character");
