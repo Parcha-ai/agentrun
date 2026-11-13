@@ -62,8 +62,8 @@ export function ComputerSetting({ kinds, value, onChange, error, warning }: {
         </>
       )}
       {picked && picked.tools.length > 0 && (
-        <p className="mt-4 border bg-muted/40 px-4 py-2.5 text-small" aria-label="The loop gets">
-          <span className="caps mr-2">The loop gets</span><span className="font-mono">{picked.tools.join(", ")}</span>
+        <p className="mt-4 border bg-muted/40 px-4 py-2.5 text-small" aria-label="Tools this computer adds">
+          This computer adds these tools: <span className="font-mono">{picked.tools.join(", ")}</span>
         </p>
       )}
       {error && <p className="mt-2 font-mono text-small text-destructive-text" role="alert">{error}</p>}

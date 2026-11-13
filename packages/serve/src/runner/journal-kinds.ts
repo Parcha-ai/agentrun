@@ -262,7 +262,7 @@ export interface AnswerData {
   readonly note?: string;
   /** "message": a deny a person's message gave while the call waited (the message route's deny row), which its approval
    *  row reads as "Declined by your message". Absent for an answer given directly. */
-  readonly by?: "message";
+  readonly by?: "message" | "setting";
   /** The allow a stop overrode (main's ApprovalAnswer.superseded): the call was approved but had not finished when its
    *  run was stopped, so the stop withdrew it. Kept as it was given. */
   readonly superseded?: { readonly decision: "allow"; readonly answeredAt?: string };

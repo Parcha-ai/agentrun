@@ -2307,10 +2307,17 @@ const made = await phones.create({ image: "android", lifetimeMs: 10 * 60_000, ne
 (phone-harness.com). The phone harness bills it at 5 cents a minute from the account's credit. A cloud iPhone (driven by
 the API's control URL) is a later change: `platform: "ios"` is refused in words.
 
-- **No daemon.** Nothing runs on the phone. `connect()` asks the phone harness for the session's adb link, runs
-  connects to it, unlocks the phone with the session's code (never in a result or an error) and probes it. Its hello
-  carries what the probe read: `arch` from `getprop ro.product.cpu.abi`, and `osVersion`, the Android release from
-  `getprop ro.build.version.release` (such as `"15"`; absent when the phone says none).
+- **phoned, the phone's driver.** `connect()` asks the phone harness for the session's adb link, connects to it,
+  unlocks the phone with the session's code (never in a result or an error) and probes it. Then it starts phoned
+  (`daemon-android/`, one dex jar built by `npm run build:phoned` into `dist/phoned.jar`) and speaks the protocol to it:
+  - The jar goes to `/data/local/tmp/phoned-<sha256 prefix>.jar` only when the phone lacks it: pushed beside that name,
+    moved there and its sha256 checked, so a jar of that name is always whole.
+  - phoned runs as the shell user through `app_process`, scrcpy's way in, on adb's `exec:` service, whose socket
+    carries its stdin and stdout raw; its stderr goes to a log beside the jar, which a failed hello names.
+  - The hello is phoned's own, checked for this provider's version and protocol (`drift.version`'s words).
+  - UiAutomation is one per phone, so one phoned answers every connection to a phone. Closing a connection cancels
+    its own calls; the last close ends phoned (its stdin closes), then drops the adb transport. A phoned that ends on
+    its own fails its connections' calls with `gone`, and the next connect starts another.
   - Neither the endpoint nor the code is ever in a spawned adb's argv, which `/proc` shows to every user of the host.
     The endpoint goes to the local adb server over its socket protocol (`host:connect`, `host:devices-l`,
     `host:disconnect`). The unlock is the vendor's shell command `unlock <code>`, once per connection; every shell
@@ -2319,35 +2326,15 @@ the API's control URL) is a later change: `platform: "ios"` is refused in words.
     spawned adb names the phone by the adb server's transport id (`-t <id>`). A shell's stdin cannot carry the unlock:
     a shell with no command string is answered `locked` (live run 3); the socket path unlocked a phone live (probe 1).
 
-  Then it gives
-  a client in this process that answers each protocol method with adb commands:
-  - `screen.shot`/`screen.read`: a raw `screencap`, cropped to the region and encoded as an RGBA PNG; `scale` is the
-    density over 160;
-  - `screen.watch`: PNG frames (`format: "png"`) from `screencap`, read once a second at most, across calls too (an
-    animated screen acked at once is no faster), a new frame only when the pixels changed; `maxWidth` scales by the
-    nearest pixel, and `quality` has no effect on a PNG. A cancel or the connection's close ends a screencap and a
-    wait in flight;
-  - `input.actions`: checked whole first (`checkActions`). Then:
-    - tap and long press;
-    - swipe: `input swipe`, or `input motionevent` for a path of three points or more. Its `ms` is shared between the
-      moves as `sleep`s, by each segment's length, so it lasts `ms` at least;
-    - the back, home and app switch buttons;
-    - `type`, by `input text`: ASCII and line breaks. A literal `%s` is split across two calls, so it is not read as
-      a space;
-    - one key at a time (`input keyevent`, a repeat as one call of many key codes), and `wait`.
-
-    A cancelled batch stops at the action it is on, a `wait` included, and answers failed, kind `aborted`, there;
-  - `apps.list` (`pm list packages`, and the app in front from `dumpsys activity activities`), `apps.launch` (its
-    launcher activity, `am start -W --activity-clear-task`, so the app named is in front and not what its task last
-    held: on Android 15 Settings' task keeps search, another package, on top) and `apps.terminate` (`am force-stop`);
-  - `ui`: `ui.observe` over `uiautomator dump`, and `ui.act` over adb's input (the foreground route only, each step
-    one batch checked whole before it runs).
-
-  exec, files, processes and tar are refused in words: a phone has no shell in the computer protocol. So are pinch
-  (adb's `input` has one finger), hold, a combo of keys, `apps.install` and `deadline.extend`.
-- **Capabilities.** Kind and os `android`, daemon `none`, lifetime `vendor`, network `open`, release `delete` only.
-  Groups `screen`, `input.touch`, `input.keys`, `apps` and `ui`. `maxLifetimeMs` is 30 min by default. No
-  mount, no extend.
+  phoned answers on the phone itself (`daemon-android/README.md` has each method): `exec.run` as the shell user,
+  `screen.shot`/`screen.read`/`screen.watch` scaled on the phone, `input.actions` through InputManager (taps, swipes,
+  a pinch, key combos and holds, Unicode text through the clipboard), `apps.list`/`apps.launch`/`apps.terminate`, and
+  the UI tree from UiAutomation. files, processes and tar are refused in words, as are `apps.install` and
+  `deadline.extend`.
+- **Capabilities.** Kind and os `android`, daemon `none` (nothing is installed: phoned lives as long as the phone's
+  connections), lifetime `vendor`, network `open`, release `delete` only.
+  Groups `exec`, `screen`, `input.touch`, `input.keys`, `apps` and `apps.ui_tree`. `maxLifetimeMs` is 30 min by default.
+  No mount, no extend.
 - **create** asks for `timeout_seconds` = the lifetime, and the phone harness ends the session then, whatever happens.
   The lifetime includes the boot, so a phone ready past its deadline fails `timeout`.
   - Each POST carries an Idempotency-Key, and a create whose answer is uncertain is found by it, never sent twice.

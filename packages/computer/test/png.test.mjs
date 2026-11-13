@@ -1,11 +1,10 @@
-// A phone's screen is encoded as PNG with the host's event loop free. The phone harness runs in the server's process
-// (connect() answers the protocol over adb here), and its screenshot and each live-view frame (about one a second while a
-// person watches) deflated a whole screen synchronously: about 170 ms of a 1080x2400 screen, every request and open store
-// transaction of the server waiting on it.
+// A screen is encoded as PNG with the host's event loop free. A provider that takes its own screenshots runs in the
+// server's process, and a synchronous deflate of a whole screen (about 170 ms of a 1080x2400 one) held every request and
+// open store transaction of the server waiting on it.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { inflateSync } from "node:zlib";
-import { encodePng } from "../dist/phone-harness.js";
+import { encodePng } from "../dist/png.js";
 
 /** A 1080x2400 RGBA screen: flat bands of a UI with a photo's noise in the middle. */
 function screen(width = 1080, height = 2400) {

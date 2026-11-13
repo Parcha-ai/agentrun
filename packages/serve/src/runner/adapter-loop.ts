@@ -688,6 +688,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   let refusals = 0;
   /** The claim's first delivery is done (LoopDeps.delivered): every row the runner read is with the loop. */
   let delivered = false;
+  /** The calls this run's journal had asked about and not answered when the claim first read it (askStands). */
+  let standing: Promise<ReadonlySet<string>> | undefined;
   /** The run is parking at its cap (the early pause, from its commit on): a raise row is left for the next claim. */
   let pausing = false;
   /** Resolved once the claim's Harness is open and its root known: a command's check reads the journal through it. */
@@ -1424,10 +1426,13 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
               if (typeof now === "object") return { text: now.deny, isError: true };
               // Set to ask since (or asked, and answered before the crash): asked as any call is, as main's gate parked a
               // replayed call as a request of its own. Its answer stands; else the run parks on it, the call held unrun until
-              // the claim lets it go; a deny says the earlier attempt may have taken effect.
-              if (now === "ask") {
+              // the claim lets it go; a deny says the earlier attempt may have taken effect. Asked and not answered yet, with
+              // the setting at allow now: the setting answers the ask (allowedBySetting).
+              const bySetting = now === "allow" && (await askStands(toolContext.callId));
+              if (now === "ask" || bySetting) {
                 const call = { callId: toolContext.callId, tool: name, args: (args ?? {}) as Record<string, unknown> };
-                const answer = await answerOf(call, mcp?.priceOf(name) ?? spec.approvalPrice?.({ ...call, tool: name as never }) ?? null, asked);
+                const price = mcp?.priceOf(name) ?? spec.approvalPrice?.({ ...call, tool: name as never }) ?? null;
+                const answer = bySetting ? await allowedBySetting(call, price, asked) : await answerOf(call, price, asked);
                 if (answer === "park") return await heldUntilAborted(toolContext.signal);
                 if (!answer.approved) return { text: refusedText(asked, answer.note?.trim() ? answer.note : undefined, "unknown"), isError: true };
               }
@@ -1675,7 +1680,13 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           const wrapped = new Map(tools.map((tool) => [tool.name, tool]));
           const follow = await parkedFollowUp(mcp!, {
             entries: await entriesOf(gate.journal, root.id, context),
-            answer: (call, price) => answerOf(call, price),
+            // As the gate before an intent does: a call still waiting on its person whose tool now reads allow is answered by
+            // the setting (allowedBySetting); any other waits for the person's answer.
+            answer: async (call, price) => {
+              const now = await spec.gate?.({ callId: call.callId, tool: call.tool as never, args: call.args });
+              const bySetting = now === "allow" && (await askStands(call.callId));
+              return bySetting ? allowedBySetting(call, price, call.tool) : answerOf(call, price);
+            },
             deniedNow: async (call) => {
               // The gate is Promise-capable on purpose (run-cap's and the approvals' gates may look things up), so await it.
               const now = await spec.gate?.({ callId: call.callId, tool: call.tool as never, args: call.args });
@@ -1982,7 +1993,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       const asked = spec.gate?.askedAs?.(tool) ?? tool;
       // Main's words for a tool set to deny (tool-gate's deniedText, from its one copy in refusal-words.ts).
       if (decision === "deny") return { deny: setToDenyText(asked, undefined, "server", replayed ? "unknown" : "no") };
-      if (decision === "allow") return "allow";
+      // A call a person was asked about and has not answered, its setting at allow now: the setting answers the ask
+      // (allowedBySetting), and the call runs without asking the person again.
+      const bySetting = decision === "allow" && !!spec.gate && (await askStands(call.callId));
+      if (decision === "allow" && !bySetting) return "allow";
       // The card shows the call's input, and beside it what the gate says the call would do that the person approves too
       // (a learned workflow's MCP calls set to ask: askedFor).
       const shown = await spec.gate?.askedFor?.(tool, call.args);
@@ -1991,7 +2005,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       const args = shown ? { ...shown, ...Object.fromEntries(Object.entries((call.args ?? {}) as Record<string, unknown>).filter(([key]) => !Object.hasOwn(shown, key))) } : call.args;
       // The call on the record before its ask (beforeAsk), with the input its model gave it.
       await beforeAsk?.(call);
-      const answer = await answerOf({ ...call, tool, args }, mcp?.priceOf(tool) ?? spec.approvalPrice?.(kernelCall) ?? null, asked);
+      const price = mcp?.priceOf(tool) ?? spec.approvalPrice?.(kernelCall) ?? null;
+      const answer = bySetting ? await allowedBySetting({ ...call, tool, args }, price, asked) : await answerOf({ ...call, tool, args }, price, asked);
       if (answer === "park") return { park: true };
       // A call a person approved: what it runs inside its own call (a learned workflow's MCP nodes set to ask) runs as
       // approved with it (host-calls.ts), as far as the card they approved named it: its ask as journaled, the card they
@@ -2019,21 +2034,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     // The ask names the call as the person is asked about it (`asked`: its settings key), so every reader of the ask (the
     // run's pending approval, its approval row, an "always" answer pinned by it) has the one name main gives it.
     const ask: AskData = first ?? { callId: call.callId, tool: asked, args: call.args ?? null, requestedAt: isoNow(), price };
-    // Commits the root's entry of `kind`, staging `staged` with it. False when the journal is sealed first (another call
-    // of the round parked the run): nothing landed, and the expectation's failure is no one's to wait on.
-    const entryLands = async (kind: string, data: AskData | AnswerData, staged: Parameters<Gate["expect"]>[1]): Promise<boolean> => {
-      const landed = gate!.expect(writesEntry(kind, (entry) => entry.callId === data.callId), staged);
-      // A seal while the commit is in flight fails it before it is awaited: handled here, read by the await below.
-      landed.catch(() => undefined);
-      try {
-        await harness!.commit((tx) => tx.appendEntry(conversation.id, { kind, data: data as unknown as JsonValue }), context);
-        await landed;
-        return true;
-      } catch (error) {
-        if (gate!.sealed) return false;
-        throw error;
-      }
-    };
+    const entryLands = (kind: string, data: AskData | AnswerData, staged: Parameters<Gate["expect"]>[1]) => landEntry(conversation, kind, data, staged);
     if (first === undefined) {
       // Asked and parked; or held as the parked call is, when another call of the round parked the run first.
       if (await entryLands(KINDS.ask, ask, { run: { state: "parked" } })) parked();
@@ -2058,6 +2059,63 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       }
       await new Promise<void>((resolve) => (wakeInbox = resolve));
     }
+  }
+
+  /** Commits the root's entry of `kind`, staging `staged` with it. False when the journal is sealed first (another call
+   *  of the round parked the run): nothing landed, and the expectation's failure is no one's to wait on. */
+  async function landEntry(conversation: { readonly id: ConversationId }, kind: string, data: AskData | AnswerData, staged: Parameters<Gate["expect"]>[1]): Promise<boolean> {
+    const landed = gate!.expect(writesEntry(kind, (entry) => entry.callId === data.callId), staged);
+    // A seal while the commit is in flight fails it before it is awaited: handled here, read by the await below.
+    landed.catch(() => undefined);
+    try {
+      await harness!.commit((tx) => tx.appendEntry(conversation.id, { kind, data: data as unknown as JsonValue }), context);
+      await landed;
+      return true;
+    } catch (error) {
+      if (gate!.sealed) return false;
+      throw error;
+    }
+  }
+
+  /** The answer to an ask a person was shown and has not answered, once its tool's setting reads allow: the setting
+   *  answers it. The ask closes with an allow row of its own (by "setting": "Allowed by the tool's setting"), the call
+   *  runs, and the person is never asked again. A person's answer already in the inbox for the call stands over it when it
+   *  is a deny; an allow of theirs is taken with the setting's answer, so no row is left untaken. */
+  async function allowedBySetting(call: PreIntentCall, price: ApprovalPrice | null, asked: string): Promise<AnswerData | "park"> {
+    // Decided only once the claim's stored commands are with the loop (deps.delivered): pi's recovery starts tool tasks while
+    // the session opens, before command() can put a person's stored deny into the inbox, and the setting must not win over it.
+    await (deps.delivered ?? Promise.resolve());
+    const row = inbox.find((command) => (command.kind === "approve" || command.kind === "deny") && approvalOf(command) === call.callId);
+    if (row?.kind === "deny") return answerOf(call, price, asked);
+    const conversation = await harness!.root(context);
+    const data: AnswerData = { callId: call.callId, approved: true, decision: "allow", answeredAt: isoNow(), by: "setting" };
+    if (row) inbox.splice(inbox.indexOf(row), 1);
+    if (!(await landEntry(conversation, KINDS.answer, data, { take: row ? [row.id] : [] }))) return "park";
+    // The call's ask, as journaled: kept for the caller, which scopes an approval to it.
+    const first = findData<AskData>(await entriesOf(gate!.journal, conversation.id, context), KINDS.ask, (ask) => ask.callId === call.callId);
+    if (first) askedArgs.set(call.callId, first.args);
+    return data;
+  }
+
+  /** Whether a person was asked about this call and has not answered yet (an ask in the journal, no answer): its card is
+   *  theirs, so the call waits for that answer (answerOf) even when its tool's setting reads allow by now, and runs on
+   *  their allow, its rows reading so. Let through on the setting alone, it ran with its ask unanswered, which the run's
+   *  end reads withdrawn: its rows said "Not run: the run ended while it waited" of a call that ran. A deny set since still
+   *  refuses it first. Read from the journal once a claim: an ask written later in the claim parks it, and an answer
+   *  written later is read by answerOf itself. */
+  async function askStands(callId: string): Promise<boolean> {
+    standing ??= (async () => {
+      const conversation = await harness!.root(context);
+      const entries = await entriesOf(gate!.journal, conversation.id, context);
+      const answered = new Set(entries.filter((entry) => entry.kind === KINDS.answer).map((entry) => (entry.data as unknown as AnswerData).callId));
+      return new Set(entries.filter((entry) => entry.kind === KINDS.ask).map((entry) => (entry.data as unknown as AskData).callId).filter((id) => !answered.has(id)));
+    })();
+    // A read that failed (a seal while it ran) is read again by the next call, never kept.
+    const read = standing;
+    return (await read.catch((error: unknown) => {
+      if (standing === read) standing = undefined;
+      throw error;
+    })).has(callId);
   }
 
   /** A call parked from inside its run (a rerun asked again): held unrun until its signal aborts (the pass ends on the

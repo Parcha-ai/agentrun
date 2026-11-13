@@ -5,7 +5,7 @@
 //
 // fauxTable(script) is the path of a table module for `script` (a fixture's absolute path or file URL), made once per
 // script: startServer({ harnessTable: fauxTable(FAUX_HARNESS) }). The table module loads in the server too, so the script
-// module (which may hold a run's process at its exit) is imported only when a run's adapter is made, in its process.
+// module is imported only when a run's adapter is made, in its process.
 import { createHash } from "node:crypto";
 import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

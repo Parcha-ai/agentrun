@@ -73,6 +73,19 @@ test("a flipped form prices only when it is unambiguous: one price across its pr
   assert.deepEqual([priced("gpt-5-4-mini"), priced("mixed-1-5"), priced("x-2-5.1")], [cost(0.75, 4.5), undefined, undefined]);
 });
 
+test("flipped entries that differ only in a long-context tiers table price at the base price, with the entry that carries tiers; different base prices, or different tiers tables, stay unpriced", async () => {
+  const tiers = [{ inputTokensAbove: 272000, input: 5, output: 22.5, cacheRead: 0.5, cacheWrite: 0 }];
+  const stub = new Map([
+    ["gpt-6.1-terra", [{ provider: "azure", cost: cost(1, 5) }, { provider: "openai", cost: { ...cost(1, 5), tiers } }]],
+    ["acme-9.1", [{ provider: "azure", cost: cost(2, 10) }, { provider: "openai", cost: { ...cost(3, 10), tiers } }]],
+    ["dual-4.2", [{ provider: "azure", cost: { ...cost(1, 5), tiers } }, { provider: "openai", cost: { ...cost(1, 5), tiers: [{ ...tiers[0], input: 9 }] } }]],
+  ]);
+  assert.deepEqual([modelModule.catalogPrice(stub, "gpt-6-1-terra", undefined), modelModule.catalogPrice(stub, "acme-9-1", undefined), modelModule.catalogPrice(stub, "dual-4-2", undefined)], [{ ...cost(1, 5), tiers }, undefined, undefined]);
+  const catalog = await modelModule.catalogPrices();
+  const real = ["gpt-6-1-terra", "gpt-6-1-sol"].map((id) => modelModule.catalogPrice(catalog, id, undefined));
+  assert.deepEqual(real.map((c) => [c?.input, c?.output, c?.cacheRead, c?.cacheWrite]), [[1, 5, 0.05, 1.25], [2, 10, 0.1, 2.5]]);
+});
+
 test("a multi-digit version flips pair by pair as the catalog lists it (llama-3-1-8b is llama-3.1-8b), and the exact id wins over its flipped form", () => {
   assert.deepEqual([priced("llama-3-1-8b"), priced("z-1-5"), priced("vendor/gpt-5-4-mini")], [cost(0.05, 0.08), cost(1, 1), cost(0.75, 4.5)]);
 });
