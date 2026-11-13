@@ -33,6 +33,15 @@ async function post(baseUrl, triggerId, body, { secret = SECRET, id = `msg_${ran
   return { status: res.status, headers: res.headers, body: json ?? text, id };
 }
 
+/** A composio trigger as it is made: with no secret, then given Composio's through the secret route (the owner's write). */
+async function composioTrigger(api, source = { kind: "webhook", signature: "composio" }, secret = SECRET) {
+  const made = await api("POST", "/triggers", hooked("triage", source));
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  const set = await api("POST", `/triggers/${made.body.id}/secret`, { secret });
+  assert.equal(set.status, 200, JSON.stringify(set.body));
+  return made.body;
+}
+
 let count = 0;
 const hooked = (agentId, source = { kind: "webhook", signature: "composio" }, extra = {}) => ({ name: `composio ${++count}`, source, target: { kind: "start_run", agent_id: agentId, input: { content: "Triage this." }, max_cost_usd: 0.5 }, ...extra });
 
@@ -59,11 +68,10 @@ test("a composio delivery fires once, keyed by its webhook-id; the same id again
   withEnv(t, SEAL);
   const { api, baseUrl } = await serve(t);
   await made(api, "triage");
-  const created = await api("POST", "/triggers", hooked("triage", { kind: "webhook", signature: "composio", accept: [{ event: "GITHUB_ISSUE_ADDED_EVENT" }] }, { secret: SECRET }));
-  assert.equal(created.status, 201, JSON.stringify(created.body));
-  const { id } = created.body;
-  assert.equal(created.body.signing_secret, undefined, "Composio's secret is not echoed");
-  assert.deepEqual([created.body.secret.name, created.body.secret.set], [`trigger:${id}`, true]);
+  const created = await composioTrigger(api, { kind: "webhook", signature: "composio", accept: [{ event: "GITHUB_ISSUE_ADDED_EVENT" }] });
+  const { id } = created;
+  assert.equal(created.signing_secret, undefined, "Composio's secret is not echoed");
+  assert.equal((await api("GET", `/triggers/${id}`)).body.secret.set, true);
   const first = await post(baseUrl, id, delivery(), { id: "msg_one" });
   assert.equal(first.status, 202, JSON.stringify(first.body));
   assert.equal(first.body.key, keyOf("webhook", id, "msg_one"));
@@ -71,6 +79,12 @@ test("a composio delivery fires once, keyed by its webhook-id; the same id again
   assert.deepEqual([again.status, again.headers.get("idempotent-replayed"), again.body.key], [200, "true", first.body.key]);
   const ignored = await post(baseUrl, id, delivery("SLACK_NEW_MESSAGE"));
   assert.deepEqual([ignored.status, ignored.body], [200, { ok: "ignored" }]);
+  // An account event has no slug: its event is the body's type, which a slug rule does not take.
+  const expired = JSON.stringify({ id: "msg_2", type: "composio.connected_account.expired", data: { id: "ca_1" }, timestamp: "2026-11-13T00:00:00Z" });
+  assert.deepEqual((await post(baseUrl, id, expired)).body, { ok: "ignored" });
+  const accountOnly = await composioTrigger(api, { kind: "webhook", signature: "composio", accept: [{ event: "composio.connected_account.expired" }] });
+  const took = await post(baseUrl, accountOnly.id, expired);
+  assert.equal(took.status, 202, JSON.stringify(took.body));
   const stale = await post(baseUrl, id, delivery(), { at: Math.floor(Date.now() / 1000) - 400 });
   assert.equal(stale.status, 401);
 });
@@ -79,7 +93,7 @@ test("a Standard Webhooks signature is 401 on a composio trigger, and a composio
   withEnv(t, SEAL);
   const { api, baseUrl } = await serve(t);
   await made(api, "triage");
-  const composio = (await api("POST", "/triggers", hooked("triage", undefined, { secret: SECRET }))).body;
+  const composio = await composioTrigger(api);
   const standard = (await api("POST", "/triggers", hooked("triage", { kind: "webhook" }))).body;
   assert.match(standard.signing_secret, /^whsec_/);
   const body = delivery();
@@ -92,7 +106,7 @@ test("a Standard Webhooks signature is 401 on a composio trigger, and a composio
   assert.equal((await post(baseUrl, standard.id, body, { headers: viaStandard(standard.signing_secret) })).status, 202, "the standard trigger still takes its own");
 });
 
-test("a composio trigger may be made before its secret (Composio makes it once the trigger's URL is registered): until one is set every request is 401; the other schemes refuse one; PATCH never moves a trigger between given and minted secrets", { timeout: 60_000 }, async (t) => {
+test("a composio trigger is made before its secret (Composio makes it once the trigger's URL is registered): until one is set every request is 401; no create takes one; PATCH never moves a trigger between given and minted secrets", { timeout: 60_000 }, async (t) => {
   withEnv(t, SEAL);
   const { api, baseUrl } = await serve(t);
   await made(api, "triage");
@@ -102,14 +116,13 @@ test("a composio trigger may be made before its secret (Composio makes it once t
   assert.equal((await post(baseUrl, none.body.id, delivery())).status, 401, "no secret, no request passes");
   assert.equal((await api("POST", `/triggers/${none.body.id}/secret`, { secret: SECRET })).status, 200);
   assert.equal((await post(baseUrl, none.body.id, delivery())).status, 202);
-  for (const source of [{ kind: "webhook" }, { kind: "webhook", signature: "github" }]) {
+  // A create takes no secret, for any scheme: Composio makes it once the URL is registered.
+  for (const source of [{ kind: "webhook" }, { kind: "webhook", signature: "github" }, { kind: "webhook", signature: "composio" }]) {
     const refused = await api("POST", "/triggers", hooked("triage", source, { secret: SECRET }));
     assert.equal(refused.status, 422, JSON.stringify(refused.body));
   }
-  assert.equal((await api("POST", "/triggers", hooked("triage", undefined, { secret: "short" }))).status, 422);
-  assert.equal((await api("POST", "/triggers", hooked("triage", undefined, { secret: "has a space in it, but long enough" }))).status, 422);
-  assert.equal((await api("POST", "/triggers", hooked("triage", undefined, { secret: 7 }))).status, 422);
-  const composio = (await api("POST", "/triggers", hooked("triage", undefined, { secret: SECRET }))).body;
+  for (const secret of ["short", "has a space in it, but long enough", 7]) assert.equal((await api("POST", `/triggers/${none.body.id}/secret`, { secret })).status, 422, String(secret));
+  const composio = await composioTrigger(api);
   const standard = (await api("POST", "/triggers", hooked("triage", { kind: "webhook" }))).body;
   assert.equal((await api("PATCH", `/triggers/${composio.id}`, { source: { kind: "webhook" } })).status, 422);
   assert.equal((await api("PATCH", `/triggers/${standard.id}`, { source: { kind: "webhook", signature: "composio" } })).status, 422);
@@ -120,7 +133,7 @@ test("a composio trigger's secret is replaced by a body to POST /triggers/{id}/s
   withEnv(t, SEAL);
   const { api, baseUrl } = await serve(t);
   await made(api, "triage");
-  const composio = (await api("POST", "/triggers", hooked("triage", undefined, { secret: SECRET }))).body;
+  const composio = await composioTrigger(api);
   const standard = (await api("POST", "/triggers", hooked("triage", { kind: "webhook" }))).body;
   assert.equal((await api("POST", `/triggers/${composio.id}/secret`)).status, 422, "no secret in the body: none is minted");
   assert.equal((await api("POST", `/triggers/${composio.id}/secret`, {})).status, 422);
@@ -138,13 +151,13 @@ test("Composio's secret is in no view, is sealed and cut like every trigger secr
   withEnv(t, SEAL);
   const { api, data, baseUrl } = await serve(t);
   await made(api, "triage");
-  const composio = (await api("POST", "/triggers", hooked("triage", undefined, { secret: SECRET }))).body;
+  const composio = await composioTrigger(api);
   for (const read of [await api("GET", `/triggers/${composio.id}`), await api("GET", "/triggers"), await api("GET", `/triggers/${composio.id}/firings`)]) assert.ok(!JSON.stringify(read.body).includes(SECRET));
   const { secretForms } = await import("../dist/standard-webhooks.js");
   assert.ok(secretForms(SECRET).includes(SECRET));
   const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
   const create = doc.paths["/triggers"].post.requestBody.content["application/json"].schema.properties;
-  assert.equal(create.secret["x-agentrun-secret"], true, "named and marked in the API document");
+  assert.equal(create.secret, undefined, "the create takes no secret: it would make the CLI's create a secret write");
   assert.ok(doc.paths["/triggers/{trigger_id}/secret"].post.requestBody.content["application/json"].schema.properties.secret["x-agentrun-secret"]);
   assert.ok(doc.paths["/triggers"].post.requestBody.content["application/json"].schema.properties.source, "the source stays");
   assert.ok(JSON.stringify(doc).includes("composio"), "the scheme is documented");

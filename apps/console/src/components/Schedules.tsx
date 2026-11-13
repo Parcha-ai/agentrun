@@ -182,6 +182,9 @@ function ScheduleDetail({ v2, go, agentName, id, every, now }: PageProps & { id:
   const [confirming, setConfirming] = useState(false);
   // A webhook's Rotate secret: asked first (the old secret stops signing at once), then the new one shown that once.
   const [rotating, setRotating] = useState(false);
+  const [givingSecret, setGivingSecret] = useState(false);
+  const [given, setGiven] = useState("");
+  const [secretSet, setSecretSet] = useState(false);
   const [fresh, setFresh] = useState<string | null>(null);
   // A rotation out: its own flag, not `busy` (a Run now that ends first clears that), so a second rotation never goes out
   // while the first is, and an older answer never shows a secret the newer one already revoked.
@@ -237,10 +240,16 @@ function ScheduleDetail({ v2, go, agentName, id, every, now }: PageProps & { id:
     setTrigger(answer);
   }, trigger.enabled ? "the pause" : "the resume");
   const remove = () => act("delete", async () => { await v2.deleteTrigger(id); go("#/triggers"); }, "the delete");
+  // A composio trigger's secret is Composio's: given here, sealed, never shown again.
+  const giveSecret = async () => {
+    if (rotateOut.current) return;
+    rotateOut.current = true; setRenewing(true); setSaid(null);
+    try { await v2.rotateTriggerSecret(id, { secret: given.trim() }); setGivingSecret(false); setGiven(""); setSecretSet(true); } catch (e) { setSaid(problem(e, "the secret")); } finally { rotateOut.current = false; setRenewing(false); }
+  };
   const rotate = async () => {
     if (rotateOut.current) return;
     rotateOut.current = true; setRenewing(true); setSaid(null); setFresh(null);
-    try { setFresh((await v2.rotateTriggerSecret(id)).signing_secret); } catch (e) { setSaid(problem(e, "the new secret")); } finally { rotateOut.current = false; setRenewing(false); }
+    try { setFresh((await v2.rotateTriggerSecret(id)).signing_secret ?? null); } catch (e) { setSaid(problem(e, "the new secret")); } finally { rotateOut.current = false; setRenewing(false); }
   };
   const runNow = async () => {
     if (firing.current) return;
@@ -270,7 +279,14 @@ function ScheduleDetail({ v2, go, agentName, id, every, now }: PageProps & { id:
           <Button size="sm" variant="solid" onClick={() => void runNow()} disabled={busy === "fire"}><Zap aria-hidden /> {busy === "fire" ? "Starting" : "Run now"}</Button>
           {!(done && "ran" in done) && <Button size="sm" onClick={() => void toggle()} disabled={busy !== null}>{trigger.enabled ? <><Pause aria-hidden /> Pause</> : <><Play aria-hidden /> Resume</>}</Button>}
           {!hook && !gh && <Button size="sm" onClick={() => go(`${hashOf(id)}/edit`)}><Pencil aria-hidden /> Edit</Button>}
-          {hook && (!rotating ? <Button size="sm" onClick={() => setRotating(true)} disabled={busy !== null || renewing}><KeyRound aria-hidden /> Rotate secret</Button> : (
+          {hook && hook.source.signature === "composio" && (!givingSecret ? <Button size="sm" onClick={() => setGivingSecret(true)} disabled={busy !== null || renewing}><KeyRound aria-hidden /> Set secret</Button> : (
+            <form className="flex items-center gap-2" onSubmit={(e) => { e.preventDefault(); void giveSecret(); }}>
+              <Input name="secret" type="password" autoComplete="off" aria-label="Composio's webhook secret" className="w-64" value={given} onChange={(e) => setGiven(e.target.value)} />
+              <Button size="sm" variant="solid" type="submit" disabled={!given.trim() || renewing}>Save</Button>
+              <Button size="sm" variant="ghost" type="button" onClick={() => { setGivingSecret(false); setGiven(""); }}>Cancel</Button>
+            </form>
+          ))}
+          {hook && hook.source.signature !== "composio" && (!rotating ? <Button size="sm" onClick={() => setRotating(true)} disabled={busy !== null || renewing}><KeyRound aria-hidden /> Rotate secret</Button> : (
             <span className="flex items-center gap-2 border border-warning/50 px-2 py-1 text-small" role="alertdialog" aria-label="Make a new secret?">
               <span>The old secret stops signing at once.</span>
               <Button size="sm" variant="solid" onClick={() => { setRotating(false); void rotate(); }}>Yes, make a new one</Button>
@@ -294,7 +310,7 @@ function ScheduleDetail({ v2, go, agentName, id, every, now }: PageProps & { id:
         <dt className="caps text-label text-muted-foreground">Cost cap</dt><dd className="font-mono">{capOf(runs.target.max_cost_usd, agentCap)}</dd>
         {hook ? <>
           <dt className="caps text-label text-muted-foreground">URL</dt><dd className="flex min-w-0 flex-wrap items-center gap-2"><code className="min-w-0 break-all font-mono text-small">{hookUrlOf(hook)}</code><CopyButton text={hookUrlOf(hook)} label="Copy URL" /><span className="basis-full text-small text-muted-foreground">{HOOK_URL_HINT}</span></dd>
-          <dt className="caps text-label text-muted-foreground">Signature</dt><dd>{SIGNATURE_WORDS[hook.source.signature ?? "standard"]}</dd>
+          <dt className="caps text-label text-muted-foreground">Signature</dt><dd>{SIGNATURE_WORDS[hook.source.signature ?? "standard"]}{hook.source.signature === "composio" && !secretSet && !(trigger as { secret?: { set?: boolean } }).secret?.set ? " (no secret set yet: every request is refused)" : ""}</dd>
           <dt className="caps text-label text-muted-foreground">Accepts</dt>
           <dd className="min-w-0 break-words">{hook.source.accept?.length ? <ul className="space-y-1 font-mono text-small">{hook.source.accept.map((a, i) => <li key={i}>{acceptWords(a)}</li>)}</ul> : "Every signed request"}</dd>
         </> : gh ? <>
@@ -523,7 +539,7 @@ function Copyable({ title, text, label, hint }: { title: string; text: string; l
   );
 }
 
-const SIGNATURES: ("standard" | "github")[] = ["standard", "github"];
+const SIGNATURES: ("standard" | "github" | "composio")[] = ["standard", "github", "composio"];
 
 /** A new webhook trigger: each signed request to its URL starts a capped run of the agent. The create's answer carries
  *  its signing secret that once (or, on a retry under the same Idempotency-Key, a note in its place): shown with the URL,
@@ -565,7 +581,7 @@ function WebhookForm({ v2, go }: { v2: Client; go: (hash: string) => void }) {
       <div className="max-w-2xl p-5 md:p-8">
         {back}
         <h1 className="mt-3 flex items-center gap-2 text-2xl font-semibold"><Webhook className="size-5 text-primary-text" aria-hidden />{made.name}</h1>
-        <p className="mt-2 text-body text-muted-foreground">Send each request to this URL, signed with this secret ({SIGNATURE_WORDS[made.source.kind === "webhook" ? made.source.signature ?? "standard" : "standard"]}). Each one starts a run.</p>
+        <p className="mt-2 text-body text-muted-foreground">Send each request to this URL, signed with {made.source.kind === "webhook" && made.source.signature === "composio" ? "the secret you gave" : "this secret"} ({SIGNATURE_WORDS[made.source.kind === "webhook" ? made.source.signature ?? "standard" : "standard"]}). Each one starts a run.</p>
         {made.signing_secret ? <SecretOnce label="The webhook's URL and secret" url={hookUrlOf(made)} secret={made.signing_secret} /> : (
           <section aria-label="The webhook's URL and secret" className="mt-4 space-y-3 border p-4 text-body">
             <Copyable title="URL" text={hookUrlOf(made)} label="Copy URL" hint={HOOK_URL_HINT} />
@@ -596,6 +612,7 @@ function WebhookForm({ v2, go }: { v2: Client; go: (hash: string) => void }) {
           </div>
           {issues["source.signature"] && <p className="mt-1 text-small text-destructive-text" role="alert" data-issue="source.signature">{issues["source.signature"]}</p>}
         </fieldset>
+        {draft.signature === "composio" && <p className="text-small text-muted-foreground">Composio makes this webhook's secret when you register its URL (shown once it is made) as its webhook subscription: set it on the trigger then.</p>}
         <Field label="Agent" field="target.agent_id" issue={issues["target.agent_id"]}>
           <Picker name="agent" label="Agent" className="w-full" value={draft.agentId} onChange={(v) => set("agentId")(v)}
             options={[{ value: "", label: agents ? "Pick an agent" : "Loading the agents" },

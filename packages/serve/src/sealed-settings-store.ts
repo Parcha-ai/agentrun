@@ -95,16 +95,18 @@ class SealedSettingsOverStore {
     return secret;
   }
 
-  /** A given value for `scope`'s `field` (a sender's signing secret, a bot's token), written sealed. One under its field's
+  /** A given value for `scope`'s `field` (a sender's signing secret, a bot's token), written sealed; `as: "utf8"` for a
+   *  signing secret that is no `whsec_` one (its whole string is the key). One under its field's
    *  rules is refused, 422, before anything is written. */
-  async set(scope: string, field: string, value: string): Promise<void> {
+  async set(scope: string, field: string, value: string, as?: "utf8"): Promise<void> {
     const spec = this.spec.fields[field];
     if (!spec) throw new Error(`${this.adapterId}'s settings keep no ${field}`);
     if (spec.format === "pem" && !PEM.test(value)) throw invalid([{ field, reason: "invalid", message: `${field} is a PEM private key` }]);
     // A value the redaction list would pass over (whitespace, under 8 bytes) is never kept; a public one is no secret, and a
     // PEM key is listed by its lines (pemValues).
     if (!spec.public && spec.format !== "pem" && (/\s/.test(value) || Buffer.byteLength(value, "utf8") < 8)) throw invalid([{ field, reason: "invalid", message: `${field} is at least 8 bytes, with no whitespace` }]);
-    if (spec.minBytes === MIN_KEY_BYTES && !value.startsWith(SECRET_PREFIX)) throw invalid([{ field, reason: "invalid", message: `${field} is a Standard Webhooks secret: whsec_ and its key in base64` }]);
+    // `utf8`: a sender's own secret, whose whole string is the key (Composio's), not a Standard Webhooks one.
+    if (as !== "utf8" && spec.minBytes === MIN_KEY_BYTES && !value.startsWith(SECRET_PREFIX)) throw invalid([{ field, reason: "invalid", message: `${field} is a Standard Webhooks secret: whsec_ and its key in base64` }]);
     if (spec.minBytes !== undefined && keyBytes(value) < spec.minBytes) throw invalid([{ field, reason: "too_short", message: `${field} holds at least ${spec.minBytes} bytes` }]);
     await this.put(scope, field, value);
   }
