@@ -676,8 +676,9 @@ await docker.release(made.value, "delete");
 Every `create` takes a request id (`CreateContext.requestId`, required): the request, not the computer, so a retry of
 the same request passes the same id. The contract makes one computer per id, named `computer-<12 hex of sha256(id)>`
 (`computerNameFor`), answers it again while it starts or runs, and refuses `exists` once it has ended
-([`spec/computer/provider.md`](../../spec/computer/provider.md#idempotent-create)). The fake ui provider and the
-attached provider keep it; the vendor providers get it with the hosted adapter.
+([`spec/computer/provider.md`](../../spec/computer/provider.md#idempotent-create)). Docker names the container for the
+request: a retry finds the name taken and answers that container, or `exists` when it is stopped, of another spec, or
+was deleted.
 
 - `capabilities()` declares kind `linux`, daemon `pid1`, groups `exec`, `files` and `processes`, `maxLifetimeMs`
   of 30 days, and `mount: ["bind"]` (below); there is no `extend()` or `stream()`, and init gets no `--max-deadline`.

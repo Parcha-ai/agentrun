@@ -1,6 +1,5 @@
 // The Docker provisioner: every call through the docker CLI with execFile or spawn, never a shell.
 import { execFile, spawn } from "node:child_process";
-import { randomBytes } from "node:crypto";
 import { readFileSync, type Stats, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -79,7 +78,8 @@ import {
 	type ReleaseHow,
 	runLifetimeMs,
 } from "./provider.js";
-import { failFor, ok, type Result, vendorFail } from "./result.js";
+import { type ComputerErrorCode, failFor, ok, type Result, vendorFail } from "./result.js";
+import { CreateRequests, endedWords, labelsDiffer, otherSpecWords } from "./create-requests.js";
 import { daemonWatch, type ScreenWatch, type ScreenWatchHandlers, type WatchOptions } from "./screen-watch.js";
 import { countTested } from "./test-connection.js";
 
@@ -233,6 +233,10 @@ const FIXED = "a Docker computer's network is fixed at create; create a new comp
 const NETWORKS = 'network is required: "none", "open" or { allow: [names or CIDRs] }';
 /** How often create asks whether the egress proxy is ready. */
 const EGRESS_POLL_MS = 100;
+/** How long a create of a request whose computer another create is still making waits for it, and how often it looks:
+ *  the image is on the host by then, so what is left is docker run, the display and the read-back. */
+const REQUEST_WAIT_MS = 120_000;
+const REQUEST_POLL_MS = 500;
 /** After a docker run cut off before its own exit: how long, at most, the leftovers are removed and looked for again,
  *  how often, and for how long in a row the looks must find none of them before they count as gone (#settle). */
 const SETTLE_MS = 10_000;
@@ -265,6 +269,8 @@ interface Ran {
 const isNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
 const isWhole = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value);
 const noSuchContainer = (stderr: string) => /no such container/i.test(stderr);
+/** Docker's words for a docker run whose --name another container holds. */
+const nameTaken = (stderr: string) => /Conflict\. The container name "[^"]*" is already in use/.test(stderr);
 const nameOf = (report: DockerInspect) => (report.Name ?? "").replace(/^\//, "");
 /** Only a container this provider made counts: its label, and a name of its making. */
 const ours = (report: DockerInspect) => report.Config?.Labels?.[COMPUTER_LABEL] === "1" && NAME.test(nameOf(report));
@@ -281,6 +287,8 @@ export class DockerProvider implements ComputerProvider {
 	readonly #desktop: Required<DockerDesktopOptions> | undefined;
 	readonly #image: ImageSource;
 	readonly #egress: { image: string; hint?: string; readyMs: number; hostAddresses?: string[]; hostRoot: string };
+	/** Each create in flight, and the names of the computers this provider deleted (create-requests.ts). */
+	readonly #requests = new CreateRequests();
 	/** Why this provider's own interfaces are not the Docker host's, in words, or none: read once, for the first allowlist
 	 *  with no egress.hostAddresses (#elsewhere). */
 	#elsewhere: string | null | undefined;
@@ -436,11 +444,79 @@ export class DockerProvider implements ComputerProvider {
 		return refusals;
 	}
 
+	/**
+	 * Makes a computer, once per request (provider.md, Idempotent create): context.requestId names the container
+	 * (computerNameFor). A request Docker holds a container for already answers that one (#taken); one whose computer
+	 * was deleted here is refused exists; a create of a request in flight here waits for the first (CreateRequests).
+	 */
 	async create(spec: ComputerSpec, context: CreateContext): Promise<Result<ComputerRef>> {
-		const signal = context?.signal;
 		const refusals = this.check(spec);
-		if (refusals.length > 0) return fail("refused", refusals.map(({ field, message }) => `${field}: ${message}`).join("; "));
-		const user = userOf(spec.user) ?? this.#user;
+		return this.#requests.create(spec, context, {
+			refuse: fail,
+			...(refusals.length > 0 ? { refused: refusals.map(({ field, message }) => `${field}: ${message}`).join("; ") } : {}),
+			differ: (asked, inFlight) => this.#specDiffer(asked, { labels: inFlight.labels ?? {}, user: this.#userFor(inFlight), image: inFlight.image }, "in flight"),
+			make: (name) => this.#createNamed(spec, name, context.signal),
+		});
+	}
+
+	/** The user a spec's computer runs as: the spec's, or the provider's. */
+	#userFor(spec: ComputerSpec): string {
+		return userOf(spec.user) ?? this.#user;
+	}
+
+	/**
+	 * How spec differs from a computer of its request (seen: "read back", or "in flight"): each label asked with another
+	 * value or none, as attach by labels matches, the user and the image. Empty when it is the same.
+	 */
+	#specDiffer(spec: ComputerSpec, have: { labels: Record<string, string>; user: string; image: string | undefined }, seen: string): string[] {
+		const differ = labelsDiffer(spec.labels ?? {}, have.labels, seen, { extra: false });
+		const user = this.#userFor(spec);
+		if (user !== have.user) differ.push(`user: asked ${user}, ${seen} ${have.user}`);
+		if (spec.image !== have.image) differ.push(`image: asked ${spec.image}, ${seen} ${have.image ?? "nothing"}`);
+		return differ;
+	}
+
+	/**
+	 * A create of a request whose name Docker holds already: its docker run (of the computer, or of the allowlist's proxy)
+	 * found the name taken, by a create of the same request in another process or before this one. A container of
+	 * another spec, one stopped, or one past its deadline is refused exists; one running is returned once attach reads it
+	 * as create made it, and one not there yet is waited for, within REQUEST_WAIT_MS. None by then is exists: a create
+	 * that took the name and removed what it made has ended.
+	 */
+	async #taken(spec: ComputerSpec, name: string, signal?: AbortSignal): Promise<Result<ComputerRef>> {
+		const until = Date.now() + REQUEST_WAIT_MS;
+		let last: { code: ComputerErrorCode; message: string } | undefined;
+		for (;;) {
+			const found = await this.#inspect([name], signal);
+			if (!found.ok) return found;
+			const report = found.value.find((one) => nameOf(one) === name);
+			if (report !== undefined) {
+				if (!ours(report)) return fail("exists", `a container named ${name} is on the Docker host and this provider did not make it: create with a new request id`);
+				const status = report.State?.Status;
+				const deadline = Date.parse(report.Config?.Labels?.[DEADLINE_LABEL] ?? "");
+				if (status === "exited" || status === "dead" || status === "removing" || deadline <= Date.now()) return fail("exists", endedWords(name));
+				if (report.State?.Running === true) {
+					const differ = this.#specDiffer(spec, { labels: report.Config?.Labels ?? {}, user: report.Config?.User ?? "", image: report.Config?.Image }, "read back");
+					if (differ.length > 0) return fail("exists", otherSpecWords(name, "was made", differ));
+					const attached = await this.attach({ id: name }, { signal });
+					if (attached.ok) return ok({ id: attached.value.id, name });
+					if (attached.error.code === "aborted") return attached;
+					// Its display or its daemon is not up yet: the first create is still making it.
+					last = attached.error;
+				}
+			}
+			if (Date.now() + REQUEST_POLL_MS >= until) {
+				if (report === undefined) return fail("exists", endedWords(name));
+				return fail("timeout", `${name}, made for this request, was not up within ${REQUEST_WAIT_MS / 1000} s${last ? `: ${last.message}` : ""}`);
+			}
+			await sleep(REQUEST_POLL_MS, undefined, { signal }).catch(() => undefined);
+			if (signal?.aborted) return fail("aborted", `create was aborted while ${name}, made for this request, came up`);
+		}
+	}
+
+	/** Everything create does under the request's name: the computer Docker holds under it, or a new one. */
+	async #createNamed(spec: ComputerSpec, name: string, signal?: AbortSignal): Promise<Result<ComputerRef>> {
+		const user = this.#userFor(spec);
 		const bound = spec.mount?.kind === "bind" ? spec.mount.path : undefined;
 		const daemon = this.#daemon();
 		if (!daemon.ok) return daemon;
@@ -496,7 +572,6 @@ export class DockerProvider implements ComputerProvider {
 			}
 		}
 		if (signal?.aborted) return fail("aborted", "create was aborted before docker run");
-		const name = `computer-${randomBytes(6).toString("hex")}`;
 		// The lifetime counts from here: what the proxy and docker run take comes out of it.
 		const lifetimeFrom = Date.now();
 		const deadline = new Date(lifetimeFrom + runLifetimeMs(spec)).toISOString();
@@ -504,7 +579,9 @@ export class DockerProvider implements ComputerProvider {
 			// The proxy first, ready before the computer exists: a computer never runs with an allowlist it cannot reach.
 			const started = await this.#startEgress(name, user, deadline, allow, spec.labels ?? {}, signal);
 			if (!started.ok) {
-				const removed = await this.release({ id: name, name }, "delete");
+				// Another create of this request, in another process, runs its proxy: what it makes is the request's.
+				if (nameTaken(started.error.message)) return this.#taken(spec, name, signal);
+				const removed = await this.#remove({ id: name, name }, "delete");
 				const after = removed.ok ? "its proxy and volume were removed" : `its proxy and volume could not be removed (${removed.error.message})`;
 				return fail(started.error.code, `${started.error.message}; the computer ${name} was never run, and ${after}`);
 			}
@@ -538,9 +615,15 @@ export class DockerProvider implements ComputerProvider {
 
 		const started = await this.#run(args, signal);
 		const ranMs = Date.now() - lifetimeFrom;
+		if (started.ok && started.value.exitCode !== 0 && nameTaken(started.value.stderr)) {
+			// Another create of this request, in another process, ran first: its computer is the request's, and this one's
+			// proxy, made for a computer that never ran, goes.
+			if (allow !== undefined) await this.#removeProxy(name);
+			return this.#taken(spec, name, signal);
+		}
 		if (!started.ok || started.value.exitCode !== 0) {
 			// A run that failed or was aborted may still have made the container; an allowlist's proxy and volume go with it.
-			const released = await this.release({ id: name, name }, "delete");
+			const released = await this.#remove({ id: name, name }, "delete");
 			if (started.ok) return vendorFail("docker",`docker run failed: ${started.value.stderr.trim()}`);
 			// Cut off before its own exit: the daemon may still make the computer after release looked, and then its egress
 			// volume with it (#settle).
@@ -1121,6 +1204,20 @@ export class DockerProvider implements ComputerProvider {
 	async release(ref: ComputerRef, how: ReleaseHow): Promise<Result<void>> {
 		if (!NAME.test(ref.name)) return fail("invalid", `${ref.name} is not the name of a Docker computer (computer-<12 hex digits>)`);
 		if (how !== "stop" && how !== "delete") return fail("invalid", `release is "stop" or "delete", not ${String(how)}`);
+		// A deleted computer's request is spent: the same request id again is refused, never made a second time.
+		if (how === "delete") this.#requests.end(ref.name);
+		return this.#remove(ref, how);
+	}
+
+	/** An allowlist proxy and its volume that create made for a computer it never ran, by their name. */
+	async #removeProxy(name: string): Promise<void> {
+		const proxy = egressNameOf(name);
+		await this.#run(["rm", "--force", proxy]);
+		await this.#run(["volume", "rm", "--force", proxy]);
+	}
+
+	/** release's work, which create also does for what it made before its computer ran (its request is not spent). */
+	async #remove(ref: ComputerRef, how: "stop" | "delete"): Promise<Result<void>> {
 		const args = how === "stop" ? ["stop", ref.name] : ["rm", "--force", "--volumes", ref.name];
 		const ran = await this.#run(args);
 		if (!ran.ok) return ran;

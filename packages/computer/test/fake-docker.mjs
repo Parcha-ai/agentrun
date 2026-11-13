@@ -302,6 +302,12 @@ switch (args[0]) {
 		let i = 1;
 		for (; i < args.length && args[i].startsWith("--"); i += args[i] === "--detach" || args[i] === "--read-only" ? 1 : 2) (flags[args[i]] ??= []).push(args[i + 1]);
 		const name = flags["--name"][0];
+		// A name another container holds, as Docker refuses it: container names are unique on a host.
+		const holder = find(load(), name);
+		if (holder) {
+			process.stderr.write('docker: Error response from daemon: Conflict. The container name "/' + name + '" is already in use by container "' + holder.Id + '". You have to remove (or rename) that container to be able to reuse that name.\\n');
+			process.exit(125);
+		}
 		const labels = Object.fromEntries(flags["--label"].map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]));
 		const parsed = flags["--mount"].map((m) => Object.fromEntries(m.split(",").map((p) => (p.includes("=") ? [p.slice(0, p.indexOf("=")), p.slice(p.indexOf("=") + 1)] : [p, ""]))));
 		// An image not on the host: --pull never fails as Docker does; any other run pulls it first.
@@ -388,7 +394,7 @@ switch (args[0]) {
 		const found = find(all, args.at(-1));
 		// config.sticky: name endings of containers rm never removes, ones Docker keeps (a daemon stuck in its removal).
 		if (args[0] === "rm" && !(found && config.sticky.some((ending) => found.Name.endsWith(ending)))) save(all.filter((c) => c !== found));
-		else if (found) { found.State.Running = false; save(all); }
+		else if (found) { Object.assign(found.State, { Running: false, Status: "exited" }); save(all); }
 		process.stdout.write(args.at(-1) + "\\n");
 		break;
 	}

@@ -9,6 +9,9 @@ import { fakeDocker } from "./fake-docker.mjs";
 
 const ALLOW = ["pypi.org"];
 const SPEC = { image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none" };
+let requests = 0;
+/** A create's context: a new request each time. */
+const req = () => ({ requestId: `docker-abort-${++requests}` });
 
 /** create(spec) on `fake` (made with lateRun), aborted once the daemon's late create has begun: the fake's daemon
  *  process marks it before the CLI can be cut off, so the abort always lands with a create under way. */
@@ -20,7 +23,7 @@ async function abortedLate(fake, spec) {
 			await sleep(10);
 		}
 	})();
-	const made = await fake.provider.create(spec, { signal: controller.signal });
+	const made = await fake.provider.create(spec, { ...req(), signal: controller.signal });
 	await watch;
 	return made;
 }
@@ -82,7 +85,7 @@ test("settleWords always names what it checked: what the last look still found, 
 test("a docker run that ended with an exit of its own is cleaned up as before, once, with no settling", async () => {
 	// The proxy's run answered, and the proxy then ended before it was ready: removed by release, as before.
 	const egress = fakeDocker({ egress: "exits" });
-	const made = await egress.provider.create({ ...SPEC, network: { allow: ALLOW } });
+	const made = await egress.provider.create({ ...SPEC, network: { allow: ALLOW } }, req());
 	assert.equal(made.ok, false);
 	assert.deepEqual([made.error.code, made.error.vendor], ["vendor", "docker"]);
 	assert.match(made.error.message, /ended \(exit code 2\) before it was ready/);

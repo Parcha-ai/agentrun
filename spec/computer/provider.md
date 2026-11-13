@@ -61,7 +61,7 @@ A computer's spec (`ComputerSpec`):
 
 `create`'s context carries a required `requestId` (`CreateContext`). It names the request, not the computer, so a
 retry of one request (a timeout, a crash between the vendor's answer and ours) makes no second computer. There is no
-fallback that makes one up: serve passes the run's claim (`<run>.<epoch>`), and conformance one per create.
+fallback that makes one up: serve passes the run's claim (`<run>#<epoch>`), and conformance one per create.
 
 - The computer's vendor-side name is `computer-<the first 12 hex of sha256(requestId)>` (`computerNameFor`), with no
   extra label, so a provider finds the request's computer by listing that name.
@@ -71,6 +71,15 @@ fallback that makes one up: serve passes the run's claim (`<run>.<epoch>`), and 
   owner differ from the spec's is refused `exists`.
 - The same id after it stopped, ended or passed its deadline is refused `exists`, in words: "computer-… was made for
   this request and has ended: create with a new request id". Never a second computer under the same name.
+- A second create of a request still in flight in the same provider waits for the first and answers what it does; one
+  asking another spec is refused `exists`. The provider remembers the requests whose computers it ended, so the same
+  id is refused even once the vendor forgets the computer; past the process, what the vendor (or the provider's
+  ledger) still shows is what holds.
+
+Every provider that makes computers keeps it through one mechanism, `CreateRequests` (`src/create-requests.ts`): the id checked, the name,
+the creates in flight and the requests ended. What the vendor holds under the name is the provider's to read: the
+hosted adapter lists the name, Docker's `docker run --name` finds the name taken and reads that container, and the
+phone harness reads its ledger by name and sends a key derived from the id as the `Idempotency-Key`.
 
 `provider.create-retried` creates twice with one id and expects one computer; `provider.create-after-release` releases
 it and expects the same id refused `exists`. Both are Full.

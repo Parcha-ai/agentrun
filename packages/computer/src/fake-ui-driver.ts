@@ -32,7 +32,8 @@ import {
 	type UiStep,
 	type UiTarget,
 } from "./protocol.js";
-import { type ComputerCapabilities, type ComputerConnection, type ComputerProvider, checkLifetime, computerNameFor, kindRefusals } from "./provider.js";
+import { CreateRequests, endedWords, labelsDiffer, otherSpecWords } from "./create-requests.js";
+import { type ComputerCapabilities, type ComputerConnection, type ComputerProvider, checkLifetime, kindRefusals } from "./provider.js";
 import { fail, ok, type Result } from "./result.js";
 import { featureOff, UiEngine, type UiRun, type UiSource, type UiStepContext, type UiView } from "./ui-engine.js";
 
@@ -641,6 +642,8 @@ export function fakeUiProvider(options: FakeUiOptions = {}, make: (options: Fake
 	const deadlines = new Map<string, Date>();
 	/** Every computer a request made, ended or not: a request id makes one computer, ever. */
 	const made = new Set<string>();
+	/** The request id checked, and a create of a request in flight shared (create-requests.ts). */
+	const requests = new CreateRequests();
 	const capabilities: ComputerCapabilities = {
 		kind: options.kind ?? "desktop",
 		lifetime: "vendor",
@@ -680,24 +683,27 @@ export function fakeUiProvider(options: FakeUiOptions = {}, make: (options: Fake
 		],
 		async create(spec, context) {
 			const refusals = this.check(spec);
-			if (refusals.length > 0) return fail("refused", refusals.map((refusal) => refusal.message).join("; "));
-			if (typeof context?.requestId !== "string" || context.requestId === "") return fail("invalid", "create needs a request id (CreateContext.requestId): pass the same one to retry the same request");
-			// One computer per request id, named for it (provider.md, Idempotent create).
-			const id = computerNameFor(context.requestId);
-			if (made.has(id)) {
-				if (!live(id)) return fail("exists", `${id} was made for this request and has ended: create with a new request id`);
-				const have = labelsOf.get(id) ?? {};
-				const asked = spec.labels ?? {};
-				const same = Object.keys(have).length === Object.keys(asked).length && Object.entries(asked).every(([key, value]) => have[key] === value);
-				if (!same) return fail("exists", `${id} was made for this request with other labels (${JSON.stringify(have)}): create with a new request id`);
-				return ok({ id, name: id });
-			}
-			made.add(id);
-			drivers.set(id, make(options));
-			labelsOf.set(id, { ...spec.labels });
-			deadlines.set(id, new Date(Date.now() + (spec.lifetimeMs ?? capabilities.maxLifetimeMs)));
-			networks.set(id, spec.network as "none" | "open");
-			return ok({ id, name: id });
+			// One computer per request id, named for it (provider.md, Idempotent create): what the fake's vendor holds is
+			// every computer a request made, ended or not.
+			return requests.create(spec, context, {
+				refuse: fail,
+				...(refusals.length > 0 ? { refused: refusals.map((refusal) => refusal.message).join("; ") } : {}),
+				differ: (asked, inFlight) => labelsDiffer(asked.labels ?? {}, inFlight.labels ?? {}, "in flight"),
+				make: async (id) => {
+					if (made.has(id)) {
+						if (!live(id)) return fail("exists", endedWords(id));
+						const differ = labelsDiffer(spec.labels ?? {}, labelsOf.get(id) ?? {}, "read back");
+						if (differ.length > 0) return fail("exists", otherSpecWords(id, "was made", differ));
+						return ok({ id, name: id });
+					}
+					made.add(id);
+					drivers.set(id, make(options));
+					labelsOf.set(id, { ...spec.labels });
+					deadlines.set(id, new Date(Date.now() + (spec.lifetimeMs ?? capabilities.maxLifetimeMs)));
+					networks.set(id, spec.network as "none" | "open");
+					return ok({ id, name: id });
+				},
+			});
 		},
 		async attach(ref) {
 			const id = "id" in ref ? ref.id : [...labelsOf].find(([found, labels]) => live(found) && Object.entries(ref.labels).every(([key, value]) => labels[key] === value))?.[0];

@@ -257,6 +257,32 @@ final class UiTest {
 		eq("met", phone.call("ui.act", "{\"steps\":[],\"expect\":{\"text\":\"Bluetooth, pairing\"}}").get("expect"));
 	}
 
+	static void testAWindowExpectWaitsForTheAppsMainWindowAndStandsAlone() throws Exception {
+		Check.Phone phone = new Check.Phone();
+		phone.call("apps.launch", "{\"id\":\"" + FakeDevice.FIXTURE + "\"}");
+		String target = "\"target\":{\"app\":\"" + FakeDevice.FIXTURE + "\"}";
+		Map<String, Object> seen = phone.call("ui.observe", "{" + target + "}");
+		String home = (String) map(seen.get("window")).get("id");
+		String next = null;
+		for (Object n : list(seen, "nodes")) if ("next".equals(map(n).get("id"))) next = (String) map(n).get("ref");
+		// No window of that title comes: unmet after its timeout, never not_found.
+		eq("unmet", phone.call("ui.act", "{" + target + ",\"steps\":[],\"expect\":{\"window\":{\"title\":\"No such window\"},\"timeoutMs\":300}}").get("expect"));
+		// A phone's windows are ordinary ones: a dialog is never met, and a window is.
+		eq("unmet", phone.call("ui.act", "{" + target + ",\"steps\":[],\"expect\":{\"window\":{\"role\":\"dialog\"},\"timeoutMs\":300}}").get("expect"));
+		eq("met", phone.call("ui.act", "{" + target + ",\"steps\":[],\"expect\":{\"window\":{\"role\":\"window\"}}}").get("expect"));
+		// Next opens the second page, a new window of the app: the expect waits for it and answers its state.
+		Map<String, Object> second = phone.call("ui.act", "{" + target + ",\"steps\":[{\"press\":\"" + next + "\"}],\"expect\":{\"window\":{\"title\":\"Second page\"}}}");
+		eq("met", second.get("expect"));
+		eq(true, second.get("changed"));
+		Map<String, Object> now = phone.call("ui.observe", "{" + target + "}");
+		eq("Second page", map(now.get("window")).get("title"));
+		yes(!home.equals(map(now.get("window")).get("id")), "the second page is a window of its own");
+		refuses("invalid", () -> phone.call("ui.act", "{\"steps\":[],\"expect\":{\"window\":{}}}"));
+		refuses("invalid", () -> phone.call("ui.act", "{\"steps\":[],\"expect\":{\"window\":{\"title\":\"x\"},\"text\":\"x\"}}"));
+		refuses("invalid", () -> phone.call("ui.act", "{\"steps\":[],\"expect\":{\"window\":{\"name\":\"x\"}}}"));
+		refuses("invalid", () -> phone.call("ui.act", "{\"steps\":[],\"expect\":{\"window\":{\"role\":\"pane\"}}}"));
+	}
+
 	static void testRowNamingSkipsActionableChildren() {
 		FakeNode row = FakeNode.of("android.widget.LinearLayout").at(0, 0, 100, 100).tappable();
 		FakeNode box = FakeNode.of("android.widget.CheckBox").at(80, 10, 95, 30).text("Remember");

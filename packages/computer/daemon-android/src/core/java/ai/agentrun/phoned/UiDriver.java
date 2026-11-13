@@ -32,6 +32,12 @@ public final class UiDriver {
 	static final long MAX_SETTLE_MS = 3_000;
 	/** How often an expect looks again. */
 	static final long EXPECT_POLL_MS = 100;
+	/** The protocol's roles (protocol.ts UI_ROLES), which expect.window.role names one of. */
+	static final java.util.Set<String> UI_ROLES = new java.util.HashSet<>(java.util.Arrays.asList(
+			"window", "dialog", "menu", "menuitem", "toolbar", "tab",
+			"button", "link", "textbox", "searchbox", "checkbox", "radio", "switch", "slider", "combobox", "progressbar",
+			"list", "listitem", "table", "row", "cell", "scrollarea",
+			"image", "text", "heading", "group", "generic"));
 	/** A ref not seen in this many observes is let go, so a long session holds a bounded set of elements. */
 	static final int REF_LIFETIME = 64;
 	/** Room a reply keeps for everything but its nodes and image. */
@@ -385,6 +391,10 @@ public final class UiDriver {
 	static final class Expect {
 		String text;
 		String ref;
+		/** A window expect (expect.window): it reads the act's app's main window, its title and its role. */
+		boolean window;
+		String windowTitle;
+		String windowRole;
 		boolean gone;
 		long timeoutMs = DEFAULT_EXPECT_MS;
 	}
@@ -461,12 +471,16 @@ public final class UiDriver {
 			}
 			Settle.quiet(a11y, clock, after(a11y, target).id(), MAX_SETTLE_MS, cancel);
 			String met = null;
+			// A met window expect answers the window that met it, the app's main window; every other act its own window.
+			Device.AxWindow main = null;
 			if (expect != null && !refused) {
 				met = holdsWithin(expect, a11y, target, clock, cancel) ? "met" : "unmet";
+				if (expect.window && !expect.gone && "met".equals(met)) main = mainOf(a11y, target);
 				// The answered state is the window once it settles after the expect, never a frame of a transition.
-				Settle.quiet(a11y, clock, after(a11y, target).id(), MAX_SETTLE_MS, cancel);
+				Settle.quiet(a11y, clock, (main != null ? main : after(a11y, target)).id(), MAX_SETTLE_MS, cancel);
+				if (main != null) main = mainOf(a11y, target);
 			}
-			Look last = new Look(after(a11y, target), false);
+			Look last = new Look(main != null ? main : after(a11y, target), false);
 			State now = record(last);
 			return Json.obj("steps", answers, "state", now.id, "changed", !first.equals(last.fingerprint()), "expect", met == null ? Json.OMIT : met);
 		}
@@ -564,17 +578,27 @@ public final class UiDriver {
 	}
 
 	private static Expect expect(Params p) {
-		p.only("text", "ref", "gone", "timeoutMs");
+		p.only("text", "ref", "window", "gone", "timeoutMs");
 		Expect e = new Expect();
 		e.text = p.str("text", null);
 		e.ref = p.has("ref") ? ref(p, "ref") : null;
 		e.gone = p.bool("gone", false);
+		if (p.has("window")) {
+			if (e.text != null || e.ref != null) throw RpcError.invalid("ui.act: expect.window stands alone: an expect waits for a window, or for text or a ref in the act's window, not both");
+			Params w = p.obj("window");
+			w.only("title", "role");
+			e.window = true;
+			e.windowTitle = w.str("title", null);
+			e.windowRole = w.str("role", null);
+			if (e.windowTitle == null && e.windowRole == null) throw RpcError.invalid("ui.act: expect.window names neither title nor role: it needs at least one");
+			if (e.windowRole != null && !UI_ROLES.contains(e.windowRole)) throw RpcError.invalid("ui.act: expect.window.role is " + Json.write(e.windowRole) + ", not one of the protocol's roles (uiRoles)");
+		}
 		if (p.has("timeoutMs")) {
 			long t = p.whole("timeoutMs", 0, Long.MAX_VALUE);
 			if (t > MAX_EXPECT_MS) throw RpcError.limit("ui.act: expect.timeoutMs " + t + " is more than the " + MAX_EXPECT_MS + " ms an expect may wait");
 			e.timeoutMs = t;
 		}
-		if (e.text == null && e.ref == null) throw RpcError.invalid("ui.act: expect names neither text nor ref: it needs at least one");
+		if (!e.window && e.text == null && e.ref == null) throw RpcError.invalid("ui.act: expect names neither text, ref nor window: it needs one");
 		return e;
 	}
 
@@ -895,8 +919,34 @@ public final class UiDriver {
 		}
 	}
 
-	/** text: some element's name or value holds it; ref: the element is in the window (holding text, when both); gone inverts. */
+	/**
+	 * The act's app's main window, which a window expect reads: the app's window in front, never the window a target or a
+	 * state aimed the act at (wire.md, expect.window). After a nav step the act has no app, and it is the app in front.
+	 * Null when there is none.
+	 */
+	private Device.AxWindow mainOf(Device.Accessibility a11y, Target target) {
+		Target app = new Target();
+		app.app = target.app;
+		try {
+			return window(a11y, app);
+		} catch (RpcError none) {
+			if ("not_found".equals(none.kind) || "unsupported".equals(none.kind)) return null;
+			throw none;
+		}
+	}
+
+	/**
+	 * window: the app's main window's title holds title and its role is role (a phone's windows are ordinary ones, role
+	 * "window"); text: some element's name or value holds it; ref: the element is in the window (holding text, when both);
+	 * gone inverts.
+	 */
 	private boolean holds(Expect e, Device.Accessibility a11y, Target target) {
+		if (e.window) {
+			Device.AxWindow main = mainOf(a11y, target);
+			String title = main == null ? null : main.title();
+			boolean seen = main != null && (e.windowTitle == null || (title != null && title.contains(e.windowTitle))) && (e.windowRole == null || "window".equals(e.windowRole));
+			return seen != e.gone;
+		}
 		Outline outline;
 		try {
 			outline = Outline.of(after(a11y, target).root(), true);

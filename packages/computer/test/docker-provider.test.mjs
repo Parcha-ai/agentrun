@@ -5,11 +5,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { DockerProvider } from "../dist/docker.js";
-import { checkLifetime } from "../dist/index.js";
+import { checkLifetime, computerNameFor } from "../dist/index.js";
 import { PROTOCOL_VERSION } from "../dist/protocol.js";
-import { fakeDocker, idOf, removal, valuesOf, VERSION } from "./fake-docker.mjs";
+import { container, fakeDocker, idOf, removal, valuesOf, VERSION } from "./fake-docker.mjs";
 
 const SPEC = { image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none" };
+let requests = 0;
+/** A create's context: a new request each time. */
+const req = () => ({ requestId: `docker-provider-${++requests}` });
 const NO_LIST = 'an allowlist needs at least one name or CIDR; for no network ask for "none"';
 /** The user a computer runs as when neither the spec nor the provider names one: this process's, or 1000:1000 when its uid or gid is 0. */
 /** docker run's argv: create reads the host with docker info first. */
@@ -81,20 +84,20 @@ test("a lifetime is at most 30 days, and create() never throws on a spec check()
 		assert.deepEqual(refusals.map((r) => r.field), ["lifetimeMs"], `lifetimeMs ${lifetimeMs}`);
 		assert.match(refusals[0].message, /at most 30 days/);
 		assert.deepEqual(refusals, checkLifetime(lifetimeMs, provider.capabilities()), "the shared lifetime rule, with Docker's cap");
-		const result = await provider.create({ ...SPEC, lifetimeMs });
+		const result = await provider.create({ ...SPEC, lifetimeMs }, req());
 		assert.equal(result.ok, false);
 		assert.equal(result.error.code, "refused");
 	}
 	for (const spec of [{ ...SPEC, image: "debian\0" }, { ...SPEC, labels: { "team\0": "a" } }, { ...SPEC, labels: { team: "a\0" } }, { ...SPEC, workdir: "/work\0" }]) {
 		assert.equal(provider.check(spec).length, 1, JSON.stringify(spec));
-		const result = await provider.create(spec);
+		const result = await provider.create(spec, req());
 		assert.equal(result.ok, false);
 		assert.equal(result.error.code, "refused");
 	}
 	assert.deepEqual(calls(), []);
 	assert.deepEqual(provider.check({ ...SPEC, lifetimeMs: days30 }), []);
 	const before = Date.now();
-	const made = await provider.create({ ...SPEC, lifetimeMs: days30 });
+	const made = await provider.create({ ...SPEC, lifetimeMs: days30 }, req());
 	assert.equal(made.ok, true, JSON.stringify(made));
 	const deadline = valuesOf(runOf(calls()), "--label").find((label) => label.startsWith("agentrun.computer.deadline="))?.split("=")[1];
 	assert.ok(Math.abs(Date.parse(deadline) - (before + days30)) < 5000, deadline);
@@ -103,11 +106,11 @@ test("a lifetime is at most 30 days, and create() never throws on a spec check()
 test("create() on a refused spec makes no docker call", async () => {
 	const { provider, calls } = fakeDocker();
 	for (const spec of [{ ...SPEC, network: { allow: [] } }, { ...SPEC, network: { allow: ["pypi.org:443"] } }, { ...SPEC, lifetimeMs: undefined }, { ...SPEC, gpu: 1 }]) {
-		const result = await provider.create(spec);
+		const result = await provider.create(spec, req());
 		assert.equal(result.ok, false);
 		assert.equal(result.error.code, "refused");
 	}
-	const allow = await provider.create({ ...SPEC, network: { allow: [] } });
+	const allow = await provider.create({ ...SPEC, network: { allow: [] } }, req());
 	assert.ok(allow.error.message.includes(NO_LIST), allow.error.message);
 	assert.deepEqual(calls(), []);
 });
@@ -115,7 +118,7 @@ test("create() on a refused spec makes no docker call", async () => {
 test("create() runs a hardened container with the daemon as its first process and a deadline label", async () => {
 	const { provider, calls, bound } = fakeDocker();
 	const before = Date.now();
-	const result = await provider.create({ ...SPEC, labels: { team: "a" } });
+	const result = await provider.create({ ...SPEC, labels: { team: "a" } }, req());
 	assert.equal(result.ok, true, JSON.stringify(result));
 	const [info, run, inspect, exec, ...rest] = calls();
 	assert.deepEqual(rest, []);
@@ -158,7 +161,7 @@ test("create() runs a hardened container with the daemon as its first process an
 
 test("create() passes the sizes, an open network and the workdir", async () => {
 	const { provider, calls } = fakeDocker();
-	const result = await provider.create({ ...SPEC, network: "open", cpus: 1.5, memoryMb: 512, pids: 64, workdir: "/app" });
+	const result = await provider.create({ ...SPEC, network: "open", cpus: 1.5, memoryMb: 512, pids: 64, workdir: "/app" }, req());
 	assert.equal(result.ok, true);
 	const run = runOf(calls());
 	assert.deepEqual(valuesOf(run, "--network"), ["bridge"]);
@@ -177,13 +180,13 @@ test("create() passes the sizes, an open network and the workdir", async () => {
 		"/work is half of memoryMb, so a full /work is ENOSPC before the memory limit; the socket directory stays 1 MiB",
 	);
 	const odd = fakeDocker();
-	assert.equal((await odd.provider.create({ ...SPEC, memoryMb: 7 })).ok, true);
+	assert.equal((await odd.provider.create({ ...SPEC, memoryMb: 7 }, req())).ok, true);
 	assert.ok(valuesOf(runOf(odd.calls()), "--tmpfs")[0].endsWith(",size=3m"), "half of an odd memoryMb rounds down");
 });
 
 test("create() with no sizes gives serve's: 2 CPUs, 4 GiB with swap the same, 1024 pids", async () => {
 	const { provider, calls } = fakeDocker();
-	assert.equal((await provider.create(SPEC)).ok, true);
+	assert.equal((await provider.create(SPEC, req())).ok, true);
 	const run = runOf(calls());
 	assert.deepEqual(valuesOf(run, "--cpu-period"), ["100000"]);
 	assert.deepEqual(valuesOf(run, "--cpu-quota"), ["200000"]);
@@ -196,7 +199,7 @@ test("create() with no sizes gives serve's: 2 CPUs, 4 GiB with swap the same, 10
 test("create() runs a computer as a non-root user unless its spec asks for root", async () => {
 	const userOf = async (spec, options) => {
 		const { provider, calls } = fakeDocker(options);
-		const result = await provider.create(spec);
+		const result = await provider.create(spec, req());
 		assert.equal(result.ok, true, JSON.stringify(result));
 		return valuesOf(runOf(calls()), "--user");
 	};
@@ -210,14 +213,14 @@ test("create() runs a computer as a non-root user unless its spec asks for root"
 	assert.deepEqual(await userOf({ ...SPEC, user: "0:0" }), ["0:0"]);
 	assert.deepEqual(await userOf({ ...SPEC, user: "1000:0" }), ["1000:0"], "root's group only when the spec asks for it");
 	const { provider, calls } = fakeDocker({ user: "1234:5678" });
-	assert.equal((await provider.create({ ...SPEC, user: "2000:3000" })).ok, true);
+	assert.equal((await provider.create({ ...SPEC, user: "2000:3000" }, req())).ok, true);
 	assert.deepEqual(
 		valuesOf(runOf(calls()), "--tmpfs"),
 		["/work:rw,nosuid,nodev,exec,uid=2000,gid=3000,mode=0700,size=2048m", "/run/agentrun:rw,noexec,nosuid,nodev,uid=2000,gid=3000,mode=0700,size=1m"],
 		"/work and init's socket directory belong to the user the computer runs as",
 	);
 	const root = fakeDocker();
-	assert.equal((await root.provider.create({ ...SPEC, user: "0" })).ok, true);
+	assert.equal((await root.provider.create({ ...SPEC, user: "0" }, req())).ok, true);
 	assert.deepEqual(valuesOf(runOf(root.calls()), "--tmpfs"), ["/work:rw,nosuid,nodev,exec,uid=0,gid=0,mode=0700,size=2048m", "/run/agentrun:rw,noexec,nosuid,nodev,uid=0,gid=0,mode=0700,size=1m"]);
 });
 
@@ -263,7 +266,7 @@ test("the default user is never in root's group: a process with uid or gid 0 giv
 			process.getuid = getuid;
 			process.getgid = getgid;
 		}
-		assert.equal((await made.provider.create(SPEC)).ok, true);
+		assert.equal((await made.provider.create(SPEC, req())).ok, true);
 		return valuesOf(runOf(made.calls()), "--user")[0];
 	};
 	assert.equal(await defaultOf(1234, 5678), "1234:5678");
@@ -274,7 +277,7 @@ test("the default user is never in root's group: a process with uid or gid 0 giv
 
 test("create() removes a container that is not running and says why", async () => {
 	const { provider, calls } = fakeDocker({ running: false });
-	const result = await provider.create(SPEC);
+	const result = await provider.create(SPEC, req());
 	assert.equal(result.ok, false);
 	assert.deepEqual([result.error.code, result.error.vendor], ["vendor", "docker"]);
 	assert.match(result.error.message, /exec format error/);
@@ -287,7 +290,7 @@ test("a computer whose lifetime ended before docker run finished says so, with b
 	// held the start, or a lifetime too short for it.
 	const exited = { State: { Running: false, Status: "exited", ExitCode: 0, Error: "" } };
 	const { provider, calls } = fakeDocker({ patch: exited });
-	const result = await provider.create({ ...SPEC, lifetimeMs: 1 });
+	const result = await provider.create({ ...SPEC, lifetimeMs: 1 }, req());
 	assert.equal(result.ok, false);
 	assert.equal(result.error.code, "timeout");
 	assert.match(result.error.message, /^the computer computer-[0-9a-f]{12}'s lifetime of 0\.001 s ended before docker run finished \(it took \d+(\.\d+)? s\), so init ended it and it was removed$/);
@@ -295,7 +298,7 @@ test("a computer whose lifetime ended before docker run finished says so, with b
 	assert.deepEqual(remove, removal(valuesOf(run, "--name")[0]));
 	// Exit 0 with lifetime left, or another exit after the deadline, is not that: the words stay Docker's state.
 	for (const [patch, lifetimeMs] of [[exited, 600_000], [{ State: { ...exited.State, ExitCode: 1 } }, 1]]) {
-		const other = await fakeDocker({ patch }).provider.create({ ...SPEC, lifetimeMs });
+		const other = await fakeDocker({ patch }).provider.create({ ...SPEC, lifetimeMs }, req());
 		assert.deepEqual([other.error.code, other.error.vendor], ["vendor", "docker"], JSON.stringify(other));
 		assert.match(other.error.message, new RegExp(`was not running after its start \\(status exited, exit code ${patch.State.ExitCode}\\), so it was removed$`));
 	}
@@ -304,7 +307,7 @@ test("a computer whose lifetime ended before docker run finished says so, with b
 test("create() with no daemon binary is not_found, with no docker call", async () => {
 	const { calls } = fakeDocker();
 	const provider = new DockerProvider({ daemonPath: join(tmpdir(), "computer-no-such-daemon", "computerd"), docker: "docker-that-is-not-called" });
-	const result = await provider.create(SPEC);
+	const result = await provider.create(SPEC, req());
 	assert.equal(result.ok, false);
 	assert.equal(result.error.code, "not_found");
 	assert.match(result.error.message, /build:daemon/);
@@ -375,7 +378,7 @@ test("connect() refuses a daemon of another version, kind or groups, and closes 
 
 test("create() deletes a computer whose own report drifts from its spec, and says every way it drifted", async () => {
 	const { provider, calls, names } = fakeDocker({ patch: { HostConfig: { PidsLimit: 1, CapDrop: [] } }, hello: { version: "0.0.1" } });
-	const result = await provider.create(SPEC);
+	const result = await provider.create(SPEC, req());
 	assert.equal(result.ok, false);
 	assert.equal(result.error.code, "refused");
 	const name = valuesOf(runOf(calls()), "--name")[0];
@@ -396,7 +399,7 @@ test("create() deletes a computer whose /work or socket tmpfs drifts on size", a
 		{ "/run/agentrun": `rw,noexec,nosuid,nodev,uid=${uid},gid=${gid},mode=0700` },
 	]) {
 		const { provider, calls, names } = fakeDocker({ patch: { HostConfig: { Tmpfs } } });
-		const result = await provider.create(SPEC);
+		const result = await provider.create(SPEC, req());
 		assert.equal(result.ok, false, JSON.stringify(Tmpfs));
 		assert.equal(result.error.code, "refused");
 		const [path] = Object.keys(Tmpfs);
@@ -410,7 +413,7 @@ test("create() deletes a computer that runs as another user, without its tmpfs m
 	const { provider, calls, names } = fakeDocker({
 		patch: { Config: { User: "0:0", Cmd: ["init"] }, HostConfig: { Tmpfs: { "/work": "rw,uid=0,gid=0,mode=0777", "/run/agentrun": null }, CpuQuota: 0 } },
 	});
-	const result = await provider.create(SPEC);
+	const result = await provider.create(SPEC, req());
 	assert.equal(result.ok, false);
 	assert.equal(result.error.code, "refused");
 	for (const words of [`User: declared "${DEFAULT_USER}", read back "0:0"`, "tmpfs /work", "tmpfs /run/agentrun", "CpuQuota: declared 200000, read back 0", "Cmd: declared"]) {
@@ -422,7 +425,7 @@ test("create() deletes a computer that runs as another user, without its tmpfs m
 
 test("create() deletes a computer whose daemon reports another architecture than the Docker host", async () => {
 	const { provider, calls, names } = fakeDocker({ arch: "aarch64" });
-	const result = await provider.create(SPEC);
+	const result = await provider.create(SPEC, req());
 	assert.equal(result.ok, false);
 	assert.equal(result.error.code, "refused");
 	assert.match(result.error.message, /arch amd64.*arm64/);
@@ -432,16 +435,16 @@ test("create() deletes a computer whose daemon reports another architecture than
 
 test("create() maps docker info's architecture to Go's names: x86_64 is amd64, aarch64 is arm64", async () => {
 	const amd = fakeDocker({ arch: "x86_64" });
-	assert.equal((await amd.provider.create(SPEC)).ok, true);
+	assert.equal((await amd.provider.create(SPEC, req())).ok, true);
 	const arm = fakeDocker({ arch: "aarch64", hello: { arch: "arm64" } });
-	assert.equal((await arm.provider.create(SPEC)).ok, true);
+	assert.equal((await arm.provider.create(SPEC, req())).ok, true);
 	const odd = fakeDocker({ arch: "riscv64", hello: { arch: "riscv64" } });
-	assert.equal((await odd.provider.create(SPEC)).ok, true);
+	assert.equal((await odd.provider.create(SPEC, req())).ok, true);
 });
 
 test("create() deletes a computer whose daemon does not answer hello", async () => {
 	const { provider, calls, names } = fakeDocker({ noDaemon: true });
-	const result = await provider.create(SPEC);
+	const result = await provider.create(SPEC, req());
 	assert.equal(result.ok, false);
 	assert.match(result.error.message, /OCI runtime exec failed/);
 	assert.deepEqual(calls().map((args) => args[0]), ["info", "run", "inspect", "exec", "rm", "ps", "volume"]);
@@ -461,7 +464,7 @@ for (const [step, call] of [["inspect", "inspect"], ["hello", "exec"]]) {
 	test(`create() aborted while its ${step} after docker run is pending returns aborted and deletes the computer`, async () => {
 		const { provider, calls, names, proceed } = fakeDocker({ hold: [step] });
 		const controller = new AbortController();
-		const pending = provider.create(SPEC, { signal: controller.signal });
+		const pending = provider.create(SPEC, { ...req(), signal: controller.signal });
 		await until(() => calls().some((args) => args[0] === call), `docker ${call}`);
 		controller.abort();
 		// Unsignalled, the held step now answers, and create would go on to ok.
@@ -478,7 +481,7 @@ for (const [step, call] of [["inspect", "inspect"], ["hello", "exec"]]) {
 test("create() aborted while docker info is pending returns aborted and makes nothing", async () => {
 	const { provider, calls, names, proceed } = fakeDocker({ hold: ["info"] });
 	const controller = new AbortController();
-	const pending = provider.create(SPEC, { signal: controller.signal });
+	const pending = provider.create(SPEC, { ...req(), signal: controller.signal });
 	await until(() => calls().some((args) => args[0] === "info"), "docker info");
 	controller.abort();
 	proceed("info");
@@ -503,7 +506,7 @@ const UNENFORCED = [
 for (const [info, words] of UNENFORCED) {
 	test(`create() refuses before making anything, and check() from then on: ${words}`, async () => {
 		const { provider, calls, names } = fakeDocker({ info });
-		const result = await provider.create(SPEC);
+		const result = await provider.create(SPEC, req());
 		assert.equal(result.ok, false, JSON.stringify(result));
 		assert.equal(result.error.code, "refused");
 		assert.ok(result.error.message.includes(words), result.error.message);
@@ -513,7 +516,7 @@ for (const [info, words] of UNENFORCED) {
 		assert.equal(refusals.length, 1, JSON.stringify(refusals));
 		assert.equal(refusals[0].field, "host");
 		assert.ok(refusals[0].message.includes(words), refusals[0].message);
-		const again = await provider.create(SPEC);
+		const again = await provider.create(SPEC, req());
 		assert.equal(again.ok, false);
 		assert.deepEqual(calls().map((args) => args[0]), ["info"], "the host is read once per provider");
 	});
@@ -522,8 +525,8 @@ for (const [info, words] of UNENFORCED) {
 test("the host's enforcement is read once per provider, and a docker info that fails is read again", async () => {
 	const { provider, calls, daemonPath } = fakeDocker();
 	assert.deepEqual(provider.check(SPEC), [], "before the host is read, check() has only the spec to go on");
-	assert.equal((await provider.create(SPEC)).ok, true);
-	assert.equal((await provider.create(SPEC)).ok, true);
+	assert.equal((await provider.create(SPEC, req())).ok, true);
+	assert.equal((await provider.create(SPEC, req())).ok, true);
 	assert.deepEqual(calls().map((args) => args[0]), ["info", "run", "inspect", "exec", "run", "inspect", "exec"]);
 	const host = await provider.host();
 	assert.deepEqual(host, { ok: true, value: { arch: "amd64", apparmor: false, selinux: false, problems: [], engine: 29 } }, "the engine's major version from docker info's ServerVersion");
@@ -536,9 +539,9 @@ test("the host's enforcement is read once per provider, and a docker info that f
 
 test("create() on a host with AppArmor expects Docker's default profile", async () => {
 	const { provider } = fakeDocker({ info: { SecurityOptions: ["name=apparmor", "name=seccomp,profile=builtin"] } });
-	assert.equal((await provider.create(SPEC)).ok, true);
+	assert.equal((await provider.create(SPEC, req())).ok, true);
 	const drifted = fakeDocker({ info: { SecurityOptions: ["name=apparmor", "name=seccomp,profile=builtin"] }, patch: { AppArmorProfile: "unconfined", HostConfig: { PidMode: "host" } } });
-	const result = await drifted.provider.create(SPEC);
+	const result = await drifted.provider.create(SPEC, req());
 	assert.equal(result.ok, false);
 	assert.match(result.error.message, /AppArmorProfile/);
 	assert.match(result.error.message, /PidMode/);
@@ -559,7 +562,7 @@ test("desktop: a desktop computer declares kind desktop and the display's groups
 
 test("desktop: create() gives the daemon DISPLAY, starts the X server through the daemon, and checks hello once the display is up", async () => {
 	const { provider, calls, started } = fakeDocker({ desktop: {} });
-	const result = await provider.create(SPEC);
+	const result = await provider.create(SPEC, req());
 	assert.equal(result.ok, true, JSON.stringify(result));
 	const run = runOf(calls());
 	assert.deepEqual(valuesOf(run, "--env"), ["HOME=/work", "DISPLAY=:0"]);
@@ -574,14 +577,14 @@ test("desktop: create() gives the daemon DISPLAY, starts the X server through th
 test("desktop: the display and the X server's argv are options", async () => {
 	const server = ["Xvfb", ":5", "-screen", "0", "800x600x24", "-nolisten", "tcp"];
 	const { provider, calls, started } = fakeDocker({ desktop: { display: ":5", server } });
-	assert.equal((await provider.create(SPEC)).ok, true);
+	assert.equal((await provider.create(SPEC, req())).ok, true);
 	assert.deepEqual(valuesOf(runOf(calls()), "--env"), ["HOME=/work", "DISPLAY=:5"]);
 	assert.deepEqual(started(), [{ argv: server }]);
 });
 
 test("desktop: create() deletes a computer whose X server ends, with the server's own words", async () => {
 	const { provider, names } = fakeDocker({ desktop: {}, display: "exits" });
-	const result = await provider.create(SPEC);
+	const result = await provider.create(SPEC, req());
 	assert.equal(result.ok, false);
 	assert.match(result.error.message, /X server/);
 	assert.match(result.error.message, /no screens found/);
@@ -594,7 +597,7 @@ test("desktop: create() keeps to its bound when the daemon stops answering once 
 	const controller = new AbortController();
 	const stop = setTimeout(() => controller.abort(), 20_000);
 	const began = Date.now();
-	const result = await provider.create(SPEC, { signal: controller.signal });
+	const result = await provider.create(SPEC, { ...req(), signal: controller.signal });
 	clearTimeout(stop);
 	assert.equal(result.ok, false);
 	assert.equal(result.error.code, "timeout", result.error.message);
@@ -605,7 +608,7 @@ test("desktop: create() keeps to its bound when the daemon stops answering once 
 
 test("desktop: create() deletes a computer whose display never comes up, after its bound", async () => {
 	const { provider, names } = fakeDocker({ desktop: { timeoutMs: 300 }, display: "never" });
-	const result = await provider.create(SPEC);
+	const result = await provider.create(SPEC, req());
 	assert.equal(result.ok, false);
 	assert.match(result.error.message, /display :0 .*not up within 0\.3 s/);
 	assert.deepEqual(names(), []);
@@ -617,4 +620,71 @@ test("desktop: a timeoutMs a timer cannot hold is refused when the provider is m
 		assert.throws(() => new DockerProvider({ daemonPath, desktop: { timeoutMs } }), /the desktop's timeoutMs must be .* at most 2147483647/, String(timeoutMs));
 	}
 	assert.doesNotThrow(() => new DockerProvider({ daemonPath, desktop: { timeoutMs: 2 ** 31 - 1 } }));
+});
+
+test("create is once per request: a retry at once, once it is up, and from another provider on the same Docker host answers the computer the first made, named by the request; other labels or another user are exists", async () => {
+	const fake = fakeDocker();
+	const spec = { ...SPEC, labels: { team: "a" } };
+	const context = { requestId: "docker-retried" };
+	const [first, early] = await Promise.all([fake.provider.create(spec, context), fake.provider.create(spec, context)]);
+	assert.equal(first.ok, true, JSON.stringify(first));
+	assert.equal(first.value.name, computerNameFor("docker-retried"));
+	assert.deepEqual(early, first, "a retry while the first starts shares its answer");
+	assert.equal(fake.calls().filter((args) => args[0] === "run").length, 1, "one docker run for both");
+	assert.deepEqual(await fake.provider.create(spec, context), first, "a retry once it is up");
+	// Another process: no create in flight and nothing remembered, so its docker run finds the name taken.
+	const other = new DockerProvider(fake.options);
+	assert.deepEqual(await other.create(spec, context), first, "a retry from another provider");
+	assert.deepEqual(fake.names(), [first.value.name], "one computer");
+	for (const [asked, words] of [
+		[{ ...spec, labels: { team: "b" } }, /label team: asked "b", (read back|in flight) "a"/],
+		[{ ...spec, user: "2000:3000" }, /user: asked 2000:3000, read back /],
+		[{ ...spec, image: "debian:trixie-slim" }, /image: asked debian:trixie-slim, read back debian:bookworm-slim/],
+	]) {
+		const refused = await other.create(asked, context);
+		assert.equal(refused.error?.code, "exists", JSON.stringify(refused));
+		assert.match(refused.error.message, new RegExp(`^${first.value.name} was made for this request with another spec, so it is not returned: `));
+		assert.match(refused.error.message, words);
+	}
+	const flying = await Promise.all([fake.provider.create({ ...spec, labels: { team: "c" } }, { requestId: "docker-flying" }), fake.provider.create(spec, { requestId: "docker-flying" })]);
+	assert.equal(flying[0].ok, true);
+	assert.equal(flying[1].error?.code, "exists", "a create of the same request in flight with other labels");
+	assert.match(flying[1].error.message, /is being made for this request with another spec, so it is not returned: label team: asked "a", in flight "c"/);
+});
+
+test("a request whose computer was deleted, stopped or ended is spent: the same request id again is exists, in words, and makes nothing", async () => {
+	const fake = fakeDocker();
+	const ended = /^computer-[0-9a-f]{12} was made for this request and has ended: create with a new request id$/;
+	const made = await fake.provider.create(SPEC, { requestId: "docker-deleted" });
+	assert.equal(made.ok, true);
+	assert.equal((await fake.provider.release(made.value, "delete")).ok, true);
+	const again = await fake.provider.create(SPEC, { requestId: "docker-deleted" });
+	assert.equal(again.error?.code, "exists");
+	assert.match(again.error.message, ended);
+	const stopped = await fake.provider.create(SPEC, { requestId: "docker-stopped" });
+	assert.equal((await fake.provider.release(stopped.value, "stop")).ok, true);
+	// From this provider and from another: the stopped container is what holds the request.
+	for (const provider of [fake.provider, new DockerProvider(fake.options)]) {
+		const refused = await provider.create(SPEC, { requestId: "docker-stopped" });
+		assert.equal(refused.error?.code, "exists");
+		assert.match(refused.error.message, ended);
+	}
+	assert.deepEqual(fake.names(), [stopped.value.name], "nothing made after the first two creates, the deleted one gone");
+	assert.equal(fake.calls().filter((args) => args[0] === "run").length, 4, "the two creates' runs, none for the deleted request, and a run of the stopped request from each provider, which Docker refused");
+	// A container of the name that this provider never made is never answered.
+	const foreign = fakeDocker({ containers: [container({ name: computerNameFor("docker-foreign"), computer: false })] });
+	const refused = await foreign.provider.create(SPEC, { requestId: "docker-foreign" });
+	assert.equal(refused.error?.code, "exists");
+	assert.match(refused.error.message, /this provider did not make it: create with a new request id/);
+});
+
+test("a create whose docker run Docker refuses for its name removes nothing: the other create's computer stays", async () => {
+	const fake = fakeDocker({ egress: "ready" });
+	const spec = { ...SPEC, network: { allow: ["pypi.org"] } };
+	const made = await fake.provider.create(spec, { requestId: "docker-allow" });
+	assert.equal(made.ok, true, JSON.stringify(made));
+	const before = fake.names();
+	const again = await new DockerProvider(fake.options).create(spec, { requestId: "docker-allow" });
+	assert.deepEqual(again, made, "the proxy's docker run found the name taken: the request's computer answers");
+	assert.deepEqual(fake.names(), before, "its computer and proxy are left as they were");
 });
