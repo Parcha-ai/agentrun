@@ -139,3 +139,64 @@ test('a request the host sends beside the harness (a side key\'s, its host label
   assert.equal(asked[0].inputTokensMax, plain.asked[0].inputTokensMax, 'admitted at its own bytes: the plain bound the session\'s own request has');
   assert.deepEqual(forwarded, [client], 'its body goes as its client sent it, without the note');
 });
+
+test('a request that took the note and whose client goes before its admission (while its tokens are counted) gives it back as it goes: the next request carries it at once, never after a lease runs out', async (t) => {
+  // The host as the runner's wrap-up is: one offer at a time, held for the request that took it until its admission
+  // tells it, or until that request gives it back (noteReturned).
+  let offered;
+  const returned = [];
+  const told = [];
+  const asked = [];
+  const forwarded = [];
+  const hooks = {
+    note: () => (offered ? undefined : (offered = NOTE)),
+    noteReturned: (note) => {
+      returned.push(note);
+      if (offered === note) offered = undefined;
+    },
+    beforeRequest: async (request) => {
+      asked.push(request);
+      if (request.noted) (told.push(offered), (offered = undefined));
+    },
+    afterRequest: async () => {},
+  };
+  // The provider's count: the first one hangs until its request's client goes; every later one says no count.
+  let counting;
+  const counted = new Promise((resolve) => (counting = resolve));
+  let counts = 0;
+  const fetch = async (url, init) => {
+    if (String(url).endsWith('/count')) {
+      counts += 1;
+      if (counts > 1) return new Response('{}', { status: 404 });
+      counting();
+      return new Promise((_resolve, reject) => init.signal.addEventListener('abort', () => reject(init.signal.reason), { once: true }));
+    }
+    forwarded.push(JSON.parse(init.body));
+    return new Response('{"usage":{}}', { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  const counter = { origin: 'https://provider.invalid', path: '/count', body: (body) => body, headers: (sent) => sent, tokensOf: () => undefined };
+  const p = await startModelProxy({ policy: { ...withNote, countInput: counter }, model: 'main-model', origin: 'https://provider.invalid', credential: () => 'provider-secret', hooks, price: () => 0.001, log: () => {}, fetch }, KEY);
+  t.after(() => p.close());
+  const { hostname, port } = new URL(p.url);
+  // Request 1 takes the note; its client goes while its tokens are counted, before its admission.
+  const first = request({ host: hostname, port, method: 'POST', path: '/v1/test', headers: { 'content-type': 'application/json', authorization: `Bearer ${KEY}` } });
+  first.on('error', () => {});
+  first.end(JSON.stringify(client));
+  await counted;
+  first.destroy();
+  for (let i = 0; returned.length === 0; i++) {
+    assert.ok(i < 100, 'the note is given back as the request goes');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.deepEqual([returned, asked.length, forwarded.length], [[NOTE], 0, 0], 'given back once, never admitted, never sent');
+  // Request 2 takes it at once and carries it: admitted with it, told once, forwarded with it.
+  const at = Date.now();
+  await new Promise((resolve) => {
+    const req = request({ host: hostname, port, method: 'POST', path: '/v1/test', headers: { 'content-type': 'application/json', authorization: `Bearer ${KEY}` } }, (res) => { res.resume(); res.on('end', resolve); res.on('error', resolve); });
+    req.on('error', resolve);
+    req.end(JSON.stringify(client));
+  });
+  assert.ok(Date.now() - at < 5_000, `carried at once: ${Date.now() - at} ms`);
+  assert.deepEqual([asked.map((r) => r.noted ?? false), told], [[true], [NOTE]], 'the next request is admitted carrying it, told once');
+  assert.deepEqual(forwarded.map((b) => b.messages.at(-1)), [{ role: 'note', text: NOTE }], 'and sent with it');
+});

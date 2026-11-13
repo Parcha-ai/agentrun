@@ -14,6 +14,7 @@ import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
 import { codexAdapter, skillProblems } from '@parcha/agentrun-harness-codex';
 import { findCodex } from '../dist/binary.js';
 import { verifyCodexBinary } from '../dist/verify.js';
+import { exec, hostNested } from './offer.mjs';
 
 const binary = verifyCodexBinary(findCodex());
 const problem = binary instanceof Error ? binary.message : undefined;
@@ -33,8 +34,9 @@ const sse = (n, items) => [
   { type: 'response.completed', response: { id: `resp_${n}`, usage } },
 ].map((e) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join('');
 const say = (n) => ({ type: 'message', role: 'assistant', id: `msg_${n}`, content: [{ type: 'output_text', text: 'done' }] });
-const submit = { type: 'function_call', name: 'submit', arguments: JSON.stringify({ value: { answer: 'ok' } }), call_id: 'call_submit' };
-const readCall = (id, skill, path) => ({ type: 'function_call', name: READ_SKILL_FILE, arguments: JSON.stringify({ skill, path }), call_id: id });
+// The model is gpt-6-luna, a code-mode model: it calls every tool from an exec script (offer.mjs).
+const submit = exec('call_submit', `text(JSON.stringify(await tools.submit({ value: { answer: 'ok' } })));`);
+const readCall = (id, skill, path) => exec(id, `try { text(await tools[${JSON.stringify(READ_SKILL_FILE)}](${JSON.stringify({ skill, path })})); } catch (e) { text(String(e && e.message)); }`);
 
 /** One node on the pinned binary whose model answers `first` (then submits, then says done); what it was sent. */
 async function node({ skills, first = [submit] }) {
@@ -46,12 +48,13 @@ async function node({ skills, first = [submit] }) {
     const n = seen.length;
     return new Response(sse(n, answers[n - 1] ?? [say(n)]), { status: 200, headers: { 'content-type': 'text/event-stream' } });
   };
-  const codex = codexAdapter({ model: 'gpt-5.4-mini', provider: { origin: 'https://provider.invalid', credential: () => 'provider-secret' }, sessionsDir: join(dir, 'sessions'), fetch, ...(skills ? { skills } : {}) });
+  const codex = codexAdapter({ model: 'gpt-6-luna', provider: { origin: 'https://provider.invalid', credential: () => 'provider-secret' }, sessionsDir: join(dir, 'sessions'), fetch, ...(skills ? { skills } : {}) });
   const runNode = createHarnessRunner(codex, { store: memorySessionStore(), timeoutMs: 90_000 });
   const output = await runNode({ kind: 'agent', label: 'skills', system: ['Answer.'], user: 'Use the skill, then answer ok.', schema: { type: 'object', required: ['answer'], properties: { answer: { type: 'string' } } }, tools: [] });
   // What Codex sent back for each call, from the request after it.
   const outputs = new Map();
-  for (const it of seen[1]?.input ?? []) if (it.type === 'function_call_output') outputs.set(it.call_id, Array.isArray(it.output) ? it.output.map((o) => o.text).join('') : it.output);
+  // An exec's output starts with code mode's own lines (`Script completed`, its wall time, `Output:`); then the script's text.
+  for (const it of seen[1]?.input ?? []) if (/_output$/.test(it.type ?? '')) outputs.set(it.call_id, (Array.isArray(it.output) ? it.output.map((o) => o.text).join('') : it.output).replace(/^Script completed\nWall time [\d.]+ seconds\nOutput:\n/, ''));
   const sessions = join(dir, 'sessions');
   const session = join(sessions, readdirSync(sessions)[0]);
   return { output, seen, outputs, session };
@@ -72,13 +75,13 @@ test("a session lists the host's skill to the model and none of Codex's bundled 
   assert.ok(shown.section.includes('How this host researches.'), 'with its description');
   assert.ok(!JSON.stringify(withSkills.seen[0]).includes(CANARY), "the skill's body is not sent until the model reads it");
   for (const name of BUNDLED) assert.ok(!JSON.stringify(withSkills.seen).includes(`- ${name}:`), `${name} is not listed`);
-  assert.deepEqual(withSkills.seen[0].tools.map((t) => t.name).sort(), [READ_SKILL_FILE, 'submit'], 'read_skill_file is offered with skills');
+  assert.deepEqual(hostNested(withSkills.seen[0]), [READ_SKILL_FILE, 'submit'], 'read_skill_file is offered with skills');
 
   const without = await node({});
   assert.deepEqual(without.output, { answer: 'ok' });
   assert.deepEqual(listed(without.seen[0]), { section: undefined, names: [] }, 'no skills section');
   for (const name of BUNDLED) assert.ok(!JSON.stringify(without.seen).includes(name), `${name} is not listed`);
-  assert.deepEqual(without.seen[0].tools.map((t) => t.name), ['submit'], 'no read_skill_file without skills');
+  assert.deepEqual(hostNested(without.seen[0]), ['submit'], 'no read_skill_file without skills');
   assert.deepEqual(readdirSync(join(without.session, 'work')), [], 'nothing in the working directory');
 });
 

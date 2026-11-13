@@ -1,106 +1,141 @@
 ---
 name: desktop-computer
-description: Use a desktop computer through the desktop_screen and desktop_input tools. It covers looking, acting with the pointer and the keyboard in batches, checking what happened, recovering, and reading the computer's refusals. Use when a run has a desktop and the task needs its screen, its apps or its windows.
+description: Use a desktop computer (a Mac, or a Linux desktop) through computer_observe, computer_act, computer_screenshot and computer_script. It covers reading an app's elements, acting on them by ref, running known steps as one script, checking what happened, recovering, and reading the computer's refusals. Use when a run has a desktop and the task needs its apps or its windows.
 ---
 
 # Using a desktop
 
-The run has a desktop: a computer with a screen, a pointer and a keyboard, rented while the run lives. You see it
-through screenshots and act on it as a person would, with the mouse and the keys. Input answers in words, never with a
-picture, so you take a screenshot to see what your actions did.
+The run has a desktop, rented while the run lives. You read an app's window as a list of its elements and act on
+them by their refs, the way an accessibility tool does. Where the desktop can't list elements (no `ui` group), you see
+it through screenshots and act at their pixels. The tools say which one you have.
 
 ## The tools
 
-**`desktop_screen` `{region?}`** takes a screenshot. With no region, it shows the whole screen, and the answer gives
-its size in pixels. With `region: {x, y, w, h}`, it shows only that part, sharper for small text. The coordinates stay
-the whole screen's: a button you find in a region is clicked at its whole-screen point.
+**`computer_observe` `{app?, image?, full?}`** shows an app's window (the one in front when you name none) as compact
+lines, one per element:
 
-**`desktop_input` `{actions}`** runs a list of 1 to 100 actions, in order:
+```
+state s3 · com.apple.Notes "Notes" · window "Groceries" 900×700 pt
+@e1 window "Groceries"
+  @e4 textbox "Title" = "Groceries" [focused]
+  @e7 button "Save"
+```
 
-| Action | Fields | What it does |
-|---|---|---|
-| `move` | `at` | Moves the pointer there. |
-| `click` | `at?`, `button?` (`left`, `right`, `middle`), `count?` (1, 2, 3) | Clicks at `at`, or where the pointer is. `count: 2` is a double click. |
-| `drag` | `path` (2+ points), `button?` | Presses at the first point, moves through the rest, releases at the last. |
-| `scroll` | `at?`, `dx?`, `dy?`, `unit` (`clicks` or `px`) | Scrolls there. `dy` above 0 scrolls down. Wheel clicks are the usual unit. |
-| `type` | `text` | Types the text, as given, into what has focus. |
-| `key` | `keys` | Presses one key, or several together as a combo: `["ctrl", "c"]`. |
+Each line is a ref (`@e7`), a role, a name, a value after `=`, what else the element says in parentheses (a help tag)
+and flags in brackets. A child is indented under its parent. When an app draws its own window, the computer can't
+list its elements: the outline says so, the window's picture comes with it, and you act at points in that picture. The head line names the **state** (`s3`). `image: true` adds the window's picture, which you need only for
+what elements can't tell you: layout, colours, images. `full: true` lists every element, not only the named or
+actionable ones.
 
-A key is a name or one printable character. The names are: `enter`, `tab`, `space`, `backspace`, `delete`, `escape`,
-`insert`, `up`, `down`, `left`, `right`, `home`, `end`, `pageup`, `pagedown`, `f1` to `f12`, `shift`, `ctrl`, `alt`,
-`super` and `capslock`. A character is one printable character, such as `"a"`, `"A"` or `"/"`. Use `type` for words,
-and `key` for keys and combos.
+**`computer_act` `{app?, steps, state?, expect?, observe?}`** runs steps in order:
 
-**Points are `[x, y]` in screenshot pixels**, origin top left, `x` to the right and `y` down. Take them from the latest
-screenshot, and aim at the middle of what you want.
+| Step | What it does |
+|---|---|
+| `{press: "@e7"}` | The element's own action (a button's press, a menu item's pick). The surest step. |
+| `{set: "@e4", value: "Milk"}` | Sets a field's text, a slider's value, a switch's `"on"` or `"off"`. |
+| `{click: "@e7"}` or `{click: [x, y]}` | A click on the element, or at a point; `button: "right"`, `count: 2`. |
+| `{type: "text", into?: "@e4"}` | Types, into the element when named, else where the focus is. |
+| `{key: "super+s"}` | A key or a chord: names or one character, joined by `+` (`enter`, `ctrl+shift+t`). |
+| `{scroll: "@e9", dy: 300}` | Scrolls by points: `dy` above 0 shows what is below. |
+| `{drag: [[x1, y1], [x2, y2]]}` | Presses at the first point, lets go at the last. |
+| `{perform: "@e7", action: "AXShowMenu"}` | One of the element's own platform actions. |
 
-## The loop: look, act, check, recover
+Each step answers its **route** (`semantic`: through the element; `page`: through the page; `background`: an event to
+the app; `foreground`: the real pointer and keys) and whether a readback **verified** it. The answer ends with whether
+the window changed and its new state. `expect: {text: "Saved"}` waits after the steps until that text shows (`gone:
+true`: until it is gone); no steps and an expect is a wait. `observe: true` adds the new outline: one call instead of
+two. The first refused step stops the rest.
 
-1. **Look.** Take a screenshot first, and again after anything that may change the screen. To read small text (a
-   menu, a field, a status line), take a region screenshot of it.
-2. **Act.** Put actions in one batch when you know what each will do without seeing the screen between them: click a
-   field, type, press `enter`. End the batch where you need to see the result. A click that opens a menu or a new
-   window ends a batch: the next point depends on what opens.
-3. **Check.** Take a screenshot and look for the change the actions should have made. That might be the text in the
-   field, the menu open, the window moved, or the page loaded. A batch that finished without an error only says the
-   computer ran the actions, not that the app did what you meant.
-4. **Recover.** If nothing changed, find out why before you try again:
-   - Maybe another window or a dialog is in front.
-   - Maybe the click landed beside the target.
-   - Maybe the app is still busy.
-   Try a better point once. After two or three tries that change nothing, change approach: use the keyboard instead
-   of the pointer (`tab` to move, `enter` to press), a menu instead of a button, or close and reopen the app.
+Prefer refs. A step at a point (`[x, y]`, in the window's points) is read against a state, the last one you observed
+unless you name another, and is refused as **stale** once the window moved or redrew under it: observe again and use
+the new state.
+
+**`computer_screenshot` `{region?}`** is the whole screen, or `region: [x, y, w, h]` of it, in screen pixels.
+
+**`computer_script` `{code}`** runs JavaScript in an isolate whose only binding is `computer`. Its tool description
+gives the `computer` object's types for this desktop. The body is an async function: `await` the calls and `return`
+what you need; `text(...)` and `image(...)` show words and pictures beside the value.
+
+```js
+const notes = computer.app("com.apple.Notes");
+await notes.observe();
+const title = notes.find({ role: "textbox", text: "Title" })[0];
+await notes.set(title.ref, "Groceries");
+const saved = await notes.key("super+s", { expect: { text: "Saved" } });
+return { saved: saved.expect, state: saved.state };
+```
+
+**Your harness's own code mode.** pi's `codemode` binds `computer` as computer_script does. Codex's `exec` does not:
+there, call the tools, each answering its value as JSON text, or call `tools.computer_script` with the code above.
+
+```js
+const notes = JSON.parse(await tools.computer_observe({ app: "com.apple.Notes" }));
+const title = notes.elements.find((node) => node.role === "textbox" && node.name === "Title");
+```
+
+**The screen itself.** Prefer an app's steps. A script's `computer.input.act([...])` is the screen-level way out, at
+screenshot pixels (`computer.screen.shot()`), for what one app's window can't reach: a drag from one app to another (a
+file from Finder into a Mail message), or anything outside every window.
+
+## How to work: observe, then act by ref, then check
+
+1. **Observe** the app first. Find your target by its name and role, and note its ref.
+2. **Act** by ref. Several steps you are sure of go in one `computer_act`: set a field, press a button. End the call
+   where you need to see the result.
+3. **Check** what the answer says: each step's route and verified, `changed`, and the expect's `met` or `unmet`. A
+   step that ran is not proof the app did what you meant. When the answer doesn't settle it, observe again.
+4. **Recover.** A refused step says why. `stale`: observe again, then act on the new refs or state. Nothing changed:
+   a dialog may be in front, or the element may be disabled (`[disabled]`). Try once more another way (`press`
+   instead of `click`, the keyboard instead of the pointer, a menu instead of a button), then change approach.
+
+## When to write a script
+
+A script is one call where tools would be many. Use one when:
+
+- **You know the steps.** A form you have seen, a menu path you know, a sequence you have done once: run it as one
+  script with an `expect` at the end, instead of one act per step.
+- **You need a few facts out of a big window.** Observe and `find()` inside the script, and return only what the next
+  decision needs: a ref, a value, a count, three rows. Never return whole observations: their elements are long, and
+  you pay for every line you read. `find({ role, text, id })`: a role is the same name on every OS, a text matches
+  the name, the value or what the parentheses say, and an id is the app's own for the element.
+- **You loop.** Scroll a list until a row shows, or read each row of a table.
+
+Don't script steps you have not seen yet. When you are unsure what is on the screen, observe before you act, by tool
+or inside the script, and decide from what it shows.
+
+## Without the ui group (a Linux desktop)
+
+The desktop lists no elements. `computer_observe` answers a screenshot of the whole screen, and `computer_act`'s steps
+are raw input at its pixels: `click`, `type`, `key`, `scroll` and `drag` at points, with no refs, no states and no
+expect. `press`, `set` and `perform` are refused. Take the points from the latest screenshot, aim at the middle of a
+target, and take another screenshot to see what your steps did. Click a field before typing into it.
 
 ## Habits that work
 
-- **Focus before typing.** Click the field, then type. Typed text goes to whatever has focus, which may not be the
-  field you see.
-- **Prefer the keyboard where it is exact.**
-  - `ctrl` + `a` selects all.
-  - `ctrl` + `l` focuses a browser's address bar.
-  - `escape` closes a menu or a dialog.
-  - `alt` + `f4` closes a window.
-  - `enter` confirms.
-  Shortcuts don't depend on where things are drawn.
-- **Scroll where the content is.** A scroll goes to what is under its point. Put `at` on the list or the page you mean,
-  not on a sidebar.
-- **Wait by looking.** If a page or an app is loading, take another screenshot before you act. Don't repeat a click
-  while the screen is still changing: the second click may land on the new screen.
-- **Windows.** If the window you need is behind another one, click its visible part or its taskbar entry, or use
-  `alt` + `tab`. Then look again to check that it is in front.
-- **Dialogs first.** A dialog, a notice or a cookie banner blocks what is under it. Read it, answer it or close it,
-  then go on.
+- **The keyboard is exact.** `super+a` (Mac) or `ctrl+a` selects all, `escape` closes a menu or a dialog, `enter`
+  confirms. A chord doesn't depend on where things are drawn.
+- **Dialogs first.** A sheet, an alert or a permission prompt blocks the window under it: answer it, then go on.
+- **Wait by expecting.** Put an `expect` on the step that starts something slow, rather than observing in a loop.
+- **The right app.** Name the app (`app: "com.apple.Notes"`) when more than one is open. In a script,
+  `computer.apps.open(id)` opens one, and `computer.app(id)` binds it.
 
 ## When a tool answers an error
 
-Errors come in words, and they say what was wrong. Read them, and act on what they say. Don't repeat the same call.
+Errors come in words, and they say what was wrong. Read them, act on what they say, and don't repeat the same call.
 
-- **A malformed action** (an unknown key name, a point that is not two numbers, an action that is not one of the six):
-  the whole batch is refused, and nothing ran. Fix the action the words name, and send the batch again.
-- **A batch that failed partway** says how many actions ran. Take a screenshot, see where it stopped, and go on from
-  there. Don't resend the actions that already ran.
-- **More than 100 actions**: split the batch.
-- **"The person had this desktop"**: a person took the desktop over and has handed it back, and your input was not
-  done. The screen may have changed, so take a screenshot before you act again.
-- **The computer is gone or unreachable**: the run's desktop ended (its time ran out, or it was released). Don't keep
-  calling. Say what you finished and what you could not.
-
-## What not to do
-
-- Don't guess coordinates from memory of another screen or another resolution. Use this screenshot's pixels.
-- Don't send a long batch blind across screens you have not seen. One wrong click early sends the rest astray.
-- Don't take screenshots in a loop just to wait. Each one takes time, and the desktop's time is limited and may be
-  billed.
-- Don't type secrets you were not given for this task, and don't change the computer's settings beyond what the task
-  needs.
+- **"The person had this computer"**: a person took the desktop over and has handed it back, and your act was not
+  done. The screen may have changed: observe again before you act.
+- **A step refused as `unsupported`** names what this desktop can't do. Use another step.
+- **The computer is gone or unreachable**: the run's desktop ended. Don't keep calling. Say what you finished and what
+  you could not.
 
 ## Time and cost
 
-The desktop lives only for the run's lifetime, and may be billed while it runs. Make a short plan before the first
-action: which app, which steps, and what will show success. Batch what is certain. Stop once the task is done, or once
-it can't be done.
+The desktop lives only for the run's lifetime and may be billed while it runs. Make a short plan first: which app,
+which steps, what will show success. Script what is certain, observe what is not, and stop once the task is done or
+can't be done. Don't type secrets you were not given for this task.
 
 ## Finishing
 
-Before you call the task done, take a final screenshot that shows the result. Describe what is on it in your answer,
-and name anything you could not finish or check.
+Before you call the task done, check the result: an observe that shows it, or a screenshot when it is visual. Say what
+it shows in your answer, and name anything you could not finish or check.
