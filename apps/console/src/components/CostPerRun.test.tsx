@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { CostChart, CostPerRun, HOW } from "./CostPerRun";
 import SAMPLE from "./CostPerRun.sample.json";
 import { ClientError, type Client } from "@/lib/client";
-import { blocksOf, blockSizeOf, level, nearest, niceTop, pct, plotted, rollingMean, runTicks, usd, windowOf, yTopOf } from "@/lib/costPerRun";
+import { blocksOf, blockSizeOf, level, nearest, niceTop, pct, plotted, rollingMean, runTicks, usd, windowOf, yTicksOf, yTopOf } from "@/lib/costPerRun";
 import type { CostRun, LearningCost } from "@/lib/v2";
 
 // The cost per run chart (GET /v2/agents/{id}/learning/cost): the invented invoice-sorter agent's 80 runs, its cost
@@ -58,14 +58,20 @@ describe("the chart's arithmetic", () => {
 });
 
 describe("the execution mix's arithmetic", () => {
-  it("cuts every run, its cost known or not, into blocks of 5 or more, about 20 blocks at most", () => {
-    expect([blockSizeOf(3), blockSizeOf(80), blockSizeOf(400), blockSizeOf(1000)]).toEqual([5, 5, 20, 50]);
+  it("cuts every run, its cost known or not, one a column up to 20, then into blocks of 5 or more, about 20 blocks at most", () => {
+    expect([blockSizeOf(3), blockSizeOf(20), blockSizeOf(21), blockSizeOf(80), blockSizeOf(400), blockSizeOf(1000)]).toEqual([1, 1, 5, 5, 20, 50]);
     const blocks = blocksOf(sample.runs, 5);
     expect(blocks).toHaveLength(16);
     expect(blocks[4]).toEqual({ from: 21, to: 25, runs: 5, counts: { agent: 1, handed_back: 1, workflow: 3 } });
     const short = blocksOf(sample.runs.slice(0, 7), 5);
     expect(short.map((b) => [b.from, b.to, b.runs])).toEqual([[1, 5, 5], [6, 7, 2]]);
     expect([pct(3, 5), pct(1, 3), pct(0, 0)]).toEqual(["60%", "33%", "0%"]);
+  });
+  it("steps the cost axis cleanly from 0 to its top: never a quarter of 5", () => {
+    expect(yTicksOf(0.005)).toEqual([0, 0.001, 0.002, 0.003, 0.004, 0.005]);
+    expect(yTicksOf(1)).toEqual([0, 0.25, 0.5, 0.75, 1]);
+    expect(yTicksOf(0.25)).toEqual([0, 0.05, 0.1, 0.15, 0.2, 0.25]);
+    expect(yTicksOf(2)).toEqual([0, 0.5, 1, 1.5, 2]);
   });
 });
 
@@ -111,6 +117,14 @@ describe("CostChart", () => {
     expect(mix.querySelector(".sr-only")!.textContent).toContain("Runs 21 to 25: by the agent 1, handed back 1, learned workflow 3");
     act(() => { mix.querySelectorAll("svg g")[4]!.dispatchEvent(new MouseEvent("pointerover", { bubbles: true })); });
     expect(mix.querySelector(".shadow-float")!.textContent).toBe("Runs 21 to 25By the agent 1 (20%)Handed back 1 (20%)Learned workflow 3 (60%)");
+  });
+  it("draws a column a run up to 20 runs, each named as one run", () => {
+    const runs = [...Array.from({ length: 4 }, (_, i) => run(i + 1, "agent", 0.002)), run(5, "handed_back", 0.003)];
+    const mix = draw(series(runs, { before: { runs: 5, mean_usd: 0.002 } })).querySelector<HTMLElement>('[data-testid="execution-mix"]')!;
+    expect(mix.textContent).toContain("Who finished each run");
+    expect(mix.textContent).not.toContain(", by ");
+    expect([...mix.querySelectorAll("svg rect")].filter((r) => r.getAttribute("class")?.startsWith("fill-chart-"))).toHaveLength(5);
+    expect(mix.querySelector(".sr-only")!.textContent).toContain("Run 5: handed back 1");
   });
   it("leaves the times-cheaper figure out under 20 runs after the takeover, and says when it comes", () => {
     const runs = [...Array.from({ length: 10 }, (_, i) => run(i + 1, "agent", 1)), ...Array.from({ length: 5 }, (_, i) => run(i + 11, "workflow", 0.1))];

@@ -2,7 +2,7 @@ import { type KeyboardEvent, type PointerEvent, useEffect, useMemo, useRef, useS
 import { Bone } from "@/components/Skeleton";
 import { problem, ProblemCard } from "@/components/learningProblem";
 import type { Client } from "@/lib/client";
-import { type Block, blockSizeOf, blocksOf, level, nearest, PATHS, pathOf, pct, plotted, type Point, rollingMean, runTicks, usd, windowOf, yTopOf } from "@/lib/costPerRun";
+import { type Block, blockSizeOf, blocksOf, level, nearest, PATHS, pathOf, pct, plotted, type Point, rollingMean, runTicks, usd, windowOf, yTicksOf, yTopOf } from "@/lib/costPerRun";
 import { when } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { CostRun, LearningCost } from "@/lib/v2";
@@ -86,7 +86,7 @@ export function CostChart({ data, on, width: fixed }: { data: LearningCost; on: 
   const x = (n: number) => M.left + (last === first ? plotW / 2 : ((n - first) / (last - first)) * plotW);
   const { top, above } = yTopOf(points, mean, s.before?.mean_usd ?? null);
   const y = (v: number) => M.top + H - (Math.min(v, top) / top) * H;
-  const yTicks = [0, top / 4, top / 2, (3 * top) / 4, top];
+  const yTicks = yTicksOf(top);
   const xTicks = runTicks(first, last, width < 520 ? 5 : 7);
   // The takeover's marker shows when its run is on the plot; the level after it shows either way, from the plot's left
   // edge when the takeover is older than the runs read.
@@ -228,6 +228,8 @@ const MIX_H = 64;
 const MIX_M = { top: 4, left: 36, bottom: 22 };
 /** Bottom to top: the learned workflow on the baseline, so its share grows from it. */
 const STACK = [...PATHS].reverse();
+/** A block's runs, as a person reads them. */
+const runsOf = (b: Block) => (b.from === b.to ? `Run ${b.from}` : `Runs ${b.from} to ${b.to}`);
 
 /** The execution mix: the runs in blocks (blocksOf), each a column of the share each path took, on its own run axis
  *  `width` wide and `height` tall, with the takeover's marker. A hover names a block's runs and counts. */
@@ -245,7 +247,7 @@ function Mix({ runs, width, height, takeover }: { runs: readonly CostRun[]; widt
     const x0 = x(b.from - 0.5), x1 = x(b.to + 0.5);
     return { x0: x0 + 1, w: Math.max(1, x1 - x0 - 2) };
   };
-  const words = (b: Block) => `Runs ${b.from} to ${b.to}: ${PATHS.filter((p) => b.counts[p.path]).map((p) => `${p.label.toLowerCase()} ${b.counts[p.path]}`).join(", ")}`;
+  const words = (b: Block) => `${runsOf(b)}: ${PATHS.filter((p) => b.counts[p.path]).map((p) => `${p.label.toLowerCase()} ${b.counts[p.path]}`).join(", ")}`;
   const lastWords = `Last ${last.runs === 1 ? "run" : `${last.runs} runs`}: ${pct(last.counts.workflow, last.runs)} by the learned workflow`;
   const shown = hover === null ? null : blocks[hover]!;
   const tipLeft = shown ? edges(shown).x0 > width / 2 : false;
@@ -253,7 +255,7 @@ function Mix({ runs, width, height, takeover }: { runs: readonly CostRun[]; widt
   return (
     <div className="relative min-w-0" style={{ width }} data-testid="execution-mix">
       <div className="font-mono text-label" style={{ paddingLeft: left }}>
-        <span className="caps block text-muted-foreground">Who finished each run, by {size}</span>
+        <span className="caps block text-muted-foreground">Who finished each run{size > 1 ? `, by ${size}` : ""}</span>
         <span className="block text-foreground">{lastWords}</span>
       </div>
       <svg width={width} height={MIX_M.top + height + MIX_M.bottom} className="mt-2 block select-none font-mono" aria-hidden onPointerLeave={() => setHover(null)}>
@@ -286,7 +288,7 @@ function Mix({ runs, width, height, takeover }: { runs: readonly CostRun[]; widt
       {shown && (
         <div className={cn("pointer-events-none absolute z-raised whitespace-nowrap border bg-card px-2 py-1 font-mono text-label shadow-float", tipLeft && "-translate-x-full")}
           style={{ left: tipLeft ? edges(shown).x0 - 6 : edges(shown).x0 + edges(shown).w + 6, top: 40 }}>
-          <span className="block font-semibold">Runs {shown.from} to {shown.to}</span>
+          <span className="block font-semibold">{runsOf(shown)}</span>
           {PATHS.filter((p) => shown.counts[p.path]).map((p) => <span key={p.path} className="block text-muted-foreground">{p.label} {shown.counts[p.path]} ({pct(shown.counts[p.path], shown.runs)})</span>)}
         </div>
       )}
