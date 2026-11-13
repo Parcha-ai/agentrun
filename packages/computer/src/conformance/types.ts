@@ -244,9 +244,10 @@ export interface ConformanceReport {
 	undeclared: Capability[];
 	/**
 	 * The computers of this run deleted, those still there after it, what went wrong, and the computers a provider gave
-	 * after their case had ended (each deleted as it came).
+	 * after their case had ended (each deleted as it came). sweep: for a provider on the shared machine-host adapter, the
+	 * live sweep of the run's label at its end (conformance/sweep.ts): nothing left behind is stillThere empty.
 	 */
-	cleanup: { deleted: string[]; left: string[]; errors: string[]; late: string[] };
+	cleanup: { deleted: string[]; left: string[]; errors: string[]; late: string[]; sweep?: { swept: number; gone: number; stillThere: string[]; leftAlone: number } };
 	/** What the provider module says of its configuration, for whoever reads the report; absent when it says nothing. */
 	notes?: string[];
 	/**

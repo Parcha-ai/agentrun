@@ -18,6 +18,7 @@
 // A persistent setting (the agent's own computer, agent-computer.ts) is made once under the agent's owner (this server's
 // id and the agent's), found again by its owner at each later claim and attached under the new claim, and detached, not
 // deleted, at the run's end. A run that finds it held by another run still going is refused, naming that run.
+import { randomUUID } from "node:crypto";
 import type { BrowserSpec, ComputerConnection, ComputerOwner, ComputerProvider, ComputerSpec, HelloResult, MountReadBack, Result } from "@parcha/agentrun-computer";
 import { isBrowserProvider, ownerFilter, releaseOlder, RUN_LABEL, runLabels } from "@parcha/agentrun-computer";
 import { computerOfPlace, type ComputerSetting as RevisionComputer, type PlaceView } from "../computer-setting.js";
@@ -161,6 +162,9 @@ const claimLost = (words: string): Error => Object.assign(new Error(words), { co
 const noop = async (): Promise<void> => {};
 
 /** The agent's computer setting: the launch's, else its revision's (computer, else place), else the launch's place. */
+/** A claim's create request: the run and its claim epoch, so a retry of the claim's create finds the computer it made. */
+const claimRequestId = (claim: { readonly runId: string; readonly epoch: number }) => `${claim.runId}#${claim.epoch}`;
+
 async function settingOf(launch: ClaimLaunch, store: Pick<Store, "agents">): Promise<ComputerSetting | undefined> {
   if (launch.computer) return launch.computer;
   const body = launch.revisionId ? ((await store.agents.revision(launch.revisionId))?.body as { computer?: RevisionComputer; place?: PlaceView } | undefined) : undefined;
@@ -252,7 +256,8 @@ export function claimBrowser(provider: ComputerProvider, spec: ComputerSpec): { 
       features: structuredClone(features),
       async open(tag, lifetimeS, browser?: BrowserSpec, signal?: AbortSignal) {
         const lifetimeMs = Math.min(lifetime, Math.max(1, Math.round(lifetimeS)) * 1000);
-        const created = await provider.create({ ...spec, lifetimeMs, labels: { ...spec.labels, [SESSION_TAG]: labelValue(tag) }, ...(browser ? { browser } : {}) }, signal ? { signal } : {});
+        // Each open is its own request: a session closed and opened again under one tag is a new one.
+        const created = await provider.create({ ...spec, lifetimeMs, labels: { ...spec.labels, [SESSION_TAG]: labelValue(tag) }, ...(browser ? { browser } : {}) }, { requestId: randomUUID(), ...(signal ? { signal } : {}) });
         if (!created.ok) throw failed(created.error);
         open.add(created.value.id);
         return created.value.id;
@@ -296,7 +301,7 @@ async function providerLaunch(
 ): Promise<LaunchedComputer & { machine: string; hello: HelloResult; watch?: (signal: AbortSignal) => unknown }> {
   const older = await releaseOlder(provider, claim.runId, claim.epoch, signal ? { signal } : {});
   if (!older.ok) throw new Error(older.error.message);
-  const created = await provider.create(spec, signal ? { signal } : {});
+  const created = await provider.create(spec, { requestId: claimRequestId(claim), ...(signal ? { signal } : {}) });
   if (!created.ok) throw new Error(created.error.message);
   const ref = { id: created.value.id, name: created.value.name };
   const release = async () => {
@@ -418,7 +423,7 @@ async function ownedStart(
     made = false;
     note(`Attached this agent's computer ${ref.name}, kept from its last run.`);
   } else {
-    const created = await provider.create(spec, call);
+    const created = await provider.create(spec, { ...call, requestId: claimRequestId(claim) });
     if (!created.ok) throw new Error(created.error.message);
     ref = { id: created.value.id, name: created.value.name };
     made = true;

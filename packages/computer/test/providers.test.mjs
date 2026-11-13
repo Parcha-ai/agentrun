@@ -51,13 +51,16 @@ function staticImports(path) {
 	return [...readFileSync(new URL(path, import.meta.url), "utf8").matchAll(/^\s*(?:import|export)\s[^;(]*?\sfrom\s+"([^"]+)"/gm)].map(([, from]) => from);
 }
 
-/** Every provider file under src/: one that declares a class implementing ComputerProvider, with the id it reports. */
+/**
+ * Every provider file under src/: one that declares a class implementing ComputerProvider, or a MachineHost (a vendor on
+ * the shared adapter, src/host.ts), with the id it reports.
+ */
 function providerFiles() {
 	const found = [];
 	for (const name of readdirSync(SRC)) {
 		if (!name.endsWith(".ts")) continue;
 		const source = readFileSync(new URL(name, SRC), "utf8");
-		if (!/\bclass\s+\w+\s+implements\s+ComputerProvider\b/.test(source)) continue;
+		if (!/\bclass\s+\w+\s+implements\s+(ComputerProvider|MachineHost)\b/.test(source)) continue;
 		const id = /\breadonly id = "([^"]+)"/.exec(source)?.[1];
 		found.push({ file: name.replace(/\.ts$/, ""), id });
 	}
