@@ -260,6 +260,21 @@ test("a script's shell and files are held to the run's gate: a denied bash, a de
   await run.end();
 });
 
+test("under a bash policy a script's shell carries the policy's git lock-down as the bash tool's does, and no option of the script overrides it", async () => {
+  const root = scratch();
+  const computer = fakeScreen(root);
+  const run = await runTools(localWorkspace(root), { kind: "desktop", computer, hello: helloOf("desktop", DESKTOP_GROUPS), check: { readBackOf } }, { mode: 1, context: ctx, bashPolicy: "read-only" });
+  run.computer.guard.install(async () => "allow");
+  const tools = run.hostTools(run.kindTools);
+  await call(tools, "computer_script", { code: "try { await computer.shell.run('git status', { env: { GIT_CONFIG_COUNT: '0', MINE: '1' } }); } catch (error) {} return 1;" });
+  const [, sent] = computer.calls.filter(([method]) => method === "exec.run").at(-1);
+  assert.equal(sent.env.GIT_CONFIG_NOSYSTEM, "1");
+  assert.notEqual(sent.env.GIT_CONFIG_COUNT, "0", "the policy's value, not the script's");
+  assert.equal(sent.env.MINE, "1", "the script's other variables stay");
+  assert.match(sent.argv.at(-1), /^git\(\) \{ case .*\ngit status$/s, "the git floor check runs before the command");
+  await run.end();
+});
+
 test("the claim's MCP server: an MCP client lists the run's computer tools and its calls answer what the per-step tools and the script answer, with structuredContent and image blocks", async () => {
   const root = scratch();
   const phone = fakeScreen(root, { ui: true });

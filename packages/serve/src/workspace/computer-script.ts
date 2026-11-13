@@ -34,6 +34,18 @@ const HELD_AS: Readonly<Record<string, "bash" | "write" | "read">> = Object.free
  *  gate is installed (the spec installs it once built) every one of those calls is refused. */
 export class ScriptGuard {
   #decide: ScriptDecide | undefined;
+  /** `shell`: what the run's bash adds under its bash policy (bash-read-only.ts policyEnv, policyPrelude): the environment
+   *  that locks git's config down, set over any a script gives, and the line that runs git only at the floor version. */
+  constructor(private readonly shell: { readonly env: Readonly<Record<string, string>>; readonly prelude: string } = { env: {}, prelude: "" }) {}
+
+  /** `op`'s arguments as the computer is sent them: a script's shell command with the policy's safeguards, as the bash
+   *  tool's own command has them, which no option of the script's overrides. */
+  shaped(op: string, args: unknown): unknown {
+    if (op !== "shell.run") return args;
+    const given = (args ?? {}) as Record<string, unknown>;
+    const env = { ...((given.env ?? {}) as Record<string, string>), ...this.shell.env };
+    return { ...given, ...(Object.keys(env).length > 0 ? { env } : {}), ...(this.shell.prelude !== "" && typeof given.command === "string" ? { command: `${this.shell.prelude}${given.command}` } : {}) };
+  }
 
   install(decide: ScriptDecide): void {
     this.#decide = decide;
@@ -53,10 +65,10 @@ export class ScriptGuard {
 
   /** `call` of the computer's port with a script's computer call held to the gate first: the refusal throws in the
    *  script, where its `await` is. */
-  async call(op: string, args: unknown, send: () => Promise<{ value?: unknown }>): Promise<unknown> {
+  async call(op: string, args: unknown, send: (args: unknown) => Promise<{ value?: unknown }>): Promise<unknown> {
     const refused = await this.refusal(op, args);
     if (refused !== undefined) throw new Error(refused);
-    return (await send()).value ?? null;
+    return (await send(this.shaped(op, args ?? {}))).value ?? null;
   }
 }
 
@@ -104,7 +116,7 @@ export function computerScriptExecutor(card: Card, guard: ScriptGuard): Executor
         // The value whole, images and all: a script shows one with image(...). The JSON round trip is the isolate's.
         execute: async (given, context) => {
           const [op, opArgs] = given as [unknown, unknown];
-          return (await guard.call(String(op), opArgs, () => port.call(String(op), opArgs ?? {}, AbortSignal.any([context.signal, ...(call.signal ? [call.signal] : [])])))) as JsonValue;
+          return (await guard.call(String(op), opArgs, (sent) => port.call(String(op), sent ?? {},AbortSignal.any([context.signal, ...(call.signal ? [call.signal] : [])])))) as JsonValue;
         },
       }],
     });
