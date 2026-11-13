@@ -977,17 +977,35 @@ def ci_calendars(t, when):
 
 def calendar_prepare(t):
     """Calendar open, its first-run sheets answered, and its calendar list still: a fresh Calendar (CI's runner) adds
-    its own calendar (Scheduled Reminders) 15 to 30 s after it opens, and one added after the snapshot would count as
-    the task's. So the list is read until it has not changed for 8 s (at most 75 s), and, when this task opened
-    Calendar, until 45 s after it did."""
-    fresh = t.app not in running()
+    its own calendar (Scheduled Reminders) when its quick event field first reads what is typed into it, and one added
+    after the snapshot would count as the task's. So a quick event is typed here and cancelled before it is made (no
+    event is made), and the list is read until it has not changed for 8 s (at most 40 s)."""
     t.launch()
-    first_run(t, t.observe())
-    t.say("wait for Calendar's list of calendars to be still" + (" (Calendar just opened: for 45 s at least)" if fresh else ""))
+    tree, _ = first_run(t, t.observe())
+    add = find(tree["nodes"], role="button", name="Add Event")
+    if add is not None:
+        t.act([{"press": add["ref"]}], "setup: open the quick event field")
+        tree = t.observe("observe the quick event field")
+        boxes = [n for n in tree["nodes"] if n.get("role") == "textbox"]
+        field = next((n for n in boxes if "focused" in (n.get("flags") or [])), None)
+        try:
+            if field is not None:
+                t.act([{"type": "Setup", "into": field["ref"]}], "setup: type into it")
+                time.sleep(2)
+                ci_calendars(t, "with the quick event typed")
+        finally:
+            # Escape cancels the field before enter makes the event; the field is gone after it.
+            for _ in range(3):
+                t.act([{"key": "escape"}], "setup: cancel the quick event")
+                tree = t.observe("observe after escape")
+                if field is None or not any(n.get("ref") == field["ref"] for n in tree["nodes"]):
+                    break
+            else:
+                raise Failed("the setup's quick event field is still open after escape")
+    t.say("wait for Calendar's list of calendars to be still")
     start = time.monotonic()
-    least = 45 if fresh else 0
     names, since = calendar_names(t.c), start
-    while (time.monotonic() - since < 8 or time.monotonic() - start < least) and time.monotonic() - start < 75:
+    while time.monotonic() - since < 8 and time.monotonic() - start < 40:
         time.sleep(1)
         now = calendar_names(t.c)
         if now != names:
