@@ -32,7 +32,7 @@ const { WRAP_UP_TEXT } = await import("../dist/tool-budget.js");
 const toldToWrapUp = (sent) => sent.some((body) => JSON.stringify(body.messages ?? []).includes(WRAP_UP_TEXT));
 const SONNET = Object.freeze({ id: "claude-sonnet-5-5", api: "anthropic-messages", price: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, outputCeiling: 64_000 });
 const priceOf = (_model, usage) => ((usage.input ?? 0) * 3 + (usage.output ?? 0) * 15 + (usage.cacheRead ?? 0) * 0.3 + (usage.cacheWrite ?? 0) * 3.75) / 1e6;
-const fauxComposer = ({ store, sealKey }) => computerDepsFrom({ env: {}, store, sealKey, faux: fauxComputers({ viewerBase: "http://127.0.0.1:9" }) });
+const fauxComposer = ({ store, sealKey }) => computerDepsFrom({ env: {}, store, sealKey, faux: fauxComputers() });
 const TASK = "Open a terminal, run hostname, and write what it prints to answer.md in your work folder.";
 /** The tokens Anthropic counts for the first request (a desktop run's first turn on Sonnet). */
 const FIRST_TOKENS = 3_146;

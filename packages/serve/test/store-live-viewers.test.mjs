@@ -215,3 +215,15 @@ test("the rows go with the run", async (t) => {
     await db.close();
   }
 });
+
+// A runner on another machine than the server (one image, a server and its runners apart) names where its viewer
+// answers: the host goes with its row, and a row put with none is the server's own machine's (loopback).
+test("a viewer's host goes with its row: of() returns the host a runner on another machine put, and none for a viewer on the server's own machine", async (t) => {
+  const { store } = await storeOn(t);
+  await queued(store, "run-1");
+  const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
+  assert.equal(await store.liveViewers.put(claim, { ...viewer("run-1", "remote", { kind: "desktop" }), host: "runner-1" }), true);
+  assert.equal(await store.liveViewers.put(claim, viewer("run-1", "local")), true);
+  const hosts = Object.fromEntries((await store.liveViewers.of("run-1")).map((row) => [row.tag, row.host]));
+  assert.deepEqual(hosts, { remote: "runner-1", local: undefined });
+});

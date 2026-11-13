@@ -38,7 +38,7 @@ const RUN = "run-1";
 const SEAL_KEY = Buffer.alloc(32, 7);
 const DESKTOP = { kind: "desktop", provider: "faux-desktop" };
 const OWNER = { ownerSession: true, token: false, accounts: true };
-const FAUX = fauxComputers({ viewerBase: "http://serve.test:4777" });
+const FAUX = fauxComputers();
 after(closeOpenSessions);
 
 const until = async (done, what, ms = 60_000) => {
