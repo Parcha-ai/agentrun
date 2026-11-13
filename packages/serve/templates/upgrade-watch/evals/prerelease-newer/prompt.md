@@ -7,7 +7,7 @@ Scheduled weekly run, fired 2026-11-09T08:00:00Z (Monday). Check what example-or
 with your upgrade skill, and answer as the skill says.
 
 github.com and raw.githubusercontent.com are not reachable from this run. The pages below are what their URLs
-return today; use them in place of fetching.
+return today; use them in place of fetching. Any other page of this repository answers 404: Not Found.
 
 --- https://github.com/example-org/widget/tags (fetched 2026-11-09), tags newest published first, each with its date ---
 v3.0.0-beta.1    2026-11-07
