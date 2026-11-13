@@ -33,7 +33,8 @@ const RULES: Rule[] = [
   { id: "caps-by-hand", says: "Mono caps is the .caps class.", fix: "caps", find: /(?<![\w-])uppercase\b(?=[\s"'`])/, skip: (path) => path === "components/ui/tip.tsx" },
   { id: "dark-variant", says: "Tokens change with the theme; a component never does.", fix: "the token whose two values you need, or a new one", find: /(?<![\w-])dark:[a-z]/ },
   { id: "page-title", says: "A page's h1 is text-2xl font-semibold, in the sans face.", fix: 'className="text-2xl font-semibold" (sr-only where the page shows no title)',
-    find: /<h1\b(?![^>]*\bsr-only\b)(?![^>]*\btext-2xl\b[^>]*\bfont-semibold\b)|<h1\b[^>]*\bfont-mono\b/ },
+    // The two classes in either order; a tag that wraps onto another line is not read here (no false failure).
+    find: /<h1\b(?=[^>]*>)(?![^>]*\bsr-only\b)(?!(?=[^>]*\btext-2xl\b)(?=[^>]*\bfont-semibold\b))|<h1\b[^>]*\bfont-mono\b/ },
   { id: "page-width-by-hand", says: "A page's width is a token.", fix: "max-w-page (forms and text) or max-w-page-wide (data)", find: /\bmax-w-\[(?:1100|1600)px\]/ },
   { id: "focus-removed", says: "outline-none comes with a focus-visible: replacement.", fix: "drop outline-none (the global ring shows), or add focus-visible:outline-offset-0 and friends",
     find: /(?<![\w:-])outline-none\b/, unless: /focus-visible:(?!outline-none)|focus:(?!outline-none)|data-\[focus\]|tabIndex=\{-1\}/, near: 2 },
@@ -152,6 +153,13 @@ describe("the console's sources follow the design system", () => {
   it("reads a wrapped class list's focus replacement, a token's variable in any spelling, and layer 0", () => {
     const rule = (id: string) => RULES.find((r) => r.id === id)!;
     const found = (id: string, source: string) => lineHits(rule(id), source.split("\n")).length;
+    expect(found("page-title", '<h1 className="mb-2 font-semibold text-2xl">Runs</h1>')).toBe(0);
+    expect(found("page-title", '<h1 className="text-2xl font-semibold">Runs</h1>')).toBe(0);
+    expect(found("page-title", '<h1 className="sr-only">Playground</h1>')).toBe(0);
+    expect(found("page-title", '<h1\n  className="text-2xl font-semibold">Runs</h1>')).toBe(0);
+    expect(found("page-title", '<h1 className="text-xl font-semibold">Runs</h1>')).toBe(1);
+    expect(found("page-title", '<h1 className="font-mono text-2xl font-semibold">Runs</h1>')).toBe(1);
+    expect(found("page-width-by-hand", '<div className="max-w-[1100px]">')).toBe(1);
     expect(found("focus-removed", 'className={cn("border outline-none",\n  "focus-visible:outline-offset-0")}')).toBe(0);
     expect(found("focus-removed", 'className="border outline-none"\nonClick={go}\ntitle="x"\naria-label="y"')).toBe(1);
     // A neighbour's focus mark, or a comment that names one, does not answer for an element that has none.
