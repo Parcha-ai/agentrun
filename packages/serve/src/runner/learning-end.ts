@@ -248,6 +248,9 @@ async function describedOf(tools: readonly string[], store: Pick<Store, "mcp">):
   return out;
 }
 
+/** The most of an agent's kept learning, newest first, read for a held workflow's ask since its hold (compileAskOf). */
+const HELD_ASKED_READ = 200;
+
 /** Whether a store run ended completed (its state `ended`, a plain completion). */
 const completedRun = (run: { readonly state: string; readonly outcome: string | null }) => run.state === "ended" && (run.outcome === null || run.outcome === "completed");
 /** The most tool calls of one run a trace keeps, and the most of a call's input or a message it holds, in characters. */
@@ -272,7 +275,7 @@ export async function traceOf(store: Store, runId: string, refuse: readonly stri
  *  it; or of the one that fits the run's input and whose promotion holds it at main's digest (runner/promotion.ts: its
  *  replay on the agent's graded inputs, or its graded served runs, fell under the bar; its champion served the run, or the
  *  agent did by hand), with the
- *  hold's numbers, once per hold (none when a run since the hold compiled it); else, when the job is due (compileDue: the run completed, the agent has no learned workflow active or waiting, none
+ *  hold's numbers, once per hold (none when any run since the hold compiled it, read from the agent's kept learning); else, when the job is due (compileDue: the run completed, the agent has no learned workflow active or waiting, none
  *  of its last COMPILE_QUIET_RUNS runs compiled, and it keeps enough notes or has run enough), a new one. Either way the
  *  agent's active notes whole, the traces of its last COMPILE_TRACES completed runs before this one, the tools a call node
  *  may run (draftTools) with what each takes and gives, its decision providers, the run's input (`input`, its fields for
@@ -338,9 +341,12 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
   if (revising && read.current === undefined) return undefined;
   let held: HeldAsk | undefined;
   if (read.held) {
-    // Once per hold: a run since it that compiled this workflow asked already (its revision is on its way to a replay).
+    // Once per hold: a run since it that compiled this workflow asked already, whatever came of it (its revision is on its
+    // way to a replay, its draft failed its checks, or the grader dropped it), however many runs ago. Read from the
+    // agent's kept learning since the hold, never a window of its last runs; one that can't be read asks nothing.
     const since = Date.parse(read.held.at);
-    if (lately.some((kept) => kept && compiledOf(kept)?.workflow === read.held!.workflow && !(kept.createdAt < since))) return undefined;
+    const kept = await deps.store.learning.proposals(input.agentId, { limit: HELD_ASKED_READ }).catch(() => undefined);
+    if (!kept || kept.some((one) => !(one.createdAt < since) && compiledOf(one)?.workflow === read.held!.workflow)) return undefined;
     const { workflow, digest, source, reason, replay } = read.held;
     held = { workflow, digest, source, reason, ...(replay ? { replay: { n: replay.n, agree: replay.agree, agent_acc: replay.agent_acc, wf_acc: replay.wf_acc, delta: replay.delta, handed_back: replay.handed_back } } : {}) };
     revising = workflow;
