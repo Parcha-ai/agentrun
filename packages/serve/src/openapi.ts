@@ -980,7 +980,7 @@ const LEARNING_COST = closed({
 });
 
 /** PUT /runs/{run_id}/grade and GET /agents/{agent_id}/learning/promotions (learn/promote.ts, runner/promotion.ts). */
-const GRADE = closed({
+const GRADE = closedWith({
   run_id: { type: "string" },
   correct: { type: "boolean", description: "Whether the run's answer was right." },
   source: { enum: [...GRADE_SOURCES], description: "Who graded it: `feedback`, a person; `eval`, an eval's label." },
@@ -988,7 +988,7 @@ const GRADE = closed({
   path: { enum: [...RUN_PATHS], description: "The path the run took, read from its record when it was graded." },
   workflow: { ...NULL_STRING, description: "The learned workflow that served it, when one did." },
   workflow_digest: { ...NULL_STRING, description: "That workflow's digest (the first 16 hex of its workflow.json's sha256), when it was served first." },
-});
+}, { expected: { type: "object", description: "The fields a right answer's JSON holds, when the grade gave them." } });
 const REPLAY_SCORE = {
   n: { ...COUNT, description: "The graded inputs it was decided on." },
   agree: { ...COUNT, description: "How many of them the workflow answered alone with the agent's recorded answer." },
