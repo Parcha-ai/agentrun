@@ -20,6 +20,8 @@ const NAME = "agentrun.computer.name";
 const DEADLINE = "agentrun.computer.deadline";
 const MAX = "agentrun.computer.max-deadline";
 const SPEC = { image: "img", lifetimeMs: 600_000, network: "none" };
+/** A pid1 host that takes a spec's user. */
+const USER_FACTS = { daemon: "pid1", specFields: ["user"], user: ["uid"], networkReadBack: false };
 const HOUR = 3_600_000;
 const ACCEPTED_NOTE = "network: none; accepted with no answer (no bytes came back): 1.1.1.1:443, 8.8.8.8:443";
 const INSTALLER_NOTE = "the daemon was installed by root (uid 0), as root";
@@ -202,6 +204,31 @@ test("create races: two creates of one request at once make one machine, and bot
 	assert.equal(fake.machines.size, 1);
 });
 
+test("create races: a second create of a request in flight with another spec is refused as exists, whatever the timing; the same spec shares the first's answer", async () => {
+	const { provider, fake } = setup({}, { facts: USER_FACTS });
+	const requestId = "race-users";
+	const [a, b, c] = await Promise.all([
+		provider.create({ ...SPEC, user: "1000:1000" }, { requestId }),
+		provider.create({ ...SPEC, user: "2000:2000" }, { requestId }),
+		provider.create({ ...SPEC, user: "1000" }, { requestId }),
+	]);
+	const first = made(a);
+	assert.equal(b.error?.code, "exists", "another user, while the first is in flight");
+	assert.match(b.error.message, /is being made for this request with another spec, so it is not returned: user: asked 2000:2000, in flight 1000:1000; create with a new request id/);
+	assert.deepEqual(made(c), first, "1000 is 1000:1000: the same spec shares the answer");
+	assert.equal(fake.creates(), 1);
+	// After it is made, the same refusal, as #again reads it back.
+	const later = await provider.create({ ...SPEC, user: "2000:2000" }, { requestId });
+	assert.equal(later.error?.code, "exists");
+	// Labels too, as #again holds a listed computer to them.
+	const plain = setup();
+	const [x, y] = await Promise.all([plain.provider.create(SPEC, { requestId: "race-labels" }), plain.provider.create({ ...SPEC, labels: { team: "b" } }, { requestId: "race-labels" })]);
+	made(x);
+	assert.equal(y.error?.code, "exists");
+	assert.match(y.error.message, /labels team: in flight, never asked for|label team: asked "b", in flight nothing/);
+	assert.equal(plain.fake.creates(), 1);
+});
+
 test("a retry from another provider instance finds the machine still starting, waits until it is up, and returns it", async () => {
 	const fake = fakeHost();
 	const first = hostedProvider(fake.host, { label: "Fakehost", daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
@@ -361,6 +388,21 @@ test("nothing left behind: a failure or an abort at any step after the machine e
 		assert.equal(aborted.error?.code, "aborted", `an abort at ${step}: ${aborted.error?.message}`);
 		await nothingLeft(fake, `an abort at ${step}`);
 	}
+});
+
+test("a process whose kill never settles holds up nothing: an aborted install still reaches the machine's delete", { timeout: 20_000 }, async () => {
+	const controller = new AbortController();
+	const { provider, fake } = setup(
+		{ timeouts: { ...TIMEOUTS, execMs: 200 } },
+		// The install never ends, and its kill never answers (a vendor's remote kill that stalls); the abort comes once
+		// the install is running.
+		{ hang: "install", killHangs: true, onStep: (name) => (name === "exec install" ? setImmediate(() => controller.abort()) : undefined) },
+	);
+	const aborted = await create(provider, SPEC, { signal: controller.signal });
+	assert.equal(aborted.error?.code, "aborted", aborted.error?.message);
+	const m = only(fake);
+	assert.ok(runsOf(fake, m.id).includes("kill install"), "the install was killed");
+	assert.equal(m.deleted, true, "and the machine deleted all the same");
 });
 
 test("create tries the bridge again while init is not yet listening", async () => {
@@ -626,6 +668,10 @@ test("pid1: the machine's command is the entrypoint; the daemon goes in beside i
 	assert.ok(m.request.command.includes("--own-network"));
 	assert.equal(m.daemon.atomic, true, "installed to .part, then moved");
 	assert.equal(m.daemon.sha256, createHash("sha256").update(DAEMON_BYTES).digest("hex"), "and moved only once it reads the sha256 uploaded");
+	assert.match(m.request.command[8], /^[0-9a-f]{32}$/, "the entrypoint waits for this create's nonce");
+	assert.equal(m.daemon.marker, m.request.command[8], "which install writes to the marker beside the daemon");
+	made(await create(provider));
+	assert.notEqual([...fake.machines.values()][1].request.command[8], m.request.command[8], "each create its own");
 	assert.ok(!runsOf(fake, m.id).includes("run start"));
 	assert.equal(provider.capabilities().daemon, "pid1");
 });
@@ -647,8 +693,9 @@ test("the pid1 entrypoint, run by sh, starts init from its home with the display
 		// A stand-in for the daemon: it says where it runs, its HOME, its DISPLAY and its arguments.
 		writeFileSync(daemon, '#!/bin/sh\necho "cwd=$(pwd) home=$HOME display=${DISPLAY-unset} args=$*"\n');
 		chmodSync(daemon, 0o755);
+		writeFileSync(`${daemon}.installed`, "n0nce\n");
 		const run = (display) => {
-			const argv = hostedCommands({ deadline: "2030-01-01T00:00:00.000Z", display, atomic: true, waitS: 5 }).entrypoint;
+			const argv = hostedCommands({ deadline: "2030-01-01T00:00:00.000Z", display, atomic: true, waitS: 5, nonce: "n0nce" }).entrypoint;
 			// The daemon's path and init's home, here instead of /opt/agentrun and /work.
 			const words = [...argv];
 			words[4] = daemon;
@@ -657,6 +704,40 @@ test("the pid1 entrypoint, run by sh, starts init from its home with the display
 		};
 		assert.equal(run(":0"), `cwd=${home} home=${home} display=:0 args=init --deadline 2030-01-01T00:00:00.000Z --user 2510:2510 --own-network`);
 		assert.equal(run(""), `cwd=${home} home=${home} display=unset args=init --deadline 2030-01-01T00:00:00.000Z --user 2510:2510 --own-network`, "no screen: no DISPLAY, not even one inherited");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("the pid1 entrypoint, run by sh, never starts a daemon already at the path without this create's marker: an image's older one, or an earlier install's", () => {
+	const root = mkdtempSync(join(tmpdir(), "computer-entrypoint-"));
+	try {
+		const daemon = join(root, "computerd");
+		const ran = join(root, "ran");
+		// The image's own daemon: executable, in place before the entrypoint starts. Run, it leaves a trace.
+		writeFileSync(daemon, `#!/bin/sh\necho started > '${ran}'\n`);
+		chmodSync(daemon, 0o755);
+		const run = () => {
+			const words = [...hostedCommands({ deadline: "2030-01-01T00:00:00.000Z", atomic: true, waitS: 0, nonce: "this-create" }).entrypoint];
+			words[4] = daemon;
+			words[6] = root;
+			try {
+				execFileSync(words[0], words.slice(1), { cwd: "/", env: { PATH: process.env.PATH }, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+				return { code: 0, err: "" };
+			} catch (error) {
+				return { code: error.status, err: String(error.stderr) };
+			}
+		};
+		const none = run();
+		assert.equal(none.code, 3, "no marker: the wait ends, and the computer with it");
+		assert.match(none.err, /the daemon did not arrive at .*computerd within 0 s/);
+		assert.throws(() => readFileSync(ran), /ENOENT/, "the old daemon never ran");
+		writeFileSync(`${daemon}.installed`, "an-earlier-create\n");
+		assert.equal(run().code, 3, "another create's marker: the same");
+		assert.throws(() => readFileSync(ran), /ENOENT/);
+		writeFileSync(`${daemon}.installed`, "this-create\n");
+		assert.equal(run().code, 0, "this create's marker: it starts");
+		assert.equal(readFileSync(ran, "utf8"), "started\n");
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
@@ -677,9 +758,9 @@ test("pid1: the gate is beside the daemon, in the directory install makes root's
 	assert.equal(ARCHIL_GATE, "/opt/agentrun/archil-mounted");
 	assert.equal(ARCHIL_GATE.slice(0, ARCHIL_GATE.lastIndexOf("/")), DAEMON.slice(0, DAEMON.lastIndexOf("/")));
 	const { entrypoint } = hostedCommands({ deadline: "2026-11-06T12:00:00.000Z", user: "2510:2510", waitS: 9, gate: ARCHIL_GATE });
-	assert.deepEqual(entrypoint.slice(3), ["sh", DAEMON, "9", "/work", "", "--gate", ARCHIL_GATE, "init", "--deadline", "2026-11-06T12:00:00.000Z", "--user", "2510:2510", "--own-network"]);
+	assert.deepEqual(entrypoint.slice(3), ["sh", DAEMON, "9", "/work", "", "", "--gate", ARCHIL_GATE, "init", "--deadline", "2026-11-06T12:00:00.000Z", "--user", "2510:2510", "--own-network"]);
 	const plain = hostedCommands({ deadline: "2026-11-06T12:00:00.000Z", user: "1000:1000", waitS: 9 });
-	assert.deepEqual(plain.entrypoint.slice(3), ["sh", DAEMON, "9", "/work", "", "init", "--deadline", "2026-11-06T12:00:00.000Z", "--user", "1000:1000", "--own-network"], "no gate: the plain command");
+	assert.deepEqual(plain.entrypoint.slice(3), ["sh", DAEMON, "9", "/work", "", "", "init", "--deadline", "2026-11-06T12:00:00.000Z", "--user", "1000:1000", "--own-network"], "no gate: the plain command");
 });
 
 test("the pid1 install, run by sh, moves the daemon into place only once it reads the sha256 given; one that reads another is removed, never moved", () => {
@@ -701,7 +782,7 @@ test("the pid1 install, run by sh, moves the daemon into place only once it read
 		const run = (sha256) => {
 			const staging = join(root, "staged");
 			writeFileSync(staging, DAEMON_BYTES);
-			const words = [...hostedCommands({ staging, atomic: true, sha256 }).install];
+			const words = [...hostedCommands({ staging, atomic: true, sha256, nonce: "this-create" }).install];
 			// The daemon's path, its home and socket directory, here instead of /opt/agentrun, /work and /run/agentrun.
 			words[5] = daemon;
 			words[6] = join(root, "work");
@@ -713,17 +794,22 @@ test("the pid1 install, run by sh, moves the daemon into place only once it read
 			}
 		};
 		const right = createHash("sha256").update(DAEMON_BYTES).digest("hex");
+		// An earlier install's marker, left behind: removed before anything is written.
+		mkdirSync(join(root, "opt", "agentrun"), { recursive: true });
+		writeFileSync(`${daemon}.installed`, "an-earlier-create\n");
 		const wrong = run("0".repeat(64));
 		assert.equal(wrong.code, 7, wrong.out);
 		assert.match(wrong.out, new RegExp(`reads sha256 ${right}, not ${"0".repeat(64)}, so it is not moved into place`));
 		assert.throws(() => readFileSync(daemon), /ENOENT/, "nothing at the daemon's path");
 		assert.throws(() => readFileSync(`${daemon}.part`), /ENOENT/, "and the written one removed");
+		assert.throws(() => readFileSync(`${daemon}.installed`), /ENOENT/, "and no marker: the entrypoint waits on");
 		// The sha256 survives held(), which assigns x as it walks the path: the right one is moved into place.
 		const good = run(right);
 		assert.equal(good.code, 0, good.out);
 		assert.match(good.out, new RegExp(`^sha256 ${right}$`, "m"));
 		assert.deepEqual(readFileSync(daemon), DAEMON_BYTES);
 		assert.throws(() => readFileSync(`${daemon}.part`), /ENOENT/);
+		assert.equal(readFileSync(`${daemon}.installed`, "utf8"), "this-create\n", "the marker, this create's nonce, written once it is in place");
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
@@ -739,8 +825,6 @@ test("pid1: a daemon that never answers reads no start log, which a pid1 machine
 });
 
 // --- a host that takes a spec's user, and a host's runtime ---
-
-const USER_FACTS = { daemon: "pid1", specFields: ["user"], user: ["uid"], networkReadBack: false };
 
 test("a host that takes a spec's user: the daemon runs as the one the spec names (a uid alone is its own gid); root, a name and another user for an Archil computer are refused", async () => {
 	const { provider, fake } = setup({}, { facts: USER_FACTS });

@@ -10,6 +10,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 import { DESKTOP_GROUPS, type DesktopOptions, desktopOf, startDisplay } from "../desktop.js";
 import { COMPUTER_LABEL, DAEMON_IN_COMPUTER, DEADLINE_LABEL, helloDrift, type ProbeReport, probeNetworkDrift, probeNotes, probeReportOf, WORK } from "../drift.js";
 import type { HostCall, Machine, MachineHost, MachineRequest } from "../host.js";
@@ -154,6 +155,8 @@ const LISTED_ROUNDS = 2;
 const LISTED_POLL_MAX_MS = 1_000;
 const LISTEN_RETRY_MS = 250;
 const START_POLL_MS = 500;
+/** The most request names one provider remembers as ended (#ended), the oldest let go first: a bound, not a ledger. */
+const ENDED_MAX = 4_096;
 /** The longest a Node timer or AbortSignal.timeout holds. */
 const MAX_TIMER_MS = 2 ** 31 - 1;
 /** The longest timeout the adapter takes: the race of a call bounded by it must still fit a Node timer. */
@@ -271,9 +274,11 @@ export class HostedProvider implements ComputerProvider {
 	readonly #timeouts: HostedTimeouts;
 	readonly #probeTargets: string[];
 	readonly #onNote: ProviderNote | undefined;
-	/** Each create in flight, by the name its request id gives: a second create of the same request waits for the first. */
-	readonly #creating = new Map<string, Promise<Result<CreatedComputer>>>();
-	/** Names of computers this provider made and has given up on or deleted: a retry of their request is refused. */
+	/** Each create in flight, by the name its request id gives, with its spec: a second create of the same request and
+	 *  spec waits for the first; one of another spec is refused. */
+	readonly #creating = new Map<string, { spec: ComputerSpec; result: Promise<Result<CreatedComputer>> }>();
+	/** Names of computers this provider made and has given up on or deleted, the last ENDED_MAX of them: a retry of
+	 *  their request is refused. In memory alone: past it, and past this process, the vendor's listing is what holds. */
 	readonly #ended = new Set<string>();
 	/** Each computer's last extend, by machine id, while one runs: the next waits for it. */
 	readonly #extending = new Map<string, Promise<void>>();
@@ -435,14 +440,57 @@ export class HostedProvider implements ComputerProvider {
 		if (refusals.length > 0) return this.#fail("refused", refusals.map(({ field, message }) => `${field}: ${message}`).join("; "));
 		const name = nameOf(context.requestId);
 		const inFlight = this.#creating.get(name);
-		if (inFlight) return inFlight;
-		const creating = this.#createOnce(spec, name, context.signal);
+		if (inFlight) {
+			// The checks #again makes of a computer listed already, made here of the spec in flight: what it gives is
+			// shared only with a create that asks the same.
+			const differ = this.#inFlightDiffer(spec, inFlight.spec, name);
+			if (differ.length > 0) return this.#fail("exists", `${name} is being made for this request with another spec, so it is not returned: ${differ.join("; ")}; create with a new request id`);
+			return inFlight.result;
+		}
+		const creating = { spec, result: this.#createOnce(spec, name, context.signal) };
 		this.#creating.set(name, creating);
 		try {
-			return await creating;
+			return await creating.result;
 		} finally {
 			if (this.#creating.get(name) === creating) this.#creating.delete(name);
 		}
+	}
+
+	/** A request's computer given up on or deleted: its name remembered, the oldest let go past ENDED_MAX. */
+	#end(name: string): void {
+		this.#ended.delete(name);
+		this.#ended.add(name);
+		for (const oldest of this.#ended) {
+			if (this.#ended.size <= ENDED_MAX) break;
+			this.#ended.delete(oldest);
+		}
+	}
+
+	/** How spec's labels differ from labels, a computer's of this request (seen: "read back", or "in flight"), in words. */
+	#labelDiffer(spec: ComputerSpec, name: string, labels: Record<string, string>, seen: string): string[] {
+		const asked = this.#labelsOf(spec, name, labels[DEADLINE_LABEL] ?? "", labels[MAX_LABEL] ?? "");
+		const differ = Object.entries(asked)
+			.filter(([key, value]) => key !== DEADLINE_LABEL && key !== MAX_LABEL && labels[key] !== value)
+			.map(([key, value]) => `label ${key}: asked ${show(value)}, ${seen} ${show(labels[key])}`);
+		const extra = Object.keys(callerLabels(labels)).filter((key) => !Object.hasOwn(asked, key));
+		if (extra.length > 0) differ.push(`labels ${extra.join(", ")}: ${seen}, never asked for`);
+		return differ;
+	}
+
+	/**
+	 * How spec differs from pending, the spec of a create of the same request still in flight: the labels and the user,
+	 * as #again holds a listed computer to them, and every other field the host is given (facts.specFields, gpu), which
+	 * the spec in flight holds exactly.
+	 */
+	#inFlightDiffer(spec: ComputerSpec, pending: ComputerSpec, name: string): string[] {
+		const differ = this.#labelDiffer(spec, name, this.#labelsOf(pending, name, "", ""), "in flight");
+		const [asked, flying] = [this.#userOf(spec), this.#userOf(pending)];
+		if (asked !== flying) differ.push(`user: asked ${asked}, in flight ${flying}`);
+		const taken = new Set<string>(this.host.facts.specFields ?? []);
+		for (const field of ["cpus", "memoryMb", "workdir", "gpu"] as const) {
+			if ((field === "gpu" || taken.has(field)) && !isDeepStrictEqual(spec[field], pending[field])) differ.push(`${field}: asked ${show(spec[field])}, in flight ${show(pending[field])}`);
+		}
+		return differ;
 	}
 
 	#endedWords(name: string): string {
@@ -529,12 +577,7 @@ export class HostedProvider implements ComputerProvider {
 			const deadline = deadlineOf(machine);
 			if (deadline !== undefined && deadline.getTime() <= Date.now()) return this.#fail("exists", this.#endedWords(name));
 			if (machine.state === "running") {
-				const asked = this.#labelsOf(spec, name, machine.labels[DEADLINE_LABEL] ?? "", machine.labels[MAX_LABEL] ?? "");
-				const differ = Object.entries(asked)
-					.filter(([key, value]) => key !== DEADLINE_LABEL && key !== MAX_LABEL && machine?.labels[key] !== value)
-					.map(([key, value]) => `label ${key}: asked ${show(value)}, read back ${show(machine?.labels[key])}`);
-				const extra = Object.keys(callerLabels(machine.labels)).filter((key) => !Object.hasOwn(asked, key));
-				if (extra.length > 0) differ.push(`labels ${extra.join(", ")}: read back, never asked for`);
+				const differ = this.#labelDiffer(spec, name, machine.labels, "read back");
 				if (differ.length > 0) return this.#fail("exists", `${name} was made for this request with another spec, so it is not returned: ${differ.join("; ")}; create with a new request id`);
 				const attached = await this.#attached(machine, signal);
 				if (attached.ok && attached.value.spec.user !== this.#userOf(spec)) {
@@ -597,6 +640,8 @@ export class HostedProvider implements ComputerProvider {
 			maxDeadline,
 			atomic: this.host.facts.daemon === "pid1",
 			sha256,
+			// This create's own: the entrypoint starts the daemon whose marker holds it, never one the image had.
+			nonce: randomBytes(16).toString("hex"),
 			waitS: Math.ceil((this.#timeouts.createMs + this.#timeouts.uploadMs + this.#timeouts.execMs + (archil ? this.#timeouts.mountMs * 3 : 0)) / 1000),
 			...(archil && this.host.facts.daemon === "pid1" ? { gate: ARCHIL_GATE } : {}),
 		});
@@ -631,7 +676,7 @@ export class HostedProvider implements ComputerProvider {
 			const { code, message } = created.error;
 			if (code === "aborted" || code === "timeout") {
 				// One that lands is deleted by its id; one whose answer never comes, by its name.
-				this.#ended.add(name);
+				this.#end(name);
 				creating.then(
 					async (made) => void (made.ok ? await this.#kill(made.value.id) : await this.#deleteNamed(name)),
 					async () => void (await this.#deleteNamed(name)),
@@ -640,7 +685,7 @@ export class HostedProvider implements ComputerProvider {
 			}
 			// A create the vendor refused made nothing. One that failed otherwise may have: it goes by its name.
 			if (["invalid", "denied", "limit", "not_found", "refused", "unauthorized", "exists"].includes(code)) return created;
-			this.#ended.add(name);
+			this.#end(name);
 			const swept = await this.#deleteNamed(name);
 			return this.#fail(code, `${this.#label} did not create the machine: ${message}${swept}`);
 		}
@@ -650,7 +695,7 @@ export class HostedProvider implements ComputerProvider {
 
 	/** Deletes a machine create gives up on, then waits, under the caller's signal, until the vendor reads it gone. */
 	async #abandon(ref: ComputerRef, error: { code: ComputerError["code"]; message: string; vendor?: string }, signal?: AbortSignal, mounted = false): Promise<Result<never>> {
-		this.#ended.add(ref.name);
+		this.#end(ref.name);
 		// A computer create made whole (its Archil folder mounted) lets go of the folder first, as release does.
 		if (mounted) {
 			const read = await this.#get(ref.id);
@@ -1269,7 +1314,7 @@ export class HostedProvider implements ComputerProvider {
 		let done: Result<void>;
 		if (how === "stop" && stop) done = await this.#call(`the stop of ${ref.name}`, (ctx) => stop(ref.id, ctx), this.#timeouts.goneMs, signal);
 		else {
-			this.#ended.add(ref.name);
+			this.#end(ref.name);
 			const killed = await this.#kill(ref.id);
 			done = killed.ok ? await this.#settle(ref, signal) : killed;
 		}

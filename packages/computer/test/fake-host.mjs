@@ -86,6 +86,7 @@ const START = Date.now();
  *  - network: the vendor's network read back, over what create asked ("none"/"open"/{ other });
  *  - lingers: { reads, lists } after a delete; fileApi: false for a host with no upload;
  *  - onStep(step, machine): at the start of every host call and daemon request, so a test can abort a signal there;
+ *  - hang: a script's kind ("install", ...) whose process never ends; killHangs: a process's kill that never settles;
  *  - archil: root verbs' answers, as fake-modal's.
  * fake.events records every exec by script or verb, every daemon method and every delete, per machine.
  */
@@ -110,6 +111,8 @@ export function fakeHost({
 	onStep = () => {},
 	archil = {},
 	timer = "ok",
+	hang,
+	killHangs = false,
 } = {}) {
 	const machines = new Map();
 	const held = [];
@@ -278,6 +281,7 @@ export function fakeHost({
 				wait: () => done.promise,
 				async kill() {
 					fake.events.push({ machine: m.id, what: `kill ${what}` });
+					if (killHangs) return new Promise(() => {});
 					proc.exit(137);
 				},
 			},
@@ -303,6 +307,7 @@ export function fakeHost({
 		const kind = verb ?? script?.kind ?? (argv[2]?.includes("cat >") ? "upload" : argv[2]?.includes("touch") ? "touch" : argv.join(" "));
 		fake.events.push({ machine: m.id, what: `run ${kind}` });
 		const proc = processOf(m, kind);
+		if (hang !== undefined && hang === kind) return proc;
 		if (verb !== undefined) {
 			const go = () => {
 				const stdin = chunks(proc);
@@ -339,7 +344,7 @@ export function fakeHost({
 			return proc;
 		}
 		if (kind === "install") {
-			const [staging, daemon, , , atomic, sha256] = script.args;
+			const [staging, daemon, , , atomic, sha256, nonce] = script.args;
 			queueMicrotask(() => {
 				const bytes = m.files.get(staging);
 				if (install !== 0 || bytes === undefined) {
@@ -347,7 +352,7 @@ export function fakeHost({
 					return proc.exit(install || 5);
 				}
 				m.files.delete(staging);
-				m.daemon = { path: daemon, bytes, atomic: atomic === "1", sha256 };
+				m.daemon = { path: daemon, bytes, atomic: atomic === "1", sha256, ...(nonce ? { marker: nonce } : {}) };
 				proc.out.push(`installer 0 root\nsha256 ${sha === "lie" ? "0".repeat(64) : createHash("sha256").update(bytes).digest("hex")}\n`);
 				if (m.pid1) maybeEntry(m);
 				proc.exit(0);
@@ -399,9 +404,10 @@ export function fakeHost({
 		return proc;
 	}
 
-	/** A pid1 machine's entrypoint becomes init once the daemon is in place, and the gate when it has one. */
+	/** A pid1 machine's entrypoint becomes init once the daemon is in place with its marker this create's nonce, and the
+	 *  gate when it has one. A daemon with no marker, or another (one the image had), is never started. */
 	function maybeEntry(m) {
-		if (m.init || m.daemon === undefined) return;
+		if (m.init || m.daemon === undefined || m.daemon.marker === undefined || m.daemon.marker !== m.pid1.nonce) return;
 		if (m.pid1.gate !== undefined && !m.files.has(m.pid1.gate)) return;
 		const args = m.pid1.initArgs;
 		const flag = (name) => args[args.indexOf(name) + 1];
@@ -442,10 +448,11 @@ export function fakeHost({
 				m.flaps = [...flaps];
 				m.request = req;
 				if (req.command) {
-					// The entrypoint's words: the daemon, the wait, the home, the display, then --gate <path> or not, then init's.
+					// The entrypoint's words: the daemon, the wait, the home, the display, the nonce, then --gate <path> or not,
+					// then init's.
 					const args = req.command.slice(4);
-					const gate = args[4] === "--gate" ? args[5] : undefined;
-					m.pid1 = { display: args[3], gate, initArgs: args.slice(gate === undefined ? 4 : 6) };
+					const gate = args[5] === "--gate" ? args[6] : undefined;
+					m.pid1 = { display: args[3], nonce: args[4], gate, initArgs: args.slice(gate === undefined ? 5 : 7) };
 				}
 				return m;
 			};

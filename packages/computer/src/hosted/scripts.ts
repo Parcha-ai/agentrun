@@ -32,17 +32,20 @@ const INSTALL_SCRIPT = [
 	"# agentrun-computer: install",
 	// a: when set, the binary goes in beside its path and is moved into place last, so a pid1 entrypoint waiting for the
 	// path never starts one half written; e: when set too, the sha256 it must read before it is moved, so the entrypoint
-	// never starts one that is not the daemon uploaded. (Not x: held() assigns x.)
-	"s=$1; d=$2; h=$3; r=$4; a=${5-}; e=${6-}; b=${d%/*}; t=$d; [ -z \"$a\" ] || t=$d.part",
+	// never starts one that is not the daemon uploaded; n: when set too, this create's nonce, written to the marker beside
+	// the daemon once it is in place, so the entrypoint starts the daemon this create installed and never one the image
+	// had there. (Not x: held() assigns x.)
+	"s=$1; d=$2; h=$3; r=$4; a=${5-}; e=${6-}; n=${7-}; b=${d%/*}; t=$d; [ -z \"$a\" ] || t=$d.part",
 	'if [ "$(id -u)" = 0 ]; then p=; elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then p="sudo -n"; else echo "the sandbox user $(id -un) is not root and has no passwordless sudo, so the daemon cannot be installed"; exit 3; fi',
 	HELD,
 	'[ -d "${b%/*}" ] || $p mkdir -p -m 0755 "${b%/*}" || { echo "installing the daemon at $d failed"; exit 5; }',
 	'held "${b%/*}" || exit 6',
 	'[ ! -L "$b" ] || { echo "the daemon at $d is not root\'s alone: $b is a symbolic link"; exit 6; }',
-	'$p mkdir -p "$b" "$h" "$r" && $p chown 0:0 "$b" && $p chmod 0755 "$b" && $p rm -f "$d" "$t" && $p install -m 0755 -o 0 -g 0 "$s" "$t" || { echo "installing the daemon at $d failed"; exit 5; }',
+	'$p mkdir -p "$b" "$h" "$r" && $p chown 0:0 "$b" && $p chmod 0755 "$b" && $p rm -f "$d" "$t" "$d.installed" && $p install -m 0755 -o 0 -g 0 "$s" "$t" || { echo "installing the daemon at $d failed"; exit 5; }',
 	'if [ -n "$a" ] && [ -n "$e" ]; then w=$($p sha256sum "$t" | cut -c1-64); [ "$w" = "$e" ] || { echo "sha256 $w"; echo "the daemon written to $t reads sha256 $w, not $e, so it is not moved into place"; $p rm -f "$t"; exit 7; }; fi',
 	'[ "$t" = "$d" ] || $p mv -f "$t" "$d" || { echo "installing the daemon at $d failed"; exit 5; }',
 	'held "$d" || exit 6',
+	`[ -z "$n" ] || { printf '%s\\n' "$n" | $p tee "$d.installed" >/dev/null; } || { echo "installing the daemon at $d failed: its marker was not written"; exit 5; }`,
 	'rm -f "$s"',
 	// Who installed it: the sandbox user's uid and name, and "sudo" when through passwordless sudo (installerOf).
 	'echo "installer $(id -u) $(id -un 2>/dev/null || echo unnamed)${p:+ sudo}"',
@@ -100,8 +103,9 @@ const START_SCRIPT = ["# agentrun-computer: start", "l=$1; shift", ROOT, `exec $
 const LOG_SCRIPT = ["# agentrun-computer: log", "l=$1", ROOT, '$p tail -c 2000 "$l" 2>/dev/null || true'].join("\n");
 
 /**
- * A pid1 machine's main process: waits, bounded, for the daemon to be moved into place executable, then becomes it with
- * exec, so init is the machine's main process and the machine ends when init does. It starts init as start does a
+ * A pid1 machine's main process: waits, bounded, for the daemon this create installed to be moved into place executable
+ * (the marker beside it, `<daemon>.installed`, holds this create's nonce: a daemon the image had at the path, or one an
+ * earlier install left, has none, or another, and is never started), then becomes it with exec, so init is the machine's main process and the machine ends when init does. It starts init as start does a
  * child's: from its home (HOME, and the working directory), with the display, when given, as its DISPLAY. POSIX sh and
  * tools in BusyBox and coreutils alike; `date +%s` bounds the wait however long a sleep takes. An Archil computer's
  * (`--gate <path>` before init's arguments) also waits for the gate, which root makes once the run's folder is mounted;
@@ -109,13 +113,15 @@ const LOG_SCRIPT = ["# agentrun-computer: log", "l=$1", ROOT, '$p tail -c 2000 "
  */
 const ENTRYPOINT_SCRIPT = [
 	"# agentrun-computer: entrypoint",
-	// The display is v, as in init's script; empty for a computer with no screen.
-	"d=$1; w=$2; h=$3; v=$4; shift 4",
+	// The display is v, as in init's script; empty for a computer with no screen. n is this create's nonce.
+	"d=$1; w=$2; h=$3; v=$4; n=$5; shift 5",
 	'g=; if [ "${1-}" = --gate ]; then g=$2; shift 2; rm -f "$g"; fi',
 	"end=$(( $(date +%s) + $w ))",
-	'until [ -f "$d" ] && [ -x "$d" ] && { [ -z "$g" ] || [ -f "$g" ]; }; do',
+	// Ours: the daemon executable, and the marker install writes after the move holding this create's nonce.
+	'ours() { [ -f "$d" ] && [ -x "$d" ] && [ -n "$n" ] && [ "$(cat "$d.installed" 2>/dev/null)" = "$n" ]; }',
+	'until ours && { [ -z "$g" ] || [ -f "$g" ]; }; do',
 	'\tif [ "$(date +%s)" -gt "$end" ]; then',
-	'\t\tif [ -f "$d" ] && [ -x "$d" ]; then echo "agentrun-computer: the Archil mount was not made within $w s ($g is not there), so this computer ends" >&2',
+	'\t\tif ours; then echo "agentrun-computer: the Archil mount was not made within $w s ($g is not there), so this computer ends" >&2',
 	'\t\telse echo "agentrun-computer: the daemon did not arrive at $d within $w s, so this computer ends" >&2; fi',
 	"\t\texit 3",
 	"\tfi",
@@ -149,7 +155,7 @@ export interface HostedCommands {
  * The adapter's commands for one computer. Init's flags are the child's (childCommands) for both modes: --own-network
  * always, the display and the most deadline.extend may move the deadline to when given. waitS bounds a pid1 entrypoint's
  * wait for the daemon (and gate, for an Archil computer); with atomic, install moves the daemon into place last, and only
- * once it reads sha256, when given.
+ * once it reads sha256, when given, then writes nonce, when given, to the marker the entrypoint waits for.
  */
 export function hostedCommands({
 	staging = "",
@@ -161,16 +167,17 @@ export function hostedCommands({
 	waitS = 600,
 	gate,
 	sha256 = "",
-}: ChildCommandOptions & { atomic?: boolean; waitS?: number; gate?: string; sha256?: string } = {}): HostedCommands {
+	nonce = "",
+}: ChildCommandOptions & { atomic?: boolean; waitS?: number; gate?: string; sha256?: string; nonce?: string } = {}): HostedCommands {
 	const init = [DAEMON_IN_COMPUTER, deadline, user, WORK, SOCKET_DIR];
 	if (display !== "" || maxDeadline !== "") init.push(display, maxDeadline);
 	const initArgs = ["init", "--deadline", deadline, "--user", user, "--own-network", ...(maxDeadline === "" ? [] : ["--max-deadline", maxDeadline])];
 	return {
-		install: argvOf(INSTALL_SCRIPT, [staging, DAEMON_IN_COMPUTER, WORK, SOCKET_DIR, ...(atomic ? ["1", ...(sha256 === "" ? [] : [sha256])] : [])]),
+		install: argvOf(INSTALL_SCRIPT, [staging, DAEMON_IN_COMPUTER, WORK, SOCKET_DIR, ...(atomic ? ["1", sha256, nonce] : [])]),
 		start: argvOf(START_SCRIPT, [INIT_LOG, ...argvOf(INIT_SCRIPT, init)]),
 		stdio: argvOf(STDIO_SCRIPT, [DAEMON_IN_COMPUTER, SOCKET_DIR]),
 		log: argvOf(LOG_SCRIPT, [INIT_LOG]),
-		entrypoint: argvOf(ENTRYPOINT_SCRIPT, [DAEMON_IN_COMPUTER, String(waitS), WORK, display, ...(gate === undefined ? [] : ["--gate", gate]), ...initArgs]),
+		entrypoint: argvOf(ENTRYPOINT_SCRIPT, [DAEMON_IN_COMPUTER, String(waitS), WORK, display, nonce, ...(gate === undefined ? [] : ["--gate", gate]), ...initArgs]),
 	};
 }
 

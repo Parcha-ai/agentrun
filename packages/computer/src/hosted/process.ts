@@ -116,7 +116,8 @@ const OUTPUT_MAX = 64 * 1024;
 
 /**
  * argv run in the machine as root through exec, stdin (when given) written and ended, waited for until it ends, within
- * ms and the caller's signal; a process past them is killed. A non-zero exit is a result, not an error.
+ * ms and the caller's signal; a process past them is killed, and the kill waited for at most ms (and CALL_SLACK_MS).
+ * A non-zero exit is a result, not an error.
  */
 export async function runToExit(host: MachineHost, id: string, argv: readonly string[], { stdin, ms, signal, what }: { stdin?: Uint8Array; ms: number; signal?: AbortSignal; what: string }): Promise<Result<RunResult>> {
 	const fail = failOf(host);
@@ -136,7 +137,10 @@ export async function runToExit(host: MachineHost, id: string, argv: readonly st
 	})();
 	const result = await race(host, ran, what, ms + CALL_SLACK_MS, signal);
 	if (!result.ok) {
-		await proc.kill().catch(() => {});
+		// Bounded, as the bridge's close is: a kill the vendor never answers (a remote call that stalls) must not hold
+		// up the caller, which may be a create on its way to deleting the whole machine.
+		const killing = Promise.resolve().then(() => proc.kill());
+		await race(host, killing, `${what}'s kill`, Math.min(ms, CALL_SLACK_MS));
 		return result.error.code === "timeout" ? fail("timeout", `${what} did not end within ${seconds(ms)}`) : result;
 	}
 	return result;
