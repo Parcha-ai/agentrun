@@ -386,6 +386,8 @@ interface CliRecord {
   onEvent(event: Parameters<PiSessionIO["onEvent"]>[0]): void;
   /** What the model said since the last boundary, written now. */
   flushText(): Promise<void>;
+  /** The same, only when there is text to show (a whitespace-only gap between two requests stays with what follows). */
+  flushSaid(): Promise<void>;
   /** The person's input, written once for the run (a resumed claim that finds it writes it again never). */
   person(text: string, opens?: boolean): Promise<void>;
   /** The first input when someone other than the person wrote it (a trigger's): the host's input entry with its origin, as
@@ -495,18 +497,25 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
     ends.set(callId, { status: "interrupted" });
   }
   let text = "";
+  /** A model message was written at a request's start (flushSaid) and no other flush has come since. */
+  let flushedAtRequest = false;
   /** The end-of-run turn's answer while that turn runs (answering), else undefined. */
   let answer: string | undefined;
   // One write at a time, in the order they were asked for, a failed one never stopping the next.
   let chain: Promise<void> = Promise.resolve();
   const inTurn = (work: () => Promise<void>): Promise<void> => (chain = chain.then(work, work));
   /** What was said since the last boundary as a model message; at a turn's end, with the cut its adapter reported. */
-  const flushText = (cut?: { stopReason?: "length"; outputTokens?: number }) => {
+  const flushText = (cut?: { stopReason?: "length"; outputTokens?: number }, atRequest = false) => {
     // Taken at the boundary, not when its write's turn comes: text said after it is the next message's.
     const said = text;
     text = "";
     return inTurn(async () => {
       if (said === "") return;
+      // Whitespace after a message flushed at the request before it joined that message's row, as the turn's text up to its
+      // call always has: it is no message of its own.
+      const joined = flushedAtRequest && said.trim() === "";
+      flushedAtRequest = atRequest;
+      if (joined) return;
       const length = cut?.stopReason === "length" ? { stopReason: "length" as const, ...(cut.outputTokens === undefined ? {} : { outputTokens: cut.outputTokens }) } : {};
       await append(KINDS.message, { role: "model", text: said, ...length });
     });
@@ -520,6 +529,7 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
       else if (event.type === "turn_end") void flushText(event).catch(() => undefined);
     },
     flushText,
+    flushSaid: () => (answer === undefined && text.trim() !== "" ? flushText(undefined, true) : Promise.resolve()),
     person: (input, opens = true) =>
       inTurn(async () => {
         if (personWritten) return;
@@ -1364,7 +1374,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             // A new request means the model's last message is over: what it said so far is on the record before the request,
             // so an answer shows while the turn goes on (a CLI that answers, then makes another request).
             if (event.type === "request_start") {
-              await cliRecord?.flushText().catch(() => undefined);
+              await cliRecord?.flushSaid().catch(() => undefined);
               await deps.flush();
             }
           },
