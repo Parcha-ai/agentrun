@@ -37,7 +37,7 @@ A method a computer does not have is an error of kind `unsupported`, in words; t
 A computer with the `ui` group also says its screen and its features:
 
 ```json
-{"protocol":"0.2","version":"0.2.0","os":"macos","kind":"desktop","arch":"arm64","groups":["apps","ui","screen"],
+{"protocol":"0.2","version":"0.2.0","os":"macos","kind":"desktop","arch":"arm64","groups":["screen","input.pointer","input.keys","apps","ui"],
  "screen":{"width":1512,"height":982,"scale":2},
  "osVersion":"26.1 (25B78)","device":{"maker":"Apple","model":"MacBook Pro"},
  "features":{"ui.tree":true,"ui.image":true,"ui.background":true,"ui.foreground":true,"ui.page":{"off":"Safari's automation is off in its Develop menu"},"ui.nav":{"off":"a Mac has no system back, home or app switch"},"apps.background":true}}
@@ -48,7 +48,10 @@ A computer with the `ui` group also says its screen and its features:
   other than its own (a drifted daemon is never handed out).
 - `os`, `kind`, `arch`: what the computer is (see [`kinds.md`](kinds.md)). `arch` is Go's name: `amd64`, `arm64`.
 - `groups`: what it offers. It must be what the provider declared for it (`capabilities().groups`). `cdp`, `stream` and
-  `downloads` are the provider's and never appear in a daemon's `hello`.
+  `downloads` are the provider's and never appear in a daemon's `hello`. `groups` holds every group the kind requires
+  to be given to an agent ([`kinds.md`](kinds.md)): a `desktop` lists `screen`, `input.pointer` and `input.keys`
+  whatever else it offers. `kindServed(hello)` names the ones missing, the case `health.kind-served` fails a computer
+  that lacks one, and an attached computer that lacks one is closed at connect ([`attach.md`](attach.md)).
 - `display`: a desktop's X display, such as `":99"`; absent elsewhere.
 - `fence`: how init holds its programs off the computer's network when it gave them one of their own
   (`init --own-network`): `"netns"`, a network namespace root made, or `"userns-netns"`, one made inside a user
@@ -130,15 +133,25 @@ Each is in [`protocol.json`](protocol.json)'s `limits`:
 | `processRingBytes`, `processLogBytes`, `maxProcesses`, `processRetainedBytes` | What a computer keeps of its processes: the last bytes of each stream, read by offset; the first bytes in a log file; how many processes, running or ended; and the output of all of them together, past which the rings of processes that ended first are let go. |
 | `maxReadWaitMs` | The longest a `process.read` waits for output. |
 | `maxActions`, `maxBatchWaitMs`, `maxKeyRepeat` | One `input.actions` batch: its actions, the durations they add up to, and a key's repeat. |
+| `launchWindowMs` | How long `apps.launch` waits for the app's window before it fails `timeout` ([below](#appslaunch)). |
 | `maxUiNodes` | The nodes one `ui.observe` returns; past it, `truncated` is true. |
 | `maxSteps` | The steps of one `ui.act`. |
 | `maxExpectMs`, `defaultExpectMs` | How long a `ui.act`'s expect may wait, and waits when it names no `timeoutMs`. |
 | `maxSettleMs` | The longest a `ui.act` waits for the window to settle after its steps. |
+| `setHoldMs` | How long after the settle a `set` step's value is read again, to answer `verified` ([below](#the-rules-every-driver-keeps)). |
 | `minImageEdge`, `maxImageEdge`, `defaultImageEdge` | A `ui.observe` image's longest edge in pixels: the range `maxEdge` may ask for, and what `image: true` gives. |
 
 An `input.actions` batch is checked whole before any action runs: an action of a group the computer does not declare,
 or a key not in the key table (`keys` in [`protocol.json`](protocol.json), or one printable character), refuses the
 batch with nothing run. A batch that fails partway answers how many actions ran.
+
+## apps.launch
+
+`apps.launch` answers once the app it opened has a window, so a `ui.observe` or a screenshot sent right after it finds
+that window. A launch that only asks the OS to open the app and answers at once races every caller. An app that shows
+no window within `launchWindowMs` (10 s) fails the launch with kind `timeout`, in words naming the app. An app already
+running with a window answers at once. The core case `apps.launch-window` observes the app right after its launch
+answers.
 
 ## The ui group
 
@@ -170,8 +183,16 @@ The result:
 ```
 
 - `state`: this observation's id. It is the connection's own; a driver keeps the last few (32 in `UiEngine`).
+- `window`: its `id`, `title` when it has one, `bounds`, and `role`: `"dialog"` for a sheet, an alert or a panel, absent
+  for an ordinary window. An app with several windows is observed at its main one (the one in front) unless `target`
+  names another.
 - `window.bounds`: where the window sits, in screen points. A node's `bounds` are in **window points**, from the
   window's top left. A point in a step is in window points too. (`input.actions` stays in screen pixels.)
+- A node's `bounds` lie inside its window. A driver clamps each edge that reaches past the window's to that edge, so a
+  row half scrolled out of a list reports only the part a person sees and taps, and its centre is a point a step can
+  use. An element wholly out of the window (flag `offscreen`, listed by a `full` observe) becomes a line, zero wide or
+  zero high, on the edge it left by. `ui.observe-shape` fails a node whose bounds reach outside the window
+  (`insideWindow` in `UiEngine`).
 - A node: `ref` (`@e12`), `role` (one of `uiRoles`: ARIA's names, the same on every OS), `name`, `value` (what it
   holds, editable: a field's text, a slider's value; never for a `secure` field), `desc` (what else it says: a row's
   secondary text, a help tag), `id` (the app's own identifier, when it has one), `bounds`, `parent` (a ref before it),
@@ -195,6 +216,11 @@ The result:
 - `state`: the state the steps' points were read from. A step at a point needs it.
 - `expect`: `text` somewhere in the window (in a name, value or desc, never a `secure` field's value), or on the element `ref`; with `gone: true`, until it is not. The computer
   polls it for `timeoutMs` (default `defaultExpectMs`, at most `maxExpectMs`).
+- `expect.window`: `{"title"?, "role"?}`, at least one, and alone (no `text` or `ref`). The computer polls until the
+  act's app shows a main window whose title holds `title` and whose role is `role` (`"window"` matches an ordinary
+  one), and the act's `state` is then that window's. A dialog that opens a moment after a click is waited for this way.
+  No such window in time is `unmet`, as any expect is, never `not_found`, even when the app has no window at all. It
+  reads only the window's title and role, so it runs with `ui.tree` off too. `ui.expect-window` checks it.
 - `foreground`: the call allows the foreground route, which moves the user's pointer and focus. Default false.
 
 The result:
@@ -217,6 +243,10 @@ The result:
   nothing typed.
 - `state` is the window after the act settled, `changed` whether it differs from before the steps, and `expect` is
   `met` or `unmet` (absent without an expect, or when a step was refused).
+- `window: "closed"` replaces `state` when the act's app has no window left: a step closed its last one (a Close
+  button, `super+w`), or a window wait ended with none. The steps that ran keep their results, a step after the one
+  that closed it is refused `stale`, and `changed` is true. The app may still be running; `apps.launch` opens its
+  window again.
 
 ### The rules every driver keeps
 
@@ -231,6 +261,19 @@ The result:
 - **The driver waits, never the model.** Every act settles before it answers: the window looks the same twice, a short
   quiet apart, or `maxSettleMs` passed. An expect is polled on the computer, and an act's `state` is the window once it
   settles after the expect, never a frame of a transition.
+- **A settle reads the tree.** "Looks the same" compares the window's id, bounds and nodes (each node's role, name,
+  value, flags and bounds). The window's image counts only when the window has no nodes (`ui.tree` off, or an app that
+  exposes none). A blinking caret, a spinner's frame or a playing video changes the image every look, so a settle on
+  the image would wait out `maxSettleMs` on every act; a transition moves the nodes, so a settle on the tree still
+  waits for it. `ui.settle-tree` times acts on a focused field.
+- **A set holds.** A `set` step answers `verified: true` only when its value still holds `setHoldMs` (500 ms) after the
+  act settled: the driver reads the element again then. An app that takes the value back (a field that rejects it, a
+  switch a policy turns back off) answers `verified: false`, though the set itself ran. `ui.set-holds` sets the
+  fixture's Code field, which takes its value back.
+- **An act follows its app's windows.** When a step closes the window the act is aimed at, the act follows the app's
+  next main window, as after a `nav`: the steps after it, the settle, the expect and the answered `state` are that
+  window's. When the app has no window left, the act answers `window: "closed"` with no `state` (above).
+  `ui.window-follow` and `ui.window-closed` close the fixture's windows.
 - **An act follows the app a step leaves for.** A `state` or `target` aims the act at its app's window; an act with
   neither is aimed at the app in front when it begins, so a step that opens another app never lets a later step reach
   it. After a `nav`

@@ -27,6 +27,7 @@ import {
 	type HelloResult,
 	type InputAction,
 	type InputActionsResult,
+	LAUNCH_WINDOW_MS,
 	MAX_CHUNK_BYTES,
 	PROTOCOL_VERSION,
 	type Rect,
@@ -1389,7 +1390,7 @@ class AdbClient implements ComputerClient {
 			const viewed = await this.#shell(`am start -W -a android.intent.action.VIEW -d ${quote(url)} -p ${id}`);
 			if (!viewed.ok) return viewed;
 			if (/Error:|Exception/.test(viewed.value)) return refuse("not_found", `${id} does not open ${redactWords(url)}: ${redactWords(viewed.value.trim().split("\n").at(-1) ?? "")}`);
-			return ok({});
+			return this.#inFront(id);
 		}
 		const resolved = await this.#shell(`cmd package resolve-activity --brief -c android.intent.category.LAUNCHER ${id}`);
 		if (!resolved.ok) return resolved;
@@ -1404,7 +1405,23 @@ class AdbClient implements ComputerClient {
 		const started = await this.#shell(`am start -W --activity-clear-task -n ${component}`);
 		if (!started.ok) return started;
 		if (/Error:|Exception/.test(started.value)) return vendorFail("phone-harness",`am start of ${component}: ${redactWords(started.value.trim().split("\n").at(-1) ?? "")}`);
-		return ok({});
+		return this.#inFront(id);
+	}
+
+	/**
+	 * apps.launch answers once the app's window is in front (wire.md, apps.launch): `am start -W` can return before the
+	 * activity is resumed, and an observe right after it then found the launcher. None in LAUNCH_WINDOW_MS is a timeout
+	 * naming the app.
+	 */
+	async #inFront(id: string): Promise<Call> {
+		const until = this.now() + LAUNCH_WINDOW_MS;
+		for (;;) {
+			const front = await this.#foreground();
+			if (!front.ok) return front;
+			if (front.value === id) return ok({});
+			if (this.now() >= until) return refuse("timeout", `${id} opened no window in front within ${LAUNCH_WINDOW_MS / 1000} s of apps.launch (${front.value ?? "nothing"} is in front)`);
+			await this.sleep(200);
+		}
 	}
 
 	async #terminate(id: unknown): Promise<Call> {

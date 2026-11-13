@@ -35,6 +35,9 @@ import {
 	type UiStep,
 	type UiStepResult,
 	type UiTarget,
+	type UiWindow,
+	SET_HOLD_MS,
+	UI_ROLES,
 } from "./protocol.js";
 import { fail, ok, type Result } from "./result.js";
 
@@ -60,7 +63,7 @@ export interface UiElement {
 /** One look at a window. */
 export interface UiView {
 	app: { id: string; name: string; pid?: number };
-	window: { id: string; title?: string; bounds: Rect };
+	window: UiWindow;
 	elements: UiElement[];
 	/**
 	 * Whatever else a person would see change (a hash of the window's pixels), so a redraw with the same tree counts.
@@ -93,6 +96,11 @@ export interface UiSource {
 	image(view: UiView, maxEdge: number, signal: AbortSignal): Promise<Result<UiImage>>;
 	/** Runs one step, by the best route the call allows. A step it cannot run is refused as unsupported, in words. */
 	run(step: UiStep, context: UiStepContext, signal: AbortSignal): Promise<Result<UiRun>>;
+	/**
+	 * Whether the app is running with no window left (a step closed its last one), which look() answers not_found for.
+	 * Absent on a source whose apps always show a window while they run (a phone's).
+	 */
+	closed?(app: string, signal: AbortSignal): Promise<boolean>;
 }
 
 export interface UiEngineOptions {
@@ -129,6 +137,7 @@ const STEP_FIELDS: Record<StepName, readonly string[]> = {
 };
 const STEP_NAMES = Object.keys(STEP_FIELDS) as StepName[];
 const KEY_NAMES: ReadonlySet<string> = new Set(KEYS);
+const ROLE_NAMES: ReadonlySet<string> = new Set(UI_ROLES);
 
 const show = (value: unknown) => JSON.stringify(value) ?? String(value);
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -229,9 +238,18 @@ function targetWrong(target: unknown): string | undefined {
 function expectWrong(expect: unknown): string | undefined {
 	if (expect === undefined) return undefined;
 	if (!isObject(expect)) return "expect is not an object";
-	const extra = Object.keys(expect).find((field) => !["text", "ref", "gone", "timeoutMs"].includes(field));
+	const extra = Object.keys(expect).find((field) => !["text", "ref", "window", "gone", "timeoutMs"].includes(field));
 	if (extra !== undefined) return `expect has no field ${show(extra)}`;
-	if (expect.text === undefined && expect.ref === undefined) return "expect names neither text nor ref: it needs at least one";
+	if (expect.window !== undefined) {
+		if (expect.text !== undefined || expect.ref !== undefined) return "expect.window stands alone: an expect waits for a window, or for text or a ref in the act's window, not both";
+		const wanted = expect.window;
+		if (!isObject(wanted)) return "expect.window is not an object: it is { title?, role? }";
+		const unknown = Object.keys(wanted).find((field) => field !== "title" && field !== "role");
+		if (unknown !== undefined) return `expect.window has no field ${show(unknown)}: it is { title?, role? }`;
+		if (wanted.title === undefined && wanted.role === undefined) return "expect.window names neither title nor role: it needs at least one";
+		if (wanted.title !== undefined && typeof wanted.title !== "string") return "expect.window.title is not a string";
+		if (wanted.role !== undefined && !ROLE_NAMES.has(wanted.role as string)) return `expect.window.role is ${show(wanted.role)}, not one of the protocol's roles (uiRoles)`;
+	} else if (expect.text === undefined && expect.ref === undefined) return "expect names neither text, ref nor window: it needs one";
 	if (expect.text !== undefined && typeof expect.text !== "string") return "expect.text is not a string";
 	if (expect.ref !== undefined && !isRef(expect.ref)) return `expect.ref is ${show(expect.ref)}, not a ref ("@e12")`;
 	if (expect.gone !== undefined && typeof expect.gone !== "boolean") return "expect.gone is not a boolean";
@@ -303,6 +321,16 @@ export function windowRectToPixels([wx, wy]: Rect, scale: number, [x, y, w, h]: 
 }
 
 const contains = ([x, y, w, h]: Rect, [px, py]: Point) => px >= x && py >= y && px < x + w && py < y + h;
+/**
+ * An element's bounds held inside its window of width by height points (wire.md, ui.observe): each edge past the
+ * window's moved in to it. A row half scrolled out of a list reports only the part a person sees and taps; one wholly
+ * out (offscreen, in a full observe) becomes a line on the edge it left by.
+ */
+export function insideWindow([x, y, w, h]: Rect, width: number, height: number): Rect {
+	const clamp = (value: number, most: number) => Math.min(most, Math.max(0, value));
+	const [left, top] = [clamp(x, width), clamp(y, height)];
+	return [left, top, clamp(x + w, width) - left, clamp(y + h, height) - top];
+}
 /** The deepest element under a point: the last in order whose bounds hold it. */
 const under = (view: UiView, point: Point) => view.elements.findLast((element) => contains(element.bounds, point));
 const sameRect = (a: Rect, b: Rect) => a.every((value, index) => value === b[index]);
@@ -314,8 +342,13 @@ const sameSize = (a: Rect, b: Rect) => a[2] === b[2] && a[3] === b[3];
  */
 const valueOf = (element: UiElement) => (element.flags?.includes("secure") ? undefined : element.value);
 const looksOf = (element: UiElement) => JSON.stringify([element.role, element.name, valueOf(element), element.desc, element.bounds, element.flags]);
-/** What a person would see of a view: the window's size, its elements and its frame. */
-const fingerprint = (view: UiView) => JSON.stringify([view.window.id, view.window.bounds, view.elements.map((element) => [element.key, looksOf(element)]), view.frame]);
+/**
+ * What a person would see of a view, for the settle and an act's changed: the window, and its elements when it has
+ * any. The frame (a hash of its pixels) counts only with no elements (ui.tree off, or a window with none): a blinking
+ * caret or a spinner redraws the frame under the same tree, which held each settle to maxSettleMs (Notes on a Mac: 13.5 s
+ * against 1.9 s on the tree) and counted as a step's effect. A state keeps its frame, for a point with no element.
+ */
+const fingerprint = (view: UiView) => JSON.stringify([view.window.id, view.window.bounds, view.elements.length > 0 ? view.elements.map((element) => [element.key, looksOf(element)]) : view.frame]);
 /** Whether an element says text, in its name, value or desc. */
 const holdsText = (element: UiElement, text: string) => [element.name, valueOf(element), element.desc].some((said) => said?.includes(text) ?? false);
 /** An element's key scoped to its window: what a ref stands for. */
@@ -483,7 +516,7 @@ export class UiEngine {
 				...(valueOf(element) === undefined ? {} : { value: valueOf(element) }),
 				...(element.desc === undefined ? {} : { desc: element.desc }),
 				...(element.id === undefined ? {} : { id: element.id }),
-				bounds: element.bounds,
+				bounds: insideWindow(element.bounds, view.window.bounds[2], view.window.bounds[3]),
 				...(parent === undefined ? {} : { parent: this.#ref(view, parent.key) }),
 				...(element.flags?.length ? { flags: element.flags } : {}),
 				...(element.actions?.length ? { actions: element.actions } : {}),
@@ -520,25 +553,49 @@ export class UiEngine {
 		const foreground = params.foreground === true;
 		const features = this.#source.features();
 		const treeOff = featureOff(features, "ui.tree");
-		if (treeOff !== undefined && params.expect !== undefined) return fail("unsupported", `ui.act: an expect reads the window's elements, and ${treeOff}`);
+		const waitsForWindow = params.expect?.window !== undefined;
+		// A window expect reads only the window's title and role, which a source gives with the tree off too.
+		if (treeOff !== undefined && params.expect !== undefined && !waitsForWindow) return fail("unsupported", `ui.act: an expect reads the window's elements, and ${treeOff}`);
 
 		if (signal.aborted) return aborted("ui.act");
 		const first = await this.#see(target, signal);
-		if (!first.ok) return first;
-		let view = first.value;
+		// A wait for a window may begin with none: its app's window not there yet is what it waits for, never not_found.
+		const windowless = !first.ok && first.error.code === "not_found" && waitsForWindow && params.steps.length === 0;
+		if (!first.ok && !windowless) return first;
+		let view: UiView | undefined = first.ok ? first.value : undefined;
 		// Where the looks after a step aim. A step that ran may have changed the app in front: a nav (home, back, recents)
 		// hands the act to whatever is in front, and when any other step (a key, a tap that opens another app) takes the
-		// target's window away, the act runs nothing more and settles on the window in front. Either way the steps
-		// that ran keep their results. An act with neither target nor state is bound to the app it began on, so a step
-		// that opens another app never lets a later step reach that one: only a nav hands the act on.
-		let aim: UiTarget | undefined = target ?? { app: first.value.app.id };
-		const after = async (): Promise<Result<UiView> | "gone"> => {
+		// target's window away, the act runs nothing more and settles on the window in front. A step that closes the
+		// aimed window hands the act to its app's next main window, as a nav does; when the app has no window left, the
+		// act answers window "closed" and no state. Either way the steps that ran keep their results. An act with neither
+		// target nor state is bound to the app it began on, so a step that opens another app never lets a later step
+		// reach that one: only a nav hands the act on.
+		let aim: UiTarget | undefined = target ?? (view === undefined ? undefined : { app: view.app.id });
+		/** Where the act goes once its aimed window is not found: the app's next main window, closed, or gone (out of reach). */
+		const reaim = async (): Promise<Result<"followed" | "closed" | "gone">> => {
+			const app = aim?.app;
+			if (app !== undefined && aim?.window !== undefined) {
+				const next = await this.#see({ app }, signal);
+				if (next.ok) {
+					aim = { app };
+					return ok("followed");
+				}
+				if (next.error.code !== "not_found") return next;
+			}
+			if (app !== undefined && (await this.#source.closed?.(app, signal)) === true) return ok("closed");
+			aim = undefined;
+			return ok("gone");
+		};
+		const after = async (): Promise<Result<UiView> | "gone" | "closed"> => {
 			const looked = await this.#see(aim, signal);
 			if (looked.ok || looked.error.code !== "not_found" || aim === undefined) return looked;
-			aim = undefined;
-			return "gone";
+			const where = await reaim();
+			if (!where.ok) return where;
+			return where.value === "followed" ? this.#see(aim, signal) : where.value;
 		};
+		const appName = view?.app.name ?? aim?.app ?? "the app";
 		const steps: UiStepResult[] = [];
+		let closed = false;
 		for (const [index, step] of params.steps.entries()) {
 			if (signal.aborted) return aborted("ui.act");
 			if (index > 0) {
@@ -547,9 +604,15 @@ export class UiEngine {
 					steps.push({ error: { kind: "stale", message: "the window this act aimed at is gone since the step before (it went to another app): observe again" } });
 					break;
 				}
+				if (looked === "closed") {
+					closed = true;
+					steps.push({ error: { kind: "stale", message: `${appName} has no window left: the step before closed its last one, so this step has nothing to act on` } });
+					break;
+				}
 				if (!looked.ok) return looked;
 				view = looked.value;
 			}
+			if (view === undefined) break;
 			const refused = this.#check(step, view, params.state, held, features);
 			if (refused !== undefined) {
 				steps.push({ error: refused });
@@ -567,43 +630,96 @@ export class UiEngine {
 			steps.push(ran.value);
 			if ("nav" in step) aim = undefined;
 		}
-		let settled = await this.#settle(aim, signal);
-		if (!settled.ok && settled.error.code === "not_found" && aim !== undefined && steps.some((one) => !("error" in one))) {
-			aim = undefined;
-			settled = await this.#settle(aim, signal);
-		}
-		if (!settled.ok) return settled;
-		let last = settled.value;
-		let met: "met" | "unmet" | undefined;
-		const refusedStep = steps.some((one) => "error" in one);
-		if (params.expect !== undefined && !refusedStep) {
-			const expect = params.expect;
-			const until = Date.now() + (expect.timeoutMs ?? DEFAULT_EXPECT_MS);
-			for (;;) {
-				if (this.#holds(expect, last)) {
-					met = "met";
-					break;
-				}
-				if (Date.now() >= until) {
-					met = "unmet";
-					break;
-				}
-				await sleep(Math.min(this.#pollMs, Math.max(0, until - Date.now())), signal);
-				if (signal.aborted) return aborted("ui.act");
-				const looked = await after();
-				if (looked === "gone") continue;
-				if (!looked.ok) return looked;
-				last = looked.value;
+		const ranAny = steps.some((one) => !("error" in one));
+		let last: UiView | undefined;
+		if (!closed) {
+			let settled = await this.#settle(aim, signal);
+			if (!settled.ok && settled.error.code === "not_found" && aim !== undefined) {
+				const where = await reaim();
+				if (!where.ok) return where;
+				if (where.value === "closed") closed = true;
+				else if (where.value === "followed" || ranAny || windowless) settled = await this.#settle(aim, signal);
 			}
-			// A poll can meet the expect mid-transition: the state handed back is the window once it settles.
-			if (last !== settled.value) {
+			if (!closed) {
+				if (settled.ok) last = settled.value;
+				else if (!(windowless && settled.error.code === "not_found")) return settled;
+			}
+		}
+		// A set holds: its value read again SET_HOLD_MS after the settle, where an app that took it back answers false.
+		const sets = params.steps.flatMap((step, index) => {
+			const result = steps[index];
+			return "set" in step && result !== undefined && !("error" in result) && result.verified ? [index] : [];
+		});
+		if (sets.length > 0 && last !== undefined) {
+			await sleep(SET_HOLD_MS, signal);
+			if (signal.aborted) return aborted("ui.act");
+			const later = await after();
+			const seen = later === "gone" || later === "closed" || !later.ok ? undefined : later.value;
+			for (const index of sets) {
+				if (seen === undefined || !this.#setHolds(params.steps[index] as { set: UiRef; value: string }, seen)) steps[index] = { ...(steps[index] as UiRun), verified: false };
+			}
+			if (later === "closed") closed = true;
+			else if (seen !== undefined && fingerprint(seen) !== fingerprint(last)) {
 				const calm = await this.#settle(aim, signal);
 				if (!calm.ok) return calm;
 				last = calm.value;
 			}
 		}
+		let met: "met" | "unmet" | undefined;
+		const refusedStep = steps.some((one) => "error" in one);
+		if (params.expect !== undefined && !refusedStep) {
+			const expect = params.expect;
+			// A window expect looks at the app's main window, whichever it is now; any other expect at the act's window.
+			const poll = async (): Promise<Result<UiView | undefined>> => {
+				if (!waitsForWindow) {
+					const looked = await after();
+					if (looked === "closed") closed = true;
+					return looked === "gone" || looked === "closed" ? ok(undefined) : looked;
+				}
+				const looked = await this.#see(aim?.app === undefined ? undefined : { app: aim.app }, signal);
+				return looked.ok || looked.error.code !== "not_found" ? looked : ok(undefined);
+			};
+			let seen = closed ? undefined : last;
+			const until = Date.now() + (expect.timeoutMs ?? DEFAULT_EXPECT_MS);
+			for (;;) {
+				if (this.#holds(expect, seen)) {
+					met = "met";
+					break;
+				}
+				// A window that closed shows nothing again: what it held is gone, and what it did not hold never comes.
+				if (closed || Date.now() >= until) {
+					met = "unmet";
+					break;
+				}
+				await sleep(Math.min(this.#pollMs, Math.max(0, until - Date.now())), signal);
+				if (signal.aborted) return aborted("ui.act");
+				const looked = await poll();
+				if (!looked.ok) return looked;
+				if (looked.value !== undefined || waitsForWindow || closed) seen = looked.value;
+			}
+			// A met window expect answers that window's state; a poll can meet an expect mid-transition: the state handed
+			// back is the window once it settles.
+			if (!closed && seen !== undefined && seen !== last) {
+				if (waitsForWindow && met === "met") aim = { app: seen.app.id, window: seen.window.id };
+				const calm = await this.#settle(aim, signal);
+				if (!calm.ok) return calm;
+				last = calm.value;
+			}
+		}
+		const expectAnswer = met === undefined ? {} : { expect: met };
+		if (closed || last === undefined) return ok({ steps, window: "closed", changed: true, ...expectAnswer });
 		const state = this.#remember(last);
-		return ok({ steps, state, changed: fingerprint(first.value) !== fingerprint(last), ...(met === undefined ? {} : { expect: met }) });
+		return ok({ steps, state, changed: !first.ok || fingerprint(first.value) !== fingerprint(last), ...expectAnswer });
+	}
+
+	/** Whether a set's value is still what it set: a switch's or checkbox's checked flag, else the element's value. */
+	#setHolds(step: { set: UiRef; value: string }, view: UiView): boolean {
+		const element = this.#elementOf(view, step.set);
+		if (element === undefined) return false;
+		// A secure field's value is never read (valueOf): its set stands as the source verified it.
+		if (element.flags?.includes("secure")) return true;
+		if (element.role === "switch" || element.role === "checkbox" || element.role === "radio") return (step.value === "on") === (element.flags?.includes("checked") ?? false);
+		return valueOf(element) === step.value;
 	}
 
 	/** Why a step may not run against this look, as a refusal, or undefined. */
@@ -640,9 +756,14 @@ export class UiEngine {
 		return undefined;
 	}
 
-	#holds(expect: UiExpect, view: UiView): boolean {
+	/** Whether the expect holds on a look; no look (no window) shows nothing, so only a gone expect holds there. */
+	#holds(expect: UiExpect, view: UiView | undefined): boolean {
 		let seen: boolean;
-		if (expect.ref !== undefined) {
+		if (view === undefined) seen = false;
+		else if (expect.window !== undefined) {
+			const { title, role } = expect.window;
+			seen = (title === undefined || (view.window.title?.includes(title) ?? false)) && (role === undefined || (view.window.role ?? "window") === role);
+		} else if (expect.ref !== undefined) {
 			const element = this.#elementOf(view, expect.ref);
 			seen = element !== undefined && (expect.text === undefined || holdsText(element, expect.text));
 		} else {

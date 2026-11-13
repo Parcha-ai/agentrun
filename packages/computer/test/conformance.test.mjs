@@ -569,11 +569,11 @@ test("the CLI as a process prints a report of more than 1 MiB whole through a pi
 	assert.equal(code, 1, stderr);
 	assert.ok(stdout.length > 1024 * 1024, `${stdout.length} bytes`);
 	const report = JSON.parse(stdout);
-	assert.equal(report.results.length, 6);
+	assert.equal(report.results.length, 7);
 	// Every case that needs the computer fails on the refused create, at length. health.no-key-in-errors is skipped before
 	// it: the fixture takes no secret.
 	const failed = report.results.filter((result) => result.status === "fail");
-	assert.equal(failed.length, 5);
+	assert.equal(failed.length, 6);
 	for (const result of failed) assert.ok(result.reason.length > 512 * 1024, result.id);
 	assert.deepEqual(report.results.filter((result) => result.status === "skip").map((result) => result.id), ["health.no-key-in-errors"]);
 });

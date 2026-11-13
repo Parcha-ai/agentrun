@@ -102,7 +102,8 @@ test("apps.launch-terminate fails a phone that launches nothing: the case is no 
 	const provider = await create({ apiKey: KEY, fetch: fake.fetch, adb: fake.adb, ledger: memoryLedger(), now: fake.clock.now, sleep: fake.clock.sleep, maxLifetimeMs: 10 * 60_000 });
 	const report = await runConformance(provider, { image: "android", patience: 1000, cases: conformanceCases.filter((c) => c.id === "apps.launch-terminate") });
 	assert.equal(statuses(report)["apps.launch-terminate"], "fail");
-	assert.match(reasonOf(report, "apps.launch-terminate"), /^com\.android\.settings in front after apps\.launch: still not so/);
+	// The harness's launch waits for the app in front (wire.md, apps.launch), so the launch itself fails, naming the app.
+	assert.match(reasonOf(report, "apps.launch-terminate"), /^apps\.launch: timeout: com\.android\.settings opened no window in front within 10 s of apps\.launch \(com\.google\.android\.apps\.nexuslauncher is in front\)/);
 	assert.equal(fake.sessions.size, 0);
 });
 
