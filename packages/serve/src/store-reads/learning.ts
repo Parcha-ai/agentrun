@@ -47,9 +47,9 @@ function answeredOf(row: KeptRow): Pick<Learning, "answered_at" | "job_cost_usd"
   return { answered_at: row.answered_at, job_cost_usd: usdOrNull(row.job_cost_usd), look_back_usd: usdOrNull(row.look_back_usd) };
 }
 
-/** Run `runId`'s learning end; null when the run kept no learning. Proposed while its learning run has not ended. */
-export async function runLearningEnd(store: Store, runId: string): Promise<RunLearningEnd | null> {
-  const kept = await store.learning.proposal(runId);
+/** Run `runId`'s learning end (its newest round's, or round `round`'s); null when the run kept no learning. Proposed while its learning run has not ended. */
+export async function runLearningEnd(store: Store, runId: string, round?: number): Promise<RunLearningEnd | null> {
+  const kept = await store.learning.proposal(runId, round);
   if (!kept) return null;
   const row = (kept.proposal ?? {}) as KeptRow;
   return { ...(await endOfKept(store, kept, row)), ...answeredOf(row) };
@@ -198,10 +198,7 @@ export async function agentCostOverStore(store: Store, agentId: string, limit = 
   for (const run of ended) {
     if (!kinds.has(run.revisionId)) kinds.set(run.revisionId, (await store.agents.revision(run.revisionId))?.kind);
     if (kinds.get(run.revisionId) === "workflow") continue;
-    const started = await learningStartOfRun(store, run.id);
-    const { looked, grade } = await learningSpendOf(store, run.id);
-    const { path, workflow } = await journalReadsOf(store, run, started);
-    runs.push({ n: runs.length + 1, run_id: run.id, started_at: new Date(run.startedAt).toISOString(), path, workflow, learned_revision: started?.seed ?? null, ...runCostOf(run.costUsd, looked, grade) });
+    runs.push(await costRunOf(store, run, runs.length + 1));
   }
   return { runs: runs.slice(Math.max(0, runs.length - limit)), summary: costSummary(runs), total_runs: runs.length, unknown_cost_runs: runs.filter((run) => run.total_usd === null).length };
 }
@@ -216,6 +213,18 @@ async function learningSpendOf(store: Store, runId: string): Promise<{ looked: R
   const looked = answeredOf((kept.proposal ?? {}) as KeptRow);
   const learningRun = kept.learningRunId ? await store.runs.get(kept.learningRunId) : undefined;
   return { looked, grade: learningRun && FINAL_STATES.includes(learningRun.state) ? (learningRun.costUsd ?? null) : 0 };
+}
+
+/** One run of the cost series, as number `n` of it: its figures and its path (agentCostOverStore's loop body, and a learning
+ *  batch's row once the run's learning has settled). */
+export async function costRunOf(store: Store, run: NonNullable<Awaited<ReturnType<Store["runs"]["get"]>>>, n: number): Promise<CostRun> {
+  const started = await learningStartOfRun(store, run.id);
+  // A run a follow-up opened again (a review's, a person's) learned in rounds: every round's look-back and grade are its
+  // learning (roundsSpendOf), never the newest round's alone.
+  const rounds = await roundsSpendOf(store, run.id);
+  const { looked, grade } = rounds ? { looked: rounds, grade: rounds.grade_usd } : await learningSpendOf(store, run.id);
+  const { path, workflow } = await journalReadsOf(store, run, started);
+  return { n, run_id: run.id, started_at: new Date(run.startedAt).toISOString(), path, workflow, learned_revision: started?.seed ?? null, ...runCostOf(run.costUsd, looked, grade) };
 }
 
 /** What a run's journal tells the agent's learning view and its cost per run: the notes its job opened (`read`, once
