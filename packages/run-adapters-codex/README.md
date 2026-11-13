@@ -24,7 +24,8 @@ const runNode = createHarnessRunner(
   `submit`); a code-mode model is offered code mode's `exec` and `wait`, whose runtime has no Node modules, no process and no network, and
   reaches the host's tools by their own names, as nested calls of the script it writes. A nested call of a computer tool
   answers the tool's value as JSON text, its images' data in it, for the script to `JSON.parse`; any other tool answers
-  its words with its images after them as data: URLs (`test/code-mode-images-taken.test.mjs`). Codex's runtime takes no
+  its words and a line saying how many images it returned were not sent, since in code mode an image reaches a script only
+  as text (`test/code-mode-images-taken.test.mjs`). Codex's runtime takes no
   binding of ours, so a script that wants the `computer` object itself calls `computer_script`, which runs in the host's
   isolate with `computer` bound. The proxy passes `exec` and
   `wait` and drops the sub-agent and user-input tools Codex lists beside them; it keeps parallel tool calls off for a
