@@ -58,6 +58,7 @@ const learning = object({
   revision: { type: ["string", "null"] },
   context: text,
   skills: { type: "array", items: object({ name: text, files: { type: "object", additionalProperties: text } }) },
+  workflows: { type: "array", items: object({ name: text, workflow: text, description: text }), description: "Approved, capability-compatible workflows pinned to this run; empty without a backend workflow bridge or when learning is notes-only or Off." },
 });
 export const SDK_PATHS = {
   "/agents/{agent_id}/sdk-runs": {
@@ -75,6 +76,15 @@ export const SDK_PATHS = {
             input: { ...text, maxLength: 128000 },
             instructions: { ...text, maxLength: 128000 },
             model: { ...text, maxLength: 256 },
+            workflow_tools: { type: "array", maxItems: 64, description: "Opts into backend workflow learning. Explicit callback catalog, at most 64 KiB JSON. Credentials and implementations stay in the application.", items: object({
+              name: { ...text, maxLength: 256, pattern: "^mcp:[a-z][a-z0-9-]{0,31}/[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$" },
+              description: { ...text, minLength: 1, maxLength: 4000 },
+              input_schema: { type: "object", additionalProperties: true },
+              output_schema: { type: "object", additionalProperties: true },
+              permission: { enum: ["allow", "ask", "deny"] },
+              price_usd: { type: "number", minimum: 0 },
+            }, ["name", "description", "input_schema", "permission"]) },
+            workflow_adapters: { type: "array", maxItems: 2, uniqueItems: true, items: { enum: ["runNode", "runJudge"] }, description: "Optional backend callbacks available for workflow model and decision nodes. Default empty; requires workflow_tools." },
           },
           ["runtime", "input", "instructions"],
         ),

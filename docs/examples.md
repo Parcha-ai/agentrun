@@ -71,5 +71,6 @@ Keep an existing backend agent's native SDK and tools while AgentRun checks lear
 | --- | --- | --- |
 | [Claude Agent SDK](tutorials/claude-sdk-learning.md) | [Release reporter](../examples/sdk-learning/claude.mjs) | The existing in-process MCP tool still executes; an accepted note or skill affects a fresh session. |
 | [Codex SDK](tutorials/codex-sdk-learning.md) | [Release reporter](../examples/sdk-learning/codex.mjs) | The existing native shell still reads a status file; an accepted revision is supplied to a fresh thread. |
+| [SDK workflow learning via MCP](tutorials/sdk-workflow-learning.md) | [Claude](../examples/sdk-learning/workflow-claude.mjs) / [Codex](../examples/sdk-learning/workflow-codex.mjs) | A generated and checked workflow invokes the original tool callbacks on a fresh request with changed data; an Off control gets the same task. |
 
 Follow the [setup and execution instructions](../examples/sdk-learning/README.md). These examples use real models only with `--live`, compare learning On with an Off control, and preserve the result for inspection in the console. They require this development checkout's client and server, plus the backend's existing SDK credentials and a configured server grading model.

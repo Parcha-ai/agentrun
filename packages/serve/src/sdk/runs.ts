@@ -8,11 +8,13 @@ import type { AgentEntry } from "../agents-store.js";
 import { uuidv7 } from "../agents-store.js";
 import { launchBody, type RunLaunch } from "../run-launch.js";
 import { learningStartFor, type StartDeps } from "../runs-over-store.js";
-import { chooseSkills, learningFolderOf, readerOf, seedFrom, secretsShown } from "../learning.js";
+import { chooseWorkflows, type LearnedWorkflow, chooseSkills, learningFolderOf, readerOf, seedFrom, secretsShown } from "../learning.js";
 import { NATIVE_GRADE_INSTRUCTION_BYTES } from "../learn/grade.js";
 import { secretRedactor } from "../runner/redact.js";
 import { redactedOutput } from "../key-refusal.js";
-import { servedSkill } from "../learn/skills.js";
+import { decodedStrings, draftProblems, servedSkill } from "../learn/skills.js";
+
+import { sdkWorkflowManifest, sdkDraftTools } from "./workflows.js";
 
 export type SdkRuntime = "claude-agent-sdk" | "codex-sdk";
 export type SdkUsage = {
@@ -49,6 +51,8 @@ export type SdkInbox = {
   batches: { sequence: number; events: SdkEvent[] }[];
   /** Exact approved skill files delivered by the start receipt; absent on older SDK runs. */
   learning_skills?: SdkSeedSkill[];
+  /** Exact approved executable workflows delivered by the start receipt. */
+  learning_workflows?: LearnedWorkflow[];
   completion?: SdkCompletion;
 };
 type SdkSeedSkill = { name: string; files: Record<string, string> };
@@ -127,7 +131,10 @@ export class SdkRuns {
     checkGrade: (model: string) => Promise<void>,
     consoleOrigin: string,
   ) {
-    only(body, ["runtime", "input", "instructions", "model"]);
+    only(body, ["runtime", "input", "instructions", "model", "workflow_tools", "workflow_adapters"]);
+    const workflow = sdkWorkflowManifest(body.workflow_tools, body.workflow_adapters);
+    if (workflow && canonical(this.clean(workflow)) !== canonical(workflow))
+      refuse("The workflow manifest contains a protected value; keep credentials in the backend.");
     const binding = sdkOf(entry.revision?.body);
     if (!binding || !entry.revision)
       throw new ApiError("agent_not_runnable", "This agent is not registered as a backend SDK agent.");
@@ -157,7 +164,7 @@ export class SdkRuns {
       deps,
       entry,
       pinned.revision,
-      { ...revisionBody, ...(revisionBody.learning === false ? {} : { learning: "notes" }) } as never,
+      { ...revisionBody, ...(!workflow && revisionBody.learning !== false ? { learning: "notes" } : {}) } as never,
       { content: cleanedInput },
     );
     if (learning) {
@@ -178,6 +185,7 @@ export class SdkRuns {
         );
     }
     const skills = learning ? await this.selectedSkills(entry.agent.id, learning.seed) : [];
+    const workflows = learning && !learning.notesOnly && workflow ? await this.selectedWorkflows(entry.agent.id, learning.seed, workflow) : [];
     const cleaned = this.clean({ instructions, ...(model ? { model } : {}) });
     const runId = uuidv7();
     const launch: RunLaunch = {
@@ -187,10 +195,11 @@ export class SdkRuns {
       harness: "sdk",
       sdk: {
         runtime: binding.runtime,
+        ...workflow,
         instructions: cleaned.instructions,
         ...(cleaned.model ? { model: cleaned.model } : {}),
       },
-      ...(learning ? { learning: { ...learning, skills: skills.map((skill) => skill.name), notesOnly: true } } : {}),
+      ...(learning ? { learning: { ...learning, skills: skills.map((skill) => skill.name), workflows: workflows.map((flow) => flow.name) } } : {}),
     };
     const now = Date.now();
     await this.store.settings.put(keyOf(runId), {
@@ -199,6 +208,7 @@ export class SdkRuns {
       expires_at: now + 3_600_000,
       batches: [],
       learning_skills: skills,
+      learning_workflows: workflows,
     } satisfies SdkInbox);
     try {
       await this.store.runs.create(
@@ -226,9 +236,15 @@ export class SdkRuns {
       inbox = await sdkInbox(this.store, runId);
     }
     const skills = inbox.learning_skills ?? [];
+    // Older SDK receipts never included executable workflows. Do not retroactively deliver one.
+    const workflows = inbox.learning_workflows ?? [];
     const shown = secretsShown(this.secrets(), { local: true });
     if (
       shown.holds(launch.learning?.section ?? "") ||
+      workflows.some((flow) => {
+        const decoded = decodedStrings(flow.workflow);
+        return shown.holds(flow.name) || shown.holds(flow.description) || shown.holds(flow.workflow) || decoded === "too_deep" || decoded.some(shown.holds);
+      }) ||
       skills.some(
         (skill) =>
           shown.holds(skill.name) ||
@@ -252,8 +268,25 @@ export class SdkRuns {
         revision: launch.learning?.seed ?? null,
         context: launch.learning?.section ?? "",
         skills,
+        workflows,
       },
     };
+  }
+  private async selectedWorkflows(agentId: string, revision: string | null, binding: NonNullable<ReturnType<typeof sdkWorkflowManifest>>): Promise<LearnedWorkflow[]> {
+    const folder = learningFolderOf(this.data, agentId);
+    try {
+      const seed = await seedFrom(revision, readerOf(folder.workspace));
+      const { flows } = chooseWorkflows(seed, secretsShown(this.secrets(), { local: true }));
+      const dsl = await import("@parcha/agentrun-dsl");
+      const { tools, gated, deniedBy } = sdkDraftTools(binding.workflow_tools);
+      let room = 256 * 1024;
+      return flows.filter((flow) => {
+        const bytes = Buffer.byteLength(JSON.stringify(flow));
+        if (bytes > room || draftProblems(dsl, flow.workflow, tools, gated, deniedBy, undefined, binding.workflow_adapters).length) return false;
+        room -= bytes;
+        return true;
+      });
+    } finally { await folder.end(); }
   }
   private async selectedSkills(agentId: string, revision: string | null): Promise<SdkSeedSkill[]> {
     const folder = learningFolderOf(this.data, agentId);

@@ -36,12 +36,15 @@ const printable = (tool: string): boolean => TOOL_NAME.test(tool) || LEARNED_MCP
  *  spaces); one for a tool not in `tools` is left out. Nothing is described unless a draft is asked for. `workflows`, false
  *  for a run of a revision that says `learning: "notes"`: the prompt asks for notes and a skill alone, says to keep no
  *  workflow draft, and asks for none (`draftFor` and `described` are not said). */
-export function reflectPrompt(options: { dir: string; active: number; tools?: readonly string[]; draftFor?: readonly string[]; described?: readonly { readonly name: string; readonly does: string }[]; workflows?: boolean }): string {
+export function reflectPrompt(options: { dir: string; active: number; tools?: readonly string[]; draftFor?: readonly string[]; described?: readonly { readonly name: string; readonly does: string }[]; workflows?: boolean; workflowAdapters?: readonly ("runNode" | "runJudge")[] }): string {
   const { dir, active, tools = [], draftFor = [], described = [], workflows = true } = options;
   if (typeof dir !== "string" || dir === "" || dir.startsWith("/") || UNSEEN.test(dir)) throw new Error("the directory must be a path relative to the run's workspace, with no control or unseen characters");
   if (!Number.isSafeInteger(active) || active < 0) throw new Error("the count of active notes must be a whole number, 0 or more");
   if (!Array.isArray(tools) || tools.some((tool) => typeof tool !== "string" || !printable(tool))) throw new Error("each tool must be a tool's name");
   if (!Array.isArray(draftFor) || draftFor.some((name) => typeof name !== "string" || !SKILL_NAME.test(name))) throw new Error("each skill a draft is asked for must be a skill's name");
+  const adapters = options.workflowAdapters;
+  const canModel = adapters === undefined || adapters.includes("runNode");
+  const canJudge = adapters?.includes("runJudge") ?? false;
   const left = Math.max(0, INDEX_LINES - active);
   return [
     "The task is done. Before the run ends, say what this run taught you that will help in later runs, if anything.",
@@ -123,14 +126,19 @@ export function reflectPrompt(options: { dir: string; active: number; tools?: re
     "",
     ...(workflows ? [
       "A workflow draft does the job as one workflow DSL document: front matter with one line that says what it does and",
-      "when to use it, then the JSON. It uses model and tool-call nodes only: no judge, pick or sift node, no code node, no shell or",
-      `executor call. Its model nodes name no tool. ${tools.length ? `Its call nodes may run only these tools: ${tools.join(", ")}.` : "It has no call node on a tool."} At most ${CAPS.file} bytes of JSON.`,
+      "when to use it, then the JSON. No code node, no shell or executor call.",
+      ...(adapters === undefined ? ["It uses model and tool-call nodes only: no judge, pick or sift node."] : [
+        `This backend provides runEffect for the allowed tool callbacks${canModel ? ", runNode for tool-free model nodes" : "; it provides NO runNode: do not use agent, decide, extract, report or prose artifact nodes"}${canJudge ? ", and runJudge for decision nodes" : "; it provides NO runJudge: do not use judge, pick, sift, verification or model-based predicates"}.`,
+        "Use tool-call nodes and deterministic bindings to reuse the backend tools. Preserve the skill output through a registered formatter tool if one is available; never invent a model, formatter or approval adapter.",
+      ]),
+      `Its model nodes name no tool. ${tools.length ? `Its call nodes may run only these tools: ${tools.join(", ")}.` : "It has no call node on a tool."} At most ${CAPS.file} bytes of JSON.`,
       "To change a draft you were given, give it again whole under its name.",
       "Its schemas are declared once under `schemas`, and `input` and `output` name one each by `schemaId`, never a schema",
       "written in place.",
       "Give its front matter an `example:` line too: one JSON object on one line, the input this run would have given it.",
       "The host dry-runs the draft on it before it is kept (no model or tool is called) and never keeps the example.",
       "",
+      ...(canModel ? [
       `\`\`\`\`${WORKFLOW_BLOCK} find-policies`,
       "---",
       "description: Finds a store's refund policy from its public pages; use when a case asks for it",
@@ -138,6 +146,17 @@ export function reflectPrompt(options: { dir: string; active: number; tools?: re
       "---",
       JSON.stringify(exampleDraft(tools.includes("web_fetch"))),
       "````",
+      ] : [
+        "Syntax-only example for a backend with no model adapter. The example MCP tool is a placeholder, not a grant: replace its name, arguments and schemas with the actual allowed catalog and skill.",
+        `\`\`\`\`${WORKFLOW_BLOCK} read-value`,
+        "---",
+        "description: Read a value using the backend tool when requested.",
+        'example: {"key":"example"}',
+        "---",
+        JSON.stringify({ v: 2, name: "read-value", schemas: { Input: { type: "object", properties: { key: { type: "string" } }, required: ["key"] }, Value: { type: "object", properties: { value: { type: "string" } }, required: ["value"] } }, input: { schemaId: "Input" }, output: { schemaId: "Value", path: "result" }, root: { node: "call", label: "read", via: "tool", tool: "mcp:example/read_value", args: { key: "{key}" }, out: "Value", as: "result", deadline_s: 30 } }),
+        "````",
+        "A chain uses {node: \"chain\", steps: [...]}. Bind earlier tool results with {result.field}; nested args must match the catalog's input schema. Return a tool result through output.path, selecting its text field when the skill expects text. If the existing tools cannot produce the required answer format, keep the skill and no workflow. Never replace these steps with a model node when runNode is unavailable.",
+      ]),
     ] : []),
   ].join("\n");
 }

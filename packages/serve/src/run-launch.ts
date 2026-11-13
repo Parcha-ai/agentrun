@@ -1,3 +1,4 @@
+import type { SdkWorkflowTool, SdkWorkflowAdapter } from "./sdk/workflows.js";
 import type { NativeBinding } from "./native/types.js";
 import { nativeOf } from "./native/binding.js";
 // A run's launch record: the one JSON body the server writes when it starts a run (start = INSERT run, design 2.1), and
@@ -21,7 +22,7 @@ import type { Place } from "./workspace/place.js";
  *  names (a learning run's `{ runId }`). `model`, `plane`, `approvers`, `documents` and `boxAllow` are the per-run choices
  *  the old path recomputed; here they are pinned at start, and optional (a built-in run may name none). */
 export interface RunLaunch {
-  readonly sdk?: {runtime: "claude-agent-sdk" | "codex-sdk"; instructions: string; model?: string};
+  readonly sdk?: {runtime: "claude-agent-sdk" | "codex-sdk"; instructions: string; model?: string; workflow_tools?: SdkWorkflowTool[]; workflow_adapters?: SdkWorkflowAdapter[]};
   readonly native?: NativeBinding;
   /** The start request's body, as the person or trigger gave it, or an object a built-in run names. */
   readonly input: unknown;
@@ -122,7 +123,7 @@ export function keepInputOrigin(stored: unknown, trigger: RunTrigger | null): Me
 export function launchBody(launch: RunLaunch): Json {
   return {
     input: launch.input,
-    ...(launch.sdk ? {sdk:launch.sdk}:{}),
+    ...(launch.sdk ? {sdk:launch.sdk as unknown as Json}:{}),
     ...(launch.native ? {native:launch.native}:{}),
     title: launch.title,
     place: launch.place,

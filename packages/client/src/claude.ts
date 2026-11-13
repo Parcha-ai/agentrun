@@ -5,6 +5,10 @@ type NativeQuery = AsyncGenerator<unknown, unknown, unknown> & { close?: () => v
 type QueryFunction = (args: any) => NativeQuery;
 const object = (value: unknown): Value => value !== null && typeof value === 'object' ? value as Value : {};
 const string = (value: unknown): string | undefined => typeof value === 'string' ? value : undefined;
+const toolName = (name: string): string => {
+  const mcp = /^mcp__([a-z][a-z0-9-]{0,31})__([A-Za-z0-9_][A-Za-z0-9._-]{0,127})$/.exec(name);
+  return mcp ? `mcp:${mcp[1]}/${mcp[2]}` : name;
+};
 const count = (value: unknown): number | undefined => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
 
 export interface ClaudeAgentLearningConfig extends BackendLearningConfig {
@@ -82,6 +86,7 @@ export function withClaudeAgentLearning<Q extends QueryFunction>(query: Q, confi
     };
     const ready = client.begin({ runtime: 'claude-agent-sdk', input: params.prompt, instructions, ...(model ? { model } : {}) }).then(value => {
       session = value;
+      session.followAbort(nativeAbort?.signal);
       if (closed || nativeAbort?.signal.aborted) {
         closed = true; finish('cancelled');
         throw nativeAbort?.signal.reason ?? new DOMException('The Claude SDK query was closed before dispatch.', 'AbortError');
@@ -110,8 +115,8 @@ export function withClaudeAgentLearning<Q extends QueryFunction>(query: Q, confi
         for (const block of Array.isArray(content.content) ? content.content.map(object) : []) {
           if (block.type === 'text' && typeof block.text === 'string') event({ type: 'text', text: block.text });
           if (block.type === 'tool_use' && typeof block.id === 'string' && typeof block.name === 'string') {
-            tools.set(block.id, block.name);
-            event({ type: 'tool', id: block.id, name: block.name, status: 'started' });
+            tools.set(block.id, toolName(block.name));
+            event({ type: 'tool', id: block.id, name: toolName(block.name), status: 'started' });
           }
         }
       }

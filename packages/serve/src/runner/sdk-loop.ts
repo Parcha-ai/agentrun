@@ -84,7 +84,7 @@ export function createSdkLoop(
           };
           const source = await host.store.runs.get(claim.runId);
           if (!source) throw new Error("SDK run no longer exists.");
-          const supplied = (await sdkInbox(host.store, claim.runId)).learning_skills;
+          const supplied = await sdkInbox(host.store, claim.runId);
           const previous = await journalEntries(journal, ctx);
           if (previous.some((entry) => entry.kind === KINDS.end)) return { state: "ended" as const };
           const redacted = (value: string) => deps.redact?.(value) ?? value;
@@ -108,7 +108,7 @@ export function createSdkLoop(
                   ? [
                       {
                         kind: KINDS.learningLaid,
-                        data: { skills: supplied?.map((skill) => skill.name) ?? [], workflows: [] },
+                        data: { skills: supplied.learning_skills?.map((skill) => skill.name) ?? [], workflows: supplied.learning_workflows?.map((flow) => flow.name) ?? [] },
                       },
                     ]
                   : []),
@@ -223,6 +223,10 @@ export function createSdkLoop(
               if (end) {
                 const evidence = JSON.stringify({
                   application_instructions: launch.sdk!.instructions,
+                  supplied_skills: inbox.learning_skills ?? [],
+                  supplied_workflows: inbox.learning_workflows ?? [],
+                  workflow_tools: launch.sdk!.workflow_tools ?? [],
+                  workflow_adapters: launch.sdk!.workflow_adapters ?? [],
                   user_input: (launch.input as { content: string }).content,
                   tool_events: inbox.batches.flatMap((batch) => batch.events.filter((event) => event.type === "tool")),
                   final_answer: result.answer,
