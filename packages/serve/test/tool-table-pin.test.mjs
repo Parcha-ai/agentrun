@@ -49,7 +49,17 @@ const snapshot = () => {
       out.agents[`${envName}/${setName}/${harness}`] = sha(agentTools(env, settings, { harness, tools: NAMES.filter(Boolean) }, NAMES));
     }
   }
-  out.openapi = sha(openapiDocument(() => undefined));
+  // The settings keys the API names (its tool-settings schemas' property names), not the whole document: other changes
+  // move that.
+  const enums = [];
+  const walk = (node) => {
+    if (Array.isArray(node)) return node.forEach(walk);
+    if (node === null || typeof node !== "object") return;
+    for (const entry of node.propertyNames?.anyOf ?? []) if (Array.isArray(entry.enum)) enums.push(entry.enum);
+    Object.values(node).forEach(walk);
+  };
+  walk(openapiDocument(() => undefined));
+  out.openapi_tool_keys = enums;
   return JSON.parse(JSON.stringify(out));
 };
 
