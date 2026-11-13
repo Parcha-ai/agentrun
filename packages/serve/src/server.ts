@@ -90,6 +90,7 @@ import { DRAIN_TIMEOUT } from "./runner/beside.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
 import { agentCostOverStore, agentLearningOverStore, learningCountsOverStore, learningSpendOverStore } from "./store-reads/learning.js";
 import { costCsv, learningCostQuery } from "./learning-cost.js";
+import { evalOf, evalsOf, recordEval } from "./learning-evals.js";
 import { keyOf, SEAL_KEY_ENV, TOOL_FIELDS } from "./tool-keys.js";
 import { toolKeysOverStore } from "./tool-keys-store.js";
 import { SIGN_INS_DIR, vendorsOver } from "./sign-ins.js";
@@ -478,6 +479,8 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/mcp$/, name: "callMcp" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning$/, name: "getAgentLearning" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/cost$/, name: "getLearningCost" },
+  { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/evals$/, name: "listLearningEvals" },
+  { method: "POST", pattern: /^\/agents\/([^/]+)\/learning\/evals$/, name: "recordLearningEval" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/notes$/, name: "listLearningNotes" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/log$/, name: "listLearningLog" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/files\/([^/]+)$/, name: "readLearningFile" },
@@ -3097,6 +3100,20 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           return void res.end(costCsv(cost.runs));
         }
         return send(res, 200, { agent: id, ...cost });
+      }
+      case "listLearningEvals":
+        await needAgent(id);
+        // The held-out tests recorded for the agent (learning-evals.ts), newest first: only ever what was posted.
+        return send(res, 200, { agent: id, evals: await evalsOf(store, id) });
+      case "recordLearningEval": {
+        const body = await bodyOf(req);
+        await needAgent(id);
+        const answer = await idempotent(req, `/agents/${id}/learning/evals`, body, async () => {
+          const result = evalOf(body, new Date());
+          await recordEval(store, id, result);
+          return { status: 201, body: result };
+        });
+        return send(res, answer.status, answer.body, answer.headers);
       }
       case "listLearningNotes":
       case "listLearningLog":

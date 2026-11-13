@@ -14,6 +14,7 @@ import { LAUNCH_LOST, SETUP_LOST } from "./files.js";
 import { HARNESSES } from "./harness.js";
 import { LEARNING_LABEL, LEARNING_MODES, LEARNING_REASONS, LEARNING_STATES } from "./learning.js";
 import { CHEAPER_AFTER_RUNS, COST_CSV_COLUMNS, COST_RUNS_DEFAULT, COST_RUNS_MAX, RUN_PATHS } from "./learning-cost.js";
+import { EVAL_JOBS_MAX, EVAL_SOURCE_MAX, EVALS_KEPT } from "./learning-evals.js";
 import { MODEL_SOURCES, THINKING_LEVELS } from "./model.js";
 import { BOX_IDS, BOX_NETWORKS, BOX_STATES } from "./place-offers.js";
 import { PLACE_MODES } from "./place.js";
@@ -965,6 +966,33 @@ const LEARNING_COST = closed({
   }, "What the series shows, over every run it counts, `limit` aside."),
 });
 
+const SHARE = (description: string) => ({ type: "number", minimum: 0, maximum: 1, description });
+const EVAL_ARM = (who: string) => closedWith({
+  accuracy: SHARE(`${who}: the share of the held-out jobs it got right.`),
+  ci: { type: "array", items: SHARE("A bound."), minItems: 2, maxItems: 2, description: "The 95% interval around `accuracy`, [low, high]: low <= accuracy <= high." },
+}, { usd_per_job: { type: ["number", "null"], minimum: 0, description: `${who}: its mean cost a job, in USD; null (or absent) when the test did not count it.` } });
+/** As answered: every field there, `usd_per_job` null when not counted. */
+const EVAL_ARM_OUT = (who: string) => { const arm = EVAL_ARM(who); return closed(arm.properties as Json); };
+const EVAL_IN = {
+  source: { type: "string", minLength: 1, maxLength: EVAL_SOURCE_MAX, description: "What ran the test, one line: a bench's name and set, a script's." },
+  n: { type: "integer", minimum: 1, maximum: EVAL_JOBS_MAX, description: "The held-out jobs the test counted: jobs the agent never learned from." },
+  learned: EVAL_ARM("The agent with what it learned"),
+  by_hand: EVAL_ARM("The agent by hand (learning off, nothing learned given)"),
+};
+const EVAL_IN_OPTIONAL = {
+  learned_revision: { type: ["string", "null"], pattern: "^[0-9a-f]{7,64}$", description: "The learning folder's commit the learned side ran from; null (or absent) when not said." },
+  measured_at: { type: "string", format: "date-time", description: "When the test ran; absent, when it is recorded." },
+};
+const LEARNING_EVAL = closed({
+  id: { type: "string" },
+  ...EVAL_IN,
+  learned: EVAL_ARM_OUT("The agent with what it learned"),
+  by_hand: EVAL_ARM_OUT("The agent by hand (learning off, nothing learned given)"),
+  learned_revision: EVAL_IN_OPTIONAL.learned_revision,
+  measured_at: { type: "string", format: "date-time" },
+  recorded_at: { type: "string", format: "date-time" },
+}, "One recorded held-out test of the agent: each side's accuracy with its 95% interval and cost a job.");
+
 const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
   "/agents/{agent_id}/learning": {
     get: {
@@ -984,6 +1012,20 @@ const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
       ],
       responses: { "200": { description: "The agent's cost per run.", content: { "application/json": { schema: LEARNING_COST }, "text/csv": { schema: { type: "string" } } } }, ...errors(400, 401, 404, 429, 500) },
       "x-agentrun-serve": "learningcost/1",
+    },
+  },
+  "/agents/{agent_id}/learning/evals": {
+    get: {
+      operationId: "listLearningEvals", tags: ["agents"], summary: "The held-out tests recorded for the agent, newest first",
+      description: `What the console's Learning tab heads with: how accurate and how cheap the agent with what it learned is against the agent by hand, on jobs it never learned from. Only ever what was posted (POST below): never computed from the agent's own runs, which are the jobs it learned from. The latest ${EVALS_KEPT}.`,
+      parameters: [AGENT_ID], responses: { "200": json(closed({ agent: { type: "string" }, evals: { type: "array", items: LEARNING_EVAL, maxItems: EVALS_KEPT, description: "Newest recorded first." } }), "The agent's recorded tests."), ...errors(401, 404, 429, 500) }, ...MARK,
+    },
+    post: {
+      operationId: "recordLearningEval", tags: ["agents"], summary: "Record a held-out test of the agent: accuracy and cost a job, learned against by hand",
+      description: `Post the result of a test run on held-out jobs (jobs the agent never learned from): \`n\`, and for each side its accuracy, the 95% interval around it and its cost a job. Only a held-out test belongs here: numbers from the jobs the agent learned on read as held-out on the console, and say more than they show. Kept newest first, the latest ${EVALS_KEPT}. A field that is missing or wrong is 422 input_invalid by field, and nothing is kept. With Idempotency-Key, a retry answers the first request's result.`,
+      parameters: [AGENT_ID, ref("parameters/IdempotencyKey")],
+      requestBody: { required: true, content: { "application/json": { schema: closedWith(EVAL_IN, EVAL_IN_OPTIONAL) } } },
+      responses: { "201": { description: "Recorded.", headers: { "Idempotent-Replayed": ref("headers/IdempotentReplayed") }, content: { "application/json": { schema: LEARNING_EVAL } } }, ...errors(400, 401, 404, 422, 429, 500) }, ...MARK,
     },
   },
   "/agents/{agent_id}/learning/notes": {
