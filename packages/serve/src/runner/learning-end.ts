@@ -32,6 +32,7 @@ import { handedValuesOf } from "../handed-values.js";
 import { MIN_SECRET } from "../learn/secrets.js";
 import { LEARNED_WORKFLOW_TOOL } from "../learned-workflow.js";
 import { LEARNING_LABEL, PROPOSAL } from "../learning.js";
+import type { RunPath } from "../learning-cost.js";
 import { reflects, type Reflect } from "../reflect-range.js";
 import { said, STOPPED } from "../learning-words.js";
 import { proposeRun } from "../propose.js";
@@ -139,7 +140,7 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
 
 /** learned_workflow by every name a harness calls it: its own, and claude-agent's host-tool alias (`mcp__hands__<name>`).
  *  A harness that names it another way reads as another tool, so its run is asked as before. */
-const LEARNED_NAMES: ReadonlySet<string> = new Set([LEARNED_WORKFLOW_TOOL, `mcp__hands__${LEARNED_WORKFLOW_TOOL}`]);
+export const LEARNED_NAMES: ReadonlySet<string> = new Set([LEARNED_WORKFLOW_TOOL, `mcp__hands__${LEARNED_WORKFLOW_TOOL}`]);
 
 /** Whether a run's job, by its timeline `rows` (the end-of-run turn's own, labelled LEARNING_LABEL, left out), gave
  *  nothing new to look back on: it called tools, every one of them learned_workflow (a workflow's own nested calls are
@@ -155,6 +156,26 @@ export function onlyLearnedWorkflows(rows: readonly TimelineEvent[]): boolean {
   if (results.some((row) => row.tool_status !== "success")) return false;
   const answered = new Set(results.filter((row) => !row.parent_tool_use_id).map((row) => row.tool_use_id));
   return calls.every((row) => answered.has(row.tool_use_id));
+}
+
+/** The path a run took (learning-cost.ts RunPath), by its timeline `rows` as runTimeline labels them (its end-of-run
+ *  turn's rows, LEARNING_LABEL, are the learning's and left out): `workflow` when its job did only what
+ *  onlyLearnedWorkflows asks of a run with nothing new to look back on, `handed_back` when it called a learned workflow
+ *  otherwise, `agent` when it called none. */
+export function runPathOf(rows: readonly TimelineEvent[]): RunPath {
+  const ran = rows.some((row) => row.agent_label !== LEARNING_LABEL && row.kind === "tool_use" && !row.parent_tool_use_id && LEARNED_NAMES.has(row.tool_name ?? ""));
+  if (!ran) return "agent";
+  return onlyLearnedWorkflows(rows) ? "workflow" : "handed_back";
+}
+
+/** The learned workflow a run's job called last by its call's `name` (callArgsOf's arguments, in the job's order: `calls`),
+ *  or null when it called none by a name. */
+export function workflowNameOf(calls: readonly { tool: string; args: Record<string, unknown> }[]): string | null {
+  for (let i = calls.length - 1; i >= 0; i--) {
+    const call = calls[i]!;
+    if (LEARNED_NAMES.has(call.tool) && typeof call.args.name === "string") return call.args.name;
+  }
+  return null;
 }
 
 /** Why each draft of `proposal` waits for its owner's OK whatever the grade: its steps calling an MCP tool with no

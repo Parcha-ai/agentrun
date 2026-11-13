@@ -13,6 +13,7 @@ import { TAKE_OVER_MINUTES } from "./computer-routes.js";
 import { LAUNCH_LOST, SETUP_LOST } from "./files.js";
 import { HARNESSES } from "./harness.js";
 import { LEARNING_LABEL, LEARNING_MODES, LEARNING_REASONS, LEARNING_STATES } from "./learning.js";
+import { CHEAPER_AFTER_RUNS, COST_CSV_COLUMNS, COST_RUNS_DEFAULT, COST_RUNS_MAX, RUN_PATHS } from "./learning-cost.js";
 import { MODEL_SOURCES, THINKING_LEVELS } from "./model.js";
 import { BOX_IDS, BOX_NETWORKS, BOX_STATES } from "./place-offers.js";
 import { PLACE_MODES } from "./place.js";
@@ -936,12 +937,52 @@ const WRITE_ERRORS = { ...errors(400, 401, 403, 404, 412, 429, 500), "428": PREC
  *  withheld when one of them can't be read here. */
 const SIGN_IN_WITHHELD = "Every text is cut of the agent's own browser sign-in pointers too, live or forgotten, and a note holding one is refused as one holding a host secret; when one of them does not open on this server (its seal key changed or is missing, or the sign-in is damaged), every learning route of the agent answers 403 `forbidden`, so nothing is shown over a shorter list.";
 const WRITE_DESCRIPTION = "As a person, with no grader: one host commit on main in the agent's queue, `learning: <edited|created|retired> by a person: <file>` with a `Changed-By: user` trailer, MEMORY.md rebuilt from the active notes, and the folder's files brought in line. A note that fails the structural checks a run's notes pass (front matter, the 4 KB cap, UTF-8, hidden characters, text shaped like a secret or holding one of the host's) is 400 `bad_request` with `problems`, and nothing is written; so is an index past 200 lines. MEMORY.md is 400: the server builds it. Answers the note as it now is, with its new ETag. An archived agent's notes are written as its definition is. " + SIGN_IN_WITHHELD;
+/** GET /agents/{agent_id}/learning/cost (learning-cost.ts, store-reads/learning.ts agentCostOverStore). */
+const COST_USD = (description: string) => ({ type: ["number", "null"], minimum: 0, description: `${description} Rounded to 1e-6; null when unknown, never 0 for unknown.` });
+const COST_MEAN = (description: string) => ({ oneOf: [closed({ runs: { ...COUNT, minimum: 1, description: "How many runs the mean is over." }, mean_usd: { type: "number", minimum: 0, description: "Their mean, rounded to 1e-6." } }), { type: "null" }], description });
+const COST_RUN = closed({
+  n: { type: "integer", minimum: 1, description: "The run's number among the agent's runs counted here, oldest first: 1 is its first." },
+  run_id: { type: "string" },
+  started_at: DATE_TIME,
+  path: { enum: [...RUN_PATHS], description: "The path the run took: `workflow`, a learned workflow finished it alone (its job's only tool calls were learned_workflow calls, each answering, and nothing was said after its first message, so it was not asked to look back); `handed_back`, a learned workflow ran and the agent went on (it failed or escalated, or the agent worked on after it); `agent`, no learned workflow ran." },
+  workflow: { ...NULL_STRING, description: "The learned workflow the job called last, by name; null when it called none." },
+  learned_revision: { ...NULL_STRING, description: "The commit of the agent's learning folder the run started from: the learned revision that served it. Null for a run that does not learn." },
+  cost_usd: COST_USD("The job's own cost: what the run had cost when its answer was final, before it looked back; for a run that did not look back, its whole cost."),
+  learning_usd: COST_USD("What learning cost for the run: its end-of-run look-back and the grade of what it proposed, outside the run. 0 for a run that does not learn or kept nothing to grade; a grade still running adds nothing yet."),
+  total_usd: COST_USD("The run's all-in cost, `cost_usd` and `learning_usd` together; null when either is."),
+});
+const LEARNING_COST = closed({
+  agent: { type: "string" },
+  runs: { type: "array", items: COST_RUN, description: "The agent's agentic runs that ended (completed, stopped or failed), oldest first: the last `limit` of them, each keeping its number. A run still at work, an imported or archived run and a workflow revision's run are left out; a run's grade is no run here, and its cost is that run's `learning_usd`." },
+  total_runs: { ...COUNT, description: "How many runs the series counts in all, `limit` aside." },
+  unknown_cost_runs: { ...COUNT, description: "How many of them have no known all-in cost (`total_usd` null)." },
+  summary: closed({
+    takeover: { oneOf: [closed({ n: { type: "integer", minimum: 1 }, run_id: { type: "string" } }), { type: "null" }], description: "The first run a learned workflow finished alone (`path` `workflow`); null before one." },
+    before: COST_MEAN("The mean of the job's own cost (`cost_usd`, learning left out) over the `agent` runs before the takeover (all of them when there is none yet) whose cost is known; null when there is none."),
+    after: COST_MEAN("The mean all-in cost (`total_usd`, learning included) of every run from the takeover on whose total is known; null before a takeover."),
+    times_cheaper: { type: ["number", "null"], minimum: 0, description: `\`before\` over \`after\`, to a tenth, once \`after\` counts ${CHEAPER_AFTER_RUNS} runs or more; else null. Learning is left out of the before side and kept in the after side, so it never flatters learning.` },
+  }, "What the series shows, over every run it counts, `limit` aside."),
+});
+
 const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
   "/agents/{agent_id}/learning": {
     get: {
       operationId: "getAgentLearning", tags: ["agents"], summary: "What the agent has learned: its index, notes, log of changes and counts",
       description: "Read at main's head with git's plumbing; every text cut of the host's secrets as they are now, and a file name holding one `[redacted]` whole. An agent whose learning was never on has no folder: `main` null and every page empty. An archived agent's is readable." + " " + SIGN_IN_WITHHELD,
       parameters: [AGENT_ID], responses: { "200": json(AGENT_LEARNING, "The agent's learning."), ...errors(401, 403, 404, 429, 500) }, ...MARK,
+    },
+  },
+  "/agents/{agent_id}/learning/cost": {
+    get: {
+      operationId: "getLearningCost", tags: ["agents"], summary: "The agent's cost per run, run after run: its own cost, what learning added and the path it took",
+      description: "Each of the agent's ended agentic runs in the order they started, with its own cost, what learning cost for it and its all-in cost, the path it took (a learned workflow alone, a learned workflow that handed back, or the agent with none) and the learned revision that served it, plus what the series shows: the first run a learned workflow finished alone, the mean cost before it and the mean all-in cost from it on. What the console's Cost per run chart draws. Aggregates only: no run's input, answer or tool text. Read from the runs' rows, launches, learning ends and timelines in the store; an agent with learning never on has every run on the `agent` path. `format=csv` answers the same runs as CSV (`text/csv`, a header line, an unknown figure empty), to plot elsewhere.",
+      parameters: [
+        AGENT_ID,
+        { name: "limit", in: "query", required: false, description: `The latest runs to answer, each keeping its number. At most ${COST_RUNS_MAX}.`, schema: { type: "integer", minimum: 1, maximum: COST_RUNS_MAX, default: COST_RUNS_DEFAULT } },
+        { name: "format", in: "query", required: false, description: "`csv`: the runs as CSV, columns " + COST_CSV_COLUMNS.join(", ") + ".", schema: { enum: ["json", "csv"], default: "json" } },
+      ],
+      responses: { "200": { description: "The agent's cost per run.", content: { "application/json": { schema: LEARNING_COST }, "text/csv": { schema: { type: "string" } } } }, ...errors(400, 401, 404, 429, 500) },
+      "x-agentrun-serve": "learningcost/1",
     },
   },
   "/agents/{agent_id}/learning/notes": {

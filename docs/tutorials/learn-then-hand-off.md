@@ -55,5 +55,15 @@ a few times. From then on every run reaches for the workflow first.
 
 Every run shows its cost, learning included. Ours dropped the run the workflow took over and stayed there.
 
+The Learning tab's **Cost per run** chart draws it run after run: each run's all-in cost as a dot coloured by the path
+it took (the agent by hand, a learned workflow that handed back, or the workflow alone), a rolling mean through them,
+the agent's cost before learning as a dashed line, a marker at the first run the workflow finished alone, and the
+level after it. Once 20 runs stand behind that level, it says how many times cheaper it is.
+
+![The cost per run chart: about $0.89 a run by hand, a marker where the learned workflow took over at run 21, then about $0.13 a run, 7x cheaper](../assets/tutorials/cost-per-run.png)
+
+The chart above is an invented agent's runs. `agentrun learning cost <agent> --format csv` writes your agent's series as
+CSV, to plot or check yourself (`GET /v2/agents/{id}/learning/cost` answers it as JSON).
+
 To prove it, keep some inputs it never learns on and compare learning off and on. The
 [learning bench](../../packages/serve/learn-bench/README.md) does that for you.
