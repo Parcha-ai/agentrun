@@ -1,6 +1,6 @@
 ---
 name: agentrun-serve
-description: Connect existing Claude Code or Codex agents locally or remotely, import selected history, and manage agents and learning through AgentRun Server. Clarify whether the user wants a live connection or historical import, then use the existing instance and its matching CLI. Also use to create agents, run them, answer questions and inspect results over MCP or the v2 API.
+description: Onboard to AgentRun by starting a new agent or connecting an existing Claude Code or Codex setup locally or remotely. Import selected history, run agents and inspect results with optional checked learning over MCP or the v2 API. Use the existing instance and its matching CLI.
 ---
 
 # AgentRun Server
@@ -12,6 +12,18 @@ agent drives it over MCP (`/v2/mcp`) or HTTP (`/v2`); a person follows the same 
 Read this skill from the target server's `/skills/agentrun-serve/SKILL.md` when possible; it matches the deployed
 build. Inspect `/v2/capabilities` and `/v2/openapi.json` before using an optional feature. A handoff naming an
 existing instance is not permission to start a replacement or change its destination.
+
+## Choose the onboarding path
+
+For general setup, establish whether the user wants to **start a new agent** or **bring an existing agent**.
+Ask only when the intent is missing: a Build an agent handoff already chose new, and a Connect agent handoff
+already chose existing. Reuse the named server and their existing inputs. For a new agent, clarify the job and
+expected result, offer a suitable template or a custom build, then follow Check the server and Create an agent.
+Inspect configured models before asking for a key. For an existing setup, follow Connect agent below; connection
+and history import need no destination model key. Live jobs use the source runtime's existing sign-in.
+
+Finish with the first requested run's result and console link, or imported history and counts. Offer optional
+self-improvement separately, and verify accepted notes or skills in a fresh later run when requested.
 
 ## Connect agent
 
@@ -47,6 +59,19 @@ The observation-only hosted connector does not execute jobs. Do not assume an ol
 this extension. A source checkout can be installed with `uv tool install ./connector` after building its matching
 Node runtime. The source machine needs `agentrun-serve remote-bridge` from that build; the connector accepts an
 explicit `--bridge` path to its compiled `remote-worker-bridge.js` for checkout-based installations.
+
+For a checkout-based installation, use Python 3.12+ and Node 24.22.3+ in that reviewed checkout:
+
+```sh
+npm ci --ignore-scripts
+npm run build
+uv tool install ./connector
+```
+
+Pass `--bridge /absolute/path/to/checkout/packages/serve/dist/native/remote-worker-bridge.js` to discovery and
+connection: building the checkout does not install `agentrun-serve` on PATH. Do not substitute a published older
+connector or fetch an unrelated branch when the named server uses this development build. The Python connector
+and Node management CLI both use the command name `agentrun`; verify which is on PATH before invoking it.
 
 Run `python -m agentrun_cli remote --help` in the installed connector environment (or its `agentrun` entry point).
 Discover the selected project with `remote discover --project /absolute/project --runtime claude-code` or
@@ -141,19 +166,35 @@ curl -sf "$AGENTRUN_BASE_URL/health"
 ```
 
 If the user named an existing server and it does not answer, diagnose that instance; do not start another one.
-Only when the user wants a new local server, start it from a checkout of the repository (Node 24.22.3 or later), in the
-background, with its data in a directory you name:
+Only when the user wants a new local server, start it from the selected reviewed checkout (Node 24.22.3 or later),
+in the background, with its data in a directory you name. Run these commands from that checkout's root. Preserve
+its selected branch/commit; do not replace it with `main` or a released package when testing development features.
+If no checkout is available, obtain the intended reviewed source ref before installing, and use that same build
+for the source connector and Node bridge:
 
 ```sh
-git clone --branch main --single-branch https://github.com/Parcha-ai/agentrun.git && cd agentrun
-npm ci --ignore-scripts && npm run build
+npm ci --ignore-scripts && npm run build || exit 1
+umask 077
 node packages/serve/dist/cli.js --data "$PWD/.agentrun" > serve.log 2>&1 &
-until grep -q '^AGENTRUN_BASE_URL=' serve.log; do sleep 1; done
+agentrun_server_pid=$!
+for i in $(seq 600); do
+  grep -q '^AGENTRUN_BASE_URL=' serve.log && break
+  kill -0 "$agentrun_server_pid" 2>/dev/null || break
+  sleep 1
+done
+grep -q '^AGENTRUN_BASE_URL=' serve.log || { echo 'AgentRun did not start; inspect its private serve.log.'; exit 1; }
 export "$(grep -m1 '^AGENTRUN_BASE_URL=' serve.log)"
-until curl -sf "$AGENTRUN_BASE_URL/health" >/dev/null; do sleep 1; done
+agentrun_server_ready=
+for i in $(seq 60); do
+  if curl --max-time 5 -sf "$AGENTRUN_BASE_URL/health" >/dev/null; then agentrun_server_ready=1; break; fi
+  kill -0 "$agentrun_server_pid" 2>/dev/null || break
+  sleep 1
+done
+test "$agentrun_server_ready" = 1 || { echo 'AgentRun did not become healthy; inspect its private serve.log.'; exit 1; }
 ```
 
-It runs on the model `AGENT_MODEL` names, with that provider's key in the environment (for example
+For a new agent running in AgentRun's managed harness, configure the model `AGENT_MODEL` names, with that
+provider's key in the environment (for example
 `AGENT_MODEL=openrouter/anthropic/claude-sonnet-5.5` and `OPENROUTER_API_KEY`); the package README lists every way. To
 try it with no key and no network, add `--faux faux.mjs` with a module that answers every request itself:
 
@@ -197,8 +238,13 @@ A refusal comes back as a tool error holding the server's `error`: `code`, `mess
 
 ## 4. Create an agent
 
-Look for one first with `agents_list`. Ask the person before you create or revise an agent, and say what it will do.
-Then `agents_create`, for example `{"name": "Release notes", "instructions": "Write release notes from the commits you are given.", "tools": ["read", "write"]}`.
+Look for one first with `agents_list` and inspect the server's templates through `GET /v2/templates` or the
+matching Node CLI's `template list`. Offer a suitable template or a custom agent; ask only for missing details
+about the job, inputs, expected result and required tools. Before applying a template, explain its tool grants
+and triggers and confirm any permissions not already granted. Use the apply schema from this server's OpenAPI document.
+
+For a custom agent, show its proposed purpose and permissions and create or revise within what the user requested.
+Use `agents_create`, for example `{"name": "Release notes", "instructions": "Write release notes from the commits you are given.", "tools": ["read", "write"]}`.
 It writes files only with a tool like `write` in its `tools`; `whoami` lists the tools this server has.
 
 ## 5. Run it, poll it, answer it

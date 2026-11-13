@@ -7,7 +7,18 @@ runner starts beside the server. The capabilities document (`GET /v2/capabilitie
 
 `npx @parcha/agentrun` starts it, with its console, on your machine; the container image runs it on a server (below).
 
-To connect an existing Claude Code project/named agent or Codex project/profile with its native sign-in and configuration, see [Native agents](../../docs/native-agents.md). The source-machine connection uses ordinary agent revisions and the existing checked learning pipeline; it does not change managed adapter isolation.
+Already use Claude Code or Codex? Choose **Connect agent** in the console and select your coding agent from the
+dropdown. Its skill asks whether to connect for future jobs, import past history, or both, then confirms the source
+project and machine. No destination model key is needed for this connection: a live agent uses its existing native
+sign-in and configuration. Turn **Self-improving** On separately to supply checked notes and skills to later runs;
+imported history stays historical and does not automatically train the agent.
+
+For a source on a different laptop, VM or container, choose **Connection setup → Another machine** and use the
+matching [Python source connector](../../connector/README.md). Remote execution currently needs the server and
+connector from the same reviewed development checkout; the published observation-only CLI does not include it.
+The source worker must stay online. See [Native agents](../../docs/native-agents.md) for setup, history scopes and
+runtime limits. Connected agents use ordinary agent revisions and the existing checked learning pipeline; managed
+adapter isolation is unchanged.
 
 ## Quick start (no key, no network)
 

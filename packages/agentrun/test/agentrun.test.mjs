@@ -5,7 +5,7 @@
 // exec of the packed package runs this bin.
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -353,21 +353,59 @@ test("on a Node below the package's engines floor the bin says, in one line, the
   }
 });
 
-// docs/SKILL.md's start step, as a coding agent runs it: when the command fails, the step ends and says why, never waits.
-test("the setup skill's start step ends with the command's error when it fails, and does not wait forever", { timeout: 30_000 }, () => {
-  const skill = readFileSync(new URL("../../../docs/SKILL.md", import.meta.url), "utf8");
-  const step = /## 2\. Start it\n\n```sh\n([\s\S]*?)```/.exec(skill)?.[1];
-  assert.ok(step, "the skill has its start step");
+// Exercise the actual onboarding recipes, without npm installs, real servers or model credentials.
+function setupRecipe(source = false) {
+  const file = source ? "../../serve/skills/agentrun-serve/SKILL.md" : "../../../docs/SKILL.md";
+  const skill = readFileSync(new URL(file, import.meta.url), "utf8");
+  const step = [...skill.matchAll(/```sh\n([\s\S]*?)```/g)].map((m) => m[1])
+    .find((block) => source ? block.includes("node packages/serve/dist/cli.js") : block.includes("npx @parcha/agentrun --no-open"));
+  assert.ok(step, "the skill has its server-start recipe");
+  return step;
+}
+function setupFixture(t, commands) {
   const dir = mkdtempSync(join(tmpdir(), "agentrun-skill-"));
-  try {
-    mkdirSync(join(dir, "fake"));
-    writeFileSync(join(dir, "fake", "npx"), "#!/bin/sh\necho 'npm error 404 Not Found - @parcha/agentrun' >&2\nexit 1\n");
-    chmodSync(join(dir, "fake", "npx"), 0o755);
-    const run = spawnSync("sh", ["-c", step], { cwd: dir, encoding: "utf8", timeout: 20_000, env: { ...process.env, PATH: `${join(dir, "fake")}:${process.env.PATH}` } });
-    assert.notEqual(run.signal, "SIGTERM", `the step ended on its own: ${run.stdout}${run.stderr}`);
-    assert.match(`${run.stdout}${run.stderr}`, /npm error 404 Not Found/, "it shows the command's error");
-  } finally {
+  mkdirSync(join(dir, "fake"));
+  for (const [name, body] of Object.entries(commands)) writeFileSync(join(dir, "fake", name), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+  t.after(() => {
+    if (existsSync(join(dir, "child.pid"))) {
+      try { process.kill(Number(readFileSync(join(dir, "child.pid"), "utf8")), "SIGKILL"); } catch (error) { if (error.code !== "ESRCH") throw error; }
+    }
     rmSync(dir, { recursive: true, force: true });
+  });
+  return { dir, run: (step) => spawnSync("sh", ["-c", step], { cwd: dir, encoding: "utf8", timeout: 20_000, env: { ...process.env, PATH: `${join(dir, "fake")}:${process.env.PATH}` } }) };
+}
+for (const source of [false, true]) test(`the ${source ? "source-server" : "setup"} skill's start step reports failure promptly and preserves its error in a private log`, { timeout: 30_000 }, (t) => {
+    const log = source ? "serve.log" : "agentrun.log";
+    const commands = { npm: "exit 0", [source ? "node" : "npx"]: "echo 'launch failed; credential: private-fixture-value' >&2\nexit 1" };
+    const f = setupFixture(t, commands);
+    const run = f.run(setupRecipe(source));
+    assert.notEqual(run.signal, "SIGTERM", `the step ended on its own: ${run.stdout}${run.stderr}`);
+    assert.equal(run.status, 1, "the failed launch is not reported as success");
+    assert.match(`${run.stdout}${run.stderr}`, /AgentRun did not start; inspect its private/, "it says where to diagnose the failure");
+    assert.doesNotMatch(`${run.stdout}${run.stderr}`, /private-fixture-value/, "launch output is not blindly exposed");
+    assert.match(readFileSync(join(f.dir, log), "utf8"), /launch failed/, "the original error remains available");
+    assert.equal(statSync(join(f.dir, log)).mode & 0o777, 0o600, "the launch log is private");
+});
+test("the source-server setup recipe stops on failed installation or build before launching a server", (t) => {
+  for (const phase of ["ci", "run"]) {
+    const f = setupFixture(t, { npm: `test "$1" != "${phase}"`, node: "touch launched\nexit 1" });
+    assert.equal(f.run(setupRecipe(true)).status, 1);
+    assert.equal(existsSync(join(f.dir, "launched")), false, `${phase} failure never launches stale output`);
+  }
+});
+test("the source-server setup recipe bounds startup and health waits while the child remains alive", { timeout: 30_000 }, (t) => {
+  for (const announce of [false, true]) {
+    const f = setupFixture(t, {
+      npm: "exit 0",
+      node: `echo $$ > child.pid\n${announce ? "echo AGENTRUN_BASE_URL=http://127.0.0.1:1/v2\n" : ""}exec /bin/sleep 30`,
+      sleep: "exit 0",
+      curl: "echo attempt >> health-attempts\nexit 1",
+    });
+    const run = f.run(setupRecipe(true));
+    assert.equal(run.signal, null, "the bounded recipe ended on its own");
+    assert.equal(run.status, 1);
+    assert.match(run.stdout, announce ? /did not become healthy/ : /did not start/);
+    if (announce) assert.equal(readFileSync(join(f.dir, "health-attempts"), "utf8").trim().split("\n").length, 60);
   }
 });
 
