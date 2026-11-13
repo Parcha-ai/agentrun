@@ -157,7 +157,7 @@ test("the constructor refuses what it cannot run with, in words", () => {
 		assert.throws(make({ autoDeleteMinutes: value }), /autoDeleteMinutes is a whole number of minutes/, String(value));
 	}
 	assert.throws(make({ gpuSnapshot: "someone-elses-gpu" }), /not a GPU snapshot of box\/Dockerfile/);
-	assert.throws(make({ archilEgress: "10.60.0.40:8100:42050" }), /the Archil egress is/);
+	assert.throws(make({ archilEgress: "192.0.2.40:8100:42050" }), /the Archil egress is/);
 	assert.throws(make({ timeouts: { retryMs: 0 } }), /retryMs/);
 });
 
@@ -377,7 +377,7 @@ test("a redirect is never followed, and a toolbox URL that is not https is refus
 
 test("network(): reads none back, and refuses any change, with refused and no request: a Daytona computer's network is fixed at create", async () => {
 	const { rec, provider } = setup({ [`GET /api/sandbox/${REF.id}`]: { body: sandbox() } });
-	for (const policy of ["open", { allow: ["example.com"] }, { allow: ["10.0.0.0/8"] }, "wifi"]) {
+	for (const policy of ["open", { allow: ["example.com"] }, { allow: ["198.51.100.0/24"] }, "wifi"]) {
 		const changed = await provider.network(REF, policy);
 		assert.equal(changed.error?.code, "refused", JSON.stringify(policy));
 		assert.match(changed.error.message, /fixed at create/);
@@ -418,9 +418,9 @@ test("exec is a session command of its own: argv as one shell line, async, no in
 		for (const request of tb.requests) assert.equal(request.headers.Authorization, `Bearer ${KEY}`);
 		return tb.commands[0].command;
 	};
-	const egress = { archilEgress: "10.60.0.40:18100:42050" };
-	assert.equal(await run(egress, [helper, "mount", "dsk", "aws-us-east-1", "/agents/a1/runs/r1/work"]), `${helper} mount dsk aws-us-east-1 /agents/a1/runs/r1/work egress=10.60.0.40:18100:42050`);
-	assert.equal(await run(egress, [helper, "revoke", "dsk", "aws-us-east-1", "/f"]), `${helper} revoke dsk aws-us-east-1 /f egress=10.60.0.40:18100:42050`);
+	const egress = { archilEgress: "192.0.2.40:18100:42050" };
+	assert.equal(await run(egress, [helper, "mount", "dsk", "aws-us-east-1", "/agents/a1/runs/r1/work"]), `${helper} mount dsk aws-us-east-1 /agents/a1/runs/r1/work egress=192.0.2.40:18100:42050`);
+	assert.equal(await run(egress, [helper, "revoke", "dsk", "aws-us-east-1", "/f"]), `${helper} revoke dsk aws-us-east-1 /f egress=192.0.2.40:18100:42050`);
 	assert.equal(await run(egress, [helper, "serve"]), `${helper} serve`, "serve takes no gateway");
 	assert.equal(await run({}, [helper, "mount", "dsk", "aws-us-east-1", "/f"]), `${helper} mount dsk aws-us-east-1 /f`, "no gateway, no egress word");
 	assert.equal(await run({ archilEgress: "" }, [helper, "mount", "dsk", "aws-us-east-1", "/f"]), `${helper} mount dsk aws-us-east-1 /f`, "an empty setting is none");
