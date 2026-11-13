@@ -7,7 +7,6 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { test } from "node:test";
 import { commitAgent, createAgent, getAgent, setCurrentRevision } from "../dist/agents-store.js";
-import { startServe } from "../dist/index.js";
 import { checkDefinitionBody } from "../dist/validate.js";
 import { agent, answerFlow, serve, withEnv } from "./support.mjs";
 import { storeOn } from "./store-helpers.mjs";

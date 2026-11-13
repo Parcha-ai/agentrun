@@ -239,16 +239,20 @@ export interface ImportRunInput {
 export type AlsoRow =
   | { readonly table: "channel_posts"; readonly row: ChannelPost }
   | { readonly table: "channel_told"; readonly row: { channel: string; marker: string } }
-  /** What the run's end-of-run turn kept: the turn and the proposal checked from it (the run's agent is the row's). */
-  | { readonly table: "learning_proposals"; readonly row: { turn: unknown; proposal: unknown } }
+  /** What the run's end-of-run turn kept: the turn and the proposal checked from it (the run's agent is the row's), and
+   *  its `round` (absent: 1): the run's first end is round 1, each end after a follow-up opened it again the next. */
+  | { readonly table: "learning_proposals"; readonly row: { turn: unknown; proposal: unknown; round?: number } }
   /** The learning run that grades and merges the kept proposal: a queued run `id` of the run's agent and revision. Started
    *  once: the same id staged again (an end replayed after a crash) adds nothing. */
-  /** `model`: the grade model (gradeModelOf, as the server resolves it), on the learning run's launch; none, the agent's own. */
-  | { readonly table: "learning_run"; readonly row: { id: string; model?: string } };
+  /** `model`: the grade model (gradeModelOf, as the server resolves it), on the learning run's launch; none, the agent's own.
+   *  `round`: the round it grades (absent: 1), named in its launch. */
+  | { readonly table: "learning_run"; readonly row: { id: string; model?: string; round?: number } };
 
 /** A run's kept learning (learning_proposals): what its end-of-run turn asked and answered, and the proposal checked from it. */
 export interface LearningProposal {
   readonly runId: string;
+  /** Which of the run's looks back: 1 for its first end, then one more for each end after a follow-up opened it again. */
+  readonly round: number;
   readonly agentId: string;
   readonly turn: unknown;
   readonly proposal: unknown;
@@ -259,9 +263,9 @@ export interface LearningProposal {
 
 /** Learning on the runner: the kept proposals, written only beside a run's end (AlsoRow learning_proposals). */
 export interface Learning {
-  /** The run's kept proposal; undefined when its end kept none. */
-  proposal(runId: string): Promise<LearningProposal | undefined>;
-  /** The agent's kept proposals, newest first. */
+  /** The run's kept proposal of round `round`, else its newest round's; undefined when its end kept none. */
+  proposal(runId: string, round?: number): Promise<LearningProposal | undefined>;
+  /** The agent's kept proposals (each round of a run one), newest first. */
   proposals(agentId: string, options?: { limit?: number }): Promise<LearningProposal[]>;
   /** What learning spent outside any run, in one read: each run (not imported) whose learning ended in [from, to) (ms),
    *  its agent, when its learning ended and what its grade cost (null: unknown; 0: nothing graded). A learning dropped
@@ -1178,7 +1182,18 @@ export class SchemaVersionUnknown extends Error {
   readonly found: number | null;
   readonly known: number;
   constructor(file: string, found: number | null, known: number) {
-    super(found === null ? `the store at ${file} has no schema yet: the server sets it up at its start` : `the store at ${file} is schema version ${found}; this build knows version ${known}`);
+    // `file` is a path (SQLite) or already a phrase (Postgres: "the Postgres schema x").
+    const store = file.startsWith("the ") ? file : `the store at ${file}`;
+    super(
+      found === null
+        ? `${store} has no schema yet: the server sets it up at its start`
+        : found < known
+          ? `${store} is schema version ${found}, and this release (version ${known}) can't open a store an earlier release set up.\n` +
+            "Start the server on a new, empty data folder with --data <new folder> (docker run or compose arguments: --data /data/<new folder> --listen 0.0.0.0 --port 7340 --drain-timeout 6s), then add your agents, MCP servers, keys and sign-ins again.\n" +
+            'On Render the Docker Command replaces the image\'s entrypoint too, so it must be the whole start command shown in "Before you upgrade" in the release notes.\n' +
+            "Keep the old folder as it is: the earlier release still opens it."
+          : `${store} is schema version ${found}, set up by a later release than this one (this release knows version ${known}). Run that release or a later one.`,
+    );
     this.name = "SchemaVersionUnknown";
     this.found = found;
     this.known = known;

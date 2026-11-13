@@ -1109,19 +1109,23 @@ class SqliteStore implements Store {
       },
     };
 
-    type ProposalRecord = { run_id: string; agent_id: string; turn: string; proposal: string; learning_run_id: string | null; created_at: number };
+    type ProposalRecord = { run_id: string; round: number; agent_id: string; turn: string; proposal: string; learning_run_id: string | null; created_at: number };
     const proposalOf = (row: ProposalRecord): LearningProposal => ({
-      runId: row.run_id, agentId: row.agent_id, turn: JSON.parse(row.turn), proposal: JSON.parse(row.proposal),
+      runId: row.run_id, round: Number(row.round), agentId: row.agent_id, turn: JSON.parse(row.turn), proposal: JSON.parse(row.proposal),
       ...(row.learning_run_id === null ? {} : { learningRunId: row.learning_run_id }), createdAt: row.created_at,
     });
+    const PROPOSAL_COLUMNS = "run_id, round, agent_id, turn, proposal, learning_run_id, created_at";
     this.learning = {
-      proposal: async (runId) => {
-        const row = await db.get<ProposalRecord>("SELECT run_id, agent_id, turn, proposal, learning_run_id, created_at FROM learning_proposals WHERE run_id = ?", runId);
+      // A round asked for, else the run's newest.
+      proposal: async (runId, round) => {
+        const row = round === undefined
+          ? await db.get<ProposalRecord>(`SELECT ${PROPOSAL_COLUMNS} FROM learning_proposals WHERE run_id = ? ORDER BY round DESC LIMIT 1`, runId)
+          : await db.get<ProposalRecord>(`SELECT ${PROPOSAL_COLUMNS} FROM learning_proposals WHERE run_id = ? AND round = ?`, runId, round);
         return row ? proposalOf(row) : undefined;
       },
       proposals: async (agentId, { limit = 100 } = {}) =>
         (await db.all<ProposalRecord>(
-          "SELECT run_id, agent_id, turn, proposal, learning_run_id, created_at FROM learning_proposals WHERE agent_id = ? ORDER BY created_at DESC, run_id DESC LIMIT ?",
+          `SELECT ${PROPOSAL_COLUMNS} FROM learning_proposals WHERE agent_id = ? ORDER BY created_at DESC, run_id DESC, round DESC LIMIT ?`,
           agentId, limit,
         )).map(proposalOf),
       spend: async ({ from, to }) => {
@@ -1132,7 +1136,7 @@ class SqliteStore implements Store {
              JOIN runs src ON src.id = lp.run_id
              LEFT JOIN runs lr ON lr.id = lp.learning_run_id
             WHERE src.imported_from IS NULL AND COALESCE(lr.ended_at, lp.created_at) >= ? AND COALESCE(lr.ended_at, lp.created_at) < ?
-            ORDER BY COALESCE(lr.ended_at, lp.created_at), lp.run_id`,
+            ORDER BY COALESCE(lr.ended_at, lp.created_at), lp.run_id, lp.round`,
           from, to,
         );
         return rows.flatMap((row): LearningSpend[] => {

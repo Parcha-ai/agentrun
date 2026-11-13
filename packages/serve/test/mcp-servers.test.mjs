@@ -10,12 +10,11 @@ import { tmpdir } from "node:os";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { startServe } from "../dist/index.js";
 import { openapiDocument } from "../dist/openapi.js";
 import { SECRET_NAMES } from "../dist/secrets.js";
 import { sealColumn, sealedAt } from "../dist/store/index.js";
 import { DatabaseSync } from "node:sqlite";
-import { client, FAUX, scratch, serve, storeBytes, withEnv } from "./support.mjs";
+import { client, FAUX, scratch, serve, startServe, storeBytes, withEnv } from "./support.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 
 const TOOLS = ["add", "slow_write", "delete_thing", "paid"];
