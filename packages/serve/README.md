@@ -1459,6 +1459,19 @@ Streamable HTTP with the official MCP SDK client (`@modelcontextprotocol/client`
 value}}` (up to 8). An `oauth` server is signed in to first ([below](#signing-in-with-oauth)), then previewed by name.
 `url` is `https`, or `http` on loopback.
 
+### Composio
+
+Composio is an MCP server like any other, so it needs no adapter of its own. Settings → MCP servers has a Composio
+preset: you give your Composio API key, a toolkit (`github`, `slack`...), the actions to grant (picked from the
+toolkit's list) and a server name, and the server has Composio make a managed MCP server for them, then saves it as an
+ordinary MCP server with the key sealed as an `x-api-key` header. `POST /v2/settings/mcp-servers/composio/tools`
+`{api_key, toolkit}` lists the actions; `PUT /v2/settings/mcp-servers/{name}/composio` `{api_key, toolkit, tools,
+user_id?}` makes and saves the server. When the toolkit needs your account and `user_id` (default `agentrun`) has none
+active, the answer's `connect_url` is Composio's page to connect it; nothing here signs in. Both routes are the owner's
+session alone, and a saved Composio server is gated, approved and shown on the Timeline as any MCP server's tools are,
+"not metered" until you price them. Composio's own meta tools stay refused, and the helper actions that connect an
+account are left off the server's address.
+
 What can go wrong, told apart:
 
 - `422 auth_required`: the server answered 401 or 403. `details.auth` is `oauth` when it names protected-resource
