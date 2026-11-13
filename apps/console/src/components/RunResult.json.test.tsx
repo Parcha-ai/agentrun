@@ -80,6 +80,26 @@ describe("the closing record, wherever the answer's other blocks are", () => {
     expect(p.host.textContent).toContain("The record:");
   });
 
+  // The fence rule is serve's lastJsonBlock: three or more backticks or tildes, closed by the same character at least as long.
+  for (const [what, open, close] of [
+    ["a four-backtick json block", "````json", "````"],
+    ["a tilde json block", "~~~json", "~~~"],
+    ["a long tilde json block closed by a longer fence", "~~~~json", "~~~~~"],
+  ] as const) {
+    it(`${what} reads as fields and has the raw JSON toggle`, async () => {
+      const p = await report(`Here is the lead.\n\n${open}\n${JSON.stringify(RECORD, null, 2)}\n${close}`);
+      expect(p.fields(), "the fields").not.toBeNull();
+      expect(p.fields()!.textContent).toContain("Dana Whitfield");
+      expect(p.toggle()?.textContent).toBe("Show raw JSON");
+      expect(p.host.textContent).toContain("Here is the lead.");
+    });
+  }
+
+  it("a shorter closing fence does not close a longer block: the answer stays Markdown", async () => {
+    const p = await report(`Here:\n\n\`\`\`\`json\n${JSON.stringify(RECORD)}\n\`\`\``);
+    expect(p.fields()).toBeNull();
+  });
+
   it("a fenced record with Windows line endings reads as fields", async () => {
     const p = await report(`Here is the lead.\r\n\r\n\`\`\`json\r\n${JSON.stringify(RECORD, null, 2).replace(/\n/g, "\r\n")}\r\n\`\`\``);
     expect(p.fields(), "the fields").not.toBeNull();

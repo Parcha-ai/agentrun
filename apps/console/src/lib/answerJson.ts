@@ -1,5 +1,5 @@
 /** An answer that ends in (or is) a JSON object, as a template's run gives its record: the words before it (Markdown, maybe
- *  none) and the object. The object is a fenced block (```json or ```) closing the answer, the whole answer, or a bare
+ *  none) and the object. The object is a fenced json block (backticks or tildes, as serve reads one) closing the answer, the whole answer, or a bare
  *  object from a line that starts with `{` to the end. Anything else (an array, JSON that does not parse, an object in
  *  the middle of the words): null, and the answer stays Markdown. */
 export function answerRecord(text: string): { words: string; record: Record<string, unknown> } | null {
@@ -8,15 +8,23 @@ export function answerRecord(text: string): { words: string; record: Record<stri
   const object = (raw: string): Record<string, unknown> | null => {
     try { const v: unknown = JSON.parse(raw); return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null; } catch { return null; }
   };
-  // The closing fenced block: from the last opening fence (a line that starts with ``` or ```json) to the closing ```,
-  // never across an earlier block.
-  if (/\n[ \t]*```$/.test(answer)) {
-    const close = answer.lastIndexOf("```");
-    const open = [...answer.slice(0, close).matchAll(/(?:^|\n)[ \t]*```(?:json)?[ \t]*\n/g)].at(-1);
-    if (!open) return null;
-    const start = open.index + open[0].length;
-    const record = object(answer.slice(start, close));
-    return record ? { words: answer.slice(0, open.index).trim(), record } : null;
+  // The fenced block, read as serve's lastJsonBlock reads one (packages/serve/src/answer-json.ts): the last `json` block,
+  // opened by a line of three or more backticks or tildes (up to three spaces in) and closed by a line of the same
+  // character at least as long. It is the record only when it closes the answer.
+  const lines = answer.split("\n");
+  let found: { open: number; end: number } | undefined;
+  for (let i = 0; i < lines.length; i++) {
+    const fence = /^ {0,3}(`{3,}|~{3,})\s*json\s*$/i.exec(lines[i]!)?.[1];
+    if (!fence) continue;
+    const closer = new RegExp(`^ {0,3}${fence[0] === "`" ? "`" : "~"}{${fence.length},}\\s*$`);
+    const end = lines.findIndex((line, j) => j > i && closer.test(line));
+    if (end < 0) break;
+    found = { open: i, end };
+    i = end;
+  }
+  if (found && found.end === lines.length - 1) {
+    const record = object(lines.slice(found.open + 1, found.end).join("\n"));
+    return record ? { words: lines.slice(0, found.open).join("\n").trim(), record } : null;
   }
   const whole = object(answer);
   if (whole) return { words: "", record: whole };
