@@ -1,7 +1,7 @@
 // The kernel cap (kernel tangle 2: the cap lives in the kernel, the same for every harness). Not exported from the
 // package's index until the cutover: its tests import it from dist/kernel/cap/.
 export { CapRefused, createCap, DECISION_IMAGE_TOKENS, DECISION_OUTPUT_TOKENS, DecisionPriceUnreadable, END_MARK_WAIT_MS, END_NOT_WRITTEN, MARK_NOT_WRITTEN, openCap } from "./admit.js";
-export { capRule, noteFor, type Judged, type JudgeState, type NoteState } from "./rule.js";
+export { capRule, noteFor, requestFigures, type Judged, type JudgeState, type NoteState } from "./rule.js";
 export { beforeRequestOf, type BeforeRequestOptions } from "./port.js";
 export { DECISION_SESSION, overCapOf, paidCalls, runCap, TOOL_SESSION, type RunCap, type RunCapOptions, type RunDecisions, type RunTools } from "./run-cap.js";
 export { ANSWER_TOKENS_LEAST, CACHE_WARM_MS, CAP_TOLERANCE, FIT_TOLERANCE, STOP_ALLOWANCE_TOKENS, THINKING_BUDGET_LEAST, expectedInput, inputBound, mostOutput, previousAfter, pricingOf, ratesFor, requestPrice } from "./price.js";

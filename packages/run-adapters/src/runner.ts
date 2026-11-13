@@ -97,7 +97,7 @@ export type Refusal = { refuse: string; forGood?: boolean; figures?: { spentUsd:
 
 /** A request admitted and not yet answered, as a budget holds it: at what its host held for it (`holdUsd`), when it held
  *  one. */
-export type InFlight = { turn: number; model: string; inputTokensMax?: number; outputTokensMax?: number; holdUsd?: number; host?: string; route?: string };
+export type InFlight = { turn: number; model: string; inputTokensMax?: number; outputTokensMax?: number; holdUsd?: number; boundUsd?: number; host?: string; route?: string };
 /** A host's admission: what it holds for the request (`holdUsd`), and the most output tokens, thinking included, it may
  *  be sent with (`outputTokensMax`, what is left of a cap can buy), which its ticket carries to the model proxy. A
  *  request its client stops part way (`ModelUsage.stoppedAfterBytes`), its cost unknown, counts at `stoppedUsd` of what
@@ -172,6 +172,8 @@ export interface ModelPortOptions {
   draining?: () => Error | undefined;
   /** A note the host has for the session's next main-model request, taken by the call (ModelPort.note). */
   note?: (model: string, request?: NoteRequest) => string | undefined;
+  /** A note given back by the request that took it, before its admission (ModelPort.noteReturned). */
+  noteReturned?: (note: string) => void;
   /** The port ends the attempt (the turn limit, the host's refusal, a cost it could not record): the error it throws. */
   stop?: (reason: "turn_limit" | "refused" | "model_error", message?: string, code?: string) => Error;
 }
@@ -184,6 +186,14 @@ export interface ModelBooking {
   turns(): number;
   /** What they cost; null once one's price is unknown. */
   spentUsd(): number | null;
+  /** What its host holds for the requests still in flight (admitted, not yet answered): `spentUsd` counts answered ones
+   *  only, so a reader of the run's spend that a request overlapping another must see adds this. Null while one in flight
+   *  has no hold (never under a cap, which refuses a request it cannot price): unknown, never read as 0. */
+  heldUsd(): number | null;
+  /** What a cache miss adds to those holds (Admission.boundUsd), the requests still in flight together: the run's tools stop
+   *  on the holds plus this (the cap counts a request that never answers at both), so a reader that must warn no later
+   *  adds it too. 0 with none in flight or none with a bound. */
+  boundUsd(): number;
   /** Books, once, each paid request a crash cut off (a `runner.request` with no `runner.turn`): a `runner.turn` marked
    *  `cut` at an unknown price, and a `request_end` saying so. A booked request is answered, so this is idempotent.
    *  Call it before the session sends anything. */
@@ -402,11 +412,12 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
       await emit({ type: "request_end", turn, usage: { input: 0, output: 0, cacheRead: 0, usd: 0 }, ...(host === undefined ? {} : { host }), ended: { end: "nothing", label: "never_left" } });
       throw stoppedLate;
     }
-    open.push({ turn, model, inputTokensMax, ...(limited === undefined ? {} : { outputTokensMax: limited }), ...(hold === undefined ? {} : { holdUsd: hold }), ...(host === undefined ? {} : { host }), ...(route === undefined ? {} : { route }) });
+    open.push({ turn, model, inputTokensMax, ...(limited === undefined ? {} : { outputTokensMax: limited }), ...(hold === undefined ? {} : { holdUsd: hold }), ...(bound ? { boundUsd: bound } : {}), ...(host === undefined ? {} : { host }), ...(route === undefined ? {} : { route }) });
     return { turn, ...(limited === undefined ? {} : { outputTokensMax: limited }), ...(withoutNote ? { noteDropped: true as const } : {}) };
   };
   const models: ModelPort = {
     ...(options.note ? { note: options.note } : {}),
+    ...(options.noteReturned ? { noteReturned: options.noteReturned } : {}),
     beforeRequest: (request: ModelRequest) => {
       const admitted = admitting.then(() => admit(request));
       admitting = admitted.catch(() => {});
@@ -528,6 +539,8 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
     models,
     turns: () => turns,
     spentUsd: () => spentUsd,
+    heldUsd: () => open.reduce<number | null>((sum, flight) => (sum === null || flight.holdUsd === undefined ? null : sum + flight.holdUsd), 0),
+    boundUsd: () => open.reduce((sum, flight) => sum + (flight.boundUsd ?? 0), 0),
     bookCut() {
       cutting ??= bookCut().catch((error) => {
         cutting = undefined;
