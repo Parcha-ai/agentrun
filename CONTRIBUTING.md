@@ -25,6 +25,8 @@ Rounds run the affected suites; CI runs everything. `npm run test:affected` runs
 
 Tests use scripted adapters and must not require model credentials. Package verification installs built tarballs into a separate application and needs network access to download dependencies. Live examples are opt-in.
 
+To add a computer provider (a sandbox or desktop vendor), follow [How to contribute a provider](packages/computer/PROVIDERS.md#how-to-contribute-a-provider): one pull request, with your conformance report in it.
+
 A test that fails twice on CI with no cause in the change is flaky. Its owner can quarantine it, which skips it on CI only, for at most 24 hours: `node scripts/quarantine.mjs --add <flake id> <file> <owner> "<test name>" "<why>"` lists it in `scripts/quarantine.json` and prints the `skip:` to put on the test. At most three tests are quarantined at once. Once an entry expires, `scripts/quarantine.test.mjs` fails every pull request until the test is fixed and its entry removed. Locally the test still runs, and `AGENTRUN_RUN_QUARANTINED=1` runs it on CI too.
 
 Keep provider configuration and application policy outside the interpreter. Integrate through `runNode`, `runJudge`, or `runEffect`. For a behavior change, add a test that reproduces the failure and checks the result a caller depends on. Keep expected outcomes independent of the implementation. Mock external services at adapter boundaries.
