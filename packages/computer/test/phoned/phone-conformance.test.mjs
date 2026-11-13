@@ -2,6 +2,9 @@
 // phone) answering where a phone's phoned would: the provider pushes the jar and starts phoned through the fake adb, and
 // every case runs against the Java code that runs on a phone. Run by `npm run test:phoned`, which builds FakeMain first.
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { conformanceCases, formatReport, runConformance } from "../../dist/index.js";
 import { fakePhoneHarness, KEY, PHONED_JAR } from "../fake-phone-harness.mjs";
@@ -18,9 +21,19 @@ const reasonOf = (report, id) => report.results.find((r) => r.id === id)?.reason
  */
 const clock = { now: Date.now, sleep: (ms) => new Promise((resolve) => setTimeout(resolve, Math.min(ms, 5))) };
 
-/** A provider over the fake phone harness whose phones run FakeMain for phoned, and a drifted twin of it. */
+/**
+ * A provider over the fake phone harness whose phones run FakeMain for phoned, and a drifted twin of it. Every phoned
+ * shares the phone's one UiAutomation registration and keeps it a moment after its stdin closes, as a phone's does: each
+ * case's connection starts a phoned of its own, and its first ui call needs the last case's phoned gone.
+ */
 async function setup() {
-	const fake = fakePhoneHarness({ startPhoned: () => startFakeMain().stream, clock });
+	const phone = mkdtempSync(join(tmpdir(), "phoned-phone-"));
+	process.once("exit", () => rmSync(phone, { recursive: true, force: true }));
+	const startPhoned = () => {
+		const main = startFakeMain({ phone, exitMs: 250 });
+		return { stream: main.stream, pid: main.child.pid, exited: main.exited, kill: () => main.child.kill("SIGKILL") };
+	};
+	const fake = fakePhoneHarness({ startPhoned, clock });
 	const options = { apiKey: KEY, fetch: fake.fetch, adb: fake.adb, ledger: memoryLedger(), now: clock.now, sleep: clock.sleep, maxLifetimeMs: 10 * 60_000, phoned: PHONED_JAR };
 	return { fake, provider: await create(options), drifted: await create({ ...options, daemonVersion: "0.0.0-drift" }) };
 }

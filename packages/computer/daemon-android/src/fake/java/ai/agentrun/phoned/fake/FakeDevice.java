@@ -2,6 +2,7 @@ package ai.agentrun.phoned.fake;
 
 import ai.agentrun.phoned.RpcError;
 import ai.agentrun.phoned.device.AxNode;
+import ai.agentrun.phoned.device.AxRefusal;
 import ai.agentrun.phoned.device.Device;
 import ai.agentrun.phoned.device.Rect;
 import java.awt.Color;
@@ -9,6 +10,11 @@ import java.awt.Graphics2D;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.FileAlreadyExistsException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Iterator;
@@ -575,7 +581,41 @@ public final class FakeDevice implements Device {
 	@Override
 	public Accessibility accessibility() {
 		if (!Boolean.TRUE.equals(features.get("ui.tree"))) throw RpcError.unsupported("the accessibility tree is not reachable: " + features.get("ui.tree"));
+		register();
 		return a11y;
+	}
+
+	/**
+	 * The phone's one UiAutomation registration, as a file every phoned on this phone shares (FakeMain's
+	 * phoned.fake.phone): created on the first ui call, as Ax connects, and refused while another holds it. Null: no
+	 * registration is kept, as in the unit tests.
+	 */
+	public Path axHolder;
+
+	private boolean registered;
+
+	private synchronized void register() {
+		if (axHolder == null || registered) return;
+		try {
+			Files.write(axHolder, String.valueOf(ProcessHandle.current().pid()).getBytes(StandardCharsets.UTF_8), StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
+			registered = true;
+		} catch (FileAlreadyExistsException e) {
+			// The system's own words when another UiAutomation is connected (UiAutomationManager).
+			throw AxRefusal.of(new IllegalStateException("UiAutomationService android.accessibilityservice.IAccessibilityServiceClient$Stub$Proxy@1 already registered!"));
+		} catch (IOException e) {
+			throw AxRefusal.of(e);
+		}
+	}
+
+	/** Lets go of the phone's UiAutomation registration, as Ax.close does. Safe to call twice. */
+	public synchronized void close() {
+		if (!registered) return;
+		registered = false;
+		try {
+			Files.deleteIfExists(axHolder);
+		} catch (IOException e) {
+			// The registration file is the test's; a stuck one shows as the next phoned's refusal.
+		}
 	}
 
 	private final Accessibility a11y = new Accessibility() {
