@@ -858,7 +858,12 @@ class SqliteStore implements Store {
         const row = await db.get<{ epoch: number | string }>(`SELECT epoch FROM runs WHERE id = ? AND runner IS NOT NULL AND claimed_until >= ${n.sql}`, runId, ...n.params);
         return row === undefined ? undefined : Number(row.epoch);
       },
-      claimMany: (runner, k, { leaseMs = DEFAULT_LEASE_MS } = {}) => this.#claimRuns(runner, leaseMs, { k }),
+      claimsOf: async (runner) => {
+        const n = clock();
+        const rows = await db.all<{ id: string; epoch: number | string; claimed_until: number | string }>(`SELECT id, epoch, claimed_until FROM runs WHERE runner = ? AND claimed_until >= ${n.sql}`, runner, ...n.params);
+        return rows.map((row) => ({ runId: row.id, runner, epoch: Number(row.epoch), until: Number(row.claimed_until), from: "running" as const }));
+      },
+      claimMany: (runner, k,{ leaseMs = DEFAULT_LEASE_MS } = {}) => this.#claimRuns(runner, leaseMs, { k }),
       update: async (claim, patch, rows = {}) => {
         if (Array.isArray(rows) || typeof rows !== "object" || rows === null) throw new TypeError("runs.update's third argument is { also?, take?, signInSettleMs? }");
         const { also = [], take = [], signInSettleMs = 0 } = rows;

@@ -5,7 +5,18 @@ import type { Permission, SecretMeta } from "./v2";
 /** A tool as a server lists it; on a saved server's read, with its permission as this server applies it to an agent that
  *  sets none (`permission`, under the server's tool settings), the owner's default and those it may be set to. */
 export type McpTool = { name: string; title?: string; description?: string; input_schema?: unknown; permission?: Permission; default_permission?: Permission; permissions?: Permission[] };
-export type McpAuthType = "none" | "bearer" | "headers" | "oauth";
+export type McpAuthType = "none" | "bearer" | "headers" | "oauth" | "github_app";
+/** The one address a `github_app` server may have: GitHub's hosted MCP (the save refuses any other, so the App's tokens go to
+ *  GitHub alone). */
+export const GITHUB_MCP_URL = "https://api.githubcopilot.com/mcp/";
+/** `#/settings/mcp?add=<name>&auth=github_app`: the add form opened for a server a template needs, its name (and, for GitHub's
+ *  own, its address and credential) filled. Undefined when the query asks for none. */
+export function addOf(query: string | undefined): { name: string; auth?: "github_app" } | undefined {
+  const q = new URLSearchParams(query ?? "");
+  const name = q.get("add");
+  if (!name || !/^[a-z][a-z0-9-]{0,31}$/.test(name)) return undefined;
+  return { name, ...(q.get("auth") === "github_app" ? { auth: "github_app" as const } : {}) };
+}
 /** A saved MCP server as GET /v2/settings/mcp-servers shows it: never a credential, only its state (`credential`: null
  *  for one that takes none). `prices`, per tool in USD, only when the server meters them. */
 export type McpServer = {
@@ -21,7 +32,7 @@ export type McpServer = {
 export type McpPreview = { protocol: string; server_info?: { name?: string; version?: string }; instructions?: string; tools: McpTool[] };
 export type McpRefresh = { added: string[]; removed: string[]; changed: string[]; server: McpServer };
 /** What a preview or save sends as `auth`: a credential only when one was typed (none: keep the sealed one). */
-export type McpAuth = { type: Exclude<McpAuthType, "oauth"> | "oauth"; token?: string; headers?: Record<string, string> };
+export type McpAuth = { type: McpAuthType; token?: string; headers?: Record<string, string> };
 /** Capabilities' `features.mcp_client`. */
 export type McpClientFeature = { auth?: string[]; harnesses?: string[] };
 
@@ -88,7 +99,8 @@ export function mcpProblem(e: unknown): { text: string; detail?: string; signIn?
     return { text: "This server signs in with OAuth, and its sign-in lets no app register itself.", detail: NEEDS_CLIENT(callback), signIn: true, needsClient: true };
   }
   if (e.code === "auth_required") return e.details?.auth === "oauth" ? { text: "This server signs in with OAuth.", detail: "Sign in to it: its tools are saved once you approve.", signIn: true } : { text: "This server asks for a token.", detail: e.message };
-  if (e.code === "not_mcp") return { text: "This address doesn't speak MCP.", detail: e.message };
+  if (e.code === "github_not_connected") return { text: "GitHub is not connected on this server.", detail: `${e.message} A GitHub App server runs on this server's GitHub App: connect GitHub, or add a repository to its installation, in Settings → GitHub, then try again.` };
+  if (e.code === "not_mcp")return { text: "This address doesn't speak MCP.", detail: e.message };
   if (redirect) return { text: "This address redirects; use the final address.", detail: redirect.message };
   if (e.status === 424) return { text: `The server failed: ${e.message}` };
   // A sign-in finishes only in a browser that started it at the address the authorization server sends it back to.
