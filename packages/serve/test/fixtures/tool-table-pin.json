@@ -1,0 +1,1225 @@
+{
+ "names": {
+  "read": {
+   "permissions": [
+    "allow",
+    "ask",
+    "deny"
+   ],
+   "default": [
+    "allow",
+    "allow"
+   ],
+   "in_force": [
+    "allow",
+    "ask",
+    "allow"
+   ],
+   "gate": {
+    "permission": "ask",
+    "default_permission": "allow",
+    "permissions": [
+     "allow",
+     "ask",
+     "deny"
+    ]
+   },
+   "key": [
+    "read",
+    "read",
+    "read",
+    "read"
+   ],
+   "setting_refused": [],
+   "replay": "safe"
+  },
+  "write": {
+   "permissions": [
+    "allow",
+    "ask",
+    "deny"
+   ],
+   "default": [
+    "allow",
+    "allow"
+   ],
+   "in_force": [
+    "allow",
+    "allow",
+    "allow"
+   ],
+   "gate": {
+    "permission": "allow",
+    "default_permission": "allow",
+    "permissions": [
+     "allow",
+     "ask",
+     "deny"
+    ]
+   },
+   "key": [
+    "write",
+    "write",
+    "write",
+    "write"
+   ],
+   "setting_refused": [],
+   "replay": "never"
+  },
+  "edit": {
+   "permissions": [
+    "allow",
+    "ask",
+    "deny"
+   ],
+   "default": [
+    "allow",
+    "allow"
+   ],
+   "in_force": [
+    "allow",
+    "allow",
+    "allow"
+   ],
+   "gate": {
+    "permission": "allow",
+    "default_permission": "allow",
+    "permissions": [
+     "allow",
+     "ask",
+     "deny"
+    ]
+   },
+   "key": [
+    "edit",
+    "edit",
+    "edit",
+    "edit"
+   ],
+   "setting_refused": [],
+   "replay": "never"
+  },
+  "bash": {
+   "permissions": [
+    "allow",
+    "ask",
+    "deny"
+   ],
+   "default": [
+    "allow",
+    "ask"
+   ],
+   "in_force": [
+    "allow",
+    "deny",
+    "allow"
+   ],
+   "gate": {
+    "permission": "deny",
+    "default_permission": "allow",
+    "permissions": [
+     "allow",
+     "ask",
+     "deny"
+    ]
+   },
+   "key": [
+    "bash",
+    "bash",
+    "bash",
+    "bash"
+   ],
+   "setting_refused": [],
+   "replay": "never"
+  },
+  "ask_person": {
+   "permissions": [
+    "allow",
+    "deny"
+   ],
+   "default": [
+    "allow",
+    "allow"
+   ],
+   "in_force": [
+    "allow",
+    "allow",
+    "allow"
+   ],
+   "gate": {
+    "permission": "allow",
+    "default_permission": "allow",
+    "permissions": [
+     "allow",
+     "deny"
+    ]
+   },
+   "key": [
+    "ask_person",
+    "ask_person",
+    "ask_person",
+    "ask_person"
+   ],
+   "setting_refused": [
+    "not_an_option"
+   ],
+   "replay": null
+  },
+  "web_fetch": {
+   "permissions": [
+    "allow",
+    "ask",
+    "deny"
+   ],
+   "default": [
+    "allow",
+    "allow"
+   ],
+   "in_force": [
+    "allow",
+    "allow",
+    "allow"
+   ],
+   "gate": {
+    "permission": "allow",
+    "default_permission": "allow",
+    "permissions": [
+     "allow",
+     "ask",
+     "deny"
+    ]
+   },
+   "key": [
+    "web_fetch",
+    "web_fetch",
+    "web_fetch",
+    "web_fetch"
+   ],
+   "setting_refused": [],
+   "replay": "safe"
+  },
+  "web_search": {
+   "permissions": [
+    "allow",
+    "ask",
+    "deny"
+   ],
+   "default": [
+    "allow",
+    "allow"
+   ],
+   "in_force": [
+    "allow",
+    "allow",
+    "allow"
+   ],
+   "gate": {
+    "permission": "allow",
+    "default_permission": "allow",
+    "permissions": [
+     "allow",
+     "ask",
+     "deny"
+    ]
+   },
+   "key": [
+    "web_search",
+    "web_search",
+    "web_search",
+    "web_search"
+   ],
+   "setting_refused": [],
+   "replay": "safe"
+  },
+  "browser": {
+   "permissions": [
+    "allow",
+    "deny"
+   ],
+   "default": [
+    "allow",
+    "allow"
+   ],
+   "in_force": [
+    "allow",
+    "allow",
+    "allow"
+   ],
+   "gate": {
+    "permission": "allow",
+    "default_permission": "allow",
+    "permissions": [
+     "allow",
+     "deny"
+    ]
+   },
+   "key": [
+    "browser",
+    "browser",
+    "browser",
+    "browser"
+   ],
+   "setting_refused": [
+    "not_an_option"
+   ],
+   "replay": null
+  },
+  "subagent": {
+   "permissions": [
+    "allow",
+    "deny"
+   ],
+   "default": [
+    "allow",
+    "allow"
+   ],
+   "in_force": [
+    "allow",
+    "allow",
+    "allow"
+   ],
+   "gate": {
+    "permission": "allow",
+    "default_permission": "allow",
+    "permissions": [
+     "allow",
+     "deny"
+    ]
+   },
+   "key": [
+    "subagent",
+    "subagent",
+    "subagent",
+    "subagent"
+   ],
+   "setting_refused": [
+    "not_an_option"
+   ],
+   "replay": null
+  },
+  "pdf_pages": {
+   "permissions": [
+    "allow",
+    "deny"
+   ],
+   "default": [
+    "allow",
+    "allow"
+   ],
+   "in_force": [
+    "allow",
+    "allow",
+    "allow"
+   ],
+   "gate": {
+    "permission": "allow",
+    "default_permission": "allow",
+    "permissions": [
+     "allow",
+     "deny"
+    ]
+   },
+   "key": [
+    "pdf_pages",
+    "pdf_pages",
+    "pdf_pages",
+    "pdf_pages"
+   ],
+   "setting_refused": [
+    "not_an_option"
+   ],
+   "replay": null
+  },
+  "llm": {
+   "permissions": [
+    "allow",
+    "deny"
+   ],
+   "default": [
+    "allow",
+    "allow"
+   ],
+   "in_force": [
+    "allow",
+    "allow",
+    "allow"
+   ],
+   "gate": {
+    "permission": "allow",
+    "default_permission": "allow",
+    "permissions": [
+     "allow",
+     "deny"
+    ]
+   },
+   "key": [
+    "llm",
+    "llm",
+    "llm",
+    "llm"
+   ],
+   "setting_refused": [
+    "not_an_option"
+   ],
+   "replay": null
+  },
+  "bash_background": {
+   "permissions": [
+    "allow",
+    "ask",
+    "deny"
+   ],
+   "default": [
+    "allow",
+    "deny"
+   ],
+   "in_force": [
+    "allow",
+    "deny",
+    "allow"
+   ],
+   "gate": {
+    "permission": "deny",
+    "default_permission": "allow",
+    "permissions": [
+     "allow",
+     "ask",
+     "deny"
+    ]
+   },
+   "key": [
+    "bash",
+    "bash",
+    "bash",
+    "bash"
+   ],
+   "setting_refused": [
+    "not_allowed"
+   ],
+   "replay": "never"
+  },
+  "bash_output": {
+   "permissions": [
+    "allow",
+    "ask",
+    "deny"
+   ],
+   "default": [
+    "allow",
+    "deny"
+   ],
+   "in_force": [
+    "allow",
+    "deny",
+    "allow"
+   ],
+   "gate": {
+    "permission": "deny",
+    "default_permission": "allow",
+    "permissions": [
+     "allow",
+     "ask",
+     "deny"
+    ]
+   },
+   "key": [
+    "bash",
+    "bash",
+    "bash",
+    "bash"
+   ],
+   "setting_refused": [
+    "not_allowed"
+   ],
+   "replay": "safe"
+  },
+  "bash_input": {
+   "permissions": [
+    "allow",
+    "ask",
+    "deny"
+   ],
+   "default": [
+    "allow",
+    "deny"
+   ],
+   "in_force": [
+    "allow",
+    "deny",
+    "allow"
+   ],
+   "gate": {
+    "permission": "deny",
+    "default_permission": "allow",
+    "permissions": [
+     "allow",
+     "ask",
+     "deny"
+    ]
+   },
+   "key": [
+    "bash",
+    "bash",
+    "bash",
+    "bash"
+   ],
+   "setting_refused": [
+    "not_allowed"
+   ],
+   "replay": "never"
+  },
+  "bash_signal": {
+   "permissions": [
+    "allow",
+    "ask",
+    "deny"
+   ],
+   "default": [
+    "allow",
+    "deny"
+   ],
+   "in_force": [
+    "allow",
+    "deny",
+    "allow"
+   ],
+   "gate": {
+    "permission": "deny",
+    "default_permission": "allow",
+    "permissions": [
+     "allow",
+     "ask",
+     "deny"
+    ]
+   },
+   "key": [
+    "bash",
+    "bash",
+    "bash",
+    "bash"
+   ],
+   "setting_refused": [
+    "not_allowed"
+   ],
+   "replay": "never"
+  },
+  "bash_list": {
+   "permissions": [
+    "allow",
+    "ask",
+    "deny"
+   ],
+   "default": [
+    "allow",
+    "deny"
+   ],
+   "in_force": [
+    "allow",
+    "deny",
+    "allow"
+   ],
+   "gate": {
+    "permission": "deny",
+    "default_permission": "allow",
+    "permissions": [
+     "allow",
+     "ask",
+     "deny"
+    ]
+   },
+   "key": [
+    "bash",
+    "bash",
+    "bash",
+    "bash"
+   ],
+   "setting_refused": [
+    "not_allowed"
+   ],
+   "replay": "safe"
+  },
+  "learned_workflow": {
+   "permissions": [
+    "allow",
+    "ask",
+    "deny"
+   ],
+   "default": [
+    "allow",
+    "allow"
+   ],
+   "in_force": [
+    "allow",
+    "allow",
+    "allow"
+   ],
+   "gate": {
+    "permission": "allow",
+    "default_permission": "allow",
+    "permissions": [
+     "allow",
+     "ask",
+     "deny"
+    ]
+   },
+   "key": [
+    "learned_workflow",
+    "learned_workflow",
+    "learned_workflow",
+    "learned_workflow"
+   ],
+   "setting_refused": [],
+   "replay": "never"
+  },
+  "monid.discover": {
+   "permissions": [
+    "allow",
+    "ask",
+    "deny"
+   ],
+   "default": [
+    "ask",
+    "ask"
+   ],
+   "in_force": [
+    "ask",
+    "ask",
+    "allow"
+   ],
+   "gate": {
+    "permission": "ask",
+    "default_permission": "ask",
+    "permissions": [
+     "allow",
+     "ask",
+     "deny"
+    ]
+   },
+   "key": [
+    "monid.discover",
+    "monid.discover",
+    "monid.discover",
+    "monid.discover"
+   ],
+   "setting_refused": [],
+   "replay": "safe"
+  },
+  "monid.inspect": {
+   "permissions": [
+    "allow",
+    "ask",
+    "deny"
+   ],
+   "default": [
+    "ask",
+    "ask"
+   ],
+   "in_force": [
+    "ask",
+    "ask",
+    "allow"
+   ],
+   "gate": {
+    "permission": "ask",
+    "default_permission": "ask",
+    "permissions": [
+     "allow",
+     "ask",
+     "deny"
+    ]
+   },
+   "key": [
+    "monid.inspect",
+    "monid.inspect",
+    "monid.inspect",
+    "monid.inspect"
+   ],
+   "setting_refused": [],
+   "replay": "safe"
+  },
+  "monid.run": {
+   "permissions": [
+    "allow",
+    "ask",
+    "deny"
+   ],
+   "default": [
+    "ask",
+    "ask"
+   ],
+   "in_force": [
+    "ask",
+    "ask",
+    "allow"
+   ],
+   "gate": {
+    "permission": "ask",
+    "default_permission": "ask",
+    "permissions": [
+     "allow",
+     "ask",
+     "deny"
+    ]
+   },
+   "key": [
+    "monid.run",
+    "monid.run",
+    "monid.run",
+    "monid.run"
+   ],
+   "setting_refused": [],
+   "replay": "never"
+  },
+  "monid.other": {
+   "permissions": [
+    "allow",
+    "ask",
+    "deny"
+   ],
+   "default": [
+    "ask",
+    "ask"
+   ],
+   "in_force": [
+    "ask",
+    "ask",
+    "allow"
+   ],
+   "gate": {
+    "permission": "ask",
+    "default_permission": "ask",
+    "permissions": [
+     "allow",
+     "ask",
+     "deny"
+    ]
+   },
+   "key": [
+    "monid.other",
+    "monid.other",
+    "monid.other",
+    "monid.other"
+   ],
+   "setting_refused": [],
+   "replay": null
+  },
+  "desktop": {
+   "permissions": [
+    "allow",
+    "deny"
+   ],
+   "default": [
+    "allow",
+    "allow"
+   ],
+   "in_force": [
+    "allow",
+    "allow",
+    "allow"
+   ],
+   "gate": {
+    "permission": "allow",
+    "default_permission": "allow",
+    "permissions": [
+     "allow",
+     "deny"
+    ]
+   },
+   "key": [
+    null,
+    null,
+    null,
+    null
+   ],
+   "setting_refused": [
+    "not_an_option"
+   ],
+   "replay": null
+  },
+  "phone": {
+   "permissions": [
+    "allow",
+    "deny"
+   ],
+   "default": [
+    "allow",
+    "allow"
+   ],
+   "in_force": [
+    "allow",
+    "allow",
+    "allow"
+   ],
+   "gate": {
+    "permission": "allow",
+    "default_permission": "allow",
+    "permissions": [
+     "allow",
+     "deny"
+    ]
+   },
+   "key": [
+    null,
+    null,
+    null,
+    null
+   ],
+   "setting_refused": [
+    "not_an_option"
+   ],
+   "replay": null
+  },
+  "jev": {
+   "permissions": [
+    "allow",
+    "deny"
+   ],
+   "default": [
+    "allow",
+    "allow"
+   ],
+   "in_force": [
+    "allow",
+    "allow",
+    "allow"
+   ],
+   "gate": {
+    "permission": "allow",
+    "default_permission": "allow",
+    "permissions": [
+     "allow",
+     "deny"
+    ]
+   },
+   "key": [
+    "jev",
+    "jev",
+    "jev",
+    "jev"
+   ],
+   "setting_refused": [
+    "not_an_option"
+   ],
+   "replay": null
+  },
+  "parallel": {
+   "permissions": [
+    "allow",
+    "deny"
+   ],
+   "default": [
+    "allow",
+    "allow"
+   ],
+   "in_force": [
+    "allow",
+    "allow",
+    "allow"
+   ],
+   "gate": {
+    "permission": "allow",
+    "default_permission": "allow",
+    "permissions": [
+     "allow",
+     "deny"
+    ]
+   },
+   "key": [
+    "parallel",
+    "parallel",
+    "parallel",
+    "parallel"
+   ],
+   "setting_refused": [
+    "not_an_option"
+   ],
+   "replay": null
+  },
+  "openrouter": {
+   "permissions": [
+    "allow",
+    "deny"
+   ],
+   "default": [
+    "allow",
+    "allow"
+   ],
+   "in_force": [
+    "allow",
+    "allow",
+    "allow"
+   ],
+   "gate": {
+    "permission": "allow",
+    "default_permission": "allow",
+    "permissions": [
+     "allow",
+     "deny"
+    ]
+   },
+   "key": [
+    "openrouter",
+    "openrouter",
+    "openrouter",
+    "openrouter"
+   ],
+   "setting_refused": [
+    "not_an_option"
+   ],
+   "replay": null
+  },
+  "mcp:linear/create_issue": {
+   "permissions": [
+    "allow",
+    "ask",
+    "deny"
+   ],
+   "default": [
+    "ask",
+    "ask"
+   ],
+   "in_force": [
+    "ask",
+    "allow",
+    "allow"
+   ],
+   "gate": {
+    "permission": "allow",
+    "default_permission": "ask",
+    "permissions": [
+     "allow",
+     "ask",
+     "deny"
+    ]
+   },
+   "key": [
+    "mcp:linear/create_issue",
+    "mcp:linear/create_issue",
+    "mcp:linear/create_issue",
+    "mcp:linear/create_issue"
+   ],
+   "setting_refused": [],
+   "replay": null
+  },
+  "mcp:linear/*": {
+   "permissions": [
+    "allow",
+    "ask",
+    "deny"
+   ],
+   "default": [
+    "ask",
+    "ask"
+   ],
+   "in_force": [
+    "ask",
+    "ask",
+    "allow"
+   ],
+   "gate": {
+    "permission": "ask",
+    "default_permission": "ask",
+    "permissions": [
+     "allow",
+     "ask",
+     "deny"
+    ]
+   },
+   "key": [
+    "mcp:linear/*",
+    "mcp:linear/*",
+    "mcp:linear/*",
+    "mcp:linear/*"
+   ],
+   "setting_refused": [],
+   "replay": null
+  },
+  "monid_run": {
+   "permissions": [
+    "allow",
+    "deny"
+   ],
+   "default": [
+    "allow",
+    "allow"
+   ],
+   "in_force": [
+    "allow",
+    "allow",
+    "allow"
+   ],
+   "gate": {
+    "permission": "allow",
+    "default_permission": "allow",
+    "permissions": [
+     "allow",
+     "deny"
+    ]
+   },
+   "key": [
+    "monid.run",
+    "monid.run",
+    "monid.run",
+    "monid.run"
+   ],
+   "setting_refused": [
+    "not_allowed"
+   ],
+   "replay": null
+  },
+  "mcp__hands__read": {
+   "permissions": [
+    "allow",
+    "deny"
+   ],
+   "default": [
+    "allow",
+    "allow"
+   ],
+   "in_force": [
+    "allow",
+    "allow",
+    "allow"
+   ],
+   "gate": {
+    "permission": "allow",
+    "default_permission": "allow",
+    "permissions": [
+     "allow",
+     "deny"
+    ]
+   },
+   "key": [
+    "read",
+    "read",
+    "read",
+    "read"
+   ],
+   "setting_refused": [
+    "not_allowed"
+   ],
+   "replay": null
+  },
+  "read_skill_file": {
+   "permissions": [
+    "allow",
+    "deny"
+   ],
+   "default": [
+    "allow",
+    "allow"
+   ],
+   "in_force": [
+    "allow",
+    "allow",
+    "allow"
+   ],
+   "gate": {
+    "permission": "allow",
+    "default_permission": "allow",
+    "permissions": [
+     "allow",
+     "deny"
+    ]
+   },
+   "key": [
+    "read",
+    "read",
+    "read",
+    "read"
+   ],
+   "setting_refused": [
+    "not_allowed"
+   ],
+   "replay": null
+  },
+  "codemode": {
+   "permissions": [
+    "allow",
+    "deny"
+   ],
+   "default": [
+    "allow",
+    "allow"
+   ],
+   "in_force": [
+    "allow",
+    "allow",
+    "allow"
+   ],
+   "gate": {
+    "permission": "allow",
+    "default_permission": "allow",
+    "permissions": [
+     "allow",
+     "deny"
+    ]
+   },
+   "key": [
+    null,
+    null,
+    null,
+    null
+   ],
+   "setting_refused": [
+    "not_allowed"
+   ],
+   "replay": null
+  },
+  "frobnicate": {
+   "permissions": [
+    "allow",
+    "deny"
+   ],
+   "default": [
+    "allow",
+    "allow"
+   ],
+   "in_force": [
+    "allow",
+    "allow",
+    "allow"
+   ],
+   "gate": {
+    "permission": "allow",
+    "default_permission": "allow",
+    "permissions": [
+     "allow",
+     "deny"
+    ]
+   },
+   "key": [
+    null,
+    null,
+    null,
+    null
+   ],
+   "setting_refused": [
+    "not_allowed"
+   ],
+   "replay": null
+  },
+  "toString": {
+   "permissions": [
+    "allow",
+    "deny"
+   ],
+   "default": [
+    "allow",
+    "allow"
+   ],
+   "in_force": [
+    "allow",
+    "allow",
+    "allow"
+   ],
+   "gate": {
+    "permission": "allow",
+    "default_permission": "allow",
+    "permissions": [
+     "allow",
+     "deny"
+    ]
+   },
+   "key": [
+    null,
+    null,
+    null,
+    null
+   ],
+   "setting_refused": [
+    "not_allowed"
+   ]
+  },
+  "constructor": {
+   "permissions": [
+    "allow",
+    "deny"
+   ],
+   "default": [
+    "allow",
+    "allow"
+   ],
+   "in_force": [
+    "allow",
+    "allow",
+    "allow"
+   ],
+   "gate": {
+    "permission": "allow",
+    "default_permission": "allow",
+    "permissions": [
+     "allow",
+     "deny"
+    ]
+   },
+   "key": [
+    null,
+    null,
+    null,
+    null
+   ],
+   "setting_refused": [
+    "not_allowed"
+   ]
+  },
+  "": {
+   "permissions": [
+    "allow",
+    "deny"
+   ],
+   "default": [
+    "allow",
+    "allow"
+   ],
+   "in_force": [
+    "allow",
+    "allow",
+    "allow"
+   ],
+   "gate": {
+    "permission": "allow",
+    "default_permission": "allow",
+    "permissions": [
+     "allow",
+     "deny"
+    ]
+   },
+   "key": [
+    null,
+    null,
+    null,
+    null
+   ],
+   "setting_refused": [
+    "not_allowed"
+   ],
+   "replay": null
+  }
+ },
+ "views": {
+  "none/none": "77f4e241bc17defc788bf3c6bebc8661825ead9773c6a27ccac048dfada852d7",
+  "none/set": "75fa8ee72d93d66fc8f9e1240ea74af0540856221708922a19330f8895807b25",
+  "keyed/none": "40f4f523d0b03979894d1824b0a5d532d3221ada69496a373c5ef5efa199f412",
+  "keyed/set": "88db6eaee6c59a0f11e276f7e1f767e3db1b488109485f72db5ce885f848ea89"
+ },
+ "agents": {
+  "none/none/pi": "b2ac2cc085cc1bbd4104dd845f5759cb667e801386f1320ba0898f56e05344a1",
+  "none/none/codex": "5d8caaca94e8359657bc5b9272e72de350138ff6b9f2e28ae657f7fa5b7241e5",
+  "none/none/claude-agent": "b2ac2cc085cc1bbd4104dd845f5759cb667e801386f1320ba0898f56e05344a1",
+  "none/none/opencode": "b2ac2cc085cc1bbd4104dd845f5759cb667e801386f1320ba0898f56e05344a1",
+  "none/set/pi": "8ebf12d8894fa5d3a62c023d024f6661d080e39007ff5194bdae8d8688d9e274",
+  "none/set/codex": "8ebf12d8894fa5d3a62c023d024f6661d080e39007ff5194bdae8d8688d9e274",
+  "none/set/claude-agent": "8ebf12d8894fa5d3a62c023d024f6661d080e39007ff5194bdae8d8688d9e274",
+  "none/set/opencode": "8ebf12d8894fa5d3a62c023d024f6661d080e39007ff5194bdae8d8688d9e274",
+  "keyed/none/pi": "2247869c6b13350ca12ffa373c7ba83ca830a37fb41ffe4d3a72105c6b4323fa",
+  "keyed/none/codex": "2ee3bda99120be772e3a6ec94bc1e407f9ff2c8bd5db7148a2629f5386fa639e",
+  "keyed/none/claude-agent": "2247869c6b13350ca12ffa373c7ba83ca830a37fb41ffe4d3a72105c6b4323fa",
+  "keyed/none/opencode": "2247869c6b13350ca12ffa373c7ba83ca830a37fb41ffe4d3a72105c6b4323fa",
+  "keyed/set/pi": "84bd3e73ea1ceb8a91fdc1771147363ed64cc31dfdc8315dd10fa1d3dc48787b",
+  "keyed/set/codex": "84bd3e73ea1ceb8a91fdc1771147363ed64cc31dfdc8315dd10fa1d3dc48787b",
+  "keyed/set/claude-agent": "84bd3e73ea1ceb8a91fdc1771147363ed64cc31dfdc8315dd10fa1d3dc48787b",
+  "keyed/set/opencode": "84bd3e73ea1ceb8a91fdc1771147363ed64cc31dfdc8315dd10fa1d3dc48787b"
+ },
+ "openapi": "44f6031f656dcc1a077525df0bd41b2aa36600d6c5f2ee6f9824a0422f450130"
+}
