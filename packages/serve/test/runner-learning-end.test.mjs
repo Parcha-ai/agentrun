@@ -437,7 +437,7 @@ test("on a run with decision providers the end-of-run prompt allows judge nodes 
       const seed = await seedOf(dir, "agent-1");
       return runner(() => ({ given: [], seed: seed.sha, section: "", seedNotes: 0 }))(dir);
     });
-    const providers = await decisionProvidersIn({ TYPESAFE_API_KEY: "faux-key", AGENTRUN_SERVE_FAUX: "1", AGENTRUN_SERVE_FAUX_JEV: FAUX_JEV });
+    const providers = await decisionProvidersIn({ TYPESAFE_API_KEY: "fake-test-key", AGENTRUN_SERVE_FAUX: "1", AGENTRUN_SERVE_FAUX_JEV: FAUX_JEV });
     assert.ok(providers?.providers.jev, "setup: the faux Jev");
     await w.start((deps) => learningEndOfRun(w.launch, { ...deps, ...(decided ? { decisionProviders: async () => providers } : {}) }), { script: [{ say: "The job's answer." }, { say: `${REFLECTED}\n\n${judgeDraft}` }, { say: REFLECTED }] });
     const row = await w.ended();
