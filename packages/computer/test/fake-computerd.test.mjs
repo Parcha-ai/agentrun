@@ -84,9 +84,16 @@ test("process.start: a program that ends at once has its whole log, a missing on
 test("waitGroup: the process runs while a background job of its group runs, a signal reaches the job, and close() leaves nothing", async () => {
 	const c = computer();
 	const alive = (pid) => {
+		// An ended process nobody reaped is a zombie: kill(pid, 0) still succeeds for it, so the state is read too.
 		try {
 			process.kill(pid, 0);
-			return true;
+		} catch {
+			return false;
+		}
+		if (!existsSync("/proc/self")) return true;
+		try {
+			const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+			return stat.slice(stat.lastIndexOf(")") + 2, stat.lastIndexOf(")") + 3) !== "Z";
 		} catch {
 			return false;
 		}

@@ -11,7 +11,7 @@
 // no capability drop and no fence; no pty, no tar calls, no desktop methods (each answers `unsupported`). It ends, with
 // every process it started, at SIGTERM or once its socket is gone (the host's temp folder removed).
 import { spawn } from "node:child_process";
-import { chmodSync, constants, existsSync, mkdirSync, promises as fs, readlinkSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, constants, existsSync, mkdirSync, promises as fs, readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { dirname, isAbsolute, join, normalize, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -64,6 +64,29 @@ export function computerd({ mounts, root, env = {} }) {
 			child.once("error", (error) => reject(fail(error.code === "ENOENT" ? "not_found" : error.code === "EACCES" ? "denied" : "invalid", `${params.argv[0]}: ${error.message}`)));
 		});
 		return { child, spawned };
+	};
+	/**
+	 * Whether a process of group `pgid` that is not a zombie remains, read from /proc/<pid>/stat (the fields after the last
+	 * ')': state, parent, group). Where there is no /proc (macOS), the group's existence is the answer.
+	 */
+	const liveInGroup = (pgid) => {
+		let names;
+		try {
+			names = readdirSync("/proc");
+		} catch {
+			return true;
+		}
+		for (const name of names) {
+			if (!/^\d+$/.test(name)) continue;
+			try {
+				const stat = readFileSync(`/proc/${name}/stat`, "utf8");
+				const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+				if (Number(fields[2]) === pgid && fields[0] !== "Z" && fields[0] !== "X") return true;
+			} catch {
+				// Ended while the scan ran.
+			}
+		}
+		return false;
 	};
 	const killGroup = (child, signal) => {
 		try {
@@ -304,13 +327,15 @@ export function computerd({ mounts, root, env = {} }) {
 			// group stays in everyChild, so a signal and close() still reach it.
 			let closed = false;
 			let groupTimer;
+			// Gone means no LIVE member: an ended process nobody reaped (a container whose PID 1 reaps nothing) is a zombie, and
+			// kill(-pgid, 0) still succeeds for it. Like the real daemon (proctree.Running), a zombie does not count.
 			const groupGone = () => {
 				try {
 					process.kill(-child.pid, 0);
-					return false;
 				} catch {
 					return true;
 				}
+				return !liveInGroup(child.pid);
 			};
 			const settle = () => {
 				if (closed && groupGone()) finish();
