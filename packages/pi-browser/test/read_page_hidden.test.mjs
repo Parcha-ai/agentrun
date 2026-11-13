@@ -220,11 +220,12 @@ test("a semicolon inside a quoted string, a url(...) or a comment does not end a
     <p style='content:"a\\";display:none;"'>Seen escaped quote.</p>
     <p style="background:url(x;display:none;)">Seen url.</p>
     <p style="color:red /* ; display:none; */">Seen comment.</p>
+    <p style="display:n/**/one">Seen comment inside a word.</p>
     <p class="fake">Seen class.</p>
     <p style='content:"a;b"; display:none'>Gone after quoted.</p>
     <p style="/* x */ display:none">Gone after comment.</p>
     <p class="real">Gone class.</p>`, `<style>.fake { content: "a;display:none;" } .real { content: "x;y"; display: none }</style>`));
-  for (const seen of ["Seen double quoted.", "Seen single quoted.", "Seen escaped quote.", "Seen url.", "Seen comment.", "Seen class."]) assert.ok(text.includes(seen), `${seen} in: ${text}`);
+  for (const seen of ["Seen double quoted.", "Seen single quoted.", "Seen escaped quote.", "Seen url.", "Seen comment.", "Seen comment inside a word.", "Seen class."]) assert.ok(text.includes(seen), `${seen} in: ${text}`);
   for (const gone of ["Gone after quoted.", "Gone after comment.", "Gone class."]) assert.ok(!text.includes(gone), `${gone} in: ${text}`);
 });
 

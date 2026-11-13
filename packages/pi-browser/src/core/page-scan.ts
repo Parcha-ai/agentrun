@@ -235,6 +235,7 @@ function splitDeclarations(text: string): string[] {
     } else if (ch === "/" && text[i + 1] === "*") {
       const end = text.indexOf("*/", i + 2);
       i = end < 0 ? text.length : end + 1;
+      current += " "; // a comment is a boundary: display:n/**/one is two words, not none
     } else if (ch === '"' || ch === "'") {
       quote = ch;
       current += ch;
