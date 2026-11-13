@@ -167,7 +167,7 @@ export function codeMode(deps: CodeModeDeps) {
   /** The exec each nested call was admitted under. */
   const execOf = new Map<string, string>();
   /** After a recovery: the `never` calls the log holds a completed outcome for, by tool and arguments, until the turn ends. Each answers one re-issue. */
-  const recovered = new Map<string, { tool: string; text: string }[]>();
+  const recovered = new Map<string, { tool: string; text: string; sent?: string }[]>();
   for (const line of deps.lines) scripts.note(line);
   machine.onRolloutLine?.((line) => scripts.note(line));
 
@@ -232,7 +232,7 @@ export function codeMode(deps: CodeModeDeps) {
       const settled = settle(fact);
       if (settled.kind !== "completed") continue;
       const key = callKey(fact.tool, e.input);
-      recovered.set(key, [...(recovered.get(key) ?? []), { tool: fact.tool, text: settled.text }]);
+      recovered.set(key, [...(recovered.get(key) ?? []), { tool: fact.tool, text: settled.text, ...(fact.store?.sent !== undefined ? { sent: fact.store.sent } : {}) }]);
     }
   };
 
@@ -242,6 +242,9 @@ export function codeMode(deps: CodeModeDeps) {
     const again = recovered.get(callKey(tool, args))?.shift();
     if (!again) return undefined;
     deps.log("codex: answered a never call from the log: it completed before the interruption", { ...(callId ? { callId } : {}), tool: again.tool });
+    // A script's call of a tool with a value gets that value's JSON again, as the first call did (scriptAnswer): the script
+    // parses it, so no words go before it.
+    if (callId !== undefined && NESTED_CALL.test(callId) && again.sent !== undefined) return again.sent;
     return boundResult(`Recorded earlier in this turn, not run again: ${again.text}`).text;
   }
 
