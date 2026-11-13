@@ -137,6 +137,6 @@ test("under a cap, a grade on OpenRouter's key alone is judged at OpenRouter's p
   const factory = await resolveRunnerLoop(deps)("learning", await store.runs.launch("learn-1"), "learn-1");
   const claim = await store.claim("learn-1", "runner-b", { leaseMs: 60_000 });
   assert.deepEqual(await factory({ journal: (c) => store.journal(c), flush: () => store.flush(), signal: new AbortController().signal }).start(claim), { state: "ended" });
-  assert.equal(gateway.requests.length, 1, "the grade was sent: its route carries a price the cap reads");
+  assert.deepEqual(gateway.requests.map((request) => request.path), ["/api/v1/systemone", "/api/v1/messages"], "the pre-check's Jev request fit the cap and was sent, then the grade: its route carries a price the cap reads");
   assert.equal((await runLearningEnd(store, "run-1"))?.state, "merged");
 });
