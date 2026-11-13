@@ -93,9 +93,9 @@ export function learningLoopOf(deps: LearningDispatchDeps): LoopFactory {
       return bookedAsk(route)(request, AbortSignal.any([signal, bound]), run);
     };
     // The generality pre-check on this host's Jev; none set up here, none asked.
-    const general: LearningLoopDeps["general"] = async (notes, source, signal, run) => {
+    const general: LearningLoopDeps["general"] = async (notes, source, signal, run, sending) => {
       const jev = await deps.jev?.();
-      return jev ? generalScores(jev, notes, source, signal, run) : undefined;
+      return jev ? generalScores(jev, notes, source, signal, run, sending) : undefined;
     };
     const loop = learningLoopFactory({ store: deps.store, data: deps.data, ask, ...(deps.jev ? { general } : {}), ...(deps.generalThreshold !== undefined ? { generalThreshold: deps.generalThreshold } : {}), ...(deps.log ? { log: deps.log } : {}), ...(deps.now ? { now: deps.now } : {}) })(loopDeps);
     return {

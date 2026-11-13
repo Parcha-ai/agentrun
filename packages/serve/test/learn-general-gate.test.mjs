@@ -183,11 +183,11 @@ test("every note under the bar: the grader is never asked, and the run's learnin
   assert.equal(calls.ask.length, 0, "no grade");
   assert.equal(calls.commit.length, 0, "nothing merged");
   const entries = await entriesOf(store, claim);
-  assert.deepEqual(entries.map(({ kind }) => kind), [KINDS.learningGraded, KINDS.learningDropped]);
-  const dropped = entries[1].data;
+  assert.deepEqual(entries.map(({ kind }) => kind), [KINDS.learningGeneral, KINDS.learningGraded, KINDS.learningDropped], "the check's end is kept before the grade");
+  const dropped = entries[2].data;
   assert.equal(dropped.reason, "grader");
   assert.match(dropped.detail, /under the bar of 0\.6/);
-  assert.equal(entries[0].data.verdict.items[0].question, "General");
+  assert.equal(entries[1].data.verdict.items[0].question, "General");
   assert.equal((await store.runs.get("learn-1")).state, "ended");
 });
 
