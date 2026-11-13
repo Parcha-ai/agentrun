@@ -500,6 +500,10 @@ export interface ProxyRequest {
   /** A side call, never its turn's own: on another model than the session's (a client's small-model call: a title, a
    *  summary), or the host's own request beside the harness's (`host`). */
   side?: true;
+  /** On the session's model but no answer of the turn (the policy's `answers` reads it so: a title, a summary, a child's
+   *  request). Still the turn's to book, but a conversation of its own: the cap never prices the session's next request
+   *  from it, nor it from the session's. */
+  unanswered?: true;
   /** It carries the host's note (`ModelProxyHooks.note`), placed in its body: the host's to record once it is admitted. */
   noted?: true;
   /** The label of the side key it came under (ModelProxy.sideKey): the host's own request, beside the harness's. */
@@ -1103,8 +1107,10 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     let ticket: unknown;
     try {
       if (!route.free) ticket = await hooks.beforeRequest({
-        // A side call: on another model than the session's, or the host's own (it counts toward no typical request).
-        model: asked, inputTokensMax, ...(asked !== model || host !== undefined ? { side: true as const } : {}),
+        // A side call: on another model than the session's, or the host's own (it counts toward no typical request). One on
+        // the session's model that is no answer of the turn (a title, a summary, a child's: `answering`, the policy's
+        // answers) is `unanswered`: booked as any request, but a conversation of its own to the cap's expected pricing.
+        model: asked, inputTokensMax, ...(asked !== model || host !== undefined ? { side: true as const } : {}), ...(!answering && host === undefined ? { unanswered: true as const } : {}),
         ...(noted ? { noted: true as const, ...(inputTokensMaxWithoutNote === undefined ? {} : { inputTokensMaxWithoutNote }) } : {}),
         ...(outputTokensAsked === undefined ? {} : { outputTokensAsked }),
         ...(outputTokensLeast === undefined ? {} : { outputTokensLeast }),
