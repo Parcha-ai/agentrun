@@ -21,9 +21,10 @@ const fn = (module, name) => (typeof module[name] === "function" ? module[name] 
 const runLearningOverStore = (...args) => fn(reads, "runLearningOverStore")(...args);
 
 const GOLDEN = JSON.parse(readFileSync(new URL("./fixtures/learning-end-golden.json", import.meta.url), "utf8"));
+/** The grader's answer that gives `verdict`: every item says general, false only for one that failed the General question. */
 const answerOf = (verdict) => JSON.stringify({
   merge: verdict.merge, reason: verdict.reason,
-  items: verdict.items.map((item) => ({ file: item.file, decision: item.pending ? "pending" : item.keep ? "keep" : "drop", ...(item.origin ? { origin: item.origin } : {}), ...(item.question ? { question: item.question } : {}), ...(item.why ? { why: item.why } : {}) })),
+  items: verdict.items.map((item) => ({ file: item.file, general: item.question !== "General", decision: item.pending ? "pending" : item.keep ? "keep" : "drop", ...(item.origin ? { origin: item.origin } : {}), ...(item.question ? { question: item.question } : {}), ...(item.why ? { why: item.why } : {}) })),
 });
 /** A response as compared: its time and its merge commit's id put aside (a sha, or not). */
 const comparable = (body) => body && { ...body, at: "<time>", merged: typeof body.merged === "string" && /^[0-9a-f]{40}$/.test(body.merged) ? "<sha>" : body.merged };

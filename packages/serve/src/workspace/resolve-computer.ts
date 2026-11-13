@@ -22,6 +22,7 @@ import { hostToolDefs, type ShellPlace } from "@parcha/agentrun-kernel/kernel";
 import { type BrowserFeatures, type BrowserFile, type BrowserSpec, type ComputerClient, type ComputerSettingKind, configurationOf, type GpuSpec, type Group, type HelloResult, imagesOf, type KindCapabilities, type MountKind, type MountReadBack, type MountSpec, type ProviderEntry, type Result } from "@parcha/agentrun-computer";
 import { type DockerDaemon, noDockerWords } from "../docker-daemon.js";
 import { gpuRefused } from "../gpu-words.js";
+import { recordedClient } from "../computer-calls.js";
 import type { MountCheck } from "./attach.js";
 import type { RunComputer } from "./run-tools.js";
 import type { Workspace } from "./workspace.js";
@@ -378,8 +379,10 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
 function runComputerOf(kind: Exclude<ComputerSettingKind, "none">, launched: LaunchedComputer, check: MountCheck | undefined): RunComputer | string {
   // The run's browser tool opens a browser's sessions through its provider.
   if (kind === "browser") return launched.browser ? { kind, browser: launched.browser } : "it gave no CDP connection";
-  const { client, hello } = launched;
-  if (!client) return "it gave no computer protocol client";
+  const { hello } = launched;
+  if (!launched.client) return "it gave no computer protocol client";
+  // Each call the agent's tools make is recorded on the tool call's row (computer-calls.ts): the run's one client.
+  const client = recordedClient(launched.client);
   if (kind === "phone") return hello ? { kind, computer: { client }, hello } : "it gave no hello";
   if (check && !launched.readBack) return "it gave no read-back of its mount";
   const readBack = launched.readBack ? () => launched.readBack!() : async (): Promise<Result<MountReadBack>> => ({ ok: false, error: { code: "unsupported", message: "nothing is mounted in this computer" } });

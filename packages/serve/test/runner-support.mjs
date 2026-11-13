@@ -250,6 +250,7 @@ export function observed(store, record) {
     },
     take: async (claim, id, outcome, reason) => (alive(), called("take", claim.runId), store.take(claim, id, outcome, reason)),
     retry: async (claim, id) => (alive(), called("retry", claim.runId), store.retry(claim, id)),
+    watchCommands: (listener) => store.watchCommands(listener),
   };
 }
 

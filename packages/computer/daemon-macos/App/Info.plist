@@ -22,6 +22,10 @@
 	<string>14.0</string>
 	<key>LSUIElement</key>
 	<true/>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>A command run through Computerd (exec.run) sends Apple events to this app, for example a script that makes and removes a demo's own calendar or folder.</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>A command run through Computerd (exec.run) reads calendars through Calendar's AppleScript, for example to count a demo's events.</string>
 	<key>NSHumanReadableCopyright</key>
 	<string>MIT licensed. See NOTICE for the work it builds on.</string>
 </dict>

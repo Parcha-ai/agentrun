@@ -139,10 +139,12 @@ unless it holds the run id or is a word the script looks for.
 | mac.textedit.edit-number | TextEdit | open the task's totals file in the background, select all and type the text with 42, by keys first (the window marks it Edited), then save with super+s (the mark goes) | the saved file is the new text, the other lines kept |
 | mac.calendar.new-event | Calendar | press Add Event, type a title into the quick event field and enter; move the event into the task's calendar through the inspector's calendar menu; escape | the task's calendar holds the event |
 
-The sandbox needs Computerd's Automation grant for Calendar, Notes, Finder, TextEdit and Safari. Without it the script
-says which are missing and stops before it starts a task. To grant it, run the script once with `--ask-grants` while
-you are at the Mac and answer **OK** to each of the five prompts. They are listed afterwards in System Settings >
-Privacy & Security > Automation > Computerd. CI's runner has them seeded (`scripts/seed-tcc.sh`).
+The sandbox needs two kinds of grant for Computerd. One is Automation for Calendar, Notes, Finder, TextEdit and Safari.
+The other is full access to calendars: Calendar's AppleScript reads the calendar store for the process that sent the
+event, and without the grant a script that counts events gets no answer. Without them the script says which are
+missing and stops before it starts a task. To grant them, run the script once with `--ask-grants` while you are at the
+Mac and answer **OK** or **Allow** to each of the six prompts. They are listed afterwards in System Settings > Privacy &
+Security > Automation > Computerd and > Calendars. CI's runner has them seeded (`scripts/seed-tcc.sh`).
 
 ```sh
 python3 -I packages/computer/daemon-macos/scripts/mini-demos.py \

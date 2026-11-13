@@ -67,4 +67,9 @@ fi
 # The Mac mini's demo tasks (mini-demos.py), recorded: reported, and not yet a verdict here, since a runner's apps are
 # fresh each time (first-run sheets, no account).
 python3 -I "$here/mini-demos.py" "$app/Contents/Helpers/computerd" "$home" "$home/demos" || echo "the demo tasks failed: see above"
+# The grants asked of TCC while the tests and demos ran, counted by service: a grant the sandbox's AppleScript needs
+# and seed-tcc.sh does not seed shows up here.
+echo "TCC requests in the last 15 minutes, by service:"
+log show --last 15m --style compact --predicate 'subsystem == "com.apple.TCC" AND eventMessage BEGINSWITH "AUTHREQ_CTX"' 2>&1 \
+	| grep -oE 'service=kTCCService[A-Za-z]+' | sort | uniq -c || true
 exit $((smoke || conformance))
