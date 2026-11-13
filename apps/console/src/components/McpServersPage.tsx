@@ -208,7 +208,16 @@ function ComposioForm({ v2, onClose, onSaved }: { v2: Client; onClose: () => voi
   const [busy, setBusy] = useState(false);
   const key = () => ((form.current?.elements.namedItem("composio-key") as HTMLInputElement | null)?.value ?? "").trim();
   const act = async (work: () => Promise<void>) => { setBusy(true); setProblem(null); try { await work(); } catch (e) { setProblem(mcpProblem(e)); } setBusy(false); };
-  const load = () => act(async () => { setListed(null); setPicked([]); setListed(await v2.composioTools(key(), toolkit.trim().toLowerCase())); });
+  // Each change of the key or toolkit (and each load) is a new ask: an answer to an older one is dropped, never shown
+  // under the toolkit now in the field.
+  const asked = useRef(0);
+  const changed = () => { asked.current++; setListed(null); };
+  const load = () => act(async () => {
+    const mine = ++asked.current;
+    setListed(null); setPicked([]);
+    const answer = await v2.composioTools(key(), toolkit.trim().toLowerCase());
+    if (mine === asked.current) setListed(answer);
+  });
   const save = () => act(async () => {
     const answer = await v2.saveComposioServer(name.trim(), key(), listed!.toolkit, picked);
     form.current?.reset();
@@ -228,11 +237,11 @@ function ComposioForm({ v2, onClose, onSaved }: { v2: Client; onClose: () => voi
   }
   return (
     <form ref={form} autoComplete="off" onSubmit={(e) => { e.preventDefault(); if (listed && picked.length && name.trim()) void save(); }} aria-label="Add from Composio" className="space-y-4 border bg-card p-4"
-      onInput={(e) => { if ((e.target as HTMLInputElement).name === "composio-key") setListed(null); }}>
+      onInput={(e) => { if ((e.target as HTMLInputElement).name === "composio-key") changed(); }}>
       <p className="text-small text-muted-foreground">Composio runs the toolkit's actions for you. This saves an MCP server that grants only the actions you tick, with your Composio key sealed like any credential.</p>
       <label className="block"><span className="caps mb-2 block text-small font-semibold">Composio API key</span><Input name="composio-key" {...secret} /></label>
       <label className="block"><span className="caps mb-2 block text-small font-semibold">Toolkit</span>
-        <Input name="composio-toolkit" value={toolkit} onChange={(e) => { setToolkit(e.target.value); setListed(null); }} placeholder="github" spellCheck={false} /></label>
+        <Input name="composio-toolkit" value={toolkit} onChange={(e) => { setToolkit(e.target.value); changed(); }} placeholder="github" spellCheck={false} /></label>
       {problem && <Said problem={problem} />}
       {listed && (
         <fieldset className="space-y-2">
@@ -251,7 +260,7 @@ function ComposioForm({ v2, onClose, onSaved }: { v2: Client; onClose: () => voi
       <div className="flex flex-wrap gap-2">
         <Button type="button" size="sm" disabled={busy || !toolkit.trim()} onClick={() => void load()}>Load actions</Button>
         {listed && <Button type="submit" size="sm" variant="solid" disabled={busy || !picked.length || !name.trim()}>{busy ? "Working" : "Save"}</Button>}
-        <Button type="button" size="sm" onClick={() => { form.current?.reset(); onClose(); }}>Cancel</Button>
+        <Button type="button" size="sm" disabled={busy} onClick={() => { form.current?.reset(); onClose(); }}>Cancel</Button>
       </div>
     </form>
   );

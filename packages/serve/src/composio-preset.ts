@@ -23,7 +23,7 @@ const MAX_TOOLS = 500;
 const WAIT_MS = 20_000;
 
 export type ComposioTool = { slug: string; name: string; description: string };
-type Ask = (step: string, method: "GET" | "POST", path: string, body?: unknown, missing?: string) => Promise<Json>;
+type Ask = (step: string, method: "GET" | "POST" | "DELETE", path: string, body?: unknown, missing?: string) => Promise<Json>;
 
 const text = (value: unknown): string => (typeof value === "string" ? value : "");
 const issue = (field: string, reason: string, message: string): InputIssue => ({ field, reason, message });
@@ -138,21 +138,28 @@ export async function composioSave<T extends { tools?: readonly { name: string }
   });
   const id = text(made.id);
   if (!id) throw new ApiError("upstream_failed", "Composio made no MCP server: nothing was saved.");
-  const generated = await ask("making the MCP server's address", "POST", "/api/v3.1/mcp/servers/generate", { mcp_server_id: id, user_ids: [user], managed_auth_by_composio: true });
-  const address = Array.isArray(generated.user_ids_url) ? text(generated.user_ids_url[0]) : "";
-  if (!address) throw new ApiError("upstream_failed", "Composio gave no address for the MCP server: nothing was saved.");
-  let connect: string | undefined;
-  if (authConfig) {
-    const accounts = await ask("checking the connected account", "GET", `/api/v3/connected_accounts?user_ids=${encodeURIComponent(user)}&toolkit_slugs=${encodeURIComponent(toolkit)}`);
-    if (!(Array.isArray(accounts.items) ? accounts.items : []).some((a) => isObject(a) && a.status === "ACTIVE")) {
-      const link = await ask("making the connect link", "POST", "/api/v3/connected_accounts/link", { auth_config_id: authConfig, user_id: user });
-      connect = text(link.redirect_url) || undefined;
+  // From here a failure deletes the server Composio just made, so a failed save leaves nothing in the person's account
+  // (best effort: the save's own error is the one answered).
+  try {
+    const generated = await ask("making the MCP server's address", "POST", "/api/v3.1/mcp/servers/generate", { mcp_server_id: id, user_ids: [user], managed_auth_by_composio: true });
+    const address = Array.isArray(generated.user_ids_url) ? text(generated.user_ids_url[0]) : "";
+    if (!address) throw new ApiError("upstream_failed", "Composio gave no address for the MCP server: nothing was saved.");
+    let connect: string | undefined;
+    if (authConfig) {
+      const accounts = await ask("checking the connected account", "GET", `/api/v3/connected_accounts?user_ids=${encodeURIComponent(user)}&toolkit_slugs=${encodeURIComponent(toolkit)}`);
+      if (!(Array.isArray(accounts.items) ? accounts.items : []).some((a) => isObject(a) && a.status === "ACTIVE")) {
+        const link = await ask("making the connect link", "POST", "/api/v3/connected_accounts/link", { auth_config_id: authConfig, user_id: user });
+        connect = text(link.redirect_url) || undefined;
+      }
     }
+    const server = await save({ url: composioAddress(address), auth: { type: "headers", headers: { "x-api-key": key } } });
+    // Composio's server can leave out an action it was allowed (HACKERNEWS_GET_FRONTPAGE, live 11-13): say which, so a grant
+    // doesn't vanish without a word. A toolkit with no account yet still lists its actions, so this holds before the connect.
+    const listed = new Set((server.tools ?? []).map((tool) => tool.name));
+    const missing = (tools as string[]).filter((slug) => !listed.has(slug));
+    return { server, ...(connect ? { connect_url: connect } : {}), ...(missing.length ? { not_served: missing } : {}) };
+  } catch (error) {
+    await ask("deleting the MCP server it made", "DELETE", `/api/v3.1/mcp/${encodeURIComponent(id)}`).catch(() => undefined);
+    throw error;
   }
-  const server = await save({ url: composioAddress(address), auth: { type: "headers", headers: { "x-api-key": key } } });
-  // Composio's server can leave out an action it was allowed (HACKERNEWS_GET_FRONTPAGE, live 11-13): say which, so a grant
-  // doesn't vanish without a word. A toolkit with no account yet still lists its actions, so this holds before the connect.
-  const listed = new Set((server.tools ?? []).map((tool) => tool.name));
-  const missing = (tools as string[]).filter((slug) => !listed.has(slug));
-  return { server, ...(connect ? { connect_url: connect } : {}), ...(missing.length ? { not_served: missing } : {}) };
 }

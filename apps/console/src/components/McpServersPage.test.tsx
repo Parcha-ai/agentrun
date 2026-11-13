@@ -636,4 +636,30 @@ describe("Settings → MCP servers, the Composio preset", () => {
     expect(p.text()).toContain("Composio's server doesn't list GITHUB_STAR_REPO");
     expect(document.body.innerHTML).not.toContain(KEY);
   });
+
+  it("drops an action list asked for a toolkit no longer in the field, and keeps Cancel off while a save is out", async () => {
+    let late: (r: Response) => void = () => undefined;
+    let first = true;
+    let finish: (r: Response) => void = () => undefined;
+    const s = server([[]], (c) => {
+      if (c.path === TOOLS_PATH && first) { first = false; return new Promise<Response>((done) => { late = done; }); }
+      if (c.method === "PUT") return new Promise<Response>((done) => { finish = done; });
+      return answer(c);
+    });
+    const p = await open(s.v2);
+    await p.click(/^Add from Composio$/);
+    await p.type("composio-key", KEY);
+    await p.type("composio-toolkit", "github");
+    await p.click(/^Load actions$/);
+    await p.type("composio-toolkit", "slack");
+    await act(async () => { late(await json(200, { toolkit: "github", no_auth: false, tools: ACTIONS })); });
+    expect(p.host.querySelector('input[type="checkbox"]')).toBeNull();
+    await p.click(/^Load actions$/);
+    await act(async () => { (p.host.querySelector('input[type="checkbox"][value="GITHUB_LIST_ISSUES"]') as HTMLInputElement).click(); });
+    await p.type("composio-name", "gh");
+    await p.click(/^Save$/);
+    const cancel = [...p.host.querySelectorAll("button")].find((b) => b.textContent === "Cancel");
+    expect(cancel?.disabled).toBe(true);
+    await act(async () => { finish(await json(200, { server: saved({ name: "gh" }) })); });
+  });
 });

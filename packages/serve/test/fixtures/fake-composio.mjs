@@ -35,6 +35,7 @@ export async function startFakeComposio({ apiKey = "fake-test-key", toolkits, au
     if (req.method === "GET" && url.pathname === "/api/v3/auth_configs") return reply(200, { items: authConfigs[slug] ?? [] });
     if (req.method === "POST" && url.pathname === "/api/v3/auth_configs") return reply(201, { auth_config: { id: `ac_made_${++made}` } });
     if (req.method === "POST" && url.pathname === "/api/v3.1/mcp/servers/custom") return reply(201, { id });
+    if (req.method === "DELETE" && url.pathname === `/api/v3.1/mcp/${id}`) return reply(200, { id, deleted: true });
     if (req.method === "POST" && url.pathname === "/api/v3.1/mcp/servers/generate") return reply(200, { user_ids_url: body.user_ids.map((u) => `${mcpOrigin}/v3/mcp/${id}?user_id=${u}&include_composio_helper_actions=true`) });
     if (req.method === "GET" && url.pathname === "/api/v3/connected_accounts") return reply(200, { items: active.includes(url.searchParams.get("toolkit_slugs")) ? [{ status: "ACTIVE" }] : [{ status: "INITIATED" }] });
     if (req.method === "POST" && url.pathname === "/api/v3/connected_accounts/link") return reply(201, { redirect_url: `https://connect.composio.test/link/${body.auth_config_id}` });

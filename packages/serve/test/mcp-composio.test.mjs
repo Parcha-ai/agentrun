@@ -115,6 +115,13 @@ test("a Composio refusal answers in words naming the step, never the key", async
   assert.equal((await failing.api("GET", "/settings/mcp-servers/gh")).status, 404, "nothing is saved");
   holdsNoKey(failing, res.body);
 
+  // A step after Composio made the server fails: the server it made is deleted, not left in the person's account.
+  const late = await setup(t, { fail: { path: "/mcp/servers/generate", status: 400 } });
+  const lateRes = await late.api("PUT", "/settings/mcp-servers/gh/composio", { api_key: late.composio.apiKey, toolkit: "github", tools: ["GITHUB_STAR_REPO"] });
+  assert.equal(lateRes.status, 422, JSON.stringify(lateRes.body));
+  assert.equal(late.composio.to(`/api/v3.1/mcp/${late.composio.mcpId}`, "DELETE").length, 1, "the server Composio made is deleted");
+  assert.equal((await late.api("GET", "/settings/mcp-servers/gh")).status, 404, "nothing is saved");
+
   const gone = await setup(t);
   const unknown = await gone.api("POST", "/settings/mcp-servers/composio/tools", { api_key: gone.composio.apiKey, toolkit: "nope" });
   assert.equal(unknown.status, 422, JSON.stringify(unknown.body));
