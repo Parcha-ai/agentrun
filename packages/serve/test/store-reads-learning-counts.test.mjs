@@ -27,7 +27,7 @@ const iso = (ms) => new Date(ms).toISOString();
 /** The grader's answer that gives `verdict` again (parseVerdict's input). */
 const answerOf = (verdict) => JSON.stringify({
   merge: verdict.merge, reason: verdict.reason,
-  items: verdict.items.map((item) => ({ file: item.file, decision: item.pending ? "pending" : item.keep ? "keep" : "drop", ...(item.origin ? { origin: item.origin } : {}), ...(item.question ? { question: item.question } : {}), ...(item.why ? { why: item.why } : {}) })),
+  items: verdict.items.map((item) => ({ file: item.file, decision: item.pending ? "pending" : item.keep ? "keep" : "drop", general: item.keep, ...(item.origin ? { origin: item.origin } : {}), ...(item.question ? { question: item.question } : {}), ...(item.why ? { why: item.why } : {}) })),
 });
 
 /** The store: agents and their revisions, then each run started at its time and ended as its case says. */

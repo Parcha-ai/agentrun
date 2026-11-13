@@ -64,8 +64,9 @@ export async function runnerBeside(dataDir: string, { loops, drainMs, env, janit
   const { hostCommandRefusals } = await import("../computers.js");
   const computers = runnerComputers(store, runs, seal.key, { dockerPaths: () => dockerPathsForRuns(runs, dataDir), hostAddresses: () => hostAddressesOnce(runs), hostWhy: hostCommandRefusals(PROVIDERS, process.env.PATH), ...(hub ? { hub } : {}) });
   // `mcpLoopback`: the server beside it is a local install (Serve.localInstall), so its runs may reach an MCP server on
-  // loopback; any other runner's runs never do.
-  const createLoop = dispatchRunner({ env: runs, data: dataDir, journal: (claim) => store.journal(claim), store, sealKey: seal.key, routeOf, computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps, ...(mcpLoopback ? { mcpLoopback: true } : {}) });
+  // loopback; any other runner's runs never do. A run's log lines (a learning run's skipped generality check) go to
+  // stderr with the runner's other lines.
+  const createLoop = dispatchRunner({ env: runs, data: dataDir, journal: (claim) => store.journal(claim), store, sealKey: seal.key, routeOf, computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps, ...(mcpLoopback ? { mcpLoopback: true } : {}), log: (line) => console.error(`agentrun-serve runner: ${line}`) });
   // It claims by the host's memory as well as by --max-runs (memory-claim.ts): a heavy harness's run waits queued for room.
   const { runnerMemory } = await import("./memory-claim.js");
   // Before it claims: the scratch folders of runs that ended after their runner died (scratch-sweep.ts).

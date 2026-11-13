@@ -14,6 +14,11 @@ export interface DescriptorKey {
 	/** The create() option it fills (apiKey). */
 	readonly option: string;
 	readonly required: boolean;
+	/**
+	 * A person picks its value from the vendor's own list rather than typing it (Orgo's workspace, by name): Settings
+	 * offers what the built provider's keyChoices(option) reads with the other keys. Absent: typed.
+	 */
+	readonly picked?: boolean;
 }
 
 /** A setting that is no key but fills a create() option, with the value used when the server names none. */
@@ -161,6 +166,7 @@ export function descriptorProblems(value: unknown): string[] {
 	named(d.keys, "keys");
 	named(d.settings, "settings");
 	if (Array.isArray(d.keys) && d.keys.some((key) => typeof key?.required !== "boolean")) problems.push("each key says whether it is required");
+	if (Array.isArray(d.keys) && d.keys.some((key) => key?.picked !== undefined && typeof key.picked !== "boolean")) problems.push("a key's picked is true or false");
 	if (d.ledger !== undefined && (typeof d.ledger?.option !== "string" || d.ledger.option === "")) problems.push("ledger names the option it fills");
 	if (d.imageEnv !== undefined && (typeof d.imageEnv !== "string" || !/^[A-Z][A-Z0-9_]*$/.test(d.imageEnv))) problems.push("imageEnv is an environment variable name (capital letters, digits and underscores)");
 	if (d.hostEnv !== undefined && (!Array.isArray(d.hostEnv) || d.hostEnv.some((name) => typeof name !== "string" || name === ""))) problems.push("hostEnv is a list of environment variable names");

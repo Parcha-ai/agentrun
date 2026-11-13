@@ -1,4 +1,4 @@
-// The store's one schema, version 10 (design 2.1). Nothing migrates into it: the rewrite replaces the old stores, and a store
+// The store's one schema, version 11 (design 2.1). Nothing migrates into it: the rewrite replaces the old stores, and a store
 // an older build made is refused as a version this build does not know. The server sets it up once at its start (a
 // store_meta row holds the version); a runner refuses a version it does not know. Version 2 adds the computer ledger;
 // version 3 numbers each save of a sign-in (sign_ins.save); version 4 stamps an MCP token's end (mcp_servers.token_until);
@@ -7,7 +7,8 @@
 // (learning_proposals.round: a follow-up to a run that ended looks back again, a round of its own); version 8 adds the
 // run-change feed (run_changes), each channel post's tries (channel_attempts) and the claim a post's try settles under
 // (channel_posts.claim); version 9 adds where a live viewer answers (computer_viewers.host, a runner's live host,
-// live-reach.ts); version 10 pairs a person's own computer (paired_computers, pairing_codes).
+// live-reach.ts); version 10 pairs a person's own computer (paired_computers, pairing_codes); version 11 keeps a command's answer
+// (commands.answer).
 // Conventions: every time is INTEGER epoch milliseconds; JSON is TEXT checked by json_valid; money is REAL US dollars;
 // sealed columns hold ciphertext only (sealed with the server's key outside the store), so the store never sees a secret
 // in the clear. Foreign keys are on (the connection's pragma).
@@ -19,7 +20,7 @@
 // journal tables, keyed by run_id (store/journal): one schema for every run's journal, so a query joins runs and their
 // journals.
 
-export const SCHEMA_VERSION = 10;
+export const SCHEMA_VERSION = 11;
 
 /** One answer per approval of a run: a second approve or deny command naming the same approval is refused
  *  (StoreConstraint), so the first answer a person gives wins from the moment it is written, before the runner takes it
@@ -149,7 +150,8 @@ export const STORE_DDL: readonly string[] = [
     created_at INTEGER NOT NULL,
     taken_at INTEGER,
     refused TEXT,
-    tries INTEGER NOT NULL DEFAULT 0
+    tries INTEGER NOT NULL DEFAULT 0,
+    ${json("answer", true)}
   ) STRICT`,
   `CREATE INDEX IF NOT EXISTS commands_by_run ON commands (run_id, id)`,
   `CREATE INDEX IF NOT EXISTS commands_untaken ON commands (run_id) WHERE taken_at IS NULL`,

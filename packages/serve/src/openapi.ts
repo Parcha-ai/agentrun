@@ -10,9 +10,12 @@ import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { NOTE_ORIGINS, NOTE_STATUSES, NOTE_TYPES } from "./learn/index.js";
 import { ERROR_STATUS } from "./errors.js";
 import { TAKE_OVER_MINUTES } from "./computer-routes.js";
+import { HOLD_MAX_MINUTES, HOLD_MINUTES } from "./computer-held.js";
+import { CALL_MS, PROTOCOL_METHODS } from "./computer-channel.js";
 import { LAUNCH_LOST, SETUP_LOST } from "./files.js";
 import { HARNESSES } from "./harness.js";
 import { LEARNING_LABEL, LEARNING_MODES, LEARNING_REASONS, LEARNING_STATES, RUN_LEARNING_USE } from "./learning.js";
+import { BATCH_CELL_MAX, BATCH_ROWS_MAX } from "./learning-batch.js";
 import { CHEAPER_AFTER_RUNS, COST_CSV_COLUMNS, COST_WINDOW, COST_RUNS_DEFAULT, COST_RUNS_MAX, RUN_PATHS } from "./learning-cost.js";
 import { EVAL_JOBS_MAX, EVAL_TEXT_MAX, EVALS_KEPT } from "./learning-evals.js";
 import { LOOP_COMPILES_MAX, LOOP_POINTS_MAX } from "./store-reads/loop.js";
@@ -656,6 +659,7 @@ const COMPUTER_PROVIDER = closedWith({
   host_tools: CHOICE_HOST_TOOLS,
 }, {
   why: { type: "string", description: "Why it is not ready, in words naming the setting to fill." },
+  picked: { type: "array", items: { type: "string" }, description: "The names of the secrets a person picks from the vendor's own list (GET /computers/{provider}/choices: Orgo's workspace, by name) rather than pastes. Absent when it has none." },
   shell_note: CHOICE_SHELL_NOTE,
   gpu: { ...COMPUTER_PROVIDER_GPU, description: "A sandbox provider's GPUs, where it declares them: the choices an agent's `computer.gpu` names." },
   network: { type: "string", description: "For a vendor-hosted computer, what this server's allow-list (AGENTRUN_BOX_ALLOW) means for it, in words: one with no network has none (\"no network, so this server's allow-list isn't offered\"); one on an open network is open (\"an open network (the vendor's own, or public addresses from this machine); this server's allow-list doesn't apply\"), except where AGENTRUN_BOX_ALLOW is none and the computer needs a network, which this server refuses (\"needs a network, which this server refuses: its AGENTRUN_BOX_ALLOW is none\"; the provider is then not ready, and its runs are refused). Absent where the allow-list applies (Docker), or where it depends on the image a provider's configurations name." },
@@ -742,13 +746,45 @@ const ACCOUNT_TEST = {
     closed({ ok: { const: false }, why: { type: "string", description: "Why the test did not pass, in plain words naming what to check: never a key." } }),
   ],
 };
+/** GET /computers/{provider}/choices (computers.ts choices): each picked key, its choices or why there are none. */
+const COMPUTER_CHOICES = closed({
+  choices: {
+    type: "array",
+    description: "Each key the provider lists under `picked`, in its descriptor's order.",
+    items: {
+      oneOf: [
+        closedWith({
+          key: { type: "string", description: "The KEY, as PUT /computers/{provider}/keys takes it." },
+          options: { type: "array", description: "The values the vendor's list offers, in its order.", items: closed({ value: { type: "string", description: "The value saved under the key." }, label: { type: "string", description: "Its words, as a person picks it (a workspace's name)." } }) },
+        }, {
+          saved: { type: "string", description: "The option whose value is saved under the key now, where one is. Absent when none is saved, or the saved one is not offered." },
+        }),
+        closed({ key: { type: "string", description: "The KEY, as PUT /computers/{provider}/keys takes it." }, why: { type: "string", description: "Why there is none to pick, in plain words: never a key." } }),
+      ],
+    },
+  },
+});
+/** held/1: what POST /runs/{run_id}/start and .../computer/release answer (computer-held-routes.ts heldRoute). */
+const HELD_ANSWER = (state: "started" | "released") => closed({ held: closed({ state: { const: state } }) });
 /** A run's computer, on the run read (run-computer.ts runComputerField). */
 const RUN_COMPUTER = {
   ...closedWith({
     kind: { enum: ["sandbox", "desktop", "phone", "browser"] },
     provider: { type: "string" },
     state: { enum: ["starting", "ready", "taken_over", "ended", "failed"], description: "`taken_over` while the owner holds the run's desktop or phone (POST /runs/{run_id}/computer/take-over); `failed` when the run could not have its computer (error code `computer_unavailable`)." },
-  }, { why: { type: "string", description: "With `failed`: the server's words, naming the setting to fill." } }),
+  }, {
+    why: { type: "string", description: "With `failed`: the server's words, naming the setting to fill." },
+    held: {
+      ...closedWith({
+        state: { enum: ["starting", "waiting", "started", "ended", "released"], description: "`starting` until the run's computer comes up; `waiting`, up and held, the agent not started (POST /runs/{run_id}/start); `started`, the agent runs; `ended`, the agent is done or was stopped and the run keeps the computer for its owner; `released`, let go (POST /runs/{run_id}/computer/release, no call for `minutes`, or the run's end)." },
+        minutes: { type: "integer", minimum: 1, maximum: HOLD_MAX_MINUTES, description: "How long the hold waits with no call from its owner (the run's `hold_minutes`)." },
+      }, {
+        until: { type: "string", format: "date-time", description: "When the hold lets the computer go if no call comes first. Absent once released." },
+        why: { enum: ["timeout", "lost"], description: "Why it was let go when no release did: `timeout`, no call came for `minutes`; `lost`, the runner that held it lost the run, and its computer with it." },
+      }),
+      description: "A run started with `hold: true`: where its held computer is.",
+    },
+  }),
   description: "The run's computer, its agent's `computer` setting: absent for a run with none.",
   "x-agentrun-serve": "computer/1",
 };
@@ -1041,8 +1077,9 @@ const LEARNING_COST = closed({
     workflow: { type: "string", description: "The learned workflow, by name." },
     digest: { type: "string", description: "The version of it its newest run served first ran: the first 16 hex characters of its workflow.json's sha256. A new version starts its count from zero." },
     state: { enum: ["serving", "needs_revision"], description: `\`serving\`: it runs first on every run it fits. \`needs_revision\`: over its last ${COST_WINDOW} runs served at this version, its mean all-in cost (\`served\`) is at or over the agent's cost by hand (\`by_hand\`), so it no longer runs first; each run it would have served asks the agent for a new version, which runs first again.` },
-    served: COST_MEAN(`The mean cost of its newest ${COST_WINDOW} runs served first at this version whose cost is known (the workflow's nodes and, after a handback, the agent's work); null when none is.`),
-    by_hand: COST_MEAN("The agent's cost by hand: the mean cost of its runs on the `agent` path whose cost is known or, with none, of its runs before the workflow first ran; null when there are none: the workflow then keeps serving."),
+    served: COST_MEAN(`The mean all-in cost (\`total_usd\`: the run's own cost, the workflow's nodes and, after a handback, the agent's work, with every learning round booked for it) of its newest ${COST_WINDOW} runs served first at this version whose all-in cost is known; null when none is.`),
+    by_hand: COST_MEAN("The agent's cost by hand: the mean all-in cost (`total_usd`) of its runs on the `agent` path whose all-in cost is known or, with none, of its runs before the workflow first ran; null when there are none: the workflow then keeps serving."),
+    unknown_cost_runs: { ...COUNT, description: "How many runs `served` and `by_hand` would have read have no known all-in cost: left out of their means, never read as 0." },
   }), description: "Each learned workflow that has run first on one of these runs, at its newest version, and where it stands against the money rule: it runs first while its cost a run stays under the agent's by hand. It does not catch a workflow that answers wrong with confidence." },
   summary: closed({
     takeover: { oneOf: [closed({ n: { type: "integer", minimum: 1 }, run_id: { type: "string" } }), { type: "null" }], description: "The first run a learned workflow finished alone (`path` `workflow`); null before one." },
@@ -1111,6 +1148,43 @@ const SERVING = closed({
   digest: { ...NULL_STRING, description: "The revision that serves first (the champion: the one promoted last, while its newest record still says promote); null when none does and the agent takes the runs." },
   replaying: { ...NULL_STRING, description: "A newer revision whose replay is at work, when there is one: it serves only once its replay promotes it; the champion serves meanwhile." },
 });
+const BATCH_LESSONS = closed({ notes: { type: "array", items: { type: "string" } }, skills: { type: "array", items: { type: "string" } }, workflows: { type: "array", items: { type: "string" } } });
+const BATCH_ROW = closedWith(
+  { n: { type: "integer", minimum: 1, description: "The row's number, 1 the first: rows run in this order." }, state: { enum: ["pending", "running", "done", "failed"], description: "`done`: the run answered, was told the reference, and that turn completed and its learning settled; `failed`: its run failed, was cancelled or waited on a person, its review was not sent, or its review's turn did not complete (`error` says). A row is failed only once its run has stopped." }, reference: { type: "string", description: "The reference answer, as the person gave it." } },
+  {
+    run_id: { type: "string", description: "The row's run: its page has the timeline, the answer and the learning." },
+    answer: { ...NULL_STRING, description: "The run's answer as compared (the `answer_field` of a JSON answer when the batch names one), cut at 2000 characters (compared whole: the review quotes it to 2000 characters and says when it was cut); null when it gave none." },
+    right: { type: "boolean", description: "Whether the answer equals the reference once trimmed, case-folded and whitespace-collapsed (two numbers by value). A display: the learning grade is the judge." },
+    reviewed: { type: "boolean", description: "The reference was sent to the run as a review, once." },
+    path: { enum: RUN_PATHS.filter((path) => path !== "replay"), description: "The path the run's job took, read when it answered, before its review (GET /agents/{agent_id}/learning/cost's `path`): whoever wrote its answer." },
+    cost_usd: COST_USD("The job's own cost."), learning_usd: COST_USD("What learning cost for the run."), total_usd: COST_USD("Their sum; for a failed row, what its run cost."),
+    learned: { ...BATCH_LESSONS, description: "The notes, skills and workflow drafts the run's learning kept, by name." },
+    merged: { ...NULL_STRING, description: "The commit of the agent's learning folder its learning last merged (its job's round or its review's)." },
+    error: { type: "string", description: "Why a failed row failed." },
+  },
+);
+const BATCH_HEAD = {
+  id: { type: "string" }, agent_id: { type: "string" }, created_at: DATE_TIME, ended_at: { ...DATE_TIME, type: ["string", "null"] },
+  status: { enum: ["running", "completed", "cancelled", "stopped"], description: "`completed`: every row ran; `cancelled`: a person's cancel; `stopped`: the batch could not go on (`stopped` says why, or `error` for the server's own failure)." },
+  stopped: { enum: ["cap", "cost_unknown", "learning_off", null], description: "Why a batch stopped before its last row: `cap`, the cap's room does not cover another row (the mean total of the rows done); `cost_unknown`, a row's cost is not known, and a cap is never guessed at; `learning_off`, the agent no longer learns here (its learning, or the server's, was turned off: `error` says which), checked before every row, so no row runs unlearned." },
+  inputs: { type: "array", items: { type: "string" }, description: "The columns each run is given, as {column: value}." },
+  answer: { type: "string", description: "The column holding the reference answer: never given to the run before its answer." },
+  answer_field: { ...NULL_STRING, description: "The dotted path in a JSON answer the reference is compared to; null: the whole answer." },
+  effort: { ...NULL_STRING, description: "The runs' effort, when the batch names one." },
+  max_cost_usd: { type: "number", exclusiveMinimum: 0, description: "Caps what the batch's runs spend: each row's run (its job, its look-back and its review's turn) is capped at what is left, and a row starts only when what is left covers the mean total of the rows done. The grades of what the runs learned are booked into the batch's cost and shown, but no cap stops a grade (as on every run), so the batch's cost can pass the cap by its last grades." },
+  total: { ...COUNT, description: "The rows." }, finished: { ...COUNT, description: "Rows done or failed." },
+  right: { ...COUNT, description: "Done rows whose answer is the reference." }, wrong: { ...COUNT, description: "Done rows whose answer is not." }, failed: { ...COUNT, description: "Failed rows." },
+  spent_usd: { type: "number", minimum: 0, description: "The finished rows' total cost." }, unknown_cost_rows: { ...COUNT, description: "Finished rows whose cost is not known (the batch stops on the first)." },
+  paths: closed({ agent: COUNT, handed_back: COUNT, workflow: COUNT }, "Done rows by the path their run took."),
+  lessons: { ...BATCH_LESSONS, description: "What the batch's learning kept, each name once." },
+  revisions: { type: "array", items: closed({ row: { type: "integer", minimum: 1 }, commit: NULL_STRING, workflows: { type: "array", items: { type: "string" } } }), description: "The merges that touched learned workflows, in order, one per merge (a row's job and its review each learn in a round of their own): the row whose learning made it, that merge's commit of the agent's learning folder, and the workflows it added or changed." },
+  cost_usd: { type: ["number", "null"], minimum: 0, description: "The batch's cost so far; in a progress read, the row in flight's too, as its row will book it: its run's cost so far and its learning's, grades that ended included. Null when a finished row's cost, or the row in flight's, is not known: the known part is never shown as the whole." },
+  remaining_usd: { type: ["number", "null"], minimum: 0, description: "What is left of the cap: `max_cost_usd` less `spent_usd`; null when a finished row's cost is not known." },
+};
+const LEARNING_BATCH_SUMMARY = closedWith(BATCH_HEAD, { error: { type: "string", description: "The server's own failure that stopped the batch." } });
+const LEARNING_BATCH = closedWith({ ...BATCH_HEAD, current: { type: ["integer", "null"], minimum: 1, description: "The row whose run is in flight." }, rows: { type: "array", items: BATCH_ROW } }, { error: { type: "string" } });
+const BATCH_ID = { name: "batch_id", in: "path", required: true, schema: { type: "string", pattern: "^lb_[0-9a-f]{16}$" } };
+const BATCH_MARK = { "x-agentrun-serve": "learningbatch/1" };
 
 const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
   "/runs/{run_id}/grade": {
@@ -1186,6 +1260,36 @@ const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
       ],
       responses: { "200": { description: "The agent's cost per run.", content: { "application/json": { schema: LEARNING_COST }, "text/csv": { schema: { type: "string" } } } }, ...errors(400, 401, 404, 429, 500) },
       "x-agentrun-serve": "learningcost/1",
+    },
+  },
+  "/agents/{agent_id}/learning/batches": {
+    post: {
+      operationId: "createLearningBatch", tags: ["agents"], summary: "Learn from rows: run the agent on each in order, with learning on, and tell it the reference answer after each",
+      description: `Rows with the columns to give the agent (\`inputs\`) and the one that holds the reference answer (\`answer\`; never given to the run before it answers). The server runs the agent on each row in order, one at a time (what a row teaches is what the next is given), as POST /agents/{agent_id}/runs does with \`input\` = {column: value}; when a run has answered and its learning has settled, it is sent a review, \`Review: the reference answer is "X"; you answered "Y".\`, the same words right or wrong (an answer past 2000 characters quoted to there, the review saying it was cut), as a message to the finished run, which looks back again. Progress is kept by the server, never the page: read it at GET .../batches/{batch_id}. One batch runs at a time per agent (409 agent_not_runnable otherwise), and the agent's current revision must say learning (409 otherwise). \`max_cost_usd\` is required and caps the runs: each row's run (job, look-back, review turn) is capped at what is left, \`cap_mode\` strict (every input token priced uncached, so no request passes it, a cache miss included), and a row starts only when what is left covers the mean total of the rows done; the grades of what they learned are booked and shown but uncapped, as on every run. The loop stops \`cap\` there, and \`cost_unknown\` when a row's cost is not known. At most ${BATCH_ROWS_MAX} rows, each cell at most ${BATCH_CELL_MAX} characters, the whole body under the body limit. A batch still running when the server stopped takes up at its first unfinished row when it starts again.`,
+      parameters: [AGENT_ID],
+      requestBody: { required: true, content: { "application/json": { schema: closedWith(
+        { inputs: { type: "array", items: { type: "string" }, minItems: 1, description: "The columns each run is given." }, answer: { type: "string", description: "The column holding the reference answer." }, rows: { type: "array", minItems: 1, maxItems: BATCH_ROWS_MAX, items: { type: "object", additionalProperties: { type: "string" } }, description: "Each row: {column: text}, with every input column and the answer column." }, max_cost_usd: { type: "number", exclusiveMinimum: 0, description: "Caps what the batch's runs spend (job, look-back, review turn); grades are booked and shown, uncapped." } },
+        { answer_field: { type: "string", description: "A dotted path into a JSON answer to compare, such as result.code; absent: the whole answer." }, effort: { type: "string", description: "The runs' effort, as a run's." } }) } } },
+      responses: { "202": { ...json(LEARNING_BATCH, "The batch, started."), headers: { Location: { schema: { type: "string" } } } }, ...errors(400, 401, 403, 404, 409, 413, 422, 429, 500) }, ...BATCH_MARK,
+    },
+    get: {
+      operationId: "listLearningBatches", tags: ["agents"], summary: "The agent's learning batches, latest first",
+      description: "The latest 20, each as its header (no rows). Every text is cut as the agent's learning reads are: 403 when they are withheld.",
+      parameters: [AGENT_ID], responses: { "200": json(closed({ batches: { type: "array", items: LEARNING_BATCH_SUMMARY } }), "The batches."), ...errors(401, 403, 404, 429, 500) }, ...BATCH_MARK,
+    },
+  },
+  "/agents/{agent_id}/learning/batches/{batch_id}": {
+    get: {
+      operationId: "getLearningBatch", tags: ["agents"], summary: "A learning batch's progress: rows done, right or wrong, lessons, workflow revisions, cost, the path each run took",
+      description: "Read from the store: it holds after a page reload or a server restart (a running batch takes up again). Each row's input is not repeated here: its run holds it. Every text (an answer, a reference, an error, a lesson's name) is cut of the server's secrets and the agent's sign-in pointers as they are now, as GET /agents/{agent_id}/learning cuts them, and withheld the same way (403) when one of the agent's sign-ins can't be read here.",
+      parameters: [AGENT_ID, BATCH_ID], responses: { "200": json(LEARNING_BATCH, "The batch."), ...errors(401, 403, 404, 429, 500) }, ...BATCH_MARK,
+    },
+  },
+  "/agents/{agent_id}/learning/batches/{batch_id}/cancel": {
+    post: {
+      operationId: "cancelLearningBatch", tags: ["agents"], summary: "Cancel a running learning batch",
+      description: "Cancels the run in flight and ends the loop; rows done stay done, and the row in flight is failed. A batch that already ended is answered as it is. Answers the batch once its loop has ended, cut as a read is; a 403 (withheld) answers a cancel that stood.",
+      parameters: [AGENT_ID, BATCH_ID], responses: { "200": json(LEARNING_BATCH, "The batch."), ...errors(401, 403, 404, 429, 500) }, ...BATCH_MARK,
     },
   },
   "/agents/{agent_id}/learning/evals": {
@@ -1538,6 +1642,47 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-serve": "computer/1",
     },
   },
+  "/runs/{run_id}/start": {
+    post: {
+      operationId: "startRun", tags: ["runs"], summary: "Start a held run's agent",
+      description: "A run started with `hold: true` waits, its computer up and held, until this starts its agent on its input. A row the run's runner applies: answered once the agent is started. 404 for a run that holds no computer; 409 `computer_not_live` when its computer is not up yet (`computer.held.state` starting), its agent already started, or the computer was let go; 503 when no runner took the row within a minute. The owner's: the server's token or the owner's session. A run never holds the server's token.",
+      parameters: [ref("parameters/RunId")],
+      requestBody: { required: false, content: { "application/json": { schema: closed({}) } } },
+      responses: { "200": json(HELD_ANSWER("started"), "The agent is started."), ...errors(401, 404, 409, 422, 429, 500, 503) },
+      "x-agentrun-serve": "held/1",
+    },
+  },
+  "/runs/{run_id}/computer/call": {
+    post: {
+      operationId: "callRunComputer", tags: ["runs"], summary: "Send a run's computer one protocol call",
+      description: `One call of the computer protocol (spec/computer) on a running run's computer: a sandbox, a desktop or a phone. A run that holds its computer (\`hold: true\`) takes calls before its agent starts, while it runs, and after it ended until the release; each call starts the hold's \`hold_minutes\` again. The answer is the computer's, verbatim: \`{ok: true, value}\` or \`{ok: false, error: {code, message, data?}}\`, the method's result or error as the protocol defines it. A row the run's runner answers, behind the owner's take-over as the agent's calls are: while a person holds the desktop or phone, the call waits for the hand-back. A call runs ${CALL_MS / 1000} seconds at most, its wait included (then \`{ok: false, error: {code: "timeout"}}\`). The run's record keeps each call's method, outcome and time, never its params or its answer's bytes. \`method\` is one of the protocol's methods (422 otherwise). 404 for no such run; 409 \`computer_not_live\` when the run is not running, has no computer that takes calls, or let its computer go; 503 when no runner took the row in time. The owner's: the server's token or the owner's session. A run never holds the server's token, so its agent drives its computer through its own tools alone.`,
+      parameters: [ref("parameters/RunId")],
+      requestBody: {
+        required: true,
+        content: { "application/json": { schema: closedWith({ method: { enum: [...PROTOCOL_METHODS], description: "The protocol method." } }, { params: { type: "object", additionalProperties: true, description: "The method's params. Absent: {}." } }) } },
+      },
+      responses: {
+        "200": json({
+          oneOf: [
+            closed({ ok: { const: true }, value: { description: "The method's result." } }),
+            closed({ ok: { const: false }, error: { type: "object", additionalProperties: true, required: ["code", "message"], properties: { code: { type: "string" }, message: { type: "string" } }, description: "The computer's error: its code, its words and its data." } }),
+          ],
+        }, "The computer's answer."),
+        ...errors(401, 404, 409, 422, 429, 500, 503),
+      },
+      "x-agentrun-serve": "channel/1",
+    },
+  },
+  "/runs/{run_id}/computer/release": {
+    post: {
+      operationId: "releaseRunComputer", tags: ["runs"], summary: "Let a held run's computer go",
+      description: "The owner is done with the computer a run holds (`hold: true`). After the agent's end the run then ends as its agent did, and its computer goes with it; before the start, the run ends cancelled, its agent never run; while the agent runs, the run no longer waits after its end. A row the run's runner applies. 404 for a run that holds no computer, and for one already let go (released, timed out, or the run is over); 409 `computer_not_live` when it is not up yet; 503 when no runner took the row within a minute. The owner's: the server's token or the owner's session.",
+      parameters: [ref("parameters/RunId")],
+      requestBody: { required: false, content: { "application/json": { schema: closed({}) } } },
+      responses: { "200": json(HELD_ANSWER("released"), "The computer is let go."), ...errors(401, 404, 409, 422, 429, 500, 503) },
+      "x-agentrun-serve": "held/1",
+    },
+  },
   "/runs/{run_id}/computer": {
     get: {
       operationId: "getRunComputer", tags: ["runs"], summary: "Watch the run's computer live and take it over: its viewer link, for the owner",
@@ -1615,6 +1760,15 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       description: "One account-level read with the provider's saved keys (a list by label, the vendor's own check): it never makes a computer, so it never spends. ok with what it read; else why, in plain words naming what to check (a key not saved, a key the vendor refused, a vendor not reached), never a key.",
       parameters: [PROVIDER_PARAM],
       responses: { "200": json(ACCOUNT_TEST, "The test's answer."), ...errors(401, 404, 429, 500) },
+      ...COMPUTER_MARK,
+    },
+  },
+  "/computers/{provider}/choices": {
+    get: {
+      operationId: "listComputerChoices", tags: ["local"], summary: "The values a computer provider's picked keys offer, read from the vendor",
+      description: "Each key the provider lists under `picked` (GET /computers), with the values the vendor's own list offers for it, read with the provider's saved keys (Orgo's workspaces, each its id and its name): it never makes a computer. A person picks one, and PUT /computers/{provider}/keys saves its value under the key. Where there is none to pick, `why` says so in plain words (a required key not saved, an account with none), never a key. A provider with no picked key answers an empty list.",
+      parameters: [PROVIDER_PARAM],
+      responses: { "200": json(COMPUTER_CHOICES, "Each picked key's choices, or why there are none."), ...errors(401, 404, 429, 500) },
       ...COMPUTER_MARK,
     },
   },
@@ -2345,6 +2499,8 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       description: "Archil mode only: the disk this run keeps its folder on, instead of its agent's own (a disk per customer, say). It is the caller's: agentrun never makes, renames or removes it, and removing the agent's disk never touches it. It is read at Archil before the run is made: none of that id, or one in another region than the account key's, is 422 at `archil_disk.disk_id` in words naming the region, and no run is made (503 when Archil can't be asked). The claim reads it again, so a disk removed in between fails the run in the same words. Its id alone: never a key or a region. The run's mount credential is minted on this disk, so Archil takes it on no other. 422 in Mode 1, or with no account key saved.",
       "x-agentrun-serve": "archil/1",
     },
+    hold: { type: "boolean", description: `true: the run claims its computer and holds it for its owner. Its agent waits until POST /runs/{run_id}/start; meanwhile POST /runs/{run_id}/computer/call sends the computer protocol calls, to set a task up. After the agent's end the run keeps the computer, for the owner's calls (to check what the agent left), until POST /runs/{run_id}/computer/release; then it ends as its agent did. A stop (POST /runs/{run_id}/stop) ends the agent and keeps the computer the same way, and the run ends stopped at the release; a cancel ends the run at once and lets the computer go. Each wait lets the computer go after \`hold_minutes\` with no call from the owner: before the start, the run then ends cancelled. The run read's \`computer.held\` says where the hold is. Only for an agent whose computer is a sandbox, a desktop or a phone, never a workflow (422 \`hold\` not_an_option otherwise). A run that loses its runner, or whose harness restarts after a fault, loses the computer it held: it fails, and \`computer.held.why\` is \`lost\`.`, "x-agentrun-serve": "held/1" },
+    hold_minutes: { type: "integer", minimum: 1, maximum: HOLD_MAX_MINUTES, description: `With \`hold: true\`: how long the held computer waits with no call from its owner, before the start and after the agent's end. Absent: ${HOLD_MINUTES}. Above ${HOLD_MAX_MINUTES}, or without hold, is 422.`, "x-agentrun-serve": "held/1" },
   },
   TimelineUsage: { ...SO_FAR, not_metered: { type: "integer", minimum: 1, description: "Set when the run made tool calls with no price (an MCP tool its owner set none for): how many. They ran outside the run's cost and its cap, and never make `usd` unknown.", "x-agentrun-serve": "mcpservers/1" } },
   Usage: { unpriced_runs: { type: "integer", minimum: 0, description: "How many runs in the report have a cost no one knows on them: they add no dollars to `total_usd`, so no sum passes them off as $0.", "x-agentrun-serve": "costsofar/1" } },
@@ -2441,6 +2597,31 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       items: { type: "object", additionalProperties: false, required: ["label", "kind", "status", "duration_ms"], properties: { label: { type: "string" }, kind: { type: "string", description: "The node's kind, as the workflow DSL names it (`extract`, `agent`, `call`, ...)." }, status: { type: "string", description: "How the node ended: `ok`, `failed` or `escalated`. Why a node failed is never shown: its text may hold part of a secret." }, duration_ms: { type: "number" }, model: { type: "string", description: "A model node's (agent, decide, extract, report): the model it ran on, as the run's model route names it. Absent on a call node." }, tier: { type: "string", description: "The tier the model node named (`fast`, `strong`); absent for none, which runs on the run's own model." } } },
       description: "On a learned workflow call's `tool_result` row alone (`tool_name` learned_workflow): each of the workflow's nodes that ran, in the order they ended, at most 64. Absent on every other row.",
       "x-agentrun-serve": "learnednodes/1",
+    },
+    computer_calls: {
+      type: "array",
+      items: {
+        type: "object", additionalProperties: false, required: ["method", "ok", "ms"],
+        properties: {
+          method: { type: "string", description: "The computer protocol method (spec/computer)." },
+          ok: { type: "boolean" },
+          ms: { type: "number" },
+          code: { type: "string", description: "The error's code, when the call failed." },
+          steps: {
+            type: "array",
+            items: { type: "object", additionalProperties: false, required: ["do"], properties: { do: { type: "string", description: "The step's kind: press, set, perform, click, type, key, nav, scroll or drag." }, route: { type: "string", description: "The route it ran by." }, verified: { type: "boolean", description: "Whether a readback showed it took." }, error: { type: "string", description: "The kind of error that refused it." } } },
+            description: "A ui.act call's steps, in order.",
+          },
+          expect: { enum: ["met", "unmet"], description: "A ui.act call's expect: whether it held." },
+        },
+      },
+      description: "On a tool call's `tool_result` row alone: each computer protocol call the tool made, in order, at most 200. Never a param's value or an answer's bytes: no screenshot, and no text a step set or typed. Absent on a call that made none.",
+      "x-agentrun-serve": "computercalls/1",
+    },
+    computer_calls_dropped: {
+      type: "integer",
+      description: "On a `tool_result` row whose call made more than 200 computer calls: how many past the 200 its record left out. Absent otherwise.",
+      "x-agentrun-serve": "computercalls/1",
     },
     learning: {
       ...closed({ state: { enum: [...LEARNING_STATES] }, reason: LEARNING_REASON, detail: { type: ["string", "null"] } }),
