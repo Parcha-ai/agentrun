@@ -446,7 +446,8 @@ test("two extends of one computer run one after the other; a timer the vendor re
 	const order = [];
 	const [a, b] = await Promise.all([provider.extend(ref, 30 * 60_000).then((r) => (order.push("a"), r)), provider.extend(ref, 20 * 60_000).then((r) => (order.push("b"), r))]);
 	assert.deepEqual(order, ["a", "b"]);
-	assert.equal(made(b).deadline.toISOString(), made(a).deadline.toISOString(), "the shorter, after the longer, keeps the longer");
+	assert.equal(b.error?.code, "refused", "the shorter, after the longer, is refused");
+	assert.ok(made(a).deadline.getTime() > Date.now() + 25 * 60_000, "the longer moved the deadline");
 	const refusing = setup({}, { timer: "limit" });
 	const ref2 = made(await create(refusing.provider));
 	const m = only(refusing.fake);
