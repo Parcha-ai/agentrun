@@ -1156,8 +1156,9 @@ def shielded():
         yield
     finally:
         shield["on"] = False
-    if shield["asked"]:
-        raise KeyboardInterrupt(shield["asked"])
+        # Also when the setup failed: the stop asked for wins over its error.
+        if shield["asked"]:
+            raise KeyboardInterrupt(shield["asked"])
 
 
 def stop(signum, frame):
