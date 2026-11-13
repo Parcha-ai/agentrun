@@ -247,7 +247,11 @@ function Mix({ runs, width, x, step, plot, takeover }: { runs: readonly CostRun[
     return { x0: from + gap, w: Math.max(1, to - from - 2 * gap) };
   };
   const words = (b: Block) => `${runsOf(b)}: ${PATHS.filter((p) => b.counts[p.path]).map((p) => `${p.label.toLowerCase()} ${b.counts[p.path]}`).join(", ")}`;
-  const lastWords = `Last ${last.runs === 1 ? "run" : `${last.runs} runs`}: ${pct(last.counts.workflow, last.runs)} by the learned workflow`;
+  // The last block's share by the learned workflow; before any workflow has finished a run, who did finish it.
+  const lastShare = blocks.some((b) => b.counts.workflow)
+    ? `${pct(last.counts.workflow, last.runs)} by the learned workflow`
+    : PATHS.filter((p) => last.counts[p.path]).map((p) => `${pct(last.counts[p.path], last.runs)} ${p.label.toLowerCase()}`).join(", ");
+  const lastWords = `Last ${last.runs === 1 ? "run" : `${last.runs} runs`}: ${lastShare}`;
   const shown = hover === null ? null : blocks[hover]!;
   const tipLeft = shown ? edges(shown).x0 > width / 2 : false;
   const onPlot = takeover !== null && x(takeover) >= left && x(takeover) <= right;

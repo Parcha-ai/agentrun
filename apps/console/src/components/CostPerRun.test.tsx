@@ -86,6 +86,12 @@ describe("CostChart", () => {
     expect(text(host)).toContain("1 run costs more than");
     expect(text(host)).toContain("1 run's cost is not known: left out.");
   });
+  it("before any workflow has finished a run, the mix's last words say who did, not 0% by the workflow", () => {
+    const host = draw(series([run(1, "agent", 0.002), run(2, "agent", 0.003), run(3, "handed_back", 0.002)]));
+    const mix = host.querySelector('[data-testid="execution-mix"]')!;
+    expect(mix.textContent).toContain("Last run: 100% handed back");
+    expect(mix.textContent).not.toContain("by the learned workflow");
+  });
   it("on a phone the level's words are short enough to clear the line's drop", () => {
     const host = draw(sample, true, 390);
     expect(text(host)).toContain("After $0.128 · 7x cheaper");
