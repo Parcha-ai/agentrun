@@ -1,10 +1,10 @@
 // The daemon as a child: for a vendor whose own agent is the computer's first process (Daytona's toolbox, E2B's envd),
 // computerd goes in through the vendor's file upload and starts as a command that agent runs. These are the shell
 // commands such a provider sends, exactly, and the read-back of the daemon it started: the same for every such vendor.
-import { DAEMON_IN_COMPUTER, helloDrift, SOCKET_DIR, WORK } from "./drift.js";
-import { readOwnNetwork, TOOL_USER } from "./isolation.js";
-import type { ComputerCapabilities, ComputerConnection } from "./provider.js";
-import { fail, ok, type Result } from "./result.js";
+import { DAEMON_IN_COMPUTER, helloDrift, SOCKET_DIR, WORK } from "../drift.js";
+import { readOwnNetwork, TOOL_USER } from "../isolation.js";
+import type { ComputerCapabilities, ComputerConnection } from "../provider.js";
+import { fail, ok, type Result } from "../result.js";
 
 const PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 const CAPS = ["CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"];
