@@ -94,6 +94,10 @@ export type LearningCost = Answer<"getLearningCost">;
  *  went on, `agent` none ran. */
 export type CostRun = LearningCost["runs"][number];
 export type RunPath = CostRun["path"];
+/** GET /v2/agents/{id}/learning/workflows/{name}/revisions' answer: the commits on main that changed a learned workflow's
+ *  workflow.json, oldest first, each with the text it had then. */
+export type WorkflowRevisions = Answer<"listLearnedWorkflowRevisions">;
+export type WorkflowRevision = WorkflowRevisions["revisions"][number];
 /** What the run's job did with the learned skills and workflows it was offered (`used`): each skill and whether its job
  *  read it, each learned workflow it called, how many times and how many of those failed. */
 export type LearnedUse = NonNullable<RunLearningRead>["used"];

@@ -470,8 +470,9 @@ const LAST_CHANGE = closed({
   at: { type: "string", format: "date-time", description: "When: the commit's time." },
 }, "The item's last change: the newest commit on its file (a note's file, a skill's SKILL.md, a draft's README.md), a person's (named by its subject's fixed prefix, `learning: <kind> by a person: `) or a run's merge (its Run-Id: `learned`). Absent when that commit is neither (the folder's own first commit, or one made outside the server).");
 const LEARNING_NOTE = { ...LEARNING_NOTE_REQUIRED, properties: { ...LEARNING_NOTE_REQUIRED.properties, retired: RETIRED, last_change: LAST_CHANGE } };
+const LEARNING_BY = { oneOf: [closed({ run: { type: "string" } }), { type: "object", additionalProperties: false, required: ["user"], properties: { user: { type: "boolean", const: true }, via: { type: "string", description: "On an approval: how it came, `console` (the owner's signed-in page)." } } }], description: "A run's merge (its commit's `Run-Id` trailer), or a person's edit, creation, retirement or approval through this API (`Changed-By: user`, and `Approved-Via` on an approval)." };
 const LEARNING_CHANGE = closed({
-  by: { oneOf: [closed({ run: { type: "string" } }), { type: "object", additionalProperties: false, required: ["user"], properties: { user: { type: "boolean", const: true }, via: { type: "string", description: "On an approval: how it came, `console` (the owner's signed-in page)." } } }], description: "A run's merge (its commit's `Run-Id` trailer), or a person's edit, creation, retirement or approval through this API (`Changed-By: user`, and `Approved-Via` on an approval)." },
+  by: LEARNING_BY,
   commit: { type: "string" }, at: { type: "string", format: "date-time" },
   reason: { type: "string", description: "A merge's: the grader's reason. A person's: what was done, `edited by a person: <file>`." },
   files: { type: "array", items: { type: "string" }, description: "The files the commit changed, MEMORY.md among them; a name holding one of the host's secrets reads `[redacted]`." },
@@ -1054,6 +1055,19 @@ const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
       security: [{ ownerSession: [] }],
       requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, maxProperties: 0 } } } },
       parameters: [AGENT_ID, NOTE_PARAM, IF_MATCH], responses: { "200": NOTE_TEXT("The note, restored."), ...WRITE_ERRORS }, ...MARK,
+    },
+  },
+  "/agents/{agent_id}/learning/workflows/{name}/revisions": {
+    get: {
+      operationId: "listLearnedWorkflowRevisions", tags: ["agents"], summary: "A learned workflow's revisions on main, oldest first, each with its workflow.json as it was then",
+      description: "The commits on the agent's learning main that changed `workflows/<name>/workflow.json`, the latest `limit` of them, oldest first, each with who made it (a run's merge, or a person), when, why, and the workflow's text at that commit (`null` when that commit holds no such file). What the console's learned-workflow replay steps through, drawing each text as a graph and marking its nodes new or edited against the revision before. One read-only exec per revision returned. `total` counts every such commit the log holds; `truncated` is true when the log itself is cut (it keeps the latest 200 changes). A workflow no commit in the log changed is 404. " + SIGN_IN_WITHHELD,
+      parameters: [AGENT_ID, { name: "name", in: "path", required: true, description: "The learned workflow's folder name, `workflows/<name>/`: lowercase letters, digits, dashes and underscores.", schema: { type: "string" } }, { name: "limit", in: "query", required: false, description: "The latest revisions to answer. At most 50.", schema: { type: "integer", minimum: 1, maximum: 50, default: 20 } }],
+      responses: { "200": json(closed({
+        name: { type: "string" },
+        revisions: { type: "array", items: closed({ commit: { type: "string" }, at: { type: "string", format: "date-time" }, by: LEARNING_BY, reason: { type: "string", description: "A merge's: the grader's reason. A person's: what was done." }, text: { type: ["string", "null"], description: "The workflow's workflow.json at this commit, cut of the host's secrets; null when the commit holds no such file." } }), description: "Oldest first." },
+        total: { ...COUNT, description: "How many commits in the log changed this workflow's workflow.json, `limit` aside." },
+        truncated: { type: "boolean", description: "The agent's log is cut at its latest 200 changes, so older revisions may exist." },
+      }), "The workflow's revisions."), ...errors(400, 401, 403, 404, 429, 500) }, ...MARK,
     },
   },
   "/agents/{agent_id}/learning/workflows/{name}/promote": {

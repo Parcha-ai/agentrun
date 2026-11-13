@@ -35,6 +35,7 @@ import triggerRowLabel from "./trigger-row-label.mjs";
 import computerStep from "./computer-step.mjs";
 import agentCardFooter from "./agent-card-footer.mjs";
 import costPerRun from "./cost-per-run.mjs";
+import workflowReplay from "./workflow-replay.mjs";
 import toolCards from "./tool-cards.mjs";
 
 export const flows = [
@@ -62,5 +63,6 @@ export const flows = [
   computerStep,
   agentCardFooter,
   costPerRun,
+  workflowReplay,
   toolCards,
 ];
