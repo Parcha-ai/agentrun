@@ -509,6 +509,7 @@ export class FakeUiDriver implements UiSource {
 			if (own?.screen !== undefined) {
 				(own.history ??= []).push(own.screen);
 				own.screen = effect.go;
+				state.focus = undefined;
 				return;
 			}
 			state.history.push(state.screen);

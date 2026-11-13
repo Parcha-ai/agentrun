@@ -850,3 +850,26 @@ test("a go in a window a press opened changes that window's screen, never the ma
 	assert.equal(main.window.title, "Home", "the main window stayed where it was");
 	await c.close();
 });
+
+test("typing into a field of an opened window whose press changes its screen is refused, as in the main window", async () => {
+	const app = {
+		id: "test.field",
+		name: "Field",
+		start: "home",
+		size: [300, 200],
+		screens: {
+			home: { title: "Home", elements: [{ key: "open", role: "button", name: "Open", id: "open", bounds: [10, 10, 80, 28], actions: ["AXPress"], press: { open: "child" } }] },
+			child: { title: "Child", elements: [{ key: "pin", role: "textbox", name: "PIN", id: "pin", bounds: [10, 10, 80, 28], press: { go: "next" } }] },
+			next: { title: "Next", elements: [{ key: "t", role: "text", name: "Next", bounds: [10, 10, 80, 28] }] },
+		},
+	};
+	const c = await fakeUiConnection({ apps: [app] });
+	await c.client.call("apps.launch", { id: app.id });
+	const home = (await c.client.call("ui.observe", {})).value;
+	await c.client.call("ui.act", { steps: [{ press: home.nodes.find((n) => n.id === "open").ref }], expect: { window: { title: "Child" } } });
+	const child = (await c.client.call("ui.observe", {})).value;
+	const typed = await c.client.call("ui.act", { steps: [{ type: "1234", into: child.nodes.find((n) => n.id === "pin").ref }] });
+	assert.equal(typed.value.steps[0].error.kind, "refused", "nothing typed: the press left the field");
+	assert.match(typed.value.steps[0].error.message, /did not take focus/);
+	await c.close();
+});
