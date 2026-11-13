@@ -139,6 +139,86 @@ for (const [why, net, bounds] of [["gets no answer", () => network({ answer: "ne
   });
 }
 
+test("a refresh behind a token near its end that fails after the owner signed in again never writes over the new sign-in", async (t) => {
+  // Two minutes left on the store's clock: the token is used at once and refreshed behind it, and the authorization server
+  // holds that refresh. The owner signs in again meanwhile and the next call opens the new credential. The old refresh then
+  // fails past the old token's end: the new sign-in stays the server's entry, for that moment and for the call after it.
+  const { store, claim, clock } = await setUp(t, 2 * MINUTE, "oauth");
+  const watched = releaseObserved(store);
+  let at = T0;
+  let fail;
+  const failing = new Promise((resolve) => (fail = resolve));
+  let reached;
+  const sent = new Promise((resolve) => (reached = resolve));
+  const net = {
+    fetches: 0,
+    lookup: async () => ["93.184.216.34"],
+    fetch: async () => {
+      net.fetches += 1;
+      reached();
+      await failing;
+      return new Response("the token service is down", { status: 503, headers: { "content-type": "text/plain" } });
+    },
+  };
+  const step = await stepOf(watched.store, claim, 0, { network: net, bounds: { requestMs: 30_000, tries: 1 }, now: () => at });
+  t.after(() => step.release());
+  assert.equal(bearer(step), `Bearer ${KEPT}`, "used at once");
+  await held(sent);
+  // The owner signs in again: a new set with an hour's life is the server's credential now.
+  clock.now += 1_000;
+  const again = { ...setOf(60 * MINUTE), tokens: { access_token: FRESH, token_type: "Bearer", refresh_token: `not-a-secret-${"refresh-3"}` } };
+  await store.mcp.put({ name: "fake", url: MCP_URL, auth: "oauth", tools: [ADD], sealed: sealMcpCredential(KEY, "fake", { type: "oauth", set: again }, MCP_URL), tokenLeftMs: 60 * MINUTE });
+  await step.beforeCall("fake", new AbortController().signal);
+  assert.equal(bearer(step), `Bearer ${FRESH}`, `the next call opened the new sign-in: ${JSON.stringify(step.credentials.fake)}`);
+  // The old token's end passes on the claim's clock, and the old refresh fails.
+  at += 3 * MINUTE;
+  fail();
+  await held(watched.released);
+  for (let i = 0; i < 5; i++) await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(bearer(step), `Bearer ${FRESH}`, `the failed refresh of the old sign-in left the new one: ${JSON.stringify(step.credentials.fake)}`);
+  await step.beforeCall("fake", new AbortController().signal);
+  assert.equal(bearer(step), `Bearer ${FRESH}`, `the call after it sends the new one: ${JSON.stringify(step.credentials.fake)}`);
+  assert.equal(net.fetches, 1, "the new sign-in was never refreshed");
+});
+
+test("a refresh behind a token near its end that fails past its end, the claim having opened the same credential again meanwhile, still refuses that token", async (t) => {
+  // The guard above keys on the credential, not on which open came last: a fresh() or a call's check that opened the same
+  // row again while the refresh was out leaves the failed refresh's refusal to stand, so the run-out token is never sent
+  // and the refresh token (perhaps spent) is never sent again by the next call.
+  const { store, claim } = await setUp(t, 2 * MINUTE, "oauth");
+  const watched = releaseObserved(store);
+  let at = T0;
+  let fail;
+  const failing = new Promise((resolve) => (fail = resolve));
+  let reached;
+  const sent = new Promise((resolve) => (reached = resolve));
+  const net = {
+    fetches: 0,
+    lookup: async () => ["93.184.216.34"],
+    fetch: async () => {
+      net.fetches += 1;
+      reached();
+      await failing;
+      return new Response("the token service is down", { status: 503, headers: { "content-type": "text/plain" } });
+    },
+  };
+  const step = await stepOf(watched.store, claim, 0, { network: net, bounds: { requestMs: 30_000, tries: 1 }, now: () => at });
+  t.after(() => step.release());
+  await held(sent);
+  // The loop's next model request opens every server again: the same row, its refresh still out.
+  await step.fresh();
+  assert.equal(bearer(step), `Bearer ${KEPT}`);
+  at += 3 * MINUTE;
+  fail();
+  await held(watched.released);
+  for (let i = 0; i < 5; i++) await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(bearer(step), undefined, `the run-out token is not handed over: ${JSON.stringify(step.credentials.fake)}`);
+  assert.ok(unopened(step), "refused in words");
+  await step.beforeCall("fake", new AbortController().signal);
+  assert.ok(unopened(step), "still refused at the next call");
+  assert.equal(net.fetches, 1, "the refresh token was not sent again");
+});
+
 test("a row another claim's refresh left, its new token near its end but valid on the store's clock, is used by a claim whose clock runs ahead, never refused", async (t) => {
   // Claim A refreshes (the token run out) and keeps a set of two minutes' life; claim B, its clock an hour ahead of every
   // other clock here, waits on A's lease and opens the row A left: valid, inside the refresh margin, never refreshed again.

@@ -281,6 +281,15 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
     // with the new token's end, and the old one would be sent past its expiry.
     const until = row.tokenUntil;
     stamps.set(name, { url: row.url, auth: row.auth, changedAt: row.credentialChangedAt, end: readAt + left(), until });
+    /** The refresh's outcome, put only while the server's stamp is still the credential this open read: a later open
+     *  that read another one (the owner signed in again or replaced it, another claim's refresh moved its token) set the
+     *  entry from that row, and a refresh of the old one that ends after it (failed past the old token's end, say) never
+     *  writes over it. A later open of the same credential (a fresh(), a call's check) leaves it this refresh's to put. */
+    const settledEntry = (extra: { headers?: Record<string, string>; unopened?: string }) => {
+      const now_ = stamps.get(name);
+      if (now_ && now_.url === row.url && now_.auth === row.auth && now_.changedAt === row.credentialChangedAt && now_.until === until) entry(extra);
+      else if (extra.headers) options.hold?.(credentialValues(extra.headers));
+    };
     if (left() > REFRESH_MARGIN_MS) return entry({ headers: bearer(set) }), { awaited: false };
     // Another claim's refresh left this row and it is still due: never refreshed from here once more.
     if (again) return entry(left() > 0 ? { headers: bearer(set) } : { unopened: UNUSABLE.silent }), { awaited: false };
@@ -321,14 +330,14 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
         // its expiry is refused in the check's words (a private host the owner may allow names where).
         if ("blocked" in got) {
           await store.mcp.releaseRefresh(name, holder).catch(() => undefined);
-          if (left() <= 0) entry({ unopened: `${UNUSABLE.blocked}: ${got.blocked}` });
+          if (left() <= 0) settledEntry({ unopened: `${UNUSABLE.blocked}: ${got.blocked}` });
           return;
         }
         if ("set" in got) {
           // Kept whatever stopped this step meanwhile (a shutdown, a lost claim, the run's end): the authorization server
           // spent the old refresh token, so the new set is the only one any claim can use. The write is the server's row,
           // not the run's; entry() hands it to this step only while it is held.
-          if (await keep(lease.row, { type: "oauth", set: got.set })) return entry({ headers: bearer(got.set) });
+          if (await keep(lease.row, { type: "oauth", set: got.set })) return settledEntry({ headers: bearer(got.set) });
           if (stop.aborted || released) return;
           // The credential changed while it refreshed (a newer set, an owner's save): use the row as it is now.
           const left = await store.mcp.server(name);
@@ -337,7 +346,7 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
         if ("refused" in got) {
           // The sign-in is over: kept as expired, so no later claim tries the refresh token again. A credential changed
           // meanwhile is the one to use.
-          if (await keep(lease.row, { ...oauth, expired: true })) return entry({ unopened: UNUSABLE.signedOut });
+          if (await keep(lease.row, { ...oauth, expired: true })) return settledEntry({ unopened: UNUSABLE.signedOut });
           if (stop.aborted || released) return;
           return void (await takeLeft(await store.mcp.server(name)));
         }
@@ -346,7 +355,7 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
         // nothing) the lease is let go and the refresh token kept for the next try. An access token past its expiry is never
         // handed over.
         if (!("held" in got)) await store.mcp.releaseRefresh(name, holder).catch(() => undefined);
-        if (left() <= 0) entry({ unopened: UNUSABLE.silent });
+        if (left() <= 0) settledEntry({ unopened: UNUSABLE.silent });
       } finally {
         // The lease is let go (kept, released, or left to lapse on a failed write): the claims waiting on it read the row.
         settledNow(store.where, name);
