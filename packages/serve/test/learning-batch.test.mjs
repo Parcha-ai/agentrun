@@ -82,6 +82,20 @@ test("POST /agents/{id}/learning/batches: each row's run, in order, with learnin
   assert.deepEqual(end.lessons.notes, ["Check units", "What the reviewer said"], "the first run's note, then the note its review taught, each once");
   assert.ok(end.rows[0].merged, "the merge of the first run's learning");
   assert.deepEqual(end.rows[0].learned.notes, ["Check units", "What the reviewer said"], "every round's");
+  // What a row's learning cost is every round's: each round's look-back and each round's grade (the review opens round 2).
+  let graded = 0;
+  for (const row of end.rows) {
+    let look = 0, grade = 0;
+    for (const round of [1, 2]) {
+      const kept = await store.learning.proposal(row.run_id, round);
+      assert.ok(kept, `row ${row.n} kept round ${round}`);
+      look += kept.proposal?.look_back_usd ?? 0;
+      grade += kept.learningRunId ? ((await store.runs.get(kept.learningRunId))?.costUsd ?? 0) : 0;
+    }
+    graded += grade;
+    assert.equal(row.learning_usd, money(look + grade), `row ${row.n}: every round's look-back and grade`);
+  }
+  assert.ok(graded > 0, "the rows' grades cost something");
 
   // Each run was given the chosen columns alone, in order, and was told the reference beside its own answer.
   const runs = (await api("GET", `/agents/${id}/runs?limit=20`)).body.runs.filter((r) => end.rows.some((row) => row.run_id === r.run_id));
@@ -198,30 +212,37 @@ test("the cap is never gone past: a row starts only when what is left covers a r
   assert.equal(end.rows[0].reviewed, true);
 });
 
-/** A batch host with no server: settings in memory, each run answering at once with a cost the test names. */
-function fakeHost({ costs, cancelled = [] }) {
+/** A batch host with no server: settings in memory, each run answering at once with a cost the test names. A run is
+ *  started under the row's key (found again by it); its answer is "A" until it is reviewed, then `after` (the reply to the
+ *  review, never the row's answer). */
+function fakeHost({ costs, cancelled = [], after = "A" }) {
   const settings = new Map();
   const runs = new Map();
+  const keys = new Map();
   let n = 0;
   return {
     runs,
+    keys,
     settings: {
       get: async (k) => (settings.has(k) ? structuredClone(settings.get(k)) : undefined),
       put: async (k, v) => void settings.set(k, structuredClone(v)),
       all: async () => [...settings].map(([key, value]) => ({ key, value: structuredClone(value), updatedAt: 0 })),
     },
     learning: async () => ({ learns: true }),
-    start: async (agentId, b) => {
+    find: async (key) => keys.get(key),
+    start: async (agentId, b, key) => {
       const id = `run-${++n}`;
-      runs.set(id, { b, cost: n - 1 in costs ? costs[n - 1] : 0.4, messages: [] });
+      runs.set(id, { b, key, cost: n - 1 in costs ? costs[n - 1] : 0.4, messages: [] });
+      keys.set(key, id);
       return id;
     },
     view: async (id) => {
       const r = runs.get(id);
-      return { status: "completed", ended_at: `e${r.messages.length}`, answer: "A", cost_usd: r.cost, learning_state: "merged", error: null };
+      return { status: r.cancelled ? "cancelled" : "completed", ended_at: `e${r.messages.length}`, answer: r.messages.length ? after : "A", cost_usd: r.cost, learning_state: "merged", error: null };
     },
+    sent: async (id, text) => runs.get(id).messages.includes(text),
     message: async (id, text) => void runs.get(id).messages.push(text),
-    cancel: async (id) => void cancelled.push(id),
+    cancel: async (id) => { cancelled.push(id); if (runs.has(id)) runs.get(id).cancelled = true; },
     figures: async (id) => ({ path: "agent", cost_usd: runs.get(id).cost === null ? null : runs.get(id).cost, learning_usd: 0, total_usd: runs.get(id).cost, learned: { notes: [], skills: [], workflows: [] }, merged: null }),
     pollMs: 1,
   };
@@ -269,4 +290,141 @@ test("a server that stops leaves the batch running, and one that starts takes up
   const end = await second.read("a1", made.id);
   assert.deepEqual([end.status, end.finished, host.runs.size], ["completed", 6, 6], "six rows, six runs: row 2's run was waited for, not started again");
   assert.equal(host.runs.get("run-2").messages.length, 1, "its review was sent once");
+});
+
+/** The host as one server process sees it: once that process "dies" (`kill`), every call it makes hangs, as a dead
+ *  process makes none; the next process (`bound` again) reads and writes the same store and runs. `crashAt`: the effect
+ *  (a write, a start, a review) numbered so after the batch's create is done, then the process dies at once. */
+function processes(host) {
+  const state = { epoch: 0, ops: 0, crashAt: Infinity, died: null };
+  let dead;
+  state.died = new Promise((r) => (dead = r));
+  const hang = () => new Promise(() => {});
+  const bound = () => {
+    const epoch = state.epoch;
+    const call = (fn, effect) => async (...a) => {
+      if (state.epoch !== epoch) return hang();
+      const out = await fn(...a);
+      if (effect && ++state.ops === state.crashAt) { state.epoch++; dead(); return hang(); }
+      return out;
+    };
+    return {
+      ...host,
+      settings: { get: call(host.settings.get), all: call(host.settings.all), put: call(host.settings.put, true) },
+      learning: call(host.learning), find: call(host.find), view: call(host.view), sent: call(host.sent), figures: call(host.figures),
+      start: call(host.start, true), message: call(host.message, true), cancel: call(host.cancel, true),
+    };
+  };
+  return { state, bound };
+}
+
+test("a server that dies between any two steps of a row, started again, runs each row once, sends each review once, keeps the first right or wrong, and books every row", async () => {
+  // A clean run counts the effects after the create: every boundary a death can fall on.
+  const clean = processes(fakeHost({ costs: [0.1, 0.2], after: "B" }));
+  const one = new LearningBatches(clean.bound());
+  const b0 = await one.create("a1", asked({ rows: [{ q: "q1", a: "A" }, { q: "q2", a: "B" }], max_cost_usd: 50 }));
+  const created = clean.state.ops;
+  await one.idle(b0.id);
+  const steps = clean.state.ops - created;
+  assert.ok(steps >= 8, `effects in a two-row batch: ${steps}`);
+  for (let at = 1; at <= steps; at++) {
+    const host = fakeHost({ costs: [0.1, 0.2], after: "B" });
+    const p = processes(host);
+    const first = new LearningBatches(p.bound());
+    const made = await first.create("a1", asked({ rows: [{ q: "q1", a: "A" }, { q: "q2", a: "B" }], max_cost_usd: 50 }));
+    p.state.crashAt = p.state.ops + at;
+    await Promise.race([p.state.died, first.idle(made.id)]);
+    const second = new LearningBatches(p.bound());
+    await second.resume();
+    await second.idle(made.id);
+    const end = await second.read("a1", made.id);
+    const why = `death at effect ${at} of ${steps}`;
+    assert.deepEqual([end.status, end.finished, end.failed], ["completed", 2, 0], `${why}: ${JSON.stringify(end)}`);
+    assert.equal(host.runs.size, 2, `${why}: one run a row`);
+    assert.deepEqual([...host.runs.values()].map((r) => r.messages.length), [1, 1], `${why}: one review a row`);
+    assert.deepEqual(end.rows.map((r) => [r.answer, r.right]), [["A", true], ["A", false]], `${why}: the answer before the review, never its reply`);
+    assert.deepEqual([end.right, end.wrong, end.spent_usd], [1, 1, 0.3], `${why}: every row booked once`);
+  }
+});
+
+test("a cancel while a row's run is starting stops that run once it has an id, and the row ends failed with it", async () => {
+  const cancelled = [];
+  const host = fakeHost({ costs: [0.1], cancelled });
+  let release;
+  const gate = new Promise((r) => (release = r));
+  const start = host.start;
+  host.start = async (...a) => { await gate; return start(...a); };
+  const batches = new LearningBatches(host);
+  const made = await batches.create("a1", asked({ max_cost_usd: 50 }));
+  await sleep(5);
+  const cancelling = batches.cancel("a1", made.id);
+  await sleep(5);
+  release();
+  const end = await cancelling;
+  assert.equal(end.status, "cancelled");
+  assert.deepEqual(cancelled, ["run-1"], "the run that started is stopped");
+  assert.deepEqual([end.rows[0].state, end.rows[0].run_id, end.failed], ["failed", "run-1", 1]);
+});
+
+test("a row that ends failed is booked once its run and its grade have stopped: a timed-out run's cost is what it spent to its end", async () => {
+  const host = fakeHost({ costs: [] });
+  let polls = 0;
+  // The first row's run never ends by itself; cancelled, it spends on for a few looks, then ends at $0.30 with its learning settled.
+  host.view = async (id) => {
+    const r = host.runs.get(id);
+    if (id !== "run-1") return { status: "completed", ended_at: `e${r.messages.length}`, answer: "A", cost_usd: 0.1, learning_state: "merged", error: null };
+    if (!r.cancelled) return { status: "working", ended_at: null, answer: null, cost_usd: 0.1, learning_state: null, error: null };
+    return ++polls < 5 ? { status: "working", ended_at: null, answer: null, cost_usd: 0.2, learning_state: null, error: null } : { status: "cancelled", ended_at: "x", answer: null, cost_usd: 0.3, learning_state: "dropped", error: null };
+  };
+  host.figures = async (id) => {
+    const total = id === "run-1" ? (polls >= 5 ? 0.3 : 0.1) : 0.1;
+    return { path: "agent", cost_usd: total, learning_usd: 0, total_usd: total, learned: { notes: [], skills: [], workflows: [] }, merged: null };
+  };
+  host.rowTimeoutMs = 20;
+  const batches = new LearningBatches(host);
+  const made = await batches.create("a1", asked({ rows: [{ q: "q1", a: "A" }, { q: "q2", a: "A" }], max_cost_usd: 50 }));
+  await batches.idle(made.id);
+  const end = await batches.read("a1", made.id);
+  assert.deepEqual(end.rows.map((r) => [r.state, r.total_usd]), [["failed", 0.3], ["done", 0.1]]);
+  assert.equal(end.spent_usd, 0.4);
+});
+
+test("a review that is not sent fails its row: a row is done only when its run was told the reference", async () => {
+  const host = fakeHost({ costs: [] });
+  host.message = async () => { throw new Error("the store is busy"); };
+  const batches = new LearningBatches(host);
+  const made = await batches.create("a1", asked({ rows: [{ q: "q1", a: "A" }], max_cost_usd: 50 }));
+  await batches.idle(made.id);
+  const end = await batches.read("a1", made.id);
+  assert.deepEqual([end.status, end.finished, end.failed, end.right, end.rows[0].state], ["completed", 1, 1, 0, "failed"]);
+  assert.match(end.rows[0].error, /review was not sent/);
+});
+
+test("learning turned off while a batch runs stops it before the next row starts: no row runs unlearned", async () => {
+  const host = fakeHost({ costs: [] });
+  let learns = true;
+  host.learning = async () => (learns ? { learns: true } : { learns: false, why: "this server's learning is off (--learning)." });
+  const message = host.message;
+  host.message = async (...a) => { learns = false; return message(...a); };
+  const batches = new LearningBatches(host);
+  const made = await batches.create("a1", asked({ max_cost_usd: 50 }));
+  await batches.idle(made.id);
+  const end = await batches.read("a1", made.id);
+  assert.deepEqual([end.status, end.stopped, end.finished, host.runs.size], ["stopped", "learning_off", 1, 1]);
+  assert.match(end.error, /learning is off/);
+});
+
+test("the person's text is kept whole: an effort is one a run takes, a column named __proto__ keeps its cell, and numbers compare by every digit", () => {
+  assert.deepEqual(checkBatchBody(body(["a"], { effort: "hgh" })).map((i) => [i.field, i.reason]), [["effort", "not_an_option"]]);
+  assert.equal(checkBatchBody(body(["a"], { effort: "high" })).effort, "high");
+  const proto = checkBatchBody(JSON.parse('{"inputs":["__proto__","b"],"answer":"a","max_cost_usd":1,"rows":[{"__proto__":"cell","b":"two","a":"x"}]}'));
+  assert.ok(!Array.isArray(proto), JSON.stringify(proto));
+  assert.equal(contentOf(proto.inputs, proto.rows[0].input), "__proto__: cell\nb: two");
+  const single = checkBatchBody(JSON.parse('{"inputs":["__proto__"],"answer":"a","max_cost_usd":1,"rows":[{"__proto__":"cell","a":"x"}]}'));
+  assert.equal(contentOf(single.inputs, single.rows[0].input), "cell");
+  assert.equal(matches("9007199254740993", "9007199254740992"), false, "past a double's digits");
+  assert.equal(matches("1.50", "1.5"), true);
+  assert.equal(matches("-0", "0"), true);
+  assert.equal(matches("+007", "7"), true);
+  assert.equal(matches("0.1000000000000000000001", "0.1"), false);
 });

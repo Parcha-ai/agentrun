@@ -994,7 +994,7 @@ const BATCH_ROW = closedWith(
 const BATCH_HEAD = {
   id: { type: "string" }, agent_id: { type: "string" }, created_at: DATE_TIME, ended_at: { ...DATE_TIME, type: ["string", "null"] },
   status: { enum: ["running", "completed", "cancelled", "stopped"], description: "`completed`: every row ran; `cancelled`: a person's cancel; `stopped`: the batch could not go on (`stopped` says why, or `error` for the server's own failure)." },
-  stopped: { enum: ["cap", "cost_unknown", null], description: "Why a batch stopped before its last row: `cap`, the cap's room does not cover another row (the mean total of the rows done); `cost_unknown`, a row's cost is not known, and a cap is never guessed at." },
+  stopped: { enum: ["cap", "cost_unknown", "learning_off", null], description: "Why a batch stopped before its last row: `cap`, the cap's room does not cover another row (the mean total of the rows done); `cost_unknown`, a row's cost is not known, and a cap is never guessed at; `learning_off`, the agent no longer learns here (its learning, or the server's, was turned off: `error` says which), checked before every row, so no row runs unlearned." },
   inputs: { type: "array", items: { type: "string" }, description: "The columns each run is given, as {column: value}." },
   answer: { type: "string", description: "The column holding the reference answer: never given to the run before its answer." },
   answer_field: { ...NULL_STRING, description: "The dotted path in a JSON answer the reference is compared to; null: the whole answer." },

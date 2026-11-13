@@ -214,7 +214,10 @@ async function learningSpendOf(store: Store, runId: string): Promise<{ looked: R
  *  batch's row once the run's learning has settled). */
 export async function costRunOf(store: Store, run: NonNullable<Awaited<ReturnType<Store["runs"]["get"]>>>, n: number): Promise<CostRun> {
   const started = await learningStartOfRun(store, run.id);
-  const { looked, grade } = await learningSpendOf(store, run.id);
+  // A run a follow-up opened again (a review's, a person's) learned in rounds: every round's look-back and grade are its
+  // learning (roundsSpendOf), never the newest round's alone.
+  const rounds = await roundsSpendOf(store, run.id);
+  const { looked, grade } = rounds ? { looked: rounds, grade: rounds.grade_usd } : await learningSpendOf(store, run.id);
   const { path, workflow } = await journalReadsOf(store, run, started);
   return { n, run_id: run.id, started_at: new Date(run.startedAt).toISOString(), path, workflow, learned_revision: started?.seed ?? null, ...runCostOf(run.costUsd, looked, grade) };
 }

@@ -1287,12 +1287,18 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       if (entry.revision?.kind !== "agentic" || !learnsOf((entry.revision.body as { learning?: unknown }).learning)) return { learns: false, why: "its current revision does not say learning: true. Turn learning on first." };
       return { learns: true };
     },
-    start: async (agentId, body) => (await startRunOf(await needAgent(agentId), body as Json)).id,
+    // A row's run starts under the row's key (the store's run origin, as an Idempotency-Key's run does), so a start the
+    // server stopped before its row kept the id is found again, never started twice.
+    find: async (key) => (await agents.request(() => agents.store.runOfOrigin(key)))?.runId,
+    start: async (agentId, body, key) => (await startRunOf(await needAgent(agentId), body as Json, { origin: { key } })).id,
     view: async (runId) => {
       const v = (await viewOverStore(store, runId, viewDepsFor(ownOriginOf()))) as Record<string, any> | undefined;
       if (!v) return undefined;
       return { status: String(v.status), ended_at: v.ended_at ?? null, answer: typeof v.result?.final_answer === "string" ? v.result.final_answer : null, cost_usd: typeof v.cost?.usd === "number" ? v.cost.usd : null, learning_state: typeof v.learning?.state === "string" ? v.learning.state : null, error: typeof v.error?.message === "string" ? v.error.message : null };
     },
+    // Sent already: a steer the run's commands hold with these words, not refused (a follow-up to an ended run is one too,
+    // its reopen's).
+    sent: async (runId, content) => (await store.commands(runId, 0)).some((c) => c.kind === "steer" && c.refused === null && (c.body as { text?: unknown } | undefined)?.text === content),
     message: async (runId, content) => void (await message(store, await needRun(runId), content)),
     cancel: async (runId) => void (await cancel(store, await needRun(runId))),
     figures: async (runId) => {
