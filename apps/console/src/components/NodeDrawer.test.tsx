@@ -52,15 +52,15 @@ describe("NodeDrawer, a model node's model", () => {
     const g: RunGraph = {
       run: { id: "r", agent: "a", revision: "1", status: "completed", paused: false, startedAt: "2026-11-01T00:00:00Z", endedAt: "2026-11-01T00:00:02Z" },
       workflow, graph, decisions: [], effects: [], totals: { cost_usd: null, decisions: 0, effects: 0, elapsed_ms: 2000 },
-      nodes: { "/root": { status: "done" }, "/root/steps/0": { status: "done", model: "gpt-5-mini", tier: "fast" }, "/root/steps/1": { status: "done", model: "gpt-5-4-mini" } },
+      nodes: { "/root": { status: "done" }, "/root/steps/0": { status: "done", model: "gpt-6-luna", tier: "fast" }, "/root/steps/1": { status: "done", model: "gpt-6-1-sol" } },
     };
     const header = (path: string) => {
       const host = document.createElement("div");
       host.innerHTML = renderToStaticMarkup(<NodeDrawer data={g} selected={{ path, item: null }} onSelect={() => {}} onClose={() => {}} fileUrl={(r) => r} />);
       return host.querySelector("header p")?.textContent;
     };
-    expect(header("/root/steps/0")).toBe("extract · fast · gpt-5-mini");
-    expect(header("/root/steps/1")).toBe("extract · gpt-5-4-mini");
+    expect(header("/root/steps/0")).toBe("extract · fast · gpt-6-luna");
+    expect(header("/root/steps/1")).toBe("extract · gpt-6-1-sol");
   });
 });
 

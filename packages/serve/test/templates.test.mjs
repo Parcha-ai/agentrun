@@ -163,9 +163,9 @@ test("a package's model: its preferred one where this server runs it on the harn
   const model = { tier: "fast", prefer: "openrouter/particle-ai/particle-1" };
   const pick = async (env, m, harness = "pi") => (await packageModel(env, m, harness)).model;
   assert.equal(await pick({ OPENROUTER_API_KEY: "fake-test-key" }, model), model.prefer, "a key for its provider runs it");
-  assert.equal(await pick({ OPENAI_API_KEY: "fake-test-key", AGENT_MODEL_FAST: "openai/gpt-5-mini" }, model), "openai/gpt-5-mini", "no OpenRouter key: the fast tier's");
+  assert.equal(await pick({ OPENAI_API_KEY: "fake-test-key", AGENT_MODEL_FAST: "openai/gpt-6-luna" }, model), "openai/gpt-6-luna", "no OpenRouter key: the fast tier's");
   assert.equal(await pick({ OPENAI_API_KEY: "fake-test-key" }, { tier: "strong", prefer: model.prefer }), "openai/gpt-6.1-sol", "no tier model set: the default of the key it has");
-  assert.equal(await pick({ OPENAI_API_KEY: "fake-test-key", AGENT_MODEL: "openai/gpt-5" }, { tier: "balanced" }), "openai/gpt-5", "balanced is the server's default");
+  assert.equal(await pick({ OPENAI_API_KEY: "fake-test-key", AGENT_MODEL: "openai/gpt-6.1-terra" }, { tier: "balanced" }), "openai/gpt-6.1-terra", "balanced is the server's default");
   assert.equal(await pick({ ANTHROPIC_API_KEY: "fake-test-key", OPENROUTER_API_KEY: "fake-test-key" }, model, "claude-agent"), "anthropic/claude-sonnet-5-5", "a harness that cannot run it takes the tier's");
   assert.equal(await pick({}, model), undefined, "no key at all: none, so the agent runs on the server's default");
   assert.equal(await pick({ OPENROUTER_API_KEY: "fake-test-key" }, undefined), undefined, "a package that names none");

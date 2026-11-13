@@ -12,7 +12,7 @@ import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
 import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
 import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
 
-const MODEL = "claude-haiku-4-5";
+const MODEL = "claude-haiku-5-5";
 
 /** The run row's metrics as its end wrote them, and GET /v2/stats' analytics totals. */
 async function counted(server, runId) {
