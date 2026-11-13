@@ -182,3 +182,50 @@ test('a pick\'s guard is asked with what its judge chose among: the candidates a
   assert.equal(seen[0].input.instructions, judged[0].questions.pick.instructions, 'the selection instructions');
   assert.equal(seen[0].input.allow_none, true);
 });
+
+test('a sift over more items than a call takes arguments still reads its weakest answer (no spread into Math.min)', async () => {
+  const siftFlow = { v: 2, name: 's', schemas: listed, input: { schemaId: 'In' }, output: { schemaId: 'Any', path: 'sifted' },
+    root: { node: 'sift', label: 'sift', itemsPath: 'items', describe: '{item.n}', out: 'Sure', as: 'sifted', guard: { signal: 'self', threshold: 0.5 } } };
+  const items = Array.from({ length: 200_000 }, (_, n) => ({ n }));
+  const seen = [];
+  const result = await runWorkflow(siftFlow, { question: 'q', items }, {
+    runJudge: answering((id) => (id.startsWith('7.') ? 0.85 : 0.95)),
+    guardStep: async (params) => { seen.push(params.self); return { p: params.self ?? Number.NaN }; },
+  });
+  assert.equal(result.status, 'complete', JSON.stringify(result.escalation ?? result.error ?? null).slice(0, 400));
+  assert.equal(seen[0], 0.7, 'item 7 (noul 0.85) is the weakest');
+});
+
+test('a step that writes the same value again is judged on that value, not on an empty patch', async () => {
+  // A step writes 42 where 42 already is; a code step writes true under its label where the input already holds true.
+  const doc = { ...flow(undefined), schemas: { ...schemas, Num: { type: 'number' } }, output: { schemaId: 'Answer', path: 'answer' },
+    root: { node: 'chain', steps: [
+      { node: 'code', label: 'first', code: '() => 42', as: 'n' },
+      { node: 'code', label: 'again', code: '() => 42', as: 'n', guard: { signal: 'jev', threshold: 0.5 } },
+      { node: 'code', label: 'flag', code: '() => true', guard: { signal: 'jev', threshold: 0.5 } },
+      { node: 'code', label: 'merge', code: '(s) => ({ n: s.n })', guard: { signal: 'jev', threshold: 0.5 } },
+      { node: 'code', label: 'answer', code: '(s) => ({ answer: s.n })', as: 'answer' },
+    ] } };
+  const outputs = [];
+  const result = await runWorkflow(doc, { question: 'q', flag: true }, { guardStep: async (params) => { outputs.push(params.output); return { p: 0.9, jev: 0.9 }; } });
+  assert.equal(result.status, 'complete', JSON.stringify(result.escalation ?? result.error ?? null));
+  assert.deepEqual(outputs, [42, true, { n: 42 }], 'an unchanged number, an unchanged boolean under a label, and the object a merging code step returned');
+});
+
+test('a self guard on an out schema with a closed allOf member widens the member too, so a right answer is accepted', async () => {
+  const closed = { type: 'object', allOf: [{ type: 'object', required: ['answer'], additionalProperties: false, properties: { answer: { type: 'number' } } }] };
+  const doc = flow({ signal: 'self', threshold: 0.7 }, { out: 'Closed' });
+  doc.schemas = { ...schemas, Closed: closed };
+  doc.output = { schemaId: 'Closed', path: 'answer' };
+  assert.deepEqual(messagesOf(doc), []);
+  const { result } = await run(doc);
+  assert.equal(result.status, 'complete', JSON.stringify(result.error ?? result.escalation ?? null));
+  assert.deepEqual(result.output, { answer: 42 }, 'the confidence is split off before the stage schema sees the value');
+  assert.equal(result.state[confidenceKey('answer')], 0.9);
+  // A closed anyOf branch and a nested allOf member are widened the same way.
+  const branched = { type: 'object', anyOf: [{ allOf: [{ additionalProperties: false, properties: { answer: { type: 'number' } }, required: ['answer'] }] }, { additionalProperties: false, properties: { skip: { type: 'boolean' } }, required: ['skip'] }] };
+  doc.schemas = { ...schemas, Closed: branched };
+  const second = await run(doc);
+  assert.equal(second.result.status, 'complete', JSON.stringify(second.result.error ?? second.result.escalation ?? null));
+  assert.equal(second.result.state[confidenceKey('answer')], 0.9);
+});

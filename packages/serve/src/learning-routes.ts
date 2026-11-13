@@ -16,6 +16,7 @@
 // main now. A text that leaves holding one of the host's secrets as they are now (a value made secret after it was
 // written) is cut of it, a file's name holding one reads "[redacted]" whole, and a diff's file holding one is withheld.
 import type { DraftAsk } from "./learn/skills.js";
+import { noteBytes } from "./learn/check.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { createHash } from "node:crypto";
 import { approve, buildIndex, CAPS, checkNote, draftProblems, frontKeys, INDEX_FILE, INDEX_LINES, isHeld, LEARNED_KEYS, type LearnedNote, learnedName, learnedPlace, learnedStatus, NOTE_FILE, NOTE_STATUSES, parseNoteFile, type Problem, printable, released, retire, retiredLearned, skillProblems, SKILLS_DIR, supersede, UNCLEAR_FRONT, unstorable, WORKFLOWS_DIR, unclearFront, restorable, restore, restoredLearned } from "./learn/index.js";
@@ -527,8 +528,8 @@ export async function writeNote(data: string, agentId: string, raw: string, inpu
           text = retire(current!.text, note.status === "pending" ? "pending" : "active");
           const retired = parseNoteFile(file, text);
           if (Array.isArray(retired)) throw refused(retired.map((detail) => printable({ rule: "note", path: file, detail }, input.refuse)));
-          const size = Buffer.byteLength(text);
-          if (size > CAPS.note + RETIRED_LINE) throw refused([printable({ rule: "too_large", path: file, detail: `${size} bytes as retired; the cap is ${CAPS.note}, and the status lines a retire adds` }, input.refuse)]);
+          const size = noteBytes(text);
+          if (size > CAPS.note + RETIRED_LINE) throw refused([printable({ rule: "too_large", path: file, detail: `${size} bytes as retired; the cap is ${CAPS.note}, and the status lines a retire adds (a compiled_into line on top)` }, input.refuse)]);
         }
         if (current && text === current.text) return { result: { status: 200, file, text, etag: etagOf(current.oid) } };
         const after = learned ? [...notes.values()] : [...[...notes.values()].filter((note) => note.file !== file && !also.has(note.file)), parseNoteFile(file, text!) as LearnedNote, ...[...also].map(([old, marked]) => parseNoteFile(old, marked) as LearnedNote)];
