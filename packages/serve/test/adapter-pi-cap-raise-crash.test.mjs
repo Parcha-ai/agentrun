@@ -7,14 +7,19 @@
 // The first runner's journal stops at a named write and never returns from it, so the loss lands at that exact point:
 // (a) the follow-up's submission, after the raise entry's commit took the row and resumed the pause; (b) the first
 // commit after that submission landed (the follow-up's request record, before the request leaves). The runner is then
-// killed and a second one claims the run once its lease has run out.
+// killed and a second one claims the run once the stores' clock is moved past the first's claim.
+//
+// Every runner holds a lease no stall of a loaded machine outlasts (STEADY): the first runner loses the run by the test's
+// kill alone. On a short real lease a stall between a request's record and its send lost the first runner its own claim;
+// it took the run again and booked that request cut (its record landed, so it may have left), then sent it once more:
+// a second cut booking, and on a cap's records a second hold, that these cases would read as the property failing.
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { closeOpenSessions, piAdapterSpec, scriptedOrigin } from "./conformance-pi-adapter.mjs";
-import { cap, quiet, rootEntries, SONNET, sleep, STEADY, TIMING } from "./adapter-pi-cap-support.mjs";
+import { cap, quiet, rootEntries, SONNET, sleep, STEADY } from "./adapter-pi-cap-support.mjs";
 
 after(closeOpenSessions);
 const { openSqliteStore } = await import("../dist/store/index.js");
@@ -27,6 +32,28 @@ const CAP = 0.01;
 const RAISED = 5;
 const FOLLOW_UP = cap.followUpOf(RAISED).text;
 const isFollowUp = (write) => write.type === "submission" && String(write.value?.requestId ?? "").startsWith("agentrun:raise:");
+
+/** The server's store and two runners' stores in `dir`, all on one clock: real time plus `clock.skewMs`, so a case runs
+ *  a killed runner's claim out by moving the stores' now past its until (`runOut`), never by waiting on a real lease. */
+async function openStores(dir) {
+  const clock = { skewMs: 0 };
+  const now = () => Date.now() + clock.skewMs;
+  const server = await openSqliteStore({ dataDir: dir, role: "server", now });
+  const stores = [await openSqliteStore({ dataDir: dir, role: "runner", now }), await openSqliteStore({ dataDir: dir, role: "runner", now })];
+  return { server, stores, runOut: () => void (clock.skewMs += STEADY.leaseMs * 2) };
+}
+
+/** `promise`, or a failure naming `what` once `ms` pass: a wait on an event that never comes fails here, not at the
+ *  suite's timeout. */
+async function within(promise, what, ms = 20_000) {
+  let timer;
+  const late = new Promise((_, reject) => (timer = setTimeout(() => reject(new Error(`not within ${ms} ms: ${what}`)), ms)));
+  try {
+    return await Promise.race([promise, late]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 /** `journal` whose commits stop for good at `point`: "submission" stops the follow-up's own commit, "after" every commit
  *  once that one landed. `stopped` resolves when it stops; `release()` lets the held commit fail, at the test's end. */
@@ -59,8 +86,7 @@ function stoppingAt(point) {
 
 async function crashedRaise(t, point, { short = false } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-adapter-raise-crash-"));
-  const server = await openSqliteStore({ dataDir: dir, role: "server" });
-  const stores = [await openSqliteStore({ dataDir: dir, role: "runner" }), await openSqliteStore({ dataDir: dir, role: "runner" })];
+  const { server, stores, runOut } = await openStores(dir);
   const runners = [];
   const stop = stoppingAt(point);
   t.after(async () => {
@@ -84,7 +110,7 @@ async function crashedRaise(t, point, { short = false } = {}) {
   }), { restartLimit: MAX_RESTARTS });
   // The first runner's journal stops at the point; the second's is the store's own.
   const first = (deps) => loop({ ...deps, journal: (claim) => stop.wrap(deps.journal(claim)) });
-  runners.push(startRunner({ store: stores[0], createLoop: first, name: "runner-a", ...TIMING }));
+  runners.push(startRunner({ store: stores[0], createLoop: first, name: "runner-a", ...STEADY }));
   const settled = async (state, ms = 20_000) => {
     const from = Date.now();
     for (;;) {
@@ -102,12 +128,12 @@ async function crashedRaise(t, point, { short = false } = {}) {
   const to = short ? Number(((CAP + budget.pending.least_cap_usd) / 2).toFixed(6)) : RAISED;
   capUsd = to;
   const raise = await sendCommand(server, "run-1", { kind: "raise", body: { capUsd: to } });
-  await stop.stopped;
+  await within(stop.stopped, `the first runner's journal to stop at ${point}`);
+  // The run moves from the first runner to the second by the first's loss alone: killed, its claim run out on the
+  // stores' clock. A claim lost while its follow-up's request was out would have that request sent once more by the
+  // claim that took it (the lost one booked cut): that path is its own case below, forced, never left to the clock.
   runners[0].kill();
-  // The second runner on a lease no stall of a loaded machine outlasts: the run moves from the first runner to it by the
-  // first's loss alone. On the short lease a stall could lose its own claim while its follow-up's request was out, and
-  // the claim that took it again would send that request once more (the lost one booked cut): a second request this
-  // test would read as a follow-up sent twice. That path is its own case below, forced, never left to the clock.
+  runOut();
   runners.push(startRunner({ store: stores[1], createLoop: loop, name: "runner-b", ...STEADY }));
   const row = await settled(short ? "parked" : "ended").catch(async (error) => {
     throw new Error(`${error.message}; raises ${JSON.stringify(await rootEntries(stores[1], "agentrun.raise"))}`);
@@ -137,8 +163,7 @@ for (const [point, words] of [["submission", "before its follow-up's submission 
 // follow-up request until the first runner is gone and the second has sent its own.
 test("a raised run whose runner is lost while its follow-up's request is out: that request is booked cut, the next claim sends it once more, and the run ends", async (t) => {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-adapter-raise-lost-request-"));
-  const server = await openSqliteStore({ dataDir: dir, role: "server" });
-  const stores = [await openSqliteStore({ dataDir: dir, role: "runner" }), await openSqliteStore({ dataDir: dir, role: "runner" })];
+  const { server, stores, runOut } = await openStores(dir);
   const runners = [];
   let release = () => {};
   const held = new Promise((resolve) => (release = resolve));
@@ -173,7 +198,7 @@ test("a raised run whose runner is lost while its follow-up's request is out: th
   const spec = piAdapterSpec({ script, tools: {}, hooks: quiet }, { fetch });
   const parkRule = { get capUsd() { return capUsd; }, park: (refusal) => cap.parkOf(refusal, capUsd), checkRaise: cap.checkRaise, followUpOf: cap.followUpOf };
   const loop = createAdapterLoop(async (claim, run) => ({ ...(await spec(claim, run)), cap: parkRule, runCap: { capUsd: () => capUsd, modelOf: () => SONNET } }), { restartLimit: MAX_RESTARTS });
-  runners.push(startRunner({ store: stores[0], createLoop: loop, name: "runner-a", ...TIMING }));
+  runners.push(startRunner({ store: stores[0], createLoop: loop, name: "runner-a", ...STEADY }));
   const settled = async (state, ms = 20_000) => {
     const from = Date.now();
     for (;;) {
@@ -186,9 +211,10 @@ test("a raised run whose runner is lost while its follow-up's request is out: th
   await settled("parked");
   capUsd = RAISED;
   await sendCommand(server, "run-1", { kind: "raise", body: { capUsd: RAISED } });
-  // The first runner's follow-up request is out (held at the provider): the runner is lost there.
-  await out;
+  // The first runner's follow-up request is out (held at the provider): the runner is lost there, by the kill alone.
+  await within(out, "the first runner's follow-up request to reach the provider");
   runners[0].kill();
+  runOut();
   runners.push(startRunner({ store: stores[1], createLoop: loop, name: "runner-b", ...STEADY }));
   const row = await settled("ended");
   release();
