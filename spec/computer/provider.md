@@ -65,16 +65,17 @@ fallback that makes one up: serve passes the run's claim (`<run>#<epoch>`), and 
 
 - The computer's vendor-side name is `computer-<the first 12 hex of sha256(requestId)>` (`computerNameFor`), with no
   extra label, so a provider finds the request's computer by listing that name.
-- The same id while that computer is still starting is the same create: it waits until the computer is up, bounded by
-  the create's own time, and answers it.
-- The same id while it is up answers it, after the labels and owner check `attach` makes; a computer whose labels or
-  owner differ from the spec's is refused `exists`.
+- The same id while that computer is still starting is the same create: it waits as a fresh create does, within the
+  same bounds, and answers it once it is up; one that reaches its deadline first is refused `exists`.
+- The same id while it is up answers it once it is the computer the spec asks for, as far as the vendor reads it back
+  (Docker: every field its drift check reads, the network and the mount among them; a phone: its labels and image); one
+  that differs is refused `exists`. A retry never gets a wider network, another folder or another user than it asked.
 - The same id after it stopped, ended or passed its deadline is refused `exists`, in words: "computer-… was made for
   this request and has ended: create with a new request id". Never a second computer under the same name.
 - A second create of a request still in flight in the same provider waits for the first and answers what it does; one
-  asking another spec is refused `exists`. The provider remembers the requests whose computers it ended, so the same
-  id is refused even once the vendor forgets the computer; past the process, what the vendor (or the provider's
-  ledger) still shows is what holds.
+  asking another spec (any field but `lifetimeMs`, which each create counts from its own start) is refused `exists`.
+  The provider remembers the requests whose computers it ended, so the same id is refused even once the vendor forgets
+  the computer; past the process, what the vendor (or the provider's ledger) still shows is what holds.
 
 Every provider that makes computers keeps it through one mechanism, `CreateRequests` (`src/create-requests.ts`): the id checked, the name,
 the creates in flight and the requests ended. What the vendor holds under the name is the provider's to read: the

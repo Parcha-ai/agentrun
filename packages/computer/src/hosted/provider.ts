@@ -10,7 +10,6 @@ import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { isDeepStrictEqual } from "node:util";
 import { CreateRequests, endedWords, otherSpecWords } from "../create-requests.js";
 import { DESKTOP_GROUPS, type DesktopOptions, desktopOf, startDisplay } from "../desktop.js";
 import { COMPUTER_LABEL, DAEMON_IN_COMPUTER, DEADLINE_LABEL, helloDrift, type ProbeReport, probeNetworkDrift, probeNotes, probeReportOf, WORK } from "../drift.js";
@@ -422,7 +421,7 @@ export class HostedProvider implements ComputerProvider {
 			...(refusals.length > 0 ? { refused: refusals.map(({ field, message }) => `${field}: ${message}`).join("; ") } : {}),
 			// The checks #again makes of a computer listed already, made here of the spec in flight: what it gives is shared
 			// only with a create that asks the same.
-			differ: (asked, inFlight, name) => this.#inFlightDiffer(asked, inFlight, name),
+			userOf: (asked) => this.#userOf(asked),
 			make: (name) => this.#createOnce(spec, name, context.signal),
 		});
 	}
@@ -440,22 +439,6 @@ export class HostedProvider implements ComputerProvider {
 			.map(([key, value]) => `label ${key}: asked ${show(value)}, ${seen} ${show(labels[key])}`);
 		const extra = Object.keys(callerLabels(labels)).filter((key) => !Object.hasOwn(asked, key));
 		if (extra.length > 0) differ.push(`labels ${extra.join(", ")}: ${seen}, never asked for`);
-		return differ;
-	}
-
-	/**
-	 * How spec differs from pending, the spec of a create of the same request still in flight: the labels and the user,
-	 * as #again holds a listed computer to them, and every other field the host is given (facts.specFields, gpu), which
-	 * the spec in flight holds exactly.
-	 */
-	#inFlightDiffer(spec: ComputerSpec, pending: ComputerSpec, name: string): string[] {
-		const differ = this.#labelDiffer(spec, name, this.#labelsOf(pending, name, "", ""), "in flight");
-		const [asked, flying] = [this.#userOf(spec), this.#userOf(pending)];
-		if (asked !== flying) differ.push(`user: asked ${asked}, in flight ${flying}`);
-		const taken = new Set<string>(this.host.facts.specFields ?? []);
-		for (const field of ["cpus", "memoryMb", "workdir", "gpu"] as const) {
-			if ((field === "gpu" || taken.has(field)) && !isDeepStrictEqual(spec[field], pending[field])) differ.push(`${field}: asked ${show(spec[field])}, in flight ${show(pending[field])}`);
-		}
 		return differ;
 	}
 

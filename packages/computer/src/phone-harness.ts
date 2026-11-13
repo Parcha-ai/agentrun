@@ -104,7 +104,10 @@ export interface PhoneLedgerEntry {
 const pendingId = (requestKey: string) => `pending-${requestKey}`;
 /** The Idempotency-Key of a request: every create of one request id sends the same key, so the service can tell them one. */
 const requestKeyOf = (requestId: string) => createHash("sha256").update(requestId, "utf8").digest("hex");
-/** How a spec differs from a phone of its request (seen: "read back", or "in flight"): its labels and its image. */
+/**
+ * How a spec differs from a phone of its request, as the ledger reads it back: its labels and its image, every field of
+ * a spec check() lets a phone ask for but its network (always open) and its lifetime (each create counts its own).
+ */
 function phoneDiffer(spec: ComputerSpec, labels: Record<string, string>, image: string, seen: string): string[] {
 	const differ = labelsDiffer(spec.labels ?? {}, labels, seen);
 	if (spec.image !== image) differ.push(`image: asked ${spec.image}, ${seen} ${image}`);
@@ -626,7 +629,6 @@ export class PhoneHarnessProvider implements ComputerProvider {
 			this.#requests.create(spec, context, {
 				refuse: fail,
 				...(refusals.length > 0 ? { refused: refusals.map(({ field, message }) => `${field}: ${message}`).join("; ") } : {}),
-				differ: (asked, inFlight) => phoneDiffer(asked, inFlight.labels ?? {}, inFlight.image, "in flight"),
 				make: (name) => this.#create(spec, name, requestKeyOf(context.requestId), context.signal),
 			}),
 		);
@@ -654,15 +656,39 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		if (entry.released !== undefined || this.#now() >= Date.parse(entry.deadline)) return fail("exists", endedWords(name));
 		const differ = phoneDiffer(spec, entry.labels, entry.image, "read back");
 		if (differ.length > 0) return fail("exists", otherSpecWords(name, "was made", differ));
-		const from = this.#now();
+		// The same wait a fresh create makes, within readyMs; a phone that ended, or reached its deadline as it started, is
+		// spent. One not ready in time is left to the create that made it, which ends it.
+		const ready = await this.#ready(entry.id, this.#now(), signal);
+		if (!ready.ok) return ready.error.code === "gone" ? fail("exists", endedWords(name)) : ready;
+		if (this.#now() >= Date.parse(this.#deadlineOf(ready.value, Date.parse(entry.deadline)))) return fail("exists", endedWords(name));
+		return ok({ id: entry.id, name });
+	}
+
+	/**
+	 * Waits until the phone id is ready, within readyMs counted from `from`, each read bounded by what readyMs has left so
+	 * a stalled one cannot hold the wait past it: the ready session, or why not. gone: the service ended the phone, or it
+	 * did not start; timeout: readyMs passed; aborted: the signal fired.
+	 */
+	async #ready(id: string, from: number, signal?: AbortSignal): Promise<Result<Session>> {
 		for (;;) {
-			const read = await this.#session(entry.id, signal);
-			if (!read.ok) return read.error.code === "gone" ? fail("exists", endedWords(name)) : read;
-			if (read.value.state === "ready") return ok({ id: entry.id, name });
-			if (read.value.state !== "provisioning") return fail("exists", endedWords(name));
-			if (this.#now() - from >= this.#readyMs) return fail("timeout", `${name}, made for this request, was not ready within ${this.#readyMs / 1000} s`);
+			if (signal?.aborted) return fail("aborted", `create was aborted while the phone ${id} started`);
+			const left = this.#readyMs - (this.#now() - from);
+			const bound = Math.max(1, Math.min(this.#requestMs, left));
+			const read = await this.#session(id, signal, bound);
+			if (!read.ok && read.error.code === "timeout") {
+				// A read cut off by its own bound (requestMs) while readyMs has time left is one slow answer, not the deadline:
+				// ask again. Only a read bounded by what readyMs had left, or the check below, ends the wait.
+				if (bound < left && this.#now() - from < this.#readyMs) {
+					await this.#sleep(this.#pollMs);
+					continue;
+				}
+				return fail("timeout", `the phone ${id} was not ready within ${this.#readyMs / 1000} s: ${read.error.message}`);
+			}
+			if (!read.ok) return fail(read.error.code, `the phone ${id} did not start: ${read.error.message}`);
+			if (read.value.state === "ready") return read;
+			if (read.value.state !== "provisioning") return fail("gone", `the phone ${id} did not start: ${this.#clean(read.value.error ?? read.value.state)}`);
+			if (this.#now() - from >= this.#readyMs) return fail("timeout", `the phone ${id} was not ready within ${this.#readyMs / 1000} s`);
 			await this.#sleep(this.#pollMs);
-			if (signal?.aborted) return fail("aborted", `create was aborted while ${name}, made for this request, started`);
 		}
 	}
 
@@ -750,29 +776,9 @@ export class PhoneHarnessProvider implements ComputerProvider {
 			return fail(code, `${words}; ${gone.ok ? "it was ended" : `it could not be ended (${gone.error.message})`}`);
 		};
 		if (cancelled) return ended("aborted", `create was aborted during POST /sessions, after the service made the phone ${id}`);
-		let session = first.value;
-		for (;;) {
-			if (signal?.aborted) return ended("aborted", `create was aborted while the phone ${id} started`);
-			// A read takes no longer than readyMs has left, so a stalled one cannot hold create past it.
-			const left = this.#readyMs - (this.#now() - from);
-			const bound = Math.max(1, Math.min(this.#requestMs, left));
-			const read = await this.#session(id, signal, bound);
-			if (!read.ok && read.error.code === "timeout") {
-				// A read cut off by its own bound (requestMs) while readyMs has time left is one slow answer, not the deadline:
-				// ask again. Only a read bounded by what readyMs had left, or the deadline check below, ends the phone.
-				if (bound < left && this.#now() - from < this.#readyMs) {
-					await this.#sleep(this.#pollMs);
-					continue;
-				}
-				return ended("timeout", `the phone ${id} was not ready within ${this.#readyMs / 1000} s: ${read.error.message}`);
-			}
-			if (!read.ok) return ended(read.error.code === "gone" ? "vendor" : read.error.code,`the phone ${id} did not start: ${read.error.message}`);
-			session = read.value;
-			if (session.state === "ready") break;
-			if (session.state !== "provisioning") return ended("vendor",`the phone ${id} did not start: ${this.#clean(session.error ?? session.state)}`);
-			if (this.#now() - from >= this.#readyMs) return ended("timeout", `the phone ${id} was not ready within ${this.#readyMs / 1000} s`);
-			await this.#sleep(this.#pollMs);
-		}
+		const ready = await this.#ready(id, from, signal);
+		if (!ready.ok) return ended(ready.error.code === "gone" ? "vendor" : ready.error.code, ready.error.message);
+		const session = ready.value;
 		const deadline = this.#deadlineOf(session, from + runLifetimeMs(spec));
 		const kept = await record(() => this.#ledger.put({ id, name, labels: { ...(spec.labels ?? {}) }, image: spec.image, deadline }));
 		if (!kept.ok) return kept;

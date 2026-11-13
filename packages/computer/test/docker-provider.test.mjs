@@ -1,6 +1,7 @@
 // DockerProvider against a fake docker program under the test's temp dir (test/fake-docker.mjs): it records each
 // call's argv and answers as the docker CLI does. No Docker and no daemon binary are needed.
 import assert from "node:assert/strict";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -622,7 +623,7 @@ test("desktop: a timeoutMs a timer cannot hold is refused when the provider is m
 	assert.doesNotThrow(() => new DockerProvider({ daemonPath, desktop: { timeoutMs: 2 ** 31 - 1 } }));
 });
 
-test("create is once per request: a retry at once, once it is up, and from another provider on the same Docker host answers the computer the first made, named by the request; other labels or another user are exists", async () => {
+test("create is once per request: a retry at once, once it is up, and from another provider on the same Docker host answers the computer the first made, named by the request; any other spec is exists, read back or in flight", async () => {
 	const fake = fakeDocker();
 	const spec = { ...SPEC, labels: { team: "a" } };
 	const context = { requestId: "docker-retried" };
@@ -636,20 +637,34 @@ test("create is once per request: a retry at once, once it is up, and from anoth
 	const other = new DockerProvider(fake.options);
 	assert.deepEqual(await other.create(spec, context), first, "a retry from another provider");
 	assert.deepEqual(fake.names(), [first.value.name], "one computer");
-	for (const [asked, words] of [
-		[{ ...spec, labels: { team: "b" } }, /label team: asked "b", (read back|in flight) "a"/],
-		[{ ...spec, user: "2000:3000" }, /user: asked 2000:3000, read back /],
-		[{ ...spec, image: "debian:trixie-slim" }, /image: asked debian:trixie-slim, read back debian:bookworm-slim/],
-	]) {
+	// Held to everything create's own drift check holds its container to: a retry never gets a wider network, another
+	// folder, other sizes or another user than it asked for.
+	const folder = mkdtempSync(join(tmpdir(), "docker-retried-"));
+	const others = [
+		[{ ...spec, labels: { team: "b" } }, /label team: declared "b", read back "a"/],
+		[{ ...spec, user: "2000:3000" }, /User: declared "2000:3000", read back /],
+		[{ ...spec, image: "debian:trixie-slim" }, /Image: declared "debian:trixie-slim", read back "debian:bookworm-slim"/],
+		[{ ...spec, network: "open" }, /network: declared open, read back none/],
+		[{ ...spec, memoryMb: 1024 }, /Memory: declared 1073741824, read back /],
+		[{ ...spec, mount: { kind: "bind", path: folder } }, /HostConfig\.Mounts: declared /],
+	];
+	for (const [asked, words] of others) {
 		const refused = await other.create(asked, context);
 		assert.equal(refused.error?.code, "exists", JSON.stringify(refused));
 		assert.match(refused.error.message, new RegExp(`^${first.value.name} was made for this request with another spec, so it is not returned: `));
 		assert.match(refused.error.message, words);
 	}
-	const flying = await Promise.all([fake.provider.create({ ...spec, labels: { team: "c" } }, { requestId: "docker-flying" }), fake.provider.create(spec, { requestId: "docker-flying" })]);
-	assert.equal(flying[0].ok, true);
-	assert.equal(flying[1].error?.code, "exists", "a create of the same request in flight with other labels");
-	assert.match(flying[1].error.message, /is being made for this request with another spec, so it is not returned: label team: asked "a", in flight "c"/);
+	assert.deepEqual(fake.names(), [first.value.name], "and none of them made a computer");
+	// In flight, the spec of the first create is there whole: every field but its lifetime is compared.
+	for (const [index, [asked]] of others.entries()) {
+		const id = `docker-flying-${index}`;
+		const flying = await Promise.all([fake.provider.create(spec, { requestId: id }), fake.provider.create({ ...asked, lifetimeMs: SPEC.lifetimeMs + 1 }, { requestId: id })]);
+		assert.equal(flying[0].ok, true, JSON.stringify(flying[0]));
+		assert.equal(flying[1].error?.code, "exists", `a create of the same request in flight asking ${JSON.stringify(asked)}`);
+		assert.match(flying[1].error.message, /is being made for this request with another spec, so it is not returned: \w+.*: asked .*, in flight /);
+	}
+	const sameButLifetime = await Promise.all([fake.provider.create(spec, { requestId: "docker-lifetime" }), fake.provider.create({ ...spec, lifetimeMs: SPEC.lifetimeMs + 1 }, { requestId: "docker-lifetime" })]);
+	assert.deepEqual(sameButLifetime[1], sameButLifetime[0], "a retry's own lifetime is not another spec");
 });
 
 test("a request whose computer was deleted, stopped or ended is spent: the same request id again is exists, in words, and makes nothing", async () => {

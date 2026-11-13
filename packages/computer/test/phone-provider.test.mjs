@@ -194,6 +194,41 @@ test("a retry of a request whose create lost both its answer and its recovery fi
 	assert.deepEqual((await ledger.list()).map((entry) => [entry.id, entry.name]), [["sess_lost", name]], "the key swapped for the phone's entry");
 });
 
+// The hang guard only bounds a failure: on a pass nothing waits on a timer.
+test("a retry that finds its request's phone still starting waits as a fresh create does: each read bounded by what readyMs has left, and a phone ready only past its deadline is spent", { timeout: 10_000 }, async () => {
+	const held = async (requestId, session, deadlineMs, fakeOptions, options = {}) => {
+		const name = computerNameFor(requestId);
+		const made = await setup(fakeOptions, { readyMs: 10_000, pollMs: 2000, requestMs: 30_000, ...options });
+		const now = made.fake.clock.now();
+		made.fake.sessions.set(session, { id: session, state: "provisioning", gets: 0, platform: "android", kind: "emulator", expires_at: (now + deadlineMs) / 1000 });
+		await made.ledger.put({ id: session, name, labels: {}, image: SPEC.image, deadline: new Date(now + deadlineMs).toISOString() });
+		return { ...made, name, create: () => made.provider.create(SPEC, { requestId }) };
+	};
+	// A read that stalls is cut off by what readyMs has left, not by requestMs, and the phone is left to the create that
+	// rented it.
+	const { timeout, made } = testTimers();
+	let stalledNow;
+	const stalled = new Promise((resolve) => (stalledNow = resolve));
+	let reads = 0;
+	const stall = ({ method, path }) => method === "GET" && path === "/sessions/sess_held" && ++reads === 3 && (stalledNow(), true);
+	const slow = await held("phone-held-slow", "sess_held", 600_000, { readyAfter: 10, stall }, { timeout });
+	const pending = slow.create();
+	await stalled;
+	assert.deepEqual(made.map((one) => one.ms), [10_000, 8_000, 6_000], "two reads and two polls of 2 s: the third read may take the 6 s readyMs has left");
+	made.at(-1).fire();
+	const late = await pending;
+	assert.equal(late.error?.code, "timeout", JSON.stringify(late));
+	assert.match(late.error.message, /^the phone sess_held was not ready within 10 s: GET \/sessions\/sess_held: the phone harness did not answer within 6 s$/);
+	assert.equal(slow.fake.requests().some((r) => r.method === "DELETE" || r.method === "POST"), false, "nothing ended, nothing rented");
+	// Ready only once its deadline passed (the second read, 2 s on, of a phone with 1 s left): spent, never answered.
+	const expired = await held("phone-held-expired", "sess_expired", 1000, { readyAfter: 2 });
+	const spent = await expired.create();
+	assert.equal(spent.error?.code, "exists", JSON.stringify(spent));
+	assert.match(spent.error.message, /^computer-[0-9a-f]{12} was made for this request and has ended: create with a new request id$/);
+	assert.equal(expired.fake.sessions.get("sess_expired")?.state, "ready", "it did come up, past its deadline");
+	assert.equal(expired.fake.requests().some((r) => r.method === "POST"), false, "nothing rented");
+});
+
 test("a phone whose end is still in flight: a second release is ok, it is neither listed nor attached, and the ledger forgets it once its GET is a 404", async () => {
 	// As the live service did in run 7: after the DELETE the session is still there, closing, for a few reads.
 	const { provider, fake, ledger } = await setup({ endLag: 3 });

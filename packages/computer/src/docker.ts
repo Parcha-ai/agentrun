@@ -79,7 +79,7 @@ import {
 	runLifetimeMs,
 } from "./provider.js";
 import { type ComputerErrorCode, failFor, ok, type Result, vendorFail } from "./result.js";
-import { CreateRequests, endedWords, labelsDiffer, otherSpecWords } from "./create-requests.js";
+import { CreateRequests, endedWords, otherSpecWords } from "./create-requests.js";
 import { daemonWatch, type ScreenWatch, type ScreenWatchHandlers, type WatchOptions } from "./screen-watch.js";
 import { countTested } from "./test-connection.js";
 
@@ -454,7 +454,7 @@ export class DockerProvider implements ComputerProvider {
 		return this.#requests.create(spec, context, {
 			refuse: fail,
 			...(refusals.length > 0 ? { refused: refusals.map(({ field, message }) => `${field}: ${message}`).join("; ") } : {}),
-			differ: (asked, inFlight) => this.#specDiffer(asked, { labels: inFlight.labels ?? {}, user: this.#userFor(inFlight), image: inFlight.image }, "in flight"),
+			userOf: (asked) => this.#userFor(asked),
 			make: (name) => this.#createNamed(spec, name, context.signal),
 		});
 	}
@@ -465,15 +465,19 @@ export class DockerProvider implements ComputerProvider {
 	}
 
 	/**
-	 * How spec differs from a computer of its request (seen: "read back", or "in flight"): each label asked with another
-	 * value or none, as attach by labels matches, the user and the image. Empty when it is the same.
+	 * How spec differs from report, the container Docker holds under its request's name: every way create's own drift
+	 * check would find it differs from spec (inspectDrift: each label asked, the image, user, network, mount, sizes and
+	 * workdir among them). Empty when it is the same.
 	 */
-	#specDiffer(spec: ComputerSpec, have: { labels: Record<string, string>; user: string; image: string | undefined }, seen: string): string[] {
-		const differ = labelsDiffer(spec.labels ?? {}, have.labels, seen, { extra: false });
-		const user = this.#userFor(spec);
-		if (user !== have.user) differ.push(`user: asked ${user}, ${seen} ${have.user}`);
-		if (spec.image !== have.image) differ.push(`image: asked ${spec.image}, ${seen} ${have.image ?? "nothing"}`);
-		return differ;
+	async #differs(spec: ComputerSpec, report: DockerInspect, signal?: AbortSignal): Promise<Result<string[]>> {
+		const host = await this.host({ signal });
+		if (!host.ok) return host;
+		const proxy = await this.#proxyOf(report, signal);
+		if (!proxy.ok) return proxy;
+		const daemon = this.#daemon();
+		if (!daemon.ok) return daemon;
+		const expected = this.#expected(host.value, report.Config?.Labels?.[DEADLINE_LABEL] ?? "", this.#userFor(spec), this.#mountedDaemon(report) ?? daemon.value, proxy.value);
+		return ok(inspectDrift(spec, report, expected));
 	}
 
 	/**
@@ -496,10 +500,14 @@ export class DockerProvider implements ComputerProvider {
 				const deadline = Date.parse(report.Config?.Labels?.[DEADLINE_LABEL] ?? "");
 				if (status === "exited" || status === "dead" || status === "removing" || deadline <= Date.now()) return fail("exists", endedWords(name));
 				if (report.State?.Running === true) {
-					const differ = this.#specDiffer(spec, { labels: report.Config?.Labels ?? {}, user: report.Config?.User ?? "", image: report.Config?.Image }, "read back");
-					if (differ.length > 0) return fail("exists", otherSpecWords(name, "was made", differ));
 					const attached = await this.attach({ id: name }, { signal });
-					if (attached.ok) return ok({ id: attached.value.id, name });
+					if (attached.ok) {
+						// Up and sound: returned only when it is the computer this spec asks for, as create would have made it.
+						const differ = await this.#differs(spec, report, signal);
+						if (!differ.ok) return differ;
+						if (differ.value.length > 0) return fail("exists", otherSpecWords(name, "was made", differ.value));
+						return ok({ id: attached.value.id, name });
+					}
 					if (attached.error.code === "aborted") return attached;
 					// Its display or its daemon is not up yet: the first create is still making it.
 					last = attached.error;

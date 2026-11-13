@@ -688,7 +688,6 @@ export function fakeUiProvider(options: FakeUiOptions = {}, make: (options: Fake
 			return requests.create(spec, context, {
 				refuse: fail,
 				...(refusals.length > 0 ? { refused: refusals.map((refusal) => refusal.message).join("; ") } : {}),
-				differ: (asked, inFlight) => labelsDiffer(asked.labels ?? {}, inFlight.labels ?? {}, "in flight"),
 				make: async (id) => {
 					if (made.has(id)) {
 						if (!live(id)) return fail("exists", endedWords(id));
