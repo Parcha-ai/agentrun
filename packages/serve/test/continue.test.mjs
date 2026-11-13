@@ -70,12 +70,13 @@ test("a completed run's follow-up takes a place under the run cap: with every pl
 test("a follow-up to a completed run and new starts sent together under one place: all are taken, exactly one holds the place at a time, never two, and each runs in its turn", { timeout: 90_000 }, async (t) => {
   const dir = await scratch(t);
   const { api, data, runnerBeats } = await serve(t, { maxRuns: 1 });
-  const done = await startRun(api, "calc", "What is six times seven?");
+  // The first turn answers at once; the follow-up's turn holds on the gate, as each new start does.
+  const done = await startRun(api, "calc", `Hold the follow-up until ${join(dir, "go")}.`);
   await follow(api, done.run_id, ["completed"]);
   for (const id of ["one", "two", "three"]) assert.equal((await api("POST", "/agents", agent(id))).status, 201);
   const hold = `Answer once ${join(dir, "go")} exists.`;
   const answers = await Promise.all([
-    api("POST", `/runs/${done.run_id}/messages`, { content: hold }),
+    api("POST", `/runs/${done.run_id}/messages`, { content: "go on" }),
     ...["one", "two", "three"].map((id) => api("POST", `/agents/${id}/runs`, { input: { content: hold } })),
   ]);
   assert.deepEqual(answers.map((a) => a.status), [202, 202, 202, 202], JSON.stringify(answers.map((a) => a.body)));
@@ -87,6 +88,7 @@ test("a follow-up to a completed run and new starts sent together under one plac
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
   assert.equal(claimed(data).length, 1, "the place is taken by one of them");
+  for (const id of ids) assert.notEqual(storeRun(data, id).state, "completed", `run ${id} (the reopened one included) stays unfinished until the gate opens`);
   await writeFile(join(dir, "go"), "");
   for (const id of ids) {
     for (let i = 0; storeRun(data, id).state !== "completed"; i++) {
