@@ -234,3 +234,23 @@ test("the promotion history trim never drops a champion: newer revisions replayi
   assert.equal(championOf(records, "answer")?.digest, "champ", "the champion still serves");
   assert.deepEqual(records.at(-1), rec(`c${PROMOTIONS_KEPT - 1}`, "hold"), "the newest kept");
 });
+
+// Review on #2644 (child guard names): the DSL names a step of a child workflow `parent/child` (its guard row's `node`
+// too), so the serving thresholds, the record-only replay and the refit read a nested guard by that name.
+test("a guard in a child workflow is read by its prefixed name: served at its own threshold, and refit", () => {
+  const child = { v: 2, name: "inner", schemas: { In: { type: "object" } }, input: { schemaId: "In" }, output: { schemaId: "In", path: "pick" },
+    root: { node: "workflow", label: "deeper", input: {}, out: "In", as: "x", workflow: { v: 2, name: "deepest", schemas: {}, root: { node: "agent", label: "leaf", guard: { signal: "self", threshold: 0.3 } } } } };
+  const flow = { v: 2, name: "outer", schemas: {}, root: { node: "chain", steps: [
+    { node: "workflow", label: "sub", input: {}, out: "In", as: "sub", workflow: { ...child, root: { node: "chain", steps: [{ node: "agent", label: "pick", guard: { signal: "self", threshold: 0.8 } }, child.root] } }, guard: { signal: "self", threshold: 0.5 } },
+  ] } };
+  const text = JSON.stringify(flow);
+  assert.deepEqual([...thresholdsOf(text)], [["sub", 0.5], ["sub/pick", 0.8], ["sub/deeper/leaf", 0.3]]);
+  // A row at p 0.6 on sub/pick, record-only: served at 0.8, it hands back (never the replay's 1e-9).
+  const row = { of: "g", recorded: { answer: "a", correct: true }, outcome: "answered", answer: "b", guards: [{ node: "sub/pick", signal: "self", self: 0.6, p: 0.6, threshold: 1e-9, escalated: false }] };
+  assert.equal(escalates(row, thresholdsOf(text)), true);
+  // The refit moves the nested guard it has rows for: wrong exactly under 0.5.
+  const rows = Array.from({ length: 20 }, (_, i) => { const p = i / 20; return { guards: [{ node: "sub/pick", signal: "self", self: p, p, threshold: 0, escalated: false }], answered: true, wfCorrect: p >= 0.5, agentCorrect: 1 }; });
+  const refit = refitGuards(text, rows, "2026-11-13T00:00:00.000Z");
+  assert.deepEqual(refit.guards.map(({ node, was, threshold }) => [node, was, threshold]), [["sub/pick", 0.8, 0.5]]);
+  assert.equal(JSON.parse(refit.text).root.steps[0].workflow.root.steps[0].guard.threshold, 0.5);
+});

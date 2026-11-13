@@ -101,3 +101,90 @@ test("the graded check keeps coming past the grades kept: new wrong grades that 
   const held = (await promotionsOf(settings, "a")).at(-1);
   assert.deepEqual({ decided: held.decided, source: held.source }, { decided: "hold", source: "graded" });
 });
+
+// Review on #2644 (refit races): two claims checking the same window at once compute the same cursor; only the claim whose
+// write marked it checked refits, never the one that lost that write and read the winner's record back.
+test("two claims checking the same 20 graded runs at once: one refit, never two", async () => {
+  const text = flowOf({ signal: "self", threshold: 0.5 });
+  const served = Array.from({ length: REFIT_EVERY }, (_, i) => { const p = 0.5 + (i % 5) * 0.1; return [p >= 0.7, p]; });
+  const { gate, digest, commits, logs } = await storeOf({ text, served });
+  const both = await Promise.all([gate({ name: "answer", workflow: text }, digest), gate({ name: "answer", workflow: text }, digest)]);
+  assert.deepEqual(both, [true, true]);
+  assert.equal(commits.length, 1, `one refit for the window: ${logs.join("\n")}`);
+});
+
+const { launchBody } = await import("../dist/run-launch.js");
+/** A launch's learning start as a run that learns is launched with (its seed commit "s"). */
+const LEARNING = { given: [], seed: "s", section: "" };
+
+/** A store of `graded` graded agent runs the workflow fits (each with its launch), runs created and commands sent kept, and
+ *  `replaying`: a promotion record already replaying with its runs (rows given). For the challenger and deadline checks. */
+async function replayStoreOf({ graded = 6, rows: given = [], records = [], newest } = {}) {
+  const kv = new Map();
+  const settings = {
+    get: async (key) => (kv.has(key) ? structuredClone(kv.get(key)) : undefined),
+    putIfAbsent: async (key, value) => (kv.has(key) ? kv.get(key) : (kv.set(key, structuredClone(value)), value)),
+    replaceIf: async (key, was, value) => (JSON.stringify(kv.get(key)) === JSON.stringify(was) ? (kv.set(key, structuredClone(value)), true) : false),
+  };
+  const rows = new Map(given.map((row) => [row.id, row]));
+  const launches = new Map(given.filter((row) => row.launch).map((row) => [row.id, row.launch]));
+  for (let i = 0; i < graded; i++) {
+    const id = `graded-${i}`;
+    rows.set(id, { id, state: "ended", metrics: { path: "agent" }, archivedAt: null });
+    launches.set(id, { input: { question: `Question ${i}` }, title: `Question ${i}`, place: { mode: "runner" }, learning: LEARNING });
+    await putGrade(settings, "a", { run: id, correct: true, expected: { question: `Question ${i}` }, source: "eval", at: `t${i}`, path: "agent" });
+  }
+  for (const record of records) await recordPromotion(settings, "a", record, () => true);
+  const created = [];
+  const commands = [];
+  const store = {
+    settings,
+    runs: {
+      get: async (id) => rows.get(id),
+      launch: async (id) => (launches.has(id) ? { runId: id, body: launchBody(launches.get(id)), sealed: null } : Promise.reject(new Error(`no run ${id}`))),
+      create: async (row, launch) => {
+        created.push(row.id);
+        rows.set(row.id, { id: row.id, state: "queued", metrics: null, archivedAt: null });
+        return { id: row.id };
+      },
+    },
+    runOfOrigin: async () => undefined,
+    command: async (runId, command) => (commands.push([runId, command.kind]), { id: `c-${commands.length}`, runId, ...command }),
+  };
+  const logs = [];
+  const gateOf = (now = Date.now) => promotionGate({ store, agentId: "a", runId: "now", revisionId: "rev", launch: { input: { question: "Now" }, title: "", place: { mode: "runner" }, learning: LEARNING }, context: ctx, log: (line) => logs.push(line), now, ...(newest ? { newest: async () => newest } : {}) });
+  return { settings, created, commands, logs, gateOf, rows };
+}
+
+// Review on #2644 (two challengers): two claims of different revisions of one workflow at once both read no revision
+// replaying; the challenger is reserved before any replay run starts, the rival check in the same guarded write, so only
+// one revision replays and only its runs start.
+test("two revisions claimed at once: one challenger reserved, one set of replay runs", async () => {
+  const older = flowOf(undefined);
+  const newer = older.replace("Answer.", "Answer, revision two.");
+  const { settings, created, logs, gateOf } = await replayStoreOf({ newest: workflowDigest({ workflow: newer }) });
+  const gate = gateOf();
+  const both = await Promise.all([gate({ name: "answer", workflow: older }, workflowDigest({ workflow: older })), gate({ name: "answer", workflow: newer }, workflowDigest({ workflow: newer }))]);
+  assert.deepEqual(both, [undefined, undefined], "neither serves while it replays");
+  const replaying = (await promotionsOf(settings, "a")).filter((one) => one.decided === "replaying");
+  assert.equal(replaying.length, 1, `one challenger: ${JSON.stringify(await promotionsOf(settings, "a"))}\n${logs.join("\n")}`);
+  assert.equal(created.length, 6, "only the reserved challenger's replay runs start");
+  assert.deepEqual([...created].sort(), [...replaying[0].runs].sort(), "the runs started are the ones its record reserved");
+});
+
+// Review on #2644 (expired replays): a replay decided past REPLAY_DEADLINE_MS with a run still at work cancels that run as
+// its decision is kept: what it would go on to spend is never read.
+test("a replay decided past its deadline cancels its runs still at work", async () => {
+  const text = flowOf(undefined);
+  const digest = workflowDigest({ workflow: text });
+  const { REPLAY_DEADLINE_MS } = await import("../dist/runner/promotion.js");
+  const replayRun = (i, state) => ({ id: `replay-${i}`, state, metrics: state === "ended" ? { path: "replay", replay: { of: `graded-${i}`, outcome: "answered" } } : null, archivedAt: null, costUsd: state === "ended" ? 0.01 : null,
+    launch: { input: { question: `Question ${i}` }, title: "", place: { mode: "runner" }, learning: LEARNING, replay: { of: `graded-${i}`, workflow: "answer", digest } } });
+  const given = [...Array.from({ length: 5 }, (_, i) => replayRun(i, "ended")), replayRun(5, "working")];
+  const at = new Date(0).toISOString();
+  const { settings, commands, logs, gateOf } = await replayStoreOf({ rows: given, records: [{ workflow: "answer", digest, at, decided: "replaying", source: "replay", reason: "replaying", runs: given.map((row) => row.id), commit: "s" }] });
+  await gateOf(() => REPLAY_DEADLINE_MS + 60_000)({ name: "answer", workflow: text }, digest);
+  const decided = (await promotionsOf(settings, "a")).at(-1);
+  assert.notEqual(decided.decided, "replaying", logs.join("\n"));
+  assert.deepEqual(commands, [["replay-5", "cancel"]], "the run still at work is cancelled once the decision is kept");
+});
