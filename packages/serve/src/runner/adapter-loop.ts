@@ -2147,9 +2147,21 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           const kept = findData<WorkflowFirstData>(await entriesOf(theGate.journal, theRoot.id, context), WORKFLOW_FIRST, () => true);
           const rec = record ?? (await openCliRecord(on, theGate.journal, context, now, spec.cwd));
           const ended = rec.endOf(WORKFLOW_FIRST_CALL);
+          /** The call's answer as the run takes it: one the agent could not stand behind goes back to it, either one the
+           *  tool cut (learnedText: no agent turn could recover its ending) or, for an agent with an output schema, one that
+           *  cannot be shaped to it (answerAsServed: the answer as the run serves it, the one replay and grading read; why
+           *  goes back with it). Pure in the call's end, so a claim that recovers a handback rebuilds the same words. */
+          const taken = (got: { text: string; isError: boolean }): { text: string; isError: boolean } => {
+            if (got.isError) return got;
+            if (got.text.length > LEARNED_CLIP) return { ...got, isError: true };
+            const asServed = answerAsServed(got.text, first.outputSchema);
+            return "why" in asServed ? { text: `${got.text}\n\n[${asServed.why}]`, isError: true } : { ...got, text: asServed.text };
+          };
+          const recorded = (end: NonNullable<typeof ended>) => ({ text: end.output ?? (end.status === "interrupted" ? endedAnswer(LEARNED_WORKFLOW_TOOL, end).text : ""), isError: end.status !== "done" });
           if (kept?.outcome === "answered") return { outcome: "answered", text: ended?.output ?? "" };
-          // Handed back on an earlier claim whose handback never reached the agent (the session is still new): sent now.
-          if (kept) return job(ended?.output ?? "");
+          // Handed back on an earlier claim whose handback never reached the agent (the session is still new): sent now, in
+          // the words that claim would have sent (its why included).
+          if (kept) return job(ended ? taken(recorded(ended)).text : "");
           if (!ended) {
             // A deny before anything is written leaves the run its agent's, as if the workflow were not there.
             const before = await spec.gate?.({ callId: call.callId, tool: call.tool as never, args });
@@ -2158,7 +2170,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             else await rec.person(spec.input);
           }
           let answer: { text: string; isError: boolean };
-          if (ended) answer = { text: ended.output ?? (ended.status === "interrupted" ? endedAnswer(LEARNED_WORKFLOW_TOOL, ended).text : ""), isError: ended.status !== "done" };
+          if (ended) answer = recorded(ended);
           else {
             const verdict = await preIntentGate(spec, hooks, wrapUp, (asked) => rec.park(asked.callId, asked.tool, asked.args ?? {}, false, true))(call, context);
             if (verdict !== "allow" && "park" in verdict) return "park";
@@ -2177,14 +2189,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             }
           }
           if (stopAbort.signal.aborted) return undefined;
-          // An answer the agent could not stand behind goes back to it: one the tool cut (learnedText: no agent turn could
-          // recover its ending), or, for an agent with an output schema, one that cannot be shaped to it (answerAsServed:
-          // the answer as the run serves it, the one replay and grading read; why goes back with it).
-          if (!answer.isError && answer.text.length > LEARNED_CLIP) answer = { ...answer, isError: true };
-          if (!answer.isError) {
-            const asServed = answerAsServed(answer.text, first.outputSchema);
-            answer = "why" in asServed ? { text: `${answer.text}\n\n[${asServed.why}]`, isError: true } : { ...answer, text: asServed.text };
-          }
+          answer = taken(answer);
           const outcome = answer.isError ? "handed_back" : "answered";
           const data: WorkflowFirstData = { workflow: first.name, digest: first.digest, revision: first.revision, call: WORKFLOW_FIRST_CALL, outcome };
           await on.commit(async (tx) => {
