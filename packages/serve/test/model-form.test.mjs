@@ -43,7 +43,7 @@ test("capabilities serve each harness's pickable models in the form it takes", a
   const { api } = await withKey(t, { ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}`, OPENAI_API_KEY: `not-a-secret-${"openai"}` });
   const harnesses = (await api("GET", "/capabilities")).body.harnesses;
   const pi = harnesses.find((h) => h.id === "pi");
-  assert.deepEqual(pi.models, ["anthropic/claude-sonnet-5-5", "anthropic/claude-opus-5-5", "anthropic/claude-haiku-5-5", "openai/gpt-6.1-sol", "openai/gpt-6.1-terra", "openai/gpt-6-luna"]);
+  assert.deepEqual(pi.models, ["anthropic/claude-sonnet-5-5", "anthropic/claude-opus-5-5", "anthropic/claude-haiku-5-5", "anthropic/claude-fable-5-2", "openai/gpt-6.1-sol", "openai/gpt-6.1-terra", "openai/gpt-6-luna"]);
   for (const h of harnesses) assert.ok(Array.isArray(h.models), h.id);
   for (const h of harnesses.filter((h) => !h.available)) assert.deepEqual(h.models, [], h.id);
 });
