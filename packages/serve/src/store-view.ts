@@ -110,8 +110,15 @@ function servedOnce(store: Store, runId: string, input: string, values: readonly
   return out;
 }
 
-/** A run's whole answer as answerOfRun read it from the rows: its newest final-answer row, never the learning turn's. */
-const answerOf = (rows: readonly TimelineEvent[]): string | null => rows.findLast((r) => r.kind === "final_answer" && r.agent_label !== LEARNING_LABEL)?.text ?? null;
+/** A run's whole answer as answerOfRun read it from the rows: its newest final-answer row, never the learning turn's, and
+ *  never an earlier turn's: a final answer row before the person's last message belongs to the turn that message
+ *  followed, so a follow-up whose own stop said nothing (no text block: a thinking-only stop) has no answer, null, not
+ *  the answer before it. */
+const answerOf = (rows: readonly TimelineEvent[]): string | null => {
+  const asked = rows.findLastIndex((r) => r.kind === "user_message" && r.agent_label === null && r.text !== null);
+  const row = rows.findLast((r) => r.kind === "final_answer" && r.agent_label !== LEARNING_LABEL);
+  return row && rows.lastIndexOf(row) > asked ? row.text ?? null : null;
+};
 
 /** A failed run's error from its row (its own words are the summary; the store keeps no code or detail apart). A run
  *  its cap ended once its cost passed it (the kernel's overCapEnd) is code spend_cap_reached, its message the words after
@@ -335,6 +342,9 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
     ((command.kind === "steer" && (command.body as { answers?: unknown } | null)?.answers !== false) || (command.kind === "raise" && budget?.kind === "budget"));
   const submitted = terminal || row.kind !== "agentic" || working ? 0 : (await commandsNow()).filter(pending).length;
   const outcome = terminal ? STATUS_OF[row.state as Exclude<RunReadState, "running">] : undefined;
+  // A cancel the person asked for reads cancelled from the 202 on, while the runner is still cutting the turn: its command
+  // row (not refused) is the request, so a poll never reads working or completed between the request and the end.
+  const cancelling = !terminal && (await commandsNow()).some((command) => command.kind === "cancel" && command.refused === null);
   const view: RunView = {
     id: row.id,
     agentId: row.agent,
@@ -342,8 +352,9 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
     ...(row.importedFrom ? { imported: { source: row.importedFrom.source, session: row.importedFrom.session } } : {}),
     kind: row.kind,
     ...(outcome ? { outcome } : {}),
+    ...(cancelling ? { finishing: "cancelled" as const } : {}),
     // A cancel is the run's outcome 'cancelled', never its state alone: a person's stop is stopped too, and is no cancel.
-    cancel: runRow.outcome === "cancelled",
+    cancel: runRow.outcome === "cancelled" || cancelling,
     working,
     submitted,
     updatedAt: iso(updatedAtMs),
