@@ -128,9 +128,10 @@ Eight members, each a call about the vendor's own machines:
 
 `upload` is optional: a vendor with no file API leaves it out, and the adapter streams the daemon through `exec`'s
 stdin. Six optional hooks exist, each for one vendor's need: `prepare` (settings once a machine runs), `stop` (with
-`release: ["stop"]`; it only asks, and the adapter waits), `setTimer` (a vendor timer that extend moves), `setLabels` (a janitor deadline that extend
-moves), `check` (the vendor's own spec rules, such as an image name, over a spec the adapter has read as an object)
-and `testConnection` (where a list would make something; else the adapter's one list, counted).
+`release: ["stop"]`; it only asks, and the adapter waits), `setTimer` (a vendor timer that extend moves), `setLabels`
+(a janitor deadline that extend moves), `check` (the vendor's own spec rules, such as an image name, over a spec the
+adapter has read as an object) and `testConnection` (where a list would make something; else the adapter's one list,
+counted).
 
 A method answers a `Result`; one that throws is read through `errorCode`. The adapter bounds every call by
 `ctx.timeoutMs` and the caller's `ctx.signal`, and never cancels a create: one that answers after the caller gave up is
