@@ -84,7 +84,7 @@ export function ToolsPage({ v2, choices, gates = [], harnesses, onSaved, onOpen 
   };
   return (
     <div className="h-full overflow-auto">
-      <div className="mx-auto max-w-[1100px] space-y-6 px-6 py-8">
+      <div className="max-w-page space-y-6 p-5 md:p-8">
         <div>
           <p className="caps text-label text-muted-foreground">Settings</p>
           <h1 className="mt-1 text-2xl font-semibold">Tools</h1>

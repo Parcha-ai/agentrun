@@ -1,3 +1,4 @@
+import { type KeyboardEvent, useState } from "react";
 import { Segmented } from "@/components/ui/segmented";
 import { cn } from "@/lib/utils";
 import { Picker } from "@/components/ui/picker";
@@ -63,7 +64,7 @@ function HarnessTable({ rows, basis }: { rows: Analytics["by_harness_effort"]; b
   return (
     <Section title="Success by harness and effort">
       {rows.length ? (
-        <div className="overflow-x-auto"><table className="w-full border-collapse text-body">
+        <div className="overflow-x-auto" role="region" aria-label="Success by harness and effort, table" tabIndex={0}><table className="w-full border-collapse text-body">
           <thead><tr className="caps border-b text-label text-muted-foreground">{["Harness", "Effort", "Runs", "Success", "Tokens", "Cost"].map((h) => <th key={h} className={th}>{h}</th>)}</tr></thead>
           <tbody>
             {rows.map((g) => {
@@ -91,7 +92,7 @@ function ToolsTable({ tools }: { tools: Analytics["tools"] }) {
   return (
     <Section title="Top tools">
       {tools.length ? (
-        <div className="overflow-x-auto"><table className="w-full border-collapse text-body">
+        <div className="overflow-x-auto" role="region" aria-label="Top tools, table" tabIndex={0}><table className="w-full border-collapse text-body">
           <thead><tr className="caps border-b text-label text-muted-foreground">{["Tool", "Calls", "Errors", "Error rate"].map((h) => <th key={h} className={th}>{h}</th>)}</tr></thead>
           <tbody>
             {tools.map((x) => (
@@ -161,7 +162,7 @@ function Trend({ days }: { days: Analytics["by_day"] }) {
       </div>
       <details className="border-t px-4 py-2">
         <summary className="caps cursor-pointer text-label text-muted-foreground">Table</summary>
-        <div className="overflow-x-auto"><table className="mt-2 w-full border-collapse font-mono text-small">
+        <div className="overflow-x-auto" role="region" aria-label="Per day, table" tabIndex={0}><table className="mt-2 w-full border-collapse font-mono text-small">
           <thead><tr className="caps text-label text-muted-foreground">{["Day", "Runs", "Completed", "Failed", "Other", "Tokens"].map((h) => <th key={h} className="py-1 pr-4 text-left font-normal">{h}</th>)}</tr></thead>
           <tbody>{days.map((d) => <tr key={d.day}><td className="py-0.5 pr-4">{d.day}</td><td className="pr-4">{d.runs}</td><td className="pr-4">{d.completed}</td><td className="pr-4">{d.failed}</td><td className="pr-4">{otherOf(d)}</td><td className="pr-4">{d.tokens.toLocaleString("en-US")}</td></tr>)}</tbody>
         </table></div>
@@ -171,26 +172,36 @@ function Trend({ days }: { days: Analytics["by_day"] }) {
 }
 
 /** Columns on one baseline, at most 24px wide, segments stacked bottom-up with a 2px surface gap and a 4px top;
- *  a hairline grid at the axis' top and middle. Each column is a focus target whose readout shows on hover and focus. */
+ *  a hairline grid at the axis' top and middle. A column's readout shows on hover and on focus. The chart is one stop
+ *  for Tab (the day last read, the latest at first); Left, Right, Home and End move between its days. */
 function Bars({ days, top, label, stack, readout, format = (n: number) => n.toLocaleString("en-US") }: {
   days: Analytics["by_day"]; top: number; label: string; format?: (n: number) => string;
   stack: (d: AnalyticsGroup) => { className: string; value: number }[]; readout: (d: AnalyticsGroup & { day: string }) => string[];
 }) {
   const H = 140;
+  const [at, setAt] = useState(days.length - 1);
+  const stop = Math.min(at, days.length - 1);
+  const move = (e: KeyboardEvent<HTMLDivElement>) => {
+    const to = e.key === "ArrowRight" ? Math.min(stop + 1, days.length - 1) : e.key === "ArrowLeft" ? Math.max(stop - 1, 0) : e.key === "Home" ? 0 : e.key === "End" ? days.length - 1 : -1;
+    if (to < 0) return;
+    e.preventDefault();
+    setAt(to);
+    (e.currentTarget.querySelectorAll<HTMLElement>('[role="listitem"]')[to])?.focus();
+  };
   return (
     <div className="flex gap-2">
       <div className="flex w-10 shrink-0 flex-col justify-between text-right font-mono text-micro text-muted-foreground" style={{ height: H }} aria-hidden>
         <span>{format(top)}</span><span>{format(top / 2)}</span><span>0</span>
       </div>
       <div className="min-w-0 flex-1">
-        <div className="relative flex items-end gap-px border-b border-border-strong" style={{ height: H }} role="list" aria-label={label}>
+        <div className="relative flex items-end gap-px border-b border-border-strong" style={{ height: H }} role="list" aria-label={label} onKeyDown={move}>
           <div className="pointer-events-none absolute inset-x-0 top-0 border-t border-border" aria-hidden />
           <div className="pointer-events-none absolute inset-x-0 top-1/2 border-t border-border" aria-hidden />
-          {days.map((d) => {
+          {days.map((d, i) => {
             const parts = stack(d).filter((p) => p.value > 0);
             return (
-              <div key={d.day} role="listitem" tabIndex={0} aria-label={`${d.day}: ${readout(d).join(", ")}`}
-                className="group relative flex h-full min-w-0 flex-1 flex-col items-center justify-end outline-none hover:bg-accent/60 focus-visible:bg-accent/60">
+              <div key={d.day} role="listitem" tabIndex={i === stop ? 0 : -1} onFocus={() => setAt(i)} aria-label={`${d.day}: ${readout(d).join(", ")}`}
+                className="group relative flex h-full min-w-0 flex-1 flex-col items-center justify-end -outline-offset-2 hover:bg-accent/60 focus-visible:bg-accent/60">
                 <div className="flex w-full max-w-[24px] flex-col-reverse gap-[2px]">
                   {parts.map((p, i) => (
                     <div key={i} className={cn(p.className, i === parts.length - 1 && "")} style={{ height: Math.max(1, Math.round((p.value / top) * (H - 2 * (parts.length - 1)))) }} />

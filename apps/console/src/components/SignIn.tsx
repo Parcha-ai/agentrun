@@ -62,7 +62,7 @@ export function SignIn({ mode, code = null, codeNeeded = false, onSubmit, proble
     <main className="grid min-h-dvh place-items-center bg-background p-6 text-foreground">
       <div className="w-full max-w-[440px] border bg-card p-8">
         <span className="flex items-center gap-1.5 font-mono text-figure font-semibold" aria-label="AgentRun"><ChevronRight className="size-5 text-primary-text" aria-hidden /><span>agent<span className="text-primary-text">.run()</span></span></span>
-        <h1 className="mb-3 mt-8 text-2xl">{COPY[mode].title}</h1>
+        <h1 className="mb-3 mt-8 text-2xl font-semibold">{COPY[mode].title}</h1>
         <p className="mb-6 text-prose leading-relaxed text-muted-foreground">{COPY[mode].body}</p>
         {mode !== "token_link" && (
           <form className="space-y-5" onSubmit={(e) => { e.preventDefault(); void submit(); }}>
@@ -131,7 +131,7 @@ export function SessionUnread({ problem, starting = false, onRetry }: { problem:
     <main className="grid min-h-dvh place-items-center bg-background p-6 text-foreground">
       <div className="w-full max-w-[440px] border bg-card p-8">
         <span className="flex items-center gap-1.5 font-mono text-figure font-semibold" aria-label="AgentRun"><ChevronRight className="size-5 text-primary-text" aria-hidden /><span>agent<span className="text-primary-text">.run()</span></span></span>
-        <h1 className="mb-3 mt-8 text-2xl">{starting ? "This server is starting" : "Can't read this server's sign-in"}</h1>
+        <h1 className="mb-3 mt-8 text-2xl font-semibold">{starting ? "This server is starting" : "Can't read this server's sign-in"}</h1>
         <p className="mb-4 text-prose leading-relaxed text-muted-foreground">{starting
           ? "Its address answers for it until it is up (a first start, a redeploy or a wake can take a minute or two). Trying again…"
           : "The page asked the server whether it has its owner yet, and got no answer it could read, so it can't show setup or sign-in. It asks again on its own."}</p>

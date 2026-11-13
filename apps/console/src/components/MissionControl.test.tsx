@@ -126,6 +126,13 @@ describe("MissionControl's analytics", () => {
     expect(html).toContain('aria-label="Runs per day"');
     expect(html).toContain('aria-label="Tokens per day"');
     expect(html.match(/role="listitem"/g)?.length).toBeGreaterThanOrEqual(2);
+    // A chart is one stop for Tab (its latest day): the arrows move between its days.
+    for (const chart of ["Runs per day", "Tokens per day"]) {
+      const list = html.slice(html.indexOf(`aria-label="${chart}"`));
+      const days = list.slice(0, list.indexOf("</figure>")).match(/role="listitem" tabindex="(-?\d)"/g)!;
+      expect(days.filter((d) => d.endsWith('"0"')).length, chart).toBe(1);
+      expect(days.at(-1), chart).toBe('role="listitem" tabindex="0"');
+    }
     expect(html).toContain("2026-10-30: 5 runs, 4 completed · 1 failed · 0 other");
     expect(html).toContain("<summary");
     // Live runs only: no source line.

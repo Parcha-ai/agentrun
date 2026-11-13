@@ -88,9 +88,9 @@ function ScheduleList({ v2, go, agentName, every, now, failuresToPause }: PagePr
   useEffect(read, [v2, tries]); // eslint-disable-line react-hooks/exhaustive-deps
   useRereads(read, every, [v2]);
   return (
-    <div className="p-5 md:p-8">
+    <div className="max-w-page-wide p-5 md:p-8">
       <div className="mb-5 flex flex-wrap items-center gap-3">
-        <h1 className="mr-auto font-mono text-2xl font-semibold">Triggers</h1>
+        <h1 className="mr-auto text-2xl font-semibold">Triggers</h1>
         {/* With no trigger yet the panel below offers the three, each with what it is for: the page says each once. */}
         {!(triggers && !triggers.length) && (
           <>
@@ -173,8 +173,8 @@ function whatWords(t: Trigger, agentName: (id: string) => string, now: number): 
  *  to change it. */
 function NotASchedule() {
   return (
-    <div className="p-5 md:p-8">
-      <a href="#/triggers" className="caps flex items-center gap-2 text-label text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" aria-hidden /> Triggers</a>
+    <div className="max-w-page-wide p-5 md:p-8">
+      <a href="#/triggers" className="caps -my-1 inline-flex items-center gap-2 py-1 text-label text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" aria-hidden /> Triggers</a>
       <p className="mt-4 border px-4 py-6 text-body text-muted-foreground">This trigger sends its firings to a run: this page doesn't open it yet.</p>
     </div>
   );
@@ -275,8 +275,8 @@ function ScheduleDetail({ v2, go, agentName, id, every, now, failuresToPause }: 
   };
   const content = typeof runs.target.input.content === "string" ? runs.target.input.content : null;
   return (
-    <div className="p-5 md:p-8">
-      <a href="#/triggers" className="caps flex items-center gap-2 text-label text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" aria-hidden /> Triggers</a>
+    <div className="max-w-page-wide p-5 md:p-8">
+      <a href="#/triggers" className="caps -my-1 inline-flex items-center gap-2 py-1 text-label text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" aria-hidden /> Triggers</a>
       <div className="mt-3 flex flex-col items-start gap-x-6 gap-y-3 sm:flex-row">
         <div className="min-w-0 flex-1 self-stretch">
           <h1 className="flex flex-wrap items-center gap-2 break-words text-2xl font-semibold leading-tight">{trigger.name}{!trigger.enabled && !done && <OffChip trigger={trigger} />}</h1>
@@ -450,7 +450,7 @@ function ScheduleForm({ v2, go, trigger, minEvery, now = Date.now }: FormProps &
   const kinds: { kind: Draft["kind"]; label: string }[] = [{ kind: "cron", label: "Repeats" }, { kind: "at", label: "Once" }, { kind: "every", label: "Every" }];
   return (
     <form onSubmit={(e) => void save(e)} className="max-w-2xl p-5 md:p-8" noValidate>
-      <a href={trigger ? hashOf(trigger.id) : "#/triggers"} className="caps flex items-center gap-2 text-label text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" aria-hidden /> {trigger ? trigger.name : "Triggers"}</a>
+      <a href={trigger ? hashOf(trigger.id) : "#/triggers"} className="caps -my-1 inline-flex items-center gap-2 py-1 text-label text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" aria-hidden /> {trigger ? trigger.name : "Triggers"}</a>
       <h1 className="mt-3 flex items-center gap-2 text-2xl font-semibold"><CalendarClock className="size-5 text-primary-text" aria-hidden />{trigger ? "Edit schedule" : "New schedule"}</h1>
       {rest.length > 0 && <div className="mt-4 border border-destructive/50 p-3 text-body text-destructive-text" role="alert">{rest.map((r, i) => <p key={i}>{r}</p>)}</div>}
       <div className="mt-5 space-y-5">
@@ -587,7 +587,7 @@ function WebhookForm({ v2, go }: { v2: Client; go: (hash: string) => void }) {
       setSaving(false);
     }
   };
-  const back = <a href="#/triggers" className="caps flex items-center gap-2 text-label text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" aria-hidden /> Triggers</a>;
+  const back = <a href="#/triggers" className="caps -my-1 inline-flex items-center gap-2 py-1 text-label text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" aria-hidden /> Triggers</a>;
   if (made) {
     return (
       <div className="max-w-2xl p-5 md:p-8">
@@ -697,7 +697,7 @@ function GitHubForm({ v2, go }: { v2: Client; go: (hash: string) => void }) {
       setSaving(false);
     }
   };
-  const back = <a href="#/triggers" className="caps flex items-center gap-2 text-label text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" aria-hidden /> Triggers</a>;
+  const back = <a href="#/triggers" className="caps -my-1 inline-flex items-center gap-2 py-1 text-label text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" aria-hidden /> Triggers</a>;
   const title = <h1 className="mt-3 flex items-center gap-2 text-2xl font-semibold"><GitPullRequest className="size-5 text-primary-text" aria-hidden />New GitHub trigger</h1>;
   if (readError) return <div className="max-w-2xl p-5 md:p-8">{back}{title}<ProblemCard problem={readError} onRetry={() => setTries((n) => n + 1)} className="mt-4" /></div>;
   if (connected === null) return <ListSkeleton label="Reading GitHub's connection" rows={3} />;

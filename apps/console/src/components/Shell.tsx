@@ -64,10 +64,16 @@ export function Shell({ active, settings = false, triggers = false, onNavigate, 
     else if (reopened.current) trigger.current?.focus();
   }, [everywhere]);
   const closeEverywhere = () => { reopened.current = true; setEverywhere(false); };
+  // The browser's tab names the place: "Runs · AgentRun".
+  const place = NAV.find((n) => n.id === active)?.label;
+  useEffect(() => { document.title = place ? `${place} · AgentRun` : "AgentRun"; }, [place]);
+  const main = useRef<HTMLElement>(null);
   // The window never scrolls: the outer box is its height and clips, and the page's own scrollbar is <main>'s. Both are
   // relative, so nothing positioned inside (a menu, sr-only text) is placed in the document and stretches it.
   return (
     <div className="relative flex h-dvh min-h-0 flex-col overflow-hidden bg-background text-foreground roomy:flex-row">
+      {/* The keyboard's first stop: past the navigation, to the page. Seen only while it has the focus. */}
+      <Button type="button" size="sm" onClick={() => main.current?.focus()} className="sr-only focus-visible:not-sr-only focus-visible:absolute focus-visible:left-2 focus-visible:top-2 focus-visible:z-toast focus-visible:inline-flex focus-visible:bg-card focus-visible:px-3">Skip to the page</Button>
       <header className="flex shrink-0 items-center justify-between border-b px-4 py-3 roomy:hidden">
         <Wordmark />
         <Button size="icon" className="size-9 [&_svg]:size-[18px]" aria-label="Navigation" aria-expanded={open} onClick={() => setOpen((v) => !v)}><Menu aria-hidden /></Button>
@@ -99,7 +105,7 @@ export function Shell({ active, settings = false, triggers = false, onNavigate, 
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <ConnectionBanner />
         {banners}
-        <main className="relative min-h-0 min-w-0 flex-1 overflow-auto">{children}</main>
+        <main ref={main} tabIndex={-1} className="relative min-h-0 min-w-0 flex-1 overflow-auto outline-none">{children}</main>
       </div>
     </div>
   );

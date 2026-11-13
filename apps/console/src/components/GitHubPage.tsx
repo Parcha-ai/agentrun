@@ -87,7 +87,7 @@ export function GitHubPage({ v2, returned }: { v2: Client; returned?: GitHubRetu
   const appHref = connection ? httpHref(`https://github.com/apps/${encodeURIComponent(connection.slug)}`) : undefined;
   return (
     <div className="h-full overflow-auto">
-      <div className="mx-auto max-w-[1100px] space-y-6 px-6 py-8">
+      <div className="max-w-page space-y-6 p-5 md:p-8">
         <div>
           <p className="caps text-label text-muted-foreground">Settings</p>
           <h1 className="mt-1 text-2xl font-semibold">GitHub</h1>

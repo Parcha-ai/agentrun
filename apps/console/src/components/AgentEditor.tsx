@@ -247,7 +247,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
     <div className="flex h-full min-h-0 flex-col">
       <header className="flex flex-wrap items-center gap-3 border-b px-5 py-4 md:px-8">
         <Button size="icon" variant="ghost" aria-label="Back to agents" onClick={onBack}><ArrowLeft aria-hidden /></Button>
-        <h1 className="min-w-0 flex-1 truncate font-mono text-xl font-semibold" title={creating ? undefined : d!.name}>{creating ? "New agent" : d!.name}</h1>
+        <h1 className="min-w-0 flex-1 truncate text-2xl font-semibold" title={creating ? undefined : d!.name}>{creating ? "New agent" : d!.name}</h1>
         {/* The kind, revision count and Archive: a row of their own under the name on a phone, so the name keeps the width. */}
         {agent && (
           <div className="flex basis-full flex-wrap items-center gap-3 sm:basis-auto" role="group" aria-label="About this agent">
@@ -301,7 +301,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
               made meanwhile is left behind. A refused Create gives it back as it was. */}
           <fieldset disabled={creating && saving} className="m-0 min-w-0 border-0 p-0">
           <p className="caps text-label text-muted-foreground">Step {at + 1}</p>
-          <h2 className="caps mb-6 border-b pb-4 text-prose font-semibold">{steps[at].label}</h2>
+          <h2 className="mb-6 border-b pb-4 text-lg font-semibold">{steps[at].label}</h2>
 
           {step === "context" && (
             <div className="max-w-3xl space-y-6">

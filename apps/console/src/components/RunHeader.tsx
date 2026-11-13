@@ -45,10 +45,10 @@ export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run
     <header className="border-b px-5 py-4 max-sm:py-3 md:px-8">
       <nav className="caps flex min-w-0 items-center gap-2 text-label text-muted-foreground" aria-label="Breadcrumb">
         {/* Back where the person came from in the console (the runs list, the agent's page), else to the run's agent. */}
-        <button type="button" aria-label="Back" title="Back" onClick={() => goBack(agentHash(run.agent_id))} className="-m-1 shrink-0 p-1 hover:text-foreground">
+        <button type="button" aria-label="Back" title="Back" onClick={() => goBack(agentHash(run.agent_id))} className="-m-1.5 shrink-0 p-1.5 hover:text-foreground">
           <ArrowLeft className="size-3.5" aria-hidden />
         </button>
-        <a href={agentHash(run.agent_id)} className="truncate hover:text-foreground hover:underline">{agentName}</a>
+        <a href={agentHash(run.agent_id)} className="-my-1 truncate py-1 hover:text-foreground hover:underline">{agentName}</a>
         <span aria-hidden>/</span>
         <span className="truncate">Run {runLabel(run.run_id)}</span>
       </nav>

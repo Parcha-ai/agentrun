@@ -31,7 +31,7 @@ export function TemplatesPage({ v2, name, go }: Props & { name?: string }) {
   }, [v2, tries]);
   const shown = name === undefined ? undefined : templates?.find((t) => t.name === name);
   return (
-    <div className="p-5 md:p-8">
+    <div className="max-w-page-wide p-5 md:p-8">
       {error && !templates ? <ProblemCard problem={error} onRetry={() => setTries((n) => n + 1)} className="" />
         : !templates ? <ListSkeleton label="Loading the templates" rows={3} />
         : name === undefined ? <TemplateList templates={templates} go={go} />
@@ -44,7 +44,7 @@ export function TemplatesPage({ v2, name, go }: Props & { name?: string }) {
 function TemplateList({ templates, go }: { templates: TemplateView[]; go: (hash: string) => void }) {
   return (
     <>
-      <h1 className="mb-5 font-mono text-2xl font-semibold">Templates</h1>
+      <h1 className="mb-5 text-2xl font-semibold">Templates</h1>
       {!templates.length ? <p className="border px-4 py-12 text-center font-mono text-body text-muted-foreground">This server offers no templates yet.</p> : (
         <ul className="grid gap-3 md:grid-cols-2">
           {templates.map((t) => (
@@ -160,7 +160,7 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
   if (made) {
     return (
       <section aria-label="Applied" className="max-w-3xl">
-        <h1 className="mb-4 flex items-center gap-2 font-mono text-2xl font-semibold"><Check className="size-5 text-success-text" aria-hidden /> {titleOf(t, sentValues)} applied</h1>
+        <h1 className="mb-4 flex items-center gap-2 text-2xl font-semibold"><Check className="size-5 text-success-text" aria-hidden /> {titleOf(t, sentValues)} applied</h1>
         {made.warnings.length > 0 && <>
           <p className="mb-3 text-lead">The agent is made. The server says:</p>
           <ul className="mb-5 space-y-2 border bg-card px-4 py-3 text-body" role="status" aria-label="Warnings">
@@ -213,8 +213,8 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
   }
   return (
     <div className="max-w-3xl">
-      <a href="#/templates" className="caps mb-4 inline-flex items-center gap-1.5 text-small text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" aria-hidden /> Templates</a>
-      <h1 className="font-mono text-2xl font-semibold">{titleOf(t, values)} <span className="text-lead font-normal text-muted-foreground">{t.version}</span></h1>
+      <a href="#/templates" className="caps mb-4 inline-flex min-h-6 items-center gap-1.5 text-small text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" aria-hidden /> Templates</a>
+      <h1 className="text-2xl font-semibold">{titleOf(t, values)} <span className="text-lead font-normal text-muted-foreground">{t.version}</span></h1>
       <p className="mt-2 text-lead leading-[1.6]">{t.description}</p>
 
       {params.length > 0 && (

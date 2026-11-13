@@ -100,3 +100,29 @@ describe("Playground's Agent and Revision pickers", () => {
     expect(host.textContent).not.toContain("/agents//runs");
   });
 });
+
+describe("Playground's fields and switches, to a screen reader", () => {
+  it("names each field by its label, and the page by a heading", () => {
+    const t = open();
+    expect(t.host.querySelector("h1")?.textContent).toBe("Playground");
+    for (const [id, name] of [["playground-input", "input.content"], ["playground-repo", "repo"], ["playground-cap", "max_cost_usd"]]) {
+      const field = t.host.querySelector(`#${id}`) as HTMLInputElement | null;
+      expect(field, id).not.toBeNull();
+      expect([...(field!.labels ?? [])].map((l) => l.textContent), id).toEqual([name]);
+    }
+    // A field of several controls is a group named by the same words.
+    const effort = [...t.host.querySelectorAll('[role="group"][aria-labelledby]')].map((g) => document.getElementById(g.getAttribute("aria-labelledby")!)?.textContent);
+    expect(effort).toEqual(expect.arrayContaining(["file_ids", "revision", "effort"]));
+  });
+
+  it("says which view is on, and moves it", () => {
+    const t = open();
+    const pressed = (name: string) => [...t.host.querySelectorAll("button")].find((b) => b.textContent === name)!;
+    expect(pressed("Form").getAttribute("aria-pressed")).toBe("true");
+    expect(pressed("JSON").getAttribute("aria-pressed")).toBe("false");
+    expect(pressed("cURL").getAttribute("aria-pressed")).toBe("true");
+    act(() => pressed("JSON").click());
+    expect(pressed("JSON").getAttribute("aria-pressed")).toBe("true");
+    expect(pressed("Form").getAttribute("aria-pressed")).toBe("false");
+  });
+});

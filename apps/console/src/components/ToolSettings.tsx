@@ -143,7 +143,7 @@ export function Resolves({ value, prefix, tool }: { value: string | undefined; p
  *  resolve to runs nowhere. A harness `harnesses` doesn't list shows as the server resolves it. */
 export const PerHarness = ({ choice, harnesses = [] }: { choice: ToolChoice; harnesses?: readonly { id: string; available: boolean; reason?: string }[] }) => <>{HARNESS_ORDER.map((h) => {
   const off = harnesses.find((x) => x.id === h && !x.available);
-  return off ? <span key={h} title={off.reason} className="block font-mono text-small text-muted-foreground opacity-60">{h}: not offered here</span>
+  return off ? <span key={h} title={off.reason} className="block font-mono text-small text-muted-foreground">{h}: not offered here</span>
     : <Resolves key={h} value={choice.resolves[h]} prefix={`${h}: `} tool={choice.name} />;
 })}</>;
 

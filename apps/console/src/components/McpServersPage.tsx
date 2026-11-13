@@ -55,7 +55,7 @@ export function McpServersPage({ v2, signIn, add, writable, whyNot = "sign_in", 
   const startSignIn = async (name: string, body: Parameters<Client["startMcpSignIn"]>[1]) => open((await v2.startMcpSignIn(name, body)).authorization_url);
   return (
     <div className="h-full overflow-auto">
-      <div className="mx-auto max-w-[1100px] space-y-6 px-6 py-8">
+      <div className="max-w-page space-y-6 p-5 md:p-8">
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div>
             <p className="caps text-label text-muted-foreground">Settings</p>
@@ -185,7 +185,7 @@ function PrivateHosts({ v2 }: { v2: Client }) {
       {hosts && (
         <form onSubmit={(e) => void allow(e)} aria-label="Allow a private network host" className="flex gap-2">
           <Input name="mcp-private-host" aria-label="Host name or IP address" value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="auth.corp.example" spellCheck={false} autoCapitalize="off" autoCorrect="off" />
-          <Button type="submit" size="sm" variant="solid" disabled={busy || !draft.trim()}>Allow</Button>
+          <Button type="submit" variant="solid" disabled={busy || !draft.trim()}>Allow</Button>
         </form>
       )}
       {problem && <Said problem={problem} />}
