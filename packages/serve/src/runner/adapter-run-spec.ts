@@ -61,8 +61,8 @@ import { type Claim, ClaimRefused, type Journal } from "./loop-contract.js";
 import { bookedSpend, cliRunMetrics, runEndCost, runMetrics } from "./metrics.js";
 import { journalEntries } from "./journal-reader.js";
 import { piShaped } from "../store-reads/journal.js";
-import { pastOf, pathMetrics, servedOf, workflowFirstOf } from "./workflow-first.js";
-import { runPathOverStore } from "../store-reads/learning.js";
+import { pathMetrics, servedOf, workflowFirstOf } from "./workflow-first.js";
+import { pastRunsOverStore, runPathOverStore } from "../store-reads/learning.js";
 import { type SpecHolds, specBuilt } from "./spec-holds.js";
 import type { ModelRoute, RouteCost } from "./model-route.js";
 import { archilClaim, type ArchilClaimOptions, MOUNT_TTL_MS } from "../workspace/archil-claim.js";
@@ -630,7 +630,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   const sessionTools = [...handTools, ...nonHandTools];
   // The learned workflow the run starts on, before its agent's first turn, when one fits its input (workflow-first.ts).
   // Or the one the money rule stopped, over the agent's past runs (costLineOf): the run asks for its revision.
-  const { serve: workflowFirst, revise: workflowRevise } = learnsWorkflows(revision.kind, workflows) ? await workflowFirstOf(revision.kind, workflows, launch, log, pastOf(deps.store, runRow.agentId), (revision.body as { outputSchema?: unknown }).outputSchema) : {};
+  const { serve: workflowFirst, revise: workflowRevise } = learnsWorkflows(revision.kind, workflows) ? await workflowFirstOf(revision.kind, workflows, launch, log, () => pastRunsOverStore(deps.store, runRow.agentId), (revision.body as { outputSchema?: unknown }).outputSchema) : {};
 
   // The run's system prompt, as main's per-run process builds it (app.ts): the environment line first (environment.ts, as
   // pi installs it before every other section), then the revision's instructions with what the agent learned laid in

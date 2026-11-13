@@ -62,8 +62,8 @@ import { entriesOf } from "./loop.js";
 import type { Claim } from "./loop-contract.js";
 import { bookedSpend, cliModelWorked, cliRunMetrics, runEndCost } from "./metrics.js";
 import { journalEntries } from "./journal-reader.js";
-import { pastOf, pathMetrics, workflowFirstOf } from "./workflow-first.js";
-import { runPathOverStore } from "../store-reads/learning.js";
+import { pathMetrics, workflowFirstOf } from "./workflow-first.js";
+import { pastRunsOverStore, runPathOverStore } from "../store-reads/learning.js";
 import { type SpecHolds, specBuilt } from "./spec-holds.js";
 import { heldRedactor, holdClaimed, runnerSecrets, secretRedactor } from "./redact.js";
 import { heldSpecOf } from "./held-run.js";
@@ -561,7 +561,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   }
   // The learned workflow the run starts on, before its agent's first turn, when one fits its input (workflow-first.ts).
   // Or the one the money rule stopped, over the agent's past runs (costLineOf): the run asks for its revision.
-  const { serve: workflowFirst, revise: workflowRevise } = learnedTool ? await workflowFirstOf(revision.kind, workflows, launch, log, pastOf(deps.store, runRow.agentId), (revision.body as { outputSchema?: unknown }).outputSchema) : {};
+  const { serve: workflowFirst, revise: workflowRevise } = learnedTool ? await workflowFirstOf(revision.kind, workflows, launch, log, () => pastRunsOverStore(deps.store, runRow.agentId), (revision.body as { outputSchema?: unknown }).outputSchema) : {};
   const session: SessionSpec = {
     key: `run:${claim.runId}`,
     label: runRow.agentId,
