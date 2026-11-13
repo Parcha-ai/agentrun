@@ -65,7 +65,7 @@ const until = async (done, what, ms = 40_000) => {
 /** A pi run of an agent that learned `check`, through the runner's adapter loop on pi's spec, the host holding a fake
  *  Jev key (`toolSettings`: the agent's own). Its row, each session's records by key, its timeline and the calls the
  *  faux Jev got. */
-async function learnedJudgeRun(t, { toolSettings, noUsage = false, capUsd } = {}) {
+async function learnedJudgeRun(t, { toolSettings, noUsage = false, capUsd, patches } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-learned-decisions-"));
   const jevCalls = join(dir, "jev.jsonl");
   // `noUsage`: Jev's answer counts no tokens and reports no cost, so the decision's cost is unknown.
@@ -93,7 +93,12 @@ async function learnedJudgeRun(t, { toolSettings, noUsage = false, capUsd } = {}
   // The host's environment: Jev's (fake) key, as where the server starts, and the faux Jev it is sent to.
   const env = { TYPESAFE_API_KEY: CANARY, AGENTRUN_SERVE_FAUX: "1", AGENTRUN_SERVE_FAUX_JEV: FAUX_JEV };
   const deps = { env, data: dir, journal: (claim) => store.journal(claim), store, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim: async () => ({ release: async () => {} }) };
-  runner = startRunner({ store, name: "runner-a", ...TIMING, createLoop: createAdapterLoop((claim, run) => adapterRunSpecFromLaunch(launch, run, deps, claim)) });
+  runner = startRunner({ store, name: "runner-a", ...TIMING, createLoop: createAdapterLoop(async (claim, run) => {
+    const spec = await adapterRunSpecFromLaunch(launch, run, deps, claim);
+    // `patches`: what the spec's end patch answered, to read what the end was told to write (a key left out keeps a stored value).
+    if (!patches) return spec;
+    return { ...spec, endPatch: async (end) => { const patch = await spec.endPatch(end); patches.push(patch); return patch; } };
+  }) });
   const row = await until(async () => {
     const now = await server.runs.get(RUN);
     return ["ended", "failed", "stopped"].includes(now.state) && now.runner === null && now;
@@ -146,4 +151,12 @@ test("a capped pi run whose learned decision reports no cost saves its cost unkn
   assert.deepEqual((records.decisions ?? []).map((record) => record.kind), ["runner.request", "runner.turn"], JSON.stringify(records.decisions));
   assert.equal(row.costUsd, null, `an unknown charge leaves the run's cost unknown, never its hold: ${JSON.stringify(row)}`);
   assert.equal(listed, null, "and the cost listed while it runs or is paused is unknown too");
+});
+
+test("a pi run whose learned decision reports no cost hands its end an unknown cost, the key present as null: a follow-up's end clears the cost an earlier end stored", { timeout: 120_000 }, async (t) => {
+  const patches = [];
+  const { row } = await learnedJudgeRun(t, { noUsage: true, capUsd: 1, patches });
+  assert.equal(row.state, "ended", JSON.stringify(row));
+  assert.ok(patches.length > 0, "the end patch ran");
+  for (const patch of patches) assert.ok("costUsd" in patch && patch.costUsd === null, `an unknown cost is written as null, never left out: ${JSON.stringify(patch)}`);
 });
