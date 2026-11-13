@@ -344,13 +344,17 @@ describe("App, creating through the API playground", () => {
   };
   it("leaves another editor's unsaved changes guarded when a detached creation request finishes", async () => {
     const page = await pending();
+    // Detach deliberately: the unsaved request now asks before leaving, even while it is pending.
+    answer = true;
     await act(async () => { location.hash = "#/agents/calc/edit"; });
     await page.wait(() => !!page.instructions(), "another agent's editor");
+    expect(confirms).toEqual([LEAVE]);
+    answer = false;
     await page.type(page.instructions(), "Answer, then check the sum.");
     await act(async () => release()); await page.settle();
     expect(location.hash).toBe("#/agents/calc/edit");
     await page.click(page.sidebar("Runs"));
-    expect(confirms).toEqual([LEAVE]);
+    expect(confirms).toEqual([LEAVE, LEAVE]);
     expect(page.instructions()?.value).toBe("Answer, then check the sum.");
   });
   it("sends no duplicate while pending and links the created agent after the response", async () => {

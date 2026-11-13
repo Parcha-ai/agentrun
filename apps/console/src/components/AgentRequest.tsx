@@ -2,7 +2,7 @@ import { Input, Textarea } from "@/components/ui/field";
 import { cloneElement, useEffect, useId, useState, type ReactElement } from "react";
 import { ArrowUpRight, Copy, Play } from "lucide-react";
 import { CodingAgentAction } from "./CodingAgentAction";
-import { Button, Picker } from "./ui";
+import { Button, ConfirmDialog, Picker } from "./ui";
 import { agentHash } from "./AgentPage";
 import { startFailure, type StartResult } from "./Playground";
 import { type Agent, type Definition, editBody } from "@/lib/agentForm";
@@ -10,6 +10,7 @@ import { briefAgentDraft, parseAgentDraft } from "@/lib/agentDraft";
 import { buildAgentPrompt, editAgentPrompt } from "@/lib/codingAgentPrompts";
 import type { Client } from "@/lib/client";
 import { cn } from "@/lib/utils";
+import { useUnsavedChangesGuard } from "@/lib/useUnsavedChangesGuard";
 
 export type AgentOperation = "create-agent" | "edit-agent";
 type RequestBody = { definition: Definition; skills?: Record<string, string>; note?: string };
@@ -24,6 +25,9 @@ export function AgentRequest({ v2, origin, operation, agentId, draft, harnesses 
   const [etag, setEtag] = useState<string | null>(null);
   const [body, setBody] = useState<RequestBody>(initial ?? briefAgentDraft(""));
   const [json, setJson] = useState(JSON.stringify(initial ?? briefAgentDraft(""), null, 2));
+  const [savedJson, setSavedJson] = useState(json);
+  // Both form edits and raw (even invalid) JSON must survive an accidental move away.
+  const guard = useUnsavedChangesGuard(json !== savedJson);
   const [view, setView] = useState<"form" | "json">("form");
   const [pane, setPane] = useState<"code" | "response">("code");
   const [language, setLanguage] = useState<"curl" | "fetch">("curl");
@@ -44,7 +48,8 @@ export function AgentRequest({ v2, origin, operation, agentId, draft, harnesses 
       setSource(agent); setEtag(version);
       // The server checks version and If-Match. All fields and skills not edited stay intact.
       const next = { definition: { ...agent.definition, version: agent.revisions + 1 } };
-      setBody(next); setJson(JSON.stringify(next, null, 2)); setResult(null); setUncertain(false);
+      const loadedJson = JSON.stringify(next, null, 2);
+      setBody(next); setJson(loadedJson); setSavedJson(loadedJson); setResult(null); setUncertain(false);
     }).catch((error) => { if (active) setLoadError(String(error instanceof Error ? error.message : error)); });
     return () => { active = false; };
   }, [v2, editing, agentId, reload]);
@@ -100,6 +105,8 @@ export function AgentRequest({ v2, origin, operation, agentId, draft, harnesses 
     try {
       const saved = editing ? await v2.updateDefinition(agentId!, prepared, etag) : { agent: await v2.createAgent(prepared), etag: null };
       setSavedId(saved.agent.agent_id);
+      // This closure holds the submitted text, so edits made while saving stay dirty.
+      setSavedJson(json);
       setResult({ status: editing ? 200 : 201, ms: performance.now() - start, body: saved.agent });
       // Do not allow a second click to create a duplicate agent. Edits can continue from the saved revision.
       if (!editing) setUncertain(true);
@@ -111,8 +118,11 @@ export function AgentRequest({ v2, origin, operation, agentId, draft, harnesses 
       if (!editing && (failure.status === 0 || failure.status >= 500)) setUncertain(true);
     } finally { setSending(false); setPane("response"); }
   };
-  if (loadError) return <div className="m-6 border p-5" role="alert"><p>{loadError}</p>{agentId && <Button className="mt-3" onClick={() => setReload((n) => n + 1)}>Reload agent</Button>}</div>;
-  if (editing && !source) return <p className="p-6 text-lead text-muted-foreground">Loading the agent definition…</p>;
+  const leaveDialog = <ConfirmDialog open={guard.asking} title="Leave without saving?" confirm="Leave" cancel="Stay" onConfirm={guard.leave} onCancel={guard.stay}>
+    {editing ? "Your changes to this agent are not saved." : "This new agent is not saved yet."} Leave drops them; Stay keeps them here.
+  </ConfirmDialog>;
+  if (loadError) return <>{leaveDialog}<div className="m-6 border p-5" role="alert"><p>{loadError}</p>{agentId && <Button className="mt-3" onClick={() => setReload((n) => n + 1)}>Reload agent</Button>}</div></>;
+  if (editing && !source) return <>{leaveDialog}<p className="p-6 text-lead text-muted-foreground">Loading the agent definition…</p></>;
   return <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-2">
     <section className="flex min-h-0 flex-col border-b lg:border-b-0 lg:border-r">
       <header className="flex h-12 shrink-0 items-center justify-between border-b px-6"><span className="text-lead font-semibold">Request</span><div className="flex gap-5">{(["form", "json"] as const).map((tab) => <button key={tab} onClick={() => { if (tab === "form" && view === "json") { if (!canUseForm) return; setBody(prepared); } setView(tab); }} className={cn("h-12 border-b text-small", view === tab ? "border-primary" : "border-transparent text-muted-foreground")}>{tab === "json" ? "JSON" : "Form"}</button>)}</div></header>
@@ -143,6 +153,7 @@ export function AgentRequest({ v2, origin, operation, agentId, draft, harnesses 
         {result ? <><p className="font-mono text-small">{result.status || "Network error"} · {Math.round(result.ms)} ms</p><pre className="overflow-auto whitespace-pre-wrap break-words font-mono text-small leading-6">{JSON.stringify(result.body, null, 2)}</pre>{savedId && <a className="inline-flex items-center gap-2 text-lead text-primary-text" href={agentHash(savedId)}>Open agent<ArrowUpRight className="size-4" /></a>}{result.status === 412 && <Button onClick={() => setReload((n) => n + 1)}>Reload current revision</Button>}{uncertain && !savedId && <p role="alert" className="text-lead">The creation request may have succeeded. Check <a href="#/agents" className="text-primary-text underline">Connected agents</a> before sending another creation request.</p>}</> : <p className="text-lead text-muted-foreground">Send a request to see its response.</p>}
       </div>}
     </section>
+    {leaveDialog}
   </div>;
 }
 function Field({ name, children }: { name: string; children: ReactElement<{ id?: string; "aria-label"?: string }> }) {
