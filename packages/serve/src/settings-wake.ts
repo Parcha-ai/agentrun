@@ -9,10 +9,21 @@ import { answersOf, asksOf } from "./run-view.js";
 import { journalEntries } from "./runner/journal-reader.js";
 import type { Store } from "./store/index.js";
 import { type PermissionSettings, permissionFrom, SHELL_FAMILY } from "./tool-gate.js";
-import type { ToolSettingsRead } from "./tool-plane.js";
+import type { ToolSettingsMap, ToolSettingsRead } from "./tool-plane.js";
 
 /** The store slice a wake reads and writes: the parked runs, their pinned revisions and journals, and the wake itself. */
 export type WakeStore = Pick<Store, "runs" | "agents" | "readJournal">;
+
+/** Whether a save moved some tool's permission to one that can read allow: a key whose permission changed and is now allow,
+ *  or is no longer set (the tool's default, which may be allow). Only such a save can answer an ask by the setting. */
+export function turnedTowardAllow(before: ToolSettingsMap, after: ToolSettingsMap): boolean {
+  for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
+    const was = before[key]?.permission;
+    const now = after[key]?.permission;
+    if (was !== now && (now === "allow" || now === undefined)) return true;
+  }
+  return false;
+}
 
 /**
  * Wakes every parked run with a call waiting on its person whose tool reads allow now on the run's pinned revision: its
@@ -25,8 +36,10 @@ export type WakeStore = Pick<Store, "runs" | "agents" | "readJournal">;
  * can't tell the run's answer, nothing is woken: settings that do not read (the gate holds to its last good read), and a
  * shell tool on its default, which is where the run's shell is (no computer: bash asks).
  */
-export async function wakeAnsweredBySetting(store: WakeStore, read: ToolSettingsRead): Promise<string[]> {
+export async function wakeAnsweredBySetting(store: WakeStore, read: ToolSettingsRead, before: ToolSettingsMap): Promise<string[]> {
   if (read.unreadable) return [];
+  // A save that turned no tool toward allow (a provider alone, a pin, a deny kept) answers no ask: no run is listed, no journal read.
+  if (!turnedTowardAllow(before, read.settings)) return [];
   const server = read.settings as unknown as PermissionSettings;
   const woken: string[] = [];
   for (const run of await store.runs.list({ state: "parked" })) {

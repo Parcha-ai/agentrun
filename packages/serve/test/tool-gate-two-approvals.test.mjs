@@ -108,6 +108,34 @@ for (const harness of ["pi", "claude-agent", "codex"]) {
   test(`${harness}: web_fetch's server setting put back to allow while the second call waits, the agent's own setting still ask: the flip wakes nothing, and the call waits for the person's allow`, { timeout: 150_000 }, (t) => bothAllowed(t, harness, "agent-ask"));
 }
 
+for (const harness of ["pi"]) {
+  test(`${harness}: a settings save that changes only a provider, while a call waits: no run is woken and no journal is read`, { timeout: 150_000 }, (t) => bothAllowed(t, harness, "provider-only"));
+}
+
+// The scan itself, over a counting store: a save that turns no tool toward allow lists no run and reads no journal; one that
+// does reads only entries (no task, no submission scan) of the parked run.
+test("a settings save that turns no tool toward allow reads no journal; one that does reads entries only", async () => {
+  const { wakeAnsweredBySetting } = await import("../dist/settings-wake.js");
+  const counts = { list: 0, scanEntries: 0, scanConversations: 0, scanTasks: 0, scanSubmissions: 0, wake: 0 };
+  const page = (name, items = []) => async () => { counts[name] += 1; return { items }; };
+  const journal = {
+    scanConversations: page("scanConversations", [{ id: 1 }]),
+    scanEntries: page("scanEntries", [{ id: 1, conversationId: 1, kind: "agentrun.ask", data: { callId: "c1", tool: "web_fetch", args: {}, requestedAt: "" } }]),
+    scanTasks: page("scanTasks"),
+    scanSubmissions: page("scanSubmissions"),
+  };
+  const store = {
+    runs: { list: async () => { counts.list += 1; return [{ id: "r1", revisionId: "v1" }]; }, wake: async () => { counts.wake += 1; return true; } },
+    agents: { revision: async () => ({ body: {} }) },
+    readJournal: () => journal,
+  };
+  const read = (settings) => ({ settings, problems: [] });
+  assert.deepEqual(await wakeAnsweredBySetting(store, read({ web_fetch: { permission: "ask" }, web_search: { provider: "off" } }), { web_fetch: { permission: "ask" } }), []);
+  assert.deepEqual(counts, { list: 0, scanEntries: 0, scanConversations: 0, scanTasks: 0, scanSubmissions: 0, wake: 0 }, "a provider-only save read nothing");
+  assert.deepEqual(await wakeAnsweredBySetting(store, read({ web_fetch: { permission: "allow" } }), { web_fetch: { permission: "ask" } }), ["r1"]);
+  assert.deepEqual(counts, { list: 1, scanEntries: 1, scanConversations: 1, scanTasks: 0, scanSubmissions: 0, wake: 1 }, "an allow reads the entries alone");
+});
+
 // A person's deny already sent wins over the setting: the owner declines the second call, then web_fetch's setting goes
 // back to allow, which wakes the run if it is still parked. Whichever claim reads the ask, the stored deny is its answer:
 // the call is never run, and its rows say it was declined.
@@ -146,6 +174,15 @@ async function bothAllowed(t, harness, putBack) {
   } else if (putBack === "woken") {
     // No answer: the flip alone ends the wait.
     await putBackNow();
+  } else if (putBack === "provider-only") {
+    // A save that turns no tool toward allow (web_fetch stays ask; only web_search's provider changes) wakes nothing.
+    const before = await server.store.runs.get(runId);
+    assert.equal(before.state, "parked", "parked on the second call, released");
+    assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: "ask" }, web_search: { provider: "off" } })).status, 200);
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    const after = await server.store.runs.get(runId);
+    assert.deepEqual([after.state, after.epoch], ["parked", before.epoch], "nothing woken: still parked, never claimed");
+    assert.equal(await answer(runId, second.id, { decision: "allow" }), 204);
   } else if (putBack === "agent-ask") {
     const before = await server.store.runs.get(runId);
     assert.equal(before.state, "parked", "parked on the second call, released");

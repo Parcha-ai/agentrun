@@ -3242,12 +3242,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const body = await bodyOf(req);
         const issues = settingsIssues(body);
         if (issues.length) throw invalid(issues);
+        const before = settings.get();
         await settings.put(body as ToolSettingsMap);
         // A setting changes what the web tools resolve to, never env or what a harness offers: capabilities again.
         recompose();
         // A run parked on a call whose tool reads allow now, on its pinned revision: woken, so its next claim's gate answers
         // the ask by the setting (settings-wake.ts), before this answer. The settings as the runner's gate reads them.
-        const woken = await wakeAnsweredBySetting(store, await loadToolSettings(store));
+        const woken = await wakeAnsweredBySetting(store, await loadToolSettings(store), before);
         if (woken.length) log?.(logLine("tool_settings", { condition: "runs_woken", runs: woken.join(",") }));
         return send(res, 200, withDefaults(settings.get()));
       }
