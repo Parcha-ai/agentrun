@@ -57,6 +57,26 @@ test("the view is handed over under the claim: one row of its kind and tag, its 
   ws.destroy();
 });
 
+test("a take-over heard while the viewer's first read of the hold is pending stands: the read is older, and the viewer is ready as the person's", async (t) => {
+  const hold = fakeHold();
+  let readOnce;
+  const asked = new Promise((resolve) => {
+    hold.hold.state = () => new Promise((release) => {
+      readOnce = release;
+      resolve();
+    });
+  });
+  const { row } = await opened(t, { hold });
+  const c = await connect(`ws://127.0.0.1:${row.port}/v/${row.id}/ws`, { origin: `http://127.0.0.1:${row.port}` });
+  c.ws.sendJson({ type: "hello", token: row.token });
+  await asked;
+  hold.emit({ state: "person" });
+  readOnce("agent");
+  const ready = await next(c.ws, "ready");
+  assert.deepEqual([ready.drive, ready.held], ["person", true]);
+  c.ws.destroy();
+});
+
 test("frames go one at a time: each [w][h][image] with the screen's real pixels, and the watch is acked only once the viewer acks", async (t) => {
   const { row, watch } = await opened(t);
   const ws = await viewerOf(row);

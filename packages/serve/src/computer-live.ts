@@ -421,7 +421,10 @@ async function openOne(input: OpenComputerView, key: string): Promise<OpenedComp
   /** The hold moved (a committed change, or Take over's and Hand back's own answers): the viewer is told once per change,
    *  and each end of a take with why. A take that begins is a new take, whoever began it; a take that ends lets go of what
    *  it held. */
+  /** Hold changes heard so far: a viewer's first read of the hold, still pending when one comes, is older than it. */
+  let heard = 0;
   const moved = (event: HoldChange): void => {
+    heard += 1;
     const before = state;
     state = event.state;
     if (before === "agent" && event.state !== "agent") newTake();
@@ -570,8 +573,11 @@ async function openOne(input: OpenComputerView, key: string): Promise<OpenedComp
     viewer = { conn, abort: new AbortController(), chain: Promise.resolve(), queued: 0 };
     // awayOwed stays: a take an earlier viewer left pending is still returned when it lands, never inherited by this one.
     const current = viewer;
-    state = await Promise.resolve(hold.state()).catch(() => state);
+    const heardBefore = heard;
+    const read = await Promise.resolve(hold.state()).catch(() => state);
     if (viewer !== current) return;
+    // A change heard while the read was pending is newer than the read: it stands.
+    if (heard === heardBefore) state = read;
     send(conn, { type: "ready", drive: state, takeOver: true, held: state === "person", kind, input: input.input });
     await startWatch(conn);
   };
