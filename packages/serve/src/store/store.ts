@@ -1154,7 +1154,17 @@ export class SchemaVersionUnknown extends Error {
   readonly found: number | null;
   readonly known: number;
   constructor(file: string, found: number | null, known: number) {
-    super(found === null ? `the store at ${file} has no schema yet: the server sets it up at its start` : `the store at ${file} is schema version ${found}; this build knows version ${known}`);
+    // `file` is a path (SQLite) or already a phrase (Postgres: "the Postgres schema x").
+    const store = file.startsWith("the ") ? file : `the store at ${file}`;
+    super(
+      found === null
+        ? `${store} has no schema yet: the server sets it up at its start`
+        : found < known
+          ? `${store} is schema version ${found}, and this release (version ${known}) can't open a store an earlier release set up.\n` +
+            "Start the server on a new, empty data folder with --data <new folder> (on the Docker image: --data /data/<new folder> --listen 0.0.0.0 --port 7340 --drain-timeout 6s), then add your agents, MCP servers, keys and sign-ins again.\n" +
+            'Keep the old folder as it is: the earlier release still opens it. See "Before you upgrade" in the release notes.'
+          : `${store} is schema version ${found}, set up by a later release than this one (this release knows version ${known}). Run that release or a later one.`,
+    );
     this.name = "SchemaVersionUnknown";
     this.found = found;
     this.known = known;
