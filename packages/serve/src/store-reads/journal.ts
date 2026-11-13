@@ -5,7 +5,7 @@
 import { createHash } from "node:crypto";
 import type { Context } from "@earendil-works/chord";
 import type { EntryLike, TimelineEvent, TimelineOptions } from "../timeline/index.js";
-import { CAPS, costLabel, timelineOf, TOOL_COST } from "../timeline/index.js";
+import { CALL_REFUSED, CAPS, costLabel, timelineOf, TOOL_COST } from "../timeline/index.js";
 import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
 import { wireName } from "../catalog.js";
 import { TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
@@ -98,7 +98,10 @@ function piShaped(entries: readonly EntryLike[]): EntryLike[] {
       // text), as pi's own interrupted result does, never an empty failure.
       const failed = data.status !== undefined && data.status !== "done";
       const content = data.output === undefined && data.status === "interrupted" ? endedAnswer("", { status: "interrupted" }).text : (data.output ?? "");
-      return { ...entry, kind: "pi.tool-result", model: [{ role: "tool", toolCallId: String(data.callId ?? ""), content, ...(failed ? { isError: true } : {}), ...timestamp }] };
+      // One refused before it ran (its gate's deny, a person's, an approval the run ended without) carries pi's refusal
+      // mark, so its rows read refused, as pi's do, never as a call that ran and failed.
+      const refused = data.status === "refused" ? { details: { [CALL_REFUSED]: true } } : {};
+      return { ...entry, kind: "pi.tool-result", model: [{ role: "tool", toolCallId: String(data.callId ?? ""), content, ...(failed ? { isError: true } : {}), ...refused, ...timestamp }] };
     }
     return entry;
   });
