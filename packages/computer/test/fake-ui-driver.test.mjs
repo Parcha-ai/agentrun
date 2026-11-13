@@ -948,3 +948,82 @@ test("a window expect reads the app's main window, never the older window a targ
 	assert.equal(statuses(report)["ui.expect-window"], "fail");
 	assert.match(reasonOf(report, "ui.expect-window"), /aimed at the home window while Another window is in front/);
 });
+
+// The fake's windows are first-class: each owns its screen, values, switches, focus and pending effects.
+
+test("two windows on one screen share nothing: a field's value, a switch and the focus are each window's own", async () => {
+	const app = {
+		id: "test.twin",
+		name: "Twin",
+		start: "doc",
+		size: [300, 200],
+		screens: {
+			doc: {
+				title: "Doc",
+				elements: [
+					{ key: "f", role: "textbox", name: "Field", id: "f", bounds: [10, 10, 120, 28] },
+					{ key: "s", role: "switch", name: "Switch", id: "s", bounds: [10, 50, 60, 28] },
+					{ key: "dup", role: "button", name: "Duplicate", id: "dup", bounds: [10, 90, 80, 28], actions: ["AXPress"], press: { open: "doc" } },
+				],
+			},
+		},
+	};
+	const c = await fakeUiConnection({ apps: [app] });
+	await c.client.call("apps.launch", { id: app.id });
+	const main = (await c.client.call("ui.observe", {})).value;
+	await c.client.call("ui.act", { steps: [{ press: main.nodes.find((n) => n.id === "dup").ref }] });
+	const twin = (await c.client.call("ui.observe", {})).value;
+	assert.notEqual(twin.window.id, main.window.id, "the duplicate is in front");
+	const at = (view, id) => view.nodes.find((n) => n.id === id);
+	const set = await c.client.call("ui.act", { target: { app: app.id, window: twin.window.id }, steps: [{ set: at(twin, "f").ref, value: "two" }, { set: at(twin, "s").ref, value: "on" }, { press: at(twin, "f").ref }] });
+	assert.deepEqual(set.value.steps.map((step) => step.verified), [true, true, true]);
+	const mainNow = (await c.client.call("ui.observe", { target: { app: app.id, window: main.window.id } })).value;
+	assert.equal(at(mainNow, "f").value, undefined, "the main window's field kept its own value");
+	assert.equal(at(mainNow, "s").flags, undefined, "its switch is off and its field has no focus");
+	// Typing where the focus is, in the main window, reaches no field: the focus is the twin's.
+	const typed = await c.client.call("ui.act", { target: { app: app.id, window: main.window.id }, steps: [{ type: "zz" }] });
+	assert.equal(typed.value.steps[0].verified, false);
+	const twinNow = (await c.client.call("ui.observe", { target: { app: app.id, window: twin.window.id } })).value;
+	assert.equal(at(twinNow, "f").value, "two");
+	assert.deepEqual(at(twinNow, "f").flags, ["focused"]);
+	assert.deepEqual(at(twinNow, "s").flags, ["checked"]);
+	await c.close();
+});
+
+test("a delayed effect is its window's: closing the window cancels it, and it never lands in another window", async () => {
+	const button = (id, name, y, press) => ({ key: id, role: "button", name, id, bounds: [10, y, 80, 28], actions: ["AXPress"], press });
+	const app = {
+		id: "test.pending",
+		name: "Pending",
+		start: "home",
+		size: [300, 200],
+		screens: {
+			home: { title: "Home", elements: [button("open", "Open", 10, { open: "child" }), button("later", "Later", 50, { go: "elsewhere", after: 200 }), button("close", "Close", 90, { close: true })] },
+			child: { title: "Child", elements: [button("later", "Later", 10, { go: "elsewhere", after: 200 }), button("spawn", "Spawn", 50, { open: "child", after: 200 }), button("close", "Close", 90, { close: true })] },
+			elsewhere: { title: "Elsewhere", elements: [{ key: "t", role: "text", name: "Elsewhere", bounds: [10, 10, 80, 28] }] },
+		},
+	};
+	const c = await fakeUiConnection({ apps: [app] });
+	await c.client.call("apps.launch", { id: app.id });
+	const home = (await c.client.call("ui.observe", {})).value;
+	const at = (view, id) => view.nodes.find((n) => n.id === id).ref;
+	await c.client.call("ui.act", { steps: [{ press: at(home, "open") }] });
+	const child = (await c.client.call("ui.observe", {})).value;
+	assert.equal(child.window.title, "Child");
+	// The child window's delayed go and delayed open, then it closes: neither lands, on the main window or anywhere.
+	const closed = await c.client.call("ui.act", { target: { app: app.id, window: child.window.id }, steps: [{ press: at(child, "later") }, { press: at(child, "spawn") }, { press: at(child, "close") }] });
+	assert.equal(closed.value.steps.length, 3);
+	await new Promise((resolve) => setTimeout(resolve, 400));
+	const after = (await c.client.call("ui.observe", {})).value;
+	assert.equal(after.window.id, home.window.id, "no window was opened after its opener closed");
+	assert.equal(after.window.title, "Home", "the main window never took the closed window's go");
+	// The main window is just the first: its own delayed go is cancelled when it closes, and the child it leaves is untouched.
+	await c.client.call("ui.act", { steps: [{ press: at(after, "open") }] });
+	const second = (await c.client.call("ui.observe", {})).value;
+	await c.client.call("ui.act", { target: { app: app.id, window: home.window.id }, steps: [{ press: at(after, "later") }, { press: at(after, "close") }] });
+	await new Promise((resolve) => setTimeout(resolve, 400));
+	const left = (await c.client.call("ui.observe", {})).value;
+	assert.equal(left.window.id, second.window.id);
+	assert.equal(left.window.title, "Child", "the window left keeps its own screen");
+	await c.close();
+});

@@ -72,28 +72,36 @@ export interface FakeUiOptions {
 	blink?: boolean;
 }
 
-/** What one app is doing: its screen, the screens behind it, its fields' values, its switches, its focus, its window. */
-interface AppState {
-	app: string;
+/**
+ * One window of a running app, which owns everything a person sees change in it: its screen and the screens behind it,
+ * its fields' values, its switches, its focus, and the effects a press in it still has pending. Two windows on one
+ * screen share nothing. The main window is just the first one an app opens.
+ */
+interface FakeWindow {
+	id: string;
 	screen: string;
 	history: string[];
 	values: Map<string, string>;
 	checked: Set<string>;
 	focus?: string;
-	/** Until when its window is between two screens: each look then shows a different frame. */
+	/** Until when it is between two screens: each look then shows a different frame. */
 	animateUntil: number;
-	/** Where its window is, in screen points. */
+	/** Where it is, in screen points. */
 	bounds: [number, number, number, number];
-	/** When its window shows (windowAfterMs after launch): before then it is running with no window. */
+	/** Its pending effects (a press's `after`, a value taken back): cancelled when it closes, so none outlives it. */
+	timers: Set<NodeJS.Timeout>;
+}
+
+/** What one app is doing: its windows, the one in front last. None: it runs with no window (its last one closed). */
+interface AppState {
+	app: string;
+	windows: FakeWindow[];
+	/** When its first window shows (windowAfterMs after launch): before then it is running with no window. */
 	windowAt: number;
-	/**
-	 * Its windows, the one in front last. The main one shows screen and moves with bounds; one a press opened shows its
-	 * own screen. None: the app runs with no window (its last one closed).
-	 */
-	windows: Array<{ id: string; screen?: string; history?: string[]; bounds?: [number, number, number, number] }>;
+	/** Where its main window opens, in screen points; a window a press opens is offset from it. */
+	origin: [number, number, number, number];
 	/** How many windows a press has opened, which names the next one. */
 	opened: number;
-	timers: Set<NodeJS.Timeout>;
 }
 
 const SCREEN = { width: 1440, height: 900, scale: 2 };
@@ -185,22 +193,53 @@ export class FakeUiDriver implements UiSource {
 		return { protocol: PROTOCOL_VERSION, version: "fake", os: this.os, kind: this.kind, arch: "arm64", groups: [...this.groups], screen: SCREEN, osVersion: this.os === "android" ? "15 (API 35)" : "26.1 (25B78)", features: this.#features, device: { maker: "AgentRun", model: "Fake ui driver" } };
 	}
 
-	/** The screen an app shows now, by its name; undefined when it is not running. */
+	/** The screen an app's window in front shows now, by its name; undefined when it is not running or has no window. */
 	screenOf(app: string): string | undefined {
-		return this.#running.get(app)?.screen;
+		return this.#running.get(app)?.windows.at(-1)?.screen;
 	}
 
-	/** Moves an app's window, or changes its size (points): a point read before a size change is then stale. */
+	/** Moves an app's window in front, or changes its size (points): a point read before a size change is then stale. */
 	place(app: string, bounds: [number, number, number, number]): void {
-		const state = this.#running.get(app);
-		if (state !== undefined) state.bounds = bounds;
+		const window = this.#running.get(app)?.windows.at(-1);
+		if (window !== undefined) window.bounds = bounds;
 	}
 
-	/** Ends every app and its timers. */
+	/** Ends every app, and every effect its windows had pending. */
 	close(): void {
-		for (const state of this.#running.values()) for (const timer of state.timers) clearTimeout(timer);
+		for (const state of this.#running.values()) this.#end(state);
 		this.#running.clear();
 		this.#front = undefined;
+	}
+
+	/** Ends an app's windows: each one's pending effects are cancelled. */
+	#end(state: AppState): void {
+		for (const window of [...state.windows]) this.#closeWindow(state, window);
+	}
+
+	/** Closes one window: its pending effects are cancelled, so a delayed press in it never lands anywhere else. */
+	#closeWindow(state: AppState, window: FakeWindow): void {
+		for (const timer of window.timers) clearTimeout(timer);
+		window.timers.clear();
+		state.windows = state.windows.filter((one) => one !== window);
+	}
+
+	/** A new window of the app on a screen, in front: its checked and focused start from the script, and nothing else is shared. */
+	#openWindow(state: AppState, app: FakeApp, id: string, screen: string, bounds: [number, number, number, number]): FakeWindow {
+		// look() shows checked and focused from the window's state alone, never the script's flags: the state starts from them.
+		const scriptedWith = (flag: UiFlag) => Object.values(app.screens).flatMap((one) => one.elements.filter((element) => element.flags?.includes(flag)).map((element) => element.key));
+		const focus = app.screens[screen]?.elements.find((element) => element.flags?.includes("focused"))?.key;
+		const window: FakeWindow = { id, screen, history: [], values: new Map(), checked: new Set(scriptedWith("checked")), ...(focus === undefined ? {} : { focus }), animateUntil: 0, bounds, timers: new Set() };
+		state.windows.push(window);
+		return window;
+	}
+
+	/** Runs effect ms from now as a pending effect of window: never once the window closed (its timers are cancelled then). */
+	#later(state: AppState, window: FakeWindow, ms: number, effect: () => void): void {
+		const timer = setTimeout(() => {
+			window.timers.delete(timer);
+			if (state.windows.includes(window)) effect();
+		}, ms);
+		window.timers.add(timer);
 	}
 
 	/** One method call on a connection, as a computer answers it; ui calls go through that connection's engine. */
@@ -221,7 +260,7 @@ export class FakeUiDriver implements UiSource {
 			case "apps.terminate": {
 				if (typeof p.id !== "string") return fail("invalid", "apps.terminate: id is not a string");
 				const state = this.#running.get(p.id);
-				for (const timer of state?.timers ?? []) clearTimeout(timer);
+				if (state !== undefined) this.#end(state);
 				this.#running.delete(p.id);
 				if (this.#front === p.id) this.#front = undefined;
 				return ok({});
@@ -245,31 +284,12 @@ export class FakeUiDriver implements UiSource {
 		}
 		if (!this.#running.has(app.id)) {
 			const offset = 40 * this.#running.size;
-			// look() shows checked and focused from this state alone, never the script's flags: the state starts from them.
-			const scriptedWith = (flag: UiFlag) => Object.values(app.screens).flatMap((screen) => screen.elements.filter((element) => element.flags?.includes(flag)).map((element) => element.key));
-			const focus = app.screens[app.start]?.elements.find((element) => element.flags?.includes("focused"))?.key;
-			this.#running.set(app.id, {
-				app: app.id,
-				screen: app.start,
-				history: [],
-				values: new Map(),
-				checked: new Set(scriptedWith("checked")),
-				...(focus === undefined ? {} : { focus }),
-				animateUntil: 0,
-				bounds: [100 + offset, 80 + offset, ...app.size],
-				windowAt: Date.now() + this.#windowAfterMs,
-				windows: [{ id: `${app.id}#main` }],
-				opened: 0,
-				timers: new Set(),
-			});
+			this.#running.set(app.id, { app: app.id, windows: [], windowAt: Date.now() + this.#windowAfterMs, origin: [100 + offset, 80 + offset, ...app.size], opened: 0 });
 		}
 		const state = this.#running.get(app.id) as AppState;
-		// A running app with no window left opens its main one again, on its first screen, as a Mac app does when launched.
-		if (state.windows.length === 0) {
-			state.screen = app.start;
-			state.history = [];
-			state.windows.push({ id: `${app.id}#main` });
-		}
+		// A running app with no window opens its main one, on its first screen: at launch, and again once its last one
+		// closed, as a Mac app does when launched.
+		if (state.windows.length === 0) this.#openWindow(state, app, `${app.id}#main`, app.start, [...state.origin]);
 		if (p.background !== true) this.#front = app.id;
 		return ok({});
 	}
@@ -316,25 +336,25 @@ export class FakeUiDriver implements UiSource {
 		if (state.windows.length === 0) return fail("not_found", `${id} is running with no window: its last one closed, and apps.launch opens it again`);
 		const shown = target?.window === undefined ? state.windows.at(-1) : state.windows.find((one) => one.id === target.window);
 		if (shown === undefined) return fail("not_found", `${id} has no window ${target?.window}; its windows are ${state.windows.map((one) => one.id).join(", ")}`);
-		const windowId = shown.id;
-		const screen = app.screens[shown.screen ?? state.screen];
+		const screen = app.screens[shown.screen];
 		// Between two screens the window slides: each look shows its elements a point or two lower than the last, as a real
 		// transition moves them, so a settle on the tree waits it out.
-		const between = shown.screen === undefined && Date.now() < state.animateUntil;
+		const between = Date.now() < shown.animateUntil;
 		const slide = between ? 1 + (this.#frames % 2) : 0;
-		// Checked and focused are the state's alone (seeded from the script at launch): the scripted flags never show through.
-		const elements = screen.elements.map(({ press: _press, enter: _enter, route: _route, counts: _counts, flags: scriptedFlags, ...element }) => {
-			const value = state.values.get(element.key) ?? element.value;
-			const flags = [...(scriptedFlags ?? []).filter((flag) => flag !== "checked" && flag !== "focused"), ...(state.checked.has(element.key) ? (["checked"] as const) : []), ...(state.focus === element.key ? (["focused"] as const) : [])];
+		// Values, checked and focused are the window's alone (checked and focused seeded from the script when it opened):
+		// the scripted flags never show through, and another window's never do.
+		const elements = screen.elements.map(({ press: _press, enter: _enter, route: _route, counts: _counts, takesBack: _takesBack, flags: scriptedFlags, ...element }) => {
+			const value = shown.values.get(element.key) ?? element.value;
+			const flags = [...(scriptedFlags ?? []).filter((flag) => flag !== "checked" && flag !== "focused"), ...(shown.checked.has(element.key) ? (["checked"] as const) : []), ...(shown.focus === element.key ? (["focused"] as const) : [])];
 			const [x, y, w, h] = element.bounds;
 			return { ...element, bounds: [x, y + slide, w, h] as typeof element.bounds, ...(value === undefined ? {} : { value }), ...(flags.length > 0 ? { flags } : {}) };
 		});
 		return ok({
 			app: { id, name: app.name },
-			window: { id: windowId, ...(screen.title === undefined ? {} : { title: screen.title }), bounds: shown.bounds ?? state.bounds },
+			window: { id: shown.id, ...(screen.title === undefined ? {} : { title: screen.title }), bounds: shown.bounds },
 			elements,
 			// A blinking caret changes what the window draws on every look, and nothing in its tree.
-			frame: between ? `between:${this.#frames++}` : this.#blink && shown.screen === undefined && state.focus !== undefined ? `${state.screen}|caret:${this.#frames++ % 2}` : (shown.screen ?? state.screen),
+			frame: between ? `between:${this.#frames++}` : this.#blink && shown.focus !== undefined ? `${shown.screen}|caret:${this.#frames++ % 2}` : shown.screen,
 		});
 	}
 
@@ -354,9 +374,10 @@ export class FakeUiDriver implements UiSource {
 		}
 		const state = running;
 		const app = this.apps.get(view.app.id) as FakeApp;
-		// The window the step lands in, and the screen it shows: a press there opens, goes or closes from it.
-		const windowId = view.window.id;
-		const shown = app.screens[state.windows.find((one) => one.id === windowId)?.screen ?? state.screen];
+		// The window the step lands in, which it changes alone: a press there goes, opens or closes from it.
+		const window = state.windows.find((one) => one.id === view.window.id);
+		if (window === undefined) return fail("stale", `${view.window.id} closed before this step ran: observe again`);
+		const shown = app.screens[window.screen];
 		const scripted = (key: string | undefined) => shown.elements.find((one) => one.key === key);
 		/** A disabled element takes no effect by any route: by its ref it is refused, by a point or the focus it is ignored. */
 		const disabled = (one: FakeElement) => one.flags?.includes("disabled") ?? false;
@@ -381,9 +402,9 @@ export class FakeUiDriver implements UiSource {
 		const takes = (one: FakeElement, route: UiRun["route"]) => !disabled(one) && !(one.route === "foreground" && route !== "foreground");
 		const land = (hit: FakeElement | undefined, route: UiRun["route"], right = false): UiRun => {
 			if (hit === undefined || right || !takes(hit, route)) return { route, verified: false };
-			this.#press(state, hit, windowId);
+			this.#press(state, window, hit);
 			if (hit.counts !== true) return { route, verified: false };
-			state.values.set(hit.key, String(Number(state.values.get(hit.key) ?? hit.value ?? "0") + 1));
+			window.values.set(hit.key, String(Number(window.values.get(hit.key) ?? hit.value ?? "0") + 1));
 			return { route, verified: true };
 		};
 		const target = scripted(element?.key);
@@ -393,7 +414,7 @@ export class FakeUiDriver implements UiSource {
 				const route = pointer(target);
 				return route.ok ? ok(land(target, route.value)) : route;
 			}
-			this.#press(state, target as FakeElement, windowId);
+			this.#press(state, window, target as FakeElement);
 			return ok({ route: "semantic", verified: this.#shownAtOnce(target as FakeElement) });
 		}
 		if ("perform" in step) {
@@ -409,19 +430,17 @@ export class FakeUiDriver implements UiSource {
 			const via: Result<UiRun["route"]> = scriptedTarget.route === "foreground" ? pointer(scriptedTarget) : ok("semantic");
 			if (!via.ok) return via;
 			if (!takes(scriptedTarget, via.value)) return ok({ route: via.value, verified: false });
-			if (toggle && step.value === "on") state.checked.add(scriptedTarget.key);
-			else if (toggle) state.checked.delete(scriptedTarget.key);
+			if (toggle && step.value === "on") window.checked.add(scriptedTarget.key);
+			else if (toggle) window.checked.delete(scriptedTarget.key);
 			else {
-				const was = state.values.get(scriptedTarget.key);
-				state.values.set(scriptedTarget.key, step.value);
+				const was = window.values.get(scriptedTarget.key);
+				window.values.set(scriptedTarget.key, step.value);
 				// An app that refuses the value takes it back a moment later: the set ran, and does not hold (SET_HOLD_MS).
 				if (scriptedTarget.takesBack !== undefined) {
-					const timer = setTimeout(() => {
-						state.timers.delete(timer);
-						if (was === undefined) state.values.delete(scriptedTarget.key);
-						else state.values.set(scriptedTarget.key, was);
-					}, scriptedTarget.takesBack);
-					state.timers.add(timer);
+					this.#later(state, window, scriptedTarget.takesBack, () => {
+						if (was === undefined) window.values.delete(scriptedTarget.key);
+						else window.values.set(scriptedTarget.key, was);
+					});
 				}
 			}
 			return ok({ route: via.value, verified: true });
@@ -439,30 +458,30 @@ export class FakeUiDriver implements UiSource {
 		if ("type" in step) {
 			const field = (one: FakeElement) => one.role === "textbox" || one.role === "searchbox";
 			if (target !== undefined && !field(target)) return fail("refused", `${step.into} is a ${target.role}, not a text field: type into a field`);
-			const into = target ?? scripted(state.focus);
+			const into = target ?? scripted(window.focus);
 			const route = pointer(into);
 			if (!route.ok) return route;
 			if (into === undefined || !takes(into, route.value) || !field(into)) return ok({ route: route.value, verified: false });
 			// A field named by its ref is focused first, as a tap does, which runs what pressing it does: a field whose
 			// press opens another screen leaves the focus there, and nothing is typed.
 			if (target !== undefined) {
-				this.#press(state, target, windowId);
-				if (state.focus !== target.key) return fail("refused", `${step.into} did not take focus: nothing typed`);
+				this.#press(state, window, target);
+				if (window.focus !== target.key) return fail("refused", `${step.into} did not take focus: nothing typed`);
 			}
-			state.values.set(into.key, `${state.values.get(into.key) ?? into.value ?? ""}${step.type}`);
+			window.values.set(into.key, `${window.values.get(into.key) ?? into.value ?? ""}${step.type}`);
 			return ok({ route: route.value, verified: true });
 		}
 		if ("key" in step) {
-			const focused = scripted(state.focus);
+			const focused = scripted(window.focus);
 			const route = pointer(focused);
 			if (!route.ok) return route;
-			if (step.key === "enter" && focused?.enter !== undefined && takes(focused, route.value)) this.#apply(state, focused.enter, windowId);
+			if (step.key === "enter" && focused?.enter !== undefined && takes(focused, route.value)) this.#apply(state, window, focused.enter);
 			return ok({ route: route.value, verified: false });
 		}
 		if ("nav" in step) {
 			if (step.nav === "back") {
-				const back = state.history.pop();
-				if (back !== undefined) state.screen = back;
+				const back = window.history.pop();
+				if (back !== undefined) window.screen = back;
 			} else if (step.nav === "home") this.#front = undefined;
 			return ok({ route: "semantic", verified: true });
 		}
@@ -481,48 +500,37 @@ export class FakeUiDriver implements UiSource {
 		return element.press !== undefined && (element.press.after ?? 0) === 0;
 	}
 
-	#press(state: AppState, element: FakeElement, windowId: string): void {
+	#press(state: AppState, window: FakeWindow, element: FakeElement): void {
 		if (element.role === "switch" || element.role === "checkbox") {
-			if (state.checked.has(element.key)) state.checked.delete(element.key);
-			else state.checked.add(element.key);
+			if (window.checked.has(element.key)) window.checked.delete(element.key);
+			else window.checked.add(element.key);
 		}
-		if (element.role === "textbox" || element.role === "searchbox") state.focus = element.key;
-		if (element.press !== undefined) this.#apply(state, element.press, windowId);
+		if (element.role === "textbox" || element.role === "searchbox") window.focus = element.key;
+		if (element.press !== undefined) this.#apply(state, window, element.press);
 	}
 
-	/** A press's effect, from the window it landed in: go to a screen there, open a window, or close that one. */
-	#apply(state: AppState, effect: FakeEffect, windowId: string): void {
+	/**
+	 * A press's effect, from the window it landed in: go to a screen in that window, open another window, or close that
+	 * one. A delayed effect is that window's pending effect: it never lands once the window closed.
+	 */
+	#apply(state: AppState, window: FakeWindow, effect: FakeEffect): void {
 		const go = () => {
-			if (effect.close === true) {
-				state.windows = state.windows.filter((one) => one.id !== windowId);
-				return;
-			}
+			if (effect.close === true) return this.#closeWindow(state, window);
 			if (effect.open !== undefined) {
 				state.opened += 1;
-				const [x, y, w, h] = state.bounds;
-				state.windows.push({ id: `${state.app}#${state.opened + 1}`, screen: effect.open, bounds: [x + 30 * state.opened, y + 30 * state.opened, w, h] });
+				const [x, y, w, h] = state.origin;
+				const app = this.apps.get(state.app) as FakeApp;
+				this.#openWindow(state, app, `${state.app}#${state.opened + 1}`, effect.open, [x + 30 * state.opened, y + 30 * state.opened, w, h]);
 				return;
 			}
 			if (effect.go === undefined) return;
-			// A window a press opened navigates on its own screen and history; the main window's are the state's.
-			const own = state.windows.find((one) => one.id === windowId);
-			if (own?.screen !== undefined) {
-				(own.history ??= []).push(own.screen);
-				own.screen = effect.go;
-				state.focus = undefined;
-				return;
-			}
-			state.history.push(state.screen);
-			state.screen = effect.go;
-			state.focus = undefined;
-			state.animateUntil = Date.now() + (effect.animateMs ?? 0);
+			window.history.push(window.screen);
+			window.screen = effect.go;
+			window.focus = undefined;
+			window.animateUntil = Date.now() + (effect.animateMs ?? 0);
 		};
 		if (!effect.after) return go();
-		const timer = setTimeout(() => {
-			state.timers.delete(timer);
-			go();
-		}, effect.after);
-		state.timers.add(timer);
+		this.#later(state, window, effect.after, go);
 	}
 }
 
