@@ -34,6 +34,7 @@ import { resolveRunnerLoop } from "./harness-loops.js";
 import type { LoopFactory } from "./loop-contract.js";
 import { routeOf } from "./model-route.js";
 import { runnerMemory } from "./memory-claim.js";
+import { sweepEndedScratch } from "./scratch-sweep.js";
 import { RUNNER_RENEW_EVERY_MS, runnerName, startRunner, type Runner, type RunnerEvent, type RunnerMemory } from "./runner.js";
 
 export { RUNNER_RENEW_EVERY_MS } from "./runner.js";
@@ -221,6 +222,8 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
     // The janitor sweeps with the computers the loop composed, never a second composition. Its lines are the runner's
     // warnings, said where the runner says its others (warn: stderr unless a test gives its own).
     if (options.janitor && typeof parts !== "function") janitor = startJanitor({ store, computers: parts.computers, env: parts.env, log: warn });
+    // Before it claims: the scratch folders of runs that ended after their runner died (scratch-sweep.ts), said as warnings.
+    await sweepEndedScratch(store, options.dataDir, { log: warn });
     runner = startRunner({
       store,
       createLoop,

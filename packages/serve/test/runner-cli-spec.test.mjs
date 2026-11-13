@@ -272,8 +272,25 @@ test("a CLI run's scratch folder is swept at its claim's end", async (t) => {
   const { row, dir } = await runOn(t, { harness: "opencode", model: { provider: "openai", modelId: "gpt-5" }, env });
   assert.equal(row.state, "ended", `the run ended: ${JSON.stringify(row)}`);
   const scratch = scratchFolder(dir, "agent-1", RUN);
-  await until(() => !existsSync(scratch), `the scratch folder swept at the claim's end: ${scratch}`, 10_000);
-  assert.equal(existsSync(dirname(scratch)), false, "the agent's scratch folder goes with its last run's");
+  // The sweep removes the run's folder, then the agent's (a second removal): wait for the last one, never the first seen.
+  await until(() => !existsSync(dirname(scratch)), `the scratch and the agent's scratch folders swept at the claim's end: ${scratch}`, 10_000);
+  assert.equal(existsSync(scratch), false, "the run's scratch folder is gone");
+});
+
+// A resumed claim that fails in its setup (here its computer cannot be had) never hands the loop a spec to release, so the
+// build's own release is what sweeps: the dead claim's home and session file still go, and the failed claim's own folder.
+test("a resumed CLI claim that fails in its setup still sweeps the dead claim's folder", async (t) => {
+  let data;
+  const failing = async () => {
+    throw new Error("computer_unavailable: no computer in this test");
+  };
+  await assert.rejects(
+    specOn(t, "opencode", { crashed: true, prepare: (dir) => void (data = dir), deps: { computerForClaim: failing } }),
+    /computer_unavailable/,
+  );
+  const scratch = scratchFolder(data, "agent-1", RUN);
+  assert.equal(existsSync(join(scratch, "harness", "1")), false, "the dead claim's folder is gone though the setup failed");
+  assert.equal(existsSync(dirname(scratch)), false, "no scratch folder is left for the failed run");
 });
 
 // A runner killed mid-claim never runs its claim's release, so its CLI's home and session state stay in harness/<epoch>.

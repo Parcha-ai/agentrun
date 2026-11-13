@@ -208,6 +208,18 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   holds.logTo(log);
   const runRow = await deps.store.runs.get(claim.runId);
   if (!runRow) throw new Error(`run ${claim.runId}: its row is gone from the store`);
+  // The claim's private folder is swept at the spec's release, the claim's end, then the scratch folder if nothing else is
+  // in it, then the agent's: the next claim, here or on another runner, lays its own, its harness's session coming back from
+  // the run's journal. Its own per claim (by the claim's epoch), so a run reopened while this claim still lets go (its
+  // release follows the run's end commit) never has the next claim's folder swept from under it. A claim whose runner died
+  // never ran its release: every claim sweeps the earlier claims' folders of its run at its start and again at its end, so
+  // a killed CLI's home and session state never outlive the run. Held here, before any step that can fail (the install, the
+  // MCP claim, the computer): a claim that fails in its setup still sweeps what the earlier claims left, as specBuilt lets
+  // go what was held when the build throws.
+  const scratch = scratchFolder(deps.data, runRow.agentId, claim.runId);
+  const harnesses = join(scratch, "harness");
+  const dir = join(harnesses, String(claim.epoch));
+  holds.hold({ scratch: { sweep: () => sweepScratch(harnesses, claim.epoch, [harnesses, scratch, dirname(scratch)]) } });
   // Every secret the server keeps sealed (store-secrets.ts) held by the runner's one redactor (the loop's) and this spec's
   // log cut, before any of the run's text is written: a run's text may quote one it was never handed.
   for (const redact of [...(run.redact ? [heldRedactor(run.redact)] : []), cut]) await holdStored(redact, deps.store, deps.sealKey, deps.data);
@@ -314,16 +326,6 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // skills laid for it) in this claim's private folder inside it, never on the run's disk. The scratch is an alias of the
   // run's folder for the run's file tools: a path the CLI builds from its working directory lands in the run's folder, and
   // any other absolute path is refused (workspace/paths.ts portPath).
-  // The private folder is swept at the spec's release, the claim's end, then the scratch folder if nothing else is in it,
-  // then the agent's: the next claim, here or on another runner, lays its own, its harness's session coming back from the
-  // run's journal. Its own per claim (by the claim's epoch), so a run reopened while this claim still lets go (its release
-  // follows the run's end commit) never has the next claim's folder swept from under it. A claim whose runner died never
-  // ran its release: every claim sweeps the earlier claims' folders of its run at its start and again at its end, so a
-  // killed CLI's home and session state never outlive the run.
-  const scratch = scratchFolder(deps.data, runRow.agentId, claim.runId);
-  const harnesses = join(scratch, "harness");
-  const dir = join(harnesses, String(claim.epoch));
-  holds.hold({ scratch: { sweep: () => sweepScratch(harnesses, claim.epoch, [harnesses, scratch, dirname(scratch)]) } });
   // Made again if a parent went as it was made (another claim's sweep removing the then empty scratch or agent folder).
   for (let tries = 1; ; tries += 1) {
     try {
