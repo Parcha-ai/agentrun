@@ -96,3 +96,95 @@ test("a release that did not land and was answered Unanswered is read back and s
   }, `run-1 released well within the ${STEADY_LEASE.leaseMs} ms lease`, 10_000);
   assert.equal(wrapped.seen.releases, 2, "sent again once");
 });
+
+test("a commit answered Unanswered that lands after the first read-back is still given back by a later pass", { timeout: 30_000 }, async (t) => {
+  const faux = fauxLoops({ turns: 2, turnMs: 5 });
+  const { server, runners: [one] } = await stores({ runners: 1 });
+  await queue(server, "run-1");
+  const store = observed(one, recorder());
+  let late = 0;
+  const wrapped = {
+    ...store,
+    runs: {
+      ...store.runs,
+      async claimMany(runner, k, options) {
+        // Answered Unanswered with nothing landed yet: the commit lands 100 ms later, after the first read-back. Polls
+        // between find nothing to claim (the pending commit holds the run); once it landed, claims are real again.
+        if (late === 0) {
+          late = -1;
+          setTimeout(() => {
+            void store.runs.claimMany(runner, k, options).then(() => (late = -2));
+          }, 100);
+          throw unanswered();
+        }
+        if (late === -1) return [];
+        return store.runs.claimMany(runner, k, options);
+      },
+    },
+  };
+  const events = [];
+  const runner = startRunner({ store: wrapped, createLoop: faux.createLoop, name: "runner-a", onEvent: (event) => events.push(event), ...TIMING });
+  t.after(() => runner.close());
+  const run = await until(async () => {
+    const row = await server.runs.get("run-1");
+    return row.state === "ended" ? row : undefined;
+  }, `run-1 ended in 3 s, long before the ${STEADY_LEASE.leaseMs} ms lease`, 3_000);
+  assert.ok(run.epoch >= 2, `the late claim was given back and the run taken again: epoch ${run.epoch}`);
+});
+
+test("a claim ending a stopped queued run is not given back by a later poll's Unanswered sweep", { timeout: 30_000 }, async (t) => {
+  const faux = fauxLoops({ turns: 2, turnMs: 5 });
+  const { server, runners: [one] } = await stores({ runners: 1 });
+  await queue(server, "run-1");
+  await server.command("run-1", { kind: "stop" });
+  const store = observed(one, recorder());
+  let calls = 0;
+  const wrapped = {
+    ...store,
+    runs: {
+      ...store.runs,
+      // The ending's own read, held so the next poll's sweep runs between the stop's writes.
+      async launch(runId) {
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        return store.runs.launch?.(runId);
+      },
+      async claimMany(runner, k, options) {
+        if (calls++ === 0) return store.runs.claimMany(runner, k, options);
+        throw unanswered();
+      },
+    },
+  };
+  const events = [];
+  const runner = startRunner({ store: wrapped, createLoop: faux.createLoop, name: "runner-a", onEvent: (event) => events.push(event), ...TIMING });
+  t.after(() => runner.close());
+  const run = await until(async () => {
+    const row = await server.runs.get("run-1");
+    return row.state === "stopped" && row.runner === null ? row : undefined;
+  }, "run-1 stopped by its own ending claim", 10_000);
+  assert.equal(run.summary, "stopped by a person");
+  assert.ok(!events.some((event) => event.type === "error" && event.step === "end (fenced)"), "no write of the ending was fenced");
+  assert.ok(!events.some((event) => event.type === "error" && event.step === "claim" && /given back/.test(event.message)), JSON.stringify(events.filter((event) => event.type === "error")));
+});
+
+test("a close during a claim recovery whose read-back never answers is held no longer than the close's window", { timeout: 30_000 }, async (t) => {
+  const faux = fauxLoops({ turns: 2, turnMs: 5 });
+  const { runners: [one] } = await stores({ runners: 1 });
+  const store = observed(one, recorder());
+  const wrapped = {
+    ...store,
+    runs: {
+      ...store.runs,
+      async claimMany() {
+        throw unanswered();
+      },
+      // The store's Postgres never answers the read.
+      claimsOf: () => new Promise(() => {}),
+    },
+  };
+  const runner = startRunner({ store: wrapped, createLoop: faux.createLoop, name: "runner-a", ...TIMING, leaseMs: 1_500, renewEveryMs: 500, stopMarginMs: 500 });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const started = Date.now();
+  const closed = await Promise.race([runner.close().then(() => true), new Promise((resolve) => setTimeout(() => resolve(false), 5_000))]);
+  assert.ok(closed, "close resolved while the recovery's read never answered");
+  assert.ok(Date.now() - started < 3_000, `close took ${Date.now() - started} ms, the window is 1000 ms`);
+});
