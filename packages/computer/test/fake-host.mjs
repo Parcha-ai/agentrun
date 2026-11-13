@@ -66,6 +66,7 @@ function feed() {
 }
 
 let counter = 0;
+const START = Date.now();
 
 /**
  * A fake host. Options:
@@ -74,6 +75,10 @@ let counter = 0;
  *    machine, then throws Late: its id never comes back), "broken" (makes it, then throws a plain error);
  *  - starting: how many reads a new machine answers starting before it runs;
  *  - unlisted: how many listings a new machine is left out of;
+ *  - flaps: for a new machine, whether each listing after its create shows it (true) or leaves it out (false), in turn,
+ *    until they run out; then every listing shows it;
+ *  - born(n): the creation time of the n-th machine made (1, 2, ...), or undefined for none; default the order made;
+ *  - size: the size every machine reads back;
  *  - sha: "ok" or "lie"; install: the install's exit code; initFails: words init writes before it exits;
  *  - notListening: how many bridges find no daemon before one does;
  *  - box: what the daemon reports (hello patch, uid, gid, status, interfaces, reached, accepted, quiet, raised);
@@ -89,6 +94,9 @@ export function fakeHost({
 	create = "ok",
 	starting = 0,
 	unlisted = 0,
+	flaps = [],
+	born,
+	size,
 	sha = "ok",
 	install = 0,
 	initFails,
@@ -115,9 +123,12 @@ export function fakeHost({
 	const gone = (m) => m === undefined || (m.deleted && !(m.lingering?.reads > 0));
 
 	const add = ({ labels = {}, network = "none", image = "img", lifetimeMs = 600_000, state = "running", startingReads = 0, box: extra = {} } = {}) => {
-		const id = `m${String(++counter).padStart(8, "0")}`;
+		const n = ++counter;
+		const id = `m${String(n).padStart(8, "0")}`;
+		const createdAt = born === undefined ? new Date(START + n) : born(machines.size + 1);
 		const machine = {
 			id,
+			createdAt,
 			labels: { ...labels },
 			network,
 			image,
@@ -153,6 +164,8 @@ export function fakeHost({
 		state: m.deleted ? "going" : m.state,
 		...(networkPatch !== undefined ? { network: networkPatch } : { network: m.network }),
 		image: { resolved: `${m.image}-id` },
+		...(m.createdAt === undefined ? {} : { createdAt: new Date(m.createdAt) }),
+		...(size === undefined ? {} : { size: { ...size } }),
 		endsAt: new Date(m.endsAt),
 		timerMoved: m.timerMoved,
 		...(drift ? { drift: [...drift] } : {}),
@@ -392,7 +405,7 @@ export function fakeHost({
 		if (m.pid1.gate !== undefined && !m.files.has(m.pid1.gate)) return;
 		const args = m.pid1.initArgs;
 		const flag = (name) => args[args.indexOf(name) + 1];
-		startInit(m, { deadline: flag("--deadline"), user: flag("--user"), max: args.includes("--max-deadline") ? flag("--max-deadline") : "" });
+		startInit(m, { deadline: flag("--deadline"), user: flag("--user"), display: m.pid1.display, max: args.includes("--max-deadline") ? flag("--max-deadline") : "" });
 	}
 	const chunks = (proc) => (proc.chunks.length === 0 ? undefined : Buffer.concat(proc.chunks).toString("utf8"));
 
@@ -426,11 +439,13 @@ export function fakeHost({
 			const make = () => {
 				const m = add({ labels: req.labels, network: req.network, image: req.image, lifetimeMs: req.lifetimeMs ?? 600_000, state: starting > 0 ? "starting" : "running", startingReads: starting });
 				m.hidden = unlisted;
+				m.flaps = [...flaps];
 				m.request = req;
 				if (req.command) {
+					// The entrypoint's words: the daemon, the wait, the home, the display, then --gate <path> or not, then init's.
 					const args = req.command.slice(4);
-					const gate = args[3] === "--gate" ? args[4] : undefined;
-					m.pid1 = { gate, initArgs: args.slice(gate === undefined ? 3 : 5) };
+					const gate = args[4] === "--gate" ? args[5] : undefined;
+					m.pid1 = { display: args[3], gate, initArgs: args.slice(gate === undefined ? 4 : 6) };
 				}
 				return m;
 			};
@@ -464,7 +479,8 @@ export function fakeHost({
 		async list(labels, ctx) {
 			await step("list", ctx);
 			const matched = [...machines.values()].filter((m) => Object.entries(labels).every(([k, v]) => m.labels[k] === v));
-			const listed = matched.filter((m) => (!m.deleted || m.lingering?.lists > 0) && !(m.hidden > 0));
+			const flapped = new Set(matched.filter((m) => m.flaps?.length > 0 && m.flaps.shift() === false));
+			const listed = matched.filter((m) => (!m.deleted || m.lingering?.lists > 0) && !(m.hidden > 0) && !flapped.has(m));
 			for (const m of matched) if (m.hidden > 0) m.hidden--;
 			for (const m of listed) if (m.deleted && m.lingering?.lists > 0) m.lingering.lists--;
 			return { ok: true, value: listed.map(view) };

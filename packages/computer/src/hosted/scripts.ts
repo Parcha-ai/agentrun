@@ -98,14 +98,16 @@ const LOG_SCRIPT = ["# agentrun-computer: log", "l=$1", ROOT, '$p tail -c 2000 "
 
 /**
  * A pid1 machine's main process: waits, bounded, for the daemon to be moved into place executable, then becomes it with
- * exec, so init is the machine's main process and the machine ends when init does. POSIX sh and tools in BusyBox and
- * coreutils alike; `date +%s` bounds the wait however long a sleep takes. An Archil computer's (`--gate <path>` before
- * init's arguments) also waits for the gate, which root makes once the run's folder is mounted; a gate there before it
- * starts (an image that holds one) is not this computer's, and goes first.
+ * exec, so init is the machine's main process and the machine ends when init does. It starts init as start does a
+ * child's: from its home (HOME, and the working directory), with the display, when given, as its DISPLAY. POSIX sh and
+ * tools in BusyBox and coreutils alike; `date +%s` bounds the wait however long a sleep takes. An Archil computer's
+ * (`--gate <path>` before init's arguments) also waits for the gate, which root makes once the run's folder is mounted;
+ * a gate there before it starts (an image that holds one) is not this computer's, and goes first.
  */
 const ENTRYPOINT_SCRIPT = [
 	"# agentrun-computer: entrypoint",
-	"d=$1; w=$2; h=$3; shift 3",
+	// The display is v, as in init's script; empty for a computer with no screen.
+	"d=$1; w=$2; h=$3; v=$4; shift 4",
 	'g=; if [ "${1-}" = --gate ]; then g=$2; shift 2; rm -f "$g"; fi',
 	"end=$(( $(date +%s) + $w ))",
 	'until [ -f "$d" ] && [ -x "$d" ] && { [ -z "$g" ] || [ -f "$g" ]; }; do',
@@ -117,6 +119,8 @@ const ENTRYPOINT_SCRIPT = [
 	"\tsleep 0.2 2>/dev/null || sleep 1",
 	"done",
 	'export HOME="$h"',
+	'cd "$h" || { echo "agentrun-computer: init\'s home $h cannot be entered, so this computer ends" >&2; exit 4; }',
+	'if [ -n "$v" ]; then export DISPLAY="$v"; else unset DISPLAY; fi',
 	'exec "$d" "$@"',
 ].join("\n");
 
@@ -157,7 +161,7 @@ export function hostedCommands({
 		start: argvOf(START_SCRIPT, [INIT_LOG, ...argvOf(INIT_SCRIPT, init)]),
 		stdio: argvOf(STDIO_SCRIPT, [DAEMON_IN_COMPUTER, SOCKET_DIR]),
 		log: argvOf(LOG_SCRIPT, [INIT_LOG]),
-		entrypoint: argvOf(ENTRYPOINT_SCRIPT, [DAEMON_IN_COMPUTER, String(waitS), WORK, ...(gate === undefined ? [] : ["--gate", gate]), ...initArgs]),
+		entrypoint: argvOf(ENTRYPOINT_SCRIPT, [DAEMON_IN_COMPUTER, String(waitS), WORK, display, ...(gate === undefined ? [] : ["--gate", gate]), ...initArgs]),
 	};
 }
 

@@ -3,8 +3,9 @@
 // the deadline and extend, delete-then-wait-gone, nothing left behind after any failed step, the Archil mount, and the
 // pid1 branch. No vendor, no network.
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -12,6 +13,7 @@ import { checkLifetime } from "../dist/index.js";
 import { DAEMON, DESKTOP_GROUPS, deferred, fakeHost, LINUX_GROUPS, VERSION } from "./fake-host.mjs";
 
 const { hostedProvider, nameOf } = await import("../dist/hosted/provider.js");
+const { hostedCommands } = await import("../dist/hosted/scripts.js");
 
 const COMPUTER = "agentrun.computer";
 const NAME = "agentrun.computer.name";
@@ -28,7 +30,7 @@ writeFileSync(DAEMON_PATH, DAEMON_BYTES);
 test.after(() => rmSync(dir, { recursive: true, force: true }));
 
 /** Short bounds, so the waits in these tests take milliseconds. */
-const TIMEOUTS = { requestMs: 2_000, createMs: 2_000, uploadMs: 2_000, execMs: 2_000, helloMs: 1_000, probeMs: 1_000, listMs: 2_000, goneMs: 500, pollMs: 5, listedMs: 500, mountMs: 2_000 };
+const TIMEOUTS = { requestMs: 2_000, createMs: 2_000, uploadMs: 2_000, execMs: 2_000, helloMs: 1_000, probeMs: 1_000, listMs: 2_000, goneMs: 500, pollMs: 5, listedMs: 500, listedStableMs: 0, mountMs: 2_000 };
 
 function setup(options = {}, fakeOptions = {}) {
 	const fake = fakeHost(fakeOptions);
@@ -165,6 +167,22 @@ test("create waits while the machine starts, and until the listing shows it twic
 	assert.ok(fake.calls.filter(([name]) => name === "list").length >= 4, "the listing by name first, then until it showed the machine twice");
 });
 
+test("create's listing wait needs two consecutive polls that show the machine: one shown, then not, starts over", async () => {
+	// The first listing after the vendor's answer is the convergence read; the wait's own polls follow, shown or not in turn.
+	const { provider, fake } = setup({}, { flaps: [true, true, false, true, false, true, true] });
+	made(await create(provider));
+	assert.deepEqual(only(fake).flaps, [], "the wait went on past a lone poll that showed it, until two in a row did");
+});
+
+test("create's listing wait holds a stability window: the polls that show the machine span at least listedStableMs", async () => {
+	const { provider, fake } = setup({ timeouts: { ...TIMEOUTS, listedStableMs: 60 } });
+	made(await create(provider));
+	const lists = fake.calls.filter(([name]) => name === "list").length;
+	// The name's listing, the convergence read before and after, and polls 5 ms apart until 60 ms passed: well over two.
+	assert.ok(lists >= 6, `the wait polled on until the window passed (${lists} listings)`);
+	assert.throws(() => setup({ timeouts: { ...TIMEOUTS, listedStableMs: -1 } }), /timeouts\.listedStableMs must be a whole number of ms 0 or more/);
+});
+
 test("idempotent create: a retry of one request returns the computer the first made, and never makes a second", async () => {
 	const { provider, fake } = setup();
 	const first = made(await provider.create(SPEC, { requestId: "run-a#1" }));
@@ -201,6 +219,32 @@ test("a retry from another provider instance finds the machine still starting, w
 	void first;
 });
 
+test("two provider instances racing one request each make a machine; both converge on the oldest, the other is deleted and read back gone, and both answer the one kept", async () => {
+	for (const [what, born, keptIndex] of [
+		["by creation time: the machine made second is the older", (n) => new Date(Date.UTC(2026, 0, 1) - n * 1_000), 1],
+		["with no creation time: the lowest id", () => undefined, 0],
+	]) {
+		const fake = fakeHost({ create: "hold", born, lingers: { reads: 1, lists: 1 } });
+		const one = hostedProvider(fake.host, { label: "Fakehost", daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+		const two = hostedProvider(fake.host, { label: "Fakehost", daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+		// Both read the name's listing and find nothing, then both creates are in flight at the vendor.
+		const pending = [one.create(SPEC, { requestId: "two-instances" }), two.create(SPEC, { requestId: "two-instances" })];
+		for (let i = 0; i < 100 && fake.creates() < 2; i++) await new Promise((done) => setImmediate(done));
+		assert.equal(fake.creates(), 2, `${what}: both instances called the vendor's create`);
+		await fake.release();
+		const [a, b] = await Promise.all(pending);
+		const made2 = [...fake.machines.values()];
+		assert.equal(made2.length, 2, `${what}: two machines were made`);
+		const kept = made2[keptIndex];
+		assert.equal(made(a).id, kept.id, `${what}: the first instance answers the one kept`);
+		assert.equal(made(b).id, kept.id, `${what}: the second instance answers the one kept`);
+		assert.deepEqual(fake.live().map((m) => m.id), [kept.id], `${what}: the other was deleted`);
+		const listed = await fake.host.list({ [NAME]: nameOf("two-instances") }, { timeoutMs: 1_000 });
+		assert.deepEqual(listed.value.map((m) => m.id), [kept.id], `${what}: and is no longer listed`);
+		assert.ok(kept.init !== undefined, `${what}: the one kept was brought up`);
+	}
+});
+
 test("a retry of a request whose computer ended, stopped or was deleted is refused as exists, in words; one made with other labels too", async () => {
 	const { provider, fake } = setup();
 	const ref = made(await provider.create(SPEC, { requestId: "ends" }));
@@ -218,6 +262,37 @@ test("a retry of a request whose computer ended, stopped or was deleted is refus
 	assert.equal(other.error?.code, "exists");
 	assert.match(other.error.message, /with another spec/);
 	assert.equal(fake.creates(), 1, "never a second machine under one name");
+});
+
+test("a retry that finds a desktop running whose display is not up yet waits for it within createMs; one that never comes up as declared is exists after createMs", async () => {
+	const labels = (request) => ({ [COMPUTER]: "1", [NAME]: nameOf(request), [DEADLINE]: new Date(Date.now() + 600_000).toISOString(), [MAX]: new Date(Date.now() + HOUR).toISOString(), "agentrun.computer.image": "img" });
+	const up = (m) => {
+		m.daemon = { path: DAEMON, bytes: DAEMON_BYTES };
+		m.init = { deadline: m.labels[DEADLINE], user: "2510:2510", display: ":0", max: m.labels[MAX] };
+	};
+	const { provider, fake } = setup({ kind: "desktop", timeouts: { ...TIMEOUTS, createMs: 600 } });
+	// The first create's init answers, and its X server is still starting: hello says linux, with no screen.
+	const starting = fake.add({ labels: labels("desktop-retry") });
+	up(starting);
+	let reads = 0;
+	const reading = fake.host.get;
+	fake.host.get = async (id, ctx) => {
+		if (id === starting.id && ++reads === 3) starting.displayUp = true;
+		return reading(id, ctx);
+	};
+	const found = made(await provider.create(SPEC, { requestId: "desktop-retry" }));
+	assert.equal(found.id, starting.id, "returned once the display was up");
+	assert.ok(fake.requests.filter(({ machine, method }) => machine === starting.id && method === "hello").length >= 2, "hello was read again while it came up");
+	fake.host.get = reading;
+	// One whose daemon never reports the declared screen: refused as exists, after createMs, in words.
+	const never = fake.add({ labels: labels("desktop-never") });
+	up(never);
+	const before = Date.now();
+	const refused = await provider.create(SPEC, { requestId: "desktop-never" });
+	assert.equal(refused.error?.code, "exists");
+	assert.match(refused.error.message, /was made for this request, and after 0\.6 s still/);
+	assert.ok(Date.now() - before >= 400, "it waited within createMs before it refused");
+	assert.equal(fake.creates(), 0, "never a second machine");
 });
 
 test("a create the host refused makes nothing and deletes nothing", async () => {
@@ -400,6 +475,39 @@ test("list finds this provider's machines by labels; attach by id or labels read
 	assert.equal(fake.machines.get(a.id).deleted, false);
 });
 
+test("attach holds the vendor's own read-back drift as create does, and reports the size the vendor reads back", async () => {
+	const sized = setup({}, { size: { cpus: 2, memoryMb: 4096 } });
+	const ref = made(await create(sized.provider));
+	const attached = made(await sized.provider.attach({ id: ref.id }));
+	assert.deepEqual({ cpus: attached.spec.cpus, memoryMb: attached.spec.memoryMb }, { cpus: 2, memoryMb: 4096 });
+	const { provider, fake } = setup();
+	const other = made(await create(provider));
+	assert.equal(made(await provider.attach({ id: other.id })).spec.cpus, undefined, "no size read back: none reported");
+	// The vendor's own read-back goes wrong after create (the drift every read of it now gives): attach refuses it.
+	const drifting = fakeHost({ drift: ['lifecycle onTimeout: declared "kill", read back "pause"'] });
+	const reader = hostedProvider(drifting.host, { label: "Fakehost", daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+	const m = drifting.add({ labels: fake.machines.get(other.id).labels });
+	Object.assign(m, { daemon: { path: DAEMON, bytes: DAEMON_BYTES }, init: { deadline: m.labels[DEADLINE], user: "2510:2510", display: "", max: m.labels[MAX] } });
+	const refused = await reader.attach({ id: m.id });
+	assert.equal(refused.error?.code, "refused");
+	assert.match(refused.error.message, /lifecycle onTimeout: declared "kill", read back "pause"/);
+	assert.equal(m.deleted, false, "left as it is");
+});
+
+test("create refuses a machine whose vendor timer already reads moved: no extend has run on it", async () => {
+	const { provider, fake } = setup({}, { lingers: { reads: 0, lists: 0 } });
+	const reading = fake.host.get;
+	fake.host.get = async (id, ctx) => {
+		const read = await reading(id, ctx);
+		return read.ok && read.value ? { ok: true, value: { ...read.value, timerMoved: true } } : read;
+	};
+	const refused = await create(provider);
+	assert.equal(refused.error?.code, "refused");
+	assert.match(refused.error.message, /timer: declared the spec's lifetime, read back an end of .*later than create set it/);
+	fake.host.get = reading;
+	await nothingLeft(fake, "a moved timer at create");
+});
+
 test("network() reads the network back and refuses any change: it is fixed at create", async () => {
 	const { provider } = setup();
 	const ref = made(await create(provider));
@@ -478,6 +586,37 @@ test("Archil: release lets the folder go (the final sync, then checkin as root),
 	assert.match(notes[0].note, /was deleted, and/);
 });
 
+test("Archil: release stop lets the folder go (the final sync, then checkin as root) before the host's stop, as delete does; a failed checkin still stops, and says so", async () => {
+	const notes = [];
+	const { provider, fake } = setup({ onNote: (note) => notes.push(note) }, { facts: { release: ["stop", "delete"], stopDeletes: false }, box: { reached: [] }, archil: { checkin: { exitCode: 1, output: "checkin refused" } } });
+	const order = [];
+	fake.host.stop = async (id) => {
+		order.push(`stop ${fake.rootRuns.filter(({ verb }) => verb === "checkin").length} checkin`);
+		fake.machines.get(id).state = "stopped";
+		return { ok: true, value: undefined };
+	};
+	const ref = made(await create(provider, ARCHIL_SPEC));
+	const syncs = fake.syncs.length;
+	assert.deepEqual(await provider.release(ref, "stop"), { ok: true, value: undefined });
+	assert.deepEqual(order, ["stop 1 checkin"], "checkin ran before the stop");
+	assert.ok(fake.syncs.length > syncs, "the final sync through the daemon");
+	assert.equal(fake.live().length, 1, "a stop keeps the machine");
+	assert.equal(notes.length, 1);
+	assert.match(notes[0].note, /was stopped, and/);
+});
+
+test("Archil: archilEgress goes to the helper's mount as its last word; unset, the mount names no gateway; a malformed one is refused at construction", async () => {
+	const { provider, fake } = setup({ archilEgress: "10.60.0.40:18100:42050" }, { box: { reached: [] } });
+	made(await create(provider, ARCHIL_SPEC));
+	const mount = fake.rootRuns.find(({ verb }) => verb === "mount");
+	assert.equal(mount.argv.at(-1), "egress=10.60.0.40:18100:42050");
+	noToken(mount.argv, "the mount's argv");
+	const plain = setup({}, { box: { reached: [] } });
+	made(await create(plain.provider, ARCHIL_SPEC));
+	assert.ok(!plain.fake.rootRuns.find(({ verb }) => verb === "mount").argv.some((word) => word.startsWith("egress=")));
+	assert.throws(() => setup({ archilEgress: "10.60.0.40:8100:42050" }), /the Archil egress is <IPv4 gateway>:<mount lane>:<data lane>/);
+});
+
 test("Archil: connect gives a client that syncs after each call that may change the folder", async () => {
 	const { provider, fake } = setup({}, { box: { reached: [] } });
 	const ref = made(await create(provider, ARCHIL_SPEC));
@@ -500,6 +639,38 @@ test("pid1: the machine's command is the entrypoint; the daemon goes in beside i
 	assert.equal(m.daemon.atomic, true, "installed to .part, then moved");
 	assert.ok(!runsOf(fake, m.id).includes("run start"));
 	assert.equal(provider.capabilities().daemon, "pid1");
+});
+
+test("pid1 desktop: the entrypoint carries the display, and init starts with it", async () => {
+	const { provider, fake } = setup({ kind: "desktop" }, { facts: { daemon: "pid1" } });
+	made(await create(provider));
+	const m = only(fake);
+	assert.equal(m.request.command[7], ":0", "the display, after the daemon, the wait and the home");
+	assert.equal(m.init.display, ":0");
+});
+
+test("the pid1 entrypoint, run by sh, starts init from its home with the display as DISPLAY, as start does a child's; none for no screen", () => {
+	const root = mkdtempSync(join(tmpdir(), "computer-entrypoint-"));
+	try {
+		const home = join(root, "work");
+		mkdirSync(home);
+		const daemon = join(root, "computerd");
+		// A stand-in for the daemon: it says where it runs, its HOME, its DISPLAY and its arguments.
+		writeFileSync(daemon, '#!/bin/sh\necho "cwd=$(pwd) home=$HOME display=${DISPLAY-unset} args=$*"\n');
+		chmodSync(daemon, 0o755);
+		const run = (display) => {
+			const argv = hostedCommands({ deadline: "2030-01-01T00:00:00.000Z", display, atomic: true, waitS: 5 }).entrypoint;
+			// The daemon's path and init's home, here instead of /opt/agentrun and /work.
+			const words = [...argv];
+			words[4] = daemon;
+			words[6] = home;
+			return execFileSync(words[0], words.slice(1), { cwd: "/", env: { PATH: process.env.PATH, DISPLAY: ":99" }, encoding: "utf8" }).trim();
+		};
+		assert.equal(run(":0"), `cwd=${home} home=${home} display=:0 args=init --deadline 2030-01-01T00:00:00.000Z --user 2510:2510 --own-network`);
+		assert.equal(run(""), `cwd=${home} home=${home} display=unset args=init --deadline 2030-01-01T00:00:00.000Z --user 2510:2510 --own-network`, "no screen: no DISPLAY, not even one inherited");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
 });
 
 test("pid1 Archil: the entrypoint waits for the gate, which root makes once the folder is mounted", async () => {

@@ -42,7 +42,7 @@ test("Daytona: MOUNT is [\"archil\"], what its provider declares", () => {
 });
 
 test("E2B: MOUNT is [\"archil\"], what its provider declares", () => {
-	const provider = new e2b.E2BProvider({ apiKey: "e2b_fake_computer_key_0123456789", Sandbox: Object.fromEntries(["create", "connect", "getInfo", "setTimeout", "kill", "list"].map((name) => [name, () => assert.fail(`Sandbox.${name} was called`)])), daemonPath: DAEMON });
+	const provider = new e2b.E2BProvider({ apiKey: "fake-test-key", Sandbox: Object.fromEntries(["create", "connect", "getInfo", "setTimeout", "kill", "list"].map((name) => [name, () => assert.fail(`Sandbox.${name} was called`)])), daemonPath: DAEMON });
 	assert.deepEqual([...e2b.MOUNT], ["archil"]);
 	assert.deepEqual([...e2b.MOUNT], declared(provider));
 });

@@ -264,14 +264,17 @@ function machineOf(info: E2BSandboxInfo): Machine {
 	}
 	if (info.lifecycle?.onTimeout !== undefined && info.lifecycle.onTimeout !== "kill") mismatch("lifecycle onTimeout", "kill", info.lifecycle.onTimeout);
 	if (info.lifecycle?.autoResume === true) mismatch("lifecycle autoResume", false, true);
+	// An end later than create's is a moved timer (timerMoved: an extend's, or one create refuses on a machine it just
+	// made); only an end it cannot read, or one earlier than create gave, is drift, at create and at attach alike.
 	if (Number.isNaN(end) || created === undefined) drift.push(`endAt: E2B reported ${show(info.endAt)} from a start of ${show(info.startedAt)}, so it might not end the computer`);
-	else if (Math.abs(end - created) > END_SLACK_MS) drift.push(`endAt: ${info.endAt.toISOString()} is not E2B's start plus the ${metadata[TIMEOUT_LABEL]} ms timeout create gave`);
+	else if (end < created - END_SLACK_MS) drift.push(`endAt: ${info.endAt.toISOString()} is earlier than E2B's start plus the ${metadata[TIMEOUT_LABEL]} ms timeout create gave`);
 	return {
 		id: info.sandboxId,
 		labels: metadata,
 		state: info.state === "running" ? "running" : info.state === "paused" ? "stopped" : "going",
 		network: networkOf(info),
 		image: { resolved: info.templateId },
+		...(info.startedAt instanceof Date && !Number.isNaN(info.startedAt.getTime()) ? { createdAt: new Date(info.startedAt) } : {}),
 		...(Number.isNaN(end) ? {} : { endsAt: new Date(end) }),
 		// An end within END_SLACK_MS of create's is create's own, rounded: a moved timer never leaves E2B's end there (clearOf).
 		timerMoved: !Number.isNaN(end) && created !== undefined && end > created + END_SLACK_MS,
@@ -280,7 +283,12 @@ function machineOf(info: E2BSandboxInfo): Machine {
 }
 
 /** A listed sandbox whose read-back E2B no longer has: still listed, so it is going, not gone. */
-const listedOnly = (sb: E2BListedSandbox): Machine => ({ id: sb.sandboxId, labels: { ...(sb.metadata ?? {}) }, state: "going" });
+const listedOnly = (sb: E2BListedSandbox): Machine => ({
+	id: sb.sandboxId,
+	labels: { ...(sb.metadata ?? {}) },
+	state: "going",
+	...(sb.startedAt instanceof Date && !Number.isNaN(sb.startedAt.getTime()) ? { createdAt: new Date(sb.startedAt) } : {}),
+});
 
 /** A stream fed by the SDK's callbacks, read as an async iterable until it ends. */
 function feed(): { push(bytes: Uint8Array): void; end(): void; iterable: AsyncIterable<Uint8Array> } {

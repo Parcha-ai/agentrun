@@ -46,16 +46,23 @@ deleted as it lands, and one whose answer never comes is found by its name and d
   users not in `specFields`, GPUs, the Archil mount and its tool user), then the host's `check`.
 - `create(spec, { requestId })`: the name is `computer-` and the first 12 hex digits of the request id's sha256. It
   lists by that name first: a machine still starting is waited for (within `createMs`) and returned once up; one up is
-  returned when its labels and daemon read back as `attach` reads them, else refused as `exists`; one stopped, ended or
-  past its deadline is refused as `exists`. It never makes a second machine under one name. Then: the machine made,
-  read while it starts, the vendor's read-back held to the request (labels, network, state, the host's drift), the
-  daemon uploaded and installed with its sha256 read back, an Archil folder mounted, init started (detached on a child
-  host, the entrypoint on a pid1 host), the bridge opened, the display started on a desktop, the daemon's credentials,
-  network and binary read back, the network-none probe run, and the listing waited for. A failure or an abort at any
-  step after the machine exists deletes it and waits until the vendor reads it gone.
-- `connect`, `attach`, `list`, `network` (fixed at create: any change is refused), `extend` (where `setTimer` or
-  `setLabels` lets the deadline follow), `release` (delete, then wait until `get` reads it gone and the name's listing
-  no longer shows it, twice running), `watch` and `testConnection`.
+  returned when its labels and daemon read back as `attach` reads them (a daemon not yet as declared, such as a
+  desktop whose display is still starting, is waited for within `createMs`), else refused as `exists`; one stopped,
+  ended or past its deadline is refused as `exists`. Two provider instances can both find no machine and both make
+  one, so after the vendor answers, and again once the machine is listed, the name's listing is read: where more than
+  one machine holds the name, the oldest (`Machine.createdAt`, or the lowest id where any has none) is kept, every
+  other is deleted and read back gone, and both creates answer the one kept. Then: the machine made, read while it
+  starts, the vendor's read-back held to the request (labels, network, state, a timer that reads moved, the host's
+  drift), the daemon uploaded and installed with its sha256 read back, an Archil folder mounted (through
+  `archilEgress` when given), init started from its home with the display (detached on a child host, the entrypoint on
+  a pid1 host), the bridge opened, the display started on a desktop, the daemon's credentials, network and binary read
+  back, the network-none probe run, and the listing waited for (two consecutive polls that show it, `listedStableMs`
+  apart). A failure or an abort at any step after the machine exists deletes it and waits until the vendor reads it
+  gone.
+- `connect`, `attach` (the host's drift held as at create, the size read back reported), `list`, `network` (fixed at
+  create: any change is refused), `extend` (where `setTimer` or `setLabels` lets the deadline follow), `release`
+  (delete, then wait until `get` reads it gone and the name's listing no longer shows it, twice running; a stop or a
+  delete of a running Archil computer lets go of its folder first), `watch` and `testConnection`.
 - Refusals use `ComputerErrorCode` alone: `invalid` for a malformed request, `unsupported` for a call or feature the
   provider does not have, `refused` for a value or state it does not serve, `exists` for a request already made;
   `vendor` carries the vendor's own words.

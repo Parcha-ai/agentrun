@@ -105,6 +105,11 @@ export interface Machine {
 	network?: NetworkPolicy;
 	/** What the vendor resolved the image to, by its own name (a template's id, a snapshot). */
 	image?: { resolved?: string };
+	/**
+	 * When the vendor made it, by its clock, where it says. Two creates of one request on two provider instances can each
+	 * make a machine before either is listed: the oldest is kept, by this, or by the lowest id where a machine has none.
+	 */
+	createdAt?: Date;
 	/** With facts.lifetime "vendor": when the vendor's timer ends it. */
 	endsAt?: Date;
 	/**
@@ -112,8 +117,13 @@ export interface Machine {
 	 * held to the most the machine may live, stands for its deadline: the vendor keeps no label change.
 	 */
 	timerMoved?: boolean;
-	/** The vendor's own create options read back wrong, in words, one each ("lifecycle onTimeout: declared ..."). */
+	/**
+	 * The vendor's own create options read back wrong, in words, one each ("lifecycle onTimeout: declared ..."). Held at
+	 * create and at attach alike, so only what holds for the machine's whole life: a timer an extend moved is timerMoved,
+	 * never drift (create refuses a machine whose timer reads moved before any extend).
+	 */
 	drift?: string[];
+	/** The size the vendor reads back, in CPUs and MiB: attach reports it. */
 	size?: { cpus?: number; memoryMb?: number };
 	gpu?: GpuSpec;
 	/** The vendor's words for a failed state. */

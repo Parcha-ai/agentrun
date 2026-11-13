@@ -20,8 +20,10 @@ import { checkMount, type MountReadBack, readBackOf } from "../mount.js";
 import {
 	ARCHIL_MOUNT_LABEL,
 	ARCHIL_TOOL_UID,
+	type ArchilEgress,
 	type ArchilMount,
 	type ArchilRoot,
+	archilEgressOf,
 	archilLabels,
 	archilMount,
 	archilRefusals,
@@ -85,6 +87,11 @@ export interface HostedTimeouts {
 	pollMs: number;
 	/** How long create waits for the listing to show the new computer. */
 	listedMs: number;
+	/**
+	 * The listing's stability window: create's wait ends once the listing has shown the new computer on two consecutive
+	 * polls, the first of them at least this long before the last, and on every poll between.
+	 */
+	listedStableMs: number;
 	/** Each root step of an Archil mount (the preflight, mount or revoke, serve), and its checkin at release. */
 	mountMs: number;
 }
@@ -113,6 +120,12 @@ export interface HostedOptions {
 	probeTargets?: string[];
 	/** Told what is no failure of the call it came from: a release that did not let an Archil folder go cleanly. */
 	onNote?: ProviderNote;
+	/**
+	 * The egress gateway an Archil computer's archil client reaches Archil through, `<IPv4 gateway>:<mount lane>:<data
+	 * lane>` such as 10.60.0.40:18100:42050 (archilEgressOf): for a vendor whose machines reach Archil only through it.
+	 * Given to the helper's mount and revoke. Unset or empty, the client reaches Archil as the machine's network allows.
+	 */
+	archilEgress?: string;
 }
 
 const VERSION: string = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).version;
@@ -136,6 +149,7 @@ const DEFAULTS: HostedTimeouts = {
 	goneMs: 120_000,
 	pollMs: 1_000,
 	listedMs: 15_000,
+	listedStableMs: 1_000,
 	mountMs: 120_000,
 };
 /** The user an Archil computer's tools run as: the image's agentrun-tool, with no sudo and no capability. */
@@ -251,6 +265,7 @@ export class HostedProvider implements ComputerProvider {
 	readonly #timeouts: HostedTimeouts;
 	readonly #probeTargets: string[];
 	readonly #onNote: ProviderNote | undefined;
+	readonly #archilEgress: ArchilEgress | undefined;
 	/** Each create in flight, by the name its request id gives: a second create of the same request waits for the first. */
 	readonly #creating = new Map<string, Promise<Result<CreatedComputer>>>();
 	/** Names of computers this provider made and has given up on or deleted: a retry of their request is refused. */
@@ -269,12 +284,14 @@ export class HostedProvider implements ComputerProvider {
 			timeouts = {},
 			probeTargets = DEFAULT_PROBE_TARGETS,
 			onNote,
+			archilEgress,
 		} = options;
 		this.id = host.id;
 		this.host = host;
 		this.#label = label;
 		this.#fail = failOf(host);
 		this.#onNote = onNote;
+		this.#archilEgress = archilEgress === undefined || archilEgress === "" ? undefined : archilEgressOf(archilEgress);
 		if (kind !== "desktop" && kind !== "linux") throw new Error(`kind is desktop or linux, not ${String(kind)}`);
 		if (!isWhole(maxLifetimeMs) || maxLifetimeMs <= 0 || maxLifetimeMs > host.facts.maxLifetimeMs) {
 			throw new Error(`maxLifetimeMs must be a whole number of ms above 0 and at most ${host.facts.maxLifetimeMs} ms, the longest ${label} keeps a computer`);
@@ -285,9 +302,11 @@ export class HostedProvider implements ComputerProvider {
 		if (Number(user[1]) === 0 || Number(user[2]) === 0) throw new Error(`the daemon user ${daemonUser} is root or in root's group; ${a(label)} computer's daemon runs as neither`);
 		const merged = { ...DEFAULTS, ...timeouts };
 		// AbortSignal.timeout and Node's timers take whole ms up to 2^31 - 1 (a fraction throws, a longer one fires at
-		// once), and a call's race adds CALL_SLACK_MS to its bound: refused here, before any machine exists.
+		// once), and a call's race adds CALL_SLACK_MS to its bound: refused here, before any machine exists. The listing's
+		// stability window alone may be 0: two consecutive polls, with no time between them asked for.
 		for (const [key, value] of Object.entries(merged)) {
-			if (!isWhole(value) || value <= 0 || value > MAX_TIMEOUT_MS) throw new Error(`timeouts.${key} must be a whole number of ms above 0 and at most ${MAX_TIMEOUT_MS}, not ${value}`);
+			const zero = key === "listedStableMs";
+			if (!isWhole(value) || value < (zero ? 0 : 1) || value > MAX_TIMEOUT_MS) throw new Error(`timeouts.${key} must be a whole number of ms ${zero ? "0 or more" : "above 0"} and at most ${MAX_TIMEOUT_MS}, not ${value}`);
 		}
 		if (!Array.isArray(probeTargets) || probeTargets.length === 0 || probeTargets.some((target) => typeof target !== "string" || !TARGET.test(target))) {
 			throw new Error("probeTargets must name at least one address for the probe, each host:port or host:port/udp");
@@ -416,17 +435,69 @@ export class HostedProvider implements ComputerProvider {
 		if (!launched.ok) return launched;
 		const { ref, made } = launched.value;
 		// From here the machine exists: every step takes the caller's signal, and a failure or an abort deletes it.
+		// Another provider instance's create of this request may have made one too (#converge): the oldest is kept.
+		const first = await this.#converge(name, ref.id, signal);
+		if (first.ok && first.value !== undefined && first.value.id !== ref.id) return this.#again(spec, name, first.value, signal);
 		const prepared = await this.#prepare(spec, ref, made, signal);
 		if (signal?.aborted) return this.#abandon(ref, { code: "aborted", message: "create was aborted" }, signal);
-		if (prepared.ok) return ok(prepared.value.length > 0 ? { ...ref, notes: prepared.value } : ref);
-		return this.#abandon(ref, prepared.error, signal);
+		if (!prepared.ok) {
+			// A create of this request on another instance, whose machine is older, deletes this one under it: answer that one.
+			const kept = await this.#converge(name, ref.id, signal);
+			if (kept.ok && kept.value !== undefined && kept.value.id !== ref.id) {
+				await this.#kill(ref.id);
+				return this.#again(spec, name, kept.value, signal);
+			}
+			return this.#abandon(ref, prepared.error, signal);
+		}
+		// The last read of the name, once this machine is listed: one made by another instance and listed only now is
+		// settled here, the oldest kept and every other deleted.
+		const last = await this.#converge(name, ref.id, signal);
+		if (!last.ok) return this.#abandon(ref, last.error, signal, true);
+		if (last.value !== undefined && last.value.id !== ref.id) return this.#again(spec, name, last.value, signal);
+		return ok(prepared.value.length > 0 ? { ...ref, notes: prepared.value } : ref);
+	}
+
+	/**
+	 * The one machine a request keeps. Two creates of one request on two provider instances can both find no machine by
+	 * the name and both make one: #creating holds within one instance alone, and a vendor's name or label need not be
+	 * unique. So after the vendor's answer the name's listing is read, with mine (read by get when not yet listed): where
+	 * more than one machine holds the name, the oldest (createdAt, or the lowest id where any has none) is kept, and every
+	 * other is deleted and read back gone, its Archil folder let go first. Every instance picks the same one from the
+	 * same listing. Its value is the machine kept, or undefined when mine holds the name alone (or nothing is listed yet).
+	 */
+	async #converge(name: string, mine: string, signal?: AbortSignal): Promise<Result<Machine | undefined>> {
+		const listed = await this.#call("the listing by the request's name", (ctx) => this.host.list({ [COMPUTER_LABEL]: "1", [NAME_LABEL]: name }, ctx), this.#timeouts.listMs, signal);
+		if (!listed.ok) return listed;
+		const holders = listed.value.filter((machine) => ours(machine.labels, name) && alive(machine.state));
+		if (!holders.some((machine) => machine.id !== mine)) return ok(undefined);
+		if (!holders.some((machine) => machine.id === mine)) {
+			const read = await this.#get(mine, signal);
+			if (read.ok && read.value !== undefined && alive(read.value.state)) holders.push(read.value);
+		}
+		const [kept, ...others] = holders.sort(oldestFirst(holders));
+		for (const other of others) {
+			const gone = await this.#discard(other, signal);
+			if (!gone.ok) return this.#fail(gone.error.code, `${holders.length} machines carry the name ${name}: ${kept?.id}, the oldest, is kept, and ${other.id} could not be deleted (${gone.error.message})`);
+		}
+		return ok(kept);
+	}
+
+	/** A machine create does not keep, deleted and read back gone; a running Archil computer lets go of its folder first. */
+	async #discard(machine: Machine, signal?: AbortSignal): Promise<Result<void>> {
+		const ref = { id: machine.id, name: machine.labels[NAME_LABEL] as string };
+		if (recordedArchil(machine.labels) !== undefined && machine.state === "running") {
+			const letGo = await this.#letGo(ref, signal);
+			if (!letGo.ok) this.#onNote?.({ computer: ref.name, note: `${machine.id}, a second machine of one request, was deleted, and ${letGo.error.message}` });
+		}
+		const killed = await this.#kill(machine.id);
+		return killed.ok ? this.#settle(ref, signal) : killed;
 	}
 
 	/** A create of a request whose computer is listed already: the same create, the computer as it is; see create. */
 	async #again(spec: ComputerSpec, name: string, first: Machine, signal?: AbortSignal): Promise<Result<CreatedComputer>> {
 		const until = Date.now() + this.#timeouts.createMs;
 		let machine: Machine | undefined = first;
-		let last = "";
+		let last: { code: ComputerError["code"]; message: string } | undefined;
 		for (;;) {
 			if (machine === undefined || !alive(machine.state) || machine.state === "stopped") return this.#fail("exists", this.#endedWords(name));
 			const deadline = deadlineOf(machine);
@@ -441,13 +512,17 @@ export class HostedProvider implements ComputerProvider {
 				if (differ.length > 0) return this.#fail("exists", `${name} was made for this request with another spec, so it is not returned: ${differ.join("; ")}; create with a new request id`);
 				const attached = await this.#attached(machine, signal);
 				if (attached.ok) return ok({ id: attached.value.id, name: attached.value.name, ...(attached.value.notes ? { notes: attached.value.notes } : {}) });
-				if (attached.error.code === "refused") return this.#fail("exists", `${name} was made for this request, and ${attached.error.message}`);
 				if (attached.error.code === "aborted") return attached;
-				// Its daemon is not up yet: the first create is still making it.
-				last = attached.error.message;
+				// Its daemon is not up yet, or not yet as declared (a desktop whose display the first create is still
+				// starting): the first create is still making it. A refusal that holds past createMs is exists.
+				last = attached.error;
 			}
-			if (Date.now() + START_POLL_MS >= until) return this.#fail("timeout", `${name}, made for this request, was not up within ${seconds(this.#timeouts.createMs)}${last ? `: ${last}` : ""}`);
-			await pause(Math.min(START_POLL_MS, this.#timeouts.pollMs * 10), signal);
+			if (Date.now() + this.#startPollMs() >= until) {
+				const within = seconds(this.#timeouts.createMs);
+				if (last?.code === "refused") return this.#fail("exists", `${name} was made for this request, and after ${within} still ${last.message}`);
+				return this.#fail("timeout", `${name}, made for this request, was not up within ${within}${last ? `: ${last.message}` : ""}`);
+			}
+			await pause(this.#startPollMs(), signal);
 			if (signal?.aborted) return this.#fail("aborted", `create was aborted while ${name}, made for this request, came up`);
 			const read = await this.#get(first.id, signal);
 			if (!read.ok) return read;
@@ -542,8 +617,13 @@ export class HostedProvider implements ComputerProvider {
 	}
 
 	/** Deletes a machine create gives up on, then waits, under the caller's signal, until the vendor reads it gone. */
-	async #abandon(ref: ComputerRef, error: { code: ComputerError["code"]; message: string; vendor?: string }, signal?: AbortSignal): Promise<Result<never>> {
+	async #abandon(ref: ComputerRef, error: { code: ComputerError["code"]; message: string; vendor?: string }, signal?: AbortSignal, mounted = false): Promise<Result<never>> {
 		this.#ended.add(ref.name);
+		// A computer create made whole (its Archil folder mounted) lets go of the folder first, as release does.
+		if (mounted) {
+			const read = await this.#get(ref.id);
+			if (read.ok && read.value !== undefined && recordedArchil(read.value.labels) !== undefined && read.value.state === "running") await this.#letGo(ref, signal);
+		}
 		const killed = await this.#kill(ref.id);
 		const gone = killed.ok ? await this.#settle(ref, signal) : killed;
 		const after = gone.ok
@@ -586,6 +666,11 @@ export class HostedProvider implements ComputerProvider {
 		return killed.ok || killed.error.code === "not_found" ? ok(undefined) : killed;
 	}
 
+	/** The pause between two reads of a machine that is starting: the next read comes after it, within createMs. */
+	#startPollMs(): number {
+		return Math.min(START_POLL_MS, this.#timeouts.pollMs * 10);
+	}
+
 	/** The host's get, bounded by requestMs. */
 	#get(id: string, signal?: AbortSignal): Promise<Result<Machine | undefined>> {
 		return this.#call(`the read of ${id}`, (ctx) => this.host.get(id, ctx), this.#timeouts.requestMs, signal);
@@ -601,8 +686,8 @@ export class HostedProvider implements ComputerProvider {
 			if (machine === undefined) return this.#fail("gone", `${ref.name} was gone before it ran`);
 			if (machine.state === "failed") return this.#fail("vendor", `${this.#label} could not start ${ref.name}${machine.why ? `: ${machine.why}` : ""}`);
 			if (machine.state !== "starting") return ok(machine);
-			if (Date.now() + START_POLL_MS >= until) return this.#fail("timeout", `${ref.name} did not start within ${seconds(this.#timeouts.createMs)}`);
-			await pause(Math.min(START_POLL_MS, this.#timeouts.pollMs * 10), signal);
+			if (Date.now() + this.#startPollMs() >= until) return this.#fail("timeout", `${ref.name} did not start within ${seconds(this.#timeouts.createMs)}`);
+			await pause(this.#startPollMs(), signal);
 			if (signal?.aborted) return this.#fail("aborted", "create was aborted while the machine started");
 		}
 	}
@@ -619,6 +704,8 @@ export class HostedProvider implements ComputerProvider {
 			if (network !== vendor) found.push(`network: declared ${policyWords(vendor)}${archil ? ` (${this.#label}'s, for root to reach Archil)` : ""}, read back ${policyWords(network)}`);
 		}
 		if (machine.state !== "running") found.push(`state: declared "running", read back ${show(machine.state)}`);
+		// No extend has run on a machine create just made: a timer that reads moved ends it later than its spec.
+		if (machine.timerMoved === true) found.push(`timer: declared the spec's lifetime, read back an end of ${machine.endsAt instanceof Date ? machine.endsAt.toISOString() : "nothing"}, later than create set it`);
 		return found;
 	}
 
@@ -753,7 +840,15 @@ export class HostedProvider implements ComputerProvider {
 
 	/** The shared Archil steps (archilMount) through root, with the takeover of this provider's lower epochs. */
 	#mountArchil(root: ArchilRoot, computer: ComputerRef, { mount, run, epoch }: { mount: ArchilMount; run: string; epoch: number }, signal?: AbortSignal): Promise<Result<void>> {
-		return archilMount({ root, mount, self: computer, releaseOlder: () => releaseOlder(this, run, epoch, signal ? { signal } : {}), timeoutMs: this.#timeouts.mountMs, ...(signal ? { signal } : {}) });
+		return archilMount({
+			root,
+			mount,
+			self: computer,
+			releaseOlder: () => releaseOlder(this, run, epoch, signal ? { signal } : {}),
+			timeoutMs: this.#timeouts.mountMs,
+			...(this.#archilEgress ? { egress: this.#archilEgress } : {}),
+			...(signal ? { signal } : {}),
+		});
 	}
 
 	#daemonExpected(): DaemonExpected {
@@ -793,15 +888,22 @@ export class HostedProvider implements ComputerProvider {
 		return "not" in report ? this.#fail("refused", `the probe in ${name} ${report.not}`) : ok(report);
 	}
 
-	/** Create waits until the listing shows the new computer, twice running, so list() shows it once create returns. */
+	/**
+	 * Create waits until the listing shows the new computer on two consecutive polls at least listedStableMs apart (and on
+	 * every poll between), so list() shows it once create returns: a listing that showed it once and then not starts over.
+	 */
 	async #waitListed(ref: ComputerRef, signal?: AbortSignal): Promise<Result<void>> {
-		const { listedMs, listMs, pollMs } = this.#timeouts;
+		const { listedMs, listMs, pollMs, listedStableMs } = this.#timeouts;
 		const until = Date.now() + listedMs;
+		let since: number | undefined;
 		for (let hits = 0; ; ) {
 			const listed = await this.#call("the listing by name", (ctx) => this.host.list({ [COMPUTER_LABEL]: "1", [NAME_LABEL]: ref.name }, ctx), listMs, signal);
 			if (!listed.ok) return listed;
-			hits = listed.value.some((machine) => machine.id === ref.id) ? hits + 1 : 0;
-			if (hits >= LISTED_ROUNDS) return ok(undefined);
+			if (listed.value.some((machine) => machine.id === ref.id)) {
+				hits += 1;
+				since ??= Date.now();
+			} else [hits, since] = [0, undefined];
+			if (hits >= LISTED_ROUNDS && since !== undefined && Date.now() - since >= listedStableMs) return ok(undefined);
 			if (Date.now() >= until) return this.#fail("timeout", `the computer was not listed within ${seconds(listedMs)} of its creation`);
 			await pause(Math.min(LISTED_POLL_MS, LISTED_POLL_MAX_MS, pollMs), signal);
 			if (signal?.aborted) return this.#fail("aborted", "create was aborted while it waited for the listing");
@@ -885,8 +987,15 @@ export class HostedProvider implements ComputerProvider {
 		if (typeof network === "object") found.push(`network: ${policyWords(network)}, which this provider never makes`);
 		const resolved = machine.image?.resolved;
 		const image = machine.labels[IMAGE_LABEL] ?? resolved ?? "";
-		const spec = { image, lifetimeMs: 1, network: typeof network === "object" ? "open" : network, labels: callerLabels(machine.labels) } as ComputerSpec;
+		// The size the vendor reads back is held to check() where the vendor takes it in a spec, and reported either way.
+		const taken = new Set(this.host.facts.specFields ?? []);
+		const cpus = machine.size?.cpus;
+		const memoryMb = machine.size?.memoryMb;
+		const sized = { ...(taken.has("cpus") && cpus !== undefined ? { cpus } : {}), ...(taken.has("memoryMb") && memoryMb !== undefined ? { memoryMb } : {}) };
+		const spec = { image, lifetimeMs: 1, network: typeof network === "object" ? "open" : network, labels: callerLabels(machine.labels), ...sized } as ComputerSpec;
 		found.push(...this.check(spec).map(({ field, message }) => `${field}: ${message}, read back from the computer`));
+		// The vendor's own create options read back, as create holds them (#machineDrift).
+		found.push(...(machine.drift ?? []));
 		let kind: AttachedComputer["spec"]["kind"];
 		let notes: string[] = [];
 		let mount: MountReadBack | undefined;
@@ -914,6 +1023,8 @@ export class HostedProvider implements ComputerProvider {
 				...(resolved !== undefined && resolved !== image ? { snapshot: resolved } : {}),
 				user: `${this.#uid}:${this.#gid}`,
 				network: spec.network,
+				...(cpus === undefined ? {} : { cpus }),
+				...(memoryMb === undefined ? {} : { memoryMb }),
 				workdir: WORK,
 				...(deadline === undefined ? {} : { deadline }),
 				...(kind === undefined ? {} : { kind }),
@@ -1101,15 +1212,19 @@ export class HostedProvider implements ComputerProvider {
 		if (!found.ok) return found.error.code === "not_found" ? ok(undefined) : found;
 		if (found.value === undefined) return ok(undefined);
 		if (!ours(found.value.labels, ref.name)) return this.#fail("not_found", `no ${this.#label} computer is ${ref.name} (${ref.id}): the machine is not this provider's, so it is left as it is`);
-		if (how === "stop" && stop) return this.#call(`the stop of ${ref.name}`, (ctx) => stop(ref.id, ctx), this.#timeouts.goneMs, signal);
+		// A stop and a delete alike let go of a running Archil computer's folder first: a stopped one holds no folder.
 		const letGo = recordedArchil(found.value.labels) !== undefined && found.value.state === "running" ? await this.#letGo(ref, signal) : ok(undefined);
-		this.#ended.add(ref.name);
-		const killed = await this.#kill(ref.id);
-		const gone = killed.ok ? await this.#settle(ref, signal) : killed;
-		if (letGo.ok) return gone;
-		if (!gone.ok) return this.#fail(gone.error.code, `${gone.error.message}; and ${letGo.error.message}`);
-		this.#onNote?.({ computer: ref.name, note: `${ref.name} was deleted, and ${letGo.error.message}` });
-		return gone;
+		let done: Result<void>;
+		if (how === "stop" && stop) done = await this.#call(`the stop of ${ref.name}`, (ctx) => stop(ref.id, ctx), this.#timeouts.goneMs, signal);
+		else {
+			this.#ended.add(ref.name);
+			const killed = await this.#kill(ref.id);
+			done = killed.ok ? await this.#settle(ref, signal) : killed;
+		}
+		if (letGo.ok) return done;
+		if (!done.ok) return this.#fail(done.error.code, `${done.error.message}; and ${letGo.error.message}`);
+		this.#onNote?.({ computer: ref.name, note: `${ref.name} was ${how === "stop" ? "stopped" : "deleted"}, and ${letGo.error.message}` });
+		return done;
 	}
 
 	/** A running Archil computer's folder let go: the final sync through a connection when it answers, then checkin as root. */
@@ -1180,6 +1295,17 @@ export async function settleGone(
 	});
 	if (!waited.ok) return waited;
 	return "failed" in waited.value ? waited.value.failed : ok(undefined);
+}
+
+/**
+ * The order #converge keeps by: the oldest first, by createdAt when every machine has one, else by id; ties by id. The
+ * same machines give the same order on every instance.
+ */
+function oldestFirst(machines: Machine[]): (a: Machine, b: Machine) => number {
+	const at = (machine: Machine) => (machine.createdAt instanceof Date ? machine.createdAt.getTime() : Number.NaN);
+	const dated = machines.every((machine) => !Number.isNaN(at(machine)));
+	const byId = (a: Machine, b: Machine) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+	return (a, b) => (dated && at(a) !== at(b) ? at(a) - at(b) : byId(a, b));
 }
 
 /** A host's own test, its words kept: unauthorized and unreachable as the shared rule reads them. */
