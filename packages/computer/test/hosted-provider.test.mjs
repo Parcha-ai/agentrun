@@ -483,6 +483,29 @@ test("release never touches a machine that is not this provider's, and refuses s
 	assert.equal((await provider.connect({ id: stranger.id, name: "computer-0123456789ab" })).error?.code, "not_found");
 });
 
+test("release stop, where the host declares it, goes through the host's stop, bounded by goneMs, and keeps the machine; never another's; no stop hook is unsupported", async () => {
+	const { provider, fake } = setup({}, { facts: { release: ["stop", "delete"], stopDeletes: false } });
+	const stops = [];
+	fake.host.stop = async (id, ctx) => {
+		stops.push([id, ctx.timeoutMs]);
+		return { ok: true, value: undefined };
+	};
+	assert.deepEqual(provider.capabilities().release, ["stop", "delete"]);
+	const ref = made(await create(provider));
+	assert.deepEqual(await provider.release(ref, "stop"), { ok: true, value: undefined });
+	assert.deepEqual(stops, [[ref.id, TIMEOUTS.goneMs]], "the host's stop, bounded by goneMs");
+	assert.equal(fake.live().length, 1, "a stop keeps the machine");
+	const stranger = fake.add({ labels: { team: "x" } });
+	assert.equal((await provider.release({ id: stranger.id, name: "computer-0123456789ab" }, "stop")).error?.code, "not_found");
+	assert.equal(stops.length, 1, "another's machine is never stopped");
+	fake.host.stop = async () => ({ ok: false, error: { code: "timeout", message: "it last read stopping" } });
+	const slow = await provider.release(ref, "stop");
+	assert.equal(slow.error?.code, "timeout");
+	assert.match(slow.error.message, /it last read stopping/);
+	delete fake.host.stop;
+	assert.equal((await provider.release(ref, "stop")).error?.code, "unsupported", "declared, but with no stop hook: unsupported");
+});
+
 // --- connect, list, attach, network ---
 
 test("connect checks hello against the provider: one that drifted is refused; a stopped machine is refused without a bridge", async () => {

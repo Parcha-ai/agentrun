@@ -26,7 +26,6 @@ import {
 	runProblem,
 } from "../dist/index.js";
 import { ModalProvider } from "../dist/modal.js";
-import { API, KEY } from "./fake-daytona.mjs";
 import { fakeDocker } from "./fake-docker.mjs";
 import { DAEMON_IMAGE, fakeModal } from "./fake-modal.mjs";
 
@@ -101,7 +100,7 @@ function providers() {
 	writeFileSync(daemon, "a stand-in for computerd\n");
 	return [
 		["docker", fakeDocker().provider],
-		["daytona", new DaytonaProvider({ apiKey: KEY, apiUrl: API, daemonPath: daemon, fetch: async () => assert.fail("no request") })],
+		["daytona", new DaytonaProvider({ apiKey: "fake-test-key", apiUrl: "https://api.daytona.test/api", daemonPath: daemon, fetch: async () => assert.fail("no request") })],
 		["modal", new ModalProvider({ sdk: fakeModal().sdk, app: "computers", daemonImage: DAEMON_IMAGE })],
 	];
 }

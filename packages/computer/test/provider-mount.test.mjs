@@ -11,7 +11,6 @@ import * as daytona from "../dist/daytona.js";
 import * as docker from "../dist/docker.js";
 import * as e2b from "../dist/e2b.js";
 import * as modal from "../dist/modal.js";
-import { API, fakeDaytona, KEY } from "./fake-daytona.mjs";
 import { fakeDocker } from "./fake-docker.mjs";
 import { DAEMON_IMAGE, fakeModal } from "./fake-modal.mjs";
 
@@ -35,8 +34,7 @@ test("Modal: MOUNT is [\"archil\"], what its provider declares", () => {
 });
 
 test("Daytona: MOUNT is [\"archil\"], what its provider declares", () => {
-	const fake = fakeDaytona();
-	const provider = new DaytonaProvider({ apiKey: KEY, apiUrl: API, daemonPath: DAEMON, fetch: fake.fetch, webSocket: fake.webSocket });
+	const provider = new DaytonaProvider({ apiKey: "fake-test-key", apiUrl: "https://api.daytona.test/api", daemonPath: DAEMON, fetch: async () => assert.fail("no request") });
 	assert.deepEqual([...daytona.MOUNT], ["archil"]);
 	assert.deepEqual([...daytona.MOUNT], declared(provider));
 });
