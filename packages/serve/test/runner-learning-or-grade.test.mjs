@@ -44,13 +44,13 @@ function toGateway(t, gateway) {
 }
 
 /** run-1 ended keeping NOTE, its learning run learn-1 queued on the grade model `model`, as the run's end commit writes. */
-async function ended(t, model) {
+async function ended(t, model, capUsd) {
   const { store, dir } = await storeOn(t);
   await agentWithRevision(store);
   await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
   const source = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
   const kept = { state: "proposed", notes: ["Retries"], skills: [], workflows: [], proposal: { notes: [NOTE] }, detail: "Proposed 1 note." };
-  await store.runs.update(source, { state: "ended" }, { also: [{ table: "learning_proposals", row: { turn: {}, proposal: kept } }, { table: "learning_run", row: { id: "learn-1", model } }] });
+  await store.runs.update(source, { state: "ended" }, { also: [{ table: "learning_proposals", row: { turn: {}, proposal: kept } }, { table: "learning_run", row: { id: "learn-1", model, ...(capUsd !== undefined ? { capUsd } : {}) } }] });
   return { store, dir };
 }
 
@@ -90,4 +90,17 @@ test("on a host with Anthropic's own key, a named Anthropic grade model keeps th
   const openai = [];
   await gradeRouteOf("openai/gpt-6.1-sol", OR_ALONE, (model) => (openai.push(model), { model, provider: { api: "anthropic-messages", origin: "x", credential: () => "k" } }));
   assert.deepEqual(openai, ["openrouter/openai/gpt-6.1-sol"], "an OpenAI model on OpenRouter's key alone: the same model on OpenRouter");
+});
+
+test("under a cap, a grade on OpenRouter's key alone is judged at OpenRouter's price before it leaves: it fits, and is graded", async (t) => {
+  const gateway = await startFauxGateway({ text: KEEP, usage: USAGE });
+  t.after(() => gateway.close());
+  toGateway(t, gateway.url);
+  const { store, dir } = await ended(t, "anthropic/claude-sonnet-5-5", 5);
+  const deps = { env: OR_ALONE, data: dir, journal: (claim) => store.journal(claim), store, sealKey: Buffer.alloc(32), computerForClaim: async () => ({ release: async () => {} }), routeOf };
+  const factory = await resolveRunnerLoop(deps)("learning", await store.runs.launch("learn-1"), "learn-1");
+  const claim = await store.claim("learn-1", "runner-b", { leaseMs: 60_000 });
+  assert.deepEqual(await factory({ journal: (c) => store.journal(c), flush: () => store.flush(), signal: new AbortController().signal }).start(claim), { state: "ended" });
+  assert.equal(gateway.requests.length, 1, "the grade was sent: its route carries a price the cap reads");
+  assert.equal((await runLearningEnd(store, "run-1"))?.state, "merged");
 });

@@ -62,6 +62,16 @@ export interface GradeMain {
 
 export type Problem = { readonly rule: string; readonly path?: string; readonly detail: string };
 
+/** A grader call its learning run's cap refused before it was sent (learning-ask.ts bookedAsk: the run's cap left, its
+ *  launch's max_cost_usd): nothing of it was spent, and the grade is skipped, said so (said.noRoomToGrade), never run past
+ *  the cap, never a failure. `forGood`: no room could ever send it (its spend or price unknown), not only none now. */
+export class GradeOverCap extends Error {
+  constructor(message: string, readonly forGood: boolean) {
+    super(message);
+    this.name = "GradeOverCap";
+  }
+}
+
 /** The folder's one write (learn/commit.ts learningCommit), a merge. */
 export interface MergeChange {
   readonly kind: "merge";
@@ -441,8 +451,11 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
               try {
                 answer = await learning.ask({ prompt: again ? `${prompt}\n\n${again}` : prompt, maxTokens: GRADE_MAX_TOKENS }, AbortSignal.any([deps.signal, timer, stopAsk.signal]), { journal: () => deps.journal(claim), flush: () => deps.flush() });
               } catch (error) {
-                usd = null;
-                tokens = null;
+                // A call the cap refused was never sent: it spent nothing, and what the grade spent before it stands.
+                if (!(error instanceof GradeOverCap)) {
+                  usd = null;
+                  tokens = null;
+                }
                 throw error;
               }
               usd = usd === null || answer.usd === null || !Number.isFinite(answer.usd) ? null : usd + answer.usd;
@@ -467,6 +480,12 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
               spend = usd;
               const end = await halted();
               if (end) return end;
+              // No room under the run's cap for the grade (a call the cap refused): skipped, said so, with what it spent
+              // before (an earlier ask's), never a failure and never past the cap.
+              if (error instanceof GradeOverCap) {
+                await append(KINDS.learningDropped, { source: source.runId, reason: "no_budget", detail: error.forGood ? said.gradeUncapped : said.noRoomToGrade, usd, tokens } satisfies DroppedData, "ended");
+                return { state: "ended" };
+              }
               await append(KINDS.learningDropped, { source: source.runId, reason: "grade_failed", detail: said.stopped(STOPPED.noReview), usd, tokens } satisfies DroppedData, "ended");
               void error;
               return { state: "ended" };

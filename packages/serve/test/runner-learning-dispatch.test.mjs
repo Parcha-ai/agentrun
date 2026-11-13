@@ -1,8 +1,10 @@
 // The runner's dispatch for a learning run (runner/learning-dispatch.ts learningLoopOf): the learning loop, its grade
 // asked through the runner's one model route (routeOf, E2r's; a test's scripted origin here) for the learning run's grade
 // model (its launch's `model`, written when the run that learned ended: gradeModelOf, as main's server resolves it), else
-// the agent's own model, as main grades. No cap is asked: main books the grade to the learning meter and caps nothing. A
-// grader that never answers is cut at the grade's bound, and what it spent is unknown (null), never $0.
+// the agent's own model, as main grades. A run with a cap has its learning run's launch carry what that cap left
+// (max_cost_usd), and each grader call is judged against it before it leaves, at its worst case: one that doesn't fit is
+// never sent, and the grade is skipped, said so. An uncapped run's grade is capped by nothing. A grader that never answers
+// is cut at the grade's bound, and what it spent is unknown (null), never $0.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { agentWithRevision, storeOn } from "./store-helpers.mjs";
@@ -47,18 +49,20 @@ function silentOrigin(sent, onRequest) {
     });
   };
 }
-/** The route the runner gives a grade: a scripted origin, priced. */
-const routeTo = (fetch, model = MODEL) => ({ provider: { api: "anthropic-messages", origin: "https://grader.invalid", credential: () => `not-a-secret-${"x"}` }, model, price, fetch });
+/** The route the runner gives a grade: a scripted origin, priced, with the catalog's cost the cap judges it at (`extra`). */
+const routeTo = (fetch, model = MODEL, extra = {}) => ({ provider: { api: "anthropic-messages", origin: "https://grader.invalid", credential: () => `not-a-secret-${"x"}` }, model, price, fetch, ...extra });
+/** The catalog's entry for MODEL as the route carries it: price's rates, and its output ceiling. */
+const CATALOG = { cost: { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5 }, outputCeiling: 64_000 };
 
 /** run-1 ended keeping NOTE and queuing its learning run learn-1 (its `learning_run` row naming `model` when given), as
  *  the run's end commit writes them. */
-async function ended(t, model) {
+async function ended(t, model, capUsd) {
   const { store, dir } = await storeOn(t);
   await agentWithRevision(store);
   await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
   const source = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
   const kept = { state: "proposed", notes: ["Retries"], skills: [], workflows: [], proposal: { notes: [NOTE] }, detail: "Proposed 1 note." };
-  await store.runs.update(source, { state: "ended" }, { also: [{ table: "learning_proposals", row: { turn: {}, proposal: kept } }, { table: "learning_run", row: { id: "learn-1", ...(model ? { model } : {}) } }] });
+  await store.runs.update(source, { state: "ended" }, { also: [{ table: "learning_proposals", row: { turn: {}, proposal: kept } }, { table: "learning_run", row: { id: "learn-1", ...(model ? { model } : {}), ...(capUsd !== undefined ? { capUsd } : {}) } }] });
   return { store, dir };
 }
 
@@ -69,14 +73,57 @@ async function runLearning(store, dir, deps) {
   return loop.start(claim);
 }
 
-test("the learning run's launch carries the grade model its run's end names, and no cap; with none named, no model", async (t) => {
+test("the learning run's launch carries the grade model its run's end names, and no cap for an uncapped run; with none named, no model", async (t) => {
   const named = await ended(t, MODEL);
   const body = (await named.store.runs.launch("learn-1")).body;
   assert.equal(body.model, MODEL, `the launch names the grade model: ${JSON.stringify(body)}`);
-  assert.ok(!("capUsd" in body) && !("cap_usd" in body), "no cap: main caps no grade");
+  assert.ok(!("max_cost_usd" in body), "an uncapped run's grade is capped by nothing");
   assert.deepEqual([body.harness, body.input], ["learning", { runId: "run-1" }]);
   const unnamed = await ended(t);
   assert.ok(!("model" in (await unnamed.store.runs.launch("learn-1")).body), "no grade model named: the launch names none");
+});
+
+test("a capped run's learning run carries what its cap left as its own cap (max_cost_usd); a figure that is not one is no room, never no cap", async (t) => {
+  const capped = await ended(t, MODEL, 0.25);
+  assert.equal((await capped.store.runs.launch("learn-1")).body.max_cost_usd, 0.25);
+  for (const bad of [-1, Number.NaN]) {
+    const odd = await ended(t, MODEL, bad);
+    assert.equal((await odd.store.runs.launch("learn-1")).body.max_cost_usd, 0, `${bad}: no room`);
+  }
+});
+
+test("a grade that doesn't fit its learning run's cap at its worst case is never sent: skipped, said so, nothing spent, never a failure", async (t) => {
+  // At $10 per million output tokens, the grade's whole bound (16,000) alone is $0.16: a $0.01 cap has no room for it.
+  const { store, dir } = await ended(t, MODEL, 0.01);
+  const sent = [];
+  const end = await runLearning(store, dir, { routeOf: async (grade) => routeTo(graderOrigin(sent), grade.model, CATALOG) });
+  assert.deepEqual(end, { state: "ended" });
+  assert.deepEqual(sent, [], "no grade request left");
+  const learning = await runLearningEnd(store, "run-1");
+  assert.deepEqual([learning?.state, learning?.reason, learning?.detail], ["dropped", "no_budget", "Not graded: no room under the cap."], JSON.stringify(learning));
+  assert.equal(learning.cost_usd.grade, 0, "it spent nothing");
+  assert.deepEqual([(await store.runs.get("learn-1")).state, (await store.runs.get("learn-1")).costUsd], ["ended", 0]);
+});
+
+test("a grade that fits its learning run's cap at its worst case is graded and merged as an uncapped one, within the cap", async (t) => {
+  const { store, dir } = await ended(t, MODEL, 1);
+  const sent = [];
+  const end = await runLearning(store, dir, { routeOf: async (grade) => routeTo(graderOrigin(sent), grade.model, CATALOG) });
+  assert.deepEqual(end, { state: "ended" });
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].max_tokens, 16_000, "sent with its whole output bound, never cut down to fit");
+  const learning = await runLearningEnd(store, "run-1");
+  assert.equal(learning?.state, "merged", JSON.stringify(learning));
+  assert.ok(learning.cost_usd.grade > 0 && learning.cost_usd.grade <= 1);
+});
+
+test("under a cap, a grade model with no price here can't be kept within it: not graded, said so, nothing sent", async (t) => {
+  const { store, dir } = await ended(t, MODEL, 1);
+  const sent = [];
+  await runLearning(store, dir, { routeOf: async (grade) => routeTo(graderOrigin(sent), grade.model, { outputCeiling: 64_000 }) });
+  assert.deepEqual(sent, []);
+  const learning = await runLearningEnd(store, "run-1");
+  assert.deepEqual([learning?.state, learning?.reason, learning?.detail], ["dropped", "no_budget", "Not graded: the grade's cost can't be kept under the cap."], JSON.stringify(learning));
 });
 
 test("a learning run's grade goes where the runner's route sends it, for the grade model its launch names: booked as the grade's, merged", async (t) => {

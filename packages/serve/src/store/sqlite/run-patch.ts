@@ -9,16 +9,15 @@ import type { SqliteExecutor, SqliteValue } from "./connection.js";
 import { claimFence, storeNow, type StoreNow } from "../fence.js";
 import { writeLaunch } from "./run-launch.js";
 
-/** A learning run's launch body: the learning harness, the run that learned as its input, and where it runs (on the
- *  runner, no box: its only writes are the learning folder's one script). */
-/** A learning run's launch: harness "learning", its input the run that learned (and the round it grades, past the first),
- *  and `model`, the grade model when one is named (gradeModelOf; none: the agent's own grades it, as main's). No cap: main
- *  caps no grade. */
 /** A WHERE condition on `runs`: the run is no built-in learning run (one a kept learning names, queued with it), which no
  *  list of runs names. */
 export const NOT_A_LEARNING_RUN = "id NOT IN (SELECT learning_run_id FROM learning_proposals WHERE learning_run_id IS NOT NULL)";
 
-export const learningLaunchOf = (runId: string, model?: string, round = 1) => ({ harness: "learning", input: { runId, ...(round > 1 ? { round } : {}) }, title: `Learning from ${runId}`, place: { mode: "runner" }, ...(model ? { model } : {}) });
+/** A learning run's launch: harness "learning", its input the run that learned (and the round it grades, past the first),
+ *  where it runs (on the runner, no box: its only writes are the learning folder's one script), `model`, the grade model
+ *  when one is named (gradeModelOf; none: the agent's own grades it, as main's), and `max_cost_usd`, what the run's cap
+ *  left for its grade (`capUsd`: a figure that is not one is no room, $0, never no cap; none for an uncapped run). */
+export const learningLaunchOf = (runId: string, model?: string, round = 1, capUsd?: number) => ({ harness: "learning", input: { runId, ...(round > 1 ? { round } : {}) }, title: `Learning from ${runId}`, place: { mode: "runner" }, ...(model ? { model } : {}), ...(capUsd !== undefined ? { max_cost_usd: Number.isFinite(capUsd) && capUsd > 0 ? capUsd : 0 } : {}) });
 
 /** The lock a write of a run's sign_in_handed and a sign-in's forget both take (Dialect.lockKey): the forget's check of
  *  the running runs' hashes and a launch's write of them are serialized, as SQLite's one writer serializes them. */
@@ -107,9 +106,9 @@ export async function applyRunPatch(tx: Pick<SqliteExecutor, "run" | "get">, cla
           each.row.id, now, claim.runId,
         );
         // Its launch row, with it: harness "learning" (the runner's loop factory picks the learning loop by it), its input
-        // the run that learned. Written once, as the run is.
+        // the run that learned, and the cap its grade runs under. Written once, as the run is.
         if (!(await tx.get("SELECT 1 AS found FROM run_launch WHERE run_id = ?", each.row.id))) {
-          await writeLaunch(tx, each.row.id, { body: learningLaunchOf(claim.runId, each.row.model, each.row.round) }, now);
+          await writeLaunch(tx, each.row.id, { body: learningLaunchOf(claim.runId, each.row.model, each.row.round, each.row.capUsd) }, now);
         }
         break;
     }
