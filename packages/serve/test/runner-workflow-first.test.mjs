@@ -40,6 +40,7 @@ const { runTimeline, runEntries, runReflect } = await import("../dist/store-read
 const { said } = await import("../dist/learning-words.js");
 const { COST_WINDOW, costLineOf, workflowCostsOf, fits, workflowDigest, workflowFirstOf, pathMetrics, reviseOf, servedOf, WORKFLOW_FIRST } = await import("../dist/runner/workflow-first.js");
 const { resolveSchemaForWorkflow } = await import("@parcha/agentrun-dsl");
+const { recordPromotion } = await import("../dist/learn/promote.js");
 
 const SEAL_KEY = Buffer.alloc(32, 7);
 const RUN = "run-1";
@@ -88,7 +89,7 @@ const until = async (done, what, ms = 40_000) => {
 /** A pi run of an agent that learned `answer`, on `input`; the node submits `{answer, sure}` (`sure` false hands back);
  *  the agent, when asked, answers AGENT_SAYS. `toolSettings` on the revision; `approve`: answer the run's first ask ("stop":
  *  stop the run while it waits instead). */
-async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION }, sure = true, learned = true, workflowFirst, toolSettings, approve = false, past = [] } = {}) {
+async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION }, sure = true, learned = true, workflowFirst, toolSettings, approve = false, past = [], promotions = [] } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-workflow-first-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -108,6 +109,8 @@ async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION 
   });
   await server.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read"], ...(learned ? { learning: true } : {}), ...(toolSettings ? { toolSettings } : {}) } });
   const seed = learned ? await landWorkflows(dir, "agent-1", FLOWS) : undefined;
+  // `promotions`: the agent's promotion records before the run (learn/promote.ts), as its replays left them.
+  for (const record of promotions) await recordPromotion(server.settings, "agent-1", record, () => true);
   const launch = { input, title: "t", place: { mode: "runner" }, model: { provider: "anthropic", modelId: MODEL }, ...(learned ? { learning: startAt(seed) } : {}), ...(workflowFirst === false ? { workflowFirst: false } : {}) };
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
   await server.flush?.();
@@ -289,6 +292,28 @@ test("money rule: a workflow whose last 10 served runs cost more than the agent 
   const ask = gateway.requests.find((request) => /no longer runs first: over its last 10 served runs it cost \$0\.5 a run, against \$0\.2 a run by hand/.test(textOf(request.body)));
   assert.ok(ask, `the compile turn asked for a revision: ${gateway.requests.map((request) => textOf(request.body).slice(0, 400)).join("\n---\n")}`);
   assert.match(textOf(ask.body), /Give `answer` again whole under its name/);
+});
+
+// A workflow its replay held (runner/promotion.ts): the agent takes the run, and its end-of-run compile turn asks for the
+// workflow's revision with the replay's numbers; a hold of another digest (an older revision) asks for none.
+test("held by its replay: the agent takes the run, and the compile turn asks for a revision with the replay's numbers; an older revision's hold asks nothing", async (t) => {
+  const at = new Date().toISOString();
+  const replay = { of: [], n: 20, agree: 13, agent_acc: 0.9, wf_acc: 0.7, delta: -0.2, handed_back: 4, cost_usd: 0.4 };
+  const held = { workflow: "answer", digest: DIGEST, at, decided: "hold", source: "replay", reason: "replayed on 20 graded inputs: more than 2 pts under the agent", replay };
+  const { row, gateway, logs } = await piRun(t, { promotions: [held] });
+  assert.equal(row.state, "ended", JSON.stringify(row));
+  assert.equal(row.metrics?.path, "agent", `the agent took the run: ${JSON.stringify(row.metrics)}`);
+  assert.equal(gateway.requests.filter(isNode).length, 0, "the held workflow never ran");
+  assert.ok(logs.some((line) => /answer at [0-9a-f]{16} is held/.test(line)), JSON.stringify(logs));
+  const ask = gateway.requests.find((request) => /One more turn: revise your learned workflow `answer`\.\nYour learned workflow `answer` does not run first: replayed on 20 of the agent's graded inputs, it was right 70\.0% of the time \(4 handed back, each scored on the agent's answer\), against the agent's 90\.0%: -20\.0 pts, more than 2 pts under\./.test(textOf(request.body)));
+  assert.ok(ask, `the compile turn asked for a revision with the replay's numbers: ${gateway.requests.map((request) => textOf(request.body)).filter((text) => text.includes("One more turn")).map((text) => text.slice(text.lastIndexOf("One more turn"), text.lastIndexOf("One more turn") + 600)).join("\n---\n")}`);
+  assert.match(textOf(ask.body), /`answer` as it is now:/);
+  assert.doesNotMatch(textOf(ask.body), /answer `No change\.`/);
+  // A hold of an older revision: main's is a new digest, decided on its own (here on its dry run: no graded input), and
+  // nothing asks for a revision.
+  const older = await piRun(t, { promotions: [{ ...held, digest: "fedcba9876543210" }] });
+  assert.equal(older.row.metrics?.path, "workflow", JSON.stringify(older.row.metrics));
+  assert.ok(!older.gateway.requests.some((request) => /One more turn: revise your learned workflow/.test(textOf(request.body))), "an older revision's hold asks nothing");
 });
 
 test("money rule: under the by-hand cost, a new digest, fewer than 10 served runs, or no by-hand baseline: the workflow serves", async (t) => {

@@ -58,8 +58,8 @@ test("the compile reference is generated from the DSL's own author contract, wit
     for (const kind of ["extract", "decide", "agent", "call", "escalate"]) assert.ok(host.nodeKinds.includes(kind), kind);
     assert.match(ref, /`web_fetch`/);
     assert.match(ref, /### Step guards/, "the DSL's own guard section, generated");
-    assert.ok(ref.includes(`"guard": {"signal": "self", "threshold": ${compile.GUARD_THRESHOLD}}`), "every judgment step is asked for a guard on its own confidence");
-    assert.equal(ref.includes("may read `jev` or `both`"), judges, "jev only with a decision provider");
+    assert.ok(ref.includes(`"guard": {"signal": "self", "threshold": ${compile.GUARD_THRESHOLD}}`), "without Jev every judgment step is asked for a guard on its own confidence");
+    assert.match(ref, /This run cannot call Jev/, "jev and both only when the run can call Jev (the Jev test below)");
     assert.doesNotMatch(ref, /"predicate": "lt", "path": "<as>\.confidence"/, "no confidence-escalate stand-in: the guard hands back");
   }
   assert.match(compile.compileReference(dsl, { tools: [], judges: false }), /There is no tool for a call node to run: author no call node\./);
@@ -239,4 +239,98 @@ test("a run's timeline shows the compile turn's asks in the host's words, never 
   const row = (n, text) => ({ id: `c:${n}`, kind: "user_message", text, summary: text });
   const rows = labelled(reflect, [row(2, reflect_.reflectPrompt({ dir: ".learning", active: 0 })), row(3, compile.compilePrompt(ASK())), row(4, compile.compileAgain(["x"], 2))]);
   assert.deepEqual(rows.map(({ text }) => text), [said.asked, said.askedCompile, said.askedCompileAgain]);
+});
+
+// Jev by default (Miguel, 11-13: "i want jev incorporated"): a run that can call Jev (its decision providers hold jev,
+// not denied) asks each judgment step for a guard on its own confidence and Jev's together (`both`), and each extract or
+// call step, which reports no confidence, for Jev alone (`jev`); a run that can't asks `self` on the judgment steps and
+// no guard elsewhere. Every guard starts at GUARD_THRESHOLD until a refit (learn/refit.ts) fits it.
+test("Jev by default: with Jev, judgment steps are asked for a both guard and extract and call steps for a jev guard; without it, self alone", () => {
+  const both = `"guard": {"signal": "both", "threshold": ${compile.GUARD_THRESHOLD}}`;
+  const jev = `"guard": {"signal": "jev", "threshold": ${compile.GUARD_THRESHOLD}}`;
+  const self = `"guard": {"signal": "self", "threshold": ${compile.GUARD_THRESHOLD}}`;
+  assert.equal(compile.GUARD_THRESHOLD, 0.7);
+  const withJev = compile.compileReference(dsl, { tools: ["web_fetch"], judges: true, jev: true });
+  assert.equal(withJev, dsl.authorContract({ host: compile.learnedHost({ tools: ["web_fetch"], judges: true, jev: true }) }));
+  assert.ok(withJev.includes(both), "judgment steps: both");
+  assert.match(withJev, /every decide, agent, judge, pick and sift step a guard `"guard": \{"signal": "both"/);
+  assert.ok(withJev.includes(jev), "extract and call steps: jev");
+  assert.match(withJev, /every extract and call step a guard `"guard": \{"signal": "jev"/);
+  assert.ok(!withJev.includes(self), "never self alone where Jev can be asked");
+  for (const judges of [false, true]) {
+    const without = compile.compileReference(dsl, { tools: ["web_fetch"], judges, jev: false });
+    assert.ok(without.includes(self), `judges ${judges}: self`);
+    assert.ok(!without.includes(both) && !without.includes(jev), `judges ${judges}: never jev or both`);
+    assert.match(without, /This run cannot call Jev: a guard reads `self` alone, never `jev` or `both`, and an extract or call step takes no guard\./);
+  }
+  // Jev is a decision provider: a run that has one may still have no Jev (another provider, or jev set to deny).
+  assert.equal(compile.compileReference(dsl, { tools: [], judges: true }), compile.compileReference(dsl, { tools: [], judges: true, jev: false }), "jev is off unless asked");
+});
+
+test("Jev by default: the worked example with Jev guards its judgment steps on both and its extract step on Jev, and the checks and the dry run pass it; without Jev, self", async (t) => {
+  const calls = join(await scratch(t), "jev.jsonl");
+  withEnv(t, { AGENTRUN_TEST_FAUX_JEV_CALLS: calls, AGENTRUN_TEST_FAUX_JEV_COST: "0.00002" });
+  const registry = await decisionProvidersIn({ TYPESAFE_API_KEY: CANARY, AGENTRUN_SERVE_FAUX: "1", AGENTRUN_SERVE_FAUX_JEV: FAUX_JEV });
+  const decisions = { providers: registry.providers, default: registry.default };
+  const doc = compile.compileExample(true, true);
+  const step = (kind) => doc.root.steps.find((one) => one.node === kind);
+  assert.deepEqual(step("decide").guard, { signal: "both", threshold: compile.GUARD_THRESHOLD });
+  assert.deepEqual(step("judge").guard, { signal: "both", threshold: compile.GUARD_THRESHOLD });
+  assert.deepEqual(step("extract").guard, { signal: "jev", threshold: compile.GUARD_THRESHOLD });
+  assert.deepEqual(draftProblems(dsl, JSON.stringify(doc), [], {}, {}, undefined, decisions), []);
+  const dry = await draftDryRun(dsl, JSON.stringify(doc), JSON.stringify(compile.EXAMPLE_INPUT));
+  assert.notEqual(dry.status, "failed", JSON.stringify(dry));
+  // Without Jev the same job guards on its own confidence, and its extract step takes none.
+  for (const judges of [false, true]) {
+    const plain = compile.compileExample(judges, false);
+    assert.deepEqual(plain.root.steps.find((one) => one.node === "decide").guard, { signal: "self", threshold: compile.GUARD_THRESHOLD });
+    assert.equal(plain.root.steps.find((one) => one.node === "extract").guard, undefined);
+  }
+  // A run with no Jev refuses the Jev example: the example the prompt shows always fits the run.
+  assert.notDeepEqual(draftProblems(dsl, JSON.stringify(doc), []), []);
+  assert.match(compile.compilePrompt(ASK({ judges: true, jev: true, reference: compile.compileReference(dsl, { tools: ["web_fetch"], judges: true, jev: true }) })), /"signal":"jev"/, "the prompt's example is the Jev one");
+});
+
+// A workflow its promotion holds (runner/promotion.ts: its replay on the agent's graded inputs fell under the bar) asks
+// the compile turn for a revision, with the replay's numbers.
+test("held by its replay: the revise ask says the replay's numbers and offers no 'No change.'", () => {
+  const held = { workflow: "answer", digest: "0123456789abcdef", source: "replay", reason: "replayed ...", replay: { n: 20, agree: 14, agent_acc: 0.9, wf_acc: 0.75, delta: -0.15, handed_back: 3 } };
+  const prompt = compile.compilePrompt(ASK({ mode: "revise", workflow: "answer", current: "{\"v\":2}", held }));
+  assert.match(prompt, /^One more turn: revise your learned workflow `answer`\.\nYour learned workflow `answer` does not run first: replayed on 20 of the agent's graded inputs, it was right 75\.0% of the time \(3 handed back, each scored on the agent's answer\), against the agent's 90\.0%: -15\.0 pts, more than 2 pts under\./);
+  assert.match(prompt, /It stays held, and the agent does every run, until a new revision of it\./);
+  assert.doesNotMatch(prompt, /No change\./, "a held workflow stays held unchanged: no such answer offered");
+  assert.equal(compile.askedForCompile(prompt), true);
+  const graded = compile.compilePrompt(ASK({ mode: "revise", workflow: "answer", current: "{}", held: { workflow: "answer", digest: "0123456789abcdef", source: "graded", reason: "20 graded runs it served were right 70.0% of the time" } }));
+  assert.match(graded, /Your learned workflow `answer` does not run first: it was held \(20 graded runs it served were right 70\.0% of the time\)\./);
+});
+
+// CompiledRecord.promoted is the promotion step's (learn/promote.ts): the kept draft's digest, read against the agent's
+// promotion records when the run's learning is read.
+test("a kept compile records its draft's digest, and promotedOf reads it against the promotion records: promote, refit from it, hold, or not decided yet", async () => {
+  const { workflowDigest } = await import("../dist/runner/workflow-first.js");
+  const text = JSON.stringify(compile.compileExample(false));
+  const result = await compile.compileTurn({
+    ask: async () => ({ answer: `\`\`\`\`workflow refund-request\n---\ndescription: d\n---\n${text}\n\`\`\`\`` }),
+    compile: ASK(), answer: "",
+    check: async () => ({ state: "proposed", workflows: 1, proposal: { files: [{ file: "workflows/refund-request/workflow.json", text }] } }),
+  });
+  const digest = workflowDigest({ workflow: text });
+  assert.equal(result.record.digest, digest, "the digest a run serving it records");
+  const at = new Date(0).toISOString();
+  const rec = (extra) => ({ workflow: "refund-request", digest, at, source: "replay", reason: "r", ...extra });
+  assert.equal(compile.promotedOf([], "refund-request", digest), undefined);
+  assert.equal(compile.promotedOf([rec({ decided: "replaying" })], "refund-request", digest), undefined);
+  assert.equal(compile.promotedOf([rec({ decided: "replaying" }), rec({ decided: "promote" })], "refund-request", digest), true);
+  assert.equal(compile.promotedOf([rec({ decided: "promote" }), rec({ decided: "hold", source: "graded" })], "refund-request", digest), false);
+  assert.equal(compile.promotedOf([rec({ decided: "hold" }), rec({ digest: "fedcba9876543210", decided: "promote", source: "refit", refit: { from: digest, guards: [] } })], "refund-request", digest), true, "a refit of it serves");
+  assert.equal(compile.promotedOf([rec({ decided: "promote", workflow: "other" })], "refund-request", digest), undefined);
+});
+
+test("GET /runs/{id}/learning: compiled.promoted is null until its promotion is decided, then true or false; its digest is served", () => {
+  const base = { state: "proposed", reason: null, detail: said.proposed(0, 0, 1), at: new Date(0).toISOString() };
+  const compiled = { workflow: "answer", from_notes: [], attempts: [{ ok: true, errors: [] }], digest: "0123456789abcdef" };
+  const body = (extra) => runLearningBody({ id: "run-1", learning: { ...base, compiled: { ...compiled, ...extra } }, seed: null, settled: true }, secretsShown([]), []).compiled;
+  assert.deepEqual([body({}).promoted, body({}).digest], [null, "0123456789abcdef"]);
+  assert.equal(body({ promoted: true }).promoted, true);
+  assert.equal(body({ promoted: false }).promoted, false);
 });

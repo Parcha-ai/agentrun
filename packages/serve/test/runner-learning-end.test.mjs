@@ -19,8 +19,10 @@ import { git, repoOf, resnap } from "./learn-support.mjs";
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { journalRecords } = await import("../dist/runner/journal-reader.js");
 const { runReflect } = await import("../dist/store-reads/journal.js");
-const { runLearningEnd } = await import("../dist/store-reads/learning.js");
-const { learningFolderOf, seedOf } = await import("../dist/learning.js");
+const { runLearningEnd, runLearningOverStore } = await import("../dist/store-reads/learning.js");
+const { recordPromotion } = await import("../dist/learn/promote.js");
+const { workflowDigest } = await import("../dist/runner/workflow-first.js");
+const { learningFolderOf, secretsShown, seedOf } = await import("../dist/learning.js");
 const { said } = await import("../dist/learning-words.js");
 const { saveToolSettings } = await import("../dist/tool-plane.js");
 const endModule = await import("../dist/runner/learning-end.js").catch(() => ({}));
@@ -453,7 +455,9 @@ test("on a run with decision providers the compile turn allows judge nodes and a
     const turn = await w.turnOf(row);
     const prompt = compileAskIn(turn.users).replace(/\s+/g, " ");
     assert.ok(prompt, "the run was asked its compile turn");
-    assert.equal(prompt.includes("may read `jev` or `both`"), decided, "the judge rule follows the run's decisions");
+    // Jev by default: the faux Jev is a provider, so the judgment steps are asked for a both guard; with none, self.
+    assert.equal(prompt.includes('"guard": {"signal": "both"'), decided, "the guard rule follows the run's decisions");
+    assert.equal(prompt.includes("This run cannot call Jev"), !decided);
     const kept = await w.server.learning.proposal("run-1");
     assert.equal(kept?.proposal?.state, "proposed", JSON.stringify(kept?.proposal));
     assert.equal(kept.proposal.workflows, decided ? 1 : 0, `the judge draft is ${decided ? "kept" : "left out"}: ${JSON.stringify(kept.proposal).slice(0, 400)}`);
@@ -496,6 +500,18 @@ test("compile: a draft the checks refuse goes back with their words, up to 3 tim
   // Each attempt was its own request (learn-reflect-run-1:compile-<n>), never answered from an earlier one.
   const end = await runLearningEnd(w.server, "run-1");
   assert.deepEqual(end.compiled.attempts.map(({ ok }) => ok), [false, false, true]);
+  // Its promotion (learn/promote.ts) is read from the agent's records at the kept draft's digest: undecided, then held,
+  // then promoted.
+  const text = kept.proposal.proposal.files.find(({ file }) => file === "workflows/answer/workflow.json").text;
+  const digest = workflowDigest({ workflow: text });
+  assert.equal(compiled.digest, digest, "the digest a run serving it records");
+  const read = async () => (await runLearningOverStore(w.server, "run-1", secretsShown([]), [])).compiled;
+  assert.deepEqual([(await read()).digest, (await read()).promoted], [digest, null], "undecided");
+  const record = { workflow: "answer", digest, at: new Date().toISOString(), source: "replay", reason: "r" };
+  await recordPromotion(w.server.settings, "agent-1", { ...record, decided: "hold" }, () => true);
+  assert.equal((await read()).promoted, false, "held");
+  await recordPromotion(w.server.settings, "agent-1", { ...record, decided: "promote" }, () => true);
+  assert.equal((await read()).promoted, true, "promoted");
 });
 
 test("compile: a draft that never passes is never silent: its errors go with the learning entry and the look-back's note still goes on", async (t) => {

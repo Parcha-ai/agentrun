@@ -25,6 +25,8 @@ import type { AnalyticsFilter } from "./analytics.js";
 import { journalEntries } from "../runner/journal-reader.js";
 import { KINDS } from "../runner/journal-kinds.js";
 import { keptOf, learnedOf, lostOf, type DroppedData, type GradedData, type KeptProposal, type MergedData } from "../runner/learning-loop.js";
+import { promotedOf } from "../learn/compile.js";
+import { promotionsOf } from "../learn/promote.js";
 import type { Store } from "../store/store.js";
 
 /** A run's learning end: the Learning fields its end sets. */
@@ -63,9 +65,10 @@ function compiledOf(row: KeptRow): Pick<Learning, "compiled" | "draft_errors"> {
   const errors = texts(draft_errors);
   const out: Pick<Learning, "compiled" | "draft_errors"> = errors.length ? { draft_errors: errors } : {};
   if (record && typeof record === "object" && typeof (record as { workflow?: unknown }).workflow === "string") {
-    const { workflow, from_notes, attempts, promoted } = record as { workflow: string; from_notes?: unknown; attempts?: unknown; promoted?: unknown };
+    const { workflow, from_notes, attempts, digest } = record as { workflow: string; from_notes?: unknown; attempts?: unknown; digest?: unknown };
     const tries = Array.isArray(attempts) ? attempts.filter((one) => one && typeof one === "object" && typeof (one as { ok?: unknown }).ok === "boolean").map((one) => ({ ok: (one as { ok: boolean }).ok, errors: texts((one as { errors?: unknown }).errors) })) : [];
-    out.compiled = { workflow, from_notes: texts(from_notes), attempts: tries, ...(promoted === true ? { promoted: true } : {}) };
+    // `promoted` is never kept: runLearningOverStore reads it from the agent's promotion records (promotedOf).
+    out.compiled = { workflow, from_notes: texts(from_notes), attempts: tries, ...(typeof digest === "string" && /^[0-9a-f]{16}$/.test(digest) ? { digest } : {}) };
   }
   return out;
 }
@@ -478,6 +481,11 @@ export async function runLearningOverStore(store: Store, runId: string, shown: S
   if (!end) return null;
   const started = await learningStartOfRun(store, runId);
   const row = await store.runs.get(runId);
+  // A kept compile's promotion (learn/promote.ts), as the agent's records say now: unread, it stays undecided.
+  if (end.compiled?.digest && row) {
+    const promoted = promotedOf(await promotionsOf(store.settings, row.agentId).catch(() => []), end.compiled.workflow, end.compiled.digest);
+    if (promoted !== undefined) end.compiled = { ...end.compiled, promoted };
+  }
   const settled = row !== undefined && FINAL_STATES.includes(row.state);
   const used = started?.given.length || started?.skills?.length || started?.workflows?.length;
   const [reflect, rows, entries] = used ? await Promise.all([runReflect(store, runId, BACKGROUND_CONTEXT), runTimeline(store, runId, BACKGROUND_CONTEXT, { settled }), runEntries(store, runId, BACKGROUND_CONTEXT)]) : [undefined, [], []];

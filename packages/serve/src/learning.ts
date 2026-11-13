@@ -129,8 +129,9 @@ export type Learning = {
   /** What the checks refused of a compiled draft that never passed: never silent, on the run's learning and its API. */
   draft_errors?: string[];
 };
-/** A compile turn's record (learn/compile.ts CompiledRecord). */
-export type LearningCompiled = { workflow: string; from_notes: string[]; attempts: { ok: boolean; errors: string[] }[]; promoted?: boolean };
+/** A compile turn's record (learn/compile.ts CompiledRecord): `digest`, the kept draft's; `promoted`, read from the agent's
+ *  promotion records when the run's learning is read, absent while undecided. */
+export type LearningCompiled = { workflow: string; from_notes: string[]; attempts: { ok: boolean; errors: string[] }[]; digest?: string; promoted?: boolean };
 /** A skill or a workflow draft a merge added or changed. */
 export type LearnedFile = { file: string; name: string; pending?: true };
 

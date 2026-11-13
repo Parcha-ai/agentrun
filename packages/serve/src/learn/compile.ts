@@ -15,6 +15,7 @@ import type { AuthorHostAddendum } from "@parcha/agentrun-dsl";
 import { LEARNED_MAX_TURNS, frontMatter, WORKFLOW_NAME, WORKFLOWS_DIR } from "./skills.js";
 import { NOTE_BLOCK, parseReflection, SKILL_BLOCK, WORKFLOW_BLOCK } from "./reflect.js";
 import { NOTE_FILE } from "./notes.js";
+import { PROMOTE_BAR, type PromotionRecord, promotionOf } from "./promote.js";
 
 /** How many active notes an agent keeps before its look-back compiles its job. */
 export const COMPILE_AFTER_NOTES = 3;
@@ -45,6 +46,16 @@ export interface ReviseAsk {
   readonly runs: number;
 }
 
+/** A workflow its promotion holds (runner/promotion.ts, learn/promote.ts): the run went by hand, and the hold's record
+ *  says why, from its replay on the agent's graded inputs (`replay`'s numbers) or the graded runs it served (`reason`). */
+export interface HeldAsk {
+  readonly workflow: string;
+  readonly digest: string;
+  readonly source: PromotionRecord["source"];
+  readonly reason: string;
+  readonly replay?: { readonly n: number; readonly agree: number; readonly agent_acc: number; readonly wf_acc: number; readonly delta: number; readonly handed_back: number };
+}
+
 /** One of the agent's earlier runs as the compile turn reads it: what it was asked, each tool call it made (`tool`, its
  *  input as the timeline previews it, and whether it failed), its answer, and what a person said after (feedback). */
 export interface CompileTrace {
@@ -55,11 +66,12 @@ export interface CompileTrace {
 }
 
 /** What the compile turn is asked with. `mode` new: the job as a new workflow; revise: `workflow`, whose text is
- *  `current`, again whole, after it handed this run back (`handedBack`) or the money rule stopped it (`revise`).
+ *  `current`, again whole, after it handed this run back (`handedBack`), the money rule stopped it (`revise`) or its
+ *  promotion holds it (`held`).
  *  `reference`: the workflow language as compileReference renders it. `notes`: the agent's active notes, whole.
  *  `traces`: its last runs. `input`: this run's input as it was launched, whose fields a workflow's input takes. `tools`:
  *  those a call node may run, with what each takes and gives (`described`); `judges`: whether the run has a decision
- *  provider (judge, pick and sift nodes are allowed). */
+ *  provider (judge, pick and sift nodes are allowed); `jev`: whether one of them is Jev, not denied (guards read it). */
 export type CompileAsk = {
   readonly reference: string;
   readonly notes: readonly { readonly file: string; readonly text: string }[];
@@ -68,13 +80,26 @@ export type CompileAsk = {
   readonly tools: readonly string[];
   readonly described?: readonly { readonly name: string; readonly does: string }[];
   readonly judges: boolean;
-} & ({ readonly mode: "new" } | { readonly mode: "revise"; readonly workflow: string; readonly current?: string; readonly handedBack?: true; readonly revise?: ReviseAsk });
+  readonly jev?: boolean;
+} & ({ readonly mode: "new" } | { readonly mode: "revise"; readonly workflow: string; readonly current?: string; readonly handedBack?: true; readonly revise?: ReviseAsk; readonly held?: HeldAsk });
 
 /** One attempt of the compile turn: whether its draft passed the checks, and else why not, in the checks' words. */
 export type CompileAttempt = { readonly ok: boolean; readonly errors: readonly string[] };
 /** The compile record a run's learning keeps (SPEC: the `compiled` event): the workflow, the notes it does the work of,
- *  every attempt in order. `promoted` is the promotion step's to set. */
-export type CompiledRecord = { readonly workflow: string; readonly from_notes: readonly string[]; readonly attempts: readonly CompileAttempt[]; readonly promoted?: boolean };
+ *  every attempt in order, and the kept draft's digest (workflowDigest of its workflow.json: what a run serving it
+ *  records). `promoted` is read from the agent's promotion records when the run's learning is read (promotedOf), never
+ *  kept. */
+export type CompiledRecord = { readonly workflow: string; readonly from_notes: readonly string[]; readonly attempts: readonly CompileAttempt[]; readonly digest?: string; readonly promoted?: boolean };
+
+/** Whether the draft a compile kept at `digest` serves (learn/promote.ts records, newest wins): true once promoted, or
+ *  once a threshold refit of it was (its new revision serves in its place); false while held; undefined while it is
+ *  replayed or before its first claim decides it. */
+export function promotedOf(records: readonly PromotionRecord[], workflow: string, digest: string): boolean | undefined {
+  const own = promotionOf(records, workflow, digest);
+  if (own?.decided === "promote") return true;
+  if (records.some((one) => one.workflow === workflow && one.decided === "promote" && one.source === "refit" && one.refit?.from === digest)) return true;
+  return own?.decided === "hold" ? false : undefined;
+}
 
 /** Whether a run's look-back compiles its agent's job: the run completed, the agent has no learned workflow (active or
  *  waiting for its owner's OK), none of its last COMPILE_QUIET_RUNS runs compiled, and it keeps COMPILE_AFTER_NOTES
@@ -91,10 +116,19 @@ const JUDGING_KINDS = ["judge", "pick", "sift", "route"] as const;
 /** The threshold a compiled step's guard starts at (SPEC: the guard shape), until the host fits one on graded runs. */
 export const GUARD_THRESHOLD = 0.7;
 
+/** The guards a compiled step is asked for (SPEC: the guard shape; Jev by default): with Jev, a judgment step's own
+ *  confidence and Jev's read together (`both`: min until a refit fits a logistic), and Jev alone on a step that reports
+ *  no confidence (extract, call); without it, the step's own confidence, and no guard where there is none. */
+const guardOf = (signal: "self" | "jev" | "both") => ({ signal, threshold: GUARD_THRESHOLD });
+const guardText = (signal: "self" | "jev" | "both") => `\`"guard": {"signal": "${signal}", "threshold": ${GUARD_THRESHOLD}}\``;
+
 /** This host's addendum to the DSL's author contract: the node kinds it runs, and its rules, each one the checks hold a
- *  draft to (learn/skills.ts draftProblems; propose.ts). */
-export function learnedHost(options: { readonly tools: readonly string[]; readonly judges: boolean }): AuthorHostAddendum {
+ *  draft to (learn/skills.ts draftProblems; propose.ts). `jev`: the run can call Jev (one of its decision providers,
+ *  not denied), so every step is asked for a guard Jev reads. */
+export function learnedHost(options: { readonly tools: readonly string[]; readonly judges: boolean; readonly jev?: boolean }): AuthorHostAddendum {
   const { tools, judges } = options;
+  const jev = options.jev === true;
+  const judgment = judges ? "decide, agent, judge, pick and sift" : "decide and agent";
   return {
     name: "AgentRun learned workflow",
     nodeKinds: [...LEARNED_KINDS, ...(judges ? JUDGING_KINDS : [])],
@@ -107,7 +141,9 @@ export function learnedHost(options: { readonly tools: readonly string[]; readon
       "Give each model node `\"tier\": \"fast\"`; a step that needs the agent's own judgment names no tier, and runs on the agent's model.",
       "`input.schemaId` names a schema whose required fields are the run's own input fields, as a run is given them: then the workflow runs first on later runs, before the agent.",
       "`output.path` is required: the workflow's answer is the value there, the job's answer in the format the runs answered with.",
-      `Give every decide and agent step a guard, \`"guard": {"signal": "self", "threshold": ${GUARD_THRESHOLD}}\`: the step submits its confidence beside its record, so its output schema has no confidence field.${judges ? ` A judge, pick or sift step takes the same guard (it reads its weakest answer). This run has a decision provider, so a guard may read \`jev\` or \`both\` where the step's own confidence is not enough.` : " This run has no decision provider: a guard reads `self` alone, never `jev` or `both`."}`,
+      jev
+        ? `Give every ${judgment} step a guard ${guardText("both")}: its own confidence and one Jev check of its output against its input, read together. The step submits its confidence beside its record, so its output schema has no confidence field${judges ? "; a judge, pick or sift step reads its weakest answer" : ""}. Give every extract and call step a guard ${guardText("jev")}: it reports no confidence of its own, so Jev alone checks it. Each threshold starts at ${GUARD_THRESHOLD}; the host refits it on graded runs.`
+        : `Give every ${judgment} step a guard ${guardText("self")}: the step submits its confidence beside its record, so its output schema has no confidence field${judges ? "; a judge, pick or sift step reads its weakest answer" : ""}. This run cannot call Jev: a guard reads \`self\` alone, never \`jev\` or \`both\`, and an extract or call step takes no guard.`,
       "An escalate step hands back a case the job's own rules send to a person, on a value a step wrote (`field_equals`, `in`); an unsure step is the guard's to hand back, not an escalate's.",
     ],
   };
@@ -115,17 +151,19 @@ export function learnedHost(options: { readonly tools: readonly string[]; readon
 
 /** The workflow language for the compile turn, generated: the DSL's own author contract (rendered from its vocabulary, so
  *  it names exactly the kinds, fields and predicates its validator admits) with this host's addendum. */
-export const compileReference = (dsl: { readonly authorContract: (options: { host?: AuthorHostAddendum }) => string }, options: { readonly tools: readonly string[]; readonly judges: boolean }): string =>
+export const compileReference = (dsl: { readonly authorContract: (options: { host?: AuthorHostAddendum }) => string }, options: { readonly tools: readonly string[]; readonly judges: boolean; readonly jev?: boolean }): string =>
   dsl.authorContract({ host: learnedHost(options) });
 
 /** The worked example's input, as a run gives it. */
 export const EXAMPLE_INPUT = { content: "Refund request: order 1043, a $42 kettle that arrived broken, bought 9 days ago." } as const;
 /** The worked example: a whole job, input to answer, that the checks and the dry run pass (a test holds it to them).
  *  An extract step reads the facts, a judge asks one typed question of them (with a decision provider), a decide step
- *  answers, each judgment step under a guard on its own confidence, and an escalate step hands back a case the policy
- *  does not cover. */
-export function compileExample(judges: boolean): Record<string, unknown> {
-  const guard = { signal: "self", threshold: GUARD_THRESHOLD };
+ *  answers, and an escalate step hands back a case the policy does not cover. With Jev (`jev`) each judgment step is
+ *  guarded on its own confidence and Jev's (`both`) and the extract step on Jev's; without, the judgment steps on their
+ *  own confidence alone. */
+export function compileExample(judges: boolean, jev = false): Record<string, unknown> {
+  const guard = guardOf(jev ? "both" : "self");
+  const facts = jev ? { guard: guardOf("jev") } : {};
   const schemas: Record<string, unknown> = {
     Request: { type: "object", properties: { content: { type: "string" } }, required: ["content"] },
     Facts: { type: "object", properties: { item: { type: "string" }, amount_usd: { type: ["number", "null"] }, days_since_purchase: { type: ["number", "null"] }, damaged: { type: "boolean" } }, required: ["item", "amount_usd", "days_since_purchase", "damaged"] },
@@ -133,7 +171,7 @@ export function compileExample(judges: boolean): Record<string, unknown> {
     ...(judges ? { Policy: { type: "object", properties: { within_policy: { type: "boolean", description: "Is this request within a 30-day refund policy for a damaged item?" } }, required: ["within_policy"] } } : {}),
   };
   const steps: Record<string, unknown>[] = [
-    { node: "extract", label: "facts", instructions: "Read the request: the item, its price in dollars, how many days ago it was bought, and whether it arrived damaged. Null for what it does not say.", state: { content: "{content}" }, out: "Facts", as: "facts", tier: "fast" },
+    { node: "extract", label: "facts", instructions: "Read the request: the item, its price in dollars, how many days ago it was bought, and whether it arrived damaged. Null for what it does not say.", state: { content: "{content}" }, out: "Facts", as: "facts", tier: "fast", ...facts },
     ...(judges ? [{ node: "judge", label: "policy", state: { facts: "{facts}" }, out: "Policy", as: "policy", guard }] : []),
     { node: "decide", label: "answer", instructions: "Decide refund, replace or decline by the refund policy, and write the reply to the customer. A request the policy does not cover is needs_review.", state: judges ? { facts: "{facts}", policy: "{policy}" } : { facts: "{facts}" }, out: "Answer", as: "answer", tier: "fast", guard },
     { node: "escalate", label: "review", when: { predicate: "field_equals", path: "answer.decision", value: "needs_review" }, kind: "needs_review", stage: "answer", summary: "The policy does not cover this request: {answer.reply}" },
@@ -142,14 +180,14 @@ export function compileExample(judges: boolean): Record<string, unknown> {
 }
 
 /** The worked example as an answer block, whole: front matter, then the JSON. */
-const exampleBlock = (judges: boolean): string => [
+const exampleBlock = (judges: boolean, jev: boolean): string => [
   `\`\`\`\`${WORKFLOW_BLOCK} refund-request`,
   "---",
   "description: Decides a refund request and writes the reply; use when a customer asks for a refund",
   `example: ${JSON.stringify(EXAMPLE_INPUT)}`,
   "from_notes: [refund-window.md, damaged-items.md]",
   "---",
-  JSON.stringify(compileExample(judges)),
+  JSON.stringify(compileExample(judges, jev)),
   "````",
 ].join("\n");
 
@@ -216,9 +254,15 @@ export function compilePrompt(ask: CompileAsk): string {
           ? `Your learned workflow \`${ask.workflow}\` ran first on this run and handed it back to you.`
           : ask.revise
             ? `Your learned workflow \`${ask.workflow}\` no longer runs first: over its last ${ask.revise.runs} served runs it cost $${ask.revise.served_usd} a run, against $${ask.revise.by_hand_usd} a run by hand.`
-            : `Your learned workflow \`${ask.workflow}\` needs a revision.`,
-        `Give \`${ask.workflow}\` again whole under its name, changed so it finishes more cases like this one alone, or spends less on each, and still hands back what it can't be sure of.`,
-        "If it was right to hand this case back and nothing would help, answer `No change.` and nothing else.",
+            : ask.held
+              ? heldLine(ask.workflow, ask.held)
+              : `Your learned workflow \`${ask.workflow}\` needs a revision.`,
+        ...(ask.held
+          ? [`Give \`${ask.workflow}\` again whole under its name, changed so its answers agree with the graded ones: fix the step that gets them wrong, or guard it so it hands those cases back.`]
+          : [
+              `Give \`${ask.workflow}\` again whole under its name, changed so it finishes more cases like this one alone, or spends less on each, and still hands back what it can't be sure of.`,
+              "If it was right to hand this case back and nothing would help, answer `No change.` and nothing else.",
+            ]),
         OUTPUT_FORMAT,
       ];
   return [
@@ -231,9 +275,9 @@ export function compilePrompt(ask: CompileAsk): string {
     "",
     "## A worked example",
     "",
-    "A whole job: the facts read, " + (ask.judges ? "a typed question asked of them, " : "") + "the answer decided, each judgment under a guard that hands back an unsure step, and a case the policy does not cover handed back.",
+    "A whole job: the facts read, " + (ask.judges ? "a typed question asked of them, " : "") + `the answer decided, ${ask.jev ? "each step under a guard Jev reads" : "each judgment under a guard"} that hands back an unsure step, and a case the policy does not cover handed back.`,
     "",
-    exampleBlock(ask.judges),
+    exampleBlock(ask.judges, ask.jev === true),
     "",
     "## This job",
     "",
@@ -252,6 +296,17 @@ export function compilePrompt(ask: CompileAsk): string {
     "brackets. Then the workflow's JSON, then close the block with four backticks. Nothing else. The host checks it and dry-runs it,",
     `and sends back what it refuses, up to ${COMPILE_RETRIES} times.`,
   ].join("\n");
+}
+
+/** Why a held workflow does not run first, in the hold's numbers: its replay's (the workflow's accuracy, its hand-backs
+ *  scored on the agent's recorded answer, against the agent's), else the hold's own reason (host-written). */
+function heldLine(workflow: string, held: HeldAsk): string {
+  const pct = (value: number) => `${(value * 100).toFixed(1)}%`;
+  const { replay } = held;
+  const why = replay
+    ? `replayed on ${replay.n} of the agent's graded inputs, it was right ${pct(replay.wf_acc)} of the time (${replay.handed_back} handed back, each scored on the agent's answer), against the agent's ${pct(replay.agent_acc)}: ${replay.delta >= 0 ? "+" : ""}${(replay.delta * 100).toFixed(1)} pts, more than ${PROMOTE_BAR * 100} pts under.`
+    : `it was held (${clean(held.reason, 400).replace(/\n/g, " ").replace(/\.$/, "")}).`;
+  return `Your learned workflow \`${workflow}\` does not run first: ${why} It stays held, and the agent does every run, until a new revision of it.`;
 }
 
 /** What each tool a call node may run takes and gives, one line each (reflect.ts said this under a draft ask). */
@@ -338,6 +393,14 @@ export function draftErrorsOf(checked: CheckedLike | undefined, name: string): s
   return errors.slice(0, ERRORS_MAX).map((error) => error.slice(0, ERROR_MAX));
 }
 
+/** The digest of draft `name` as the checks kept it (its workflow.json's text in the proposal): runner/workflow-first.ts
+ *  workflowDigest's, the first 16 hex of its sha256, so a run serving it records the same. */
+function draftDigestOf(checked: CheckedLike, name: string): string | undefined {
+  if (checked.state !== "proposed") return undefined;
+  const file = ((checked.proposal as { files?: { file?: unknown; text?: unknown }[] } | null)?.files ?? []).find((one) => one?.file === draftPaths(name)[0]);
+  return typeof file?.text === "string" ? createHash("sha256").update(file.text).digest("hex").slice(0, 16) : undefined;
+}
+
 /** The record's workflow when no attempt named one. */
 export const UNNAMED = "(unnamed)";
 
@@ -380,7 +443,8 @@ export async function compileTurn<C extends CheckedLike>(input: {
       errors = draftErrorsOf(checked, read.name);
       if (!errors.length && checked) {
         attempts.push({ ok: true, errors: [] });
-        return { record: { workflow: read.name, from_notes: fromNotes, attempts }, kept: { answer, checked }, draftErrors: [] };
+        const digest = draftDigestOf(checked, read.name);
+        return { record: { workflow: read.name, from_notes: fromNotes, attempts, ...(digest ? { digest } : {}) }, kept: { answer, checked }, draftErrors: [] };
       }
     }
     attempts.push({ ok: false, errors });

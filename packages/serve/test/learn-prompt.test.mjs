@@ -137,6 +137,7 @@ test("a run with decision providers is offered judge, pick and sift nodes by the
     const kinds = learnedHost({ tools: ["read"], judges: true }).nodeKinds;
     for (const kind of ["judge", "pick", "sift"]) assert.ok(kinds.includes(kind), kind);
     assert.ok(!kinds.includes("code"));
-    assert.match(compileReference(dsl, { tools: ["read"], judges: true }), /may read `jev` or `both`/);
+    // Jev by default: a run whose providers hold Jev asks its judgment steps for a both guard.
+    assert.match(compileReference(dsl, { tools: ["read"], judges: true, jev: draftDecisionProviders(decisions).includes("jev") }), /"guard": \{"signal": "both"/);
   }
 });
