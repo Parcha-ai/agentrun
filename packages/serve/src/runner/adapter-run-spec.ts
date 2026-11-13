@@ -725,7 +725,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
       const entries = await agentEntriesOf(deps.journal(claim), context);
       // The path it took and the learned revision it ran on, for a run that learns (workflow-first.ts pathMetrics), by the
       // one classifier the cost per run reads back (runPathOverStore).
-      const path = pathMetrics(launch, launch.learning ? await runPathOverStore(deps.store, claim.runId, launch.learning) : undefined, entries as never);
+      const path = pathMetrics(launch, launch.learning ? await runPathOverStore(deps.store, claim.runId, launch.learning, run.redact) : undefined, entries as never);
       // Its cost is its booking's, as a CLI run's is (metrics.ts bookedSpend, the one reader): every model request its
       // session's proxy booked, pi's own answers and its side calls (a learned workflow's nodes, web_search's hosted search
       // with its fee) alike, and its decisions (a learned workflow's decision nodes, LS-07; one that reported none is

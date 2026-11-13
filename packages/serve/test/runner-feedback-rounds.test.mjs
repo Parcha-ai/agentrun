@@ -4,8 +4,9 @@
 //   - a run its learned workflow answered alone, graded right: the grade is kept, nothing more: no reopen, no request,
 //     path `workflow`, learning $0;
 //   - the same graded wrong: a revision ask for the workflow, never a re-run of the job: the run opens again, the agent is
-//     asked its end-of-run turn alone (the job, the workflow's answer, the label, the ask to give the workflow again), the
-//     path stays `workflow`, and that turn's $ is the run's learning, never its job's;
+//     asked its end-of-run turn alone (the look-back hears the job, the workflow's answer and the label; the compile turn
+//     after it asks for the workflow again, with that answer and the label), the path stays `workflow`, and those turns'
+//     $ is the run's learning, never its job's;
 //   - a run the agent finished, graded with a label: a look-back round on it, no turn of the job's, and the cost per run
 //     counts every round's look-back (agentCostOverStore: the job is its first round's, all after it learning).
 // Then the rule itself (servedAnswerStands): a follow-up that ends with no new answer keeps the path; one the agent
@@ -143,13 +144,20 @@ test("a 20-run labelled stream: right served runs cost $0 learning and stay work
   // the workflow's answer, the label and the ask first, then the prompt), and the path stays the workflow's.
   const wrong = rows.get(`run-${WRONG}`);
   assert.ok(wrong.asked.length >= 1, "the revision ask was asked");
-  for (const request of wrong.asked) assert.ok(/The task is done\. Before the run ends|was not in the format|did not pass its dry run|Answer again/i.test(lastText(request.body)), `only the end-of-run turn ran: ${lastText(request.body).slice(0, 300)}`);
+  for (const request of wrong.asked) assert.ok(/The task is done\. Before the run ends|was not in the format|did not pass its dry run|Answer again|One more turn: revise your learned workflow|Your workflow draft did not pass the checks/i.test(lastText(request.body)), `only the end-of-run turn ran: ${lastText(request.body).slice(0, 300)}`);
   const ask = lastText(wrong.asked[0].body);
   assert.match(ask, new RegExp(`Question ${WRONG}: what is six times seven`), "the job");
   assert.match(ask, /Your learned workflow `answer` ran first on this job and answered it\. Its answer:\s+\{"answer":41,/, "what the workflow answered");
   assert.match(ask, new RegExp(LABEL(WRONG).replace(/[.?]/g, "\\$&")), "the label");
-  assert.match(ask, /Your learned workflow `answer` answered this job alone, and its answer was wrong\. Give `answer` again whole under its name/, "the revision ask");
   assert.match(ask, /The task is done\. Before the run ends/, "then the end-of-run prompt");
+  assert.doesNotMatch(ask, /Give `answer` again whole/, "the look-back keeps notes only: it asks for no workflow");
+  // The compile turn after it asks for the revision, with the workflow's answer and the label.
+  const compile = wrong.asked.map((request) => lastText(request.body)).find((text) => text.trimStart().startsWith("One more turn: revise your learned workflow `answer`."));
+  assert.ok(compile, `the compile turn asked for the revision: ${wrong.asked.map((request) => lastText(request.body).slice(0, 80)).join(" | ")}`);
+  assert.match(compile, /Your learned workflow `answer` answered this run alone, and a reviewer graded its answer wrong\./);
+  assert.match(compile, /\{"answer":41,/, "the workflow's answer");
+  assert.match(compile, new RegExp(LABEL(WRONG).replace(/[.?]/g, "\\$&")), "the label");
+  assert.match(compile, /Give `answer` again whole under its name, changed so it answers cases like this one right or hands them back/, "the revision ask");
   assert.equal(wrong.row.metrics?.path, "workflow", `no new answer of the agent's: the path stays the workflow's: ${JSON.stringify(wrong.row.metrics)}`);
   const two = await server.learning.proposal(`run-${WRONG}`, 2);
   assert.equal(two?.round, 2, `the revision ask is round 2: ${JSON.stringify(two)}`);
@@ -206,4 +214,30 @@ test("servedAnswerStands: the path is who wrote the final answer; a follow-up wi
   assert.equal(sameAnswer(" 42 ", "42"), true);
   assert.equal(sameAnswer("{\"a\":1,\"b\":2}", "{\"b\": 2, \"a\": 1}"), true);
   assert.equal(sameAnswer("41", "42"), false);
+});
+
+test("the path compares the workflow's answer as it produced it and as the agent was shown it: a held value the redactor cut does not make a restated answer look changed", async () => {
+  const { runPathOverStore } = await import("../dist/store-reads/learning.js");
+  const { redactSecrets } = await import("../dist/learn/secrets.js");
+  const held = "tok_live_9f3Kq2Zr7Lm4Xw8B";
+  const produced = `{"mcc":"5812","source":"https://site.test/menu?key=${held}"}`;
+  const shown = redactSecrets(produced, [held], Number.POSITIVE_INFINITY);
+  assert.notEqual(shown, produced, "the redactor cuts the held value");
+  const restated = [{ kind: "final_answer", text: produced }, { kind: "user_message", text: "Is that right?" }, { kind: "final_answer", text: shown }];
+  assert.equal(servedAnswerStands(produced, restated), false, "compared with the produced answer alone, the restated one looks changed");
+  assert.equal(servedAnswerStands(produced, restated, shown), true, "the answer as the agent was shown it stands");
+  assert.equal(servedAnswerStands(produced, [...restated.slice(0, 2), { kind: "final_answer", text: shown.replace("5812", "5814") }], shown), false, "a changed one still hands it back");
+  assert.equal(runPathOverStore.length >= 3, true);
+});
+
+test("a run with rounds: its impact and its cost per run read the same split: the job is its first round's, every later turn its learning", async () => {
+  const { impactLearningOf, roundsLooked } = await import("../dist/store-reads/learning.js");
+  const rounds = { answered_at: "2026-11-13T00:00:00.000Z", job_cost_usd: 0.6, look_back_usd: 0.1, grade_usd: 0.02 };
+  // Round 1's job $0.60, a follow-up turn $0.30, two look-backs $0.10: the row holds $1.00.
+  assert.deepEqual(roundsLooked(rounds, 1.0), { answered_at: rounds.answered_at, job_cost_usd: 0.6, look_back_usd: 0.4 });
+  assert.deepEqual(roundsLooked(rounds, null), { answered_at: rounds.answered_at, job_cost_usd: 0.6, look_back_usd: 0.1 }, "an unknown row cost: the look-backs added up");
+  const impact = impactLearningOf({ state: "merged", reason: null, at: "2026-11-13T00:01:00.000Z" }, { seedNotes: 1 }, undefined, rounds, 1.0);
+  assert.equal(impact.job_cost_usd, 0.6, "the job is round 1's");
+  assert.equal(impact.look_back_usd, 0.4, "the follow-up turn is learning, as the cost per run counts it");
+  assert.equal(impact.grade_usd, 0.02);
 });

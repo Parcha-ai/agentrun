@@ -5,8 +5,9 @@
 //     read it) and nothing else happens: no turn, $0;
 //   - the same, graded wrong: a revision ask for that workflow. The run opens again on a feedback round: the grade's
 //     words are on its record, the agent is asked no turn of the job's, and the run goes straight to its end-of-run turn,
-//     whose prompt carries the job, the workflow's answer, the grade's words and the ask to give the workflow again
-//     changed. Its spend is learning spend (the round's look-back), and the run's path stays `workflow`;
+//     whose look-back hears the job, the workflow's answer and the grade's words (notes), and whose compile turn asks for
+//     the workflow again, changed (learning-end.ts compileAskOf). Its spend is learning spend, and the run's path stays
+//     `workflow`;
 //   - a run the agent finished (path `agent` or `handed_back`) graded with words (`label`): a look-back round on them
 //     (#2579's later round, notes), the same way: no turn of the job's, the end-of-run turn reading the words.
 // A grade with neither asks for nothing more. The server writes the round's steer (server.ts gradeRun, runs.reopen); the
@@ -69,13 +70,11 @@ export function pendingFeedbackOf(entries: readonly { readonly kind: string; rea
 
 /** What the end-of-run turn of a feedback round is told before its prompt: for a run whose agent never took the job (its
  *  learned workflow answered alone, so its session saw nothing), the job and what the workflow answered first
- *  (`job`, `served`); then the grade and its words; for a revision, the ask to give the workflow again changed. */
+ *  (`job`, `served`); then the grade and its words. The look-back keeps notes only: a revision's ask to give the workflow
+ *  again changed is the compile turn's, after it (learning-end.ts compileAskOf reads the round, learn/compile.ts asks). */
 export function feedbackAsk(feedback: FeedbackData, seen?: { readonly job: string; readonly served: { readonly workflow: string; readonly answer: string } }): string {
   const graded = `A reviewer graded ${seen ? "that" : "this run's"} answer ${feedback.correct ? "right" : "wrong"}. What they said:`;
-  const revise = feedback.round === "revise" && feedback.workflow
-    ? [`Your learned workflow \`${feedback.workflow}\` answered this job alone, and its answer was wrong. Give \`${feedback.workflow}\` again whole under its name, changed so it answers cases like this one right or hands them back to you at an \`escalate\` node, keeping what it already answers right. If no change to it would, keep it as it is and keep what this case teaches as a note.`]
-    : [];
-  return [...(seen ? [seen.job, servedAnswerText(seen.served.workflow, seen.served.answer)] : []), graded, "", feedback.text, ...(revise.length ? ["", ...revise] : [])].join("\n\n").replace(/\n{3,}/g, "\n\n");
+  return [...(seen ? [seen.job, servedAnswerText(seen.served.workflow, seen.served.answer)] : []), graded, "", feedback.text].join("\n\n").replace(/\n{3,}/g, "\n\n");
 }
 
 /** Opens run `grade.run` again on the feedback round its grade asks for (feedbackRoundOf), with the grade's words

@@ -56,6 +56,13 @@ export interface HeldAsk {
   readonly replay?: { readonly n: number; readonly agree: number; readonly agent_acc: number; readonly wf_acc: number; readonly delta: number; readonly handed_back: number };
 }
 
+/** A run its learned workflow answered alone that a grade said was wrong (runner/feedback-round.ts, a `revise` round):
+ *  the workflow's answer and the grade's words, each cut of the run's secrets. */
+export interface GradedAsk {
+  readonly answer: string;
+  readonly words: string;
+}
+
 /** One of the agent's earlier runs as the compile turn reads it: what it was asked, each tool call it made (`tool`, its
  *  input as the timeline previews it, and whether it failed), its answer, and what a person said after (feedback). */
 export interface CompileTrace {
@@ -66,8 +73,8 @@ export interface CompileTrace {
 }
 
 /** What the compile turn is asked with. `mode` new: the job as a new workflow; revise: `workflow`, whose text is
- *  `current`, again whole, after it handed this run back (`handedBack`), the money rule stopped it (`revise`) or its
- *  promotion holds it (`held`).
+ *  `current`, again whole, after it handed this run back (`handedBack`), the money rule stopped it (`revise`), a grade
+ *  said the answer it gave this run alone was wrong (`graded`) or its promotion holds it (`held`).
  *  `reference`: the workflow language as compileReference renders it. `notes`: the agent's active notes, whole.
  *  `traces`: its last runs. `input`: this run's input as it was launched, whose fields a workflow's input takes. `tools`:
  *  those a call node may run, with what each takes and gives (`described`); `judges`: whether the run has a decision
@@ -81,7 +88,7 @@ export type CompileAsk = {
   readonly described?: readonly { readonly name: string; readonly does: string }[];
   readonly judges: boolean;
   readonly jev?: boolean;
-} & ({ readonly mode: "new" } | { readonly mode: "revise"; readonly workflow: string; readonly current?: string; readonly handedBack?: true; readonly revise?: ReviseAsk; readonly held?: HeldAsk });
+} & ({ readonly mode: "new" } | { readonly mode: "revise"; readonly workflow: string; readonly current?: string; readonly handedBack?: true; readonly revise?: ReviseAsk; readonly graded?: GradedAsk; readonly held?: HeldAsk });
 
 /** One attempt of the compile turn: whether its draft passed the checks, and else why not, in the checks' words. */
 export type CompileAttempt = { readonly ok: boolean; readonly errors: readonly string[] };
@@ -235,6 +242,9 @@ export const askedForCompile = (text: unknown): "again" | boolean =>
 /** What a compiled workflow gives (#2412): the job's answer as the runs gave it, never a summary of it. */
 export const OUTPUT_FORMAT = "Its output is the job's answer in the output format your runs gave it, and your skill's when one gives a format: its last node writes it, and `output` names that node's state.";
 
+/** The most characters of a wrong graded answer, and of its grade's words, the revise ask shows. */
+const GRADED_MAX = 4_000;
+
 /** The compile turn's message. */
 export function compilePrompt(ask: CompileAsk): string {
   if (ask.mode === "revise" && !WORKFLOW_NAME.test(ask.workflow)) throw new Error("the workflow asked to be revised must be a workflow's name");
@@ -254,10 +264,20 @@ export function compilePrompt(ask: CompileAsk): string {
           ? `Your learned workflow \`${ask.workflow}\` ran first on this run and handed it back to you.`
           : ask.revise
             ? `Your learned workflow \`${ask.workflow}\` no longer runs first: over its last ${ask.revise.runs} served runs it cost $${ask.revise.served_usd} a run, against $${ask.revise.by_hand_usd} a run by hand.`
-            : ask.held
-              ? heldLine(ask.workflow, ask.held)
-              : `Your learned workflow \`${ask.workflow}\` needs a revision.`,
-        ...(ask.held
+            : ask.graded
+              ? `Your learned workflow \`${ask.workflow}\` answered this run alone, and a reviewer graded its answer wrong.`
+              : ask.held
+                ? heldLine(ask.workflow, ask.held)
+                : `Your learned workflow \`${ask.workflow}\` needs a revision.`,
+        ...(ask.graded
+          ? [
+              ...fenced("its answer", clean(ask.graded.answer, GRADED_MAX)),
+              "What the reviewer said:",
+              ...fenced("the grade", clean(ask.graded.words, GRADED_MAX)),
+              `Give \`${ask.workflow}\` again whole under its name, changed so it answers cases like this one right or hands them back to you at an \`escalate\` node, keeping what it already answers right.`,
+              "If no change to it would, answer `No change.` and nothing else.",
+            ]
+          : ask.held
           ? [`Give \`${ask.workflow}\` again whole under its name, changed so its answers agree with the graded ones: fix the step that gets them wrong, or guard it so it hands those cases back.`]
           : [
               `Give \`${ask.workflow}\` again whole under its name, changed so it finishes more cases like this one alone, or spends less on each, and still hands back what it can't be sure of.`,

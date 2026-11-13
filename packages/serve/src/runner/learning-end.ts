@@ -29,7 +29,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { isMessageRow, type TimelineEvent } from "../timeline/index.js";
 import { Hearing } from "../heard.js";
 import { type LearningFolder, readLearning, readSnapshot } from "../learn/folder.js";
-import { type CompileAsk, type CompileTrace, compileDue, compileReference, COMPILE_AFTER_RUNS, COMPILE_QUIET_RUNS, COMPILE_TRACES, type HeldAsk } from "../learn/compile.js";
+import { type CompileAsk, type CompileTrace, compileDue, compileReference, COMPILE_AFTER_RUNS, COMPILE_QUIET_RUNS, COMPILE_TRACES, type GradedAsk, type HeldAsk } from "../learn/compile.js";
 import { type PromotionRecord, promotionOf, promotionsOf } from "../learn/promote.js";
 import { type DraftDecisions, draftDecisionProviders } from "../learn/skills.js";
 import { DECISION_PROVIDER_KEYS } from "../tool-plane.js";
@@ -47,7 +47,8 @@ import type { McpServerRow, Store } from "../store/store.js";
 import { readApprovers } from "../server-approvers.js";
 import { runEntries, runReflect, runTimeline, withFeedback } from "../store-reads/journal.js";
 import { capNowOf } from "./journal-kinds.js";
-import { fits, reviseOf, servedOf, workflowDigest } from "./workflow-first.js";
+import { fits, reviseOf, servedAnswerOf, servedOf, workflowDigest } from "./workflow-first.js";
+import { pendingFeedbackOf } from "./feedback-round.js";
 import type { EndOfRunTurn } from "./loop-contract.js";
 import { type Checked, createReflectHook, type ReflectDeps, type ReflectTurn } from "./reflect-hook.js";
 import { runnerSecrets } from "./redact.js";
@@ -302,7 +303,10 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
   const entries = await runEntries(deps.store, input.runId, BACKGROUND_CONTEXT).catch(() => []);
   const served = servedOf(entries);
   const stopped = reviseOf(entries);
-  let revising = served?.outcome === "handed_back" ? served.workflow : stopped?.workflow;
+  // A wrong grade of the answer its workflow gave alone (a `revise` feedback round this end closes): that workflow.
+  const fed = pendingFeedbackOf(entries);
+  const gradedOf = fed?.round === "revise" && fed.workflow ? fed.workflow : undefined;
+  let revising = served?.outcome === "handed_back" ? served.workflow : (stopped?.workflow ?? gradedOf);
   // The workflows whose newest promotion record holds them: the run's own may be one (it went by hand).
   const records: PromotionRecord[] = revising ? [] : await promotionsOf(deps.store.settings, input.agentId).catch(() => []);
   const heldNames = new Set([...new Set(records.map(({ workflow }) => workflow))].filter((name) => records.findLast((one) => one.workflow === name)?.decided === "hold"));
@@ -375,7 +379,9 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
   const fields = input.input !== null && typeof input.input === "object" && !Array.isArray(input.input) ? { input: input.input as Record<string, unknown> } : {};
   const base = { reference: compileReference(dsl, { tools, judges, jev }), notes: read.notes, traces: traces.filter((one): one is CompileTrace => one !== undefined), tools, described, judges, jev, ...fields };
   if (!revising) return { mode: "new", ...base };
-  return { mode: "revise", workflow: revising, current: read.current!, ...(served?.outcome === "handed_back" ? { handedBack: true as const } : stopped ? { revise: { workflow: stopped.workflow, served_usd: stopped.served_usd, by_hand_usd: stopped.by_hand_usd, runs: stopped.runs } } : held ? { held } : {}), ...base };
+  const cut = (text: string) => redactSecrets(text, input.refuse, Number.POSITIVE_INFINITY);
+  const graded: GradedAsk | undefined = gradedOf && fed ? { answer: cut(servedAnswerOf(entries)?.answer ?? ""), words: cut(fed.text) } : undefined;
+  return { mode: "revise", workflow: revising, current: read.current!, ...(served?.outcome === "handed_back" ? { handedBack: true as const } : stopped ? { revise: { workflow: stopped.workflow, served_usd: stopped.served_usd, by_hand_usd: stopped.by_hand_usd, runs: stopped.runs } } : graded ? { graded } : held ? { held } : {}), ...base };
 }
 
 /** The tools a workflow draft may name (learning-run.ts draftTools): the revision's own, as its run's gate reads them
