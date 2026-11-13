@@ -48,6 +48,15 @@ async function filesUnder(dir) {
   return out;
 }
 
+/** Every folder under `dir`, recursively, a folder at a time (one that went is skipped). */
+async function foldersUnder(dir) {
+  const out = [];
+  for (const entry of await readdir(dir, { withFileTypes: true }).catch(() => [])) {
+    if (entry.isDirectory()) out.push(join(dir, entry.name), ...(await foldersUnder(join(dir, entry.name))));
+  }
+  return out;
+}
+
 /** The processes on this machine whose working directory is inside run `runId`'s scratch folder under `scratch` (the
  *  CLI's, which works there): read from /proc, each one that went meanwhile skipped. None on a machine with no /proc. */
 async function workingIn(scratch, runId) {
@@ -281,11 +290,13 @@ test("claude-agent: the Claude CLI's own MCP client calls mcp:fake/add through t
   const scratchFiles = await scratchOf(data, runId);
   // The CLI is found working in the run's scratch (so its exit, waited on below, is seen).
   assert.ok((await workingIn(join(data, "scratch"), runId)).length > 0, "the CLI process works in the run's scratch");
-  // Mid-call is the one moment the CLI's own files exist to be read (the claim's scratch folder is swept at the run's end,
-  // and a scan of a swept folder reads nothing): the CLI's home and MCP config are there and none holds the token.
-  const cliFilesMidCall = scratchFiles.filter((file) => file.path.includes(`/${runId}/harness/`));
-  assert.ok(cliFilesMidCall.length > 0, `the CLI's own files were read mid-call: ${JSON.stringify(scratchFiles.map((file) => file.path))}`);
-  const leakedMidCall = cliFilesMidCall.filter((file) => file.text.includes(TOKEN)).map((file) => file.path);
+  // Mid-call is the one moment the CLI's own folder is there to be read (the claim's scratch folder is swept at the run's
+  // end, and a scan of a swept folder reads nothing): the scan reached it (its home, config, tmp and cache, made at the
+  // session's start), and no file in it holds the token. Before its first call the CLI may have written no file there
+  // yet (on a CI runner it had none; on a box only a passing fswatch probe in its tmp), so what is asserted is that the
+  // folder was read, never a count of files in it.
+  assert.ok((await foldersUnder(join(data, "scratch"))).some((folder) => folder.endsWith(`/${runId}/harness`)), `the CLI's own folder is read mid-call: ${JSON.stringify(scratchFiles.map((file) => file.path))}`);
+  const leakedMidCall = scratchFiles.filter((file) => file.text.includes(TOKEN)).map((file) => file.path);
   assert.deepEqual(leakedMidCall, [], "no file of the CLI's own (its home, its MCP config) holds the token");
   held.release();
   const { rows, last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 150_000 });

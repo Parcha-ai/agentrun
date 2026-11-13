@@ -362,7 +362,8 @@ export class McpSignIns {
    *  when the discovery could not be made (refused, unreachable, not OAuth): the start's own words say why. `stop`: the
    *  preview's, so a server that stops cuts the discovery's requests and lookups with the preview's own. */
   async registration(url: URL, stop?: AbortSignal): Promise<{ registration: boolean; callback: string } | undefined> {
-    const found = await this.discovered(url, { own: this.own, allowed: await this.allowed() }, stop);
+    // The start's reach, loopback included: a local install's sign-in is told as its start will find it.
+    const found = await this.discovered(url, { own: this.own, allowed: await this.allowed(), loopback: this.loopback }, stop);
     return found && { registration: found.registration, callback: this.callback };
   }
 
