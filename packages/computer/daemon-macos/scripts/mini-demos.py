@@ -321,13 +321,20 @@ CLOSE_WINDOWS = """on run argv
   end if
   set name_prefix to item 2 of argv
   tell application "Finder"
-    repeat with w in (every Finder window whose name starts with name_prefix)
-      close w
-    end repeat
+    -- By id: Finder answers close on a reference from a window list with -10010.
+    set ids to {}
     repeat with w in Finder windows
-      try
-        if POSIX path of (target of w as alias) starts with root then close w
-      end try
+      set wid to id of w
+      if name of w starts with name_prefix then
+        set end of ids to wid
+      else
+        try
+          if POSIX path of (target of w as alias) starts with root then set end of ids to wid
+        end try
+      end if
+    end repeat
+    repeat with wid in ids
+      close window id (wid as integer)
     end repeat
   end tell
   return ""
