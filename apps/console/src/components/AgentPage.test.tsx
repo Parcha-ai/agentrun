@@ -563,8 +563,8 @@ describe("AgentPage, the model on a gateway server", () => {
     const own = await open(on("pi", "agent-model/gpt-6-mini"), { models: gateway, harnesses: named });
     expect([modelOf(own).textContent, modelOf(own).title]).toEqual(["gpt-6-mini", "agent-model/gpt-6-mini"]);
     act(() => root?.unmount());
-    const provider = await open(on("pi", "openai/gpt-5"), { models: gateway, harnesses: named });
-    expect([modelOf(provider).textContent, modelOf(provider).title]).toEqual(["openai/gpt-5", ""]);
+    const provider = await open(on("pi", "openai/gpt-6.1-sol"), { models: gateway, harnesses: named });
+    expect([modelOf(provider).textContent, modelOf(provider).title]).toEqual(["openai/gpt-6.1-sol", ""]);
   });
 });
 

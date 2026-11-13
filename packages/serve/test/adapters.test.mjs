@@ -14,7 +14,7 @@ const CLAUDE_LOCK = HARNESS_INSTALLS["claude-agent"].lock;
 import { fileURLToPath } from "node:url";
 import { anthropicModelId, HarnessUnavailable, modelOn, providerFor } from "../dist/provider.js";
 
-const openai = { provider: "openai", modelId: "gpt-5.4-mini" };
+const openai = { provider: "openai", modelId: "gpt-6-luna" };
 const refused = (pattern) => (error) => error instanceof HarnessUnavailable && pattern.test(error.message);
 
 test("codex's provider: OpenAI with its key; a gateway at its base, also given as base/v1; and why not otherwise", () => {
@@ -36,7 +36,7 @@ test("codex's price is the catalog's per million tokens, cached input at its own
 });
 
 test("claude-agent's provider: Anthropic Messages only, at ANTHROPIC_BASE_URL's base or api.anthropic.com, with its key; serve's gateway neither disables it nor ever receives its requests", () => {
-  const anthropic = { provider: "anthropic", modelId: "claude-haiku-4-5" };
+  const anthropic = { provider: "anthropic", modelId: "claude-haiku-5-5" };
   const key = `not-a-secret-${"a"}`;
   const direct = providerFor("anthropic-messages", { ANTHROPIC_API_KEY: key }, anthropic, "claude-agent");
   assert.deepEqual([direct.origin, direct.credential()], ["https://api.anthropic.com", key]);
@@ -48,7 +48,7 @@ test("claude-agent's provider: Anthropic Messages only, at ANTHROPIC_BASE_URL's 
   }
   assert.equal(providerFor("anthropic-messages", { ANTHROPIC_API_KEY: key, ANTHROPIC_BASE_URL: "https://host.example/api" }, anthropic, "claude-agent").origin, "https://host.example/api", "an endpoint under a path keeps it");
   assert.throws(() => providerFor("anthropic-messages", {}, anthropic, "claude-agent"), refused(/ANTHROPIC_API_KEY/));
-  assert.throws(() => providerFor("anthropic-messages", { ANTHROPIC_API_KEY: key }, { provider: "openai", modelId: "gpt-5.4-mini" }, "claude-agent"), refused(/claude-agent runs Anthropic models/));
+  assert.throws(() => providerFor("anthropic-messages", { ANTHROPIC_API_KEY: key }, { provider: "openai", modelId: "gpt-6-luna" }, "claude-agent"), refused(/claude-agent runs Anthropic models/));
 });
 
 test("the model id codex is given is the one model.ts chose: OpenAI's own id direct, the gateway's whole name through a gateway", async (t) => {
@@ -58,16 +58,16 @@ test("the model id codex is given is the one model.ts chose: OpenAI's own id dir
   t.after(() => (saved === undefined ? delete process.env.OPENAI_API_KEY : (process.env.OPENAI_API_KEY = saved)));
   process.env.OPENAI_API_KEY = `not-a-secret-${"direct"}`;
   const key = { OPENAI_API_KEY: process.env.OPENAI_API_KEY };
-  assert.deepEqual((await chooseModel(key, "openai/gpt-4o")).model, { provider: "openai", modelId: "gpt-4o" }, "direct: OpenAI's id, the provider already taken out");
+  assert.deepEqual((await chooseModel(key, "openai/gpt-6.1-sol")).model, { provider: "openai", modelId: "gpt-6.1-sol" }, "direct: OpenAI's id, the provider already taken out");
   const gateway = { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9/v1" };
-  assert.equal((await chooseModel(gateway, "openai/gpt-4o")).model.modelId, "openai/gpt-4o", "through a gateway: its name, whole");
-  assert.equal((await chooseModel({ ...gateway, AGENT_MODEL_GATEWAY_IDS: "bare" }, "openai/gpt-4o")).model.modelId, "gpt-4o", "unless the gateway takes bare ids");
+  assert.equal((await chooseModel(gateway, "openai/gpt-6.1-sol")).model.modelId, "openai/gpt-6.1-sol", "through a gateway: its name, whole");
+  assert.equal((await chooseModel({ ...gateway, AGENT_MODEL_GATEWAY_IDS: "bare" }, "openai/gpt-6.1-sol")).model.modelId, "gpt-6.1-sol", "unless the gateway takes bare ids");
 });
 
 test("the model id claude-agent sends and prices is Anthropic's own: dots as dashes, as a gateway such as OpenRouter names its models with dots", () => {
   assert.equal(anthropicModelId({ provider: "anthropic", modelId: "claude-sonnet-5.5" }), "claude-sonnet-5-5", "OpenRouter's name, as Anthropic's id");
   assert.equal(anthropicModelId({ provider: "anthropic", modelId: "claude-sonnet-5-5" }), "claude-sonnet-5-5", "Anthropic's own id, unchanged");
-  assert.equal(anthropicModelId({ provider: "anthropic", modelId: "claude-haiku-4.5" }), "claude-haiku-4-5");
+  assert.equal(anthropicModelId({ provider: "anthropic", modelId: "claude-haiku-5.5" }), "claude-haiku-5-5");
   assert.equal(anthropicModelId({ provider: "other", modelId: "a.b" }), "a.b", "another provider's id is never rewritten");
 });
 
@@ -76,7 +76,7 @@ test("claude-agent's model is one provider and the model's own id: the doubled a
   const doubled = (await modelOn("anthropic-messages", {}, "anthropic/anthropic/claude-sonnet-5.5", "claude-agent"));
   assert.equal(doubled.host, false, "the revision's own model: a refusal at save, which no host setting fixes");
   assert.match(doubled.why, /name it anthropic\/claude-sonnet-5\.5\./);
-  assert.equal((await modelOn("anthropic-messages", { AGENT_MODEL: "anthropic/anthropic/claude-haiku-4.5" }, undefined, "claude-agent")).host, true, "the host's default: a setting of the host");
+  assert.equal((await modelOn("anthropic-messages", { AGENT_MODEL: "anthropic/anthropic/claude-haiku-5.5" }, undefined, "claude-agent")).host, true, "the host's default: a setting of the host");
 });
 
 test("a gateway base with a path: codex sends to <base>/v1/responses and claude-agent to <base>/v1/messages, a trailing /v1 taken once, so one OpenRouter-style base serves both", () => {
@@ -129,7 +129,7 @@ const loadedSdk = async (version) => ({ sdk: { query() {} }, sdkVersion: version
 test("claude-agent with Claude Code not installed in the data, and no key: the reason is the install, with the command that installs it into the data's harnesses, never the key a person would set first", async (t) => {
   const data = mkdtempSync(join(tmpdir(), "agentrun-adapters-"));
   t.after(() => rmSync(data, { recursive: true, force: true }));
-  const needs = { model: { provider: "anthropic", modelId: "claude-haiku-4-5" }, models: { getModel: () => undefined } };
+  const needs = { model: { provider: "anthropic", modelId: "claude-haiku-5-5" }, models: { getModel: () => undefined } };
   await assert.rejects(claudeOf({ AGENTRUN_SERVE_DATA: data }, needs), (error) => {
     assert.ok(error instanceof HarnessUnavailable, String(error));
     assert.match(error.message, /not installed/);
@@ -150,7 +150,7 @@ test("claude-agent's adapter is handed the SDK, its CLI and the MCP library as t
   const real = await import("@parcha/agentrun-harness-claude");
   const given = [];
   const load = async () => ({ ...real, claudeAgentAdapter: (options) => (given.push(options), { id: "claude-agent" }) });
-  const needs = { model: { provider: "anthropic", modelId: "claude-haiku-4-5" }, models: { getModel: () => undefined } };
+  const needs = { model: { provider: "anthropic", modelId: "claude-haiku-5-5" }, models: { getModel: () => undefined } };
   const env = { ANTHROPIC_API_KEY: `not-a-secret-${"k"}`, AGENTRUN_SERVE_DATA: "/d" };
   const sdk = await loadedSdk("0.3.286");
   await claudeOf(env, needs, load, async () => sdk);
@@ -172,7 +172,7 @@ test("claude-agent's native skills reach the adapter as serve gives them, and an
   const real = await import("@parcha/agentrun-harness-claude");
   const given = [];
   const load = async () => ({ ...real, claudeAgentAdapter: (options) => (given.push(options), { id: "claude-agent" }) });
-  const needs = { model: { provider: "anthropic", modelId: "claude-haiku-4-5" }, models: { getModel: () => undefined } };
+  const needs = { model: { provider: "anthropic", modelId: "claude-haiku-5-5" }, models: { getModel: () => undefined } };
   const env = { ANTHROPIC_API_KEY: `not-a-secret-${"k"}` };
   const skills = [{ name: "cite", files: { "SKILL.md": "---\nname: cite\ndescription: Cite sources.\n---\nCite.\n", "reference/sources.md": "Primary first.\n" } }];
   await claudeOf(env, { ...needs, skills }, load, loadedSdk);
@@ -209,7 +209,7 @@ test("codex with Codex not installed in the data, or not its pinned build: the r
   const data = mkdtempSync(join(tmpdir(), "agentrun-adapters-"));
   t.after(() => rmSync(data, { recursive: true, force: true }));
   const codex = await import("@parcha/agentrun-harness-codex");
-  const needs = { model: { provider: "openai", modelId: "gpt-5.4-mini" }, models: { getModel: () => undefined } };
+  const needs = { model: { provider: "openai", modelId: "gpt-6-luna" }, models: { getModel: () => undefined } };
   const line = installLine(join(data, "harnesses", "codex"), HARNESS_INSTALLS.codex.lock);
   assert.match(line, / npm ci --prefix \S+ --ignore-scripts --include=optional && /);
   const reason = (load) => codexOf({ AGENTRUN_SERVE_DATA: data, OPENAI_API_KEY: `not-a-secret-${"k"}` }, needs, load).then(() => assert.fail("refused"), (error) => (assert.ok(error instanceof HarnessUnavailable, String(error)), error.message));
@@ -230,7 +230,7 @@ test("codex with Codex not installed in the data, or not its pinned build: the r
 test("demo: run from npx, a missing OpenCode says the npx line that starts this same AgentRun with it, on this server's store, keeping the other harnesses here", async () => {
   const opencode = await import("../dist/harness-opencode/index.js");
   const absent = async () => ({ ...opencode, verifyOpenCodeAsync: async () => { throw new opencode.OpenCodeNotInstalled("no binary for this platform"); } });
-  const needs = { model: { provider: "openai", modelId: "gpt-5.4-mini" }, models: { getModel: () => undefined } };
+  const needs = { model: { provider: "openai", modelId: "gpt-6-luna" }, models: { getModel: () => undefined } };
   const store = `${HOME_DIR}/store`;
   const reason = await adapters.opencodeOf({ AGENTRUN_SERVE_DATA: store }, needs, absent, true).then(() => assert.fail("refused"), (error) => (assert.ok(error instanceof HarnessUnavailable, String(error)), error.message));
   assert.ok(reason.endsWith(`; restart AgentRun with it: npx -p @parcha/agentrun-serve@${SERVE} -p opencode-ai@1.19.5 agentrun-serve --data ${store}`), reason);

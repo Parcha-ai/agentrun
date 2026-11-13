@@ -43,7 +43,7 @@ const ROWS = [
   { name: "bare ids, the revision's openrouter/openai/gpt-6.1-sol", ids: "bare", model: "openrouter/openai/gpt-6.1-sol", host: "team-default", sent: "openai/gpt-6.1-sol" },
   // No price set: the catalog prices it, as the provider the revision names lists it (OpenAI's entry has tiers past 272k
   // input tokens; the highest of the others has none), so a bare id priced without that provider is priced wrong.
-  { name: "bare ids, the revision's openai/gpt-5.5 at the catalog's price", ids: "bare", model: "openai/gpt-5.5", host: "team-default", sent: "gpt-5.5", catalog: true },
+  { name: "bare ids, the revision's openai/gpt-6.1-sol at the catalog's price", ids: "bare", model: "openai/gpt-6.1-sol", host: "team-default", sent: "gpt-6.1-sol", catalog: true },
 ];
 
 /** The operator's gateway env for `row`, at the loopback gateway `url`: priced $1 in and $2 out a million, unless the

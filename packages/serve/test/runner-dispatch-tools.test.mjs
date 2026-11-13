@@ -44,7 +44,7 @@ const OFFERED = [...GRANTED].sort();
 
 /** On each wire, a source whose route speaks it to the gateway, and where its requests land. */
 const SOURCES = {
-  "anthropic-messages": { model: "anthropic/claude-sonnet-4-5", env: (url) => ({ ANTHROPIC_API_KEY: KEY, ANTHROPIC_BASE_URL: url }), path: "/v1/messages", launched: { provider: "anthropic", modelId: "claude-sonnet-4-5" } },
+  "anthropic-messages": { model: "anthropic/claude-sonnet-5-5", env: (url) => ({ ANTHROPIC_API_KEY: KEY, ANTHROPIC_BASE_URL: url }), path: "/v1/messages", launched: { provider: "anthropic", modelId: "claude-sonnet-5-5" } },
   "openai-responses": { model: undefined, env: (url) => ({ AGENT_MODEL_BASE_URL: `${url}/v1`, AGENT_MODEL_API_KEY: KEY, AGENT_MODEL: "team-model", AGENT_MODEL_PRICE: "1,1" }), path: "/v1/responses" },
 };
 

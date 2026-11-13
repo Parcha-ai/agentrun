@@ -57,7 +57,7 @@ const HARNESSES = {
     const fake = await fakeAnthropic({ reply: () => ({ text: "Answered." }) });
     t.after(() => fake.close());
     await linkHarnesses(dir);
-    return { model: { provider: "anthropic", modelId: "claude-haiku-4-5" }, env: { [DATA_ENV]: dir, ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}`, ANTHROPIC_BASE_URL: fake.url }, requests: () => fake.messages().length, asked: () => fake.messages().map((one) => one.text) };
+    return { model: { provider: "anthropic", modelId: "claude-haiku-5-5" }, env: { [DATA_ENV]: dir, ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}`, ANTHROPIC_BASE_URL: fake.url }, requests: () => fake.messages().length, asked: () => fake.messages().map((one) => one.text) };
   },
   codex: async (t, dir) => {
     const was = process.env.AGENTRUN_CODEX_STANDIN;

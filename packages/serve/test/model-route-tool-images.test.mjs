@@ -52,7 +52,7 @@ async function sentFor(t, model, env, request) {
 const SHOT = [{ type: "text", text: "the page" }, { type: "image", source: { type: "base64", media_type: "image/png", data: PNG } }];
 
 test("OpenRouter: a tool's result with text and a PNG reaches the model with the image, after the tool's text", async (t) => {
-  const body = await sentFor(t, "openrouter/openai/gpt-5", { OPENROUTER_API_KEY: KEY }, answered(SHOT));
+  const body = await sentFor(t, "openrouter/openai/gpt-6.1-sol", { OPENROUTER_API_KEY: KEY }, answered(SHOT));
   const at = body.messages.findIndex((message) => message.role === "tool");
   assert.ok(at >= 0, `the tool's message: ${JSON.stringify(body.messages)}`);
   assert.deepEqual([body.messages[at].tool_call_id, body.messages[at].content], ["toolu_1", "the page"], "the tool's text, as its message");
@@ -69,7 +69,7 @@ test("OpenAI: a tool's result with text and a PNG reaches the model in the call'
 });
 
 test("a tool's result of text alone is sent as before, on OpenRouter and on OpenAI", async (t) => {
-  const routed = await sentFor(t, "openrouter/openai/gpt-5", { OPENROUTER_API_KEY: KEY }, answered([{ type: "text", text: "no image here" }]));
+  const routed = await sentFor(t, "openrouter/openai/gpt-6.1-sol", { OPENROUTER_API_KEY: KEY }, answered([{ type: "text", text: "no image here" }]));
   const tool = routed.messages.find((message) => message.role === "tool");
   assert.equal(tool.content, "no image here");
   assert.equal(routed.messages.at(-1), tool, "nothing attached after it");
