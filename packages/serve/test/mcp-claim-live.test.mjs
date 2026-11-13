@@ -29,12 +29,12 @@ async function registryOn(t) {
   return { store, clock, dir, registry };
 }
 
-/** The run's MCP for its claim, granted `server`'s add, and a call of it by id. `redact`: the run's redactor it holds
- *  every credential value with. */
+/** The run's MCP for its claim, granted `server`'s add, and a call of it by id. `redact.hold`: the run's redactor's hold, which
+ *  every credential value is handed to. */
 async function claimed(t, { store, dir }, server, redact) {
   const claim = await store.claim("run-1", "runner-a", { leaseMs: 10 * HOUR });
   // A runner beside a local install, as the CLI's is: the fake MCP server is on loopback.
-  const mcp = await mcpForClaim({ loopback: true, claim, store, sealKey: KEY, grants: [`mcp:${server}/add`], harness: { commit: async () => undefined }, work: () => dir, ...(redact ? { redact } : {}) });
+  const mcp = await mcpForClaim({ loopback: true, claim, store, sealKey: KEY, grants: [`mcp:${server}/add`], harness: { commit: async () => undefined }, work: () => dir, ...(redact ? { hold: redact.hold } : {}) });
   t.after(() => mcp.release());
   const add = mcp.tools.find((tool) => tool.name === `mcp__${server}__add`);
   return (callId) => add.call({ a: 2, b: 3 }, { callId, signal: new AbortController().signal });
