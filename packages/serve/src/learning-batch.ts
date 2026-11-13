@@ -536,7 +536,9 @@ export class LearningBatches {
       const key = ROW_KEY(h.id, row.n);
       let runId: string | undefined;
       try {
-        runId = await this.host.start(h.agent_id, { input: { content: contentOf(h.inputs, row.input) }, max_cost_usd: usd(h.max_cost_usd - h.spent_usd), ...(h.effort ? { effort: h.effort } : {}) }, key);
+        // Capped at what the batch has left, strict (cap.ts: every input token priced uncached), so no request of the run, a
+        // cache miss included, passes it: the batch's cap holds its runs, whatever the agent's own cap_mode.
+        runId = await this.host.start(h.agent_id, { input: { content: contentOf(h.inputs, row.input) }, max_cost_usd: usd(h.max_cost_usd - h.spent_usd), cap_mode: "strict", ...(h.effort ? { effort: h.effort } : {}) }, key);
       } catch (error) {
         // A start that failed after its run was made is that run's start: found by the key, the row is its.
         runId = await this.host.find(key);
