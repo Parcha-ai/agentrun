@@ -244,7 +244,9 @@ const js = `"use strict";
   // Keys, for both: a printable character typed goes as its char, everything else as its key. AltGr's character (which
   // Windows reports with Ctrl and Alt held) is text, not a shortcut; a dead key is left to finish as the composition or
   // the input it makes (compositionend, beforeinput).
+  var justComposed = null;
   function onKeyDown(e) {
+    justComposed = null;
     if (e.isComposing || e.keyCode === 229 || e.key === "Dead") return;
     if ((e.ctrlKey || e.metaKey) && (e.key === "v" || e.key === "V")) return;
     e.preventDefault();
@@ -259,13 +261,15 @@ const js = `"use strict";
     if (text) send({ type: "text", text: text });
   }
   [canvas, sink].forEach(function (el) { el.addEventListener("keydown", onKeyDown); el.addEventListener("paste", onPaste); });
-  sink.addEventListener("compositionend", function (e) { if (e.data) send({ type: "text", text: e.data }); sink.value = ""; });
+  sink.addEventListener("compositionend", function (e) { justComposed = e.data || null; if (e.data) send({ type: "text", text: e.data }); sink.value = ""; });
   // A soft keyboard (a phone's, a tablet's) sends keydown with keyCode 229 and no key, so its edits come as the sink's
   // beforeinput alone. A desktop's typed key never reaches here: onKeyDown's preventDefault cancels the beforeinput it
   // would have made. A composition's own steps are compositionend's, a paste the paste handler's.
   function sendKey(key) { send({ type: "key", action: "down", key: key, code: "", modifiers: 0 }); }
   var EDITS = {
-    insertText: function (e) { if (e.data) send({ type: "text", text: e.data }); },
+    // Some browsers follow compositionend with an insertText of the same word, with no key between: that repeat is the
+    // composition's, already sent; a key since (onKeyDown) or any other edit makes the same text a new one.
+    insertText: function (e) { if (e.data && e.data !== justComposed) send({ type: "text", text: e.data }); },
     // Autocorrect swapping a word the computer already has: as many Backspaces as the replaced range, then the new word.
     insertReplacementText: function (e) {
       var text = e.data || (e.dataTransfer ? e.dataTransfer.getData("text/plain") : "");
@@ -284,6 +288,7 @@ const js = `"use strict";
     if (!edit || e.isComposing) return;
     e.preventDefault();
     edit(e);
+    justComposed = null;
   });
   // Whatever a keyboard put in the sink that no beforeinput took (one it could not cancel) is let go, never sent twice.
   sink.addEventListener("input", function (e) { if (!e.isComposing) sink.value = ""; });

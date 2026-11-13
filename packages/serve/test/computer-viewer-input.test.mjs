@@ -119,6 +119,17 @@ test("a composition's steps are left to compositionend: the word goes once", () 
   assert.deepEqual(sent, [{ type: "text", text: "word" }]);
 });
 
+test("an insertText that repeats the composition just ended sends nothing; a different one still sends", () => {
+  const { sent, sink } = viewer("android");
+  sink.dispatch("compositionend", { data: "word" });
+  sink.dispatch("beforeinput", { inputType: "insertText", isComposing: false, data: "word" });
+  assert.deepEqual(sent, [{ type: "text", text: "word" }]);
+  sink.dispatch("compositionend", { data: "word" });
+  sink.dispatch("beforeinput", { inputType: "insertText", isComposing: false, data: "other" });
+  sink.dispatch("beforeinput", { inputType: "insertText", isComposing: false, data: "word" });
+  assert.deepEqual(sent.map((m) => m.text), ["word", "word", "other", "word"]);
+});
+
 test("a desktop's typed key goes once, as its char: its keydown is cancelled, so no beforeinput types it again", () => {
   const { sent, press } = viewer("desktop");
   const typed = press({ key: "a", code: "KeyA", keyCode: 65 }, { inputType: "insertText", data: "a" });
