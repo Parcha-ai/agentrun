@@ -5,10 +5,12 @@
 // account. A map that cannot be read says the check could not be made: it never guesses either way. The warning is one of
 // the grants.<tool> family, beside a tool the server denies.
 import assert from "node:assert/strict";
-import { randomBytes } from "node:crypto";
+import { generateKeyPairSync, randomBytes } from "node:crypto";
 import { mkdir } from "node:fs/promises";
+import { createServer } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
+import { GitHubConnect } from "../dist/github-connection.js";
 import { appPermissionWarnings, TOOL_PERMISSIONS } from "../dist/template-github-permissions.js";
 import { openSqliteStore } from "../dist/store/sqlite/store.js";
 import { scratch, serve, withEnv } from "./support.mjs";
@@ -42,6 +44,83 @@ test("a permissions map that could not be read says the check could not be made,
   const warned = await appPermissionWarnings(RELEASE_NOTES, onApp, reads({ unreadable: "GitHub gave no permissions for the installation on acme (HTTP 502)" }));
   assert.deepEqual(warned, [{ field: "grants.mcp:github/issue_write", reason: "not_set_up_here", message: "mcp:github/issue_write needs Issues: write of the GitHub App, and this server could not check whether it has it (GitHub gave no permissions for the installation on acme (HTTP 502)): if release-notes can't use it, it keeps its draft in its answer." }]);
   assert.ok(!warned[0].message.includes("refuses"), "never says GitHub refuses it");
+});
+
+/** A GitHub whose GET /app/installations/{id} answers as `routes[id]` says: {status, body} at once, or {hang: true} never.
+ *  The connection reads it as the App's installations `accounts` (id n is account `a<n>`). */
+async function githubWith(t, routes) {
+  const seen = [];
+  let open = 0;
+  let peak = 0;
+  const server = createServer((req, res) => {
+    const id = Number(/\/app\/installations\/(\d+)$/.exec(req.url ?? "")?.[1]);
+    seen.push(id);
+    const route = routes[id];
+    if (!route || route.hang) {
+      open++;
+      peak = Math.max(peak, open);
+      res.on("close", () => open--);
+      return;
+    }
+    res.writeHead(route.status, { "content-type": "application/json" }).end(JSON.stringify(route.body));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => (server.closeAllConnections(), server.close(resolve))));
+  const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const pem = privateKey.export({ type: "pkcs8", format: "pem" });
+  const installations = Object.keys(routes).map((id) => ({ id: Number(id), account: `a${id}` }));
+  const connect = new GitHubConnect({ credentials: () => ({ appId: "1", pem }), view: () => ({ installations }) }, { api: `http://127.0.0.1:${server.address().port}`, say: () => {} });
+  const warned = (limits) => appPermissionWarnings(RELEASE_NOTES, onApp, () => connect.installationPermissions(undefined, limits));
+  return { connect, warned, seen, peak: () => peak };
+}
+const ok = (permissions) => ({ status: 200, body: { permissions } });
+
+test("many slow installations: the permissions read answers within its limit, reads four at a time, and says the unread accounts could not be checked", { timeout: 60_000 }, async (t) => {
+  const routes = {};
+  for (let id = 1; id <= 20; id++) routes[id] = id <= 6 ? ok({ issues: "write" }) : { hang: true };
+  const { warned, seen, peak } = await githubWith(t, routes);
+  const started = Date.now();
+  const warnings = await warned({ withinMs: 400 });
+  assert.ok(Date.now() - started < 3000, `answered in ${Date.now() - started} ms`);
+  assert.equal(warnings.length, 1, JSON.stringify(warnings));
+  assert.equal(warnings[0].reason, "not_set_up_here");
+  assert.match(warnings[0].message, /could not check whether it has it on a7, a8, a9, .*, a19, a20 \(no answer within 0\.4 s\): if release-notes can't use it there, it keeps its draft/);
+  assert.ok(!warnings[0].message.includes("a1 ") && !warnings[0].message.includes("a6 "), "the accounts that were read are not named as unread");
+  assert.equal(seen.length, 10, "the ten that were reached before the limit; the rest were never asked");
+  assert.ok(peak() <= 4, `at most four reads open at once, saw ${peak()}`);
+});
+
+test("installation readers: a refusal, a missing map or an unknown level leaves that account unchecked, admin counts as write", async (t) => {
+  const good = ok({ issues: "write" });
+  const cases = [
+    ["a non-200 (404)", { status: 404, body: { message: "Not Found" } }, /could not check whether it has it on a2 \(GitHub gave no permissions for the installation on a2 \(HTTP 404\)\)/],
+    ["a 502 whose body still carries a map", { status: 502, body: { permissions: { issues: "write" } } }, /on a2 \(GitHub gave no permissions for the installation on a2 \(HTTP 502\)\)/],
+    ["a 200 with no permissions map", { status: 200, body: { id: 2 } }, /on a2 \(GitHub gave no permissions for the installation on a2 \(HTTP 200\)\)/],
+    ["a permissions map that is not an object", { status: 200, body: { permissions: "write" } }, /on a2 \(GitHub gave no permissions for the installation on a2 \(HTTP 200\)\)/],
+    ["a level it does not know", ok({ issues: "triage" }), /on a2 \(GitHub gave a level this server does not know for issues on a2\)/],
+  ];
+  for (const [what, bad, said] of cases) {
+    const { warned } = await githubWith(t, { 1: good, 2: bad });
+    const warnings = await warned();
+    assert.equal(warnings.length, 1, `${what}: ${JSON.stringify(warnings)}`);
+    assert.equal(warnings[0].reason, "not_set_up_here", what);
+    assert.match(warnings[0].message, said, what);
+    assert.ok(!warnings[0].message.includes("refuses"), `${what}: never says GitHub refuses it`);
+  }
+  // Every installation unreadable: the whole check could not be made, with the reason.
+  const none = await githubWith(t, { 1: { status: 500, body: null } });
+  assert.match((await none.warned())[0].message, /could not check whether it has it \(GitHub gave no permissions for the installation on a1 \(HTTP 500\)\)/);
+  // An unreadable account beside one short of the permission: both said, apart.
+  const mixed = await githubWith(t, { 1: ok({ issues: "read" }), 2: { status: 404, body: {} } });
+  const both = await mixed.warned();
+  assert.deepEqual(both.map((w) => w.reason), ["not_allowed", "not_set_up_here"]);
+  assert.match(both[0].message, /has Issues: read on a1, so GitHub refuses it/);
+  // GitHub's `admin` is write: it holds Issues: write, and is not named as short.
+  const admin = await githubWith(t, { 1: ok({ issues: "admin" }), 2: good });
+  assert.deepEqual(await admin.warned(), []);
+  // A map with the permission missing says it has none.
+  const bare = await githubWith(t, { 1: ok({ metadata: "read" }) });
+  assert.match((await bare.warned())[0].message, /has no Issues permission on a1, so GitHub refuses it/);
 });
 
 /** A server whose MCP server `github` is saved as `auth` (its row put in the store before the server starts: on the

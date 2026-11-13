@@ -13,7 +13,7 @@ export type Level = "read" | "write";
 
 /** What the App's installations hold, as GitHub says now: each one's account and permissions map; or why it could not be
  *  read (in words that end a sentence's clause, with no full stop). */
-export type Held = { readonly installations: readonly { readonly account: string; readonly permissions: Readonly<Record<string, Level>> }[] } | { readonly unreadable: string };
+export type Held = { readonly installations: readonly { readonly account: string; readonly permissions: Readonly<Record<string, Level>> }[]; readonly unread?: readonly { readonly account: string; readonly why: string }[] } | { readonly unreadable: string };
 
 /** Each GitHub MCP tool a template may grant that needs more than reading what the App's metadata gives: the permission
  *  and level GitHub's permission table for its request names, and what the template does instead when it can't. */
@@ -51,9 +51,17 @@ export async function appPermissionWarnings(pkg: { name: string; mcp: readonly M
       continue;
     }
     const short = map.installations.filter((installation) => !holds(installation.permissions[wants.permission], wants.level));
-    if (!short.length) continue;
-    const holding = short.map(({ account, permissions }) => `${permissions[wants.permission] ? `${label}: ${permissions[wants.permission]}` : `no ${label} permission`} on ${account}`).join(", ");
-    warnings.push({ field: `grants.${name}`, reason: "not_allowed", message: `${name} needs ${label}: ${wants.level}, and this server's GitHub App has ${holding}, so GitHub refuses it: ${pkg.name} ${wants.instead}. The App's owner can add ${label}: ${wants.level} to it on GitHub.` });
+    if (short.length) {
+      const holding = short.map(({ account, permissions }) => `${permissions[wants.permission] ? `${label}: ${permissions[wants.permission]}` : `no ${label} permission`} on ${account}`).join(", ");
+      warnings.push({ field: `grants.${name}`, reason: "not_allowed", message: `${name} needs ${label}: ${wants.level}, and this server's GitHub App has ${holding}, so GitHub refuses it: ${pkg.name} ${wants.instead}. The App's owner can add ${label}: ${wants.level} to it on GitHub.` });
+    }
+    // Installations whose map was not read in time or at all: said apart, never passed as holding it.
+    if (map.unread?.length) {
+      const byReason = new Map<string, string[]>();
+      for (const { account, why } of map.unread) byReason.set(why, [...(byReason.get(why) ?? []), account]);
+      const unread = [...byReason].map(([why, accounts]) => `${accounts.join(", ")} (${why})`).join("; ");
+      warnings.push({ field: `grants.${name}`, reason: NOT_SET_UP, message: `${name} needs ${label}: ${wants.level} of the GitHub App, and this server could not check whether it has it on ${unread}: if ${pkg.name} can't use it there, it ${wants.instead}.` });
+    }
   }
   return warnings;
 }
