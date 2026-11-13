@@ -210,8 +210,11 @@ The result:
   that takes real input only, and the driver cannot always tell: such a step answers `verified: false`. A step the
   driver knows needs the foreground route, in a call without `foreground: true`, is refused `denied`.
 - A step that may not run answers `{"error": {"kind", "message"}}`, and it is the last result: the steps after it do
-  not run. Its kinds: `stale`, `invalid`, `denied`, `unsupported`, `not_found`, `timeout`, `limit`, `refused`. A
-  step on a disabled control by its ref is refused `refused`: a field's text never goes to whatever has the focus.
+  not run. Its kinds: `stale`, `invalid`, `denied`, `unsupported`, `not_found`, `timeout`, `limit`, `refused`,
+  `aborted`. A person who takes the computer back stops the act with `aborted` and nothing sent: before a step would
+  take the foreground route, and before every step once one took it, the person's keyboard or mouse used since the
+  act began, or the pointer moved from where the act last left it, ends the act there, as it ends an `input.actions`
+  batch. A step on a disabled control by its ref is refused `refused`: a field's text never goes to whatever has the focus.
   For the same reason, a `type` into a ref that is not a text field is refused `refused` with nothing sent, and a
   driver that focuses a field before typing (a tap) checks the field took the focus, else refuses `refused` with
   nothing typed.

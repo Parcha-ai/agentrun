@@ -287,7 +287,7 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
      *  of its secret, which the first answer showed once. */
     createTrigger: (body: TriggerCreate, key: string) => call<TriggerMade>("POST", "/triggers", { body, headers: { "idempotency-key": key } }),
     /** A webhook trigger's new signing secret, shown this once; the old one signs nothing from now on. */
-    rotateTriggerSecret: (id: string) => call<TriggerSecret>("POST", `${trigger(id)}/secret`, { body: {} }),
+    rotateTriggerSecret: (id: string, body: { secret?: string } = {}) => call<TriggerSecret>("POST", `${trigger(id)}/secret`, { body }),
     updateTrigger: (id: string, body: TriggerInput) => call<Trigger>("PATCH", trigger(id), { body }),
     deleteTrigger: (id: string) => call<unknown>("DELETE", trigger(id)),
     /** Runs a schedule now: `key` is the click's own Idempotency-Key, so the same click sent again fires once. */

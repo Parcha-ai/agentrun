@@ -1863,6 +1863,21 @@ delivery on the payload's tag, for tracing. A request that carries no scheme's s
 one, or is signed under a scheme other than its trigger's, is the same `401` as a bad signature, and the headers are
 checked before the body is read.
 
+`composio` takes [Composio](https://composio.dev) trigger events. Register the trigger's `hook_url` as Composio's webhook
+subscription (`POST /api/v3.1/webhook_subscriptions` with `enabled_events: ["composio.trigger.message"]`); Composio
+answers with a `secret` it makes, which you give here, whole and as Composio shows it, with `POST /v2/triggers/{id}/secret`
+and the body `{"secret": "..."}` (the same call replaces it when you rotate it in Composio). A composio trigger is made with no
+secret (the URL carries its id, so Composio can only make the secret after); until one is set every request is refused. It is sealed as a minted one is and never shown again; this server never
+makes one for a composio trigger. Composio signs as Standard Webhooks does (`webhook-id`, `webhook-timestamp`, `webhook-signature`) but keyed by the
+UTF-8 bytes of that secret string, not a decoded `whsec_` key, which is why a `standard` trigger cannot take it. The
+firing's key is `webhook-id`, the event is the body's `metadata.trigger_slug`, so `accept: [{"event":
+"GITHUB_ISSUE_ADDED_EVENT"}]` takes one Composio trigger's events, and a rule's `where` pointers read the payload under
+`/data`. The subscription also delivers account events (`composio.connected_account.expired`,
+`composio.connected_account.activated`, `composio.trigger.disabled`), signed the same way, with no slug: their event is the
+body's top-level `type`, so `accept` can take them too. A Composio project's subscription posts every event to the one URL it names, so it fires that one composio
+trigger and its agent: other triggers never see those deliveries, whatever their `accept`. The tag also names
+`trigger_id` and `user_id`.
+
 `accept` makes a trigger take only the events it names, from the delivery alone:
 
 ```json
