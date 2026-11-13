@@ -7,10 +7,13 @@
 // daemon is reached, nothing is pulled or built, and no box provider is called.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import { enabledBoxes, placeOffers, remoteNoList, withNetworks } from "../dist/place-offers.js";
+import { dockerHost } from "./docker-host-fake.mjs";
 import { client, follow, jsonLines, printed, scratch, serve, withEnv } from "./support.mjs";
 
 const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
@@ -59,13 +62,15 @@ const until = async (done, what, ms = 30_000) => {
   }
 };
 
-// SKIP (follow-up #2080): on the runner the Docker box is a computer (computerd in a container the computer package
-// makes), which this fake docker cannot stand in for: it answers the image's arch with its version, refuses the image's
-// stdin recipe, and answers `docker info` in the probe's format, not JSON; and the computer package's own fake
-// (docker-host-fake.mjs) answers the daemon's hello and no file call, so no bash runs. The demo needs a fake that serves
-// computerd's file and exec calls, or a real Docker (the computer package's docker suite has one in CI).
-test.skip("demo through the API: with AGENTRUN_BOXES not set and Docker answering, docker is on by default; a new agent is saved in the Docker box with bash, and its run writes out.txt there", { timeout: 120_000 }, async (t) => {
-  const docker = await fakeDocker(t, undefined);
+// The Docker box is a computer (computerd in a container the computer package makes). This demo runs over the computer
+// package's fake docker with its fake computerd (docker-host-fake.mjs, computerd: true): the run's bash runs in the
+// computer's folders, /workspace the run's folder. The Go daemon file is only copied and bound, never run.
+const DAEMON = fileURLToPath(new URL("../../computer/dist/computerd-linux-amd64", import.meta.url));
+const NO_COMPUTERD_FILE = !existsSync(DAEMON) &&"no computerd-linux-amd64: run npm run build:daemon -w @parcha/agentrun-computer (CI's build job does)";
+test("demo through the API: with AGENTRUN_BOXES not set and Docker answering, docker is on by default; a new agent is saved in the Docker box with bash, and its run writes out.txt there", { timeout: 120_000, skip: NO_COMPUTERD_FILE }, async (t) => {
+  const host = dockerHost({ computerd: true });
+  withEnv(t, { PATH: `${host.dir}:${process.env.PATH}` }, ["AGENTRUN_BOXES", "AGENTRUN_DOCKER_IMAGE", "AGENTRUN_BOX_ALLOW", "DAYTONA_API_KEY"]);
+  const docker = { calls: host.calls };
   const server = await serve(t, { faux: PROBE });
   const { api } = server;
   const places = await placesOf(api);
@@ -84,7 +89,11 @@ test.skip("demo through the API: with AGENTRUN_BOXES not set and Docker answerin
   assert.equal(run.status, 202, JSON.stringify(run.body));
   assert.deepEqual(run.body.place, DOCKER);
   await follow(api, run.body.run_id, ["completed"], { deadlineMs: 60_000 });
-  assert.ok(docker.calls().some((args) => args[0] === "exec" && args.join(" ").includes("out.txt")), "bash ran in the box, through docker exec");
+  // The command travels as a computerd call over `docker exec -i <computer> computerd stdio`, never in the argv: bash ran in
+  // the box when its computer was made for this run and attached by that exec, and the file it wrote is the run's, read below.
+  const computer = docker.calls().find((args) => args[0] === "run" && args.includes(`agentrun.run=${run.body.run_id}`) && args.includes("agentrun.computer=1"));
+  assert.ok(computer, "the run's computer was made in Docker");
+  assert.ok(docker.calls().some((args) => args[0] === "exec" && args.includes(computer[computer.indexOf("--name") + 1]) && args.at(-1) === "stdio"), "bash ran in the box, through docker exec of its computerd");
   assert.equal((await api("GET", `/runs/${run.body.run_id}/files/out.txt`)).body, "hello from the box\n");
 });
 

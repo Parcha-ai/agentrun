@@ -190,7 +190,7 @@ export function egressVolume({ computer, deadline = new Date(Date.now() + 600_00
  * create already under way; `late()`
  * reads its marks. `sticky` lists name endings of containers `docker rm` never removes.
  */
-export function fakeDocker({ running = true, gone = false, containers = [], patch = {}, hello = {}, arch = "x86_64", info = {}, vanish = [], noDaemon = false, user, hold = [], desktop, display = "up", binds = {}, daemonMode = 0o755, daemonCache, volumes = [], egress = "ready", proxyPatch = {}, proxyLocal, egressOptions, endpoint = "unix:///var/run/docker.sock", images, pull = "ok", volume, volumeRoots = {}, lateRun = null, sticky = [] } = {}) {
+export function fakeDocker({ running = true, gone = false, containers = [], patch = {}, hello = {}, arch = "x86_64", info = {}, vanish = [], noDaemon = false, user, hold = [], desktop, display = "up", binds = {}, daemonMode = 0o755, daemonCache, volumes = [], egress = "ready", proxyPatch = {}, proxyLocal, egressOptions, endpoint = "unix:///var/run/docker.sock", images, pull = "ok", volume, volumeRoots = {}, lateRun = null, sticky = [], computerd = false } = {}) {
 	const dir = mkdtempSync(join(tmpdir(), "computer-fake-docker-"));
 	dirs.push(dir);
 	const log = join(dir, "calls.jsonl");
@@ -207,7 +207,10 @@ export function fakeDocker({ running = true, gone = false, containers = [], patc
 	writeFileSync(daemonPath, DAEMON_BYTES);
 	chmodSync(daemonPath, daemonMode);
 	const program = join(dir, "docker");
-	const config = JSON.stringify({ dir, log, state, volumeState, imageState, volumeRoots, lateRun, sticky, pull, running, gone, patch, binds, egress, proxyPatch, proxyLocal: proxyLocal ?? null, endpoint, hello: { ...HELLO, ...hello },
+	// With `computerd`, every call but hello and ping goes to a fake computerd (fake-computerd.mjs) the fake's `run` starts for
+	// each computer: exec, files and processes run on this machine in the computer's own folders, over the real protocol.
+	const computerdModule = computerd ? fileURLToPath(new URL("./fake-computerd.mjs", import.meta.url)) : null;
+	const config = JSON.stringify({ computerd: computerdModule, dir, log, state, volumeState, imageState, volumeRoots, lateRun, sticky, pull, running, gone, patch, binds, egress, proxyPatch, proxyLocal: proxyLocal ?? null, endpoint, hello: { ...HELLO, ...hello },
 		info: { Architecture: arch, SecurityOptions: ["name=seccomp,profile=builtin", "name=cgroupns"], MemoryLimit: true, SwapLimit: true, PidsLimit: true, CPUCfsQuota: true, CPUCfsPeriod: true, ServerVersion: "29.0.0", ...info },
 		vanish, noDaemon, hold, display, desktopHello: { ...HELLO, ...hello, kind: "desktop", groups: [...HELLO.groups, "screen", "input.pointer", "input.keys"] } });
 	writeFileSync(
@@ -362,6 +365,15 @@ switch (args[0]) {
 		made.Mounts[0].RW = !("readonly" in mount);
 		if (!config.running) Object.assign(made.State, { ExitCode: 127, Error: "exec format error" });
 		if (flags["--cpus"]) made.HostConfig.NanoCpus = Math.round(Number(flags["--cpus"][0]) * 1e9);
+		if (config.computerd) {
+			// The computer's init: a detached process listening on a socket of its own, which exec of computerd stdio bridges to.
+			const socket = config.dir + "/" + made.Id.slice(0, 10) + ".sock";
+			const env = Object.fromEntries(made.Config.Env.map((pair) => [pair.slice(0, pair.indexOf("=")), pair.slice(pair.indexOf("=") + 1)]));
+			const mounts = made.Mounts.filter((m) => m.Type === "bind" && m.Destination !== "/opt/agentrun/computerd").map((m) => ({ src: m.Source, dst: m.Destination }));
+			const init = require("node:child_process").spawn(process.execPath, [config.computerd, socket, JSON.stringify({ mounts, root: config.dir + "/fs/" + made.Id.slice(0, 10), env })], { detached: true, stdio: "ignore", env: { PATH: process.env.PATH } });
+			init.unref();
+			made.Computerd = { pid: init.pid, socket };
+		}
 		commit(merge(made, config.patch), "computer");
 		break;
 	}
@@ -386,6 +398,8 @@ switch (args[0]) {
 		if (config.gone) noSuch(args.at(-1));
 		const all = load();
 		const found = find(all, args.at(-1));
+		// The computer's own init (config.computerd), and every process it started, end with it.
+		if (found?.Computerd && !(args[0] === "rm" && config.sticky.some((ending) => found.Name.endsWith(ending)))) { try { process.kill(found.Computerd.pid, "SIGTERM"); } catch {} }
 		// config.sticky: name endings of containers rm never removes, ones Docker keeps (a daemon stuck in its removal).
 		if (args[0] === "rm" && !(found && config.sticky.some((ending) => found.Name.endsWith(ending)))) save(all.filter((c) => c !== found));
 		else if (found) { found.State.Running = false; save(all); }
@@ -452,12 +466,19 @@ switch (args[0]) {
 	case "exec": {
 		if (config.noDaemon) { process.stderr.write("OCI runtime exec failed: no such file or directory\\n"); process.exit(126); }
 		let buffered = "";
+		// With config.computerd, computerd stdio bridges to the computer's init: every line but hello and ping goes to it
+		// as it is, and its replies come back as they are.
+		const init = config.computerd ? find(load(), args[args.indexOf("stdio") - 2] ?? "")?.Computerd : undefined;
+		const bridge = init ? require("node:net").connect(init.socket) : undefined;
+		if (bridge) { bridge.on("error", () => process.exit(1)); bridge.pipe(process.stdout); bridge.on("close", () => process.exit(0)); }
 		process.stdin.on("data", (chunk) => {
 			buffered += chunk;
 			let at;
 			while ((at = buffered.indexOf("\\n")) >= 0) {
-				const request = JSON.parse(buffered.slice(0, at));
+				const line = buffered.slice(0, at);
+				const request = JSON.parse(line);
 				buffered = buffered.slice(at + 1);
+				if (bridge && request.method !== "hello" && request.method !== "ping") { bridge.write(line + "\\n"); continue; }
 				const answer = (result) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: request.id, result }) + "\\n");
 				if (config.display === "stalls" && existsSync(config.dir + "/started.jsonl")) continue;
 				const up = existsSync(config.dir + "/display-up");
