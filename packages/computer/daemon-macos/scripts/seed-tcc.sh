@@ -38,6 +38,9 @@ for service in kTCCServiceAccessibility kTCCServiceScreenCapture kTCCServicePost
 	seed "$system_db" "$service" sudo
 	seed "$user_db" "$service" ""
 done
+# Calendar's AppleScript reads the calendar store on behalf of the process that sent the event: the demos' snapshot
+# waited on it with no answer on a runner without this.
+seed "$user_db" kTCCServiceCalendar ""
 
 # Automation (Apple events) from Computerd to the demos' five apps: mini-demos.py makes and removes each task's sandbox
 # by AppleScript through Computerd's exec.run. A row names the target too, by bundle id and its code requirement.

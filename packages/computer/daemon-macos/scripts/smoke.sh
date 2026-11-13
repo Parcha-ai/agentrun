@@ -67,4 +67,9 @@ fi
 # The Mac mini's demo tasks (mini-demos.py), recorded: reported, and not yet a verdict here, since a runner's apps are
 # fresh each time (first-run sheets, no account).
 python3 -I "$here/mini-demos.py" "$app/Contents/Helpers/computerd" "$home" "$home/demos" || echo "the demo tasks failed: see above"
+# What TCC decided for Computerd and the demos' apps while they ran: a grant the sandbox's AppleScript needs and the
+# runner lacks shows here as a request with no answer.
+echo "TCC, the last 15 minutes:"
+log show --last 15m --style compact --predicate 'subsystem == "com.apple.TCC" AND (eventMessage CONTAINS[c] "computerd" OR eventMessage CONTAINS[c] "osascript")' 2>&1 \
+	| grep -E 'kTCCService|AUTHREQ|auth_value|Prompting|denied|allowed' | tail -60
 exit $((smoke || conformance))
