@@ -66,6 +66,13 @@ test("the series as CSV: a header line, one row a run, an unknown figure empty, 
   ].join("\r\n"));
 });
 
+test("the series as CSV: a text cell a spreadsheet would run as a formula opens as its text", () => {
+  const runs = series([["workflow", 0.1], ["workflow", 0.1], ["workflow", 0.1], ["workflow", 0.1]]);
+  ["=1+1", "+cmd", "-2", "@SUM(A1)"].forEach((name, i) => { runs[i].workflow = name; });
+  const cells = costCsv(runs).split("\r\n").slice(1, 5).map((line) => line.split(",")[4]);
+  assert.deepEqual(cells, ["'=1+1", "'+cmd", "'-2", "'@SUM(A1)"]);
+});
+
 const DESCRIPTION = "Answers a question as a number; use when the person asks for the answer";
 /** Agent `id`'s learning folder made as a first run makes it, then learned workflow `name` committed on main. */
 async function landFlow(data, id, name) {
@@ -101,7 +108,7 @@ test("GET /agents/{id}/learning/cost: the agent's runs in order, by hand until a
   const alone = await runOf("Use the learned workflow answer on What is six times seven.");
   const back = await runOf("Use the learned workflow absent on What is two.");
   const body = await cost();
-  assert.deepEqual(body.runs.map((run) => [run.n, run.run_id, run.path, run.workflow]), [[1, byHand[0], "agent", null], [2, byHand[1], "agent", null], [3, alone, "workflow", "answer"], [4, back, "handed_back", "absent"]]);
+  assert.deepEqual(body.runs.map((run) => [run.n, run.run_id, run.path, run.workflow]), [[1, byHand[0], "agent", null], [2, byHand[1], "agent", null], [3, alone, "workflow", "answer"], [4, back, "handed_back", null]], "a name the launch never offered (the model's own text) is never shown");
   assert.deepEqual([body.runs[2].learned_revision, body.runs[3].learned_revision], [sha, sha], "the commit its learning started from");
   for (const run of body.runs) {
     const { learning } = await savedOf(data, run.run_id);

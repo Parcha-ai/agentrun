@@ -216,11 +216,15 @@ async function journalReadsOf(store: Store, run: { readonly id: string; readonly
       read: final && started?.given.length ? notesReadOf(started.given, await runReflect(store, run.id, BACKGROUND_CONTEXT), rows) : [],
       laid: offered ? laidOf(entries) : undefined,
       path,
-      workflow: path === "agent" ? null : workflowNameOf([...callArgsOf(entries).values()]),
+      // Only a name the launch offered: a call's raw `name` (a failed call's included) is the model's text, never shown.
+      workflow: path === "agent" ? null : offeredName(workflowNameOf([...callArgsOf(entries).values()]), started?.workflows),
     };
   };
   return final ? settledJournalReads(store, run.id, run.epoch, journal) : journal();
 }
+
+/** `name` when it is one of the learned workflows the run's launch offered, else null. */
+const offeredName = (name: string | null, offered: readonly string[] | undefined) => (name !== null && offered?.includes(name) ? name : null);
 
 /** What a settled run's journal tells the agent's learning view, kept by store and run id with the run's epoch: a claim
  *  and a run's end each move the epoch, and only a claim writes to its journal, so a settled run's reads hold until the

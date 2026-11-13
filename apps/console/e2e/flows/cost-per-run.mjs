@@ -2,7 +2,7 @@
 // on, its GET /v2/agents/{id}/learning/cost answered with the console's invented sample (src/components/CostPerRun.sample.json:
 // 80 runs of an invoice-sorter agent whose learned workflow takes over at run 21). The chart lays out inside its card at
 // each width (no label past the plot's right edge), names the takeover and how many times cheaper, and a hover shows a
-// run's readout. E2E_SHOTS=<dir> also saves each width and theme.
+// run's readout. E2E_SHOTS=<dir> also saves each width and theme, before and during the hover.
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { check } from "../harness.mjs";
@@ -52,6 +52,7 @@ export default {
         if (m.plotWidth > m.cardWidth + 0.5) wrong.push(`${theme} ${width}px: the plot is ${m.plotWidth}px in a ${m.cardWidth}px card`);
         for (const t of m.past) wrong.push(`${theme} ${width}px: "${t}" runs past the plot`);
         // A hover two thirds of the way along: a run after the takeover, by the learned workflow.
+        if (shots) await card.screenshot({ path: join(shots, `cost-per-run-${theme}-${width}.png`) });
         const plot = card.locator("svg[aria-hidden]").last();
         await plot.scrollIntoViewIfNeeded();
         const box = await plot.boundingBox();
@@ -60,7 +61,7 @@ export default {
         await tip.waitFor({ timeout: 5000 }).catch(async (e) => { if (shots) await page.screenshot({ path: join(shots, "failed.png"), fullPage: true }); throw e; });
         const said = await tip.textContent();
         check(/^Run \d+\$[\d.]+ all-in/.test(said ?? "") && /Learned revision [0-9a-f]{7}/.test(said ?? ""), `${theme} ${width}px: the hover says ${said}`);
-        if (shots) await card.screenshot({ path: join(shots, `cost-per-run-${theme}-${width}.png`) });
+        if (shots) await card.screenshot({ path: join(shots, `cost-per-run-${theme}-${width}-hover.png`) });
         await page.mouse.move(0, 0);
       }
     }

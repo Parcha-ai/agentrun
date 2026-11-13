@@ -3056,7 +3056,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         await needAgent(id);
         // The agent's cost per run over the one store (agentCostOverStore): each ended run's figures and path, aggregates only.
         const { limit, csv } = learningCostQuery(url);
-        const cost = await agentCostOverStore(store, id, limit);
+        const read = await agentCostOverStore(store, id, limit);
+        // Each workflow's name as the other learning reads show it: one that holds a secret or a sign-in's value is cut.
+        const shown = await learningShown(id);
+        const cost = { ...read, runs: read.runs.map((run) => (run.workflow === null ? run : { ...run, workflow: shown.name(run.workflow) })) };
         if (csv) {
           res.writeHead(200, { "content-type": "text/csv; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff", "content-disposition": `attachment; filename="${id}-cost-per-run.csv"` });
           return void res.end(costCsv(cost.runs));
