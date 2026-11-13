@@ -257,17 +257,25 @@ const completedRun = (run: { readonly state: string; readonly outcome: string | 
 const TRACE_CALLS = 20;
 const TRACE_TEXT = 600;
 
-/** One earlier run as the compile turn reads it (learn/compile.ts CompileTrace), from its timeline (the end-of-run turn's
- *  rows, LEARNING_LABEL, left out): its first message, each tool call its job made at the top level, its answer, and each
- *  message after the first (a person's follow-up: their feedback); every text cut of `refuse` and every secret's shape. */
+/** One earlier run as the compile turn reads it (learn/compile.ts CompileTrace), from its timeline (traceFrom). */
 export async function traceOf(store: Store, runId: string, refuse: readonly string[]): Promise<CompileTrace> {
-  const rows = (await runTimeline(store, runId, BACKGROUND_CONTEXT, { settled: false })).filter((row) => row.agent_label !== LEARNING_LABEL);
+  return traceFrom(await runTimeline(store, runId, BACKGROUND_CONTEXT, { settled: false }), refuse);
+}
+
+/** A run's trace from its timeline rows, the end-of-run turn's (LEARNING_LABEL) left out: its first message (the
+ *  person's, or a trigger's firing: what it was asked), each tool call its job made at the top level, its answer, and
+ *  each message the person sent after the first (`user_message`: their feedback), never the server's words (an
+ *  approval's resume, which can carry a call's result, a raised cap's follow-up, a hand-back) or a trigger's; every text
+ *  cut of `refuse` and every secret's shape. */
+export function traceFrom(timeline: readonly TimelineEvent[], refuse: readonly string[]): CompileTrace {
+  const rows = timeline.filter((row) => row.agent_label !== LEARNING_LABEL);
   const cut = (text: string | null | undefined) => redactSecrets(String(text ?? ""), refuse, Number.POSITIVE_INFINITY).replace(/\s+/g, " ").trim().slice(0, TRACE_TEXT);
-  const messages = rows.filter(isMessageRow).map((row) => cut(row.text ?? row.summary));
+  const messages = rows.filter(isMessageRow);
   const failed = new Set(rows.filter((row) => row.kind === "tool_result" && row.tool_status === "failed").map((row) => row.tool_use_id));
   const calls = rows.filter((row) => row.kind === "tool_use" && !row.parent_tool_use_id).slice(0, TRACE_CALLS).map((row) => ({ tool: cut(row.tool_name), input: cut(row.tool_input_preview), ...(failed.has(row.tool_use_id) ? { failed: true as const } : {}) }));
   const answer = rows.findLast((row) => row.kind === "final_answer")?.text;
-  return { input: messages[0] ?? "", calls, answer: cut(answer), feedback: messages.slice(1) };
+  const first = messages[0];
+  return { input: first ? cut(first.text ?? first.summary) : "", calls, answer: cut(answer), feedback: messages.slice(1).filter((row) => row.kind === "user_message").map((row) => cut(row.text ?? row.summary)) };
 }
 
 /** The compile turn's facts for run `runId` of agent `agentId` (learn/compile.ts): a revision of the learned workflow
