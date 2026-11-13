@@ -5,8 +5,8 @@
 The core checks must pass: hello, ping, exec, files, apps, the socket's peer check, and each grant-bound method either
 working or refused in words that name the grant. With the grants in place (seed-tcc.sh), it also drives TextEdit in the
 background: open a document without bringing it forward, observe it, type into it, and expect the text. Then the ui
-fixture (UIFixture.app, when installed): its elements, an expect, and its canvas, which only foreground input reaches;
-and input.actions on the keyboard and mouse against the same app as the desktop input fixture (--input-log).
+fixture (UIFixture.app, when installed): its elements, an expect, its canvas, which only foreground input reaches, and
+a press on Close that closes its last window; and input.actions on the keyboard and mouse against the same app as the desktop input fixture (--input-log).
 Those live results are reported, and fail the run only with SMOKE_STRICT_LIVE=1. A summary goes to $GITHUB_STEP_SUMMARY.
 """
 
@@ -221,6 +221,14 @@ def fixture(c):
     final = count()
     landed = after is not None and final is not None and int(final) == int(after) + 1
     record("fixture", "a canvas click with foreground: true lands and verifies", landed and step.get("verified") is True, f"{json.dumps(allowed.get('error') or step)} count {after} -> {final}")
+
+    # A press that closes the app's last window ran, and the act says the window closed: no state, no error.
+    if "close" in by:
+        closed = c.call("ui.act", {"target": {"app": FIXTURE}, "steps": [{"press": by["close"]["ref"]}]})
+        r = closed.get("result") or {}
+        step = (r.get("steps") or [{}])[0]
+        ok = r.get("window") == "closed" and "state" not in r and "route" in step and step.get("verified") is True
+        record("fixture", "press Close on the last window: window closed, the step ran", ok, json.dumps(closed.get("error") or r))
     c.call("apps.terminate", {"id": FIXTURE})
 
 

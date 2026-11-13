@@ -5,11 +5,12 @@ import { ListSkeleton } from "@/components/Skeleton";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/field";
 import { Chip } from "@/components/ui/chip";
+import { Picker } from "@/components/ui/picker";
 import { type Client, ClientError, problemOf } from "@/lib/client";
 import { BY_THE_MINUTE, METERED } from "@/lib/computers";
 import { clock, runLabel, when } from "@/lib/format";
 import { type SecretsWhyNot, WHY_NOT_WORDS } from "@/lib/secrets";
-import type { ApiError, ComputerKindView, ComputerProvider, Computers, PairedComputer, Pairing } from "@/lib/v2";
+import type { ApiError, ComputerChoices, ComputerKeyChoices, ComputerKindView, ComputerProvider, Computers, PairedComputer, Pairing } from "@/lib/v2";
 
 /** Each kind's name and what it gives a run, in the console's words. A kind the console doesn't know yet reads as its id. */
 const KIND_WORDS: Record<string, { label: string; gives: string }> = {
@@ -42,7 +43,8 @@ export const PAIRING_POLL_MS = 2_000;
  *  server doesn't offer says the server's why. Each provider shows under every kind it serves, with its secrets as
  *  SecretRows (the KEY, Set or Missing, Optional unless required, where from and when, never a value), whether a run
  *  could have it now (and the server's why not), Paste or Replace of one key (PUT …/keys with that KEY), a removal
- *  (null), and Test connection (POST …/test). A save or removal reads the whole page again: a key can make a provider
+ *  (null), and Test connection (POST …/test). A key the provider lists as picked (Orgo's workspace) is never pasted: once
+ *  its required keys are saved, it is picked by name from the vendor's own list (KeyChoices). A save or removal reads the whole page again: a key can make a provider
  *  ready, and a kind offered, under every kind at once. Keys change only on a writable session. A metered provider of a kind
  *  that bills by the minute says so, and that those minutes are outside a run's spending cap. */
 export function ComputersPage({ v2, writable, whyNot = "sign_in" }: {
@@ -116,7 +118,7 @@ export function ComputersPage({ v2, writable, whyNot = "sign_in" }: {
             {k.providers.filter((p) => !pairedIds.has(p.id)).map((p) => {
               const at = `${k.kind}/${p.id}`;
               return (
-                <ProviderRow key={p.id} kind={k.kind} provider={p} writable={writable} serves={servesOf(p.id)} tested={tested[p.id]} testing={testing.has(p.id)}
+                <ProviderRow key={p.id} v2={v2} kind={k.kind} provider={p} writable={writable} serves={servesOf(p.id)} tested={tested[p.id]} testing={testing.has(p.id)}
                   open={open?.at === at ? open.mode : null} problem={problem?.at === at ? problem.words : null}
                   onOpen={(mode) => { setOpen(mode ? { at, mode } : null); setProblem(null); }}
                   onSave={(keys) => save(at, p, keys)}
@@ -280,6 +282,7 @@ function KindSection({ kind: k, providers, own, children }: { kind: ComputerKind
 }
 
 type RowProps = {
+  v2: Client;
   /** The kind whose section this row is under. */
   kind: string;
   provider: ComputerProvider;
@@ -295,7 +298,7 @@ type RowProps = {
   onTest: () => void;
 };
 
-function ProviderRow({ kind, provider: p, writable, serves, tested, testing, open, problem, onOpen, onSave, onRemove, onTest }: RowProps) {
+function ProviderRow({ v2, kind, provider: p, writable, serves, tested, testing, open, problem, onOpen, onSave, onRemove, onTest }: RowProps) {
   const pasting = open && "paste" in open ? open.paste : null;
   const removing = open && "remove" in open ? open.remove : null;
   return (
@@ -316,10 +319,15 @@ function ProviderRow({ kind, provider: p, writable, serves, tested, testing, ope
                   form or confirm is open. */}
               {p.secrets.map((secret) => {
                 const key = keyOf(secret.name);
+                // A picked key is chosen from the vendor's list below (KeyChoices), never pasted.
+                const picked = p.picked?.includes(secret.name) ?? false;
                 return <SecretRow key={secret.name} field={secret} required={p.required.includes(secret.name)} writable={writable && !open}
-                  onPaste={() => onOpen({ paste: key })} onRemove={() => onOpen({ remove: key })} />;
+                  {...(picked ? {} : { onPaste: () => onOpen({ paste: key }) })} onRemove={() => onOpen({ remove: key })} />;
               })}
             </ul>
+          )}
+          {p.picked && p.picked.length > 0 && p.required.every((name) => p.secrets.some((secret) => secret.name === name && secret.set)) && (
+            <KeyChoices v2={v2} provider={p} writable={writable && !open} onSave={onSave} />
           )}
           {tested && (
             <p data-test className={`mt-2 text-small ${tested.ok ? "text-success-text" : "text-destructive-text"}`}>{`${tested.ok ? "Passed" : "Failed"} · ${clock(tested.at)} · ${tested.words}`}</p>
@@ -340,6 +348,62 @@ function ProviderRow({ kind, provider: p, writable, serves, tested, testing, ope
       )}
       {problem && <p role="alert" className="mt-4 border border-destructive/50 px-3 py-2 font-mono text-small text-destructive-text">{problem}</p>}
     </li>
+  );
+}
+
+/** A provider's picked keys (Orgo's workspace), once its required keys are saved: each one's choices as GET
+ *  …/choices reads them from the vendor with those keys, in a Picker showing each by its label (a workspace's name,
+ *  never its id) and the one saved now; picking one saves its value under the KEY (PUT …/keys), and the page reads
+ *  everything again. Where there is none to pick, the server's why. One choice and none saved: it is used, said so.
+ *  Read again whenever a key of the provider changes. */
+function KeyChoices({ v2, provider: p, writable, onSave }: { v2: Client; provider: ComputerProvider; writable: boolean; onSave: RowProps["onSave"] }) {
+  const [answer, setAnswer] = useState<ComputerChoices | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
+  const [saving, setSaving] = useState<{ key: string; value: string } | null>(null);
+  const stamp = p.secrets.map((secret) => `${secret.name}:${secret.set}:${secret.changed_at ?? ""}`).join(" ");
+  useEffect(() => {
+    let live = true;
+    setAnswer(null); setProblem(null);
+    v2.computerChoices(p.id).then((read) => { if (live) setAnswer(read); }, (e) => { if (live) setProblem(problemOf(e)); });
+    return () => { live = false; };
+  }, [v2, p.id, stamp]);
+  const pick = async (choice: ComputerKeyChoices, value: string) => {
+    setSaving({ key: choice.key, value }); setProblem(null);
+    const refused = await onSave({ [choice.key]: value });
+    setSaving(null);
+    if (refused) setProblem(refused.fields?.map((f) => f.message).join(" ") || refused.message);
+  };
+  if (problem && !answer) return <p role="alert" className="mt-3 font-mono text-small text-destructive-text">{`The choices could not be read: ${problem}`}</p>;
+  if (!answer) return <p role="status" className="mt-3 text-small text-muted-foreground">Reading the choices…</p>;
+  return (
+    <div className="mt-3 space-y-3">
+      {answer.choices.map((choice) => {
+        // The key as the page knows it: set from the environment, the server reads that and a pick here is never used;
+        // set but not among the options (gone from the vendor's list), the server still uses the saved one until a pick.
+        const secret = p.secrets.find((one) => keyOf(one.name) === choice.key);
+        const env = secret?.source === "env";
+        return (
+          <div key={choice.key} data-choices={choice.key} className="border bg-card p-3">
+            <p className="caps mb-2 text-small font-semibold">{choice.key}</p>
+            {"why" in choice
+              ? <p data-why className="font-mono text-small text-warning-text">{choice.why}</p>
+              : <>
+                  <Picker label={`${p.name} ${choice.key}`} value={saving?.key === choice.key ? saving.value : choice.saved ?? ""} disabled={!writable || env || saving !== null}
+                    options={choice.options.map((option) => ({ value: option.value, label: option.label }))} placeholder="Pick one"
+                    onChange={(value) => void pick(choice, value)} className="w-full max-w-md" />
+                  <p data-choice-note className={`mt-2 text-small ${secret?.set && choice.saved === undefined ? "text-warning-text" : "text-muted-foreground"}`}>
+                    {env ? `Set in the environment where AgentRun starts, and that one is used: change ${choice.key} there.`
+                      : choice.saved !== undefined ? "Picked and saved on this server."
+                      : secret?.set ? `The ${choice.key} saved on this server is not one of these any more, and runs still ask for it: pick one.`
+                      : choice.options.length === 1 ? `The only one, ${choice.options[0]!.label}, is used while none is picked.`
+                      : `${choice.options.length} to pick from. Pick the one this server's computers use.`}
+                  </p>
+                </>}
+          </div>
+        );
+      })}
+      {problem && <p role="alert" className="font-mono text-small text-destructive-text">{problem}</p>}
+    </div>
   );
 }
 

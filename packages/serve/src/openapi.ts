@@ -657,6 +657,7 @@ const COMPUTER_PROVIDER = closedWith({
   host_tools: CHOICE_HOST_TOOLS,
 }, {
   why: { type: "string", description: "Why it is not ready, in words naming the setting to fill." },
+  picked: { type: "array", items: { type: "string" }, description: "The names of the secrets a person picks from the vendor's own list (GET /computers/{provider}/choices: Orgo's workspace, by name) rather than pastes. Absent when it has none." },
   shell_note: CHOICE_SHELL_NOTE,
   gpu: { ...COMPUTER_PROVIDER_GPU, description: "A sandbox provider's GPUs, where it declares them: the choices an agent's `computer.gpu` names." },
   network: { type: "string", description: "For a vendor-hosted computer, what this server's allow-list (AGENTRUN_BOX_ALLOW) means for it, in words: one with no network has none (\"no network, so this server's allow-list isn't offered\"); one on an open network is open (\"an open network (the vendor's own, or public addresses from this machine); this server's allow-list doesn't apply\"), except where AGENTRUN_BOX_ALLOW is none and the computer needs a network, which this server refuses (\"needs a network, which this server refuses: its AGENTRUN_BOX_ALLOW is none\"; the provider is then not ready, and its runs are refused). Absent where the allow-list applies (Docker), or where it depends on the image a provider's configurations name." },
@@ -743,6 +744,24 @@ const ACCOUNT_TEST = {
     closed({ ok: { const: false }, why: { type: "string", description: "Why the test did not pass, in plain words naming what to check: never a key." } }),
   ],
 };
+/** GET /computers/{provider}/choices (computers.ts choices): each picked key, its choices or why there are none. */
+const COMPUTER_CHOICES = closed({
+  choices: {
+    type: "array",
+    description: "Each key the provider lists under `picked`, in its descriptor's order.",
+    items: {
+      oneOf: [
+        closedWith({
+          key: { type: "string", description: "The KEY, as PUT /computers/{provider}/keys takes it." },
+          options: { type: "array", description: "The values the vendor's list offers, in its order.", items: closed({ value: { type: "string", description: "The value saved under the key." }, label: { type: "string", description: "Its words, as a person picks it (a workspace's name)." } }) },
+        }, {
+          saved: { type: "string", description: "The option whose value is saved under the key now, where one is. Absent when none is saved, or the saved one is not offered." },
+        }),
+        closed({ key: { type: "string", description: "The KEY, as PUT /computers/{provider}/keys takes it." }, why: { type: "string", description: "Why there is none to pick, in plain words: never a key." } }),
+      ],
+    },
+  },
+});
 /** held/1: what POST /runs/{run_id}/start and .../computer/release answer (computer-held-routes.ts heldRoute). */
 const HELD_ANSWER = (state: "started" | "released") => closed({ held: closed({ state: { const: state } }) });
 /** A run's computer, on the run read (run-computer.ts runComputerField). */
@@ -1636,6 +1655,15 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       description: "One account-level read with the provider's saved keys (a list by label, the vendor's own check): it never makes a computer, so it never spends. ok with what it read; else why, in plain words naming what to check (a key not saved, a key the vendor refused, a vendor not reached), never a key.",
       parameters: [PROVIDER_PARAM],
       responses: { "200": json(ACCOUNT_TEST, "The test's answer."), ...errors(401, 404, 429, 500) },
+      ...COMPUTER_MARK,
+    },
+  },
+  "/computers/{provider}/choices": {
+    get: {
+      operationId: "listComputerChoices", tags: ["local"], summary: "The values a computer provider's picked keys offer, read from the vendor",
+      description: "Each key the provider lists under `picked` (GET /computers), with the values the vendor's own list offers for it, read with the provider's saved keys (Orgo's workspaces, each its id and its name): it never makes a computer. A person picks one, and PUT /computers/{provider}/keys saves its value under the key. Where there is none to pick, `why` says so in plain words (a required key not saved, an account with none), never a key. A provider with no picked key answers an empty list.",
+      parameters: [PROVIDER_PARAM],
+      responses: { "200": json(COMPUTER_CHOICES, "Each picked key's choices, or why there are none."), ...errors(401, 404, 429, 500) },
       ...COMPUTER_MARK,
     },
   },
