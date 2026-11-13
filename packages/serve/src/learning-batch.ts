@@ -313,13 +313,15 @@ export class LearningBatches {
     for (let n = 1; n <= h.total; n++) rows.push(await this.row(id, n));
     const live = rows.find((r) => LIVE.has(stageOf(r)) && r.run_id);
     const inflight = live?.run_id ? ((await this.host.figures(live.run_id).catch(() => undefined))?.total_usd ?? null) : 0;
-    return { ...this.shown(h), current: live?.n ?? null, cost_usd: inflight === null ? null : usd(h.spent_usd + inflight), rows: rows.map(({ input: _input, review: _review, ...r }) => r) };
+    return { ...this.shown(h), current: live?.n ?? null, cost_usd: inflight === null || h.unknown_cost_rows ? null : usd(h.spent_usd + inflight), rows: rows.map(({ input: _input, review: _review, ...r }) => r) };
   }
 
-  /** A batch as the header says it, for a list (no rows). */
+  /** A batch as the header says it, for a list (no rows). A finished row whose cost is not known makes the cost, and what is
+   *  left of the cap, unknown (null): the known part is never shown as the whole. */
   private shown(h: Header) {
     const { ending: _ending, ...shown } = h;
-    return { ...shown, cost_usd: h.spent_usd, remaining_usd: usd(Math.max(0, h.max_cost_usd - h.spent_usd)) };
+    const known = h.unknown_cost_rows === 0;
+    return { ...shown, cost_usd: known ? h.spent_usd : null, remaining_usd: known ? usd(Math.max(0, h.max_cost_usd - h.spent_usd)) : null };
   }
 
   async list(agentId: string): Promise<{ batches: ReturnType<LearningBatches["shown"]>[] }> {
@@ -386,6 +388,9 @@ export class LearningBatches {
     let h = await this.tally((await this.header(id))!);
     if (batchStage(h) !== "running" && batchStage(h) !== "ending") return;
     if (loop.failed && !h.ending) h = await this.ending(h, { status: "stopped", stopped: null, error: loop.failed });
+    // A row booked with its cost unknown stops the batch, read from the rows: a stop between that row's write and the
+    // batch's ending is no batch that runs on, or completes.
+    if (h.unknown_cost_rows && !h.ending) h = await this.ending(h, { status: "stopped", stopped: "cost_unknown" });
     for (let n = 1; n <= h.total && !h.ending; n++) {
       if (loop.halted) return;
       if (loop.cancelled) break;

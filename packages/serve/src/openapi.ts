@@ -1065,11 +1065,11 @@ const BATCH_HEAD = {
   paths: closed({ agent: COUNT, handed_back: COUNT, workflow: COUNT }, "Done rows by the path their run took."),
   lessons: { ...BATCH_LESSONS, description: "What the batch's learning kept, each name once." },
   revisions: { type: "array", items: closed({ row: { type: "integer", minimum: 1 }, commit: NULL_STRING, workflows: { type: "array", items: { type: "string" } } }), description: "The merges that touched learned workflows: the row whose learning made it, the commit of the agent's learning folder, and the workflows." },
-  cost_usd: { type: "number", minimum: 0, description: "The batch's cost so far; in a progress read, the row in flight's too, as its row will book it: its run's cost so far and its learning's, grades that ended included (null while that is unknown)." },
-  remaining_usd: { type: "number", minimum: 0 },
+  cost_usd: { type: ["number", "null"], minimum: 0, description: "The batch's cost so far; in a progress read, the row in flight's too, as its row will book it: its run's cost so far and its learning's, grades that ended included. Null when a finished row's cost, or the row in flight's, is not known: the known part is never shown as the whole." },
+  remaining_usd: { type: ["number", "null"], minimum: 0, description: "What is left of the cap: `max_cost_usd` less `spent_usd`; null when a finished row's cost is not known." },
 };
 const LEARNING_BATCH_SUMMARY = closedWith(BATCH_HEAD, { error: { type: "string", description: "The server's own failure that stopped the batch." } });
-const LEARNING_BATCH = closedWith({ ...BATCH_HEAD, cost_usd: { type: ["number", "null"], minimum: 0 }, current: { type: ["integer", "null"], minimum: 1, description: "The row whose run is in flight." }, rows: { type: "array", items: BATCH_ROW } }, { error: { type: "string" } });
+const LEARNING_BATCH = closedWith({ ...BATCH_HEAD, current: { type: ["integer", "null"], minimum: 1, description: "The row whose run is in flight." }, rows: { type: "array", items: BATCH_ROW } }, { error: { type: "string" } });
 const BATCH_ID = { name: "batch_id", in: "path", required: true, schema: { type: "string", pattern: "^lb_[0-9a-f]{16}$" } };
 const BATCH_MARK = { "x-agentrun-serve": "learningbatch/1" };
 const EVAL_TEXT = (description: string, example: string) => ({ type: "string", minLength: 1, maxLength: EVAL_TEXT_MAX, description, example });

@@ -270,6 +270,9 @@ test("a row whose cost is not known stops the batch: a cap is never guessed at",
   await batches.idle(made.id);
   const end = await batches.read("a1", made.id);
   assert.deepEqual([end.status, end.stopped, end.finished, end.unknown_cost_rows], ["stopped", "cost_unknown", 2, 1]);
+  assert.deepEqual([end.cost_usd, end.remaining_usd], [null, null], "a cost with a row's unknown is unknown, never the known part shown as all");
+  const listed = (await batches.list("a1")).batches[0];
+  assert.deepEqual([listed.cost_usd, listed.remaining_usd], [null, null]);
 });
 
 test("a server that stops leaves the batch running, and one that starts takes up at the first unfinished row without running a finished row again", async () => {
@@ -297,7 +300,7 @@ test("a server that stops leaves the batch running, and one that starts takes up
 /** A host whose runs take a while, as a server's do: a run is working on its first look and has answered ("A") on its
  *  second; the review reopens it (working, then its turn ends `reviewTurn`, its reply "B"); a cancel ends a working run
  *  cancelled at its next look, and is nothing to a run that has ended. A run costs $0.10 a turn. */
-function lifeHost({ reviewTurn = "completed" } = {}) {
+function lifeHost({ reviewTurn = "completed", unknown = [] } = {}) {
   const settings = new Map();
   const runs = new Map();
   const keys = new Map();
@@ -340,7 +343,8 @@ function lifeHost({ reviewTurn = "completed" } = {}) {
       Object.assign(r, { turn: r.turn + 1, looks: 0, status: "working" });
     },
     cancel: async (id) => { const r = runs.get(id); if (r?.status === "working") r.stop = true; },
-    figures: async (id) => { const r = runs.get(id); return { path: "agent", cost_usd: money(0.1 * r.turn), learning_usd: 0, total_usd: money(0.1 * r.turn), learned: { notes: [], skills: [], workflows: [] }, merged: null }; },
+    // A run named in `unknown` has no known cost (its learning's figures were not kept).
+    figures: async (id) => { const r = runs.get(id); const known = !unknown.includes(id); return { path: "agent", cost_usd: money(0.1 * r.turn), learning_usd: known ? 0 : null, total_usd: known ? money(0.1 * r.turn) : null, learned: { notes: [], skills: [], workflows: [] }, merged: null }; },
     pollMs: 0,
   };
 }
@@ -402,6 +406,10 @@ async function legal(host, batches, why) {
       assert.deepEqual([r.answer, r.right], ["A", r.reference === "A"], `${why} | row ${r.n}'s answer is the one before its review`);
     }
     const ended = b.rows.filter((r) => r.state === "done" || r.state === "failed");
+    if (ended.some((r) => r.run_id && r.total_usd === null)) {
+      assert.notEqual(b.status, "completed", `${why} | a batch with a row whose cost is not known reads completed`);
+      assert.deepEqual([b.cost_usd, b.remaining_usd], [null, null], `${why} | a batch with a row whose cost is not known shows a cost`);
+    }
     assert.deepEqual([b.finished, b.right, b.wrong, b.failed, b.spent_usd], [ended.length, ended.filter((r) => r.state === "done" && r.right).length, ended.filter((r) => r.state === "done" && !r.right).length, ended.filter((r) => r.state === "failed").length, money(ended.reduce((sum, r) => sum + (r.total_usd ?? 0), 0))], `${why} | the header is its rows' fold`);
   }
   const byKey = new Map();
@@ -419,8 +427,8 @@ const rowsOfOnly = (b) => [b.status, b.stopped, ...b.rows.map((r) => [r.state, r
 const TWO = () => asked({ rows: [{ q: "q1", a: "A" }, { q: "q2", a: "B" }], max_cost_usd: 50 });
 
 /** One fault, then a server that starts again on the same store and runs whatever it finds running to its end. */
-async function scenario({ reviewTurn, crashAt = Infinity, errorAt = Infinity, errorAfter = false, cancelAt = Infinity }) {
-  const host = lifeHost({ reviewTurn });
+async function scenario({ reviewTurn, unknown = [], crashAt = Infinity, errorAt = Infinity, errorAfter = false, cancelAt = Infinity }) {
+  const host = lifeHost({ reviewTurn, unknown });
   const p = faults(host);
   Object.assign(p.s, { crashAt, errorAt, errorAfter, cancelAt });
   const first = new LearningBatches(p.bound());
@@ -452,20 +460,22 @@ test("the batch and its rows are one machine: a crash, a failed call or a cancel
       if (!gaps.has(kind)) gaps.set(kind, String(error.message).slice(0, 400));
     }
   };
-  for (const reviewTurn of ["completed", "failed", "cancelled"]) {
-    const clean = await scenario({ reviewTurn });
+  // Each kind of row ending: the review's turn completed, failed or was cancelled; and the last row's cost not known.
+  for (const [reviewTurn, unknown] of [["completed", []], ["failed", []], ["cancelled", []], ["completed", ["run-2"]]]) {
+    const clean = await scenario({ reviewTurn, unknown });
     await check(() => legal(clean.host, clean.second, `${reviewTurn}, no fault`));
     const { effects, calls } = clean.s;
     assert.ok(effects >= 10 && calls > effects, `steps in a two-row batch: ${effects} effects, ${calls} calls`);
     const done = await clean.second.read("a1", headOf(await clean.host.settings.all()).id);
     await check(async () => {
       assert.deepEqual(done.rows.map((r) => r.state), reviewTurn === "completed" ? ["done", "done"] : ["failed", "failed"], `${reviewTurn}, no fault | a row whose review's turn did not complete is failed, never done`);
+      if (unknown.length) assert.deepEqual([done.status, done.stopped], ["stopped", "cost_unknown"], `${reviewTurn}, last cost unknown | the batch stops cost_unknown`);
       if (reviewTurn !== "completed") assert.match(done.rows[0].error ?? "", /review/);
     });
     for (let at = 1; at <= effects; at++) {
       for (const fault of [{ crashAt: at }, { cancelAt: at }, { cancelAt: at, crashAt: at + 1 }]) {
-        const why = `${reviewTurn}, ${JSON.stringify(fault)} of ${effects} effects`;
-        const run = await scenario({ reviewTurn, ...fault });
+        const why = `${reviewTurn}${unknown.length ? " (last cost unknown)" : ""}, ${JSON.stringify(fault)} of ${effects} effects`;
+        const run = await scenario({ reviewTurn, unknown, ...fault });
         await check(() => legal(run.host, run.second, why));
         // A crash alone loses nothing: the next start runs a batch that was made to its end, as if none had come.
         const made = headOf(await run.host.settings.all());
@@ -482,8 +492,8 @@ test("the batch and its rows are one machine: a crash, a failed call or a cancel
     }
     for (let at = 1; at <= calls; at++) {
       for (const errorAfter of [false, true]) {
-        const run = await scenario({ reviewTurn, errorAt: at, errorAfter });
-        await check(() => legal(run.host, run.second, `${reviewTurn}, call ${at} of ${calls} fails ${errorAfter ? "after" : "before"} its effect`));
+        const run = await scenario({ reviewTurn, unknown, errorAt: at, errorAfter });
+        await check(() => legal(run.host, run.second, `${reviewTurn}${unknown.length ? " (last cost unknown)" : ""}, call ${at} of ${calls} fails ${errorAfter ? "after" : "before"} its effect`));
         cases++;
       }
     }
