@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { problem, ProblemCard } from "@/components/learningProblem";
 import { CostPerRun } from "@/components/CostPerRun";
+import { LearnFromCsv } from "@/components/LearnFromCsv";
 import { LearningSwitch } from "@/components/LearningSwitch";
 import { GraphLegend, WorkflowGraph } from "@/components/WorkflowGraph";
 import { Banner } from "@/components/ui/banner";
@@ -52,6 +53,8 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places, on
   const [olderLog, setOlderLog] = useState<{ items: LearningChange[]; cursor: string | null; pages: number }>({ items: [], cursor: null, pages: 0 });
   // Whether the runs read are all the agent's (false: the latest page of them only).
   const [adding, setAdding] = useState(false);
+  // Bumped when a batch from a CSV ends: the chart reads again, with the tab.
+  const [batchEnds, setBatchEnds] = useState(0);
   const asked = useRef(0);
   const reading = useRef(false);
   // Reads the tab again. The answer settles once the list is read, or once that read failed (it never rejects), so an
@@ -151,7 +154,8 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places, on
     <div className="space-y-6">
       {stale}
       <Empty on={on} lookedBack={lookedBack} switchRow={switchRow(true)} onAdd={readOnly ? undefined : () => setAdding(true)} />
-      <CostPerRun v2={v2} agentId={agent.agent_id} on={on} quiet />
+      {on && !readOnly && <LearnFromCsv v2={v2} agentId={agent.agent_id} onFinished={() => { setBatchEnds((n) => n + 1); void read(); }} />}
+      <CostPerRun key={batchEnds} v2={v2} agentId={agent.agent_id} on={on} quiet />
       <NotKept runs={runs} />
     </div>
   );
@@ -175,7 +179,8 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places, on
         </section>
       )}
       {shownImpact(view.impact) ? <ImpactCard impact={view.impact} /> : view.impact === null && on && <p className="font-mono text-small text-muted-foreground">{IMPACT_LATER}</p>}
-      <CostPerRun v2={v2} agentId={agent.agent_id} on={on} />
+      {on && !readOnly && <LearnFromCsv v2={v2} agentId={agent.agent_id} onFinished={() => { setBatchEnds((n) => n + 1); void read(); }} />}
+      <CostPerRun key={batchEnds} v2={v2} agentId={agent.agent_id} on={on} />
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
         <div className="min-w-0 space-y-6">
         <section className="min-w-0 space-y-3" aria-label="Notes">
