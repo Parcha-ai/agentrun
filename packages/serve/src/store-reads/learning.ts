@@ -25,7 +25,7 @@ import type { AnalyticsFilter } from "./analytics.js";
 import { journalEntries } from "../runner/journal-reader.js";
 import { KINDS } from "../runner/journal-kinds.js";
 import { keptOf, learnedOf, lostOf, type DroppedData, type GradedData, type KeptProposal, type MergedData } from "../runner/learning-loop.js";
-import { GENERAL_UNCHECKED } from "../learn/general.js";
+import { GENERAL_NO_BUDGET, GENERAL_NO_ROOM, GENERAL_UNCHECKED } from "../learn/general.js";
 import type { Store } from "../store/store.js";
 
 /** A run's learning end: the Learning fields its end sets. */
@@ -79,8 +79,10 @@ async function endOfKept(store: Store, kept: NonNullable<Awaited<ReturnType<Stor
   const cost = spent ? { cost_usd: { grade: spent.usd }, tokens: { grade: spent.tokens ?? null } } : {};
   // A generality check that could not run (learning-loop.ts `unchecked`) is said after the end's words: the grader read
   // every note. Its provider's error stays in the journal.
-  const skipped = (graded?.unchecked ?? dropped?.unchecked) !== undefined;
-  const withSkip = (detail: string | null) => (skipped ? [detail, GENERAL_UNCHECKED].filter(Boolean).join(" ") : detail);
+  // One skipped for no room under the cap (GENERAL_NO_BUDGET) says so.
+  const unchecked = graded?.unchecked ?? dropped?.unchecked;
+  const skip = unchecked === undefined ? undefined : unchecked === GENERAL_NO_BUDGET ? GENERAL_NO_ROOM : GENERAL_UNCHECKED;
+  const withSkip = (detail: string | null) => (skip ? [detail, skip].filter(Boolean).join(" ") : detail);
   if (merged && graded) {
     // Each item as the merge settled it: its record's verdict (a note it left out is no longer kept, and says why). A merge
     // recorded with none (before the record kept it) reads no item decisions.
