@@ -6,6 +6,7 @@
 // ui's bounds are window points; input.actions aims in screenshot pixels. A case that taps a node through input.actions
 // turns its point into pixels with the screen's scale (pixelsOf).
 import type { ComputerKind, Point, Rect, UiNode, UiObserveResult, UiRole } from "../../protocol.js";
+import { windowRectToPixels } from "../../ui-engine.js";
 import type { CaseContext } from "../types.js";
 
 /** The stock Settings app of each phone kind this suite knows. */
@@ -52,9 +53,8 @@ async function scaleOf(t: CaseContext): Promise<number> {
 
 /** A point of a ui observation (window points) as input.actions aims it: screenshot pixels. */
 export async function pixelsOf(t: CaseContext, seen: UiObserveResult, [x, y]: Point): Promise<Point> {
-	const scale = await scaleOf(t);
-	const [wx, wy] = seen.window.bounds;
-	return [Math.round((wx + x) * scale), Math.round((wy + y) * scale)];
+	const [px, py] = windowRectToPixels(seen.window.bounds, await scaleOf(t), [x, y, 0, 0]);
+	return [px, py];
 }
 
 /**

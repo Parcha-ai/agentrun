@@ -40,7 +40,10 @@ import { fail, ok, type Result } from "./result.js";
 
 /** One element as a source sees it. Bounds are in window points. */
 export interface UiElement {
-	/** The source's own identity for the element: the same in every look while the element exists, never reused for another. */
+	/**
+	 * The source's own identity for the element in its window: the same in every look while the element exists, never
+	 * reused for another. The engine scopes it to the window, so two windows' elements of one key are two refs.
+	 */
 	key: string;
 	role: UiRole;
 	name?: string;
@@ -109,7 +112,7 @@ const ACTIONABLE: ReadonlySet<UiRole> = new Set<UiRole>(["button", "link", "text
 /** Room a reply keeps for everything but its nodes and image: the envelope and the other fields. */
 const REPLY_ROOM = 16 * 1024;
 /** The kinds a step's refusal carries; any other failure of a source fails the whole call. */
-const STEP_KINDS: ReadonlySet<string> = new Set<DaemonErrorKind>(["not_found", "invalid", "timeout", "denied", "limit", "unsupported", "stale"]);
+const STEP_KINDS: ReadonlySet<string> = new Set<DaemonErrorKind>(["not_found", "invalid", "timeout", "denied", "limit", "unsupported", "stale", "refused"]);
 
 type StepName = "press" | "set" | "perform" | "click" | "type" | "key" | "nav" | "scroll" | "drag";
 /** Each step's fields: its name first. */
@@ -133,11 +136,6 @@ const isRef = (value: unknown): value is UiRef => typeof value === "string" && v
 const isWhole = (value: unknown): value is number => typeof value === "number" && Number.isInteger(value);
 const isPoint = (value: unknown): value is Point => Array.isArray(value) && value.length === 2 && value.every(isWhole);
 
-/** The step's name: the one field that says what it is. */
-export function stepName(step: UiStep): StepName {
-	return STEP_NAMES.find((name) => name in step) as StepName;
-}
-
 /** The ref a step acts on, if any: press, set, perform, a click or scroll at a ref, and type's into. */
 export function stepRef(step: UiStep): UiRef | undefined {
 	if ("press" in step) return step.press;
@@ -149,17 +147,30 @@ export function stepRef(step: UiStep): UiRef | undefined {
 	return undefined;
 }
 
-/** The point a step lands on, if it is aimed at one: a click or scroll at a point, a drag's first point. */
-export function stepPoint(step: UiStep): Point | undefined {
-	if ("click" in step) return isPoint(step.click) ? step.click : undefined;
-	if ("scroll" in step) return isPoint(step.scroll) ? step.scroll : undefined;
-	if ("drag" in step) return step.drag[0];
-	return undefined;
+/**
+ * Every point a step touches, in order: a click or scroll at a point, each point of a drag's path. Each one is held to
+ * the same checks (inside the window, nothing changed under it since the state), so a drag's end is no freer than its start.
+ */
+export function stepPoints(step: UiStep): Point[] {
+	if ("click" in step) return isPoint(step.click) ? [step.click] : [];
+	if ("scroll" in step) return isPoint(step.scroll) ? [step.scroll] : [];
+	if ("drag" in step) return step.drag;
+	return [];
+}
+
+/**
+ * A key chord's names, in order: joined by "+", the last of them may be "+" itself ("+", "shift++"). Every driver reads
+ * a chord with it.
+ */
+export function chordKeys(chord: string): string[] {
+	if (chord === "+") return ["+"];
+	if (chord.endsWith("++")) return [...chord.slice(0, -2).split("+"), "+"];
+	return chord.split("+");
 }
 
 /** A key chord's words: undefined when it is one, else why not. */
 function chordWrong(chord: string): string | undefined {
-	const names = chord.split("+");
+	const names = chordKeys(chord);
 	const wrong = names.find((name) => !KEY_NAMES.has(name) && !/^[\x21-\x7e]$/.test(name));
 	if (chord === "" || wrong !== undefined) return `key ${show(chord)}: each name joined by "+" is one of the key table's (protocol.json keys) or one printable character`;
 	return undefined;
@@ -265,7 +276,7 @@ export function checkUiAct(params: unknown): Result<UiActParams> {
 	const dragMs = steps.reduce((sum, step) => sum + ("drag" in step ? (step.ms ?? 0) : 0), 0);
 	if (dragMs > MAX_BATCH_WAIT_MS) return fail("limit", `ui.act: the drags ask for ${dragMs} ms, more than the ${MAX_BATCH_WAIT_MS} ms one act may`);
 	if (params.state === undefined) {
-		const index = steps.findIndex((step) => stepPoint(step) !== undefined);
+		const index = steps.findIndex((step) => stepPoints(step).length > 0);
 		if (index >= 0) return fail("invalid", `ui.act: steps[${index}] is at a point, and a point needs the state it was read from: pass state`);
 	}
 	const wrongExpect = expectWrong(params.expect);
@@ -283,15 +294,32 @@ export function featureOff(features: Features, name: Feature): string | undefine
 	return value === undefined ? `this computer does not offer ${name}` : `${name} is off here: ${value.off}`;
 }
 
+/**
+ * A rect of a ui observation, in window points, as screen.shot and input.actions take it: screenshot pixels, the
+ * window's origin added and the screen's scale (hello.screen.scale) applied. The one conversion every caller uses.
+ */
+export function windowRectToPixels([wx, wy]: Rect, scale: number, [x, y, w, h]: Rect): Rect {
+	return [Math.round((wx + x) * scale), Math.round((wy + y) * scale), Math.round(w * scale), Math.round(h * scale)];
+}
+
 const contains = ([x, y, w, h]: Rect, [px, py]: Point) => px >= x && py >= y && px < x + w && py < y + h;
 /** The deepest element under a point: the last in order whose bounds hold it. */
 const under = (view: UiView, point: Point) => view.elements.findLast((element) => contains(element.bounds, point));
 const sameRect = (a: Rect, b: Rect) => a.every((value, index) => value === b[index]);
 const sameSize = (a: Rect, b: Rect) => a[2] === b[2] && a[3] === b[3];
-const looksOf = (element: UiElement) => JSON.stringify([element.role, element.name, element.value, element.desc, element.bounds, element.flags]);
+/**
+ * The value the engine may read: none for a secure field. Every read of a value goes through it (the nodes, the
+ * outline, the diff, the stale checks, the settle, an expect), so no answer is an oracle for a password, not even by
+ * telling whether it changed.
+ */
+const valueOf = (element: UiElement) => (element.flags?.includes("secure") ? undefined : element.value);
+const looksOf = (element: UiElement) => JSON.stringify([element.role, element.name, valueOf(element), element.desc, element.bounds, element.flags]);
 /** What a person would see of a view: the window's size, its elements and its frame. */
 const fingerprint = (view: UiView) => JSON.stringify([view.window.id, view.window.bounds, view.elements.map((element) => [element.key, looksOf(element)]), view.frame]);
-const holdsText = (element: UiElement, text: string) => [element.name, element.value, element.desc].some((said) => said?.includes(text) ?? false);
+/** Whether an element says text, in its name, value or desc. */
+const holdsText = (element: UiElement, text: string) => [element.name, valueOf(element), element.desc].some((said) => said?.includes(text) ?? false);
+/** An element's key scoped to its window: what a ref stands for. */
+const scopedKey = (view: UiView, key: string) => `${view.window.id}\n${key}`;
 
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
 	return new Promise((resolve) => {
@@ -350,14 +378,22 @@ export class UiEngine {
 		return turn;
 	}
 
-	#ref(key: string): UiRef {
-		let ref = this.#refOf.get(key);
+	/** The ref of a view's element key, given once per window and key. */
+	#ref(view: UiView, key: string): UiRef {
+		const scoped = scopedKey(view, key);
+		let ref = this.#refOf.get(scoped);
 		if (ref === undefined) {
 			ref = `@e${this.#nextRef++}`;
-			this.#refOf.set(key, ref);
-			this.#keyOf.set(ref, key);
+			this.#refOf.set(scoped, ref);
+			this.#keyOf.set(ref, scoped);
 		}
 		return ref;
+	}
+
+	/** The view's element a ref stands for: undefined when it is gone, or of another window. */
+	#elementOf(view: UiView, ref: UiRef): UiElement | undefined {
+		const scoped = this.#keyOf.get(ref);
+		return view.elements.find((one) => scopedKey(view, one.key) === scoped);
 	}
 
 	#remember(view: UiView): string {
@@ -396,23 +432,22 @@ export class UiEngine {
 		if (signal.aborted) return aborted("ui.observe");
 		const since = params.since === undefined ? undefined : this.#states.get(params.since);
 		let { nodes, truncated } = this.#nodes(view, params.full === true);
-		// Keep the reply within the line limit: the image is whole, so nodes give way.
-		const room = MAX_LINE_BYTES - REPLY_ROOM - (image?.data.length ?? 0);
+		// Keep the reply within the line limit: everything but the nodes (the image, the diff) is whole, so nodes give way.
+		const rest = {
+			app: view.app,
+			window: view.window,
+			...(since === undefined ? {} : { diff: this.#diff(since, view) }),
+			...(image === undefined ? {} : { image }),
+			...(treeOff === undefined ? {} : { empty: treeOff }),
+		};
+		const room = MAX_LINE_BYTES - REPLY_ROOM - Buffer.byteLength(JSON.stringify(rest));
+		if (room < 0) return fail("limit", `ui.observe: the image and the diff since ${params.since ?? "no state"} are more than one reply holds: observe with a smaller image, or without since`);
 		while (nodes.length > 0 && Buffer.byteLength(JSON.stringify(nodes)) > room) {
 			nodes = nodes.slice(0, Math.floor(nodes.length * 0.9));
 			truncated = true;
 		}
 		const state = this.#remember(view);
-		return ok({
-			state,
-			app: view.app,
-			window: view.window,
-			nodes,
-			...(since === undefined ? {} : { diff: this.#diff(since, view) }),
-			...(image === undefined ? {} : { image }),
-			...(treeOff === undefined ? {} : { empty: treeOff }),
-			truncated,
-		});
+		return ok({ state, nodes, ...rest, truncated });
 	}
 
 	/** A look at the target, with no elements while the tree is off: a source never shows what the feature hides. */
@@ -427,7 +462,7 @@ export class UiEngine {
 		const byKey = new Map(view.elements.map((element) => [element.key, element]));
 		const kept = new Set<string>();
 		for (const element of view.elements) {
-			if (!full && element.name === undefined && element.value === undefined && element.desc === undefined && !(element.actions?.length ?? 0) && !ACTIONABLE.has(element.role)) continue;
+			if (!full && element.name === undefined && valueOf(element) === undefined && element.desc === undefined && !(element.actions?.length ?? 0) && !ACTIONABLE.has(element.role)) continue;
 			// The element, and every element above it, so each node's parent is in the list.
 			for (let at: UiElement | undefined = element; at !== undefined && !kept.has(at.key); at = at.parent === undefined ? undefined : byKey.get(at.parent)) kept.add(at.key);
 		}
@@ -442,14 +477,14 @@ export class UiEngine {
 			let parent = element.parent === undefined ? undefined : byKey.get(element.parent);
 			while (parent !== undefined && !kept.has(parent.key)) parent = parent.parent === undefined ? undefined : byKey.get(parent.parent);
 			nodes.push({
-				ref: this.#ref(element.key),
+				ref: this.#ref(view, element.key),
 				role: element.role,
 				...(element.name === undefined ? {} : { name: element.name }),
-				...(element.value === undefined || element.flags?.includes("secure") ? {} : { value: element.value }),
+				...(valueOf(element) === undefined ? {} : { value: valueOf(element) }),
 				...(element.desc === undefined ? {} : { desc: element.desc }),
 				...(element.id === undefined ? {} : { id: element.id }),
 				bounds: element.bounds,
-				...(parent === undefined ? {} : { parent: this.#ref(parent.key) }),
+				...(parent === undefined ? {} : { parent: this.#ref(view, parent.key) }),
 				...(element.flags?.length ? { flags: element.flags } : {}),
 				...(element.actions?.length ? { actions: element.actions } : {}),
 			});
@@ -458,16 +493,19 @@ export class UiEngine {
 	}
 
 	#diff(before: UiView, after: UiView): { added: UiRef[]; removed: UiRef[]; changed: UiRef[] } {
-		const was = new Map(before.elements.map((element) => [element.key, looksOf(element)]));
-		const now = new Set(after.elements.map((element) => element.key));
+		// Keys are each window's own: across two windows every element is added or removed.
+		const was = new Map(before.elements.map((element) => [scopedKey(before, element.key), looksOf(element)]));
+		const now = new Set(after.elements.map((element) => scopedKey(after, element.key)));
 		const added: UiRef[] = [];
 		const changed: UiRef[] = [];
 		for (const element of after.elements) {
-			const looked = was.get(element.key);
-			if (looked === undefined) added.push(this.#ref(element.key));
-			else if (looked !== looksOf(element)) changed.push(this.#ref(element.key));
+			const looked = was.get(scopedKey(after, element.key));
+			if (looked === undefined) added.push(this.#ref(after, element.key));
+			else if (looked !== looksOf(element)) changed.push(this.#ref(after, element.key));
 		}
-		const removed = before.elements.filter((element) => !now.has(element.key) && this.#refOf.has(element.key)).map((element) => this.#ref(element.key));
+		const removed = before.elements
+			.filter((element) => !now.has(scopedKey(before, element.key)) && this.#refOf.has(scopedKey(before, element.key)))
+			.map((element) => this.#ref(before, element.key));
 		return { added, removed, changed };
 	}
 
@@ -488,11 +526,27 @@ export class UiEngine {
 		const first = await this.#see(target, signal);
 		if (!first.ok) return first;
 		let view = first.value;
+		// Where the looks after a step aim. A step that ran may have changed the app in front: a nav (home, back, recents)
+		// hands the act to whatever is in front, and when any other step (a key, a tap that opens another app) takes the
+		// target's window away, the act runs nothing more and settles on the window in front. Either way the steps
+		// that ran keep their results. An act with neither target nor state is bound to the app it began on, so a step
+		// that opens another app never lets a later step reach that one: only a nav hands the act on.
+		let aim: UiTarget | undefined = target ?? { app: first.value.app.id };
+		const after = async (): Promise<Result<UiView> | "gone"> => {
+			const looked = await this.#see(aim, signal);
+			if (looked.ok || looked.error.code !== "not_found" || aim === undefined) return looked;
+			aim = undefined;
+			return "gone";
+		};
 		const steps: UiStepResult[] = [];
 		for (const [index, step] of params.steps.entries()) {
 			if (signal.aborted) return aborted("ui.act");
 			if (index > 0) {
-				const looked = await this.#see(target, signal);
+				const looked = await after();
+				if (looked === "gone") {
+					steps.push({ error: { kind: "stale", message: "the window this act aimed at is gone since the step before (it went to another app): observe again" } });
+					break;
+				}
 				if (!looked.ok) return looked;
 				view = looked.value;
 			}
@@ -502,7 +556,7 @@ export class UiEngine {
 				break;
 			}
 			const ref = stepRef(step);
-			const element = ref === undefined ? undefined : view.elements.find((one) => one.key === this.#keyOf.get(ref));
+			const element = ref === undefined ? undefined : this.#elementOf(view, ref);
 			const ran = await this.#source.run(step, { ...(element === undefined ? {} : { element }), view, foreground }, signal);
 			if (!ran.ok) {
 				if (ran.error.code === "aborted") return ran;
@@ -511,8 +565,13 @@ export class UiEngine {
 				break;
 			}
 			steps.push(ran.value);
+			if ("nav" in step) aim = undefined;
 		}
-		const settled = await this.#settle(target, signal);
+		let settled = await this.#settle(aim, signal);
+		if (!settled.ok && settled.error.code === "not_found" && aim !== undefined && steps.some((one) => !("error" in one))) {
+			aim = undefined;
+			settled = await this.#settle(aim, signal);
+		}
 		if (!settled.ok) return settled;
 		let last = settled.value;
 		let met: "met" | "unmet" | undefined;
@@ -531,13 +590,14 @@ export class UiEngine {
 				}
 				await sleep(Math.min(this.#pollMs, Math.max(0, until - Date.now())), signal);
 				if (signal.aborted) return aborted("ui.act");
-				const looked = await this.#see(target, signal);
+				const looked = await after();
+				if (looked === "gone") continue;
 				if (!looked.ok) return looked;
 				last = looked.value;
 			}
 			// A poll can meet the expect mid-transition: the state handed back is the window once it settles.
 			if (last !== settled.value) {
-				const calm = await this.#settle(target, signal);
+				const calm = await this.#settle(aim, signal);
 				if (!calm.ok) return calm;
 				last = calm.value;
 			}
@@ -554,14 +614,16 @@ export class UiEngine {
 		}
 		const ref = stepRef(step);
 		if (ref !== undefined) {
-			const key = this.#keyOf.get(ref);
-			if (!view.elements.some((one) => one.key === key)) return { kind: "stale", message: `${ref} is gone: its element is no longer in the window. Observe again for fresh refs` };
+			if (this.#elementOf(view, ref) === undefined) return { kind: "stale", message: `${ref} is gone: its element is no longer in the window. Observe again for fresh refs` };
 		}
-		const point = stepPoint(step);
-		if (point !== undefined) {
+		const points = stepPoints(step);
+		if (points.length > 0) {
 			if (held === undefined) return { kind: "stale", message: `state ${stateId} is no longer held: observe again, and read the point from the new state` };
-			const [x, y] = point;
 			if (held.window.id !== view.window.id) return { kind: "stale", message: `the window of state ${stateId} is no longer the one in front: observe again` };
+		}
+		for (const point of points) {
+			if (held === undefined) break;
+			const [x, y] = point;
 			if (!sameSize(held.window.bounds, view.window.bounds)) return { kind: "stale", message: `the window changed size since state ${stateId}, so (${x}, ${y}) may not land on what it showed: observe again` };
 			if (!contains([0, 0, view.window.bounds[2], view.window.bounds[3]], point)) return { kind: "invalid", message: `(${x}, ${y}) is outside the window, which is ${view.window.bounds[2]} by ${view.window.bounds[3]} points` };
 			const then = under(held, point);
@@ -581,8 +643,7 @@ export class UiEngine {
 	#holds(expect: UiExpect, view: UiView): boolean {
 		let seen: boolean;
 		if (expect.ref !== undefined) {
-			const key = this.#keyOf.get(expect.ref);
-			const element = view.elements.find((one) => one.key === key);
+			const element = this.#elementOf(view, expect.ref);
 			seen = element !== undefined && (expect.text === undefined || holdsText(element, expect.text));
 		} else {
 			const text = expect.text as string;

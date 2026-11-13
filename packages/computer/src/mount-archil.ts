@@ -165,9 +165,47 @@ function preflightDrift(output: string, expectedSha: string): string[] {
 /** What Archil answers a mount of a folder another client holds. */
 const HELD = "has an outstanding delegation";
 
+/**
+ * An egress gateway for the archil client (parcha-proxy's archil-egress): with one, the helper's mount starts
+ * `computerd archil-relay` and redirects root's TCP to Archil's 8100 and 32050 to it, and the relay carries each
+ * connection to the gateway's lane for its port with a PROXY v2 header naming the original destination. The gateway
+ * forwards only to a destination that proves, by certificate, the Archil name the client asked for.
+ */
+export interface ArchilEgress {
+	/** The gateway's IPv4 address. */
+	gateway: string;
+	/** The gateway's port for the client's connections to 8100 (the mount endpoint). */
+	mountLane: number;
+	/** The gateway's port for the client's connections to 32050 (the file servers). */
+	dataLane: number;
+}
+
+const IPV4 = /^(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)$/;
+const LANE = /^[1-9]\d{0,4}$/;
+/** Archil's own ports, which the computer redirects to the relay: no lane may be one. */
+const ARCHIL_PORTS = new Set([8100, 32050]);
+
+/**
+ * Reads `<IPv4 gateway>:<mount lane>:<data lane>`, such as 10.60.0.40:18100:42050, as the helper checks it: an IPv4
+ * address and two different ports, neither 8100 nor 32050. Anything else throws, in words.
+ */
+export function archilEgressOf(text: string): ArchilEgress {
+	const [gateway = "", mount = "", data = "", ...rest] = text.split(":");
+	const mountLane = Number(mount);
+	const dataLane = Number(data);
+	const lane = (port: string, n: number) => LANE.test(port) && n <= 65535 && !ARCHIL_PORTS.has(n);
+	if (rest.length > 0 || !IPV4.test(gateway) || !lane(mount, mountLane) || !lane(data, dataLane) || mountLane === dataLane) {
+		throw new Error(`the Archil egress is <IPv4 gateway>:<mount lane>:<data lane>, such as 10.60.0.40:18100:42050, with two different ports, neither 8100 nor 32050; not ${JSON.stringify(text)}`);
+	}
+	return { gateway, mountLane, dataLane };
+}
+
 /** The helper's argv for a verb. */
-function helper(verb: "mount" | "revoke" | "serve" | "checkin", mount?: ArchilMount): string[] {
-	if (verb === "mount" || verb === "revoke") return [ARCHIL_HELPER, verb, mount!.disk, mount!.region, mount!.folder];
+function helper(verb: "mount" | "revoke" | "serve" | "checkin", mount?: ArchilMount, egress?: ArchilEgress): string[] {
+	if (verb === "mount" || verb === "revoke") {
+		const way = egress === undefined ? [] : [`egress=${egress.gateway}:${egress.mountLane}:${egress.dataLane}`];
+		return [ARCHIL_HELPER, verb, mount!.disk, mount!.region, mount!.folder, ...way];
+	}
 	return [ARCHIL_HELPER, verb];
 }
 
@@ -180,6 +218,8 @@ export interface ArchilMountOptions {
 	releaseOlder: () => Promise<Result<{ released: ComputerRef[]; kept: ComputerRef[]; unproven: unknown[] }>>;
 	/** The bound of each step in the computer. */
 	timeoutMs: number;
+	/** The egress gateway the archil client reaches Archil through; none, and it reaches Archil as the computer's network allows. */
+	egress?: ArchilEgress;
 	signal?: AbortSignal;
 }
 
@@ -195,10 +235,11 @@ export interface ArchilMountOptions {
  *      Another computer of the run at the claim's own epoch is never forced off: while one is listed there is no
  *      revoke, and a held folder refuses in words;
  *   4. serve: the resident sync server, which holds no token.
- * The archil client and serve run in the computer's own network namespace, which reaches Archil; the tools' network is
- * init's own namespace, loopback alone (computerd init --own-network), so there is no firewall to set here.
+ * The archil client and serve run in the computer's own network namespace, which reaches Archil (through the egress
+ * gateway, when one is given: the helper sets the relay and its redirect); the tools' network is init's own namespace,
+ * loopback alone (computerd init --own-network), so there is no firewall to set here.
  */
-export async function archilMount({ root, mount, self: computer, releaseOlder, timeoutMs, signal }: ArchilMountOptions): Promise<Result<void>> {
+export async function archilMount({ root, mount, self: computer, releaseOlder, timeoutMs, egress, signal }: ArchilMountOptions): Promise<Result<void>> {
 	const step = async (argv: readonly string[], what: string, stdin?: string) => {
 		const ran = await root.run(argv, { timeoutMs, ...(stdin === undefined ? {} : { stdin }), ...(signal ? { signal } : {}) });
 		if (!ran.ok) return failAs(ran.error, `archil ${what} in the computer could not run: ${scrub(ran.error.message, mount.token)}`);
@@ -234,7 +275,7 @@ export async function archilMount({ root, mount, self: computer, releaseOlder, t
 		if (!checked.ok) return checked;
 	}
 	let verb: "mount" | "revoke" = force ? "revoke" : "mount";
-	let took = await step(helper(verb, mount), verb, `${mount.token}\n`);
+	let took = await step(helper(verb, mount, egress), verb, `${mount.token}\n`);
 	if (!took.ok) return took;
 	if (verb === "mount" && took.value.exitCode !== 0 && took.value.output.includes(HELD) && twins.length > 0) {
 		return fail("refused", `the run's folder is held, and the run has ${twins.join(", ")} at this claim's same epoch: a create never forces off a computer of its own epoch, so nothing was revoked; release that computer, or attach to it`);
@@ -243,7 +284,7 @@ export async function archilMount({ root, mount, self: computer, releaseOlder, t
 		const checked = await beforeForce();
 		if (!checked.ok) return checked;
 		verb = "revoke";
-		took = await step(helper(verb, mount), verb, `${mount.token}\n`);
+		took = await step(helper(verb, mount, egress), verb, `${mount.token}\n`);
 		if (!took.ok) return took;
 	}
 	if (took.value.exitCode !== 0) return failed(verb, took.value);

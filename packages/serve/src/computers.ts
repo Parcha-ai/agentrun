@@ -122,7 +122,7 @@ export interface ComputerRoutesOptions {
   readonly keyTable?: KeyTable;
   /** The model-visible tools a kind brings, by name (server.ts kindTools). */
   readonly tools: (kind: ComputerKind) => readonly string[];
-  /** This server's folder mode, or how to read it at each call (folderModeOf: the Archil settings row), so turning
+  /** This server's folder mode, or how to read it at each call (folderModeOf: the Archil settings, the environment's or the saved row), so turning
    *  Archil on or off takes effect without building the routes again. */
   readonly mode: FolderMode | (() => FolderMode | Promise<FolderMode>);
   /** Why this machine cannot run a provider's computers, by its id (hostCommandRefusals at the server's start): the
@@ -396,7 +396,7 @@ export type ComputerRoutes = ReturnType<typeof createComputerRoutes>;
 
 /** This server's folder mode, read from the store at each call: "disk" (Mode 2) while the Archil settings row is saved
  *  (PUT /v2/workspace/archil), else "local" (Mode 1). createComputerRoutes' `mode`. */
-export const folderModeOf = (store: { settings: Pick<Store["settings"], "get"> }) => async (): Promise<FolderMode> => ((await inArchilMode(store)) ? "disk" : "local");
+export const folderModeOf = (store: { settings: Pick<Store["settings"], "get"> }, env: KeyEnv = {}) => async (): Promise<FolderMode> => ((await inArchilMode(store, env)) ? "disk" : "local");
 
 /** Settings → Computers' routes, by their operation names: GET /v2/computers, PUT /v2/computers/{provider}/keys and POST
  *  /v2/computers/{provider}/test. */

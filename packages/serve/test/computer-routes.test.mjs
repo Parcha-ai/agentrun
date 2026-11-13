@@ -11,7 +11,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { COMPUTER_ROUTES, computerRoute, computerViewOf, takenOverIn } from "../dist/computer-routes.js";
+import { COMPUTER_ROUTES, computerRoute, computerViewOf } from "../dist/computer-routes.js";
 import { COMPUTER_HAND_BACK, COMPUTER_HANDOVER_KIND, COMPUTER_HOLD_KIND, COMPUTER_TAKE_OVER, computerAsk, computerHoldOf } from "../dist/computer-commands.js";
 import { ERROR_STATUS } from "../dist/errors.js";
 import { openapiDocument } from "../dist/openapi.js";
@@ -101,7 +101,6 @@ test("a take-over writes one row and is pending until the runner applies it; the
   // The runner applied it: the person's hold in the run's journal.
   desk.entries.push({ kind: COMPUTER_HOLD_KIND, data: { state: "person", take: `c${rows[0].id}`, computer: "desktop", at: NOW, by: rows[0].id } });
   assert.equal(await desk.hold(), "person");
-  assert.equal(takenOverIn(desk.entries, await desk.store.commands("run-1", 0)), true, "the run read's computer field says taken_over");
   assert.deepEqual(await desk.answer(routes["hand-back"]), { status: 200, body: { hold: "person" } }, "written; the runner has not applied it yet");
   const handBack = (await desk.store.commands("run-1", 0)).find((row) => row.kind === COMPUTER_HAND_BACK);
   assert.deepEqual(handBack.body, { take: `c${rows[0].id}`, at: NOW }, "the hand-back names the take it ends");

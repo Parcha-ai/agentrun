@@ -25,6 +25,7 @@ import {
 	JSONRPC_CODES,
 	MAX_LINE_BYTES,
 	PROTOCOL_VERSION,
+	type UiFlag,
 	type UiImage,
 	type UiStep,
 	type UiTarget,
@@ -203,7 +204,19 @@ export class FakeUiDriver implements UiSource {
 		}
 		if (!this.#running.has(app.id)) {
 			const offset = 40 * this.#running.size;
-			this.#running.set(app.id, { screen: app.start, history: [], values: new Map(), checked: new Set(), animateUntil: 0, bounds: [100 + offset, 80 + offset, ...app.size], timers: new Set() });
+			// look() shows checked and focused from this state alone, never the script's flags: the state starts from them.
+			const scriptedWith = (flag: UiFlag) => Object.values(app.screens).flatMap((screen) => screen.elements.filter((element) => element.flags?.includes(flag)).map((element) => element.key));
+			const focus = app.screens[app.start]?.elements.find((element) => element.flags?.includes("focused"))?.key;
+			this.#running.set(app.id, {
+				screen: app.start,
+				history: [],
+				values: new Map(),
+				checked: new Set(scriptedWith("checked")),
+				...(focus === undefined ? {} : { focus }),
+				animateUntil: 0,
+				bounds: [100 + offset, 80 + offset, ...app.size],
+				timers: new Set(),
+			});
 		}
 		if (p.background !== true) this.#front = app.id;
 		return ok({});
@@ -217,16 +230,27 @@ export class FakeUiDriver implements UiSource {
 
 	async look(target: UiTarget | undefined): Promise<Result<UiView>> {
 		const id = target?.app ?? this.#front;
-		if (id === undefined) return fail("not_found", "no app is in front: launch one with apps.launch");
+		const touch = this.kind === "android" || this.kind === "ios";
+		// A phone reads only the app in front, as its accessibility dump does (phone-ui.ts): an app behind is not found.
+		const front = this.#front ?? "home";
+		if (touch && target?.app !== undefined && target.app !== front) return fail("not_found", `${target.app} is not in front on this phone (${front} is): launch it with apps.launch first`);
+		if (id === undefined || (id === "home" && this.#front === undefined)) {
+			if (target?.window !== undefined && target.window !== "home#main") return fail("not_found", `the home screen has no window ${target.window}; its window is home#main`);
+			// With no app in front a computer shows its home screen or desktop (after nav home, or terminating the app in
+			// front): a window to observe and settle on, as on a real one.
+			const [width, height] = [this.hello().screen?.width ?? 0, this.hello().screen?.height ?? 0];
+			return ok({ app: { id: "home", name: touch ? "Home screen" : "Desktop" }, window: { id: "home#main", bounds: [0, 0, width, height] }, elements: [], frame: "home" });
+		}
 		const state = this.#running.get(id);
 		const app = this.apps.get(id);
 		if (state === undefined || app === undefined) return fail("not_found", `${id} is not running: launch it with apps.launch`);
 		const windowId = `${id}#main`;
 		if (target?.window !== undefined && target.window !== windowId) return fail("not_found", `${id} has no window ${target.window}; its window is ${windowId}`);
 		const screen = app.screens[state.screen];
-		const elements = screen.elements.map(({ press: _press, enter: _enter, route: _route, counts: _counts, ...element }) => {
+		// Checked and focused are the state's alone (seeded from the script at launch): the scripted flags never show through.
+		const elements = screen.elements.map(({ press: _press, enter: _enter, route: _route, counts: _counts, flags: scriptedFlags, ...element }) => {
 			const value = state.values.get(element.key) ?? element.value;
-			const flags = [...(element.flags ?? []).filter((flag) => flag !== "checked" && flag !== "focused"), ...(state.checked.has(element.key) ? (["checked"] as const) : []), ...(state.focus === element.key ? (["focused"] as const) : [])];
+			const flags = [...(scriptedFlags ?? []).filter((flag) => flag !== "checked" && flag !== "focused"), ...(state.checked.has(element.key) ? (["checked"] as const) : []), ...(state.focus === element.key ? (["focused"] as const) : [])];
 			return { ...element, ...(value === undefined ? {} : { value }), ...(flags.length > 0 ? { flags } : {}) };
 		});
 		const between = Date.now() < state.animateUntil;
@@ -246,9 +270,17 @@ export class FakeUiDriver implements UiSource {
 	}
 
 	async run(step: UiStep, { element, view, foreground }: UiStepContext): Promise<Result<UiRun>> {
-		const state = this.#running.get(view.app.id) as AppState;
+		const running = this.#running.get(view.app.id);
+		if (running === undefined) {
+			// The home screen or desktop: nav runs (there is nowhere further to go), anything else has nothing to land on.
+			if ("nav" in step) return ok({ route: "semantic", verified: true });
+			return fail("unsupported", `the fake's ${view.app.name.toLowerCase()} takes no input but nav: launch an app with apps.launch`);
+		}
+		const state = running;
 		const app = this.apps.get(view.app.id) as FakeApp;
 		const scripted = (key: string | undefined) => app.screens[state.screen].elements.find((one) => one.key === key);
+		/** A disabled element takes no effect by any route: by its ref it is refused, by a point or the focus it is ignored. */
+		const disabled = (one: FakeElement) => one.flags?.includes("disabled") ?? false;
 		/** The route an input step (a pointer, typing, a key) takes, or why it may not run, in the off features' words. */
 		const pointer = (target: FakeElement | undefined): Result<UiRun["route"]> => {
 			const only = target?.route === "foreground";
@@ -262,22 +294,28 @@ export class FakeUiDriver implements UiSource {
 			return ok("foreground");
 		};
 		/** A pointer step by its route: an element it reaches is pressed, and a counting one verified by its count. */
+		/**
+		 * Whether input by this route has an effect on the element: a disabled control takes it and does nothing, and a
+		 * view that takes real input only never sees input posted by another route (blindBackground lets one through).
+		 * Every input step (a point, typing, a key) applies its effect only through this.
+		 */
+		const takes = (one: FakeElement, route: UiRun["route"]) => !disabled(one) && !(one.route === "foreground" && route !== "foreground");
 		const land = (hit: FakeElement | undefined, route: UiRun["route"], right = false): UiRun => {
-			if (hit === undefined || right || (hit.route === "foreground" && route !== "foreground")) return { route, verified: false };
+			if (hit === undefined || right || !takes(hit, route)) return { route, verified: false };
 			this.#press(state, hit);
 			if (hit.counts !== true) return { route, verified: false };
 			state.values.set(hit.key, String(Number(state.values.get(hit.key) ?? hit.value ?? "0") + 1));
 			return { route, verified: true };
 		};
 		const target = scripted(element?.key);
-		if (target?.flags?.includes("disabled")) return fail("invalid", `${target.name ?? "the element"} is disabled`);
+		if (target !== undefined && disabled(target)) return fail("refused", `${target.name ?? "the element"} is disabled: a step on it does nothing, so none ran`);
 		if ("press" in step || ("perform" in step && step.action === target?.actions?.[0])) {
 			if (target?.route === "foreground") {
 				const route = pointer(target);
 				return route.ok ? ok(land(target, route.value)) : route;
 			}
 			this.#press(state, target as FakeElement);
-			return ok({ route: "semantic", verified: true });
+			return ok({ route: "semantic", verified: this.#shownAtOnce(target as FakeElement) });
 		}
 		if ("perform" in step) {
 			if (!(target?.actions ?? []).includes(step.action)) return fail("unsupported", `${target?.name ?? "the element"} has no action ${step.action}`);
@@ -285,28 +323,41 @@ export class FakeUiDriver implements UiSource {
 		}
 		if ("set" in step) {
 			const scriptedTarget = target as FakeElement;
-			if (scriptedTarget.role === "switch" || scriptedTarget.role === "checkbox") {
-				if (step.value !== "on" && step.value !== "off") return fail("invalid", `a ${scriptedTarget.role} is set to "on" or "off", not ${JSON.stringify(step.value)}`);
-				if (step.value === "on") state.checked.add(scriptedTarget.key);
-				else state.checked.delete(scriptedTarget.key);
-				return ok({ route: "semantic", verified: true });
-			}
-			if (scriptedTarget.role !== "textbox" && scriptedTarget.role !== "searchbox") return fail("unsupported", `a ${scriptedTarget.role} has no value to set`);
-			state.values.set(scriptedTarget.key, step.value);
-			return ok({ route: "semantic", verified: true });
+			const toggle = scriptedTarget.role === "switch" || scriptedTarget.role === "checkbox";
+			if (toggle && step.value !== "on" && step.value !== "off") return fail("invalid", `a ${scriptedTarget.role} is set to "on" or "off", not ${JSON.stringify(step.value)}`);
+			if (!toggle && scriptedTarget.role !== "textbox" && scriptedTarget.role !== "searchbox") return fail("unsupported", `a ${scriptedTarget.role} has no value to set`);
+			// A view that takes real input only is set by real input, as a press is: never by the semantic route.
+			const via: Result<UiRun["route"]> = scriptedTarget.route === "foreground" ? pointer(scriptedTarget) : ok("semantic");
+			if (!via.ok) return via;
+			if (!takes(scriptedTarget, via.value)) return ok({ route: via.value, verified: false });
+			if (toggle && step.value === "on") state.checked.add(scriptedTarget.key);
+			else if (toggle) state.checked.delete(scriptedTarget.key);
+			else state.values.set(scriptedTarget.key, step.value);
+			return ok({ route: via.value, verified: true });
 		}
 		if ("click" in step) {
 			// A point lands on what the app draws there, whether or not the view carries its elements (ui.tree off).
 			const hit = target ?? (Array.isArray(step.click) ? app.screens[state.screen].elements.findLast((one) => this.#inside(one.bounds, step.click as [number, number])) : undefined);
 			const route = pointer(hit);
-			return route.ok ? ok(land(hit, route.value, step.button === "right")) : route;
+			if (!route.ok) return route;
+			// A double or triple click lands as many times; a right click once.
+			let landed = land(hit, route.value, step.button === "right");
+			for (let more = step.button === "right" ? 0 : (step.count ?? 1) - 1; more > 0; more--) landed = land(hit, route.value);
+			return ok(landed);
 		}
 		if ("type" in step) {
+			const field = (one: FakeElement) => one.role === "textbox" || one.role === "searchbox";
+			if (target !== undefined && !field(target)) return fail("refused", `${step.into} is a ${target.role}, not a text field: type into a field`);
 			const into = target ?? scripted(state.focus);
 			const route = pointer(into);
 			if (!route.ok) return route;
-			if (into === undefined || (into.role !== "textbox" && into.role !== "searchbox")) return ok({ route: route.value, verified: false });
-			state.focus = into.key;
+			if (into === undefined || !takes(into, route.value) || !field(into)) return ok({ route: route.value, verified: false });
+			// A field named by its ref is focused first, as a tap does, which runs what pressing it does: a field whose
+			// press opens another screen leaves the focus there, and nothing is typed.
+			if (target !== undefined) {
+				this.#press(state, target);
+				if (state.focus !== target.key) return fail("refused", `${step.into} did not take focus: nothing typed`);
+			}
 			state.values.set(into.key, `${state.values.get(into.key) ?? into.value ?? ""}${step.type}`);
 			return ok({ route: route.value, verified: true });
 		}
@@ -314,7 +365,7 @@ export class FakeUiDriver implements UiSource {
 			const focused = scripted(state.focus);
 			const route = pointer(focused);
 			if (!route.ok) return route;
-			if (step.key === "enter" && focused?.enter !== undefined) this.#apply(state, focused.enter);
+			if (step.key === "enter" && focused?.enter !== undefined && takes(focused, route.value)) this.#apply(state, focused.enter);
 			return ok({ route: route.value, verified: false });
 		}
 		if ("nav" in step) {
@@ -331,6 +382,12 @@ export class FakeUiDriver implements UiSource {
 
 	#inside([x, y, w, h]: [number, number, number, number], [px, py]: [number, number]): boolean {
 		return px >= x && py >= y && px < x + w && py < y + h;
+	}
+
+	/** Whether a press's effect is there to read back as soon as it ran: a toggle, a focus, or a screen opened at once. */
+	#shownAtOnce(element: FakeElement): boolean {
+		if (["switch", "checkbox", "textbox", "searchbox"].includes(element.role)) return true;
+		return element.press !== undefined && (element.press.after ?? 0) === 0;
 	}
 
 	#press(state: AppState, element: FakeElement): void {
@@ -374,12 +431,14 @@ export function serveUiLines(driver: FakeUiDriver, input: Readable, output: Writ
 	const error = (id: unknown, kind: DaemonErrorKind, message: string, code = codeOf(kind)) => reply({ jsonrpc: "2.0", id: id ?? null, error: { code, message, data: { kind } } });
 	const line = async (text: string) => {
 		if (Buffer.byteLength(text) > MAX_LINE_BYTES) return error(null, "limit", "the request is over the line limit", JSONRPC_CODES.invalidRequest);
-		let message: { id?: number | string; method?: unknown; params?: unknown };
+		let parsed: unknown;
 		try {
-			message = JSON.parse(text);
+			parsed = JSON.parse(text);
 		} catch {
 			return error(null, "invalid", "the line is not JSON", JSONRPC_CODES.parse);
 		}
+		if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return error(null, "invalid", "a request is a JSON object", JSONRPC_CODES.invalidRequest);
+		const message = parsed as { id?: number | string; method?: unknown; params?: unknown };
 		if (message.method === CANCEL_METHOD) {
 			running.get((message.params as { id?: number | string } | undefined)?.id ?? "")?.abort();
 			return;
@@ -473,13 +532,32 @@ export function fakeUiProvider(options: FakeUiOptions = {}, make: (options: Fake
 		maxLifetimeMs: 60 * 60_000,
 		release: ["delete"],
 	};
+	const networks = new Map<string, "none" | "open">();
 	const missing = (id: string) => fail("not_found", `no fake ui computer ${id}`);
+	const end = (id: string) => {
+		drivers.get(id)?.close();
+		drivers.delete(id);
+		labelsOf.delete(id);
+		deadlines.delete(id);
+		networks.delete(id);
+	};
+	/** Whether the computer is there: one past its deadline is ended then (its lifetime is the vendor's), and is not. */
+	const live = (id: string) => {
+		const deadline = deadlines.get(id);
+		if (deadline !== undefined && deadline.getTime() <= Date.now()) end(id);
+		return drivers.has(id);
+	};
+	const allowRefused = "a fake ui computer's network is none or open, never an allowlist";
 	return {
 		id: "fake-ui",
 		version: "fake",
 		drivers,
 		capabilities: () => capabilities,
-		check: (spec) => [...kindRefusals(capabilities), ...checkLifetime(spec.lifetimeMs, capabilities)],
+		check: (spec) => [
+			...kindRefusals(capabilities),
+			...checkLifetime(spec.lifetimeMs, capabilities),
+			...(spec.network === "none" || spec.network === "open" ? [] : [{ field: "network", message: typeof spec.network === "object" ? allowRefused : `network is "none" or "open", not ${JSON.stringify(spec.network)}` }]),
+		],
 		async create(spec) {
 			const refusals = this.check(spec);
 			if (refusals.length > 0) return fail("refused", refusals.map((refusal) => refusal.message).join("; "));
@@ -487,30 +565,31 @@ export function fakeUiProvider(options: FakeUiOptions = {}, make: (options: Fake
 			drivers.set(id, make(options));
 			labelsOf.set(id, { ...spec.labels });
 			deadlines.set(id, new Date(Date.now() + (spec.lifetimeMs ?? capabilities.maxLifetimeMs)));
+			networks.set(id, spec.network as "none" | "open");
 			return ok({ id, name: id });
 		},
 		async attach(ref) {
-			const id = "id" in ref ? ref.id : [...labelsOf].find(([, labels]) => Object.entries(ref.labels).every(([key, value]) => labels[key] === value))?.[0];
-			if (id === undefined || !drivers.has(id)) return missing("id" in ref ? ref.id : JSON.stringify(ref.labels));
-			return ok({ id, name: id, spec: { image: "fake-ui", user: "501", network: "none", kind: capabilities.kind, deadline: deadlines.get(id) } });
+			const id = "id" in ref ? ref.id : [...labelsOf].find(([found, labels]) => live(found) && Object.entries(ref.labels).every(([key, value]) => labels[key] === value))?.[0];
+			if (id === undefined || !live(id)) return missing("id" in ref ? ref.id : JSON.stringify(ref.labels));
+			return ok({ id, name: id, spec: { image: "fake-ui", user: "501", network: networks.get(id) ?? "none", kind: capabilities.kind, deadline: deadlines.get(id) } });
 		},
 		async list(labels) {
-			const matching = [...labelsOf].filter(([, have]) => Object.entries(labels).every(([key, value]) => have[key] === value));
-			return ok(matching.map(([id, have]) => ({ ref: { id, name: id }, labels: have, deadline: deadlines.get(id), state: "running" as const, network: "none" as const })));
+			const matching = [...labelsOf].filter(([id, have]) => live(id) && Object.entries(labels).every(([key, value]) => have[key] === value));
+			return ok(matching.map(([id, have]) => ({ ref: { id, name: id }, labels: have, deadline: deadlines.get(id), state: "running" as const, network: networks.get(id) ?? "none" })));
 		},
-		async network(ref) {
-			return drivers.has(ref.id) ? ok("none") : missing(ref.id);
+		async network(ref, policy) {
+			if (!live(ref.id)) return missing(ref.id);
+			if (policy !== undefined && policy !== "none" && policy !== "open") return fail("refused", allowRefused);
+			if (policy !== undefined) networks.set(ref.id, policy);
+			return ok(networks.get(ref.id) ?? "none");
 		},
 		async connect(ref) {
-			const driver = drivers.get(ref.id);
-			return driver === undefined ? missing(ref.id) : connectUi(driver);
+			if (!live(ref.id)) return missing(ref.id);
+			return connectUi(drivers.get(ref.id) as FakeUiDriver);
 		},
 		async release(ref, how) {
 			if (how === "stop") return fail("unsupported", "a fake ui computer is deleted on release, never stopped");
-			drivers.get(ref.id)?.close();
-			drivers.delete(ref.id);
-			labelsOf.delete(ref.id);
-			deadlines.delete(ref.id);
+			end(ref.id);
 			return ok(undefined);
 		},
 	};

@@ -117,7 +117,6 @@ const nativeToolNames = (options: PiAdapterOptions): readonly string[] =>
 
 async function openPi(options: PiAdapterOptions, spec: SessionSpec, io: PiSessionIO): Promise<AdapterSession> {
   const context = withAbortSignal(io.signal, BACKGROUND_CONTEXT);
-  const names = [...spec.tools.map((tool) => tool.name), ...nativeToolNames(options)];
   // The session's route: pi-ai's requests reach the provider only through this proxy, which admits and books each one
   // through the runner's booking (io.models).
   const proxy = await routeProxy(options, io.models, [...spec.tools.map((tool) => tool.name), ...nativeToolNames(options)], options.redact);

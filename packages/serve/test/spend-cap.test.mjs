@@ -55,8 +55,7 @@ test("the worst case prices the request's input: at $0 output, an input that pas
   assert.deepEqual([run.status, run.state, run.error, run.pending?.kind, posts()], ["input_required", "waiting", null, "budget", 0], JSON.stringify(run));
 });
 
-// SKIP (follow-up #2078): the spend cap or an unknown cost reads differently on the runner (cost reads $0, not unknown)
-test.skip("a request the cap refuses never reaches the model: the run's second request, its input alone over the cap, is not made, and the run pauses at its cap", async (t) => {
+test("a request the cap refuses never reaches the model: the run's second request, its input alone over the cap, is not made, and the run pauses at its cap", async (t) => {
   const calls = join(await scratch(t), "calls.jsonl");
   withEnv(t, { AGENTRUN_TEST_FAUX_CALLS: calls });
   const { api } = await serve(t, { faux: new URL("./fixtures/faux-recorded.mjs", import.meta.url).pathname });

@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { conformanceCases, findNodes, formatReport, refusedStep, runConformance, UiSession } from "../dist/index.js";
+import { checkUiAct, chordKeys, conformanceCases, findNodes, formatReport, refusedStep, runConformance, UiSession } from "../dist/index.js";
 import { connectUi, FakeUiDriver, fakeUiConnection, fakeUiProvider, NEXT_ANIMATE_MS, NEXT_MS, UI_FIXTURE } from "../dist/fake-ui-driver.js";
 
 const APP = UI_FIXTURE.id;
@@ -123,6 +123,296 @@ test("typing and keys take the routes the features allow, refused in the off fea
 	await canvas.close();
 });
 
+test("a press is verified only when its effect is there at once; a double click lands twice", async () => {
+	const c = await fakeUiConnection();
+	await c.client.call("apps.launch", { id: APP });
+	const seen = (await c.client.call("ui.observe", {})).value;
+	const ref = (id) => seen.nodes.find((n) => n.id === id).ref;
+	assert.deepEqual((await c.client.call("ui.act", { steps: [{ press: ref("wifi") }] })).value.steps, [{ route: "semantic", verified: true }], "a switch's toggle reads back at once");
+	assert.deepEqual((await c.client.call("ui.act", { steps: [{ press: ref("save") }] })).value.steps, [{ route: "semantic", verified: false }], "Save shows Saved only later");
+	const twice = await c.client.call("ui.act", { steps: [{ click: ref("canvas"), count: 2 }], foreground: true });
+	assert.deepEqual(twice.value.steps, [{ route: "foreground", verified: true }]);
+	assert.equal((await c.client.call("ui.observe", {})).value.nodes.find((n) => n.id === "canvas").value, "2");
+	await c.close();
+});
+
+test("the Core apps and ui cases read the ui fixture on a computer with no exec or files, desktop and phone", { timeout: 60_000 }, async () => {
+	const core = ["apps.launch-terminate", "ui.observe-shape"];
+	for (const options of [{}, { os: "android", kind: "android" }]) {
+		const report = await run(fakeUiProvider(options), core);
+		for (const id of core) assert.equal(statuses(report)[id], "pass", `${options.kind ?? "desktop"} ${id}: ${reasonOf(report, id)}`);
+	}
+});
+
+test("an expect never matches a secure field's value", async () => {
+	const app = {
+		id: "test.login",
+		name: "Login",
+		start: "a",
+		size: [300, 200],
+		screens: { a: { elements: [{ key: "pw", role: "textbox", name: "Password", flags: ["secure"], value: "hunter2", bounds: [10, 10, 200, 28] }] } },
+	};
+	const c = await fakeUiConnection({ apps: [app] });
+	await c.client.call("apps.launch", { id: app.id });
+	const probed = await c.client.call("ui.act", { steps: [], expect: { text: "hunter2", timeoutMs: 200 } });
+	assert.equal(probed.value.expect, "unmet", "the password is not readable through an expect");
+	const named = await c.client.call("ui.act", { steps: [], expect: { text: "Password", timeoutMs: 200 } });
+	assert.equal(named.value.expect, "met", "its name still is");
+	// Nor through whether it changed: setting the same value and another answer alike.
+	const seen = (await c.client.call("ui.observe", {})).value;
+	const pw = seen.nodes[0].ref;
+	assert.equal(seen.nodes[0].value, undefined);
+	const same = await c.client.call("ui.act", { steps: [{ set: pw, value: "hunter2" }] });
+	const other = await c.client.call("ui.act", { steps: [{ set: pw, value: "guess" }] });
+	assert.deepEqual([same.value.changed, other.value.changed], [false, false]);
+	const since = await c.client.call("ui.observe", { since: seen.state });
+	assert.deepEqual(since.value.diff, { added: [], removed: [], changed: [] });
+	const point = await c.client.call("ui.act", { state: seen.state, steps: [{ click: [20, 20] }] });
+	assert.equal(point.value.steps[0].error, undefined, "a point on it is not stale for its value");
+	await c.close();
+});
+
+test("every point of a drag is held to its state: an end outside the window is invalid, an end on what changed is stale", async () => {
+	const c = await fakeUiConnection();
+	await c.client.call("apps.launch", { id: APP });
+	const seen = (await c.client.call("ui.observe", {})).value;
+	const wifi = seen.nodes.find((n) => n.id === "wifi");
+	const [x, y, w, h] = wifi.bounds;
+	const onWifi = [Math.floor(x + w / 2), Math.floor(y + h / 2)];
+	const out = await c.client.call("ui.act", { state: seen.state, steps: [{ drag: [[300, 300], [310, 310], [1000, 1000]] }] });
+	assert.equal(out.value.steps[0].error?.kind, "invalid", JSON.stringify(out.value.steps));
+	assert.match(out.value.steps[0].error.message, /\(1000, 1000\) is outside the window/);
+	assert.deepEqual((await c.client.call("ui.act", { steps: [{ press: wifi.ref }] })).value.steps, [{ route: "semantic", verified: true }]);
+	const moved = await c.client.call("ui.act", { state: seen.state, steps: [{ drag: [[300, 300], onWifi] }] });
+	assert.equal(moved.value.steps[0].error?.kind, "stale", JSON.stringify(moved.value.steps));
+	assert.match(moved.value.steps[0].error.message, new RegExp(`what is at \\(${onWifi[0]}, ${onWifi[1]}\\) changed`));
+	await c.close();
+});
+
+test("a chord's last key may be + itself", () => {
+	assert.deepEqual(["+", "shift++", "ctrl+shift+t", "a"].map(chordKeys), [["+"], ["shift", "+"], ["ctrl", "shift", "t"], ["a"]]);
+	for (const key of ["+", "shift++", "ctrl+="]) assert.equal(checkUiAct({ steps: [{ key }] }).ok, true, key);
+	for (const key of ["", "++", "shift+", "+shift"]) assert.equal(checkUiAct({ steps: [{ key }] }).ok, false, key);
+});
+
+test("a fake desktop with no app in front shows its desktop", async () => {
+	const c = await fakeUiConnection();
+	const seen = (await c.client.call("ui.observe", {})).value;
+	assert.deepEqual([seen.app, seen.nodes], [{ id: "home", name: "Desktop" }, []]);
+	await c.close();
+});
+
+test("two apps' elements of one scripted key are two elements: a ref of the app behind is stale, not the front app's", async () => {
+	const appOf = (id) => ({ id, name: id, start: "a", size: [300, 200], screens: { a: { elements: [{ key: "go", role: "switch", name: "Go", bounds: [10, 10, 80, 28] }] } } });
+	const c = await fakeUiConnection({ apps: [appOf("test.one"), appOf("test.two")] });
+	await c.client.call("apps.launch", { id: "test.one" });
+	const one = (await c.client.call("ui.observe", {})).value.nodes[0].ref;
+	await c.client.call("apps.launch", { id: "test.two" });
+	const two = (await c.client.call("ui.observe", {})).value.nodes[0].ref;
+	assert.notEqual(one, two);
+	const pressed = await c.client.call("ui.act", { steps: [{ press: one }] });
+	assert.equal(pressed.value.steps[0].error?.kind, "stale", JSON.stringify(pressed.value.steps));
+	assert.equal((await c.client.call("ui.observe", {})).value.nodes[0].flags?.includes("checked") ?? false, false, "test.two's switch is untouched");
+	await c.close();
+});
+
+test("nav home on a fake phone settles on its home screen, and the app comes back with apps.launch", async () => {
+	const c = await fakeUiConnection({ os: "android", kind: "android" });
+	await c.client.call("apps.launch", { id: APP });
+	const home = await c.client.call("ui.act", { steps: [{ nav: "home" }] });
+	assert.deepEqual(home.value.steps, [{ route: "semantic", verified: true }], JSON.stringify(home));
+	const seen = (await c.client.call("ui.observe", {})).value;
+	assert.equal(seen.app.id, "home");
+	assert.deepEqual(seen.nodes, []);
+	const tapped = await c.client.call("ui.act", { state: seen.state, steps: [{ click: [10, 10] }] });
+	assert.equal(tapped.value.steps[0].error?.kind, "unsupported");
+	await c.client.call("apps.launch", { id: APP });
+	assert.equal((await c.client.call("ui.observe", {})).value.app.id, APP);
+	await c.close();
+});
+
+test("an act aimed at an app (a saved state, or a target) that navigates away follows the window in front: its steps keep their results and its state is the new window's", async () => {
+	const c = await fakeUiConnection({ os: "android", kind: "android" });
+	for (const aimed of [(seen) => ({ state: seen.state }), () => ({ target: { app: APP, window: `${APP}#main` } })]) {
+		await c.client.call("apps.launch", { id: APP });
+		const seen = (await c.client.call("ui.observe", {})).value;
+		assert.equal(seen.app.id, APP);
+		const home = await c.client.call("ui.act", { ...aimed(seen), steps: [{ nav: "home" }], expect: { text: "nothing here", timeoutMs: 100 } });
+		assert.equal(home.ok, true, JSON.stringify(home));
+		assert.deepEqual(home.value.steps, [{ route: "semantic", verified: true }]);
+		assert.equal(home.value.expect, "unmet", "the expect polled the home screen, not the app behind it");
+		assert.equal((await c.client.call("ui.observe", { since: home.value.state })).value.app.id, "home", "the act's state is the home screen's");
+	}
+	await c.close();
+});
+
+test("a step other than nav that takes the act's window away (a key that leaves the app) runs nothing after it, keeps its result, and settles on the window in front", async () => {
+	class Leaving extends FakeUiDriver {
+		async run(step, context) {
+			return "key" in step && step.key === "f12" ? super.run({ nav: "home" }, context) : super.run(step, context);
+		}
+	}
+	const c = (await connectUi(new Leaving({ os: "android", kind: "android" }))).value;
+	await c.client.call("apps.launch", { id: APP });
+	const seen = (await c.client.call("ui.observe", {})).value;
+	const left = await c.client.call("ui.act", { state: seen.state, steps: [{ key: "f12" }, { key: "a" }] });
+	assert.equal(left.ok, true, JSON.stringify(left));
+	assert.deepEqual(left.value.steps[0], { route: "semantic", verified: true });
+	assert.equal(left.value.steps[1].error?.kind, "stale");
+	assert.match(left.value.steps[1].error.message, /the window this act aimed at is gone since the step before/);
+	assert.equal(left.value.changed, true);
+	// With neither state nor target, the act is bound to the app it began on: the step after one that leaves it is
+	// refused, never run in whatever is in front now.
+	await c.client.call("apps.launch", { id: APP });
+	const bare = await c.client.call("ui.act", { steps: [{ key: "f12" }, { type: "1234" }] });
+	assert.equal(bare.ok, true, JSON.stringify(bare));
+	assert.deepEqual(bare.value.steps[0], { route: "semantic", verified: true });
+	assert.equal(bare.value.steps[1].error?.kind, "stale", JSON.stringify(bare.value.steps));
+	await c.close();
+});
+
+test("a disabled control takes no effect by any route: its ref is refused, a click at its point lands and does nothing", async () => {
+	const app = { id: "test.off", name: "Off", start: "a", size: [300, 200], screens: { a: { elements: [{ key: "wifi", role: "switch", name: "Wi-Fi", bounds: [10, 10, 80, 28], flags: ["disabled"] }] } } };
+	const c = await fakeUiConnection({ apps: [app] });
+	await c.client.call("apps.launch", { id: app.id });
+	const seen = (await c.client.call("ui.observe", {})).value;
+	const ref = seen.nodes[0].ref;
+	assert.equal((await c.client.call("ui.act", { steps: [{ press: ref }] })).value.steps[0].error?.kind, "refused");
+	const clicked = await c.client.call("ui.act", { state: seen.state, steps: [{ click: [20, 20] }] });
+	assert.equal(clicked.value.steps[0].verified, false, JSON.stringify(clicked));
+	assert.deepEqual((await c.client.call("ui.observe", {})).value.nodes[0].flags, ["disabled"], "not checked");
+	await c.close();
+});
+
+test("blind background input reaches no field or key effect that takes foreground input only: typing and enter land nowhere, with foreground: true they apply", async () => {
+	const field = { key: "pin", role: "textbox", name: "PIN", bounds: [10, 10, 200, 28], route: "foreground", enter: { go: "b" } };
+	const app = { id: "test.blind", name: "Blind", start: "a", size: [300, 200], screens: { a: { elements: [field] }, b: { elements: [{ key: "done", role: "text", name: "Done", bounds: [10, 10, 80, 28] }] } } };
+	const c = await fakeUiConnection({ apps: [app], blindBackground: true });
+	await c.client.call("apps.launch", { id: app.id });
+	const ref = (await c.client.call("ui.observe", {})).value.nodes[0].ref;
+	const typed = await c.client.call("ui.act", { steps: [{ type: "1234", into: ref }, { key: "enter" }] });
+	assert.deepEqual(typed.value.steps, [{ route: "background", verified: false }, { route: "background", verified: false }], JSON.stringify(typed));
+	const seen = (await c.client.call("ui.observe", {})).value;
+	assert.equal(seen.nodes[0].value, undefined, "nothing was typed");
+	assert.equal(seen.nodes[0].name, "PIN", "and enter did not go to the next screen");
+	const real = await c.client.call("ui.act", { foreground: true, steps: [{ type: "1234", into: ref }, { key: "enter" }] });
+	assert.deepEqual(real.value.steps.map((one) => one.route), ["foreground", "foreground"], JSON.stringify(real));
+	assert.equal((await c.client.call("ui.observe", {})).value.nodes[0].name, "Done", "real input typed and entered");
+	await c.close();
+});
+
+test("type into a ref that is no field is refused; a field whose tap opens another screen takes no focus and gets nothing typed", async () => {
+	const app = {
+		id: "test.into",
+		name: "Into",
+		start: "a",
+		size: [300, 200],
+		screens: {
+			a: { elements: [{ key: "send", role: "button", name: "Send", bounds: [10, 10, 80, 28] }, { key: "search", role: "searchbox", name: "Search", bounds: [10, 50, 200, 28], press: { go: "b" } }, { key: "to", role: "textbox", name: "To", bounds: [10, 90, 200, 28] }] },
+			b: { elements: [{ key: "query", role: "textbox", name: "Query", bounds: [10, 10, 200, 28], flags: ["focused"] }] },
+		},
+	};
+	const c = await fakeUiConnection({ apps: [app] });
+	await c.client.call("apps.launch", { id: app.id });
+	const [send, search, to] = (await c.client.call("ui.observe", {})).value.nodes.map((node) => node.ref);
+	const notField = await c.client.call("ui.act", { steps: [{ type: "hello", into: send }] });
+	assert.deepEqual(notField.value.steps[0].error, { kind: "refused", message: `${send} is a button, not a text field: type into a field` }, JSON.stringify(notField));
+	const typed = await c.client.call("ui.act", { steps: [{ type: "hello", into: to }] });
+	assert.equal(typed.value.steps[0].verified, true, JSON.stringify(typed));
+	const opened = await c.client.call("ui.act", { steps: [{ type: "hello", into: search }] });
+	assert.deepEqual(opened.value.steps[0].error, { kind: "refused", message: `${search} did not take focus: nothing typed` }, JSON.stringify(opened));
+	const after = (await c.client.call("ui.observe", {})).value.nodes;
+	assert.deepEqual([after[0].name, after[0].value], ["Query", undefined], "the tap opened the other screen, and nothing reached its field");
+	await c.close();
+});
+
+test("a set honors the element's route as a press does: a foreground-only control is never set by the semantic route", async () => {
+	const app = { id: "test.fg", name: "Fg", start: "a", size: [300, 200], screens: { a: { elements: [{ key: "pin", role: "textbox", name: "PIN", bounds: [10, 10, 200, 28], route: "foreground" }, { key: "lock", role: "switch", name: "Lock", bounds: [10, 50, 80, 28], route: "foreground" }] } } };
+	const strict = await fakeUiConnection({ apps: [app] });
+	await strict.client.call("apps.launch", { id: app.id });
+	const [pin, lock] = (await strict.client.call("ui.observe", {})).value.nodes.map((node) => node.ref);
+	const denied = await strict.client.call("ui.act", { steps: [{ set: pin, value: "1234" }] });
+	assert.equal(denied.value.steps[0].error?.kind, "denied", JSON.stringify(denied));
+	const allowed = await strict.client.call("ui.act", { foreground: true, steps: [{ set: pin, value: "1234" }, { set: lock, value: "on" }] });
+	assert.deepEqual(allowed.value.steps, [{ route: "foreground", verified: true }, { route: "foreground", verified: true }]);
+	await strict.close();
+	const blind = await fakeUiConnection({ apps: [app], blindBackground: true });
+	await blind.client.call("apps.launch", { id: app.id });
+	const refs = (await blind.client.call("ui.observe", {})).value.nodes.map((node) => node.ref);
+	const posted = await blind.client.call("ui.act", { steps: [{ set: refs[0], value: "1234" }, { set: refs[1], value: "on" }] });
+	assert.deepEqual(posted.value.steps, [{ route: "background", verified: false }, { route: "background", verified: false }]);
+	const after = (await blind.client.call("ui.observe", {})).value.nodes;
+	assert.equal(after[0].value, undefined, "posted input reached no field");
+	assert.equal(after[1].flags, undefined, "nor the switch");
+	await blind.close();
+});
+
+test("ui.observe-shape skips, in hello's words, a computer with both ui.tree and ui.image off", async () => {
+	const report = await run(fakeUiProvider({ features: { "ui.tree": { off: "this driver reads no tree" }, "ui.image": { off: "this driver takes no images" } } }), ["ui.observe-shape"]);
+	assert.equal(statuses(report)["ui.observe-shape"], "skip", reasonOf(report, "ui.observe-shape"));
+	assert.match(reasonOf(report, "ui.observe-shape"), /this driver reads no tree, and .*this driver takes no images/);
+});
+
+test("the fake ui provider keeps a computer's network (none or open, never an allowlist) and ends a computer at its deadline", async () => {
+	const provider = fakeUiProvider();
+	const spec = { image: "fake-ui", user: "501", kind: "desktop", labels: { run: "r1" } };
+	const allow = await provider.create({ ...spec, network: { allow: ["example.com"] }, lifetimeMs: 60_000 });
+	assert.equal(allow.error?.code, "refused");
+	assert.match(allow.error.message, /never an allowlist/);
+	const made = await provider.create({ ...spec, network: "open", lifetimeMs: 60_000 });
+	assert.equal(made.ok, true, JSON.stringify(made));
+	assert.equal((await provider.network(made.value)).value, "open");
+	assert.equal((await provider.attach({ id: made.value.id })).value.spec.network, "open");
+	assert.equal((await provider.list({ run: "r1" })).value[0].network, "open");
+	assert.equal((await provider.network(made.value, "none")).value, "none");
+	assert.equal((await provider.network(made.value, { allow: ["example.com"] })).error?.code, "refused");
+	assert.equal((await provider.network(made.value)).value, "none", "a refused policy changes nothing");
+	const brief = await provider.create({ ...spec, labels: { run: "r2" }, network: "none", lifetimeMs: 30 });
+	assert.equal(brief.ok, true, JSON.stringify(brief));
+	await new Promise((resolve) => setTimeout(resolve, 60));
+	assert.deepEqual((await provider.list({ run: "r2" })).value, [], "past its deadline it is not listed");
+	assert.equal((await provider.connect(brief.value)).error?.code, "not_found");
+	assert.equal((await provider.attach({ id: brief.value.id })).error?.code, "not_found");
+	assert.equal(provider.drivers.has(brief.value.id), false, "it was ended");
+	await provider.release(made.value, "delete");
+});
+
+test("a scripted switch's checked flag is where its state starts: it shows checked, turns off, and on again", async () => {
+	const app = { id: "test.switch", name: "Switch", start: "a", size: [300, 200], screens: { a: { elements: [{ key: "wifi", role: "switch", name: "Wi-Fi", bounds: [10, 10, 80, 28], flags: ["checked"] }, { key: "name", role: "textbox", name: "Name", bounds: [10, 50, 200, 28], flags: ["focused"] }] } } };
+	const c = await fakeUiConnection({ apps: [app] });
+	await c.client.call("apps.launch", { id: app.id });
+	const flagsOf = async (name) => (await c.client.call("ui.observe", {})).value.nodes.find((node) => node.name === name).flags ?? [];
+	assert.deepEqual(await flagsOf("Wi-Fi"), ["checked"]);
+	assert.deepEqual(await flagsOf("Name"), ["focused"], "a scripted focus is the state's focus too");
+	const ref = (await c.client.call("ui.observe", {})).value.nodes.find((node) => node.name === "Wi-Fi").ref;
+	assert.equal((await c.client.call("ui.act", { steps: [{ set: ref, value: "off" }] })).ok, true);
+	assert.deepEqual(await flagsOf("Wi-Fi"), []);
+	assert.equal((await c.client.call("ui.act", { steps: [{ press: ref }] })).ok, true);
+	assert.deepEqual(await flagsOf("Wi-Fi"), ["checked"]);
+	await c.close();
+});
+
+test("the fixture's ui cases pass on a driver whose only input is the foreground route", { timeout: 60_000 }, async () => {
+	const report = await run(fakeUiProvider({ os: "android", kind: "android", features: { "ui.background": { off: "a phone has no posted input" } } }));
+	for (const id of UI_CASES) assert.equal(statuses(report)[id], "pass", `${id}: ${reasonOf(report, id)}`);
+});
+
+test("a step that took a route the features or the call do not allow fails the case it ran in", { timeout: 60_000 }, async () => {
+	class Rogue extends FakeUiDriver {
+		async run(step, context) {
+			const done = await super.run(step, context);
+			return done.ok ? { ok: true, value: { ...done.value, route: "foreground" } } : done;
+		}
+	}
+	const features = { "ui.background": { off: "posting input is off" }, "ui.foreground": { off: "the user's pointer is theirs" } };
+	const off = await run(fakeUiProvider({ features }, (options) => new Rogue(options)), ["ui.route-reported"]);
+	assert.equal(statuses(off)["ui.route-reported"], "fail");
+	assert.match(reasonOf(off, "ui.route-reported"), /took the foreground route, and ui.foreground is off here: the user's pointer is theirs/);
+	const unasked = await run(fakeUiProvider({}, (options) => new Rogue(options)), ["ui.route-reported"]);
+	assert.equal(statuses(unasked)["ui.route-reported"], "fail");
+	assert.match(reasonOf(unasked, "ui.route-reported"), /took the foreground route on a call without foreground: true/);
+});
+
 test("a feature refused without its declared sentence fails ui.features-off-refused", { timeout: 60_000 }, async () => {
 	class Mumbling extends FakeUiDriver {
 		async handle(engine, method, params, signal) {
@@ -235,6 +525,9 @@ test("the line server: method not found, parse error, a request with no id, and 
 	assert.equal((await reply(1)).error.code, -32601);
 	input.write("{not json\n");
 	assert.equal((await reply(null)).error.code, -32700);
+	replies.length = 0;
+	input.write("null\n");
+	assert.equal((await reply(null)).error.code, -32600, "a line of JSON that is not an object is an invalid request, and the server goes on");
 	input.write(`${JSON.stringify({ jsonrpc: "2.0", id: 2, method: "apps.launch", params: { id: APP } })}\n`);
 	await reply(2);
 	input.write(`${JSON.stringify({ jsonrpc: "2.0", id: 3, method: "ui.act", params: { steps: [], expect: { text: "never", timeoutMs: 30_000 } } })}\n`);

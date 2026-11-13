@@ -9,7 +9,8 @@ import { join } from "node:path";
 import { after, test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
-import { fakeUiConnection, UI_FIXTURE } from "@parcha/agentrun-computer/fake-ui-driver";
+import { AttachHub, attachedProvider } from "@parcha/agentrun-computer";
+import { FakeUiDriver, fakeUiConnection, NEXT_ANIMATE_MS, NEXT_MS, serveUiSocket, UI_FIXTURE } from "@parcha/agentrun-computer/fake-ui-driver";
 import { computerMcp, localWorkspace, runTools } from "../dist/workspace/index.js";
 
 const dirs = [];
@@ -22,12 +23,12 @@ const call = (tools, name, args) => tools.find((tool) => tool.name === name).cal
 
 /** A run on a fresh fake ui desktop: its tools, bound to it, the fixture's app opened by a script (the tools open no
  *  app: a script's computer.apps.open does, as the kind skills teach). */
-async function fakeRun() {
+async function fakeRun(options = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "computer-fake-ui-"));
   dirs.push(dir);
-  const connection = await fakeUiConnection();
+  const connection = await fakeUiConnection(options);
   closing.push(() => connection.close());
-  const run = await runTools(localWorkspace(dir), { kind: "desktop", computer: { client: connection.client }, groups: connection.hello.groups }, { mode: 1, context: ctx });
+  const run = await runTools(localWorkspace(dir), { kind: "desktop", computer: { client: connection.client }, hello: connection.hello }, { mode: 1, context: ctx });
   const tools = run.hostTools(run.kindTools);
   const opened = await call(tools, "computer_script", { code: `await computer.apps.open(${JSON.stringify(UI_FIXTURE.id)});` });
   assert.equal(opened.isError, false, opened.text);
@@ -74,6 +75,73 @@ test("a point read against a state the window has left is refused as stale, in t
   await call(tools, "computer_act", { app: UI_FIXTURE.id, steps: [{ press: next }], expect: { text: "Second page" } });
   const stale = await call(tools, "computer_act", { app: UI_FIXTURE.id, steps: [{ click: [40, 150] }], state: first.structured.id });
   assert.match(JSON.stringify(stale.structured ?? stale.text), /stale/, stale.text);
+});
+
+test("an act's state is the settled window after its expect: a point read against it is not stale, though the transition was still moving when the expect was met", async () => {
+  const { tools } = await fakeRun();
+  const first = await call(tools, "computer_observe", { app: UI_FIXTURE.id });
+  const acted = await call(tools, "computer_act", { app: UI_FIXTURE.id, steps: [{ press: refOf(first, "Next") }], expect: { text: "Second page" } });
+  assert.equal(acted.structured.expect, "met", acted.text);
+  const onSecond = await call(tools, "computer_act", { app: UI_FIXTURE.id, steps: [{ click: [300, 300] }], state: acted.structured.state });
+  assert.equal(onSecond.isError, false, onSecond.text);
+  assert.deepEqual(onSecond.structured.steps, [{ route: "background", verified: false }], "the state names the second page, not a frame of its transition");
+});
+
+test("with ui.tree off, a point goes stale when the frame changes, in the computer's words", async () => {
+  const { tools } = await fakeRun({ features: { "ui.tree": { off: "Accessibility is not granted" } } });
+  const home = await call(tools, "computer_observe", { app: UI_FIXTURE.id });
+  assert.equal(home.isError, false, home.text);
+  const atNext = [150, 150];
+  const pressed = await call(tools, "computer_act", { app: UI_FIXTURE.id, steps: [{ click: atNext }], state: home.structured.id });
+  assert.equal(pressed.isError, false, pressed.text);
+  await new Promise((resolve) => setTimeout(resolve, NEXT_MS + NEXT_ANIMATE_MS + 100));
+  const again = await call(tools, "computer_act", { app: UI_FIXTURE.id, steps: [{ click: atNext }], state: home.structured.id });
+  assert.match(JSON.stringify(again.structured ?? again.text), /stale/, again.text);
+});
+
+/** Two ends of one socket, delivering in order. */
+function socketPair() {
+  const ends = [{ text: [], closes: [] }, { text: [], closes: [] }];
+  let closed;
+  const side = (me, peer) => ({
+    send(text) { if (!closed) queueMicrotask(() => peer.text.forEach((listener) => listener(text))); },
+    close(code, reason) {
+      if (closed) return;
+      closed = { code, reason };
+      queueMicrotask(() => [...me.closes, ...peer.closes].forEach((listener) => listener(code, reason)));
+    },
+    onText(listener) { me.text.push(listener); },
+    onClose(listener) { me.closes.push(listener); },
+    get closed() { return closed; },
+  });
+  return [side(ends[0], ends[1]), side(ends[1], ends[0])];
+}
+
+test("a run's release closes its connection: the call in flight comes back aborted in the computer's words, and a later one is refused gone", async () => {
+  const driver = new FakeUiDriver();
+  const hub = new AttachHub();
+  const paired = { id: "c-1", name: "Test Mac", hello: driver.hello(), labels: { owner: "test" } };
+  const provider = attachedProvider(paired, hub);
+  const [serve, computer] = socketPair();
+  serveUiSocket(driver, computer);
+  assert.equal((await hub.accept(paired, serve)).ok, true);
+  closing.push(async () => driver.close());
+  const held = (await provider.create({ image: "attached", lifetimeMs: 60_000, network: "open", labels: { run: "a" } })).value;
+  const connected = (await provider.connect(held)).value;
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "computer-fake-ui-"));
+  dirs.push(dir);
+  const run = await runTools(localWorkspace(dir), { kind: "desktop", computer: { client: connected.client }, hello: connected.hello }, { mode: 1, context: ctx });
+  const tools = run.hostTools(run.kindTools);
+  assert.equal((await call(tools, "computer_script", { code: `await computer.apps.open(${JSON.stringify(UI_FIXTURE.id)});` })).isError, false);
+  const waiting = call(tools, "computer_act", { app: UI_FIXTURE.id, steps: [], expect: { text: "never", timeoutMs: 30_000 } });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal((await provider.release(held, "delete")).ok, true);
+  const aborted = await waiting;
+  assert.equal(aborted.isError, true);
+  assert.match(`${aborted.text} ${JSON.stringify(aborted.structured ?? null)}`, /abort/i, aborted.text);
+  const later = await call(tools, "computer_observe", { app: UI_FIXTURE.id });
+  assert.equal(later.isError, true);
+  assert.match(`${later.text} ${JSON.stringify(later.structured ?? null)}`, /gone|closed/i, later.text);
 });
 
 test("a step the computer can't read is refused in words, by the tool and by a script alike", async () => {

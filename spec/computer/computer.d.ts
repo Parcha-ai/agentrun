@@ -102,7 +102,7 @@ type UiStep =
   | { click: UiRef | Point; button?: "left" | "right"; count?: 1 | 2 | 3 }
   /** Type text, into the element when named, else where the focus is. */
   | { type: string; into?: UiRef }
-  /** A chord: names in KEYS or one printable character, joined by "+": "super+s", "enter", "ctrl+shift+t". */
+  /** A chord: names in KEYS or one printable character, joined by "+", the last of which may be "+" itself: "super+s", "enter", "ctrl+shift+t", "shift++". */
   | { key: string }
   /** The system's own navigation (feature ui.nav). */
   | { nav: "back" | "home" | "app_switch" }

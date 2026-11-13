@@ -8,7 +8,7 @@ import { mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
-import { kindRefusals, PHONE_GROUPS, parseUiElements, UiEngine } from "../dist/index.js";
+import { AdbUiSource, kindRefusals, PHONE_GROUPS, parseUiElements, UiEngine } from "../dist/index.js";
 import { PROTOCOL_VERSION } from "../dist/protocol.js";
 import { ADB_CODE, ADB_HOST, fakeClock, fakePhoneHarness, ITEMS, KEY, SCREEN, SEARCH_FIELD, SETTINGS } from "./fake-phone-harness.mjs";
 
@@ -690,8 +690,7 @@ test("the client answers the phone groups over adb: a screenshot, touch, keys, b
 		"input keyevent KEYCODE_APP_SWITCH",
 		"input text 'Hello,%sit'\\''s%s1'",
 		"input keyevent KEYCODE_ENTER",
-		"input keyevent KEYCODE_ENTER",
-		"input keyevent KEYCODE_ENTER",
+		"input keyevent KEYCODE_ENTER KEYCODE_ENTER",
 		"input keyevent KEYCODE_A",
 		"input text '%'",
 	]);
@@ -815,6 +814,63 @@ test("typing into Settings' search reads back from ui.observe: the field is a se
 	assert.equal(typed.ref, empty.ref, "the field keeps its ref while its text changes");
 });
 
+test("a ui step the phone cannot finish runs nothing: a set to text adb cannot type leaves the field as it was", async () => {
+	const { provider, fake } = await setup();
+	const { value: ref } = await provider.create(SPEC);
+	const { client } = (await provider.connect(ref)).value;
+	await client.call("apps.launch", { id: SETTINGS });
+	await client.call("input.actions", { actions: [{ type: "tap", at: [100, 40] }, { type: "type", text: "wifi" }] });
+	const field = await searchField(client);
+	assert.equal(field.value, "wifi");
+	const before = fake.shells().length;
+	const set = await client.call("ui.act", { steps: [{ set: field.ref, value: "café" }], foreground: true });
+	assert.equal(set.value.steps[0].error?.kind, "unsupported", JSON.stringify(set));
+	assert.match(set.value.steps[0].error.message, /printable ASCII/);
+	assert.deepEqual(fake.shells().slice(before).filter((command) => command.startsWith("input ")), [], "no tap, no delete");
+	assert.equal((await searchField(client)).value, "wifi", "the field keeps its text");
+});
+
+test("a set holds the phone's input from its tap to its text: an input.actions batch that arrives while it reads the focus waits until the set ends", { timeout: 10_000 }, async () => {
+	const fake = fakePhoneHarness();
+	// The set's read of the focus (the first dump after its tap) waits until the test lets it go. armed: where the set's shells start.
+	let armed = false;
+	let reading;
+	const read = new Promise((resolve) => (reading = resolve));
+	let release;
+	const released = new Promise((resolve) => (release = resolve));
+	const run = async (args, options) => {
+		if (armed !== false && args.includes("uiautomator dump /dev/tty") && fake.shells().slice(armed).some((command) => command.startsWith("input tap"))) {
+			armed = false;
+			reading();
+			await released;
+		}
+		return fake.adb.run(args, options);
+	};
+	const adb = Object.assign(run, { run, server: fake.adb.server });
+	const { provider } = await setup({}, { fetch: fake.fetch, adb, now: fake.clock.now, sleep: fake.clock.sleep });
+	const { value: ref } = await provider.create(SPEC);
+	const { value: connection } = await provider.connect(ref);
+	const { client } = connection;
+	await client.call("apps.launch", { id: SETTINGS });
+	await client.call("input.actions", { actions: [{ type: "tap", at: [100, 40] }] });
+	const field = await searchField(client);
+	const before = fake.shells().length;
+	armed = before;
+	const set = client.call("ui.act", { steps: [{ set: field.ref, value: "wifi" }], foreground: true });
+	await read;
+	const other = client.call("input.actions", { actions: [{ type: "button", name: "back" }] });
+	for (let turn = 0; turn < 5; turn++) await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(fake.shells().slice(before).filter((command) => command.startsWith("input keyevent KEYCODE_BACK")).length, 0, "the batch waits for the set");
+	release();
+	const done = await set;
+	assert.deepEqual(done.value.steps, [{ route: "foreground", verified: false }], JSON.stringify(done));
+	assert.deepEqual(await other, { ok: true, value: { done: 1 } });
+	const order = fake.shells().slice(before).filter((command) => /^input (tap|text|keyevent KEYCODE_BACK)/.test(command));
+	assert.deepEqual([order[0].split(" ")[1], order.at(-2), order.at(-1)], ["tap", "input text 'wifi'", "input keyevent KEYCODE_BACK"], JSON.stringify(order));
+	await connection.close();
+	await provider.release(ref, "delete");
+});
+
 test("a literal %s is typed as %s, not as a space: input text's escape never meets text that holds it", async () => {
 	const { provider } = await setup();
 	const { value: ref } = await provider.create(SPEC);
@@ -933,11 +989,151 @@ test("parseUiElements: Android's classes as the protocol's roles, an editable fi
 test("a list row in the same place showing other content, or the same layout in another app, is another element", () => {
 	const row = (app, label) => `<hierarchy><node index="0" class="android.widget.ListView" package="${app}" bounds="[0,0][100,200]"><node index="0" class="android.widget.LinearLayout" package="${app}" clickable="true" bounds="[0,0][100,50]"><node index="0" class="android.widget.TextView" package="${app}" text="${label}" bounds="[0,0][100,50]" /></node></node></hierarchy>`;
 	const keys = (xml) => parseUiElements(xml, 1, [100, 200]).value.elements.map((one) => one.key);
-	const [, wifi] = keys(row("com.android.settings", "Wi-Fi"));
-	const [, bluetooth] = keys(row("com.android.settings", "Bluetooth"));
+	const [list, wifi, wifiLabel] = keys(row("com.android.settings", "Wi-Fi"));
+	const [sameList, bluetooth, bluetoothLabel] = keys(row("com.android.settings", "Bluetooth"));
 	assert.notEqual(wifi, bluetooth, "a scrolled list's next row in the old row's place: the old ref goes stale, never taps it");
+	assert.equal(sameList, list, "the list itself keeps its ref while its rows change, so a second scroll on it still runs");
+	assert.equal(bluetoothLabel, wifiLabel, "a label nothing taps keeps its ref while its text changes");
 	assert.deepEqual(keys(row("com.android.settings", "Wi-Fi")), keys(row("com.android.settings", "Wi-Fi")), "the same row read again keeps its key");
 	assert.notEqual(keys(row("com.example", "Wi-Fi"))[1], wifi, "another app's row is not this app's");
+});
+
+test("set clears a multiline field's whole text wherever the tap leaves the caret, then types the value", async () => {
+	// A field holding two lines, the caret left by the tap at the end of the first (where MOVE_END would stop).
+	let text = "first line\nsecond line";
+	let caret = text.indexOf("\n");
+	const xml = `<hierarchy><node index="0" class="android.widget.EditText" package="com.example" text="first line&#10;second line" content-desc="Notes" focused="true" bounds="[0,0][400,200]" /></hierarchy>`;
+	const phone = {
+		scale: () => 1,
+		dump: async () => ({ ok: true, value: xml }),
+		check: () => ({ ok: true, value: undefined }),
+		hold(step) {
+			return step(async (actions) => {
+				for (const action of actions) this.one(action);
+				return { ok: true, value: undefined };
+			});
+		},
+		one(action) {
+			if (action.type === "key") {
+				for (let i = 0; i < (action.repeat ?? 1); i++) {
+					const [key] = action.keys;
+					if (key === "backspace" && caret > 0) [text, caret] = [text.slice(0, caret - 1) + text.slice(caret), caret - 1];
+					else if (key === "delete") text = text.slice(0, caret) + text.slice(caret + 1);
+					else if (key === "end") caret = text.indexOf("\n", caret) === -1 ? text.length : text.indexOf("\n", caret);
+				}
+			}
+			if (action.type === "type") [text, caret] = [text.slice(0, caret) + action.text + text.slice(caret), caret + action.text.length];
+		},
+	};
+	const source = new AdbUiSource(phone, () => [400, 400]);
+	const [element] = parseUiElements(xml, 1, [400, 400]).value.elements;
+	assert.equal(element.value, text);
+	const view = { app: { id: "com.example", name: "Example" }, window: { id: "w", bounds: [0, 0, 400, 400] }, elements: [element] };
+	const ran = await source.run({ set: "@e1", value: "new" }, { element, view, foreground: true }, new AbortController().signal);
+	assert.equal(ran.ok, true, JSON.stringify(ran));
+	assert.equal(text, "new");
+});
+
+test("an empty field's hint is not its value: an expect never meets it; a field holding other text keeps it", async () => {
+	const xml = (text) => `<hierarchy><node index="0" class="android.widget.EditText" package="com.example" text="${text}" hint="Search apps" bounds="[0,0][100,50]" /></hierarchy>`;
+	const [empty] = parseUiElements(xml("Search apps"), 1, [100, 50]).value.elements;
+	assert.equal(empty.value, undefined);
+	assert.equal(empty.name, undefined, "nor its name");
+	const engine = new UiEngine({ features: () => ({ "ui.tree": true }), look: async () => ({ ok: true, value: parseUiElements(xml("Search apps"), 1, [100, 50]).value }), image: async () => ({ ok: false, error: { code: "unsupported", message: "no" } }), run: async () => ({ ok: false, error: { code: "unsupported", message: "no" } }) });
+	assert.equal((await engine.act({ steps: [], expect: { text: "Search apps", timeoutMs: 100 } })).value.expect, "unmet");
+	const [typed] = parseUiElements(xml("maps"), 1, [100, 50]).value.elements;
+	assert.equal(typed.value, "maps");
+	// The dump cannot say the hint is showing, so the field may hold that very text: a set erases it anyway.
+	const ran = [];
+	const source = new AdbUiSource({ scale: () => 1, dump: async () => ({ ok: true, value: xml("Search apps").replace("<node ", '<node focused="true" ') }), check: () => ({ ok: true, value: undefined }), hold: (step) => step(async (actions) => (ran.push(...actions), { ok: true, value: undefined })) }, () => [100, 50]);
+	const view = { app: { id: "com.example", name: "Example" }, window: { id: "w", bounds: [0, 0, 100, 50] }, elements: [empty] };
+	const set = await source.run({ set: "@e1", value: "maps" }, { element: empty, view, foreground: true }, new AbortController().signal);
+	assert.equal(set.ok, true, JSON.stringify(set));
+	assert.deepEqual(ran.slice(1), [
+		{ type: "key", keys: ["backspace"], repeat: 11 },
+		{ type: "key", keys: ["delete"], repeat: 11 },
+		{ type: "type", text: "maps" },
+	]);
+});
+
+test("a labeled control keeps the other text it shows as its desc; a step on a disabled one is refused with nothing sent", async () => {
+	const xml = `<hierarchy><node index="0" class="android.widget.Button" package="com.example" text="Pay $5" content-desc="Pay" clickable="true" bounds="[0,0][100,50]" /><node index="1" class="android.widget.EditText" package="com.example" text="old" enabled="false" bounds="[0,60][100,110]" /></hierarchy>`;
+	const [button, field] = parseUiElements(xml, 1, [100, 120]).value.elements;
+	assert.equal(button.name, "Pay");
+	assert.equal(button.desc, "Pay $5");
+	assert.deepEqual(field.flags, ["disabled"]);
+	const ran = [];
+	const source = new AdbUiSource({ scale: () => 1, dump: async () => ({ ok: false, error: { code: "unsupported", message: "unused" } }), check: () => ({ ok: true, value: undefined }), hold: (step) => step(async (actions) => (ran.push(...actions), { ok: true, value: undefined })) }, () => [100, 120]);
+	const view = { app: { id: "com.example", name: "Example" }, window: { id: "com.example", bounds: [0, 0, 100, 120] }, elements: [button, field] };
+	for (const step of [{ set: "@e2", value: "new" }, { type: "new", into: "@e2" }]) {
+		const refused = await source.run(step, { element: field, view, foreground: true }, new AbortController().signal);
+		assert.equal(refused.error?.code, "refused", JSON.stringify(refused));
+		assert.match(refused.error.message, /is disabled on this phone: a step on it would act on whatever has the focus instead, so nothing was sent/);
+	}
+	assert.deepEqual(ran, [], "no input reached the phone");
+});
+
+test("a field in a recycled list row is keyed by what its row shows: the row's next item makes its old ref another element; typing keeps it", () => {
+	const row = (name, typed) =>
+		`<hierarchy><node index="0" class="androidx.recyclerview.widget.RecyclerView" package="com.example" scrollable="true" bounds="[0,0][400,800]"><node index="0" class="android.widget.LinearLayout" package="com.example" bounds="[0,0][400,100]"><node index="0" class="android.widget.TextView" package="com.example" text="${name}" bounds="[0,0][200,50]" /><node index="1" class="android.widget.EditText" package="com.example" text="${typed}" content-desc="Quantity" bounds="[200,0][400,50]" /></node></node></hierarchy>`;
+	const fieldOf = (xml) => parseUiElements(xml, 1, [400, 800]).value.elements.find((element) => element.role === "textbox");
+	const apples = fieldOf(row("Apples", "1"));
+	assert.equal(fieldOf(row("Apples", "12")).key, apples.key, "typing in the field keeps its key");
+	assert.notEqual(fieldOf(row("Pears", "1")).key, apples.key, "the recycled row's field is another element");
+	const plain = `<hierarchy><node index="0" class="android.widget.LinearLayout" package="com.example" bounds="[0,0][400,100]"><node index="0" class="android.widget.EditText" package="com.example" text="a" content-desc="Name" bounds="[0,0][400,50]" /></node></hierarchy>`;
+	assert.equal(fieldOf(plain).key, fieldOf(plain.replace('text="a"', 'text="ab"')).key, "a field outside a list keeps its key as before");
+});
+
+test("type into a ref that is no field is refused with nothing sent; a field that does not take the focus gets nothing typed", async () => {
+	const screen = (focused) =>
+		`<hierarchy><node index="0" class="android.widget.Button" package="com.example" text="Send" clickable="true" bounds="[0,0][100,50]" /><node index="1" class="android.widget.EditText" package="com.example" content-desc="To" ${focused === "to" ? 'focused="true" ' : ""}bounds="[0,60][100,110]" /><node index="2" class="android.widget.EditText" package="com.example" content-desc="Body" ${focused === "body" ? 'focused="true" ' : ""}bounds="[0,120][100,170]" /></hierarchy>`;
+	const [button, to] = parseUiElements(screen(), 1, [100, 180]).value.elements;
+	const view = { app: { id: "com.example", name: "Example" }, window: { id: "com.example", bounds: [0, 0, 100, 180] }, elements: parseUiElements(screen(), 1, [100, 180]).value.elements };
+	let ran = [];
+	let after = screen("to");
+	const source = new AdbUiSource({ scale: () => 1, dump: async () => ({ ok: true, value: after }), check: () => ({ ok: true, value: undefined }), hold: (step) => step(async (actions) => (ran.push(...actions), { ok: true, value: undefined })) }, () => [100, 180]);
+	const run = (step, element) => source.run(step, { element, view, foreground: true }, new AbortController().signal);
+	const notField = await run({ type: "hello", into: "@e1" }, button);
+	assert.equal(notField.error?.code, "refused", JSON.stringify(notField));
+	assert.equal(notField.error.message, "@e1 is a button, not a text field: type into a field");
+	assert.deepEqual(ran, [], "nothing reached the phone");
+	// The tap leaves the focus in another field (or opened another app): the tap ran, nothing was typed.
+	for (const elsewhere of [screen("body"), screen(), `<hierarchy><node index="0" class="android.widget.EditText" package="com.other" focused="true" bounds="[0,0][100,50]" /></hierarchy>`]) {
+		[ran, after] = [[], elsewhere];
+		for (const step of [{ type: "hello", into: "@e2" }, { set: "@e2", value: "hello" }]) {
+			const missed = await run(step, to);
+			assert.equal(missed.error?.code, "refused", JSON.stringify(missed));
+			assert.equal(missed.error.message, "@e2 did not take focus: nothing typed");
+		}
+		assert.deepEqual(ran, [{ type: "tap", at: [50, 85] }, { type: "tap", at: [50, 85] }], "only the taps ran");
+	}
+	// It takes the focus: the text follows the tap.
+	[ran, after] = [[], screen("to")];
+	assert.equal((await run({ type: "hello", into: "@e2" }, to)).ok, true);
+	assert.deepEqual(ran, [{ type: "tap", at: [50, 85] }, { type: "type", text: "hello" }]);
+	// At a point, the tap must leave a field focused.
+	[ran, after] = [[], screen()];
+	const point = await run({ type: "hello", into: [50, 25] }, undefined);
+	assert.equal(point.error?.message, "[50,25] did not take focus: nothing typed");
+	assert.deepEqual(ran, [{ type: "tap", at: [50, 25] }]);
+});
+
+test("a phone's set: a toggle takes on or off only, a field too long to clear in one step is refused before any input", async () => {
+	const ran = [];
+	const phone = { scale: () => 1, dump: async () => ({ ok: false, error: { code: "unsupported", message: "unused" } }), check: () => ({ ok: true, value: undefined }), hold: (step) => step(async (actions) => (ran.push(...actions), { ok: true, value: undefined })) };
+	const source = new AdbUiSource(phone, () => [400, 400]);
+	const view = { app: { id: "com.example", name: "Example" }, window: { id: "w", bounds: [0, 0, 400, 400] }, elements: [] };
+	const toggle = { key: "t", role: "switch", name: "Wi-Fi", bounds: [0, 0, 100, 40] };
+	const refused = await source.run({ set: "@e1", value: "true" }, { element: toggle, view, foreground: true }, new AbortController().signal);
+	assert.equal(refused.error?.code, "invalid");
+	assert.match(refused.error.message, /is set to "on" or "off", not "true"/);
+	const long = { key: "f", role: "textbox", name: "Notes", value: "x".repeat(5000), bounds: [0, 0, 400, 200] };
+	const tooLong = await source.run({ set: "@e2", value: "short" }, { element: long, view, foreground: true }, new AbortController().signal);
+	assert.equal(tooLong.error?.code, "limit");
+	assert.match(tooLong.error.message, /holds 5000 characters, more than the 4900/);
+	assert.deepEqual(ran, [], "no input for either");
+	const key = await source.run({ key: "shift++" }, { view, foreground: true }, new AbortController().signal);
+	assert.match(key.error?.message ?? "", /presses one key at a time/, "a chord ending in + is two keys, shift and +");
 });
 
 test("ui.observe never sends a secure field's value", async () => {
@@ -947,6 +1143,10 @@ test("ui.observe never sends a secure field's value", async () => {
 	const seen = await engine.observe({});
 	assert.equal(seen.ok, true, JSON.stringify(seen));
 	assert.deepEqual(seen.value.nodes.map(({ role, value, flags }) => ({ role, value, flags })), [{ role: "textbox", value: undefined, flags: ["secure"] }]);
+	const row = `<hierarchy><node index="0" class="android.widget.LinearLayout" package="com.example" clickable="true" bounds="[0,0][100,50]"><node index="0" class="android.widget.EditText" package="com.example" text="hunter2" content-desc="Password" password="true" bounds="[0,0][100,50]" /></node></hierarchy>`;
+	const [named] = parseUiElements(row, 1, [100, 50]).value.elements;
+	assert.equal(named.name, "Password", "a row is named by the field's label, never its text");
+	assert.ok(!named.key.includes("hunter2"), "nor is the text in its key");
 });
 
 test("apps.launch puts the named app in front, even when its task holds another app's activity on top", async () => {

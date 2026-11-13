@@ -11,6 +11,7 @@ import * as computer from "../dist/index.js";
 const {
 	ARCHIL_HELPER,
 	ARCHIL_MOUNT_LABEL,
+	archilEgressOf,
 	archilLabels,
 	archilMount,
 	archilReadBack,
@@ -118,6 +119,22 @@ test("archilMount: preflight, the takeover, mount, then serve, each as root thro
 		if (at !== 1) assert.equal(call.stdin, undefined, `call ${at} gets no stdin`);
 	}
 	assert.equal(computer.archilNetwork, undefined, "no netlock read-back");
+});
+
+test("archilMount with an egress gateway hands the helper's mount egress=<gateway>:<mount lane>:<data lane>, last, and serve nothing new", async () => {
+	const root = fakeRoot();
+	const egress = { gateway: "10.60.0.40", mountLane: 18100, dataLane: 42050 };
+	const done = await archilMount({ root, mount: MOUNT, releaseOlder: released(), timeoutMs: 1000, egress });
+	assert.deepEqual(done, ok(undefined));
+	assert.deepEqual(root.calls[1].argv, [ARCHIL_HELPER, "mount", MOUNT.disk, MOUNT.region, MOUNT.folder, "egress=10.60.0.40:18100:42050"]);
+	assert.deepEqual(root.calls[2].argv, [ARCHIL_HELPER, "serve"]);
+});
+
+test("archilEgressOf reads <IPv4 gateway>:<mount lane>:<data lane> as the helper does, and refuses every other shape in words", () => {
+	assert.deepEqual(archilEgressOf("10.60.0.40:18100:42050"), { gateway: "10.60.0.40", mountLane: 18100, dataLane: 42050 });
+	for (const text of ["", "10.60.0.40", "10.60.0.40:18100", "10.60.0.40:18100:18100", "10.60.0.40:8100:42050", "10.60.0.40:18100:32050", "10.60.0.40:0:42050", "10.60.0.40:65536:42050", "10.60.0.400:18100:42050", "proxy.internal:18100:42050", "10.60.0.40:18100:42050:1", "10.60.0.40:018100:42050", " 10.60.0.40:18100:42050"]) {
+		assert.throws(() => archilEgressOf(text), /the Archil egress is <IPv4 gateway>:<mount lane>:<data lane>/, JSON.stringify(text));
+	}
 });
 
 test("archilMount: a takeover releases the lower epochs before any mount; released any, or the folder held, it revokes; a failed release revokes nothing", async () => {
