@@ -596,9 +596,14 @@ public final class UiDriver {
 			if (node != null && !node.enabled()) throw new Refused("refused", s.kind + " " + s.ref + ": the control is disabled, and a disabled control takes nothing");
 			// Every point a step touches is held to the point rule, each point of a drag's path as much as its first.
 			if (s.path != null) {
-				for (long[] at : s.path) checkPoint(at, stateId, held, window, frame);
+				// The tree is read once for the whole path, and a cancel is heard between points.
+				Outline tree = Outline.of(window.root(), true);
+				for (long[] at : s.path) {
+					cancel.check();
+					checkPoint(at, stateId, held, window, frame, tree);
+				}
 			} else if (s.point != null) {
-				checkPoint(s.point, stateId, held, window, frame);
+				checkPoint(s.point, stateId, held, window, frame, Outline.of(window.root(), true));
 			}
 			Sign sign = new Sign(a11y, target, window, cancel);
 			switch (s.kind) {
@@ -824,7 +829,7 @@ public final class UiDriver {
 	 * The point rule: a point read from a state lands only when the window is the state's, at its size, and what is
 	 * under the point is the element the state saw there, where it was.
 	 */
-	void checkPoint(long[] p, String stateId, State held, Device.AxWindow window, Outline.Frame frame) throws Refused {
+	void checkPoint(long[] p, String stateId, State held, Device.AxWindow window, Outline.Frame frame, Outline tree) throws Refused {
 		String at = "(" + p[0] + ", " + p[1] + ")";
 		if (held == null) throw new Refused("stale", "state " + stateId + " is no longer held: observe again, and read the point from the new state");
 		if (held.windowId != window.id()) throw new Refused("stale", "the window of state " + stateId + " is no longer the one in front: observe again");
@@ -838,7 +843,7 @@ public final class UiDriver {
 		int dx = held.windowBounds.left - now.left;
 		int dy = held.windowBounds.top - now.top;
 		Outline.Hit then = hitIn(held.hits, px[0] + dx, px[1] + dy);
-		Outline.Hit hit = Outline.of(window.root(), true).hitAt(px[0], px[1]);
+		Outline.Hit hit = tree.hitAt(px[0], px[1]);
 		boolean same = then == null ? hit == null
 				: hit != null && then.key.equals(hit.key)
 						&& then.bounds.left - dx == hit.bounds.left && then.bounds.top - dy == hit.bounds.top
