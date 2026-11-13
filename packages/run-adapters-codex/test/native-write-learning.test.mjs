@@ -18,6 +18,7 @@ import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
 import { codexAdapter } from '@parcha/agentrun-harness-codex';
 import { findCodex } from '../dist/binary.js';
 import { verifyCodexBinary } from '../dist/verify.js';
+import { CLASSIC_MODEL } from './offer.mjs';
 
 const binary = verifyCodexBinary(findCodex());
 const problem = binary instanceof Error ? binary.message : undefined;
@@ -60,7 +61,7 @@ async function turn(model, attempts) {
   return { output, told, logged, learning: works.filter((work) => existsSync(join(work, '.learning'))), seen };
 }
 
-const CLASSIC = 'gpt-5.4-mini';
+const CLASSIC = CLASSIC_MODEL;
 const CODE_MODE = 'gpt-6-sol';
 
 test("with Codex's catalog unreadable, apply_patch stays listed, and a classic model's apply_patch under .learning/ writes nothing", { skip, timeout: 120_000 }, async () => {
