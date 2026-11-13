@@ -349,6 +349,45 @@ test("the hold lets the computer go when no call comes for its minutes, and a ne
   assert.equal(await over.up([{ kind: "computer.held", data: { state: "released", at: 1_000, minutes: 1, by: 4 } }]), "released");
 });
 
+test("a call that runs longer than the hold keeps the computer, and the count starts again when the last call ends", async () => {
+  const written = [];
+  let clock = 1_000;
+  const minutes = 0.01; // 600 ms
+  const held = journalHeld({ minutes }, async (entries) => void written.push(...entries), () => clock);
+  assert.equal(await held.up([]), "held");
+  const waiting = held.untilStarted(new Promise(() => {}));
+  let over = false;
+  waiting.then(() => (over = true));
+  held.callStarted();
+  held.callStarted();
+  clock += 5_000; // far past the hold's minutes, two calls still in flight
+  await new Promise((resolve) => setTimeout(resolve, 800));
+  assert.equal(over, false, "no lapse while a call is in flight");
+  assert.equal(held.refusesCall(), undefined, "the computer is still held");
+  held.callEnded(clock);
+  await new Promise((resolve) => setTimeout(resolve, 800));
+  assert.equal(over, false, "one call is still in flight");
+  held.callEnded(clock);
+  clock += 700;
+  assert.equal(await waiting, "moved");
+  assert.deepEqual([held.state(), held.lapse()], ["released", "timeout"]);
+});
+
+test("a held run: an owner's call longer than the hold's minutes keeps the computer and answers", async (t) => {
+  const world = await setup(t, { hold: { minutes: 0.01 } });
+  const client = fakeClient();
+  const quick = client.call;
+  client.call = async (method, params) => {
+    if (method === "exec.run") await new Promise((resolve) => setTimeout(resolve, 1_500)); // 2.5 times the hold's 600 ms
+    return quick(method, params);
+  };
+  await world.start({ client, minutes: 0.01 });
+  await until(async () => (await world.state()) === "waiting", "the computer is up and held");
+  const slow = await world.route("callRunComputer", { method: "exec.run", params: { argv: ["sleep", "1"] } });
+  assert.deepEqual(slow, { answer: { ok: true, value: { method: "exec.run", params: { argv: ["sleep", "1"] } } } }, "the long call answers");
+  assert.equal(await world.state(), "waiting", "the computer is still held after it");
+});
+
 test("hold and hold_minutes on a run's create: a boolean, a whole number of minutes up to the most, and only for a computer that speaks the protocol", () => {
   assert.deepEqual(holdIssues({ hold: true }), []);
   assert.deepEqual(holdIssues({ hold: true, hold_minutes: HOLD_MAX_MINUTES }), []);

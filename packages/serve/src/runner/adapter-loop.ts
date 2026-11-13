@@ -949,13 +949,19 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     const call = channelCallOf(command);
     if ("refused" in call) return call;
     void (async () => {
-      const done = await runChannelCall(pass.computer, call, AbortSignal.any([deps.signal, AbortSignal.timeout(CALL_MS)]), now);
+      // The hold's idle count stands still while the call runs, and starts again when the last one ends.
+      theHeld?.callStarted();
+      let done: Awaited<ReturnType<typeof runChannelCall>>;
+      try {
+        done = await runChannelCall(pass.computer, call, AbortSignal.any([deps.signal, AbortSignal.timeout(CALL_MS)]), now);
+      } finally {
+        theHeld?.callEnded(now());
+      }
       unsettledCalls.add(async () => {
         // Written through the pass open now: the one the call ran in, or, when a fault closed that one meanwhile, the
         // claim's next. None open (between passes): it waits for the next pass to open.
         const [liveGate, livePass] = [gate, channelNow];
         if (!liveGate || liveGate.sealed || !livePass) return false;
-        heldNow?.touched(done.at);
         const landed = liveGate.expect(writesEntry(CALL_KIND, (data) => data.by === command.id), { take: [command.id], answer: { command: command.id, value: done.answer } });
         landed.catch(() => undefined);
         await livePass.commit([{ kind: CALL_KIND, data: { by: command.id, at: done.at, ...done.record } }]);
