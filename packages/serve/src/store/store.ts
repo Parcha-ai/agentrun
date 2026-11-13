@@ -600,6 +600,10 @@ export interface Runs {
    *  and fenced by), never a reader's; undefined when no claim holds it (none, released, or run out) or there is no
    *  such run. */
   heldAt(runId: string): Promise<number | undefined>;
+  /** The claims `runner` holds now (its name on the run's row, its lease not run out on the store's clock), each with the
+   *  epoch it holds at: what a runner reads back when a claim or release commit was answered Unanswered, to learn
+   *  whether it landed. `from` is "running" (the claim's own `from` is not kept). */
+  claimsOf(runner: string): Promise<Claim[]>;
   /** Claims up to `k` claimable runs for `runner`, oldest first, in one transaction: each at its own epoch + 1, with its
    *  `from`. A runner fills its free loops with one call. */
   claimMany(runner: string, k: number, options?: { leaseMs?: number }): Promise<Claim[]>;

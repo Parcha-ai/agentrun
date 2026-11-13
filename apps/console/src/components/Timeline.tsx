@@ -4,7 +4,7 @@ import { BROWSER_TOOL_NAMES } from "@pi-browser/contract";
 import { nameOf } from "@timeline/labels";
 import { Chip } from "@/components/ui/chip";
 import { Spinner } from "@/components/ui/spinner";
-import { clock, markdown, openLinkedFile } from "@/lib/format";
+import { chargeWords, clock, markdown, openLinkedFile } from "@/lib/format";
 import { mcpToolLabel } from "@/lib/mcp";
 import { rowDetail, rowFailed, rowPaused, rowRefused, type Step, steps } from "@/lib/timeline";
 import { kindWithModel, ranOnWords } from "@/lib/nodeModel";
@@ -110,7 +110,7 @@ const WAITING_CHIP: Record<string, string> = { budget: "Paused at cap" };
 
 /** One step: a failed one reads as failed. A server row marked `paused` (the run paused at its cap) shows a pause icon,
  *  muted like any server row. */
-function Row({ step, last, waitingChip, files, onOpen }: { step: Step; last: boolean; waitingChip?: string; files?: RunFile[]; onOpen?: (file: RunFile) => void }) {
+function Row({ step, last, ended, waitingChip, files, onOpen }: { step: Step; last: boolean; ended: boolean; waitingChip?: string; files?: RunFile[]; onOpen?: (file: RunFile) => void }) {
   // The row a step shows, and so its label: the one place a row is read for display.
   const row = step.row;
   const [open, setOpen] = useState(false);
@@ -137,6 +137,8 @@ function Row({ step, last, waitingChip, files, onOpen }: { step: Step; last: boo
               {/* A label can be long (a trigger's name, up to 200 characters, spaces or none): cut to the row's width, so it
                   never widens the page or runs over the time; whole on hover. */}
               <span data-label className="min-w-0 truncate" title={label(row)}>{label(row)}</span>
+              {/* A call's own charge (a browser call's session time): on its row, never a row of its own. */}
+              {(row.kind === "tool_use" || row.kind === "tool_result") && row.usage && <span className="font-mono text-label">· {chargeWords(row.usage, { ended })}</span>}
               {row.kind === "waiting" && <Chip tone="warning">{waitingChip ?? "Input required"}</Chip>}
               {awaitsApproval(row) && <Chip tone="warning">Approval required</Chip>}
               {failed && <Chip tone="error">Error</Chip>}
@@ -198,7 +200,10 @@ function LearnedNodes({ nodes }: { nodes: LearnedNode[] }) {
 /** The run's live timeline as a step list (lib/timeline's `steps`: each tool once, from either of the server's shapes;
  *  a question once; repeated failures once): newest last, older steps folded behind "1 earlier step" or "N earlier steps". `asking`: the
  *  waiting row of the question the page shows above while the run waits on it; its step points there. */
-export function Timeline({ rows, live, fold = 6, asking, waitingOn, files, onOpen }: { rows: TimelineRow[]; live: boolean; fold?: number; asking?: string;
+export function Timeline({ rows, live, fold = 6, asking, waitingOn, files, onOpen, ended = false }: { rows: TimelineRow[]; live: boolean; fold?: number; asking?: string;
+  /** Whether the run has ended (runEnded of its status): a charge's words then say what is known, never "so far". The run
+   *  page and the agent page's latest run both pass it. */
+  ended?: boolean;
   /** The run's files and the handler that opens one: a link in an opened Answer that names a file opens it. */
   files?: RunFile[]; onOpen?: (file: RunFile) => void;
   /** What the run waits on now (its `pending.kind`): the newest waiting row's chip says so. */
@@ -219,7 +224,7 @@ export function Timeline({ rows, live, fold = 6, asking, waitingOn, files, onOpe
           <ChevronRight className="size-3" aria-hidden /> {hidden} earlier {hidden === 1 ? "step" : "steps"}
         </button>
       )}
-      <ol>{shown.map((step, i) => <Row key={step.row.id} step={step} last={i === shown.length - 1 && !live} waitingChip={step.row.id === current && waitingOn ? WAITING_CHIP[waitingOn] : undefined} files={files} onOpen={onOpen} />)}</ol>
+      <ol>{shown.map((step, i) => <Row key={step.row.id} step={step} last={i === shown.length - 1 && !live} ended={ended} waitingChip={step.row.id === current && waitingOn ? WAITING_CHIP[waitingOn] : undefined} files={files} onOpen={onOpen} />)}</ol>
       {live && <Working title="Working" note="Steps appear as the agent takes them." spin />}
     </div>
   );
