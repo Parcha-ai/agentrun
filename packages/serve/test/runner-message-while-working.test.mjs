@@ -56,7 +56,7 @@ const heard = (factory, answered) => (deps) => {
 
 /** A pi run through the runner whose model answers by `answerOf(body, n)` (the nth request), and, with `looksBack`, an
  *  end-of-run turn asking LOOK_BACK; the stores and what the model was asked. */
-async function runOn(t, { answerOf, looksBack = false, step, answered = () => {} }) {
+async function runOn(t, { answerOf, looksBack = false, step, answered = () => {}, before = async () => {} }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-message-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -69,6 +69,8 @@ async function runOn(t, { answerOf, looksBack = false, step, answered = () => {}
   const launch = { input: { content: "First question." }, title: "t", place: { mode: "runner" }, harness: "pi", model: { provider: "anthropic", modelId: "claude-sonnet-5.5" }, max_cost_usd: 5 };
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
   await server.flush?.();
+  // What lands on the run before any runner claims it (a message sent as soon as the run's 202 came back).
+  await before(server);
   const requests = [];
   const fetch = async (_url, init) => {
     const body = JSON.parse(String(init.body ?? "{}"));
@@ -124,6 +126,38 @@ test("a message sent while the run's turn is in flight reaches it: placed into t
   const end = await ended(server);
   assert.equal(end.state, "ended", JSON.stringify(end));
   await reached(server, requests, row.id, "Second answer.");
+});
+
+/** The person's words in a Messages request, in the order the model reads them. */
+const userTexts = (body) => (body.messages ?? []).filter((one) => one.role === "user").flatMap((one) => (typeof one.content === "string" ? [one.content] : one.content.filter((part) => part.type === "text").map((part) => part.text)));
+
+test("a message sent right after the run's start, before any runner has sent its input, lands after the input: the timeline and the model read the input first", { timeout: 120_000 }, async (t) => {
+  // The QA walk's race: POST /runs answers 202 and the person's message comes at once, so the runner's first claim
+  // hands the loop the message's steer row while the run's session is still new. pi's steer on a new session submits
+  // the message as the session's first prompt, and the input went in after it ("Also this." answered before "First
+  // question.").
+  let rowId;
+  const { server, requests } = await runOn(t, {
+    before: async (server) => {
+      rowId = (await server.command(RUN, { kind: "steer", body: { text: "Also this." } })).id;
+      await server.flush?.();
+    },
+    answerOf: async (body) => (userTexts(body).includes("Also this.") ? "Second answer." : "First answer."),
+  });
+  const end = await ended(server);
+  assert.equal(end.state, "ended", JSON.stringify(end));
+  const row = (await server.commands(RUN, 0)).find((one) => one.id === rowId);
+  assert.ok(row && row.takenAt !== null && row.refused === null, `the message was taken by the run, not refused or left: ${JSON.stringify(row)}`);
+  assert.ok(requests.length >= 1, "the model was asked");
+  assert.equal(userTexts(requests[0])[0], "First question.", `the model's first request opens on the run's input: ${JSON.stringify(userTexts(requests[0]))}`);
+  for (const body of requests) {
+    const said = userTexts(body);
+    const [input, message] = [said.indexOf("First question."), said.indexOf("Also this.")];
+    if (message >= 0) assert.ok(input >= 0 && input < message, `the model reads the input before the message: ${JSON.stringify(said)}`);
+  }
+  assert.ok(requests.some((body) => userTexts(body).includes("Also this.")), "the model was asked with the message");
+  const person = (await runTimeline(server, RUN, context, { settled: true })).filter((one) => one.kind === "user_message").map((one) => one.text ?? one.summary);
+  assert.deepEqual(person, ["First question.", "Also this."], "the timeline shows the input, then the message");
 });
 
 test("a message sent after the turn's answer, while the run looks back in its end-of-run turn, is never refused by the end: the end opens the run again and it runs as a new turn, as main's", { timeout: 120_000 }, async (t) => {

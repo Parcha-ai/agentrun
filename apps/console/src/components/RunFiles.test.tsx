@@ -1,8 +1,8 @@
-import { act, createElement } from "react";
+import { act, createElement, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ArtifactViewer } from "./RunFiles";
+import { ArtifactViewer, listedFiles, RunFiles } from "./RunFiles";
 import type { RunFile } from "@/lib/v2";
 
 // The file viewer closes as the console's other overlays do: its X, a click on the dimmed backdrop around it, or Escape
@@ -137,5 +137,59 @@ describe("ArtifactViewer, on a narrow screen", () => {
     expect(/^<header class="([^"]*)"/.exec(h)![1].split(" ")).toContain("flex-wrap");
     const row = /<div class="([^"]*)"><div class="[^"]*" role="radiogroup" aria-label="View">/.exec(h);
     expect(row?.[1].split(" ")).toEqual(expect.arrayContaining(["basis-full", "order-last", "sm:basis-auto", "sm:order-none"]));
+  });
+});
+
+// A coding run leaves Python's caches and tool folders beside what it wrote. The Files tab lists what it wrote and keeps
+// the rest behind "Show hidden"; whether they show is the page's, so the tab bar's count follows it.
+describe("RunFiles, hidden folders", () => {
+  const f = (path: string, size_bytes = 100): RunFile => ({ path, size_bytes, content_type: "text/plain", modified_at: "2026-11-03T21:00:00Z" } as RunFile);
+  const files = [f("stats.py"), f("__pycache__/stats.cpython-312.pyc"), f(".git/HEAD"), f("test_stats.py"), f("pkg/.pytest_cache/v/x")];
+  const open = (list: RunFile[]) => {
+    const el = document.body.appendChild(document.createElement("div"));
+    root = createRoot(el);
+    act(() => root!.render(createElement(Page, { files: list })));
+    return el;
+  };
+  const paths = (el: HTMLElement) => [...el.querySelectorAll("li")].map((li) => li.textContent ?? "");
+  const press = (el: HTMLElement, text: string) => act(() => [...el.querySelectorAll("button")].find((b) => b.textContent === text)!.click());
+
+  // The run page: a tab bar whose count is listedFiles of the same state the tab reads.
+  function Page({ files }: { files: RunFile[] }) {
+    const [showHidden, setShowHidden] = useState(false);
+    return createElement("div", null, createElement("nav", { "data-tab": true }, `Files ${listedFiles(files, showHidden).length}`), createElement(RunFiles, { files, onOpen: () => {}, showHidden, onShowHidden: setShowHidden }));
+  }
+  const tab = (el: HTMLElement) => el.querySelector("[data-tab]")!.textContent;
+
+  it("lists what the run wrote, counts only that, and offers the rest", () => {
+    const el = open(files);
+    expect(paths(el)).toHaveLength(2);
+    expect(el.textContent).not.toContain("__pycache__");
+    expect(el.textContent).toContain("2 files");
+    expect(el.textContent).toContain("Show 3 hidden");
+    expect(tab(el)).toBe("Files 2");
+  });
+
+  it("shows them on asking, the tab's count follows, and hides them again", () => {
+    const el = open(files);
+    press(el, "Show 3 hidden");
+    expect(paths(el)).toHaveLength(5);
+    expect(el.textContent).toContain("__pycache__/stats.cpython-312.pyc");
+    expect(tab(el)).toBe("Files 5");
+    press(el, "Hide 3 hidden");
+    expect(paths(el)).toHaveLength(2);
+    expect(tab(el)).toBe("Files 2");
+  });
+
+  it("keeps a dot FILE the run wrote, and offers nothing when nothing is hidden", () => {
+    const el = open([f(".env.example"), f("notes.md")]);
+    expect(paths(el)).toHaveLength(2);
+    expect(el.textContent).not.toMatch(/hidden/);
+  });
+
+  it("says so when every file is in a hidden folder", () => {
+    const el = open([f("__pycache__/a.pyc")]);
+    expect(el.textContent).toContain("Only files in hidden folders");
+    expect(el.textContent).toContain("Show 1 hidden");
   });
 });

@@ -39,6 +39,20 @@ describe("Chip", () => {
   it("writes each tone's words in the tone's -text colour", () => {
     for (const [tone, cls] of [["success", "text-success-text"], ["warning", "text-warning-text"], ["error", "text-destructive-text"], ["info", "text-info-text"], ["active", "text-run-active"]] as const) expect(html(<Chip tone={tone}>x</Chip>)).toContain(cls);
   });
+  it("carries the CSS contract that keeps a status badge whole in a narrow row (\"INPUT REQUI\"): its words on one line, its own width, never shrunk", () => {
+    // jsdom measures no layout, so this checks the classes the row's cut depends on; the measured cut (scrollWidth == clientWidth
+    // in a real browser) is the autoqa step in QA.md (Beta.35, #3).
+    const chip = mount(<Chip tone="warning">Input required</Chip>).querySelector("span.caps")!;
+    expect(chip.textContent).toBe("Input required");
+    expect(chip.className.split(" ")).toEqual(expect.arrayContaining(["whitespace-nowrap", "shrink-0"]));
+  });
+  it("a label chip (words of any length) shrinks with its row and cuts its words with an ellipsis, whole on hover; it is never shrink-0", () => {
+    const chip = mount(<Chip label title="a long workflow node name">a long workflow node name</Chip>).querySelector("span.caps")!;
+    expect(chip.className.split(" ")).toEqual(expect.arrayContaining(["min-w-0"]));
+    expect(chip.className.split(" ")).not.toContain("shrink-0");
+    expect(chip.querySelector("span")!.className.split(" ")).toEqual(expect.arrayContaining(["min-w-0", "truncate"]));
+    expect(chip.getAttribute("title")).toBe("a long workflow node name");
+  });
 });
 
 describe("Field", () => {
