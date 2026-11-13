@@ -92,18 +92,24 @@ The `ui` group's rules are checked on a small app whose behaviour the suite know
 with no model: `ai.agentrun.uifixture` (`packages/computer/src/conformance/ui-fixture.ts`), a window of 320 by 320
 points, which fits a small phone in portrait. Its home window has a
 "Name" field, a "Wi-Fi" switch, "Save" (which shows "Saved" a moment after its press, so only an expect sees it), "Next"
-(which opens a second page after a moment and a transition) and a "Canvas" that only foreground input reaches, whose
-value is the number of clicks that reached it. The second page has "Back".
+(which opens a second page after a moment and a transition), a "Canvas" that only foreground input reaches, whose
+value is the number of clicks that reached it, a "Code" field that takes back any value set into it a moment later,
+"New window" (which opens a second window titled "Another window" after a moment) and "Close" (which closes the
+window it is in; the second window has one too). The second page has "Back". Closing the last window leaves the app
+running with none, and `apps.launch` opens its main window again. A fixture that cannot open a second window (one
+window per app, as on a phone) leaves out "New window", and the window cases skip in words.
 
 A driver's conformance image installs the fixture, built for its OS from that description. Its cases are Full: a
-computer without it skips them in words. Where it is installed, the Core cases `apps.launch-terminate` and
-`ui.observe-shape` use it too, so a computer that offers no exec or files (an attached Mac, a phone) still runs them;
+computer without it skips them in words. Where it is installed, the Core cases `apps.launch-terminate`,
+`apps.launch-window` and `ui.observe-shape` use it too, so a computer that offers no exec or files (an attached Mac, a phone) still runs them;
 without it they use a phone's Settings app, or the input fixture written with files. They check observe's shape on a known window, refs that survive a change and
 go `stale` when their element leaves, a point refused `stale` once its window changed, an expect met and one unmet, the
 route each step reports (in every case, never a route whose feature is off, nor foreground on a call that did not
 allow it), a click never answered verified unless it landed (on the canvas without `foreground: true`,
-a driver may refuse it `denied` or post it unverified; with it, the click lands and is verified by its count), and each
-feature: on, it does what it says; off, it is refused with its own sentence.
+a driver may refuse it `denied` or post it unverified; with it, the click lands and is verified by its count), a
+settle on the tree while a caret blinks, a set the app takes back answered unverified, a window expect, an act whose
+window closed (with another to follow, and with none left), and each feature: on, it does what it says; off, it is
+refused with its own sentence.
 
 `@parcha/agentrun-computer/fake-ui-driver` runs the fixture with no Mac and no phone, over the wire: in process
 (`fakeUiConnection`, `fakeUiProvider`) or on stdin and stdout. Drivers and surfaces test against it.

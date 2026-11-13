@@ -11,6 +11,9 @@ import { allowed, CODE_DIR, container, egressVolume, fakeDocker, idOf, LOCAL, PA
 
 const ALLOW = ["pypi.org", "*.pythonhosted.org", "93.184.215.0/24"];
 const SPEC = { image: "debian:bookworm-slim", lifetimeMs: 600_000, network: { allow: ALLOW } };
+let requests = 0;
+/** A create's context: a new request each time. */
+const req = () => ({ requestId: `docker-egress-${++requests}` });
 const DEFAULT_USER = process.getuid() !== 0 && process.getgid() !== 0 ? `${process.getuid()}:${process.getgid()}` : "1000:1000";
 const FIXED = /a Docker computer's network is fixed at create; create a new computer/;
 const A = "computer-0000000000aa";
@@ -63,7 +66,7 @@ test("check() takes an allowlist of names and CIDRs, and refuses one that is emp
 
 test("create() with an allowlist makes the volume, starts the proxy and waits for its ready line, then runs the computer with no network, the volume read-only, the proxy variables and init's relay", async () => {
 	const { provider, calls, names, volumeNames } = fakeDocker();
-	const made = await provider.create({ ...SPEC, labels: { team: "a" } });
+	const made = await provider.create({ ...SPEC, labels: { team: "a" } }, req());
 	assert.equal(made.ok, true, JSON.stringify(made));
 	const { name } = made.value;
 	const volume = `${name}-egress`;
@@ -75,14 +78,17 @@ test("create() with an allowlist makes the volume, starts the proxy and waits fo
 	const computer = computerRunOf(calls());
 	const deadline = valuesOf(computer, "--label").find((label) => label.startsWith("agentrun.computer.deadline="))?.split("=")[1];
 	assert.deepEqual(valuesOf(computer, "--pull"), ["never"], "the computer's run never pulls");
-	// The volume carries the computer's name, its deadline and the spec's labels, so the janitor finds it with no computer.
+	// The volume carries the computer's name, its deadline and the spec's labels, so the janitor finds it with no computer,
+	// and the create's attempt, as the computer and the proxy do, so a failed create removes only what it made.
+	const attempt = valuesOf(computer, "--label").find((label) => label.startsWith("agentrun.computer.attempt="));
+	assert.match(attempt ?? "", /^agentrun\.computer\.attempt=[0-9a-f-]{36}$/);
 	assert.deepEqual(calls()[4], [
 		"volume", "create", "--driver", "local", "--opt", "type=tmpfs", "--opt", "device=tmpfs", "--opt", `o=size=1m,uid=${uid},gid=${gid},mode=0700`,
-		"--label", `agentrun.computer.egress=${name}`, "--label", `agentrun.computer.deadline=${deadline}`, "--label", "team=a", volume,
+		"--label", `agentrun.computer.egress=${name}`, "--label", `agentrun.computer.deadline=${deadline}`, "--label", "team=a", "--label", attempt, volume,
 	]);
 	assert.deepEqual(proxyRunOf(calls()), [
 		"run", "--detach", "--name", volume,
-		"--label", `agentrun.computer.egress=${name}`, "--label", `agentrun.computer.deadline=${deadline}`, "--label", "team=a",
+		"--label", `agentrun.computer.egress=${name}`, "--label", `agentrun.computer.deadline=${deadline}`, "--label", "team=a", "--label", attempt,
 		"--user", DEFAULT_USER, "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--ipc", "private", "--cgroupns", "private",
 		"--pids-limit", "64", "--memory", "256m", "--memory-swap", "256m", "--cpu-period", "100000", "--cpu-quota", "50000", "--ulimit", "nofile=1024:1024",
 		"--log-driver", "json-file", "--log-opt", "max-size=1m", "--log-opt", "max-file=2",
@@ -112,7 +118,7 @@ test("create() with none or open makes no volume, no proxy, no proxy variables a
 	for (const network of ["none", "open"]) {
 		// The image is not on the host: docker run pulls it, as before, with no image inspect or pull of its own.
 		const { provider, calls, volumeNames } = fakeDocker({ images: [] });
-		const made = await provider.create({ ...SPEC, network });
+		const made = await provider.create({ ...SPEC, network }, req());
 		assert.equal(made.ok, true, JSON.stringify(made));
 		assert.deepEqual(calls().map((args) => args[0]), ["info", "run", "inspect", "exec"], network);
 		const run = computerRunOf(calls());
@@ -127,7 +133,7 @@ test("create() with none or open makes no volume, no proxy, no proxy variables a
 test("create() with an allowlist pulls an image the host lacks before it makes anything, and both runs take --pull never: no pull happens between the egress volume and the computer", async () => {
 	for (const [images, pulled] of [[[EGRESS_IMAGE], ["debian:bookworm-slim"]], [["debian:bookworm-slim"], [EGRESS_IMAGE]], [[], ["debian:bookworm-slim", EGRESS_IMAGE]]]) {
 		const { provider, calls, names, volumeNames } = fakeDocker({ images });
-		const made = await provider.create(SPEC);
+		const made = await provider.create(SPEC, req());
 		assert.equal(made.ok, true, JSON.stringify(made));
 		const all = calls();
 		const volume = all.findIndex((args) => args[0] === "volume" && args[1] === "create");
@@ -141,7 +147,7 @@ test("create() with an allowlist pulls an image the host lacks before it makes a
 
 test("create() with an allowlist fails in words naming the image when its pull fails, before any volume or container is made", async () => {
 	const { provider, calls, names, volumeNames } = fakeDocker({ images: [EGRESS_IMAGE], pull: "fails" });
-	const made = await provider.create(SPEC);
+	const made = await provider.create(SPEC, req());
 	assert.equal(made.ok, false, JSON.stringify(made));
 	assert.deepEqual([made.error.code, made.error.vendor], ["vendor", "docker"]);
 	assert.match(made.error.message, /^docker pull debian:bookworm-slim failed, so nothing was made: .*pull access denied for debian:bookworm-slim/);
@@ -153,7 +159,7 @@ test("create() aborted while it pulls an image stays aborted, and nothing is mad
 	const { provider, calls, names, volumeNames, proceed } = fakeDocker({ images: [EGRESS_IMAGE], hold: ["pull"] });
 	const controller = new AbortController();
 	try {
-		const pending = provider.create(SPEC, { signal: controller.signal });
+		const pending = provider.create(SPEC, { ...req(), signal: controller.signal });
 		for (let i = 0; i < 500 && !calls().some((args) => args[0] === "pull"); i++) await new Promise((resolve) => setTimeout(resolve, 20));
 		controller.abort();
 		const made = await pending;
@@ -169,7 +175,7 @@ test("create() aborted while it pulls an image stays aborted, and nothing is mad
 
 test("the egress option: another image for the proxy, a hint after its refusal's words, and how long create waits for it; a hint a status line cannot carry is refused when the provider is made", async () => {
 	const { provider, calls } = fakeDocker({ egressOptions: { image: "node:22.23.4-bookworm-slim", hint: "ask the operator to add it" } });
-	const made = await provider.create(SPEC);
+	const made = await provider.create(SPEC, req());
 	assert.equal(made.ok, true, JSON.stringify(made));
 	const proxy = proxyRunOf(calls());
 	assert.equal(proxy[proxy.indexOf("--entrypoint") + 2], "node:22.23.4-bookworm-slim");
@@ -210,7 +216,7 @@ test("the proxy's code must be built and readable by the computer's user, its di
 test("an allowlist on a host that remaps user ids is refused in words before any volume or container: the proxy's socket and code are owned by host ids the computer does not have", async () => {
 	for (const [remap, words] of [["userns", "userns-remap"], ["rootless", "rootless Docker"]]) {
 		const { provider, calls, names, volumeNames } = fakeDocker({ info: { SecurityOptions: ["name=seccomp,profile=builtin", `name=${remap}`, "name=cgroupns"] } });
-		const result = await provider.create(SPEC);
+		const result = await provider.create(SPEC, req());
 		assert.equal(result.ok, false, `${remap}: ${JSON.stringify(result)}`);
 		assert.equal(result.error.code, "refused");
 		assert.match(result.error.message, new RegExp(`^network: this Docker host remaps user ids \\(${words}\\), so .*an allowlist.* ask for network none or open, or use a Docker host that does not remap ids$`), remap);
@@ -219,14 +225,14 @@ test("an allowlist on a host that remaps user ids is refused in words before any
 		// Once the host is read, check() says so too, for an allowlist alone.
 		assert.deepEqual(provider.check(SPEC).map((r) => r.field), ["network"], remap);
 		assert.deepEqual(provider.check({ ...SPEC, network: "none" }), [], `${remap}: network none`);
-		assert.equal((await provider.create({ ...SPEC, network: "open" })).ok, true, `${remap}: network open is made as before`);
+		assert.equal((await provider.create({ ...SPEC, network: "open" }, req())).ok, true, `${remap}: network open is made as before`);
 	}
 });
 
 test("an allowlist whose Docker host is not where this provider runs (a daemon that is not a local unix socket) is refused in words before anything is made, unless egress.hostAddresses names the host's addresses", async () => {
 	for (const [endpoint, said] of [["tcp://docker.example.com:2376", /talks to a Docker daemon at tcp:\/\/docker\.example\.com:2376, not a local unix socket/], ["ssh://builder@docker.example.com", /not a local unix socket/], [null, /could not say where its Docker daemon is/]]) {
 		const { provider, calls, names, volumeNames } = fakeDocker({ endpoint });
-		const refused = await provider.create(SPEC);
+		const refused = await provider.create(SPEC, req());
 		assert.equal(refused.ok, false, `${endpoint}: ${JSON.stringify(refused)}`);
 		assert.equal(refused.error.code, "refused");
 		assert.match(refused.error.message, said, String(endpoint));
@@ -236,11 +242,11 @@ test("an allowlist whose Docker host is not where this provider runs (a daemon t
 		// Once it is known, check() says so too, for an allowlist alone; none and open are made as before.
 		assert.deepEqual(provider.check(SPEC).map((r) => r.field), ["network"], String(endpoint));
 		assert.deepEqual(provider.check({ ...SPEC, network: "none" }), []);
-		assert.equal((await provider.create({ ...SPEC, network: "open" })).ok, true, `${endpoint}: network open`);
+		assert.equal((await provider.create({ ...SPEC, network: "open" }, req())).ok, true, `${endpoint}: network open`);
 	}
 	const HOST = ["93.184.215.20", "2606:4700::20"];
 	const given = fakeDocker({ endpoint: "tcp://docker.example.com:2376", egressOptions: { hostAddresses: HOST } });
-	const made = await given.provider.create(SPEC);
+	const made = await given.provider.create(SPEC, req());
 	assert.equal(made.ok, true, JSON.stringify(made));
 	assert.ok(!given.calls().some((args) => args[0] === "context"), "with the host's addresses given, where the daemon is does not matter");
 	const proxy = proxyRunOf(given.calls());
@@ -253,7 +259,7 @@ test("an allowlist from a provider whose host root shows it runs in a container 
 	try {
 		writeFileSync(join(root, ".dockerenv"), "");
 		const { provider, calls, names, volumeNames } = fakeDocker({ egressOptions: { hostRoot: root } });
-		const refused = await provider.create(SPEC);
+		const refused = await provider.create(SPEC, req());
 		assert.equal(refused.ok, false, JSON.stringify(refused));
 		assert.equal(refused.error.code, "refused");
 		assert.match(refused.error.message, /^network: this provider runs in a container \(\/\.dockerenv exists\), so this provider's own interfaces are not the Docker host's/);
@@ -261,7 +267,7 @@ test("an allowlist from a provider whose host root shows it runs in a container 
 		assert.deepEqual([names(), volumeNames()], [[], []]);
 		assert.deepEqual(provider.check(SPEC).map((r) => r.field), ["network"]);
 		const given = fakeDocker({ egressOptions: { hostRoot: root, hostAddresses: ["93.184.215.20"] } });
-		assert.equal((await given.provider.create(SPEC)).ok, true, "with the host's addresses given");
+		assert.equal((await given.provider.create(SPEC, req())).ok, true, "with the host's addresses given");
 		for (const hostRoot of ["", "relative/root", 7]) assert.throws(() => new DockerProvider({ daemonPath: "/nonexistent", egress: { hostRoot } }), /egress/, JSON.stringify(hostRoot));
 	} finally {
 		rmSync(root, { recursive: true, force: true });
@@ -294,7 +300,7 @@ test("containerSigns() names what shows this provider runs in a container: /.doc
 
 test("create() fails closed when the proxy ends before it is ready: the computer is never run, and the proxy and its volume are removed", async () => {
 	const { provider, calls, names, volumeNames } = fakeDocker({ egress: "exits" });
-	const made = await provider.create(SPEC);
+	const made = await provider.create(SPEC, req());
 	assert.equal(made.ok, false);
 	assert.deepEqual([made.error.code, made.error.vendor], ["vendor", "docker"]);
 	assert.match(made.error.message, /egress proxy .* ended .*: egress: no host list/);
@@ -304,7 +310,7 @@ test("create() fails closed when the proxy ends before it is ready: the computer
 
 test("create() fails closed when the proxy never says it is ready within its bound", async () => {
 	const { provider, calls, names, volumeNames } = fakeDocker({ egress: "never", egressOptions: { readyMs: 300 } });
-	const made = await provider.create(SPEC);
+	const made = await provider.create(SPEC, req());
 	assert.equal(made.ok, false);
 	assert.equal(made.error.code, "timeout");
 	assert.match(made.error.message, /egress proxy .* was not ready within 0\.3 s/);
@@ -318,7 +324,7 @@ for (const step of ["logs", "inspect"]) {
 		const { provider, calls, names, volumeNames, proceed } = fakeDocker({ egress: "never", hold: [step], egressOptions: { readyMs: 400 } });
 		const started = Date.now();
 		try {
-			const made = await provider.create(SPEC);
+			const made = await provider.create(SPEC, req());
 			const took = Date.now() - started;
 			assert.equal(made.ok, false, JSON.stringify(made));
 			assert.equal(made.error.code, "timeout", made.error.message);
@@ -337,7 +343,7 @@ test("create() aborted by its caller during the readiness poll stays aborted, no
 	const { provider, calls, names, volumeNames, proceed } = fakeDocker({ egress: "never", hold: ["logs"], egressOptions: { readyMs: 60_000 } });
 	const controller = new AbortController();
 	try {
-		const pending = provider.create(SPEC, { signal: controller.signal });
+		const pending = provider.create(SPEC, { ...req(), signal: controller.signal });
 		for (let i = 0; i < 500 && !calls().some((args) => args[0] === "logs"); i++) await new Promise((resolve) => setTimeout(resolve, 20));
 		controller.abort();
 		const made = await pending;
@@ -351,11 +357,11 @@ test("create() aborted by its caller during the readiness poll stays aborted, no
 
 test("create() removes the proxy and its volume with a computer that is not running after its start, or that drifts", async () => {
 	const stopped = fakeDocker({ running: false });
-	const made = await stopped.provider.create(SPEC);
+	const made = await stopped.provider.create(SPEC, req());
 	assert.equal(made.ok, false);
 	assert.deepEqual([stopped.names(), stopped.volumeNames()], [[], []]);
 	const drifted = fakeDocker({ proxyPatch: { HostConfig: { ReadonlyRootfs: false } } });
-	const refused = await drifted.provider.create(SPEC);
+	const refused = await drifted.provider.create(SPEC, req());
 	assert.equal(refused.ok, false);
 	assert.equal(refused.error.code, "refused");
 	assert.match(refused.error.message, /network: declared \{"allow":.*\}, read back .*egress proxy .*read-only root/);
@@ -364,7 +370,7 @@ test("create() removes the proxy and its volume with a computer that is not runn
 
 test("create() refuses a computer whose init does not relay to the proxy: its network reads back other", async () => {
 	const relayless = fakeDocker({ patch: { Config: { Cmd: ["init", "--deadline", "2030-01-01T00:00:00.000Z"] } } });
-	const made = await relayless.provider.create(SPEC);
+	const made = await relayless.provider.create(SPEC, req());
 	assert.equal(made.ok, false);
 	assert.equal(made.error.code, "refused");
 	assert.match(made.error.message, /network: declared \{"allow":.*\}, read back an egress volume .* but no relay/);
@@ -557,7 +563,7 @@ test("a proxy whose --local was removed, or lacks one of the Docker host's addre
 test("create() refuses a proxy that does not run with the Docker host's addresses it was given, removed or shortened: the drift check reads other and removes it all", async () => {
 	for (const proxyLocal of [[], LOCAL]) {
 		const { provider, names, volumeNames } = fakeDocker({ proxyLocal, egressOptions: { hostAddresses: [HOST] } });
-		const made = await provider.create(SPEC);
+		const made = await provider.create(SPEC, req());
 		assert.equal(made.ok, false, JSON.stringify(made));
 		assert.equal(made.error.code, "refused", made.error.message);
 		assert.match(made.error.message, new RegExp(`network: declared \\{"allow":.*\\}, read back .*does not refuse the Docker host's address(es)? .*${literal(HOST)}`));

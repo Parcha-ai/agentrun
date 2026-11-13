@@ -5,8 +5,8 @@
 // step's least fits the cap; a step's least is its whole input bound at the cache-write price ($3.75 a million) and a
 // 1,024-token answer ($15 a million). The answers' usage is a desktop run's on Sonnet (3,146 tokens written to the cache
 // at first, then 1,300 more each step, 40 out), so the run spends about $0.04 in all. So:
-//  - through a gateway (OpenRouter: the bound is the bytes, 10,600 tokens at first, about 7,000 of them the computer's
-//    tools' definitions), the first request needs $0.055 and the whole run $0.114: $0.12, documented, takes it to its
+//  - through a gateway (OpenRouter: the bound is the bytes, 11,000 tokens at first, about 7,400 of them the computer's
+//    tools' definitions), the first request needs $0.057 and the whole run $0.115: $0.12, documented, takes it to its
 //    answer, $0.11 parks it before its last step;
 //  - straight to Anthropic, each bound is Anthropic's count (3,821 tokens at first with the tool prompt), so the first
 //    request needs $0.030 and the whole run $0.083: $0.09, documented, takes it to its answer, $0.08 parks it.
@@ -84,7 +84,7 @@ test("the documented minimums are what the run needs, to the cent above: $0.12 t
   const direct = await neededFor(t, "https://api.anthropic.com");
   assert.ok(gateway.asked[0].request.inputTokensMax > 9_000, `through a gateway the first request is read by its bytes: ${gateway.asked[0].request.inputTokensMax}`);
   assert.equal(direct.asked[0].request.inputTokensMax, 3_146 + 675, "straight to Anthropic, by its count and the tool-use prompt");
-  assert.deepEqual([gateway.first, direct.first].map((usd) => Math.round(usd * 1000) / 1000), [0.055, 0.03], "the first request's least");
+  assert.deepEqual([gateway.first, direct.first].map((usd) => Math.round(usd * 1000) / 1000), [0.057, 0.03], "the first request's least");
   assert.deepEqual([Math.ceil(gateway.whole * 100) / 100, Math.ceil(direct.whole * 100) / 100], [GATEWAY_MINIMUM, DIRECT_MINIMUM], JSON.stringify({ gateway: gateway.whole, direct: direct.whole }));
 });
 
@@ -113,9 +113,9 @@ for (const [route, origin, minimum, underEnds] of [["through a gateway", "https:
 
 // Expected mode, the default: a step after the first is priced from what the session's previous request read from the cache
 // (cacheRead at $0.30 a million, only what is new at the cache-write price), so the run needs about $0.06 by either route.
-// Through a gateway the first request alone needs $0.055 (the computer tools' definitions are read by their bytes), so $0.05
+// Through a gateway the first request alone needs $0.057 (the computer tools' definitions are read by their bytes), so $0.05
 // parks it before anything is sent; straight to Anthropic it parks before the last step.
-test("expected mode, the default: $0.06 takes a pi desktop run on Sonnet to its answer by either route; $0.05 parks it (a gateway's first request needs $0.055, so nothing is sent; Anthropic's parks before its last step)", async (t) => {
+test("expected mode, the default: $0.06 takes a pi desktop run on Sonnet to its answer by either route; $0.05 parks it (a gateway's first request needs $0.057, so nothing is sent; Anthropic's parks before its last step)", async (t) => {
   for (const origin of ["https://openrouter.ai/api", "https://api.anthropic.com"]) {
     const at = await desktopRun(t, 0.06, origin, "expected");
     assert.deepEqual([at.row.state, at.sent.length], ["ended", 5], `${origin}: ${JSON.stringify({ state: at.row.state, summary: at.row.summary })}`);

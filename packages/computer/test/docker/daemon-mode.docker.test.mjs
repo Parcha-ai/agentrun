@@ -12,6 +12,7 @@ import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { after, before, describe, it } from "node:test";
 import { DockerProvider } from "../../dist/docker.js";
+import { newRequest } from "./request.mjs";
 
 const LIVE = process.env.AGENTRUN_COMPUTER_LIVE_DOCKER === "1";
 const IMAGE = "debian:bookworm-slim";
@@ -55,7 +56,7 @@ describe("a Docker computer whose daemon was installed under umask 077", { skip:
 	});
 
 	it(`creates a computer running as user ${USER}, neither root nor the daemon file's owner`, async () => {
-		const created = await provider.create({ image: IMAGE, lifetimeMs: 10 * 60_000, network: "none", user: USER, labels: { "agentrun.test": "daemon-mode" } });
+		const created = await provider.create({ image: IMAGE, lifetimeMs: 10 * 60_000, network: "none", user: USER, labels: { "agentrun.test": "daemon-mode" } }, newRequest("daemon-mode"));
 		assert.equal(created.ok, true, JSON.stringify(created));
 		ref = created.value;
 	});

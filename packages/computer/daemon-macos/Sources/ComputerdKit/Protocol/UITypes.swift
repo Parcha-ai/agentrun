@@ -74,12 +74,15 @@ public struct UiApp: Sendable, Codable, Equatable {
 public struct UiWindow: Sendable, Codable, Equatable {
 	public var id: String
 	public var title: String?
+	/// What it is, by the node roles: "dialog" for a sheet, an alert or a panel. Absent: "window".
+	public var role: String?
 	/// In screen points: where the window sits.
 	public var bounds: Rect
 
-	public init(id: String, title: String?, bounds: Rect) {
+	public init(id: String, title: String?, role: String? = nil, bounds: Rect) {
 		self.id = id
 		self.title = title
+		self.role = role
 		self.bounds = bounds
 	}
 }
@@ -333,19 +336,34 @@ public enum Step: Sendable, Equatable, Codable {
 }
 
 /// What must hold once the steps ran, polled on the computer until timeoutMs. text: some node's name or value holds it.
-/// ref: the element exists. Both: that element's name or value holds the text. gone: the opposite of each.
+/// ref: the element exists. Both: that element's name or value holds the text. window: the act's app shows a window
+/// that matches it (its main one), whose state the act then answers. gone: the opposite of each. One of text and ref
+/// (or both), or window alone.
 public struct Expect: Sendable, Codable, Equatable {
 	public var text: String?
 	public var ref: String?
+	public var window: ExpectWindow?
 	public var gone: Bool?
 	/// Default defaultExpectMs, at most maxExpectMs.
 	public var timeoutMs: Int?
 
-	public init(text: String? = nil, ref: String? = nil, gone: Bool? = nil, timeoutMs: Int? = nil) {
+	public init(text: String? = nil, ref: String? = nil, window: ExpectWindow? = nil, gone: Bool? = nil, timeoutMs: Int? = nil) {
 		self.text = text
 		self.ref = ref
+		self.window = window
 		self.gone = gone
 		self.timeoutMs = timeoutMs
+	}
+}
+
+/// A window of the act's app: its title holds title, and its role is role. At least one of the two.
+public struct ExpectWindow: Sendable, Codable, Equatable {
+	public var title: String?
+	public var role: String?
+
+	public init(title: String? = nil, role: String? = nil) {
+		self.title = title
+		self.role = role
 	}
 }
 
@@ -418,9 +436,12 @@ public enum ExpectOutcome: String, Sendable, Codable {
 public struct UiActResult: Sendable, Codable, Equatable {
 	/// One per step tried, in order. A refused step is the last.
 	public var steps: [StepResult]
-	/// The state after the steps, once the window settled.
-	public var state: String
-	/// The window's nodes or image changed between before the first step and the settled state.
+	/// The state after the steps, once the window settled. Absent when window is "closed".
+	public var state: String?
+	/// "closed": a step closed the act's window and its app has no window left (super+w on the last one), so there is
+	/// no state to answer. The steps that ran keep their results. Absent while the act has a window.
+	public var window: String? = nil
+	/// The window's nodes or image changed between before the first step and the settled state. True when it closed.
 	public var changed: Bool
 	/// Whether the expect held in time; absent with no expect, or when a step was refused.
 	public var expect: ExpectOutcome?

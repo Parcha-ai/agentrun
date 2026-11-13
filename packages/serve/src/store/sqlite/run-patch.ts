@@ -4,7 +4,7 @@
 // transaction: the run's end and its outbox rows commit with the journal's last entry, or none of them do. The fence is
 // the first statement: `WHERE id = ? AND epoch = ?` changing no row throws Fenced, and the caller's transaction rolls back.
 import { endedReason, FINAL_STATES, Fenced, type AlsoRow, type Claim, type ImportedFrom, type RunOutcome, type RunPatch, type RunRow, type RunState } from "../store.js";
-import { type Dialect, SQLITE } from "../dialect.js";
+import { type Dialect, settledBody, SQLITE } from "../dialect.js";
 import type { SqliteExecutor, SqliteValue } from "./connection.js";
 import { claimFence, storeNow, type StoreNow } from "../fence.js";
 import { writeLaunch } from "./run-launch.js";
@@ -165,11 +165,11 @@ export async function refuseLeftovers(tx: Pick<SqliteExecutor, "run" | "get">, r
       runId,
     );
     if (reopened) {
-      await tx.run("UPDATE commands SET taken_at = ?, refused = ? WHERE run_id = ? AND taken_at IS NULL AND kind <> 'steer'", now, endedReason(state), runId);
+      await tx.run(`UPDATE commands SET taken_at = ?, refused = ?, ${settledBody(dialect)} WHERE run_id = ? AND taken_at IS NULL AND kind <> 'steer'`, now, endedReason(state), runId);
       return;
     }
   }
-  await tx.run("UPDATE commands SET taken_at = ?, refused = ? WHERE run_id = ? AND taken_at IS NULL", now, endedReason(state), runId);
+  await tx.run(`UPDATE commands SET taken_at = ?, refused = ?, ${settledBody(dialect)} WHERE run_id = ? AND taken_at IS NULL`, now, endedReason(state), runId);
   // The run is over: the secrets its launch held for its life go with this same commit. A message that opens it again
   // hands its own (runs.reopen).
   await tx.run("UPDATE run_launch SET sealed = NULL WHERE run_id = ? AND sealed IS NOT NULL", runId);

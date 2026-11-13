@@ -25,6 +25,7 @@ import type { AnalyticsFilter } from "./analytics.js";
 import { journalEntries } from "../runner/journal-reader.js";
 import { KINDS } from "../runner/journal-kinds.js";
 import { keptOf, learnedOf, lostOf, type DroppedData, type GradedData, type KeptProposal, type MergedData } from "../runner/learning-loop.js";
+import { GENERAL_NO_BUDGET, GENERAL_NO_ROOM, GENERAL_UNCHECKED } from "../learn/general.js";
 import type { Store } from "../store/store.js";
 
 /** A run's learning end: the Learning fields its end sets. */
@@ -76,20 +77,26 @@ async function endOfKept(store: Store, kept: NonNullable<Awaited<ReturnType<Stor
   // What the grade spent: the graded entry's, or what a grade that failed spent before it did.
   const spent = graded ?? (dropped && "usd" in dropped ? { usd: dropped.usd ?? null, tokens: dropped.tokens ?? null } : undefined);
   const cost = spent ? { cost_usd: { grade: spent.usd }, tokens: { grade: spent.tokens ?? null } } : {};
+  // A generality check that could not run (learning-loop.ts `unchecked`) is said after the end's words: the grader read
+  // every note. Its provider's error stays in the journal.
+  // One skipped for no room under the cap (GENERAL_NO_BUDGET) says so.
+  const unchecked = graded?.unchecked ?? dropped?.unchecked;
+  const skip = unchecked === undefined ? undefined : unchecked === GENERAL_NO_BUDGET ? GENERAL_NO_ROOM : GENERAL_UNCHECKED;
+  const withSkip = (detail: string | null) => (skip ? [detail, skip].filter(Boolean).join(" ") : detail);
   if (merged && graded) {
     // Each item as the merge settled it: its record's verdict (a note it left out is no longer kept, and says why). A merge
     // recorded with none (before the record kept it) reads no item decisions.
     const verdict = merged.verdict;
     const what = verdict ? learnedOf(keptOf(row.proposal, verdict), verdict) : { learned: [], pending: [], skills: [], workflows: [] };
     return {
-      state: "merged", reason: null, detail: merged.detail, at: endedAt, ...left, ...(verdict ? { verdict } : {}), graded: { ...graded.graded }, ...cost, merged: merged.commit,
+      state: "merged", reason: null, detail: withSkip(merged.detail), at: endedAt, ...left, ...(verdict ? { verdict } : {}), graded: { ...graded.graded }, ...cost, merged: merged.commit,
       learned: what.learned, ...(what.pending.length ? { pending: what.pending } : {}), ...(what.skills.length ? { skills: what.skills } : {}), ...(what.workflows.length ? { workflows: what.workflows } : {}),
     };
   }
   const reason = (dropped?.reason ?? null) as Learning["reason"];
   const lost = reason === "grader" ? lostOf(row.proposal) : [];
   return {
-    state: "dropped", reason, detail: dropped?.detail ?? null, at: endedAt,
+    state: "dropped", reason, detail: withSkip(dropped?.detail ?? null), at: endedAt,
     ...(dropped?.problems?.length ? { problems: [...dropped.problems] as Learning["problems"] } : left),
     // The verdict, when one was given; the blobs it read only go with a merge (the server kept them for its merge alone).
     ...(graded ? { verdict: graded.verdict } : {}), ...cost, ...(lost.length ? { lost } : {}),

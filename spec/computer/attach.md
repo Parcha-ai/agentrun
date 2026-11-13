@@ -119,6 +119,10 @@ A person's installed app updates on its own schedule, so it can lag the server. 
   `hello` is closed with `4408`, saying so, and dials again on its own schedule.
 - A `hello` without a field the server reads (`protocol`, `version`, `os`, `kind`, `arch`, `groups`) is closed
   with `4426`, naming the fields: the driver is updated, and dials again once it is.
+- A `hello` that lacks a group its kind needs to be given to an agent (`kindServed`: a `desktop` with no
+  `input.pointer`) is closed with `4426`: "Ada's MacBook Pro says it is a macos desktop but declares no input.pointer,
+  input.keys: update the driver on Ada's MacBook Pro (…)". Pairing refuses the same `hello` in the same words. The
+  conformance case `health.kind-served` fails such a driver before it ships.
 - A computer has one socket. When the same computer dials again (its network changed and the old socket is half dead),
   the server keeps the new socket and closes the old one with `4409`. New means dialed later, whichever `hello`
   answers first: a socket whose `hello` ends after a socket dialed later went live is closed with `4409` too.
@@ -134,7 +138,7 @@ A person's installed app updates on its own schedule, so it can lag the server. 
 | `4401` | Its token is unknown or revoked. | Stops: the person pairs it again. |
 | `4408` | Nothing heard for 60 s. | Dials again. |
 | `4409` | The same computer dialed again. | Dials again (the newer socket is already up). |
-| `4426` | It speaks another protocol version ([Versions](#versions)). | Stops: the person updates the driver. |
+| `4426` | It speaks another protocol version ([Versions](#versions)), or its `hello` lacks a group its kind needs. | Stops: the person updates the driver. |
 
 Any other code, or a drop with none (`1006`), is redialed. A driver waits 1 s before its first redial, doubling each
 time to at most 60 s, less up to a fifth at random so a fleet that lost the server together does not return together

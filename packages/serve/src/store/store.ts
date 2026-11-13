@@ -298,6 +298,8 @@ export interface LearningSpend {
 export interface StagedTake {
   readonly command: number;
   readonly effect: number;
+  /** What the command answers, JSON, written with its take (Store.answerOf reads it once). */
+  readonly answer?: unknown;
 }
 
 /** What a journal commit writes beside its batches, in its one transaction, under its fence: the run row's patch and rows
@@ -966,6 +968,9 @@ export interface ComputerLedgerRow {
 export interface ComputerLedger {
   /** Saves `labels` and `detail` for `provider`'s session `sessionId`, inserted or replaced in place. */
   put(provider: string, sessionId: string, labels: Readonly<Record<string, string>>, detail: Readonly<Record<string, unknown>>): Promise<void>;
+  /** Saves `labels` and `detail` for the session only while no row is kept for it, in one statement (two writers never
+   *  both claim it): true when it was saved; false, with nothing written, when a row was there. */
+  claim(provider: string, sessionId: string, labels: Readonly<Record<string, string>>, detail: Readonly<Record<string, unknown>>): Promise<boolean>;
   /** The session's row, or undefined when none is kept. */
   get(provider: string, sessionId: string): Promise<ComputerLedgerRow | undefined>;
   /** Every session of `provider`, by its id. */
@@ -1269,6 +1274,14 @@ export interface Store {
   /** Marks the command taken (or refused, with `reason`) under the claim, once: a command already taken stays as it was.
    *  Fenced on a stale claim. */
   take(claim: Claim, commandId: number, outcome?: "taken" | "refused", reason?: string): Promise<void>;
+  /** What the run's command answered, read once: the row's answer is cleared in the same transaction, so its bytes do not
+   *  stay in the store. Undefined when the row is untaken, refused, taken with no answer, already read, or not the run's. */
+  answerOf(runId: string, commandId: number): Promise<{ readonly value: unknown } | undefined>;
+  /** Tells `listener` when a command of a run in this store is written ("written", after command() commits) or taken,
+   *  refused or answered ("answered": a take, a run update that takes, a journal commit that takes or ends the run).
+   *  A hint to read now, for handles in this process only: a row another process writes wakes nothing here, the reader's
+   *  poll finds it. Called after the commit, asynchronously; a listener's throw is swallowed. Answers the unsubscribe. */
+  watchCommands(listener: (event: { readonly runId: string; readonly what: "written" | "answered" }) => void): () => void;
   /** Counts a failed resume on the untaken command that woke the run, under the claim, and answers its tries; the command
    *  stays untaken. Fenced on a stale claim; StoreConstraint when the command is taken or not the run's. */
   retry(claim: Claim, commandId: number): Promise<number>;
