@@ -283,16 +283,24 @@ async function world(subject: ConformanceSubject, t: { after(fn: () => unknown):
   /** A claim whose COMMIT the store left unanswered (Unanswered: it may have landed) holds the run under a lease the case
    *  made steady (STEADY), so nothing else would take it back: the runner said so (its poll's error), and that claim is run
    *  out (runOut) as a lost one is, once per such word; the runner then claims the run again. */
-  let ranOut = 0;
+  // Handled words are counted per source: `events` (this process's runners) and `more` (a runner process's events file).
+  // One shared total would lose the child's words once the child exits and its events stop being passed, so a later
+  // unanswered claim of the replacement runner would count as already handled and never run out.
+  let ranOutHere = 0;
+  let ranOutMore = 0;
   const runOutUnknown = (more: readonly unknown[] = []) => {
     // Only a claim's own word (the poll's error): an unanswered renew says the same words while its loop is still held, and
-    // running that claim out would take a healthy loop's lease. `more` is another source of events (a runner process's).
-    const unknown = [...events, ...more].filter((event) => {
-      const seen = event as { step?: unknown; message?: unknown };
-      return seen.step === "poll" && /did not answer its commit/.test(String(seen.message ?? ""));
-    }).length;
-    if (unknown > ranOut) {
-      ranOut = unknown;
+    // running that claim out would take a healthy loop's lease.
+    const unanswered = (list: readonly unknown[]) =>
+      list.filter((event) => {
+        const seen = event as { step?: unknown; message?: unknown };
+        return seen.step === "poll" && /did not answer its commit/.test(String(seen.message ?? ""));
+      }).length;
+    const here = unanswered(events);
+    const there = unanswered(more);
+    if (here > ranOutHere || there > ranOutMore) {
+      ranOutHere = Math.max(ranOutHere, here);
+      ranOutMore = Math.max(ranOutMore, there);
       runOut();
     }
   };
