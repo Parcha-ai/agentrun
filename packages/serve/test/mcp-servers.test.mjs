@@ -52,7 +52,8 @@ async function plain(t, answer) {
 /** A server on `data` that a test closes before starting another on it, and that is closed after the test whatever
  *  happens. */
 async function started(t, data) {
-  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  // A local install, as its operator says: its fake MCP servers are on loopback.
+  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", mcpLoopback: true });
   let closed;
   const close = () => (closed ??= server.close());
   t.after(close);
@@ -211,7 +212,8 @@ test("PUT seals the credential: reads say `sealed` and never hold it, nor does t
   assert.equal(one.status, 200);
   assert.equal(one.body.credential, "sealed");
   const all = await api("GET", "/settings/mcp-servers");
-  assert.deepEqual(all.body.servers.map((s) => [s.name, s.url, s.credential]), [["fake", server.url, "sealed"]]);
+  // Its URL shown as its origin, the path and query held (shownUrl).
+  assert.deepEqual(all.body.servers.map((s) => [s.name, s.url, s.credential]), [["fake", `${new URL(server.url).origin}/…`, "sealed"]]);
   holdsNone(JSON.stringify([saved.body, one.body, all.body]), token, "a read");
 
   // Sealed at rest: no store byte (the DB and its WAL/shm) holds the credential in the clear. How it is sealed in its row,

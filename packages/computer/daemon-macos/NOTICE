@@ -1,0 +1,40 @@
+Computerd for macOS builds on what these MIT-licensed projects worked out. No file is copied from them; where
+Computerd uses the same undocumented values, they are named here so a reader can check them against their source.
+
+Cua Driver (https://github.com/trycua/cua, libs/cua-driver), read at 377b0fee21559d770bbb7fe6a772de2a7611a371
+  MIT License, Copyright (c) 2025 Cua AI, Inc.
+  - SkyLight's pid-routed events (SLEventPostToPid) and the window fields 40, 91 and 92 that aim them.
+  - CGEventSetWindowLocation reading a window point on macOS 27 and later, a screen point before.
+  - Electron's AXManualAccessibility; the messaging timeout of a second or less on every accessibility call.
+  - Pressing a menu item by its AXMenuItemCmdChar for a key chord sent to an app in the background.
+  - The capture alert's schedule in replayd's ScreenCaptureApprovals.plist (scripts/seed-tcc.sh).
+
+open-computer-use (https://github.com/iFurySt/open-computer-use), read at fccf49abeea10726d58b5acba32b205843cb5f56
+  MIT License, Copyright (c) 2026 Leo
+  - The SkyLight symbols resolved with dlsym and their C signatures (Sources/ComputerdMac/SkyLight.swift).
+  - The click recipe: a move, an off-screen primer press, the presses at the point with their click state, gesture
+    phase and click group, posted through both SkyLight's path and the public one (Sources/ComputerdMac/Input.swift).
+  - The synthetic focus records (activation 0x0D, key window 0x10) that let a background window take keys.
+
+Peekaboo (https://github.com/steipete/Peekaboo), read at 69764083b16397845dc68b5c0ddb4f674290ae70
+  MIT License, Copyright (c) 2025 Peter Steinberger
+  - The shape: one app in the Aqua session holds every grant, and a command started anywhere (an SSH session) relays
+    to it, so macOS judges each action by the app's signature.
+
+yabai (https://github.com/koekeishiya/yabai), MIT License
+  - The event record layouts above were first recovered there.
+
+The MIT License's text:
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
+  documentation files (the "Software"), to deal in the Software without restriction, including without limitation the
+  rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to
+  permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all copies or substantial portions of the
+  Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
+  WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+  COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+  OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.

@@ -43,8 +43,8 @@ test("a learned workflow's trace names the model each model node ran on, and its
   };
   // As a run hands the tool its models: a node of no tier on the session's own port, named by the run's route (modelName);
   // a node of the fast tier on that tier's own model, named by its id (a host with AGENT_MODEL_FAST set, #2408's routes).
-  const modelOf = (tier) => (tier === "fast" ? { provider: `${PORT_PROVIDER}-fast`, modelId: "gpt-5-mini" } : { provider: PORT_PROVIDER, modelId: "session" });
-  const modelName = () => "gpt-5-4-mini";
+  const modelOf = (tier) => (tier === "fast" ? { provider: `${PORT_PROVIDER}-fast`, modelId: "gpt-6-luna" } : { provider: PORT_PROVIDER, modelId: "session" });
+  const modelName = () => "gpt-6-1-sol";
   const tool = learnedWorkflowTool({ workflows: [{ name: "two-tiers", description: "Two tiers", workflow: JSON.stringify(FLOW) }], granted: [], env: {}, work, models, modelOf, modelName, policy: () => "allow", denyFrom: () => "default" });
   const kept = [];
   const api = { callId: "call-1", commit: async (change) => change({ appendEntry: async (_conversation, entry) => void kept.push(entry) }) };
@@ -52,8 +52,8 @@ test("a learned workflow's trace names the model each model node ran on, and its
   assert.equal(said.isError, false, JSON.stringify(said));
   const trace = kept.find((entry) => entry.kind === LEARNED_NODES)?.data?.nodes;
   assert.deepEqual(trace?.map(({ label, kind, status, model, tier }) => ({ label, kind, status, model, tier })), [
-    { label: "quick look", kind: "extract", status: "ok", model: "gpt-5-mini", tier: "fast" },
-    { label: "final answer", kind: "extract", status: "ok", model: "gpt-5-4-mini", tier: undefined },
+    { label: "quick look", kind: "extract", status: "ok", model: "gpt-6-luna", tier: "fast" },
+    { label: "final answer", kind: "extract", status: "ok", model: "gpt-6-1-sol", tier: undefined },
   ], JSON.stringify(trace));
   assert.equal("tier" in trace[1], false, "a node of no tier has no tier key");
 });
@@ -81,13 +81,13 @@ test("two model nodes with one label each keep the model they ran on", { timeout
     ] },
     { node: "extract", label: "final answer", instructions: "Answer it.", out: "Answer", as: "answer" },
   ] } };
-  const modelOf = (tier) => (tier === "fast" ? { provider: `${PORT_PROVIDER}-fast`, modelId: "gpt-5-mini" } : { provider: PORT_PROVIDER, modelId: "session" });
-  const tool = learnedWorkflowTool({ workflows: [{ name: "same-label", description: "Same label", workflow: JSON.stringify(flow) }], granted: [], env: {}, work, models, modelOf, modelName: () => "gpt-5-4-mini", policy: () => "allow", denyFrom: () => "default" });
+  const modelOf = (tier) => (tier === "fast" ? { provider: `${PORT_PROVIDER}-fast`, modelId: "gpt-6-luna" } : { provider: PORT_PROVIDER, modelId: "session" });
+  const tool = learnedWorkflowTool({ workflows: [{ name: "same-label", description: "Same label", workflow: JSON.stringify(flow) }], granted: [], env: {}, work, models, modelOf, modelName: () => "gpt-6-1-sol", policy: () => "allow", denyFrom: () => "default" });
   const kept = [];
   const api = { callId: "call-1", commit: async (change) => change({ appendEntry: async (_conversation, entry) => void kept.push(entry) }) };
   const said = await tool.execute({ name: "same-label", input: { question: "six times seven" } }, api, { abortSignal: new AbortController().signal });
   assert.equal(said.isError, false, JSON.stringify(said));
   const trace = kept.find((entry) => entry.kind === LEARNED_NODES)?.data?.nodes ?? [];
   const checks = trace.filter((n) => n.label === "check").map(({ model, tier }) => `${tier ?? "-"}:${model}`).sort();
-  assert.deepEqual(checks, ["-:gpt-5-4-mini", "fast:gpt-5-mini"], JSON.stringify(trace));
+  assert.deepEqual(checks, ["-:gpt-6-1-sol", "fast:gpt-6-luna"], JSON.stringify(trace));
 });

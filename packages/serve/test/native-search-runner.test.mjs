@@ -48,7 +48,7 @@ async function provider(t) {
 
 test("a pi run's own web_search, resolved native, searches on the runner through the run's route: the provider's hosted search, its fee booked, the tool answering the results", { timeout: 120_000 }, async (t) => {
   const { url, calls } = await provider(t);
-  withEnv(t, { ANTHROPIC_API_KEY: ["not-a-secret", "anthropic"].join("-"), ANTHROPIC_BASE_URL: url, AGENT_MODEL: "anthropic/claude-sonnet-4-5", AGENTRUN_TEST_FAUX_UPSTREAM_CALLS: calls }, ["PARALLEL_API_KEY", "AGENT_MODEL_BASE_URL", "OPENROUTER_API_KEY", "AGENTRUN_TEST_FAUX_UPSTREAM"]);
+  withEnv(t, { ANTHROPIC_API_KEY: ["not-a-secret", "anthropic"].join("-"), ANTHROPIC_BASE_URL: url, AGENT_MODEL: "anthropic/claude-sonnet-5-5", AGENTRUN_TEST_FAUX_UPSTREAM_CALLS: calls }, ["PARALLEL_API_KEY", "AGENT_MODEL_BASE_URL", "OPENROUTER_API_KEY", "AGENTRUN_TEST_FAUX_UPSTREAM"]);
   const { api, data } = await serve(t, { faux: undefined });
   assert.equal((await api("PUT", "/settings/tools", { web_search: { provider: "native" } })).status, 200);
   assert.equal((await api("POST", "/agents", agent("searcher", { harness: "pi", tools: ["web_search"], instructions: "Search for the answer." }))).status, 201);
@@ -66,6 +66,6 @@ test("a pi run's own web_search, resolved native, searches on the runner through
   const search = records.filter((entry) => entry.kind === "runner.request" && entry.host === "web_search");
   assert.equal(search.length, 1, JSON.stringify(records));
   const turn = records.find((entry) => entry.kind === "runner.turn" && entry.turn === search[0].turn);
-  // claude-sonnet-4-5 at $3 and $15 a million: 20,000 in and 40 out, plus one search at $0.01.
-  assert.ok(Math.abs(turn.usd - (20_000 * 3 / 1e6 + 40 * 15 / 1e6 + 0.01)) < 1e-9, `its tokens and its search: ${JSON.stringify(turn)}`);
+  // claude-sonnet-5-5 at $2 and $10 a million: 20,000 in and 40 out, plus one search at $0.01.
+  assert.ok(Math.abs(turn.usd - (20_000 * 2 / 1e6 + 40 * 10 / 1e6 + 0.01)) < 1e-9, `its tokens and its search: ${JSON.stringify(turn)}`);
 });
