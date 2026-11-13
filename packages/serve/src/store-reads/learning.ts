@@ -215,14 +215,14 @@ async function learningSpendOf(store: Store, runId: string): Promise<{ looked: R
 /** The path run `runId` took and the learned workflow it ran, the one classifier its run record keeps (metrics.path,
  *  metrics.workflow, metrics.workflow_digest: workflow-first.ts pathMetrics, written at the run's end) and its cost per run
  *  reads (pathOfRow). A run its learned workflow served first (its WORKFLOW_FIRST entry, servedOf): `workflow` when it
- *  answered, `handed_back` when it handed back, with its digest. Else, for a run offered a learned workflow, its timeline
+ *  answered, `handed_back` when it handed back, with its digest. Else, for a run its launch offered a learned workflow, its timeline
  *  (runner/learning-end.ts runPathOf, the agent calling the tool itself): `workflow` when its job did only that,
  *  `handed_back` when the agent went on, with the workflow its job called last. Any other run's path is `agent`. */
 export async function runPathOverStore(store: Store, runId: string, started: RunLaunch["learning"]): Promise<{ path: RunPath; workflow: string | null; digest?: string }> {
-  if (!started?.workflows?.length) return { path: "agent", workflow: null };
   const entries = await runEntries(store, runId, BACKGROUND_CONTEXT);
   const served = servedOf(entries);
   if (served) return { path: served.outcome === "answered" ? "workflow" : "handed_back", workflow: served.workflow, ...(served.digest ? { digest: served.digest } : {}) };
+  if (!started?.workflows?.length) return { path: "agent", workflow: null };
   const path = runPathOf(await runTimeline(store, runId, BACKGROUND_CONTEXT, { settled: false }));
   // Only a name the launch offered: a call's raw `name` (a failed call's included) is the model's text, never shown.
   return { path, workflow: path === "agent" ? null : offeredName(workflowNameOf([...callArgsOf(entries).values()]), started.workflows) };
