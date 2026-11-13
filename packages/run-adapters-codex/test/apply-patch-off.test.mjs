@@ -116,3 +116,16 @@ test("on the machine: a binary that gives its catalog has no note, and Codex's c
     await machine.close();
   }
 });
+
+test("a catalog that can't be read is said with the binary's name only: no host path, and no CODEX_HOME of its own", async () => {
+  const bin = { command: '/opt/secret-place/bin/codex-b' };
+  // It doesn't start: the spawn's error names the binary by its full path.
+  const notStarted = await patchlessCatalog(async () => { throw new Error('spawn /opt/secret-place/bin/codex-b ENOENT'); }, bin, dirs, new AbortController().signal);
+  assert.match(notStarted.why ?? '', /codex-b/, `it names the binary: ${notStarted.why}`);
+  assert.doesNotMatch(notStarted.why ?? '', /\/opt\/secret-place/, `no host path: ${notStarted.why}`);
+  // It fails: its stderr names its own CODEX_HOME.
+  const spawn = async () => ({ end() {}, kill() {}, async *lines() {}, exited: Promise.resolve({ code: 2, signal: null }), stderrTail: () => `error: cannot write ${dirs.own}/models.json under ${dirs.home}` });
+  const failed = await patchlessCatalog(spawn, { command: '/opt/secret-place/bin/codex-c' }, dirs, new AbortController().signal);
+  assert.match(failed.why ?? '', /exit code 2/, `it says how it failed: ${failed.why}`);
+  for (const path of [dirs.own, dirs.home, '/opt/secret-place']) assert.ok(!(failed.why ?? '').includes(path), `no ${path} in: ${failed.why}`);
+});

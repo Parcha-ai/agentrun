@@ -1,0 +1,55 @@
+{
+  "captured": "main 43a5be9b140652b3acaf21c2024bac0f15b88d01: browser-person.ts (personHands, answerAsk) wrote the entries; timeline.ts timelineOf showed them",
+  "instruction": "Sign in to the supplier portal",
+  "session": "ar-run-1-1",
+  "cases": {
+    "done": [
+      [
+        "waiting",
+        "Waiting for you: Sign in to the supplier portal",
+        "ar-run-1-1"
+      ],
+      [
+        "phase",
+        "You handed the browser back",
+        null
+      ]
+    ],
+    "cancelled": [
+      [
+        "waiting",
+        "Waiting for you: Sign in to the supplier portal",
+        "ar-run-1-1"
+      ],
+      [
+        "phase",
+        "You cancelled the agent's hand-over",
+        null
+      ]
+    ],
+    "expired": [
+      [
+        "waiting",
+        "Waiting for you: Sign in to the supplier portal",
+        "ar-run-1-1"
+      ],
+      [
+        "phase",
+        "The agent's hand-over expired before you answered it",
+        null
+      ]
+    ],
+    "signedIn": [
+      [
+        "waiting",
+        "Waiting for you: Sign in to the supplier portal",
+        "ar-run-1-1"
+      ],
+      [
+        "user_message",
+        "You signed in",
+        "ar-run-1-1"
+      ]
+    ]
+  }
+}

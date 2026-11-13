@@ -1,5 +1,5 @@
-// The run's one booking on the adapter loop: the host's check before a paid request (the spec's beforeRequest, the spend
-// cap's beforeRequestOf) is asked with the run's totals, every session of the run summed (runBooking over the run's
+// The run's one booking on the adapter loop: the run's one cap (runCap, from the spec's cap options) judges each paid
+// request with the run's totals, every session of the run summed (runBooking over the run's
 // journal sessions), never its own session's alone. A run whose earlier session spent $0.60 asks its first request of
 // a new session with $0.60 spent.
 import assert from "node:assert/strict";
@@ -47,7 +47,7 @@ test("the adapter loop asks the host's check with the run's spend: an earlier se
 
   const asked = [];
   const spec = piAdapterSpec({ script: [{ say: "done" }], tools: {}, hooks: quiet });
-  const loop = createAdapterLoop(async (claim, run) => ({ ...(await spec(claim, run)), beforeRequest: (request) => void asked.push(request.spentUsd) }), { restartLimit: MAX_RESTARTS });
+  const loop = createAdapterLoop(async (claim, run) => ({ ...(await spec(claim, run)), runCap: { capUsd: () => undefined, modelOf: () => undefined, judged: (request) => void asked.push(request.spentUsd) } }), { restartLimit: MAX_RESTARTS });
   runner = startRunner({ store, createLoop: loop, name: "runner-a", ...TIMING });
   const deadline = Date.now() + 20_000;
   for (;;) {

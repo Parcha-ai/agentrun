@@ -6,12 +6,18 @@ and uses the standard library only (`http.client`, `json`, `ssl`), on Python 3.1
 
 ## Install
 
-The package is held in this repository: it is not on PyPI. Install it from GitHub, or from a checkout:
+```sh
+pip install parcha-agentrun
+```
+
+Or from GitHub, or from a checkout:
 
 ```sh
 pip install "git+https://github.com/Parcha-ai/agentrun#subdirectory=python"
 pip install ./python
 ```
+
+Its versions start at 0.3.0. The 0.2.x releases under the same name are the old hosted API's SDK, not this client.
 
 It installs as `parcha-agentrun` and imports as `agentrun`. It has no dependencies, and it ships `py.typed`, so pyright
 and mypy read its types.
@@ -77,6 +83,10 @@ with client.runs.read_file(done["run_id"], "notes.md", stream=True) as response:
     for chunk in response.iter_bytes():
         ...
 ```
+
+A `StreamedResponse` reads with `read`, `read1` or `iter_bytes`. A read that fails (the server stalls past the
+call's `timeout`, or the body is cut before its length) raises `AgentRunUnreachable` with the failure's code, never an
+`http.client` error, and closes the connection. Nothing is tried again: what was read is yours.
 
 `runs.follow` reads the route's event stream and resumes a dropped connection with `Last-Event-ID`, so no page comes
 twice. It waits at least the server's `retry` before it reconnects, and a gateway's `Retry-After`. Only the server's

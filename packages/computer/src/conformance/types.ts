@@ -1,9 +1,9 @@
 // The conformance suite's shapes: a case is data that names its level, its group and the capabilities it needs.
 import type { MountKind, MountSpec } from "../mount.js";
-import type { ComputerClient, ComputerKind, DaemonMethod, DaemonMethods, ExecRunParams, Group, HelloResult } from "../protocol.js";
-import type { ComputerConnection, ComputerProvider, ComputerRef, ComputerSpec, DaemonMode } from "../provider.js";
+import type { ComputerClient, ComputerKind, ComputerOs, DaemonMethod, DaemonMethods, ExecRunParams, Group, HelloResult, NetworkFence } from "../protocol.js";
+import type { ComputerConnection, ComputerProvider, ComputerRef, ComputerSpec, DaemonMode, GpuSpec } from "../provider.js";
 import type { ComputerError, ComputerErrorCode, Result } from "../result.js";
-import type { ComputerSettingKind } from "../kinds.js";
+import type { ComputerSettingKind, KindCapabilities } from "../kinds.js";
 import type { CdpDialer, CdpSocket } from "./cdp.js";
 import type { StartedFixture } from "./fixture.js";
 import type { KindVerdict } from "./kind.js";
@@ -11,14 +11,16 @@ import type { KindVerdict } from "./kind.js";
 /** Core: what a computer of its kind must do. Full: an optional capability, tested only where it is declared. */
 export type Level = "core" | "full";
 /** The suite's own grouping of its cases, the first part of each case id; not the protocol's Group. */
-export type CaseGroup = "health" | "exec" | "files" | "process" | "provider" | "drift" | "isolation" | "mount" | "screen" | "input" | "touch" | "apps" | "lifetime" | "browser";
+export type CaseGroup = "health" | "exec" | "files" | "process" | "provider" | "drift" | "isolation" | "mount" | "screen" | "input" | "touch" | "apps" | "ui" | "lifetime" | "browser" | "gpu";
 
 /**
  * What a case needs: a group (declared by both the provider's capabilities().groups and the computer's hello), a
  * network the provider declares, the janitor as the keeper of deadlines, a spec.user the provider takes, a release that
- * stops a computer and keeps it, a mount kind capabilities().mount declares, a provider method that is optional
- * (extend, stream), declared by being there, or the ports of a vendor's agent in the computer (vendor-agent: declared
- * by capabilities().vendorAgentPorts, an empty list included).
+ * stops a computer and keeps it, an agent's persistent computer (capabilities().persistence), a mount kind
+ * capabilities().mount declares, a provider method that is optional (extend, stream), declared by being there, the
+ * ports of a vendor's agent in the computer (vendor-agent: declared by capabilities().vendorAgentPorts, an empty list
+ * included), a secret the provider takes (secrets: declared by the run's planted provider, which its conformance
+ * module's ENV makes possible), or GPUs (gpu: declared by capabilities().gpu).
  */
 export type Capability =
 	| Group
@@ -29,11 +31,14 @@ export type Capability =
 	| "user:root"
 	| "user:uid"
 	| "release:stop"
+	| "persistence"
 	| "mount:bind"
 	| "mount:archil"
 	| "extend"
 	| "stream"
-	| "vendor-agent";
+	| "vendor-agent"
+	| "secrets"
+	| "gpu";
 
 /**
  * A fresh run's folder for one mount kind, made by the provider's conformance module: the mount that reaches it, and its
@@ -121,8 +126,14 @@ export interface CaseContext {
 	dir(): Promise<string>;
 	/** The same provider with a daemon that reports another version; skips the case when none was given. */
 	drifted(): Promise<ComputerProvider>;
+	/** What the provider declares of itself (ConformanceOptions.declared); undefined when the run was given none. */
+	readonly declared: readonly KindCapabilities[] | undefined;
+	/** The provider built with planted secrets (ConformanceOptions.planted); skips the case when none was given. */
+	planted(): Promise<PlantedProvider>;
 	/** A fresh run's folder for this mount kind, closed when the case ends; skips the case when the run can make none. */
 	runFolder(kind: MountKind): Promise<RunFolder>;
+	/** The GPU the run pays for (options.gpu, the CLI's --gpu); skips the case when the run names none. */
+	gpu(): GpuSpec;
 	/**
 	 * Starts the run's fixture in the case's computer and waits until it is up: an app that logs each input event it
 	 * gets, so a case checks what an action did with no model. It is stopped when the case ends. Skips the case when the
@@ -165,7 +176,21 @@ export interface Case {
 	computer?: "shared" | "fresh" | "none";
 	/** The longest this case may run, when it needs longer than the run's default. */
 	timeoutMs?: number;
+	/**
+	 * The systems the case's body is written for. Absent: any, but a case that needs exec or processes runs POSIX
+	 * programs (sh, id, /proc) and is Linux's alone, and one that needs files names POSIX paths (/tmp) and is no Windows
+	 * computer's (caseOs). A computer of another os skips it in words.
+	 */
+	os?: readonly ComputerOs[];
 	run(t: CaseContext): Promise<void>;
+}
+
+/** The systems a case runs on: its own os; else Linux alone for one that runs programs, any but Windows for one that names paths. */
+export function caseOs(c: Pick<Case, "os" | "needs">): readonly ComputerOs[] | undefined {
+	if (c.os !== undefined) return c.os;
+	if (c.needs.some((need) => need === "exec" || need === "processes")) return ["linux"];
+	if (c.needs.includes("files")) return ["linux", "macos", "android", "ios"];
+	return undefined;
 }
 
 export interface CaseResult {
@@ -176,9 +201,14 @@ export interface CaseResult {
 	reason?: string;
 	/**
 	 * On a skip: the needs that were not declared and are optional for this kind of computer. A Core case skipped for
-	 * these does not fail Core; any other skip of a Core case does.
+	 * these does not fail Core; any other skip of a Core case does, but one for `os`.
 	 */
 	undeclared?: Capability[];
+	/**
+	 * On a skip: the systems the case is written for (Case.os, caseOs), none of them this computer's. A Core case skipped
+	 * for this is not this computer's to pass or fail, so it does not fail Core; its reason stays in the report.
+	 */
+	os?: readonly string[];
 	/** What the case saw and recorded without asserting it (CaseContext.observe); absent when nothing. */
 	observed?: string[];
 }
@@ -191,8 +221,12 @@ export interface ConformanceReport {
 	kind: ComputerKind;
 	daemonMode: DaemonMode;
 	image: string;
-	/** What the run's computer said in hello; null when no computer could be made. */
-	daemon: { version: string; os: string; arch: string } | null;
+	/**
+	 * What each computer of the run said in its first hello, one entry per computer in the order they answered, each
+	 * naming the computer and its role, with the fence its programs are held behind when it says one; empty when no
+	 * computer answered. Computers of one run may differ: a GPU computer's fence is not the run's computer's.
+	 */
+	daemons: ComputerDaemon[];
 	/** The groups or case ids the run was limited to, when it was. */
 	only?: string[];
 	/** When only or kind was given: the Core cases it left out, which did not run. */
@@ -217,9 +251,10 @@ export interface ConformanceReport {
 	notes?: string[];
 	/**
 	 * What create's read-back recorded of each computer the run made that does not refuse it (a probe target that
-	 * accepted and sent nothing back), one entry per note, naming the computer, in the order they came; absent when none.
+	 * accepted and sent nothing back), one entry per note, naming the computer and its role, in the order they came;
+	 * absent when none.
 	 */
-	computerNotes?: ComputerNote[];
+	computerNotes?: CreatedNote[];
 	/**
 	 * What the provider said through its onNote option during the run (a release that did not let an Archil folder go
 	 * cleanly), naming the computer, in the order it came: no failure of any case. The CLI gives the option and fills
@@ -228,10 +263,37 @@ export interface ConformanceReport {
 	providerNotes?: ComputerNote[];
 }
 
-/** One note a create returned: the computer's name and the note's words. */
+/** One note about a computer: the computer's name and the note's words. */
 export interface ComputerNote {
 	computer: string;
 	note: string;
+}
+
+/**
+ * What a computer is for in a run: "shared", the run's computer, which the cases that need no computer of their own
+ * share; else the id of the case that made it.
+ */
+export type ComputerRole = string;
+
+/** One note a create returned: the computer, its role, and the note's words. */
+export interface CreatedNote extends ComputerNote {
+	role: ComputerRole;
+}
+
+/** What one computer's first hello said: the computer, its role, and the fence when it names one. */
+export interface ComputerDaemon {
+	computer: string;
+	role: ComputerRole;
+	version: string;
+	os: string;
+	arch: string;
+	fence?: NetworkFence;
+}
+
+/** A provider built with planted secrets, and the values planted: none of them may show in anything it answers. */
+export interface PlantedProvider {
+	provider: ComputerProvider;
+	secrets: string[];
 }
 
 export interface ConformanceOptions {
@@ -249,6 +311,16 @@ export interface ConformanceOptions {
 	cases?: Case[];
 	/** The same provider with a daemon that reports another version, for the drift cases. */
 	drifted?: () => Promise<ComputerProvider> | ComputerProvider;
+	/**
+	 * What the provider declares of itself, each configuration's kind and groups, for health.declared: its descriptor
+	 * (until the descriptor lands, its PROVIDERS entry, or its module's CAPABILITIES). Without it, that case skips.
+	 */
+	declared?: readonly KindCapabilities[];
+	/**
+	 * The same provider built with a planted value in place of each of its secrets (an API key, a token), and those
+	 * values, for health.no-key-in-errors. Without it (a provider that takes no secret), that case skips.
+	 */
+	planted?: () => Promise<PlantedProvider> | PlantedProvider;
 	/**
 	 * A fresh run's folder for a mount kind, for the mount cases: the provider's conformance module makes it (a folder on
 	 * the Docker host for a bind), or gives undefined for a kind it cannot make. Without it, those cases skip in words.
@@ -269,6 +341,11 @@ export interface ConformanceOptions {
 	 * fixture APK for an Android phone. Without it those cases skip, and Core cannot pass where kind requires them.
 	 */
 	fixture?: string;
+	/**
+	 * The GPU the gpu case asks for: a type the provider declares and a count. A GPU bills by the second, so the run names
+	 * the one it pays for; without it the case skips in words.
+	 */
+	gpu?: GpuSpec;
 	/** fetch for screen.stream; default the global one. */
 	fetch?: CaseContext["fetch"];
 	/** How the browser cases open a CDP socket; default a WebSocket (dialCdp). Tests give a fake browser's. */

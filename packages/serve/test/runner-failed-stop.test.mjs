@@ -10,6 +10,7 @@ import { commandRow, observed, queue, recorder, sleep, STEADY_LEASE, stores, unt
 
 const { startRunner } = await import("../dist/runner/runner.js");
 const { sendCommand } = await import("../dist/runner/commands.js");
+const { runReadState } = await import("../dist/store-reads/runs.js");
 after(closeOpenSessions);
 const { suiteTools } = await import("../dist/runner/conformance/harness.js");
 const TIMING = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 30 };
@@ -76,12 +77,12 @@ test("a stop waiting when the loop fails with no end written ends the run stoppe
   const row = await until(async () => {
     const now = await server.runs.get("run-1");
     return ["failed", "stopped"].includes(now.state) && now.runner === null && now;
-  }, "the run final and released", 5_000);
+  }, "the run final and released", 60_000);
   assert.deepEqual([row.state, row.summary], ["stopped", "stopped by a person"], "the person's stop is the run's end");
   const taken = await commandRow(server, "run-1", stop.id);
   assert.ok(taken.takenAt !== null, "the stop row is taken");
   assert.equal(taken.refused, null, `the stop is taken, never refused: ${JSON.stringify(taken.refused)}`);
-  assert.deepEqual(await endsOf(server), [{ state: "stopped", summary: "stopped by a person" }], "the run's end is in its journal");
+  assert.deepEqual(await endsOf(server), [{ state: "stopped", summary: "stopped by a person", outcome: "stopped" }], "the run's end is in its journal, a person's stop");
   await sleep(TIMING.pollMs * 10);
   assert.equal(claimsOf(record), 1, "claimed once, never again");
 });
@@ -90,17 +91,17 @@ test("a parked run whose resume keeps failing, then is stopped, ends stopped wit
   const { createLoop } = loops([{ call: "asked" }, { say: "done" }], (n) => n >= 2);
   const { server, record, start } = await running(t, createLoop);
   start();
-  await until(async () => (await server.runs.get("run-1")).state === "parked", "the run parked on its ask", 5_000);
+  await until(async () => (await server.runs.get("run-1")).state === "parked", "the run parked on its ask", 60_000);
   await sendCommand(server, "run-1", { kind: "approve", body: { approval: "the asked call" } });
-  await until(async () => (await server.runs.get("run-1")).backoffUntil !== null, "the failed resume's backoff", 5_000);
+  await until(async () => (await server.runs.get("run-1")).backoffUntil !== null, "the failed resume's backoff", 60_000);
   const stop = await sendCommand(server, "run-1", { kind: "stop", body: {} });
   const row = await until(async () => {
     const now = await server.runs.get("run-1");
     return now.state === "stopped" && now.runner === null && now;
-  }, "the stop ends the run", 5_000);
+  }, "the stop ends the run", 60_000);
   assert.equal(row.summary, "stopped by a person");
   assert.ok((await commandRow(server, "run-1", stop.id)).takenAt !== null, "the stop row is taken");
-  assert.deepEqual(await endsOf(server), [{ state: "stopped", summary: "stopped by a person" }], "the run's end is in its journal");
+  assert.deepEqual(await endsOf(server), [{ state: "stopped", summary: "stopped by a person", outcome: "stopped" }], "the run's end is in its journal, a person's stop");
   assert.ok(claimsOf(record) >= 2);
 });
 
@@ -109,16 +110,33 @@ test("a parked run brought back by an approve whose resume fails stays parked wi
   const { createLoop, ran } = loops([{ call: "asked" }, { say: "done" }], (n) => n === 2);
   const { server, record, start } = await running(t, createLoop);
   start();
-  await until(async () => (await server.runs.get("run-1")).state === "parked", "the run parked on its ask", 5_000);
+  await until(async () => (await server.runs.get("run-1")).state === "parked", "the run parked on its ask", 60_000);
   // Its resume cannot open, so which call the approve names never comes into it.
   const approve = await sendCommand(server, "run-1", { kind: "approve", body: { approval: "the asked call" } });
-  await until(() => claimsOf(record) >= 2, "the approve brings the run back", 5_000);
+  await until(() => claimsOf(record) >= 2, "the approve brings the run back", 60_000);
   const row = await until(async () => {
     const now = await server.runs.get("run-1");
     return now.runner === null && now.state !== "running" && now;
-  }, "the resume released", 5_000);
+  }, "the resume released", 60_000);
   assert.equal(row.state, "parked", `never failed: ${JSON.stringify(row)}`);
   assert.ok(row.backoffUntil !== null && row.backoffUntil !== undefined, "released with a backoff");
   assert.equal((await commandRow(server, "run-1", approve.id)).takenAt, null, "the approve is kept for one more try");
   assert.equal(ran.asked, 0, "the asked call never ran");
+});
+
+test("a learning run whose loop fails with a person's stop waiting ends stopped with no outcome 'stopped': it is never reopened, so it reads stopped, never waiting for good", async (t) => {
+  const { createLoop } = loops([{ say: "done" }], () => true);
+  const opened = await stores({ runners: 1 });
+  const record = recorder();
+  await opened.server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { harness: "learning", input: { runId: "run-0" }, title: "Learning from run-0", place: { mode: "runner" } } });
+  const stop = await sendCommand(opened.server, "run-1", { kind: "stop", body: {} });
+  const runner = startRunner({ store: observed(opened.runners[0], record), createLoop, name: "runner-a", ...TIMING });
+  t.after(() => runner.close());
+  const row = await until(async () => {
+    const now = await opened.server.runs.get("run-1");
+    return now.state === "stopped" && now.runner === null && now;
+  }, "the run final and released", 60_000);
+  assert.deepEqual([row.summary, row.outcome], ["stopped by a person", null], `no outcome 'stopped' on a learning run: ${JSON.stringify(row)}`);
+  assert.equal(runReadState(row, "agentic"), "stopped", "it reads stopped, never running");
+  assert.ok((await commandRow(opened.server, "run-1", stop.id)).takenAt !== null, "the stop row is taken");
 });

@@ -12,7 +12,7 @@ import { fauxTable } from "./fixtures/faux-table.mjs";
 const storedBodies = (data) => {
   const db = new DatabaseSync(join(data, "store.sqlite"), { readOnly: true });
   try {
-    return db.prepare("SELECT body_json FROM revisions").all().map((row) => JSON.parse(row.body_json));
+    return db.prepare("SELECT body FROM revisions").all().map((row) => JSON.parse(row.body));
   } finally {
     db.close();
   }

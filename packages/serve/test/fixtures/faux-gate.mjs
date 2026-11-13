@@ -18,6 +18,17 @@ const slow = (faux, ms, text) =>
     faux.signal?.addEventListener("abort", () => (clearTimeout(timer), resolve(faux.message("", { stopReason: "aborted" }))), { once: true });
   });
 
+/** Waits until `file` exists: true then, false as soon as the turn is stopped (its signal aborted), so a test that ended
+ *  before writing the file leaves no poll behind it (the runner's close aborts its runs' turns). */
+const until = async (faux, file) => {
+  while (!faux.signal?.aborted) {
+    if (await access(file).then(() => true, () => false)) return true;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  return false;
+};
+const aborted = (faux) => faux.message("", { stopReason: "aborted" });
+
 export default function reply(context, faux) {
   noteRequest(context);
   // A workflow's model node (its `submit` tool added), told "Fetch <url> once.": web_fetch on the url, then it submits
@@ -36,7 +47,7 @@ export default function reply(context, faux) {
     const calls = context.messages.filter((m) => m.role === "toolResult").length;
     if (calls === 0) return faux.message(faux.toolCall("web_fetch", { url: again[1] }), { stopReason: "toolUse" });
     if (calls === 1) return (async () => {
-      while (!(await access(again[2]).then(() => true, () => false))) await new Promise((resolve) => setTimeout(resolve, 20));
+      if (!(await until(faux, again[2]))) return aborted(faux);
       return faux.message(faux.toolCall("web_fetch", { url: again[1] }), { stopReason: "toolUse" });
     })();
     return faux.message(`Saw: ${toldOf(context)}`);
@@ -47,7 +58,7 @@ export default function reply(context, faux) {
   if (later) {
     if (context.messages.some((m) => m.role === "toolResult")) return faux.message(`Saw: ${toldOf(context)}`);
     return (async () => {
-      while (!(await access(later[2]).then(() => true, () => false))) await new Promise((resolve) => setTimeout(resolve, 20));
+      if (!(await until(faux, later[2]))) return aborted(faux);
       return faux.message(faux.toolCall("web_fetch", { url: later[1] }), { stopReason: "toolUse" });
     })();
   }

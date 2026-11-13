@@ -1,8 +1,9 @@
 // The commands that take a secret, from stdin and never from the command line: `login` (the token for a server, checked
-// and kept in the config file), `logout`, and `tool-keys set` (one field of a tool key). A secret is never in argv, so
+// and kept in the config file) and `logout`. No command writes a key or any other secret to the server: those are set in
+// the console, signed in, and the server refuses the token on them (secret-writes.ts). A secret is never in argv, so
 // never in shell history or `ps`, and never in any output or error. Each command is `{ command, pathParams, summary,
 // route?, help, options, run }`; cli.mjs runs it with `{ values, args, env, io, cli }`, where `cli` is its own
-// `{ fail, targetOf, clientOf, request, send, secretAt, BAD_HEADER }`: the token's custody and the requests are its.
+// `{ fail, baseOf, targetOf, clientOf, request, BAD_HEADER }`: the token's custody and the requests are its.
 import { randomBytes } from "node:crypto";
 import { chmodSync, closeSync, constants, existsSync, fsyncSync, mkdirSync, openSync, renameSync, rmSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
@@ -73,6 +74,10 @@ function secretsOf(body, publicFields = []) {
   return found;
 }
 
+/** A refusal's exit code: 4 for the token refused (401, 403), 5 for an operation the server does not offer here (501),
+ *  1 for any other. */
+export const refusalExit = (status) => (status === 401 || status === 403 ? 4 : status === 501 ? 5 : 1);
+
 /** A client for a request that carries a secret: a refusal prints the status, the error's code when it is one, and a
  *  message of this CLI's own, never the server's answer, which could quote the secret. What it does print has every
  *  copy of `secrets` cut: `scrub`, which cli.mjs's send applies to a JSON answer's value before it prints it, and to a
@@ -91,8 +96,9 @@ function secretClient(clientOf, target, io, secrets) {
         code = undefined;
       }
       const named = typeof code === "string" && /^[a-z_]+$/.test(code) ? ` ${code}` : "";
-      client.io.stderr.write(`The server refused it: ${response.status}${named}. Its answer is not shown, since it could quote the secret sent.\n`);
-      return response.status === 401 || response.status === 403 ? 4 : 1;
+      const what = response.status === 501 ? "The server does not offer it here" : "The server refused it";
+      client.io.stderr.write(`${what}: ${response.status}${named}. Its answer is not shown, since it could quote the secret sent.\n`);
+      return refusalExit(response.status);
     },
   };
 }
@@ -204,29 +210,4 @@ export const LOGOUT = {
   },
 };
 
-export const TOOL_KEY_SET = {
-  command: ["tool-keys", "set"],
-  pathParams: ["key_id", "field"],
-  summary: "Save one field of a tool key, its value read from stdin or an environment variable",
-  route: "PUT /settings/tool-keys/{key_id}",
-  help: [
-    ["--from-env VAR", "the value is the environment variable VAR's, not stdin's"],
-    ["(stdin)", "the value: printf %s \"$VALUE\" | agentrun tool-keys set KEY_ID FIELD"],
-  ],
-  options: { "from-env": { type: "string" } },
-  async run({ values, args: [keyId, field], env, io, cli }) {
-    const from = values["from-env"];
-    if (from !== undefined && !env[from]) throw cli.fail(2, `--from-env ${from}: the environment has no ${from}.`);
-    const value = from !== undefined ? env[from] : await readSecret(io, cli.fail, "The value", `pipe it in, or name the variable that holds it with --from-env VAR`);
-    if (!value) throw cli.fail(2, "stdin holds no value.");
-    // KEY_ID goes whole into one path segment: one fetch would read as no segment or a step up is none.
-    if (["", ".", ".."].includes(keyId)) throw cli.fail(2, "agentrun tool-keys set: KEY_ID may not be empty, . or ..");
-    const path = `/settings/tool-keys/${encodeURIComponent(keyId)}`;
-    const target = cli.targetOf(values, env);
-    // Where it lands, the base URL's own path counted: the tool key route, or nothing is sent.
-    if (cli.secretAt("PUT", `${target.base}${path}`)?.operationId !== "saveToolKey") throw cli.fail(2, `agentrun tool-keys set: PUT ${path} under ${target.base} is not the tool key route; nothing was sent.`);
-    return cli.send(secretClient(cli.clientOf, target, io, [value]), { method: "PUT", path, headers: {}, body: JSON.stringify({ values: { [field]: value } }), type: "application/json" });
-  },
-};
-
-export const SECRETS = [LOGIN, LOGOUT, TOOL_KEY_SET];
+export const SECRETS = [LOGIN, LOGOUT];

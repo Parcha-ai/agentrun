@@ -1,6 +1,6 @@
 // pi through the adapter under the host's check: a person's steer that comes while the model is answering lets that
 // answer finish, then reaches the model in the next request, and that steered request is admitted through the host's
-// check (beforeRequest) like any other: asked twice, admitted twice, the first answer stored before the steer's.
+// check (the run's one cap) like any other: asked twice, admitted twice, the first answer stored before the steer's.
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -37,12 +37,10 @@ test("pi through the adapter: a steer mid-answer lets the answer finish, and the
     return origin(url, init);
   };
   const asked = [];
-  const beforeRequest = async (request) => {
-    asked.push(request.turn);
-    return undefined;
-  };
+  // The run's one cap, uncapped, each request it judged recorded by its turn.
+  const runCap = { capUsd: () => undefined, modelOf: () => undefined, judged: (request) => void asked.push(request.turn) };
   const spec = piAdapterSpec({ script: [], tools: {}, hooks: quiet }, { fetch });
-  const createLoop = createAdapterLoop(async (claim, run) => ({ ...(await spec(claim, run)), beforeRequest }));
+  const createLoop = createAdapterLoop(async (claim, run) => ({ ...(await spec(claim, run)), runCap }));
   const runner = startRunner({ store: opened.runners[0], createLoop, name: "runner-a", ...TIMING });
   t.after(() => runner.close());
   await midAnswer;

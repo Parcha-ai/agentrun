@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { AgentEditor } from "./AgentEditor";
 import { type Agent, createBody, editBody, toolOffers } from "@/lib/agentForm";
 import { toolChoices, toolGates } from "@/lib/toolSettings";
+import { optionsOf, picker } from "@/test/picker";
 
 // An agent's approvals (definition.approvals): "ask", the default, parks a call its tool gate says ask for the owner's
 // answer; "never" runs it unattended, every tool it has granted (deny and pins still apply). The editor's Tools step sets
@@ -13,7 +14,7 @@ let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 
 const NEVER_LINE = "Never ask: every tool this agent has runs without waiting for you. A tool set to deny, and a template's pins, still hold.";
-const caps = { harnesses: [{ id: "pi", available: true }], thinking: ["low"], tools: toolOffers([{ name: "read", available: true }, { name: "bash", available: true }]) };
+const caps = { harnesses: [{ id: "pi", available: true }], thinking: ["low"], tools: toolOffers([{ name: "read", available: true, harnesses: ["pi", "claude-agent", "codex", "opencode"] }, { name: "bash", available: true, harnesses: ["pi"] }]) };
 const gates = toolGates([{ name: "bash", permission: "ask", default_permission: "ask", permissions: ["allow", "ask", "deny"] }]);
 const agentWith = (approvals?: "ask" | "never"): Agent => ({ agent_id: "a1", kind: "agentic", revision: "rv1", revisions: 1, archived_at: null,
   definition: { version: 1, name: "Mine", instructions: "Do it.", harness: "pi", skills: [], tools: ["read", "bash"], ...(approvals ? { approvals } : {}) } });
@@ -87,7 +88,7 @@ describe("AgentEditor, the agent's approvals while a save is under way and with 
     for (const r of radios()) expect(r.disabled).toBe(false);
   });
 
-  it("with ask off on this server, a tool set to ask under Never ask says it runs, not that it is refused", () => {
+  it("with ask off on this server, a tool set to ask under Never ask says it runs, not that it is refused", async () => {
     const off = toolGates([{ name: "bash", permission: "ask", default_permission: "ask", permissions: ["allow", "ask", "deny"], ask_needs: "password" }]);
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);
@@ -95,13 +96,13 @@ describe("AgentEditor, the agent's approvals while a save is under way and with 
     const row = host.querySelector('tr[data-tool="bash"]')!;
     expect(row.textContent).toContain("Runs without asking: Never ask is on.");
     expect(row.textContent).not.toContain("Each call is refused");
-    expect(row.querySelector<HTMLOptionElement>('select[aria-label="bash permission"] option[value="ask"]')!.disabled).toBe(false);
+    expect((await optionsOf(picker(row, "bash permission")!)).find((o) => o.value === "ask")?.disabled).toBe(false);
   });
 });
 
 describe("AgentEditor, the Tool settings words under Never ask", () => {
   const SEARCH = { name: "web_search", providers: ["auto", "native", "exa-keyless", "parallel", "off"], provider: "auto", default_provider: "auto", available: true, resolves: { pi: "exa-keyless" } };
-  const searchCaps = { ...caps, tools: toolOffers([{ name: "read", available: true }, { name: "web_search", available: true }]) };
+  const searchCaps = { ...caps, tools: toolOffers([{ name: "read", available: true, harnesses: ["pi", "claude-agent", "codex", "opencode"] }, { name: "web_search", available: true, harnesses: ["pi"] }]) };
   const GATE = { permission: "ask" as const, permission_from: "default" as const, default_permission: "ask" as const, permissions: ["allow" as const, "ask" as const, "deny" as const] };
   const searcher = (approvals: "ask" | "never"): Agent => ({ agent_id: "s1", kind: "agentic", revision: "rv1", revisions: 1, archived_at: null,
     definition: { version: 1, name: "Searcher", instructions: "Look.", harness: "pi", skills: [], tools: ["read", "web_search"], approvals },

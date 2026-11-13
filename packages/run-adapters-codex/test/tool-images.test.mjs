@@ -53,3 +53,27 @@ test("on the pinned binary, a host tool's image reaches the model as an image it
   assert.equal(sent.output[0].text, '/tmp/view/frame.png: image/png, 70 bytes');
   assert.equal(sent.output[1].image_url, `data:image/png;base64,${PNG}`);
 });
+
+test("in code mode, a nested host tool's image is not sent: Codex hands an exec script a tool's image as a data: URL in its text, so the script gets the text and a line that it was not sent, never the base64", { skip, timeout: 180_000 }, async () => {
+  const dir = mkdtempSync(join(ROOT, 'code-'));
+  const seen = [];
+  const exec = (callId, js) => ({ type: 'custom_tool_call', name: 'exec', input: js, call_id: callId });
+  const answers = [
+    [exec('call_look', `const r = await tools.read({ path: '/tmp/view/frame.png' }); text(String(r));`)],
+    [exec('call_submit', `text(JSON.stringify(await tools.submit({ value: { answer: 'ok' } })));`)],
+  ];
+  const fetch = async (_url, init) => {
+    seen.push(JSON.parse(init.body));
+    const n = seen.length;
+    return new Response(sse(n, answers[n - 1] ?? [say(n)]), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  };
+  const codex = codexAdapter({ model: 'gpt-6-sol', provider: { origin: 'https://provider.invalid', credential: () => 'provider-secret' }, sessionsDir: join(dir, 'sessions'), fetch });
+  const read = { name: 'read', description: 'Read a file.', inputSchema: { type: 'object', properties: { path: { type: 'string' } } }, replay: 'safe', call: async () => ({ text: '/tmp/view/frame.png: image/png, 70 bytes', images: [{ mimeType: 'image/png', data: PNG }] }) };
+  const runNode = kernel.createHarnessRunner(codex, { store: memorySessionStore(), tools: [read], timeoutMs: 120_000 });
+  const output = await runNode({ kind: 'agent', label: 'code-images', system: ['Answer.'], user: 'Look at the frame, then answer ok.', schema: { type: 'object', required: ['answer'], properties: { answer: { type: 'string' } } }, tools: ['read'] });
+  assert.deepEqual(output, { answer: 'ok' });
+  assert.equal(seen.some((body) => JSON.stringify(body).includes(PNG)), false, 'no request to the model carries the image as text');
+  const told = seen.flatMap((body) => body.input ?? []).filter((item) => item.call_id === 'call_look' && /_output$/.test(item.type ?? '')).map((item) => JSON.stringify(item.output));
+  assert.ok(told.some((t) => t.includes('/tmp/view/frame.png: image/png, 70 bytes')), `the script got the tool's text: ${told.join(' | ').slice(0, 300)}`);
+  assert.ok(told.some((t) => /1 image .*not sent/.test(t)), `and a line that its image was not sent: ${told.join(' | ').slice(0, 300)}`);
+});

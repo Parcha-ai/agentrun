@@ -160,8 +160,10 @@ test("demo: the CLI creates an agent, starts a capped run, reads it, lists runs 
 
   const raw = cli(["api", "GET", "/health", ...data]);
   assert.deepEqual([raw.code, raw.json().status], [0, "ok"]);
+  // The webhook holds its signing secret, which only the owner's signed-in session writes or removes: the API token is
+  // refused, exit 4, in the server's words.
   const deleted = cli(["webhook", "delete", ...data]);
-  assert.deepEqual([deleted.code, deleted.out], [0, ""], deleted.err);
+  assert.deepEqual([deleted.code, deleted.out, JSON.parse(deleted.err).error.code], [4, "", "forbidden"], deleted.err);
 
   // 1: the server refused, its error JSON on stderr.
   const missing = cli(["runs", "get", "no-such-run", ...data]);
@@ -170,10 +172,11 @@ test("demo: the CLI creates an agent, starts a capped run, reads it, lists runs 
   for (const args of [["runs", "get"], ["runs", "start", "demo", "--max-cost-usd", "two"], ["runs", "bogus"], ["agents", "list", "--no-such-flag"], ["runs", "start", "demo", "--body", "{not json"]]) {
     assert.equal(cli([...args, ...data]).code, 2, args.join(" "));
   }
-  // A body that carries a secret is never taken from the command line.
+  // A body that carries a secret is never taken from the command line. Saving a key is the owner's, in the console: the
+  // CLI has no verb for it, and a raw call refuses an inline body.
   const inline = cli(["tool-keys", "save", "exa", "--body", '{"values":{"EXA_API_KEY":"not-a-secret"}}', ...data]);
   assert.equal(inline.code, 2);
-  assert.match(inline.err, /--body -/);
+  assert.match(inline.err, /has no verb save/);
   const rawInline = cli(["api", "PUT", "/settings/tool-keys/exa", "--body", '{"values":{"EXA_API_KEY":"not-a-secret"}}', ...data]);
   assert.equal(rawInline.code, 2);
   for (const run of [inline, rawInline]) assert.ok(!`${run.out}${run.err}`.includes("not-a-secret"), "the refused value is in no output");
@@ -633,4 +636,31 @@ test("server mcp from flags alone is a JSON-RPC request: the body's required con
   const answer = JSON.parse(tools.out);
   assert.equal(answer.id, 1);
   assert.ok(answer.result.tools.some((tool) => tool.name === "whoami"), tools.out);
+});
+
+test("no CLI command, the table's or a hand-written one, reaches an operation that writes a secret: the document's marks (markedOperations) name each; the API keeps the route, the TypeScript client its method, and help says where secrets are set", { timeout: 120_000 }, async () => {
+  const { servedDocument } = await import(GENERATOR);
+  const { markedOperations } = await import(join(ROOT, "packages", "serve", "dist", "secret-writes.js"));
+  const doc = await servedDocument();
+  const marked = markedOperations(doc);
+  assert.ok(marked.includes("saveToolKey") && marked.includes("deleteToolKey"), `a tool key's save and removal are secret writes: ${JSON.stringify(marked)}`);
+  const routeOf = new Map(Object.entries(doc.paths).flatMap(([path, item]) => Object.entries(item).filter(([, op]) => op?.operationId).map(([method, op]) => [op.operationId, `${method.toUpperCase()} ${path}`])));
+  const { COMMANDS, SECRET_ROUTES } = await import(TABLE);
+  assert.deepEqual(COMMANDS.filter((entry) => marked.includes(entry.operationId)).map((entry) => entry.command.join(" ")), [], "no table command");
+  const hand = [
+    ...(await import(join(ROOT, "packages", "agentrun", "lib", "login.mjs"))).SECRETS,
+    (await import(join(ROOT, "packages", "agentrun", "lib", "follow.mjs"))).WAIT,
+    (await import(join(ROOT, "packages", "agentrun", "lib", "skill.mjs"))).SKILL_INSTALL,
+    ...Object.values(await import(join(ROOT, "packages", "agentrun", "lib", "template.mjs"))).filter((entry) => entry?.command),
+  ];
+  const routes = marked.map((id) => routeOf.get(id));
+  assert.deepEqual(hand.filter((entry) => routes.some((route) => String(entry.route ?? "").startsWith(route))).map((entry) => entry.command.join(" ")), [], "no hand-written command");
+  // The raw `api` call still guards every secret route's body, a command's or not.
+  assert.ok(SECRET_ROUTES.some((entry) => entry.operationId === "saveToolKey"), "a raw call to the tool key route is still guarded");
+  // The API and the clients keep them: the routes answer the token in words (secret-writes.ts), and the client has the methods.
+  const client = readFileSync(join(ROOT, "packages", "client", "src", "operations.generated.ts"), "utf8");
+  for (const id of ["saveToolKey", "deleteToolKey"]) assert.ok(client.includes(`call("${id}"`), `the TypeScript client keeps ${id}`);
+  const help = spawnSync(process.execPath, [BIN, "help"], { encoding: "utf8" });
+  assert.match(help.stdout, /Keys and other secrets are set in the console, signed in/);
+  assert.doesNotMatch(help.stdout, /tool-keys[^\n]*\b(?:set|save|delete)\b/, "help lists no command that writes a key");
 });

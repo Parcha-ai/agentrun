@@ -8,6 +8,7 @@ import { ClientError, type FieldIssue } from "@/lib/client";
 import { ANALYTICS, statsWith } from "./AgentAnalytics.sample";
 import type { Places } from "@/lib/place";
 import type { Run, TimelinePage } from "@/lib/v2";
+import { optionsOf, pick, valueOf } from "@/test/picker";
 
 // An agent's own page: its current revision's settings in the header, its runs, and a workflow agent's graph, read-only.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -34,15 +35,15 @@ async function splitRun(reread: (done: Run) => Promise<Run> = async (done) => do
 
 const efforts = recorded<{ features: { efforts: string[] } }>("capabilities").body.features.efforts;
 /** A start's answer: the run (202), or a recorded refusal thrown as the client throws it. */
-type Answer = { run: Run } | { refused: string };
+type Answer = { run: Run } | { refused: string } | { thrown: { status: number; code: string; message: string; fields?: FieldIssue[] } };
 /** Each recorded run's timeline by its run's id: an agent's latest run with one is followed through it. */
 const recordedPages = new Map(runNames.map((n) => recorded<TimelinePage>(`${n}.timeline`).body).map((p) => [p.run_id, p]));
 /** A final page with no rows, at the run's own status: what a run without a recorded timeline is followed through. */
 const endedPage = (r: Run): TimelinePage => ({ cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, run_id: r.run_id, status: r.status, state: r.state, rows: [], drop: [], reset: true, unchanged: false, final: true, has_more: false, next_after: 1 });
-type Opts = { runs?: Run[]; next?: string | null; more?: () => Promise<{ runs: Run[]; next_cursor: string | null }>; tab?: string; answer?: Answer; stats?: () => Promise<unknown>; models?: { default: string; source: string; route_prefix?: string | null }; harnesses?: { id: string; default_model?: string | null; available?: boolean; reason?: string }[]; hold?: Promise<unknown>; strict?: boolean; timeline?: (id: string, o: { after?: number }) => Promise<TimelinePage>; reread?: (id: string) => Promise<Run>; agentError?: unknown; places?: Places | null };
+type Opts = { runs?: Run[]; next?: string | null; more?: () => Promise<{ runs: Run[]; next_cursor: string | null }>; tab?: string; answer?: Answer; stats?: () => Promise<unknown>; models?: { route_prefix: string | null }; harnesses?: { id: string; default_model?: string | null; available?: boolean; reason?: string }[]; hold?: Promise<unknown>; strict?: boolean; timeline?: (id: string, o: { after?: number }) => Promise<TimelinePage>; reread?: (id: string) => Promise<Run>; agentError?: unknown; places?: Places | null };
 /** By default the server's stats carry the sample analytics. `followed` lists the latest run's reads (its
  *  timeline's pages and its record), apart from the page's own reads in `asked`. */
-async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = null, more, tab, answer = { run: recorded<Run>("start.run").body }, stats = async () => statsWith(ANALYTICS), models, harnesses, hold, strict = false, timeline, reread, agentError, places }: Opts = {}) {
+async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = null, more, tab, answer = { run: recorded<Run>("start.run").body }, stats = async () => statsWith(ANALYTICS), models, harnesses = editorCaps.harnesses, hold, strict = false, timeline, reread, agentError, places }: Opts = {}) {
   const went: string[] = [];
   const asked: string[] = [];
   const followed: string[] = [];
@@ -54,6 +55,7 @@ async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = nul
       starts.push({ id, body, key });
       await hold;
       if ("run" in answer) return { run: answer.run, status: 202 };
+      if ("thrown" in answer) throw Object.assign(new ClientError(answer.thrown.status, answer.thrown.code, answer.thrown.message), answer.thrown.fields ? { fields: answer.thrown.fields } : {});
       const r = recorded<{ error: { code: string; message: string; fields?: FieldIssue[] } }>(answer.refused);
       throw Object.assign(new ClientError(r.status, r.body.error.code, r.body.error.message), r.body.error.fields ? { fields: r.body.error.fields } : {});
     },
@@ -70,7 +72,7 @@ async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = nul
   };
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
-  const props = { v2: v2 as never, agentId: agent.agent_id, defaultModel: models?.default ?? editorCaps.defaultModel, modelSource: models?.source, routePrefix: models?.route_prefix, harnesses, efforts, go: (h: string) => went.push(h), tab, places };
+  const props = { v2: v2 as never, agentId: agent.agent_id, routePrefix: models?.route_prefix, harnesses, efforts, go: (h: string) => went.push(h), tab, places };
   act(() => root!.render(strict ? createElement(StrictMode, null, createElement(AgentPage, props)) : createElement(AgentPage, props)));
   const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
   await settle();
@@ -80,13 +82,14 @@ async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = nul
   const fact = (name: string) => [...host.querySelectorAll("dt")].find((t) => t.textContent === name)?.nextElementSibling?.textContent;
   const bar = () => host.querySelector('section[aria-label="Start a run"]');
   const input = () => bar()!.querySelector("textarea") as HTMLTextAreaElement;
-  const set = async (el: HTMLTextAreaElement | HTMLSelectElement, value: string) => {
+  const set = async (el: HTMLTextAreaElement | HTMLButtonElement, value: string) => {
+    if (el instanceof HTMLButtonElement) return pick(el, value);
     await act(async () => {
       Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), "value")!.set!.call(el, value);
-      el.dispatchEvent(new Event(el instanceof HTMLSelectElement ? "change" : "input", { bubbles: true }));
+      el.dispatchEvent(new Event("input", { bubbles: true }));
     });
   };
-  const effort = () => bar()!.querySelector('select[aria-label="Effort"]') as HTMLSelectElement;
+  const effort = () => bar()!.querySelector('button[aria-haspopup=listbox][aria-label="Effort"]') as HTMLButtonElement;
   return { host, went, asked, followed, statsAsked, starts, click, button, tabs, fact, bar, input, set, effort };
 }
 
@@ -105,8 +108,8 @@ describe("AgentPage", () => {
     expect(page.host.querySelector("h1")?.textContent).toBe("Invoice checker");
     expect(page.fact("Harness")).toBe("pi");
     expect(page.fact("Thinking")).toBe("high");
-    // No model of its own: the server's default, named as the default.
-    expect(page.fact("Model")).toBe(`${editorCaps.defaultModel} (default)`);
+    // No model of its own: the recorded server's default for pi, named as the default.
+    expect(page.fact("Model")).toBe("faux/faux-1 (default)");
     expect(page.fact("Revision")).toBe("rev 3 of 3");
     expect(page.host.textContent).not.toContain("Archived");
     await page.click(/^Edit$/);
@@ -341,7 +344,7 @@ describe("AgentPage", () => {
 
   it("runs the agent from its page with the picked effort, never an output, and opens the run it started", async () => {
     const page = await open(agentFixture("invoice-checker"));
-    expect([...page.effort().options].map((o) => o.textContent)).toEqual(["default", ...efforts]);
+    expect((await optionsOf(page.effort())).map((o) => o.text)).toEqual(["default", ...efforts]);
     await page.set(page.input(), "Check invoice INV-1050.");
     await page.set(page.effort(), "high");
     await page.click(/^Run$/);
@@ -352,7 +355,7 @@ describe("AgentPage", () => {
 
   it("sends no effort when the effort is default, so the server's own order applies", async () => {
     const page = await open(agentFixture("invoice-checker"));
-    expect(page.effort().value).toBe("");
+    expect(valueOf(page.effort())).toBe("");
     await page.set(page.input(), "Check invoice INV-1050.");
     await page.click(/^Run$/);
     expect(page.starts.map((s) => s.body)).toEqual([{ input: { content: "Check invoice INV-1050." } }]);
@@ -394,6 +397,19 @@ describe("AgentPage", () => {
     await page.set(page.input(), '{ "subject": "No body" }');
     await page.click(/^Run$/);
     expect(page.bar()!.querySelector('[role="alert"]')?.textContent).toContain("the workflow does not take this input");
+    expect(page.went).toEqual([]);
+  });
+
+  it("a refused input (#1926) shows the server's schema path and reason, and each further field under it", async () => {
+    const first = "the workflow does not take this input: #/properties/b: must not have fewer than 1 characters";
+    const second = "the workflow does not take this input: #/properties/c: must be integer";
+    const page = await open(agentFixture("support-triage"), { answer: { thrown: { status: 422, code: "input_invalid", message: first, fields: [{ field: "input at #/properties/b", reason: "invalid", message: first }, { field: "input at #/properties/c", reason: "invalid", message: second }] } } });
+    await page.set(page.input(), '{ "a": "hello", "b": "", "c": "x" }');
+    await page.click(/^Run$/);
+    const alert = page.bar()!.querySelector('[role="alert"]') as HTMLElement;
+    expect(alert.textContent).toContain(`The run did not start: ${first}`);
+    expect([...alert.querySelectorAll("li")].map((li) => li.textContent)).toEqual([`input at #/properties/c: ${second}`]);
+    expect(alert.textContent).not.toContain("INPUT_INVALID");
     expect(page.went).toEqual([]);
   });
 
@@ -476,7 +492,8 @@ describe("AgentPage", () => {
 });
 
 describe("AgentPage, the model on a gateway server", () => {
-  const gateway = { default: "agent-model/gpt-6-luna", source: "gateway", route_prefix: "agent-model" };
+  const gateway = { route_prefix: "agent-model" };
+  const named = [{ id: "pi", default_model: "agent-model/gpt-6-luna" }, { id: "claude-agent", default_model: null }, { id: "codex", default_model: "agent-model/gpt-6-luna" }];
   const on = (harness: string, model?: string): Agent => {
     const a = agentFixture("invoice-checker");
     const { model: _m, ...definition } = a.definition;
@@ -484,7 +501,7 @@ describe("AgentPage, the model on a gateway server", () => {
   };
   const modelOf = (page: Awaited<ReturnType<typeof open>>) => [...page.host.querySelectorAll("dt")].find((t) => t.textContent === "Model")!.nextElementSibling as HTMLElement;
   it("shows the default without the gateway's routing prefix, the full id in its title", async () => {
-    const page = await open(on("pi"), { models: gateway });
+    const page = await open(on("pi"), { models: gateway, harnesses: named });
     expect(modelOf(page).textContent).toBe("gpt-6-luna (default)");
     expect(modelOf(page).title).toBe("agent-model/gpt-6-luna");
   });
@@ -496,9 +513,16 @@ describe("AgentPage, the model on a gateway server", () => {
     expect(modelOf(claude).textContent).toBe("none yet: add a model key in Settings → Model keys");
   });
   it("a claude-agent agent naming no model has no default to show", async () => {
-    const page = await open(on("claude-agent"), { models: gateway });
+    const page = await open(on("claude-agent"), { models: gateway, harnesses: named });
     expect(modelOf(page).textContent).toBe("none yet: add a model key in Settings → Model keys");
     expect(page.host.textContent).not.toContain("gpt-6-luna");
+  });
+  it("an agent's own model: the gateway's routing prefix off, the full id in its title; any other id whole", async () => {
+    const own = await open(on("pi", "agent-model/gpt-6-mini"), { models: gateway, harnesses: named });
+    expect([modelOf(own).textContent, modelOf(own).title]).toEqual(["gpt-6-mini", "agent-model/gpt-6-mini"]);
+    act(() => root?.unmount());
+    const provider = await open(on("pi", "openai/gpt-5"), { models: gateway, harnesses: named });
+    expect([modelOf(provider).textContent, modelOf(provider).title]).toEqual(["openai/gpt-5", ""]);
   });
 });
 

@@ -6,7 +6,10 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { test as nodeTest } from "node:test";
+import { sqliteAdapterTests } from "./store-target.mjs";
+
+const test = sqliteAdapterTests(nodeTest, "the SQLite connection's worker and queue");
 import { Connection } from "../dist/store/sqlite/connection.js";
 
 async function connected(t) {

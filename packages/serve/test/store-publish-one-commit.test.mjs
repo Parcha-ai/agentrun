@@ -29,7 +29,7 @@ function crashingAtRunUpdate(connection) {
     step: async (statement) => (check(statement.sql), tx.step(statement)),
   });
   return {
-    connection: { get: (...args) => connection.get(...args), all: (...args) => connection.all(...args), transaction: (work, options) => connection.transaction((tx) => work(wrap(tx)), options) },
+    connection: { dialect: connection.dialect, get: (...args) => connection.get(...args), all: (...args) => connection.all(...args), transaction: (work, options) => connection.transaction((tx) => work(wrap(tx)), options) },
     armed,
   };
 }

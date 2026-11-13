@@ -3,11 +3,11 @@
 // the OpenAPI document read every list of sources from the registry (trigger-adapters.ts), so a new source is one
 // adapter file and one line there.
 import type { InputIssue } from "./errors.js";
-import type { SettingsSpec } from "./sealed-settings.js";
+import type { SettingsSpec } from "./sealed-settings-store.js";
 import { unknownFields } from "./validate.js";
 
 type Json = Record<string, unknown>;
-/** A source as triggers.json keeps it: its kind, the adapter's id, and the adapter's own fields. */
+/** A source as the store keeps it: its kind, the adapter's id, and the adapter's own fields. */
 export type Source = { kind: string } & Json;
 
 /** The times of a source that fires on a clock, made once for one reading of it (a cron line is parsed once). */
@@ -31,7 +31,7 @@ export type TriggerAdapter = {
   /** Whether its words are its owner's (a run's message origin `owner`): true only when the owner wrote them as they set
    *  it up; never for words that come from outside. */
   owner: boolean;
-  /** What it keeps sealed (sealed-settings.ts), for the server or for each trigger: a field it mints (a signing secret)
+  /** What it keeps sealed (sealed-settings-store.ts), for the server or for each trigger: a field it mints (a signing secret)
    *  is made at a trigger's create and at a rotation, shown once, and goes with the trigger. */
   settings?: SettingsSpec;
   /** Its shapes as a create's error names them: `{kind: "..."}` with its fields. */
@@ -48,7 +48,7 @@ export type TriggerAdapter = {
   /** A source given at a create or a PATCH (`value.kind` is its id), checked: each issue added through `bad`, with its
    *  field under `source`. Undefined when it does not read. */
   parse(value: Json, now: number, bad: (field: string, reason: string, message: string) => void, issues: InputIssue[]): Source | undefined;
-  /** Whether a source triggers.json keeps is whole, of its type. */
+  /** Whether a source the store keeps is whole, of its type. */
   wellFormed(source: Json): boolean;
   /** The zone its times are read in, for its runs' provenance line. Default UTC. */
   zone?(source: Source): string;

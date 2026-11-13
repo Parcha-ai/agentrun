@@ -8,6 +8,12 @@
 // output while the exec runs (archil-exec.ts); the workspace's own calls are rooted at the root, so they never meet it,
 // each exec's files are deleted on every path, and sweep() clears what a killed exec left.
 //
+// An exec asked to run with no network (ExecOptions.network "deny", a bash policy's shell: run-tools.ts) is sent with
+// its egress denied (DENY_EGRESS): the container reaches the two mounted folders and nothing else. Archil refuses a
+// network policy on a plan without one (its Free plan). Then the command runs with the network open, as the owner's
+// plan allows, and its stderr starts with one line saying so and why, Archil's words included. The workspace remembers
+// the refusal, so its later execs are sent without the policy and say the same.
+//
 // Durability. Archil commits a put, an append or a delete before it answers 200, so each call returns once the API
 // has answered. A write is one put. The API has no rename, so there is no temporary key; that a reader sees the old
 // file or the new one, never a mix, rests on Archil's S3 gateway publishing an object when its put completes (a
@@ -32,18 +38,22 @@
 // its execs one at a time and makes its writes wait for them; a 409 from another client's hold is tried again for up
 // to queueMs. Reads do not wait.
 //
-// Not yet: mountSpec and attach (an Archil folder in a computer is mounted by the computer's helper, module D6, with a
-// disk mount token this workspace has no way to make), and background programs, which need a computer (`process`
-// refuses every call, cause no-computer, as with any workspace that has none).
+// In a computer. mountSpec() is the Archil mount a computer makes of the root: the disk's id, its region and the root as
+// the folder (runKey), with the disk token from the function it was made with (the claim's, archil-claim.ts). attach()
+// goes through the shared attach path (attach.ts checkReadBack, then attachedWorkspace) with the check the claim builds:
+// the computer module's read-back of that mount under the claim's epoch. The read-back holds no token, so attach asks
+// for none. Once attached, the computer syncs the mount after each changing call (the attach contract), so attach adds no
+// sync of its own. Without a region and a token function, both are refused in words. Background programs need a
+// computer: here `process` refuses every call, cause no-computer, as with any workspace that has none.
 import type { MountSpec } from "@parcha/agentrun-computer";
-import { type ArchilDisk, type ArchilImage, type ArchilListPage, pinnedImage } from "./archil-disk.js";
-import { archilExec, COMMAND_MAX_MS, DEFAULT_QUEUE_MS, MAX_EXEC_MS, spillKeys, spillName } from "./archil-exec.js";
-import { type AttachableComputer, type MountCheck, noProcesses } from "./attach.js";
+import { type ArchilDisk, type ArchilImage, type ArchilListPage, DENY_EGRESS, pinnedImage } from "./archil-disk.js";
+import { ArchilEgressRefused, archilExec, COMMAND_MAX_MS, DEFAULT_QUEUE_MS, type ExecJob, MAX_EXEC_MS, spillKeys, spillName } from "./archil-exec.js";
+import { type AttachableComputer, attachedWorkspace, checkReadBack, type MountCheck, noProcesses } from "./attach.js";
 import { globRegex } from "./glob.js";
 import { relativeSegments } from "./paths.js";
 import {
-  EXEC_OUTPUT_MAX, type Entry, type ExecOptions, type ExecResult, GREP_FILE_MAX, GREP_LINE_MAX, GREP_MAX, GREP_TIME_MS,
-  type GrepMatch, type GrepOptions, type GrepResult, READ_MAX, type Workspace, WorkspaceError,
+  abortError, EXEC_OUTPUT_MAX, type Entry, type ExecOptions, type ExecResult, GREP_FILE_MAX, GREP_LINE_MAX, GREP_MAX, GREP_TIME_MS,
+  type GrepMatch, type GrepOptions, type GrepResult, READ_MAX, type Stat, type Workspace, WorkspaceError,
 } from "./workspace.js";
 
 /** The most bytes one append call takes. */
@@ -56,16 +66,20 @@ export type ArchilWorkspaceOptions = {
   readonly queueMs?: number;
   /** The image every exec runs in, the same for every workspace serve makes (a run's or a learning folder's), pinned by
    *  digest (an image given without one is refused): a public image `<name>@sha256:…`, or one built through Archil's
-   *  images API with its digest. With none, Archil's default exec image, whose git (2.34.1, measured) is older than
-   *  learning's floor. */
+   *  images API with its digest. With none, Archil's default exec image, whose git (2.34.1, measured) is older than a
+   *  bash policy's floor; serve's claim always names one (archil-settings.ts DEFAULT_ARCHIL_EXEC_IMAGE). */
   readonly image?: ArchilImage;
   /** Told when an exec's cleanup leaves spill files behind (a failed delete, tried twice), with the keys and why; the
    *  exec's own result stands. Default: a process warning. */
   readonly onCleanupFailed?: (message: string) => void;
+  /** The disk's region (the server's Archil settings): a computer's mount names it. */
+  readonly region?: string;
+  /** The disk token a computer's mount takes, asked for when a mount is made (the claim's, archil-claim.ts). */
+  readonly mountToken?: () => string | Promise<string>;
 };
 
-/** Why an Archil workspace is not yet put in a computer. */
-const NOT_IN_A_COMPUTER = "an Archil folder in a computer is mounted by the computer's helper (module D6), not yet: this workspace has no disk mount token to give it";
+/** Why an Archil workspace made without what a mount needs is not put in a computer. */
+const NOT_IN_A_COMPUTER = "an Archil Workspace goes in a computer only when it is made with its disk's region and its disk token (the run's Archil claim): this one was not";
 
 const show = (path: string): string => JSON.stringify(path === "" ? "." : path);
 const statusOf = (error: unknown): number | undefined => {
@@ -117,8 +131,12 @@ class ArchilWorkspace implements Workspace {
   readonly #queueMs: number;
   readonly #image: ArchilImage | undefined;
   readonly #onCleanupFailed: (message: string) => void;
+  readonly #region: string | undefined;
+  readonly #mountToken: (() => string | Promise<string>) | undefined;
   /** The last exec asked for, settled either way: the next exec, and every write, starts after it. */
   #execs: Promise<unknown> = Promise.resolve();
+  /** Why Archil refused an exec's network policy, once it has: an exec asking for no network then runs with it open. */
+  #egressOpen: string | undefined;
   #rooted = false;
 
   constructor(disk: ArchilDisk, root: string, options: ArchilWorkspaceOptions = {}) {
@@ -136,6 +154,8 @@ class ArchilWorkspace implements Workspace {
     this.#queueMs = options.queueMs ?? DEFAULT_QUEUE_MS;
     this.#image = image;
     this.#onCleanupFailed = options.onCleanupFailed ?? ((message) => process.emitWarning(message, "ArchilWorkspaceCleanup"));
+    this.#region = options.region;
+    this.#mountToken = options.mountToken;
   }
 
   /** The key of relative path `rel` ("" for the root). */
@@ -310,6 +330,26 @@ class ArchilWorkspace implements Workspace {
     return 0;
   }
 
+  /** What is at `path`, from its folder's listing: a file (its size, and its time when the listing gives one, else 0),
+   *  a directory, or nothing (a file in the place of a folder on the way included). The file API cannot tell a link
+   *  from a file (the named limit): a link an exec made is a "file" here, never "link". */
+  async stat(path: string): Promise<Stat | undefined> {
+    const rel = relativeSegments(path).join("/");
+    if (rel === "") return { kind: "dir", size: 0, mtimeMs: 0 };
+    try {
+      if ((await this.#fileOnTheWay(rel)) !== undefined) return undefined;
+      const key = this.#key(rel);
+      for await (const page of this.#pages(key, false)) {
+        if (page.commonPrefixes.includes(`${key}/`) || page.objects.some((o) => o.key === `${key}/`)) return { kind: "dir", size: 0, mtimeMs: 0 };
+        const found = page.objects.find((o) => o.key === key);
+        if (found !== undefined) return { kind: "file", size: found.size, mtimeMs: found.mtimeMs ?? 0 };
+      }
+      return undefined;
+    } catch (error) {
+      throw failed(error, rel, "stat");
+    }
+  }
+
   async list(dir: string): Promise<Entry[]> {
     const rel = relativeSegments(dir).join("/");
     const prefix = `${this.#key(rel)}/`;
@@ -318,13 +358,14 @@ class ArchilWorkspace implements Workspace {
       for await (const page of this.#pages(prefix, false)) {
         for (const common of page.commonPrefixes) {
           const name = common.slice(prefix.length).replace(/\/$/, "");
-          if (name !== "" && !name.includes("/")) entries.set(name, { name, kind: "dir", size: 0 });
+          // A folder of the file API has no time of its own: 0, as stat says.
+          if (name !== "" && !name.includes("/")) entries.set(name, { name, kind: "dir", size: 0, mtimeMs: 0 });
         }
-        for (const { key, size } of page.objects) {
+        for (const { key, size, mtimeMs } of page.objects) {
           if (!key.startsWith(prefix) || key === prefix) continue;
           const rest = key.slice(prefix.length);
-          if (rest.endsWith("/")) entries.set(rest.slice(0, -1), { name: rest.slice(0, -1), kind: "dir", size: 0 });
-          else if (!rest.includes("/")) entries.set(rest, { name: rest, kind: "file", size });
+          if (rest.endsWith("/")) entries.set(rest.slice(0, -1), { name: rest.slice(0, -1), kind: "dir", size: 0, mtimeMs: mtimeMs ?? 0 });
+          else if (!rest.includes("/")) entries.set(rest, { name: rest, kind: "file", size, mtimeMs: mtimeMs ?? 0 });
         }
       }
     } catch (error) {
@@ -510,7 +551,12 @@ class ArchilWorkspace implements Workspace {
     const maxOutput = options.maxOutput ?? EXEC_OUTPUT_MAX;
     if (!Number.isSafeInteger(maxOutput) || maxOutput < 0) throw new WorkspaceError("REFUSED", "exec's maxOutput is a whole number, 0 or more");
     const cwd = relativeSegments(options.cwd ?? "");
+    const { signal } = options;
+    if (signal?.aborted) throw abortError(signal);
+    // onOutput gets all of the output (up to the port's own cap, EXEC_OUTPUT_MAX), the result its first maxOutput.
+    const readBack = options.onOutput ? Math.max(maxOutput, EXEC_OUTPUT_MAX) : maxOutput;
     const run = async (): Promise<ExecResult> => {
+      if (signal?.aborted) throw abortError(signal);
       if (!this.#rooted) await this.#makeRoot();
       // This exec's files in the spill folder, beside the workspace's folder: stdin, and the output read back.
       const name = spillName();
@@ -520,16 +566,33 @@ class ArchilWorkspace implements Workspace {
           const stdin = options.stdin;
           await this.#settle("", () => this.#disk.putObject(files.in, stdin)).catch((error: unknown) => { throw failed(error, "", "exec's stdin"); });
         }
-        const result = await archilExec(this.#disk, {
-          root: this.#root, spill: this.#spill, name, cwd, argv, env, timeoutMs, maxOutput, queueMs: this.#queueMs,
+        const job: ExecJob = {
+          root: this.#root, spill: this.#spill, name, cwd, argv, env, timeoutMs, maxOutput: readBack, queueMs: this.#queueMs,
           stdin: options.stdin !== undefined, ...(this.#image === undefined ? {} : { image: this.#image }),
-        });
-        // Archil answers once the command has ended: each stream once, whole (and capped). An error the caller's
-        // callback throws is not the call's.
-        for (const chunk of [{ stream: "stdout", data: result.stdout }, { stream: "stderr", data: Buffer.from(result.stderr, "utf8") }] as const) {
+        };
+        const deny = options.network === "deny";
+        let read: ExecResult | undefined;
+        if (deny && this.#egressOpen === undefined) {
+          try {
+            read = await archilExec(this.#disk, { ...job, network: DENY_EGRESS });
+          } catch (error) {
+            // Archil's plan takes no network policy: nothing ran, so the command runs again with the network open.
+            if (!(error instanceof ArchilEgressRefused)) throw error;
+            this.#egressOpen = error.message;
+            // The caller gave up while Archil answered: the command it no longer waits for is not started now.
+            if (signal?.aborted) throw abortError(signal);
+          }
+        }
+        read ??= await archilExec(this.#disk, job);
+        // Archil answers once the command has ended: each stream once, whole. An error the caller's callback throws is
+        // not the call's.
+        const warning = deny && this.#egressOpen !== undefined ? `agentrun: this command ran with the network open. ${this.#egressOpen}\n` : "";
+        const stderr = Buffer.from(`${warning}${read.stderr}`, "utf8");
+        for (const chunk of [{ stream: "stdout", data: read.stdout }, { stream: "stderr", data: stderr }] as const) {
           try { options.onOutput?.(chunk); } catch { /* the caller's callback */ }
         }
-        return result;
+        const cut = read.stdout.length > maxOutput || stderr.length > maxOutput;
+        return { ...read, stdout: read.stdout.subarray(0, maxOutput), stderr: stderr.subarray(0, maxOutput).toString("utf8"), truncated: read.truncated || cut };
       } finally {
         // Every path (done, timed out, failed): this exec's files go. A delete that fails is tried once more; what
         // still stays is reported, and it (or what a killed exec leaves) the next sweep() takes, or names if it cannot.
@@ -538,7 +601,15 @@ class ArchilWorkspace implements Workspace {
     };
     const done = this.#execs.then(run, run);
     this.#execs = done.catch(() => undefined);
-    return done;
+    if (signal === undefined) return done;
+    // Archil's serverless exec cannot be stopped once it is sent (a known limit): an abort answers at once, and the
+    // command runs on to its own deadline, holding the folder, so this workspace's later execs and writes still wait
+    // for it. One not yet sent is never sent.
+    return new Promise<ExecResult>((resolve, reject) => {
+      const onAbort = (): void => reject(abortError(signal));
+      signal.addEventListener("abort", onAbort, { once: true });
+      done.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+    });
   }
 
   /** The root and its spill folder made on the disk: an exec mounts both, so they have to be there. Called inside the
@@ -605,14 +676,23 @@ class ArchilWorkspace implements Workspace {
   /** No computer: every background call is REFUSED, cause no-computer. */
   readonly process = noProcesses;
 
-  // TODO(D6): the archil MountSpec ({ kind: "archil", disk, region, folder, token }) and attach through attach.ts's
-  // checkReadBack and attachedWorkspace, once a disk mount token for the run is passed in (its source decided with D6).
-  async mountSpec(): Promise<MountSpec> {
-    throw new WorkspaceError("REFUSED", NOT_IN_A_COMPUTER);
+  /** The Archil mount of the root with `token`: refused without a region and a token function. */
+  #mount(token: string): MountSpec {
+    if (this.#region === undefined || this.#mountToken === undefined) throw new WorkspaceError("REFUSED", NOT_IN_A_COMPUTER);
+    return { kind: "archil", disk: this.#disk.id, region: this.#region, folder: this.#root, token };
   }
 
-  async attach(_computer: AttachableComputer, _check: MountCheck): Promise<Workspace> {
-    throw new WorkspaceError("REFUSED", NOT_IN_A_COMPUTER);
+  /** The Archil mount a computer makes of this folder: the disk, its region, the root as the folder, and the token. */
+  async mountSpec(): Promise<MountSpec> {
+    this.#mount("");
+    return this.#mount(await this.#mountToken!());
+  }
+
+  async attach(computer: AttachableComputer, check: MountCheck): Promise<Workspace> {
+    // The computer module's read-back never holds the token, so the mount is compared without one.
+    await checkReadBack(computer, this.#mount(""), check);
+    // The computer syncs the mount after each changing call (the attach contract): nothing more to make durable here.
+    return attachedWorkspace(this, computer, { synced: async () => true });
   }
 }
 

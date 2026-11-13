@@ -1,16 +1,12 @@
 // pi's own storage conformance suite (@earendil-works/pi-durable/testing) over the store's journal: store.journal(claim) on
-// the one store (openSqliteStore, its connection on a worker), scoped by run_id, each case on a fresh claimed run in a
-// fresh store file. The journal is a pi Storage in every case pi itself checks: atomic commits and their seqs, global
+// the one store (openSqliteStore, its connection on a worker; openPostgresStore with AGENTRUN_TEST_PG_URL), scoped by
+// run_id, each case on a fresh claimed run in a fresh store file (or schema). The journal is a pi Storage in every case pi itself checks: atomic commits and their seqs, global
 // ids, conversations, entries and their ancestry, tasks, submissions, documents and their history, cursors, close.
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { describe, it } from "node:test";
 import { createStorageConformance } from "@earendil-works/pi-durable/testing";
-
-const { openSqliteStore } = await import("../dist/store/index.js");
+import { storeOn } from "./store-helpers.mjs";
 
 /** pi's assertions on node:assert. */
 const assertions = {
@@ -24,14 +20,9 @@ const assertions = {
   },
 };
 
-/** The one store in a scratch directory of test `t`, closed and removed after it. */
+/** The one store of test `t` (a scratch file, or a Postgres schema: store-helpers.mjs), closed and removed after it. */
 async function scratchStore(t) {
-  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-store-"));
-  const store = await openSqliteStore({ file: join(dir, "store.sqlite") });
-  t.after(async () => {
-    await store.close().catch(() => undefined);
-    rmSync(dir, { recursive: true, force: true });
-  });
+  const { store } = await storeOn(t, { clock: { get now() { return Date.now(); } } });
   await store.agents.put({ id: "agent-1", name: "Agent" });
   await store.agents.addRevision({ id: "rev-1", agentId: "agent-1", kind: "agentic", body: {} });
   return store;

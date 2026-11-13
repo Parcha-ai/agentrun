@@ -6,6 +6,7 @@ import { ToolsPage } from "./ToolsPage";
 import type { Agent } from "@/lib/agentForm";
 import { toolChoices, toolGates } from "@/lib/toolSettings";
 import type { ToolSettings } from "@/lib/v2";
+import { pick } from "@/test/picker";
 
 // What a tool resolves to depends on its permission too (deny: unavailable; ask: no search that can't wait). An answer
 // read for one permission says nothing of another: until the server answers for the new one, the row says so.
@@ -13,8 +14,8 @@ import type { ToolSettings } from "@/lib/v2";
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
-const pick = async (s: HTMLSelectElement, value: string) => {
-  await act(async () => { Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(s, value); s.dispatchEvent(new Event("change", { bubbles: true })); });
+const choose = async (s: HTMLButtonElement, value: string) => {
+  await pick(s, value);
   await settle();
 };
 const ALL = ["allow", "ask", "deny"];
@@ -27,14 +28,14 @@ describe("a permission change and what the tool resolves to", () => {
       definition: { version: 1, name: "Searcher", instructions: "Look it up.", harness: "pi", skills: [], tools: ["web_search"] },
       tools: [{ name: "web_search", provider: "auto", provider_from: "default", default_provider: "auto", resolved: "exa-keyless", permission: "allow", permission_from: "default", default_permission: "allow", permissions: ["allow", "ask", "deny"] }],
     };
-    const caps = { harnesses: [{ id: "pi", available: true }], tools: [{ name: "web_search", available: true }], thinking: [] };
+    const caps = { harnesses: [{ id: "pi", available: true }], tools: [{ name: "web_search", available: true, harnesses: ["pi"] }], thinking: [] };
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);
     act(() => root!.render(createElement(AgentEditor, { agent, caps, providerChoices: toolChoices([SEARCH]), permissionGates: toolGates([SEARCH]), step: "tools", onSave: async () => null })));
     await settle();
     const row = () => host.querySelector("section[aria-label='Tool settings'] tr[data-tool='web_search']")!;
     expect(row().textContent).toContain("pi: Exa keyless");
-    await pick(row().querySelector<HTMLSelectElement>("select[aria-label='web_search permission']")!, "deny");
+    await choose(row().querySelector<HTMLButtonElement>("button[aria-haspopup=listbox][aria-label='web_search permission']")!, "deny");
     expect(row().textContent).not.toContain("pi: Exa keyless");
     expect(row().textContent).toContain("once saved");
   });
@@ -49,7 +50,7 @@ describe("a permission change and what the tool resolves to", () => {
     await settle();
     const row = () => host.querySelector("tr[data-tool='web_search']")!;
     expect(row().textContent).toContain("pi: Exa keyless");
-    await pick(row().querySelector<HTMLSelectElement>("select[aria-label='web_search permission']")!, "deny");
+    await choose(row().querySelector<HTMLButtonElement>("button[aria-haspopup=listbox][aria-label='web_search permission']")!, "deny");
     expect(held).toEqual({ web_search: { permission: "deny" } });
     expect(row().textContent).not.toContain("pi: Exa keyless");
     expect(row().textContent).toContain("reading…");

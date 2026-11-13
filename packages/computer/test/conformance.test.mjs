@@ -14,11 +14,11 @@ import { fakeComputers } from "./fake-computer.mjs";
 const IMAGE = "debian:bookworm-slim";
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const CLI = fileURLToPath(new URL("../dist/conformance/cli.js", import.meta.url));
-const GROUPS = ["health", "exec", "files", "process", "provider", "drift", "isolation", "mount", "screen", "input", "touch", "apps", "lifetime"];
-const PROTOCOL_GROUPS = ["exec", "files", "processes", "screen", "input.pointer", "input.keys", "input.touch", "apps", "apps.install", "apps.ui_tree"];
-const CAPABILITIES = [...PROTOCOL_GROUPS, "network:none", "network:open", "network:allow", "lifetime:janitor", "user:root", "user:uid", "release:stop", "extend", "stream", "mount:bind", "mount:archil", "vendor-agent"];
-/** Groups with no Core case: lifetime's extend and the mount of the run's folder are optional for every kind. */
-const OPTIONAL_GROUPS = ["lifetime", "mount"];
+const GROUPS = ["health", "exec", "files", "process", "provider", "drift", "isolation", "mount", "screen", "input", "touch", "apps", "ui", "lifetime", "gpu"];
+const PROTOCOL_GROUPS = ["exec", "files", "processes", "screen", "input.pointer", "input.keys", "input.touch", "apps", "apps.install", "ui"];
+const CAPABILITIES = [...PROTOCOL_GROUPS, "network:none", "network:open", "network:allow", "lifetime:janitor", "user:root", "user:uid", "release:stop", "persistence", "extend", "stream", "mount:bind", "mount:archil", "vendor-agent", "secrets", "gpu"];
+/** Groups with no Core case: lifetime's extend, the mount of the run's folder and GPUs are optional for every kind. */
+const OPTIONAL_GROUPS = ["lifetime", "mount", "gpu"];
 
 const pass = (id, extra = {}) => ({ id, level: "core", group: id.split(".")[0], needs: [], run: async () => {}, ...extra });
 const statuses = (report) => Object.fromEntries(report.results.map((r) => [r.id, r.status]));
@@ -57,7 +57,7 @@ test("a case that passes is pass; one that throws is fail, with what it found as
 	assert.equal(report.provider, "fake");
 	assert.equal(report.providerVersion, "1.0.0");
 	assert.equal(report.image, IMAGE);
-	assert.deepEqual(report.daemon, { version: "1.0.0", os: "linux", arch: "amd64" });
+	assert.deepEqual(report.daemons, [{ computer: "fake-1", role: "shared", version: "1.0.0", os: "linux", arch: "amd64" }]);
 	assert.deepEqual(
 		report.results.map(({ id, level, group }) => [id, level, group]),
 		[
@@ -193,7 +193,7 @@ test("when no computer can be made, every case that needs one fails with create'
 	});
 	assert.deepEqual(statuses(report), { "health.ping": "fail", "provider.check": "pass" });
 	assert.match(reasons(report)["health.ping"], /no computer: create was refused: no capacity in this region/);
-	assert.equal(report.daemon, null);
+	assert.deepEqual(report.daemons, []);
 	assert.equal(report.core, "fail");
 });
 
@@ -319,8 +319,9 @@ test("the CLI's --json prints the report object; a Core failure exits 1", async 
 	const code = await main(["--provider", "./fixtures/fake-provider.mjs", "--json", "--image", "alpine:3.20"], { stdout: out, cwd: HERE, cases });
 	assert.equal(code, 1);
 	const report = JSON.parse(out.text());
-	assert.deepEqual(Object.keys(report).sort(), ["cleanup", "core", "daemon", "daemonMode", "image", "kind", "provider", "providerVersion", "results", "undeclared"]);
-	assert.deepEqual([report.kind, report.daemonMode, report.daemon], ["linux", "pid1", { version: "1.0.0", os: "linux", arch: "amd64" }]);
+	assert.deepEqual(Object.keys(report).sort(), ["cleanup", "core", "daemonMode", "daemons", "image", "kind", "provider", "providerVersion", "results", "undeclared"]);
+	assert.deepEqual([report.kind, report.daemonMode, report.daemons], ["linux", "pid1", [{ computer: report.daemons[0]?.computer, role: "shared", version: "1.0.0", os: "linux", arch: "amd64" }]]);
+	assert.match(report.daemons[0].computer, /./);
 	assert.equal(report.provider, "fake-module");
 	assert.equal(report.image, "alpine:3.20");
 	assert.equal(report.core, "fail");
@@ -372,8 +373,8 @@ test("each case of the suite is data: a unique id in its group, a level, and nee
 		assert.ok(c.level === "core" || c.level === "full", `${c.id}: level ${c.level}`);
 		for (const need of c.needs) assert.ok(CAPABILITIES.includes(need), `${c.id} needs ${need}`);
 		// A Core case needs only what some kind or daemon mode may require: groups, network none and a child daemon's
-		// vendor-agent, never an optional provider method.
-		if (c.level === "core") assert.ok(c.needs.every((need) => [...PROTOCOL_GROUPS, "network:none", "vendor-agent"].includes(need)), `${c.id}: a Core case needs only groups, network:none and vendor-agent`);
+		// vendor-agent, never an optional provider method; or a secret the provider takes (secrets), for the no-key case.
+		if (c.level === "core") assert.ok(c.needs.every((need) => [...PROTOCOL_GROUPS, "network:none", "vendor-agent", "secrets"].includes(need)), `${c.id}: a Core case needs only groups, network:none, vendor-agent and secrets`);
 		assert.equal(typeof c.run, "function");
 	}
 	// lifetime's one case is Full: extend is optional for every kind. So is every mount case, until the cutover decides.
@@ -568,8 +569,13 @@ test("the CLI as a process prints a report of more than 1 MiB whole through a pi
 	assert.equal(code, 1, stderr);
 	assert.ok(stdout.length > 1024 * 1024, `${stdout.length} bytes`);
 	const report = JSON.parse(stdout);
-	assert.equal(report.results.length, 4);
-	for (const result of report.results) assert.ok(result.reason.length > 512 * 1024, result.id);
+	assert.equal(report.results.length, 6);
+	// Every case that needs the computer fails on the refused create, at length. health.no-key-in-errors is skipped before
+	// it: the fixture takes no secret.
+	const failed = report.results.filter((result) => result.status === "fail");
+	assert.equal(failed.length, 5);
+	for (const result of failed) assert.ok(result.reason.length > 512 * 1024, result.id);
+	assert.deepEqual(report.results.filter((result) => result.status === "skip").map((result) => result.id), ["health.no-key-in-errors"]);
 });
 
 test("provider.check-refuses deletes a computer that create made though check refused its spec, and fails", async () => {
@@ -826,6 +832,65 @@ test("provider.stop (Core) passes a provider that declares stop and lists the co
 	assert.deepEqual(statuses(report), { "provider.stop": "pass" }, JSON.stringify(report.results));
 });
 
+const PERSISTENCE_CASES = ["provider.owner", "provider.detach", "provider.persistence"];
+
+test("a provider with no persistence passes provider.owner and provider.detach (Core), refusing both in words; provider.persistence skips", async () => {
+	const fake = fakeComputers();
+	const report = await runConformance(fake.provider, { image: IMAGE, cases: byId(...PERSISTENCE_CASES) });
+	assert.deepEqual(statuses(report), { "provider.owner": "pass", "provider.detach": "pass", "provider.persistence": "skip" }, JSON.stringify(report.results));
+	assert.equal(reasons(report)["provider.persistence"], "the provider does not declare persistence: it keeps no computer for an agent");
+	assert.deepEqual(report.undeclared, ["persistence"]);
+	assert.equal(report.core, "pass");
+	assert.ok(fake.calls.some(([call, , how]) => call === "release" && how === "detach"), "the case asked for detach");
+	assert.deepEqual(fake.alive(), [], "every computer was deleted after");
+});
+
+test("provider.owner (Core) fails a provider with no persistence whose check takes an owner", async () => {
+	const fake = fakeComputers();
+	const check = fake.provider.check;
+	fake.provider.check = (spec) => check(spec).filter((refusal) => refusal.field !== "owner");
+	const report = await runConformance(fake.provider, { image: IMAGE, cases: byId("provider.owner") });
+	assert.equal(statuses(report)["provider.owner"], "fail");
+	assert.match(reasons(report)["provider.owner"], /refuses owner in words/);
+	assert.equal(report.core, "fail");
+});
+
+test("provider.detach (Core) fails a provider whose detach of a run's computer deletes it", async () => {
+	const fake = fakeComputers();
+	const release = fake.provider.release;
+	fake.provider.release = (ref, how) => release(ref, how === "detach" ? "delete" : how);
+	const report = await runConformance(fake.provider, { image: IMAGE, cases: byId("provider.detach") });
+	assert.equal(statuses(report)["provider.detach"], "fail");
+	assert.match(reasons(report)["provider.detach"], /release detach of a run's computer/);
+	assert.equal(report.core, "fail");
+});
+
+for (const resume of [false, true]) {
+	test(`a provider that declares persistence (resume ${resume}) passes provider.owner, provider.detach and provider.persistence, and deletes the agent's computer`, async () => {
+		const fake = fakeComputers({ persistence: { keepsState: true, resume } });
+		const report = await runConformance(fake.provider, { image: IMAGE, cases: byId(...PERSISTENCE_CASES) });
+		assert.deepEqual(statuses(report), Object.fromEntries(PERSISTENCE_CASES.map((id) => [id, "pass"])), JSON.stringify(report.results));
+		assert.equal(report.core, "pass");
+		const owned = fake.made.filter(({ labels }) => labels["agentrun.owner"] !== undefined);
+		assert.equal(owned.length, 1, "one agent's computer was made");
+		assert.match(owned[0].labels["agentrun.owner"], /^agent:conformance-[0-9a-f]{12}$/);
+		assert.deepEqual(fake.alive(), [], "every computer was deleted after");
+	});
+}
+
+for (const [broken, words] of [
+	["detach-deletes", /the agent's computer, listed after detach/],
+	["forgets", /files\.read after the attach/],
+	["no-fence", /attach under the claim at epoch 1, below 2/],
+]) {
+	test(`provider.persistence (Full) fails a provider whose persistence is broken: ${broken}`, async () => {
+		const fake = fakeComputers({ persistence: { keepsState: true, resume: false }, brokenPersistence: broken });
+		const report = await runConformance(fake.provider, { image: IMAGE, cases: byId("provider.persistence") });
+		assert.equal(statuses(report)["provider.persistence"], "fail");
+		assert.match(reasons(report)["provider.persistence"], words);
+	});
+}
+
 test("provider.janitor (Full) needs release:stop: a janitor provider that does not declare stop skips it in words", async () => {
 	const fake = fakeComputers({ release: ["delete"] });
 	const report = await runConformance(fake.provider, { image: IMAGE, cases: byId("provider.janitor") });
@@ -848,7 +913,7 @@ test("the provider cases compare a computer by its id and name, so a create that
 	assert.deepEqual(statuses(report), { "provider.attach": "pass", "provider.list": "pass", "provider.janitor": "pass" }, JSON.stringify(reasons(report)));
 });
 
-test("the notes create returns are in the report, each naming its computer, and the text report prints every one", async () => {
+test("the notes create returns are in the report, each naming its computer and its role, and the text report prints every one", async () => {
 	const note = "network: none; accepted with no answer (no bytes came back): 1.1.1.1:443";
 	const { provider, made } = fakeComputers({ notes: [note] });
 	const report = await runConformance(provider, {
@@ -857,11 +922,11 @@ test("the notes create returns are in the report, each naming its computer, and 
 	});
 	assert.equal(report.core, "pass", JSON.stringify(reasons(report)));
 	assert.equal(made.length, 2, "the run's computer and the case's");
-	const names = made.map(({ name }) => name);
-	assert.deepEqual(report.computerNotes, names.map((computer) => ({ computer, note })), "one entry per note, naming the computer that recorded it");
+	const named = made.map(({ name }, i) => ({ computer: name, role: i === 0 ? "shared" : "provider.fresh" }));
+	assert.deepEqual(report.computerNotes, named.map((one) => ({ ...one, note })), "one entry per note, naming the computer that recorded it and its role");
 	assert.deepEqual(JSON.parse(JSON.stringify(report)).computerNotes, report.computerNotes, "the same in --json's report object");
 	const lines = formatReport(report).trimEnd().split("\n");
-	for (const computer of names) assert.ok(lines.includes(`note ${computer}: ${note}`), `${computer}'s note in:\n${lines.join("\n")}`);
+	for (const { computer, role } of named) assert.ok(lines.includes(`note ${computer} (${role}): ${note}`), `${computer}'s note in:\n${lines.join("\n")}`);
 	assert.match(lines.at(-1), /^core PASS 2\/2/, "the verdict stays last");
 	const quiet = await runConformance(fakeComputers().provider, { image: IMAGE, cases: [pass("health.ping")] });
 	assert.equal(Object.hasOwn(quiet, "computerNotes"), false, "no notes, no field");
@@ -877,7 +942,43 @@ test("the CLI's --json carries the notes create returned", async () => {
 	assert.equal(report.computerNotes[0].note, "network: none; accepted with no answer (no bytes came back): 1.1.1.1:443");
 	const text = sink();
 	assert.equal(await main(["--provider", "./fixtures/accept-first-provider.mjs"], { stdout: text, cwd: HERE, cases: [pass("health.ping")] }), 0);
-	assert.match(text.text(), /^note \S+: network: none; accepted with no answer \(no bytes came back\): 1\.1\.1\.1:443$/m);
+	assert.match(text.text(), /^note \S+ \(shared\): network: none; accepted with no answer \(no bytes came back\): 1\.1\.1\.1:443$/m);
+});
+
+test("each computer's daemon is in the report under its own name and role, with its own fence: the first hello is not taken for the run's", async () => {
+	// The run's computer holds its programs behind a plain network namespace; the case's (a GPU computer on a runtime
+	// where root may not make one) behind one in a user namespace of its own. The report keeps both apart.
+	const fake = fakeComputers({ notes: ["fence: userns-netns"] });
+	const fences = { "fake-1": "netns", "fake-2": "userns-netns" };
+	const provider = {
+		...fake.provider,
+		connect: async (ref) => {
+			const connected = await fake.provider.connect(ref);
+			return connected.ok ? { ok: true, value: { ...connected.value, hello: { ...connected.value.hello, fence: fences[ref.name] } } } : connected;
+		},
+	};
+	const report = await runConformance(provider, {
+		image: IMAGE,
+		cases: [
+			pass("health.ping", { run: async (t) => void (await t.connect()) }),
+			pass("gpu.present", { group: "gpu", computer: "none", run: async (t) => void (await t.connect(await t.create())) }),
+		],
+	});
+	assert.equal(report.core, "pass", JSON.stringify(reasons(report)));
+	const daemon = { version: "1.0.0", os: "linux", arch: "amd64" };
+	assert.deepEqual(report.daemons, [
+		{ computer: "fake-1", role: "shared", ...daemon, fence: "netns" },
+		{ computer: "fake-2", role: "gpu.present", ...daemon, fence: "userns-netns" },
+	], "one entry per computer, its role and fence its own; a second hello of the run's computer adds none");
+	assert.deepEqual(report.computerNotes.map(({ computer, role }) => [computer, role]), [["fake-1", "shared"], ["fake-2", "gpu.present"]]);
+	const lines = formatReport(report).trimEnd().split("\n");
+	assert.equal(lines[0], "computer conformance · fake · linux, daemon pid1 · computerd 1.0.0 linux/amd64");
+	assert.ok(lines.includes("daemon fake-1 (shared): computerd 1.0.0 linux/amd64 · fence netns"), lines.join("\n"));
+	assert.ok(lines.includes("daemon fake-2 (gpu.present): computerd 1.0.0 linux/amd64 · fence userns-netns"), lines.join("\n"));
+	assert.ok(lines.includes("note fake-2 (gpu.present): fence: userns-netns"), lines.join("\n"));
+	const plain = await runConformance(fakeComputers().provider, { image: IMAGE, cases: [pass("health.ping")] });
+	assert.deepEqual(plain.daemons.map((one) => Object.hasOwn(one, "fence")), [false], "no fence in hello, none in the report");
+	assert.ok(formatReport(plain).split("\n").includes("daemon fake-1 (shared): computerd 1.0.0 linux/amd64"));
 });
 
 test("drift.version passes only on a refusal that is the version drift, never on a create or connect refused for another reason", async () => {

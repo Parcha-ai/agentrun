@@ -9,6 +9,7 @@ import { chmod, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { pdfPages } from "../dist/pdf-pages.js";
+import { localWorkspace } from "../dist/workspace/index.js";
 import { scratch } from "./support.mjs";
 
 /** A stand-in for `tool` in `bin`: dumps its environment to `dumps/<tool>.<n>.env`, then does what pdf_pages needs of it. */
@@ -47,9 +48,9 @@ test("pdf_pages' helper programs start with PATH, the locale and the temp direct
   Object.assign(process.env, planted);
   process.env.PATH = `${bin}:${process.env.PATH}`;
 
-  const pdf = await pdfPages({ path: "doc.pdf", maxPages: 1 }, { work });
+  const pdf = await pdfPages({ path: "doc.pdf", maxPages: 1 }, { work: localWorkspace(work) });
   assert.equal(pdf.text.trim(), "page text", "the stand-ins answered the PDF path");
-  const image = await pdfPages({ path: "big.png" }, { work });
+  const image = await pdfPages({ path: "big.png" }, { work: localWorkspace(work) });
   assert.equal(image.pages.length, 1, "the stand-in ffmpeg scaled the image");
 
   const { readdir } = await import("node:fs/promises");

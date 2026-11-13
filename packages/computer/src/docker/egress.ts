@@ -1,8 +1,8 @@
 // A Docker computer's way out to the network when its spec asks for an allowlist ({ allow: [names or CIDRs] }): the
 // computer stays `--network none`, and its own egress proxy runs in a second container the provider makes, reads back
-// and removes with it. Moved from serve's box-egress.ts and rewritten onto the provider: the proxy no longer lives in the
-// process that made the computer, so the computer keeps its network when that process ends, and attach and list read it
-// back from Docker anywhere.
+// and removes with it. The proxy does not live in the process that
+// made the computer, so the computer keeps its network when that process ends, and attach and list read it back from
+// Docker anywhere.
 //
 //  - The volume `<computer>-egress`: a tmpfs of 1 MiB, mode 0700, owned by the computer's uid:gid. The proxy's Unix
 //    socket is made in it; the computer mounts it read-only at EGRESS_MOUNT.
@@ -17,14 +17,16 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { networkInterfaces } from "node:os";
 import { fileURLToPath } from "node:url";
-import { DEADLINE_LABEL, type DockerInspect } from "../drift.js";
+import { DEADLINE_LABEL } from "../drift.js";
+import type { DockerInspect } from "./inspect.js";
 import type { NetworkPolicy } from "../provider.js";
 import { LISTED_PORTS, parseAllow } from "./egress-proxy.js";
 import { checkAddress } from "./egress-table.js";
 
-/** The proxy container's image: node:22.23.4-bookworm-slim, pinned to its multi-arch index digest (as serve pins its
- *  own), so every host runs the same Node. The provider's `egress.image` replaces it. */
-export const EGRESS_IMAGE = "node:22.23.4-bookworm-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d";
+/** The proxy container's image: node:22.23.5-trixie-slim (Node 22's November 2026 security release), pinned to its
+ *  multi-arch index digest (amd64 and arm64 both listed), so every host runs the same Node. serve's macOS proxy pins the
+ *  same image. The provider's `egress.image` replaces it. */
+export const EGRESS_IMAGE = "node:22.23.5-trixie-slim@sha256:68c76cfad89921b927eae28ba21407475e29d0ce450afcdbe70c1532db042b64";
 /** The label the proxy container and the volume carry: the computer's name. In the provider's own namespace, which a
  *  spec's labels cannot use. */
 export const EGRESS_LABEL = "agentrun.computer.egress";
@@ -42,9 +44,11 @@ const PROXY_VOLUME = "/egress";
 const PROXY_SOCKET = `${PROXY_VOLUME}/egress.sock`;
 const PROXY_CODE = "/code/docker";
 const PROXY_PACKAGE = "/code/package.json";
+/** With the provider's volume option, the staged tree (src/docker/stage.ts) mounted whole: docker/ and package.json. */
+const PROXY_ROOT = "/code";
 const PROXY_MAIN = `${PROXY_CODE}/egress-main.js`;
 /** The files the proxy container runs, in dist/docker. */
-const CODE_FILES = ["egress-main.js", "egress-proxy.js", "egress-table.js"];
+export const CODE_FILES = ["egress-main.js", "egress-proxy.js", "egress-table.js"];
 const EXAMPLE = '["pypi.org", "*.pythonhosted.org", "93.184.215.0/24"]';
 
 /** The proxy container's name, and the volume's, for computer `name`. */
@@ -55,6 +59,15 @@ export const egressNameOf = (name: string): string => `${name}-egress`;
 export interface EgressCode {
 	dir: string;
 	packageJson: string;
+	/** With the provider's volume option: the code is staged below the volume's root in one tree (src/docker/stage.ts),
+	 *  `root` its subpath (undefined when unknown), which the proxy mounts whole at /code. */
+	volume?: {
+		name: string;
+		root?: string;
+		/** For a read-back: whether a proxy may be mounted on this subpath, any verified copy of the code (stage.ts
+		 *  egressStaged), not only `root`. Without it, `root` alone. */
+		accepts?: (subpath: string) => boolean;
+	};
 }
 
 /** This package's own build: the directory this file is in, and the package's package.json. */
@@ -190,7 +203,13 @@ export function egressRunArgs({ name, user, image, allow, local, deadline, code,
 	for (const [key, value] of Object.entries(PROXY_LOG.options)) args.push("--log-opt", `${key}=${value}`);
 	args.push("--network", "bridge");
 	args.push("--mount", `type=volume,src=${proxy},dst=${PROXY_VOLUME}`);
-	args.push("--mount", `type=bind,src=${code.dir},dst=${PROXY_CODE},readonly`, "--mount", `type=bind,src=${code.packageJson},dst=${PROXY_PACKAGE},readonly`);
+	if (code.volume === undefined) {
+		args.push("--mount", `type=bind,src=${code.dir},dst=${PROXY_CODE},readonly`, "--mount", `type=bind,src=${code.packageJson},dst=${PROXY_PACKAGE},readonly`);
+	} else {
+		// With the provider's volume option, the staged tree, one directory, as the volume's subpath: the Docker daemon has
+		// none of this process's paths.
+		args.push("--mount", `type=volume,src=${code.volume.name},dst=${PROXY_ROOT},volume-subpath=${code.volume.root ?? ""},volume-nocopy,readonly`);
+	}
 	// Create pulled the image before it made the volume, so this run never pulls: the sweep's grace holds.
 	args.push("--pull", "never");
 	args.push("--entrypoint", "node", image, PROXY_MAIN, "--socket", PROXY_SOCKET, "--deadline", deadline, "--allow", allow.join(","));
@@ -264,13 +283,25 @@ export function egressOf(proxy: DockerInspect | null | undefined, owner: EgressO
 	for (const field of ["Binds", "VolumesFrom", "Devices", "PidMode", "UsernsMode"]) if (!blank(host[field])) return other(`has ${field} ${show(host[field])}`);
 	if (config.User !== owner.user) return other(`runs as ${show(config.User).replaceAll('"', "")}, not the computer's ${show(owner.user).replaceAll('"', "")}`);
 	const mounts = proxy.Mounts ?? [];
-	const want = [
-		{ Type: "volume", Name: named, Destination: PROXY_VOLUME, RW: true },
-		{ Type: "bind", Destination: PROXY_CODE, RW: false, ...(code ? { Source: code.dir } : {}) },
-		{ Type: "bind", Destination: PROXY_PACKAGE, RW: false, ...(code ? { Source: code.packageJson } : {}) },
-	];
+	// The code: binds of `code`'s paths, or, with the provider's volume option, the staged tree at /code, the volume's
+	// subpath (checked below in HostConfig.Mounts, which records it; Mounts shows the volume by name).
+	const shared = code?.volume;
+	const codeMounts =
+		shared === undefined
+			? [
+					{ Type: "bind", Destination: PROXY_CODE, RW: false, ...(code ? { Source: code.dir } : {}) },
+					{ Type: "bind", Destination: PROXY_PACKAGE, RW: false, ...(code ? { Source: code.packageJson } : {}) },
+				]
+			: [{ Type: "volume", Name: shared.name, Destination: PROXY_ROOT, RW: false }];
+	const want = [{ Type: "volume", Name: named, Destination: PROXY_VOLUME, RW: true }, ...codeMounts];
 	const fits = mounts.length === want.length && want.every((wanted) => mounts.some((mount) => Object.entries(wanted).every(([key, value]) => (mount as Record<string, unknown>)[key] === value)));
 	if (!fits) return other(`has mounts ${show(mounts.map((m) => `${m.Type} ${m.Name ?? m.Source} at ${m.Destination}${m.RW ? "" : " read-only"}`))}, not its volume read-write at ${PROXY_VOLUME} and its code read-only`);
+	if (shared !== undefined) {
+		const asked = (host.Mounts ?? []).filter((mount) => mount.Target === PROXY_ROOT);
+		const subpath = (asked[0]?.VolumeOptions as { Subpath?: unknown } | undefined)?.Subpath;
+		const right = asked.length === 1 && asked[0]?.Type === "volume" && asked[0].Source === shared.name && asked[0].ReadOnly === true && (typeof subpath === "string" && subpath !== "" && (shared.accepts !== undefined ? shared.accepts(subpath) : shared.root === undefined || subpath === shared.root));
+		if (!right) return other(`mounts ${show(asked)} at ${PROXY_ROOT}, not the staged code's subpath ${show(shared.root)} of the volume ${shared.name}, read-only`);
+	}
 	const entrypoint = config.Entrypoint;
 	if (!Array.isArray(entrypoint) || entrypoint.length !== 1 || entrypoint[0] !== "node") return other(`has the entrypoint ${show(entrypoint)}, not node`);
 	const cmd = Array.isArray(config.Cmd) ? config.Cmd : [];

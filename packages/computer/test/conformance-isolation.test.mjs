@@ -32,6 +32,18 @@ test("it passes where the probe of each declared port on both loopbacks is refus
 	assert.deepEqual(statuses(report), { [ID]: "pass" }, reasons(report)[ID]);
 });
 
+test("the report holds one line with every target's outcome, on a pass and on a fail alike", async () => {
+	const passing = await run({ vendorAgentPorts: [2280] });
+	assert.equal(statuses(passing)[ID], "pass", reasons(passing)[ID]);
+	const line = passing.results[0].observed.find((one) => one.startsWith("probe, as the computer's user: "));
+	assert.ok(line, JSON.stringify(passing.results[0].observed));
+	for (const target of ["127.0.0.1:2280", "[::1]:2280", "1.1.1.1:443", "example.com:443"]) assert.ok(line.includes(`${target} refused`), `${target} in ${line}`);
+	const failing = await run({ vendorAgentPorts: [2280], agentAnswers: ["[::1]:2280"] });
+	assert.equal(statuses(failing)[ID], "fail");
+	const seen = failing.results[0].observed.find((one) => one.startsWith("probe, as the computer's user: "));
+	assert.ok(seen?.includes("[::1]:2280 answered") && seen.includes("1.1.1.1:443 refused"), `every target, the one that answered too: ${seen}`);
+});
+
 test("it passes with no ports declared (a vendor with no agent inside), on the outside and the interfaces alone", async () => {
 	const report = await run({ vendorAgentPorts: [] });
 	assert.deepEqual(statuses(report), { [ID]: "pass" }, reasons(report)[ID]);

@@ -7,19 +7,18 @@
 // leaves this machine and no real key is used.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { deniedText, permissionFrom, RunGate } from "../dist/tool-gate.js";
+import { deniedText, permissionFrom } from "../dist/tool-gate.js";
+import { runnerGate } from "./gate-support.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
-import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
+import { agent, follow, retried, scratch, serve, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const fixture = (name) => new URL(`./fixtures/${name}`, import.meta.url).pathname;
 const GATE = { faux: fixture("faux-gate.mjs"), harnessTable: fauxTable(fixture("faux-gate.mjs")), fauxWeb: fixture("faux-gate-web.mjs"), accounts: true, openSetup: true };
 const PAGE = "http://public.example/";
-const HARNESSES = ["pi", "claude-agent", "codex"];
 const FAUX_MCP = fixture("faux-mcp.mjs");
 const MCP_TOKEN = `not-a-secret-${"approvals-never-bearer"}`;
 
@@ -33,9 +32,9 @@ async function network(t) {
 /** Agent `id` on `harness` that fetches PAGE once with web_fetch (`extra` beside it), and one run of it. */
 async function fetching(api, id, harness, extra = {}) {
   const ask = `Fetch ${PAGE} once.`;
-  const made = await api("POST", "/agents", agent(id, { harness, instructions: ask, tools: ["web_fetch"], ...extra }));
+  const made = await retried(api)("POST", "/agents",agent(id, { harness, instructions: ask, tools: ["web_fetch"], ...extra }));
   assert.equal(made.status, 201, JSON.stringify(made.body));
-  const run = await api("POST", `/agents/${id}/runs`, { input: { content: ask } });
+  const run = await retried(api)("POST", `/agents/${id}/runs`, { input: { content: ask } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   return run.body.run_id;
 }
@@ -56,23 +55,23 @@ test("permissionFrom: never turns an ask into an allow from unattended, as its l
   assert.equal(permissionFrom("bash_background", { bash: { permission: "deny" } }, {}, "never").permission, "deny");
 });
 
-test("RunGate under never: an ask is allowed, a deny refuses, and a name nothing maps still asks (fail closed)", async (t) => {
-  const dir = await scratch(t);
-  writeFileSync(join(dir, "tool-settings.json"), JSON.stringify({ web_fetch: { permission: "ask" }, read: { permission: "deny" } }));
-  const where = { root: join(dir, "runs", "r"), work: join(dir, "work"), data: dir, runId: "r", harness: "pi" };
-  const never = new RunGate(where, {}, true, true, "never");
-  const asked = new RunGate(where, {}, true, true, "ask");
+test("RunGate under never: an ask is allowed, a deny refuses, and a name nothing maps still asks (fail closed)", () => {
+  const settings = { web_fetch: { permission: "ask" }, read: { permission: "deny" } };
+  const never = runnerGate({ settings, approvals: "never" });
+  const asked = runnerGate({ settings, approvals: "ask" });
   assert.equal(asked.policy("web_fetch"), "ask");
   assert.equal(never.policy("web_fetch"), "allow", "an ask under ask is an allow under never");
   assert.equal(never.policy("read"), "deny", "a server deny is never lifted");
   assert.equal(never.policy("no_such_tool_anyone_maps"), "ask", "a name nothing maps fails closed, never lifted");
 });
 
-test("under never, web_fetch set to ask runs without parking on pi, claude-agent and codex; the agent and run reads say never; its tools say unattended; ask (the default) still parks", { timeout: 150_000 }, async (t) => {
+/** Under never, web_fetch set to ask on `harnesses`: each run goes without parking and fetches once; the agent and run
+ *  reads say never, and its tools say the allow came from unattended. Answers the server's api. */
+async function neverOn(t, harnesses) {
   const dialled = await network(t);
   const { api } = await serve(t, GATE);
   assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: "ask" } })).status, 200);
-  const runs = await Promise.all(HARNESSES.map(async (harness) => ({ harness, runId: await fetching(api, `never-${harness}`, harness, { approvals: "never" }) })));
+  const runs = await Promise.all(harnesses.map(async (harness) => ({ harness, runId: await fetching(api, `never-${harness}`, harness, { approvals: "never" }) })));
   for (const { harness, runId } of runs) {
     const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
     const view = (await api("GET", `/runs/${runId}`)).body;
@@ -84,8 +83,13 @@ test("under never, web_fetch set to ask runs without parking on pi, claude-agent
     const fetchTool = read.tools.find((tool) => tool.name === "web_fetch");
     assert.deepEqual([fetchTool.permission, fetchTool.permission_from], ["allow", "unattended"], `${harness}: its tool says where the allow came from`);
   }
-  assert.equal((await dialled()).filter((url) => url.startsWith(PAGE)).length, HARNESSES.length, "each harness fetched once, unasked");
+  assert.equal((await dialled()).filter((url) => url.startsWith(PAGE)).length, harnesses.length, "each harness fetched once, unasked");
 
+  return api;
+}
+
+test("under never, web_fetch set to ask runs without parking on pi; the agent and run reads say never; its tools say unattended; ask (the default) still parks", { timeout: 150_000 }, async (t) => {
+  const api = await neverOn(t, ["pi"]);
   // The default: none set reads ask, and the call parks as before.
   const askRun = await fetching(api, "ask-pi", "pi");
   await follow(api, askRun, ["input_required"], { deadlineMs: 60_000 });
@@ -93,6 +97,10 @@ test("under never, web_fetch set to ask runs without parking on pi, claude-agent
   assert.equal(askView.pending?.kind, "approval", "ask parks");
   assert.equal(askView.approvals, "ask");
   assert.equal((await api("GET", "/agents/ask-pi")).body.definition.approvals, "ask", "none set reads ask");
+});
+
+test("under never, web_fetch set to ask runs without parking on claude-agent and codex, as on pi", { timeout: 150_000 }, async (t) => {
+  await neverOn(t, ["claude-agent", "codex"]);
 });
 
 test("under never a deny still refuses: the server's, and the agent's own", { timeout: 120_000 }, async (t) => {
@@ -119,7 +127,7 @@ test("under never an MCP tool (which asks by default) runs unasked; a server's d
   t.after(() => fake.close());
   assert.equal((await api("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "bearer", token: MCP_TOKEN } })).status, 200);
   const content = 'Call mcp__fake__add with {"a":2,"b":3}';
-  const made = await api("POST", "/agents", agent("mcp-never", { tools: ["mcp:fake/add"], approvals: "never" }));
+  const made = await retried(api)("POST", "/agents",agent("mcp-never", { tools: ["mcp:fake/add"], approvals: "never" }));
   assert.equal(made.status, 201, JSON.stringify(made.body));
   const run = await api("POST", "/agents/mcp-never/runs", { input: { content } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
@@ -149,10 +157,10 @@ test("a workflow's call node on a tool set to ask runs under never, and its run 
     root: { node: "chain", steps: [{ node: "call", label: "Read the home page", via: "tool", tool: "web_fetch", args: { url: "{website}" }, out: "Page", as: "home", deadline_s: 60 }] },
   };
   assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: "ask" } })).status, 200);
-  assert.equal((await api("POST", "/agents", { definition: { id: "site-ask", name: "site-ask", workflow: flow, tools: ["web_fetch"] } })).status, 201);
+  assert.equal((await retried(api)("POST", "/agents",{ definition: { id: "site-ask", name: "site-ask", workflow: flow, tools: ["web_fetch"] } })).status, 201);
   const refused = await api("POST", "/agents/site-ask/runs", { input: { website: PAGE } });
   assert.deepEqual([refused.status, refused.body.error?.code, refused.body.error?.details?.asks], [409, "agent_not_runnable", ["web_fetch"]]);
-  const saved = await api("POST", "/agents", { definition: { id: "site-never", name: "site-never", workflow: flow, tools: ["web_fetch"], approvals: "never" } });
+  const saved = await retried(api)("POST", "/agents",{ definition: { id: "site-never", name: "site-never", workflow: flow, tools: ["web_fetch"], approvals: "never" } });
   assert.equal(saved.status, 201, JSON.stringify(saved.body));
   assert.deepEqual(saved.body.warnings ?? [], [], "no call-node warning under never");
   const ran = await api("POST", "/agents/site-never/runs", { input: { website: PAGE } });
@@ -162,7 +170,7 @@ test("a workflow's call node on a tool set to ask runs under never, and its run 
 
 test("approvals takes ask or never: anything else is a 422 naming the field", async (t) => {
   const { api } = await serve(t);
-  const bad = await api("POST", "/agents", agent("bad-approvals", { approvals: "sometimes" }));
+  const bad = await retried(api)("POST", "/agents",agent("bad-approvals", { approvals: "sometimes" }));
   assert.equal(bad.status, 422, JSON.stringify(bad.body));
   const field = bad.body.error.fields.find((f) => f.field === "definition.approvals");
   assert.equal(field?.reason, "not_an_option", JSON.stringify(bad.body.error.fields));
@@ -205,11 +213,8 @@ test("never lifts no ask that stands in for a setting that does not read: a fall
   assert.deepEqual(permissionFrom("bash", { bash: { permission: "ask", fallback: true } }, {}, "never"), { permission: "ask", from: "server" });
   assert.deepEqual(permissionFrom("bash", { bash: { permission: "maybe" } }, {}, "never"), { permission: "ask", from: "server" });
   assert.deepEqual(permissionFrom("web_fetch", {}, { web_fetch: { permission: "maybe" } }, "never"), { permission: "ask", from: "agent" });
-  // Through the gate, from the server's settings file: an invalid permission for bash reads as an ask it never lifts.
-  const dir = await scratch(t);
-  writeFileSync(join(dir, "tool-settings.json"), JSON.stringify({ bash: { permission: "maybe" }, web_fetch: { permission: "deny" } }));
-  const where = { root: join(dir, "runs", "r"), work: join(dir, "work"), data: dir, runId: "r", harness: "pi" };
-  const never = new RunGate(where, { web_fetch: { permission: "ask" } }, true, true, "never");
+  // Through the gate, from the server's stored settings: an invalid permission for bash reads as an ask it never lifts.
+  const never = runnerGate({ settings: { bash: { permission: "maybe" }, web_fetch: { permission: "deny" } }, overrides: { web_fetch: { permission: "ask" } }, approvals: "never" });
   assert.equal(never.policy("bash"), "ask", "an invalid bash permission is never run unattended");
   assert.equal(never.policy("bash_background"), "ask", "nor a shell watcher held to it");
   assert.notEqual(never.policy("web_fetch"), "allow", "the server's deny under the agent's ask is never allowed");
@@ -234,13 +239,66 @@ test("native web_search set to ask on claude-agent and codex: under never it is 
   const NATIVE_ASKS = /native search cannot wait for an approval/;
   for (const harness of ["claude-agent", "codex"]) {
     const native = { harness, tools: ["web_search"], tool_settings: { web_search: { provider: "native", permission: "ask" } } };
-    const never = await api("POST", "/agents", agent(`native-never-${harness}`, { ...native, approvals: "never" }));
+    const never = await retried(api)("POST", "/agents",agent(`native-never-${harness}`, { ...native, approvals: "never" }));
     assert.equal(never.status, 201, `${harness}: ${JSON.stringify(never.body)}`);
     assert.equal((never.body.warnings ?? []).some((w) => NATIVE_ASKS.test(w.message ?? "")), false, `${harness}: no native-ask warning under never: ${JSON.stringify(never.body.warnings)}`);
-    const started = await api("POST", `/agents/native-never-${harness}/runs`, { input: { content: "Search once." } });
+    const started = await retried(api)("POST", `/agents/native-never-${harness}/runs`, { input: { content: "Search once." } });
     assert.equal(started.status, 202, `${harness}: it starts under never: ${JSON.stringify(started.body)}`);
-    const asked = await api("POST", "/agents", agent(`native-ask-${harness}`, native));
+    const asked = await retried(api)("POST", "/agents",agent(`native-ask-${harness}`, native));
     assert.equal(asked.status, 201, `${harness}: ${JSON.stringify(asked.body)}`);
     assert.ok((asked.body.warnings ?? []).some((w) => NATIVE_ASKS.test(w.message ?? "")), `${harness}: under ask the warning stands: ${JSON.stringify(asked.body.warnings)}`);
   }
+});
+
+test("approvals takes ask back: a definition put back as it reads (the console's edit) keeps what it reads, ask or never; a never agent edited to ask reads ask; an edit that leaves approvals out asks, of either kind, and a change of kind naming none asks", { timeout: 60_000 }, async (t) => {
+  const { api } = await serve(t);
+  assert.equal((await retried(api)("POST", "/agents",agent("plain"))).status, 201);
+  const read = (await api("GET", "/agents/plain")).body.definition;
+  assert.equal(read.approvals, "ask", "none set reads ask");
+  // The console's edit (apps/console agentForm.ts editBody): the definition as read, one field changed, the next version.
+  const echoed = await api("PUT", "/agents/plain/definition", { definition: { ...read, instructions: "Answer in one line.", version: read.version + 1 } });
+  assert.equal(echoed.status, 200, JSON.stringify(echoed.body));
+  assert.equal((await api("GET", "/agents/plain")).body.definition.approvals, "ask", "still ask");
+
+  // A never agent: the console's edit sends back the approvals it read, so it stays never.
+  assert.equal((await retried(api)("POST", "/agents",agent("unattended", { approvals: "never" }))).status, 201);
+  const asRead = (await api("GET", "/agents/unattended")).body.definition;
+  assert.equal(asRead.approvals, "never");
+  const roundTrip = await api("PUT", "/agents/unattended/definition", { definition: { ...asRead, instructions: "Answer briefly.", version: asRead.version + 1 } });
+  assert.equal(roundTrip.status, 200, JSON.stringify(roundTrip.body));
+  assert.equal((await api("GET", "/agents/unattended")).body.definition.approvals, "never", "the console's round trip keeps never");
+  // An edit that leaves approvals out asks: openapi.ts's own words for DefinitionInput.approvals, "An edit that leaves it
+  // out asks, so no edit makes an agent unattended by saying nothing" (main's agents.ts says the same).
+  const left = await api("PUT", "/agents/unattended/definition", agent("unattended", { version: asRead.version + 2, instructions: "Answer in a word." }));
+  assert.equal(left.status, 200, JSON.stringify(left.body));
+  assert.equal((await api("GET", "/agents/unattended")).body.definition.approvals, "ask", "an edit leaving approvals out asks");
+  assert.equal((await api("PUT", "/agents/unattended/definition", agent("unattended", { version: asRead.version + 3, approvals: "never" }))).status, 200);
+  const turned = await api("PUT", "/agents/unattended/definition", agent("unattended", { version: asRead.version + 4, approvals: "ask" }));
+  assert.equal(turned.status, 200, JSON.stringify(turned.body));
+  assert.equal((await api("GET", "/agents/unattended")).body.definition.approvals, "ask", "an edit naming ask turns it to ask");
+
+  // A workflow agent: the same rule.
+  // The workflow the call-node case below runs (one web_fetch call node).
+  const flow = {
+    v: 2, name: "read-site",
+    schemas: {
+      In: { type: "object", required: ["website"], properties: { website: { type: "string" } } },
+      Page: { type: "object", required: ["ok"], properties: { ok: { type: "boolean" } } },
+    },
+    input: { schemaId: "In" },
+    output: { schemaId: "Page", path: "home" },
+    root: { node: "chain", steps: [{ node: "call", label: "Read the home page", via: "tool", tool: "web_fetch", args: { url: "{website}" }, out: "Page", as: "home", deadline_s: 60 }] },
+  };
+  const made = await retried(api)("POST", "/agents",{ definition: { id: "flow-never", name: "flow-never", workflow: flow, tools: ["web_fetch"], approvals: "never" } });
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  assert.equal((await api("GET", "/agents/flow-never")).body.definition.approvals, "never");
+  const flowLeft = await api("PUT", "/agents/flow-never/definition", { definition: { id: "flow-never", name: "flow-never", version: 2, workflow: { ...flow, name: "read-site-again" }, tools: ["web_fetch"] } });
+  assert.equal(flowLeft.status, 200, JSON.stringify(flowLeft.body));
+  assert.equal((await api("GET", "/agents/flow-never")).body.definition.approvals, "ask", "a workflow edit leaving approvals out asks");
+
+  // A change of kind (agentic → workflow) naming no approvals asks too.
+  assert.equal((await retried(api)("POST", "/agents",agent("switcher", { approvals: "never" }))).status, 201);
+  const switched = await api("PUT", "/agents/switcher/definition", { definition: { id: "switcher", name: "switcher", version: 2, workflow: flow, tools: ["web_fetch"] } });
+  assert.equal(switched.status, 200, JSON.stringify(switched.body));
+  assert.equal((await api("GET", "/agents/switcher")).body.definition.approvals, "ask", "a change of kind naming none asks");
 });

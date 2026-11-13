@@ -1,4 +1,4 @@
-import type { AgentTool, Permission, ToolSetting, ToolSettings } from "./v2";
+import type { AgentTool, Permission, ToolPin, ToolSetting, ToolSettings } from "./v2";
 
 /** The harnesses a capability resolves for, in the order the console shows them. */
 export const HARNESS_ORDER = ["pi", "claude-agent", "codex", "opencode"] as const;
@@ -50,6 +50,8 @@ export type ToolGate = { name: string; permission: Permission; default_permissio
 /** Said wherever a tool the server's table denies shows: the server's deny is absolute (it holds over an agent's own
  *  allow or ask and over Never ask). */
 export const SERVER_DENY = "Refused on this server for every agent, whatever the agent's own setting or Never ask.";
+/** Said beside a tool whose permission is deny: what deny does not do (its words are tl-tools'). */
+export const DENY_ONLY = "Deny stops this tool only. The agent can still reach the web with other tools it has, such as browser, bash or web_search: deny those too to keep it offline.";
 
 /** An MCP tool as its server's read lists it (GET /v2/mcp/servers/{name}): this server's permission in force for it. */
 type McpListed = { name: string; tools: readonly { name: string; permission?: Permission }[] };
@@ -66,16 +68,10 @@ export const serverDenies = (name: string, gates: readonly ToolGate[], read?: re
   return gates.some((g) => g.name === name && g.permission === "deny");
 };
 
-const PERMISSIONS: readonly string[] = ["allow", "ask", "deny"];
-const isPermission = (v: unknown): v is Permission => typeof v === "string" && PERMISSIONS.includes(v);
-
-/** Each tool's permission, in the server's order: `capabilities.tools` entries that carry one. None from an older server. */
+/** Each tool's permission, in the server's order: every `capabilities.tools` entry carries one, the owner's default and
+ *  those offered. None until the capabilities read answers. */
 export function toolGates(raw: unknown): ToolGate[] {
-  return (Array.isArray(raw) ? raw : []).flatMap((t): ToolGate[] => {
-    const e = t as { name?: unknown; permission?: unknown; default_permission?: unknown; permissions?: unknown; ask_needs?: unknown } | null;
-    if (!e || typeof e.name !== "string" || !Array.isArray(e.permissions) || !e.permissions.length || !e.permissions.every(isPermission) || !isPermission(e.default_permission)) return [];
-    return [{ name: e.name, permission: isPermission(e.permission) ? e.permission : e.default_permission, default_permission: e.default_permission, permissions: e.permissions, ...(e.ask_needs === "password" ? { ask_needs: "password" as const } : {}) }];
-  });
+  return ((raw ?? []) as ToolGate[]).map(({ name, permission, default_permission, permissions, ask_needs }) => ({ name, permission, default_permission, permissions, ...(ask_needs === "password" ? { ask_needs } : {}) }));
 }
 
 const PROVIDER: Record<string, string> = { auto: "auto", native: "native", kernel: "kernel fetch", "exa-keyless": "Exa keyless", parallel: "Parallel" };
@@ -163,3 +159,30 @@ export function issuesFor(fields: Record<string, string>, prefix: string, shown:
   }
   return { byTool, rest };
 }
+
+type PinScalar = Exclude<ToolPin[string], unknown[]>;
+/** A one-of list in the gate's one form (tool-gate.ts canonicalChoices): each value once, null first, then by JSON text. */
+const choicesOf = (value: ToolPin[string]): PinScalar[] => {
+  if (!Array.isArray(value)) return [value];
+  const texts = [...new Set(value.filter((one) => one !== null).map((one) => JSON.stringify(one)))].sort();
+  return [...(value.includes(null) ? [null] : []), ...texts.map((text) => JSON.parse(text) as PinScalar)];
+};
+/** A pinned value in words: text as it is, any other as JSON (tool-gate.ts scalarWords; null is said by pinLine). */
+const valueWords = (one: PinScalar): string => (typeof one === "string" ? one : JSON.stringify(one));
+
+/** A pin in words, in the gate's order (tool-gate.ts pinWords: arguments sorted, each list in its one form), so the screen
+ *  and a refusal read alike: "event must be left out or COMMENT; method must be one of create, delete_pending". */
+export function pinLine(pin: ToolPin): string {
+  return Object.keys(pin).sort().map((arg) => {
+    const values = choicesOf(pin[arg]!);
+    const nullable = values[0] === null;
+    const rest = (nullable ? values.slice(1) : values).map((one) => valueWords(one));
+    if (!rest.length) return `${arg} must be left out`;
+    const of = rest.length === 1 ? rest[0] : `one of ${rest.join(", ")}`;
+    return `${arg} must be ${nullable ? `left out or ${of}` : of}`;
+  }).join("; ");
+}
+/** What every pin says after its words. */
+export const PIN_HOLDS = "Calls outside it are refused before they run or ask.";
+/** A pin that doesn't read (pin_broken): it fails closed. */
+export const PIN_BROKEN = "This pin doesn't read, so every call to this tool is refused. Set the pin again, or remove the tool's setting.";

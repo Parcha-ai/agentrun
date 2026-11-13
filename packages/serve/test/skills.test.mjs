@@ -10,24 +10,47 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { skillProblems } from "@parcha/agentrun-harness-claude";
 import { ON_DEMAND, promptOf, READS_AT_ONCE, readsFiles, skillsOf, splitSkills, systemOf } from "../dist/skills.js";
-import { workspaceTestHooks } from "../dist/workspace.js";
+import { localWorkspace } from "../dist/workspace/index.js";
 
 const CANARY = `not-a-secret-canary-${process.pid}`;
 
 /** A SKILL.md with front matter naming `name`, described. */
 const md = (name, body = "Body.", description = "What it does.") => `---\nname: ${name}\ndescription: ${description}\n---\n${body}\n`;
 
-/** A run's work/ holding `files` (paths under `.agents/skills/` to text), removed after the test. */
+/** A run's work/ holding `files` (paths under `.agents/skills/` to text), removed after the test: its folder (`dir`) and
+ *  the run's Workspace on it (`work`), which the skills are read through. */
 async function workWith(t, files) {
   const root = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-serve-skills-"));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const work = join(root, "work");
+  const dir = join(root, "work");
+  await mkdir(dir);
   for (const [path, text] of Object.entries(files)) {
-    const file = join(work, ".agents", "skills", path);
+    const file = join(dir, ".agents", "skills", path);
     await mkdir(dirname(file), { recursive: true });
     await writeFile(file, text);
   }
-  return { root, work };
+  return { root, dir, work: localWorkspace(dir) };
+}
+
+/** `workspace` with its reads counted: the most in flight at once (`peak`). A batch's reads all start before any ends
+ *  (each is asked at once, and none answers before the next is asked), so the peak is the batch's size, with no wait. */
+function counted(workspace) {
+  const reads = { open: 0, peak: 0 };
+  const wrapped = new Proxy(workspace, {
+    get(target, name) {
+      const value = target[name];
+      if (name !== "read") return typeof value === "function" ? value.bind(target) : value;
+      return async (...args) => {
+        reads.peak = Math.max(reads.peak, ++reads.open);
+        try {
+          return await value.apply(target, args);
+        } finally {
+          reads.open -= 1;
+        }
+      };
+    },
+  });
+  return { reads, workspace: wrapped };
 }
 
 test("skills are grouped by name from the revision's files: a skill's nested files go with it, a file goes to the nearest skill above it, and a file under no skill is no skill's", async (t) => {
@@ -51,11 +74,11 @@ test("skills are grouped by name from the revision's files: a skill's nested fil
 });
 
 test("a skill's file is read through no link: a reference file linked out of work/ is refused, and none of its text is read", async (t) => {
-  const { root, work } = await workWith(t, { "cite/SKILL.md": md("cite") });
+  const { root, dir, work } = await workWith(t, { "cite/SKILL.md": md("cite") });
   const outside = join(root, "server-own.txt");
   await writeFile(outside, CANARY);
-  await mkdir(join(work, ".agents", "skills", "cite", "reference"), { recursive: true });
-  await symlink(outside, join(work, ".agents", "skills", "cite", "reference", "sources.md"));
+  await mkdir(join(dir, ".agents", "skills", "cite", "reference"), { recursive: true });
+  await symlink(outside, join(dir, ".agents", "skills", "cite", "reference", "sources.md"));
   await assert.rejects(skillsOf(["cite/SKILL.md", "cite/reference/sources.md"], work), (error) => !String(error?.message).includes(CANARY));
 });
 
@@ -73,23 +96,16 @@ test("files are read at most READS_AT_ONCE at a time, and a skill with more file
   const refs = Array.from({ length: READS_AT_ONCE * 2 + 5 }, (_, i) => `ref/f-${String(i).padStart(2, "0")}.md`);
   const files = { "cite/SKILL.md": md("cite"), ...Object.fromEntries(refs.map((ref) => [`cite/${ref}`, `Text of ${ref}.\n`])) };
   const names = Array.from({ length: READS_AT_ONCE + 3 }, (_, i) => `s-${String(i).padStart(2, "0")}`);
-  const { work } = await workWith(t, { ...files, ...Object.fromEntries(names.map((name) => [`${name}/SKILL.md`, md(name)])) });
-  let open = 0;
-  let peak = 0;
-  workspaceTestHooks.afterOpen = async () => {
-    peak = Math.max(peak, ++open);
-    await new Promise((resolve) => setTimeout(resolve, 5));
-    open -= 1;
-  };
-  t.after(() => void (workspaceTestHooks.afterOpen = undefined));
+  const { work: plain } = await workWith(t, { ...files, ...Object.fromEntries(names.map((name) => [`${name}/SKILL.md`, md(name)])) });
+  const { reads, workspace: work } = counted(plain);
   const [cite] = await skillsOf(Object.keys(files), work);
   assert.deepEqual(Object.keys(cite.files), ["SKILL.md", ...refs]);
   for (const ref of refs) assert.equal(cite.files[ref], `Text of ${ref}.\n`);
-  assert.ok(peak <= READS_AT_ONCE, `skillsOf had ${peak} files open at once`);
-  peak = 0;
+  assert.ok(reads.peak > 1 && reads.peak <= READS_AT_ONCE, `skillsOf had ${reads.peak} reads of the run's Workspace in flight at once`);
+  reads.peak = 0;
   const prompt = await promptOf("Do it.", names.map((name) => `${name}/SKILL.md`), work);
   assert.deepEqual([...prompt.matchAll(/<skill name="([^"]+)">/g)].map((m) => m[1]), names);
-  assert.ok(peak <= READS_AT_ONCE, `promptOf had ${peak} files open at once`);
+  assert.ok(reads.peak > 1 && reads.peak <= READS_AT_ONCE, `promptOf had ${reads.peak} reads of the run's Workspace in flight at once`);
 });
 
 test("each skill is judged on its own by the adapter's check: one it takes goes native, one it would refuse stays inlined", () => {

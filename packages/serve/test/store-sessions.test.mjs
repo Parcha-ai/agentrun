@@ -5,7 +5,7 @@
 // writer whose claim moved on is refused SessionFenced and so is every later append of its store, and a run reopened at
 // the next epoch reads them back and goes on. sync() is one durable flush of the store.
 import assert from "node:assert/strict";
-import { DatabaseSync } from "node:sqlite";
+import { raw } from "./store-target.mjs";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
@@ -34,15 +34,15 @@ async function onClaim(store, claim, context = ctx) {
 }
 
 /** The store file's rows, read by a connection of the test's own. */
-function rows(file, sql, ...params) {
-  const db = new DatabaseSync(file, { readOnly: true });
+async function rows(file, sql, ...params) {
+  const db = await raw(file, { readOnly: true });
   try {
-    return db.prepare(sql).all(...params).map((row) => ({ ...row }));
+    return await db.all(sql, ...params);
   } finally {
-    db.close();
+    await db.close();
   }
 }
-const entriesOf = (file, runId) => rows(file, "SELECT conversation_id, record FROM pi_entries WHERE run_id = ? ORDER BY id", runId).map((row) => ({ conversation: row.conversation_id, ...JSON.parse(row.record) }));
+const entriesOf = async (file, runId) => (await rows(file, "SELECT conversation_id, record FROM pi_entries WHERE run_id = ? ORDER BY id", runId)).map((row) => ({ conversation: row.conversation_id, ...JSON.parse(row.record) }));
 
 test("R1: a session's records land in that run's journal, a conversation per key named on the root, and read() returns them in order", async (t) => {
   const { file, sessions } = await claimed(t);
@@ -52,7 +52,7 @@ test("R1: a session's records land in that run's journal, a conversation per key
   await writer.append([record(3)]);
   assert.deepEqual(await sessions.read("node-1"), [record(1), record(2), record(3)]);
   assert.deepEqual(await writer.read(), [record(1), record(2), record(3)]);
-  const entries = entriesOf(file, "run-1");
+  const entries = await entriesOf(file, "run-1");
   const named = entries.find((entry) => entry.kind === "agentrun.session.key" && entry.data?.key === "node-1");
   assert.ok(named, `the root names the key's conversation: ${JSON.stringify(entries)}`);
   assert.deepEqual(entries.filter((entry) => entry.conversation === named.data.conversation).map((entry) => entry.data), [1, 2, 3].map((n) => record(n).data), "each record is an entry of that conversation, in order");
@@ -66,13 +66,13 @@ test("R2: a writer whose claim moved on is refused SessionFenced and writes noth
   // The claim lapses and another runner takes the run: the epoch moves on.
   clock.now = T0 + LEASE + 1;
   assert.ok(await store.claim("run-1", "runner-b", { leaseMs: LEASE }), "the next claim takes the run");
-  const before = entriesOf(file, "run-1").length;
+  const before = (await entriesOf(file, "run-1")).length;
   await assert.rejects(writer.append([record(2)]), (error) => error instanceof SessionFenced && error.key === "node-1", "the fenced writer is refused SessionFenced");
-  assert.equal(entriesOf(file, "run-1").length, before, "and wrote nothing");
+  assert.equal((await entriesOf(file, "run-1")).length, before, "and wrote nothing");
   // Never retried under the newer epoch: every later append of this store is refused, whatever its key or writer.
   await assert.rejects(other.append([record(9)]), (error) => error instanceof SessionFenced && error.key === "node-2");
   await assert.rejects((async () => (await sessions.open("node-3")).append([record(7)]))(), SessionFenced);
-  assert.equal(entriesOf(file, "run-1").length, before, "no later append wrote anything");
+  assert.equal((await entriesOf(file, "run-1")).length, before, "no later append wrote anything");
 });
 
 test("R2: once the claim's signal is aborted (the claim lost, or the runner shutting down), the store refuses every append SessionFenced", async (t) => {
@@ -128,10 +128,10 @@ test("R5: sync() is one durable flush of the store", async (t) => {
   const { file, sessions } = await claimed(t);
   const writer = await sessions.open("node-1");
   await writer.append([record(1)]);
-  const flushes = () => rows(file, "SELECT flushes FROM store_meta")[0].flushes;
-  const before = flushes();
+  const flushes = async () => Number((await rows(file, "SELECT flushes FROM store_meta"))[0].flushes);
+  const before = await flushes();
   await writer.sync();
-  assert.equal(flushes(), before + 1, "one FULL commit of the store");
+  assert.equal(await flushes(), before + 1, "one FULL commit of the store");
 });
 
 test("R6: two runs' sessions with the same key stay apart", async (t) => {

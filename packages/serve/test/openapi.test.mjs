@@ -6,10 +6,11 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { isDeepStrictEqual } from "node:util";
 import { decisionRows } from "../dist/decision-rows.js";
-import { agentFolderOf, homeOf } from "../dist/files.js";
+import { agentFolderOf } from "../dist/files.js";
+import { agentHomeFolder } from "../dist/workspace/index.js";
 import { ROUTES } from "../dist/server.js";
 import { DEFINITION_FIELDS } from "../dist/validate.js";
-import { REQUEST_EXAMPLES, RUN_FIELDS_SENT } from "../dist/openapi.js";
+import { CAPABILITIES_SENT, DEFINITION_INPUT_OPTIONAL, DEFINITION_OPTIONAL, MCP_PREVIEW_SCOPE, REQUEST_EXAMPLES, RUN_FIELDS_SENT, SIGN_IN_FIELDS_SENT } from "../dist/openapi.js";
 import { schemaProblems } from "./schema-support.mjs";
 import { capabilities } from "../dist/index.js";
 import { note } from "./fixtures/faux-learn.mjs";
@@ -58,7 +59,7 @@ test("approving a note is the owner's password session alone, from the console w
   assert.deepEqual(doc.components.securitySchemes.bearer, VENDORED.components.securitySchemes.bearer, "the contract's scheme is as vendored");
 });
 
-test("every route the server serves is in the document, and every operation in it is a route here: served, or marked unsupported with why", async (t) => {
+test("every route the server serves is in the document, and every operation in it is a route here: served, or marked unsupported with why; the contract's operations this server does not serve are left out", async (t) => {
   const { doc } = await served(t);
   const ops = operations(doc);
   for (const route of ROUTES) {
@@ -75,8 +76,10 @@ test("every route the server serves is in the document, and every operation in i
     else assert.equal(op["x-agentrun-serve-unsupported"], undefined, `${op.operationId} is served`);
     if (route.capability) assert.equal(op["x-agentrun-serve-unsupported"].capability, route.capability);
   }
-  assert.equal(ops.filter(({ op }) => op["x-agentrun-serve-unsupported"]).length, 4, "the four this server answers 501");
-  assert.deepEqual(doc.info["x-agentrun-serve"].unsupported.length, 4);
+  assert.equal(ops.filter(({ op }) => op["x-agentrun-serve-unsupported"]).length, 1, "the one this server answers 501: quotes");
+  assert.deepEqual(doc.info["x-agentrun-serve"].unsupported, ["POST /quotes"]);
+  assert.deepEqual(doc.info["x-agentrun-serve"].not_served, ["GET /agents/{agent_id}/home", "PUT /agents/{agent_id}/home", "POST /runs/{run_id}/kill"]);
+  for (const id of ["exportHome", "importHome", "killRun"]) assert.ok(!ops.some(({ op }) => op.operationId === id), `${id} is not in the document`);
 });
 
 test("the contract's operations are as vendored; this server's own are added and marked x-agentrun-serve", async (t) => {
@@ -141,6 +144,17 @@ test("the contract's operations are as vendored; this server's own are added and
       assert.ok(isDeepStrictEqual(same, vendoredSame), "getTimeline is the contract's but for its limit");
       continue;
     }
+    if (op.operationId === "listAgents") {
+      // archivedparam/1: this route also takes `archived`, as GET /runs already does (C1): the contract's
+      // parameters, then this server's one, and the rest as vendored.
+      assert.deepEqual(Object.keys(changes), ["archived"]);
+      assert.deepEqual(op.parameters.slice(0, -1), original.parameters);
+      assert.deepEqual([op.parameters.at(-1).name, op.parameters.at(-1).in, op.parameters.at(-1).required], ["archived", "query", false]);
+      const { parameters: _a, ...same } = rest;
+      const { parameters: _b, ...vendoredSame } = original;
+      assert.ok(isDeepStrictEqual(same, vendoredSame), "listAgents is the contract's but for its archived");
+      continue;
+    }
     if (op.operationId === "listRunFiles" || op.operationId === "readRunFile") {
       // A hidden run's files (signins/1): the contract's description, then why 403 is answered here, and 403 added where
       // the contract has none; the rest as vendored.
@@ -198,14 +212,25 @@ test("the contract's operations are as vendored; this server's own are added and
     const { requestBody: _c, parameters: _d, ...vendoredSame } = original;
     assert.ok(isDeepStrictEqual(same, vendoredSame), `${op.operationId} is the contract's but for its named changes`);
   }
-  assert.equal(vendored.size + own.length, operations(doc).length, "no contract operation is gone");
+  // No contract operation is gone but those this server does not serve (NOT_SERVED), which the document lists.
+  const notServed = doc.info["x-agentrun-serve"].not_served;
+  assert.deepEqual(notServed.map((at) => vendored.get(at.replace(/^\S+/, (method) => method.toLowerCase()))?.operationId), ["exportHome", "importHome", "killRun"]);
+  assert.equal(vendored.size - notServed.length + own.length, operations(doc).length, "no other contract operation is gone");
   assert.deepEqual(own.sort(), [...doc.info["x-agentrun-serve"].extensions].sort(), "info lists the server's own");
   // Every property this server adds is marked with the addition that made it, and listed; without them, the
   // contract's components are as vendored.
   const components = structuredClone(doc.components);
+  // A schema this server adds whole is its own, marked (SecretMeta, the one shape a secret's view answers): set aside,
+  // as an added security scheme is below.
+  for (const [name, schema] of Object.entries(components.schemas)) {
+    if (!(name in VENDORED.components.schemas)) {
+      assert.notEqual(schema["x-agentrun-serve"], undefined, `${name}, a schema this server adds, is marked x-agentrun-serve`);
+      delete components.schemas[name];
+    }
+  }
   const marked = [];
   // Names taken out of a schema's `required` with the property they name: only the fields this server always sends
-  // (RUN_FIELDS_SENT) may be, so a required addition anywhere else still fails this comparison.
+  // (RUN_FIELDS_SENT, SIGN_IN_FIELDS_SENT, CAPABILITIES_SENT, Run.place) may be, so a required addition anywhere else still fails this comparison.
   const unrequired = [];
   const notes = [];
   const strip = (schema, at) => {
@@ -270,8 +295,23 @@ test("the contract's operations are as vendored; this server's own are added and
   }
   // A security scheme this server adds is its own, marked (the owner's session that approving a note takes).
   for (const [name, scheme] of Object.entries(components.securitySchemes ?? {})) if (scheme["x-agentrun-serve"] !== undefined) delete components.securitySchemes[name];
+  // DefinitionInput: instructions, version, skills and tools are optional here where the server does not require them
+  // (validate.ts, agents.ts definitionOf); Definition keeps only instructions optional, as a workflow revision's own
+  // answer has none, and always sends the rest. Checked absent, then restored, so the comparison below is the
+  // contract's own required arrays.
+  for (const [name, fields] of [["DefinitionInput", DEFINITION_INPUT_OPTIONAL], ["Definition", DEFINITION_OPTIONAL]]) {
+    for (const field of fields) assert.ok(!components.schemas[name].required.includes(field), `${name}.${field} is optional here`);
+    components.schemas[name].required = VENDORED.components.schemas[name].required;
+  }
+  // A contract property this server always sends (CAPABILITIES_SENT's `models`) is required here though the contract's is
+  // not: taken out of the required list, and listed with the rest.
+  const capabilities = components.schemas.Capabilities;
+  for (const field of CAPABILITIES_SENT.filter((name) => capabilities.required.includes(name) && !VENDORED.components.schemas.Capabilities.required.includes(name))) {
+    capabilities.required = capabilities.required.filter((name) => name !== field);
+    unrequired.push(`Capabilities.${field}`);
+  }
   assert.ok(isDeepStrictEqual(components, VENDORED.components), "the contract's components are unchanged but for the marked properties");
-  assert.deepEqual(unrequired.sort(), ["Run", "RunSummary"].flatMap((schema) => RUN_FIELDS_SENT.map((field) => `${schema}.${field}`)).sort(), "only the fields this server always sends are required beyond the contract");
+  assert.deepEqual(unrequired.sort(), [...["Run", "RunSummary"].flatMap((schema) => RUN_FIELDS_SENT.map((field) => `${schema}.${field}`)), "Run.place", ...CAPABILITIES_SENT.map((field) => `Capabilities.${field}`), ...SIGN_IN_FIELDS_SENT.map((field) => `SignIn.${field}`)].sort(), "only the fields this server always sends are required beyond the contract");
   assert.deepEqual(marked.sort(), [...doc.info["x-agentrun-serve"].fields].sort(), "info lists the marked properties");
   assert.deepEqual(notes.sort(), [...doc.info["x-agentrun-serve"].unsupported_fields, ...doc.info["x-agentrun-serve"].details, ...doc.info["x-agentrun-serve"].notes].sort(), "info lists the contract properties it notes");
 });
@@ -283,7 +323,7 @@ test("the served definition takes exactly the fields this server takes: a contra
   const refused = Object.keys(fields).filter((field) => fields[field]["x-agentrun-serve-unsupported"]);
   assert.deepEqual(Object.keys(fields).filter((field) => !refused.includes(field)).sort(), [...DEFINITION_FIELDS].sort(), "every field validate.ts takes, and no other, unmarked");
   assert.deepEqual(doc.info["x-agentrun-serve"].unsupported_fields, refused.map((field) => `DefinitionInput.${field}`));
-  const values = { input_schema: { type: "object" }, output_schema: { type: "object" } };
+  const values = { input_schema: { type: "object" } };
   for (const field of refused) {
     const answer = await api("POST", "/agents", agent(`with-${field.replaceAll("_", "-")}`, { [field]: values[field] ?? "x" }));
     assert.equal(answer.status, 422, field);
@@ -356,13 +396,8 @@ test("live answers meet the served document: capabilities, and an agent made, re
   for (const [id, body] of [["on-pi", agent("on-pi", { model: "faux/faux-1", thinking: "high" })], ["on-claude", agent("on-claude", { harness: "claude-agent" })], ["in-runner", agent("in-runner", { place: { mode: "runner" } })], ["in-bwrap", agent("in-bwrap", { place: { mode: "sandbox", box: "bwrap" } })], ["in-sandbox", agent("in-sandbox", { place: { mode: "sandbox", box: "daytona" } })], ["on-codex", flowAgent("on-codex", undefined, { harness: "codex" })]]) {
     const { warnings: _, ...made } = (await api("POST", "/agents", body)).body;
     const read = (await api("GET", `/agents/${id}`)).body;
-    if (id !== "on-codex") {
-      check("Agent", made);
-      check("Agent", read);
-      continue;
-    }
-    // A workflow definition keeps no instructions, which v2/0 requires of every definition: the one gap left, for v2/1.
-    for (const answer of [made, read]) assert.deepEqual([...new Set(schemaProblems(doc, { $ref: "#/components/schemas/Agent" }, answer))], ["$.definition.instructions: is required"]);
+    check("Agent", made);
+    check("Agent", read);
   }
   // The document's place takes the two modes the server takes, and refuses what it refuses.
   const place = doc.components.schemas.DefinitionInput.properties.place;
@@ -570,8 +605,7 @@ test("an agent's home is its own addition, home/1: its routes and capabilities.h
     assert.ok(op.responses["404"] && op.responses["401"], `${name} answers 401 and 404`);
   }
   assert.ok(file.put.responses["403"] && file.put.responses["413"] && file.delete.responses["403"], "a write answers 403, and a PUT 413");
-  assert.deepEqual(Object.keys(doc.paths["/agents/{agent_id}/home"]).sort(), Object.keys(VENDORED.paths["/agents/{agent_id}/home"]).sort(), "the contract's packed home keeps its path and methods");
-  assert.equal(doc.paths["/agents/{agent_id}/home"].get["x-agentrun-serve-unsupported"].capability, "home.export");
+  assert.equal(doc.paths["/agents/{agent_id}/home"], undefined, "the contract's packed home is not served here");
   assert.equal(doc.components.schemas.Capabilities.properties.home["x-agentrun-serve"], "home/1");
   assert.ok(doc.info["x-agentrun-serve"].fields.includes("Capabilities.home"));
 
@@ -583,8 +617,8 @@ test("an agent's home is its own addition, home/1: its routes and capabilities.h
   const json = (op, status) => op.responses[status].content["application/json"].schema;
   assert.deepEqual(schemaProblems(doc, json(file.put, "200"), await written.json()), []);
   // A host-owned note, planted as the server would: learning lists as one entry of its own shape, the note not at all.
-  await mkdir(join(homeOf(data, "keeper"), "learning"));
-  await writeFile(join(homeOf(data, "keeper"), "learning", "l.md"), "learned");
+  await mkdir(join(agentHomeFolder(data, "keeper"), "learning"));
+  await writeFile(join(agentHomeFolder(data, "keeper"), "learning", "l.md"), "learned");
   const listed = (await api("GET", "/agents/keeper/home/files")).body;
   assert.deepEqual(listed.files.map((f) => [f.path, f.host_owned]), [["learning", true], ["notes/a.md", undefined]]);
   assert.deepEqual(schemaProblems(doc, json(files.get, "200"), listed), []);
@@ -602,14 +636,15 @@ test("an agent's home is its own addition, home/1: its routes and capabilities.h
 test("a tool key's save documents every status it answers, 503 unavailable among them: a save still checking its key when the server closes keeps nothing", async (t) => {
   const { doc } = await served(t);
   const save = doc.paths["/settings/tool-keys/{key_id}"].put;
-  assert.deepEqual(Object.keys(save.responses).sort(), ["204", "400", "401", "409", "415", "422", "429", "500", "503"]);
+  // 403: the token, never the owner's session (secret-writes.ts), is refused a secret write.
+  assert.deepEqual(Object.keys(save.responses).sort(), ["204", "400", "401", "403", "409", "415", "422", "429", "500", "503"]);
   assert.equal(save.responses["503"]?.$ref, "#/components/responses/Unavailable");
 });
 
-test("the served TimelineKind holds every kind pi-durable-agent's timeline declares, decision among them as decision-rows/1, and a decision row meets TimelineRow", async (t) => {
+test("the served TimelineKind holds every kind the timeline declares, decision among them as decision-rows/1, and a decision row meets TimelineRow", async (t) => {
   const { doc } = await served(t);
   // The kinds as the timeline's built declaration has them, comments dropped: the rows this server serves are its.
-  const declaration = await readFile(new URL("timeline.d.ts", import.meta.resolve("@parcha/pi-durable-agent/timeline")), "utf8");
+  const declaration = await readFile(new URL("timeline.d.ts", import.meta.resolve("../dist/timeline/index.js")), "utf8");
   const union = /export type TimelineKind =([^;]+);/.exec(declaration.replace(/\/\*[\s\S]*?\*\//g, ""))?.[1] ?? "";
   const declared = [...union.matchAll(/"([a-z_]+)"/g)].map(([, kind]) => kind);
   assert.ok(declared.includes("decision") && declared.includes("usage"), `the timeline's kinds are read: ${declared}`);
@@ -634,6 +669,60 @@ test("the not-metered counts are this server's own fields: TimelineUsage.not_met
   assert.equal(doc.components.schemas.UsageLine.properties.unpriced_runs?.type, "integer");
 });
 
+test("what /usage and an agentic run's pause answer is in the document: the report's unpriced_runs, and 501 on pause and resume", async (t) => {
+  const { api, baseUrl } = await serve(t);
+  const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
+  const report = (await api("GET", "/usage")).body;
+  assert.equal(typeof report.unpriced_runs, "number");
+  assert.deepEqual(schemaProblems(doc, { $ref: "#/components/schemas/Usage" }, report), []);
+  for (const path of ["/runs/{run_id}/pause", "/runs/{run_id}/resume"]) assert.ok(doc.paths[path].post.responses["501"], `${path} documents 501`);
+});
+
+test("the agent create and update answers carry warnings, which the document now allows: A2", async (t) => {
+  const { api, baseUrl } = await serve(t);
+  const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
+  const created = await api("POST", "/agents", agent("qa-warnings", { harness: "claude-agent" }));
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  assert.ok(Array.isArray(created.body.warnings) && created.body.warnings.some((w) => w.field === "definition.harness"), "POST /agents warns of a harness it does not run here");
+  assert.deepEqual(schemaProblems(doc, { $ref: "#/components/schemas/Agent" }, created.body), [], "the create answer, warnings included, meets Agent");
+  const updated = await api("PUT", "/agents/qa-warnings/definition", { definition: { instructions: "Answer, again.", harness: "claude-agent" } });
+  assert.equal(updated.status, 200, JSON.stringify(updated.body));
+  assert.ok(Array.isArray(updated.body.warnings) && updated.body.warnings.some((w) => w.field === "definition.harness"), "PUT .../definition warns the same way");
+  assert.deepEqual(schemaProblems(doc, { $ref: "#/components/schemas/Agent" }, updated.body), [], "the commit answer, warnings included, meets Agent");
+});
+
+test("a workflow revision names no instructions, version, skills or tools, which the document now allows, and keeps the 422s instructions and workflow together or neither give: A4", async (t) => {
+  const { api, baseUrl } = await serve(t);
+  const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
+  const body = flowAgent("qa-workflow-fields");
+  assert.deepEqual(body.definition.version ?? body.definition.skills ?? body.definition.tools, undefined, "the create names none of the three");
+  assert.deepEqual(schemaProblems(doc, { $ref: "#/components/schemas/DefinitionInput" }, body.definition), [], "the create's definition meets DefinitionInput without instructions, version, skills or tools");
+  const created = await api("POST", "/agents", body);
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const read = await api("GET", "/agents/qa-workflow-fields");
+  assert.equal(read.status, 200);
+  assert.equal(read.body.definition.instructions, undefined, "a workflow revision's own answer has none");
+  assert.deepEqual(schemaProblems(doc, { $ref: "#/components/schemas/Agent" }, read.body), [], "the read answer, instructions absent, meets Agent");
+  const both = await api("POST", "/agents", agent("qa-workflow-both", { workflow: body.definition.workflow }));
+  assert.deepEqual([both.status, both.body.error.fields[0].field, both.body.error.fields[0].reason], [422, "definition.workflow", "not_allowed"], "instructions and workflow together are still refused");
+  const neither = await api("POST", "/agents", { definition: { id: "qa-workflow-neither", name: "x" } });
+  assert.deepEqual([neither.status, neither.body.error.fields[0].field, neither.body.error.fields[0].reason], [422, "definition.instructions", "missing"], "neither is still refused");
+});
+
+test("GET /agents documents archived, as GET /runs already does, and lists an archived agent by it: C1", async (t) => {
+  const { api, baseUrl } = await serve(t);
+  const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
+  const param = doc.paths["/agents"].get.parameters.find((p) => p.name === "archived");
+  assert.ok(param, "GET /agents documents archived");
+  assert.deepEqual([param.in, param.required, param.schema.type], ["query", false, "boolean"]);
+  await made(api, agent("qa-archived"));
+  assert.equal((await api("POST", "/agents/qa-archived/archive")).status, 200);
+  const archived = await api("GET", "/agents?archived=true");
+  assert.equal(archived.status, 200, JSON.stringify(archived.body));
+  assert.ok(archived.body.agents.some((a) => a.agent_id === "qa-archived"), "the archived agent is in the archived list");
+  assert.deepEqual(schemaProblems(doc, { $ref: "#/components/schemas/AgentList" }, archived.body), []);
+});
+
 test("what this server always sends is required in the document: a run's revision, kind and archived_at, on a run and in a list, an agent's tools on its own route, and a trigger's zone and interval start, which a write may leave out", { timeout: 60_000 }, async (t) => {
   const { api, baseUrl } = await serve(t, { triggerClock: fakeClock("2026-10-31T12:00:00Z") });
   const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
@@ -655,7 +744,8 @@ test("what this server always sends is required in the document: a run's revisio
   const answer = doc.paths["/triggers/{trigger_id}"].get.responses["200"].content["application/json"].schema;
   const write = doc.paths["/triggers"].post.requestBody.content["application/json"].schema;
   for (const [source, filled] of [[{ cron: "30 1 * * *" }, "timezone"], [{ every_s: 600 }, "start_at"]]) {
-    const body = schedule("nightly", source);
+    // One name per trigger of an agent (the store's UNIQUE (agent_id, name)): each its own.
+    const body = schedule("nightly", source, { name: `nightly ${filled}` });
     assert.deepEqual(schemaProblems(doc, write, body), [], `a write may leave ${filled} out`);
     const created = await api("POST", "/triggers", body);
     assert.equal(created.status, 201, JSON.stringify(created.body));
@@ -665,4 +755,24 @@ test("what this server always sends is required in the document: a run's revisio
     const { [filled]: _, ...without } = read.source;
     assert.notDeepEqual(schemaProblems(doc, answer, { ...read, source: without }), [], `an answer without ${filled} is not the document's`);
   }
+});
+
+test("every InputIssue reason the MCP registry sends is one the document's InputIssue lists (a URL's redirect among them)", async () => {
+  const { openapiDocument } = await import("../dist/openapi.js");
+  const listed = openapiDocument(() => undefined).components.schemas.InputIssue.properties.reason.enum;
+  const sent = new Set();
+  for (const file of ["mcp-probe.ts", "mcp-servers-store.ts", "mcp-private-hosts.ts"]) {
+    for (const [, reason] of (await readFile(new URL(`../src/${file}`, import.meta.url), "utf8")).matchAll(/reason: "([a-z_]+)"/g)) sent.add(reason);
+  }
+  assert.ok(sent.has("redirect"), "the registry refuses a redirect with reason redirect");
+  assert.deepEqual([...sent].filter((reason) => !listed.includes(reason)).sort(), []);
+});
+
+test("an MCP preview's tools are said to be the server's offer, not what the credential allows (a read-only token lists write tools too)", async (t) => {
+  const { doc } = await served(t);
+  const preview = doc.paths["/settings/mcp-servers/preview"].post;
+  assert.match(MCP_PREVIEW_SCOPE, /not what this credential allows/);
+  assert.match(MCP_PREVIEW_SCOPE, /refused by the MCP server/);
+  assert.ok(preview.description.includes(MCP_PREVIEW_SCOPE), preview.description);
+  assert.ok(preview.responses["200"].description.includes(MCP_PREVIEW_SCOPE), preview.responses["200"].description);
 });

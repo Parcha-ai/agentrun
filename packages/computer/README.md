@@ -7,10 +7,17 @@ npm install @parcha/agentrun-computer@latest
 ```
 
 ```ts
-import { DockerProvider, providerModule } from "@parcha/agentrun-computer";
+import { providerFor, providerModule } from "@parcha/agentrun-computer";
+// One provider's class, from its own subpath: the package root loads no provider.
+import { DockerProvider } from "@parcha/agentrun-computer/docker";
 // The mount rule alone: loads no provider, no vendor SDK and no conformance code.
 import { checkMount, readBackOf, WORKSPACE, type MountSpec } from "@parcha/agentrun-computer/mount";
 ```
+
+The package root holds the protocol, the registry and the descriptors, and loads no provider: a provider loads by its
+id (`providerFor(id, options)`, which imports that one provider's file), or from its subpath (`/docker`, `/daytona`,
+`/modal`, `/e2b`, `/orgo`, `/orgo-desktop`, `/phone-harness`, `/browserbase`, `/kernel`, `/local-chrome`). A provider's
+option types (`DockerProviderOptions`, `ModalProviderOptions` and the like) come from its subpath too, not the root.
 
 The package carries the daemon for Linux amd64 and arm64 in `dist/`, so a provider runs it with no Go on the host. A
 vendor's SDK is the host's: Modal's `modal` package is imported only when the Modal provider is built, and the package
@@ -33,6 +40,10 @@ full VM, a machine. The protocol has two layers:
   inside. It never runs commands itself: the daemon does. This package has four: Docker, Modal's VM runtime, Daytona
   and E2B (desktops), each one line of the provider registry (see [Adding a computer](#adding-a-computer)).
 
+The protocol is published as a spec, [`spec/computer/`](../../spec/computer/README.md), at protocol version 0.2
+(`PROTOCOL_VERSION`, which `hello` carries as `protocol`). Its JSON Schema and constants are generated from
+`src/protocol.ts` by `node scripts/generate-computer-spec.mjs`, and a test fails when they drift.
+
 ## What it does today
 
 The daemon answers `hello`, `ping`, `exec.run`, the `files.*` methods, `tar.*`, the `process.*` methods and
@@ -43,7 +54,7 @@ extension](#the-protocol-extension-kind-daemon-modes-screen-input-apps-lifetime)
 
 ```text
 → {"jsonrpc":"2.0","id":1,"method":"hello","params":{"client":"me"}}
-← {"jsonrpc":"2.0","id":1,"result":{"version":"0.1.0-beta.30","os":"linux","kind":"linux","arch":"arm64","groups":["exec","files","processes"]}}
+← {"jsonrpc":"2.0","id":1,"result":{"protocol":"0.2","version":"0.1.0-beta.30","os":"linux","kind":"linux","arch":"arm64","groups":["exec","files","processes"]}}
 → {"jsonrpc":"2.0","id":2,"method":"exec.run","params":{"argv":["uname","-m"],"timeoutMs":5000}}
 ← {"jsonrpc":"2.0","id":2,"result":{"exitCode":0,"stdout":"YWFyY2g2NAo=","stderr":"","timedOut":false,"truncated":false}}
 ```
@@ -94,7 +105,10 @@ extension](#the-protocol-extension-kind-daemon-modes-screen-input-apps-lifetime)
   refuses uid 0 for its programs (root shares its uid with every root process of the vendor's); refuses to start while
   any other process holds that uid (one could be signalled, traced or written to by them, and a vendor's agent among
   them would be theirs to command), naming each; moves every one of its threads into a new network namespace and
-  brings its loopback up, reading back that no thread stayed behind and that the loopback alone is up or addressed
+  brings its loopback up over rtnetlink (RTM_NEWLINK with IFF_UP on lo's index, as `ip link set lo up` does; and
+  RTM_NEWADDR for 127.0.0.1/8 where the kernel gave lo none), never by the SIOCSIFFLAGS ioctl, which gVisor's netstack
+  refuses in a new namespace (ENOTTY, live on Modal's gVisor, 11-11). It reads back lo up and running, 127.0.0.1 on it
+  and a listener there reached, and that no thread stayed behind and that the loopback alone is up or addressed
   (a kernel with the tunnel modules loaded gives every new namespace its fallback tunnels, tunl0, gre0, sit0 and the
   rest, down with no address: they stay so, since no program holds CAP_NET_ADMIN, and computerd's probe reports any
   it could bring up, which every read-back refuses); then drops as below, and installs a seccomp filter on every thread that refuses (EPERM) a socket of family
@@ -108,6 +122,24 @@ extension](#the-protocol-extension-kind-daemon-modes-screen-input-apps-lifetime)
   `--egress`: such a computer's network is `none` (open and allowlists wait for a proxy out of that namespace, which
   is not built yet). The code is `daemon/internal/isolate`; `test/docker/loopback-block.docker.test.mjs` runs each
   provider's start in a root container beside a stand-in agent on 2280 and 49983.
+- **Where root may not make the network namespace, init makes it inside a user namespace.** Root holds no
+  CAP_SYS_ADMIN on gVisor (Modal's GPU runtime), so `unshare(CLONE_NEWNET)` is EPERM. It may make a user namespace with
+  a network namespace inside it (a live probe on Modal's gVisor, 11-11). Init doesn't ask the vendor which it is: it
+  tries the plain namespace first, and on EPERM alone (`isolate.ErrNoNetworkNamespace`) it takes this way, whatever the
+  vendor.
+  - Init starts itself again as `computerd userns-init --started-in <its network namespace>`: a child in a new user
+    namespace that maps every uid and gid to itself, and a new network namespace. The root parent writes the map, which
+    needs CAP_SETUID and CAP_SETGID. The map keeps every id as it is, so the files the programs make, HOME, and the run's
+    folder belong to the same uid inside and out.
+  - The child does all of the above but make the namespace. Before touching anything, it reads back
+    (`isolate.KeepOwnNetwork`) that no thread is in the namespace it was started from. Then it brings the loopback up
+    over rtnetlink and reads it back, as above. The live T4 run at the fallback's first head (11-11) made the user and
+    network namespace, then failed at lo on the ioctl.
+  - The first init keeps no capability (no_new_privs, every set empty). It passes SIGTERM and SIGINT on, reaps, and exits
+    with the child's code.
+  - If neither way works, init refuses to start in words that name both, and the computer fails closed.
+  - hello says which fence holds, `fence: "netns"` or `"userns-netns"`. Every provider that starts init with
+    `--own-network` (Daytona, E2B, Orgo, Modal) refuses a hello that names neither.
 - **Init drops its privileges itself, as any user, root included,** before it listens, so the line holds on every
   vendor and not only where the provider drops capabilities (Docker: `--cap-drop ALL`). On every thread it sets
   `no_new_privs`; drops from the bounding set each capability up to the kernel's last
@@ -237,7 +269,7 @@ Its whole tree ends when the program ends or is signalled to its end. Ids are `p
 | `process.signal` | `id, signal` | `{}`: `TERM`, `INT`, `KILL` or `HUP`, to the program's process group, except `INT` with a pty (below); to a process that has ended it does nothing |
 | `process.resize` | `id, cols, rows` | `{}`: the terminal's new size; the program gets SIGWINCH |
 | `process.list` | `from?` | `{processes, truncated, next}`: `processes` are `{id, pid, argv, argvClipped, pty, running, exitCode, signal, startedAt, endedAt}` in start order, times in milliseconds since the epoch; at most 768 KiB a reply: when `truncated`, list again with `from` set to `next`. Pages follow start order, not places in the table, so a process dropped between two pages makes the next skip none |
-| `process.wait` | `id, timeoutMs` | `{running, exitCode, signal}`: waits up to `timeoutMs` (0 to a day) for the end; `running` is true on timeout |
+| `process.wait` | `id, timeoutMs` | `{running, exitCode, signal}`: waits up to `timeoutMs` (0 to a day) for the end, which comes once all the program wrote before it exited is in its log and streams; `running` is true on timeout |
 
 - Each stream keeps its last 8 MiB in a ring. Offsets count bytes since the process started; `nextOffset` is where the
   next read starts. A read below the ring's start begins at its start, and `dropped` says how many bytes were lost; an
@@ -371,8 +403,8 @@ in the kernel's tool registry, keyed by these groups.
 | --- | --- | --- | --- |
 | `none` | | | (the run's folder only: no computer) |
 | `sandbox` | `linux` | `exec`, `files`, `processes` | |
-| `desktop` | `desktop` | `screen`, `input.pointer`, `input.keys` | `exec`, `files`, `processes`, `apps`, `stream` |
-| `phone` | `android`, `ios` | `screen`, `input.touch`, `apps` | `input.keys`, `apps.install`, `apps.ui_tree`, `stream` |
+| `desktop` | `desktop` | `screen`, `input.pointer`, `input.keys` | `exec`, `files`, `processes`, `apps`, `ui`, `stream` |
+| `phone` | `android`, `ios` | `screen`, `input.touch`, `apps` | `input.keys`, `apps.install`, `ui`, `stream` |
 | `browser` | `browser` | `cdp` | `stream`, `downloads` |
 
 - `serves(capabilities, kind)` is true when `capabilities().kind` is one of the kind's machine kinds and every required
@@ -394,18 +426,19 @@ in the kernel's tool registry, keyed by these groups.
   | e2b | sandbox: `E2B_BASE_TEMPLATE` ("base"); desktop: `E2B_DESKTOP_TEMPLATE` ("desktop") |
   | orgo | desktop: `ORGO_BASE_IMAGE` ("linux") |
   | phone-harness | phone: `PHONE_IMAGE` ("android") |
-  | browserbase, kernel | browser: `BROWSER_IMAGE` ("chromium") |
+  | browserbase, kernel, local | browser: `BROWSER_IMAGE` ("chromium") |
 
   | id | label | kinds | keys (required unless marked) | mounts | metered |
   | --- | --- | --- | --- | --- | --- |
   | docker | Docker | sandbox, desktop | none | bind | no |
-  | daytona | Daytona | sandbox | `DAYTONA_API_KEY`; `DAYTONA_API_URL`, `DAYTONA_TARGET` (optional) | archil | yes |
+  | daytona | Daytona | sandbox | `DAYTONA_API_KEY`; `DAYTONA_API_URL`, `DAYTONA_TARGET`, `DAYTONA_ARCHIL_EGRESS` (optional) | archil | yes |
   | modal | Modal | sandbox | `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` | archil | yes |
   | e2b | E2B | sandbox, desktop | `E2B_API_KEY` | archil | yes |
-  | orgo | Orgo | desktop | `ORGO_API_KEY` | none | yes |
+  | orgo | Orgo | desktop (Linux; Windows and macOS with `os`) | `ORGO_API_KEY` | none | yes |
   | phone-harness | Phone harness | phone | `PHONE_HARNESS_API_KEY` | none | yes |
   | browserbase | Browserbase | browser | `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID` | none | yes |
   | kernel | Kernel | browser | `KERNEL_API_KEY` | none | yes |
+  | local | Local Chrome | browser | none | none | no |
 
 - Each provider module exports `CAPABILITIES` beside `MOUNT` (the registry's contract, `ProviderModule`). A unit test
   holds every registry provider's `CAPABILITIES` and `MOUNT` to its entry, and each provider built from the test fakes,
@@ -453,7 +486,7 @@ itself, from our server (adb, a vendor API). Either way a connection's `client` 
 params, { signal })` and `close()`): `DaemonClient` over a stream, or a provider's in-process client.
 
 **Groups.** `capabilities().groups` is one flat list, repeated in hello's `groups`: `exec`, `files`, `processes`,
-`screen`, `input.pointer`, `input.keys`, `input.touch`, `apps`, `apps.install`, `apps.ui_tree`, and the provider's
+`screen`, `input.pointer`, `input.keys`, `input.touch`, `apps`, `apps.install`, `ui`, and the provider's
 `cdp`, `stream`, `downloads`. Each is optional unless kind makes it Core. The drift check and Docker's `connect` refuse a hello whose kind or groups differ from what the
 provider declares, either way.
 
@@ -463,8 +496,8 @@ provider declares, either way.
 | `input.pointer` | `input.actions`: `move`, `down`, `up`, `click` (`count` 1-3, held `keys`), `drag` (a path of 2 or more points), `scroll` (`unit` clicks or px) |
 | `input.keys` | `input.actions`: `key` (one key pressed, or a combo released in reverse; `repeat`), `hold` (`ms`), `type` |
 | `input.touch` | `input.actions`: `tap`, `long_press`, `swipe`, `pinch` (`scale` above 1 apart, below together), `button` (back, home, app_switch) |
-| `apps`, `apps.install` | `apps.list` (`{ apps, foreground }`), `apps.launch`, `apps.terminate`; `apps.install({ path })` of a file already in the computer |
-| `apps.ui_tree` | `apps.ui_tree`: `{ root: UiNode, nodes, truncated }`, at most 5000 nodes; a node has `role`, `id?`, `text?`, `label?`, `bounds` in screenshot pixels, `enabled`, the optional booleans and `children` |
+| `apps`, `apps.install` | `apps.list` (`{ apps, foreground }`), `apps.launch({ id, url?, background? })`, `apps.terminate`; `apps.install({ path })` of a file already in the computer |
+| `ui` | `ui.observe({ target?, full?, image?, since? })`: `{ state, app, window, nodes, diff?, image?, truncated }`, at most 5000 flat nodes, each `{ ref, role, name?, value?, id?, bounds, parent?, flags?, actions? }` with an ARIA role and bounds in window points. `ui.act({ target?, state?, steps, expect?, foreground? })`: `{ steps, state, changed, expect? }`, each step's `route` and `verified`, or its refusal (`stale`, `denied`, ...) as the last. The rules are in [`wire.md`](../../spec/computer/wire.md#the-ui-group); `UiEngine` (`src/ui-engine.ts`) keeps them over a `UiSource`, `UiSession` (`src/client.ts`) is the typed caller, and `@parcha/agentrun-computer/fake-ui-driver` answers them from scripted apps for tests |
 
 **The live view's seam** (`src/screen-watch.ts`). The runner's viewer reads a computer through
 `provider.watch?(ref, handlers, { signal?, maxWidth?, quality? })`:
@@ -627,7 +660,7 @@ fixtures of every evasion it catches.
 ## Docker
 
 ```ts
-import { DockerProvider } from "@parcha/agentrun-computer";
+import { DockerProvider } from "@parcha/agentrun-computer/docker";
 
 const docker = new DockerProvider({ daemonPath: "dist/computerd-linux-amd64" });
 const made = await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none" });
@@ -745,7 +778,7 @@ key.
 
 - **The volume** `computer-<hex>-egress`: a tmpfs of 1 MiB, mode 0700, owned by the computer's uid:gid. The proxy
   makes its Unix socket there (0600); the computer mounts it read-only at `/opt/agentrun/egress` (`EGRESS_MOUNT`).
-- **The proxy container** `computer-<hex>-egress`: `node` in `EGRESS_IMAGE` (node:22.23.4-bookworm-slim, pinned by
+- **The proxy container** `computer-<hex>-egress`: `node` in `EGRESS_IMAGE` (node:22.23.5-trixie-slim, pinned by
   digest; `new DockerProvider({ daemonPath, egress: { image } })` replaces it) runs `dist/docker/egress-main.js`, this
   package's own build, bound read-only with its `package.json`. It is on Docker's default bridge alone, publishes no
   port, and runs as the computer's uid:gid with a read-only root, `--cap-drop ALL`, `no-new-privileges`, 256 MiB, 64
@@ -814,7 +847,8 @@ computer has the folder at one path, `/workspace` (`WORKSPACE`). `HOME` stays wh
 Docker): `/workspace` is only the mount.
 
 ```ts
-import { DockerProvider, WORKSPACE } from "@parcha/agentrun-computer";
+import { WORKSPACE } from "@parcha/agentrun-computer";
+import { DockerProvider } from "@parcha/agentrun-computer/docker";
 
 const docker = new DockerProvider({ daemonPath: "dist/computerd-linux-amd64" });
 // The run folder must exist, by its canonical path, and be writable by docker.user (below).
@@ -840,6 +874,14 @@ const made = await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 60
   `{ other: "<words>" }` for a mount at `/workspace` the provider never makes. An Archil mount's `epoch` is the
   computer's `agentrun.epoch` label (Archil's hold on a folder carries none); an Archil mount with no epoch reads back
   as `{ other }`, in words. The token is never in a label, a read-back or an error.
+- **An Archil egress gateway (Daytona, `archilEgress` / `DAYTONA_ARCHIL_EGRESS`).** For a target whose runners reach
+  Archil only through a gateway, `<IPv4 gateway>:<mount lane>:<data lane>` (such as `10.60.0.40:18100:42050`, parcha-proxy's
+  archil-egress). The helper's mount then starts `computerd archil-relay` on the computer's loopback (127.0.0.1:3129) and
+  an nftables table of its own (`inet agentrun_archil`) that redirects root's TCP to 8100 (the mount endpoint) and 32050
+  (the file servers, at the raw addresses the mount endpoint returns) to the relay and resets every other TCP to those
+  ports. The relay sends each connection to the gateway's lane for its port with a PROXY v2 header naming the original
+  destination; the gateway admits only a destination that proves, by certificate, the Archil name the client asked for.
+  A relay that cannot reach the gateway closes the connection, so the client reaches nothing. Unset, nothing changes.
 - **Docker takes a bind.** `create` adds `--mount type=bind,src=<path>,dst=/workspace` after the daemon's mount:
   read-write, propagation `rprivate`. A path Docker's `--mount` cannot hold (a comma, a double quote, a line break) is
   refused by `check`.
@@ -864,13 +906,68 @@ const made = await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 60
   refuses such a computer. The drift check (below) holds a computer to the mount it was asked for: the bind there, from
   that path, read-write, `rprivate`, and no other mount.
 
+### A provider in a container: the `volume` option
+
+A provider that runs in a container of the Docker it drives, given that Docker's socket (the server under
+`docker compose`), has paths the Docker daemon does not: its files are on a named volume the daemon mounted into its
+container. A bind of its daemon copy or of a run folder names a path that exists only inside that container, so every
+`docker run` would fail. The `volume` option says where its files are:
+
+```ts
+// The server's container has the named volume agentrun_agentrun-data mounted at /data.
+const docker = new DockerProvider({
+	daemonPath: "dist/computerd-linux-amd64",
+	daemonCache: "/data/computer-cache", // at or below volume.root
+	volume: { name: "agentrun_agentrun-data", root: "/data" },
+});
+await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none", mount: { kind: "bind", path: "/data/disk/agents/a1/runs/r1/work" } });
+```
+
+- `volume: { name, root }`: `name` is the named volume, as `docker volume ls` names it; `root` is where this process
+  has it mounted, an absolute path. Without the option, nothing changes: every path is bound as it is.
+- With it, the daemon and the run's folder are mounted as the volume's subpaths, never binds of this process's paths
+  and never the volume's root, and every subpath is a directory (Docker mounts a directory subpath on every engine that
+  has `volume-subpath`; nothing leans on a file). The daemon is staged in `daemonCache` as `daemon-<sha256>/`, holding
+  `computerd` (0755) and an empty `egress/`, written in a temporary directory and renamed into place, reused when the
+  same; that directory is mounted read-only at `/opt/agentrun`, so the daemon is `/opt/agentrun/computerd` as on every
+  computer and an allowlist's egress volume has its mount point. `--mount type=volume,src=<name>,dst=/opt/agentrun,
+  volume-subpath=<daemon dir below root>,volume-nocopy,readonly`, and `--mount type=volume,src=<name>,dst=/workspace,
+  volume-subpath=<folder below root>,volume-nocopy`. `volume-nocopy`: Docker never copies the image's files at the
+  destination into the volume.
+- `daemonCache` must be at or below `root`; the provider throws in words when it is made with one that is not. A run
+  folder must be below `root`; `check` and `create` refuse one that is not, or the root itself, in words, before any
+  `docker run`.
+- `volume-subpath` takes Docker Engine 26 or later (API 1.45). The provider reads the engine with `docker info`
+  (`host().engine`); `create` refuses an older one, or one that reports no version, in words before anything is made,
+  and `check` does too once the host is read.
+- `attach` and `list` read the run's folder back from the volume's subpath (`HostConfig.Mounts`) as the path below
+  `root` that `create` was given, `{ kind: "bind", path }`. The drift check holds the daemon's and the folder's mounts to
+  the volume, its subpaths, read-only and read-write, and no bind.
+- The run folder is still checked for the computer's user as above: the provider reads it at its own path.
+- **An allowlist's proxy too.** The egress proxy's code (`dist/docker/egress-main.js`, `egress-proxy.js`,
+  `egress-table.js` and the package's `package.json`) is bound from this package's build, a path the Docker daemon does
+  not have either. With the option, `create` stages those four files below the volume's root first, as it stages the
+  daemon: in `daemonCache`, in `egress-<sha256 of the files>/` (`docker/` holding the three modules, `package.json`
+  beside it; 0755 directories, 0644 files), written in a temporary directory and renamed into place, and reused when
+  one with the same bytes and modes is there. A published tree, the daemon's or the proxy's, is never removed or written
+  over, since a running computer may have it mounted: providers sharing `daemonCache` that stage at once use the tree
+  the first one renamed into place, and a tree at that name that no longer holds the same (a hand edit) is left as it
+  is, the new one published beside it as `<name>-<random>`. The read-back (`attach`, `list`, `network`, the drift
+  check) takes a computer mounted on `<name>` or any `<name>-<anything>` in that directory whose contents verify, byte
+  for byte and mode for mode: two providers that repaired the same tree at once each mounted their own copy, and both
+  are as `create` makes one. A source that is not a regular file (a named pipe) is
+  refused in words, never waited on. The proxy then mounts that one
+  directory, the layout it runs from, whole at `/code` as the volume's subpath, read-only, and the read-back holds it to
+  it. The egress volume is a named volume of its own, as before. In a container the provider still needs
+  `egress.hostAddresses` for an allowlist (see the egress proxy).
+
 ### The image: `ensureImage`
 
 The provider owns the image its computers start from and makes it ready in its own process. There is no state file and
 no other process to wait on: Docker's own tag is the shared state.
 
 ```ts
-import { DockerProvider } from "@parcha/agentrun-computer";
+import { DockerProvider } from "@parcha/agentrun-computer/docker";
 
 const docker = new DockerProvider({ daemonPath: "dist/computerd-linux-amd64" }); // image: the default recipe
 const image = await docker.image({ signal });   // built once; one inspect when Docker has it
@@ -1015,7 +1112,8 @@ in a long-lived service), with Docker's CLI on its PATH. A computer stops at its
 its stopped container may stay up to one interval longer.
 
 ```ts
-import { DockerProvider, sweep } from "@parcha/agentrun-computer";
+import { sweep } from "@parcha/agentrun-computer";
+import { DockerProvider } from "@parcha/agentrun-computer/docker";
 
 const swept = await sweep(new DockerProvider({ daemonPath: "dist/computerd-linux-amd64" }));
 if (swept.ok) console.log(`deleted ${swept.value.deleted.join(", ") || "none"}; kept ${swept.value.kept}`);
@@ -1049,7 +1147,8 @@ as a caller's labels, with no code of its own: Docker writes them with `--label`
   the computer through the provider's own exec, and a deleted computer holds no mount.
 
 ```ts
-import { DockerProvider, releaseOlder, runLabels } from "@parcha/agentrun-computer";
+import { releaseOlder, runLabels } from "@parcha/agentrun-computer";
+import { DockerProvider } from "@parcha/agentrun-computer/docker";
 
 const docker = new DockerProvider({ daemonPath: "dist/computerd-linux-amd64" });
 // A claim at epoch 3 takes the run over: the computers of epochs 1 and 2 go first.
@@ -1074,7 +1173,7 @@ sandbox, and the Daytona sweep wait through it too.
 
 ```ts
 import { ModalClient } from "modal"; // the host's own client: this package imports nothing from the SDK
-import { ModalProvider } from "@parcha/agentrun-computer";
+import { ModalProvider } from "@parcha/agentrun-computer/modal";
 
 const modal = new ModalProvider({
 	sdk: new ModalClient(),
@@ -1084,7 +1183,7 @@ const modal = new ModalProvider({
 const made = await modal.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none" });
 ```
 
-`ModalProvider` makes Modal sandboxes on the VM runtime only, through the slice of Modal's JS SDK named by `ModalSdk`
+`ModalProvider` makes Modal sandboxes on the VM runtime, or on gVisor for a GPU computer (below), through the slice of Modal's JS SDK named by `ModalSdk`
 (apps, images, sandboxes and five methods of a sandbox). It has not yet run against real Modal: every test uses a fake
 of that slice, and the live conformance file waits for a key (below).
 
@@ -1096,7 +1195,9 @@ of that slice, and the live conformance file waits for a key (below).
 - **The loopback block.** Init starts with `--own-network` (see [Init, the socket and the
   bridge](#init-the-socket-and-the-bridge)) whatever Modal runs inside the sandbox: the daemon's programs reach their
   own loopback and nothing else, and the default computer user is 2510:2510 (`user` option or spec.user for another;
-  init refuses one another process holds). Modal's root holds every capability, so the namespace is made there. Known
+  init refuses one another process holds). On the VM runtime Modal's root holds every capability, so the namespace is
+  made there. On gVisor, a GPU computer's runtime, root may not make it, so init makes it inside a user namespace
+  (below). Known
   gap: network `open` is refused in words until a proxy carries it out of the daemon's own network, the next feature
   after this one; a computer that needs pip, npm or git from the internet cannot be made on Modal until then.
 - **The daemon is uploaded at create.** The sandbox's command is a small POSIX sh entrypoint (BusyBox and coreutils
@@ -1200,8 +1301,47 @@ of that slice, and the live conformance file waits for a key (below).
   sandbox terminated if one lands later. A create that refuses its sandbox (drift, an abort, a failed upload)
   terminates it and waits as release does, within `releaseMs`, so nothing is left listed when it returns. The terminate
   is sent whatever the caller's signal; the wait takes it, so an aborted create returns at once, and a wait past the
-  bound or cut short by an abort says the sandbox may still be ending and what `poll()` last read.
-- **GPU** is refused: this provider makes VM sandboxes, and Modal offers GPUs on gVisor only.
+  bound or cut short by an abort says the sandbox may still be ending and what `poll()` last read. Before that
+  terminate, a create whose sandbox's own command had ended says so: its exit code and the tail of its output. When
+  Modal refuses an exec with FAILED_PRECONDITION ("Modal Sandbox is shutting down", code `gone`), the command, init, has
+  just exited and Modal ends the sandbox asynchronously, so create first waits up to `endedMs` (30 s) for `poll()` to
+  read it finished, then reads init's words. The first GPU live run on gVisor ended this way, with no words.
+- **GPU.** `capabilities().gpu` declares Modal's GPU types by its own names (guide/gpu): `T4`, `L4`, `A10`, `L40S`,
+  `A100` (40 GB), `A100-40GB`, `A100-80GB`, `RTX-PRO-6000`, `H100`, `H200`, `B200`, `B300`, at most 8 to a computer
+  (Modal refuses an `A10` past 4, in its words). Its `H100!` and `B200+` variants are not offered: a computer gets the
+  type it asked for. `spec.gpu: { type, count }` becomes the SDK's `gpu` (`"T4"`, `"A100-80GB:2"`), and since Modal
+  offers GPUs on gVisor only, such a sandbox runs with `runtime: "gvisor"`; every other computer stays on the VM
+  runtime. The drift check holds the runtime from both sides: the probe's kernel must be gVisor's on a GPU computer, and a
+  VM's on any other. Modal reads no GPU back: the
+  spec tag records the GPUs, and attach reports them on a computer the probe reads as gVisor. `capabilities().isolation`
+  stays `vm`, every other computer's; a GPU computer's is declared apart, `gpu.isolation: "gvisor"`, so a caller that
+  needs a VM's isolation can tell. Modal's GPUs are `preemptible: true`: Modal may move a GPU workload, so a run on one
+  can be cut short (guide/preemption). `gpu.mounts` is `[]`: a GPU with an Archil mount is refused (checkGpu), since the
+  Archil client's FUSE mount is not proven on gVisor yet. That keeps serve from giving a run a Modal GPU sandbox in either
+  mode, as a serve sandbox always mounts the run's folder; the library takes one without a mount.
+- **The loopback fence on gVisor.** A GPU computer's init gets the same network namespace of its own, loopback alone,
+  made another way.
+  - Modal's gVisor gives root no CAP_SYS_ADMIN, so `unshare(CLONE_NEWNET)` is EPERM. With `--own-network`, init refused
+    to start there (live on a T4, 11-10).
+  - It does let root make a user namespace with a network namespace inside it (`unshare -Urn`, live on a T4, 11-11, as
+    root and as nobody; nothing of Modal's runs or listens inside a gVisor sandbox, and every loopback port answered
+    nothing).
+  - So init, given the same `--own-network` on every runtime, makes the namespace inside a user namespace when root's
+    own attempt is EPERM (the daemon's fallback, any vendor: see "Where root may not make the network namespace").
+  - The first init stays PID 1 with no capability and no_new_privs set. It passes SIGTERM and SIGINT on and ends with
+    the init that serves, so the sandbox lives as long as that one does.
+  - Declared: `gpu.fence: "userns-netns"`. Read back: hello's `fence` on every connect, which the drift check requires
+    to be one of the two. Create notes it when it is `userns-netns`, and the conformance report records it under the GPU
+    computer's own name and role (`daemons[].fence`).
+  - Proven in Docker. In `test/docker/modal-commands.docker.test.mjs`, a root container with Docker's default
+    capabilities and no seccomp profile stands in for gVisor:
+    - `--own-network` falls back and serves;
+    - hello says `userns-netns`;
+    - the programs run as 1000 with no capability, in another network and user namespace than PID 1's, on the loopback
+      alone;
+    - what they write in HOME is 1000's from outside;
+    - with Docker's default seccomp profile (no user namespace either), init refuses in words that name both ways.
+  - Not yet proven live on Modal.
 
 ### What every Modal fact rests on
 
@@ -1311,8 +1451,12 @@ node packages/computer/dist/conformance/modal-sweep.js --after /tmp/modal-before
 sandbox in the app carrying `agentrun.computer=1` (`sandboxes.list({ appId, tags })`, which lists running sandboxes
 only, so a finished one needs no sweep). `--after` refuses, exit 2, before it lists anything, a file whose app or
 server is not the one the environment names now, or that names none: every computer of another app would read as
-new. Otherwise it terminates every such sandbox not in that file, reads each back through `sandboxes.fromId` and `poll()` until it reports an exit code or Modal no
-longer knows it (up to 60 s each), and prints one line, `{"swept":n,"gone":m,"stillThere":[ids]}`. It exits 0 when
+new. Otherwise it reads the tags (`getTags()`) of every such sandbox not in that file and terminates each that carries
+a conformance run's label (`agentrun.conformance`, which every computer of a run carries): one another user of the app
+made during the run, with no such label, is left alone, and so is one whose tags it cannot read (said on stderr). It
+reads each terminated sandbox back through `sandboxes.fromId` and `poll()` until it reports an exit code or Modal no
+longer knows it (up to 60 s each), and prints one line, `{"swept":n,"gone":m,"stillThere":[ids],"leftAlone":k}`, where
+`leftAlone` counts the new sandboxes it did not terminate. It exits 0 when
 every swept sandbox has finished, 1 when one still runs, and 2 on a usage error, an unreadable before file or one of
 another app or server, a missing token or app, or a listing Modal refused, having terminated nothing. A sandbox in the before file is never
 named by any call.
@@ -1320,7 +1464,7 @@ named by any call.
 ## Daytona
 
 ```ts
-import { DaytonaProvider } from "@parcha/agentrun-computer";
+import { DaytonaProvider } from "@parcha/agentrun-computer/daytona";
 
 const daytona = new DaytonaProvider({ apiKey, daemonPath: "dist/computerd-linux-amd64" });
 const made = await daytona.create({ image: "my-snapshot", lifetimeMs: 600_000, network: "none" });
@@ -1357,7 +1501,10 @@ stopped one.
 Daytona runs its own toolbox daemon as the sandbox's first process, and a snapshot we do not build has no `computerd`.
 So the provider pushes it in at create and starts it as a long-lived command, and reaches it the same way:
 
-1. Upload the static binary through the toolbox's file upload, to `/tmp/agentrun-computerd-<random>`.
+1. Upload the static binary through the toolbox's file upload, to `/tmp/agentrun-computerd-<random>`:
+   `/files/upload-v2`, or `/files/upload` when the toolbox answers 404 for it. An older toolbox, as a self-hosted
+   Daytona's runners may run, serves only `/files/upload`, which takes the same form; any other refusal is not retried
+   on the older route.
 2. Install it with `/process/execute` (the command is piped to the sandbox's shell): root-owned, mode 755, at
    `/opt/agentrun/computerd`, and make `/work` (its home) and `/run/agentrun` (its socket's directory). As root, or
    through passwordless `sudo`; a sandbox with neither is refused in the script's words. The script prints the
@@ -1443,6 +1590,7 @@ the TTL.
 | `user` | none | the daemon runs as the provider's `daemonUser`; a spec cannot name a user |
 | `release` | `stop`, `delete` | `POST /sandbox/{id}/stop` and `DELETE /sandbox/{id}` |
 | `stopDeletes` | `true` with `autoDeleteMinutes: 0`, else `false` | `autoDeleteInterval` 0 deletes a sandbox as soon as it stops |
+| `gpu` | `H100`; at most 1 | daytona-gpu's own GPU (`DAYTONA_GPU_SNAPSHOT_GPU`, from GET /snapshots/daytona-gpu). A GPU computer is made from Daytona's GPU snapshot `daytona-gpu` (`DAYTONA_GPU_SNAPSHOT`: its default sandbox image, user `daytona` with passwordless sudo, plus the CUDA toolkit), sent as `snapshot`: its spec's image is `"daytona-gpu"` or `"default"`, and `check` refuses any other (a snapshot of box/Dockerfile among them) in words. A Daytona snapshot carries its own resources, so the create sends none (no `cpu`, `gpu`, `gpuType`, `memory` or `disk`: Daytona refuses them beside a snapshot, 400 "Cannot specify Sandbox resources when using a snapshot"), and the read-back's `snapshot`, `gpu` and `gpuType` must be the snapshot's. Another type or count needs a snapshot of its own, so `check` refuses it. A GPU computer's limits, declared on `capabilities().gpu`: `preemptible: true` (daytona.io/pricing lists its GPUs as "Preemptible GPU prices": a run on one can be cut short); `stopDeletes: true` (it is made with `autoDeleteInterval: 0`, whatever `autoDeleteMinutes` says. That is Daytona's ephemeral: its SDK's `ephemeral` sets it, and `CreateSandbox` has no `ephemeral` field, so none is sent. A GPU sandbox has no pause and no snapshot, so stopping it deletes it and nothing on it persists); `region: "earth"` (Daytona's one GPU region, sent as `target` in place of the provider's); `perGpu` 16 vCPU, 100 GiB memory and 400 GiB disk, the snapshot's; `mounts: []`, so a GPU computer with any mount is refused in words: Daytona's GPU host gives no `/dev/fuse`, even to root (live 11-11), and the archil client mounts through FUSE. In serve's Mode 2 the run's folder is an Archil mount, so a Daytona GPU sandbox is refused there, and Settings' `gpu.why` says so. The org needs GPU credits, or the create is refused in Daytona's words. Create notes who installed the daemon: daytona-gpu's `daytona` user through passwordless sudo, or root on a snapshot of box/Dockerfile. The `gpuSnapshot` option names our own GPU snapshot instead: box/Dockerfile as it is, built with one GPU by `box/build-daytona.py --gpu H100` (resources gpu 1 and gpuType H100, named `agentrun-archil-gpu-h100-<recipe hash>`, in region earth). Its user is root, its GPU is the one its name says, and its GPU computers take no mount either. It carries no CUDA toolkit: pip install torch brings its own CUDA runtime; the host gives the driver. A GPU spec's image is then `"default"` or that name. An Archil computer's preflight reads `/dev/fuse`, and one without it is refused in those words ("this computer has no /dev/fuse, so the Archil folder can't be mounted") before anything else |
 
 ### What the provider does
 
@@ -1507,7 +1655,8 @@ From Daytona's read of the sandbox:
 | `autoStopInterval`, `autoDeleteInterval` | `autoStopMinutes` (0 unset), `autoDeleteMinutes` (-1 unset), exactly |
 | `autoDestroyAt` | set, and no later than the deadline plus the TTL's minute and 2 minutes of clock skew |
 | `sandboxClass` | the provider's class |
-| `public`, `kvm`, `gpu`, `volumes`, `linkedSandboxId` | false, not true, 0, none, none |
+| `gpu`, `gpuType` | `spec.gpu`'s count (0 with none) and, with one, its type |
+| `public`, `kvm`, `volumes`, `linkedSandboxId` | false, not true, none, none |
 
 From the daemon, over one connection: hello (the provider's version, `linux`, the `arch` option, every daemon
 capability), `/proc/self/status` (Uid and Gid the daemon user's four times, no groups, `NoNewPrivs: 1`, `CapInh`,
@@ -1522,8 +1671,8 @@ organization's), `daemonPath`, `arch` (`amd64` or `arm64`), `sandboxClass` (`con
 The conformance module, `dist/conformance/daytona.js` (`--provider daytona`), reads the run's settings by these names
 when it runs (`settingsFromEnv`) and passes each to `create()` as the option in brackets: `COMPUTER_DAYTONA_API_KEY`
 (`apiKey`, required), `COMPUTER_DAYTONA_API_URL` (`apiUrl`), `COMPUTER_DAYTONA_DAEMON` (`daemonPath`),
-`COMPUTER_DAYTONA_ARCH` (`arch`), `COMPUTER_DAYTONA_TARGET` (`target`), `COMPUTER_DAYTONA_CLASS` (`sandboxClass`) and
-`COMPUTER_DAYTONA_USER` (`daemonUser`). It exports `createProvider()` and `createDriftedProvider()` (which builds a
+`COMPUTER_DAYTONA_ARCH` (`arch`), `COMPUTER_DAYTONA_TARGET` (`target`), `COMPUTER_DAYTONA_CLASS` (`sandboxClass`),
+`COMPUTER_DAYTONA_USER` (`daemonUser`) and `COMPUTER_DAYTONA_GPU_SNAPSHOT` (`gpuSnapshot`). It exports `createProvider()` and `createDriftedProvider()` (which builds a
 daemon of another version with Go), and reads `COMPUTER_DAYTONA_SNAPSHOT` (the run's image; unset, `"default"`,
 Daytona's default snapshot). It never reads `DAYTONA_API_KEY`, `DAYTONA_API_URL` or `DAYTONA_TARGET`, not even as a
 fallback: on a host that runs other Daytona work they may hold another organization's key. Those are serve's names,
@@ -1551,13 +1700,16 @@ node packages/computer/dist/conformance/daytona-sweep.js --after /tmp/daytona-be
 ```
 
 `--before <file>` writes the id of every sandbox carrying `agentrun.computer=1`, whatever its name or state, into the
-file. `--after <file>` lists them again and deletes (`release(ref, "delete")`) every one whose id is not in the file,
-then reads each with `GET /sandbox/{id}` until Daytona answers 404, up to 60 s each, and prints one JSON line,
-`{"swept":n,"notFound":m,"stillThere":[ids]}`, where `swept` counts the sandboxes not there before and `notFound` plus
-`stillThere`'s length is `swept`. A sandbox in the file is never named by any call. A new sandbox without a computer's
-name is not this provider's: release refuses it, and it is reported still there. Exit 0 when every swept sandbox reads
-404, 1 when one is still there, 2 on a usage error, a before file it cannot read, no key, or a listing Daytona refused
-(nothing is deleted then). Anything else that creates a labelled sandbox between the two runs is swept too.
+file. `--after <file>` lists them again and deletes (`release(ref, "delete")`) every one whose id is not in the file
+and that carries a conformance run's label (`agentrun.conformance`, which every computer of a run carries), then reads
+each with `GET /sandbox/{id}` until Daytona answers 404, up to 60 s each, and prints one JSON line,
+`{"swept":n,"notFound":m,"stillThere":[ids],"leftAlone":k}`, where `swept` counts the conformance sandboxes not there
+before, `notFound` plus `stillThere`'s length is `swept`, and `leftAlone` counts the new labelled sandboxes with no
+conformance label: another user of the account (a server's computers) made them during the run, and no call names
+them. A sandbox in the file is never named by any call. A new conformance sandbox without a computer's name is not this
+provider's: release refuses it, and it is reported still there. Exit 0 when every swept sandbox reads 404, 1 when one
+is still there, 2 on a usage error, a before file it cannot read, no key, or a listing Daytona refused (nothing is
+deleted then).
 
 ### Not yet known
 
@@ -1602,6 +1754,7 @@ repository's main; the docs were read on 2026-11-05.
 | `GET /sandbox/{sandboxId}/toolbox-proxy-url`; the toolbox at `toolboxProxyUrl` + `/` + id | `daytona/clients@8006f63e:openapi-specs/api.json:5235`; `daytona/clients@8006f63e:sdk-typescript/src/Sandbox.ts:1566-1573` |
 | `Authorization: Bearer <key>` | `daytona/clients@8006f63e:sdk-typescript/src/Daytona.ts:444` |
 | `POST /files/upload-v2?path=`, multipart field `file` | `daytona/clients@8006f63e:openapi-specs/toolbox.json:2031` |
+| `POST /files/upload?path=`, multipart field `file`, on a toolbox with no `/files/upload-v2` | `daytonaio/daytona@b5a5d9e7:apps/daemon/pkg/toolbox/server.go:191`, `daytonaio/daytona@b5a5d9e7:apps/daemon/pkg/toolbox/fs/upload_file.go:22-35` |
 | `POST /process/execute` `{command, timeout}` to `{exitCode, result}`; the command piped to the shell | `daytona/clients@8006f63e:openapi-specs/toolbox.json:3234`, `daytona/clients@8006f63e:openapi-specs/toolbox.json:4679`, `daytona/clients@8006f63e:openapi-specs/toolbox.json:4703`; `daytonaio/daytona@b5a5d9e7:apps/daemon/pkg/toolbox/process/execute.go:55-57` |
 | `POST /process/session` `{sessionId}`; a session's shell runs as the toolbox's own user | `daytona/clients@8006f63e:openapi-specs/toolbox.json:3636`, `daytona/clients@8006f63e:openapi-specs/toolbox.json:4525`; `daytonaio/daytona@b5a5d9e7:apps/daemon/pkg/session/create.go:20-24` |
 | `POST /process/session/{sessionId}/exec` `{command, runAsync, suppressInputEcho}` to `{cmdId}` | `daytona/clients@8006f63e:openapi-specs/toolbox.json:4017`, `daytona/clients@8006f63e:openapi-specs/toolbox.json:5922`, `daytona/clients@8006f63e:openapi-specs/toolbox.json:5935` |
@@ -1849,8 +2002,11 @@ computer capped at 30 minutes, Hobby's plan for conformance
 switch and `COMPUTER_E2B_API_KEY` are both set; `E2B_API_KEY` never counts.
 
 `dist/conformance/e2b-sweep.js --before <file>` records every sandbox E2B lists with `agentrun.computer=1`; `--after
-<file>` kills every one not in the file, reads each back until `getInfo` no longer finds it and the listing no longer
-shows it, up to 60 s each, and prints `{"swept":n,"gone":m,"stillThere":[ids]}`. Exit 0 when every swept sandbox is
+<file>` kills every one not in the file whose metadata carries a conformance run's label (`agentrun.conformance`),
+leaving alone one another user of the account made during the run, reads each killed one back until `getInfo` no longer
+finds it and the listing no longer shows it, up to 60 s each, and prints
+`{"swept":n,"gone":m,"stillThere":[ids],"leftAlone":k}` (`leftAlone`: the new labelled sandboxes with no conformance
+label, which no call names). Exit 0 when every swept sandbox is
 gone, 1 when one is still there, 2 on a usage error, an unreadable before file, no key, or a refused listing (nothing is
 killed then). It reads `COMPUTER_E2B_API_KEY` and `COMPUTER_E2B_DOMAIN` as the conformance module does, and needs no
 live switch.
@@ -1886,6 +2042,105 @@ A live run must show:
 `packages/envd/internal/services/process/start.go`, `.../process/handler/handler.go:395-420`), and E2B's docs
 (network/restrict-public-access and network/internet-access, read 2026-11-07). Each is cited where it is used above and in `src/e2b.ts`.
 
+## Orgo: Windows and macOS desktops (parked)
+
+Orgo offers its Linux desktop alone, which runs computerd (`src/orgo.ts`). Its Windows and macOS desktops are parked:
+the descriptor lists them in `parked` (`ORGO_PARKED`), so `PROVIDERS` offers no configuration of either, Settings →
+Computers lists no Windows or macOS image, and an agent whose computer names `windows` or `macos` is refused at its
+run's start in words naming the image Orgo offers, `linux`. They do not run computerd either: computerd for Windows and
+macOS is CP-8, deferred. `create({ os: "windows" | "macos", apiKey, workspaceId })` still builds an
+`OrgoDesktopProvider` (`src/orgo-desktop.ts`) with daemon `none`, for the conformance suite and the tests. It answers
+the protocol's methods in process over Orgo's REST API, as the phone harness and Browserbase do. Its spec's image is
+`"windows"` (`ORGO_WINDOWS_IMAGE`, Orgo's Windows Server 2019) or `"macos"` (`ORGO_MACOS_IMAGE`): the one the provider was
+built for.
+
+- **What each offers.** The protocol groups, by Orgo's calls:
+  - `screen`: Orgo's screenshot (`response_format=base64&format=png`). A region is cropped in process. The live view
+    polls it about once a second, scaled by Orgo past `maxWidth`.
+  - `input.pointer` and `input.keys`: Orgo's click, mouse-move, drag, scroll, type and key calls.
+  - `exec`: Orgo's bash call. On Windows that is PowerShell: argv becomes a call operator over single-quoted words,
+    and the exit code is `$LASTEXITCODE`. On macOS it is the shell, every word quoted. argv is never a shell string.
+  - `files`, Windows only: one PowerShell script whose request is base64 JSON. A write over 96 KiB is uploaded first
+    (Orgo's `/files/upload` with `destPath`).
+  - No `processes`: Orgo runs a command and waits for it. No `tar`, and no mount.
+  - Network `open`, never read back from inside: Orgo has no egress control, and no daemon runs in the computer to
+    hold its programs to loopback, so the provider cannot prove `none`.
+- **What Orgo's API cannot do is refused in words, and a refused batch runs nothing:**
+  - on Windows, a triple click, keys held during a click, a drag of more than two points, a sideways or pixel
+    scroll, and `hold`;
+  - on macOS, a right-button double click or drag;
+  - `+` as a key, since it joins Orgo's combinations.
+- **down and up.** Orgo has no separate press and release. A `down` is held in the client, across batches as the
+  protocol says. Its `up` becomes one click (the pointer did not move) or one drag (from where it went down). A batch
+  that fails releases a press it holds.
+- **The cursor.** The live view's frames carry the place the client last moved the pointer to (`cursor`), and a move is
+  a new frame even when Orgo's screenshot leaves the cursor out.
+- **Lifetime.** The name carries the run, the epoch and the deadline, as the Linux desktop's does (`src/orgo-names.ts`),
+  and the janitor ends a computer by it. On Windows, Orgo's `ends_in_hours` is the backstop. A Mac has no Orgo end.
+  The other labels are a file the provider writes in the computer (`C:\ProgramData\agentrun\labels.json`,
+  `/Users/Shared/agentrun/labels.json`). A program in the computer can change that file, so list, the janitor and
+  the takeover trust the name, which only the key can change.
+- **attach** reports who the programs run as. On Windows that is `0:0` for a member of the Administrators group,
+  since it can do what a root can, and is said as it is.
+- **Idle suspension.** Nothing runs in a computer Orgo does not read `running`: any action wakes a suspended one.
+  `list` reads the labels file of a running computer alone, and attach, connect and extend refuse the others in words.
+- **Release** deletes. A Mac Orgo manages answers 409 to a delete. That is refused in Orgo's words, and the Mac is
+  left.
+- **Conformance.** `COMPUTER_ORGO_OS=windows` (or `macos`) with `--kind desktop` runs the desktop's cases:
+  - The Windows fixture is a PowerShell script this package carries (`src/conformance/windows-fixture.ts`): the same
+    window as `computerd-fixture`, started with `Start-Process` through exec and files.
+  - The cases written for Linux (exec's and files' POSIX programs and paths) are skipped in words (`caseOs`).
+  - The live run needs Orgo's Scale plan or a Windows computer bought on the plan; the macOS run needs Orgo's Mac
+    access.
+
+### An agent's own computer on Orgo (persistence)
+
+The Linux desktop declares `capabilities().persistence` (`{ keepsState: true, resume: true }`) and takes
+`spec.owner: { agent }` with no `lifetimeMs`: a computer that belongs to the agent and outlives the run (see
+"Persistent computers: an agent's own"). The Windows desktop's code declares it too, without resume; a Mac declares
+none.
+
+- **Its name** is `computer-<hex>-o<the owner's hash>`, with no run, epoch or deadline, and it has no Orgo end.
+- **Its labels live in a ledger.** Orgo holds no labels, and a detached computer is never woken to read its labels
+  file, so the provider keeps an agent's computer's labels (the owner's, the claim's run and epoch) and when it was
+  detached in a ledger: the `ledger` option, which Orgo's descriptor declares, so serve passes its computer ledger and
+  they outlive a restart. Without one it is kept in memory. `list` reads them with nothing run inside, and gives
+  `owned`, `owner`, `detachedAt`, and `deadline` undefined. A ledger has `put`, `get`, `list`, `remove` and `swap`:
+  `swap(was, entry)` writes entry only while the kept entry is still `was` as read (a compare-and-set; serve's is one
+  SQL statement), and says whether it did.
+- **No entry, no labels.** An agent's computer with no ledger entry is listed `owned` with no labels and no owner, to
+  an unfiltered list alone. The janitor can't read its owner, so it keeps it. Attach and detach refuse it in words,
+  and nothing reads its labels file instead: release it with delete.
+- **`release(ref, "detach")`** is for an agent's computer alone; a run's computer refuses it and runs on:
+  - Linux: Orgo's suspend saves memory and disk, and computerd init with them. `persistence.resume` is true.
+  - Windows: Orgo's stop archives its disk (files, apps and settings, not memory), and it reads `frozen`. `resume` is
+    false.
+  - macOS declares no persistence: Orgo stops no Mac, so `check()` refuses an owner.
+- **`attach({ id }, { claim })`** from a later run starts or resumes it first: attaching an agent's computer is asking
+  for it. A run's computer that isn't running is still never woken, and is never taken under a claim. Under a claim
+  the computer carries the claim's run and epoch, in the ledger and its labels file. A claim of the same run below
+  the epoch it carries is refused as fenced, and nothing changes. An attach that started or resumed the computer and
+  then fails a check stops or suspends it again, as it was found. One rule keeps attaches, detaches and deletes apart:
+  each takes the ledger entry with a busy marker (`swap`) before anything is done to the computer, and every other is
+  refused (busy) until it is settled. The holder renews the marker with `swap` right before each step that wakes,
+  stops, suspends or replaces what runs in the computer (a put-back, a daemon's replacement, its labels file written
+  after a wake), and only the holder settles the entry, each write a `swap` from the entry it last wrote. A holder
+  whose `swap` finds the entry changed (its marker went stale past 15 minutes and another took it, or it was removed)
+  does nothing more to the computer, and its attach or detach answers an error, never ok. So of two attaches of one
+  run racing, the lower epoch is refused however they interleave, and an older attach never ends the programs or
+  sleep of a newer one. One provider's attaches and detaches of a computer take turns. Its read-back spec carries
+  `owner`.
+- **`release(ref, "delete", { claim })`** deletes an agent's computer only while its ledger entry carries exactly that
+  claim's run and epoch and nobody holds it busy; otherwise it is refused in words (fenced, or busy) and runs on. A
+  claim that made a computer and then lost the agent's hold deletes it this way, so a later claim that found and took
+  it keeps it. A run's computer refuses a delete under a claim.
+- **Init on Linux.** An owned computer's init ends its programs at its deadline, `maxLifetimeMs` out, and has no
+  most in practice: each attach moves the deadline `maxLifetimeMs` out again (`deadline.extend`). A desktop left
+  detached past that, or whose daemon is another version (the package was upgraded meanwhile), gets its daemon
+  installed again at its next attach: the old init is stopped by its process, then every step create takes, the disk
+  kept, and the attach notes say the daemon was replaced and why. A run's computer is refused instead. `extend`
+  refuses an owned computer: it has no janitor's deadline to move.
+
 ## Browsers: Browserbase and Kernel
 
 A browser is a computer of kind `browser`: a vendor's browser session that answers CDP. No computerd runs (daemon
@@ -1908,19 +2163,40 @@ and are never in a ref, a list, an error's words or a report. `client` stays a `
 | conformance reads | `COMPUTER_BROWSERBASE_API_KEY`, `COMPUTER_BROWSERBASE_PROJECT_ID`, `COMPUTER_BROWSERBASE_API_URL` | `COMPUTER_KERNEL_API_KEY`, `COMPUTER_KERNEL_API_URL` |
 
 Both declare `lifetime: "vendor"`, `network: ["open"]`, `isolation: "vm"`, `release: ["delete"]`, and no `extend`
-(neither vendor moves a running session's timeout). Neither declares `downloads` yet: Browserbase keeps a session's
-downloads, but the protocol has no method that reads them, so the group waits for one. Both call the vendor endpoints
-pi-browser's Browserbase and Kernel providers call today. `check()` refuses an image other than `chromium`, a lifetime past
-the cap, a network other than open, and any size, user, workdir or mount, before a vendor call. `list` and attach by
+(neither vendor moves a running session's timeout). Neither declares the `downloads` group yet: the kind registry's
+entry does not, so Browserbase's downloads are read through its `downloads` member (below). `check()` refuses an image
+other than `chromium`, a lifetime past the cap, a network other than open, any size, user, workdir or mount, and a
+browser option the provider does not declare (below), before a vendor call. `list` and attach by
 labels take at least one label (a vendor account holds sessions no provider made), ask the vendor by status and by the
 first label a query carries as it is, and match every label themselves. They show every browser that has not ended:
 Browserbase's `RUNNING` and `PENDING`, Kernel's `status=all` with the deleted dropped (Kernel's filter takes one value,
 and `active` may leave out a browser still starting). A release is idempotent: one already ended or
 unknown to the vendor is released.
 
+A browser session's own options ride the spec, `spec.browser`: `viewport`, `profile: { pointer, save }` (a saved
+profile the session opens, and whether it writes back to it), `stealth` and `headless`. `capabilities().browser`
+declares what a provider's sessions offer: `timeout` (`"wall-clock"` or `"inactivity"`), `profiles: { settleMs }` (how
+long after a saving session ends the vendor may still write the profile back), `stealth`, `headless`, and
+`downloads: { path }` (the folder a driver points `Browser.setDownloadBehavior` at). An option asks for a declared
+feature or is refused in words; a flag set `false` asks for nothing; a viewport needs no feature. No browser loads an
+extension: the driver is raw CDP, with nothing loaded into Chrome. `isBrowserProvider(p)` is true for a provider of
+kind browser that declares them.
+
+| | Browserbase | Kernel | Local Chrome |
+| --- | --- | --- | --- |
+| `capabilities().browser` | wall-clock, `stealth`, `profiles` (settle 5 s), `downloads` (`downloads/`) | inactivity, `headless`, `profiles` (settle 0) | wall-clock |
+| `viewport` | `browserSettings.viewport` | `viewport` | the window's size |
+| `stealth` | `browserSettings.verified` and `solveCaptchas` (the solver is off otherwise: Browserbase's default is on) | not declared (Kernel's stealth brings a proxy nothing prices yet) | not declared |
+| `profile` | a context: `browserSettings.context { id, persist }` | a profile by name: `profile { name, save_changes }`, made first if Kernel does not know it | not declared |
+| `profiles { create, remove }` | `POST /v1/contexts`, `DELETE /v1/contexts/{id}` | `POST /profiles` under a random name (the pointer), `DELETE /profiles/{name}` | none |
+| `downloads { list, read }` | `GET /v1/downloads?sessionId=` (paged), `GET /v1/downloads/{id}`, cut at `maxBytes` | none | none |
+
+A pointer is a capability: whoever holds it opens the profile, so no error's words carry one.
+
 A vendor call is one request, never retried where a retry could open a second paid browser, and a failure names the
-call and the HTTP status alone, never the vendor's words. A host that already talks to the vendor (pi-browser's SDK
-client) passes its own transport: `BrowserbaseApi` or `KernelRequest`. Its thrown error rides the failure as a hidden
+call and the HTTP status alone, never the vendor's words. A host that already talks to the vendor passes its own
+transport: `BrowserbaseApi` (its optional calls back the features of the same name: one without them declares none of
+those) or `KernelRequest`. Its thrown error rides the failure as a hidden
 cause (`causeOf(result)`), not enumerable, so it is in no JSON.
 
 Each create writes one more label beside the spec's, `agentrun.create` (`CREATE_LABEL`), with a value of its own. A
@@ -1941,6 +2217,83 @@ AGENTRUN_COMPUTER_LIVE_KERNEL=1 COMPUTER_KERNEL_API_KEY=... \
   npm run conformance -w @parcha/agentrun-computer -- --provider kernel
 ```
 
+## A local browser: this machine's Chrome, no keys
+
+The `local-chrome` provider (Local Chrome, `local-chrome.ts`) is a computer of kind `browser` that is the Chrome or Chromium
+on the machine AgentRun runs on. No vendor, no key, nothing billed.
+
+```ts
+import { LocalBrowserProvider } from "@parcha/agentrun-computer/local-chrome";
+
+const local = new LocalBrowserProvider({ env: { PATH: process.env.PATH } }); // or { executablePath: "/usr/bin/chromium" }
+const made = await local.create({ image: "chromium", lifetimeMs: 30 * 60_000, network: "open" });
+const connected = await local.connect(made.value); // connected.value.cdp.url: ws://127.0.0.1:<port>/devtools/browser/<id>
+await local.release(made.value, "delete");
+```
+
+Each computer is one Chrome with a throwaway profile and a debugging port Chrome picks on 127.0.0.1. It runs
+headless by default. `headed: true` shows the window, for a person watching on this machine. `create()` returns
+once `/json/version` answers on that port. `connect()` hands over the DevTools URL. `release("delete")` ends Chrome and
+removes its profile and every other file of it. `list()` and attach by labels find the provider's own browsers by
+`browser.json` in each browser's directory under the root (default `<tmpdir>/agentrun-local-browser-<uid>`, made 0700,
+refused when another user can write it). That file holds the labels and the deadline.
+
+Lifetime: each browser runs under a supervisor of its own (`local-supervisor.ts`), a small detached Node process. It
+ends Chrome and removes its files at the deadline, on release, or when Chrome exits, whatever became of the process
+that made the browser. So a run that crashes leaves no Chrome behind once its deadline passes. `list()` reads the
+deadline, so the janitor's `sweep` also ends a browser whose supervisor was killed (`lifetime: "janitor"`). The cap is
+24 h.
+
+Finding Chrome: the `executablePath` option, else `PI_BROWSER_CHROME` or `CHROME_PATH` in the `env` option, else the
+first `google-chrome`, `google-chrome-stable`, `chromium` or `chromium-browser` on that env's `PATH`, else the usual
+install places. The library reads no environment of its own: the host passes `env`. With none found, `check()`,
+`create()` and `testConnection()` say what to install and which setting names one. `testConnection()` starts the Chrome
+once, headless on a blank page with a proxy that reaches nothing, to prove it starts here with its sandbox on. It
+keeps nothing.
+
+The fence and the sandbox are PR #1718's:
+
+- Chrome's own sandbox is always on. A start as root is refused (Chrome refuses root with its sandbox on), and so is a
+  Chrome that cannot start its sandbox here, in words that name the fix (an AppArmor profile on Ubuntu 23.10 and later,
+  or Chrome's setuid helper). Nothing retries without the sandbox.
+- Every request Chrome makes goes through the browser's egress proxy, the same one Docker's computers use
+  (`docker/egress-proxy.ts`). A spec's `network` is `"open"` (no list) or `{ allow: [names and CIDRs] }`. With a list,
+  the proxy reaches only those hosts, on ports 80 and 443, and refuses any other host by name before its lookup. A
+  CIDR that covers a refused range (loopback, private) is refused at `check()`. The proxy reaches public addresses only, each checked after its lookup:
+  this machine's loopback, private networks, link-local and a cloud's metadata address (169.254.169.254) are
+  refused. Chrome is started with `--proxy-bypass-list=<-loopback>`, so loopback goes through the proxy too. Its
+  `--host-resolver-rules=MAP <proxy> <proxy>, MAP * ~NOTFOUND` means Chrome resolves no name itself, so a request
+  sent around the proxy reaches nothing. QUIC is off (`--disable-quic`), and WebRTC sends no UDP
+  (`--webrtc-ip-handling-policy=disable_non_proxied_udp`). The proxy and its relay live in the supervisor, so the fence
+  holds for a browser driven from another process, and a browser whose supervisor is gone reaches nothing.
+
+Capabilities: `network: ["open", "allow"]` (public addresses, or a list's hosts among them), `isolation: "host"`,
+`daemon: "none"`, groups `cdp` only (no live view: run it headed to watch), `release: ["delete"]`, no mount, and
+`browser: { timeout: "wall-clock" }`: `spec.browser.viewport` sizes its window, and it takes no other session option.
+
+Known limits, so it is for local and development use:
+
+- The debugging port has no auth. Any process on this machine that finds the port can drive the browser, read its
+  pages and cookies, and navigate it. The port is on 127.0.0.1 only, and it is random per browser.
+- Chrome runs as the user AgentRun runs as, on this host. Chrome's sandbox is the only isolation between a page and
+  the machine. The fence keeps the browser off this machine's services and private networks, but the browser
+  process itself is not in a container or a VM.
+- The page cannot reach this machine's services, but the supervisor's relay port on 127.0.0.1 is reachable by local
+  processes. Through it they reach public addresses, which they can reach anyway.
+- No proxy of your own, no extensions, no saved profiles: each browser starts from an empty profile that goes with it.
+
+Driving it: pi-browser's raw-CDP driver (`@parcha/pi-browser/driver/cdp`) drives this browser, as it drives the vendor
+browsers, with the `snapshot` and `run` actions and nothing loaded into Chrome. `run` code is refused; navigation is a
+`goto` action. Its snapshot does not read a frame another site runs in its own
+process (a cross-origin iframe). The snapshot names each frame it left out, so an agent knows the page has more.
+
+The conformance module starts a real Chrome, so it waits for its switch:
+
+```sh
+AGENTRUN_COMPUTER_LIVE_LOCAL_CHROME=1 [COMPUTER_LOCAL_CHROME_PATH=/usr/bin/chromium] \
+  npm run conformance -w @parcha/agentrun-computer -- --provider local-chrome --kind browser
+```
+
 ## Phone harness (the phone kind)
 
 ```ts
@@ -1955,7 +2308,9 @@ const made = await phones.create({ image: "android", lifetimeMs: 10 * 60_000, ne
 the API's control URL) is a later change: `platform: "ios"` is refused in words.
 
 - **No daemon.** Nothing runs on the phone. `connect()` asks the phone harness for the session's adb link, runs
-  connects to it, unlocks the phone with the session's code (never in a result or an error) and probes it.
+  connects to it, unlocks the phone with the session's code (never in a result or an error) and probes it. Its hello
+  carries what the probe read: `arch` from `getprop ro.product.cpu.abi`, and `osVersion`, the Android release from
+  `getprop ro.build.version.release` (such as `"15"`; absent when the phone says none).
   - Neither the endpoint nor the code is ever in a spawned adb's argv, which `/proc` shows to every user of the host.
     The endpoint goes to the local adb server over its socket protocol (`host:connect`, `host:devices-l`,
     `host:disconnect`). The unlock is the vendor's shell command `unlock <code>`, once per connection; every shell
@@ -1979,18 +2334,19 @@ the API's control URL) is a later change: `platform: "ios"` is refused in words.
     - the back, home and app switch buttons;
     - `type`, by `input text`: ASCII and line breaks. A literal `%s` is split across two calls, so it is not read as
       a space;
-    - one key at a time (`input keyevent`), and `wait`.
+    - one key at a time (`input keyevent`, a repeat as one call of many key codes), and `wait`.
 
     A cancelled batch stops at the action it is on, a `wait` included, and answers failed, kind `aborted`, there;
   - `apps.list` (`pm list packages`, and the app in front from `dumpsys activity activities`), `apps.launch` (its
     launcher activity, `am start -W --activity-clear-task`, so the app named is in front and not what its task last
     held: on Android 15 Settings' task keeps search, another package, on top) and `apps.terminate` (`am force-stop`);
-  - `apps.ui_tree`: `uiautomator dump`.
+  - `ui`: `ui.observe` over `uiautomator dump`, and `ui.act` over adb's input (the foreground route only, each step
+    one batch checked whole before it runs).
 
   exec, files, processes and tar are refused in words: a phone has no shell in the computer protocol. So are pinch
   (adb's `input` has one finger), hold, a combo of keys, `apps.install` and `deadline.extend`.
 - **Capabilities.** Kind and os `android`, daemon `none`, lifetime `vendor`, network `open`, release `delete` only.
-  Groups `screen`, `input.touch`, `input.keys`, `apps` and `apps.ui_tree`. `maxLifetimeMs` is 30 min by default. No
+  Groups `screen`, `input.touch`, `input.keys`, `apps` and `ui`. `maxLifetimeMs` is 30 min by default. No
   mount, no extend.
 - **create** asks for `timeout_seconds` = the lifetime, and the phone harness ends the session then, whatever happens.
   The lifetime includes the boot, so a phone ready past its deadline fails `timeout`.
@@ -2024,9 +2380,14 @@ the API's control URL) is a later change: `platform: "ios"` is refused in words.
   - `list()` reads the ledger before `GET /sessions`, so it never forgets a phone a create records while it runs. It
     forgets a phone the listing leaves out only once that phone's own `GET /sessions/<id>` is a 404.
 - **adb** is an option too: a transport, `{ run(args, { input }), server(service) }` (tests give a fake), or the path of
-  the `adb` CLI (Android platform-tools; default `adb` on PATH), whose server it starts and speaks to on the loopback
-  (port 5037, adb's own, or `adbCli(path, { port })`). Every spawned adb names that port with `-P`, so the CLI and the
-  socket requests reach one server. Without adb, connect says so in words.
+  the `adb` CLI (Android platform-tools; default `adb` on PATH, which the phone's descriptor names as its
+  `hostCommand`, so a server says it is missing before any phone is rented), whose server it starts and speaks to on
+  the loopback (port 5037, adb's own, or `adbCli(path, { port })`). Every spawned adb names that port with `-P`, so the CLI and the
+  socket requests reach one server. `adbCli(path, { env })` spawns adb from the environment given, with every
+  `ADB_*`, `ANDROID_ADB_*` and `ANDROID_SERIAL` variable dropped, so nothing in it points the CLI at another server or
+  device. The library reads no environment of its own: the conformance module passes its own, minus its
+  `COMPUTER_PHONE_HARNESS_*` names (the key never reaches adb), and serve should pass one too. Without `env`, a spawned
+  adb inherits the process's environment as it is. Without adb, connect says so in words.
 - **testConnection** is list(): one `GET /sessions` joined to the ledger, and a GET of any phone the listing leaves out.
   It rents nothing and reaches no phone: ok with the
   count of this provider's phones, `unauthorized` for a refused key, `unreachable` when the phone harness is not
@@ -2039,17 +2400,17 @@ Conformance (`src/conformance/phone-harness.ts`) reads `COMPUTER_PHONE_HARNESS_A
 `maxLifetimeMs`.
 
 With no fixture app (it takes no files), the touch, keys and apps cases drive the stock Settings app and read back
-through `apps.ui_tree` (`src/conformance/cases/settings.ts`):
+through `ui.observe` (`src/conformance/cases/settings.ts`):
 - `touch.tap`: a tap on a row opens its page: the row's title shows, as a text or a label (Android 15's page has it
   only as its toolbar's content-desc), and the next row is gone. Back comes back. When the page does not
   come, its words say what it saw: the screen in px and dp, what is in front, the tap point and the row's bounds,
   whether the title shows outside the list, and whether the next row is still shown;
 - `touch.swipe`: a swipe up moves the list up;
 - `input.type-text` and `input.key-table-refuses-unknown`: the text read back from the search field;
-- `apps.launch-terminate`, which needs the apps group alone: Settings is listed; once launched it is in front, and
-  shown, in `apps.ui_tree` when the phone has one, else in a screenshot other than the one before; once terminated it
-  is not in front;
-- `apps.ui-tree-shape`: the tree's shape, on Settings.
+- `apps.launch-terminate`, which needs the apps group alone: the ui fixture where it is installed, else Settings, is
+  listed; once launched it is in front, and shown, in `ui.observe` when the phone reads its elements, else in a
+  screenshot (or `ui.observe`'s image) other than the one before; once terminated it is not in front;
+- `ui.observe-shape`: the observation's shape, on the ui fixture where it is installed, else on Settings.
 
 `touch.pinch` skips in the provider's own refusal.
 
@@ -2057,7 +2418,7 @@ through `apps.ui_tree` (`src/conformance/cases/settings.ts`):
 
 A provider for another vendor passes the same suite as Docker's, with one command. The suite is data: each case in
 `src/conformance/cases/` names its level, its group (`health`, `exec`, `files`, `process`, `provider`, `drift`,
-`isolation`, `mount`, `screen`, `input`, `touch`, `apps`, `lifetime`, `browser`) and the capabilities it needs, and uses only `ComputerProvider`,
+`isolation`, `mount`, `screen`, `input`, `touch`, `apps`, `lifetime`, `browser`, `gpu`) and the capabilities it needs, and uses only `ComputerProvider`,
 `ComputerClient` and the suite's assertion helpers, so the same cases run against a provider with daemon `none`.
 
 ```sh
@@ -2076,17 +2437,22 @@ full lifetime  extend                                       - 1
 optional screen screenshot-size                              - 1
   - screen.screenshot-size: the provider does not declare screen
 ...
-core PASS 54/54 · 10 optional cases skipped, not declared · full 10/13 · mount:archil screen input.pointer input.keys input.touch apps.install apps apps.ui_tree extend not declared
+core PASS 54/54 · 10 optional cases skipped, not declared · full 10/13 · mount:archil screen input.pointer input.keys input.touch apps.install apps ui extend not declared
 ```
 
 An id is resolved through the provider registry, and only there; the usage lists every id it holds. A module path is
 resolved from the directory npm was run in. It exits 0 when Core passes, 1 when it fails, 2 on a
 usage error, and 3 on a partial run; `--json` prints the report object (`{ provider, providerVersion, kind,
-daemonMode, image, daemon: { version, os, arch }, only?, coreNotRun?, results: [{ id, level, group, status, reason?,
-undeclared? }], core, undeclared, cleanup, notes?, computerNotes? }`). A failure is listed under its line with what the
-case found. `computerNotes` (`[{ computer, note }]`, absent when empty) holds every note a `create` returned beside its
-ref, such as a probe target that accepted and sent nothing back, naming the computer, in the order they came; the text
-report prints each as `note <computer>: <words>` above the verdict, so a run that passes Core never hides one. Notes an
+daemonMode, image, daemons: [{ computer, role, version, os, arch, fence? }], only?, coreNotRun?, results: [{ id, level,
+group, status, reason?, undeclared? }], core, undeclared, cleanup, notes?, computerNotes? }`). A failure is listed under
+its line with what the case found. A computer's `role` is `"shared"` for the run's computer, which the cases that need
+none of their own share, else the id of the case that made it. `daemons` holds each computer's first `hello`, one entry
+per computer in the order they answered (empty when none did), so computers of one run that differ are kept apart: a GPU
+computer's `fence` is not the run's computer's. The text report prints each as `daemon <computer> (<role>): computerd
+<version> <os>/<arch> · fence <fence>` above the verdict. `computerNotes` (`[{ computer, role, note }]`, absent when
+empty) holds every note a `create` returned beside its ref, such as a probe target that accepted and sent nothing back,
+naming the computer and its role, in the order they came; the text report prints each as `note <computer> (<role>):
+<words>` above the verdict, so a run that passes Core never hides one. Notes an
 `attach` returns are not carried: cases call `attach` on the provider directly, so the runner never sees them.
 
 `--only` that leaves any Core case out is a partial run: `core` is `"partial"` when every case that ran passed (a
@@ -2104,6 +2470,10 @@ capabilities), no case of the run failed (a declared optional group that fails w
 every required group has at least one passing case and no Core case skipped but for an optional group the computer does
 not declare, and the run left nothing behind. A Full case that skips is owed by no group: a provider may refuse in
 words what its kind does not require, as the phone harness refuses `touch.pinch`, and the report still shows the skip.
+A case is written for the systems its `os` names (`caseOs`). Without one, a case that needs exec or processes runs
+POSIX programs (`sh`, `id`, `/proc`) and is Linux's alone, and one that needs files names POSIX paths and is no Windows
+computer's. A computer of another os skips it in words ("the case is written for linux, and this computer runs
+windows"), after the check of what it declares.
 `none` is no computer, and `--kind` refuses it in words. Given no cases, a run takes `casesFor(machineKind)`: a
 browser's own cases (`browserCases`), every other kind the suite's (`conformanceCases`), in the library as in the CLI;
 `kindCases` draws from the same by kind. `kindCases`, `kindVerdict` and `casesFor` are exported, so the serve side reads
@@ -2162,8 +2532,8 @@ Core and Full follow the Kubernetes agent-sandbox conformance levels (KEP-539.2)
   kind `invalid`, and runs nothing), `input.actions-stops-at-first-failure` (move, left button down, move off the screen,
   click: `done` 2, the press released where it was, no click, and a later click lands, so nothing was left held), `touch.tap` and `touch.swipe` (the
   fixture app logs the tap at its point, and the swipe's start and end), `apps.install-launch` (installed, listed, in
-  front when launched and not when terminated) and `apps.ui-tree-shape` (every node typed as the protocol says, inside
-  the screenshot, with the fixture's button found by its id and text).
+  front when launched and not when terminated) and `ui.observe-shape` (every node typed as the protocol says, inside
+  its window, with the fixture's button found by its id and text).
 - **Full** is each optional capability a provider declares: network `open` (`network:open`), a network allowlist
   (`network:allow`), each with a change of a computer's network to it and back to `none`, refused or applied
   truthfully, on a computer of the case's own (`provider.network-switch`, `provider.network-switch-allow`), the janitor for a provider whose lifetime is `"janitor"` and that stops computers and keeps them
@@ -2208,8 +2578,8 @@ installed with `apps.install` and launched, logging to its files directory, with
 `ai.agentrun.fixture:id/button` that reads `agentrun fixture`). Each event is one JSON line (`ready`, `down`/`up` with
 button and point, `wheel`, `key`, `text`, `touch` with finger and phase); `src/conformance/fixture.ts` is the
 contract. A case that needs it and was given none skips, so Core cannot pass on a desktop or phone without it. The
-fixture is stopped when its case ends, once launched, even when it never logged ready. A phone that declares neither files nor `apps.ui_tree` skips the touch cases:
-`no way to observe the effect: declare files or apps.ui_tree`.
+fixture is stopped when its case ends, once launched, even when it never logged ready. A phone that declares neither files nor `ui` skips the touch cases:
+`no way to observe the effect: declare files or ui`.
 
 The suite makes every computer with the label `agentrun.conformance=<run id>`, image `--image`, a 30-minute lifetime
 and network `none` (`open` for a phone that declares no `none`, since its kind does not require it). It deletes each computer a case made when the case ends, and the shared one at the end; for a
@@ -2231,24 +2601,79 @@ computer's `HOME`, which the provider sets, is a directory its user can write, a
 From code: `runConformance(provider, { image, only?, signal?, drifted?, mountFor?, caseTimeoutMs?, cleanupTimeoutMs?,
 fixture?, fetch? })` returns the report, and `formatReport(report)` the text above.
 
+## Persistent computers: an agent's own
+
+A run's computer belongs to its run: it has a deadline (`lifetimeMs`, required), and the janitor or the vendor ends it
+once the deadline passes. A persistent computer belongs to an agent instead. It outlives the agent's runs, which take
+it one at a time, and it keeps its files between them. The contract, in `src/provider.ts` and `src/labels.ts`:
+
+- **Declared.** A provider that keeps computers for agents declares `capabilities().persistence`:
+  `{ keepsState: true, resume }`. `keepsState`: a detached computer keeps its files. `resume`: `true` when it comes back
+  as it was, its processes still running; `false` when it boots again from its kept disk. A provider that declares none
+  refuses `spec.owner` in `check()`, in words, before any vendor call, and refuses `release(ref, "detach")`, the
+  computer left as it was.
+- **Owned.** `spec.owner: { agent, idleTtlMs? }` makes the computer the agent's. It has no run deadline: the rule that
+  refuses a computer with no deadline is a run's computers' alone, and an owned spec that names `lifetimeMs` is refused
+  (`checkTenure(spec, capabilities)` holds both rules, for every provider's `check()`). The computer carries the owner
+  label, `agentrun.owner=agent:<id>` (`OWNER_LABEL`), and `agentrun.idle-ttl-ms` (`IDLE_TTL_LABEL`) when the owner set
+  an idle TTL; `ownerLabels(owner)` gives both and `ownerOf(labels)` reads them back.
+- **Detach.** `release(ref, "detach")` stops the computer with its state kept. It stays the agent's, listed `stopped`,
+  with `detachedAt`, when it was detached. Only an owned computer detaches: a run's computer refuses it in words and
+  runs on. `"delete"` deletes an owned computer, and only the agent or its owner asks for that: the caller's rule, not
+  the provider's.
+- **Attached under a new claim.** A run takes the computer with `attach({ id }, { claim: { run, epoch } })`. The
+  provider brings it back (starts it, when detached) and records the claim, so the computer carries the run's
+  `agentrun.run` and `agentrun.epoch` and `releaseOlder` of that run finds it. A claim of the same run below the epoch
+  the computer carries is refused as fenced, with nothing changed. A claim on a computer with no owner is refused: a
+  run's computer belongs to its run.
+- **The janitor.** A computer is owned when it carries the owner label or its provider's `list()` marks it `owned: true`
+  (with `owner` when the listing knows it: a vendor whose stopped computer shows no labels). `sweep` never deletes an
+  owned computer by a deadline. It deletes one only when its owner agent is
+  gone (`ownerGone(agent)`, the caller's answer, in `SweepOptions`), or when it has been detached for longer than its
+  owner's idle TTL. An owner label it cannot read keeps the computer: the janitor never deletes an agent's state on a
+  rule it cannot read. On a provider that declares persistence it sweeps owned computers under lifetime `"vendor"`
+  too, since no vendor ends them. `releaseOlder` detaches an owned computer of a lower epoch and never deletes it: the
+  new claim attaches it.
+- **Conformance.** `provider.owner` and `provider.detach` are Core for every provider: `check()` refuses an owner
+  without persistence, and a lifetime with one; a run's computer refuses detach and runs on. `provider.persistence` is
+  Full, run where persistence is declared: create with an owner, write a file, detach, attach by id under a new claim,
+  read the file back (with `resume`, find the process still running), refuse a fenced claim, then delete.
+
+`test/fake-computer.mjs`'s `persistence` option is a provider that declares it and passes the cases. Orgo's provider
+is the first vendor to wire it.
+
 ## Adding a computer
 
-A new computer is one provider file and one registry line. The conformance CLI (and serve, once wired) resolves
-providers through the registry, `src/providers.ts`, and nothing else, so neither needs an edit:
+A new computer is one provider file and one descriptor, `src/descriptors/<id>.ts`, declared once and listed in
+`DESCRIPTORS` (`src/descriptors/index.ts`). Everything else is derived from the descriptors: the registry
+(`src/providers.ts`, id to `load()`), the kind registry's `PROVIDERS` (Settings' rows), and the ids. The conformance
+CLI (and serve) resolve providers through them, so neither needs an edit:
 
 ```ts
-export const providers = {
-	docker: () => import("./docker.js"),
-	modal: () => import("./modal.js"),
-	daytona: () => import("./daytona.js"),
-	e2b: () => import("./e2b.js"),
-	fly: () => import("./fly.js"), // a new computer's line
-} satisfies Record<string, () => Promise<ProviderModule>>;
+export const FLY = defineProvider({
+	id: "fly",
+	label: "Fly",
+	keys: [{ name: "FLY_API_TOKEN", option: "apiToken", required: true }], // each key and the create() option it fills
+	metered: true,
+	mounts: [],
+	network: ["none", "open"], // the network forms its computers make: none, open, allow
+	capabilities: [{ kind: "linux", groups: ["exec", "files", "processes"] }], // one per configuration
+	load: () => import("../fly.js"),
+});
 ```
 
-Each import is lazy: loading the registry loads no provider and no vendor SDK. `providerFor(id, options)` builds a
-provider by id from its options and refuses an id it does not hold, naming the ones it does. The provider file,
-`src/<vendor>.ts`, exports what a `ProviderModule` is:
+A descriptor is data and a lazy `load()`: it imports `../descriptor.js` and other descriptors alone, so loading the
+registry, the kind registry or the package root loads no provider and no vendor SDK. `defineProvider` checks it when
+it is declared (`descriptorProblems`), in words. Its fields: `id`, `label`, `keys` (each key's name, the option it
+fills, and whether it is required), `settings` (a setting that is no key but fills an option, with its default),
+`metered`, `mounts`, `network` (the network forms its computers make, at least one of none, open and allow),
+`capabilities` (the kind and groups of each configuration), `defaultImage` (by setting kind),
+`prepareImage` (a provider that builds or pulls its image before a run), `imageEnv` (the server's environment variable
+that, when set, names the image of every computer of the provider, as Daytona's `AGENTRUN_DAYTONA_SNAPSHOT`), `local`
+(a computer on this host), and
+`ledger` (the option a provider's ledger fills). `providerFor(id, options)` builds a provider by id from its options and
+refuses an id it does not hold, naming the ones it does. The provider file, `src/<vendor>.ts`, exports what a
+`ProviderModule` is:
 
 - the provider class, which implements `ComputerProvider` and reports the registry id as its `id`;
 - `MOUNT`, the mount kinds its computers take;
@@ -2292,6 +2717,10 @@ AGENTRUN_COMPUTER_LIVE_DAYTONA=1 COMPUTER_DAYTONA_API_KEY=... [COMPUTER_DAYTONA_
 AGENTRUN_COMPUTER_LIVE_MODAL=1 npm run test:modal -w @parcha/agentrun-computer   # also needs COMPUTER_MODAL_TOKEN_ID/SECRET, a key the lead OKed
 AGENTRUN_COMPUTER_LIVE_E2B=1 npm run test:e2b -w @parcha/agentrun-computer       # also needs COMPUTER_E2B_API_KEY, a key the lead OKed, and the e2b package
 ```
+
+`npm test` also runs `test/local-chrome-live.test.mjs` on a real Chrome where one is on PATH (or `CHROME_PATH` names
+one) and starts here with its sandbox on: it creates a local browser, drives it over CDP, checks that a service on this
+machine's loopback is out of its reach, and releases it. Elsewhere it skips with the reason.
 
 Where Xvfb is on PATH, the Go tests also run the X client, and screen and input against the fixture, on a real X
 server; elsewhere those tests skip in words and the fake X server's tests still run.

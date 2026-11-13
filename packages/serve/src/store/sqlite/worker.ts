@@ -20,6 +20,7 @@
 //   close
 import { parentPort } from "node:worker_threads";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
+import { inMemory } from "./memory.js";
 
 export type Params = readonly SQLInputValue[];
 /** What a statement that changes no row means: `fenced` (the claim's epoch is not the run's) or `final` (a final or unknown
@@ -33,14 +34,18 @@ export type Request =
   | { op: "exec"; sql: string }
   | { op: "stmt"; statement: Statement; mode: Mode }
   | { op: "write"; statements: readonly Statement[]; full?: boolean }
-  | { op: "begin"; full?: boolean; read?: boolean }
+  | { op: "begin"; full?: boolean; read?: boolean; busyMs?: number }
   | { op: "step"; statement: Statement }
   | { op: "commit" }
   | { op: "rollback" }
   | { op: "close" };
 /** An error as the worker reports it: busy (the lock outlasted busy_timeout), constraint, miss (an expectation), owned
  *  (another server holds the store), closed, or sql (anything else). */
-export type WorkerError = { kind: "busy" | "constraint" | "sql" | "closed" | "owned"; message: string } | { kind: "miss"; message: string; miss: Miss };
+export type WorkerError =
+  | { kind: "busy" | "sql" | "closed" | "owned"; message: string }
+  /** `errcode`: SQLite's extended result code, which names the rule (CHECK, UNIQUE, PRIMARYKEY, FOREIGNKEY, NOTNULL). */
+  | { kind: "constraint"; message: string; errcode: number }
+  | { kind: "miss"; message: string; miss: Miss };
 export type Reply = { id: number; ok: true; value: unknown } | { id: number; ok: false; error: WorkerError };
 
 /** A statement's expectation failed: carried out of the transaction, which is rolled back. */
@@ -84,15 +89,24 @@ function step(statement: Statement): StatementResult {
   return result;
 }
 
-/** A transaction: BEGIN IMMEDIATE for a write; for `read`, a deferred one that takes no writer lock (one snapshot). */
-function begin(full: boolean, read = false): void {
+/** The connection's own busy wait (its open's busyTimeoutMs): what a begin given a shorter one goes back to. */
+let busyTimeout = 0;
+
+/** A transaction: BEGIN IMMEDIATE for a write; for `read`, a deferred one that takes no writer lock (one snapshot).
+ *  `busyMs`: the most this begin waits for the database's write lock, when the transaction's deadline leaves less than
+ *  the connection's own busy wait (Connection.transaction's `fromCall`); the connection's own is set back after it. */
+function begin(full: boolean, read = false, busyMs?: number): void {
   const conn = opened();
   if (full) conn.exec(FULL);
+  const bounded = busyMs !== undefined && busyMs < busyTimeout;
+  if (bounded) conn.exec(`PRAGMA busy_timeout = ${Math.max(0, Math.floor(busyMs))}`);
   try {
     conn.exec(read ? "BEGIN DEFERRED" : "BEGIN IMMEDIATE");
   } catch (error) {
     if (full) conn.exec(NORMAL);
     throw error;
+  } finally {
+    if (bounded) conn.exec(`PRAGMA busy_timeout = ${busyTimeout}`);
   }
   inTx = true;
   txFull = full;
@@ -143,12 +157,15 @@ function errorOf(error: unknown): WorkerError {
   // SQLITE_BUSY (5) and SQLITE_LOCKED (6), with their extended codes in the high bytes.
   if (typeof e?.errcode === "number" && ((e.errcode & 0xff) === 5 || (e.errcode & 0xff) === 6)) return { kind: "busy", message };
   // SQLITE_CONSTRAINT (19).
-  if (typeof e?.errcode === "number" && (e.errcode & 0xff) === 19) return { kind: "constraint", message };
+  if (typeof e?.errcode === "number" && (e.errcode & 0xff) === 19) return { kind: "constraint", message, errcode: e.errcode };
   return { kind: "sql", message };
 }
 
-/** The store's owner lock: an exclusive lock on `<file>.owner` that a second owner cannot take. */
+/** The store's owner lock: an exclusive lock on `<file>.owner` that a second owner cannot take. An in-memory database is
+ *  this connection's own data, which no other server can open: it takes none (a lock file would be left in the working
+ *  directory, named after no file). */
 function takeOwnerLock(file: string): void {
+  if (inMemory(file)) return;
   const lock = new DatabaseSync(`${file}.owner`);
   try {
     lock.exec("PRAGMA busy_timeout = 0");
@@ -168,7 +185,8 @@ function handle(request: Request): unknown {
     case "open": {
       if (request.owner) takeOwnerLock(request.file);
       db = new DatabaseSync(request.file);
-      db.exec(`PRAGMA busy_timeout = ${Math.max(0, Math.floor(request.busyTimeoutMs))}`);
+      busyTimeout = Math.max(0, Math.floor(request.busyTimeoutMs));
+      db.exec(`PRAGMA busy_timeout = ${busyTimeout}`);
       db.exec("PRAGMA journal_mode = WAL");
       db.exec(NORMAL);
       db.exec("PRAGMA foreign_keys = ON");
@@ -197,7 +215,7 @@ function handle(request: Request): unknown {
       }
     }
     case "begin":
-      begin(request.full === true, request.read === true);
+      begin(request.full === true, request.read === true, request.busyMs);
       return null;
     case "step":
       if (!inTx) throw new Error("a step outside a transaction");

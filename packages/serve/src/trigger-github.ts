@@ -4,7 +4,7 @@
 // it, each its own firing, keyed by the SHA-256 of the signed body (GitHub signs neither X-GitHub-Delivery nor
 // X-GitHub-Event). The App's ping is answered, and its installation events go to the connection, which checks each with
 // GitHub before it keeps its installation list or turns the github triggers off.
-import { FIELDS } from "./github-connection.js";
+import { GITHUB_FIELDS as FIELDS } from "./github.js";
 import { ACCEPT_SCHEMA, acceptOf, acceptRefusal, type Rule } from "./trigger-accept.js";
 import { closedSchema, type Source, type TriggerAdapter, unknownSourceFields } from "./trigger-adapter.js";
 import { type Scheme, SIGNATURE_SCHEMES } from "./trigger-signatures.js";

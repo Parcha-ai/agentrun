@@ -95,6 +95,22 @@ export function daemonCopy(source: string, directory: string, fs: CopyFs = NODE_
 	);
 }
 
+/**
+ * `directory`, made if missing and checked as daemonCopy checks its own (privateDirectory: this user's, 0700, no link,
+ * nothing above it another user may write), as a path with no link in it; made again once when a cleaner removes it
+ * partway. For what else the provider keeps beside the daemon's copy: the trees the volume option stages
+ * (src/docker/stage.ts), the daemon's directory and the egress proxy's code.
+ */
+export function privateCacheDirectory(directory: string): Result<string> {
+	const uid = process.getuid?.();
+	if (uid === undefined) return fail("unsupported", "this platform has no user ids, so the provider cannot keep its copies where only this user may change them");
+	const first = privateDirectory(NODE_FS, resolve(directory), uid);
+	if (!("vanished" in first)) return first;
+	const second = privateDirectory(NODE_FS, resolve(directory), uid);
+	if (!("vanished" in second)) return second;
+	return fail("invalid", `the daemon copy directory ${resolve(directory)} vanished while the provider checked it, twice (${second.vanished} was gone); ${ELSEWHERE}`);
+}
+
 /** A directory that was there and is gone, at this path: the caller makes it again once. */
 interface Vanished {
 	vanished: string;

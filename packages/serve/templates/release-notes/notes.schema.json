@@ -137,7 +137,8 @@
         "destination": { "enum": ["issue", "answer"] },
         "action": { "enum": ["created", "updated", "exists", "none"] },
         "issue_number": { "type": "integer", "minimum": 1 },
-        "url": { "type": "string", "pattern": "^https://github\\.com/" }
+        "url": { "type": "string", "pattern": "^https://github\\.com/" },
+        "reason": { "type": "string", "minLength": 1, "maxLength": 300, "description": "with destination answer: why the draft is here and not in an issue, in one plain sentence (the notes only were asked for, no issue_write, or GitHub refused the write and why)" }
       }
     }
   }

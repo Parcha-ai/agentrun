@@ -1,11 +1,31 @@
 // The run and epoch labels (src/labels.ts): the two names in one place, the run id rule, and a computer's epoch read from
-// its labels; and no provider refuses them. No Docker, no vendor: each provider's check() runs on its fake.
+// its labels; and no provider refuses them. An agent's computer's owner labels, and the tenure rule every check() shares
+// (checkTenure): no provider here declares persistence, so each refuses an owner. No Docker, no vendor: each provider's
+// check() runs on its fake.
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { DaytonaProvider, EPOCH_LABEL, epochOf, epochProblem, ModalProvider, RUN_LABEL, runLabels, runProblem } from "../dist/index.js";
+import { DaytonaProvider } from "../dist/daytona.js";
+import {
+	checkTenure,
+	EPOCH_LABEL,
+	epochOf,
+	epochProblem,
+	IDLE_TTL_LABEL,
+	OWNER_LABEL,
+	OWNER_SERVER_LABEL,
+	ownerFilter,
+	ownerLabels,
+	ownerOf,
+	ownerProblem,
+	RUN_LABEL,
+	runLabels,
+	runLifetimeMs,
+	runProblem,
+} from "../dist/index.js";
+import { ModalProvider } from "../dist/modal.js";
 import { API, KEY } from "./fake-daytona.mjs";
 import { fakeDocker } from "./fake-docker.mjs";
 import { DAEMON_IMAGE, fakeModal } from "./fake-modal.mjs";
@@ -95,5 +115,71 @@ test("no provider refuses the run and epoch labels, beside a caller's own", () =
 			[],
 			`${id}: ${JSON.stringify(refusals)}`,
 		);
+	}
+});
+
+test("an agent's computer carries agentrun.owner=agent:<id>, and its idle TTL when the owner set one; ownerOf reads them back", () => {
+	assert.deepEqual([OWNER_LABEL, IDLE_TTL_LABEL], ["agentrun.owner", "agentrun.idle-ttl-ms"]);
+	assert.deepEqual(ownerLabels({ agent: "ag-1" }), { "agentrun.owner": "agent:ag-1" });
+	assert.deepEqual(ownerLabels({ agent: "ag-1", idleTtlMs: 3_600_000 }), { "agentrun.owner": "agent:ag-1", "agentrun.idle-ttl-ms": "3600000" });
+	assert.deepEqual(ownerOf(ownerLabels({ agent: "ag-1", idleTtlMs: 60_000 })), { ok: true, value: { agent: "ag-1", idleTtlMs: 60_000 } });
+	assert.deepEqual(ownerOf({ ...runLabels("r", 1) }), { ok: true, value: undefined }, "a run's computer has no owner");
+	for (const [owner, words] of [
+		[{ agent: "" }, /owner\.agent must be the agent's id/],
+		[{ agent: "a\0b" }, /NUL/],
+		[{ agent: "a", idleTtlMs: 0 }, /idleTtlMs is a whole number of milliseconds above 0/],
+		[{ agent: "a", idleTtlMs: 1.5 }, /idleTtlMs/],
+	]) {
+		assert.throws(() => ownerLabels(owner), (error) => error instanceof TypeError && words.test(error.message), JSON.stringify(owner));
+		assert.match(ownerProblem(owner), words);
+	}
+	for (const [labels, words] of [
+		[{ [OWNER_LABEL]: "ag-1" }, /reads "ag-1", not agent:<id>/],
+		[{ [OWNER_LABEL]: "agent:" }, /not agent:<id>/],
+		[{ [OWNER_LABEL]: "agent:a", [IDLE_TTL_LABEL]: "01" }, /reads "01", not a whole number of milliseconds above 0/],
+		[{ [OWNER_LABEL]: "agent:a", [IDLE_TTL_LABEL]: "0" }, /not a whole number of milliseconds above 0/],
+	]) {
+		const read = ownerOf(labels);
+		assert.equal(read.ok, false, JSON.stringify(labels));
+		assert.equal(read.error.code, "invalid");
+		assert.match(read.error.message, words);
+	}
+});
+
+test("an owner that names its server carries agentrun.owner-server too; ownerOf reads it back, and ownerFilter is what an owner's listing filters by", () => {
+	assert.equal(OWNER_SERVER_LABEL, "agentrun.owner-server");
+	const owner = { agent: "ag-1", server: "0123456789ab", idleTtlMs: 60_000 };
+	assert.deepEqual(ownerLabels(owner), { "agentrun.owner": "agent:ag-1", "agentrun.owner-server": "0123456789ab", "agentrun.idle-ttl-ms": "60000" });
+	assert.deepEqual(ownerOf(ownerLabels(owner)), { ok: true, value: owner });
+	assert.deepEqual(ownerFilter(owner), { "agentrun.owner": "agent:ag-1", "agentrun.owner-server": "0123456789ab" }, "no idle TTL in a filter");
+	assert.deepEqual(ownerFilter({ agent: "ag-1" }), { "agentrun.owner": "agent:ag-1" });
+	for (const server of ["", "a\0b", 7]) assert.match(ownerProblem({ agent: "a", server }), /owner\.server/, JSON.stringify(server));
+	const read = ownerOf({ [OWNER_LABEL]: "agent:a", [OWNER_SERVER_LABEL]: "" });
+	assert.equal(read.ok, false);
+	assert.match(read.error.message, /agentrun\.owner-server reads "", not a server's id/);
+});
+
+test("checkTenure: a run's computer needs a lifetime; an agent's needs persistence, an owner that is one, and no lifetime", () => {
+	const run = { lifetime: "janitor", maxLifetimeMs: 3_600_000 };
+	const persists = { ...run, persistence: { keepsState: true, resume: false } };
+	const fields = (refusals) => refusals.map((r) => r.field);
+	assert.deepEqual(checkTenure({ lifetimeMs: 60_000 }, run), []);
+	assert.deepEqual(fields(checkTenure({}, run)), ["lifetimeMs"], "a run's computer with no lifetime");
+	assert.deepEqual(fields(checkTenure({}, persists)), ["lifetimeMs"], "a run's computer with no lifetime, on a provider that persists");
+	const refused = checkTenure({ owner: { agent: "a" } }, run, "Docker");
+	assert.deepEqual(fields(refused), ["owner"]);
+	assert.match(refused[0].message, /^the Docker provider keeps no computer for an agent \(it declares no persistence\), so spec\.owner is refused/);
+	assert.deepEqual(checkTenure({ owner: { agent: "a", idleTtlMs: 60_000 } }, persists), [], "an agent's computer with no lifetime");
+	assert.deepEqual(fields(checkTenure({ owner: { agent: "a" }, lifetimeMs: 60_000 }, persists)), ["lifetimeMs"], "an agent's computer with a lifetime");
+	assert.deepEqual(fields(checkTenure({ owner: { agent: "" } }, persists)), ["owner"], "an owner that is not one");
+	assert.throws(() => runLifetimeMs({}), /a run's computer needs lifetimeMs/);
+	assert.equal(runLifetimeMs({ lifetimeMs: 5 }), 5);
+});
+
+test("every provider refuses spec.owner in its check(), in words: none of them keeps a computer for an agent yet", () => {
+	for (const [id, provider] of providers()) {
+		const { lifetimeMs: _, ...base } = SPEC;
+		const refusals = provider.check({ ...base, owner: { agent: "ag-1" } });
+		assert.ok(refusals.some((r) => r.field === "owner" && /declares no persistence/.test(r.message)), `${id}: ${JSON.stringify(refusals)}`);
 	}
 });

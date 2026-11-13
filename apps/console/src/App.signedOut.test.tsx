@@ -13,7 +13,7 @@ afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; vi.u
 
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 const UNAUTHENTICATED = { error: { code: "unauthenticated", message: "sign in first", retryable: false } };
-const RUN = { run_id: "r1", agent_id: "calc", agent_version: 1, revision: "rv1", kind: "agentic", status: "working", state: "working", title: "Look at the page", created_at: "2026-11-08T06:00:00Z", ended_at: null, result: null, error: null, cost: null, archived_at: null };
+const RUN = { run_id: "r1", place: { mode: "runner" }, agent_id: "calc", agent_version: 1, revision: "rv1", kind: "agentic", status: "working", state: "working", title: "Look at the page", created_at: "2026-11-08T06:00:00Z", ended_at: null, result: null, error: null, cost: null, archived_at: null };
 
 function server({ accounts = true } = {}) {
   // `held`: the next run read waits, then answers whatever `release` gives it (a read started under one session that
@@ -23,7 +23,7 @@ function server({ accounts = true } = {}) {
     const u = new URL(url, "http://serve.test");
     const method = init?.method ?? "GET";
     s.asked.push(`${method} ${u.pathname}`);
-    if (u.pathname === "/v2/auth/session") return accounts ? json(200, { password_set: true, signed_in: s.signedIn }) : json(404, { error: { code: "not_found", message: "no accounts", retryable: false } });
+    if (u.pathname === "/v2/auth/session") return accounts ? json(200, { accounts: true, password_set: true, signed_in: s.signedIn, secrets_writable: s.signedIn }) : json(200, { accounts: false, secrets_writable: false, secrets_reason: "token" });
     if (s.hold && (u.pathname === "/v2/runs/r1" || u.pathname === "/v2/runs/r1/timeline" || u.pathname === "/v2/runs/r1/browser")) { s.hold = false; return new Promise<Response>((done) => { s.release = done; }); }
     if (u.pathname === "/v2/auth/sign-in" && method === "POST") {
       const { password } = JSON.parse(String(init?.body ?? "{}")) as { password?: string };
@@ -32,12 +32,12 @@ function server({ accounts = true } = {}) {
       return json(200, { signed_in: true });
     }
     if (!s.signedIn) return json(401, UNAUTHENTICATED);
-    if (u.pathname === "/v2/capabilities") return json(200, { harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } });
+    if (u.pathname === "/v2/capabilities") return json(200, { models: { source: "providers", ready: true }, harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } });
     if (u.pathname === "/v2/agents") return json(200, { agents: [], next_cursor: null });
     if (u.pathname === "/v2/runs") return json(200, { runs: [RUN], next_cursor: null });
     if (u.pathname === "/v2/runs/r1") return json(200, RUN);
     if (u.pathname === "/v2/runs/r1/files") return json(200, { run_id: "r1", files: [], complete: true, truncated: false });
-    if (u.pathname === "/v2/runs/r1/timeline") return json(200, { run_id: "r1", status: "working", state: "working", rows: [], drop: [], reset: true, unchanged: false, final: false, has_more: false, next_after: 0 });
+    if (u.pathname === "/v2/runs/r1/timeline") return json(200, { run_id: "r1", place: { mode: "runner" }, status: "working", state: "working", rows: [], drop: [], reset: true, unchanged: false, final: false, has_more: false, next_after: 0 });
     if (u.pathname === "/v2/runs/r1/browser") return json(200, { state: "live", viewer: "/v2/runs/r1/browser/live/v/AbCdEfGhIjKlMnOpQrStUv#t=SECRET-TOKEN-1234567890" });
     return json(404, { error: { code: "not_found", message: u.pathname, retryable: false } });
   });

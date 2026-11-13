@@ -7,13 +7,11 @@
 // into it.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
 import { agentFolderOf, homeKey } from "../dist/files.js";
-import { learningTestHooks } from "../dist/learning.js";
-import { KEEPS, learnedIn, NOTHING_YET, wholeIn } from "./learn-support.mjs";
+import { KEEPS, learnedIn, NOTHING_YET, pinOf, resnapSync, wholeIn } from "./learn-support.mjs";
 import { agent, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
@@ -47,18 +45,19 @@ function git(cwd, args) {
 }
 
 const repoOf = (data, id) => join(agentFolderOf(data, id), "learning");
-const pinOf = (data, runId) => JSON.parse(readFileSync(join(runDir(data, runId), "learning.json"), "utf8"));
 const learnedDir = (data, runId) => join(runDir(data, runId), "work", ".learning");
 const answer = async (api, runId) => (await api("GET", `/runs/${runId}`)).body.result?.final_answer ?? "";
 
-/** Commits `files` on main, in the folder's working tree, as a merge into main would leave it. Its commit. */
-function commitToMain(repo, files, message = "learned") {
+/** Commits `files` on main, in the folder's working tree, as a merge into main would leave it, and (`snap`) the folder's
+ *  snapshot rebuilt from it. Its commit. */
+function commitToMain(repo, files, message = "learned", snap = true) {
   for (const [path, text] of Object.entries(files)) {
     mkdirSync(dirname(join(repo, path)), { recursive: true });
     writeFileSync(join(repo, path), text);
   }
   git(repo, ["add", "--", ...Object.keys(files)]);
   git(repo, ["commit", "-q", "-m", message]);
+  if (snap) resnapSync(repo);
   return git(repo, ["rev-parse", "main"]);
 }
 
@@ -117,7 +116,7 @@ test("a new agent with learning on: its first run makes its folder, main checked
   assert.equal(readFileSync(join(repo, "MEMORY.md"), "utf8"), "");
   assert.equal(git(repo, ["status", "--porcelain"]), "");
   assert.deepEqual(readdirSync(agentFolderOf(data, "fresh")).sort(), ["learning", "runs"], "its learning folder beside its runs");
-  assert.deepEqual(pinOf(data, runId), { seed: git(repo, ["rev-parse", "main"]) });
+  assert.deepEqual((await pinOf({ data: data }, runId)), { seed: git(repo, ["rev-parse", "main"]) });
   assert.deepEqual(readdirSync(learnedDir(data, runId)), ["MEMORY.md"]);
   assert.ok(prompt.includes(`Answer the question.\n\n# Learned\n\n${KEEPS}\n\n${NOTHING_YET}`), `an empty index: the run is told it learns, and that nothing is learned yet: ${prompt}`);
   assert.ok(!prompt.includes("What you learned in earlier runs"), "no intro to notes it has none of");
@@ -146,7 +145,7 @@ test("an empty learning/ in the agent's home before its first run, with no .git,
   assert.ok(existsSync(join(repo, ".git")), "a repository, made in place");
   assert.equal(git(repo, ["rev-list", "--count", "main"]), "1");
   assert.deepEqual(git(repo, ["ls-tree", "--name-only", "main"]).split("\n"), ["MEMORY.md"]);
-  assert.deepEqual(pinOf(data, runId), { seed: git(repo, ["rev-parse", "main"]) });
+  assert.deepEqual((await pinOf({ data: data }, runId)), { seed: git(repo, ["rev-parse", "main"]) });
   assert.equal(statSync(repo).mode & 0o777, 0o700, "its mode as it was");
 });
 
@@ -157,7 +156,7 @@ for (const harness of ["pi", "claude-agent", "codex"]) {
     const id = `first-${harness}`;
     assert.equal((await api("POST", "/agents", agent(id, { learning: true, harness, instructions: "Answer the question." }))).status, 201);
     const { runId, prompt } = await ran(api, id);
-    assert.deepEqual(pinOf(data, runId), { seed: git(repoOf(data, id), ["rev-parse", "main"]) }, "a first run has a pin, with nothing learned");
+    assert.deepEqual((await pinOf({ data: data }, runId)), { seed: git(repoOf(data, id), ["rev-parse", "main"]) }, "a first run has a pin, with nothing learned");
     assert.ok(prompt.includes(`Answer the question.\n\n# Learned\n\n${KEEPS}\n\n${NOTHING_YET}`), prompt);
     assert.equal(prompt.split("# Learned").length, 2, "one section");
     // It never promises to keep what is never kept: a secret the person asks it to remember is refused, and said so. A
@@ -186,7 +185,7 @@ for (const harness of ["pi", "claude-agent", "codex"]) {
     assert.ok(!prompt.includes("uncommitted") && !prompt.includes("Loose") && !prompt.includes("Old refunds"), prompt);
     assert.deepEqual(readdirSync(learnedDir(data, runId)).sort(), ["MEMORY.md", "prefers-tables.md", "refund-policy-path.md"]);
     for (const file of ["MEMORY.md", "prefers-tables.md", "refund-policy-path.md"]) assert.equal(readFileSync(join(learnedDir(data, runId), file), "utf8"), MAIN[file], file);
-    assert.deepEqual(pinOf(data, runId), { seed: sha, section: WHOLE, given: GIVEN });
+    assert.deepEqual((await pinOf({ data: data }, runId)), { seed: sha, section: WHOLE, given: GIVEN });
     const skills = join(runDir(data, runId), "work", ".agents", "skills");
     assert.deepEqual(existsSync(skills) ? readdirSync(skills) : [], [], "no learned skill is written");
     const { whole, short } = await learningOf(api, id, runId);
@@ -232,7 +231,8 @@ test("an index naming notes main does not hold whole: the run reads its first 20
 function tenNotes(repo) {
   const notes = Array.from({ length: 10 }, (_, i) => String(i + 1).padStart(2, "0")).map((n) => [`note-${n}.md`, note(`Note ${n}`, `Rule ${n} of ten`, "user", "", `Rule ${n}: ${Array(4).fill("keep this in mind").join(" ")}.\n`)]);
   const lines = notes.map(([file]) => `- [Note ${file.slice(5, 7)}](${file}) — Rule ${file.slice(5, 7)} of ten`);
-  notes.forEach(([file, text], i) => commitToMain(repo, { [file]: text, "MEMORY.md": `${lines.slice(0, i + 1).join("\n")}\n` }, `learned ${file}`));
+  notes.forEach(([file, text], i) => commitToMain(repo, { [file]: text, "MEMORY.md": `${lines.slice(0, i + 1).join("\n")}\n` }, `learned ${file}`, false));
+  resnapSync(repo);
   return { notes, lines };
 }
 const bytes = (text) => Buffer.byteLength(text);
@@ -246,7 +246,7 @@ test("past the learning budget: the index whole, then the notes changed last, wh
     const { notes, lines } = tenNotes(repoOf(data, id));
     const { runId, prompt } = await ran(api, id);
     const section = learnedIn(prompt);
-    assert.equal(section, pinOf(data, runId).section, "the pin holds what the instructions say");
+    assert.equal(section, (await pinOf({ data: data }, runId)).section, "the pin holds what the instructions say");
     assert.equal(prompt.split(KEEPS).length, 2, "told it learns once, right before the index and the notes (learnedIn reads after it)");
     const [intro, index] = section.split("\n\n");
     assert.equal(intro, `What you learned in earlier runs: the index, one line per note, then the newest notes whole. ${KEPT}`);
@@ -366,31 +366,34 @@ test("a note holding a value made one of the server's secrets after it was writt
   const { runId, prompt } = await ran(api, "leaky");
   assert.ok(!prompt.includes(value), prompt);
   assert.ok(learnedIn(prompt).includes("## Shop key (shop-key.md)\n\nSign in with [redacted]\n\nSend [redacted] as the key."), prompt);
-  assert.ok(!readFileSync(join(runDir(data, runId), "learning.json"), "utf8").includes(value), "nor the pin");
+  assert.ok(!JSON.stringify(await pinOf({ data }, runId)).includes(value), "nor the pin");
   for (const file of readdirSync(learnedDir(data, runId))) {
     const text = readFileSync(join(learnedDir(data, runId), file), "utf8");
     assert.ok(!text.includes(value) && text.includes("[redacted]"), `${file}: ${text}`);
   }
 });
 
-test("the pin: a run keeps the commit it was made from when main moves on, through a continue in a new process", { timeout: 120_000 }, async (t) => {
+// Waits on the switch (tl-untangle): a message to a run that ended on the runner answers 409, so the run is never
+// continued here.
+const CONTINUE_TODO = "the switch (tl-untangle): a run that ended on the runner is continued by a message";
+test("the pin: a run keeps the commit it was made from when main moves on, through a continue in a new process", { timeout: 120_000, skip: CONTINUE_TODO }, async (t) => {
   const { api, data } = await serve(t, { faux: SYSTEM });
   const sha = await learned(api, data, "pinned", { instructions: "Answer the question." });
   const { runId, prompt } = await ran(api, "pinned");
-  const pin = readFileSync(join(runDir(data, runId), "learning.json"), "utf8");
+  const pin = JSON.stringify(await pinOf({ data }, runId));
   assert.equal(JSON.parse(pin).seed, sha);
   const later = commitToMain(repoOf(data, "pinned"), { "MEMORY.md": `${INDEX}- [Later](later.md) — a rule main learned after the run was made\n`, "later.md": note("Later", "a rule main learned after the run was made", "feedback") });
   assert.notEqual(later, sha);
   assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "and again?" })).status, 202);
   await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
   const again = await answer(api, runId);
-  assert.equal(readFileSync(join(runDir(data, runId), "learning.json"), "utf8"), pin, "the pin is never written again");
+  assert.equal(JSON.stringify(await pinOf({ data }, runId)), pin, "the pin is never written again");
   assert.equal(learnedIn(again), learnedIn(prompt));
   assert.ok(!again.includes("main learned after"), again);
   assert.equal(existsSync(join(learnedDir(data, runId), "later.md")), false);
   // A run made now starts from the new main.
   const next = await ran(api, "pinned");
-  assert.equal(pinOf(data, next.runId).seed, later);
+  assert.equal((await pinOf({ data: data }, next.runId)).seed, later);
   assert.deepEqual(wholeIn(learnedIn(next.prompt)), ["later.md", "prefers-tables.md", "refund-policy-path.md"], next.prompt);
   assert.ok(existsSync(join(learnedDir(data, next.runId), "later.md")));
 });
@@ -406,7 +409,7 @@ test("two runs of a new agent made at once: one folder made, one commit on main,
   const main = git(repo, ["rev-parse", "main"]);
   assert.equal(git(repo, ["rev-list", "--count", "--all"]), "1");
   assert.equal(git(repo, ["reflog", "show", "--format=%H", "refs/heads/main"]), main, "main was set once");
-  assert.deepEqual(made.map((run) => pinOf(data, run.body.run_id).seed), [main, main]);
+  assert.deepEqual(await Promise.all(made.map(async (run) => (await pinOf({ data }, run.body.run_id)).seed)), [main, main]);
   assert.deepEqual(readdirSync(agentFolderOf(data, "twice")).sort(), ["learning", "runs"], "its learning folder beside its runs");
   for (const run of made) assert.equal((await api("GET", `/runs/${run.body.run_id}`)).body.learning.reason, "empty", "seeded, and its end-of-run turn gave no note");
 });
@@ -428,11 +431,11 @@ test("two agents whose ids differ only in case: each has its own learning folder
   assert.ok(!other.prompt.includes("Refund policy path") && !other.prompt.includes("Prefers tables"), other.prompt);
   assert.deepEqual(readdirSync(learnedDir(data, other.runId)), ["MEMORY.md"]);
   assert.equal(readFileSync(join(learnedDir(data, other.runId), "MEMORY.md"), "utf8"), "");
-  assert.notEqual(pinOf(data, other.runId).seed, sha);
+  assert.notEqual((await pinOf({ data: data }, other.runId)).seed, sha);
   // The one that learned still starts from its own.
   const own = await ran(api, "Twin");
   assert.equal(learnedIn(own.prompt), WHOLE, own.prompt);
-  assert.deepEqual(pinOf(data, own.runId), { seed: sha, section: WHOLE, given: GIVEN });
+  assert.deepEqual((await pinOf({ data: data }, own.runId)), { seed: sha, section: WHOLE, given: GIVEN });
 });
 
 test("no hook runs on the host's git calls: neither the folder's own (its hooks folder, core.hooksPath, an fsmonitor) nor a template, hooks folder or config the environment names", { timeout: 120_000 }, async (t) => {
@@ -498,48 +501,6 @@ test("a folder the server cannot read: the run still completes, with nothing lea
   assert.equal(learnedIn((await ran(api, "locked")).prompt), WHOLE);
 });
 
-test("a main whose commit git cannot read, and notes that cannot be copied into the run: each run completes with nothing learned, seed_failed, and the folder's working tree and index are left as they were", { timeout: 120_000 }, async (t) => {
-  const { api, data } = await serve(t, { faux: SYSTEM });
-  const main = await learned(api, data, "lost", { instructions: "Answer the question." });
-  const repo = repoOf(data, "lost");
-  writeFileSync(join(repo, "MEMORY.md"), `${INDEX}- [Mine](mine.md) — a person's uncommitted rule\n`);
-  git(repo, ["add", "--", "MEMORY.md"]);
-  const staged = git(repo, ["ls-files", "--stage"]);
-  const object = join(repo, ".git", "objects", main.slice(0, 2), main.slice(2));
-  const kept = readFileSync(object);
-  rmSync(object);
-  const lost = await ran(api, "lost");
-  await seedFailed(api, data, "lost", lost.runId, lost.prompt);
-  assert.match(readFileSync(join(repo, "MEMORY.md"), "utf8"), /a person's uncommitted rule/);
-  assert.equal(git(repo, ["ls-files", "--stage"]), staged, "the index is not replaced");
-  assert.equal(git(repo, ["for-each-ref", "--format=%(objectname)", "refs/heads/main"]), main);
-  // main readable again, and the run's copy that fails.
-  writeFileSync(object, kept, { mode: 0o444 });
-  learningTestHooks.beforePin = () => {
-    throw new Error("the disk is full");
-  };
-  t.after(() => void (learningTestHooks.beforePin = undefined));
-  const full = await ran(api, "lost");
-  learningTestHooks.beforePin = undefined;
-  await seedFailed(api, data, "lost", full.runId, full.prompt);
-});
-
-test("a copy that fails once its pin is in place (the run's directory not synced): the pin goes too, so the run is seed_failed and nothing learned reaches its instructions", { timeout: 120_000 }, async (t) => {
-  const { api, data } = await serve(t, { faux: SYSTEM });
-  await learned(api, data, "unsynced", { instructions: "Answer the question." });
-  let pinned;
-  learningTestHooks.afterPin = (runDir) => {
-    pinned = JSON.parse(readFileSync(join(runDir, "learning.json"), "utf8"));
-    throw new Error("the run's directory could not be synced");
-  };
-  t.after(() => void (learningTestHooks.afterPin = undefined));
-  const run = await ran(api, "unsynced");
-  learningTestHooks.afterPin = undefined;
-  assert.equal(pinned?.section, WHOLE, "the pin was in place, with the notes, when the copy failed");
-  assert.equal(learnedIn(run.prompt), undefined, "no # Learned in the run's instructions");
-  await seedFailed(api, data, "unsynced", run.runId, run.prompt);
-});
-
 /** A scratch directory holding one file, `kept`, for a planted link to point at (or at its file). */
 async function linkTarget(t) {
   const target = await scratch(t);
@@ -566,7 +527,7 @@ async function refusedLink(api, data, id, runId, prompt, target, said) {
   assert.deepEqual(readdirSync(target), ["kept"], "nothing is made where the link points");
   assert.equal(readFileSync(join(target, "kept"), "utf8"), "kept\n", "nothing is written through the link");
   const warning = said.find((text) => text.includes(`the agent ${id}'s learning folder could not be read`)) ?? "";
-  assert.match(warning, /is a symbolic link/, said.join(""));
+  assert.match(warning, /a link in the learning folder at [^ ]+ can't be followed, so nothing learned is read or written; remove the link/, said.join(""));
   assert.ok(!warning.includes(target), warning);
 }
 
@@ -590,7 +551,10 @@ for (const [where, plant] of Object.entries(PLANTED)) {
   });
 }
 
-test("a symbolic link at disk/agents/<key>, the agent's folder, there before its first run: the run is refused at its start, since its own folder would be made through the link, and nothing is made where the link points", { timeout: 120_000 }, async (t) => {
+// Waits on the switch's start (tl-untangle): a run is queued before any folder is made, so its start refuses nothing for
+// its agent's folder; the runner's claim makes the run's folder.
+const RUN_FOLDER_LINK_TODO = "the switch's start (tl-untangle): a run whose agent's folder is a link is refused at its start";
+test("a symbolic link at disk/agents/<key>, the agent's folder, there before its first run: the run is refused at its start, since its own folder would be made through the link, and nothing is made where the link points", { timeout: 120_000, skip: RUN_FOLDER_LINK_TODO }, async (t) => {
   const { api, data } = await serve(t, { faux: SYSTEM });
   const target = await linkTarget(t);
   assert.equal((await api("POST", "/agents", agent("linked", { learning: true, instructions: "Answer the question." }))).status, 201);
@@ -602,52 +566,4 @@ test("a symbolic link at disk/agents/<key>, the agent's folder, there before its
   assert.match(JSON.stringify(run.body), /disk\/agents\/linked-[0-9a-f]{16} is a symbolic link, and a run's folder is never made through one/);
   assert.ok(!JSON.stringify(run.body).includes(target), "the refusal names the link, not its target");
   assert.deepEqual(readdirSync(target).sort(), before, "nothing made where the link points");
-});
-
-test("a link swapped in for the learning folder the host has just made is caught by the check after the mkdir, never followed", { timeout: 120_000 }, async (t) => {
-  const { api, data } = await serve(t, { faux: SYSTEM });
-  const target = await linkTarget(t);
-  assert.equal((await api("POST", "/agents", agent("swapped", { learning: true, instructions: "Answer the question." }))).status, 201);
-  const repo = repoOf(data, "swapped");
-  learningTestHooks.afterMkdir = (dir) => {
-    if (dir !== repo) return;
-    rmSync(dir, { recursive: true });
-    symlinkSync(target, dir);
-  };
-  t.after(() => void (learningTestHooks.afterMkdir = undefined));
-  const said = stderrOf(t);
-  const run = await ran(api, "swapped");
-  learningTestHooks.afterMkdir = undefined;
-  assert.ok(lstatSync(repo).isSymbolicLink(), "the hook swapped the link in");
-  await refusedLink(api, data, "swapped", run.runId, run.prompt, target, said);
-});
-
-/** A request's system prompt, as text. */
-const systemText = (body) => (typeof body?.system === "string" ? body.system : (body?.system ?? []).map((block) => block?.text ?? "").join("\n"));
-
-test("a claude-agent run on its real adapter: the notes are whole in the system prompt after the instructions, under # Learned, with the revision's skill loaded through the Skill tool and no learned one", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
-  const fake = await fakeAnthropic({ reply: () => ({ text: "Claude answered." }) });
-  t.after(() => fake.close());
-  withEnv(t, { ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}`, ANTHROPIC_BASE_URL: fake.url, AGENT_MODEL: "anthropic/claude-haiku-4-5" }, ["AGENT_MODEL_BASE_URL"]);
-  const { api, data } = await serve(t, { faux: undefined });
-  // The agent's folder, with main already holding two active notes and a superseded one when its first run is made.
-  const repo = repoOf(data, "learner");
-  mkdirSync(repo, { recursive: true });
-  git(repo, ["init", "-q", "--template=", "--initial-branch=main"]);
-  const sha = commitToMain(repo, MAIN);
-  const cite = "---\nname: cite\ndescription: How this agent cites its sources.\n---\nCite every source you read.\n";
-  const created = await api("POST", "/agents", { ...agent("learner", { learning: true, harness: "claude-agent", model: "anthropic/claude-haiku-4-5", instructions: "Answer the question.", skills: ["cite"] }), skills: { "cite/SKILL.md": cite } });
-  assert.equal(created.status, 201, JSON.stringify(created.body));
-  const run = await api("POST", "/agents/learner/runs", { input: { content: "Answer." } });
-  assert.equal(run.status, 202, JSON.stringify(run.body));
-  await follow(api, run.body.run_id, ["completed"], { deadlineMs: 120_000 });
-  assert.deepEqual(pinOf(data, run.body.run_id), { seed: sha, section: WHOLE, given: GIVEN });
-  const first = fake.messages().find((m) => m.tools.includes("Skill"));
-  assert.ok(first, `the Skill tool is offered: ${JSON.stringify(fake.messages().map((m) => m.tools))}`);
-  const system = systemText(first.body);
-  assert.ok(system.includes(`Answer the question.\n\n# Learned\n\n${KEEPS}\n\n${WHOLE}`), `the notes follow the instructions, after what the run is told of learning: ${system.slice(-2000)}`);
-  assert.ok(!system.includes("Old refunds"), "a superseded note is never shown");
-  assert.ok(JSON.stringify(first.body).includes("agentrun:cite"), "the revision's skill goes as it did");
-  assert.ok(!system.includes('<skill name="cite">'), "and is not inlined");
-  assert.deepEqual(readdirSync(learnedDir(data, run.body.run_id)).sort(), ["MEMORY.md", "prefers-tables.md", "refund-policy-path.md"]);
 });

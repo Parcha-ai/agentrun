@@ -17,7 +17,7 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { sessionSpendOf } from "@parcha/agentrun-kernel";
 import { closeOpenSessions, MODEL } from "./conformance-pi-adapter.mjs";
-import { beforeRequestOf, capRun, cap, quiet, specCap } from "./adapter-pi-cap-support.mjs";
+import { capRun, cap, quiet, specCap } from "./adapter-pi-cap-support.mjs";
 
 const { piAdapter } = await import("../dist/runner/adapters/pi.js");
 const { journalSessions } = await import("../dist/runner/sessions.js");
@@ -94,7 +94,7 @@ async function stoppedRun(t, { capUsd, spentUsd = 0, text, journalOf, abortAfter
     cap: specCap(capUsd),
     ...(journalOf ? { journalOf } : {}),
     // `spentUsd` spent before: the host's priced tools (the cap's spentUsd hook), outside the model's records.
-    beforeRequest: beforeRequestOf({ capUsd: () => capUsd, modelOf: () => PRICED, ...(spentUsd ? { spentUsd: () => spentUsd } : {}) }),
+    runCap: ({ capUsd: () => capUsd, modelOf: () => PRICED, ...(spentUsd ? { spentUsd: () => spentUsd } : {}) }),
     during: async (server) => {
       await origin.streamed;
       await sendCommand(server, "run-1", { kind: "stop", body: {} });

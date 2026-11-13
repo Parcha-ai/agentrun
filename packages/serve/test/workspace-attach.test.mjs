@@ -10,6 +10,7 @@ import { after, test } from "node:test";
 import { readBackOf } from "@parcha/agentrun-computer";
 import { attachedWorkspace, checkReadBack, COMPUTER_CHUNK, localWorkspace, NO_COMPUTER } from "../dist/workspace/index.js";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
+import { realProcesses } from "./workspace-fake-processes.mjs";
 
 const dirs = [];
 after(() => { for (const dir of dirs) rmSync(dir, { recursive: true, force: true }); });
@@ -72,12 +73,19 @@ test("attach checks the computer's read-back against readBackOf(mountSpec()) (th
   const passed = { readBackOf: (spec) => { asked.push(spec); return { kind: "bind", path: "/where/the/check/says" }; } };
   await base.attach(fakeComputer(root, { readBack: { kind: "bind", path: "/where/the/check/says" } }), passed);
   assert.deepEqual(asked, [{ kind: "bind", path: root }], "it asked the passed-in check, with its own mount");
-  // The disk's mount: never with the token in a refusal.
+  // The disk's mount, read back under the claim's epoch (attach.ts checkReadBack: readBackOf(spec, check.epoch), each
+  // side said as "<disk>:/<folder> in <region>, exclusive under epoch <n>"): never with the token in a refusal.
   const archil = { kind: "archil", disk: "dsk", region: "r1", folder: "agents/a/runs/r/work", token: "secret-token" };
-  await refused(checkReadBack(fakeComputer(root, { readBack: { kind: "archil", disk: "dsk", region: "r1", folder: "agents/b/runs/r/work", exclusive: true, epoch: 1 } }), archil, { readBackOf }), "REFUSED", /not dsk:\/agents\/a\/runs\/r\/work in r1/);
-  await refused(checkReadBack(fakeComputer(root, { readBack: { kind: "archil", disk: "dsk", region: "r2", folder: "agents/a/runs/r/work", exclusive: true, epoch: 1 } }), archil, { readBackOf }), "REFUSED", /in r2, not/);
-  await checkReadBack(fakeComputer(root, { readBack: { kind: "archil", disk: "dsk", region: "r1", folder: "agents/a/runs/r/work", exclusive: true, epoch: 1 } }), archil, { readBackOf });
-  await assert.rejects(checkReadBack(fakeComputer(root, { readBack: { kind: "bind", path: "/x" } }), archil, { readBackOf }), (error) => !error.message.includes("secret-token"), "a refusal never carries the token");
+  const claimed = { readBackOf, epoch: 1 };
+  const back = (fields) => fakeComputer(root, { readBack: { kind: "archil", disk: "dsk", region: "r1", folder: "agents/a/runs/r/work", exclusive: true, epoch: 1, ...fields } });
+  await refused(checkReadBack(back({ folder: "agents/b/runs/r/work" }), archil, claimed), "REFUSED", /it mounts dsk:\/agents\/b\/runs\/r\/work in r1, exclusive under epoch 1, not dsk:\/agents\/a\/runs\/r\/work in r1, exclusive under epoch 1/);
+  await refused(checkReadBack(back({ region: "r2" }), archil, claimed), "REFUSED", /it mounts dsk:\/agents\/a\/runs\/r\/work in r2, exclusive under epoch 1, not dsk:\/agents\/a\/runs\/r\/work in r1/);
+  await refused(checkReadBack(back({ epoch: 2 }), archil, claimed), "REFUSED", /it mounts dsk:\/agents\/a\/runs\/r\/work in r1, exclusive under epoch 2, not dsk:\/agents\/a\/runs\/r\/work in r1, exclusive under epoch 1/);
+  await checkReadBack(back({}), archil, claimed);
+  // The epoch fence (#1994: readBackOf takes the claim's epoch): a check with no epoch reads no Archil mount back, so the
+  // disk's mount is refused in these words, however it reads back.
+  await refused(checkReadBack(back({}), archil, { readBackOf }), "REFUSED", /not an Archil mount of dsk:\/agents\/a\/runs\/r\/work with no epoch to read it back under \(an epoch must be a whole number from 0 to 9007199254740991, not undefined\)/);
+  await assert.rejects(checkReadBack(fakeComputer(root, { readBack: { kind: "bind", path: "/x" } }), archil, claimed), (error) => !error.message.includes("secret-token"), "a refusal never carries the token");
 });
 
 test("attached: a write goes to a temporary file beside the target, then a move; a big one in chunks, the kept mode on the last", async () => {
@@ -122,7 +130,9 @@ test("attached: read, ranged and chunked, from /workspace/<path>; append in chun
   computer.plant.file("/workspace/b.txt", "bb");
   computer.plant.link("/workspace/link");
   computer.clear();
-  assert.deepEqual(await workspace.list(""), [
+  const listed = await workspace.list("");
+  assert.ok(listed.every((entry) => typeof entry.mtimeMs === "number"), "each entry carries its modified time");
+  assert.deepEqual(listed.map(({ mtimeMs, ...entry }) => entry), [
     { name: "b.txt", kind: "file", size: 2 }, { name: "f.txt", kind: "file", size: 10 }, { name: "logs", kind: "dir", size: 0 }, { name: "z", kind: "dir", size: 0 },
   ], "files and folders, sorted, a link left out");
   assert.deepEqual(computer.calls.map(([, p]) => [p.depth, p.offset]), [[1, 0], [1, 2], [1, 4]], "one level, every page");
@@ -155,20 +165,76 @@ test("attached: a path that leaves the root is ESCAPE and never reaches the comp
   await refused(workspace.remove(""), "REFUSED");
 });
 
-test("attached: exec is the computer's exec.run in /workspace/<cwd>; onOutput gets each stream once, whole; stdin is refused", async () => {
-  const { computer, workspace } = await attached({
-    exec: () => ({ exitCode: 3, stdout: Buffer.from("out\n"), stderr: Buffer.from("err\n"), timedOut: false, truncated: true }),
-  });
+test("attached: exec is the computer's process.start in /workspace/<cwd>, read as it comes; never exec.run; stdin is refused", async () => {
+  const { root, computer, workspace } = await attached();
+  realProcesses(computer, root);
+  mkdirSync(join(root, "src"));
   const chunks = [];
-  const result = await workspace.exec(["bash", "-lc", "make"], { cwd: "src", env: { PATH: "/usr/bin" }, timeoutMs: 5000, maxOutput: 100, onOutput: (chunk) => chunks.push([chunk.stream, Buffer.from(chunk.data).toString()]) });
-  assert.deepEqual(computer.calls, [["exec.run", { argv: ["bash", "-lc", "make"], cwd: "/workspace/src", env: { PATH: "/usr/bin" }, timeoutMs: 5000, maxOutput: 100 }]]);
-  assert.deepEqual([Buffer.from(result.stdout).toString(), result.stderr, result.code, result.timedOut, result.truncated], ["out\n", "err\n", 3, false, true]);
-  assert.deepEqual(chunks, [["stdout", "out\n"], ["stderr", "err\n"]], "once per stream, with everything");
-  const quiet = [];
-  await workspace.exec(["true"], { env: {}, timeoutMs: 1000, onOutput: (chunk) => quiet.push(chunk.stream) });
-  assert.deepEqual(quiet, ["stdout", "stderr"], "once per stream even when it is empty");
+  const result = await workspace.exec(["bash", "-c", "pwd; echo err >&2; exit 3"], { cwd: "src", env: { PATH: "/usr/bin:/bin" }, timeoutMs: 5000, maxOutput: 100, onOutput: (chunk) => chunks.push([chunk.stream, Buffer.from(chunk.data).toString()]) });
+  assert.deepEqual(computer.calls[0], ["process.start", { argv: ["bash", "-c", "pwd; echo err >&2; exit 3"], cwd: "/workspace/src", env: { PATH: "/usr/bin:/bin" } }]);
+  assert.ok(!computer.methods().includes("exec.run"), "exec.run keeps a stream's head and answers once: exec never calls it");
+  assert.deepEqual([Buffer.from(result.stdout).toString(), result.stderr, result.code, result.signal, result.timedOut, result.truncated], [`${join(root, "src")}\n`, "err\n", 3, null, false, false]);
+  assert.deepEqual(chunks.sort(), [["stderr", "err\n"], ["stdout", `${join(root, "src")}\n`]]);
   await workspace.exec(["true"], { env: {}, timeoutMs: 1000, onOutput: () => { throw new Error("the caller's bug"); } });
   await refused(workspace.exec(["cat"], { env: {}, timeoutMs: 1000, stdin: Buffer.from("x") }), "REFUSED", /stdin/);
+  await refused(workspace.exec(["no-such-program-here"], { env: {}, timeoutMs: 1000 }), "NOT_FOUND");
+});
+
+test("attached: exec streams, gives onOutput every byte of a long output (its end included), keeps the cap's head, and says a signal", async () => {
+  const { root, computer, workspace } = await attached();
+  realProcesses(computer, root);
+  const seen = [];
+  // The program waits after "one" until the file "go" is there, which the test makes when onOutput gets "one": an exec
+  // that answered only at its end would never see it, and would end at its deadline.
+  const script = "printf one; while [ ! -e go ]; do sleep 0.01; done; head -c 400000 /dev/zero | tr '\\0' a; printf END";
+  const out = await workspace.exec(["bash", "-c", script], { env: { PATH: "/usr/bin:/bin" }, timeoutMs: 20_000, maxOutput: 1000, onOutput: ({ stream, data }) => {
+    if (seen.length === 0) writeFileSync(join(root, "go"), "");
+    if (stream === "stdout") seen.push(Buffer.from(data));
+  } });
+  assert.equal(out.timedOut, false, "it streamed: the first piece came before the program ended");
+  const all = Buffer.concat(seen);
+  assert.equal(all.length, 3 + 400_000 + 3, "every byte, past computerd's 360 KB head and past the cap");
+  assert.equal(all.subarray(-3).toString(), "END", "the end of a long output is there");
+  assert.deepEqual([out.stdout.length, out.truncated, out.code], [1000, true, 0]);
+  const termed = await workspace.exec(["bash", "-c", "kill -TERM $$"], { env: { PATH: "/usr/bin:/bin" }, timeoutMs: 10_000 });
+  assert.deepEqual([termed.code, termed.signal, termed.timedOut], [null, "SIGTERM", false], "computerd's TERM, said as Node says it");
+});
+
+test("attached: at the deadline, or an abort, exec sends KILL to the process and returns: timedOut, or an AbortError", async () => {
+  const { root, computer, workspace } = await attached();
+  realProcesses(computer, root);
+  const slow = await workspace.exec(["sleep", "300"], { env: { PATH: "/usr/bin:/bin" }, timeoutMs: 300 });
+  assert.deepEqual([slow.code, slow.signal, slow.timedOut], [null, "SIGKILL", true], "ended at its deadline, by the KILL it sent");
+  assert.ok(computer.calls.some(([method, params]) => method === "process.signal" && params.signal === "KILL"));
+  // Aborted when the program has said it started, not after a clock: had the abort done nothing, the exec would answer
+  // at its deadline with a result, not reject.
+  const controller = new AbortController();
+  computer.clear();
+  await assert.rejects(workspace.exec(["bash", "-c", "echo started; sleep 300"], { env: { PATH: "/usr/bin:/bin" }, timeoutMs: 600_000, signal: controller.signal, onOutput: () => controller.abort() }), (error) => error?.name === "AbortError");
+  assert.ok(computer.calls.some(([method, params]) => method === "process.signal" && params.signal === "KILL"), "the abort sent KILL");
+  computer.clear();
+  await assert.rejects(workspace.exec(["true"], { env: {}, timeoutMs: 1000, signal: AbortSignal.abort() }), (error) => error?.name === "AbortError");
+  assert.deepEqual(computer.calls, [], "an aborted signal starts nothing");
+});
+
+test("attached: stat is the computer's files.stat, never following: a link is a link, nothing there is undefined, a link on the way is ESCAPE", async () => {
+  const { computer, workspace } = await attached();
+  computer.plant.file("/workspace/sub/a.txt", "12345");
+  computer.plant.link("/workspace/link", "/etc");
+  computer.plant.link("/workspace/sub/hop", "/etc");
+  const file = await workspace.stat("sub/a.txt");
+  assert.deepEqual([file.kind, file.size, typeof file.mtimeMs], ["file", 5, "number"]);
+  assert.deepEqual(computer.calls.find(([method]) => method === "files.stat")?.[1].follow, false);
+  assert.deepEqual([(await workspace.stat("sub")).kind, (await workspace.stat("sub")).size], ["dir", 0]);
+  assert.equal((await workspace.stat("")).kind, "dir");
+  assert.equal((await workspace.stat("link")).kind, "link");
+  assert.equal(await workspace.stat("missing"), undefined);
+  assert.equal(await workspace.stat("missing/deeper"), undefined);
+  assert.equal(await workspace.stat("sub/a.txt/under"), undefined);
+  await refused(workspace.stat("sub/hop/passwd"), "ESCAPE");
+  computer.clear();
+  await refused(workspace.stat("../x"), "ESCAPE");
+  assert.deepEqual(computer.calls, [], "a path that leaves the root never reaches the computer");
 });
 
 test("attached: process is the computer's, start's cwd and log taken relative to the run's folder, the rest passed through; grep searches the mounted folder", async () => {
@@ -200,7 +266,7 @@ test("attached: a computer's error comes back as the Workspace's code, in its wo
   const { computer, workspace } = await attached();
   const codes = [["not_found", "NOT_FOUND"], ["exists", "EXISTS"], ["limit", "TOO_LARGE"], ["timeout", "TIMEOUT"], ["denied", "REFUSED"], ["is_dir", "REFUSED"], ["gone", "UNAVAILABLE"], ["docker", "UNAVAILABLE"]];
   for (const [given, code] of codes) {
-    computer.overrides["exec.run"] = { result: { ok: false, error: { code: given, message: `said ${given}` } } };
+    computer.overrides["process.start"] = { result: { ok: false, error: { code: given, message: `said ${given}` } } };
     await refused(workspace.exec(["true"], { env: {}, timeoutMs: 1000 }), code, new RegExp(`said ${given}`));
   }
 });

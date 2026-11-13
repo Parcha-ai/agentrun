@@ -1,5 +1,5 @@
 // Watch live: the run page frames the run's browser, as served. A run browses (pi-browser's fake browser: one page, no
-// vendor, no key) and asks the person, so it waits with its session open. Its page's "Watch live" tab frames the viewer
+// vendor, no key) and asks the person, so it waits with its session open. Its page's Screen tab frames the viewer
 // (a same-origin path under the run's own live-view route) and the viewer reaches its live state, with no CSP violation in
 // the console's page or the viewer's: the console's CSP (page.ts, default-src 'self') lets it frame its own origin, and
 // the viewer's (browser-live.ts LIVE_CSP) lets only that origin frame it. Once the run ends, the tab says the browser
@@ -28,7 +28,7 @@ export default {
     const started = await api("POST", "/agents/watch/runs", { input: { content: "Browse the example page." } });
     check(started.status === 202, `starting the run answered ${started.status}`);
     const runId = started.body.run_id;
-    const livePath = `/v2/runs/${encodeURIComponent(runId)}/browser/live/`;
+    const livePath = `/v2/runs/${encodeURIComponent(runId)}/computer/live/`;
 
     // The run's page, loaded again so the violation listener is in it from the start.
     await page.goto(`${origin}/#/runs/${encodeURIComponent(runId)}`);
@@ -40,17 +40,17 @@ export default {
     const refused = new Promise((_, reject) => page.on("console", (m) => { if (/csp violation|Refused to (frame|display)|violates the following Content Security Policy/i.test(m.text())) reject(new Error(`the browser refused: ${m.text().replace(/https?:\/\/[^\s'"()]+/g, (u) => (URL.canParse(u) ? new URL(u).origin : "(an address)")).slice(0, 200)}`)); }));
     refused.catch(() => {});
 
-    // The tab reads "Watch live" once the run's browser has a session (the console reads the run's browser as it goes).
+    // The Screen tab frames the viewer once the run's browser has a session (the console reads the run's screen as it goes).
     const viewerDocument = page.waitForResponse((r) => r.request().resourceType() === "document" && new URL(r.url()).pathname.startsWith(livePath), { timeout: 45_000 });
     viewerDocument.catch(() => {});
-    await page.getByRole("tab", { name: "Watch live" }).click({ timeout: 45_000 });
-    const frameEl = page.locator('iframe[title="The run\'s browser"]');
+    await page.getByRole("tab", { name: "Screen" }).click({ timeout: 45_000 });
+    const frameEl = page.locator('iframe[title="The run\'s screen"]');
     await frameEl.waitFor();
     check(await frameEl.evaluate((el, path) => new URL(el.src).pathname.startsWith(path), livePath), "the frame is the run's own live-view path");
 
     // Live: the viewer's page loaded in the frame, its socket is up and the host said ready: Take over is offered (or,
     // read-only, the watch-only note).
-    const viewer = page.frameLocator('iframe[title="The run\'s browser"]');
+    const viewer = page.frameLocator('iframe[title="The run\'s screen"]');
     await Promise.race([viewer.locator("#hands:not([hidden]), #watching:not([hidden])").first().waitFor(), refused]);
     const notice = viewer.locator("#notice");
     check(await notice.isHidden() || !/Disconnected|not accepted|refused|released/i.test(await notice.innerText()), `the viewer says: ${await notice.innerText().catch(() => "")}`);

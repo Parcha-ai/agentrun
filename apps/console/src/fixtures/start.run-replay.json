@@ -24,6 +24,9 @@
     "status": "queued",
     "state": "working",
     "title": "Summarize the standup: we ship Friday.",
+    "place": {
+      "mode": "runner"
+    },
     "created_at": "2026-10-28T22:41:37.515Z",
     "updated_at": "2026-10-28T22:41:37.517Z",
     "ended_at": null,

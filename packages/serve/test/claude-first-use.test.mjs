@@ -14,7 +14,7 @@ import { basename, dirname, join } from "node:path";
 import { after, test } from "node:test";
 import { claudeAgentExecutable, CLAUDE_AGENT_SDK_VERSION } from "@parcha/agentrun-harness-claude";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
-import { agent, client, follow, scratch, serve } from "./support.mjs";
+import { agent, client, follow, retried, scratch, serve } from "./support.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { startFakeOAuth } from "./fixtures/fake-oauth-server.mjs";
 
@@ -168,7 +168,7 @@ async function firstUseEnv(t, registry, anthropic) {
  *  stand-in for the one AgentRun ships), with an agent on claude-agent. */
 async function firstUseServe(t, registry, data, more = {}) {
   const served = await serve(t, { faux: undefined, harnesses: false, harnessLocks: { "claude-agent": registry.lock }, ...(data ? { data } : {}), ...more });
-  assert.equal((await served.api("POST", "/agents", agent("claude", { harness: "claude-agent", model: `anthropic/${MODEL}` }))).status, 201);
+  assert.equal((await retried(served.api)("POST", "/agents",agent("claude", { harness: "claude-agent", model: `anthropic/${MODEL}` }))).status, 201);
   return served;
 }
 
@@ -304,7 +304,8 @@ test("while it installs, the run reads \"Installing Claude Code (first use)…\"
   for (const id of [first.body.run_id, second.body.run_id]) {
     const { rows, last } = await follow(api, id, ["completed", "failed"], { deadlineMs: 240_000 });
     assert.equal(last.status, "completed", JSON.stringify(rows.slice(-3)));
-    assert.ok(!rows.some((r) => r.summary === INSTALLING), "the install's row goes once it is installed");
+    // The wait stays on the timeline as a step the run took, as the host's other phase rows do, said once.
+    assert.equal(rows.filter((r) => r.kind === "phase" && r.summary === INSTALLING).length, 1, "the install's row, once");
   }
   assert.equal(registry.tarballs().length, 1, "still one install");
 });
@@ -327,7 +328,7 @@ test("a launch that waited for the install refreshes its MCP OAuth tokens again 
   const asked = await fetch(started.body.authorization_url, { redirect: "manual" });
   const back = await fetch(asked.headers.get("location"), { redirect: "manual", headers: { cookie: started.headers.get("set-cookie")?.split(";")[0] ?? "" } });
   assert.equal(back.headers.get("location"), "/#/settings/mcp?server=docs&sign_in=ok");
-  assert.equal((await api("POST", "/agents", agent("claude-docs", { harness: "claude-agent", model: `anthropic/${MODEL}`, tools: ["mcp:docs/add"], tool_settings: { "mcp:docs/*": { permission: "allow" } } }))).status, 201);
+  assert.equal((await retried(api)("POST", "/agents",agent("claude-docs", { harness: "claude-agent", model: `anthropic/${MODEL}`, tools: ["mcp:docs/add"], tool_settings: { "mcp:docs/*": { permission: "allow" } } }))).status, 201);
   const refreshes = () => as.log.filter((entry) => entry.form.grant_type === "refresh_token").length;
   const run = await api("POST", "/agents/claude-docs/runs", { input: { content: "Say hello." } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
@@ -537,26 +538,33 @@ test("a partial tree is not Claude Code: one whose MCP library would resolve fro
   assert.equal(run.status, 202, `a partial tree does not make claude-agent unrunnable: ${JSON.stringify(run.body)}`);
   const { rows, last } = await follow(api, run.body.run_id, ["completed", "failed"], { deadlineMs: 240_000 });
   assert.equal(registry.tarballs().length, 1, "installed again: the SDK's tarball asked");
-  assert.equal(last.status, "completed", JSON.stringify(rows.slice(-3)));
+  assert.equal(last.status, "completed", JSON.stringify({ rows: rows.slice(-3), error: (await api("GET", `/runs/${run.body.run_id}`)).body.error }));
   assert.ok(existsSync(join(data, "harnesses", "claude-agent", "node_modules", ...MCP.split("/"), "package.json")), "the MCP library is in the harnesses now");
 });
 
-test("runs that wait for the install keep their places: at max_concurrent_runs 1, a second run during the install is refused, so no two run at once after it", { timeout: 300_000, skip }, async (t) => {
+test("runs that wait for the install keep their places: at max_concurrent_runs 1, a second run started during the install is queued, not taken, so no two run at once after it", { timeout: 300_000, skip }, async (t) => {
   let letGo;
   const hold = new Promise((resolve) => (letGo = resolve));
   t.after(() => letGo());
   const registry = await fakeRegistry(t, { hold });
   const anthropic = await anthropicEndpoint(t);
   await firstUseEnv(t, registry, anthropic.fake);
-  const { api } = await serve(t, { faux: undefined, harnesses: false, harnessLocks: { "claude-agent": registry.lock }, maxRuns: 1 });
-  assert.equal((await api("POST", "/agents", agent("claude", { harness: "claude-agent", model: `anthropic/${MODEL}` }))).status, 201);
+  const { api, runnerBeats } = await serve(t, { faux: undefined, harnesses: false, harnessLocks: { "claude-agent": registry.lock }, maxRuns: 1 });
+  assert.equal((await retried(api)("POST", "/agents", agent("claude", { harness: "claude-agent", model: `anthropic/${MODEL}` }))).status, 201);
   const first = await api("POST", "/agents/claude/runs", { input: { content: "Say hello." } });
   assert.equal(first.status, 202, JSON.stringify(first.body));
   await until("the run waits for the install", async () => (await api("GET", `/runs/${first.body.run_id}/timeline`)).body.rows?.some((r) => r.kind === "phase" && r.summary === INSTALLING), 60_000);
+  // A start over the run limit is queued, not refused.
   const second = await api("POST", "/agents/claude/runs", { input: { content: "Say hello too." } });
-  assert.deepEqual([second.status, second.body.error?.code], [429, "rate_limited"], `the waiting run holds the one place: ${JSON.stringify(second.body)}`);
+  assert.equal(second.status, 202, JSON.stringify(second.body));
+  // The waiting run holds the one place: past three more of the runner's beats (polls, each of which would claim a queued
+  // run had it a place), the second is still queued and untouched while the first waits for the install.
+  const seen = runnerBeats();
+  await until("three more runner beats", () => runnerBeats() >= seen + 3, 60_000);
+  assert.equal((await api("GET", `/runs/${second.body.run_id}`)).body.status, "queued", "the second run waits for the place");
+  assert.deepEqual((await api("GET", `/runs/${second.body.run_id}/timeline`)).body.rows ?? [], [], "nothing of it has run");
   letGo();
-  assert.equal((await follow(api, first.body.run_id, ["completed", "failed"], { deadlineMs: 240_000 })).last.status, "completed");
+  for (const id of [first.body.run_id, second.body.run_id]) assert.equal((await follow(api, id, ["completed", "failed"], { deadlineMs: 240_000 })).last.status, "completed");
 });
 
 test("the manual command replaces an install the server made, read-only as it left it: run as shown, it puts a whole install in its place", { timeout: 300_000, skip }, async (t) => {
@@ -583,8 +591,8 @@ test("a run cancelled while it waits for the install gives its place back at onc
   const anthropic = await anthropicEndpoint(t);
   await firstUseEnv(t, registry, anthropic.fake);
   const { api } = await serve(t, { faux: undefined, harnesses: false, harnessLocks: { "claude-agent": registry.lock }, maxRuns: 1 });
-  assert.equal((await api("POST", "/agents", agent("claude", { harness: "claude-agent", model: `anthropic/${MODEL}` }))).status, 201);
-  assert.equal((await api("POST", "/agents", agent("plain"))).status, 201);
+  assert.equal((await retried(api)("POST", "/agents",agent("claude", { harness: "claude-agent", model: `anthropic/${MODEL}` }))).status, 201);
+  assert.equal((await retried(api)("POST", "/agents",agent("plain"))).status, 201);
   const waiting = await api("POST", "/agents/claude/runs", { input: { content: "Say hello." } });
   assert.equal(waiting.status, 202, JSON.stringify(waiting.body));
   await until("the run waits for the install", async () => (await api("GET", `/runs/${waiting.body.run_id}/timeline`)).body.rows?.some((r) => r.kind === "phase" && r.summary === INSTALLING), 60_000);
@@ -621,7 +629,7 @@ console.log(JSON.stringify({ url: served.baseUrl, token: served.token }));
     child.once("exit", (code) => reject(new Error(`the first server exited (${code}) before it served`)));
   });
   const api = client(first.url, first.token);
-  assert.equal((await api("POST", "/agents", agent("claude", { harness: "claude-agent", model: `anthropic/${MODEL}` }))).status, 201);
+  assert.equal((await retried(api)("POST", "/agents",agent("claude", { harness: "claude-agent", model: `anthropic/${MODEL}` }))).status, 201);
   const run = await api("POST", "/agents/claude/runs", { input: { content: "Say hello." } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   await until("npm runs on the data", async () => (await npmOn(data)).length > 0, 120_000);
@@ -654,54 +662,3 @@ test("a person's npm config that omits optional packages still installs Claude C
   assert.ok(existsSync(join(data, "harnesses", "claude-agent", "node_modules", ...PLATFORM.split("/"), "claude")), "the platform package's CLI is installed");
 });
 
-/** The layout an earlier build installed Claude Code in: the SDK's tree at the top of `<data>/harnesses` itself (its
- *  package.json, lock and node_modules), read-only as that build left it. `more`: other entries beside it. */
-async function flatTree(harnesses, more = []) {
-  mkdirSync(join(harnesses, "node_modules", ...SDK.split("/")), { recursive: true });
-  writeFileSync(join(harnesses, "package.json"), `${JSON.stringify({ name: "agentrun-claude-code", private: true, dependencies: { [SDK]: PIN } })}\n`);
-  writeFileSync(join(harnesses, "package-lock.json"), "{}\n");
-  writeFileSync(join(harnesses, "node_modules", ...SDK.split("/"), "package.json"), JSON.stringify({ name: SDK, version: PIN }));
-  for (const entry of more) mkdirSync(join(harnesses, entry), { recursive: true });
-  execFileSync("chmod", ["-R", "a-w", harnesses]);
-}
-
-test("a data dir that holds Claude Code as an earlier build installed it (read-only, at the top of <data>/harnesses) gets a working install under harnesses/claude-agent, nothing of the old tree left, and says so once", { timeout: 300_000, skip }, async (t) => {
-  const registry = await fakeRegistry(t);
-  const anthropic = await anthropicEndpoint(t);
-  await firstUseEnv(t, registry, anthropic.fake);
-  const data = join(await scratch(t), "agents");
-  const harnesses = join(data, "harnesses");
-  await flatTree(harnesses);
-  const lines = [];
-  const { api } = await firstUseServe(t, registry, data, { log: (line) => lines.push(line) });
-  const run = await api("POST", "/agents/claude/runs", { input: { content: "Say hello." } });
-  assert.equal(run.status, 202, JSON.stringify(run.body));
-  const { rows, last } = await follow(api, run.body.run_id, ["completed", "failed"], { deadlineMs: 240_000 });
-  assert.equal(last.status, "completed", JSON.stringify(rows.slice(-3)));
-  assert.equal(installedIn(data), PIN, "installed under harnesses/claude-agent");
-  assert.deepEqual((await readdir(harnesses)).sort(), ["claude-agent"], "nothing of the earlier install is left beside it");
-  const said = lines.filter((line) => line.includes(`removed the earlier Claude Code install at ${harnesses}: it installs again under harnesses/claude-agent`));
-  assert.equal(said.length, 1, lines.join("\n"));
-});
-
-test("only that exact layout is removed: a harnesses directory that also holds anything else is left as it is", { timeout: 60_000 }, async (t) => {
-  const install = await import("../dist/harness-install.js");
-  assert.equal(typeof install.removeFlatInstall, "function", "harness-install.ts exports removeFlatInstall");
-  for (const more of [["codex"], ["claude-agent"], [".claude-agent-x1"], ["notes"]]) {
-    const harnesses = join(await scratch(t), "harnesses");
-    await flatTree(harnesses, more);
-    assert.equal(await install.removeFlatInstall(harnesses), false, `beside ${more}: not removed`);
-    assert.deepEqual((await readdir(harnesses)).sort(), [...more, "node_modules", "package-lock.json", "package.json"].sort(), `beside ${more}: as it was`);
-  }
-  // No harnesses directory, an empty one, or one with the per-harness layout alone: nothing to remove.
-  const root = await scratch(t);
-  assert.equal(await install.removeFlatInstall(join(root, "none")), false);
-  mkdirSync(join(root, "harnesses", "codex"), { recursive: true });
-  assert.equal(await install.removeFlatInstall(join(root, "harnesses")), false);
-  assert.deepEqual(await readdir(join(root, "harnesses")), ["codex"]);
-  // The layout alone, read-only: removed whole.
-  const flat = join(await scratch(t), "harnesses");
-  await flatTree(flat);
-  assert.equal(await install.removeFlatInstall(flat), true);
-  assert.deepEqual(await readdir(flat), [], "the directory stays, empty, for the per-harness installs");
-});

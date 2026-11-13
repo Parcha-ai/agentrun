@@ -24,7 +24,7 @@ import type { TSchema } from "typebox";
 import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { PublicFetchOptions } from "@parcha/pi-browser";
 import { type CapRefusal, capRefusals } from "./cap.js";
-import { FAUX_PARALLEL_ENV, fauxFetch, handedKeys, PARALLEL_KEY_ENV } from "./decisions.js";
+import { FAUX_PARALLEL_ENV, fauxFetch, parallelKeyOf } from "./decisions.js";
 import { clip, fetchOptions, HTML_READ_CHARS, linksWithin, MAX_CHARS_MIN, PAGE_CHARS, PAGE_READ_MAX_CHARS, type Page, type Part, partOfRead, partProblem, type Read, readDirect, TEXT_CAP, TIMEOUT_MS, TITLE_CAP, textOf, type Unread, URL_MAX, URL_PARAMETERS } from "./web-fetch-direct.js";
 import { FAUX_ENV } from "./model.js";
 import { PaidRefused, paidRequest, parallelFeeOf } from "./paid-calls.js";
@@ -226,21 +226,35 @@ export async function webFetch(url: unknown, { parallel, pages, checkMs = TIMEOU
   return { ...partOfRead(page, { offset, maxChars }), via, ...(why ? { parallel: why } : {}) };
 }
 
-let parallel: Extract | null | undefined;
-/** The pages this run read (Pages): its process is the run's, so the agent's tool and a call node's web_fetch share them. */
-export const runPages: Pages = new Map();
-/** The run's Parallel extract, made once in its process so a refused key holds for the rest of the run: on the Parallel
- *  key the server handed it (handedKeys, the read the decision providers share), null without one. */
+/** Each run's Parallel extract, by the environment its calls are given: one object per run (main's run process hands
+ *  process.env; the runner hands each claim its own, claim-secrets.ts), so one claim's key or client never serves another. */
+const parallels = new WeakMap<NodeJS.ProcessEnv, Extract | null>();
+/** Each run's pages, by the environment its calls are given (one object per run: main's run process hands process.env,
+ *  the runner hands each claim its own), so the pages one run read never serve another's. */
+const pagesByRun = new WeakMap<NodeJS.ProcessEnv, Pages>();
+/** The pages the run whose calls are given `env` read (Pages): the agent's tool and a call node's web_fetch of that run
+ *  share them, another run's never. */
+export function pagesOf(env: NodeJS.ProcessEnv): Pages {
+  let pages = pagesByRun.get(env);
+  if (!pages) pagesByRun.set(env, (pages = new Map()));
+  return pages;
+}
+/** The run's Parallel extract, made once for the environment its calls are given, so a refused key holds for the rest of
+ *  the run: on the Parallel key that environment holds (parallelKeyOf: the per-run pipe, or the claim's own), null
+ *  without one. */
 export function parallelOf(env: NodeJS.ProcessEnv): Extract | null {
-  if (parallel !== undefined) return parallel;
-  const key = handedKeys(env)[PARALLEL_KEY_ENV];
-  return (parallel = key === undefined ? null : parallelExtract(key, async (...args) => ((await fauxFetch(env, FAUX_PARALLEL_ENV)) ?? fetch)(...args)));
+  const made = parallels.get(env);
+  if (made !== undefined) return made;
+  const key = parallelKeyOf(env);
+  const extract = key === undefined ? null : parallelExtract(key, async (...args) => ((await fauxFetch(env, FAUX_PARALLEL_ENV)) ?? fetch)(...args));
+  parallels.set(env, extract);
+  return extract;
 }
 
 /** The part `options` names of the page at `url` by the provider the run's plane resolves web_fetch to: Parallel's
  *  extract (with the direct fetch behind it) where it resolves to parallel, the guarded direct fetch otherwise, and a
  *  failed Page saying why where it is unavailable or the part is one a call may not ask for (partProblem), before
- *  anything is fetched. From `pages` (the run's, runPages) where they hold the URL. */
+ *  anything is fetched. From `pages` (the run's, pagesOf) where they hold the URL. */
 export async function fetchFor(env: NodeJS.ProcessEnv, url: unknown, options: GuardOptions & Part & { pages?: Pages } = {}): Promise<WebPage | Page> {
   const problem = partProblem(options);
   if (problem) return { ok: false, url: typeof url === "string" ? clip(url, URL_MAX) : "", status: 0, title: "", text: "", links: [], error: problem };
@@ -292,7 +306,7 @@ export function webFetchTool(env: NodeJS.ProcessEnv, name = WEB_FETCH_TOOL): Too
     replay: "safe",
     execute: async (args, _api, context) => {
       const { url, offset, max_chars } = args as { url?: unknown; offset?: number; max_chars?: number };
-      const page = await fetchFor(env, url, { ...(await fetchOptions(env, FAUX_ENV)), offset, maxChars: max_chars, pages: runPages, ...(context?.abortSignal ? { signal: context.abortSignal } : {}) });
+      const page = await fetchFor(env, url, { ...(await fetchOptions(env, FAUX_ENV)), offset, maxChars: max_chars, pages: pagesOf(env), ...(context?.abortSignal ? { signal: context.abortSignal } : {}) });
       return forModel(webFetchText(page, name), { details: page });
     },
   });

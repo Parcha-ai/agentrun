@@ -27,17 +27,23 @@ export function openLineUrl(line, publicUrl) {
   return publicUrl !== undefined && URL.canParse(publicUrl) && url.origin === new URL(publicUrl).origin ? word : undefined;
 }
 
+/** The line an API-only server (AGENTRUN_API_ONLY=1) prints in place of its "Open " line: it has no console to open, so
+ *  the address this command names is the server's API, from the AGENTRUN_BASE_URL line before it. */
+export const API_ONLY_LINE = /^API only \(AGENTRUN_API_ONLY=1\)/;
+
 /** How many of the server's last output lines a start that fails shows. */
 export const TAIL_LINES = 20;
 
 /** The server's lines this command says too, as they come: its banner's boxes line (whether new agents get the Docker
- *  box, or why not), the Docker box image's first build, as it starts and ends, and, on a server with a public address
- *  and no password yet, the setup link with its code, which setup at that address asks for. */
-export const SAID = /^(Boxes: |Preparing the Docker box image |The Docker box image |Set up this server: )/;
+ *  box, or why not), and, on a server with a public address and no password yet, the setup link with its code, which
+ *  setup at that address asks for. */
+export const SAID = /^(Boxes: |Set up this server: )/;
 
 /** The address a person opens first, as the server says it: the URL of the first "Open " line of its output that names
  *  one (openLineUrl). That line is the server's interface for it (the plain address today, a single-use sign-in link
- *  once the server prints one), so this command never builds the address itself. Resolves undefined when the output ends
+ *  once the server prints one), so this command never builds the address itself. An API-only server prints no such line:
+ *  its API-only line (API_ONLY_LINE) stands for it, and the address is its AGENTRUN_BASE_URL line's, held to the same
+ *  hosts as an "Open " line's. Resolves undefined when the output ends
  *  without one. Until then, the last TAIL_LINES lines before it are kept in `seen`: what a start that fails shows, and each
  *  goes to `onBefore`. Every whole line after it goes to `onLine`; the rest of the output is read and dropped, so the
  *  server never blocks on a full pipe. */
@@ -50,6 +56,8 @@ export function openUrl(stdout, publicUrl, seen = [], onLine = () => {}, onBefor
   return new Promise((resolve) => {
     let pending = "";
     let found;
+    // The API's address, from the banner's AGENTRUN_BASE_URL line: what an API-only server's line stands for.
+    let base;
     stdout.setEncoding("utf8");
     stdout.on("data", (chunk) => {
       pending += chunk;
@@ -58,7 +66,12 @@ export function openUrl(stdout, publicUrl, seen = [], onLine = () => {}, onBefor
         pending = pending.slice(end + 1);
         if (found !== undefined) onLine(line);
         else if ((found = openLineUrl(line, publicUrl)) !== undefined) resolve(found);
-        else keep(line);
+        else if (base !== undefined && API_ONLY_LINE.test(line)) resolve((found = base));
+        else {
+          const named = /^AGENTRUN_BASE_URL=(\S+)$/.exec(line)?.[1];
+          if (named !== undefined && openLineUrl(`Open ${named}`, publicUrl) !== undefined) base = named;
+          keep(line);
+        }
       }
     });
     stdout.on("end", () => {
@@ -101,7 +114,7 @@ export function npmExecOf(env, from = process.ppid) {
 }
 
 export const USAGE = `Usage: npx @parcha/agentrun [--port N] [--data DIR] [--no-open]   start the server
-       npx @parcha/agentrun import|reset-password [--data DIR]   a server command
+       npx @parcha/agentrun import|reset-password|runner [--data DIR]   a server command (runner: one more runner on this store)
        npx @parcha/agentrun <command> [args]   the server's API: agents, runs, triggers, ..., api (npx @parcha/agentrun help)`;
 
 /** The server's launcher, installed with this package (its dependency), or undefined. */
@@ -119,7 +132,7 @@ export const serverArgs = (argv) => (argv.includes("--no-open") ? argv.filter((a
 
 /** The server's own commands (its CLI's first word), which this command runs on its store: every other first word is
  *  the CLI's, which names a command it has or says it has none. */
-export const SERVER_COMMANDS = ["eval-template", "import", "reset-password", "validate-template"];
+export const SERVER_COMMANDS = ["eval-template", "import", "reset-password", "runner", "validate-template"];
 
 /** How many of the server's refusals and ignored deliveries a start says, each route and reason once, before one line
  *  that says the rest are not: under this command the server's log goes nowhere else (its stdout is read here and dropped). */
@@ -130,7 +143,7 @@ const REFUSED = new Map([
   ["wrong_token", "the API token is not this server's"],
   ["no_credential", "it carried no API token"],
   ["wrong_password", "the password is wrong"],
-  ["sign_in_table_full", "too many sign-ins at once"],
+  ["sign_in_table_full", "a sign-in from more addresses than the limit counts one by one"],
 ]);
 
 /** The fields of one of the server's log lines (print.ts: `key=value` or `key="value"`); a repeated key keeps its first

@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { SchedulesPage } from "./Schedules";
 import { createClient } from "@/lib/client";
 import type { Firing, Trigger } from "@/lib/v2";
+import { pick, picker } from "@/test/picker";
 
 // Making a GitHub trigger (serve's trigger-github): a trigger of kind github takes the events its `accept` names from the
 // server's one GitHub App, keeps no secret and has no URL of its own (its page: Triggers.githubDetail.test). The console offers one only while GitHub is connected
@@ -64,9 +65,11 @@ async function open(v2: ReturnType<typeof createClient>, view: Parameters<typeof
   const click = async (label: RegExp) => { await act(async () => { button(label)!.click(); }); await settle(); };
   const tick = async (value: string) => { await act(async () => { (host.querySelector(`input[name="event"][value="${value}"]`) as HTMLInputElement).click(); }); };
   const set = async (name: string, value: string) => {
-    const el = host.querySelector(`[name="${name}"]`) as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
-    const proto = el instanceof HTMLSelectElement ? HTMLSelectElement.prototype : el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-    await act(async () => { Object.getOwnPropertyDescriptor(proto, "value")!.set!.call(el, value); el.dispatchEvent(new Event(el instanceof HTMLSelectElement ? "change" : "input", { bubbles: true })); });
+    // The agent is the console's Picker: picked as a person picks it.
+    if (name === "agent") return pick(picker(host, "Agent")!, value);
+    const el = host.querySelector(`[name="${name}"]`) as HTMLInputElement | HTMLTextAreaElement;
+    const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    await act(async () => { Object.getOwnPropertyDescriptor(proto, "value")!.set!.call(el, value); el.dispatchEvent(new Event("input", { bubbles: true })); });
   };
   const fill = async () => { await set("name", "review PRs"); await set("agent", "triage"); await set("content", "Review the pull request."); await set("maxCost", "1"); };
   return { host, went, button, click, tick, set, fill, settle, text: () => host.textContent ?? "" };
@@ -155,9 +158,11 @@ describe("Triggers: GitHub", () => {
     const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
     await settle();
     const set = async (name: string, value: string) => {
-      const el = host.querySelector(`[name="${name}"]`) as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
-      const proto = el instanceof HTMLSelectElement ? HTMLSelectElement.prototype : el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-      await act(async () => { Object.getOwnPropertyDescriptor(proto, "value")!.set!.call(el, value); el.dispatchEvent(new Event(el instanceof HTMLSelectElement ? "change" : "input", { bubbles: true })); });
+      // The agent is the console's Picker: picked as a person picks it.
+    if (name === "agent") return pick(picker(host, "Agent")!, value);
+    const el = host.querySelector(`[name="${name}"]`) as HTMLInputElement | HTMLTextAreaElement;
+      const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      await act(async () => { Object.getOwnPropertyDescriptor(proto, "value")!.set!.call(el, value); el.dispatchEvent(new Event("input", { bubbles: true })); });
     };
     await set("agent", "triage"); await set("content", "Review the pull request."); await set("maxCost", "1");
     await act(async () => { [...host.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Create GitHub trigger")!.click(); });

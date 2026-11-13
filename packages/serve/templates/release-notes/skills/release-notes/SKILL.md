@@ -258,7 +258,13 @@ edits and copies it: an issue. You make at most one write per run.
      joiner, right after any `@` you must keep).
    - Never `assignees`, `milestone`, `state` or `type`.
 4. A refused or failed write: don't retry with another tool. Answer with `draft.destination: "answer"`, `action:
-   "none"`, and the error in `questions`.
+   "none"`, and `draft.reason` saying why in one plain sentence, never as a failure of the notes. A permission refusal
+   (403, "Resource not accessible by integration") means the GitHub App this server uses can read issues but not
+   write them: "The draft is here because this server's GitHub App can't create issues on <owner/name> (it has Issues:
+   read). To get drafts as issues, the App's owner can add Issues: write in the App's permissions on GitHub; each
+   installation then accepts it." Any other error: the same sentence with GitHub's
+   words. The notes themselves are complete either way.
+   Whenever the draft stays in the answer (step 1 too), `draft.reason` says why.
 
 ### 9. Answer
 

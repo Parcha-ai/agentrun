@@ -59,12 +59,17 @@ export async function githubCall(api: string, path: string, options: { method?: 
   return { status: res.status, json, headers: res.headers };
 }
 
+/** Permissions an installation token is narrowed to (GitHub's access_tokens `permissions`), each at most what the App has:
+ *  none given, the App's own. A checkout's is {contents: "read"} alone. */
+export type GithubPermissions = Readonly<Record<string, "read" | "write">>;
+
 /** An installation token of the App `appId` (its private key `pem`) for one repository: `target.installation`, or the
  *  installation GitHub says covers `target.repo` (GET /repos/{owner}/{repo}/installation, asked with the App's JWT); then
- *  POST /app/installations/{id}/access_tokens narrowed to that one repository, with the App's permissions. Pure apart
+ *  POST /app/installations/{id}/access_tokens narrowed to that one repository, with the App's permissions or the narrower
+ *  `permissions` given. Pure apart
  *  from the calls to GitHub at `api`: serve's launch path mints with it today, and a runner can tomorrow; the run never
  *  sees the key. `expires_at` in ms. */
-export async function mintInstallationToken(api: string, appId: string, pem: string, target: { installation?: number; repo: string }, nowMs?: number): Promise<{ ok: true; token: string; expires_at: number } | { ok: false; reason: "not_installed" | "no_repo" | "github_failed"; message: string }> {
+export async function mintInstallationToken(api: string, appId: string, pem: string, target: { installation?: number; repo: string }, nowMs?: number, permissions?: GithubPermissions): Promise<{ ok: true; token: string; expires_at: number } | { ok: false; reason: "not_installed" | "no_repo" | "github_failed"; message: string }> {
   const [owner, name, extra] = target.repo.split("/");
   if (!owner || !name || extra !== undefined || !/^[A-Za-z0-9-]{1,39}$/.test(owner) || !/^[A-Za-z0-9._-]{1,100}$/.test(name)) return { ok: false, reason: "no_repo", message: "No GitHub repository was named for this run: a GitHub event's run has one; another run names it in its input as https://github.com/<owner>/<repo>." };
   const notInstalled = { ok: false as const, reason: "not_installed" as const, message: `The GitHub App isn't installed on ${owner}/${name}: install it there (or add the repository to its installation), then run again.` };
@@ -78,7 +83,7 @@ export async function mintInstallationToken(api: string, appId: string, pem: str
       if (found.status !== 200 || !Number.isSafeInteger(id)) return { ok: false, reason: "github_failed", message: `GitHub did not say which installation covers ${owner}/${name} (HTTP ${found.status}).` };
       installation = id as number;
     }
-    const answer = await githubCall(api, `/app/installations/${installation}/access_tokens`, { method: "POST", jwt, body: { repositories: [name] } });
+    const answer = await githubCall(api, `/app/installations/${installation}/access_tokens`, { method: "POST", jwt, body: { repositories: [name], ...(permissions ? { permissions } : {}) } });
     const minted = (typeof answer.json === "object" && answer.json !== null ? answer.json : {}) as { token?: unknown; expires_at?: unknown };
     if (answer.status === 404 || answer.status === 422) return notInstalled;
     const expires = typeof minted.expires_at === "string" ? Date.parse(minted.expires_at) : NaN;
@@ -87,4 +92,67 @@ export async function mintInstallationToken(api: string, appId: string, pem: str
   } catch (error) {
     return { ok: false, reason: "github_failed", message: `GitHub did not give this run a token: ${(error as Error).message}.` };
   }
+}
+
+/** The GitHub App's settings (trigger_settings, adapter "github", scope "server"): its id, slug, client id and settings
+ *  page, which are no secret, and its installations (public: sealed, never redacted); its private key and webhook secret,
+ *  sealed and redacted. The server writes them (github-connection.ts); the runner reads the id and key per claim
+ *  (runner/github-app.ts). */
+export const GITHUB_FIELDS = { appId: "app_id", slug: "slug", clientId: "client_id", settingsUrl: "settings_url", privateKey: "private_key", webhookSecret: "webhook_secret", installations: "installations" } as const;
+export const GITHUB_SCOPE = "server";
+
+const unescapeAttr = (value: string) => value.replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+const REPO_URL = /https:\/\/github\.com\/([A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38})\/([A-Za-z0-9._-]{1,100})/;
+
+/** The attributes of the first payload tag in `content` (the server's own, triggers.ts inputOf: each value escaped), or
+ *  undefined when it has none. */
+function payloadAttrs(content: string): { at: number; attrs: Record<string, string> } | undefined {
+  const at = content.indexOf("<trigger-payload ");
+  if (at < 0) return undefined;
+  const tag = content.slice(at, content.indexOf(">", at) + 1);
+  return { at, attrs: Object.fromEntries([...tag.matchAll(/ ([a-z][a-z0-9_-]*)="([^"]*)"/g)].map((m) => [m[1]!, unescapeAttr(m[2]!)])) };
+}
+
+/** The repository a run is about, from its first message: the GitHub event it was started for (the server's own payload
+ *  tag, the first one, with its installation and repository), else the first https://github.com/<owner>/<repo> its owner's
+ *  words name, before any payload (a sender's text is never read for it). Undefined when it names none. The tag is read only
+ *  for a run a github trigger started (`payload`, from its launch's inputOrigin): anyone may write the tag's text into a
+ *  run of their own, and it names an installation. */
+export function githubTargetOf(content: unknown, { payload = false }: { payload?: boolean } = {}): { installation?: number; repo: string } | undefined {
+  if (typeof content !== "string") return undefined;
+  const tag = payloadAttrs(content);
+  if (tag && payload) {
+    const { attrs } = tag;
+    if (attrs.source === "github" && typeof attrs.repo === "string" && /^[^/\s]+\/[^/\s]+$/.test(attrs.repo)) return { repo: attrs.repo, ...(/^\d{1,15}$/.test(attrs.installation ?? "") ? { installation: Number(attrs.installation) } : {}) };
+  }
+  const own = tag ? content.slice(0, tag.at) : content;
+  const url = REPO_URL.exec(own);
+  // The repository's name ends where the sentence does: trailing punctuation, then a .git, are not part of it.
+  return url ? { repo: `${url[1]}/${url[2]!.replace(/[.,;:)!?]+$/, "").replace(/\.git$/, "")}` } : undefined;
+}
+
+/** A pull request as a run's GitHub event names it: its repository (owner/name), the installation that sent it, its
+ *  number, its head sha and, when the event carries one, its base sha. */
+export type GithubPull = { readonly repo: string; readonly installation?: number; readonly number: number; readonly head: string; readonly base?: string };
+const SHA = /^[0-9a-f]{40}$/;
+const OWNER = /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$/;
+const NAME = /^[A-Za-z0-9._-]{1,100}$/;
+
+/** The pull request a run was started for: read from its first message's payload tag alone (the server's, made from a
+ *  signed GitHub delivery: trigger-signatures.ts attrsOf), never from anyone's words, and only for a run a github trigger
+ *  started (`payload`, from its launch's inputOrigin, as githubTargetOf reads it). Undefined when the run was not started
+ *  by a GitHub event about a pull request with a head (a comment event has none). */
+export function githubPullOf(content: unknown, { payload = false }: { payload?: boolean } = {}): GithubPull | undefined {
+  if (typeof content !== "string" || !payload) return undefined;
+  const attrs = payloadAttrs(content)?.attrs;
+  if (!attrs || attrs.source !== "github") return undefined;
+  const [owner, name, extra] = (attrs.repo ?? "").split("/");
+  if (!owner || !name || extra !== undefined || !OWNER.test(owner) || !NAME.test(name) || name === "." || name === "..") return undefined;
+  const number = Number(attrs.number);
+  if (!/^\d{1,15}$/.test(attrs.number ?? "") || number < 1 || !SHA.test(attrs.head_sha ?? "")) return undefined;
+  return {
+    repo: `${owner}/${name}`, number, head: attrs.head_sha!,
+    ...(SHA.test(attrs.base_sha ?? "") ? { base: attrs.base_sha! } : {}),
+    ...(/^\d{1,15}$/.test(attrs.installation ?? "") ? { installation: Number(attrs.installation) } : {}),
+  };
 }

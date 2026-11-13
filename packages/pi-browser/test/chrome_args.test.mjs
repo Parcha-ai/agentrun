@@ -6,7 +6,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { chromeArgs, extensionDirectory, extensionOrigin } from "../dist/providers/chrome-args.js";
+import { chromeArgs, extensionDirectory, extensionOrigin, findChrome } from "../dist/providers/chrome-args.js";
 
 const origins = (args) => args.filter((arg) => arg.startsWith("--remote-allow-origins="));
 
@@ -69,4 +69,15 @@ test("an extension directory given to chromeArgs names the one allowed Origin; n
   const given = chromeArgs({ userDataDir: "/tmp/profile", viewport: { width: 800, height: 600 }, headless: true, sandbox: true, extensionDir: dir });
   assert.deepEqual(origins(given), [`--remote-allow-origins=${extensionOrigin(dir)}`]);
   assert.notEqual(extensionOrigin(dir), extensionOrigin());
+});
+
+test("a Chrome the person names comes first, then the first install that exists; none is null", () => {
+  const present = new Set(["/opt/google/chrome/chrome", "/opt/me/chrome-custom", "/usr/local/bin/chromium"]);
+  const exists = (file) => present.has(file);
+  assert.equal(findChrome({ PI_BROWSER_CHROME: "/opt/me/chrome-custom", PATH: "/usr/local/bin" }, exists), "/opt/me/chrome-custom");
+  assert.equal(findChrome({ CHROME_PATH: "/opt/me/chrome-custom" }, exists), "/opt/me/chrome-custom");
+  assert.equal(findChrome({ PI_BROWSER_CHROME: "/missing", PATH: "/usr/local/bin" }, exists), "/usr/local/bin/chromium", "a named path that is absent falls through to the search");
+  assert.equal(findChrome({ PATH: "/nowhere" }, exists), "/opt/google/chrome/chrome");
+  assert.equal(findChrome({ PATH: "/nowhere" }, (file) => file === "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"), "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome");
+  assert.equal(findChrome({ PATH: "/nowhere" }, () => false), null);
 });

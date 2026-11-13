@@ -179,6 +179,9 @@ export function decisionModelsNamed(nodes: readonly Record<string, unknown>[]): 
   return out;
 }
 
+/** The keys a per-run process was handed on its pipe, once read: process-wide on purpose, as that process is one run's.
+ *  The runner (one process for many claims) never reads the pipe: each claim's keys are in its own environment
+ *  (parallelKeyOf, decisionProvidersIn), so nothing here is shared between claims. */
 let keysHanded: Record<string, string> | undefined;
 /** The keys the server handed the run's process, by name: read at the first call and the descriptor closed, and the
  *  same object at every later one (the decision providers' and the web tools'), so the descriptor is read and closed once
@@ -196,6 +199,14 @@ export function handedKeys(env: NodeJS.ProcessEnv): Record<string, string> {
   }
 }
 
+/** The Parallel key a call's environment holds: on the pipe where the server handed a per-run process its keys
+ *  (`DECISION_KEY_FD_ENV` set: main's run process, handedKeys), else in the claim's own environment, where the runner's
+ *  claim put it (claim-secrets.ts). Read from the environment the call is given each time, so a claim's key is its own. */
+export function parallelKeyOf(env: NodeJS.ProcessEnv): string | undefined {
+  if (env[DECISION_KEY_FD_ENV] !== undefined) return handedKeys(env)[PARALLEL_KEY_ENV];
+  return isSet(env[PARALLEL_KEY_ENV]) ? env[PARALLEL_KEY_ENV] : undefined;
+}
+
 /** Under --faux only: the fetch the module `env[name]` names, in place of a provider's API (the tests' fake). */
 export const fauxFetch = async (env: NodeJS.ProcessEnv, name: string) =>
   env[FAUX_ENV] && env[name] ? ((await import(pathToFileURL(env[name]).href)) as { default: typeof fetch }).default : undefined;
@@ -207,7 +218,21 @@ export const fauxFetch = async (env: NodeJS.ProcessEnv, name: string) =>
  *  provider it lacks is refused before the run instead of being asked of another. Each provider sends a request once: one that fails after it
  *  was sent may have been answered and billed, so the decision escalates as interrupted instead of being asked again. */
 export async function decisionProvidersOf(env: NodeJS.ProcessEnv): Promise<{ providers: Record<string, DecisionProvider>; default: string } | undefined> {
-  const handed = handedKeys(env);
+  return decisionProvidersFrom(handedKeys(env), env);
+}
+
+/** In the runner (one process for many runs): a claim's decision providers, built from the decision keys in its own
+ *  environment (claim-secrets.ts read them from the store into it), never from a shared pipe or a process-wide cache. The
+ *  same providers decisionProvidersOf builds, on the keys the claim's environment holds (decisionKeysOf). */
+export async function decisionProvidersIn(env: NodeJS.ProcessEnv): Promise<{ providers: Record<string, DecisionProvider>; default: string } | undefined> {
+  return decisionProvidersFrom(decisionKeysOf(env), env);
+}
+
+/** The decision providers on the keys `handed` (by name), with each provider's faux fetch read from `env` under --faux: Jev
+ *  (TypeSafe's or OpenRouter's route), Parallel (its own API or OpenRouter), and OpenRouter's Decisions models. Undefined
+ *  when `handed` names no provider key. The one builder behind decisionProvidersOf (the per-run pipe) and decisionProvidersIn
+ *  (the runner's store), so both routes build the same providers. */
+async function decisionProvidersFrom(handed: Record<string, string>, env: NodeJS.ProcessEnv): Promise<{ providers: Record<string, DecisionProvider>; default: string } | undefined> {
   const providers: Record<string, DecisionProvider> = {};
   const jev = handed[JEV_KEY_ENV] !== undefined ? { apiKey: handed[JEV_KEY_ENV] } : handed[JEV_OPENROUTER_KEY_ENV] !== undefined ? { provider: "openrouter" as const, apiKey: handed[JEV_OPENROUTER_KEY_ENV] } : undefined;
   if (jev) {

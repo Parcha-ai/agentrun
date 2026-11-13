@@ -15,6 +15,7 @@ import {
   endBackground,
   exitCodeOf,
   hostToolDefs,
+  NO_SHELL,
   SHELL_FAMILY,
   SHELL_WATCHERS,
   shellPermission,
@@ -27,7 +28,7 @@ const NONE = ["read", "write", "edit"];
 const LOCAL = ["read", "write", "edit", "bash"];
 const answer = (text) => async () => ({ text });
 /** The ruled refusal of every background tool with no computer, in Mode 1 or Mode 2. */
-const NEEDS_A_COMPUTER = "Background programs need a computer: run this agent with place sandbox (Docker in Mode 1, or a remote computer in Mode 2).";
+const NEEDS_A_COMPUTER = "Background programs need a computer: run this agent with a sandbox computer (Settings → Computers; place sandbox in the v2 API).";
 /** A call's failure, in its words: an executor answers a failure, and only an abort throws. */
 const errorOf = async (call) => (await call).error;
 const injected = { read: answer("read"), write: answer("write"), edit: answer("edit"), bash: answer("bash") };
@@ -223,6 +224,16 @@ test("closing a terminal's input after an earlier partial line ends the input: i
   assert.equal(closed.text, "Wrote 0 bytes to background process 1's stdin, then closed it. Read what it answers with bash_output.");
   await until(async () => /exited with code 0/.test((await r.invoke("bash_output", { id: "1" }, { hands })).text), "cat to end on the end of its input");
   assert.match((await r.invoke("bash_output", { id: "1" }, { hands })).text, /\n\nhello$/);
+});
+
+test("with no shell, bash is not listed, and a call of it anyway is refused in words that say how to get one, its executor never run", async () => {
+  const ran = [];
+  const r = createRegistry({ maxExecS: 600, shell: "none", executors: { ...injected, bash: async () => (ran.push("bash"), { text: "ran" }) } });
+  assert.deepEqual(r.list().map((tool) => tool.name), NONE);
+  const { hands } = localHands();
+  assert.equal(await errorOf(r.invoke("bash", { command: "true" }, { hands })), NO_SHELL);
+  assert.match(NO_SHELL, /^bash is not available in this run: .*sandbox computer/);
+  assert.deepEqual(ran, []);
 });
 
 test("with no computer's processes, each background tool refuses in words, and the run's end ends none", async () => {

@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, posix } from 'node:path';
+import type { GateAnswer, GateCall } from '@parcha/agentrun-kernel';
 import { type DriveContext, type Harness, type HostTool, type ReplayPolicy, Restart, type SessionState, type Submission, Unavailable } from './host/kernel.js';
 import {
   BuiltinCalls,
@@ -32,6 +33,7 @@ import { uuidFrom } from './ids.js';
 import { MessageQueue } from './inbox.js';
 import { sandboxSpawn } from './spawn.js';
 import { MCP_OUTPUT_TOKENS, toolServer } from './host/tool-server.js';
+import { resumeDanglingCalls } from './resume.js';
 import { JournalSessionStore } from './store.js';
 import { MCP_SERVER, TranscriptBuilder, type TurnEnd } from './transcript.js';
 import { CLAUDE_AGENT_CLI_SKILL_NAMES } from './cli-names.js';
@@ -85,7 +87,10 @@ import { assertAgentSdkVersion, CLAUDE_VM_EXECUTABLE } from './versions.js';
  * in the log; `PostToolUse` / `PostToolUseFailure` the outcome, after the
  * Drive's writes are flushed for a mutating call), so after a crash the
  * recovery note says which calls completed and which were interrupted ("may
- * have half-run"); nothing reruns one. Bash's timeout is clamped to what is
+ * have half-run"); nothing reruns one. A host-tool call the transcript left
+ * with no result and no intent (a park held it at the host's gate) runs on
+ * the resume, gate first, and its result is in the transcript before the CLI
+ * starts (`resumeDanglingCalls`). Bash's timeout is clamped to what is
  * left of the invocation, so a command never outlives it: one the clamp ends
  * is recorded as out of time, never left open. Claude Code runs its commands
  * under its own sandbox (bubblewrap, checked by a self-test in the VM before
@@ -211,9 +216,9 @@ export interface ClaudeCodeHarnessOptions {
    *  not: each call recorded as a built-in's (the session's model proxy decides what the provider may run). */
   providerTools?: readonly ProviderTool[];
   /**
-   * The model, a native Anthropic id (`claude-sonnet-4-5`) or a Gateway one
-   * (`anthropic/claude-sonnet-4.5`, passed as its native id: `nativeModelId`).
-   * Default `claude-sonnet-4-5`.
+   * The model, a native Anthropic id (`claude-sonnet-5-5`) or a Gateway one
+   * (`anthropic/claude-sonnet-5.5`, passed as its native id: `nativeModelId`).
+   * Default `claude-sonnet-5-5`.
    */
   model?: string;
   /** The model of the CLI's small background calls (`nativeModelId` too). Default `model`. */
@@ -256,10 +261,32 @@ export interface ClaudeCodeHarnessOptions {
   unsandboxedCommands?: boolean;
   /** Called with the child's stderr tail when it exits mid-turn, the gateway's refusals, and SDK diagnostics. */
   log?: (message: string, fields?: Record<string, unknown>) => void;
+  /** The host's gate (SessionIO.gate), asked by the tool bridge about each call of `tools` before its intent. */
+  gate?: (call: GateCall) => Promise<GateAnswer>;
+  /** The clock a user turn's day is read from (dateLine). Default the system's. */
+  now?: () => Date;
 }
 
+/**
+ * The line a user turn starts with when the session's model was not yet told its day: today's date, in UTC.
+ *
+ * The CLI records a session's system prompt at its first request and every resume sends that record, so a date the
+ * host put there (serve's environment line) stays the first day's. Re-rendering it (`snapshot: false`) records nothing
+ * and drops the prompt-cache prefix, so the day rides in the turn instead: the first message sent on a day the model has
+ * not been told carries this line, in the CLI's transcript only (the host's log keeps the person's words). The
+ * session's first launch sends no line on its first day: its fresh system prompt is the one recorded.
+ */
+export function dateLine(now: Date): string {
+  return `Today is ${dayOf(now)} (UTC).`;
+}
+
+const dayOf = (now: Date) => now.toISOString().slice(0, 10);
+
+/** The effect a user message that told its model the day is recorded under (`date:<message uuid>`, input `{ day }`). */
+const DATE_EFFECT = 'date';
+
 /** The default model. */
-export const DEFAULT_MODEL = 'claude-sonnet-4-5';
+export const DEFAULT_MODEL = 'claude-sonnet-5-5';
 
 /** What the harness appends to the system prompt about the tools, before `instructions`, with the built-ins off and the app's tools there. */
 export const TOOLS_NOTE = `Your only tools are this app's, the mcp__${MCP_SERVER}__ tools; you have no shell, file, search or web tools of your own.`;
@@ -535,7 +562,12 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
             );
           },
         });
+        const gate = options.gate;
         const bridge = toolBridge(ctx, tools, {
+          // The host's gate before the intent, so a refused or parked call leaves nothing of its own written. The
+          // assistant line that made the call is in the log before the gate is asked: a park ends the claim, and the
+          // resume finds the call it held dangling in the transcript, under the same id (resumeDanglingCalls).
+          ...(gate ? { gate: async (call: GateCall) => (await store.barrier(call.callId, barrierMs), gate(call)) } : {}),
           // A `never` tool runs only once the assistant entry that asked for it is in the log.
           beforeNever: ({ callId }) => store.barrier(callId, barrierMs),
         });
@@ -702,11 +734,24 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
         const sdkEnv = { ...vmEnv, CLAUDE_CONFIG_DIR: configDir };
         const disallowed = [...CLAUDE_BUILTINS_OFF, ...(providerTools.includes('web_search') ? [] : ['WebSearch']), ...(options.disallowedTools ?? [])].filter((name) => !(skills && name === 'Skill'));
         const sessionId = uuidFrom(ctx.runId);
+        // A host-tool call the transcript left dangling that never started (a park held it, or the process died before
+        // its intent): it runs now, the host's gate first, and its result is in the transcript before the CLI resumes it.
+        // One with an intent is left to the CLI's repair and the recovery note, as before; nothing ever runs one twice.
+        if (store.hasSession) await resumeDanglingCalls(ctx, bridge, store);
         // A turn a crash cut off: the harness's own account of it (which calls completed, which may have half-run) goes
         // in this drive's system prompt, not in a user message the model might answer back to the user. A resumed
         // session sends the system prompt recorded at its start (`snapshot`), whatever a later launch passes, so this
         // drive alone renders its own (`snapshot: false`, which records nothing: the next drive's is the recorded one).
         const recovered = recoverySystemNote(ctx.state());
+        // The day this drive's system prompt names, while the CLI holds no record of the session: its first launch's
+        // prompt is fresh, and the first launch with snapshot on records its own (a first launch that recovers records
+        // nothing). Once a record exists a resume sends it, whatever day it names, and a recovery's own fresh prompt is
+        // never recorded: every other day reaches the model in its turn (dateLine).
+        const now = options.now ?? (() => new Date());
+        const recordedDay = !store.hasSession ? dayOf(now()) : undefined;
+        /** A message the CLI's transcript holds told the model `day`. */
+        const told = (day: string) =>
+          ctx.state().effectOrder.some((e) => e.name === DATE_EFFECT && (e.input as { day?: unknown } | undefined)?.day === day && store.hasUser(e.key.slice(DATE_EFFECT.length + 1)));
         const queryOptions: QueryOptions = {
           model,
           cwd: machine.root,
@@ -779,6 +824,14 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
           const uuid = !first ? randomUUID() : how.synthetic ? uuidFrom(`note:${first}`) : uuidFrom(first);
           // A recovery message carries placed prompts' words: which, under its uuid, before it goes (lostPrompts reads it).
           if (how.covers?.length) await ctx.effect(`covers:${uuid}`, { name: 'covers', replay: 'safe', input: { ids: how.covers } }, async () => true);
+          // The first message on a day the model was not told carries that day (dateLine), the session's recorded first
+          // day aside. Recorded under the message's uuid: the day counts as told once the transcript holds the message.
+          const at = now();
+          const day = dayOf(at);
+          if (!told(day)) {
+            if (day !== recordedDay) text = `${dateLine(at)}\n\n${text}`;
+            await ctx.effect(`${DATE_EFFECT}:${uuid}`, { name: DATE_EFFECT, replay: 'safe', input: { day } }, async () => day);
+          }
           outstanding.add(uuid);
           input.push({
             type: 'user',

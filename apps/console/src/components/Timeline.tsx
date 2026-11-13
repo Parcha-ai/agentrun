@@ -1,13 +1,15 @@
-import { Brain, ChevronRight, CircleAlert, CircleDollarSign, CirclePause, FileText, Flag, LoaderCircle, MessageCircleQuestion, MessageSquareText, Scale, ShieldQuestion, User, Wrench } from "lucide-react";
+import { Brain, ChevronRight, CircleAlert, CircleDollarSign, CirclePause, FileText, Flag, MessageCircleQuestion, MessageSquareText, Scale, ShieldQuestion, User, Workflow, Wrench } from "lucide-react";
 import { useState } from "react";
 import { BROWSER_TOOL_NAMES } from "@pi-browser/contract";
 import { nameOf } from "@timeline/labels";
 import { Chip } from "@/components/ui/chip";
+import { Spinner } from "@/components/ui/spinner";
 import { clock } from "@/lib/format";
 import { mcpToolLabel } from "@/lib/mcp";
 import { rowDetail, rowFailed, rowPaused, type Step, steps } from "@/lib/timeline";
+import { kindWithModel, ranOnWords } from "@/lib/nodeModel";
 import { cn } from "@/lib/utils";
-import type { TimelineRow } from "@/lib/v2";
+import type { LearnedNode, TimelineRow } from "@/lib/v2";
 
 const ICON: Record<string, typeof Brain> = {
   user_message: User, thinking: Brain, tool_use: Wrench, tool_result: Wrench, waiting: MessageCircleQuestion,
@@ -24,20 +26,23 @@ const awaitsApproval = (row: TimelineRow) => row.kind === "tool_approval_request
 const fromServer = (row: TimelineRow) => row.origin === "server";
 /** A trigger's message, a webhook's input or a schedule's (served `origin: "trigger"`): the trigger's, never the person's. */
 const fromTrigger = (row: TimelineRow) => row.origin === "trigger";
-/** A trigger row's summary without its "<Source> <its name>: " prefix: exactly that, by the name the row carries
- *  (`trigger.name`, serve's, as its summary shows it after its one-word source), so a name or a message with a colon in
- *  it keeps the message whole; with no name (a trigger gone, named by its id) up to the first ": ". */
-const triggerSaid = (row: TimelineRow) => {
+/** A trigger row's summary split at its "<Source> <its name>: " prefix: `who`, the trigger in its own words as serve
+ *  names it now ("Webhook inbound-lead", "Schedule nightly", or the id once it is deleted), and `said`, the message. The
+ *  split is exactly at the name the row carries (`trigger.name`, serve's, after its one-word source), so a name or a
+ *  message with a colon in it keeps both whole; with no name (a trigger gone, named by its id) at the first ": ". A
+ *  summary with no prefix has no `who`. Nothing is looked up: the served row says it. */
+const triggerParts = (row: TimelineRow): { who: string | null; said: string } => {
   const summary = row.summary ?? "";
   const name = row.trigger?.name;
   const at = name ? summary.indexOf(` ${name}: `) : -1;
-  if (name && at > 0 && !summary.slice(0, at).includes(" ")) return summary.slice(at + name.length + 3).trimStart();
-  return summary.replace(/^[^:]+:\s*/, "");
+  if (name && at > 0 && !summary.slice(0, at).includes(" ")) return { who: summary.slice(0, at + 1 + name.length), said: summary.slice(at + name.length + 3).trimStart() };
+  const m = /^([^:]+):\s*/.exec(summary);
+  return m ? { who: m[1]!, said: summary.slice(m[0].length) } : { who: null, said: summary };
 };
 /** The title a row shows: its summary without the kind's own prefix ("Thinking: ", "You: ", a server message's
- *  "AgentRun: ", a trigger's "<Source> <its name>: ", e.g. "Webhook inbound-lead: "). */
+ *  "AgentRun: ", a trigger's "<Source> <its name>: ", e.g. "Webhook inbound-lead: ", which is that row's label). */
 const title = (row: TimelineRow) => {
-  const text = fromTrigger(row) ? triggerSaid(row) : (row.summary ?? "").replace(fromServer(row) ? /^AgentRun:\s*/ : /^(You|Thinking|Asked you|Waiting for you):\s*/, "");
+  const text = fromTrigger(row) ? triggerParts(row).said : (row.summary ?? "").replace(fromServer(row) ? /^AgentRun:\s*/ : /^(You|Thinking|Asked you|Waiting for you):\s*/, "");
   // A workflow run's input is a JSON object: show its fields, not its braces.
   if (row.kind === "user_message" && text.startsWith("{")) {
     try { return Object.entries(JSON.parse(text) as Record<string, unknown>).map(([k, v]) => `${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`).join(" · "); } catch { /* not whole JSON: as is */ }
@@ -58,7 +63,7 @@ const BROWSER = new Set<string>(BROWSER_TOOL_NAMES);
 /** A tool's name as the label says it: an MCP server's tool as `<server> · <tool>`, a browser tool by its name, any
  *  other as the harness names it. */
 const toolName = (tool: string | null | undefined) => (tool ? (mcpToolLabel(tool) ?? (BROWSER.has(tool) ? nameOf(tool) : tool)) : tool);
-const label = (row: TimelineRow) => fromServer(row) ? "AgentRun" : fromTrigger(row) ? "Trigger" :
+const label = (row: TimelineRow) => fromServer(row) ? "AgentRun" : fromTrigger(row) ? (triggerParts(row).who ?? "Trigger") :
   ({ user_message: "You", thinking: "Thinking", tool_use: toolName(row.tool_name) ?? "Tool", tool_result: toolName(row.tool_name) ?? "Result", waiting: "Waiting for you", usage: "Usage", final_answer: "Answer", phase: "Phase", error: "Error", decision: "Decision", text_block: "Text", tool_approval_requested: "Your approval", learning: "Learning" } as Partial<Record<string, string>>)[row.kind] ?? row.kind;
 
 /** A waiting row's chip, by what the run waits on now (its `pending.kind`, the run page's to pass: a row carries no kind
@@ -92,25 +97,59 @@ function Row({ step, last, waitingChip }: { step: Step; last: boolean; waitingCh
       <div className="min-w-0 flex-1 border-b py-3">
         <button type="button" className="flex w-full items-start gap-3 text-left" onClick={() => setOpen((v) => !v)} aria-expanded={open} disabled={!detail}>
           <span className="min-w-0 flex-1">
-            <span className="flex items-center gap-2 text-[13px] text-muted-foreground">
-              {label(row)}
+            <span className="flex min-w-0 items-center gap-2 text-body text-muted-foreground">
+              {/* A label can be long (a trigger's name, up to 200 characters, spaces or none): cut to the row's width, so it
+                  never widens the page or runs over the time; whole on hover. */}
+              <span data-label className="min-w-0 truncate" title={label(row)}>{label(row)}</span>
               {row.kind === "waiting" && <Chip tone="warning">{waitingChip ?? "Input required"}</Chip>}
               {awaitsApproval(row) && <Chip tone="warning">Approval required</Chip>}
               {failed && <Chip tone="error">Error</Chip>}
               {row.agent_label && <Chip>{row.agent_label}</Chip>}
-              {step.ms !== undefined && <span className="font-mono text-[11px]">{took(step.ms)}</span>}
-              {step.times && <span className="font-mono text-[11px]">{step.times} times{step.until ? ` over ${took(Math.max(0, Date.parse(step.until) - Date.parse(row.timestamp)))}` : ""}</span>}
+              {step.ms !== undefined && <span className="font-mono text-label">{took(step.ms)}</span>}
+              {step.times && <span className="font-mono text-label">{step.times} times{step.until ? ` over ${took(Math.max(0, Date.parse(step.until) - Date.parse(row.timestamp)))}` : ""}</span>}
             </span>
-            <span className={cn("mt-0.5 block break-words text-[15px] leading-snug", fromServer(row) && "text-muted-foreground")}>{shown}</span>
-            {step.saved && <span className="mt-0.5 block font-mono text-[12px] text-muted-foreground">saved {step.saved}</span>}
-            {notSent(row) && <span className="mt-0.5 block break-words text-[13px] text-muted-foreground">{notSent(row)}</span>}
+            <span className={cn("mt-0.5 block break-words text-prose leading-snug", fromServer(row) && "text-muted-foreground")}>{shown}</span>
+            {step.saved && <span className="mt-0.5 block font-mono text-small text-muted-foreground">saved {step.saved}</span>}
+            {notSent(row) && <span className="mt-0.5 block break-words text-body text-muted-foreground">{notSent(row)}</span>}
           </span>
-          <span className="caps shrink-0 pt-0.5 text-[11px] text-muted-foreground">{clock(row.timestamp)}</span>
+          <span className="caps shrink-0 pt-0.5 text-label text-muted-foreground">{clock(row.timestamp)}</span>
           {detail && <ChevronRight className={cn("mt-0.5 size-4 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")} aria-hidden />}
         </button>
-        {open && detail && <pre className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap break-words border bg-card p-3 font-mono text-[12px] leading-[1.7]">{detail}</pre>}
+        {open && detail && <pre className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap break-words border bg-card p-3 font-mono text-small leading-[1.7]">{detail}</pre>}
+        {row.learned_nodes?.length ? <LearnedNodes nodes={row.learned_nodes} /> : null}
       </div>
     </li>
+  );
+}
+
+/** How a learned workflow's node ended, in its chip's tone: ok, failed, escalated; any other word (a skipped node) muted. */
+const NODE_TONE: Record<string, "success" | "error" | "warning"> = { ok: "success", failed: "error", escalated: "warning" };
+/** A learned workflow call's nodes (its result row's `learned_nodes`): closed, a line that says how many ran and how many
+ *  did not end ok; open, each node in the order it ended, its status, its label, its kind and how long it took. Never why
+ *  a node failed: the server keeps none of that text. */
+function LearnedNodes({ nodes }: { nodes: LearnedNode[] }) {
+  const [open, setOpen] = useState(false);
+  const counts = Object.entries(nodes.reduce<Record<string, number>>((n, x) => ({ ...n, [x.status]: (n[x.status] ?? 0) + 1 }), {})).filter(([status]) => status !== "ok");
+  const said = [`${nodes.length} ${nodes.length === 1 ? "node" : "nodes"}`, ...counts.map(([status, n]) => `${n} ${status}`)].join(" · ");
+  return (
+    <div className="mt-2">
+      <button type="button" className="caps flex items-center gap-1 text-label text-muted-foreground hover:text-foreground" onClick={() => setOpen((v) => !v)} aria-expanded={open}
+        aria-label={`${open ? "Hide" : "Show"} the workflow's ${nodes.length === 1 ? "node" : "nodes"}`}>
+        <ChevronRight className={cn("size-3 transition-transform", open && "rotate-90")} aria-hidden /><Workflow className="size-3" aria-hidden />{said}
+      </button>
+      {open && (
+        <ol aria-label="The workflow's nodes" className="mt-2 divide-y border bg-card">
+          {nodes.map((n, i) => (
+            <li key={i} className="flex items-center gap-3 px-3 py-1.5">
+              <span data-status={n.status} className="contents"><Chip tone={NODE_TONE[n.status] ?? "muted"} className="w-[5.5rem] justify-center">{n.status}</Chip></span>
+              <span className="min-w-0 flex-1 truncate text-body" title={n.label}>{n.label}</span>
+              <span data-kind className="font-mono text-label text-muted-foreground" title={ranOnWords(n) || undefined}>{kindWithModel(n.kind, n)}</span>
+              <span className="w-14 text-right font-mono text-label text-muted-foreground">{took(n.duration_ms)}</span>
+            </li>
+          ))}
+        </ol>
+      )}
+    </div>
   );
 }
 
@@ -132,7 +171,7 @@ export function Timeline({ rows, live, fold = 6, asking, waitingOn }: { rows: Ti
   return (
     <div>
       {hidden > 0 && (
-        <button type="button" className="caps mb-1 ml-10 flex items-center gap-1 py-2 text-[11px] text-muted-foreground hover:text-foreground" onClick={() => setAll(true)}>
+        <button type="button" className="caps mb-1 ml-10 flex items-center gap-1 py-2 text-label text-muted-foreground hover:text-foreground" onClick={() => setAll(true)}>
           <ChevronRight className="size-3" aria-hidden /> {hidden} earlier steps
         </button>
       )}
@@ -146,9 +185,9 @@ export function Timeline({ rows, live, fold = 6, asking, waitingOn }: { rows: Ti
 export function Working({ title, note, spin = true }: { title: string; note: string; spin?: boolean }) {
   return (
     <div className="flex flex-col items-center gap-2 py-12 text-center">
-      {spin && <LoaderCircle className="size-5 animate-spin text-run-active" aria-hidden />}
-      <p className="caps text-[11px] font-semibold">{title}</p>
-      <p className="max-w-sm text-[13px] text-muted-foreground">{note}</p>
+      {spin && <Spinner className="size-5" />}
+      <p className="caps text-label font-semibold">{title}</p>
+      <p className="max-w-sm text-body text-muted-foreground">{note}</p>
     </div>
   );
 }

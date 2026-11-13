@@ -7,6 +7,7 @@ a download comes back byte for byte."""
 from __future__ import annotations
 
 import errno
+import inspect
 import json
 import os
 import pickle
@@ -41,6 +42,11 @@ from agentrun import (
 )
 import agentrun
 from agentrun._scrub import scrubber_of, secrets_of
+from agentrun._types import Group
+
+# The routes only the owner's browser reaches, which the server's document marks x-agentrun-browser-only: an MCP sign-in's
+# start (its callback needs the cookie its answer sets there) and Connect GitHub's start and its two returns.
+BROWSER_ONLY = ("startMcpOAuth", "connectGitHub", "gitHubCallback", "gitHubInstalled")
 
 # The package's own directory: a frame is the client's when its file is under it, whatever the checkout's path holds.
 PACKAGE = os.path.dirname(os.path.abspath(agentrun.__file__)) + os.sep
@@ -284,32 +290,44 @@ class Rules(unittest.TestCase):
         self.assertEqual((off.kind, off.by, off.capability, off.status, len(server.requests)), ("unsupported", "server", "quotes", 501, 1))
 
     def test_runs_wait_long_polls_the_timeline_tries_a_gateways_502_again_returns_a_run_waiting_on_a_person_and_past_its_timeout_raises_with_the_run_as_it_is(self) -> None:
+        # r1 ends on the server's say-so, never the clock's: its first timeline request is a gateway's 502, tried again, then
+        # one more page says it still works, and the fourth request's page says it ended. So the polls are counted by what
+        # the server answered, whatever the machine's speed; the deadline (60 s) is never what ends the wait.
         asked = 0
+        ended_at = 4
 
         def answer(request: Request, reply: Reply) -> Any:
             nonlocal asked
             if request.url.startswith("/v2/runs/r1/timeline"):
                 asked += 1
-                return json_answer(502, {}) if asked == 1 else json_answer(200, page())
+                if asked == 1:
+                    return json_answer(502, {})
+                return json_answer(200, page(status="completed", state="completed", final=True, unchanged=False) if asked >= ended_at else page())
             if request.url == "/v2/runs/r1":
-                return json_answer(200, {"run_id": "r1", "status": "working"})
+                return json_answer(200, {"run_id": "r1", "status": "completed" if asked >= ended_at else "working"})
             if request.url.startswith("/v2/runs/r2/timeline"):
                 return json_answer(200, page(run_id="r2", status="input_required", unchanged=False))
             if request.url == "/v2/runs/r2":
                 return json_answer(200, {"run_id": "r2", "status": "input_required", "pending": {"kind": "question"}})
+            if request.url.startswith("/v2/runs/r3/timeline"):
+                return json_answer(200, page(run_id="r3"))
+            if request.url == "/v2/runs/r3":
+                return json_answer(200, {"run_id": "r3", "status": "working"})
             return json_answer(404, {"error": {"code": "not_found"}})
 
         server = Listener(self, answer)
         client = AgentRun(base_url=server.base, api_key=KEY)
-        late = self.thrown(client.runs.wait, "r1", timeout=0.7005)
-        assert isinstance(late, AgentRunTimeout)
-        self.assertEqual((late.kind, late.run_id, late.run), ("late", "r1", {"run_id": "r1", "status": "working"}))
+        self.assertEqual(client.runs.wait("r1", timeout=60), {"run_id": "r1", "status": "completed"})
         polls = [parse_qs(urlsplit(r.url).query) for r in server.requests if r.url.startswith("/v2/runs/r1/timeline")]
-        self.assertGreaterEqual(len(polls), 3, "a 502, then polls")
-        self.assertEqual(polls[0]["wait_ms"], ["0"])
+        self.assertEqual(len(polls), ended_at, "the 502, its retry, a page that still works, the page that ended it")
+        self.assertEqual([poll["wait_ms"] for poll in polls[:2]], [["0"], ["0"]], "the first poll asks for the timeline as it is, and its retry the same")
         for poll in polls[2:]:
-            self.assertTrue(poll["wait_ms"][0].isdigit() and int(poll["wait_ms"][0]) <= 25_000, "whole milliseconds, at most the route's maximum")
+            self.assertTrue(poll["wait_ms"][0].isdigit() and 0 < int(poll["wait_ms"][0]) <= 25_000, "a long-poll after the first: whole milliseconds, at most the route's maximum")
         self.assertEqual(client.runs.wait("r2"), {"run_id": "r2", "status": "input_required", "pending": {"kind": "question"}})
+        # Past its timeout a wait raises with the run as it is, however many polls fitted: r3 never ends.
+        late = self.thrown(client.runs.wait, "r3", timeout=0.3)
+        assert isinstance(late, AgentRunTimeout)
+        self.assertEqual((late.kind, late.run_id, late.run), ("late", "r3", {"run_id": "r3", "status": "working"}))
         self.assertIsInstance(self.thrown(client.runs.wait, "r1", timeout=0), AgentRunUsage)
 
     def test_runs_wait_whose_deadline_passes_while_a_refusals_body_is_still_coming_ends_in_a_timeout_never_a_refusal(self) -> None:
@@ -371,6 +389,50 @@ class Rules(unittest.TestCase):
             self.assertEqual((response.status, response.headers.get("content-type")), (200, "application/octet-stream"))
             self.assertEqual(b"".join(response.iter_bytes(100)), data)
 
+    def test_a_streamed_download_cut_midway_or_stalled_is_unreachable_with_a_code_never_a_raw_error_and_never_tried_again(self) -> None:
+        data = bytes(range(256))
+
+        def answer(request: Request, reply: Reply) -> Any:
+            reply.head(200, {"content-type": "application/octet-stream", "content-length": str(len(data))})
+            reply.write(data[:100])
+            if request.url.endswith("/stall.bin"):
+                reply.hold()
+            else:
+                reply.wait(0.05)
+                reply.destroy()
+            return None
+
+        server = Listener(self, answer)
+        client = AgentRun(base_url=server.base, api_key=KEY)
+
+        def read_all(response: StreamedResponse, how: str) -> bytes:
+            got = b""
+            if how == "read":
+                return response.read()
+            if how == "read1":
+                while True:
+                    chunk = response.read1()
+                    if not chunk:
+                        return got
+                    got += chunk
+            for chunk in response.iter_bytes(64):
+                got += chunk
+            return got
+
+        for how in ("read", "read1", "iter_bytes"):
+            with client.runs.read_file("r1", "cut.bin", stream=True) as response:
+                cut = self.thrown(read_all, response, how)
+            assert isinstance(cut, AgentRunUnreachable), f"{how}: {cut!r}"
+            self.assertRegex(cut.cause, r"^[A-Za-z0-9_]+$", how)
+            self.assertIsNone(cut.__context__, f"{how}: raised past the except, chained to nothing that holds the body")
+            self.assertNotIn(KEY, printed(cut))
+        self.assertEqual(len(server.requests), 3, "each cut download was sent once: bytes already read are the caller's")
+        with client.runs.read_file("r1", "stall.bin", stream=True, timeout=0.3) as response:
+            self.assertEqual(response.read(100), data[:100], "what came is read")
+            stalled = self.thrown(response.read)
+        assert isinstance(stalled, AgentRunUnreachable), repr(stalled)
+        self.assertEqual((stalled.cause, len(server.requests)), ("timeout", 4))
+
     def test_a_body_cut_after_a_2xx_is_tried_again_for_a_get_and_a_download_and_a_posts_is_unreachable_with_a_code(self) -> None:
         data = bytes(range(256))
         tries: dict[str, int] = {}
@@ -403,11 +465,36 @@ class Rules(unittest.TestCase):
         self.assertNotIn(KEY, printed(started))
         self.assertEqual(server.requests[-1].url, "/v2/agents/a/runs")
 
-    def test_an_mcp_sign_in_has_no_method_it_starts_in_the_owners_browser_whose_callback_needs_the_cookie_its_start_sets(self) -> None:
+    def test_an_mcp_sign_in_has_no_method_it_starts_in_the_owners_browser_whose_callback_needs_the_cookie_its_start_sets_nor_in_any_group_has_any_operation_only_a_browser_or_github_calls(self) -> None:
         client = AgentRun(base_url="https://agentrun.example.com/v2", api_key=KEY)
-        self.assertFalse(hasattr(client.mcp_servers, "oauth_start"))
+        # Every generated method of the client and of every group, each called once through a recording call: the operations
+        # the client has a method for, wherever the generator put them, so one that moves to another group is still seen.
+        sent: list[str] = []
+
+        def record(operation_id: str, *args: Any, **kwargs: Any) -> None:
+            sent.append(operation_id)
+
+        targets: list[Any] = [client, *(member for member in vars(client).values() if isinstance(member, Group))]
+        called = 0
+        for target in targets:
+            target.__dict__["_call" if isinstance(target, Group) else "_operation"] = record
+            for name, function in inspect.getmembers(type(target), inspect.isfunction):
+                if name.startswith("_") or function.__module__ != "agentrun._generated":
+                    continue
+                required = [p for p in inspect.signature(function).parameters.values() if p.name != "self" and p.default is p.empty and p.kind == p.POSITIONAL_OR_KEYWORD]
+                getattr(target, name)(*["x"] * len(required))
+                called += 1
+        self.assertGreater(called, 50)
+        self.assertEqual(len(sent), called, "each method sends one operation")
+        # The routes only the owner's browser reaches (the document marks them x-agentrun-browser-only): no method, and each
+        # stays in the table, so a body bound for a secret one is still cut.
+        for operation_id in BROWSER_ONLY:
+            self.assertNotIn(operation_id, sent, f"{operation_id} has a method")
+            self.assertIn(operation_id, OPERATIONS, f"{operation_id} stays in the operation table")
+        self.assertTrue(OPERATIONS["startMcpOAuth"].secret, "the start is a secret route: a body bound for it is cut from the answer")
+        # GitHub's own signed delivery: no method, as no command.
+        self.assertNotIn("receiveHook_github", sent)
         self.assertTrue(callable(client.mcp_servers.oauth_client), "its public client document stays")
-        self.assertNotIn("startMcpOAuth", OPERATIONS)
 
     def test_a_secret_bodys_list_items_are_public_by_brackets_as_the_cli_reads_them_each_item_kept_every_other_string_cut(self) -> None:
         body = json.dumps({"url": "https://mcp.example.com/mcp", "scopes": ["read", "write"], "client_id": "abc", "client_secret": "cs-1"})

@@ -8,8 +8,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { commandOf, operationsOf } from './generate-clients.mjs';
+import { commandOf, operationsOf, servedDocument, tableText } from './generate-clients.mjs';
 import { pythonProblems, pythonText } from './clients/python.mjs';
+import { clientText } from './clients/typescript.mjs';
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
 const GENERATOR = join(ROOT, 'scripts', 'generate-clients.mjs');
@@ -103,6 +104,22 @@ test('the Python module is made of the projection: snake_case methods by resourc
   }
 });
 
+test('a learned item\'s `retired` keeps one TypedDict name on every response, its new `host` form among its values, never a numbered union (#2444)', () => {
+  const text = readFileSync(GENERATED, 'utf8');
+  for (const name of ['GetAgentLearningResponseNotesItemsItemRetired', 'GetAgentLearningResponseSkillsItemRetired', 'GetAgentLearningResponseWorkflowsItemRetired', 'ListLearningNotesResponseItemsItemRetired']) {
+    // Two optional keys, one of them a Python keyword (`from`): its required and optional keys are two functional
+    // TypedDicts (`_XRequired = TypedDict(...)`, `_XOptional = TypedDict(..., total=False)`) and X a class of both.
+    const line = (base) => text.split('\n').find((l) => l.startsWith(`${base} = TypedDict(`)) ?? '';
+    assert.ok(text.includes(`class ${name}(_${name}Required, _${name}Optional):`), `${name} is a TypedDict of its own name`);
+    assert.match(line(`_${name}Required`), /"by": "Literal\[[^\]]*\\"host\\"/, `${name} takes by "host"`);
+    const optional = line(`_${name}Optional`);
+    assert.match(optional, /total=False\)$/, `${name}: from and why are optional`);
+    assert.match(optional, /"why": "Literal\[\\"unreadable\\"\]"/, `${name} has why`);
+    assert.match(optional, /"from": "Literal\[\\"active\\", \\"pending\\"\]"/, `${name} has from`);
+  }
+  assert.doesNotMatch(text, /ItemRetired\d/, 'no numbered Retired type');
+});
+
 test('the Python module cannot be written when two operations take one method, a method takes a hand-written name, or two arguments take one name', () => {
   const ops = operationsOf(DOC);
   const problems = (commands) => pythonProblems(ops, { ...MAP, commands: { ...MAP.commands, ...commands } }, commandOf);
@@ -148,4 +165,27 @@ test('pyright passes a consumer of the documented calls, and fails a wrong body 
   const failed = [...new Set([...bad.stdout.matchAll(/bad\.py:(\d+):\d+ - error/g)].map((match) => Number(match[1])))];
   assert.deepEqual(failed, marked, bad.stdout);
   assert.match(bad.stdout, /"definitio" is an undefined item/);
+});
+
+test('an operation the document marks x-agentrun-browser-only gets no method in either client and no command, and stays in both tables; the served document marks the browser routes', async () => {
+  const marked = structuredClone(DOC);
+  marked.paths['/runs/{run_id}'].get['x-agentrun-browser-only'] = 'Only a browser reaches it.';
+  const ops = operationsOf(marked);
+  const python = pythonText(ops, MAP, commandOf, 'h'.repeat(64));
+  assert.ok(python.includes('    "getRun": Operation(method="GET", path="/runs/{run_id}"'), 'in the Python table');
+  assert.ok(!python.includes('._call("getRun"') && !python.includes('._operation("getRun"'), 'no Python method');
+  const typescript = clientText(ops, MAP, commandOf, 'h'.repeat(64));
+  assert.ok(typescript.includes('  getRun: {"method":"GET","path":"/runs/{run_id}"'), 'in the TypeScript table');
+  assert.ok(!typescript.includes('call("getRun"'), 'no TypeScript method');
+  assert.ok(!tableText(ops, MAP).includes('"operationId": "getRun"'), 'no CLI command');
+  assert.ok(tableText(operationsOf(DOC), MAP).includes('"operationId": "getRun"'), 'unmarked, the command is there');
+  assert.ok(pythonText(operationsOf(DOC), MAP, commandOf, 'h'.repeat(64)).includes('._call("getRun"'), 'unmarked, the method is there');
+  // The server's own document: the routes only the owner's browser reaches, each marked with why.
+  const served = operationsOf(await servedDocument()).filter((op) => op.browserOnly).map((op) => op.operationId).sort();
+  assert.deepEqual(served, ['connectGitHub', 'gitHubCallback', 'gitHubInstalled', 'startMcpOAuth']);
+  const generated = readFileSync(GENERATED, 'utf8');
+  for (const id of served) {
+    assert.ok(generated.includes(`    "${id}": Operation(`), `${id} stays in the committed table`);
+    assert.ok(!generated.includes(`._call("${id}"`) && !generated.includes(`._operation("${id}"`), `${id} has no committed method`);
+  }
 });

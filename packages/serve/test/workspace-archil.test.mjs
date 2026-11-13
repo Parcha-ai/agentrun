@@ -10,9 +10,10 @@ import { createServer } from "node:http";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { setTimeout as sleep } from "node:timers/promises";
 import { after, before, test } from "node:test";
-import { archilDisk, archilWorkspace, learningKey, READ_MAX, runFolder, runKey } from "../dist/workspace/index.js";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { archilDisk, archilWorkspace, learningKey, localWorkspace, READ_MAX, runFolder, runKey } from "../dist/workspace/index.js";
+import { runHands } from "../dist/workspace/run-tools.js";
 import { FakeArchilDisk } from "./fixtures/archil-fake.mjs";
 import { PATH, suite } from "./workspace-conformance.mjs";
 
@@ -53,6 +54,8 @@ suite("ArchilWorkspace over a fake disk", async () => {
   skip: {
     symlinks: "the suite plants links with this machine's filesystem, which is not the disk; links an exec makes are tested below as Archil's file API showed them live: never followed (get 501, 404 through a linked folder, a put through one 409), exec's cwd through one ESCAPE",
     linksListed: "Archil's file API cannot tell a link from a file: it lists a link an exec made as a file, and reading it fails UNAVAILABLE (tested below)",
+    abortKills: "Archil's serverless exec cannot be stopped once sent: an abort answers at once, and the command runs on to its own deadline (tested below)",
+    noStreaming: "Archil's serverless exec answers once, when the command has ended: onOutput gets each stream once, whole (tested below)",
   },
 });
 
@@ -219,11 +222,15 @@ test("archil: sweep() queues behind execs and before later ones, removes empty f
   const { disk, workspace } = fresh({ onCleanupFailed: (message) => reports.push(message) });
   for (const name of ["old.out", "old.err"]) disk.files.set(`${OUT}/${name}`, Buffer.from("left behind"));
   disk.dirs.add(OUT);
-  // A slow listing of the spill folder: an exec asked for after the sweep must not lose its staged stdin to it.
+  // A listing of the spill folder held until the exec is asked for: an exec asked for after the sweep must not lose its
+  // staged stdin to it.
   const listPage = disk.listPage.bind(disk);
-  disk.listPage = async (prefix, options) => { if (under(prefix.replace(/\/$/, ""), OUT)) await sleep(150); return listPage(prefix, options); };
+  let release;
+  const held = new Promise((resolve) => { release = resolve; });
+  disk.listPage = async (prefix, options) => { if (under(prefix.replace(/\/$/, ""), OUT)) await held; return listPage(prefix, options); };
   const sweeping = workspace.sweep();
   const cat = workspace.exec(["cat"], { env: ENV, stdin: Buffer.from("kept"), timeoutMs: 10_000 });
+  release();
   await sweeping;
   assert.equal(text((await cat).stdout), "kept", "the exec ran after the sweep, its stdin whole");
   disk.listPage = listPage;
@@ -265,6 +272,86 @@ test("archil: the exec image is the workspace's, pinned by digest, copied when i
   for (const bad of [{ baseImage: "" }, { baseImage: "debian:trixie" }, { baseImage: "debian@sha256:short" }, { imageId: IMAGE_ID }, { imageId: IMAGE_ID, digest: "latest" }, { imageId: "short", digest: DIGEST }, { baseImage: `x@${DIGEST}`, imageId: IMAGE_ID }]) {
     assert.throws(() => archilWorkspace(plain, ROOT, { image: bad }), /pinned by digest/, JSON.stringify(bad));
   }
+});
+
+const DENY = { egress: { default: "deny" } };
+const execNetworks = (disk) => disk.calls.filter((call) => call.op === "exec").map((call) => call.network);
+const PLAN_REFUSAL = { status: 403, code: "network_plan_required", message: "network policies need the Developer plan" };
+
+test("archil: an exec asked for no network is sent with its egress denied; one not asked is sent with none", async () => {
+  const disk = new FakeArchilDisk();
+  const workspace = archilWorkspace(disk, ROOT);
+  const denied = await workspace.exec(["sh", "-c", "echo ran"], { env: ENV, timeoutMs: 10_000, network: "deny" });
+  assert.equal(text(denied.stdout), "ran\n");
+  assert.equal(denied.stderr, "", "no warning when the policy was taken");
+  await workspace.exec(["true"], { env: ENV, timeoutMs: 10_000 });
+  assert.deepEqual(execNetworks(disk), [DENY, undefined]);
+});
+
+test("archil: a plan that takes no network policy (403 network_plan_required) runs the command with the network open and says so in one line, Archil's words included", async () => {
+  const disk = new FakeArchilDisk();
+  disk.refuseNetwork = PLAN_REFUSAL;
+  const workspace = archilWorkspace(disk, ROOT);
+  const seen = [];
+  const ran = await workspace.exec(["sh", "-c", "echo ran; echo own >&2"], { env: ENV, timeoutMs: 10_000, network: "deny", onOutput: ({ stream, data }) => seen.push([stream, text(data)]) });
+  assert.equal(text(ran.stdout), "ran\n", "the command ran, once");
+  const [warning, ...rest] = ran.stderr.split("\n");
+  assert.match(warning, /^agentrun: this command ran with the network open\. Archil refused the exec's network policy \(403 network_plan_required\): .*network policies need the Developer plan$/);
+  assert.deepEqual(rest, ["own", ""], "the program's own stderr after the one line");
+  assert.deepEqual(seen.find(([stream]) => stream === "stderr")?.[1], ran.stderr, "the stream a caller reads carries the line too");
+  assert.deepEqual(execNetworks(disk), [DENY, undefined], "refused with the policy (nothing ran), then run without it");
+  // The refusal is remembered: a later exec is not sent with the policy again, and says the same.
+  const again = await workspace.exec(["true"], { env: ENV, timeoutMs: 10_000, network: "deny" });
+  assert.match(again.stderr, /^agentrun: this command ran with the network open\. .*network_plan_required/);
+  assert.deepEqual(execNetworks(disk), [DENY, undefined, undefined]);
+  // An exec that asked for no policy says nothing of it.
+  assert.equal((await workspace.exec(["true"], { env: ENV, timeoutMs: 10_000 })).stderr, "");
+});
+
+test("archil: an exec cancelled while Archil refuses its network policy is not started with the network open", async () => {
+  const disk = new FakeArchilDisk();
+  let answer;
+  disk.refuseNetwork = { ...PLAN_REFUSAL, answered: new Promise((resolve) => { answer = resolve; }) };
+  const workspace = archilWorkspace(disk, ROOT);
+  const controller = new AbortController();
+  const cancelled = workspace.exec(["sh", "-c", "echo ran"], { env: ENV, timeoutMs: 10_000, network: "deny", signal: controller.signal });
+  while (disk.calls.filter((call) => call.op === "exec").length === 0) await new Promise((resolve) => setImmediate(resolve));
+  controller.abort();
+  await assert.rejects(cancelled, (error) => error.name === "AbortError");
+  answer();
+  // The queue's next exec runs after the cancelled one has settled: by then a fallback would have been sent.
+  const next = await workspace.exec(["true"], { env: ENV, timeoutMs: 10_000, network: "deny" });
+  assert.match(next.stderr, /^agentrun: this command ran with the network open\./, "the refusal is still remembered");
+  assert.deepEqual(execNetworks(disk), [DENY, undefined], "the cancelled command was never sent again; only the next one ran");
+  assert.deepEqual(disk.calls.filter((call) => call.op === "exec").map((call) => call.command.includes("'echo ran'")), [true, false]);
+});
+
+test("archil: a 403 that names no network (a refused key, the exec allowance spent) still fails the exec, in words, and runs nothing", async () => {
+  const disk = new FakeArchilDisk();
+  disk.refuseNetwork = { status: 403, code: "Forbidden", message: "exec allowance spent" };
+  const workspace = archilWorkspace(disk, ROOT);
+  await refused(workspace.exec(["true"], { env: ENV, timeoutMs: 10_000, network: "deny" }), "UNAVAILABLE");
+  assert.deepEqual(execNetworks(disk), [DENY], "no second call with the network open");
+});
+
+test("archil: a run's shell under a bash policy runs each command with no network; with no policy, or the server's own execs, with Archil's default", async () => {
+  const shellNetworks = async (bashPolicy) => {
+    const disk = new FakeArchilDisk();
+    const workspace = archilWorkspace(disk, ROOT);
+    const run = await runHands(workspace, undefined, { mode: 2, context: BACKGROUND_CONTEXT, ...(bashPolicy === undefined ? {} : { bashPolicy }) });
+    await run.hands.exec("true", { timeoutS: 10 });
+    await run.executors.bash({ command: "true" }, {});
+    // The server's own exec on the folder (a checkout's fetch): the run's Workspace itself, not the shell's.
+    await workspace.exec(["true"], { env: ENV, timeoutMs: 10_000 });
+    return execNetworks(disk);
+  };
+  assert.deepEqual(await shellNetworks("read-only"), [DENY, DENY, undefined], "the shell's two paths (the kernel's hands, pi's bash) deny egress; the server's own exec does not");
+  assert.deepEqual(await shellNetworks(undefined), [undefined, undefined, undefined], "no policy: no network field at all");
+});
+
+test("a Workspace that cannot deny a command's network refuses the exec and runs nothing", async () => {
+  const { root } = scratch();
+  await assert.rejects(localWorkspace(root).exec(["true"], { env: ENV, timeoutMs: 10_000, network: "deny" }), (error) => error.code === "REFUSED" && /cannot deny its network/.test(error.message));
 });
 
 test("archil: a timeout over 295 s is refused (Archil cuts a call at 300 s), and no call is made", async () => {
@@ -371,9 +458,14 @@ test("archil: a write returns only once the API acknowledged it, and a reader se
   await workspace.write("f", "old");
   let release;
   disk.hold = new Promise((resolve) => { release = resolve; });
+  // Checked once the put has reached the disk (its call made), not after a clock.
+  const putObject = disk.putObject.bind(disk);
+  let reached;
+  const atDisk = new Promise((resolve) => { reached = resolve; });
+  disk.putObject = (key, body) => { const put = putObject(key, body); reached(); return put; };
   let returned = false;
   const writing = workspace.write("f", "new").then(() => { returned = true; });
-  await sleep(100);
+  await atDisk;
   assert.equal(returned, false, "the write has not returned before the acknowledgement");
   assert.equal(text(await workspace.read("f")), "old", "nothing of the new file is seen before it");
   disk.hold = undefined;
@@ -400,12 +492,34 @@ test("archil: exec maps a signal to code null and an exit of 139 to 139, keeps a
   assert.deepEqual([crashed.code, crashed.signal, crashed.timedOut], [null, "SIGSEGV", false], "a program a signal ended has no exit code, and the signal is said");
   const exited = await workspace.exec(["bash", "-c", "exit 139"], { env: ENV, timeoutMs: 10_000 });
   assert.deepEqual([exited.code, exited.timedOut], [139, false], "a program that exits 139 by itself keeps it");
-  const started = Date.now();
-  const tiny = await workspace.exec(["sleep", "5"], { env: ENV, timeoutMs: 0.4 });
+  // A command that would run 300 s answers timedOut: only its deadline could have ended it.
+  const tiny = await workspace.exec(["sleep", "300"], { env: ENV, timeoutMs: 0.4 });
   assert.deepEqual([tiny.timedOut, tiny.code], [true, null], "a deadline under a millisecond is still a deadline");
-  assert.ok(Date.now() - started < 4_000, `it returned at its deadline (${Date.now() - started} ms)`);
   const noisy = await workspace.exec(["bash", "-c", "head -c 20000000 /dev/zero; head -c 20000000 /dev/zero >&2; echo done"], { env: ENV, maxOutput: 10, timeoutMs: 30_000 });
   assert.deepEqual([noisy.stdout.length, noisy.stderr.length, noisy.truncated, noisy.code], [10, 10, true, 0], "both streams are read to the end and cut, and the program is not killed for it");
+});
+
+test("archil: an abort answers at once, the sent exec runs on to its end, and the next exec waits for it; one not yet sent is never sent", async () => {
+  const { disk, workspace } = fresh();
+  const controller = new AbortController();
+  const queued = new AbortController();
+  // Both are aborted the moment the first exec is sent to the disk (not after a clock), before its answer can come.
+  const send = disk.exec.bind(disk);
+  let answered = false;
+  disk.exec = (request) => {
+    const answer = send(request).finally(() => { answered = true; });
+    controller.abort();
+    queued.abort();
+    return answer;
+  };
+  const first = workspace.exec(["bash", "-c", "echo done > first"], { env: ENV, timeoutMs: 10_000, signal: controller.signal });
+  const second = workspace.exec(["bash", "-c", "echo ran > second"], { env: ENV, timeoutMs: 10_000, signal: queued.signal });
+  await assert.rejects(first, (error) => error?.name === "AbortError");
+  assert.equal(answered, false, "the abort answered before the disk did");
+  await assert.rejects(second, (error) => error?.name === "AbortError");
+  const after = await workspace.exec(["cat", "first"], { env: ENV, timeoutMs: 10_000 });
+  assert.equal(text(after.stdout), "done\n", "the next exec ran after the aborted one ended, which wrote its file");
+  assert.equal(disk.calls.filter((call) => call.op === "exec").length, 2, "the queued exec was never sent");
 });
 
 test("archil: a glob is the port's (*, ** and ?), not ripgrep's: brackets, braces and a leading ! are themselves", async () => {
@@ -429,8 +543,13 @@ test("archil: a symbolic link made by exec is ESCAPE as a later exec's cwd", asy
 
 test("archil: a write made while exec holds the folder waits for it, and is not lost", async () => {
   const { disk, workspace } = fresh();
+  // The write is made once the exec has been sent to the disk (its call made), not after a clock.
+  const exec = disk.exec.bind(disk);
+  let sent;
+  const atDisk = new Promise((resolve) => { sent = resolve; });
+  disk.exec = (request) => { const ran = exec(request); sent(); return ran; };
   const running = workspace.exec(["bash", "-c", "sleep 0.5; echo done > by-exec"], { env: ENV, timeoutMs: 10_000 });
-  await sleep(50);
+  await atDisk;
   await workspace.write("during", "kept");
   await running;
   assert.equal(text(await workspace.read("during")), "kept");
@@ -458,12 +577,12 @@ test("archil: grep maps to the disk's grep: sorted, its stop reasons, a file as 
   await refused(workspace.grep("needle"), "UNAVAILABLE");
 });
 
-test("archil: mountSpec and attach are refused in words until the computer's helper mounts an Archil folder; nothing is called", async () => {
+test("archil: a workspace made without a region and a disk token refuses mountSpec and attach in words; nothing is called", async () => {
   const { disk, workspace } = fresh();
   for (const call of [() => workspace.mountSpec(), () => workspace.attach({}, { readBackOf: () => ({}) })]) {
     await assert.rejects(call(), (error) => {
       assert.equal(error.code, "REFUSED");
-      assert.match(error.message, /mounted by the computer's helper \(module D6\), not yet/);
+      assert.match(error.message, /only when it is made with its disk's region and its disk token/);
       return true;
     });
   }
@@ -521,18 +640,16 @@ test("archil: grep skips a file over 8 MiB, as Local does, and stops waiting at 
   // not hold grep past timeMs and its margin.
   await workspace.write("sub/one.txt", "needle\n");
   const listPage = disk.listPage.bind(disk);
+  // That listing never answers, so grep answering at all is its own deadline's doing: truncated "time".
   disk.listPage = (prefix, options) => (prefix === `${ROOT}/sub/` ? new Promise(() => {}) : listPage(prefix, options));
-  let started = Date.now();
   const slow = await workspace.grep("needle", { timeMs: 300 });
   assert.equal(slow.truncated, "time");
   assert.deepEqual(slow.matches.map((m) => m.path), ["small.txt"], "what was checked before the deadline");
-  assert.ok(Date.now() - started < 2_300 + 700, `it returned at its deadline (${Date.now() - started} ms)`);
   disk.listPage = listPage;
+  // Nor does the disk's grep here: the same.
   disk.grep = () => new Promise(() => {});
-  started = Date.now();
   const stuck = await workspace.grep("needle", { timeMs: 300 });
   assert.deepEqual(stuck, { matches: [], truncated: "time" });
-  assert.ok(Date.now() - started < 2_300 + 700, `it returned near its deadline (${Date.now() - started} ms)`);
 });
 
 test("archil-disk: the S3 endpoint is https on Archil's host for the disk's region; plain http only to this machine's loopback in tests", () => {
@@ -555,6 +672,8 @@ test("archil-disk: the SDK seam takes its key and S3 endpoint as options (no env
     request.on("data", (c) => chunks.push(c));
     request.on("end", () => {
       const body = Buffer.concat(chunks).toString("utf8");
+      // The seam never asks for "/": a request there is another test's probe of a port this server reused, not the seam's.
+      if (request.url === "/") { response.writeHead(404); return response.end(); }
       seen.push({ method: request.method, url: request.url, range: request.headers.range, auth: request.headers.authorization, agent: request.headers["user-agent"], body });
       const json = (status, value) => { response.writeHead(status, { "content-type": "application/json" }); response.end(JSON.stringify(value)); };
       if (request.method === "GET" && request.url === "/api/disks/dsk-0000000000000001") {
@@ -621,6 +740,9 @@ test("archil-disk: the SDK seam takes its key and S3 endpoint as options (no env
     assert.equal(keyCalls, 3, "the key is asked for on every call, never kept from an earlier one");
     await assert.rejects(disk.exec({ ...exec, image: { imageId: IMAGE_ID, digest: `sha256:${"00".repeat(32)}` } }), /digest/);
     assert.equal(seen.filter((r) => r.url === "/api/exec").length, 1, "an image whose digest is not the pinned one runs nothing");
+    // The network policy goes in the body as Archil's ExecDiskRequest names it (disk@1.12.0's `network`), its one field
+    // picked: nothing else a network object carries rides along.
+    await disk.exec({ mounts: exec.mounts, queueMs: 1_000, command: "true", network: { egress: { default: "deny", allow: ["*"] }, extra: true } });
     // A redirect is not followed (the key would go with it), and a read that never answers gives up.
     const before = seen.length;
     await assert.rejects(disk.getRange("agents/a/runs/r/work/moved.txt", "bytes=0-1"));
@@ -639,9 +761,8 @@ test("archil-disk: the SDK seam takes its key and S3 endpoint as options (no env
     // A 200 that ignored Range: the asked slice, the bytes before it dropped as they stream.
     const slice = await disk.getRange("agents/a/runs/r/work/whole.bin", "bytes=5-9");
     assert.deepEqual([slice.status, text(slice.body), slice.body.buffer.byteLength], [200, "wwwww", 5]);
-    const started = Date.now();
+    // The server never answers this read (stalls.txt above), so its failing at all is the read's own timeout giving up.
     await assert.rejects(archilDisk({ ...options, readTimeoutMs: 200 }).getRange("agents/a/runs/r/work/stalls.txt", "bytes=0-1"));
-    assert.ok(Date.now() - started < 5_000, `a stalled read gave up (${Date.now() - started} ms)`);
     seen.splice(before);
     assert.deepEqual(readNames.filter((name) => /ARCHIL|AGENTRUN/i.test(name)), [], "the seam reads no Archil setting from the environment");
     assert.deepEqual(seen.map((r) => [r.method, r.url, r.range ?? null]), [
@@ -650,6 +771,7 @@ test("archil-disk: the SDK seam takes its key and S3 endpoint as options (no env
       ["GET", `/api/images/${IMAGE_ID}`, null],
       ["POST", "/api/exec", null],
       ["GET", `/api/images/${IMAGE_ID}`, null],
+      ["POST", "/api/exec", null],
     ]);
     assert.ok(seen.every((r) => r.auth === "Bearer loopback-dummy"), "the key, as a bearer token, on every call");
     assert.match(seen[0].agent, /^archil-js\//, "disks.get is the SDK's");
@@ -667,6 +789,7 @@ test("archil-disk: the SDK seam takes its key and S3 endpoint as options (no env
       command: "true",
       imageId: IMAGE_ID,
     });
+    assert.deepEqual(JSON.parse(seen[5].body).network, { egress: { default: "deny" } });
   } finally {
     process.env = realEnv;
     for (const [name, value] of Object.entries(saved)) {

@@ -1,7 +1,8 @@
 // A fake attachable computer (serve/src/workspace/attach.ts) for the attach tests: a computerd client (the computer
 // module's ComputerClient: call(method, params), bytes in base64) over a bind of the host folder `root` at /workspace,
 // written with plain node:fs and never fsynced (as computerd writes into a bind); exec.run answers what the test
-// scripts; process calls answer ok. It records every call, in order, as [method, params], so a test can show what an
+// scripts; process calls answer ok (realProcesses, in workspace-fake-processes.mjs, runs them for real). A handler
+// may answer a promise. It records every call, in order, as [method, params], so a test can show what an
 // attached Workspace asked the computer for, without the computer module's daemon.
 import { appendFileSync, closeSync, fchmodSync, lstatSync, mkdirSync, openSync, readdirSync, readSync, renameSync, rmdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -91,7 +92,7 @@ export function fakeComputer(root, options = {}) {
         const handler = computer.overrides[method] ?? methods[method];
         if (!handler) return fail("unsupported", `the fake computer has no ${method}`);
         try {
-          return "ok" in (handler.result ?? {}) ? handler.result : ok(handler(params));
+          return "ok" in (handler.result ?? {}) ? handler.result : ok(await handler(params));
         } catch (error) {
           return fail(CODES[error.code] ?? "invalid", error.message);
         }

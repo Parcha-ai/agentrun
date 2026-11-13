@@ -143,7 +143,16 @@ test("demo: started on an OpenAI key alone, pi's default model follows an Anthro
   const piDefault = async () => (await (await api("GET", "/capabilities")).json()).harnesses.find((harness) => harness.id === "pi").default_model;
   const firstKeyed = (keys) => model.MODEL_KEYS.find((row) => keys.includes(row.field)).model;
   assert.equal(await piDefault(), firstKeyed(["OPENAI_API_KEY"]));
-  assert.equal((await api("PUT", "/settings/tool-keys/anthropic", { values: { ANTHROPIC_API_KEY: "not-a-secret" } })).status, 204);
+  // A key is saved from the owner's session, as the console saves it: the token can't write a secret (secret-writes.ts).
+  // The owner's first password is set with the token standing in for the setup code; with accounts off, the launch link's
+  // console is the owner's.
+  const origin = new URL(base).origin;
+  let opened = await fetch(`${base}/v2/setup`, { method: "POST", redirect: "manual", headers: { authorization: `Bearer ${token}`, "content-type": "application/json", origin }, body: JSON.stringify({ password: `owner-${randomBytes(12).toString("hex")}` }) });
+  if (opened.status !== 201) opened = await fetch(`${origin}/?token=${token}`, { redirect: "manual" });
+  const cookie = opened.headers.getSetCookie().map((line) => line.split(";")[0]).join("; ");
+  assert.ok(cookie, `an owner's session: ${opened.status}`);
+  const saved = await fetch(`${base}/v2/settings/tool-keys/anthropic`, { method: "PUT", headers: { cookie, origin, "content-type": "application/json" }, body: JSON.stringify({ values: { ANTHROPIC_API_KEY: "not-a-secret" } }) });
+  assert.equal(saved.status, 204, await saved.text());
   assert.equal(await piDefault(), firstKeyed(["OPENAI_API_KEY", "ANTHROPIC_API_KEY"]), "the saved key moves the default, with no restart");
 });
 

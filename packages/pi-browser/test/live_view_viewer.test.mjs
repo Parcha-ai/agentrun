@@ -830,6 +830,56 @@ test("watch only reads as watching: its own banner (never that input is held), n
   assert.ok(Math.abs(down.x - 250) <= 2 && Math.abs(down.y - 125) <= 2, `the click lands where it was made on the page (${down.x}, ${down.y})`);
 });
 
+test("filling the window: the same viewer grown from a small frame to a large one redraws the page as big as fits at its own shape, and clicks still land exactly where they were made on the page", { skip: NO_CHROME, timeout: 100_000 }, async (t) => {
+  const TOKEN = randomBytes(32).toString("base64url");
+  const web = await viewerServer(TOKEN);
+  const root = await mkdtemp(path.join(tmpdir(), "lv-viewer-"));
+  const provider = cdpProvider({ chrome: { executablePath: CHROME, profileRoot: root } });
+  let ref = null;
+  const tabs = [];
+  t.after(async () => { for (const tab of tabs) tab.close(); if (ref) await within(20_000, provider.release(ref)); await within(5_000, web.close()); await within(5_000, rm(root, { recursive: true, force: true })); }, { timeout: 40_000 });
+  ref = await within(60_000, provider.create({ tag: "lv-viewer-fill", maxLifetimeS: 600, idleTimeoutS: 60, proxies: false, verified: false, captcha: false, viewport: { width: 1000, height: 700 }, metadata: {} }, new AbortController().signal));
+  assert.ok(ref, "the browser started");
+  const attached = await within(30_000, provider.attach(ref));
+  const maker = await openTab(attached.sdkCdpUrl, "about:blank");
+  tabs.push(maker);
+  const jpeg = Buffer.from(await maker.evaluate(`(async () => { const c = new OffscreenCanvas(200, 100); c.getContext("2d").fillRect(0, 0, 200, 100); const b = await c.convertToBlob({ type: "image/jpeg" }); return Array.from(new Uint8Array(await b.arrayBuffer())); })()`));
+  // The console's Screen tab (a frame 640 wide), then the same viewer filling a 1600x1000 window: no reload in between.
+  const tab = await openTab(attached.sdkCdpUrl, "about:blank");
+  tabs.push(tab);
+  await tab.send("Emulation.setDeviceMetricsOverride", { width: 640, height: 420, deviceScaleFactor: 1, mobile: false });
+  await tab.navigate(`${web.base}/v/${web.id}#t=${TOKEN}`);
+  assert.ok(await until(() => web.received.length >= 1), "the viewer spoke");
+  web.send({ type: "ready", drive: "idle", takeOver: true, held: true });
+  web.sendFrame(jpeg, 1000, 500);
+  await settle(400);
+  const box = () => tab.evaluate(`(() => { const r = document.getElementById("screen").getBoundingClientRect(); const s = document.getElementById("stage").getBoundingClientRect(); return { left: r.left, top: r.top, w: r.width, h: r.height, stage: { w: s.width, h: s.height } }; })()`);
+  const clickAt = async (fx, fy) => {
+    const r = await box();
+    const before = web.received.length;
+    const x = r.left + r.w * fx, y = r.top + r.h * fy;
+    await tab.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 });
+    await tab.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 });
+    assert.ok(await until(() => web.received.slice(before).some((m) => m.type === "mouse" && m.action === "down")), "the click is sent");
+    return web.received.slice(before).find((m) => m.type === "mouse" && m.action === "down");
+  };
+  const small = await box();
+  let down = await clickAt(0.25, 0.25);
+  assert.ok(Math.abs(down.x - 250) <= 2 && Math.abs(down.y - 125) <= 2, `small: a quarter in lands a quarter into the page (${down.x}, ${down.y})`);
+  // Fill the window.
+  await tab.send("Emulation.setDeviceMetricsOverride", { width: 1600, height: 1000, deviceScaleFactor: 1, mobile: false });
+  await settle(400);
+  const big = await box();
+  assert.ok(big.w > small.w * 2, `the page is drawn much larger (${small.w} -> ${big.w})`);
+  assert.ok(Math.abs(big.w / big.h - 2) < 0.02, `at its own 2:1 shape, letterboxed (${big.w}x${big.h} in ${JSON.stringify(big.stage)})`);
+  assert.ok(Math.abs(big.w - Math.min(big.stage.w, big.stage.h * 2)) <= 2, "as large as the stage allows");
+  down = await clickAt(0.25, 0.25);
+  assert.ok(Math.abs(down.x - 250) <= 2 && Math.abs(down.y - 125) <= 2, `filled: a quarter in still lands a quarter into the page (${down.x}, ${down.y})`);
+  down = await clickAt(0.75, 0.5);
+  assert.ok(Math.abs(down.x - 750) <= 2 && Math.abs(down.y - 250) <= 2, `filled: three quarters across, half down (${down.x}, ${down.y})`);
+  assert.equal(web.sockets(), 1, "the same connection throughout: the viewer was not reloaded");
+});
+
 test("a take-over that never started says so in its own words; one that did start and ends says the browser went back", { skip: NO_CHROME, timeout: 100_000 }, async (t) => {
   const TOKEN = randomBytes(32).toString("base64url");
   const web = await viewerServer(TOKEN);

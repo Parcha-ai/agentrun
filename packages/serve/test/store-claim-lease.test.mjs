@@ -13,10 +13,13 @@ import { commitWrites } from "@earendil-works/pi-durable/testing";
 import { Fenced } from "../dist/store/store.js";
 import { queued, storeOn } from "./store-helpers.mjs";
 import { runRow, scratchConnection, T0 } from "./store-support.mjs";
+import { postgresOnly, sqliteOnly } from "./store-target.mjs";
 
 const storeModule = await import("../dist/store/index.js");
 /** The shared fence predicate, read at each call: a store without it fails each test at its own call. */
 const claimFence = (...args) => storeModule.claimFence(...args);
+/** "Now" for the fence (store/fence.ts StoreNow): the time `ms`, bound, as a store with a bound clock reads it. */
+const at = (ms) => ({ sql: "CAST(? AS BIGINT)", params: [ms] });
 
 /** Whether `fence` matches a run row, through `tx`: the count of rows a no-op update under it touches. */
 const holds = async (tx, fence) => (await tx.runCounted(`UPDATE runs SET epoch = epoch WHERE ${fence.where}`, ...fence.params)) === 1;
@@ -27,13 +30,13 @@ test("the fence's held form: a claim holds its run while its lease has not run o
   await runRow(db, "run-1", 1);
   const until = (await db.get("SELECT claimed_until FROM runs WHERE id = 'run-1'")).claimed_until;
   await db.connection.transaction(async (tx) => {
-    assert.equal(await holds(tx, claimFence({ runId: "run-1", epoch: 1 }, until)), true, "at its last moment");
-    assert.equal(await holds(tx, claimFence({ runId: "run-1", epoch: 1 }, until + 1)), false, "a moment after");
-    assert.equal(await holds(tx, claimFence({ runId: "run-1", epoch: 2 }, until)), false, "another epoch");
+    assert.equal(await holds(tx, claimFence({ runId: "run-1", epoch: 1 }, at(until))), true, "at its last moment");
+    assert.equal(await holds(tx, claimFence({ runId: "run-1", epoch: 1 }, at(until + 1))), false, "a moment after");
+    assert.equal(await holds(tx, claimFence({ runId: "run-1", epoch: 2 }, at(until))), false, "another epoch");
   });
 });
 
-test("the fence's inserted-here form holds only for the row its own insert returned, never claimed: another run's row, a claimed row or a row with a runner are refused", async (t) => {
+test("the fence's inserted-here form holds only for the row its own insert returned, never claimed: another run's row, a claimed row or a row with a runner are refused", sqliteOnly("the form naming its row by rowid; Postgres's is the next test"), async (t) => {
   const db = await scratchConnection(t);
   await runRow(db, "run-claimed", 1);
   await db.connection.transaction(async (tx) => {
@@ -45,6 +48,22 @@ test("the fence's inserted-here form holds only for the row its own insert retur
     assert.equal(await holds(tx, claimFence({ runId: "run-claimed", epoch: 1 }, T0, { insertedHere: claimed.rowid })), false, "a claimed row (epoch above 0, a runner)");
     await tx.run("UPDATE runs SET runner = 'runner-x' WHERE id = 'run-imported'");
     assert.equal(await holds(tx, claimFence({ runId: "run-imported", epoch: 0 }, T0, { insertedHere: mine.rowid })), false, "a row with a runner");
+  });
+});
+
+test("the fence's inserted-here form on Postgres holds only for a row this transaction inserted, never claimed: a never-claimed row another transaction inserted, a claimed row or a row with a runner are refused", postgresOnly("the form naming its row by its inserting transaction"), async (t) => {
+  const db = await scratchConnection(t);
+  await runRow(db, "run-claimed", 1);
+  // A run never claimed (epoch 0, no runner) written by a transaction of its own, before this one.
+  await db.run("INSERT INTO runs (id, agent_id, revision_id, state, epoch, started_at) VALUES ('run-queued', 'agent-1', 'rev-1', 'queued', 0, ?)", T0);
+  const here = { insertedHere: "this-transaction" };
+  await db.connection.transaction(async (tx) => {
+    await tx.run("INSERT INTO runs (id, agent_id, revision_id, state, epoch, started_at) VALUES ('run-imported', 'agent-1', 'rev-1', 'ended', 0, ?)", T0);
+    assert.equal(await holds(tx, claimFence({ runId: "run-imported", epoch: 0 }, at(T0), here)), true, "the row this transaction inserted");
+    assert.equal(await holds(tx, claimFence({ runId: "run-queued", epoch: 0 }, at(T0), here)), false, "a never-claimed row another transaction inserted");
+    assert.equal(await holds(tx, claimFence({ runId: "run-claimed", epoch: 1 }, at(T0), here)), false, "a claimed row (epoch above 0, a runner)");
+    await tx.run("UPDATE runs SET runner = 'runner-x' WHERE id = 'run-imported'");
+    assert.equal(await holds(tx, claimFence({ runId: "run-imported", epoch: 0 }, at(T0), here)), false, "a row with a runner");
   });
 });
 

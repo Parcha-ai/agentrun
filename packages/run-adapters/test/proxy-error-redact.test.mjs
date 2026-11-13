@@ -127,6 +127,19 @@ test("an error event reaches the client cut whatever its layout: the type after 
   }
 });
 
+test("an error event whose data is the model's own words, not JSON (as serve's runner route sends it), reaches the client cut, on one data line or several", async (t) => {
+  const healthy = 'data: {"type":"message_start","message":{"id":"m1"}}\n\n';
+  for (const event of [
+    `event: error\ndata: 500 {"message":"Key ${CREDENTIAL} is not valid"}\n\n`,
+    `event: error\ndata: 401 the provider refused\ndata: the key ${CREDENTIAL} on a line of its own\n\n`,
+  ]) {
+    for (const pieces of [undefined, [...(healthy + event)]]) {
+      const got = await answered(t, 200, healthy + event, undefined, { pieces, contentType: 'text/event-stream' });
+      assert.ok(!got.text.includes(CREDENTIAL) && got.text.includes('[redacted]') && got.text.startsWith(healthy), JSON.stringify(got.text));
+    }
+  }
+});
+
 test("a header value the host added, with a quote and a slash, is cut in its JSON-escaped and slash-escaped spelling", async (t) => {
   const TAG = 'dummy-tag/with"quote-0123';
   const encoded = JSON.stringify({ error: { message: `unknown tag ${TAG}` } }).replaceAll('/', '\\/');

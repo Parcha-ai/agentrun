@@ -4,7 +4,7 @@
 // Claude Agent SDK and codex's Codex are installed on first use into the data's harnesses directory and loaded from there
 // alone (harness-install.ts); opencode's pinned CLI that is missing says so with the one line that installs it: an npm
 // install beside serve, or, when serve runs from npx, the npx line that runs it with the missing package.
-import { existsSync, readFileSync } from "node:fs";
+import { accessSync, constants, existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AdapterFacts, AgentAdapter, SessionSpec } from "@parcha/agentrun-kernel";
@@ -17,7 +17,7 @@ import { type HarnessEntry, harnessOf, onAdapter } from "./harness-table.js";
 import type { ModelRef } from "./model.js";
 import { HarnessUnavailable, type InstallFix, providerFor } from "./provider.js";
 import { keyShaped } from "./secret-cut.js";
-import { servedSkill } from "./learn/skills.js";
+import { servedSkills } from "./learn/skills.js";
 import { runKeyOf } from "./key-refusal.js";
 import type { SkillCheck, SkillFiles } from "./skills.js";
 import { planeOf } from "./tool-plane.js";
@@ -109,13 +109,17 @@ export const CODEX_STANDIN_ENV = "AGENTRUN_SERVE_CODEX_STANDIN";
  *  adapter (src/harness-opencode) takes it only under its own guard (AGENTRUN_OPENCODE_STANDIN=1, under a test runner). */
 export const OPENCODE_STANDIN_ENV = "AGENTRUN_SERVE_OPENCODE_STANDIN";
 
+/** Whether a test's stand-in runs in place of harness `id`'s own CLI in `env` (CODEX_STANDIN_ENV, OPENCODE_STANDIN_ENV):
+ *  its adapter then loads nothing installed, so a run of it needs no first-use install. */
+export const standsIn = (id: string, env: NodeJS.ProcessEnv): boolean => (id === codexFacts.id && Boolean(env[CODEX_STANDIN_ENV])) || (id === openCodeFacts.id && Boolean(env[OPENCODE_STANDIN_ENV]));
+
 /** The event of a harness's own lines in the run's log (its model proxy's refusals and failures): a failed run's message
  *  is never taken from one (runs.ts lastLogLine). */
 export const HARNESS_LOG_EVENT = "harness";
 
 /**
  * A harness's log, into the run's log: the run process's stderr, which serve opens on the run's process.log. One JSON
- * line per call, as pi-durable-disk writes them (`{at, event, message, ...}`). A request's path loses its query string,
+ * line per call (`{at, event, message, ...}`). A request's path loses its query string,
  * and every value of the environment's key-shaped variables is cut out of the line, so a key a client sent in either
  * place, or one serve holds, never reaches the log.
  */
@@ -174,7 +178,7 @@ function unavailable(facts: AdapterFacts, error: unknown, npx: boolean, env: Nod
 }
 
 type ModelCost = { input: number; output: number; cacheRead: number; cacheWrite: number };
-/** A child's command under the run's confinement (pi-durable-disk's confinePrefix): only added in front. */
+/** A child's command under the run's confinement (noNewPrivsPrefix): only added in front. */
 export type ConfineChild = (child: Readonly<{ command: string; args: string[] }>) => { command: string; args: string[] };
 /** What a run's adapter needs of serve: its model, the catalog that prices it as it prices pi's runs, the run's
  *  confinement for the harness's own process, and the skills it loads itself (claude-agent's, codex's and opencode's,
@@ -182,11 +186,39 @@ export type ConfineChild = (child: Readonly<{ command: string; args: string[] }>
 export type AdapterNeeds = { model: ModelRef; models: { getModel(provider: string, id: string): { cost?: Partial<ModelCost> } | undefined }; confine?: ConfineChild; skills?: readonly SkillFiles[]; unpriced?: ReadonlySet<string> };
 
 /** The ConfineChild that starts a child under `prefix` (the argv pi's commands start under, ending in "--"); none when
- *  the run confines nothing, since an adapter refuses a confinement that adds nothing. */
+ *  the run confines nothing (macOS), since an adapter refuses a confinement that adds nothing. */
 export function confineOf(prefix: readonly string[]): ConfineChild | undefined {
   if (!prefix.length) return undefined;
   return (child) => ({ command: prefix[0]!, args: [...prefix.slice(1), child.command, ...child.args] });
 }
+
+/** The util-linux `setpriv` a CLI run's process starts under. */
+const SETPRIV = "/usr/bin/setpriv";
+
+/** The argv a CLI run's process starts under for no_new_privs: `setpriv --no-new-privs --` on Linux, nothing on macOS
+ *  (which has no no_new_privs). Where setpriv is not usable it throws (code `SETPRIV_UNAVAILABLE`), so the run is refused,
+ *  never started unconfined. */
+export function noNewPrivsPrefix(options: { noNewPrivs?: boolean; setprivPath?: string } = {}): string[] {
+  const noNewPrivs = options.noNewPrivs ?? process.platform !== "darwin";
+  if (!noNewPrivs) return [];
+  const path = options.setprivPath ?? SETPRIV;
+  try {
+    if (!statSync(path).isFile()) throw new Error("not a file");
+    accessSync(path, constants.X_OK);
+  } catch (cause) {
+    const reason = cause instanceof Error ? cause.message : String(cause);
+    throw Object.assign(
+      new Error(
+        `commands run under no_new_privs (and as runAs) through setpriv (util-linux), which is not usable at ${path}: ${reason}. ` +
+          "Install util-linux, point setprivPath at it, or pass noNewPrivs: false on a host that already confines commands.",
+        { cause },
+      ),
+      { code: "SETPRIV_UNAVAILABLE" as const },
+    );
+  }
+  return [path, "--no-new-privs", "--"];
+}
+
 
 /** The model key a run on `harness` (one on an adapter, by its wire's route) of `model` (the revision's; none, the host's default for the
  *  harness) takes: the one its requests carry on the route its provider below takes, as key-refusal.ts' runKeyOf names
@@ -218,15 +250,10 @@ const loadClaude = (): Promise<unknown> => import(CLAUDE_PACKAGE);
 
 /** What serve reads of the claude-agent package: the adapter, the SDK version it pins and the SDK's install line it
  *  names, and this platform's suffix for the SDK's CLI package. */
-type ClaudePackage = { claudeAgentAdapter(options: Record<string, unknown>): AgentAdapter; CLAUDE_AGENT_SDK_VERSION: string; CLAUDE_AGENT_SDK_INSTALL: string; claudeAgentPlatform(): string };
+type ClaudePackage = { claudeAgentAdapter(options: Record<string, unknown>): AgentAdapter; verifyClaudeAgentCliAsync(path: string | undefined): Promise<unknown>; CLAUDE_AGENT_SDK_VERSION: string; CLAUDE_AGENT_SDK_INSTALL: string; claudeAgentPlatform(): string };
 
 /** This server's data, as `env` names it (the server sets it for itself and its runs). */
 const dataOf = (env: NodeJS.ProcessEnv): string => env[DATA_ENV] || defaultData(env);
-
-/** The SDK version claude-agent pins: the one constant, the package's own (CLAUDE_AGENT_SDK_VERSION). */
-export async function claudeSdkVersion(load: () => Promise<unknown> = loadClaude): Promise<string> {
-  return ((await load()) as ClaudePackage).CLAUDE_AGENT_SDK_VERSION;
-}
 
 /** What claude-agent's install needs (harness-install.ts HarnessPins): the pinned SDK version, and this platform's CLI package. */
 export async function claudePins(load: () => Promise<unknown> = loadClaude): Promise<HarnessPins> {
@@ -296,6 +323,10 @@ export async function claudeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load
     // whoever bills it (its priceModel).
     const endpoint = provider ? { origin: provider.origin, credential: provider.credential, auth: provider.auth } : { origin: "", credential: () => "" };
     const priced = provider ? { ...needs, model: provider.priceModel } : native;
+    // Its CLI checked off the event loop first (hashed and run as a child), so the server goes on answering: a pass is
+    // kept, and the adapter's own check answers from it. A CLI that fails its pins is the adapter's to report, in its
+    // order (the SDK before the CLI).
+    await claude.verifyClaudeAgentCliAsync(sdk.cliPath);
     // The skills only when there are some: with none, the adapter keeps its Skill tool off.
     adapter = claude.claudeAgentAdapter({ model: { default: provider?.modelId ?? native.model.modelId }, provider: endpoint, price: priceOf(priced), log: harnessLog(claudeFacts.id, env), sdk: sdk.sdk, sdkVersion: sdk.sdkVersion, cliPath: sdk.cliPath, mcp: sdk.mcp, ...(needs.confine ? { confine: needs.confine } : {}), ...(needs.skills?.length ? { skills: needs.skills } : {}), ...nativeOptions(claudeFacts, env) });
   } catch (error) {
@@ -326,7 +357,9 @@ export async function codexOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load:
     if (missing) throw new HarnessUnavailable(new HarnessNotInstalled(entry, dir, pins.version, existsSync(dir) ? `Codex in ${dir} is not whole: it lacks ${missing}` : undefined).message, "install");
     binary = codexBinaryIn(dir, pins);
     try {
-      codex.verifyCodex(binary);
+      // Off the event loop (the binary hashed and run as a child), so the server goes on answering; the adapter's own
+      // check then answers from what this kept.
+      await codex.verifyCodexAsync(binary);
     } catch (error) {
       const line = installLine(dir, entry.lock);
       const message = (error as Error).message.split(codex.CODEX_INSTALL).join(line);
@@ -348,7 +381,8 @@ export async function opencodeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, lo
   const standIn = env[OPENCODE_STANDIN_ENV] ? (JSON.parse(env[OPENCODE_STANDIN_ENV]) as { command: string; args?: string[]; env?: Record<string, string> }) : undefined;
   if (!standIn) {
     try {
-      opencode.verifyOpenCode();
+      // Off the event loop, as codexOf checks its binary; the adapter's own check then answers from what this kept.
+      await opencode.verifyOpenCodeAsync();
     } catch (error) {
       // serve's own line, which installs the adapter with its pinned CLI, in place of the adapter's (the CLI alone).
       const message = (error as Error).message.replace(opencode.OPENCODE_INSTALL, openCodeFacts.install.npmLine);
@@ -362,15 +396,8 @@ export async function opencodeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, lo
   // Its instructions list each skill by the description its SKILL.md's front matter gives on one LF line, which is all the
   // adapter reads: each SKILL.md goes as servedSkill writes it (its name and description, as a prompt reads them, on one
   // line each), as a learned skill already does, so a CRLF file or a folded description is listed by its own words.
-  const skills = needs.skills?.map((skill) => ({ ...skill, files: { ...skill.files, ...(skill.files["SKILL.md"] === undefined ? {} : { "SKILL.md": servedSkill(skill.files["SKILL.md"]) }) } }));
+  const skills = needs.skills && servedSkills(needs.skills);
   return opencode.openCodeAdapter({ model: provider.modelId, provider: { origin: provider.origin, credential: provider.credential }, price: priceOf({ ...needs, model: provider.priceModel }), log: harnessLog(openCodeFacts.id, env), ...(needs.confine ? { confine: needs.confine } : {}), ...(skills?.length ? { skills } : {}), ...(standIn ? { standIn } : {}) });
-}
-
-/** `harness`'s adapter for a run, as its entry in the harness table builds it (harness-table.ts). */
-export async function adapterFor(harness: string, env: NodeJS.ProcessEnv, needs: AdapterNeeds): Promise<AgentAdapter> {
-  const make = harnessOf(env, harness)?.adapter;
-  if (!make) throw new HarnessUnavailable(`This server does not run ${harness} yet.`);
-  return make(env, needs);
 }
 
 /** Why `harness` cannot run here, or undefined when it can (its entry's refusal): its package and pins, its provider, and

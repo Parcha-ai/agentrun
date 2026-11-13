@@ -3,10 +3,10 @@
 // host's (ANTHROPIC_AUTH_TOKEN as a bearer, OpenRouter's key) goes there. Capabilities say pi's default model is ready
 // only where that route can run: a gateway it could not reach, or one with no ANTHROPIC_API_KEY, is not ready.
 // Every request goes to a loopback gateway (fixtures/faux-gateway.mjs) on a port below the ephemeral range, with dummy
-// keys, and the run's processes load the net guard, so nothing leaves this machine.
+// keys, and this test process loads the net guard (runs run in the server's process on the runner), so nothing leaves
+// this machine.
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { mkdtemp } from "node:fs/promises";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -22,7 +22,15 @@ const MODEL = "anthropic/claude-haiku-4-5";
 /** Every answer's usage: 1000 tokens in, 100 out. claude-haiku-4-5 in serve's catalog: $1 in, $5 out per million. */
 const USAGE = { input: 1000, output: 100 };
 const AT_PRICE = (USAGE.input * 1 + USAGE.output * 5) / 1e6;
-const GUARD = new URL("./fixtures/net-guard.mjs", import.meta.url);
+// The net guard, loaded into this process (where a run's model requests leave from) with its log set first: every
+// connect or lookup off this machine is refused and written there. A case reads the lines written since it began.
+const GUARD_LOG = join(mkdtempSync(join(process.env.TMPDIR ?? "/tmp", "net-guard-")), "guard.jsonl");
+process.env.NET_GUARD_LOG = GUARD_LOG;
+await import(new URL("./fixtures/net-guard.mjs", import.meta.url).href);
+delete process.env.NET_GUARD_LOG;
+const guardLines = () => (existsSync(GUARD_LOG) ? readFileSync(GUARD_LOG, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) : []);
+/** The guard's refusals written after `mark` (a count of its lines read before). */
+const refusedSince = (mark) => guardLines().slice(mark).filter((line) => line.kind === "refused");
 
 /** A port free on 127.0.0.1 now, below the kernel's ephemeral range (no listen(0) or outbound connection is handed it). */
 async function freePort() {
@@ -52,8 +60,8 @@ async function gateway(t) {
 
 test("pi through ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY: POST /v1/messages at the gateway, the key in x-api-key only and never ANTHROPIC_AUTH_TOKEN as a bearer, an anthropic-version, Anthropic's own model id, nothing off this machine, booked at the catalog's price", { timeout: 90_000 }, async (t) => {
   const gw = await gateway(t);
-  const guardLog = join(await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "net-guard-")), "guard.jsonl");
-  withEnv(t, { ANTHROPIC_BASE_URL: gw.url, ANTHROPIC_API_KEY: KEY("anthropic"), ANTHROPIC_AUTH_TOKEN: KEY("host-token"), AGENT_MODEL: MODEL, NET_GUARD_LOG: guardLog, NODE_OPTIONS: `--import=${GUARD.href}` }, NAMES);
+  const mark = guardLines().length;
+  withEnv(t, { ANTHROPIC_BASE_URL: gw.url, ANTHROPIC_API_KEY: KEY("anthropic"), ANTHROPIC_AUTH_TOKEN: KEY("host-token"), AGENT_MODEL: MODEL }, NAMES);
   const { api } = await serve(t, { faux: undefined });
   const { models } = (await api("GET", "/capabilities")).body;
   assert.deepEqual([models.source, models.default, models.ready], ["providers", MODEL, true], JSON.stringify(models));
@@ -68,8 +76,7 @@ test("pi through ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY: POST /v1/messages at 
   assert.ok(posts.every((r) => typeof r.headers["anthropic-version"] === "string"), "each request names an anthropic-version");
   assert.equal(run.status, "completed", JSON.stringify(run.error));
   assert.deepEqual(rows.findLast((r) => r.kind === "usage")?.usage, { usd: Math.round(posts.length * AT_PRICE * 1e6) / 1e6, requests: posts.length }, "each answer once, from its usage, at the catalog's price");
-  const refused = readFileSync(guardLog, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)).filter((line) => line.kind === "refused");
-  assert.deepEqual(refused, [], "nothing left this machine");
+  assert.deepEqual(refusedSince(mark), [], "nothing left this machine");
 });
 
 for (const [host, settings] of [
@@ -92,12 +99,9 @@ for (const [host, settings] of [
 const REFUSED_BASE = "http://gateway.example/anthropic";
 const REFUSAL = "ANTHROPIC_BASE_URL must be an https URL of a gateway";
 
-/** The net guard's refusals in `log`: each connect or lookup a run's process tried off this machine. */
-const refusals = (log) => readFileSync(log, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)).filter((line) => line.kind === "refused");
-
 test("an OpenAI default with a refused ANTHROPIC_BASE_URL is ready and runs: capabilities read it ready, the run starts, and its request goes to OpenAI's route (refused here by the net guard), never to the gateway", { timeout: 90_000 }, async (t) => {
-  const guardLog = join(await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "net-guard-")), "guard.jsonl");
-  withEnv(t, { ANTHROPIC_BASE_URL: REFUSED_BASE, ANTHROPIC_API_KEY: KEY("anthropic"), OPENAI_API_KEY: KEY("openai"), AGENT_MODEL: "openai/gpt-6.1-sol", NET_GUARD_LOG: guardLog, NODE_OPTIONS: `--import=${GUARD.href}` }, NAMES);
+  const mark = guardLines().length;
+  withEnv(t, { ANTHROPIC_BASE_URL: REFUSED_BASE, ANTHROPIC_API_KEY: KEY("anthropic"), OPENAI_API_KEY: KEY("openai"), AGENT_MODEL: "openai/gpt-6.1-sol" }, NAMES);
   const { api } = await serve(t, { faux: undefined });
   const { models } = (await api("GET", "/capabilities")).body;
   assert.deepEqual([models.default, models.ready, models.needs], ["openai/gpt-6.1-sol", true, null], JSON.stringify(models));
@@ -105,7 +109,7 @@ test("an OpenAI default with a refused ANTHROPIC_BASE_URL is ready and runs: cap
   const started = await api("POST", "/agents/pi-openai-refused-anthropic/runs", { input: { content: "Say hi." } });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   await follow(api, started.body.run_id, ["completed", "failed"], { deadlineMs: 60_000 });
-  const hosts = new Set(refusals(guardLog).map((line) => line.host));
+  const hosts = new Set(refusedSince(mark).map((line) => line.host));
   assert.ok(hosts.has("api.openai.com"), `OpenAI's route was taken: ${JSON.stringify([...hosts])}`);
   assert.ok(!hosts.has("gateway.example"), "nothing went to the refused gateway");
 });

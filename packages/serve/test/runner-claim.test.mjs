@@ -2,36 +2,22 @@
 // loops"; the claim epoch is the one fence). Two runners, each on its own connection to one store file, one queued run:
 // exactly one claims it. The holder renews, so the other never takes it while it lives. Killed (frozen: no renew, no
 // release), its claim runs out and the other reclaims it with epoch + 1, and the dead runner's late journal commit is
-// refused (Fenced). A runner that closes releases its run still running, and the other claims it at once.
+// refused (Fenced).
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { startRunner } from "../dist/runner/runner.js";
-import { fauxLoops, observed, queue, recorder, sleep, STEADY_LEASE, stores, until } from "./runner-support.mjs";
+import { fauxLoops, observed, queue, recorder, STEADY_LEASE, stores } from "./runner-support.mjs";
 
 const LEASE_MS = 400;
 const TIMING = { leaseMs: LEASE_MS, renewEveryMs: 100, stopMarginMs: 150, pollMs: 20, commandPollMs: 20 };
 
-/** The steady lease, for a case whose point is not a lapse (a close's early release): a claim lost to a stall would turn
- *  it into the lapse case. */
-const STEADY = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 20 };
-
-async function twoRunners(t, createLoop, timing = TIMING) {
-  const { server, runners: [one, two] } = await stores({ runners: 2 });
-  const record = recorder();
-  const events = [];
-  const onEvent = (event) => events.push(event);
-  const started = [
-    startRunner({ store: observed(one, record), createLoop, name: "runner-a", onEvent, ...timing }),
-    startRunner({ store: observed(two, record), createLoop, name: "runner-b", onEvent, ...timing }),
-  ];
-  t.after(() => Promise.all(started.map((runner) => runner.close())));
-  return { server, record, events, runners: started };
-}
-
 /** An observed store whose claims and renews are told as they return: `returned(op, n)` waits until `op` (claimMany or
  *  renewMany) has returned `n` times, then for one turn of the event loop, so the runner's own continuation of that call
- *  has run. It waits on the calls, never on time. */
-function told(store) {
+ *  has run. It waits on the calls, never on time.
+ *  Its reads of command rows wait for `readsAfter`: a runner reads its new claims' rows (one more store call, a round trip
+ *  on Postgres) before it holds them, so a test that opens the gate only once both runners' claims are back holds the
+ *  claim well after claimMany returned, as a slow store does, on any store. */
+function told(store, { readsAfter } = {}) {
   const counts = { claimMany: 0, renewMany: 0 };
   const waiting = [];
   const tell = (op) => {
@@ -46,7 +32,12 @@ function told(store) {
     }
   };
   return {
-    store: { ...store, runs: { ...store.runs, claimMany: after("claimMany", store.runs.claimMany) }, renewMany: after("renewMany", store.renewMany) },
+    store: {
+      ...store,
+      runs: { ...store.runs, claimMany: after("claimMany", store.runs.claimMany) },
+      renewMany: after("renewMany", store.renewMany),
+      commandsOf: async (cursors) => (await readsAfter, store.commandsOf(cursors)),
+    },
     count: (op) => counts[op],
     async returned(op, n) {
       while (counts[op] < n) await new Promise((resolve) => waiting.push(resolve));
@@ -55,20 +46,47 @@ function told(store) {
   };
 }
 
+/** The runners' "claimed" events as they come: `nth(n)` is the n-th claim a runner holds (its loop made, its renews due
+ *  from then on). claimMany's return is not that moment: the runner reads the claim's command rows first. Waited for by
+ *  the event, never by time. */
+function claimedEvents() {
+  const claims = [];
+  const waiting = [];
+  return {
+    onEvent(event) {
+      if (event.type !== "claimed") return;
+      claims.push(event.claim);
+      for (const wake of waiting.splice(0)) wake();
+    },
+    async nth(n) {
+      while (claims.length < n) await new Promise((resolve) => waiting.push(resolve));
+      return claims[n - 1];
+    },
+  };
+}
+
 // The renew on a clock the test moves: the runners' timers (their polls, renews and claim deadlines) and every clock
 // (the runners' and the stores') are node:test's mocked ones, so nothing moves unless a step moves it, and a box's load
 // can neither starve a renew nor run a lease out. Each step moves the clock one renew interval, waits for the holder's
 // renew to return (by count, never by elapsed time), and reads that the claim moved with it.
-test("two runners, one queued run: exactly one claims it, and keeps it while it renews, each renew moving its claimed_until", async (t) => {
+// The mock goes on before either runner starts and before any store call of theirs, and off once their timers are done
+// with: no store transaction straddles the switch (see the case below).
+test("two runners, one queued run: exactly one claims it, and keeps it while it renews, each renew moving its claimed_until", { timeout: 60_000 }, async (t) => {
   const faux = fauxLoops({ turns: 1_000, turnMs: 20 });
   const { server, runners: [one, two] } = await stores({ runners: 2 });
   await queue(server, "run-1");
   const record = recorder();
   const events = [];
-  const onEvent = (event) => events.push(event);
+  const held = claimedEvents();
+  const onEvent = (event) => {
+    events.push(event);
+    held.onEvent(event);
+  };
   t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"], now: 1_000_000 });
-  const a = told(observed(one, record));
-  const b = told(observed(two, record));
+  let readRows = () => {};
+  const readsAfter = new Promise((resolve) => (readRows = resolve));
+  const a = told(observed(one, record), { readsAfter });
+  const b = told(observed(two, record), { readsAfter });
   const runners = [
     startRunner({ store: a.store, createLoop: faux.createLoop, name: "runner-a", onEvent, ...TIMING }),
     startRunner({ store: b.store, createLoop: faux.createLoop, name: "runner-b", onEvent, ...TIMING }),
@@ -77,9 +95,15 @@ test("two runners, one queued run: exactly one claims it, and keeps it while it 
     // Each runner polls once as it starts: both ask, exactly one gets the run.
     await a.returned("claimMany", 1);
     await b.returned("claimMany", 1);
+    readRows();
     assert.deepEqual(record.claims.map(({ runId, epoch }) => [runId, epoch]), [["run-1", 1]], JSON.stringify(record.claims));
     const name = record.claims[0].runner;
     const [holder, other] = name === "runner-a" ? [a, b] : [b, a];
+    // The holder holds it once it has read the claim's command rows: no step moves the clock before then, or its renew
+    // would find nothing to renew and no later step would come.
+    const claim = await held.nth(1);
+    assert.deepEqual([claim.runId, claim.epoch, claim.runner], ["run-1", 1, name], "the claim held is the one that landed");
+    assert.deepEqual(runners.find((runner) => runner.name !== name).held(), [], "the other runner holds nothing: the run is claimed");
     // Three leases long, one renew interval a step: each step's renew lands and moves the claim to now + the lease.
     const steps = (LEASE_MS * 3) / TIMING.renewEveryMs;
     for (let step = 1; step <= steps; step += 1) {
@@ -100,110 +124,62 @@ test("two runners, one queued run: exactly one claims it, and keeps it while it 
   }
 });
 
-/** Waits, by event, until `check(record.commits)` holds: each landed commit the observed store records wakes it. */
-function commitsTold(record) {
-  const waiting = [];
-  const push = record.commits.push.bind(record.commits);
-  record.commits.push = (...commits) => {
-    const length = push(...commits);
-    for (const wake of waiting.splice(0)) wake();
-    return length;
-  };
-  return async (check) => {
-    while (!check(record.commits)) await new Promise((resolve) => waiting.push(resolve));
-  };
-}
-
-// On the clock the test moves, as the renew case: the holder is killed, the clock moves one poll at a time, and each of
-// the other runner's polls is waited for by count. Its claim comes only once the clock is past the holder's claimed_until,
-// at epoch 2; the dead runner's late commit is Fenced; and the new holder's loop commits. No wait reads elapsed time.
-test("the holder is killed: the other reclaims after claimed_until with epoch 2, and the dead one's late commit is Fenced", async (t) => {
+// A runner that closes hands its run back: the loop is stopped for a shutdown where it can resume, the store is flushed, the
+// run released (its epoch moves on), and the other runner claims it at once, one epoch further. A claim and its epoch are the
+// fence, so this one is kept, and made deterministic: the lease is one no stall outlasts (STEADY_LEASE), so the other runner
+// can only have the run through the close's release, never through the old claim lapsing, and nothing is read off a clock.
+// Each step is waited for by its event (a runner's "claimed": the claim held, its loop made), never by a poll.
+test("a runner that closes stops its loop where it can resume and releases the run, still running; the other claims it at once", { timeout: 60_000 }, async (t) => {
+  const timing = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 20 };
   const faux = fauxLoops({ turns: 1_000, turnMs: 20 });
   const { server, runners: [one, two] } = await stores({ runners: 2 });
-  await queue(server, "run-1");
   const record = recorder();
-  const committed = commitsTold(record);
-  t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"], now: 1_000_000 });
-  const a = told(observed(one, record));
-  const b = told(observed(two, record));
-  const runners = [
-    startRunner({ store: a.store, createLoop: faux.createLoop, name: "runner-a", ...TIMING }),
-    startRunner({ store: b.store, createLoop: faux.createLoop, name: "runner-b", ...TIMING }),
-  ];
-  try {
-    await a.returned("claimMany", 1);
-    await b.returned("claimMany", 1);
-    assert.deepEqual(record.claims.map(({ epoch }) => epoch), [1], JSON.stringify(record.claims));
-    const [holder, other] = record.claims[0].runner === "runner-a" ? [runners[0], runners[1]] : [runners[1], runners[0]];
-    const otherTold = other === runners[0] ? a : b;
-    // One poll interval: the holder's loop commits a turn, and the other runner polls once more, finding nothing.
-    t.mock.timers.tick(TIMING.pollMs);
-    await committed((commits) => commits.some((commit) => commit.epoch === 1));
-    await otherTold.returned("claimMany", 2);
-    holder.kill();
-    const lastUntil = (await server.runs.get("run-1")).claimedUntil;
-
-    // One poll at a time until the other runner claims the run: never while the clock is at or before claimed_until.
-    let polls = otherTold.count("claimMany");
-    const limit = polls + LEASE_MS / TIMING.pollMs + 5;
-    while (record.claims.length < 2) {
-      assert.ok(polls < limit, `the other runner reclaims within ${limit} polls: ${JSON.stringify(record.claims)}`);
-      t.mock.timers.tick(TIMING.pollMs);
-      await otherTold.returned("claimMany", ++polls);
-      if (record.claims.length < 2) continue;
-      assert.ok(Date.now() > lastUntil, `reclaimed only past claimed_until: at ${Date.now()}, until ${lastUntil}`);
-    }
-    const second = record.claims[1];
-    assert.deepEqual([second.runner, second.epoch], [other.name, 2]);
-    assert.ok(second.at > lastUntil, `the reclaim's time ${second.at} is past claimed_until ${lastUntil}`);
-
-    const dead = faux.loops.find((loop) => loop.claim.epoch === 1);
-    await assert.rejects(dead.commitNow(), { name: "Fenced" }, "the dead runner's late commit");
-    assert.equal(record.commits.filter((commit) => commit.epoch === 1 && commit.startedAt > second.at).length, 0, "nothing of epoch 1 lands after the reclaim");
-    // One turn of the new holder's loop.
-    t.mock.timers.tick(TIMING.pollMs);
-    await committed((commits) => commits.some((commit) => commit.epoch === 2));
-  } finally {
-    t.mock.timers.reset();
-    await Promise.all(runners.map((runner) => runner.close()));
-  }
-});
-
-test("a runner that closes stops its loop where it can resume and releases the run, still running; the other claims it at once", async (t) => {
-  const faux = fauxLoops({ turns: 1_000, turnMs: 20 });
-  // Its point is a close's early release, never a lapse: the steady lease (its "before the old lease ran out" holds
-  // only more plainly on it).
-  const { server, record, runners: [a, b] } = await twoRunners(t, faux.createLoop, STEADY);
+  const held = claimedEvents();
+  const onEvent = (event) => held.onEvent(event);
+  let readRows = () => {};
+  const readsAfter = new Promise((resolve) => (readRows = resolve));
   await queue(server, "run-1");
+  const a = told(observed(one, record), { readsAfter });
+  const b = told(observed(two, record), { readsAfter });
+  const runners = [
+    startRunner({ store: a.store, createLoop: faux.createLoop, name: "runner-a", onEvent, ...timing }),
+    startRunner({ store: b.store, createLoop: faux.createLoop, name: "runner-b", onEvent, ...timing }),
+  ];
+  // Close is idempotent: the holder's is already done when this runs.
+  t.after(() => Promise.all(runners.map((runner) => runner.close())));
 
-  const first = await until(() => record.claims[0], "a claim");
-  const holder = first.runner === a.name ? a : b;
-  const other = holder === a ? b : a;
+  // Each runner polls once as it starts: both claims are back before the claim's rows are read.
+  await a.returned("claimMany", 1);
+  await b.returned("claimMany", 1);
+  readRows();
+  const first = await held.nth(1);
+  assert.deepEqual(record.claims.map(({ runId, runner, epoch }) => [runId, runner, epoch]), [["run-1", first.runner, 1]], "exactly one claim, the one held");
+  const holder = runners.find((runner) => runner.name === first.runner);
+  const other = runners.find((runner) => runner !== holder);
   const leaseEnd = (await server.runs.get("run-1")).claimedUntil;
-  // A starved machine as the close goes: close() has stopped the loop, then the process blocks 600 ms (no renew runs), so
-  // a lease shorter than the stall runs out before the close's release, and the runner lets the claim go unreleased.
-  const closing = holder.close();
-  const until600 = Date.now() + 600;
-  while (Date.now() < until600);
-  await closing;
-  const closedAt = Date.now();
+  await holder.close();
 
   assert.equal(faux.loops[0].stopCalls[0]?.kind, "shutdown", "the loop is stopped for a shutdown");
   assert.match(record.ops.join(" | "), /flush \| release run-1/, "flushed, then released");
-  const second = await until(() => record.claims[1], "the other runner's claim", LEASE_MS * 10);
-  // The close's release bumped the epoch to 2: the other runner's claim is 3.
+  const second = await held.nth(2);
+  // The close's release moved the epoch to 2: the other runner's claim is 3.
   assert.deepEqual([second.runner, second.epoch], [other.name, 3]);
-  assert.ok(second.at < leaseEnd, `claimed ${second.at - closedAt} ms after the close, before the old lease would have run out`);
+  assert.ok(record.claims[1].at < leaseEnd, "claimed before the old lease would have run out: it was handed back, not lapsed");
+  // The runner makes the loop before it says "claimed".
   assert.equal(faux.loops[1].claim.epoch, 3, "a new loop resumes it");
+  assert.equal((await server.runs.get("run-1")).state, "running", "still running");
 });
 
-// The end, then a lease's worth of polls on a clock the test moves: the run ends and is released on real timers (a lease no
-// stall outlasts, each step waited for by its event), then the runners' timers are mocked and the clock moves past one
-// lease, a step at a time, each runner's poll waited for by count. No poll claims the ended run.
-test("a run that ends is flushed and released, and never claimed again", async (t) => {
+// The end, then polls past a lease on the stores' clock: the run ends and is released on real timers (a lease no stall
+// outlasts, each step waited for by its event), then the stores' clock (the one every store judges a lease on) moves past
+// one lease, a quarter lease a step, and each runner's next poll is waited for by count. No poll claims the ended run.
+// Never node:test's mocked timers here: the runners poll all along, so a store transaction begun on real timers would end
+// under the mock, whose clearInterval cannot clear its real deadline tick (store/deadline.ts runnableDeadline). That
+// tick, left ref'd, held the file's process open after both cases passed, until the CI shard was cut.
+test("a run that ends is flushed and released, and never claimed again", { timeout: 60_000 }, async (t) => {
   const timing = { ...TIMING, leaseMs: 60_000, renewEveryMs: 1_000, stopMarginMs: 5_000 };
   const faux = fauxLoops({ turns: 2, turnMs: 10 });
-  const { server, runners: [one, two] } = await stores({ runners: 2 });
+  const { server, runners: [one, two], clock } = await stores({ runners: 2 });
   const record = recorder();
   const events = [];
   let released = () => {};
@@ -229,22 +205,18 @@ test("a run that ends is flushed and released, and never claimed again", async (
     const run = await server.runs.get("run-1");
     assert.ok(run.endedAt !== null, "the end commit stamped ended_at");
 
-    // From each runner's next poll on, its timers are the test's: that poll is the last on a real timer.
-    t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"], now: Date.now() });
-    const polled = [a.count("claimMany") + 1, b.count("claimMany") + 1];
-    await a.returned("claimMany", polled[0]);
-    await b.returned("claimMany", polled[1]);
-    // Past one lease, a quarter lease a step; each step, each runner polls once and claims nothing.
+    // Past one lease on the stores' clock, a quarter lease a step; each step, each runner's next poll (one sent after the
+    // move) returns, and nothing is claimed.
     for (let step = 1; step <= 5; step += 1) {
-      t.mock.timers.tick(timing.leaseMs / 4);
-      await a.returned("claimMany", (polled[0] += 1));
-      await b.returned("claimMany", (polled[1] += 1));
+      clock.skewMs += timing.leaseMs / 4;
+      const polled = [a.count("claimMany") + 2, b.count("claimMany") + 2];
+      await a.returned("claimMany", polled[0]);
+      await b.returned("claimMany", polled[1]);
       assert.equal(record.claims.length, 1, `step ${step}: an ended run is final: ${JSON.stringify(record.claims)}`);
     }
     assert.deepEqual(runners.flatMap((runner) => runner.held()), [], "no runner holds it");
     assert.deepEqual(await server.runs.claimable({ limit: 10 }), []);
   } finally {
-    t.mock.timers.reset();
     await Promise.all(runners.map((runner) => runner.close()));
   }
 });

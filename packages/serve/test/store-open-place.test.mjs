@@ -6,7 +6,10 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { test as nodeTest } from "node:test";
+import { sqliteAdapterTests } from "./store-target.mjs";
+
+const test = sqliteAdapterTests(nodeTest, "the store file's place (dataDir or file)");
 
 const { openSqliteStore } = await import("../dist/store/index.js");
 

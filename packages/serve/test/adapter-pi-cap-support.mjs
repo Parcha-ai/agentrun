@@ -5,6 +5,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MODEL, piAdapterSpec, scriptedOrigin } from "./conformance-pi-adapter.mjs";
+import { strictOptions } from "./strict-options.mjs";
 
 const { openSqliteStore } = await import("../dist/store/index.js");
 const { startRunner } = await import("../dist/runner/runner.js");
@@ -14,19 +15,23 @@ const { MAX_RESTARTS } = await import("../dist/runner/conformance/harness.js");
 export const cap = await import("../../run-adapters/dist/kernel/cap/index.js");
 export const { beforeRequestOf } = cap;
 
+/** Every runner of these cases: a lease no stall of a loaded machine outlasts. A claim lost mid-request would be retaken
+ *  and its request read with no answer (held, not booked), which these money checks do not read; the runs end themselves.
+ *  A case that loses a claim does it itself (a killed runner, the store's clock moved past the claim's until). */
+/** The short lease, for the cases that kill a runner and wait for its claim to run out on the real clock. */
 export const TIMING = { leaseMs: 600, renewEveryMs: 150, stopMarginMs: 200, pollMs: 20, commandPollMs: 30 };
-/** capRun's one runner: a lease no stall of a loaded machine outlasts. A claim lost mid-request would be retaken and its
- *  request read with no answer (held, not booked), which these money checks do not read; the runs end themselves. The
- *  short TIMING stays for the cases that kill a runner and wait for its lease to run out. */
 export const STEADY = { leaseMs: 60_000, renewEveryMs: 1_000, stopMarginMs: 5_000, pollMs: 20, commandPollMs: 30 };
 export const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
 /** The suite's model as the cap prices it: Sonnet's list price. */
 export const SONNET = Object.freeze({ id: MODEL, api: "anthropic-messages", price: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, outputCeiling: 64_000 });
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-/** A store with one queued run, a runner on the adapter loop running `script` with `beforeRequest`, until the run is
- *  not running or `ms` passes. `asked`: each request the host was asked about; `sent`: each body the provider got. */
-export async function capRun(t, { script, beforeRequest, cap: runCap, specOf, during, journalOf, ms = 20_000 }) {
+/** A store with one queued run, a runner on the adapter loop running `script` on the run's one cap of `runCap` (the kernel
+ *  runCap's options), until the run is not running or `ms` passes. `asked`: each request the cap judged, with its answer;
+ *  `sent`: each body the provider got. */
+export async function capRun(t, options) {
+  strictOptions("capRun", options, ["script", "runCap", "cap", "specOf", "during", "journalOf", "endOfRun", "ms"]);
+  const { script, runCap, cap: parkCap, specOf, during, journalOf, endOfRun, ms = 20_000 } = options;
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-adapter-cap-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -45,15 +50,14 @@ export async function capRun(t, { script, beforeRequest, cap: runCap, specOf, du
   const spec = specOf ? specOf(sent) : piAdapterSpec({ script, tools: {}, hooks: quiet }, { fetch: scriptedOrigin(script, sent) });
   const loop = createAdapterLoop(async (claim, run) => ({
     ...(await spec(claim, run)),
-    ...(runCap ? { cap: runCap } : {}),
-    beforeRequest: async (request) => {
-      const answer = await beforeRequest(request);
-      asked.push({ request, answer });
-      return answer;
-    },
+    // `endOfRun`: the run's end-of-run step (LoopDeps.endOfRun), asked of the run's agent.
+    ...(endOfRun ? { agentId: "agent-1" } : {}),
+    ...(parkCap ? { cap: parkCap } : {}),
+    // The run's one cap, built by the loop from these options: each request it judged is recorded with its answer.
+    runCap: { ...runCap, judged: (request, answer) => void asked.push({ request, answer }) },
   }), { restartLimit: MAX_RESTARTS });
   // `journalOf(journal)`: the claim's journal as the loop sees it (a test's commit hook), else the store's own.
-  const createLoop = journalOf ? (deps) => loop({ ...deps, journal: (claim) => journalOf(deps.journal(claim)) }) : loop;
+  const createLoop = (deps) => loop({ ...deps, ...(journalOf ? { journal: (claim) => journalOf(deps.journal(claim)) } : {}), ...(endOfRun ? { endOfRun } : {}) });
   runner = startRunner({ store, createLoop, name: "runner-a", ...STEADY });
   // `during(server)`: what a test does while the run runs (a person's stop once a request is out), awaited before the read.
   const acting = during ? during(server) : undefined;
@@ -67,13 +71,14 @@ export async function capRun(t, { script, beforeRequest, cap: runCap, specOf, du
     await sleep(20);
   }
   await acting;
-  return { row, asked, sent, ms: Date.now() - from, server, store };
+  return { row, asked, sent, ms: Date.now() - from, server, store, dir };
 }
 
 /** The run's cap as a loop spec carries it (what E2 fills from the run's launch): its figure and the kernel's park. */
 export const specCap = (capUsd) => ({ capUsd, park: (refusal) => cap.parkOf(refusal, capUsd) });
 
-/** The data of each root entry of `kind` in run-1's journal, read under a reader's claim at the run's epoch. */
+/** The data of each root entry of `kind` in run-1's journal, read under a reader's claim at the run's epoch; with no
+ *  `kind`, every root entry whole (for the run's Timeline). */
 export async function rootEntries(store, kind) {
   const { BACKGROUND_CONTEXT: ctx } = await import("@earendil-works/chord/context");
   const { createModels } = await import("@earendil-works/pi-ai/models");
@@ -85,7 +90,7 @@ export async function rootEntries(store, kind) {
     const out = [];
     for (let cursor; ; ) {
       const page = await root.entries({ order: "ascending" }, 500, cursor, ctx);
-      for (const entry of page.items) if (entry.kind === kind) out.push(entry.data);
+      for (const entry of page.items) if (kind === undefined) out.push(entry); else if (entry.kind === kind) out.push(entry.data);
       if (page.next === undefined) break;
       cursor = page.next;
     }

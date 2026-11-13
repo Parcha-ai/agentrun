@@ -1,4 +1,4 @@
-// Take over the agent's browser and hand it back, in the viewer the run page frames (Watch live). The run's browser is
+// Take over the agent's browser and hand it back, in the viewer the run page frames (the Screen tab). The run's browser is
 // pi-browser's fake backend (the serve tests' faux-browser.mjs, through --faux-browser), and its model asks for the person in the browser
 // (faux-browse-handoff: a snapshot, then browser_request_handoff, then a question naming the hand-off's result). In the
 // framed viewer, Take over holds the browser for the owner, and Hand back gives it back; with the agent's ask pending,
@@ -24,7 +24,7 @@ export default {
     const runId = started.body.run_id;
     const runPath = `/v2/runs/${encodeURIComponent(runId)}`;
 
-    // The run page: its browser is live once the agent opens a page, and the tab says Watch live. The agent's ask for the
+    // The run page: its browser is live once the agent opens a page, on the Screen tab. The agent's ask for the
     // person comes a model call after its page opens: the page's own poll reads it (pending.kind "browser") before the
     // hand-back that answers it, or the hand-back would answer nothing. The poll repeats while the ask waits.
     const runRead = (kind) => page.waitForResponse(async (r) => {
@@ -34,10 +34,10 @@ export default {
     const asked = runRead("browser");
     await page.goto(`${base}/#/runs/${encodeURIComponent(runId)}`);
     await asked;
-    const tab = page.getByRole("tab", { name: "Watch live" });
+    const tab = page.getByRole("tab", { name: "Screen" });
     await tab.waitFor();
     await tab.click();
-    const viewer = page.frameLocator('section[aria-label="Browser"] iframe');
+    const viewer = page.frameLocator('section[aria-label="Screen"] iframe');
     const hands = viewer.locator("#hands");
     await hands.waitFor();
     check((await hands.innerText()) === "Take over", `the viewer's button reads ${await hands.innerText()}`);

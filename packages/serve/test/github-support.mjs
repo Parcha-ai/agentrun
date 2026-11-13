@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { createHmac, createVerify, generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
 import { createServer } from "node:http";
-import { call, serve, withEnv } from "./support.mjs";
+import { call, clientOwnerSession, serve, withEnv } from "./support.mjs";
 
 export const SEAL = { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") };
 export const PUBLIC = "https://agents.example.test";
@@ -30,7 +30,8 @@ export async function fakeGitHub(t) {
   const holds = {};
   /** An HTTP status a test makes GitHub answer: `installation` (one installation's read), `installations` (the list),
    *  `repositories` (an installation token's read of the repositories it covers), `mint` (an installation token's
-   *  mint). `repositories` and `mint` also take {status, message, headers}, as GitHub's rate limits answer a 403. */
+   *  mint). `repositories` and `mint` also take {status, message, headers}, as GitHub's rate limits answer a 403, or a
+   *  function of the installation (and, for `mint`, the body asked) giving one of those, or nothing for GitHub's answer. */
   const failures = {};
   const requests = [];
   const tokens = [];
@@ -111,8 +112,9 @@ export async function fakeGitHub(t) {
         if (!id) return answer(401, { message: "A JSON web token could not be decoded" });
         const on = installations.get(Number(minting[1]));
         if (!on || (on.app_id ?? app.id) !== id) return answer(404, { message: "Not Found" });
-        if (failures.mint) return answer(...failed(failures.mint));
         const asked = JSON.parse(body || "{}");
+        const mintFails = typeof failures.mint === "function" ? failures.mint(Number(minting[1]), asked) : failures.mint;
+        if (mintFails) return answer(...failed(mintFails));
         if ((asked.repositories ?? []).some((name) => !coveredBy(Number(minting[1])).has(`${on.account}/${name}`))) return answer(422, { message: "There is at least one repository that does not exist or is not accessible to the parent installation." });
         const token = `ghs_test${randomBytes(18).toString("hex")}`;
         tokens.push({ token, installation: Number(minting[1]), repositories: asked.repositories, permissions: asked.permissions, at: Date.now() });
@@ -123,7 +125,8 @@ export async function fakeGitHub(t) {
       const held = tokens.find((entry) => entry.token === bearer && !revoked.includes(entry.token));
       if (req.method === "GET" && req.url.startsWith("/installation/repositories")) {
         if (!held) return answer(401, { message: "Bad credentials" });
-        if (failures.repositories) return answer(...failed(failures.repositories));
+        const listFails = typeof failures.repositories === "function" ? failures.repositories(held.installation) : failures.repositories;
+        if (listFails) return answer(...failed(listFails));
         const full = [...coveredBy(held.installation)].filter((name) => !held.repositories || held.repositories.includes(name.split("/")[1]));
         return answer(200, { total_count: full.length, repositories: full.map((name) => ({ name: name.split("/")[1], full_name: name })) });
       }
@@ -159,7 +162,12 @@ export function held() {
  *  on instead. Answers as the API client does: status, JSON body, headers.get. */
 export async function startConnect(server, body = {}, { wrong = false } = {}) {
   const port = Number(new URL(server.baseUrl).port);
-  const res = await call(port, { method: "POST", path: "/v2/integrations/github/connect", headers: { ...(wrong ? {} : { host: new URL(PUBLIC).host, "x-forwarded-proto": "https" }), authorization: `Bearer ${server.token}`, "content-type": "application/json" }, body });
+  // Connect is a secret write (it seals the App's key and webhook secret): the owner's session, as the console sends it,
+  // from the public URL (its https cookie name, its origin) unless `wrong`, never the token.
+  const session = await clientOwnerSession(server);
+  const cookie = wrong ? session.cookie : session.cookie.replace(`agentrun-${port}-session=`, "__Host-agentrun-session=");
+  const at = wrong ? { origin: session.origin } : { host: new URL(PUBLIC).host, "x-forwarded-proto": "https", origin: new URL(PUBLIC).origin };
+  const res = await call(port, { method: "POST", path: "/v2/integrations/github/connect", headers: { ...at, cookie, "content-type": "application/json" }, body });
   return { status: res.status, body: res.json ?? res.text, headers: { get: (name) => [res.headers[name] ?? []].flat().join(", ") || null } };
 }
 
@@ -207,3 +215,17 @@ export async function deliver(baseUrl, secret, event, payload, { signature, deli
   return { status: res.status, body: await res.json().catch(() => null), body_text: body };
 }
 
+
+/** The server's store, read beside it in the runner role (the server holds the store itself): its trigger settings, its
+ *  triggers and its runs' launches. Closed after the test. */
+export async function storeOf(t, server) {
+  const { openSqliteStore } = await import("../dist/store/index.js");
+  const store = await openSqliteStore({ dataDir: server.data, role: "runner" });
+  t.after(() => store.close());
+  return store;
+}
+
+/** A run's first input, as its launch row holds it (the runner reads it at the run's claim). */
+export async function firstInput(t, server, runId) {
+  return (await (await storeOf(t, server)).runs.launch(runId)).body.input;
+}

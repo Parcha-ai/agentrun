@@ -27,10 +27,10 @@ const CLI = join(ROOT, "packages/serve/dist/cli.js");
 const playwright = await import(process.env.PLAYWRIGHT_CORE ?? "playwright-core");
 const chromium = playwright.chromium ?? playwright.default?.chromium;
 if (!chromium) throw new Error(`no chromium in ${process.env.PLAYWRIGHT_CORE ?? "playwright-core"}`);
-const NOTE = "Find the setup code in the server's log (on Render, the Logs tab), or open the link the log prints. The server's API token (AGENTRUN_TOKEN) works here too.";
+const NOTE = "On Render: paste the server's AGENTRUN_TOKEN from the service's Environment tab. Elsewhere: paste the setup code the server printed in its log, or open the link it prints.";
 const PASSWORD = ["not", "a", "secret", "e2e", "setup"].join("-");
 const HSTS = "max-age=31536000";
-const SETUP_LINE = /^Set up this server: \S+\/setup#code=([A-Za-z0-9_-]{22})$/gm;
+const SETUP_LINE = /^Set up this server: \S+\/setup#code=([A-Za-z0-9_-]{22}) \(or paste AGENTRUN_TOKEN\)$/gm;
 
 const checks = [];
 const check = (what, ok, detail = "") => { checks.push(ok); console.log(`${ok ? "ok  " : "FAIL"} ${what}${detail ? `: ${detail}` : ""}`); };
@@ -161,7 +161,7 @@ try {
     await fill(page, "wrong-code-0000000000x");
     await page.click('button[type="submit"]');
     await page.waitForSelector('[role="alert"]', { timeout: 15_000 });
-    check("a wrong code is refused in words", ((await page.textContent('[role="alert"]')) ?? "").includes("That setup code is not the one in the server's log."));
+    check("a wrong code is refused in words", ((await page.textContent('[role="alert"]')) ?? "").includes("That setup code was refused: open the newest setup link in the server's log, or paste the server's token (AGENTRUN_TOKEN) here."));
     await fill(page, code);
     await page.click('button[type="submit"]');
     check("the code from the server's log sets the password and signs in", await signedIn(page).then(() => true, () => false));
