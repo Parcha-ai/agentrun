@@ -163,9 +163,9 @@ test("a package's model: its preferred one where this server runs it on the harn
   const model = { tier: "fast", prefer: "openrouter/particle-ai/particle-1" };
   const pick = async (env, m, harness = "pi") => (await packageModel(env, m, harness)).model;
   assert.equal(await pick({ OPENROUTER_API_KEY: "fake-test-key" }, model), model.prefer, "a key for its provider runs it");
-  assert.equal(await pick({ OPENAI_API_KEY: "fake-test-key", AGENT_MODEL_FAST: "openai/gpt-5-mini" }, model), "openai/gpt-5-mini", "no OpenRouter key: the fast tier's");
+  assert.equal(await pick({ OPENAI_API_KEY: "fake-test-key", AGENT_MODEL_FAST: "openai/gpt-6-luna" }, model), "openai/gpt-6-luna", "no OpenRouter key: the fast tier's");
   assert.equal(await pick({ OPENAI_API_KEY: "fake-test-key" }, { tier: "strong", prefer: model.prefer }), "openai/gpt-6.1-sol", "no tier model set: the default of the key it has");
-  assert.equal(await pick({ OPENAI_API_KEY: "fake-test-key", AGENT_MODEL: "openai/gpt-5" }, { tier: "balanced" }), "openai/gpt-5", "balanced is the server's default");
+  assert.equal(await pick({ OPENAI_API_KEY: "fake-test-key", AGENT_MODEL: "openai/gpt-6.1-terra" }, { tier: "balanced" }), "openai/gpt-6.1-terra", "balanced is the server's default");
   assert.equal(await pick({ ANTHROPIC_API_KEY: "fake-test-key", OPENROUTER_API_KEY: "fake-test-key" }, model, "claude-agent"), "anthropic/claude-sonnet-5-5", "a harness that cannot run it takes the tier's");
   assert.equal(await pick({}, model), undefined, "no key at all: none, so the agent runs on the server's default");
   assert.equal(await pick({ OPENROUTER_API_KEY: "fake-test-key" }, undefined), undefined, "a package that names none");
@@ -443,6 +443,14 @@ test("a string parameter can say what its value is: market-monitor's schedule is
     const problems = await problemsOf(t, ({ edit }) => edit(/focus: \{ type: string, description: .*\}/, to));
     assert.ok(problems.some((one) => said.test(one)), `${to}: ${problems.join(" | ")}`);
   }
+});
+
+test("market-monitor's lookback_days help says what the number does (the days a run looks back, equal to the gap between runs), not a note about changing cron", async (t) => {
+  const { api } = await serve(t);
+  const help = (await api("GET", "/templates")).body.templates.find((x) => x.name === "market-monitor").parameters.lookback_days.description;
+  assert.doesNotMatch(help, /change cron/);
+  assert.match(help, /how many days back a run looks/);
+  assert.match(help, /equal to the gap between runs/);
 });
 
 test("every package this server ships applies on a server with nothing saved: no key, no MCP server, no box; what it lacks is a warning, and no tool it grants needs a key; one with a shell is refused in words, nothing made", { timeout: 120_000 }, async (t) => {

@@ -14,7 +14,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { childCommands, type DaemonExpected, daemonDrift } from "./child.js";
+import { childCommands, type DaemonExpected, daemonDrift } from "./hosted/scripts.js";
 import { DaemonClient } from "./client.js";
 import { ORGO, ORGO_BASE_IMAGE } from "./descriptors/orgo.js";
 import { DESKTOP_GROUPS } from "./desktop.js";

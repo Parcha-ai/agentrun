@@ -6,7 +6,7 @@
 import { createHash } from "node:crypto";
 import { PassThrough, Writable } from "node:stream";
 import { PROTOCOL_VERSION } from "../dist/protocol.js";
-import { scriptOf } from "./fake-e2b.mjs";
+import { scriptOf } from "./fake-shell.mjs";
 import { netDevText } from "./net-dev.mjs";
 
 export const VERSION = JSON.parse(await (await import("node:fs/promises")).readFile(new URL("../package.json", import.meta.url), "utf8")).version;

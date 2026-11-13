@@ -2,8 +2,7 @@
 // run's model, and the run is read from its store once its process has exited.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { startServe } from "../dist/index.js";
-import { answerFlow, client, FAUX, flowAgent, follow, journalOf, runDir, serve, storeRun, withEnv } from "./support.mjs";
+import { answerFlow, client, FAUX, flowAgent, follow, journalOf, runDir, serve, storeRun, withEnv, startServe } from "./support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 
 const start = async (api, id, input, workflow = answerFlow()) => {

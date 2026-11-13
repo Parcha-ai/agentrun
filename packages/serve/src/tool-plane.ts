@@ -72,15 +72,20 @@ export const SERVE_OWN_TOOLS: readonly string[] = ["learned_workflow"];
  *  held to `desktop`, every phone tool to `phone` (the kernel registry's definitions name the key; tool-gate.ts
  *  settingsKeyOf reads it there). Allowed by default like a table tool; allow or deny. */
 export const KIND_KEYS: readonly string[] = ["desktop", "phone"];
+/** A decision provider's settings key, its bare id (decisions.ts' providers: Jev, Parallel, OpenRouter's Decisions
+ *  models): what an agent's learned workflow's decision nodes may ask (learned-workflow.ts, LS-07), and whose keys the
+ *  runner hands its claim. Allowed by default; allow or deny. A workflow agent's own decisions read no setting of it. */
+export const DECISION_PROVIDER_KEYS: readonly string[] = ["jev", "parallel", "openrouter"];
 
 /** A settings key: a tool of the table, one of the run's own tools (SERVE_OWN_TOOLS), a computer kind's (KIND_KEYS), a
+ *  decision provider's (DECISION_PROVIDER_KEYS), a
  *  catalog tool (`monid.<tool>`, `mcp:<server>/<tool>`), or an MCP server's wildcard (`mcp:<server>/*`), which sets each
  *  of its tools. */
 /** A tool's name in an agent's or the server's tool settings: a plain name, a catalog's tool (`monid.discover`), an MCP
  *  server's tool (`mcp:<server>/<tool>`) or its wildcard (`mcp:<server>/*`). */
 const TOOL_KEY = /^(?:[a-z][a-z0-9_-]{0,63}(?:\.[A-Za-z0-9_-]{1,64})?|mcp:[A-Za-z0-9_.-]{1,64}\/(?:\*|[A-Za-z0-9_.-]{1,128}))$/;
 const isToolSettingsKey = (name: string): boolean => TOOL_KEY.test(name);
-const isSettingsKey = (name: string): boolean => isToolSettingsKey(name) && (TABLE_TOOLS.includes(name) || SERVE_OWN_TOOLS.includes(name) || KIND_KEYS.includes(name) || isCatalogTool(name) || /^mcp:[^/]+\/\*$/.test(name));
+const isSettingsKey = (name: string): boolean => isToolSettingsKey(name) && (TABLE_TOOLS.includes(name) || SERVE_OWN_TOOLS.includes(name) || KIND_KEYS.includes(name) || DECISION_PROVIDER_KEYS.includes(name) || isCatalogTool(name) || /^mcp:[^/]+\/\*$/.test(name));
 /** One tool's settings: its provider (a capability that has a choice), its permission, and an MCP tool's pin (the
  *  arguments its calls must carry, tool-gate.ts pinRefusal). */
 export type ToolSetting = { provider?: string; permission?: Permission; pin?: Pin; /** bash's policy, an agent's own only (bash-read-only.ts). */ policy?: BashPolicy; /** Read as a stand-in for a value not offered (checkToolSettings); never shown or written. */ fallback?: true; /** The stand-in's value as written in the file, which a save that keeps the stand-in writes back (ToolSettings.put). Never shown. */ raw?: unknown; /** A pin in the file that does not read (readToolSettings): the gate refuses every call of the tool, and a save keeps it (ToolSettings.put) until the owner sets a valid pin or removes the tool's setting. Served as `pin_broken: true`. */ brokenPin?: true; /** The broken pin as written in the file, which a save that keeps it writes back. Never shown. */ rawPin?: unknown };
@@ -414,7 +419,7 @@ export function settingsIssues(value: unknown, at = "", layer: "server" | "agent
   if (!isPlain(value)) return [{ field: at || "body", reason: "wrong_type", message: `${at || "the body"} is an object of tools to their settings` }];
   return Object.entries(value).flatMap(([name, setting]): InputIssue[] => {
     const pickable = Object.hasOwn(PROVIDERS, name);
-    if (!isSettingsKey(name)) return [{ field: field(name), reason: "not_allowed", message: `Tool settings are kept for this server's tools (${[...TABLE_TOOLS, ...SERVE_OWN_TOOLS, ...KIND_KEYS].join(", ")}), catalog tools (monid.<tool>, mcp:<server>/<tool>) and an MCP server's tools (mcp:<server>/*); ${name} is none of them.` }];
+    if (!isSettingsKey(name)) return [{ field: field(name), reason: "not_allowed", message: `Tool settings are kept for this server's tools (${[...TABLE_TOOLS, ...SERVE_OWN_TOOLS, ...KIND_KEYS, ...DECISION_PROVIDER_KEYS].join(", ")}), catalog tools (monid.<tool>, mcp:<server>/<tool>) and an MCP server's tools (mcp:<server>/*); ${name} is none of them.` }];
     if (!isPlain(setting)) return [{ field: field(name), reason: "wrong_type", message: `${field(name)} is an object, {${pickable ? "provider, " : ""}permission${isMcpTool(name) ? ", pin" : ""}${layer === "agent" && name === "bash" ? ", policy" : ""}}` }];
     return Object.entries(setting).flatMap(([key, given]): InputIssue[] => {
       if (key === "pin") return pinIssues(given, field(name, key), name);
@@ -431,7 +436,7 @@ export function settingsIssues(value: unknown, at = "", layer: "server" | "agent
       }
       if (key === "permission") {
         // A wildcard sets each tool of its server's: a catalog tool's permissions.
-        const offered = permissionsOf(isMcpTool(name) ? name : name.replace(/\/\*$/, "/_"));
+        const offered = permissionsOf(name);
         return offered.includes(given as Permission) ? [] : [{ field: field(name, key), reason: "not_an_option", message: `${field(name, key)} is one of ${offered.join(", ")}` }];
       }
       if (key !== "provider" || !pickable) return [{ field: field(name, key), reason: "not_allowed", message: `${field(name)} keeps no field ${key}.` }];
@@ -495,7 +500,7 @@ export function checkToolSettings(read: unknown, where: string): { settings: Too
       else kept.pin = setting.pin as Pin;
     }
     if (setting.permission !== undefined) {
-      const offered = permissionsOf(isMcpTool(name) ? name : name.replace(/\/\*$/, "/_"));
+      const offered = permissionsOf(name);
       if (offered.includes(setting.permission as Permission)) kept.permission = setting.permission as Permission;
       else {
         // Its fail-closed stand-in, marked so: an ask nobody set lets nothing run unasked (tool-gate.ts SHELL_WATCHERS).

@@ -106,13 +106,13 @@ test("a workflow on a harness other than pi saves with a warning and its runs ar
 
 test("a harness is checked on the revision's own model, never refused for the server's default: claude-agent runs an Anthropic model on a server whose default is OpenAI", { timeout: 60_000 }, async (t) => {
   // Both providers configured (no real keys), the server's default model OpenAI's.
-  withEnv(t, { AGENT_MODEL: "openai/gpt-4o-mini", OPENAI_API_KEY: `not-a-secret-${"openai"}`, ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}` }, ["AGENT_MODEL_BASE_URL", "ANTHROPIC_BASE_URL", "AGENTRUN_HARNESS_TABLE"]);
+  withEnv(t, { AGENT_MODEL: "openai/gpt-6-luna", OPENAI_API_KEY: `not-a-secret-${"openai"}`, ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}` }, ["AGENT_MODEL_BASE_URL", "ANTHROPIC_BASE_URL", "AGENTRUN_HARNESS_TABLE"]);
   // A copy: serve checks a harness once per environment object, and process.env outlives this test.
   const env = { ...process.env };
   const revision = (model) => ({ kind: "agentic", instructions: "Answer.", harness: "claude-agent", ...(model ? { model } : {}) });
-  assert.deepEqual(await blockersOf(env, revision("anthropic/claude-haiku-4-5")), [], "its own Anthropic model runs");
-  const named = await blockersOf(env, revision("openai/gpt-4o-mini"));
+  assert.deepEqual(await blockersOf(env, revision("anthropic/claude-haiku-5-5")), [], "its own Anthropic model runs");
+  const named = await blockersOf(env, revision("openai/gpt-6-luna"));
   assert.deepEqual(named.map((b) => [b.field, b.host]), [["definition.model", true]], "an OpenAI model it is given does not run");
-  assert.match(named[0].message, /claude-agent runs Anthropic models; the run's model is openai\/gpt-4o-mini/);
+  assert.match(named[0].message, /claude-agent runs Anthropic models; the run's model is openai\/gpt-6-luna/);
   assert.deepEqual(await blockersOf(env, revision(undefined)), [], "a model-less revision runs on the Anthropic model its key gives, never the server's OpenAI default");
 });

@@ -48,7 +48,7 @@ import { overCapMessage, SPEND_CAP_REACHED } from "@parcha/agentrun-kernel/kerne
 import { type BookedSpend, bookedSpend } from "./runner/metrics.js";
 import { journalRecords, recordOf } from "./runner/journal-reader.js";
 import { capNowOf, type EndData, KINDS } from "./runner/journal-kinds.js";
-import { notesReadOf, runLearningEnd, type RunLearning, withNotes } from "./store-reads/learning.js";
+import { notesReadOf, runLearningEnd, type RunLearning, usedOnly, withNotes } from "./store-reads/learning.js";
 import { runReflect, runTimeline, wholeAnswerFor, wholeAnswers } from "./store-reads/journal.js";
 import { type RunReadState, readRun } from "./store-reads/runs.js";
 import { runCutValues, runErrorWordsOf, underCut } from "./run-cut.js";
@@ -280,7 +280,7 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   // run that learns is seeded, then looking back once its end-of-run turn starts (main's seeded and reflecting).
   const started = launch ? learningStartOf(launch) : undefined;
   const read = started?.given.length ? notesReadOf(started.given, reflectRange, await runTimeline(store, runId, context, { settled: terminal })) : [];
-  const under = !ended && started && !seedFailed(started) ? underWay(started, reflectRange, iso(runRow.startedAt)) : null;
+  const under = !ended && started && started.use ? usedOnly(started, terminal, iso(runRow.endedAt ?? runRow.startedAt)) : !ended && started && !seedFailed(started) ? underWay(started, reflectRange, iso(runRow.startedAt)) : null;
   const sofar = ended ?? under;
   const shownEnd = sofar && withNotes(sofar, started, read);
   const turns = new Turns();

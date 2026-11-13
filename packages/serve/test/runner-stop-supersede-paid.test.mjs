@@ -44,7 +44,7 @@ test("a stop while an approved paid call is in flight cuts it, withdraws it over
     rmSync(dir, { recursive: true, force: true });
   });
   await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Search, then say done.", tools: ["web_search"], toolSettings: { web_search: { permission: "ask" } } } });
-  await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "Search." }, title: "t", place: { mode: "runner" }, harness: "pi", model: { provider: "anthropic", modelId: "claude-sonnet-4-5" }, plane: { web_search: "parallel" }, max_cost_usd: 10 } });
+  await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "Search." }, title: "t", place: { mode: "runner" }, harness: "pi", model: { provider: "anthropic", modelId: "claude-sonnet-5-5" }, plane: { web_search: "parallel" }, max_cost_usd: 10 } });
   const route = {
     model: "faux-1", provider: { api: "anthropic-messages", origin: "https://route.invalid", credential: () => `not-a-secret-${"r"}` },
     fetch: scriptedOrigin([{ call: "web_search", args: { query: "agentrun", n: 3 } }, { say: "done" }]),

@@ -10,25 +10,50 @@ export const REFLECT_PREFIX = "learn-reflect-";
 /** The label a reader puts on the end-of-run turn's rows and messages: the server's (learning.ts LEARNING_LABEL). */
 export const REFLECT_LABEL = "learning";
 
-/** The end-of-run turn's request id, one per run: pi answers a repeat of it from its submission, so a turn asked again
- *  on a later claim is never asked of the model twice. The server's own prefix, so the run's readers tell the turn's
- *  rows apart by it (reflectFrom). */
-export const reflectRequestId = (runId: string, again = false) => `${REFLECT_PREFIX}${runId}${again ? REFLECT_AGAIN : ""}`;
-/** The suffix of the end-of-run turn's re-ask's request id (EndOfRunTurn ask's `again`): one per run too, so a repeat
+/** The end-of-run turn's request id, one per round of a run: pi answers a repeat of it from its submission, so a turn
+ *  asked again on a later claim is never asked of the model twice. A run's first end is round 1; an end after a follow-up
+ *  opened the run again is the next round, whose turn is asked of the model anew under an id of its own. The server's own
+ *  prefix, so the run's readers tell the turn's rows apart by it (reflectRanges). */
+export const reflectRequestId = (runId: string, again = false, round = 1) => `${REFLECT_PREFIX}${runId}${round > 1 ? `${REFLECT_ROUND}${round}` : ""}${again ? REFLECT_AGAIN : ""}`;
+/** The suffix of the end-of-run turn's re-ask's request id (EndOfRunTurn ask's `again`): one per round too, so a repeat
  *  is answered from its submission, never asked of the model twice. */
 export const REFLECT_AGAIN = ":again";
+/** What names a later round in the end-of-run turn's request id, before its number. */
+const REFLECT_ROUND = ":round-";
 
-/** Where the end-of-run turn began in a run's journal: the entry its input placed, from the input submission under the
- *  turn's request id; else, on a CLI harness, the turn's prompt the CLI record wrote as it asked the turn (`entries`:
- *  adapter-loop.ts asking, an end-of-run-turn entry of the person's, written before the turn's submission, which only
- *  its answer writes). Undefined before either, or for a run that asked none. Every entry from it on, until the run's
- *  end, is the turn's (the server's labelled: after the entry before it). */
-export function reflectFrom(submissions: readonly { readonly type?: string; readonly requestId?: string; readonly entry?: unknown }[], entries: readonly { readonly kind?: string; readonly id?: unknown; readonly data?: unknown }[] = []): number | undefined {
-  const placed = submissions.filter((record) => record.type === "input" && typeof record.requestId === "string" && record.requestId.startsWith(REFLECT_PREFIX) && record.entry !== undefined);
-  if (placed.length) return Math.min(...placed.map((record) => Number(record.entry)));
-  const asked = entries.find((entry) => entry.kind === KINDS.endOfRunTurn && (entry.data as { role?: unknown } | null | undefined)?.role === "person");
-  return asked === undefined ? undefined : Number(asked.id);
+/** One round of a run's end-of-run turn in its journal: `from`, the entry its input placed (the turn's first); `until`, the
+ *  run's end entry that closed it, once written. Every entry between is the turn's. */
+export type ReflectRange = { readonly from: number; readonly until?: number };
+
+/** Each round of the end-of-run turn in a run's journal, oldest first: each begins at the entry its input placed, from the
+ *  input submissions under its request ids (its re-ask's within it); else, on a CLI harness, at the turn's prompt the CLI
+ *  record wrote as it asked it (`entries`: adapter-loop.ts answering, an end-of-run-turn entry of the person's with its
+ *  request id, written before the turn's submission, which only its answer writes). Each ends at the first end entry
+ *  after it (the run's end that round closed with); the newest may not have ended yet. None for a run that asked none.
+ *  A follow-up's messages, between one round's end and the next round, are no round's. */
+export function reflectRanges(submissions: readonly { readonly type?: string; readonly requestId?: string; readonly entry?: unknown }[], entries: readonly { readonly kind?: string; readonly id?: unknown; readonly data?: unknown }[] = []): ReflectRange[] {
+  const starts = new Map<string, number>();
+  const note = (requestId: string, entry: number) => {
+    if (!Number.isFinite(entry)) return;
+    const round = requestId.endsWith(REFLECT_AGAIN) ? requestId.slice(0, -REFLECT_AGAIN.length) : requestId;
+    starts.set(round, Math.min(starts.get(round) ?? entry, entry));
+  };
+  for (const record of submissions) {
+    if (record.type === "input" && typeof record.requestId === "string" && record.requestId.startsWith(REFLECT_PREFIX) && record.entry !== undefined) note(record.requestId, Number(record.entry));
+  }
+  for (const entry of entries) {
+    const data = entry.data as { role?: unknown; requestId?: unknown } | null | undefined;
+    if (entry.kind === KINDS.endOfRunTurn && data?.role === "person" && typeof data.requestId === "string" && data.requestId.startsWith(REFLECT_PREFIX)) note(data.requestId, Number(entry.id));
+  }
+  const ends = entries.filter((entry) => entry.kind === KINDS.end).map((entry) => Number(entry.id)).sort((a, b) => a - b);
+  return [...starts.values()].sort((a, b) => a - b).map((from) => {
+    const until = ends.find((end) => end >= from);
+    return until === undefined ? { from } : { from, until };
+  });
 }
+
+/** Whether entry `entry` (a number) is one of `ranges`' end-of-run turns. */
+export const inReflect = (ranges: readonly ReflectRange[], entry: number): boolean => ranges.some(({ from, until }) => entry >= from && (until === undefined || entry <= until));
 
 /** The refusal of the end-of-run turn's write or edit under work/.learning/: the tool gate's one text (NOTE_ONLY_TEXT), so
  *  the adapter loop's refusal and the gate's are the same words. */

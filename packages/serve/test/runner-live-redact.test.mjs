@@ -120,7 +120,7 @@ test("a real pi run's running bash streaming a held secret: its live row (and so
     rmSync(dir, { recursive: true, force: true });
   });
   await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Run it.", tools: ["bash"] } });
-  await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "Go." }, title: "t", place: { mode: "runner" }, harness: "pi", model: { provider: "anthropic", modelId: "claude-sonnet-4-5" } } });
+  await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "Go." }, title: "t", place: { mode: "runner" }, harness: "pi", model: { provider: "anthropic", modelId: "claude-sonnet-5-5" } } });
   const folder = runFolder(dir, "agent-1", "run-1");
   mkdirSync(folder, { recursive: true });
   // Past the secret it prints more than the tail the live view holds back (fixtures/live-tail.mjs, the secret now in the
