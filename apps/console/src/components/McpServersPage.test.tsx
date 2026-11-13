@@ -416,6 +416,15 @@ describe("Settings → MCP servers, GitHub App", () => {
     expect(p.text()).toContain("GitHub is not connected on this server.");
     expect(p.text()).toContain("Settings → GitHub");
   });
+
+  it("keeps the server's own words when the App is connected but has no repository", async () => {
+    const why = "The GitHub App is installed but no repository is selected: add one in the installation's settings on GitHub.";
+    const s = server([[]], (c) => (c.path.endsWith("/preview") ? refusal(409, "github_not_connected", why) : undefined));
+    const p = await open(s.v2, { add: { name: "github", auth: "github_app" } });
+    await p.click(/^Preview$/);
+    expect(p.text()).toContain(why);
+    expect(p.text()).toContain("Settings → GitHub");
+  });
 });
 
 describe("Settings → MCP servers, back from a sign-in", () => {

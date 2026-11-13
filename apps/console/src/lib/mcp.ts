@@ -84,7 +84,7 @@ export function mcpProblem(e: unknown): { text: string; detail?: string; signIn?
   if (!(e instanceof ClientError)) return { text: `The request didn't reach this server: ${e instanceof Error ? e.message : String(e)}` };
   const redirect = e.fields?.find((f) => f.field === "url" && f.reason === "redirect");
   if (e.code === "auth_required") return e.details?.auth === "oauth" ? { text: "This server signs in with OAuth.", detail: "Sign in to it: its tools are saved once you approve.", signIn: true } : { text: "This server asks for a token.", detail: e.message };
-  if (e.code === "github_not_connected") return { text: "GitHub is not connected on this server.", detail: "A GitHub App server runs on this server's GitHub App: connect GitHub in Settings → GitHub, then try again." };
+  if (e.code === "github_not_connected") return { text: "GitHub is not connected on this server.", detail: `${e.message} A GitHub App server runs on this server's GitHub App: connect GitHub, or add a repository to its installation, in Settings → GitHub, then try again.` };
   if (e.code === "not_mcp")return { text: "This address doesn't speak MCP.", detail: e.message };
   if (redirect) return { text: "This address redirects; use the final address.", detail: redirect.message };
   if (e.status === 424) return { text: `The server failed: ${e.message}` };
