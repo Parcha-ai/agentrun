@@ -178,9 +178,13 @@ def osa(c, script, *argv):
 
 
 def can_automate(c, ask=False):
-    """Each app's Automation answer for Computerd: granted, denied, unasked or not running."""
-    words = exec_run(c, ["/usr/bin/swift", os.path.join(here, "can-automate.swift")] + (["--ask"] if ask else []) + list(APPS), 180000)
-    return dict(line.split(" ", 1) for line in words.splitlines() if " " in line)
+    """Computerd's grants the sandbox needs, by what they are for: granted, denied, unasked, not running. Automation of
+    each app, and Calendars (Privacy & Security > Calendars), since Calendar's AppleScript reads the store for the
+    process that sent the event: without it the snapshot waited on Calendar with no answer."""
+    words = exec_run(c, ["/usr/bin/swift", os.path.join(here, "can-automate.swift")] + (["--ask"] if ask else []) + list(APPS), 600000)
+    names = dict(APPS, calendars="calendar data")
+    pairs = (line.split(" ", 1) for line in words.splitlines() if " " in line)
+    return {(f"Automation of {names[k]}" if k in APPS else names.get(k, k)): v for k, v in pairs}
 
 
 # The onscreen windows of every app, by id, through CoreGraphics from JavaScript for Automation's bridge: no Apple event,
@@ -295,8 +299,9 @@ REMOVE_FOLDERS = """on run argv
   return ""
 end run"""
 
-# The windows and tabs on the sandbox's files: Safari's tabs by their address, Finder's windows by their folder,
-# TextEdit's documents by their path, each closed without saving. An app that is not running has none.
+# The windows and tabs on the sandbox's files: Safari's tabs by their address, Finder's windows by their folder's name
+# (a sandbox's own name) or path, TextEdit's documents by their path, each closed without saving. An app that is not
+# running has none.
 CLOSE_WINDOWS = """on run argv
   set root to item 1 of argv
   set url_root to "file://" & root
@@ -314,7 +319,11 @@ CLOSE_WINDOWS = """on run argv
       end repeat
     end tell
   end if
+  set name_prefix to item 2 of argv
   tell application "Finder"
+    repeat with w in (every Finder window whose name starts with name_prefix)
+      close w
+    end repeat
     repeat with w in Finder windows
       try
         if POSIX path of (target of w as alias) starts with root then close w
@@ -414,7 +423,7 @@ def sweep(c):
     # A killed calendar task's event may still be in the default calendar: its title is known from the run id in the
     # name of the calendar the task made first.
     runs = sorted({n[len(PREFIX):len(PREFIX) + 6] for n in shot["calendars"] if n.startswith(PREFIX)})
-    osa(c, CLOSE_WINDOWS, ROOT)
+    osa(c, CLOSE_WINDOWS, ROOT, PREFIX)
     osa(c, REMOVE_CALENDARS, PREFIX, *[event_title(r) for r in runs])
     osa(c, REMOVE_FOLDERS, PREFIX)
     shutil.rmtree(ROOT, ignore_errors=True)
@@ -891,6 +900,16 @@ def close_inspector(c, t):
     raise Failed("the event's inspector is still open after escape")
 
 
+def remove_files():
+    """The task's folders under the root, then the root once nothing else is in it. The root is the run's (the sweep
+    removed any earlier one), so the .DS_Store Finder writes there goes with it."""
+    for n in os.listdir(ROOT) if os.path.isdir(ROOT) else []:
+        if n.startswith(NAME):
+            shutil.rmtree(os.path.join(ROOT, n))
+    if os.path.isdir(ROOT) and set(os.listdir(ROOT)) <= {".DS_Store"}:
+        shutil.rmtree(ROOT)
+
+
 def teardown(t):
     """The task's sandbox, removed by plain scripting on a connection of its own (the task's may be stuck in a call):
     the windows and tabs on its files, its calendar, its Notes folder and their notes, its files. Each part runs even
@@ -900,10 +919,10 @@ def teardown(t):
     try:
         parts = [("close the event's inspector", lambda: close_inspector(c, t))] if t.inspector else []
         parts += [
-            ("close the windows and tabs on the task's files", lambda: osa(c, CLOSE_WINDOWS, ROOT)),
+            ("close the windows and tabs on the task's files", lambda: osa(c, CLOSE_WINDOWS, ROOT, NAME)),
             ("delete the task's calendar and its events", lambda: osa(c, REMOVE_CALENDARS, NAME, event_title(RUN))),
             ("delete the task's Notes folder and its notes", lambda: osa(c, REMOVE_FOLDERS, NAME)),
-            ("delete the task's files", lambda: [shutil.rmtree(f"{ROOT}/{n}") for n in (os.listdir(ROOT) if os.path.isdir(ROOT) else []) if n.startswith(NAME)]),
+            ("delete the task's files", remove_files),
         ]
         for words, part in parts:
             t.say(f"teardown: {words}")
@@ -911,8 +930,6 @@ def teardown(t):
                 part()
             except Exception as e:
                 failed.append(f"{words}: {e}")
-        if os.path.isdir(ROOT) and not os.listdir(ROOT):
-            os.rmdir(ROOT)
     finally:
         c.close()
     return failed
@@ -981,16 +998,16 @@ def main():
             c.call("apps.launch", {"id": app, "background": True})
         if "--ask-grants" in flags:
             for app, words in can_automate(c, ask=True).items():
-                print(f"Automation, Computerd > {APPS.get(app, app)}: {words}")
+                print(f"Computerd, {app}: {words}")
             sys.exit(0)
         answers = can_automate(c)
-        print("Automation: " + ", ".join(f"{APPS.get(app, app)} {words}" for app, words in answers.items()), flush=True)
-        missing = {app: words for app, words in answers.items() if words != "granted"}
+        print("grants: " + ", ".join(f"{what} {words}" for what, words in answers.items()), flush=True)
+        missing = {what: words for what, words in answers.items() if words != "granted"}
         if missing:
-            names = ", ".join(f"{APPS.get(app, app)} ({words})" for app, words in missing.items())
-            sys.exit(f"Computerd has no Automation grant for: {names}. The sandbox is made and removed by AppleScript: run "
-                     "this again with --ask-grants while a person is at the Mac to answer the prompts (System Settings > "
-                     "Privacy & Security > Automation > Computerd lists them after).")
+            names = ", ".join(f"{what} ({words})" for what, words in missing.items())
+            sys.exit(f"Computerd lacks grants the sandbox needs: {names}. The sandbox is made and removed by AppleScript: "
+                     "run this again with --ask-grants while a person is at the Mac to answer the prompts (System Settings > "
+                     "Privacy & Security > Automation and > Calendars list them after).")
 
         if os.path.isdir(out):
             shutil.rmtree(out)
