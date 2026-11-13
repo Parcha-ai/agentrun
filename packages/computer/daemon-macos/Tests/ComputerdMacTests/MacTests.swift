@@ -140,22 +140,19 @@ final class MacTests: XCTestCase {
 		XCTAssertTrue(list.apps.contains { $0.id == "com.apple.finder" }, "\(list.apps.map(\.id))")
 	}
 
-	func testAPersonsInputIsKeptAtWhenItHappened() {
+	func testAPersonsInputIsWhatComputerdDidNotPost() {
 		let watch = PersonWatch(watching: false)
 		let clock = SystemClock()
 		// Computerd's own events are not a person's.
-		watch.record(source: Int64(getpid()), stamp: 100, uptime: 100)
+		watch.record(source: Int64(getpid()))
 		XCTAssertNil(watch.lastInput())
-		// An event the monitor got 0.5 s after it happened counts from when it happened.
+		// Anyone else's are, at when the monitor saw them.
 		let before = clock.now()
-		watch.record(source: 1, stamp: 99.5, uptime: 100)
-		let after = clock.now()
+		watch.record(source: 1)
 		let kept = watch.lastInput()!
-		XCTAssertGreaterThanOrEqual(kept, before - 500)
-		XCTAssertLessThanOrEqual(kept, after - 500)
-		// An older event that arrives later leaves the newer time in place.
-		watch.record(source: 1, stamp: 98, uptime: 100)
-		XCTAssertEqual(watch.lastInput(), kept)
+		XCTAssertGreaterThanOrEqual(kept, before)
+		XCTAssertLessThanOrEqual(kept, clock.now())
+		// A modifier pressed on its own is the keyboard too.
 		XCTAssertTrue(PersonWatch.kinds.contains(.flagsChanged))
 	}
 }

@@ -27,7 +27,7 @@ final class PersonWatch: PersonInput, @unchecked Sendable {
 		guard watching else { return }
 		DispatchQueue.main.async { [self] in
 			let seen: (NSEvent) -> Void = { [self] event in
-				record(source: event.cgEvent?.getIntegerValueField(.eventSourceUnixProcessID), stamp: event.timestamp)
+				record(source: event.cgEvent?.getIntegerValueField(.eventSourceUnixProcessID))
 			}
 			var made: [Any] = []
 			if let global = NSEvent.addGlobalMonitorForEvents(matching: Self.kinds, handler: seen) { made.append(global) }
@@ -39,14 +39,14 @@ final class PersonWatch: PersonInput, @unchecked Sendable {
 		}
 	}
 
-	/// One event, from the process `source` at `stamp` (NSEvent's timestamp, on the clock of systemUptime). Events
-	/// Computerd posts carry its pid as their source (on the mini, every one of its keys did) and are not a person's.
-	/// The time kept is when the event happened, not when the main thread got to it: a key pressed just before an act
-	/// began can reach the monitor after, and must not count as a take-over of that act.
-	func record(source: Int64?, stamp: TimeInterval, uptime: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+	/// One event, from the process `source`. Events Computerd posts carry its pid as their source (on the mini, every one
+	/// of its keys did) and are not a person's. The time kept is when the monitor saw it, not the event's timestamp:
+	/// posted events (a remote screen's, a test's) can carry 0 there, which would date them before any act. A key
+	/// pressed just before an act began and seen just after stops that act: someone is at the keyboard.
+	func record(source: Int64?) {
 		if source == me { return }
-		let at = clock.now() - max(0, uptime - stamp) * 1000
-		lock.withLock { last = max(last ?? at, at) }
+		let now = clock.now()
+		lock.withLock { last = now }
 	}
 
 	func lastInput() -> Double? { lock.withLock { last } }
