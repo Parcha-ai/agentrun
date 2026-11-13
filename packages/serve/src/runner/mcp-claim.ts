@@ -277,7 +277,9 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
     const end = set.expires_at ? Date.parse(set.expires_at) : Date.parse(set.obtained_at) + UNKNOWN_EXPIRY_MS;
     const left = (): number => (row.tokenLeftMs === null ? end - now() : row.tokenLeftMs - (now() - readAt));
     // The token's end as the store stamped it, for the per-call check: another claim's refresh moves it (stamp.tokenUntil).
-    const until = (await store.mcp.stamp(name))?.tokenUntil ?? null;
+    // Read with the sealed set in the one row (never a second query): a refresh between two reads would pair the old token
+    // with the new token's end, and the old one would be sent past its expiry.
+    const until = row.tokenUntil;
     stamps.set(name, { url: row.url, auth: row.auth, changedAt: row.credentialChangedAt, end: readAt + left(), until });
     if (left() > REFRESH_MARGIN_MS) return entry({ headers: bearer(set) }), { awaited: false };
     // Another claim's refresh left this row and it is still due: never refreshed from here once more.

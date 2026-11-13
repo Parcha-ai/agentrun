@@ -215,7 +215,7 @@ function ServerForm({ v2, saved, writable, signIn, onCancel, onSaved }: { v2: Cl
     const asked = edits.current;
     void act(async () => {
       try {
-        const answer = await v2.previewMcpServer(url.trim(), auth());
+        const answer = await v2.previewMcpServer(url.trim(), auth(), saved?.name);
         if (asked === edits.current) setPreview(answer);
       } catch (e) { if (asked === edits.current) throw e; }
     });

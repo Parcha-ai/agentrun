@@ -73,6 +73,21 @@ test("a replayed callback is refused in the words: the state is single-use", asy
   await assert.rejects(() => r.oauthCallback(query), (e) => e.code === "bad_request" && /used already/.test(e.message), "the same callback again is refused");
 });
 
+test("a preview of an edit that leaves the shown address as it is reaches the saved endpoint, and never answers the real address", async (t) => {
+  const { reg } = await signIns(t);
+  const mcp = await startFakeMcp();
+  t.after(() => mcp.close());
+  const r = reg();
+  const saved = await r.save("docs", { url: mcp.url, auth: { type: "none" } });
+  assert.notEqual(saved.url, mcp.url, "the view shows the masked address");
+  mcp.log.length = 0;
+  // The console's edit form sends back what it was shown, with the name of the server it edits.
+  const listed = await r.preview({ name: "docs", url: saved.url, auth: { type: "none" } });
+  assert.ok(listed.tools.length > 0, "the saved endpoint listed its tools");
+  assert.ok(mcp.log.some((entry) => entry.path === "/mcp"), `the saved endpoint was reached: ${JSON.stringify(mcp.log)}`);
+  assert.ok(!JSON.stringify(listed).includes(mcp.url), "the real address is not in the answer");
+});
+
 test("a sign-in survives a restart mid-flight: a fresh registry on the same store finishes the callback", async (t) => {
   const { mcp, reg } = await signIns(t);
   const started = await reg().oauthStart("docs", { url: mcp.url }); // one registry (a process) starts the sign-in

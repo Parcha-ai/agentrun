@@ -175,3 +175,33 @@ test("a row another claim's refresh left, its new token near its end but valid o
   assert.equal(net.fetches, 1, "one refresh in all: B never refreshed the row A left");
   assert.equal(bearer(stepB), `Bearer ${FRESH}`, `B uses the set A left: ${JSON.stringify(stepB.credentials.fake)}`);
 });
+
+test("a refresh that lands between a run's read of the credential and of its token's end never leaves it sending the expired token", async (t) => {
+  // The credential and its end are one row snapshot: another claim's refresh landing right after this run read the row must
+  // not pair the old token with the new token's end. The run's next call sees the row moved and opens the new token.
+  const { store, claim } = await setUp(t, 30 * MINUTE);
+  const old = await store.mcp.server("fake");
+  const fresh = { ...setOf(60 * MINUTE), tokens: { access_token: FRESH, token_type: "Bearer", refresh_token: `not-a-secret-${"refresh-2"}` } };
+  let landed = false;
+  const mcp = new Proxy(store.mcp, {
+    get(target, key) {
+      const value = Reflect.get(target, key, target);
+      if (key !== "server") return typeof value === "function" ? value.bind(target) : value;
+      return async (...args) => {
+        const row = await value.apply(target, args);
+        // The other claim's refresh lands once this run has read the row, before anything else it reads.
+        if (!landed && args[0] === "fake") {
+          landed = true;
+          const kept = await target.keepRefreshed("fake", { seen: old.sealed, sealed: sealMcpCredential(KEY, "fake", { type: "oauth", set: fresh }, MCP_URL), holder: "other@1", tokenLeftMs: 60 * MINUTE });
+          assert.equal(kept.kept, true, "the interleaved refresh was kept");
+        }
+        return row;
+      };
+    },
+  });
+  const step = await stepOf({ where: store.where, mcp, runs: store.runs, settings: store.settings }, claim, 0, { network: network({ answer: "never" }) });
+  t.after(() => step.release());
+  assert.equal(landed, true, "the refresh landed between the run's reads");
+  await step.beforeCall("fake", new AbortController().signal);
+  assert.equal(bearer(step), `Bearer ${FRESH}`, `the run's next call uses the new token, never the one it held: ${JSON.stringify(step.credentials.fake)}`);
+});

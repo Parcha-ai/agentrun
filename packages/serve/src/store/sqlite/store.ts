@@ -152,6 +152,7 @@ const mcpServerOf = (r: McpServerRecord, at: number = Number((r as McpServerReco
   sealed: r.sealed === null ? null : Uint8Array.from(r.sealed), refreshHolder: r.refresh_holder, refreshUntil: r.refresh_until,
   refreshLapsed: r.refresh_until !== null && r.refresh_until < at,
   tokenLeftMs: r.token_until === null ? null : r.token_until - at,
+  tokenUntil: r.token_until === null ? null : Number(r.token_until),
   createdAt: r.created_at, updatedAt: r.updated_at, listedAt: r.listed_at, credentialChangedAt: r.credential_changed_at,
 });
 const mcpPinOf = (r: McpPinRecord): McpPinRow => ({ runId: r.run_id, body: JSON.parse(r.body), pinnedAt: r.pinned_at });

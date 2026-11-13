@@ -173,7 +173,11 @@ export class McpServersOverStore {
       const send = await this.reached(kept.auth, url, stop);
       return marked(kept.url, await this.listServer(url, await this.withAppToken(kept.auth, url, (await this.opened(name, kept, "name")).headers, stop), send, stop));
     }
-    const { url, auth } = this.admit(body);
+    // `name` with a url: the saved server the form is editing. Its address as every read shows it (shownUrl), sent back
+    // unchanged, is the saved one here too (as save and sign-in map it): the browser never gets the real address back.
+    const { name: editing, ...asked } = body;
+    const saved = editing === undefined ? undefined : await this.store.mcp.server(String(editing));
+    const { url, auth } = this.admit({ ...asked, ...(asked.url !== undefined ? { url: savedOrGiven(asked.url, saved?.url) } : {}) });
     // A github_app server's credential is a token of the App, minted here, as for a saved one: its static headers are optional.
     // A per_run server's are optional too: they only list its tools, for a server that lists them only to a caller it knows.
     if (auth.type !== "none" && auth.type !== "github_app" && auth.type !== "per_run" && !auth.headers) throw invalid([credentialMissing(auth.type, "A preview needs the credential it is to connect with.")]);

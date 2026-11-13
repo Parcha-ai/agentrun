@@ -639,6 +639,9 @@ export interface McpServerRow {
    *  never by its own clock against the set's expires_at, which the writer stamped on its clock. Null when the writer
    *  gave no measure of the token's life. */
   readonly tokenLeftMs: number | null;
+  /** The token's end as the store stamped it (token_until), read in the same snapshot as `sealed`: the end of the very
+   *  token the sealed set holds. A refresh by any claim moves it. Null as tokenLeftMs. */
+  readonly tokenUntil: number | null;
   readonly createdAt: number;
   readonly updatedAt: number;
   /** When the tools were last listed (ms): a refresh moves this, not updatedAt, so a refresh is not read as an owner edit.
