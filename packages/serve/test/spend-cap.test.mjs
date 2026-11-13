@@ -101,9 +101,7 @@ const GROUPS = ["meter", "agent", "key", "day", "region"];
 /** /usage for every grouping: its total and each line's usd. */
 const usages = async (api) => Promise.all(GROUPS.map(async (group) => (await api("GET", `/usage?group_by=${group}`)).body));
 
-// SKIP (follow-up #2080): a pi run's end reads its cost from its root's answers, so a request a cancel cut mid-answer (booked
-// unknown in its model session) ends at $0; waits on #2487's nullable end cost and #2486's pi end cost
-test.skip("a run cancelled while its request answers costs unknown (the request may have been billed), and /usage stays priced with the runs it knows", async (t) => {
+test("a run cancelled while its request answers costs unknown (the request may have been billed), and /usage stays priced with the runs it knows", async (t) => {
   const { api, data } = await serve(t, { faux: OUTPUT_PRICED });
   const paid = await ended(api, (await start(api, "paid", "What is six times seven?")).run_id);
   assert.ok(paid.cost.usd > 0);
