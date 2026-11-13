@@ -18,7 +18,7 @@ import { randomUUID } from "node:crypto";
 import { localWorkspace, type Workspace, workspaceErrorWords } from "./workspace/index.js";
 import type { TSchema } from "typebox";
 import { defineExtension, defineTool, ROOT_CONVERSATION_ID, type ToolExecutionApi, type ToolRegistration } from "@earendil-works/pi-durable";
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { registerLabel, TOOL_COST } from "./timeline/index.js";
 import { paidCall } from "./cap.js";
 import { wireName } from "./catalog.js";

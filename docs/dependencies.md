@@ -23,7 +23,7 @@ Read from the packages' own source, their manifests declaring no license: `openc
 
 AgentRun's own license is declared in its package manifests, separately from this third-party inventory. This table records package metadata, not an approval to redistribute. The release owner must confirm source rights, inspect applicable license texts, and preserve required notices.
 
-Optional peer/dependency names absent from this lockfile: `encoding`, `bufferutil`, `utf-8-validate`, `kerberos`, `@smithy/hash-node`, `@cfworker/json-schema`, `pg-native`. These are not counted as inventoried packages; adding them requires regenerating this inventory.
+Optional peer/dependency names absent from this lockfile: `encoding`, `react`, `bufferutil`, `utf-8-validate`, `kerberos`, `@smithy/hash-node`, `@cfworker/json-schema`, `pg-native`. These are not counted as inventoried packages; adding them requires regenerating this inventory.
 
 ## Locked packages
 
@@ -63,16 +63,16 @@ Optional peer/dependency names absent from this lockfile: `encoding`, `bufferuti
 | @babel/runtime | 7.29.7 | MIT | agentrun, pi-browser, run-adapters-claude-agent, serve | no | 1 |
 | @browserbasehq/sdk | 2.21.0 | Apache-2.0 | agentrun, pi-browser, serve | no | 1 |
 | @browserbasehq/stagehand | 4.4.0 | MIT | agentrun, pi-browser, serve | no | 1 |
-| @earendil-works/chord | 1.5.0 | MIT | agentrun, pi-browser, serve | no | 1 |
-| @earendil-works/pi-agent-core | 1.5.0 | MIT | agentrun, serve | no | 1 |
-| @earendil-works/pi-ai | 1.5.0 | MIT | agentrun, pi-browser, serve | no | 1 |
-| @earendil-works/pi-codemode | 1.5.0 | MIT | agentrun, pi-browser, serve | no | 1 |
-| @earendil-works/pi-coding-agent | 1.5.0 | MIT | agentrun, serve | no | 1 |
-| @earendil-works/pi-durable | 1.5.0 | MIT | agentrun, pi-browser, serve | no | 1 |
-| @earendil-works/pi-mcp | 1.5.0 | MIT | agentrun, serve | no | 1 |
-| @earendil-works/pi-schema | 1.5.0 | MIT | agentrun, pi-browser, serve | no | 1 |
-| @earendil-works/pi-telemetry | 1.5.0 | MIT | agentrun, pi-browser, serve | no | 1 |
-| @earendil-works/pi-tui | 1.5.0 | MIT | agentrun, serve | no | 1 |
+| @earendil-works/chord | 1.5.2 | MIT | agentrun, pi-browser, serve | no | 1 |
+| @earendil-works/pi-agent-core | 1.5.2 | MIT | agentrun, serve | no | 1 |
+| @earendil-works/pi-ai | 1.5.2 | MIT | agentrun, pi-browser, serve | no | 1 |
+| @earendil-works/pi-codemode | 1.5.2 | MIT | agentrun, pi-browser, serve | no | 1 |
+| @earendil-works/pi-coding-agent | 1.5.2 | MIT | agentrun, serve | no | 1 |
+| @earendil-works/pi-durable | 1.5.2 | MIT | agentrun, pi-browser, serve | no | 1 |
+| @earendil-works/pi-mcp | 1.5.2 | MIT | agentrun, serve | no | 1 |
+| @earendil-works/pi-schema | 1.5.2 | MIT | agentrun, pi-browser, serve | no | 1 |
+| @earendil-works/pi-telemetry | 1.5.2 | MIT | agentrun, pi-browser, serve | no | 1 |
+| @earendil-works/pi-tui | 1.5.2 | MIT | agentrun, serve | no | 1 |
 | @google/genai | 2.21.0 | Apache-2.0 | agentrun, pi-browser, serve | no | 1 |
 | @hono/node-server | 2.1.5 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
 | @isaacs/nonrecursive-glob-match | 1.1.0 | BlueOak-1.0.0 | agentrun, serve | no | 1 |
@@ -197,7 +197,6 @@ Optional peer/dependency names absent from this lockfile: `encoding`, `bufferuti
 | google-logging-utils | 1.1.3 | Apache-2.0 | agentrun, pi-browser, serve | no | 1 |
 | gopd | 1.2.0 | MIT | agentrun, client, pi-browser, run-adapters-claude-agent, serve | no | 1 |
 | graceful-fs | 4.2.11 | ISC | agentrun, serve | no | 1 |
-| grok-mermaid | 0.2.3 | Apache-2.0 | agentrun, serve | no | 1 |
 | has-symbols | 1.1.0 | MIT | agentrun, client, pi-browser, run-adapters-claude-agent, serve | no | 1 |
 | has-tostringtag | 1.0.2 | MIT | agentrun, pi-browser, serve | no | 1 |
 | hasown | 2.0.4 | MIT | agentrun, client, pi-browser, run-adapters-claude-agent, serve | no | 1 |
@@ -227,6 +226,7 @@ Optional peer/dependency names absent from this lockfile: `encoding`, `bufferuti
 | jwa | 2.0.1 | MIT | agentrun, pi-browser, serve | no | 1 |
 | jws | 4.0.1 | MIT | agentrun, pi-browser, serve | no | 1 |
 | long | 5.3.2 | Apache-2.0 | agentrun, pi-browser, serve | no | 1 |
+| lovely-mermaid | 0.3.3 | Apache-2.0 | agentrun, serve | no | 1 |
 | lru-cache | 11.5.3 | BlueOak-1.0.0 | agentrun, serve | no | 1 |
 | marked-cjk-friendly | 0.1.2 | MIT | agentrun, serve | no | 1 |
 | marked | 18.0.11 | MIT | agentrun, serve | no | 1 |

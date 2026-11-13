@@ -4,7 +4,7 @@
 // the host has (the request's size and metering, whether the node acted on the answers), and this module stores and reads
 // rows without looking inside them.
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { defineDoc, defineDocFamily, type DocumentReader, type Harness, type JsonObject } from "@earendil-works/pi-durable";
 
 /** The session document that holds a run's decision rows. */
