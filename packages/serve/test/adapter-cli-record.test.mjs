@@ -124,6 +124,53 @@ test("a call a fault cut off after it ran ends interrupted when the session open
   assert.deepEqual(callsOf(records).map((call) => [call.callId, call.status]), [["call-1", "interrupted"]]);
 });
 
+test("a call's end whose commit the store could not answer, and that landed, is the call's one end: never a second, interrupted, written beside it (Unanswered is outcome unknown)", async (t) => {
+  const { Unanswered } = await import("../dist/store/index.js");
+  const opened = await stores({ runners: 1 });
+  await queue(opened.server, "run-1");
+  const ran = [];
+  const lookup = { name: "lookup", description: "Look it up.", inputSchema: { type: "object" }, replay: "never", call: async (args) => { ran.push(args); return { text: "found" }; } };
+  const inner = createAdapterLoop(() => ({
+    adapter: standInCli("lookup"),
+    session: { key: "root", label: "root", system: [], tools: [lookup], context: "fresh" },
+    input: "Find it.",
+    runCap: { capUsd: () => undefined, modelOf: () => undefined },
+    record: "loop",
+    hooks: quiet,
+    gate: () => "allow",
+  }));
+  // The store's commit of the call's end lands, and its answer is lost: the connection went silent after the COMMIT was sent.
+  let lost = 0;
+  const endsDone = (batches) => batches.some((batch) => batch.some((write) => write.type === "entry" && write.value.kind === KINDS.callEnd && write.value.data.status === "done"));
+  const createLoop = (deps) =>
+    inner({
+      ...deps,
+      journal: (claim) =>
+        new Proxy(deps.journal(claim), {
+          get(target, property) {
+            const value = Reflect.get(target, property, target);
+            if (property !== "commit") return typeof value === "function" ? value.bind(target) : value;
+            return async (batches, ...rest) => {
+              const result = await value.call(target, batches, ...rest);
+              if (endsDone(batches) && lost++ === 0) throw new Unanswered("its commit", 10_000);
+              return result;
+            };
+          },
+        }),
+    });
+  const runner = startRunner({ store: observed(opened.runners[0], recorder()), createLoop, name: "runner-a", ...STEADY });
+  t.after(() => runner.close());
+  const row = await until(async () => {
+    const now = await opened.server.runs.get("run-1");
+    return ["ended", "failed"].includes(now.state) && now.runner === null && now;
+  }, "the run ended and released", 10_000);
+  assert.equal(lost, 1, "the end's answer was lost once");
+  const records = await recordAt(opened.server, row);
+  const ends = records.entries.filter((entry) => entry.kind === KINDS.callEnd && entry.data.callId === "call-1");
+  assert.deepEqual(ends.map((entry) => entry.data.status), ["done"], "the call has the one end that landed");
+  assert.deepEqual(ran, [{ q: "x" }], "ran once");
+});
+
 /** A CLI stand-in whose tool bridge hands the model a refused call's words as its error result, as every CLI adapter's
  *  bridge does (run-adapters' toolBridge): its turn calls `tool` as call-1 through the gate; a deny is the call's result,
  *  never run; a park holds the call until the session closes. Its resume log keeps that the turn was sent: a session opened

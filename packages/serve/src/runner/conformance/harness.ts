@@ -16,7 +16,7 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { AnswerTaken, dropPostgresSchema, openPostgresStore, openStore, RunFinal, type RunRow, type Store, type StoreRole, storeTarget } from "../../store/index.js";
+import { AnswerTaken, dropPostgresSchema, openPostgresStore, openStore, RunFinal, type RunRow, type Store, type StoreRole, storeTarget, Unanswered } from "../../store/index.js";
 import { sendCommand } from "../commands.js";
 import { callsOf, journalRecords, messagesOf, type CallRecord, type MessageRecord } from "../journal-reader.js";
 import { type AnswerData, KINDS, MESSAGE_SENT_AGAIN } from "../journal-kinds.js";
@@ -183,8 +183,21 @@ async function world(subject: ConformanceSubject, t: { after(fn: () => unknown):
     rmSync(dir, { recursive: true, force: true });
     if (target.kind === "postgres") await dropPostgresSchema(target.url, storeEnv.AGENTRUN_STORE_SCHEMA!);
   });
-  await server.agents.create({ id: "agent-1", name: "Conformance" }, { id: "rev-1", kind: "agentic", body: { instructions: "Follow the script." } });
-  await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" });
+  // A setup write the store left unanswered (Unanswered: a stalled box, past the commit's bound) is an unknown outcome,
+  // never a failure: its row is read, and the write made again only when it did not land.
+  const settled = async (write: () => Promise<unknown>, landed: () => Promise<unknown>): Promise<void> => {
+    try {
+      await write();
+    } catch (error) {
+      if (!(error instanceof Unanswered)) throw error;
+      if (!(await landed())) await write();
+    }
+  };
+  await settled(
+    () => server.agents.create({ id: "agent-1", name: "Conformance" }, { id: "rev-1", kind: "agentic", body: { instructions: "Follow the script." } }),
+    () => server.agents.get("agent-1"),
+  );
+  await settled(() => server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }), () => server.runs.get(RUN));
   /** The command rows a runner has handed to a loop's command(): with the loop, whether or not taken yet. */
   const handed = new Set<number>();
   /** Each runner's claims in flight (store.runs.claimMany), by its name: what claimsSettled waits for. */
@@ -267,14 +280,43 @@ async function world(subject: ConformanceSubject, t: { after(fn: () => unknown):
     const answers = entries.entries.filter((entry) => entry.kind === KINDS.answer).map((entry) => entry.data as unknown as AnswerData);
     return { calls: subject.readCalls ? await subject.readCalls(journal, BACKGROUND_CONTEXT) : callsOf(entries), messages: messagesOf(entries), answers };
   };
+  /** A claim whose COMMIT the store left unanswered (Unanswered: it may have landed) holds the run under a lease the case
+   *  made steady (STEADY), so nothing else would take it back: the runner said so (its poll's error), and that claim is run
+   *  out (runOut) as a lost one is, once per such word; the runner then claims the run again. */
+  let ranOut = 0;
+  const runOutUnknown = () => {
+    const unknown = events.filter((event) => /did not answer its commit/.test(String((event as { message?: unknown }).message ?? ""))).length;
+    if (unknown > ranOut) {
+      ranOut = unknown;
+      runOut();
+    }
+  };
   const ended = (state: RunRow["state"], ms = 15_000) =>
     until(async () => {
+      runOutUnknown();
       const row = await run();
       return row.state === state && row.runner === null && row;
     }, `the run ${state} and released`, ms).catch(async (error: Error) => {
       const row = await run();
       throw new Error(`${error.message}; the run is ${row.state} (runner ${row.runner}, epoch ${row.epoch}); the runners said ${JSON.stringify(events)}`);
     });
+  /** Waits for `started` (a tool's first call, the event this case's next step needs), bounded by EVENT_WAIT_MS and naming
+   *  what never came, with the run and what the runners said. It waits on the real signal, never a bare await: a run that
+   *  ended without it, or a claim that never reached the tool, fails the case at once, not at the case's 180 s bound.
+   *  An unanswered claim is run out while it waits (runOutUnknown). */
+  const began = async (started: Promise<void>, what: string, ms = EVENT_WAIT_MS): Promise<void> => {
+    let done = false;
+    void started.then(() => (done = true));
+    await until(async () => {
+      if (done) return true;
+      runOutUnknown();
+      const row = await run();
+      if (["ended", "failed", "stopped"].includes(row.state)) throw new Error(`the run ${row.state} before ${what}`);
+      return false;
+    }, what, ms).catch((error: Error) => {
+      throw new Error(`${error.message}; the runners said ${JSON.stringify(events)}`);
+    });
+  };
   /** The run's timeline as its live view shows it: every stored commit through the live translate (live/translate.ts),
    *  its events through the timeline's own reducer, as the console reads them. */
   const liveRows = async (): Promise<TimelineEvent[]> => {
@@ -299,7 +341,7 @@ async function world(subject: ConformanceSubject, t: { after(fn: () => unknown):
     assert.ok(ask, "the run wrote its ask");
     return String((ask.data as { callId?: unknown }).callId);
   };
-  return { dir, storeUrl: url, storeEnv, clockFile, runOut, claimsSettled, server, start, run, read, ended, commandRow, askedCall, events, handedOver: (id: number) => handed.has(id), liveRows };
+  return { dir, storeUrl: url, storeEnv, clockFile, runOut, claimsSettled, server, start, run, read, ended, began, commandRow, askedCall, events, handedOver: (id: number) => handed.has(id), liveRows };
 }
 
 interface Case {
@@ -629,7 +671,7 @@ const CASES: readonly Case[] = [
       const w = await world(subject, t);
       const { tools, letSlowGo, slowStarted } = suiteTools();
       await w.start("runner-a", { script: [{ call: "slow" }, { sayLastSteer: true }], tools, hooks: quiet });
-      await slowStarted;
+      await w.began(slowStarted, "the slow tool to start");
       const steer = await sendCommand(w.server, RUN, { kind: "steer", body: { text: "check the totals" } });
       // One command poll and then some: the steer reaches the loop while the tool runs.
       await sleep(TIMING.commandPollMs * 4);
@@ -662,7 +704,7 @@ const CASES: readonly Case[] = [
       // sent as a turn of its own, that message (the last the person sent).
       const script: ScriptStep[] = [{ call: "slow" }, { sayLastSteer: true }, ...(steers ? [] : texts.map((): ScriptStep => ({ sayLastSteer: true })))];
       await w.start("runner-a", { script, tools, hooks: quiet });
-      await slowStarted;
+      await w.began(slowStarted, "the slow tool to start");
       const rows: { id: number }[] = [];
       for (const text of texts) rows.push(await sendCommand(w.server, RUN, { kind: "steer", body: { text } }));
       // The tool goes on once every message is with the loop: the turn in flight has them, never a timer.
@@ -698,7 +740,7 @@ const CASES: readonly Case[] = [
       const script: ScriptStep[] = [{ call: "slow" }, { sayLastSteer: true }, { sayLastSteer: true }, { sayLastSteer: true }];
       const holder: { runner?: Runner; crashed?: boolean } = {};
       await w.start("runner-a", { script, tools, hooks: crashAt("afterMessageSent", holder) }, holder);
-      await slowStarted;
+      await w.began(slowStarted, "the slow tool to start");
       const row = await sendCommand(w.server, RUN, { kind: "steer", body: { text } });
       await until(() => w.handedOver(row.id), "the message handed to the loop mid-turn");
       letSlowGo();
@@ -733,7 +775,7 @@ const CASES: readonly Case[] = [
       const w = await world(subject, t);
       const { tools, slowStarted } = suiteTools();
       await w.start("runner-a", { script: [{ call: "slow" }, { say: "never" }], tools, hooks: quiet });
-      await slowStarted;
+      await w.began(slowStarted, "the slow tool to start");
       const stop = await sendCommand(w.server, RUN, { kind: "stop" });
       const row = await w.ended("stopped");
       const { calls, messages } = await w.read();
@@ -761,7 +803,7 @@ const CASES: readonly Case[] = [
       const w = await world(subject, t);
       const { tools, slowStarted } = suiteTools();
       await w.start("runner-a", { script: [{ call: "slow" }, { say: "never" }], tools, hooks: quiet });
-      await slowStarted;
+      await w.began(slowStarted, "the slow tool to start");
       const cancel = await sendCommand(w.server, RUN, { kind: "cancel" });
       const row = await w.ended("stopped");
       const { calls, messages } = await w.read();
@@ -826,7 +868,7 @@ const CASES: readonly Case[] = [
       const w = await world(subject, t);
       const { tools, letSlowGo, slowStarted } = suiteTools();
       await w.start("runner-a", { script: [{ call: "slow" }, { sayLastSteer: true }], tools, hooks: quiet });
-      await slowStarted;
+      await w.began(slowStarted, "the slow tool to start");
       const origin = { kind: "trigger", trigger_id: "trigger-1", source: "webhook", owner: false };
       const steer = await sendCommand(w.server, RUN, { kind: "steer", body: { text: "a new order came in", origin } });
       // The tool goes on once the steer is with the loop: the turn in flight has it, never a timer.
