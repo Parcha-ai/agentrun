@@ -12,7 +12,7 @@ describe("model labels", () => {
     expect(modelLabel("anthropic/claude-x", undefined)).toEqual({ text: "anthropic/claude-x" });
   });
   it("leaves a provider's own id, and any id when the models do not come from a gateway, whole", () => {
-    expect(modelLabel("openai/gpt-5", "agent-model")).toEqual({ text: "openai/gpt-5" });
+    expect(modelLabel("openai/gpt-6.1-sol", "agent-model")).toEqual({ text: "openai/gpt-6.1-sol" });
     expect(modelLabel("faux/faux-1", null)).toEqual({ text: "faux/faux-1" });
   });
   it("takes each harness's default from the server (harnesses[].default_model), none where it says null", () => {

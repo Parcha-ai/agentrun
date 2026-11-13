@@ -53,7 +53,8 @@ export async function startFakeMcp({ era = "modern", token, oauth = false, port 
       res.writeHead(200, { "content-type": "application/json" });
       return void res.end(JSON.stringify({ resource: `${base}/mcp`, authorization_servers: [typeof oauth === "function" ? oauth() : typeof oauth === "string" ? oauth : `${base}/auth`] }));
     }
-    if (req.url !== "/mcp") return void res.writeHead(404).end();
+    // Its endpoint is /mcp, with any query of its own (?version=2).
+    if (new URL(req.url, base).pathname !== "/mcp") return void res.writeHead(404).end();
     inspect?.(req.headers);
     // `hold`: awaited before a request to /mcp is answered, for a test that keeps a listing waiting at a point it chooses.
     if (hold) await hold(req.headers);

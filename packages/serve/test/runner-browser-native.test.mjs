@@ -117,7 +117,7 @@ test("a revision that names no browser gets none of its tools on a pi root", { t
 });
 
 test("a CLI root gets no browser tool from the runner, whatever its revision names", { timeout: 120_000 }, async (t) => {
-  const opened = await storeWith(t, { harness: "opencode", tools: ["read", "browser"] }, { ...PI_LAUNCH, harness: "opencode", model: { provider: "openai", modelId: "gpt-5" } });
+  const opened = await storeWith(t, { harness: "opencode", tools: ["read", "browser"] }, { ...PI_LAUNCH, harness: "opencode", model: { provider: "openai", modelId: "gpt-6.1-sol" } });
   const [claim] = await opened.store.runs.claimMany("runner-a", 1, { leaseMs: 60_000 });
   const registry = createRegistry();
   const harness = await Harness.open(opened.store.journal(claim), { models: () => undefined, registry, onReport: () => {} }, ctx);

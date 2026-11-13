@@ -196,6 +196,10 @@ export type ServeOptions = {
    *  X-Forwarded-For names (the nearest one not itself a trusted proxy). None by default: the header is never read, and
    *  every request counts under the address it came from. */
   trustedProxies?: readonly string[];
+  /** This server is a local install, its operator says (the CLI: AGENTRUN_MCP_ALLOW_LOOPBACK=1, only on a machine they
+   *  alone use): an MCP server's URL may be on loopback, at its save, preview and sign-in, and for the runner beside it.
+   *  Never inferred; absent, loopback is refused there in words saying how to say so. */
+  mcpLoopback?: boolean;
   /** The address to listen on (default 127.0.0.1). On any other address every `Host` name is served and the token is
    *  the only lock: put TLS in front of it. */
   host?: string;
@@ -343,6 +347,10 @@ export function fauxEnvOf(options: ServeOptions): NodeJS.ProcessEnv {
 /** `launchCode`: with no accounts, the code of the console's link this start prints (`/?launch=<code>`), which gives the
  *  browser that opens it a console session (page.ts ConsoleSessions). */
 export type Serve = { url: string; baseUrl: string; port: number; token: string; tokenFile: string | null; tokenMade: boolean; setupUrl?: string; setupOpen?: boolean; launchCode?: string; boxesLine: string; close(): Promise<void>;
+  /** Whether this server is a local install (listening on loopback, reached at no address off it): the one kind whose own
+   *  runner beside it may reach an MCP server's URL on loopback (runner/beside.ts mcpLoopback). Only that runner is told:
+   *  it is this process's finding, never a store's, so another host's runner on a shared store never inherits it. */
+  localInstall: boolean;
   /** What a stop waits on: the runs whose processes still finish their turn, and the longest it waits on them. */
   stopping(): { runs: number; boundMs: number } };
 
@@ -3432,7 +3440,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const url = `http://${shown.includes(":") ? `[${shown}]` : shown}:${address.port}`;
   owner?.attach(options.publicUrl ?? url);
   webhooks.attach(options.publicUrl ?? url);
-  mcpServers.attach(options.publicUrl ?? url, url);
+  // A local install is the one server an MCP server's URL may be on loopback for (anywhere else, loopback is this machine's
+  // other services: mcp-oauth.ts mcpServerAt), and only as its operator says (mcpLoopback), never inferred from where it
+  // listens: a hosted container listens on loopback behind its proxy too.
+  const localInstall = options.mcpLoopback === true;
+  mcpServers.attach(options.publicUrl ?? url, url, localInstall);
   // A run's end and its wait are the outbound webhook's run.ended and run.needs_input (webhooks.ts). The runners write them
   // to the store and this server runs no run, so it follows the store: each read takes the runs not final yet and the
   // newest runs (one that started and ended between two reads is among them). It tells each end it has not told once the
@@ -3586,6 +3598,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     ...(setupUrl ? { setupUrl, setupOpen: openSetup } : {}),
     ...(consoleSessions ? { launchCode: consoleSessions.code } : {}),
     boxesLine: boxesLine(boxOffers, enabledBoxes(env), boxAllow, boxesByDefault(env)),
+    localInstall,
     // Once: a second call, at any time, is the first one's promise, so a close repeated after the next server started
     // never writes this data root's record again (the next server's, by then).
     close: () => (stopped ??= stop()),

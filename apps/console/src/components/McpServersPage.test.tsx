@@ -316,6 +316,15 @@ describe("Settings → MCP servers, the saved ones", () => {
     expect(s.writes()).toEqual([{ method: "PUT", path: "/v2/settings/mcp-servers/fake", body: { url: VARS.url, auth: { type: "bearer" } } }]);
   });
 
+  it("previews an edit with the saved server's name beside the address as shown, so the server maps it to the saved endpoint", async () => {
+    const masked = saved({ url: "https://mcp.example.com/…", auth: { type: "none" } });
+    const s = server([[masked]], (c) => (c.path.endsWith("/preview") ? json(200, PREVIEW) : undefined));
+    const p = await open(s.v2);
+    await p.click(/^Change$/, p.row("fake"));
+    await p.click(/^Preview$/);
+    expect(s.writes()).toEqual([{ method: "POST", path: "/v2/settings/mcp-servers/preview", body: { url: "https://mcp.example.com/…", auth: { type: "none" }, name: "fake" } }]);
+  });
+
   it("a save that lands after its form was closed and another opened leaves the other form open, with what was typed", async () => {
     let finish: (r: Response) => void = () => {};
     const s = server([[saved(), saved({ name: "other" })]], (c) => (c.method === "PUT" ? new Promise<Response>((done) => { finish = done; }) : undefined));

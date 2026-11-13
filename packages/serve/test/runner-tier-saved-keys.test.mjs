@@ -76,7 +76,7 @@ async function world(t, harness) {
   await server.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: ASK, harness, tools: ["read"], learning: true } });
   await putSealedKey(server, SEAL_KEY, "OPENAI_API_KEY", SAVED_KEY);
   const env = {
-    ANTHROPIC_BASE_URL: gw.url, ANTHROPIC_API_KEY: ENV_KEY, AGENT_MODEL: "anthropic/claude-sonnet-4-5", AGENT_MODEL_FAST: "openai/gpt-5-mini",
+    ANTHROPIC_BASE_URL: gw.url, ANTHROPIC_API_KEY: ENV_KEY, AGENT_MODEL: "anthropic/claude-sonnet-5-5", AGENT_MODEL_FAST: "openai/gpt-6-luna",
     AGENTRUN_HARNESS_TABLE: fauxTable(FAUX_HARNESS), NODE_TEST_CONTEXT: process.env.NODE_TEST_CONTEXT ?? "1",
   };
   return { dir, server, store, gw, env };
@@ -86,7 +86,7 @@ for (const harness of ["pi", "claude-agent"]) {
   test(`${harness}: a learned fast node on another provider's model whose key is saved alone runs on it, the saved key on its request`, { timeout: 60_000 }, async (t) => {
     const { dir, server, store, gw, env } = await world(t, harness);
     const seed = await landWorkflows(dir, "agent-1", [{ name: "answer", description: "Answers a question as a number", workflow: fastFlow }]);
-    const launch = { input: { content: ASK }, title: "t", place: { mode: "runner" }, harness, model: { provider: "anthropic", modelId: "claude-sonnet-4-5" }, learning: startAt(seed) };
+    const launch = { input: { content: ASK }, title: "t", place: { mode: "runner" }, harness, model: { provider: "anthropic", modelId: "claude-sonnet-5-5" }, learning: startAt(seed) };
     await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
     await server.flush?.();
     // The run's routes as the runner resolves them, OpenAI's origin sent to the gateway on loopback (the proxy's fetch).
@@ -110,7 +110,7 @@ for (const harness of ["pi", "claude-agent"]) {
     }, "the run's end");
     assert.equal(row.state, "ended", JSON.stringify(row));
     const node = gw.requests.filter((request) => (request.body?.tools ?? []).some((tool) => tool?.name === "submit"));
-    assert.deepEqual(node.map((request) => [request.path, request.body?.model, request.headers.authorization]), [["/v1/responses", "gpt-5-mini", `Bearer ${SAVED_KEY}`]], `the node's one request is OpenAI's, on the saved key: ${JSON.stringify(gw.requests.map((r) => [r.path, r.body?.model]))}`);
+    assert.deepEqual(node.map((request) => [request.path, request.body?.model, request.headers.authorization]), [["/v1/responses", "gpt-6-luna", `Bearer ${SAVED_KEY}`]], `the node's one request is OpenAI's, on the saved key: ${JSON.stringify(gw.requests.map((r) => [r.path, r.body?.model]))}`);
     assert.ok(gw.requests.filter((request) => request.path === "/v1/messages").every((request) => request.headers["x-api-key"] === ENV_KEY), "the run's own model keeps its own key");
   });
 }
@@ -124,13 +124,13 @@ test("the saved key a learned tier needs is opened for its route alone: readable
   });
   await store.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: ASK, tools: ["read"], learning: true } });
   await putSealedKey(store, SEAL_KEY, "OPENAI_API_KEY", SAVED_KEY);
-  const env = { ANTHROPIC_API_KEY: ENV_KEY, AGENT_MODEL: "anthropic/claude-sonnet-4-5", AGENT_MODEL_FAST: "openai/gpt-5-mini" };
+  const env = { ANTHROPIC_API_KEY: ENV_KEY, AGENT_MODEL: "anthropic/claude-sonnet-5-5", AGENT_MODEL_FAST: "openai/gpt-6-luna" };
   const deps = { store, sealKey: SEAL_KEY, env };
   assert.deepEqual(await tierModelKeys(deps, ["fast"]), { OPENAI_API_KEY: SAVED_KEY });
   assert.deepEqual(await tierModelKeys(deps, []), {}, "no tier, nothing opened");
   const routeEnv = withModelKeys(env, await tierModelKeys(deps, ["fast"]));
   assert.equal(routeEnv.OPENAI_API_KEY, SAVED_KEY, "the tier's route reads it by name");
   assert.equal(Object.keys(routeEnv).includes("OPENAI_API_KEY"), false, "never enumerable: a spread or a spawn carries none");
-  const tools = await claimSecrets(deps, await store.agents.revision("rev-1"), { model: { provider: "anthropic", modelId: "claude-sonnet-4-5" } });
+  const tools = await claimSecrets(deps, await store.agents.revision("rev-1"), { model: { provider: "anthropic", modelId: "claude-sonnet-5-5" } });
   assert.equal(tools.OPENAI_API_KEY, undefined, "the run's tool environment holds the run's own model's key alone");
 });

@@ -195,7 +195,7 @@ test("start: a desktop launched with no hello is refused and released: its ports
 });
 
 test("start: a Docker launch that fails where no daemon answers is refused in the one wording (as Settings → Computers and the run's start say); with a daemon, in the launch's own words", async () => {
-  const NO_DOCKER = "No Docker on this server: Render and most hosted services run none. A vendor sandbox (Daytona, Modal or E2B) needs Archil turned on in Settings → Workspace.";
+  const NO_DOCKER = "No Docker on this server: Render and most hosted services run none. A vendor sandbox (Daytona, Modal, E2B or Agent37) needs Archil turned on in Settings → Workspace.";
   const failing = (daemon) => ({ keysOf: async () => ({}), answers: async () => false, daemon, launch: async () => { throw new Error("cannot ask Docker its architecture (docker version): Cannot connect to the Docker daemon"); } });
   const start = async (side) => (await resolveComputer({ kind: "sandbox", provider: "docker" }, 1, KINDS, side)).start({ workspace: localWorkspace(scratch()), check: { readBackOf } });
   await assert.rejects(start(failing(async () => ({ up: false, absent: true, reason: "exit 1" }))), (error) => error.code === "computer_unavailable" && error.message === NO_DOCKER);

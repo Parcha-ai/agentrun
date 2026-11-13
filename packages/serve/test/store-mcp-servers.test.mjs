@@ -27,8 +27,8 @@ test("a headers server reads: auth header names (not values), credential sealed,
   });
   const view = await reg(store).get("github");
   assert.equal(view.name, "github");
-  assert.equal(view.url, "https://mcp.example.com/github", "the view carries the saved url");
-  assert.deepEqual(view.auth, { type: "headers", headers: ["authorization", "x-extra"] }, "header names, never values");
+  assert.equal(view.url, "https://mcp.example.com/…", "the view shows the saved address as origin and /…");
+  assert.deepEqual(view.auth,{ type: "headers", headers: ["authorization", "x-extra"] }, "header names, never values");
   assert.equal(view.credential, "sealed");
   assert.deepEqual(view.server_info, { name: "GitHub", version: "1" });
   assert.equal(view.instructions, "Use create_issue.");
@@ -42,9 +42,9 @@ test("the view and the list item carry url, and the view holds every field the v
   const { store } = await storeOn(t);
   await saveMcpServer(store, KEY, { name: "github", url: "https://mcp.example.com/github", auth: "none", protocol: "2025-06-18", tools: [{ name: "add" }], serverInfo: { name: "GitHub", version: "1" } });
   const view = await reg(store).get("github");
-  assert.equal(view.url, "https://mcp.example.com/github", "the view carries the saved url");
+  assert.equal(view.url, "https://mcp.example.com/…", "the view shows the saved address as origin and /…");
   const list = await reg(store).list();
-  assert.equal(list.servers.find((s) => s.name === "github").url, "https://mcp.example.com/github", "the list item carries the saved url");
+  assert.equal(list.servers.find((s) => s.name === "github").url, "https://mcp.example.com/…", "the list item shows it the same way");
   // Every field the v2 McpServer schema requires is in the view, so the next dropped field fails here, not only at the route.
   const doc = openapiDocument(() => undefined);
   const op = Object.values(doc.paths).flatMap((path) => Object.values(path)).find((entry) => entry && typeof entry === "object" && entry.operationId === "getMcpServer");

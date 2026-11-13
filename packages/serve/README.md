@@ -687,13 +687,13 @@ one computer that it keeps between runs, instead of a fresh one for each run:
 **Where the run's folder lives.** A server keeps its runs' folders in one of two modes:
 
 - **Mode 1** (the default): on this server's own disk. Only a provider that binds a folder of this machine can hold
-  it, so a sandbox runs on Docker only; a Daytona, Modal or E2B sandbox is refused ("Mode 1 runs a sandbox only on
+  it, so a sandbox runs on Docker only; a Daytona, Modal, E2B or Agent37 sandbox is refused ("Mode 1 runs a sandbox only on
   Docker").
 - **Mode 2**: on Archil disks. `PUT /v2/workspace/archil` turns it on with the account key, `ARCHIL_API_KEY`, its
   region and that region's S3 URL (and an exec image pinned by digest, if you want one other than serve's default);
   `DELETE` turns it off. The default exec image is Docker's `buildpack-deps:trixie-scm` pinned by digest (git 2.47),
   because Archil's own has git 2.34 and a read-only bash policy runs git only at 2.43 or later. An image you name needs
-  git 2.43 for that too, and GNU coreutils and perl, as Debian-family images have. A Daytona, Modal or E2B sandbox mounts
+  git 2.43 for that too, and GNU coreutils and perl, as Debian-family images have. A Daytona, Modal, E2B or Agent37 sandbox mounts
   the run's folder from its disk with a mount credential minted for that run alone; Docker's sandbox is refused, since
   it cannot mount the disk.
 
@@ -798,7 +798,7 @@ no computer.
 registries and GitHub) through its egress proxy, and nothing else; `AGENTRUN_BOX_ALLOW=none` gives it no network. From a
 server in a container the proxy also refuses the Docker host's own addresses, which the server reads through the socket
 ([in the published image](#in-the-published-image)). A
-Daytona, Modal or E2B sandbox has no network of its own (loopback only). A phone and a hosted browser are on their
+Daytona, Modal, E2B or Agent37 sandbox has no network of its own (loopback only). A phone and a hosted browser are on their
 vendor's own network, whatever the list says. Local Chrome is open unless this server sets `AGENTRUN_BOX_ALLOW`; then
 only those hosts (the default list, a sandbox's package registries, is no browsing policy). Under
 `AGENTRUN_BOX_ALLOW=none`, each of these is refused at the run's start, in words that name the setting.
@@ -1542,7 +1542,12 @@ proxy on a public https address, set `AGENTRUN_PUBLIC_URL` to that address and h
 and `X-Forwarded-Proto: https`: without them a start reads as another address (or plain http) than the callback's,
 and every start answers `409 wrong_origin`. For an MCP server whose URL is not loopback, every endpoint its authorization server names (and
 every request to one) must be `https` and resolve to no private, loopback or link-local address, or the sign-in or
-refresh is refused with words and nothing is sent. A loopback MCP server is a development-only exception: its
+refresh is refused with words and nothing is sent. A loopback MCP server (a `127.0.0.1` or `localhost` URL) is taken only
+by a server started with `AGENTRUN_MCP_ALLOW_LOOPBACK=1`, which says this is a local install: set it only on a machine you
+alone use, since loopback is this machine's other services too. Without it such a URL is refused at the save, the preview
+and the sign-in, in words naming the variable, and a runner never reaches one; only the runner beside such a server does.
+An MCP server's URL is shown on every read as its origin and `/…`: its path and query are held as a secret, sent only to
+the server itself, and sending the shown URL back for a saved server keeps the saved one. A loopback MCP server is a development-only exception: its
 authorization server may name endpoints on the MCP server's own loopback host, exactly as its URL writes it (never
 another loopback address, the IPv6 loopback, or a name for this machine in its place), on any port but this server's own; any other
 loopback endpoint is refused the same way. The host is pinned, not the port, as a local authorization server listens on
