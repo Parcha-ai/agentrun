@@ -1863,6 +1863,21 @@ delivery on the payload's tag, for tracing. A request that carries no scheme's s
 one, or is signed under a scheme other than its trigger's, is the same `401` as a bad signature, and the headers are
 checked before the body is read.
 
+`composio` takes [Composio](https://composio.dev) trigger events. Register the trigger's `hook_url` as Composio's webhook
+subscription (`POST /api/v3.1/webhook_subscriptions` with `enabled_events: ["composio.trigger.message"]`); Composio
+answers with a `secret` it makes, which you give here, whole and as Composio shows it, with `POST /v2/triggers/{id}/secret`
+and the body `{"secret": "..."}` (the same call replaces it when you rotate it in Composio). A composio trigger is made with no
+secret (the URL carries its id, so Composio can only make the secret after); until one is set every request is refused. It is sealed as a minted one is and never shown again; this server never
+makes one for a composio trigger. Composio signs as Standard Webhooks does (`webhook-id`, `webhook-timestamp`, `webhook-signature`) but keyed by the
+UTF-8 bytes of that secret string, not a decoded `whsec_` key, which is why a `standard` trigger cannot take it. The
+firing's key is `webhook-id`, the event is the body's `metadata.trigger_slug`, so `accept: [{"event":
+"GITHUB_ISSUE_ADDED_EVENT"}]` takes one Composio trigger's events, and a rule's `where` pointers read the payload under
+`/data`. The subscription also delivers account events (`composio.connected_account.expired`,
+`composio.connected_account.activated`, `composio.trigger.disabled`), signed the same way, with no slug: their event is the
+body's top-level `type`, so `accept` can take them too. A Composio project's subscription posts every event to the one URL it names, so it fires that one composio
+trigger and its agent: other triggers never see those deliveries, whatever their `accept`. The tag also names
+`trigger_id` and `user_id`.
+
 `accept` makes a trigger take only the events it names, from the delivery alone:
 
 ```json
@@ -2896,11 +2911,14 @@ cap, due at the run's first request), the words say the budget instead, on every
 $X, enough for little work: answer as soon as you can." On pi the words go into that one request's context;
 on claude-agent, codex and opencode the model proxy adds them to the body (after everything the CLI sent, so its cached
 prefix is unchanged). Neither CLI nor pi keeps them in its transcript, and no message is queued, so nothing runs after
-the model's answer. Once per cap, across restarts; a raise re-arms it.
+the model's answer. Once per cap, across restarts; a raise re-arms it. The note also comes due, if it has not already,
+on the request whose tool call would be refused now (the wrap-up below: what is left no longer covers what the run keeps
+back to answer), so the note tells the model what is left no later than its tools stop.
 
-A capped run also stops calling tools before its cap stops it. Once what it has spent, plus what its requests and paid
-steps still out are held at (their worst case, as the cap counts them, a browser session's open reserve included),
-reaches 75% of its cap, the run's tool gate
+A capped run also stops calling tools before its cap stops it. It keeps back enough to answer: one typical step (its own
+answers' typical cost) and one final answer at its least, as the cap prices the main model's next request. Once what it
+has spent, plus what its requests and paid steps still out are held at (their worst case, as the cap counts them, a
+browser session's open reserve included), leaves less than that, the run's tool gate
 refuses every call a model makes, in every conversation of the run, on every harness, before any setting or approval
 is read, with one fixed text: "Budget nearly spent: stop calling tools and answer now from what you have." A call that
 would open a child conversation is refused the same way, so no new one starts. Nothing in flight is cut: a child still
@@ -2909,7 +2927,10 @@ model requests are judged by the cap as before, so the run's final answer still 
 request that does not fit what is left is refused as above. The figure is read from the run's booking records at each
 call, never kept in memory, so a restart or a claim moved to another runner holds the same line, and a raise moves it.
 Several requests out at once hold far more than they cost, which is why a fan-out of children used to end a small cap
-with no answer at all; the quarter left above the line is the room for each of them, and the parent, to answer.
+with no answer at all: their holds count as taken, so the run stops calling tools while each of them, and the parent,
+still has room to answer. A simple run, with nothing else out, uses its cap up to its last step and answer. The run is
+told what is left (its wrap-up note, above) no later than its first refused call. Its one known miss: a request that
+writes to its max output can still leave no room for the answer; then the run pauses for a raise rather than overspend.
 
 Under a cap each request is limited to the
 output tokens what is left of the cap can buy, thinking included, never more than it asks for or than the model's
@@ -2942,7 +2963,7 @@ screenshots, then the answer), spending about $0.04 in all:
 
 In `strict` mode every step's whole input is priced at the cache-write price. In `expected` mode a step after the first is priced from what the session's previous request read from the cache, so a five-step run needs about $0.06 by either route, and about $0.007 a further step; the first request is priced as in `strict`, so its figure is the same. A claude-agent run's first request is of the same size (the pinned
 CLI's measured 6,926 bytes with five tools: $0.04 for its first request through a gateway). A cap below these pauses at
-once with `Not sent: ... the next step needs at least $X`, and a raise to that figure sends it on.
+once with `Not sent: ... the next step needs at least $X`, and a raise to that figure sends it on. (In `strict` mode through a gateway, a run a cent under the five-step figure is not parked before its last step: the cap's wrap-up refuses its last screenshot, and the run answers from what it has.)
 `packages/serve/test/cap-minimum.test.mjs` holds these figures to what the cap does. A request in flight holds what it was admitted at until it answers, so requests
 sent side by side cannot pass the cap together. Spent so far is read from the run's store each time its process starts, so it
 survives a restart, plus each response since, and with them each charge a paid tool booked (`monid.run`, which is itself

@@ -817,6 +817,7 @@ const HOOK_IGNORED = closed({ ok: { const: "ignored" } }, "Verified, and not an 
  *  day whose firing is no longer kept, `{ok: "duplicate"}`); none for a request with no event, or whose events no
  *  trigger takes. Its firings' `by` names the sources `adapters` give. */
 const hookFiringsOf = (adapters: readonly TriggerAdapter[]) => closed({ firings: { type: "array", items: { oneOf: [{ ...TRIGGER_FIRING, properties: { ...TRIGGER_FIRING.properties, by: firedByOf(adapters) } }, HOOK_DUPLICATE] } } });
+const GIVEN_TRIGGER_SECRET = { type: "string", minLength: 24, "x-agentrun-secret": true, description: "The secret Composio gave the webhook subscription whose URL is this composio trigger's `hook_url`, the whole string as Composio shows it (under 24 bytes, or with whitespace, is refused). Kept sealed as a minted secret is, never answered or shown again. A composio trigger is made with none (Composio makes it once the URL is registered) and refuses every request until this sets one; any other trigger takes none." };
 const TRIGGER_SECRET = { type: "string", pattern: "^whsec_[A-Za-z0-9+/]+={0,2}$", description: "A webhook trigger's signing secret, shown this once: `whsec_` and 32 random bytes in base64, as the Standard Webhooks spec gives it. Never in any GET; kept sealed under the seal key. Sign each request to /hooks/{trigger_id} with it." };
 /** github/1: Connect GitHub, the server's one GitHub App (github-connection.ts). */
 const GITHUB_MARK = { "x-agentrun-serve": "github/1" };
@@ -1875,7 +1876,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       description: "Any of its fields. `enabled: false` stops its firings; `enabled: true` again, or a new source, goes on from now: the time it was off is skipped, never caught up. A firing already due goes on.",
       parameters: [TRIGGER_ID],
       requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, properties: TRIGGER_WRITE } } } },
-      responses: { "200": json(TRIGGER, "Changed."), ...errors(400, 401, 404, 409, 415, 422, 429, 500) },
+      responses: { "200": json(TRIGGER_READ, "Changed: the trigger as a read answers it, with its secret's metadata."), ...errors(400, 401, 404, 409, 415, 422, 429, 500) },
       ...TRIGGER_MARK,
     },
     delete: {
@@ -1897,11 +1898,12 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/triggers/{trigger_id}/secret": {
     post: {
       operationId: "rotateTriggerSecret", tags: ["local"], summary: "A webhook trigger's new secret, shown once; the old one signs nothing from now on",
-      description: "A secret write: the owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words and the secret kept. 422 for a trigger that is not a webhook's.",
+      description: "A secret write: the owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words and the secret kept. 422 for a trigger that is not a webhook's. A trigger whose `signature` is `composio` is never made a secret: it takes the one Composio gave in the body's `secret` (required here, and answers its metadata alone), and every other trigger takes no body.",
       parameters: [TRIGGER_ID],
+      requestBody: { required: false, content: { "application/json": { schema: closedWith({}, { secret: GIVEN_TRIGGER_SECRET }) } } },
       // The owner's password session alone (secret-writes.ts), never the document's bearer.
       security: [{ ownerSession: [] }],
-      responses: { "200": json(closed({ secret: TRIGGER_SECRET_META, signing_secret: TRIGGER_SECRET }), "The new secret as `signing_secret`, this once, and its metadata."), ...errors(401, 403, 404, 409, 422, 429, 500) },
+      responses: { "200": json(closedWith({ secret: TRIGGER_SECRET_META }, { signing_secret: TRIGGER_SECRET }), "The new secret as `signing_secret`, this once, and its metadata; a composio trigger, its metadata alone."), ...errors(401, 403, 404, 409, 422, 429, 500) },
       ...TRIGGER_MARK,
     },
   },
