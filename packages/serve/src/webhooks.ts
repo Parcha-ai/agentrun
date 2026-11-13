@@ -674,7 +674,12 @@ export class Webhooks {
       postId: id, moment: attempt.type, at: now, statusCode: attempt.status_code, latencyMs: attempt.latency_ms, error: attempt.error,
       retryAt: attempt.retry_at === null ? null : Date.parse(attempt.retry_at), redelivery: how.redelivery,
     };
-    const write = () => this.store.channels.settle(id, to ?? { state: standingPost.state, reason: standingPost.reason }, row, { kept: ATTEMPTS_KEPT, sending: [...this.sending.keys()] });
+    // A redelivery that failed leaves the message as it is; when its read failed, the state to leave is read again at the
+    // write, never taken from the claim-time guess.
+    const write = async () => {
+      const left = to ?? (unread ? await this.store.channels.get(id) : standingPost);
+      await this.store.channels.settle(id, to ?? { state: left?.state ?? standingPost.state, reason: left?.reason ?? standingPost.reason }, row, { kept: ATTEMPTS_KEPT, sending: [...this.sending.keys()] });
+    };
     try {
       if (unread) throw unread;
       await write();
@@ -682,8 +687,9 @@ export class Webhooks {
       this.say({ condition: "attempt_unsaved", webhook_id: id, error: (error as Error).message });
       // Not written. This try's own outcome is known, so only its write is tried again, soon and until it lands, never
       // the send: a message its receiver has is not sent again when its claim runs out, and a failed one keeps its
-      // schedule. A redelivery's outcome (the message's own state left as it was) is let go.
-      if (to !== undefined) this.resettle(id, how.redelivery, write, () => this.afterSettle(id, to, delay, attempt, attempts, failure, gone, standing));
+      // schedule. A redelivery's try is recorded the same way (the message's state left as it was), and its 410 still
+      // turns the webhook off once it lands.
+      if (to !== undefined || how.redelivery) this.resettle(id, how.redelivery, write, () => this.afterSettle(id, to, delay, attempt, attempts, failure, gone, standing));
       return attempt;
     }
     await this.afterSettle(id, to, delay, attempt, attempts, failure, gone, standing);

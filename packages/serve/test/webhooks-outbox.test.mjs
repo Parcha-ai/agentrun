@@ -778,6 +778,31 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     await onDisk(dir, () => outboxOf(dir).messages.every((m) => m.status === "delivered"), "the message delivered at its retry");
   });
 
+  test("a redelivery answered 410 whose settle-time read of the message fails still records the try and turns the webhook off", async (t) => {
+    // The first try answers 503 (message queued, next try a minute away); the redelivery answers 410.
+    const hook = await receiver(t, (n) => (n === 1 ? 503 : 410));
+    const log = logged();
+    const dir = await scratch(t);
+    let refused = 0;
+    const on = await webhookOn(t, dir, { retryMs: [60_000], storeRetryMs: 50, wrap: seeing("channels", (channels) => ({
+      get: async (id) => {
+        if (hook.got.length >= 2 && refused < 3) throw (refused++, new Error("the store is busy"));
+        return channels.get(id);
+      },
+    })) });
+    await on.runs("run_1");
+    const webhooks = await on.open(log.push);
+    await webhooks.save({ url: hook.url });
+    await webhooks.emit("run.ended", { run_id: "run_1", agent_id: "a", status: "completed", title: "t" }, new Date().toISOString());
+    await onDisk(dir, () => outboxOf(dir).attempts.length === 1);
+    const id = hook.got[0].headers["webhook-id"];
+    await webhooks.redeliver(id);
+    await log.when("condition=webhook_disabled");
+    assert.equal(refused, 3, "the read was refused as many times as the try reads it");
+    assert.equal(webhooks.view().disabled?.reason, "the receiver answered 410 Gone");
+    await onDisk(dir, () => outboxOf(dir).attempts.some((a) => a.status_code === 410 && a.redelivery), "the redelivery's try recorded");
+  });
+
   // From the outbound webhook's first store-held form: a PUT, a DELETE and a try's 410 change the webhook one after
   // another, a DELETE leaves nothing to send, a PUT that fails keeps no secret, and one server alone sends.
 
