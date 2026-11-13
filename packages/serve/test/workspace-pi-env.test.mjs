@@ -1,0 +1,144 @@
+// pi's read, write and edit on a Workspace (serve/src/workspace/pi-env.ts), as a model reads them: a path named by the
+// folder's own path, a link refused, an image opened anywhere in a computer. And bash on the Workspace: its output streams, a long one is spilled whole
+// to .agentrun/output/ in the run's folder (read can open it), a signal is 128 + n, the environment is only what it is
+// given, and a timeout, an abort and a cwd outside are said as pi's own environment says them.
+import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { after, test } from "node:test";
+import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
+import { hostToolsOf } from "./host-tools-of.mjs";
+import { localWorkspace } from "../dist/workspace/index.js";
+import { bashTool, fileTools, OUTPUT_DIR, piEnv, readAnywhereInComputer } from "../dist/workspace/pi-env.js";
+import { readBackOf } from "@parcha/agentrun-computer";
+import { fakeComputer } from "./workspace-fake-computer.mjs";
+import { realProcesses } from "./workspace-fake-processes.mjs";
+
+const dirs = [];
+after(() => { for (const dir of dirs) rmSync(dir, { recursive: true, force: true }); });
+function scratch() {
+  const dir = realpathSync(mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-pi-env-")));
+  dirs.push(dir);
+  const root = join(dir, "work");
+  mkdirSync(root);
+  return root;
+}
+/** A PNG of one pixel. */
+const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
+function seed(root) {
+  writeFileSync(join(root, "a.txt"), "one\ntwo\nthree\n");
+  writeFileSync(join(root, "big.txt"), Array.from({ length: 3000 }, (_, i) => `line ${i}`).join("\n"));
+  mkdirSync(join(root, "sub"));
+  writeFileSync(join(root, "sub", "b.md"), "# b\nfoo foo\n");
+  writeFileSync(join(root, "img.png"), PNG);
+}
+
+const NAMES = ["read", "write", "edit"];
+/** The same tools on the Workspace. */
+function onWorkspace(root, cwd = "/workspace") {
+  const env = piEnv(localWorkspace(root), { cwd, env: {}, defaultTimeoutS: 120 });
+  return hostToolsOf({ env: async () => env }, NAMES, ctx, new Map(), fileTools());
+}
+const call = (tools, name, args) => tools.find((tool) => tool.name === name).call(args, { callId: `c-${Math.random()}`, signal: new AbortController().signal });
+
+test("on the runner the folder is named by its own path: an absolute path under it is the same file, and answers name it relative", async () => {
+  const root = scratch();
+  seed(root);
+  const tools = onWorkspace(root, root);
+  assert.equal((await call(tools, "read", { path: join(root, "a.txt") })).text.split("\n")[0].trim().endsWith("one"), true);
+  assert.deepEqual(await call(tools, "write", { path: join(root, "w.txt"), content: "w" }), { text: "Successfully wrote to w.txt", isError: false });
+  assert.deepEqual(await call(tools, "read", { path: "/workspace/a.txt" }), { text: "/workspace/a.txt: outside the workspace", isError: true }, "/workspace is no name of a folder on the runner");
+});
+
+test("a link in the run's folder is refused by read, write and edit, in words, and never followed", async () => {
+  const root = scratch();
+  const outside = join(root, "..", "outside.txt");
+  writeFileSync(outside, "secret");
+  symlinkSync(outside, join(root, "link.txt"));
+  const tools = onWorkspace(root);
+  for (const [name, args] of [["read", { path: "link.txt" }], ["write", { path: "link.txt", content: "x" }], ["edit", { path: "link.txt", edits: [{ oldText: "secret", newText: "x" }] }]]) {
+    const answer = await call(tools, name, args);
+    assert.equal(answer.isError, true, name);
+    assert.match(answer.text, /link\.txt: refused: a link is on the way to it, or it is one/, name);
+    assert.doesNotMatch(answer.text, /secret/);
+  }
+  assert.equal(readFileSync(outside, "utf8"), "secret");
+});
+
+test("in a computer read opens an image at any path there (a render in /tmp), read through the computer; anything else outside stays refused, and with no computer an image outside is refused too", async () => {
+  const root = scratch();
+  const elsewhere = scratch();
+  writeFileSync(join(elsewhere, "render.png"), PNG);
+  writeFileSync(join(elsewhere, "fake.png"), "not an image");
+  writeFileSync(join(elsewhere, "notes.txt"), "text");
+  const computer = realProcesses(fakeComputer(root), root);
+  const attached = await localWorkspace(root).attach(computer, { readBackOf });
+  const names = ["/workspace"];
+  const env = piEnv(attached, { cwd: "/workspace", env: {}, defaultTimeoutS: 120 });
+  const read = readAnywhereInComputer(fileTools().find((tool) => tool.name === "read"), attached, names, { PATH: "/usr/bin:/bin" });
+  const [tool] = hostToolsOf({ env: async () => env }, ["read"], ctx, new Map(), [read]);
+  const image = await call([tool], "read", { path: join(elsewhere, "render.png") });
+  assert.deepEqual([image.text, image.isError, image.images], [`${join(elsewhere, "render.png")}: image/png, ${PNG.length} bytes`, false, [{ mimeType: "image/png", data: PNG.toString("base64") }]]);
+  assert.ok(computer.methods().includes("process.start"), "read through the computer");
+  assert.deepEqual(await call([tool], "read", { path: join(elsewhere, "fake.png") }), { text: `${join(elsewhere, "fake.png")} is not an image`, isError: true });
+  assert.deepEqual(await call([tool], "read", { path: join(elsewhere, "missing.png") }), { text: `${join(elsewhere, "missing.png")} could not be read in the box`, isError: true });
+  assert.deepEqual(await call([tool], "read", { path: join(elsewhere, "notes.txt") }), { text: `${join(elsewhere, "notes.txt")}: outside the workspace`, isError: true });
+  const none = onWorkspace(root);
+  assert.deepEqual(await call(none, "read", { path: join(elsewhere, "render.png") }), { text: `${join(elsewhere, "render.png")}: outside the workspace`, isError: true }, "with no computer, read never opens a path outside");
+});
+
+/** pi's bash on the Workspace, through a host tool: the answer a model reads. */
+function bashOn(root, options = {}) {
+  const env = piEnv(localWorkspace(root), { cwd: options.cwd ?? "/workspace", env: options.env ?? { PATH: "/usr/local/bin:/usr/bin:/bin" }, defaultTimeoutS: 120 });
+  return { env, tool: hostToolsOf({ env: async () => env }, ["bash"], ctx, new Map(), [bashTool()])[0] };
+}
+
+test("bash on the Workspace: runs in the run's folder, with only the environment it is given; an exit and a signal are said as pi says them", async () => {
+  const root = scratch();
+  writeFileSync(join(root, "here.txt"), "found\n");
+  const { tool } = bashOn(root, { env: { PATH: "/usr/bin:/bin", ONLY: "this" } });
+  assert.deepEqual(await call([tool], "bash", { command: "cat here.txt; env | sort" }), { text: "found\nONLY=this\nPATH=/usr/bin:/bin\nPWD=" + root + "\nSHLVL=1\n_=/usr/bin/env\n", isError: false });
+  const failed = await call([tool], "bash", { command: "echo out; exit 3" });
+  assert.deepEqual(failed, { text: "out\n\n\nCommand exited with code 3", isError: true });
+  const killed = await call([tool], "bash", { command: "kill -TERM $$" });
+  assert.deepEqual(killed, { text: "Command exited with code 143", isError: true });
+});
+
+test("bash on the Workspace: a long output keeps its tail, and is spilled whole to .agentrun/output/ in the run's folder, which read opens", async () => {
+  const root = scratch();
+  const { env, tool } = bashOn(root);
+  const answer = await call([tool], "bash", { command: "seq 1 5000" });
+  assert.match(answer.text, /^\[earlier output omitted\]\n/);
+  assert.match(answer.text, /\n5000\n/);
+  const full = answer.text.match(/Full output: (\S+)$/)?.[1];
+  assert.ok(full?.startsWith(`/workspace/${OUTPUT_DIR}/`), answer.text.slice(-200));
+  const rel = full.slice("/workspace/".length);
+  assert.equal(readFileSync(join(root, rel), "utf8"), Array.from({ length: 5000 }, (_, i) => `${i + 1}\n`).join(""), "the whole output");
+  const [read] = hostToolsOf({ env: async () => env }, ["read"], ctx, new Map(), fileTools());
+  assert.match((await call([read], "read", { path: full, offset: 5000 })).text, /^5000\n/);
+});
+
+test("bash on the Workspace: a timeout is said as pi says it, its output kept; a cwd outside is refused", async () => {
+  const root = scratch();
+  const { tool } = bashOn(root);
+  const timed = await call([tool], "bash", { command: "echo before; sleep 300", timeout: 1 });
+  assert.deepEqual(timed, { text: "before\n\n\nCommand timed out after 1 seconds", isError: true });
+});
+
+test("bash on the Workspace streams: pi's api.output gets the first line before the command ends", async () => {
+  const root = scratch();
+  const { env } = bashOn(root);
+  const seen = [];
+  // The command waits after its first line until the file "go" is there, which the test makes when that line comes:
+  // output given only at the end would leave it waiting to its deadline.
+  const ran = await env.exec("echo first; while [ ! -e go ]; do sleep 0.01; done; echo second", { timeout: 60, onOutput: (text) => {
+    if (seen.length === 0) writeFileSync(join(root, "go"), "");
+    seen.push(text);
+  } }, ctx);
+  assert.equal(ran.ok, true, "it ended on its own, not at its deadline");
+  assert.equal(seen[0], "first\n");
+  const outside = await env.exec("pwd", { cwd: "/etc" }, ctx);
+  assert.equal(outside.ok, false);
+  assert.equal(outside.error.code, "spawn_error");
+});

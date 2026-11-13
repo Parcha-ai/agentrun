@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createBody, DECISION, decisionProvider, defaultTools, editBody, harnessOptions, reachesWeb, same, saveError, toolOffers, toolsFor, WORKFLOW } from "./agentForm";
+import { capOf, createBody, DECISION, decisionProvider, defaultTools, editBody, harnessOptions, reachesWeb, same, sandboxReason, saveError, toolOffers, toolsFor, WORKFLOW } from "./agentForm";
 import { DECISION_STARTER } from "./decisionStarter";
 import { WORKFLOW_STARTER } from "./workflowStarter";
 import { ClientError } from "./client";
@@ -86,16 +86,85 @@ describe("createBody", () => {
   });
 });
 
+describe("the agent's default spend cap per run (definition.max_cost_usd)", () => {
+  const capped = { ...(agent.body as object), definition: { ...agent.body.definition, max_cost_usd: 2.5, some_future_field: { kept: true } } } as never;
+  it("an edit keeps every field the form does not show: max_cost_usd and an unknown one", () => {
+    const body = editBody(capped, { instructions: "Check it twice." }, "");
+    expect(body.definition).toMatchObject({ max_cost_usd: 2.5, some_future_field: { kept: true }, instructions: "Check it twice." });
+  });
+  it("an edit sets a new cap, and a cleared one is sent as an explicit 0, never left out", () => {
+    expect(editBody(capped, { max_cost_usd: 4 }, "").definition.max_cost_usd).toBe(4);
+    const cleared = editBody(capped, { max_cost_usd: 0 }, "");
+    expect([cleared.unchanged, cleared.definition.max_cost_usd, cleared.definition.some_future_field]).toEqual([false, 0, { kept: true }]);
+  });
+  it("a new agent's first revision carries the cap typed, none when empty, and a starter never one", () => {
+    const f = { name: "A", description: "", instructions: "Do it.", harness: "pi", tools: [] };
+    expect(createBody({ ...f, max_cost_usd: 0.75 }).definition.max_cost_usd).toBe(0.75);
+    expect(createBody(f).definition).not.toHaveProperty("max_cost_usd");
+    expect(createBody({ ...f, harness: DECISION, decisionProvider: "jev", max_cost_usd: 0.75 }).definition).not.toHaveProperty("max_cost_usd");
+  });
+});
+
+describe("the agent's computer (definition.computer)", () => {
+  // The server keeps `place` as computer's view and writes both from either: the console writes computer, never place.
+  const placed = { ...(agent.body as object), definition: { ...agent.body.definition, place: { mode: "sandbox", box: "docker" }, computer: { kind: "sandbox", provider: "docker" } } } as never;
+  it("a new agent's first revision carries the computer picked, and no place", () => {
+    const f = { name: "A", description: "", instructions: "Do it.", harness: "pi", tools: [] };
+    const body = createBody({ ...f, computer: { kind: "desktop", provider: "orgo" } }).definition;
+    expect(body.computer).toEqual({ kind: "desktop", provider: "orgo" });
+    expect(body).not.toHaveProperty("place");
+  });
+  it("a new agent's first revision never carries a place, whatever the form held: the computer is the setting", () => {
+    const body = createBody({ name: "A", description: "", instructions: "Do it.", harness: "pi", tools: [], place: { mode: "sandbox", box: "docker" } } as never).definition;
+    expect(body).not.toHaveProperty("place");
+  });
+  it("a new agent with no computer picked sends none: the server gives it its default", () => {
+    const body = createBody({ name: "A", description: "", instructions: "Do it.", harness: "pi", tools: [] }).definition;
+    expect(body).not.toHaveProperty("computer");
+    expect(body).not.toHaveProperty("place");
+  });
+  it("a starter (a workflow agent) never carries a computer", () => {
+    expect(createBody({ name: "A", description: "", instructions: "", harness: DECISION, tools: [], decisionProvider: "jev", computer: { kind: "sandbox", provider: "docker" } }).definition).not.toHaveProperty("computer");
+  });
+  it("an edit that changes the computer sends the new one and drops the old place, which would say the old one", () => {
+    const body = editBody(placed, { computer: { kind: "none" } }, "");
+    expect(body.definition.computer).toEqual({ kind: "none" });
+    expect(body.definition).not.toHaveProperty("place");
+    expect(body.unchanged).toBe(false);
+  });
+  it("an edit that keeps the computer is unchanged, whatever place the read carried beside it", () => {
+    expect(editBody(placed, { computer: { kind: "sandbox", provider: "docker" } }, "").unchanged).toBe(true);
+  });
+});
+
+describe("capOf, the default cap field's text", () => {
+  it("empty is none, a number (with or without a leading $) is that number, and a $ alone or text is refused", () => {
+    expect(capOf("")).toEqual({ ok: true, value: undefined });
+    expect(capOf("   ")).toEqual({ ok: true, value: undefined });
+    expect(capOf("$2.50")).toEqual({ ok: true, value: 2.5 });
+    expect(capOf(" 4 ")).toEqual({ ok: true, value: 4 });
+    for (const text of ["$", " $ ", "ten"]) expect(capOf(text).ok, text).toBe(false);
+  });
+});
+
 describe("harnessOptions", () => {
   it("offers pi, Claude and Codex in that order, each available or disabled with the server's reason", () => {
     expect(harnessOptions(caps.body.harnesses)).toEqual([
       { id: "pi", label: "Pi", available: true, reason: undefined },
-      { id: "claude-agent", label: "Claude", available: false, reason: "This server does not run claude-agent yet." },
-      { id: "codex", label: "Codex", available: false, reason: "This server does not run codex yet." },
+      { id: "claude-agent", label: "Claude", available: false, reason: "claude-agent needs ANTHROPIC_API_KEY." },
+      { id: "codex", label: "Codex", available: false, reason: "codex needs OPENAI_API_KEY, or a gateway in AGENT_MODEL_BASE_URL." },
     ]);
   });
   it("offers nothing the server does not list", () => {
     expect(harnessOptions([{ id: "pi", available: true }]).map((h) => h.id)).toEqual(["pi"]);
+  });
+  it("offers OpenCode last of the harnesses, when the server lists it", () => {
+    const listed = [{ id: "opencode", available: false, reason: "opencode is not installed here" }, { id: "pi", available: true }, { id: "codex", available: true }];
+    expect(harnessOptions(listed)).toEqual([
+      { id: "pi", label: "Pi", available: true, reason: undefined },
+      { id: "codex", label: "Codex", available: true, reason: undefined },
+      { id: "opencode", label: "OpenCode", available: false, reason: "opencode is not installed here" },
+    ]);
   });
 });
 
@@ -224,37 +293,38 @@ describe("same", () => {
 
 describe("tools by default (tools on, Miguel's rule), and whether the agent reaches the web", () => {
   const offers = toolOffers([
-    { name: "read", available: true }, { name: "write", available: true }, { name: "edit", available: true },
-    { name: "fetch_page", available: true }, { name: "ask_person", available: true }, { name: "browser", available: false, missing: ["BROWSERBASE_API_KEY"] },
+    { name: "read", available: true, harnesses: ["pi", "claude-agent", "codex", "opencode"] }, { name: "write", available: true, harnesses: ["pi", "claude-agent", "codex", "opencode"] }, { name: "edit", available: true, harnesses: ["pi", "claude-agent", "codex", "opencode"] },
+    { name: "web_fetch", available: true, harnesses: ["pi"] }, { name: "ask_person", available: true, harnesses: ["pi"] }, { name: "browser", available: false, missing: ["BROWSERBASE_API_KEY"], harnesses: ["pi"] },
   ]);
   it("takes the server's tools as objects", () => {
-    expect(offers.find((t) => t.name === "browser")).toEqual({ name: "browser", available: false, missing: ["BROWSERBASE_API_KEY"] });
+    expect(offers.find((t) => t.name === "browser")).toEqual({ name: "browser", available: false, missing: ["BROWSERBASE_API_KEY"], harnesses: ["pi"] });
   });
   it("a new pi agent starts with every tool the server can run ticked, never one it can't", () => {
-    expect(defaultTools("pi", offers)).toEqual(["read", "write", "edit", "fetch_page", "ask_person"]);
+    expect(defaultTools("pi", offers)).toEqual(["read", "write", "edit", "web_fetch", "ask_person"]);
   });
   it("on Claude or Codex, only the tools that harness runs here: the server's own rule until it says per harness", () => {
     expect(defaultTools("claude-agent", offers)).toEqual(["read", "write", "edit"]);
     expect(defaultTools("codex", offers)).toEqual(["read", "write", "edit"]);
   });
   it("follows the server when it says which harnesses run each tool", () => {
-    const said = toolOffers([{ name: "read", available: true, harnesses: ["pi", "codex"] }, { name: "fetch_page", available: true, harnesses: ["pi", "codex"] }, { name: "ask_person", available: true, harnesses: ["pi"] }]);
-    expect(defaultTools("codex", said)).toEqual(["read", "fetch_page"]);
+    const said = toolOffers([{ name: "read", available: true, harnesses: ["pi", "codex"] }, { name: "web_fetch", available: true, harnesses: ["pi", "codex"] }, { name: "ask_person", available: true, harnesses: ["pi"] }]);
+    expect(defaultTools("codex", said)).toEqual(["read", "web_fetch"]);
   });
-  it("reaches the web with any of fetch_page, web_fetch and web_search, and with none of them does not", () => {
-    for (const web of ["fetch_page", "web_fetch", "web_search"]) expect(reachesWeb(["read", web]), web).toBe(true);
+  it("reaches the web with web_fetch or web_search, and with neither does not", () => {
+    for (const web of ["web_fetch", "web_search"]) expect(reachesWeb(["read", web]), web).toBe(true);
     expect(reachesWeb(["read", "write", "ask_person"])).toBe(false);
     expect(reachesWeb([])).toBe(false);
   });
   it("keeps what each tool does, as the server says it", () => {
-    expect(toolOffers([{ name: "web_fetch", available: true, summary: "Read one public web page." }])).toEqual([{ name: "web_fetch", available: true, summary: "Read one public web page." }]);
+    expect(toolOffers([{ name: "web_fetch", available: true, summary: "Read one public web page.", harnesses: ["pi"] }])).toEqual([{ name: "web_fetch", available: true, summary: "Read one public web page.", harnesses: ["pi"] }]);
   });
 });
 
 describe("toolOffers, a tool object that doesn't say whether it's available", () => {
   it("reads it as available: only an explicit false makes a tool unavailable", () => {
-    expect(toolOffers([{ name: "read" }])).toEqual([{ name: "read", available: true }]);
-    expect(toolOffers([{ name: "read", available: false }])).toEqual([{ name: "read", available: false }]);
+    // No `harnesses` served: no harness runs it here.
+    expect(toolOffers([{ name: "read" }])).toEqual([{ name: "read", available: true, harnesses: [] }]);
+    expect(toolOffers([{ name: "read", available: false, harnesses: ["pi", "claude-agent", "codex", "opencode"] }])).toEqual([{ name: "read", available: false, harnesses: ["pi", "claude-agent", "codex", "opencode"] }]);
   });
 });
 
@@ -269,5 +339,31 @@ describe("call-only tools", () => {
   it("no harness runs one, so no agent starts with one ticked", () => {
     expect(toolsFor("pi", offers).map((t) => t.name)).toEqual(["read"]);
     expect(defaultTools("pi", offers)).toEqual(["read"]);
+  });
+});
+
+describe("sandbox-only tools", () => {
+  const offers = toolOffers([
+    { name: "read", nodes: true, available: true, harnesses: ["pi", "codex"] },
+    { name: "bash", nodes: false, sandbox_only: true, available: true, harnesses: ["pi", "codex"] },
+  ]);
+  it("keeps what capabilities say of a tool: sandbox_only", () => {
+    expect(offers[1]).toEqual({ name: "bash", available: true, harnesses: ["pi", "codex"], sandbox_only: true, nodes: false });
+  });
+  it("lists one for an agent to name, and starts no new agent with it ticked: a new agent's place is the runner", () => {
+    expect(toolsFor("codex", offers).map((t) => t.name)).toEqual(["read", "bash"]);
+    expect(defaultTools("pi", offers)).toEqual(["read"]);
+  });
+  it("can be ticked only on an agent whose place is a sandbox: a new agent, or a runner one, says why not", () => {
+    for (const place of [undefined, { mode: "runner" }]) expect(sandboxReason(offers[1], place)).toMatch(/^Sandbox-only: it runs in a box/);
+    expect(sandboxReason(offers[1], { mode: "sandbox", box: "docker" })).toBeUndefined();
+    expect(sandboxReason(offers[0], undefined)).toBeUndefined();
+  });
+});
+
+// Where an agent runs (its computer: "the agent's computer" above), and a tool's reason from the server is kept.
+describe("places in the definition", () => {
+  it("toolOffers keeps a tool's reason, for a tool the server can't run with nothing missing", () => {
+    expect(toolOffers([{ name: "bash", available: false, sandbox_only: true, reason: "fixture: no box", harnesses: ["pi"] }])).toEqual([{ name: "bash", available: false, sandbox_only: true, reason: "fixture: no box", harnesses: ["pi"] }]);
   });
 });

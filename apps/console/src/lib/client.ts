@@ -1,11 +1,15 @@
 import type { Stats } from "./mission";
 import type { Agent, Definition, SaveWarning } from "./agentForm";
+import type { AgentLearning, LearningChange, LearningDiff, LearningNote, NoteProblem, NoteText, Page } from "./learning";
+import type { McpAuth, McpClientFeature, McpPreview, McpRefresh, McpServer } from "./mcp";
 import type { RunGraph } from "./runGraph";
 import { applyPage } from "./timeline";
-import type { ApiError, Run, RunFiles, RunStatus, TimelinePage, TimelineRow, ToolKeys, ToolKeysFeature } from "./v2";
+import type { ApiError, Firing, GitHubConnectStart, GitHubDisconnected, GitHubStatus, InputIssue, McpPrivateHosts, TemplateApplied, TemplateApply, TemplateView, RaiseAnswer, Run, RunComputer, RunLearningRead, LearningCost, ComputerHoldAnswer, HandBackOutcome, RunFiles, RunStatus, TimelinePage, TimelineRow, SessionSecrets, SignInForgotten, ToolKeys, ToolKeysFeature, ToolSettings, Trigger, TriggerCreate, TriggerInput, TriggerMade, TriggerSecret, Webhook, WebhookAttempt, WebhookSaved, WebhooksFeature, Archil, ArchilBody, ArchilTest, Computers, ComputerKeysBody, ComputerProvider, ComputerTest } from "./v2";
 
 /** A request AgentRun Server refused: its HTTP status and its typed error (`code`, `message`, `retryable`). */
-export type FieldIssue = { field: string; reason: string; message: string };
+/** A refusal's issue at one field, as the server names it (with its `fix`, when it says one). Its `reason` is any string, as
+ *  ApiError's `code` is: the server also sends reasons its document does not list yet (an MCP server's `url` "redirect"). */
+export type FieldIssue = InputIssue;
 
 export class ClientError extends Error {
   /** A 422's issues, by field, as the server names them. */
@@ -14,6 +18,8 @@ export class ClientError extends Error {
   retryAfterMs?: number;
   /** What the server says beyond the message (`error.details`): a 409 `agent_not_runnable` names the box it lacks. */
   details?: Record<string, unknown>;
+  /** A note the server's checks refused (400): each check it fails, printable. */
+  problems?: NoteProblem[];
   constructor(readonly status: number, readonly code: string, message: string, readonly retryable = false, readonly requestId?: string) {
     super(message);
     this.name = "ClientError";
@@ -21,9 +27,19 @@ export class ClientError extends Error {
   toApiError(): ApiError { return { code: this.code, message: this.message, retryable: this.retryable, request_id: this.requestId, ...(this.details ? { details: this.details } : {}) }; }
 }
 
+/** A failed request as a page says it: a refusal as the server's `code: message`, any other failure by its message. */
+export const problemOf = (e: unknown) => (e instanceof ClientError ? `${e.code}: ${e.message}` : e instanceof Error ? e.message : String(e));
+
 /** POST /v2/workflows/validate's answer: issues refuse a save, warnings only advise. Paths are JSON Pointers into the
  *  workflow ("" for the document itself). */
 export type WorkflowCheck = { ok: boolean; issues: { path: string; code: string; message: string }[]; warnings: (string | { path?: string; message: string })[] };
+
+/** `GET /v2/setup/import`'s answer. Before the owner is set: the server can import, still counting (202), then its counts
+ *  (null for each when the count failed). After: the import's state. `{ offer: false }`: none, either way. */
+export type ImportOffer = { counting: true } | { projects: number | null; sessions: number | null };
+export type ImportState = { state: "running" } | { state: "done"; agents: number; runs: number; skipped: number } | { state: "stopped" };
+export type SetupImport = ImportOffer | ImportState;
+type NoOffer = { offer: false };
 
 /** A runs list's filter (GET /v2/runs's `status` and `archived`): runs in one status, and the archived runs in place of
  *  the others. */
@@ -37,12 +53,20 @@ const runsQuery = (limit: number, cursor: string | null | undefined, { status, a
   return `?${q}`;
 };
 
-export type Capabilities = { harnesses: { id: string; available: boolean; reason?: string; steer?: boolean }[]; features: { messages: { steer: boolean; answer: boolean; follow_up: boolean; steer_workflow_runs: boolean }; tool_keys?: ToolKeysFeature } };
+/** `limits`: this server's own (the largest upload, null for none, and the most files a run names). */
+/** `models.ready`: whether an agent that names no model runs here; when not, `needs` says what would make it: a model
+ *  provider's key, or another default model. */
+export type Capabilities = { harnesses: { id: string; available: boolean; reason?: string; steer?: boolean }[]; features: { messages: { steer: boolean; answer: boolean; follow_up: boolean; steer_workflow_runs: boolean }; tool_keys?: ToolKeysFeature; webhooks?: WebhooksFeature; mcp_client?: McpClientFeature; triggers?: { routes: boolean; min_every_s?: number; history_kept?: number } }; limits: { max_upload_bytes: number | null; max_files_per_run: number }; models: { default?: string | null; ready?: boolean; needs?: "key" | "model" | null; source?: "faux" | "gateway" | "providers" } };
 export type Client = ReturnType<typeof createClient>;
 
+/** The paths whose 401 is the answer to signing in (a wrong password, a wrong setup code), not a session that ended. */
+const SIGNING_IN = new Set(["/auth/sign-in", "/setup"]);
+
 /** The console's client for `agentrun.v2/0`, on the page's own origin: the server's HttpOnly cookie is the session, and
- *  every write is same-origin JSON (the server refuses a cookie write from another origin). */
-export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), base = "/v2" }: { fetch?: typeof fetch; base?: string } = {}) {
+ *  every write is same-origin JSON (the server refuses a cookie write from another origin). `onSignedOut`: called on
+ *  every 401 but signing in's own, so the console knows its session ended (a sign-out in another tab, an expiry) at
+ *  the first read the server refuses, whichever page made it. */
+export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), base = "/v2", onSignedOut }: { fetch?: typeof fetch; base?: string; onSignedOut?: () => void } = {}) {
   async function call<T>(method: string, path: string, opts: { body?: unknown; headers?: Record<string, string>; signal?: AbortSignal; text?: boolean } = {}): Promise<T> {
     return (await callTagged<T>(method, path, opts)).body;
   }
@@ -59,11 +83,13 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     if (!res.ok) {
-      const e = ((await res.json().catch(() => null)) as { error?: ApiError & { fields?: FieldIssue[]; retry_after_ms?: number } } | null)?.error;
+      if (res.status === 401 && !SIGNING_IN.has(path)) onSignedOut?.();
+      const e = ((await res.json().catch(() => null)) as { error?: ApiError & { fields?: FieldIssue[]; retry_after_ms?: number; problems?: NoteProblem[] } } | null)?.error;
       const err = new ClientError(res.status, e?.code ?? "http_error", e?.message ?? `${method} ${path}: ${res.status}`, e?.retryable ?? false, e?.request_id);
       if (e?.fields) err.fields = e.fields;
       if (typeof e?.retry_after_ms === "number") err.retryAfterMs = e.retry_after_ms;
       if (e?.details && typeof e.details === "object" && !Array.isArray(e.details)) err.details = e.details;
+      if (Array.isArray(e?.problems)) err.problems = e.problems;
       throw err;
     }
     const out = !text && (res.headers.get("content-type") ?? "").includes("json") ? ((await res.json()) as T) : ((await res.text()) as T);
@@ -71,20 +97,37 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
   }
   const agent = (id: string) => `/agents/${encodeURIComponent(id)}`;
   const run = (id: string) => `/runs/${encodeURIComponent(id)}`;
+  const mcpServer = (name: string) => `/settings/mcp-servers/${encodeURIComponent(name)}`;
+  const trigger = (id: string) => `/triggers/${encodeURIComponent(id)}`;
   // A create's warnings come on its answer, and the agent's page that opens next reads the agent again (a read carries
   // none): they are kept here and put on a read of that same revision, until the next save or make-current of the agent,
   // after which they may be stale (the host can be set up since), so they go.
   const created = new Map<string, { revision: string; warnings: SaveWarning[] }>();
+  const note = (id: string, file: string) => `${agent(id)}/learning/files/${encodeURIComponent(file)}`;
+  // A note is text (text/markdown) both ways round, with its version as the ETag; a refusal is still JSON.
+  const asNote = (r: { body: string; etag: string | null }): NoteText => ({ note: r.body, etag: r.etag });
+  const noteAccept = { accept: "text/markdown, application/json" };
   return {
     capabilities: () => call<Capabilities>("GET", "/capabilities"),
-    /** The owner's session; its status too, since a server without accounts answers 404. */
-    session: () => callTagged<{ password_set: boolean; signed_in: boolean }>("GET", "/auth/session").then((r) => ({ status: r.status, body: r.body as unknown }), (e) => {
-      if (e instanceof ClientError && e.status === 404) return { status: 404, body: null as unknown };
+    /** The session, on a server with accounts or without (`accounts`), with whether it may write a secret. */
+    session: () => callTagged<SessionSecrets>("GET", "/auth/session").then((r) => ({ status: r.status, body: r.body as unknown })),
+    signIn: (password: string) => call<{ signed_in: boolean }>("POST", "/auth/sign-in", { body: { password } }),
+    /** Sets the owner's password. `importSessions`: the owner ticked setup's box, so the server imports this machine's
+     *  sessions once the password is set; never sent otherwise. */
+    setup: (password: string, code?: string, importSessions = false) =>
+      call<{ signed_in: boolean; importing?: boolean }>("POST", "/setup", { body: { password, ...(code ? { code } : {}), ...(importSessions ? { import: true } : {}) } }),
+    /** `GET /v2/setup/import` (a serve extension, on a server on this machine only): before the owner is set, how many
+     *  sessions setup's box would import; after, to the signed-in owner, how the import asked for at setup stands. Null
+     *  where the server offers none (`{ offer: false }`, or a 404: a server without accounts has no such route, and once
+     *  the owner is set it is none to a caller not signed in) or refuses the read. */
+    setupImport: () => call<SetupImport | NoOffer>("GET", "/setup/import").then((r) => ((r as Partial<NoOffer> | null)?.offer === false ? null : (r as SetupImport)), (e) => {
+      if (e instanceof ClientError && (e.status === 404 || e.status === 403)) return null;
       throw e;
     }),
-    signIn: (password: string) => call<{ signed_in: boolean }>("POST", "/auth/sign-in", { body: { password } }),
-    setup: (password: string, code?: string) => call<{ signed_in: boolean }>("POST", "/setup", { body: { password, ...(code ? { code } : {}) } }),
+    /** Signs this browser out; every other browser stays signed in. */
     signOut: () => call<{ signed_out: boolean }>("POST", "/auth/sign-out", { body: {} }),
+    /** Signs out every browser and phone signed in to this server, this one too. */
+    signOutEverywhere: () => call<{ signed_out: boolean }>("POST", "/auth/sign-out-everywhere", { body: {} }),
     /** Counts and sums from the server's store, for Mission Control (`GET /v2/stats`, a serve extension). */
     stats: () => call<Stats>("GET", "/stats"),
     listRuns: (limit = 50, cursor?: string | null, filter?: RunsFilter) => call<{ runs: Run[]; next_cursor: string | null }>("GET", `/runs${runsQuery(limit, cursor, filter)}`),
@@ -118,12 +161,60 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     setCurrent: async (id: string, revision: string) => { const r = await call<Agent>("POST", `${agent(id)}/current`, { body: { revision } }); created.delete(id); return r; },
     archiveAgent: (id: string) => call<Agent>("POST", `${agent(id)}/archive`, { body: {} }),
     unarchiveAgent: (id: string) => call<Agent>("POST", `${agent(id)}/unarchive`, { body: {} }),
+    /** What an agent learned: its notes' first page, the index its next run reads, the changes, and how its runs did. */
+    agentLearning: (id: string) => call<AgentLearning>("GET", `${agent(id)}/learning`),
+    /** An agent's cost per run, run after run: its latest `limit` runs (the server's default when absent) and what the
+     *  whole series shows. */
+    learningCost: (id: string, limit?: number) => call<LearningCost>("GET", `${agent(id)}/learning/cost${limit ? `?limit=${limit}` : ""}`),
+    learningNotes: (id: string, cursor: string) => call<Page<LearningNote>>("GET", `${agent(id)}/learning/notes?cursor=${encodeURIComponent(cursor)}`),
+    learningLog: (id: string, cursor: string) => call<Page<LearningChange>>("GET", `${agent(id)}/learning/log?cursor=${encodeURIComponent(cursor)}`),
+    /** A note's whole text and its version, for the If-Match of an edit or a retire. */
+    readNote: async (id: string, file: string) => asNote(await callTagged<string>("GET", note(id, file), { headers: noteAccept, text: true })),
+    /** Edits a note (`etag`: the version the edit was made on; 412 when it changed since) or creates one (`create`: 412
+     *  when the name is taken). The text goes as JSON, the one write the server takes under the page's session. The
+     *  answer is the note as it now is, and its new version. */
+    writeNote: async (id: string, file: string, text: string, on: { etag: string } | { create: true }) =>
+      asNote(await callTagged<string>("PUT", note(id, file), { body: { text }, headers: { ...noteAccept, ...("etag" in on ? { "if-match": on.etag } : { "if-none-match": "*" }) }, text: true })),
+    /** Retires a note: out of every later run's instructions, its record kept. 412 when it changed since `etag`. */
+    retireNote: async (id: string, file: string, etag: string) => asNote(await callTagged<string>("POST", `${note(id, file)}/retire`, { body: {}, headers: { ...noteAccept, "if-match": etag }, text: true })),
+    /** Approves a note that waits for the owner's OK, so later runs read it; 412 when it changed since `etag`. */
+    approveNote: async (id: string, file: string, etag: string) => asNote(await callTagged<string>("POST", `${note(id, file)}/approve`, { body: {}, headers: { ...noteAccept, "if-match": etag }, text: true })),
+    /** A retired note, skill (its SKILL.md) or draft (its README.md) made active again, on version `etag`: the owner's
+     *  session only, and checked again as a new one is (POST …/learning/files/{file}/restore). */
+    restoreNote: async (id: string, file: string, etag: string) => asNote(await callTagged<string>("POST", `${note(id, file)}/restore`, { body: {}, headers: { ...noteAccept, "if-match": etag }, text: true })),
+    /** Forgets one of an agent's saved browser sign-ins (DELETE /agents/{id}/sign-ins/{key}): every vendor's under the key. */
+    forgetSignIn: (id: string, key: string) => call<SignInForgotten>("DELETE", `${agent(id)}/sign-ins/${encodeURIComponent(key)}`),
+    /** A learned workflow (`name`, its folder's) made into a workflow agent of its own, which runs with no agent loop: an
+     *  active one alone (409 learned_not_active otherwise), checked again as a restore checks it. The owner's session only.
+     *  The answer is the new agent; the learned workflow stays where it is. Under `idempotencyKey`, so a retry after a lost
+     *  answer gets the agent the first one made, never a second. */
+    promoteWorkflow: async (id: string, name: string, idempotencyKey: string) => {
+      const made = await call<Agent>("POST", `${agent(id)}/learning/workflows/${encodeURIComponent(name)}/promote`, { body: {}, headers: { "idempotency-key": idempotencyKey } });
+      if (made.warnings?.length) created.set(made.agent_id, { revision: made.revision, warnings: made.warnings });
+      return made;
+    },
     getRun: (id: string) => call<Run>("GET", run(id)),
+    /** What the run's learning changed in its agent's notes, file by file (each with its patch, or why it is withheld). */
+    runLearningDiff: (id: string) => call<LearningDiff>("GET", `${run(id)}/learning/diff`),
+    /** The run's learning (GET /v2/runs/{id}/learning): with `used`, the learned skills it was offered and read, and the
+     *  learned workflows it called. Null for a run that does not learn. */
+    runLearning: (id: string) => call<RunLearningRead>("GET", `${run(id)}/learning`),
+    /** The run's computer, every kind with a screen: off, none or live with its viewer, and who drives (GET /v2/runs/{id}/computer). */
+    runComputer: (id: string) => call<RunComputer>("GET", `${run(id)}/computer`),
+    /** The owner takes the run's desktop or phone (a browser is taken in its own viewer): `pending` until the agent's step
+     *  in flight ends, then the person's. The owner's password session only. */
+    takeOverComputer: (id: string) => call<ComputerHoldAnswer>("POST", `${run(id)}/computer/take-over`, { body: {} }),
+    /** Hands the run's computer back, every kind: answers the agent's ask (`outcome`, done when not given), else ends the
+     *  owner's take. The first answer wins. The owner's password session only. */
+    handBackComputer: (id: string, outcome?: HandBackOutcome) => call<ComputerHoldAnswer>("POST", `${run(id)}/computer/hand-back`, { body: outcome ? { outcome } : {} }),
     /** Hides a run from the runs list (or shows it again), its history kept. The answer is the run. */
     archiveRun: (id: string) => call<Run>("POST", `${run(id)}/archive`, { body: {} }),
     unarchiveRun: (id: string) => call<Run>("POST", `${run(id)}/unarchive`, { body: {} }),
+    /** Raises an agentic run's spend cap (only a raise: above its current cap, else 422). A run paused at its cap goes on
+     *  (`resumed`); an ended run is 409 not_continuable. */
+    raiseCap: (id: string, maxCostUsd: number) => call<RaiseAnswer>("PATCH", run(id), { body: { max_cost_usd: maxCostUsd } }),
     /** Starts a run. The server answers 202 with the run; the same key with the same body answers with that same run. */
-    startRun: async (agentId: string, body: { input: unknown; revision?: string; effort?: string; max_cost_usd?: number }, idempotencyKey: string) => {
+    startRun: async (agentId: string, body: { input: unknown; revision?: string; effort?: string; max_cost_usd?: number; file_ids?: string[] }, idempotencyKey: string) => {
       const r = await callTagged<Run>("POST", `${agent(agentId)}/runs`, { body, headers: { "idempotency-key": idempotencyKey } });
       return { run: r.body, status: r.status };
     },
@@ -134,6 +225,8 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
       return call<TimelinePage>("GET", `${run(id)}/timeline${q.size ? `?${q}` : ""}`, { signal });
     },
     listFiles: (id: string) => call<RunFiles>("GET", `${run(id)}/files`),
+    /** Deletes an upload (`DELETE /v2/files/{id}`): one the person removed before a run named it. */
+    deleteUpload: (fileId: string) => call<string>("DELETE", `/files/${encodeURIComponent(fileId)}`),
     readFile: (id: string, path: string) => call<string>("GET", `${run(id)}/files/${path.split("/").map(encodeURIComponent).join("/")}`, { text: true }),
     /** One send, one key: a retry of the same send reuses its key, so the server keeps the first request's identity. */
     sendMessage: (id: string, content: string, idempotencyKey: string) =>
@@ -161,7 +254,85 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
      *  state, and the server keeps no record of a body that holds the values. */
     saveToolKey: (id: string, values: Record<string, string>) => call<unknown>("PUT", `/settings/tool-keys/${encodeURIComponent(id)}`, { body: { values } }),
     removeToolKey: (id: string) => call<unknown>("DELETE", `/settings/tool-keys/${encodeURIComponent(id)}`),
+    /** Each kind of computer, whether this server offers it and why not, and its providers with their keys by name, never a
+     *  value. */
+    computers: () => call<Computers>("GET", "/computers"),
+    /** Saves a provider's keys, declared names only; null removes one. No Idempotency-Key: the same PUT twice is the same
+     *  state. The answer is the provider, never a value. */
+    saveComputerKeys: (provider: string, keys: ComputerKeysBody) => call<ComputerProvider>("PUT", `/computers/${encodeURIComponent(provider)}/keys`, { body: keys }),
+    /** One account-level read of a provider with its saved keys; it never makes a computer. */
+    testComputer: (provider: string) => call<ComputerTest>("POST", `/computers/${encodeURIComponent(provider)}/test`),
+    /** Archil (Mode 2): on or off, its disk settings and its key by name, never a value. */
+    archil: () => call<Archil>("GET", "/workspace/archil"),
+    /** Turns Archil on, or changes it: the settings replaced, the key given sealed (null removes it). The answer is the view. */
+    saveArchil: (body: ArchilBody) => call<Archil>("PUT", "/workspace/archil", { body }),
+    /** Turns Archil off (back to Mode 1); its key is kept. The answer is the view. */
+    archilOff: () => call<Archil>("DELETE", "/workspace/archil"),
+    /** One listing of the disk's root with the saved key. */
+    testArchil: () => call<ArchilTest>("POST", "/workspace/archil/test"),
+    /** The webhook, never its secret (a serve extension). */
+    webhook: () => call<Webhook>("GET", "/settings/webhook"),
+    /** Sets the webhook's URL; the first PUT makes its secret and answers it, once (`secret`). */
+    saveWebhook: (url: string) => call<WebhookSaved>("PUT", "/settings/webhook", { body: { url } }),
+    removeWebhook: () => call<unknown>("DELETE", "/settings/webhook"),
+    /** A `webhook.test` message, tried once now: its attempt. */
+    testWebhook: () => call<WebhookAttempt>("POST", "/settings/webhook/test", { body: {} }),
+    /** The last attempts, newest first. */
+    /** Triggers (serve's trigger/1): schedules and webhooks, each starting an agent's capped runs. */
+    listTriggers: () => call<{ triggers: Trigger[] }>("GET", "/triggers"),
+    getTrigger: (id: string) => call<Trigger>("GET", trigger(id)),
+    /** A trigger made: under `key` (Idempotency-Key), so a retry answers the same trigger, a webhook's with `note` in place
+     *  of its secret, which the first answer showed once. */
+    createTrigger: (body: TriggerCreate, key: string) => call<TriggerMade>("POST", "/triggers", { body, headers: { "idempotency-key": key } }),
+    /** A webhook trigger's new signing secret, shown this once; the old one signs nothing from now on. */
+    rotateTriggerSecret: (id: string) => call<TriggerSecret>("POST", `${trigger(id)}/secret`, { body: {} }),
+    updateTrigger: (id: string, body: TriggerInput) => call<Trigger>("PATCH", trigger(id), { body }),
+    deleteTrigger: (id: string) => call<unknown>("DELETE", trigger(id)),
+    /** Runs a schedule now: `key` is the click's own Idempotency-Key, so the same click sent again fires once. */
+    fireTrigger: (id: string, key: string) => call<Firing>("POST", `${trigger(id)}/fire`, { body: {}, headers: { "idempotency-key": key } }),
+    /** Its last firings, newest first. */
+    triggerFirings: (id: string) => call<{ firings: Firing[] }>("GET", `${trigger(id)}/firings`),
+    webhookDeliveries: () => call<{ attempts: WebhookAttempt[] }>("GET", "/settings/webhook/deliveries"),
+    /** A message of the log sent again, once now, under its webhook-id: its attempt. */
+    redeliverWebhook: (id: string) => call<WebhookAttempt>("POST", `/settings/webhook/deliveries/${encodeURIComponent(id)}/redeliver`, { body: {} }),
+    /** The server's provider per capability that has a choice (its default where it sets none). */
+    /** Remote MCP servers (a serve extension): a read shows a credential's state, never its value. A preview stores
+     *  nothing; a save with no credential in `auth` keeps the sealed one. */
+    /** The templates this server offers. */
+    listTemplates: () => call<{ templates: TemplateView[] }>("GET", "/templates"),
+    /** Makes a template's agent (and its triggers) under one Idempotency-Key: the same request again answers what it did. */
+    applyTemplate: (name: string, body: TemplateApply, idempotencyKey: string) =>
+      call<TemplateApplied>("POST", `/templates/${encodeURIComponent(name)}/apply`, { body, headers: { "idempotency-key": idempotencyKey } }),
+    listMcpServers: () => call<{ servers: McpServer[] }>("GET", "/settings/mcp-servers"),
+    /** `name`: the saved server an edit form previews, so its address as shown (origin and `/…`) is previewed at the saved endpoint. */
+    previewMcpServer: (url: string, auth: McpAuth, name?: string) => call<McpPreview>("POST", "/settings/mcp-servers/preview", { body: { url, auth, ...(name ? { name } : {}) } }),
+    /** Sends no prices: the server keeps the saved ones for the tools still listed at the same address. */
+    saveMcpServer: (name: string, url: string, auth: McpAuth) => call<McpServer>("PUT", mcpServer(name), { body: { url, auth } }),
+    refreshMcpServer: (name: string) => call<McpRefresh>("POST", `${mcpServer(name)}/refresh`, { body: {} }),
+    deleteMcpServer: (name: string) => call<unknown>("DELETE", mcpServer(name)),
+    /** Starts an OAuth sign-in to the server at `url`: the page the person opens to approve it. */
+    startMcpSignIn: (name: string, body: { url: string; scopes?: string[]; client_id?: string; client_secret?: string }) => call<{ authorization_url: string }>("POST", `${mcpServer(name)}/oauth/start`, { body }),
+    /** The private-network hosts an MCP server's authorization server may be on; none by default. */
+    mcpPrivateHosts: () => call<McpPrivateHosts>("GET", "/settings/mcp-servers/oauth/private-hosts"),
+    /** Replaces them (the owner's password session alone): the list as the server keeps it. */
+    saveMcpPrivateHosts: (hosts: string[]) => call<McpPrivateHosts>("PUT", "/settings/mcp-servers/oauth/private-hosts", { body: { hosts } }),
+    /** Whether this server has a GitHub App, and the App when it does: always a 200, `{connected: false}` with none. */
+    githubConnection: () => call<GitHubStatus>("GET", "/integrations/github"),
+    /** Starts connecting one: the form the browser posts to GitHub. 409 github_already_connected, github_no_public_url or
+     *  github_no_seal_key, in the server's words. */
+    connectGitHub: (org?: string) => call<GitHubConnectStart>("POST", "/integrations/github/connect", { body: org ? { org } : {} }),
+    /** Disconnects it: every GitHub trigger turns off; the note says what to delete on GitHub. */
+    disconnectGitHub: () => call<GitHubDisconnected>("DELETE", "/integrations/github"),
+    toolSettings: () => call<ToolSettings>("GET", "/settings/tools"),
+    /** Replaces the server's providers: a capability the body leaves out takes its default. The answer is each one's now. */
+    saveToolSettings: (settings: ToolSettings) => call<ToolSettings>("PUT", "/settings/tools", { body: settings }),
     stop: (id: string) => call<unknown>("POST", `${run(id)}/stop`, { body: {} }),
+    /** Answers the tool call the run waits on the owner's approval of (`pending.id`, approvals/1): 204. The owner's
+     *  password session alone may (a token is 403); the first answer wins, so the same one again is 204 and another 409
+     *  `not_continuable` with `details: { reason: "already_answered", decision }`. `note`: with deny, the reason the model
+     *  is told; sent only when given. */
+    answerApproval: (id: string, approvalId: string, decision: "allow" | "deny", note?: string) =>
+      call<unknown>("POST", `${run(id)}/approvals/${encodeURIComponent(approvalId)}`, { body: { decision, ...(note ? { note } : {}) } }),
     cancel: (id: string) => call<unknown>("POST", `${run(id)}/cancel`, { body: {} }),
   };
 }
@@ -180,12 +351,13 @@ export async function allPages<P extends { next_cursor: string | null }, T>(page
 }
 
 /** Follows a run's timeline from its cursor until the server says the timeline is final and has no more rows (or
- *  `signal` aborts), handing the merged rows to `onRows` after each page. A request in flight when `signal` aborts is
- *  cancelled, and nothing after the abort is published. Resolves with the last page. */
+ *  `signal` aborts), handing the merged rows to `onRows` after each page. With no `onRows` it watches the run's status
+ *  alone: each page goes to `onPage` and only the cursor is kept, no row is merged or held. A request in flight when
+ *  `signal` aborts is cancelled, and nothing after the abort is published. Resolves with the last page. */
 export async function follow(
   v2: Client,
   runId: string,
-  { onRows, onPage, signal, waitMs = 25000, minDelayMs = 250 }: { onRows: (rows: TimelineRow[]) => void; onPage?: (page: TimelinePage) => void; signal?: AbortSignal; waitMs?: number; minDelayMs?: number },
+  { onRows, onPage, signal, waitMs = 25000, minDelayMs = 250 }: { onRows?: (rows: TimelineRow[]) => void; onPage?: (page: TimelinePage) => void; signal?: AbortSignal; waitMs?: number; minDelayMs?: number },
 ): Promise<TimelinePage> {
   let rows: TimelineRow[] = [];
   let after: number | undefined;
@@ -194,9 +366,9 @@ export async function follow(
     const page = await v2.getTimeline(runId, after === undefined ? { signal } : { after, waitMs, signal }).catch((e) => { if (signal?.aborted) return null; throw e; });
     if (!page || signal?.aborted) break;
     last = page;
-    rows = applyPage(rows, page);
+    if (onRows) rows = applyPage(rows, page);
     onPage?.(page);
-    onRows(rows);
+    onRows?.(rows);
     if (page.final && !page.has_more) break;
     after = page.next_after;
     const delay = Math.max(minDelayMs, page.unchanged ? (page.poll_after_ms ?? 0) : 0);

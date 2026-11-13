@@ -1,14 +1,13 @@
-// One server per data root, written for AgentRun. A server takes <data>/server.lock before anything reads or writes the
-// data root, and holds it until it closes; a second server on the same root is refused by name and touches nothing.
+// One server per data root, written for AgentRun. A server takes <data>/server.lock once it holds its store (server.ts
+// dataRootLock), and holds it until it closes; a second server on the same root is refused by name. The store's owner
+// lock holds one store; this one holds the data root beside it (the token, the seal key, uploads, harness installs), which
+// two servers on two stores (two Postgres schemas, or SQLite and Postgres) would otherwise share.
 //
-// The lock is SQLite's EXCLUSIVE lock, as pi-durable-disk's owner.lock: held on one connection for the server's life,
+// The lock is SQLite's EXCLUSIVE lock, as a run's store holds it: held on one connection for the server's life,
 // dropped by the kernel when the process dies (a crashed server's file is reused by the next start, never refused for
 // existing), and refused to a second connection whether it is in another process or in this one. The file is opened by
 // SQLite alone: a POSIX lock is dropped when any descriptor the process holds on the file is closed, so no other code
 // may open it (its mode is set by path).
-//
-// pi-durable-disk forgets a command record written in another pid namespace only under the precondition this lock
-// keeps: two servers never hold one data root at once.
 import { chmodSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";

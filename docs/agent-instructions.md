@@ -4,17 +4,17 @@ Give this file to your coding agent. Use the actual AgentRun interpreter and Jev
 
 ## Read first
 
-- [README and quickstart](../README.md#quickstart)
+- [Workflow language and quickstart](../packages/dsl/README.md)
 - [Support workflow](../examples/support-answer.mjs)
 - [Live support integration](support-quickstart.md)
 - [Host integration contract](host-integration.md)
 - [Jev adapter](../packages/jev/README.md)
 
-If AgentRun is not checked out, clone `https://github.com/Parcha-ai/agentrun.git` on `main` into a new directory. If access is unavailable, report the failure. Do not replace it with an unrelated similarly named package. The packages are published on npm. Install `@parcha/agentrun-dsl@beta` and, for Jev decisions, `@parcha/agentrun-jev@beta` in the target application. Use the separate source checkout below to run the support example.
+If AgentRun is not checked out, clone `https://github.com/Parcha-ai/agentrun.git` on `main` into a new directory. If access is unavailable, report the failure. Do not replace it with an unrelated similarly named package. The packages are published on npm. Install `@parcha/agentrun-dsl@latest` and, for Jev decisions, `@parcha/agentrun-jev@latest` in the target application. Use the separate source checkout below to run the support example.
 
 ## Establish a working baseline
 
-Use Node 22.19+ or 24.2+ (the checkout includes `.nvmrc`). In the checkout, run:
+Use Node 24.22.3 or newer (the checkout includes `.nvmrc`). In the checkout, run:
 
 ```sh
 npm ci --ignore-scripts

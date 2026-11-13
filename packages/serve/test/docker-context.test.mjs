@@ -16,14 +16,14 @@ const buildx = spawnSync("docker", ["buildx", "version"], { stdio: "ignore" }).s
 test("the image's build context holds the workspace and the console's sources, and never a .env, an .npmrc, node_modules or dist", { skip: !buildx && "docker buildx is not installed", timeout: 120_000 }, async (t) => {
   const dir = await scratch(t);
   const context = join(dir, "context");
-  const kept = ["package.json", "package-lock.json", "tsconfig.base.json", "packages/serve/src/server.ts", "packages/serve/docker/Dockerfile", "scripts/build-pi-demo.mjs", "examples/typed-research.ts", "examples/typed-research-fixtures.ts", "apps/console/package.json", "apps/console/package-lock.json", "apps/console/index.html", "apps/console/src/main.tsx"];
+  const kept = ["package.json", "package-lock.json", "tsconfig.base.json", "packages/serve/src/server.ts", "packages/serve/docker/Dockerfile", "scripts/build-workspaces.mjs", "apps/console/package.json", "apps/console/package-lock.json", "apps/console/index.html", "apps/console/src/main.tsx"];
   const dropped = [
     ".env", ".env.local", ".env.production", ".npmrc",
     "packages/serve/.env", "packages/serve/.env.test", "packages/serve/.npmrc", "packages/serve/src/.env",
     "scripts/.env", "examples/.env", "apps/console/.env",
     "node_modules/zod/index.js", "packages/serve/node_modules/x/index.js", "packages/serve/dist/cli.js", "packages/serve/tsconfig.tsbuildinfo",
     "apps/console/node_modules/vite/index.js", "apps/console/dist/index.html", "apps/viewer/index.html",
-    ".git/config", "docs/releasing.md", "examples/starter/index.ts", "render.yaml", "changes/x.md",
+    ".git/config", "docs/releasing.md", "examples/starter/index.ts", "examples/typed-research.ts", "render.yaml", "changes/x.md",
   ];
   for (const path of [...kept, ...dropped]) {
     await mkdir(dirname(join(context, path)), { recursive: true });
@@ -38,21 +38,64 @@ test("the image's build context holds the workspace and the console's sources, a
   for (const path of dropped) assert.equal(existsSync(join(out, path)), false, `${path} is not in the context`);
 });
 
-test("both stages build on one digest-pinned node:22 trixie base, and the runtime has git 2.40 or newer", async () => {
+test("every stage builds on one digest-pinned debian trixie base, its Node the verified 24.22.3 alone, and the runtime has git 2.40 or newer", async () => {
   const dockerfile = await readFile(join(ROOT, "packages/serve/docker/Dockerfile"), "utf8");
-  const bases = [...dockerfile.matchAll(/^FROM (\S+)/gm)].map(([, image]) => image);
-  assert.equal(bases.length, 2, "a build stage and a runtime stage");
-  assert.match(bases[0], /^node:22\.\d+\.\d+-trixie-slim@sha256:[0-9a-f]{64}$/, "pinned by digest");
-  assert.equal(bases[1], bases[0], "one base for both stages");
-  // pi-git-remote needs git 2.40; trixie's is 2.47, bookworm's 2.39.
+  const stages = [...dockerfile.matchAll(/^FROM (\S+)(?: AS (\S+))?$/gm)].map(([, image, name]) => ({ image, name }));
+  assert.deepEqual(stages.map((stage) => stage.name), ["node", "android", "build", "adb", undefined], "a node stage, the Android SDK's stage, a build stage, the adb stage and a runtime stage");
+  assert.match(stages[0].image, /^debian:trixie-slim@sha256:[0-9a-f]{64}$/, "plain Debian, pinned by digest: no other Node in any layer");
+  for (const stage of stages) assert.equal(stage.image, stages[0].image, "one base for every stage");
+  // The node stage installs the release through install-node.sh, which verifies it against the pinned signer.
+  const [, node] = dockerfile.split(/^FROM /m);
+  assert.match(node, /^ARG NODE_VERSION=24\.22\.3$/m, "Node 24.22.3, the November 2026 security release");
+  assert.match(node, /^ARG NODE_SIGNER=[0-9A-F]{40}$/m, "the signer pinned by its full fingerprint");
+  assert.match(node, /^ARG NODE_RELEASE_KEYS=[0-9a-f]{40}$/m, "nodejs/release-keys pinned by commit");
+  assert.match(node, /sh \/usr\/local\/sbin\/install-node\.sh "\$NODE_VERSION" "\$NODE_SIGNER" "\$NODE_RELEASE_KEYS" \/opt\/node/, "installed by the verifying script");
+  assert.equal(dockerfile.match(/^COPY --from=node \/opt\/node\/ \/usr\/local\/$/gm)?.length, 2, "the build and runtime stages take that Node, and only it");
+  const runtimeNode = /^RUN \[ "\$\(node --version\)" = v24\.22\.3 \][^\n]*\\\n[^\n]*find \/ -xdev -type f -name node ! -path \/usr\/local\/bin\/node/m;
+  assert.match(dockerfile.slice(dockerfile.lastIndexOf("\nFROM ")), runtimeNode, "the runtime fails on any other node binary");
+  // An agent's learning folder needs git 2.32 (the learning script's floor, learn/learning.sh); the image holds itself to 2.40 by its own choice, and
+  // trixie's is 2.47.
   const runtime = dockerfile.slice(dockerfile.lastIndexOf("\nFROM "));
   const install = /apt-get install [^\n]*/.exec(runtime)?.[0] ?? "";
   assert.match(install, /--no-install-recommends/, "without recommends");
   for (const pkg of ["tini", "git"]) assert.match(install, new RegExp(`\\s${pkg}(\\s|$)`), `the runtime installs ${pkg}`);
-  // The RUN that reads git's version, continuation lines included, fails the build below 2.40.
+  // The RUN that reads git's version, continuation lines included, fails the build below the image's own 2.40.
   const guard = [...runtime.matchAll(/^RUN (?:[^\n]*\\\n)*[^\n]*/gm)].map(([run]) => run).find((run) => run.includes("git --version")) ?? "";
   assert.match(guard, /dpkg --compare-versions "\$v" ge 2\.40\b/, "the build compares the git it installed with 2.40");
   assert.match(guard, /\|\| \{[^}]*\bexit 1; \}/, "an older git fails the build");
+});
+
+test("the amd64 image carries adb from Android platform-tools r35.0.2, its zip pinned by sha256; the arm64 image none", async () => {
+  const dockerfile = await readFile(join(ROOT, "packages/serve/docker/Dockerfile"), "utf8");
+  const stage = /^FROM \S+ AS adb\n([\s\S]*?)\n\nFROM /m.exec(dockerfile)?.[1] ?? "";
+  assert.match(stage, /^ARG PLATFORM_TOOLS_ZIP=https:\/\/dl\.google\.com\/android\/repository\/platform-tools_r35\.0\.2-linux\.zip$/m, "r35.0.2, from Google");
+  assert.match(stage, /^ARG PLATFORM_TOOLS_SHA256=acfdcccb123a8718c46c46c059b2f621140194e5ec1ac9d81715be3d6ab6cd0a$/m, "the zip's sha256");
+  const at = (text) => stage.indexOf(text);
+  assert.ok(at('if [ "$TARGETARCH" = amd64 ]') >= 0 && at('if [ "$TARGETARCH" = amd64 ]') < at("curl"), "fetched for amd64 alone");
+  assert.ok(at("sha256sum -c") > at("curl") && at("sha256sum -c") < at("unzip -q"), "the zip is checked before anything in it is unpacked");
+  assert.ok(at("adb version") > at("unzip -q"), "the build runs the adb it unpacked, and holds it to 35.0.2");
+  const runtime = dockerfile.slice(dockerfile.lastIndexOf("\nFROM "));
+  assert.match(runtime, /^COPY --from=adb \/opt\/adb\/ \/usr\/local\/bin\/$/m, "the runtime has it on PATH");
+  assert.match(runtime, /^RUN \[ "\$\(dpkg --print-architecture\)" != amd64 \] \|\| \[ "\$\(command -v adb\)" = \/usr\/local\/bin\/adb \]$/m, "an amd64 image without it fails the build");
+});
+
+test("the build stage builds phoned after the daemon, with a digest-pinned JDK 17 and the Android SDK's files from zips pinned by sha256", async () => {
+  const dockerfile = await readFile(join(ROOT, "packages/serve/docker/Dockerfile"), "utf8");
+  const stage = /^FROM \S+ AS android\n([\s\S]*?)\n\nFROM /m.exec(dockerfile)?.[1] ?? "";
+  assert.match(stage, /^COPY --from=eclipse-temurin:17\.\S+@sha256:[0-9a-f]{64} \/opt\/java\/openjdk \/opt\/jdk-17$/m, "Temurin 17, pinned by digest");
+  assert.match(stage, /^ADD --checksum=sha256:[0-9a-f]{64} https:\/\/dl\.google\.com\/android\/repository\/platform-35_r02\.zip \/tmp\/platform\.zip$/m, "platforms;android-35, from Google, by sha256");
+  assert.match(stage, /^ADD --checksum=sha256:[0-9a-f]{64} https:\/\/dl\.google\.com\/android\/repository\/build-tools_r35_linux\.zip \/tmp\/build-tools\.zip$/m, "build-tools;35.0.0, from Google, by sha256");
+  const build = /^FROM \S+ AS build\n([\s\S]*?)\n\nFROM /m.exec(dockerfile)?.[1] ?? "";
+  assert.match(build, /^COPY --from=android \/opt\/jdk-17 \/opt\/jdk-17$/m);
+  assert.match(build, /^COPY --from=android \/opt\/android-sdk \/opt\/android-sdk$/m);
+  const at = (text) => build.indexOf(text);
+  const phoned = at("JAVA_HOME=/opt/jdk-17 ANDROID_HOME=/opt/android-sdk npm run build:phoned -w @parcha/agentrun-computer");
+  assert.ok(phoned > at("npm run build:daemon"), "phoned builds after the daemon");
+  assert.ok(at("npm run check:phoned -w @parcha/agentrun-computer") > phoned, "the build fails without phoned's dex jar, stamped with the package version");
+  // CI's phoned job lays out the same SDK files from the same zips: one pair of pins.
+  const action = await readFile(join(ROOT, ".github/actions/android-toolchain/action.yml"), "utf8");
+  const pins = (text) => [...new Set(text.match(/\b[0-9a-f]{64}\b/g))].sort();
+  assert.deepEqual(pins(action), pins(stage.split("\n").filter((line) => line.startsWith("ADD ")).join("\n")), "the action's zips are the Dockerfile's");
 });
 
 test("the build stage builds the console before the server, so the server's dist carries it, and keeps none of its sources", async () => {

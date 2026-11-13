@@ -1,0 +1,380 @@
+// What a trigger may send a run, through the API: never a message to a run with no spend cap (refused at create, at
+// PATCH and, should the cap be gone, at the firing), and never an answer to a run that waits on a person (the firing is
+// skipped, the run still waits). And the hook's own edges the review asked for: a create retried under its
+// Idempotency-Key replays the trigger with no secret; a key too short signs nothing; the headers are judged before the
+// body is read.
+import assert from "node:assert/strict";
+import { createHmac, randomBytes } from "node:crypto";
+import { readFile, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
+import { join } from "node:path";
+import { test } from "node:test";
+import { isMessageRow } from "../dist/timeline/index.js";
+import { verify as hookRefusal } from "../dist/standard-webhooks.js";
+import { asOwner, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
+import { MESSAGE_RUN, RUN_EXEC, firings, made } from "./trigger-support.mjs";
+
+const { Webhook } = createRequire(import.meta.url)("standardwebhooks");
+const SEAL = { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") };
+const messaging = (runId) => ({ name: "inbox", source: { kind: "webhook" }, target: { kind: "message_run", run_id: runId, input: { content: "A new event came in." } } });
+
+async function post(baseUrl, triggerId, body, secret, id = `msg_${randomBytes(8).toString("hex")}`) {
+  const at = Math.floor(Date.now() / 1000);
+  const res = await fetch(`${baseUrl}/hooks/${triggerId}`, { method: "POST", headers: { "webhook-id": id, "webhook-timestamp": String(at), "webhook-signature": new Webhook(secret).sign(id, new Date(at * 1000), body) }, body });
+  return { status: res.status, body: await res.json().catch(() => null) };
+}
+
+test("a message_run target must be a capped run: refused at create and at PATCH on target.run_id, and a firing to a run whose cap is gone fails, sending nothing", { timeout: 180_000, skip: MESSAGE_RUN }, async (t) => {
+  withEnv(t, SEAL);
+  const data = join(await scratch(t), "agents");
+  const first = await serve(t, { data });
+  await made(first.api, "chat");
+  const uncapped = (await first.api("POST", "/agents/chat/runs", { input: { content: "Say hello." } })).body;
+  const capped = (await first.api("POST", "/agents/chat/runs", { input: { content: "Say hello." }, max_cost_usd: 1 })).body;
+  await follow(first.api, uncapped.run_id, ["completed"]);
+  await follow(first.api, capped.run_id, ["completed"]);
+  const refused = await first.api("POST", "/triggers", messaging(uncapped.run_id));
+  assert.equal(refused.status, 422);
+  assert.deepEqual(refused.body.error.fields.map((f) => [f.field, f.reason]), [["target.run_id", "not_allowed"]]);
+  assert.match(refused.body.error.fields[0].message, /no spend cap/);
+  const { id, signing_secret: secret } = (await first.api("POST", "/triggers", messaging(capped.run_id))).body;
+  const patched = await first.api("PATCH", `/triggers/${id}`, { target: messaging(uncapped.run_id).target });
+  assert.deepEqual([patched.status, patched.body.error.fields.map((f) => f.field)], [422, ["target.run_id"]]);
+  await first.close();
+  // The cap gone from the run's record (nothing removes one today): the firing is refused, never an uncapped turn.
+  const file = join(runDir(data, capped.run_id), "serve.json");
+  const meta = JSON.parse(await readFile(file, "utf8"));
+  delete meta.max_cost_usd;
+  await writeFile(file, JSON.stringify(meta));
+  const second = await serve(t, { data });
+  assert.equal((await post(second.baseUrl, id, "{}", secret)).status, 202);
+  const [failed] = await firings(second.api, id, 1);
+  assert.equal(failed.status, "failed", JSON.stringify(failed));
+  assert.match(failed.error.message, /no spend cap/);
+  const { rows } = await follow(second.api, capped.run_id, ["completed"]);
+  assert.equal(rows.filter(isMessageRow).length, 1, "nothing sent");
+});
+
+test("a firing never answers a run that waits on a person: it is skipped with why, and the run still waits for its answer", { timeout: 120_000, skip: RUN_EXEC }, async (t) => {
+  withEnv(t, SEAL);
+  const { api, baseUrl } = await serve(t);
+  await made(api, "asks", { tools: ["ask_person"] });
+  const run = (await api("POST", "/agents/asks/runs", { input: { content: "Pick a region." }, max_cost_usd: 1 })).body;
+  await follow(api, run.run_id, ["input_required"]);
+  assert.equal((await api("GET", `/runs/${run.run_id}`)).body.pending?.kind, "question");
+  const { id, signing_secret: secret } = (await api("POST", "/triggers", messaging(run.run_id))).body;
+  assert.equal((await post(baseUrl, id, "eu", secret)).status, 202);
+  const [skipped] = await firings(api, id, 1);
+  assert.deepEqual([skipped.status, skipped.reason, skipped.run_id], ["skipped", "The run is waiting on a person.", null], JSON.stringify(skipped));
+  const read = (await api("GET", `/runs/${run.run_id}`)).body;
+  assert.deepEqual([read.status, read.state, read.pending?.kind], ["input_required", "waiting", "question"], "still waiting, unanswered");
+  assert.equal((await api("POST", `/runs/${run.run_id}/cancel`)).status, 202);
+});
+
+test("a webhook trigger's create retried under its Idempotency-Key replays the same trigger with no secret, saying it was shown once; another body under the key is 409", { timeout: 60_000 }, async (t) => {
+  withEnv(t, SEAL);
+  const { api, data } = await serve(t);
+  await made(api, "triage");
+  const body = { name: "on push", source: { kind: "webhook" }, target: { kind: "start_run", agent_id: "triage", input: { content: "Go." }, max_cost_usd: 0.5 } };
+  const first = await api("POST", "/triggers", body, { "idempotency-key": "make-1" });
+  assert.equal(first.status, 201);
+  assert.match(first.body.signing_secret, /^whsec_/);
+  assert.equal(first.body.note, undefined);
+  const again = await api("POST", "/triggers", body, { "idempotency-key": "make-1" });
+  assert.deepEqual([again.status, again.headers.get("idempotent-replayed"), again.body.id, again.body.signing_secret], [201, "true", first.body.id, undefined]);
+  assert.match(again.body.note, /shown once.*\/secret/);
+  assert.ok(!(await readFile(join(data, ".idempotency.json"), "utf8")).includes(first.body.signing_secret.slice("whsec_".length)), "the idempotency record holds no secret");
+  assert.equal((await api("GET", "/triggers")).body.triggers.length, 1, "one trigger");
+  const other = await api("POST", "/triggers", { ...body, name: "other" }, { "idempotency-key": "make-1" });
+  assert.deepEqual([other.status, other.body.error.code], [409, "idempotency_mismatch"]);
+});
+
+test("a key shorter than 24 bytes signs nothing, even with its own correct signature", () => {
+  const body = Buffer.from("{}");
+  const at = String(Math.floor(Date.now() / 1000));
+  for (const key of [Buffer.alloc(0), randomBytes(16)]) {
+    const secret = `whsec_${key.toString("base64")}`;
+    const signature = `v1,${createHmac("sha256", key).update(`msg_x.${at}.`).update(body).digest("base64")}`;
+    assert.ok(hookRefusal(secret, { "webhook-id": "msg_x", "webhook-timestamp": at, "webhook-signature": signature }, body, Date.now()), `a ${key.length}-byte key`);
+  }
+});
+
+test("bad webhook headers are refused before the body is read: a body past 256 KiB with no signature is the hook's 401, not a 413", { timeout: 60_000 }, async (t) => {
+  withEnv(t, SEAL);
+  const { api, baseUrl } = await serve(t);
+  await made(api, "triage");
+  const { id } = (await api("POST", "/triggers", { source: { kind: "webhook" }, target: { kind: "start_run", agent_id: "triage", input: { content: "Go." }, max_cost_usd: 0.5 } })).body;
+  const res = await fetch(`${baseUrl}/hooks/${id}`, { method: "POST", headers: { "webhook-id": "msg_x" }, body: "x".repeat((256 << 10) + 1) }).catch((error) => ({ status: `reset: ${error.message}` }));
+  assert.equal(res.status, 401);
+});
+
+/** The trigger's saved row at the store: a steer marked `answers: false`, untaken and not refused while the run waits, so no
+ *  answer of the run's was this message. */
+async function untakenAnswersFalse(server, runId) {
+  const held = (await server.store.commands(runId, 0)).filter((command) => command.body?.origin?.kind === "trigger");
+  assert.equal(held.length, 1, "the trigger's row is at the store");
+  assert.deepEqual([held[0].kind, held[0].body.answers, held[0].takenAt, held[0].refused], ["steer", false, null, null], JSON.stringify(held[0]));
+}
+
+/** The window cases below hold a message at its door with `beforeSubmit` (ServeOptions: awaited after a message's checks and
+ *  before its command row is written), while the run comes to wait (or park, or pause) under it. Each keeps whether the seam
+ *  ran, and asserts that before the outcome. */
+
+test("a run that comes to wait on a person between the firing's check and its door's admission is never answered: the message waits untaken at the store (answers false), the question stands, and no message reaches the run", { timeout: 120_000 }, async (t) => {
+  withEnv(t, SEAL);
+  const gate = join(await scratch(t), "gate");
+  let api;
+  let reached = 0;
+  // The seam before a message reaches the run's door: the run is let ask its question here, and the message goes on
+  // only once the run waits on it.
+  const beforeSubmit = async (runId, content) => {
+    if (!content.startsWith("A new event came in.")) return;
+    reached += 1;
+    await writeFile(gate, "");
+    // Its turn has ended on the question once the timeline holds the wait (the run's own status reads working while this
+    // message is on its way).
+    const waits = async () => (await api("GET", `/runs/${runId}/timeline`)).body.rows.some((row) => row.kind === "waiting");
+    for (const end = Date.now() + 30_000; !(await waits()); await new Promise((resolve) => setTimeout(resolve, 50))) assert.ok(Date.now() < end, "the run asks");
+  };
+  const server = await serve(t, { beforeSubmit });
+  api = server.api;
+  await made(api, "asks", { tools: ["ask_person"] });
+  const run = (await api("POST", "/agents/asks/runs", { input: { content: `Pick a region once ${gate} exists.` }, max_cost_usd: 1 })).body;
+  await follow(api, run.run_id, ["working"]);
+  const { id, signing_secret: secret } = (await api("POST", "/triggers", messaging(run.run_id))).body;
+  assert.equal((await post(server.baseUrl, id, "eu", secret)).status, 202);
+  const [skipped] = await firings(api, id, 1);
+  assert.equal(reached, 1, "the firing's message reached the door's seam");
+  // The store's door takes the row (its firing sent) and marks it answers:false: it waits untaken, and answers no park.
+  assert.deepEqual([skipped.status, skipped.reason], ["sent", null], JSON.stringify(skipped));
+  const read = (await api("GET", `/runs/${run.run_id}`)).body;
+  assert.deepEqual([read.status, read.state, read.pending?.kind], ["input_required", "waiting", "question"], "the question stands, unanswered");
+  const { rows } = await follow(api, run.run_id, ["input_required"]);
+  assert.equal(rows.filter(isMessageRow).length, 1, "no message reached it");
+  await untakenAnswersFalse(server, run.run_id);
+  assert.equal((await api("POST", `/runs/${run.run_id}/cancel`)).status, 202);
+});
+
+// What becomes of the row the door took while the run came to wait: it is not dropped. The runner refuses it while the run
+// waits (it answers no person), so it stays untaken; once the person answers and the run's turn ends, the store's end
+// reopens the run with that leftover steer and it runs as a new turn. The firing's `sent` is therefore true: the message
+// is delivered after the wait, never lost, and never as the answer.
+test("a trigger's message held at the door while the run comes to wait on a question is delivered after the person answers, as a turn of its own: the firing's sent is true, and the answer was the person's", { timeout: 120_000 }, async (t) => {
+  withEnv(t, SEAL);
+  const gate = join(await scratch(t), "gate");
+  let api;
+  const beforeSubmit = async (runId, content) => {
+    if (!content.startsWith("A new event came in.")) return;
+    await writeFile(gate, "");
+    const waits = async () => (await api("GET", `/runs/${runId}/timeline`)).body.rows.some((row) => row.kind === "waiting");
+    for (const end = Date.now() + 30_000; !(await waits()); await new Promise((resolve) => setTimeout(resolve, 50))) assert.ok(Date.now() < end, "the run asks");
+  };
+  const server = await serve(t, { beforeSubmit });
+  api = server.api;
+  await made(api, "asks", { tools: ["ask_person"] });
+  const run = (await api("POST", "/agents/asks/runs", { input: { content: `Pick a region once ${gate} exists.` }, max_cost_usd: 1 })).body;
+  await follow(api, run.run_id, ["working"]);
+  const { id, signing_secret: secret } = (await api("POST", "/triggers", messaging(run.run_id))).body;
+  assert.equal((await post(server.baseUrl, id, "eu", secret)).status, 202);
+  const [firing] = await firings(api, id, 1);
+  assert.deepEqual([firing.status, firing.reason], ["sent", null], JSON.stringify(firing));
+  await follow(api, run.run_id, ["input_required"]);
+  const held = (await server.store.commands(run.run_id, 0)).filter((command) => command.body?.origin?.trigger_id === id);
+  assert.equal(held.length, 1, "the trigger's row is at the store");
+  assert.equal(held[0].body.answers, false);
+  assert.deepEqual([held[0].refused], [null], "the question stands and the row is not refused while the run waits");
+  assert.equal((await api("POST", `/runs/${run.run_id}/messages`, { content: "eu" })).status, 202);
+  // The person's answer ends the turn; the leftover row then reopens the run and runs as its next turn.
+  const reached = async () => {
+    const [row] = (await server.store.commands(run.run_id, 0)).filter((command) => command.body?.origin?.trigger_id === id);
+    return row.takenAt !== null && row.refused === null;
+  };
+  for (const end = Date.now() + 60_000; !(await reached()); await new Promise((resolve) => setTimeout(resolve, 100))) assert.ok(Date.now() < end, "the held row is delivered after the answer");
+  const { rows } = await follow(api, run.run_id, ["completed"]);
+  const kinds = rows.map((row) => row.kind);
+  const answer = kinds.indexOf("user_message", kinds.indexOf("waiting"));
+  assert.equal(rows[answer].text, "eu", "the question's answer is the person's");
+  assert.ok(rows.slice(answer + 1).some((row) => String(row.text ?? "").startsWith("A new event came in.")), "the trigger's message ran after the answer, as a turn of its own");
+  assert.equal((await firings(api, id, 1))[0].status, "sent", "the history says sent, and it was");
+});
+
+/** The answers to approvals among a run's command rows (an allow, or a deny: a decline is one): what the run was told of them. */
+const answersOf = (commands) => commands.filter((command) => command.kind === "approve" || command.kind === "deny").map((command) => [command.kind, command.body]);
+
+const GATE = { faux: new URL("./fixtures/faux-gate.mjs", import.meta.url).pathname, fauxWeb: new URL("./fixtures/faux-gate-web.mjs", import.meta.url).pathname, accounts: true, openSetup: true };
+
+// The window the server's own check cannot see: a person's message in flight (counted, so the run reads working) while
+// a call of its run is parked for its owner's approval. A trigger's message reaching the run then must never answer that
+// approval: it may not answer a person (answers false), so it never declines one either.
+test("a trigger's message that reaches a run while a tool call waits for its owner's approval never declines it: the approval stands, the same one, unanswered, and the firing sends nothing", { timeout: 120_000 }, async (t) => {
+  withEnv(t, SEAL);
+  const gate = join(await scratch(t), "gate");
+  let api;
+  let baseUrl;
+  let trigger;
+  let seen;
+  let server;
+  // The person's message, held at the door's seam once it is counted (the run reads working): the run's call is let park,
+  // then the trigger fires and settles, and the run's answers to its approvals are read (serve.json's `approvals`, where
+  // a decline is written), before the person's message goes on.
+  const beforeSubmit = async (runId, content) => {
+    if (content !== "And the other page too.") return;
+    try {
+      await writeFile(gate, "");
+      const parked = async () => (await api("GET", `/runs/${runId}/timeline`)).body.rows.some((row) => row.kind === "tool_approval_requested");
+      for (const end = Date.now() + 30_000; !(await parked()); await new Promise((resolve) => setTimeout(resolve, 50))) assert.ok(Date.now() < end, "the call parks");
+      assert.equal((await post(baseUrl, trigger.id, "eu", trigger.signing_secret)).status, 202);
+      const [firing] = await firings(api, trigger.id, 1);
+      seen = { firing, answers: answersOf(await server.store.commands(runId, 0)) };
+    } catch (error) {
+      seen = { error };
+    }
+  };
+  server = await serve(t, { ...GATE, beforeSubmit });
+  ({ api, baseUrl } = server);
+  assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: "ask" } })).status, 200);
+  await made(api, "fetcher", { tools: ["web_fetch"] });
+  const run = (await api("POST", "/agents/fetcher/runs", { input: { content: `Fetch http://public.example/ once ${gate} exists.` }, max_cost_usd: 1 })).body;
+  await follow(api, run.run_id, ["working"]);
+  trigger = (await api("POST", "/triggers", messaging(run.run_id))).body;
+  const said = api("POST", `/runs/${run.run_id}/messages`, { content: "And the other page too." });
+  for (const end = Date.now() + 60_000; !seen; await new Promise((resolve) => setTimeout(resolve, 50))) assert.ok(Date.now() < end, "the person's message reached the seam");
+  await said;
+  if (seen.error) throw seen.error;
+  assert.deepEqual(seen.answers, [], "no approval answered: none declined by the trigger's message");
+  assert.deepEqual([seen.firing.status, seen.firing.reason], ["skipped", "The run is waiting on a person."], JSON.stringify(seen.firing));
+  // Once the person's message is in, the call still waits for its owner: the same one, the only one, unanswered.
+  let read;
+  for (const end = Date.now() + 30_000; (read = (await api("GET", `/runs/${run.run_id}`)).body).pending?.kind !== "approval"; await new Promise((resolve) => setTimeout(resolve, 50))) assert.ok(Date.now() < end, `the approval still waits: ${JSON.stringify(read.pending)}`);
+  assert.deepEqual([read.status, read.state, read.pending.tool], ["input_required", "waiting", "web_fetch"]);
+  assert.deepEqual(answersOf(await server.store.commands(run.run_id, 0)), [], "and never answered");
+  assert.equal((await api("POST", `/runs/${run.run_id}/cancel`)).status, 202);
+});
+
+/** The tests' faux model priced on output only, $100 a million: a request's least (1,024 tokens) is $0.1024. */
+const OUTPUT_PRICED = new URL("./fixtures/faux-output-priced.mjs", import.meta.url).pathname;
+
+// The cap's twin of the window above: a person's message in flight while the run's turn ends on a refusal for room, so
+// the run is paused at its cap for its person to raise. A trigger's message then never starts a turn in it.
+test("a trigger's message that reaches a run paused at its cap while another message is in flight is refused: the firing is skipped, and no message of the trigger reaches the run", { timeout: 120_000 }, async (t) => {
+  withEnv(t, SEAL);
+  const gate = join(await scratch(t), "gate");
+  let api;
+  let baseUrl;
+  let trigger;
+  let seen;
+  // The person's message, held at the door's seam once it is counted (the run reads working): the run's turn is let go
+  // on, to its next request, which its cap refuses for room; then the trigger fires and settles.
+  const beforeSubmit = async (runId, content) => {
+    if (content !== "And the other page too.") return;
+    try {
+      await writeFile(gate, "");
+      const refused = async () => (await api("GET", `/runs/${runId}/timeline`)).body.rows.some((row) => row.paused === true);
+      for (const end = Date.now() + 30_000; !(await refused()); await new Promise((resolve) => setTimeout(resolve, 50))) assert.ok(Date.now() < end, "the cap refuses the turn's next request");
+      assert.equal((await post(baseUrl, trigger.id, "eu", trigger.signing_secret)).status, 202);
+      const [firing] = await firings(api, trigger.id, 1);
+      seen = { firing };
+    } catch (error) {
+      seen = { error };
+    }
+  };
+  const server = await serve(t, { faux: OUTPUT_PRICED, beforeSubmit });
+  ({ api, baseUrl } = server);
+  await made(api, "reader", { tools: ["read"] });
+  // Its first request fits the cap; the read's spend leaves less than the next one's least.
+  const run = (await api("POST", "/agents/reader/runs", { input: { content: `Read these paths once ${gate} exists: ["one.md"]` }, max_cost_usd: 0.1025 })).body;
+  await follow(api, run.run_id, ["working"]);
+  trigger = (await api("POST", "/triggers", messaging(run.run_id))).body;
+  const said = api("POST", `/runs/${run.run_id}/messages`, { content: "And the other page too." });
+  for (const end = Date.now() + 60_000; !seen; await new Promise((resolve) => setTimeout(resolve, 50))) assert.ok(Date.now() < end, "the person's message reached the seam");
+  await said;
+  if (seen.error) throw seen.error;
+  assert.deepEqual([seen.firing.status, seen.firing.reason], ["skipped", "The run is waiting on a person."], JSON.stringify(seen.firing));
+  const rows = (await api("GET", `/runs/${run.run_id}/timeline`)).body.rows;
+  assert.equal(rows.filter((row) => (row.text ?? "").startsWith("A new event came in.")).length, 0, `no message of the trigger's: ${JSON.stringify(rows.map((r) => [r.kind, r.summary]))}`);
+  assert.equal((await api("POST", `/runs/${run.run_id}/cancel`)).status, 202);
+});
+
+test("a run that comes to wait on a tool call's approval between the firing's check and its door's admission has its approval left standing: the message waits untaken at the store (answers false), the approval stands, unanswered, and no message reaches the run", { timeout: 120_000 }, async (t) => {
+  withEnv(t, SEAL);
+  const gate = join(await scratch(t), "gate");
+  let api;
+  let reached = 0;
+  // The seam before a message reaches the run's door: the run is let call web_fetch (set to ask) here, and the message
+  // goes on only once the call is parked for its approval.
+  const beforeSubmit = async (runId, content) => {
+    if (!content.startsWith("A new event came in.")) return;
+    reached += 1;
+    await writeFile(gate, "");
+    const parked = async () => (await api("GET", `/runs/${runId}/timeline`)).body.rows.some((row) => row.kind === "tool_approval_requested");
+    for (const end = Date.now() + 30_000; !(await parked()); await new Promise((resolve) => setTimeout(resolve, 50))) assert.ok(Date.now() < end, "the call parks");
+  };
+  const server = await serve(t, { ...GATE, beforeSubmit });
+  api = server.api;
+  assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: "ask" } })).status, 200);
+  await made(api, "fetcher", { tools: ["web_fetch"] });
+  const run = (await api("POST", "/agents/fetcher/runs", { input: { content: `Fetch http://public.example/ once ${gate} exists.` }, max_cost_usd: 1 })).body;
+  await follow(api, run.run_id, ["working"]);
+  const { id, signing_secret: secret } = (await api("POST", "/triggers", messaging(run.run_id))).body;
+  assert.equal((await post(server.baseUrl, id, "eu", secret)).status, 202);
+  const [skipped] = await firings(api, id, 1);
+  assert.equal(reached, 1, "the firing's message reached the door's seam");
+  assert.deepEqual([skipped.status, skipped.reason], ["sent", null], JSON.stringify(skipped));
+  let read;
+  for (const end = Date.now() + 30_000; (read = (await api("GET", `/runs/${run.run_id}`)).body).pending?.kind !== "approval"; await new Promise((resolve) => setTimeout(resolve, 50))) assert.ok(Date.now() < end, `the approval still waits: ${JSON.stringify([read.status, read.state, read.pending])}`);
+  assert.deepEqual([read.status, read.state, read.pending?.kind, read.pending?.tool], ["input_required", "waiting", "approval", "web_fetch"], "the approval stands, unanswered");
+  assert.deepEqual(answersOf(await server.store.commands(run.run_id, 0)), [], "and never answered");
+  const { rows } = await follow(api, run.run_id, ["input_required"]);
+  assert.equal(rows.filter(isMessageRow).length, 1, "no message reached it");
+  await untakenAnswersFalse(server, run.run_id);
+  assert.equal((await api("POST", `/runs/${run.run_id}/cancel`)).status, 202);
+});
+
+test("a trigger's message held at the door while a tool call comes to wait for approval is delivered after the owner allows it, as a turn of its own: the firing's sent is true, and the allow answered the approval alone", { timeout: 120_000 }, async (t) => {
+  withEnv(t, SEAL);
+  const gate = join(await scratch(t), "gate");
+  let api;
+  const beforeSubmit = async (runId, content) => {
+    if (!content.startsWith("A new event came in.")) return;
+    await writeFile(gate, "");
+    const parked = async () => (await api("GET", `/runs/${runId}/timeline`)).body.rows.some((row) => row.kind === "tool_approval_requested");
+    for (const end = Date.now() + 30_000; !(await parked()); await new Promise((resolve) => setTimeout(resolve, 50))) assert.ok(Date.now() < end, "the call parks");
+  };
+  const server = await serve(t, { ...GATE, beforeSubmit });
+  api = server.api;
+  assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: "ask" } })).status, 200);
+  await made(api, "fetcher", { tools: ["web_fetch"] });
+  const run = (await api("POST", "/agents/fetcher/runs", { input: { content: `Fetch http://public.example/ once ${gate} exists.` }, max_cost_usd: 1 })).body;
+  await follow(api, run.run_id, ["working"]);
+  const { id, signing_secret: secret } = (await api("POST", "/triggers", messaging(run.run_id))).body;
+  assert.equal((await post(server.baseUrl, id, "eu", secret)).status, 202);
+  const [firing] = await firings(api, id, 1);
+  assert.deepEqual([firing.status, firing.reason], ["sent", null], JSON.stringify(firing));
+  let read;
+  for (const end = Date.now() + 30_000; (read = (await api("GET", `/runs/${run.run_id}`)).body).pending?.kind !== "approval"; await new Promise((resolve) => setTimeout(resolve, 50))) assert.ok(Date.now() < end, "the approval waits");
+  const triggers = async () => (await server.store.commands(run.run_id, 0)).filter((command) => command.body?.origin?.trigger_id === id);
+  assert.deepEqual((await triggers()).map((row) => row.refused), [null], "the row is not refused while the call waits");
+  assert.equal((await asOwner(server)("POST", `/runs/${run.run_id}/approvals/${read.pending.id}`, { decision: "allow" })).status, 204);
+  for (const end = Date.now() + 60_000; ((await triggers())[0]?.takenAt ?? null) === null; await new Promise((resolve) => setTimeout(resolve, 100))) assert.ok(Date.now() < end, "the held row is delivered after the allow");
+  assert.equal((await triggers())[0].refused, null);
+  assert.deepEqual(answersOf(await server.store.commands(run.run_id, 0)).map(([kind]) => kind), ["approve"], "the allow is the one answer");
+  const { rows } = await follow(api, run.run_id, ["completed"]);
+  assert.equal(rows.filter((row) => String(row.text ?? "").startsWith("A new event came in.")).length > 0, true, "the message ran as a turn of its own");
+});
+
+test("a firing never reaches a run paused at its spend cap (pending budget): it is skipped with the same reason, and the run still waits for its cap to be raised", { timeout: 120_000 }, async (t) => {
+  withEnv(t, SEAL);
+  // The tests' faux model priced on output only: a $0.05 cap cannot buy a request's least, so the run pauses at once.
+  const { api, baseUrl } = await serve(t, { faux: new URL("./fixtures/faux-output-priced.mjs", import.meta.url).pathname });
+  await made(api, "capped");
+  const run = (await api("POST", "/agents/capped/runs", { input: { content: "Write one.md" }, max_cost_usd: 0.05 })).body;
+  await follow(api, run.run_id, ["input_required"]);
+  assert.equal((await api("GET", `/runs/${run.run_id}`)).body.pending?.kind, "budget");
+  const { id, signing_secret: secret } = (await api("POST", "/triggers", messaging(run.run_id))).body;
+  assert.equal((await post(baseUrl, id, "{}", secret)).status, 202);
+  const [skipped] = await firings(api, id, 1);
+  assert.deepEqual([skipped.status, skipped.reason], ["skipped", "The run is waiting on a person."], JSON.stringify(skipped));
+  const read = (await api("GET", `/runs/${run.run_id}`)).body;
+  assert.deepEqual([read.status, read.state, read.pending?.kind], ["input_required", "waiting", "budget"], "still paused at its cap");
+  assert.equal((await api("POST", `/runs/${run.run_id}/cancel`)).status, 202);
+});

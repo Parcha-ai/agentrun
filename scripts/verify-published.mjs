@@ -8,7 +8,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { releasePackageNames, releasePackages } from './release-preflight.mjs';
+import { ownVersionPackages, releasePackageNames, releasePackages } from './release-preflight.mjs';
 import { buildOverrides, findDrift } from './pi-family-pins.mjs';
 import { isMain } from './is-main.mjs';
 
@@ -94,7 +94,10 @@ export async function installRegistryConsumer(consumer, { requested, root, regis
   return lock;
 }
 
-export async function verifyPublished(root, selected, { allowAbsent = false, fetchImpl = fetch, wait, now } = {}) {
+// A canary from main, published under npm's `canary` dist-tag: <core>-canary.<run>.g<sha7>, one suffix on every package of the plan.
+const CANARY = /^\d+\.\d+\.\d+(-canary\.\d+\.g[0-9a-f]{7,40})$/;
+
+export async function verifyPublished(root, selected, { allowAbsent = false, canary = false, fetchImpl = fetch, wait, now } = {}) {
   assert.ok([...releasePackages, 'all'].includes(selected));
   assert.ok(!allowAbsent || selected !== 'all', 'Absence probes select exactly one package');
   const receiptPath = join(root, `.release/published-${selected}.json`);
@@ -106,10 +109,20 @@ export async function verifyPublished(root, selected, { allowAbsent = false, fet
     assert.equal(plan.status, 'passed');
     assert.equal(plan.registry, 'https://registry.npmjs.org/');
     assert.deepEqual(plan.packages.map(pkg => pkg.directory), releasePackages);
+    const suffixes = new Set();
     for (const pkg of plan.packages) {
       assert.equal(pkg.name, releasePackageNames[pkg.directory]);
-      assert.match(pkg.version, /^\d+\.\d+\.\d+-beta\.\d+$/);
+      if (canary) {
+        const match = CANARY.exec(pkg.version);
+        assert.ok(match, `${pkg.name}@${pkg.version} is not a canary (x.y.z-canary.<run>.g<sha>)`);
+        suffixes.add(match[1]);
+        continue;
+      }
+      // A package on its own version line (@parcha/agentrun) carries a plain version; every other one the workspace's beta.
+      const own = ownVersionPackages.includes(pkg.directory);
+      assert.match(pkg.version, own ? /^\d+\.\d+\.\d+$/ : /^\d+\.\d+\.\d+-beta\.\d+$/, `${pkg.name}@${pkg.version} is not on its version line (${own ? 'x.y.z' : 'x.y.z-beta.N'})`);
     }
+    assert.ok(suffixes.size <= 1, `a canary plan has one canary suffix on every package, not ${[...suffixes].join(', ')}`);
     const results = [];
     for (const pkg of plan.packages.filter(pkg => selected === 'all' || selected === pkg.directory)) {
       const metadataResponse = await registryResponse(`${plan.registry}${encodeURIComponent(pkg.name)}/${pkg.version}`, { fetchImpl, wait, now, retryNotFound: !allowAbsent });
@@ -136,9 +149,10 @@ export async function verifyPublished(root, selected, { allowAbsent = false, fet
       receipt.registryVisible = await waitForRegistryVersions(plan.registry, plan.packages, { fetchImpl, wait, now });
       const consumer = await mkdtemp(join(tmpdir(), 'agentrun-registry-consumer-'));
       try {
-        // The Pi packages are optional peers of @parcha/agentrun-pi: a host supplies them, so the consumer does, at the versions the package is tested with.
-        const piDev = JSON.parse(await readFile(join(root, 'packages/pi/package.json'), 'utf8')).devDependencies ?? {};
-        const peers = ['@earendil-works/pi-coding-agent', '@earendil-works/pi-agent-core', '@earendil-works/pi-tui', '@earendil-works/pi-ai', 'typebox'].map(name => { assert.ok(piDev[name], `packages/pi has no dev dependency ${name}`); return `${name}@${piDev[name]}`; });
+        // The Pi packages are peers of @parcha/agentrun-serve (pi-ai, pi-durable, chord) and of pi-browser: a host supplies
+        // them, so the consumer does, at the versions the repository's lockfile holds.
+        const rootLock = JSON.parse(await readFile(join(root, 'package-lock.json'), 'utf8'));
+        const peers = ['@earendil-works/pi-coding-agent', '@earendil-works/pi-agent-core', '@earendil-works/pi-tui', '@earendil-works/pi-ai', '@earendil-works/pi-durable', '@earendil-works/chord', 'typebox'].map(name => { const version = rootLock.packages?.[`node_modules/${name}`]?.version; assert.ok(version, `the lockfile holds no ${name}`); return `${name}@${version}`; });
         const lock = await installRegistryConsumer(consumer, { requested: [...plan.packages.map(pkg => `${pkg.name}@${pkg.version}`), ...peers], root, registry: plan.registry });
         for (const pkg of plan.packages) assert.equal(lock.packages[`node_modules/${pkg.name}`].integrity, pkg.integrity, 'Installed archive integrity mismatch');
         await writeFile(join(consumer, 'deny-network.mjs'), `import net from 'node:net'; import http from 'node:http'; import https from 'node:https'; import {syncBuiltinESMExports} from 'node:module';
@@ -146,9 +160,8 @@ export async function verifyPublished(root, selected, { allowAbsent = false, fet
     globalThis.fetch=deny;net.Socket.prototype.connect=deny;http.request=deny;http.get=deny;https.request=deny;https.get=deny;syncBuiltinESMExports();\n`);
         await writeFile(join(consumer, 'smoke.mjs'), `import assert from 'node:assert/strict';
     import {runTriageDemo} from '@parcha/agentrun-dsl/demo';
-    import {createJevRunner} from '@parcha/agentrun-jev'; import {createPiRunner} from '@parcha/agentrun-pi';
-    import {openDurableRun} from '@parcha/pi-durable-disk';
-    assert.equal(typeof createJevRunner,'function');assert.equal(typeof createPiRunner,'function');assert.equal(typeof openDurableRun,'function');
+    import {createJevRunner} from '@parcha/agentrun-jev'; import {startServe} from '@parcha/agentrun-serve';
+    assert.equal(typeof createJevRunner,'function');assert.equal(typeof startServe,'function');
     for(const scenario of ['billing','technical','ambiguous']){const {result}=await runTriageDemo(scenario);assert.equal(result.status,scenario==='ambiguous'?'escalated':'complete');}\n`);
         await exec(process.execPath, ['--import', './deny-network.mjs', 'smoke.mjs'], { cwd: consumer, timeout: 30_000, maxBuffer: 1024 * 1024 });
       } finally { await rm(consumer, { recursive: true, force: true }); }
@@ -165,13 +178,20 @@ export async function verifyPublished(root, selected, { allowAbsent = false, fet
   }
 }
 
+/** The command's arguments (`argv` as process.argv): `--package <directory|all>`, then `--allow-absent` and `--canary` in any
+ *  order, each at most once (--canary: the plan is a canary from main, not a release). Anything else throws the usage line. */
+export function commandArgs(argv) {
+  const usage = 'Usage: node scripts/verify-published.mjs --package dsl|jev|pi-browser|serve|all [--allow-absent] [--canary]';
+  const flags = argv.slice(4);
+  assert.ok(argv[2] === '--package' && argv.length >= 4 && flags.every(flag => ['--allow-absent', '--canary'].includes(flag)) && new Set(flags).size === flags.length, usage);
+  return { selected: argv[3], allowAbsent: flags.includes('--allow-absent'), canary: flags.includes('--canary') };
+}
+
 if (isMain(import.meta)) {
-  assert.equal(process.argv[2], '--package', 'Usage: node scripts/verify-published.mjs --package dsl|jev|pi|pi-durable-disk|all [--allow-absent]');
-  assert.ok(process.argv.length === 4 || (process.argv.length === 5 && process.argv[4] === '--allow-absent'));
-  const selected = process.argv[3];
+  const { selected, allowAbsent, canary } = commandArgs(process.argv);
   const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
   try {
-    const result = await verifyPublished(root, selected, { allowAbsent: process.argv[4] === '--allow-absent' });
+    const result = await verifyPublished(root, selected, { allowAbsent, canary });
     if (result.status === 'absent') {
       console.log(`Registry confirms ${selected} is absent at the release version.`);
       process.exitCode = 3;

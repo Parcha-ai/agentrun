@@ -10,14 +10,23 @@ export function cdpDriver(base) {
     const pending = new Map();
     const waiters = [];
     const loaded = new Set();
-    // Fetches and XHRs the browser dropped itself (net::ERR_ABORTED), not documents: re-running a case over a
-    // navigation still in flight races it.
+    // Fetches, XHRs and their CORS preflights the browser or the network dropped (net::ERR_ABORTED, a preflight with no
+    // answer, ...), not documents: re-running a case over a navigation still in flight races it. A request the observer
+    // refused (net::ERR_BLOCKED_BY_CLIENT) is the effect under test, never a drop.
     let aborted = 0;
+    // The page's own requests (not documents) the browser has announced and not yet ended, by request id.
+    const inFlight = new Set();
+    const settledWaiters = [];
     ws.onmessage = (event) => {
       const m = JSON.parse(String(event.data));
       if (m.id !== undefined) { const p = pending.get(m.id); pending.delete(m.id); if (m.error) p?.reject(new Error(m.error.message)); else p?.resolve(m.result); return; }
       if (m.method === "Page.lifecycleEvent" && m.params.name === "load") loaded.add(m.params.loaderId);
-      if (m.method === "Network.loadingFailed" && m.params.errorText === "net::ERR_ABORTED" && (m.params.type === "Fetch" || m.params.type === "XHR")) aborted += 1;
+      if (m.method === "Network.requestWillBeSent" && m.params.type !== "Document") inFlight.add(m.params.requestId);
+      if (m.method === "Network.loadingFinished" || m.method === "Network.loadingFailed") {
+        inFlight.delete(m.params.requestId);
+        if (inFlight.size === 0) for (const wake of settledWaiters.splice(0)) wake();
+      }
+      if (m.method === "Network.loadingFailed" && ["Fetch", "XHR", "Preflight"].includes(m.params.type) && !m.params.errorText.startsWith("net::ERR_BLOCKED_BY_CLIENT")) aborted += 1;
       for (const w of waiters.splice(0)) if (w.test(m)) w.resolve(); else waiters.push(w);
     };
     ws.onclose = () => { for (const p of pending.values()) p.reject(new Error("the test driver's socket closed")); pending.clear(); };
@@ -31,6 +40,22 @@ export function cdpDriver(base) {
     await send("Page.enable", {}, sessionId);
     await send("Page.setLifecycleEventsEnabled", { enabled: true }, sessionId);
     await send("Network.enable", {}, sessionId);
+    /** The pid of Chrome's network service, its own process; null when Chrome names none. */
+    const networkService = async () => (await send("SystemInfo.getProcessInfo")).processInfo.find((p) => p.type.includes("NetworkService"))?.id ?? null;
+    // When the network service dies (Chrome for Testing 155 sometimes crashes it just after a CORS preflight while Fetch
+    // interception is on, more often under load, sandbox or not), Chrome starts another, and here never ends the requests
+    // the dead one carried: no loadingFailed, no pause, nothing at the server. Its restart is a drop: it is counted, and what
+    // was in flight is forgotten, since nothing will end it.
+    // Checks run one at a time, so one restart is counted once.
+    let service = await networkService().catch(() => null);
+    let restarts = 0;
+    let checking = Promise.resolve();
+    const checkService = () => (checking = checking.then(async () => {
+      const now = await networkService().catch(() => null);
+      if (now === null || now === service) return;
+      if (service !== null) { restarts += 1; inFlight.clear(); for (const wake of settledWaiters.splice(0)) wake(); }
+      service = now;
+    }));
     // `userGesture`: a click carries user activation, as a real one does, so popups open.
     const evaluate = async (expression) => {
       const answer = await send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true, userGesture: true }, sessionId);
@@ -61,7 +86,20 @@ export function cdpDriver(base) {
       /** Returns the moment the browser answers: the request the page starts in it exists, and nothing else has
        *  happened since. */
       fire: (expression) => evaluate(expression),
-      aborted: () => aborted,
+      /** How many drops so far: requests the browser or the network dropped (see above), and restarts of the network service. */
+      drops: async () => { await checkService(); return aborted + restarts; },
+      /** How many times the network service restarted so far. */
+      restarts: async () => { await checkService(); return restarts; },
+      /** Resolves once every request the page started (but documents) has ended, or the network service has restarted (which
+       *  ends none of them), or after `ms`. */
+      settled: (ms) => new Promise((resolve) => {
+        if (inFlight.size === 0) return resolve();
+        const wake = () => { clearTimeout(timer); clearInterval(poll); const at = settledWaiters.indexOf(wake); if (at !== -1) settledWaiters.splice(at, 1); resolve(); };
+        const timer = setTimeout(wake, ms);
+        const poll = setInterval(() => void checkService(), 500);
+        settledWaiters.push(wake);
+      }),
+      networkService,
       url: () => evaluate("location.href"),
       snapshot: () => evaluate("document.body ? document.body.innerText : ''"),
       page: async () => ({ url: await evaluate("location.href"), title: await evaluate("document.title"), text: await evaluate("document.body ? document.body.innerText : ''"), html: await evaluate("document.documentElement.outerHTML") }),

@@ -1,14 +1,9 @@
-// The home path checks on their own (home-path.ts): plain segments, the fold that host-owned names are matched by, the
-// identity check, and a seeded property over 20,000 paths against the ways a disk can take two names for one.
+// The home path checks on their own (home-path.ts): plain segments, the fold that host-owned names are matched by, and a
+// seeded property over 20,000 paths against the ways a disk can take two names for one.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ApiError } from "../dist/errors.js";
-import { foldName, homePath, ownedBy, ownedByIdentity, plainSegment, sameEntry } from "../dist/home-path.js";
-
-test("a plain segment is its own NFC form with no default-ignorable code point", () => {
-  for (const segment of ["notes.md", "café.md", "learning", "über", "x-1"]) assert.equal(plainSegment(segment), true, segment);
-  for (const segment of ["learn‌ing", "learn​ing", "learn­ing", "﻿learning", "a⁠b", "café.md", "Kit", "a͏b"]) assert.equal(plainSegment(segment), false, JSON.stringify(segment));
-});
+import { foldName, homePath, ownedBy } from "../dist/home-path.js";
 
 test("the fold takes a name's compatibility form, upper then lower case, and drops combining marks", () => {
   for (const [name, folded] of [["learnıng", "learning"], ["LEARNİNG", "learning"], ["ｌｅａｒｎｉｎｇ", "learning"], ["Learning", "learning"], ["ſ", "s"], ["K", "k"], ["café", "cafe"]]) assert.equal(foldName(name), folded, JSON.stringify(name));
@@ -17,23 +12,6 @@ test("the fold takes a name's compatibility form, upper then lower case, and dro
   assert.equal(ownedBy(["kit"], "Kit"), "kit");
   assert.equal(ownedBy(["learning"], "./LEARNİNG/x"), "learning");
   for (const path of ["learning2/x", "notes/learning/x", "learn/ing", "café.md"]) assert.equal(ownedBy(["learning"], path), undefined, path);
-});
-
-test("two stats are one entry exactly when device and inode are both the same", () => {
-  assert.equal(sameEntry({ dev: 1n, ino: 2n }, { dev: 1n, ino: 2n }), true);
-  assert.equal(sameEntry({ dev: 1n, ino: 2n }, { dev: 1n, ino: 3n }), false);
-  assert.equal(sameEntry({ dev: 1n, ino: 2n }, { dev: 9n, ino: 2n }), false);
-});
-
-test("a first segment that is on disk the same entry as learning/ is learning, whatever its spelling; absent either, it is not", async () => {
-  // Stats as a disk that takes two spellings for one name would give them: given, since such a disk is not made here.
-  const disk = (entries) => async (path) => entries[path] ?? null;
-  assert.equal(await ownedByIdentity("/data/homes/keeper", "Other/notes.md", ["learning"], disk({ "/data/homes/keeper/Other": { dev: 1n, ino: 7n }, "/data/homes/keeper/learning": { dev: 1n, ino: 7n } })), "learning");
-  assert.equal(await ownedByIdentity("/data/homes/keeper", "Other", ["learning"], disk({ "/data/homes/keeper/Other": { dev: 1n, ino: 7n }, "/data/homes/keeper/learning": { dev: 1n, ino: 7n } })), "learning");
-  assert.equal(await ownedByIdentity("/data/homes/keeper", "Other/notes.md", ["learning"], disk({ "/data/homes/keeper/Other": { dev: 1n, ino: 7n }, "/data/homes/keeper/learning": { dev: 1n, ino: 8n } })), undefined, "another inode");
-  assert.equal(await ownedByIdentity("/data/homes/keeper", "Other/notes.md", ["learning"], disk({ "/data/homes/keeper/Other": { dev: 1n, ino: 7n }, "/data/homes/keeper/learning": { dev: 2n, ino: 7n } })), undefined, "another device");
-  assert.equal(await ownedByIdentity("/data/homes/keeper", "Other/notes.md", ["learning"], disk({ "/data/homes/keeper/Other": { dev: 1n, ino: 7n } })), undefined, "no learning/ there");
-  assert.equal(await ownedByIdentity("/data/homes/keeper", "Other/notes.md", ["learning"], disk({ "/data/homes/keeper/learning": { dev: 1n, ino: 7n } })), undefined, "the segment not there");
 });
 
 /** A seeded generator (mulberry32): the same paths on every run. */

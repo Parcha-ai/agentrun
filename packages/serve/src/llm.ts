@@ -2,6 +2,7 @@
 // model a workflow's model node of the same tier runs on here (the faux module's under `--faux`), and its text comes
 // back with the usage and the price pi-ai's catalog gives it, null when the model has no price (never $0).
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
+import { sideRequests } from "./cap.js";
 
 export const LLM_TOOL = "llm";
 const MAX_PROMPT = 400_000;
@@ -16,8 +17,10 @@ type Models = {
   completeSimple(model: never, context: never, options?: never): Promise<{ content: { type: string; text?: string }[]; usage?: { input: number; output: number; cacheRead?: number; cacheWrite?: number; cost?: { total: number } }; stopReason?: string; errorMessage?: string }>;
 };
 
-/** The completer over `models`, each call on `pick(tier)`'s model at `thinking`. */
-export function completer(models: Models, pick: (tier: string | undefined) => { provider: string; modelId: string } | undefined, thinking: ModelThinkingLevel): Complete {
+/** The completer over `models`, each call on `pick(tier)`'s model at `thinking`. An answer names the model as `named`
+ *  (the run's own name for it) when the pick reaches it through another provider (a runner's session proxy), else as
+ *  `<provider>/<model id>`. */
+export function completer(models: Models, pick: (tier: string | undefined) => { provider: string; modelId: string; named?: string } | undefined, thinking: ModelThinkingLevel): Complete {
   return async (args, signal) => {
     const { prompt, system, maxTokens, tier } = args;
     if (typeof prompt !== "string" || !prompt.trim()) throw new Error("llm: prompt is a non-empty string");
@@ -25,11 +28,15 @@ export function completer(models: Models, pick: (tier: string | undefined) => { 
     if (system !== undefined && typeof system !== "string") throw new Error("llm: system is a string");
     if (maxTokens !== undefined && (typeof maxTokens !== "number" || !Number.isInteger(maxTokens) || maxTokens < 1 || maxTokens > 64_000)) throw new Error("llm: maxTokens is an integer from 1 to 64000");
     if (tier !== undefined && !["fast", "default", "strong"].includes(tier as string)) throw new Error("llm: tier is fast, default or strong");
-    const ref = pick(tier as string | undefined) ?? pick(undefined);
-    if (!ref) throw new Error("llm: this run has no model");
+    // Only a call that names no tier gets the default: a tier the run has no model for is refused, never answered by
+    // another tier's model.
+    const ref = pick(tier as string | undefined);
+    if (!ref) throw new Error(tier === undefined ? "llm: this run has no model" : `llm: tier ${tier as string} has no model in this run`);
     const model = models.getModel(ref.provider, ref.modelId) as { cost?: { input: number; output: number } } | undefined;
     if (!model) throw new Error(`llm: the model ${ref.provider}/${ref.modelId} is not known here`);
     const context = { ...(system ? { systemPrompt: system } : {}), messages: [{ role: "user", content: prompt, timestamp: Date.now() }] };
+    // A side request of its own (request-start.ts): its marks name it "llm", never the default a compaction's summary takes.
+    sideRequests.set(context, { label: LLM_TOOL, extraInputTokens: 0, maxFeeUsd: 0, feeUsd: () => 0 });
     const message = await models.completeSimple(model as never, context as never, { signal, reasoning: thinking, ...(maxTokens ? { maxTokens } : {}) } as never);
     if (message.stopReason === "error" || message.stopReason === "aborted") throw new Error(`llm: ${message.errorMessage ?? message.stopReason}`);
     const text = message.content.filter((part) => part.type === "text").map((part) => part.text ?? "").join("");
@@ -38,6 +45,6 @@ export function completer(models: Models, pick: (tier: string | undefined) => { 
     const cached = (message.usage?.cacheRead ?? 0) + (message.usage?.cacheWrite ?? 0);
     const usage = message.usage ? { input_tokens: message.usage.input + cached, output_tokens: message.usage.output, cached_input_tokens: cached } : null;
     const cost = priced && typeof message.usage?.cost?.total === "number" ? message.usage.cost.total : null;
-    return { text, model: `${ref.provider}/${ref.modelId}`, usage, cost_usd: cost };
+    return { text, model: ref.named ?? `${ref.provider}/${ref.modelId}`, usage, cost_usd: cost };
   };
 }

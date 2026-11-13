@@ -108,7 +108,19 @@ test('a code-mode model (luna) is told nothing about a read-only sandbox or sub-
   assert.match(config, /^sandbox_mode = "read-only"$/m);
 });
 
-test('a classic model is told nothing about a read-only sandbox, and is offered the host\'s write tool', { skip, timeout: 180_000 }, async () => {
+test("with the built-ins off, a code-mode model (luna, sol) is offered no apply_patch of Codex's own: exec lists none, and config.toml names the catalog that turns it off", { skip, timeout: 360_000 }, async () => {
+  for (const model of ['gpt-6-luna', 'gpt-6-sol']) {
+    const { request, config } = await firstRequest(model);
+    const carrier = (request.input ?? []).find((item) => item.type === 'additional_tools');
+    const exec = carrier?.tools.find((ns) => ns.name === 'functions')?.tools.find((t) => t.name === 'exec');
+    assert.match(exec?.description ?? '', /declare const tools: \{ write\(args: \{/, `${model}: exec still carries the host's tools`);
+    // Before: exec's description held `### apply_patch` and its declaration, and every call failed for want of an environment.
+    assert.doesNotMatch(JSON.stringify(request), /apply_patch/, `${model}: no apply_patch anywhere in what the model is offered`);
+    assert.match(config, /^model_catalog_json = ".*\/codex-home\/model-catalog\.json"$/m, `${model}: the catalog Codex reads is the harness's`);
+  }
+});
+
+test('a classic model is told nothing about a read-only sandbox, and is offered the host\'s write tool',{ skip, timeout: 180_000 }, async () => {
   const { request, config } = await firstRequest('gpt-5.4-mini');
   assert.deepEqual(sandboxNotes(request), [], 'no message describes Codex\'s sandbox');
   assert.deepEqual((request.tools ?? []).map((t) => t.name), ['write']);

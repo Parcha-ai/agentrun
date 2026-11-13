@@ -1,13 +1,15 @@
-export { createHarnessRunner, modelPortFor, SUBMIT_TOOL, RUNNER_RECORDS } from "./runner.js";
-export type { BeforeRequest, HarnessRunner, HarnessRunnerOptions, ModelBooking, ModelPortEvent, ModelPortOptions } from "./runner.js";
-export { DELEGATE_RESULT_SCHEMA, DELEGATE_TOOL, delegateProblems, delegateTool } from "./delegate.js";
-export type { DelegateAgent, DelegateEvent, DelegateOptions } from "./delegate.js";
-export { HarnessRunError, SessionFenced } from "./errors.js";
+export { answeredUnpriced, createHarnessRunner, modelPortFor, sessionSpendOf, SUBMIT_TOOL, RUNNER_RECORDS } from "./runner.js";
+export { runBooking, type RunSessions } from "./run-booking.js";
+export type { Admission, BeforeRequest, Refusal, HarnessRunner, HarnessRunnerOptions, InFlight, ModelBooking, ModelPortEvent, ModelPortOptions, SessionCost } from "./runner.js";
+export { HarnessRunError, SessionFenced, TurnParked } from "./errors.js";
 export { toolSchemaProblems } from "./schema-check.js";
-export { READ_SKILL_FILE, readSkillFileTool, skillProblems } from "./skill-files.js";
+export { READ_SKILL_FILE, readSkillFileTool, SKILL_BYTES, skillProblems } from "./skill-files.js";
 export type { HostSkill, SkillFileList } from "./skill-files.js";
 export type { HarnessRunReason } from "./errors.js";
+export { CONTENT_FILTERED, HOST_RESULT_MAX_CHARS, hostedTool } from "./types.js";
+export { bookRequest, isConnectCode, isGatewayTimeout, rejectionCode } from "./booking.js";
+export type { Booked, Ended, Priced } from "./booking.js";
 export type {
-  AdapterCapabilities, AdapterEvent, AdapterSession, AgentAdapter, HarnessEvent, HostTool, ToolImage, JsonValue, ModelPort, ModelTicket, ModelRequest, ModelUsage,
-  NodeRequest, SessionIO, SessionRecord, SessionSpec, SessionState, SessionStore, SessionWriter, TurnStatus,
+  AdapterCapabilities, AdapterEvent, AdapterSession, AgentAdapter, AdapterFacts, GateAnswer, GateCall, SessionPort, Wire, HarnessEvent, HostTool, McpCallResult, McpClient, McpTool, ToolImage, JsonValue, ModelPort, ModelTicket, ModelRequest, ModelUsage, NoteRequest,
+  NodeRequest, SessionIO, SessionMcp, SessionRecord, SessionSpec, SessionState, SessionStore, SessionWriter, ToolPermission, TurnStatus,
 } from "./types.js";

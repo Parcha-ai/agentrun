@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { curlFor, exampleInput, keeper, startBody, started, submitStart } from "./runStart";
+import { curlFor, exampleHint, exampleInput, keeper, startBody, started, submitStart } from "./runStart";
 
 describe("startBody", () => {
   it("starts an agentic run with its first message as content, and only the options given", () => {
@@ -20,6 +20,15 @@ describe("startBody", () => {
     expect(startBody("workflow", { text: "{subject:" })).toMatchObject({ ok: false, field: "input" });
     expect(startBody("agentic", { text: "Go.", maxCostUsd: "-1" })).toMatchObject({ ok: false, field: "max_cost_usd" });
     expect(startBody("agentic", { text: "Go.", maxCostUsd: "0" })).toMatchObject({ ok: false, field: "max_cost_usd" });
+  });
+
+  it("names the repository when given as owner/name, and refuses anything else", () => {
+    expect(startBody("workflow", { text: '{"a":1}', repo: "not a repo" })).toEqual({ ok: true, body: { input: { a: 1 } } });
+    expect(startBody("workflow", { text: '{"a":1}', repo: "a/b" })).toEqual({ ok: true, body: { input: { a: 1 } } });
+    expect(startBody("agentic", { text: "Go.", repo: " Parcha-ai/agentrun " })).toEqual({ ok: true, body: { input: { content: "Go." }, repo: "Parcha-ai/agentrun" } });
+    expect(startBody("agentic", { text: "Go.", repo: "" })).toEqual({ ok: true, body: { input: { content: "Go." } } });
+    expect(startBody("agentic", { text: "Go.", repo: "agentrun" })).toMatchObject({ ok: false, field: "repo" });
+    expect(startBody("agentic", { text: "Go.", repo: "a/b/c" })).toMatchObject({ ok: false, field: "repo" });
   });
 });
 
@@ -46,7 +55,7 @@ describe("curlFor", () => {
   it("is the request as cURL, with the token from the environment, never a value", () => {
     const c = curlFor("http://127.0.0.1:7340", "meeting-notes", { input: { content: "It's done." } }, "k1");
     expect(c).toContain("curl -X POST 'http://127.0.0.1:7340/v2/agents/meeting-notes/runs'");
-    expect(c).toContain('-H "Authorization: Bearer $AGENTRUN_TOKEN"');
+    expect(c).toContain('-H "Authorization: Bearer $AGENTRUN_API_KEY"');
     expect(c).toContain("-H 'Idempotency-Key: k1'");
     expect(c).toContain(`-d '{"input":{"content":"It'\\''s done."}}'`);
   });
@@ -108,6 +117,26 @@ describe("exampleInput", () => {
     expect(JSON.parse(e.text)).toEqual({ company: "", documents: [] });
     expect(e.from).toBe("shape");
     expect(exampleInput({ schemas: {} })).toBeNull();
+  });
+  it("with no required list (#1926), pre-fills no field, so the box never fails its own schema; the hint names what it takes", () => {
+    const w = { input: { schemaId: "In" }, schemas: { In: { type: "object", properties: { a: { type: "string" }, b: { type: "string", minLength: 1 } } } } };
+    const e = exampleInput(w)!;
+    expect(JSON.parse(e.text)).toEqual({});
+    expect(e.optional).toEqual(["a", "b"]);
+    expect(exampleHint(e, "run")).toBe("The workflow's input, its required fields empty. Fill them in, then run. It also takes a, b, if you add them.");
+  });
+  it("names the optional fields it left out beside the required ones it filled", () => {
+    const w = { input: { schemaId: "In" }, schemas: { In: { type: "object", required: ["company"], properties: { company: { type: "string" }, note: { type: "string", minLength: 3 } } } } };
+    const e = exampleInput(w)!;
+    expect(JSON.parse(e.text)).toEqual({ company: "" });
+    expect(e.optional).toEqual(["note"]);
+    expect(exampleHint(e, "start")).toBe("The workflow's input, its required fields empty. Fill them in, then start. It also takes note, if you add it.");
+  });
+  it("an example is the example's hint, with nothing left out", () => {
+    const w = { input: { schemaId: "In" }, schemas: { In: { type: "object", properties: { a: { type: "string" } }, examples: [{ a: "x" }] } } };
+    const e = exampleInput(w)!;
+    expect(e.optional).toEqual([]);
+    expect(exampleHint(e, "run")).toBe("The workflow's example input. Edit it, then run.");
   });
   it("follows a local $ref to the schema it names, as the DSL resolves it", () => {
     const w = { input: { schemaId: "In" }, schemas: {

@@ -14,12 +14,15 @@ export * from "./core/host.js";
 export * from "./core/images.js";
 export * from "./core/lease.js";
 export * from "./core/page-classifier.js";
-export { isPrivateAddress, pinnedLookup, PUBLIC_MAX_BYTES, publicFetch, readPage, type PublicAnswer, type PublicFetchOptions } from "./core/public-fetch.js";
+export { isPrivateAddress, pinnedLookup, PUBLIC_MAX_BYTES, publicFetch, type PublicAnswer, type PublicFetchOptions } from "./core/public-fetch.js";
+export { READ_DEADLINE_MS, READ_MAX_CHARS, readPage, type PageRead, type ReadPageOptions } from "./core/read-page.js";
 export * from "./core/receipts.js";
 export * from "./core/redact.js";
-export * from "./core/sites.js";
 export { DEFAULT_BROWSER_POLICY } from "./core/session-control.js";
 export * from "./core/tools.js";
 export * from "./core/usage.js";
 export * from "./core/web.js";
 export * from "./core/vault.js";
+// One CDP call over its own socket, kept open for a setting that lasts as long as it (Browser.setDownloadBehavior): what a
+// host holding a vendor's browser for the tool needs beside the driver.
+export { cdpCall, type CdpSession } from "./core/cdp-call.js";

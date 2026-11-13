@@ -1,98 +1,134 @@
-// The host tools of a run on a harness other than pi: pi's own read, write and edit (ArchilCodingTools), called with
-// the run's environment, so their arguments, their confinement to the run's work/ and their refusals are pi's, word for
-// word, and pi's fetch_page and web_fetch, the public-host guard included. pi's tools take only the environment, their
-// output and their diagnostics from a call's API, so that is all a call here gives them. read, fetch_page and web_fetch
-// may run again after a crash; write and edit never: the kernel records each one's intent before it runs, and a call a
-// crash cut off is answered interrupted, not run again. A refusal, an error and a write's or edit's result name a path in
-// the workspace relative to it (`hello.md`), never by the server's data directory (`workspaceRelative`).
-import { realpathSync } from "node:fs";
-import { dirname } from "node:path";
+// The host tools of a run on a harness other than pi: its coding tools, from the run's coding source (coding-tools.ts:
+// pi's own read, write and edit on the run's environment, or in a box those, bash and the background tools on the
+// box's), so their arguments, their confinement and their refusals are pi's, word for word, pi's web_fetch, the public-host
+// guard included, web_search, and monid's three (monid.ts), which stay on this machine.
+// pi's tools take only the environment, their output and their diagnostics from a call's API, and a paid one its call's
+// id and the run's store, so that is all a call here gives them: the output's tail or head as the tool keeps it (pi's
+// limits), then the diagnostics, also when the tool failed. read, the web tools, monid.discover, monid.inspect,
+// bash_output and bash_list may run again after a crash; write, edit, bash, monid.run, bash_background, bash_input and
+// bash_signal never: the kernel records each one's intent before it runs, and a call a crash cut off is answered
+// interrupted, not run again. A tool is named by its catalog name here and goes to the harness under its wire name
+// (catalog.ts: `monid.run` is `monid_run`), which the harness calls and journals. A refusal, an error and a write's or
+// edit's result name a path in the workspace relative to it (`hello.md`), never by the server's data directory
+// (`workspaceRelative`); in a box they name the box's paths. The runner's adapter loop gates each call before its intent
+// (tool-gate.ts RunGate.decide), so a call that reaches a host tool here was allowed.
 import type { Context } from "@earendil-works/chord";
 import { withAbortSignal } from "@earendil-works/chord/context";
-import { ROOT_CONVERSATION_ID, type ToolRegistration } from "@earendil-works/pi-durable";
+import { createModels } from "@earendil-works/pi-ai/models";
+import { ROOT_CONVERSATION_ID, type ToolExecutionApi, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { HostTool } from "@parcha/agentrun-kernel";
-import { ArchilCodingTools, type DurableRun } from "@parcha/pi-durable-disk";
-import { FETCH_PAGE_TOOL, fetchOptions, fetchPageTool } from "./fetch-page.js";
-import { FAUX_ENV } from "./model.js";
-import { WEB_FETCH_TOOL, webFetchTool } from "./web-fetch.js";
+import { WEB_FETCH_TOOL } from "./web-fetch.js";
+import { WEB_SEARCH_TOOL } from "./web-search.js";
+import { realOf, workspaceRelative } from "./workspace-paths.js";
+import { bounded, imagesOf, textOf } from "./workspace/executors.js";
 
-/** Each tool a harness other than pi runs here, and whether a call a crash cut off may run again. */
-export const REPLAY: Record<string, "safe" | "never"> = { read: "safe", write: "never", edit: "never", [FETCH_PAGE_TOOL]: "safe", [WEB_FETCH_TOOL]: "safe" };
+export { workspaceRelative } from "./workspace-paths.js";
+
+/** Each tool a harness other than pi runs here, by catalog name, and whether a call a crash cut off may run again.
+ *  `learned_workflow` (learned-workflow.ts LEARNED_WORKFLOW_TOOL, named here as a string so the modules do not import
+ *  each other) is never run again. */
+export const REPLAY: Record<string, "safe" | "never"> = { read: "safe", write: "never", edit: "never", bash: "never", [WEB_FETCH_TOOL]: "safe", [WEB_SEARCH_TOOL]: "safe", "monid.discover": "safe", "monid.inspect": "safe", "monid.run": "never", bash_background: "never", bash_output: "safe", bash_input: "never", bash_signal: "never", bash_list: "safe", learned_workflow: "never" };
+
+// pi's limits on a tool's output, and how a call's output is held within them, are the executors' (workspace/executors.ts).
+export { cutUtf8, MAX_BYTES, MAX_LINES } from "./workspace/executors.js";
 
 /** One call's result, kept by its call id for the run's timeline (an adapter's tool_end carries none). */
 export type ToolResults = Map<string, { text: string; isError: boolean }>;
 
+/** The members of pi's ToolExecutionApi a host tool's api gives. They are typed against pi's own type (`HostApi`), so a
+ *  change to any of them in pi fails the build, and they are every member pi's own tools read (scripts/host-tool-api.test.mjs
+ *  reads pi's tool sources for each `api.<member>`). The rest of pi's api (taskId, registry, the task, memo, document and
+ *  nested-tool members) belongs to the tool task pi runs a tool in, which a host tool, called by another harness, has
+ *  none of: the full type cannot be built here, so a read of any other member throws, naming it, rather than reading as
+ *  "is not a function". `conversationId` is the run's root conversation, where a host tool's calls are made: serve's
+ *  browser-cost `capped` reads it, now that the browser binds as a host tool on the runner. `snapshot` and
+ *  `waitForTask` are the run's own Harness's (run.harness, the claim's journal on the runner), as `commit` is: a
+ *  document or a task of this run, never another's. A remote executor (workspace/executors.ts
+ *  piExecutor) has no run Harness and gives none of these three (RUN_ONLY_MEMBERS); the coding tools it runs read none.
+ *  `memo` and `taskId` are a pi tool task's own, which a host tool runs in none of: they are not given here. */
+export const HOST_API_MEMBERS = ["env", "callId", "commit", "output", "outputWindow", "retainedOutput", "diagnostic", "agent", "models", "conversationId", "snapshot", "waitForTask"] as const;
+/** The members a host tool's api gives only on a run's Harness: a remote executor's api has none of them. */
+export const RUN_ONLY_MEMBERS = ["conversationId", "snapshot", "waitForTask"] as const;
+type HostApi = Pick<ToolExecutionApi, (typeof HOST_API_MEMBERS)[number]>;
+const hostApi = (given: HostApi): ToolExecutionApi =>
+  new Proxy(given, {
+    get: (target, key) => {
+      if (typeof key === "symbol" || key === "then" || Object.hasOwn(target, key)) return Reflect.get(target, key);
+      throw new Error(`a host tool's api has no ${key}: pi gives it only to a tool its own tool task runs`);
+    },
+  }) as unknown as ToolExecutionApi;
+
 /** The tools whose result is pi's own words about a path (`Successfully wrote to <path>`), never a file's text. */
 const SAYS_PATH = new Set(["write", "edit"]);
 
-/**
- * `text` with the workspace's absolute path taken out: `<work>/notes/a.md` reads `notes/a.md`, the workspace itself `.`,
- * a path beside it `../x` (pi's tools resolve a relative path before they refuse it), and pi's refusal ("<path>: outside
- * the workspace <work>") names no directory. `works` is the workspace as the environment names it and as the kernel
- * resolves it (they differ under a symlinked directory). For a refusal, an error, and a write's or edit's result; a
- * read's result is the file's own text and is never changed.
- */
-export function workspaceRelative(text: string, works: readonly string[]): string {
-  const escape = (path: string) => path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  // A name counts only where a path starts (not inside a longer one), and, unless a "/" follows, where it ends (a quote, a
-  // space, a separator or the text's end).
-  const start = "(?<![\\w./~-])";
-  const end = "(?![^'\"\\s,;:)\\]])";
-  let out = text;
-  // Longest first, so a name inside another is taken out before the outer one could take its prefix.
-  for (const work of [...new Set(works)].filter((w) => w.length > 1).sort((a, b) => b.length - a.length)) {
-    const name = `${start}${escape(work)}`;
-    out = out
-      .replace(new RegExp(`outside the workspace ${name}${end}`, "g"), "outside the workspace")
-      .replace(new RegExp(`${name}/`, "g"), "")
-      .replace(new RegExp(`${name}${end}`, "g"), ".");
-    const parent = dirname(work);
-    if (parent.length > 1) out = out.replace(new RegExp(`${start}${escape(parent)}/`, "g"), "../").replace(new RegExp(`${start}${escape(parent)}${end}`, "g"), "..");
-  }
-  return out;
+/** What one host tool's call reads of the run: the run's environment (its file environment, the api's `env`), its
+ *  harness's commit and its root agent (a paid call's booking and pi's read), the context and the results map, and the
+ *  paid-call money seam, over the runner's claim Harness (runner/adapter-run-spec.ts). */
+export interface HostToolCtx {
+  readonly context: Context;
+  readonly results: ToolResults;
+  /** The run's environment, as the api's `env` (the file environment; the web and monid tools read none of it). */
+  env(): Promise<ToolExecutionApi["env"]>;
+  readonly commit: ToolExecutionApi["commit"];
+  readonly agent: ToolExecutionApi["agent"];
+  /** The run's own Harness's snapshot and waitForTask (run.harness, the claim's journal on the runner), as
+   *  `commit` is: a document or task of this run only. */
+  readonly snapshot: ToolExecutionApi["snapshot"];
+  readonly waitForTask: ToolExecutionApi["waitForTask"];
+  /** A gate for a tool that cannot be run on the runner yet: undefined to run the call, else the refusal that is its answer,
+   *  so the tool is listed but never run as a stub. No tool sets it now (learned_workflow runs for real on every session's
+   *  model port); it stays the seam a not-yet-runnable tool refuses through. The paid tools the loop can book
+   *  (web_fetch/web_search/monid) carry no such gate; the adapter loop books their requests (bookedIn). */
+  settle?(name: string, args: unknown, callId: string): { refused: string } | undefined;
 }
 
-const textOf = (content: unknown): string =>
-  Array.isArray(content) ? content.map((block) => (block && typeof block === "object" && "text" in block && typeof block.text === "string" ? block.text : "")).join("") : "";
-
-/** `path` as the kernel resolves it, or itself when it cannot be resolved. */
-const realOf = (path: string): string => {
-  try {
-    return realpathSync(path);
-  } catch {
-    return path;
-  }
-};
-
-export function hostTools(run: DurableRun, names: readonly string[], context: Context, results: ToolResults): HostTool[] {
-  const fetchPage = fetchPageTool(() => fetchOptions(process.env, FAUX_ENV)) as unknown as ToolRegistration;
-  const webFetch = webFetchTool(process.env) as unknown as ToolRegistration;
-  const tools = new Map([...(ArchilCodingTools.tools ?? []), fetchPage, webFetch].map((tool) => [tool.name, tool as ToolRegistration] as const));
-  return names.flatMap((name) => {
-    const tool = tools.get(name);
-    const replay = REPLAY[name];
-    if (!tool || !replay) return [];
-    const host: HostTool = {
-      name,
-      description: tool.description,
-      inputSchema: tool.parameters as unknown as Record<string, unknown>,
-      replay,
-      async call(args, { callId, signal }) {
-        const out: string[] = [];
-        const env = await run.env({ conversationId: ROOT_CONVERSATION_ID, read: undefined as never }, context);
-        const api = { env, output: (chunk: string | Uint8Array) => void out.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8")), outputWindow: undefined, diagnostic: () => {} };
-        const result = await tool.execute(args as never, api as never, withAbortSignal(signal, context)).catch((error: Error) => ({ content: [{ type: "text", text: error.message }], isError: true }));
-        // pi 1.1 names the result's blocks `content`, pi 1.2 and later `output`.
-        const given = result as unknown as { content?: unknown; output?: unknown; isError?: boolean };
-        const said = textOf(given.content ?? given.output) || out.join("");
-        const isError = given.isError === true;
-        const work = (env as { cwd?: unknown }).cwd;
-        const works = typeof work === "string" ? [work, realOf(work)] : [];
-        const answer = { text: isError || SAYS_PATH.has(name) ? workspaceRelative(said, works) : said, isError };
-        results.set(callId, answer);
+/** One pi ToolRegistration `tool` (named `name` by its catalog name) as the kernel's HostTool an adapter session takes:
+ *  the paid-call seam, then the tool on the run's environment and harness, its answer the text a
+ *  model reads (the output or the failure, a write's or an error's path named relative to the run's folder). Undefined when
+ *  `name` is not one a host runs (REPLAY). */
+export function hostToolOf(name: string, tool: ToolRegistration, ctx: HostToolCtx): HostTool | undefined {
+  const replay = REPLAY[name];
+  if (!replay) return undefined;
+  return {
+    name: tool.name,
+    description: tool.description,
+    inputSchema: tool.parameters as unknown as Record<string, unknown>,
+    replay,
+    async call(args, { callId, signal }) {
+      // The unready-tool seam: a tool that cannot be run on the runner yet is refused in words, never run as a stub.
+      const unsettled = ctx.settle?.(name, args, callId);
+      if (unsettled) {
+        const answer = { text: unsettled.refused, isError: true };
+        ctx.results.set(callId, answer);
         return answer;
-      },
-    };
-    return [host];
-  });
+      }
+      const out = bounded(tool.outputLimits);
+      const notes: string[] = [];
+      const env = await ctx.env();
+      // The call's id and the run's store, as pi's: a paid call marks and books its charge there (monid.ts).
+      const api = hostApi({
+        env, callId,
+        commit: ctx.commit,
+        output: (chunk) => out.push(chunk), outputWindow: undefined, retainedOutput: () => out.retained(),
+        diagnostic: (note) => void notes.push(note.message),
+        agent: ctx.agent,
+        models: createModels(),
+        conversationId: ROOT_CONVERSATION_ID,
+        snapshot: ctx.snapshot, waitForTask: ctx.waitForTask,
+      });
+      // A tool that throws (bash on a non-zero exit or a timeout) still answers with its output, as pi's harness does;
+      // monid's answer a failure as an error result, which is kept as it is.
+      const result = await tool.execute(args as never, api, withAbortSignal(signal, ctx.context)).catch((error: Error) => ({ failed: error.message, isError: true }));
+      // pi names a result's blocks `output`; its bash answers its exit as a result's diagnostic.
+      const given = result as unknown as { output?: unknown; isError?: boolean; failed?: string; diagnostics?: readonly { message: string }[] };
+      const said = [textOf(given.output) || out.text(), given.failed, ...notes, ...(given.diagnostics ?? []).map((note) => note.message)].filter((part) => part).join("\n\n");
+      const isError = given.isError === true;
+      const work = (env as { cwd?: unknown }).cwd;
+      const works = typeof work === "string" ? [work, realOf(work)] : [];
+      const answer = { text: isError || SAYS_PATH.has(name) ? workspaceRelative(said, works) : said, isError };
+      ctx.results.set(callId, answer);
+      const images = imagesOf(given.output);
+      return images.length ? { ...answer, images } : answer;
+    },
+  };
 }

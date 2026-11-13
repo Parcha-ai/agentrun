@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-codex/test/fake-app-server.mjs at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, patches: 005-fake-app-server-script, 006-comments
+// Changed by Parcha, and AgentRun's own since the port from upstream froze on 2026-11-07.
 /**
  * A fake `codex app-server --stdio`, for the tests that need no network. It
  * speaks the subset of the protocol the harness uses and keeps a rollout
@@ -36,7 +36,12 @@
  * what it says is a model request, as Codex's is: a POST to the provider's
  * `base_url` + `/responses` from `config.toml` (the drive's gateway proxy, in
  * front of a scripted model), with the provider's
- * `env_key` as its bearer key, streamed back piece by piece.
+ * `env_key` as its bearer key, streamed back piece by piece. With
+ * `FAKE_CODEX_MODEL=responses` the model drives the whole turn, as Codex's
+ * does: each step sends the thread's history and dynamic tools, and a
+ * `function_call` it answers is called (`modelTurn`). An answer that ends
+ * `response.incomplete` is a stream error retried after a backoff, as
+ * Codex 0.164's is ("Incomplete response returned, reason: ...").
  *
  * For the sandbox tier's tests (docs/workspaces.md §11.4 A6) it also plays
  * the parts of Codex the harness relies on there:
@@ -62,6 +67,10 @@
  * - a project config (`<cwd>/.codex/config.toml`) is read only when
  *   `config.toml` trusts the cwd, and its `developer_instructions` then show
  *   in every echo (`[project config: …]`);
+ * - `FAKE_CODEX_START_MS` answers `initialize` that many ms late, as a slow
+ *   start does: the drive places no prompt before it;
+ * - `FAKE_CODEX_RECORD_MS` writes a turn's user message that many ms after
+ *   `turn/start` is answered, as Codex does (it answers first);
  * - `FAKE_CODEX_LAG=1` writes a call's `function_call` line only after the
  *   drive answered it (Codex's rollout writer is asynchronous);
  * - `escalate <command>` asks for its approval with `additionalPermissions`;
@@ -75,6 +84,7 @@ import { randomUUID } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { createInterface } from 'node:readline';
+import { mcpDown, mcpTurn } from './fake-app-server-mcp.js';
 
 const home = process.env.CODEX_HOME;
 if (home && process.argv[2] === 'sandbox') {
@@ -189,13 +199,100 @@ async function stream(text, onPiece) {
   for await (const chunk of res.body) {
     buffer += decoder.decode(chunk, { stream: true });
     for (let at = buffer.indexOf('\n\n'); at >= 0; at = buffer.indexOf('\n\n')) {
-      const data = buffer.slice(0, at).replace(/^data: /, '');
+      // An event's `data:` lines (the provider names each event on an `event:` line before them).
+      const data = buffer.slice(0, at).split('\n').filter((line) => line.startsWith('data:')).map((line) => line.replace(/^data: ?/, '')).join('\n');
       buffer = buffer.slice(at + 2);
       if (data === '[DONE]') return;
       if (data) onPiece(JSON.parse(data).delta);
     }
   }
   throw new Error('the model stream was cut');
+}
+
+/**
+ * `FAKE_CODEX_MODEL=responses`: the turn is the provider's model's, as Codex's is. Each step sends the thread's history (its
+ * `response_item` payloads, in order) and its dynamic tools to the provider's `/responses`, then does what the answer says: a
+ * `function_call` calls that dynamic tool (its line, `item/tool/call`, its output) and asks the model again; text is said and
+ * ends the turn. A resumed thread's history is the rollout it resumed, so the model picks up where it was.
+ */
+/** Codex's stream retries (its `stream_max_retries` default), and what modelTurn returns for a turn interrupted between them. */
+const STREAM_RETRIES = 5;
+const INTERRUPTED = Symbol('interrupted');
+
+async function modelTurn(turnId) {
+  let retries = 0;
+  for (;;) {
+    const input = thread.lines.filter((l) => l.type === 'response_item').map((l) => l.payload);
+    const tools = thread.dynamicTools.map((t) => ({ type: 'function', name: t.name, description: t.description ?? '', parameters: t.inputSchema ?? { type: 'object', properties: {} } }));
+    const res = await fetch(`${modelBase()}/responses`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', accept: 'text/event-stream', authorization: `Bearer ${modelKey()}`, originator: 'codex_cli_rs', version: '0.160.0', session_id: thread.id },
+      body: JSON.stringify({ model: modelId(), input, tools, stream: true, store: false }),
+    });
+    if (!res.ok || !res.body) throw new Error(`the model answered ${res.status}`);
+    let text = '';
+    let call;
+    let completed = false;
+    let incomplete;
+    // The answer's text, told as it comes (Codex's item/agentMessage/delta), its item started at the first piece.
+    const itemId = `msg_${randomUUID().slice(0, 8)}`;
+    let started = false;
+    const piece = (delta) => {
+      if (!started) notify('item/started', { threadId: thread.id, turnId, item: { type: 'agentMessage', id: itemId, text: '' } });
+      started = true;
+      if (delta) notify('item/agentMessage/delta', { threadId: thread.id, turnId, itemId, delta });
+    };
+    const decoder = new TextDecoder();
+    let buffer = '';
+    for await (const chunk of res.body) {
+      buffer += decoder.decode(chunk, { stream: true });
+      for (let at = buffer.indexOf('\n\n'); at >= 0; at = buffer.indexOf('\n\n')) {
+        const data = buffer.slice(0, at).split('\n').filter((line) => line.startsWith('data:')).map((line) => line.replace(/^data: ?/, '')).join('\n');
+        buffer = buffer.slice(at + 2);
+        if (!data || data === '[DONE]') continue;
+        const event = JSON.parse(data);
+        if (event.type === 'response.output_text.delta') {
+          text += event.delta ?? '';
+          piece(event.delta ?? '');
+        } else if (event.type === 'response.output_item.done' && event.item?.type === 'function_call') call = event.item;
+        else if (event.type === 'response.completed') completed = true;
+        else if (event.type === 'response.incomplete') incomplete = event.response?.incomplete_details?.reason ?? 'unknown';
+      }
+    }
+    if (incomplete) {
+      // As Codex 0.164 does: an incomplete response is a stream error ("Incomplete response returned, reason: ..."), retried
+      // after a backoff up to its stream retries; a turn/interrupt meanwhile ends the turn there, interrupted. The answer's
+      // item never completes: no line of it is written.
+      const message = `Incomplete response returned, reason: ${incomplete}`;
+      if (retries >= STREAM_RETRIES) throw new Error(message);
+      retries++;
+      notify('error', { threadId: thread.id, turnId, error: { message }, willRetry: true });
+      await sleep(200 * 2 ** (retries - 1));
+      if (active?.interrupted) return INTERRUPTED;
+      continue;
+    }
+    if (!completed) throw new Error('the model stream was cut');
+    if (call) {
+      const callId = call.call_id;
+      const tool = call.name;
+      let args = {};
+      try {
+        args = call.arguments ? JSON.parse(call.arguments) : {};
+      } catch {}
+      write('response_item', { type: 'function_call', name: tool, arguments: call.arguments ?? '{}', call_id: callId });
+      notify('item/started', { threadId: thread.id, turnId, item: { type: 'dynamicToolCall', id: callId, tool } });
+      const result = await request('item/tool/call', { threadId: thread.id, turnId, callId, namespace: null, tool, arguments: args });
+      const out = result.contentItems?.map((c) => c.text).join('') ?? '';
+      write('response_item', { type: 'function_call_output', call_id: callId, output: out });
+      notify('item/completed', { threadId: thread.id, turnId, item: { type: 'dynamicToolCall', id: callId, tool, status: result.success ? 'completed' : 'failed' } });
+      continue;
+    }
+    piece('');
+    write('event_msg', { type: 'item_completed', thread_id: thread.id, turn_id: turnId, item: { type: 'AgentMessage', id: itemId, content: [{ type: 'Text', text }] } });
+    write('response_item', { type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] });
+    notify('item/completed', { threadId: thread.id, turnId, item: { type: 'agentMessage', id: itemId, text } });
+    return text;
+  }
 }
 
 async function say(turnId, text) {
@@ -230,6 +327,7 @@ const scripted = () => {
 async function runTurn(turnId, clientId, text) {
   ensureMeta();
   write('event_msg', { type: 'task_started', turn_id: turnId });
+  if (process.env.FAKE_CODEX_RECORD_MS) await sleep(Number(process.env.FAKE_CODEX_RECORD_MS));
   userMessage(turnId, clientId, text);
   notify('turn/started', { threadId: thread.id, turn: { id: turnId, status: 'inProgress', items: [] } });
   let last;
@@ -241,7 +339,16 @@ async function runTurn(turnId, clientId, text) {
   // `FAKE_CODEX_TAMPER=shrink|replace`: every turn tampers (a model under danger-full-access that keeps at it).
   const tamper = /^tamper\s+(shrink|replace)$/.exec(trimmed) ?? (process.env.FAKE_CODEX_TAMPER ? [null, process.env.FAKE_CODEX_TAMPER] : null);
   const lag = process.env.FAKE_CODEX_LAG === '1';
-  if (trimmed === 'compact') {
+  if (process.env.FAKE_CODEX_MODEL === 'responses') {
+    last = await modelTurn(turnId);
+    if (last === INTERRUPTED) {
+      // `turn/interrupt` between a stream's retries: the turn ends there.
+      write('event_msg', { type: 'turn_aborted', turn_id: turnId, reason: 'interrupted' });
+      active = undefined;
+      notify('turn/completed', { threadId: thread.id, turn: { id: turnId, status: 'interrupted', error: null, items: [] } });
+      return;
+    }
+  } else if (trimmed === 'compact') {
     // Codex's compaction: the history replaced by its summary, then the turn goes on.
     write('compacted', { message: 'Summary of the conversation so far.', replacement_history: thread.lines.filter((l) => l.type === 'response_item' && l.payload?.type === 'message').map((l) => l.payload) });
     last = 'compacted';
@@ -258,6 +365,9 @@ async function runTurn(turnId, clientId, text) {
     }
     await sleep(300);
     last = 'tampered';
+    await say(turnId, last);
+  } else if (trimmed === 'outputs' || /^mcp\s/.test(trimmed)) {
+    last = await mcpTurn(trimmed, turnId, { thread, write, notify, say, table });
     await say(turnId, last);
   } else if (trimmed === 'recall') {
     const said = thread.lines.map((l) => JSON.stringify(l.payload ?? {})).join('\n');
@@ -387,12 +497,15 @@ async function handle(m) {
   const p = m.params ?? {};
   switch (m.method) {
     case 'initialize':
-      return reply({ userAgent: 'fake-app-server/0', codexHome: home });
+      // FAKE_CODEX_START_MS: app-server takes that long to start (the drive places nothing before it has).
+      return void setTimeout(() => reply({ userAgent: 'fake-app-server/0', codexHome: home }), Number(process.env.FAKE_CODEX_START_MS ?? 0));
     case 'initialized':
       return;
     case 'thread/start': {
       const id = randomUUID();
       const path = join(home, 'sessions', '2026', '10', '06', `rollout-2026-10-06T00-00-00-${id}.jsonl`);
+      const down = await mcpDown({ config, table });
+      if (down) return fail(-32603, down);
       thread = { id, path, cwd: p.cwd, dynamicTools: p.dynamicTools ?? [], lines: [], planted: projectConfig(p.cwd) };
       return reply({ thread: { id, path }, approvalPolicy: p.approvalPolicy, sandbox: { type: 'readOnly' } });
     }

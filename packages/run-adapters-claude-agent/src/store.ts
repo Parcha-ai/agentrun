@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-claude-code/src/store.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, imports rewritten for AgentRun; patches: 009-tool-result-barrier-and-refusals
+// Changed by Parcha, and AgentRun's own since the port from upstream froze on 2026-11-07.
 import type { JournalRecord, NativeJournal, TranscriptEntry } from './host/process.js';
 
 /**
@@ -171,6 +171,22 @@ export class JournalSessionStore {
       // Entries without a uuid (titles, mode markers, queue operations) are appended as they come.
       else this.journal.append(item.stream, item.entry, item.entry.uuid ? { id: item.entry.uuid } : {});
     }
+  }
+
+  /** The main transcript as a resume loads it: the log's lines as of the drive's start, and those `extend` added. */
+  lines(): readonly TranscriptLine[] {
+    return this.loaded.get(CLAUDE_STREAM) ?? [];
+  }
+
+  /**
+   * A line the harness writes into the main transcript before the CLI loads it (a dangling call's result on a resume):
+   * on the log, deduped by its `uuid` like the CLI's own, and in what `load` returns, after the lines before it.
+   */
+  extend(entry: TranscriptLine): void {
+    this.loaded.set(CLAUDE_STREAM, [...this.lines(), entry]);
+    this.held.push({ stream: CLAUDE_STREAM, entry });
+    this.note(entry);
+    this.release();
   }
 
   async load(key: SessionKey): Promise<TranscriptLine[] | null> {

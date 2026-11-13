@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-process/src/records.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, imports rewritten for AgentRun; patches: 003-comments-name-this-host, 004-comments-name-the-session-writer
+// Changed by Parcha, and AgentRun's own since the port from upstream froze on 2026-11-07.
 import type { EffectRecord, SessionState } from '../kernel/index.js';
 
 /**
@@ -153,47 +153,6 @@ export function transcriptOf(state: SessionState): JournalRecord<TranscriptEntry
 function lastUnavailable(state: SessionState): number {
   for (let i = state.effectOrder.length - 1; i >= 0; i--) if (state.effectOrder[i]!.name === 'unavailable') return i;
   return -1;
-}
-
-/**
- * Where the last turn ended: the `effectOrder` index of the batch holding
- * the last `turn` entry, or of the last `unavailable` fact (a turn the
- * harness could not run: it is over, with an error, and nothing in it is
- * recovered), or -1 if no turn has ended yet. Everything after it belongs to
- * the current (or an interrupted) turn.
- */
-export function lastTurnEnd(state: SessionState): number {
-  let at = -1;
-  for (const r of transcriptOf(state)) if (r.data?.type === 'turn') at = r.at;
-  return Math.max(at, lastUnavailable(state));
-}
-
-/**
- * A batch input for UIs: the transcript entries as they are, every other
- * stream as a count (native records can be large, and a page polling a
- * session should not carry them).
- */
-export function summarizeBatch(input: unknown): unknown {
-  const batch = input as JournalBatch | undefined;
-  if (!batch || typeof batch !== 'object' || !batch.streams) return input;
-  const streams: Record<string, unknown> = {};
-  for (const [name, part] of Object.entries(batch.streams)) {
-    streams[name] =
-      name === TRANSCRIPT
-        ? part
-        : {
-            from: part.from,
-            count: part.entries.length,
-            blobs: part.entries.filter((e) => e.blob).length,
-          };
-  }
-  return { v: batch.v, n: batch.n, streams };
-}
-
-/** The transcript entries of one batch input (inline only; transcript entries are never offloaded). */
-export function batchTranscript(input: unknown): TranscriptEntry[] {
-  const part = (input as JournalBatch | undefined)?.streams?.[TRANSCRIPT];
-  return (part?.entries ?? []).map((e) => e.data as TranscriptEntry).filter(Boolean);
 }
 
 export interface OpenTurn {

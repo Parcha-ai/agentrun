@@ -4,31 +4,26 @@ import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { cp, lstat, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
-import { basename, dirname, join, resolve } from 'node:path';
+import { readdirSync } from 'node:fs';
+import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { auditBlockers } from './audit-exceptions.mjs';
+import { MACHINE_PATH } from './machine-path.mjs';
 import { buildOverrides, findDrift } from './pi-family-pins.mjs';
-import { recordProblems } from './reference-record.mjs';
 import { checkPiFamily, developedVersions, laggingWorkspaces, listCopies } from './consumer-pi.mjs';
 import { importsOf } from './package-imports.mjs';
 import { runtimeSmokeChecks } from './release-preflight.mjs';
 import { ALLOWED_MARKS, attributionProblems, boundaryProblems, carriesUpstream } from './upstream-attribution.mjs';
 
 const exec = promisify(execFile);
-// `--pi <x.y.z>`: install the clean consumer's pi family at that version instead of the one the repository's lockfile holds.
-// Without it the consumer is pinned to the lockfile, as before.
-const piFlag = process.argv.indexOf('--pi');
-const legPi = piFlag === -1 ? undefined : process.argv[piFlag + 1];
-assert.ok(piFlag === -1 || /^\d+\.\d+\.\d+$/.test(legPi ?? ''), `--pi takes a plain x.y.z version, got ${legPi}`);
 // `--console`: the server's packed dist must carry the console it answers at "/" (apps/console, built before the server's
 // build, which copies it in). Its files are scanned like every packed file either way.
 const requireConsole = process.argv.includes('--console');
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const receiptDir = join(root, '.release');
-const [major, minor] = process.versions.node.split('.').map(Number);
-assert.ok(major > 22 || major === 22 && minor >= 19, 'Package verification requires Node.js >=22.19.0');
+const [major, minor, patch] = process.versions.node.split('.').map(Number);
+assert.ok(major > 24 || major === 24 && (minor > 22 || minor === 22 && patch >= 3), 'Package verification requires Node.js >=24.22.3');
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/(?:API_KEY|TOKEN|SECRET|PASSWORD|PRIVATE_KEY|NODE_OPTIONS|NODE_PATH)/i.test(key)));
 const receipt = { status: 'running', startedAt: new Date().toISOString(), node: process.version, packages: [], demos: [], checks: [], limitations: ['The content scan is heuristic, not proof of complete secret detection.', 'Smoke tests use fake adapters and prohibit networking; live provider behavior is verified separately.', 'License and publication ownership remain separate release decisions.'] };
 await mkdir(receiptDir, { recursive: true });
@@ -36,10 +31,6 @@ await rm(join(receiptDir, 'typescript-diagnostics.txt'), { force: true });
 const writeReceipt = () => writeFile(join(receiptDir, 'verification.json'), JSON.stringify(receipt, null, 2) + '\n');
 await writeReceipt();
 const temporary = await mkdtemp(join(tmpdir(), 'agentrun-package-check-'));
-/** The pins for a leg that names its own pi version: every @earendil-works package the lockfile holds is pinned to it, by name. */
-function piLeg({ held }, version) {
-  return { overrides: Object.fromEntries([...held.keys()].map(name => [name, version])), held: new Map([...held.keys()].map(name => [name, new Set([version])])) };
-}
 async function run(command, args, cwd = root, allowFailure = false, commandEnv = env) {
   try { return { ...(await exec(command, args, { cwd, env: commandEnv, maxBuffer: 16 * 1024 * 1024, timeout: 180_000 })), exitCode: 0 }; }
   catch (error) {
@@ -50,7 +41,8 @@ async function run(command, args, cwd = root, allowFailure = false, commandEnv =
 }
 const json = async path => JSON.parse(await readFile(path, 'utf8'));
 const forbid = [
-  ['machine-specific path', /(?:\/(?:home|Users)\/[^/\s"']+\/|[A-Za-z]:\\Users\\[^\\\s"']+\\)/],
+  // The one machine-path rule, shared with export-source.mjs (machine-path.mjs says what it takes and what it leaves).
+  ['machine-specific path', MACHINE_PATH],
   ['private service endpoint', /https?:\/\/(?:localhost\b|127\.\d+\.\d+\.\d+\b|10\.\d+\.\d+\.\d+\b|192\.168\.\d+\.\d+\b|172\.(?:1[6-9]|2\d|3[01])\.\d+\.\d+\b|169\.254\.\d+\.\d+\b|[a-z0-9.-]+\.(?:internal|local|localhost)\b)/i],
   ['embedded credential value', /\b(?:api[_-]?key|access[_-]?token|client[_-]?secret|password)\s*[:=]\s*["'][A-Za-z0-9_./+=-]{24,}["']/i],
   ['private key', /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/],
@@ -59,21 +51,39 @@ const forbid = [
   ['credential URL', /https?:\/\/[^\s/:]+:[^\s/@]+@/],
 ];
 
+// Every file of the template packages the server ships: the server checks each package whole at its start
+// (src/templates.ts readPackage), so what ships under templates/ is what the repository holds there.
+function templateFiles() {
+  const root = new URL('../packages/serve/templates/', import.meta.url);
+  return readdirSync(root, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile()).map((entry) => `package/templates/${relative(fileURLToPath(root), join(entry.parentPath, entry.name)).split(sep).join('/')}`).sort();
+}
+
 // Loopback and private endpoints are refused in every packed file. The browser package names a few loopback URLs on purpose, so
 // those exact literals, in those exact files, are removed before the scan; any other loopback string, in any file of any package,
 // still fails. Each entry says why it is there, and an entry that matches nothing fails too, so the list cannot go stale.
-// Files beyond the common allowlist, by package. The browser package ships its vendored Stagehand facade's provenance file beside the compiled
-// copy, so a reader of the tarball can check what was copied; no other package may carry it.
+// Files beyond the common allowlist, by package. The browser package ships the provenance files of what it vendors (the Stagehand facade, and
+// Browser Use Pi's snapshot and actions behind the raw-CDP driver) beside the compiled copies, so a reader of the tarball can check what was
+// copied; no other package may carry them.
 const allowedExtraFiles = {
-  'pi-browser': ['package/src/vendor/stagehand-facade/UPSTREAM.json'],
-  // The learning repository's contract ships with its checker.
-  learn: ['package/SPEC.md'],
+  'pi-browser': ['package/src/vendor/stagehand-facade/UPSTREAM.json', 'package/src/vendor/browser-use-pi/UPSTREAM.json'],
   // The harness seam ships the provenance of the code it copies from vercel-labs/durable-harness (upstream-attribution.mjs).
   'run-adapters': ['package/vendor/durable-harness/UPSTREAM.json'],
   'run-adapters-claude-agent': ['package/vendor/durable-harness/UPSTREAM.json'],
   'run-adapters-codex': ['package/vendor/durable-harness/UPSTREAM.json'],
   // The server's bin is its launcher, which hands the server its secrets over a pipe (launcher/agentrun-serve).
-  serve: ['package/launcher/agentrun-serve'],
+  // And the locks the CLI harnesses' first use installs by (src/harness-install.ts): each the package.json it locks and
+  // npm's lock, metadata naming the package at its pin and every package of its tree by sha512, never the CLI itself.
+  // And the template packages it ships, which it reads at its start (src/templates.ts), with their format (templates/README.md).
+  serve: ['package/launcher/agentrun-serve', 'package/harnesses/claude-agent/package.json', 'package/harnesses/claude-agent/package-lock.json', 'package/harnesses/codex/package.json', 'package/harnesses/codex/package-lock.json', ...templateFiles()],
+  // `npx @parcha/agentrun` is a command, not a library: its bin and the module the bin loads, plain JavaScript with no build,
+  // and the API's CLI with its command table generated from the server's OpenAPI document (scripts/generate-clients.mjs),
+  // its wait-and-follow module (follow.mjs), the commands that read a secret from stdin (login.mjs), its skill's
+  // installer (skill.mjs) and its template package check (template.mjs).
+  // The computer package ships its image recipe for remote computers with an Archil mount: the root helper, whose sha256
+  // the provider reads at run time to check an image (src/mount-archil.ts), its Dockerfile, and the scripts that build it
+  // as a Daytona snapshot, a Modal image or an E2B template.
+  computer: ['package/box/agentrun-archil', 'package/box/Dockerfile', 'package/box/build-daytona.py', 'package/box/build-modal.py', 'package/box/build-e2b.mjs'],
+  agentrun: ['package/bin/agentrun.mjs', 'package/lib/start.mjs', 'package/lib/cli.mjs', 'package/lib/follow.mjs', 'package/lib/commands.generated.mjs', 'package/lib/login.mjs', 'package/lib/skill.mjs', 'package/lib/template.mjs'],
 };
 const allowedEndpoints = {
   'run-adapters-claude-agent': [
@@ -87,11 +97,6 @@ const allowedEndpoints = {
     ['dist/host/proxy.d.ts', 'http://127.0.0.1:<port>'],
   ],
   'pi-browser': [
-    // Stagehand's trace export is pointed at a closed loopback port (the discard port): nothing listens, nothing leaves the host.
-    // The request observer owns the URL (it exempts that export from its holds) and the driver's types carry it.
-    ['dist/core/effects.js', 'http://127.0.0.1:9/v1/traces'],
-    ['dist/core/effects.d.ts', 'http://127.0.0.1:9/v1/traces'],
-    ['dist/driver/stagehand.d.ts', 'http://127.0.0.1:9/v1/traces'],
     // The DevTools endpoint of the Chrome the provider started itself, on the free port it chose.
     ['dist/providers/cdp.js', 'http://127.0.0.1:${port}'],
     ['dist/providers/cdp.js', 'http://127.0.0.1:${local.port}'],
@@ -101,16 +106,19 @@ const allowedEndpoints = {
     // The live view starts its own server on loopback when the host mounts none (never 0.0.0.0), and tells the host the viewer's address.
     ['dist/live-view/server.js', 'http://127.0.0.1:${s.address().port}'],
   ],
-  'pi-durable-agent': [
-    // `serve` binds the loopback only (it has no host option): it parses a request's target against that origin and tells its caller the address it listens on.
-    ['dist/serve/server.js', 'http://127.0.0.1'],
-    ['dist/serve/server.d.ts', 'http://127.0.0.1:<port>/'],
-    // The README's example of the address the command prints.
-    ['README.md', 'http://127.0.0.1:41297/'],
+  computer: [
+    // The local browser asks the Chrome it started for its DevTools path, on the loopback port that Chrome chose.
+    ['dist/chrome.js',
+      'http://127.0.0.1:${port}/json/version'], // key-gate: loopback-rule the local Chrome's own DevTools socket
   ],
   'run-adapters-codex': [
     // A session's model proxy binds the loopback only, on a port it chose, and gives Codex that address as its provider.
     ['dist/host/proxy.js', 'http://127.0.0.1:${address.port}'],
+  ],
+  agentrun: [
+    // The CLI's last resort for the server started on this machine: the address agentrun-serve binds by default.
+    ['lib/cli.mjs',
+      'http://127.0.0.1:7340/v2'], // key-gate: loopback-rule the default address of the server started on this machine
   ],
   serve: [
     // The address agentrun-serve binds by default, which its quick start points a client at.
@@ -119,10 +127,25 @@ const allowedEndpoints = {
     ['CHANGELOG.md', 'http://127.0.0.1:7340'],
     // The agentrun.v2/0 contract, vendored unchanged for GET /v2/openapi.json: its servers list the local server's default address.
     ['dist/openapi/agentrun-v2.openapi.json', 'http://127.0.0.1:7340'],
+    // The OpenCode adapter's MCP server listens on the loopback interface, on the free port it chose, and gives OpenCode that address.
+    ['dist/harness-opencode/host/mcp.js',
+      'http://127.0.0.1/mcp'], // key-gate: loopback-rule declares the MCP address of the OpenCode adapter, which listens on 127.0.0.1 only
   ],
 };
 
 const usedEndpoints = new Set();
+
+// Files a package's archive must hold. The computer package's providers start the daemon from its own dist: Docker binds
+// dist/computerd-linux-<arch> into each computer, Daytona and Modal upload it. `npm run build:daemon -w @parcha/agentrun-computer`
+// (Go, after `npm run build`) writes both, and the check below requires each, executable by everyone (every computer drops
+// every capability, so its root runs the mounted binary only if everyone may), an ELF for its architecture, stamped with the
+// package's version, the one its hello reports. Its ./mount subpath is what a host reads the mount rule from. The Docker
+// provider binds dist/docker and package.json into each egress proxy container, which runs the egress files with Node alone.
+const daemonMachines = { amd64: 0x3e, arm64: 0xb7 };
+const egressCode = ['egress-main.js', 'egress-proxy.js', 'egress-table.js'];
+const requiredFiles = {
+  computer: ['package/LICENSE', 'package/NOTICE', 'package/README.md', 'package/dist/index.js', 'package/dist/index.d.ts', 'package/dist/mount.js', 'package/dist/mount.d.ts', ...egressCode.map(file => `package/dist/docker/${file}`), ...Object.keys(daemonMachines).map(arch => `package/dist/computerd-linux-${arch}`)],
+};
 
 try {
   // JSON keeps the last of two equal keys, so a merge that leaves a key twice passes every later check.
@@ -133,7 +156,7 @@ try {
     assert.equal(text, JSON.stringify(JSON.parse(text), null, 2) + '\n', `packages/${entry.name}/package.json is not canonical two-space JSON: a key appears twice, or the layout differs`);
   }
   receipt.checks.push('Every packages/*/package.json is canonical two-space JSON, so no key appears twice.');
-  const packageDirectories = ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'pi-git-remote', 'pi-agent-learn', 'learn', 'decisions', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'harness'];
+  const packageDirectories = ['dsl', 'jev', 'pi-browser', 'serve', 'decisions', 'computer', 'client', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'agentrun'];
   const tarballs = [];
   const attributed = [];
   for (const directory of packageDirectories) {
@@ -146,7 +169,7 @@ try {
     const names = (await run('tar', ['-tzf', tarball])).stdout.trim().split('\n');
     for (const name of names) {
       assert.ok(name.startsWith('package/') && !name.split('/').includes('..'), `Unsafe archive path in ${manifest.name}`);
-      assert.ok(name.endsWith('/') || (allowedExtraFiles[directory] ?? []).includes(name) || /^package\/(?:package\.json|README(?:\.md)?|CHANGELOG\.md|LICENSE(?:\.txt|\.md)?|NOTICE(?:\.txt|\.md)?|bin\/archil-scoped|dist\/.+|schema\/.+|skills\/.+)$/.test(name), `File outside the public package allowlist: ${name}`);
+      assert.ok(name.endsWith('/') || (allowedExtraFiles[directory] ?? []).includes(name) || /^package\/(?:package\.json|README(?:\.md)?|CHANGELOG\.md|LICENSE(?:\.txt|\.md)?|NOTICE(?:\.txt|\.md)?|dist\/.+|schema\/.+|skills\/.+)$/.test(name), `File outside the public package allowlist: ${name}`);
       assert.ok(!/(?:^|\/)(?:\.env(?:\..*)?|node_modules|\.git|\.cascade|\.release|test|tests)(?:\/|$)/.test(name), `Unexpected packed path: ${name}`);
       assert.ok(!/\.(?:pem|key|p12|pfx|map)$/.test(name), `Unexpected packed file: ${name}`);
     }
@@ -155,13 +178,24 @@ try {
     const extracted = join(temporary, `inspect-${directory}`);
     await mkdir(extracted);
     await run('tar', ['-xzf', tarball, '-C', extracted]);
+    for (const name of requiredFiles[directory] ?? []) assert.ok(names.includes(name), `${manifest.name} must hold ${name.slice('package/'.length)}${name.includes('/computerd-linux-') ? ': run npm run build:daemon -w @parcha/agentrun-computer (Go) after the build' : ''}`);
+    if (directory === 'computer') {
+      for (const [arch, machine] of Object.entries(daemonMachines)) {
+        const name = `package/dist/computerd-linux-${arch}`;
+        assert.ok(listing.some(line => line.startsWith('-rwxr-xr-x') && line.endsWith(` ${name}`)), `${name} is packed executable by everyone (0755)`);
+        const bytes = await readFile(join(extracted, name));
+        assert.ok(bytes.subarray(0, 4).equals(Buffer.from([0x7f, 0x45, 0x4c, 0x46])) && bytes.readUInt16LE(18) === machine, `${name} is a Linux ${arch} ELF`);
+        assert.ok(bytes.includes(Buffer.from(manifest.version)), `${name} is stamped with ${manifest.version}: build the daemon again after the version changes`);
+      }
+      receipt.checks.push(`${manifest.name} holds LICENSE, NOTICE, its ./mount subpath, the egress proxy's code, and the daemon for linux ${Object.keys(daemonMachines).join(' and ')}, each an executable ELF stamped ${manifest.version}.`);
+    }
     for (const name of names.filter(n => !n.endsWith('/'))) {
       const content = await readFile(join(extracted, name), 'utf8');
       const decoded = content.replace(/(?:%[0-9a-f]{2})+/gi, value => { try { return decodeURIComponent(value); } catch { return value; } });
       const scanned = (allowedEndpoints[directory] ?? []).reduce((text, [file, literal]) => (name === `package/${file}` && text.includes(literal) ? (usedEndpoints.add(`${file} ${literal}`), text.replaceAll(literal, '')) : text), content);
       const scannedDecoded = scanned.replace(/(?:%[0-9a-f]{2})+/gi, value => { try { return decodeURIComponent(value); } catch { return value; } });
       for (const [kind, pattern] of forbid) assert.ok(!pattern.test(scanned) && !pattern.test(scannedDecoded), `${kind} found in ${manifest.name}/${name}; content omitted`);
-      if (name.endsWith('.js') || name.endsWith('.d.ts')) {
+      if (name.endsWith('.js') || name.endsWith('.mjs') || name.endsWith('.d.ts')) {
         const imports = importsOf(content);
         for (const dependency of imports) {
           if (dependency.startsWith('.')) {
@@ -205,15 +239,15 @@ try {
   const npmMajor = Number((await run('npm', ['--version'])).stdout.trim().split('.')[0]);
   // The drift check below fails the run if a future npm resolves either override shape differently.
   const pinned = buildOverrides(rootLock, npmMajor);
-  const { overrides, held } = legPi ? piLeg(pinned, legPi) : pinned;
+  const { overrides, held } = pinned;
   await writeFile(join(consumer, 'package.json'), JSON.stringify({ name: 'agentrun-clean-consumer', version: '1.0.0', private: true, type: 'module', overrides }));
   await run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--save-exact', ...tarballs], consumer);
   const typescript = await json(join(root, 'node_modules', 'typescript', 'package.json'));
   const nodeTypes = await json(join(root, 'node_modules', '@types', 'node', 'package.json'));
   const zod = await json(join(root, 'node_modules', 'zod', 'package.json'));
-  // The Pi packages are optional peers of @parcha/agentrun-pi: a host or application supplies them, so the consumer does.
+  // The Pi packages, at the repository's versions: a host or application supplies them, so the consumer does.
   const peers = [];
-  for (const name of ['@earendil-works/pi-coding-agent', '@earendil-works/pi-agent-core', '@earendil-works/pi-tui', '@earendil-works/pi-ai', 'typebox']) peers.push(`${name}@${legPi && name.startsWith('@earendil-works/') ? legPi : (await json(join(root, 'node_modules', name, 'package.json'))).version}`);
+  for (const name of ['@earendil-works/pi-coding-agent', '@earendil-works/pi-agent-core', '@earendil-works/pi-tui', '@earendil-works/pi-ai', 'typebox']) peers.push(`${name}@${(await json(join(root, 'node_modules', name, 'package.json'))).version}`);
   await run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--save-dev', '--save-exact', `typescript@${typescript.version}`, `@types/node@${nodeTypes.version}`, `zod@${zod.version}`, ...peers], consumer);
   // Every @earendil-works package in the consumer is at a version the repository's lockfile holds for that name.
   const consumerLock = JSON.parse(await readFile(join(consumer, 'package-lock.json'), 'utf8'));
@@ -222,17 +256,17 @@ try {
   receipt.checks.push('Every @earendil-works package in the consumer resolves at a version the repository lockfile holds for it.');
   // The versions the consumer landed on are printed and filed before they are judged, so a failure shows what was installed.
   const copies = listCopies(consumerLock.packages);
-  const developed = legPi ? { '@earendil-works/pi-durable': legPi, '@earendil-works/chord': legPi } : developedVersions(rootLock);
+  const developed = developedVersions(rootLock);
   const peerRanges = {};
   for (const packed of receipt.packages) {
     const ranges = Object.fromEntries(Object.entries((await json(join(consumer, 'node_modules', packed.name, 'package.json'))).peerDependencies ?? {}).filter(([name]) => name in developed));
     if (Object.keys(ranges).length) peerRanges[packed.name] = ranges;
   }
-  receipt.piFamily = { developedOn: developed, ...(legPi ? { leg: legPi } : {}), copies };
+  receipt.piFamily = { developedOn: developed, copies };
   for (const copy of copies) console.log(`Consumer holds ${copy.name}@${copy.version} at ${copy.location}`);
-  const piProblems = checkPiFamily(copies, developed, peerRanges, legPi ? [] : laggingWorkspaces(rootLock, developed));
+  const piProblems = checkPiFamily(copies, developed, peerRanges, laggingWorkspaces(rootLock, developed));
   if (piProblems.length) throw new Error(`The packages installed together do not land on the pi version the repository develops on:\n${piProblems.join('\n')}`);
-  receipt.checks.push(`The consumer holds one pi-durable and one chord, at ${developed['@earendil-works/pi-durable']} and ${developed['@earendil-works/chord']}, ${legPi ? `the version this leg names (--pi ${legPi})` : 'the versions the repository develops the durable packages on'}.`);
+  receipt.checks.push(`The consumer holds one pi-durable and one chord, at ${developed['@earendil-works/pi-durable']} and ${developed['@earendil-works/chord']}, the versions the repository develops the durable packages on.`);
   for (const packed of receipt.packages) {
     const installed = await json(join(consumer, 'node_modules', packed.name, 'package.json'));
     assert.equal(installed.version, packed.version, `Installed version mismatch: ${packed.name}`);
@@ -263,7 +297,6 @@ syncBuiltinESMExports();
   const starterTarballs = tarballs.filter((_, index) => ['dsl', 'jev'].includes(packageDirectories[index]));
   await starterCommand(['install', '--ignore-scripts', '--no-audit', '--no-fund', ...starterTarballs], 0, false);
   assert.ok((await lstat(join(starter, 'node_modules/@parcha/agentrun-dsl'))).isDirectory(), 'Starter must install the DSL package, not a workspace symlink');
-  await assert.rejects(lstat(join(starter, 'node_modules/@parcha/agentrun-pi')), { code: 'ENOENT' });
   await starterCommand(['test']);
   const starterOutput = await starterCommand(['start']);
   assert.match(starterOutput, /\[review-policy\]/);
@@ -288,48 +321,22 @@ syncBuiltinESMExports();
     receipt.demos.push({ scenario, status: result.result.status, output: result.result.output ?? null, events: result.events.map(event => ({ type: event.type, label: event.label })) });
   }
   console.log('Installed CLI: billing, technical, and ambiguous scenarios passed without network.');
-  // Every Box provider that pi-transport exports under ./box/* is checked by name, so a new provider adds no line here.
-  const transportRoot = join(consumer, 'node_modules/@parcha/pi-transport');
-  const transportExports = (await json(join(transportRoot, 'package.json'))).exports;
-  const boxProviders = (await readdir(join(transportRoot, 'dist/box'))).filter(file => file.endsWith('.js')).map(file => file.slice(0, -3)).filter(name => transportExports[`./box/${name}`] !== null).sort();
-  // A file name like archil-exec exports archilExecBoxes.
-  const boxFactory = name => `${name.replace(/-(\w)/g, (_, letter) => letter.toUpperCase())}Boxes`;
-  assert.ok(['docker', 'local'].every(name => boxProviders.includes(name)), `pi-transport exports the providers ${boxProviders.join(', ')}`);
   await writeFile(join(consumer, 'smoke.mjs'), `import assert from 'node:assert/strict';
 import { runWorkflow, validateWorkflow, defineWorkflow, runTypedWorkflow, inspectWorkflow, formatWorkflowTree, authorWorkflow, authorContract, loadAuthorReference } from '@parcha/agentrun-dsl';
 import { z } from 'zod';
 import { supportTriage } from '@parcha/agentrun-dsl/demo';
 import { openRecovery, withRecovery, memoryStore } from '@parcha/agentrun-dsl/recovery';
 import { registerStoreConformance } from '@parcha/agentrun-dsl/recovery/testing';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createJevRunner } from '@parcha/agentrun-jev';
-import * as pi from '@parcha/agentrun-pi';
-import * as archil from '@parcha/pi-durable-disk';
-import * as archilLease from '@parcha/pi-durable-disk/lease';
-import * as archilInternals from '@parcha/pi-durable-disk/internals';
 import * as browser from '@parcha/pi-browser';
-import * as browserAgent from '@parcha/pi-browser/coding-agent';
+import * as browserDurable from '@parcha/pi-browser/durable';
 import * as browserTesting from '@parcha/pi-browser/testing';
 import * as browserCdp from '@parcha/pi-browser/providers/cdp';
-import * as vision from '@parcha/pi-vision';
-import * as visionDurable from '@parcha/pi-vision/durable';
-import * as visionTesting from '@parcha/pi-vision/testing';
-import * as transport from '@parcha/pi-transport';
-import * as transportHands from '@parcha/pi-transport/hands';
-import * as transportHome from '@parcha/pi-transport/home';
-import * as transportLaunch from '@parcha/pi-transport/launch';
-import * as transportTesting from '@parcha/pi-transport/testing';
-import * as piDurable from '@parcha/agentrun-pi/durable';
-import * as piWorkflows from '@parcha/agentrun-pi/workflows';
-import * as agentHome from '@parcha/pi-durable-agent';
-import * as gitRemote from '@parcha/pi-git-remote';
-import * as gitRemoteAgent from '@parcha/pi-git-remote/coding-agent';
-import * as agentLearn from '@parcha/pi-agent-learn';
-import * as learnCheck from '@parcha/agentrun-learn';
 import * as decisions from '@parcha/agentrun-decisions';
+import * as client from '@parcha/agentrun-client';
 import { judgeFromProvider } from '@parcha/agentrun-dsl';
 import { registerDecisionProviderConformance } from '@parcha/agentrun-dsl/testing';
 import * as adapters from '@parcha/agentrun-kernel';
@@ -340,17 +347,9 @@ import { createRegistry, Harness, MemoryStorage } from '@earendil-works/pi-durab
 import { createModels } from '@earendil-works/pi-ai/models';
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
 import { execFileSync } from 'node:child_process';
-import * as agentExport from '@parcha/pi-durable-agent/export';
-import * as agentServe from '@parcha/pi-durable-agent/serve';
-import * as agentWorkflow from '@parcha/pi-durable-agent/workflow';
 import * as serve from '@parcha/agentrun-serve';
-import * as piSignin from '@parcha/agentrun-pi/signin';
-import * as reference from '@parcha/agentrun-harness';
-import * as referenceScan from '@parcha/agentrun-harness/scan';
-import * as referencePlace from '@parcha/agentrun-harness/place';
-import { fileURLToPath } from 'node:url';
-const { createPiRunner } = pi;
-assert.equal('authorWorkflow' in pi, false);
+import * as computer from '@parcha/agentrun-computer';
+import * as computerMount from '@parcha/agentrun-computer/mount';
 assert.equal(validateWorkflow(supportTriage).ok,true);
 const schema=JSON.parse(await readFile(new URL(import.meta.resolve('@parcha/agentrun-dsl/schema')),'utf8'));
 assert.equal(schema.$id,'https://agentrun.ai/schema/v2/workflow.schema.json');
@@ -367,44 +366,59 @@ assert.ok(formatWorkflowTree(inspectWorkflow(typed)).includes('copy [code]'));
 assert.deepEqual((await runWorkflow(JSON.parse(JSON.stringify(typed)),{text:'serialized'},{})).output,{text:'serialized'});
 const judge=createJevRunner({client:{async systemOne(){return {model:'fake',answers:{ok:{type:'noul',noul:.9}},usage:{input_tokens:1,output_tokens:1}};}}});
 assert.equal((await judge({label:'check',kind:'judge',state:{ok:true},questions:{ok:{type:'noul',instructions:'Is it okay?'}}})).answers.ok.noul,.9);
-let disposed=false;
-const runNode=createPiRunner({model:{},modelRuntime:{},sessionFactory:async options=>({session:{subscribe(){return()=>{};},async abort(){},dispose(){disposed=true;},async prompt(){await options.customTools.find(t=>t.name==='submit').execute('submit',{value:{total:5}});}}})});
-assert.deepEqual(await runNode({kind:'agent',label:'fake',system:[],user:'Return total',schema:workflow.schemas.Result}),{total:5});
-assert.ok(disposed); assert.equal(typeof authorWorkflow,'function');
-assert.equal(typeof archil.openDurableRun,'function'); assert.equal(typeof archilLease.openRunLease,'function'); assert.equal(typeof archilLease.leaseParkTarget,'function'); assert.equal(typeof archilInternals.runPath,'function'); assert.equal('openRunLease' in archil,false); assert.ok(existsSync(archil.ARCHIL_SCOPED)); assert.equal('supervise' in archilLease,false);
-assert.ok(browser.BROWSER_TOOLS.length>0); assert.equal(typeof browserAgent.createBrowserExtension,'function'); assert.equal(typeof browserTesting.FakeBackend,'function'); assert.equal(typeof browserCdp.cdpProvider,'function');
-assert.deepEqual(Object.keys(vision.READ_MEDIA_PARAMETERS),['ask','from_s','to_s','page','char_offset']); assert.equal(vision.resolveLimits(undefined).image.maxWidth,2000); assert.equal(vision.citation('a.pdf',{page:{from:3,to:3}}),'a.pdf#page=3'); assert.equal(typeof visionDurable.createVisionExtension,'function');
-assert.equal((await visionTesting.fakeEyes().see({parts:[],ask:'q'},new AbortController().signal)).text,'fake answer');
-assert.equal(typeof transport.parseTransportConfig,'function'); assert.equal(typeof transportLaunch.launch,'function'); assert.equal(typeof transportLaunch.launchState,'function'); assert.equal(typeof transportLaunch.launchStop,'function'); assert.equal(transportHome.launch,transportLaunch.launch); assert.equal(typeof transportHome.moveWorkspace,'function'); assert.equal(typeof transportHome.sealStore,'function'); assert.equal(typeof transportTesting.createBoxConformance,'function');
-for (const name of ${JSON.stringify(boxProviders)}) assert.equal(typeof (await import('@parcha/pi-transport/box/'+name))[${JSON.stringify(Object.fromEntries(boxProviders.map(name => [name, boxFactory(name)])))}[name]],'function',name);
-assert.equal(typeof transportHands.boxEnv,'function');
-assert.equal(typeof transportHands.transport,'function'); assert.equal(typeof transport.TransportError,'function');
-assert.equal(piDurable.DECISION_RECEIPTS_DOC,'agentrun.decisions'); assert.equal(piDurable.DECISION_ROW_VERSION,1); { let opened=0; const writer=piDurable.createDecisionWriter({open:async()=>{opened++;throw new Error('never opened');}}); await writer.flush(); assert.equal(opened,0); }
-assert.equal(typeof piWorkflows.WorkflowStore,'function'); assert.equal(typeof piWorkflows.WorkflowStoreError,'function'); { const dir=await mkdtemp(join(tmpdir(),'wf-store-')); try { assert.deepEqual(await new piWorkflows.WorkflowStore(dir).list(),[]); } finally { await rm(dir,{recursive:true,force:true}); } }
-{ const dir=await mkdtemp(join(tmpdir(),'agentrun-agent-home-')); try { const home=await agentHome.createAgentHome(join(dir,'acme'),{definition:{version:1,name:'consumer',instructions:'Answer.',skills:['s'],tools:[]},skills:{'s/SKILL.md':'# S'}}); const started=await agentHome.startRun(home,{runId:'r1',host:'consumer'}); assert.deepEqual(started,{...agentHome.runPaths(home,'r1'),runId:'r1',agent:{instructions:'Answer.',tools:[]},leases:[]}); assert.equal(await readFile(join(started.workspace,'.agents/skills/s/SKILL.md'),'utf8'),'# S'); assert.deepEqual(await agentHome.carryBack(home,started,{outcome:'completed'}),{changed:true,profiles:[],released:[]}); assert.equal((await agentHome.readAgentHome(home)).runs.r1.outcome,'completed'); } finally { await rm(dir,{recursive:true,force:true}); } }
-{ const dir=await mkdtemp(join(tmpdir(),'agentrun-git-remote-')); try { const bare=join(dir,'remote.git'); execFileSync('git',['init','-q','--bare','--template=','-b','main',bare]); const repo=await gitRemote.openRepo({dir:join(dir,'host'),remote:gitRemote.local(bare)}); const made=await repo.commitTo('runs/r1',{files:{'inbox/r1.md':'a lesson\\n'},message:'r1',trailers:{'Run-Id':'r1'}}); await repo.push(made.sha,'runs/r1'); const fresh=await gitRemote.openRepo({dir:join(dir,'fresh'),remote:gitRemote.local(bare)}); assert.deepEqual(await fresh.commitTo('runs/r1',{files:{'inbox/r1.md':'again\\n'},message:'r1',trailers:{'Run-Id':'r1'}}),{sha:made.sha,created:false}); assert.equal(await fresh.read('inbox/r1.md',made.sha),'a lesson\\n'); const userinfo=new URL('https://git.example.test/a.git'); userinfo.username='user'; userinfo.password='pass'; await assert.rejects(gitRemote.openRepo({dir:join(dir,'h'),remote:{kind:'https',url:userinfo.href}}),e=>e instanceof gitRemote.GitRemoteError&&e.code==='refused'); assert.throws(()=>gitRemote.https(userinfo.href,()=>undefined),e=>e instanceof gitRemote.GitRemoteError&&e.code==='refused'); const hosted=gitRemote.codeStorage({origin:'https://git.example.test/git/',repo:'agents/a1',token:async()=>'unused',hidden:true}); assert.deepEqual([hosted.kind,hosted.url,hosted.pushUrl],['https','https://git.example.test/git/agents/a1.git','https://git.example.test/git/agents/a1+ephemeral.git']); assert.equal((await hosted.credential()).username,'t'); } finally { await rm(dir,{recursive:true,force:true}); } }
-{ const dir=await mkdtemp(join(tmpdir(),'agentrun-agent-learn-')); try { assert.throws(()=>agentLearn.RULES_LOCKED.push('x'),TypeError); assert.equal(agentLearn.isRulesLocked('learnings/AGENTS.md'),true); const bare=join(dir,'remote.git'); execFileSync('git',['init','-q','--bare','--template=','-b','main',bare]); const repo=await gitRemote.openRepo({dir:join(dir,'host'),remote:gitRemote.local(bare)}); const lesson={id:'L-0123456789ab',type:'lesson',scope:'all',status:'active',provenance:{runs:['r0'],sha:'0'.repeat(40),untrusted:false},uses:0,supersedes:[],text:'Search both forms of the legal name.'}; const made=await repo.commitTo('main',{files:{'learnings/L-0123456789ab.md':agentLearn.renderLearning(lesson)},message:'seed'}); await repo.push(made.sha,'main'); const registry=createRegistry(); registry.install(agentLearn.agentLearn()); const harness=await Harness.open(new MemoryStorage(),{models:createModels(),registry},BACKGROUND_CONTEXT); try { const seeded=await agentLearn.seedLearning({repo,target:harness,into:join(dir,'work')}); assert.equal(seeded.sha,made.sha); assert.equal((await agentLearn.readSeed(harness)).sha,made.sha); assert.match(seeded.section,/L-0123456789ab lesson: Search both forms/); assert.equal(await readFile(join(dir,'work/.agent/learnings/L-0123456789ab.md'),'utf8'),agentLearn.renderLearning(lesson)); assert.deepEqual(await agentLearn.collectCandidates(harness),[]); } finally { await harness.close(BACKGROUND_CONTEXT); } } finally { await rm(dir,{recursive:true,force:true}); } }
-assert.equal(typeof gitRemoteAgent.createGitRemoteExtension,'function'); assert.equal(typeof gitRemoteAgent.default,'function'); assert.equal(typeof gitRemoteAgent.createGitRemoteExtension({}),'function');
-assert.deepEqual([agentExport.EXPORTABLE_KINDS,agentExport.SECRET_KINDS,agentExport.projectForExport],[agentHome.EXPORTABLE_KINDS,agentHome.SECRET_KINDS,agentHome.projectForExport]);
-{ assert.deepEqual(Object.keys(agentServe).sort(),['STORE_PAGE_FILES','serveHome','serveStore','storeApi']); const pkg=join(process.cwd(),'node_modules','@parcha','pi-durable-agent'); assert.match(execFileSync(join(process.cwd(),'node_modules','.bin','pi-durable-agent'),['--help'],{encoding:'utf8'}),/usage: pi-durable-agent serve <dir>/); for (const file of ['page.html','store.html','page.css','graph.js','page.js']) assert.ok((await readFile(join(pkg,'dist','serve',file),'utf8')).length>0,'the install has dist/serve/'+file); }
-assert.deepEqual(Object.keys(agentWorkflow).sort(),['checkWorkflowBody','readWorkflowRun','revisionGraph','runWorkflowRevision','startWorkflowRevision','workflowCarry','workflowIssues']); await assert.rejects(agentWorkflow.checkWorkflowBody(null),error=>error.code==='invalid');
-{ const ready=piSignin.checkKeys({name:'consumer',models:{lead:{needs:['text']}},keys:[{env:'CONSUMER_KEY',why:'w',where:'x',required:true}],programs:[],expectedCalls:0,expectedCost:0},{env:{}}); assert.equal(ready.exitCode,2); assert.equal(typeof piSignin.resolveModel,'function'); }
-{ const dir=await mkdtemp(join(tmpdir(),'agentrun-agent-propose-')); try { assert.deepEqual(agentLearn.guard({role:'curate',files:{'agent.json':'{}'}}).map(r=>r.reason),['rules_locked']); const bare=join(dir,'remote.git'); execFileSync('git',['init','-q','--bare','--template=','-b','main',bare]); const repo=await gitRemote.openRepo({dir:join(dir,'host'),remote:gitRemote.local(bare)}); const base=await repo.commitTo('main',{files:{'AGENTS.md':'# Rules\\n'},message:'seed'}); await repo.push(base.sha,'main'); const noted={callId:'c1',type:'lesson',text:'Search both forms of the legal name.',evidence:['a 404']}; const target={snapshot:async()=>({order:['c1'],byCall:{c1:noted}})}; const proposed=await agentLearn.proposeLearning({repo,runId:'r1',target}); assert.equal(proposed.status,'proposed'); assert.deepEqual(await agentLearn.proposeLearning({repo,runId:'r1',target}),{status:'already',sha:proposed.sha}); assert.deepEqual(agentLearn.parseInbox(await repo.read('inbox/r1.md',proposed.sha)),{run:'r1',candidates:[{...noted,untrusted:false}]}); const refused=await agentLearn.proposeLearning({repo,runId:'r2',target,secrets:['Search both forms']}); assert.equal(refused.status,'refused'); assert.equal(await repo.resolve('runs/r2'),undefined); } finally { await rm(dir,{recursive:true,force:true}); } }
-{ const dir=await mkdtemp(join(tmpdir(),'agentrun-agent-workflows-')); try { const work=join(dir,'work'), checkout=join(dir,'checkout'); await mkdir(work); await mkdir(checkout); const saved=await new piWorkflows.WorkflowStore(work).save('consumer-add',workflow); const records={[saved.digest+'.json']:await readFile(join(work,'.pi/agentrun/workflows/consumer-add',saved.digest+'.json'),'utf8'),latest:saved.digest+'\\n'}; const main={main:'0'.repeat(40),read:async()=>undefined,list:async()=>[]}; const candidate={run:'r1',name:'consumer-add',description:'Add two numbers.',records,untrusted:false}; assert.equal((await agentLearn.workflowAdmitter({tmpRoot:dir})({...main,workflow:candidate})).status,'held'); const admitted=await agentLearn.workflowAdmitter({tmpRoot:dir,allowExecutableCode:true})({...main,workflow:candidate}); assert.equal(admitted.status,'admitted'); assert.equal(agentLearn.parseTrial(admitted.files['.agents/skills/consumer-add/trial.json'],'consumer-add').status,'trial'); for (const [file,text] of Object.entries(admitted.files)) if (file.startsWith('.pi/')) { await mkdir(join(checkout,file,'..'),{recursive:true}); await writeFile(join(checkout,file),text); } assert.equal((await new piWorkflows.WorkflowStore(checkout).load('consumer-add')).digest,saved.digest); assert.equal(agentLearn.matches([{pointer:'/left',op:'gte',value:1}],{left:2}),true); } finally { await rm(dir,{recursive:true,force:true}); } }
-{ const ready=piSignin.checkKeys({name:'consumer',models:{lead:{needs:['text']}},keys:[{env:'CONSUMER_KEY',why:'w',where:'x',required:true}],programs:[],expectedCalls:0,expectedCost:0},{env:{}}); assert.equal(ready.exitCode,2); assert.equal(typeof piSignin.resolveModel,'function'); }
+assert.equal(typeof authorWorkflow,'function');
+assert.ok(browser.BROWSER_TOOLS.length>0); assert.equal(typeof browserDurable.createBrowserExtension,'function'); assert.equal(typeof browserTesting.FakeBackend,'function'); assert.equal(typeof browserCdp.cdpProvider,'function');
 assert.ok(loadAuthorReference('language').includes(authorContract()));
-{ assert.equal(typeof serve.startServe,'function'); const servePkg=join(process.cwd(),'node_modules','@parcha','agentrun-serve'); assert.ok(JSON.parse(await readFile(join(servePkg,'dist','openapi','agentrun-v2.openapi.json'),'utf8')).openapi,'the install has the contract its build copies, dist/openapi/agentrun-v2.openapi.json'); const caps=await serve.capabilities({}); assert.equal(caps.contract,'agentrun.v2/0'); assert.equal(caps.backend,'local'); assert.deepEqual(caps.models,{source:'providers',route_prefix:null,fast:null,default:null,strong:null}); assert.deepEqual(caps.harnesses.map((h)=>[h.id,h.default_model]),[['pi',null],['claude-agent',null],['codex',null]]); assert.equal(serve.ERROR_STATUS.unsupported_here,501); }
-for (const name of ['demo','run','placeAt','localHost','codeOf','tapBox']) assert.equal(typeof reference[name],'function',name); assert.equal(typeof referenceScan.credentialIn,'function'); assert.equal(typeof referencePlace.localPlace,'function'); assert.ok(existsSync(fileURLToPath(import.meta.resolve('@parcha/agentrun-harness/child-app'))),'the child app resolves to a file');
-{ const draft={v:2,name:'w',schemas:{S:{type:'object'}},output:{schemaId:'S'},root:{node:'agent',label:'a',instructions:'Do it.',out:'S',as:'a',tools:['bash']}}; const changes=[{path:'workflows/w/workflow.json',status:'added',bytes:Buffer.from(JSON.stringify(draft))},{path:'AGENTS.md',status:'modified',bytes:Buffer.from('x')}]; assert.deepEqual(learnCheck.checkRun({branch:'runs/r1',changes}).problems.map(p=>p.rule),['no_tool_list','locked','memo_missing']); assert.deepEqual(learnCheck.checkRun({branch:'runs/r1',changes,tools:['fetch_page']}).problems.map(p=>p.rule),['workflow','locked','memo_missing']); }
+{ assert.equal(typeof serve.startServe,'function'); const servePkg=join(process.cwd(),'node_modules','@parcha','agentrun-serve'); assert.ok(JSON.parse(await readFile(join(servePkg,'dist','openapi','agentrun-v2.openapi.json'),'utf8')).openapi,'the install has the contract its build copies, dist/openapi/agentrun-v2.openapi.json'); const caps=await serve.capabilities({}); assert.equal(caps.contract,'agentrun.v2/0'); assert.equal(caps.backend,'local'); assert.deepEqual(caps.models,{source:'providers',route_prefix:null,fast:null,default:null,strong:null,ready:false,needs:'key',priced:null}); assert.deepEqual(caps.harnesses.map((h)=>[h.id,h.default_model]),[['pi',null],['claude-agent',null],['codex',null],['opencode',null]]); assert.equal(serve.ERROR_STATUS.unsupported_here,501); }
 { const faux=adaptersTesting.fauxAdapter({script:()=>[{submit:{answer:'ok'}}]}); const runNode=adapters.createHarnessRunner(faux,{store:adaptersTesting.memorySessionStore()}); assert.deepEqual(await runNode({kind:'agent',label:'smoke',system:[],user:'{}',schema:{type:'object',required:['answer'],properties:{answer:{type:'string'}}}}),{answer:'ok'}); assert.equal(faux.requests,1); assert.equal(typeof adapters.HarnessRunError,'function'); assert.equal(adapters.SUBMIT_TOOL,'submit'); }
 { const drive=await adaptersKernel.openDrive({writer:await adaptersTesting.memorySessionStore().open('packed'),signal:new AbortController().signal}); assert.equal(await drive.effect('k',{name:'k',replay:'never'},async()=>'ok'),'ok'); await drive.submit({id:'p',kind:'prompt',text:'hi'}); await adaptersProcess.placeSubmissions(drive,drive.pending()); assert.deepEqual(drive.pending(),[]); assert.equal(typeof adaptersKernel.Restart,'function'); assert.equal(typeof adaptersProcess.NativeJournal,'function'); }
 { const fetch=async()=>new Response(JSON.stringify({mode:'fast',answers:{holds:{type:'noul',noul:0.9},pick:{type:'choice',choice:'a',probabilities:{a:0.75,b:0.25}}},citations:[{url:'https://example.org/a',excerpts:[]}],usage:{input_tokens:1,output_tokens:0},decision_id:'decisions_0'}),{status:200,headers:{'content-type':'application/json'}}); const result=await judgeFromProvider(decisions.parallelProvider({apiKey:'fake-test-key',fetch}))({label:'smoke',kind:'judge',state:{},questions:{holds:{type:'noul',instructions:'Q?'},pick:{type:'choice',instructions:'Which?',criteria:{a:null,b:null}}}}); assert.equal(result.answers.holds.noul,0.9); assert.equal(result.answers.pick.confidence,0.5); assert.deepEqual([result.cost_basis,result.evidence.length,result.confidence_source.pick],['estimate',1,'derived']); assert.equal(typeof registerDecisionProviderConformance,'function'); }
-console.log(JSON.stringify({core:true,jev:true,pi:true,archil:true,browser:true,vision:true,transport:true,agent:true,serve:true,git:true,learn:true,learnCheck:true,decisions:true,adapters:true,harness:true,network:'prohibited'}));
+{ assert.deepEqual(Object.keys(computerMount).sort(),['MOUNT_KINDS','WORKSPACE','checkMount','epochProblem','readBackOf']); for (const name of Object.keys(computerMount)) assert.equal(computerMount[name],computer[name],name); assert.equal(computerMount.WORKSPACE,'/workspace'); assert.deepEqual(computerMount.checkMount({kind:'bind',path:'relative'},['bind']).map(r=>r.field),['mount']); assert.deepEqual(computerMount.readBackOf({kind:'archil',disk:'d',region:'r',folder:'f',token:'t'},7),{kind:'archil',disk:'d',region:'r',folder:'f',exclusive:true,epoch:7}); assert.ok('other' in computerMount.readBackOf({kind:'archil',disk:'d',region:'r',folder:'f',token:'t'}),'an Archil read-back with no epoch is refused'); assert.ok(computer.providerIds.length>0); for (const id of computer.providerIds) { const module=await computer.providerModule(id); assert.ok(Array.isArray(module.MOUNT)&&module.MOUNT.every(kind=>computerMount.MOUNT_KINDS.includes(kind)),id+' MOUNT'); assert.equal(typeof module.create,'function',id+' create'); assert.equal(module.fromEnv,undefined,id+' has no fromEnv'); } const pkg=join(process.cwd(),'node_modules','@parcha','agentrun-computer'); for (const arch of ['amd64','arm64']) assert.equal((await stat(join(pkg,'dist','computerd-linux-'+arch))).mode&0o777,0o755&~process.umask(),'the install has dist/computerd-linux-'+arch+', executable (0755 less the umask npm installed it under)'); }
+{ const key='fake-test-key-0123456789'; const seen=[]; const fetch=async(url,init)=>{ seen.push([url,init.headers.authorization]); return new Response(JSON.stringify({error:{code:'bad_request',message:'echo '+key}}),{status:400,headers:{'content-type':'application/json'}}); }; const c=new client.AgentRun({baseUrl:'https://agentrun.example.com/v2',apiKey:key,fetch}); await assert.rejects(c.runs.get('..'),client.AgentRunUsage); assert.throws(()=>new client.AgentRun({baseUrl:'https://agentrun.example.com/v2',apiKey:'a\\nb'}),client.AgentRunAuthError); const refused=await c.agents.get('a b').catch((error)=>error); assert.ok(refused instanceof client.AgentRunRefused); assert.deepEqual([refused.status,refused.code,refused.error.message],[400,'bad_request','echo [hidden]']); assert.ok(!refused.message.includes(key)); assert.deepEqual(seen,[['https://agentrun.example.com/v2/agents/a%20b','Bearer '+key]]); }
+console.log(JSON.stringify({core:true,jev:true,browser:true,serve:true,decisions:true,adapters:true,computer:true,client:true,network:'prohibited'}));
 `);
   const smoke = JSON.parse((await offlineNode(['smoke.mjs'])).stdout);
   assert.deepEqual(smoke, runtimeSmokeChecks);
   receipt.runtimeSmoke = smoke;
   assert.match((await offlineNode(['node_modules/@parcha/agentrun-serve/dist/cli.js', '--help'])).stdout, /^usage: agentrun-serve /, 'the installed agentrun-serve bin prints its usage');
+  assert.match((await offlineNode(['node_modules/@parcha/agentrun/bin/agentrun.mjs', '--help'])).stdout, /^Usage: npx @parcha\/agentrun /, 'the installed agentrun bin prints its usage');
+  // A host that checks a run folder's mount imports @parcha/agentrun-computer/mount: in a fresh process, the loader loads
+  // dist/mount.js and node's built-ins, and no provider, vendor SDK or conformance module.
+  await writeFile(join(consumer, 'computer-mount.mjs'), `import { registerHooks } from 'node:module';
+const loaded = [];
+registerHooks({ load(url, context, next) { loaded.push(url); return next(url, context); } });
+const mount = await import('@parcha/agentrun-computer/mount');
+console.log(JSON.stringify({ loaded: loaded.filter(url => !url.startsWith('node:')), resolved: import.meta.resolve('@parcha/agentrun-computer/mount'), names: Object.keys(mount).sort() }));
+`);
+  const mountLoad = JSON.parse((await offlineNode(['computer-mount.mjs'])).stdout);
+  assert.match(mountLoad.resolved, /\/node_modules\/@parcha\/agentrun-computer\/dist\/mount\.js$/, 'the installed ./mount subpath is dist/mount.js');
+  assert.deepEqual(mountLoad.loaded, [mountLoad.resolved], 'importing @parcha/agentrun-computer/mount loads dist/mount.js and node built-ins alone');
+  assert.deepEqual(mountLoad.names, ['MOUNT_KINDS', 'WORKSPACE', 'checkMount', 'epochProblem', 'readBackOf']);
+  receipt.checks.push('The installed @parcha/agentrun-computer/mount loads dist/mount.js and node built-ins alone, in a fresh process: no provider, vendor SDK or conformance module.');
+  // The egress proxy runs in a bare Node container from two binds of the installed package: dist/docker at /code/docker and
+  // package.json at /code/package.json. Laid out the same way with nothing else beside it, the proxy refuses a missing list
+  // in words, and with one listens on its socket, logs its ready line, and ends itself at its deadline.
+  {
+    const installed = join(consumer, 'node_modules/@parcha/agentrun-computer');
+    const proxy = await mkdtemp(join(tmpdir(), 'agentrun-egress-'));
+    try {
+      await cp(join(installed, 'dist/docker'), join(proxy, 'code/docker'), { recursive: true });
+      await cp(join(installed, 'package.json'), join(proxy, 'code/package.json'));
+      await mkdir(join(proxy, 'egress'));
+      const main = join(proxy, 'code/docker/egress-main.js');
+      const refused = await run(process.execPath, [main], proxy, true);
+      assert.equal(refused.exitCode, 2, `the packed egress proxy refuses a missing list with exit 2: ${refused.stderr || refused.stdout}`);
+      assert.match(refused.stdout, /^egress: no host list was given/, 'the packed egress proxy says why it does not start');
+      const deadline = new Date(Date.now() + 3_000).toISOString();
+      const ran = await run(process.execPath, [main, '--socket', join(proxy, 'egress/egress.sock'), '--deadline', deadline, '--allow', 'example.org'], proxy, true);
+      assert.equal(ran.exitCode, 0, `the packed egress proxy runs to its deadline: ${ran.stderr || ran.stdout}`);
+      assert.match(ran.stdout, /^egress ready allow=example\.org$/m, 'the packed egress proxy logs its ready line');
+      assert.match(ran.stdout, /the deadline .* has come, the proxy ends/, 'the packed egress proxy ends itself at its deadline');
+    } finally {
+      await rm(proxy, { recursive: true, force: true });
+    }
+  }
+  receipt.checks.push('The installed @parcha/agentrun-computer egress proxy, laid out as its container binds it (dist/docker and package.json alone), refuses a missing list with exit 2, and with one logs its ready line and ends itself at its deadline.');
   if (requireConsole) {
     const index = await readFile(join(consumer, 'node_modules/@parcha/agentrun-serve/dist/console/index.html'), 'utf8').catch(() => '');
     assert.match(index, /\ssrc="\.\/assets\/[^"]+\.js"/, 'the installed agentrun-serve has the console, dist/console/index.html');
@@ -420,23 +434,6 @@ console.log(JSON.stringify({core:true,jev:true,pi:true,archil:true,browser:true,
     assert.match(serveNotice, /dist\/console\/THIRD-PARTY-NOTICES\.txt/, "agentrun-serve's NOTICE points to the console's notices");
     receipt.checks.push('The installed agentrun-serve carries the console (dist/console/index.html) and its third-party notices (dist/console/THIRD-PARTY-NOTICES.txt, which NOTICE names); its files passed the same scans.');
   }
-  assert.match((await offlineNode(['node_modules/@parcha/agentrun-learn/dist/cli.js', '--help'])).stdout, /^usage: agentrun-learn check /, 'the installed agentrun-learn bin prints its usage');
-  // The reference example runs in the consumer as a stranger would run it: its pages are served by the browser's fake backend on
-  // loopback, so its preload admits loopback only.
-  await cp(join(root, 'scripts/deny-remote.mjs'), join(consumer, 'deny-remote.mjs'));
-  await cp(join(root, 'examples/reference'), join(consumer, 'reference'), { recursive: true, filter: path => !['node_modules', 'dist'].includes(basename(path)) });
-  const expectedRecord = await json(join(root, 'examples/reference/expected.json'));
-  const referenceTmp = join(temporary, 'reference-home');
-  await mkdir(referenceTmp);
-  const reference = await run(process.execPath, ['--no-warnings=ExperimentalWarning', '--import', './deny-remote.mjs', 'reference/run.ts', '--json'], consumer, false, { PATH: process.env.PATH, HOME: referenceTmp, TMPDIR: referenceTmp });
-  const referenceRecord = JSON.parse(reference.stdout);
-  const referenceProblems = recordProblems(referenceRecord, expectedRecord);
-  assert.deepEqual(referenceProblems, [], `The reference job in the consumer printed a record that differs from examples/reference/expected.json (token counts are not compared exactly): ${referenceProblems.join('; ')}`);
-  receipt.reference = { status: 'passed', network: 'loopback only', evidence: referenceRecord.evidence, usage: referenceRecord.usage };
-  receipt.checks.push('The reference example, copied into the consumer and run with loopback-only networking and no key, printed the record in examples/reference/expected.json.');
-  await cp(join(root, 'scripts/verify-pi-install.mjs'), join(consumer, 'verify-pi-install.mjs'));
-  receipt.piExtension = JSON.parse((await offlineNode(['verify-pi-install.mjs'])).stdout);
-  receipt.checks.push('Packed Pi package installed and discovered by native Pi package manager/resource loader; skill and complete/escalated demos passed offline.');
   const auditRun = await run('npm', ['audit', '--omit=dev', '--json'], consumer, true);
   const audit = JSON.parse(auditRun.stdout);
   await writeFile(join(receiptDir, 'npm-audit.json'), JSON.stringify(audit, null, 2) + '\n');
@@ -450,13 +447,12 @@ console.log(JSON.stringify({core:true,jev:true,pi:true,archil:true,browser:true,
 import { z } from 'zod';
 import { createJevRunner, type JevOptions } from '@parcha/agentrun-jev';
 import { authorWorkflow, type AuthorWorkflowOptions } from '@parcha/agentrun-dsl';
-import { createPiRunner, type PiRunnerOptions } from '@parcha/agentrun-pi';
 import { openRecovery, withRecovery, memoryStore } from '@parcha/agentrun-dsl/recovery';
 const jevOptions: JevOptions = {client:{async systemOne(){return {answers:{ok:{type:'noul',noul:1}}};}}};
 const deps: WorkflowDeps = { runJudge: createJevRunner(jevOptions) };
 const workflow: Workflow = {v:2,name:'typed',schemas:{Result:{type:'object'}},output:{schemaId:'Result'},root:{node:'chain',steps:[]}};
-async function useAll(pi: PiRunnerOptions, author: AuthorWorkflowOptions) {
-  const result = await runWorkflow(workflow,{}, {...deps,runNode:createPiRunner(pi)});
+async function useAll(author: AuthorWorkflowOptions) {
+  const result = await runWorkflow(workflow,{}, deps);
   const candidate = await authorWorkflow(author);
   return [result.status,candidate.workflow.name];
 }
@@ -486,15 +482,6 @@ async function typedConsumer(){
 void typedConsumer;
 `);
   await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'consumer.ts'], consumer);
-  // pi-ai's declarations name an optional peer of @google/genai that npm does not install, so this file is checked without
-  // declaration checking (the package's own declarations are checked by its `verify:tarball`).
-  // The durable entry's declarations name pi-durable's, which reach the same pi-ai declarations: checked the same way.
-  await writeFile(join(consumer, 'durable-consumer.ts'), `import type { RecoveryJournal, RecoveryStore } from '@parcha/agentrun-dsl/recovery';
-import type { RecoveryStore as DurableStore } from '@parcha/agentrun-pi/durable';
-const openStore = (store: DurableStore): Promise<RecoveryJournal> => { const contract: RecoveryStore = store; return contract.open({binding:'digest'}); };
-void openStore;
-`);
-  await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'durable-consumer.ts'], consumer);
   await writeFile(join(consumer, 'jev-consumer.ts'), `import { createJevRunner, type JevJudge, type JevImage } from '@parcha/agentrun-jev';
 import type { WorkflowDeps } from '@parcha/agentrun-dsl';
 const image: JevImage = { bytes: new Uint8Array([0x89]), mime: 'image/png' };
@@ -504,12 +491,6 @@ const call = (): ReturnType<JevJudge> => judge({ label: 'door', kind: 'judge', s
 void [asDep, call];
 `);
   await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'jev-consumer.ts'], consumer);
-  await writeFile(join(consumer, 'workflows-consumer.ts'), `import { WorkflowStore, WorkflowStoreError, type StoredWorkflow, type WorkflowRevision } from '@parcha/agentrun-pi/workflows';
-import type { Workflow } from '@parcha/agentrun-dsl';
-const keep = async (store: WorkflowStore, workflow: Workflow): Promise<[StoredWorkflow, WorkflowRevision[], WorkflowStoreError | undefined]> => [await store.save('copy', workflow), await store.list(), undefined];
-void keep;
-`);
-  await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'workflows-consumer.ts'], consumer);
   await writeFile(join(consumer, 'adapters-consumer.ts'), `import { openDrive, Restart, type Drive, type EffectRecord } from '@parcha/agentrun-kernel/kernel';
 import { NativeJournal, placeSubmissions } from '@parcha/agentrun-kernel/process';
 const place = async (drive: Drive): Promise<[EffectRecord | undefined, NativeJournal]> => { await placeSubmissions(drive, drive.pending()); return [drive.state().effects.get('k'), new NativeJournal(drive)]; };
@@ -517,130 +498,25 @@ const kernel: [typeof openDrive, typeof Restart] = [openDrive, Restart];
 void [place, kernel];
 `);
   await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'adapters-consumer.ts'], consumer);
-  await writeFile(join(consumer, 'archil-consumer.ts'), `import { openDurableRun, type RunRef } from '@parcha/pi-durable-disk';
-import { openRunLease } from '@parcha/pi-durable-disk/lease';
-const durable: [typeof openDurableRun, typeof openRunLease, RunRef | undefined] = [openDurableRun, openRunLease, undefined];
-// @ts-expect-error a run reference names its disk.
-const incomplete: RunRef = { region: 'aws-us-east-1', id: 'r1' };
-void [durable, incomplete];
-`);
-  await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'archil-consumer.ts'], consumer);
   await writeFile(join(consumer, 'browser-consumer.ts'), `import { BROWSER_TOOLS, type BrowserPolicy } from '@parcha/pi-browser';
-import { createBrowserExtension } from '@parcha/pi-browser/coding-agent';
+import { createBrowserExtension } from '@parcha/pi-browser/durable';
 import { FakeBackend } from '@parcha/pi-browser/testing';
 const browser: [typeof BROWSER_TOOLS, typeof createBrowserExtension, typeof FakeBackend, BrowserPolicy | undefined] = [BROWSER_TOOLS, createBrowserExtension, FakeBackend, undefined];
 void browser;
 `);
   await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'browser-consumer.ts'], consumer);
-  await writeFile(join(consumer, 'vision-consumer.ts'), `import { resolveLimits, type Limits, type VisionOptions } from '@parcha/pi-vision';
-import { createVisionExtension, type VisionHandle } from '@parcha/pi-vision/durable';
-import { fakeEyes } from '@parcha/pi-vision/testing';
-const limits: Limits = resolveLimits(undefined, { requestBytes: 20 * 1024 * 1024 });
-const vision: [typeof createVisionExtension, typeof fakeEyes, VisionHandle | undefined] = [createVisionExtension, fakeEyes, undefined];
-// @ts-expect-error a host's options name where looks are filed.
-const unfiled: VisionOptions = { scope: (id: string) => ({ label: id, deriveDir: 'media' }) };
-void [limits, vision, unfiled];
+  await writeFile(join(consumer, 'computer-consumer.ts'), `import { checkMount, MOUNT_KINDS, readBackOf, WORKSPACE, type MountKind, type MountReadBack, type MountSpec } from '@parcha/agentrun-computer/mount';
+import { providerModule, type ComputerProvider, type ProviderModule } from '@parcha/agentrun-computer';
+// A host checks a run folder's mount from the subpath, and reads a provider's mount kinds from its registry line.
+const spec: MountSpec = { kind: 'bind', path: WORKSPACE };
+const back: MountReadBack = readBackOf(spec);
+const kinds: readonly MountKind[] = MOUNT_KINDS;
+const takes = async (id: string): Promise<readonly MountKind[]> => { const module: ProviderModule = await providerModule(id); return module.MOUNT; };
+// @ts-expect-error a read-back never holds the token.
+const leaked: MountReadBack = { kind: 'archil', disk: 'd', region: 'r', folder: 'f', token: 't' };
+void [back, checkMount(spec, kinds), takes, leaked, undefined as ComputerProvider | undefined];
 `);
-  await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'vision-consumer.ts'], consumer);
-  await writeFile(join(consumer, 'transport-consumer.ts'), `import type { ExecutionEnv } from '@earendil-works/pi-durable/env';
-import { parseTransportConfig, type Box, type BoxProvider, type Transport, type TransportConfig, type TransportHost } from '@parcha/pi-transport';
-${boxProviders.map(name => `import { ${boxFactory(name)} } from '@parcha/pi-transport/box/${name}';`).join('\n')}
-import { moveWorkspace, sealStore, type Seal } from '@parcha/pi-transport/home';
-import { boxEnv, transport as openTransport } from '@parcha/pi-transport/hands';
-const providers: [${boxProviders.map(name => `(...options: Parameters<typeof ${boxFactory(name)}>) => BoxProvider`).join(', ')}] = [${boxProviders.map(boxFactory).join(', ')}];
-const transport: [typeof parseTransportConfig, Box | undefined, typeof moveWorkspace, typeof sealStore, Seal | undefined] = [parseTransportConfig, undefined, moveWorkspace, sealStore, undefined];
-// What a host hands to pi's Harness as a conversation's environment.
-const hands = (box: Box): ExecutionEnv => boxEnv(box);
-// The router: a Harness's env from a parsed config and what the host passes.
-const routed = (config: TransportConfig, host: TransportHost): Transport => openTransport(config, host);
-void [providers, transport, hands, routed];
-`);
-  await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'transport-consumer.ts'], consumer);
-  await writeFile(join(consumer, 'agent-consumer.ts'), `import { carryBack, createAgentHome, durableProfileStore, runPaths, startRun, type AgentHome, type CarryBack, type ProfileStore, type RunStart } from '@parcha/pi-durable-agent';
-// A host's run: start it from the agent home, hand its browser the run store's profiles, carry it back.
-const oneRun = async (home: AgentHome, harness: Parameters<typeof durableProfileStore>[0]): Promise<CarryBack> => {
-  const started: RunStart = await startRun(home, { host: 'consumer' });
-  const profiles: ProfileStore = durableProfileStore(harness);
-  void [profiles, runPaths(home, started.runId).dir];
-  return carryBack(home, started, { outcome: 'completed' });
-};
-void [oneRun, createAgentHome];
-`);
-  await writeFile(join(consumer, 'agent-serve-consumer.ts'), `import { serveHome, type ServeHandle, type ServeOptions } from '@parcha/pi-durable-agent/serve';
-// A host serves a home to look at: an address, and a way to stop it.
-const look = async (dir: string, options: ServeOptions): Promise<ServeHandle> => serveHome({ dir }, options);
-void look;
-`);
-  await writeFile(join(consumer, 'agent-export-consumer.ts'), `import { EXPORTABLE_KINDS, projectForExport, SECRET_KINDS } from '@parcha/pi-durable-agent/export';
-// An exporter's view: the two lists and one document as it may leave the home, from the subpath that loads nothing else.
-const kept: readonly string[] = EXPORTABLE_KINDS;
-const secret: readonly string[] = SECRET_KINDS;
-void [kept, secret, projectForExport('agent.runs', { path: 'runs/r1', host: 'h', startedAt: '' })];
-`);
-  await writeFile(join(consumer, 'agent-workflow-consumer.ts'), `import { checkWorkflowBody, readWorkflowRun, revisionGraph, runWorkflowRevision, type GraphDiff, type RunNodeState, type RunState, type WorkflowBody, type WorkflowRunStart, type WorkflowRunView } from '@parcha/pi-durable-agent/workflow';
-// A store's workflow revision: checked before it is committed, run on its run store, read back for a run page.
-const check = (body: WorkflowBody): Promise<void> => checkWorkflowBody(body);
-const page = (run: WorkflowRunStart): Promise<WorkflowRunView> => readWorkflowRun(run);
-const ended: RunState[] = ['completed', 'failed', 'stopped', 'escalated'];
-const interrupted: RunNodeState = 'stopped';
-const changed = async (body: WorkflowBody, parent: WorkflowBody): Promise<GraphDiff | undefined> => (await revisionGraph({ body }, { kind: 'workflow', body: parent })).diff;
-void [check, page, ended, interrupted, changed, runWorkflowRevision];
-`);
-  await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'agent-consumer.ts', 'agent-serve-consumer.ts', 'agent-export-consumer.ts', 'agent-workflow-consumer.ts'], consumer);
-  await writeFile(join(consumer, 'git-consumer.ts'), `import { codeStorage, GitRemoteError, https, local, openRepo, type CodeStorageOptions, type CommitOptions, type Committed, type CredentialSource, type HttpsOptions, type Remote, type Repo } from '@parcha/pi-git-remote';
-// A host proposes a run's files on the run's branch and pushes them; an https remote takes its credential from a callback.
-const propose = async (dir: string, remote: Remote, files: CommitOptions['files']): Promise<Committed> => {
-  const repo: Repo = await openRepo({ dir, remote });
-  const made = await repo.commitTo('runs/r1', { files, message: 'r1', trailers: { 'Run-Id': 'r1' } });
-  await repo.push(made.sha, 'runs/r1');
-  return made;
-};
-const anyHost = (url: string, credential: CredentialSource, options?: HttpsOptions): Remote => https(url, credential, options);
-const codeStorageHost = (options: CodeStorageOptions): Remote => codeStorage(options);
-const code = (error: unknown) => (error instanceof GitRemoteError ? error.code : undefined);
-void [propose, anyHost, codeStorageHost, code, local];
-// The coding-agent subpath: options a host writes, the report it hears, and the factory pi loads.
-import { createGitRemoteExtension, type EndOutcome, type GitRemoteOptions } from '@parcha/pi-git-remote/coding-agent';
-import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
-const options: GitRemoteOptions = { remote: local('/srv/acme.git'), allow: ['notes/**'], onEnd: (report) => { if (report.ok) { const outcome: EndOutcome = report.outcome; void outcome.branch; } } };
-const extension: (pi: ExtensionAPI) => void = createGitRemoteExtension(options);
-void extension;
-`);
-  await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'git-consumer.ts'], consumer);
-  await writeFile(join(consumer, 'learn-consumer.ts'), `import { agentLearn, collectCandidates, curate, LearnError, seedLearning, type Candidate, type CurateReport, type Guard, type Judge, type Refusal, type Seeded, type WorkflowHint } from '@parcha/pi-agent-learn';
-import type { Repo } from '@parcha/pi-git-remote';
-// A host seeds a run from its agent repository, installs the extension with its guard, and reads the run's candidates after.
-const guard: Guard = (input) => (input.candidates ?? []).filter((c: Candidate) => c.text.includes('secret')).map((): Refusal => ({ reason: 'secret_value', detail: 'a secret' }));
-const start = async (repo: Repo, harness: Parameters<typeof seedLearning>[0]['target'] & Parameters<typeof collectCandidates>[0], into: string, workflows: WorkflowHint[]): Promise<[Seeded, Candidate[]]> => {
-  const seeded = await seedLearning({ repo, target: harness, into, workflows });
-  return [seeded, await collectCandidates(harness)];
-};
-const code = (error: unknown) => (error instanceof LearnError ? error.code : undefined);
-// The curator writes main; its judge is the DSL's System One port.
-const curated = (repo: Repo, judge: Judge): Promise<CurateReport> => curate({ repo, judge, thresholds: { general: { yes: 0.9 } } });
-void [start, code, curated, agentLearn({ guard, secrets: () => [] })];
-`);
-  await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'learn-consumer.ts'], consumer);
-  // @parcha/agentrun-harness without @parcha/pi-transport, its optional peer: the package and its @parcha dependencies alone,
-  // where its public types compile under --strict with no skipLibCheck. @google/genai's types (under pi-ai) import the MCP
-  // SDK, genai's own optional peer, so a strict consumer of pi-ai supplies it at the range genai names.
-  const bare = join(temporary, 'consumer-reference');
-  await mkdir(bare);
-  await writeFile(join(bare, 'package.json'), JSON.stringify({ name: 'agentrun-harness-consumer', version: '1.0.0', private: true, type: 'module', overrides }));
-  await run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--save-exact', ...['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'harness'].map(directory => tarballs[packageDirectories.indexOf(directory)])], bare);
-  const mcp = (await json(join(bare, 'node_modules', '@google', 'genai', 'package.json'))).peerDependencies?.['@modelcontextprotocol/sdk'];
-  await run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--save-dev', '--save-exact', `typescript@${typescript.version}`, `@types/node@${nodeTypes.version}`, ...(mcp ? [`@modelcontextprotocol/sdk@${mcp}`] : [])], bare);
-  assert.equal(existsSync(join(bare, 'node_modules', '@parcha', 'pi-transport')), false, 'the reference consumer holds no @parcha/pi-transport');
-  await writeFile(join(bare, 'reference-consumer.ts'), `import { demo, localHost, placeAt, type Boxes, type DemoOptions, type Fakes, type Job, type ToolContext } from '@parcha/agentrun-harness';
-const fakes: Fakes = { model: () => { throw new Error('no model'); }, tools: { lookup: (args) => ({ id: String(args.id), score: 1 }) }, judge: async () => { throw new Error('no judge'); }, pages: {}, start: '' };
-const job: Job = { workflow: { v: 2, name: 'typed', schemas: { Any: { type: 'object' } }, output: { schemaId: 'Any', path: 'final' }, root: { node: 'code', label: 'finish', code: 's => ({ final: {} })' } }, input: {} };
-const options: DemoOptions = { self: import.meta.url, spec: { name: 'typed' }, job, fakes };
-const boxes: Boxes = { name: 'none' };
-const useTool = (context: ToolContext): boolean => context.live;
-void [demo, localHost, placeAt, options, boxes, useTool];
-`);
-  await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'reference-consumer.ts'], bare);
-  receipt.checks.push('@parcha/agentrun-harness, installed with its @parcha dependencies and without @parcha/pi-transport, compiles under --strict with no skipLibCheck.');
+  await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'computer-consumer.ts'], consumer);
   // The Claude Agent adapter installed without its SDK (an optional peer the host brings) says so in one line that ends with
   // the line installing the pinned SDK. That line, run exactly as printed in a consumer of its own, is all it takes for the
   // adapter's checks to pass: the SDK, its platform package (the CLI) and the MCP library it brings as a peer.

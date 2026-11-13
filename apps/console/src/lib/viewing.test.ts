@@ -3,8 +3,8 @@ import { latest, pendingQuestion, viewKind } from "./viewing";
 import type { RunFile, TimelineRow } from "./v2";
 
 const file = (path: string, content_type: string | null): RunFile => ({ path, size_bytes: 1, modified_at: "2026-10-28T19:33:28.590Z", content_type });
-const row = (id: string, kind: string, seq: number): TimelineRow =>
-  ({ id, seq, kind, summary: `Waiting for you: ${id}`, text: null, timestamp: "2026-10-28T19:33:16.118Z", tool_name: null });
+const row = (id: string, kind: TimelineRow["kind"], seq: number): TimelineRow =>
+  ({ created_at: "2026-10-28T19:33:16.118Z", agent_label: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null, id, seq, kind, summary: `Waiting for you: ${id}`, text: null, timestamp: "2026-10-28T19:33:16.118Z", tool_name: null });
 
 describe("pendingQuestion", () => {
   const rows = [row("q1", "waiting", 1), row("a1", "user_message", 2)];

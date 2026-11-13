@@ -4,10 +4,12 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, readdir, symlink, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { startServe } from "../dist/server.js";
-import { FAUX, client, follow, scratch, serve, startRun } from "./support.mjs";
+import { SCHEMA_VERSION } from "../dist/store/schema.js";
+import { openSqliteStore } from "../dist/store/sqlite/store.js";
+import { client, FAUX, scratch, serve, startServe } from "./support.mjs";
 
 /** The error startServe refused with, or null after closing the server it should not have started. */
 const refusal = (options) => startServe(options).then(async (server) => (await server.close(), null), (error) => error);
@@ -23,51 +25,46 @@ test("a data directory with beta.26 agent homes is refused at start, each home n
   await oldHome(data, "triage");
   const error = await refusal({ data, port: 0, faux: FAUX });
   assert.ok(error, "refused");
-  assert.match(error.message, /0\.1\.0-beta\.26 or earlier/);
-  assert.ok(error.message.includes(join(data, "old", "agent.sqlite")) && error.message.includes(join(data, "triage", "agent.sqlite")), error.message);
-  assert.match(error.message, /upgrad/i);
+  assert.match(error.message, /holds an earlier version's data/);
+  assert.ok(error.message.includes(join("old", "agent.sqlite")) && error.message.includes(join("triage", "agent.sqlite")), error.message);
+  assert.match(error.message, /Keep this directory with the earlier version, or start this version on a new, empty directory/);
   assert.deepEqual((await readdir(data)).sort(), ["old", "triage"], "nothing is made beside the old homes: no store, no token");
 });
 
-test("a volume already started on this version is refused too while an old home is in it", async (t) => {
-  const { data, close } = await serve(t);
+test("a volume already started on this version starts again on its own data, and is refused once an old home is in it", async (t) => {
+  const { api, data, close } = await serve(t);
+  assert.equal((await api("POST", "/agents", { definition: { id: "kept", name: "kept", instructions: "Answer." } })).status, 201);
   await close();
   assert.ok(existsSync(join(data, "store.sqlite")));
+  const again = await startServe({ data, port: 0, faux: FAUX });
+  let closing;
+  const closeAgain = () => (closing ??= again.close());
+  t.after(closeAgain);
+  assert.deepEqual((await client(again.baseUrl, again.token)("GET", "/agents")).body.agents.map((a) => a.agent_id), ["kept"], "this version's volume is not refused");
+  await closeAgain();
   await oldHome(data, "old");
-  assert.match((await refusal({ data, port: 0, faux: FAUX }))?.message ?? "started", /agent homes from AgentRun Server 0\.1\.0-beta\.26 or earlier/);
-});
-
-test("a healthy volume of this version starts again on its own data, its agents and runs there", async (t) => {
-  const data = join(await scratch(t), "agents");
-  const first = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
-  const api = client(first.baseUrl, first.token);
-  const runId = (await startRun(api, "kept", "What is six times seven?")).run_id;
-  await follow(api, runId, ["completed"]);
-  await first.close();
-  const { api: again } = await serve(t, { data });
-  assert.deepEqual((await again("GET", "/agents")).body.agents.map((a) => a.agent_id), ["kept"]);
-  assert.equal((await again("GET", `/runs/${runId}`)).body.status, "completed");
+  assert.match((await refusal({ data, port: 0, faux: FAUX }))?.message ?? "started", /holds an earlier version's data \(old\/agent\.sqlite\)/);
 });
 
 test("an old home under any name is refused: an agent named runs, a symlinked home, and a symlinked agent.sqlite", async (t) => {
   const root = await scratch(t);
   const named = join(root, "named");
   await oldHome(named, "runs");
-  assert.match((await refusal({ data: named, port: 0, faux: FAUX }))?.message ?? "started", new RegExp(join(named, "runs", "agent.sqlite").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.match((await refusal({ data: named, port: 0, faux: FAUX }))?.message ?? "started", new RegExp(join("runs", "agent.sqlite").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   const linked = join(root, "linked");
   await oldHome(join(root, "elsewhere"), "kept");
   await mkdir(linked, { recursive: true });
   await symlink(join(root, "elsewhere", "kept"), join(linked, "kept"));
-  assert.match((await refusal({ data: linked, port: 0, faux: FAUX }))?.message ?? "started", /0\.1\.0-beta\.26 or earlier/, "a symlinked home is refused too");
+  assert.match((await refusal({ data: linked, port: 0, faux: FAUX }))?.message ?? "started", /holds an earlier version's data/, "a symlinked home is refused too");
   const file = join(root, "file");
   await mkdir(join(file, "kept"), { recursive: true });
   await symlink(join(root, "elsewhere", "kept", "agent.sqlite"), join(file, "kept", "agent.sqlite"));
-  assert.match((await refusal({ data: file, port: 0, faux: FAUX }))?.message ?? "started", /0\.1\.0-beta\.26 or earlier/, "a symlinked agent.sqlite is refused too");
+  assert.match((await refusal({ data: file, port: 0, faux: FAUX }))?.message ?? "started", /holds an earlier version's data/, "a symlinked agent.sqlite is refused too");
 });
 
-test("this version's own runs/ and a directory with no agent.sqlite start as before", async (t) => {
+test("this version's own disk/ and a directory with no agent.sqlite start as before", async (t) => {
   const data = join(await scratch(t), "agents");
-  await mkdir(join(data, "runs", "01a1-example"), { recursive: true });
+  await mkdir(join(data, "disk", "agents", "notes-0123456789abcdef", "runs", "01a1-example"), { recursive: true });
   await mkdir(join(data, "notes"), { recursive: true });
   const { api } = await serve(t, { data });
   assert.equal((await api("GET", "/agents")).status, 200);
@@ -76,12 +73,51 @@ test("this version's own runs/ and a directory with no agent.sqlite start as bef
 test("the bin prints the refusal and exits 1", { timeout: 20_000 }, async (t) => {
   const data = join(await scratch(t), "agents");
   await oldHome(data, "old");
-  const child = spawn(process.execPath, [new URL("../dist/cli.js", import.meta.url).pathname, "--data", data, "--port", "0", "--faux", FAUX], { stdio: ["ignore", "ignore", "pipe"] });
+  // A home beside the data, not this machine's: a first start counts the sessions in its home for setup's offer.
+  const child = spawn(process.execPath, [new URL("../dist/cli.js", import.meta.url).pathname, "--data", data, "--port", "0", "--faux", FAUX], { stdio: ["ignore", "ignore", "pipe"], env: { ...process.env, HOME: dirname(data) } });
   const killer = setTimeout(() => child.kill("SIGTERM"), 10_000);
   t.after(() => (clearTimeout(killer), child.kill("SIGTERM")));
   let err = "";
   for await (const chunk of child.stderr) err += chunk;
   const code = child.exitCode ?? (await new Promise((resolve) => child.once("exit", resolve)));
   assert.equal(code, 1, err);
-  assert.match(err, /^agentrun-serve: this data directory holds agent homes/m);
+  assert.match(err, /^agentrun-serve: .* holds an earlier version's data \(old\/agent\.sqlite\)/m);
+});
+
+/** The bin started on a data directory whose store says `version`: its stderr and exit code. */
+const startOnStoreAt = async (t, version) => {
+  const data = join(await scratch(t), "agents");
+  const store = await openSqliteStore({ dataDir: data, role: "server" });
+  await store.close();
+  const raw = new DatabaseSync(join(data, "store.sqlite"));
+  raw.exec(`UPDATE store_meta SET schema_version = ${version}`);
+  raw.close();
+  const child = spawn(process.execPath, [new URL("../dist/cli.js", import.meta.url).pathname, "--data", data, "--port", "0", "--faux", FAUX], { stdio: ["ignore", "ignore", "pipe"], env: { ...process.env, HOME: dirname(data) } });
+  const killer = setTimeout(() => child.kill("SIGTERM"), 10_000);
+  t.after(() => (clearTimeout(killer), child.kill("SIGTERM")));
+  let err = "";
+  for await (const chunk of child.stderr) err += chunk;
+  const code = child.exitCode ?? (await new Promise((resolve) => child.once("exit", resolve)));
+  return { err, code };
+};
+
+test("the bin on a store an earlier release set up says what to do, once, with no stack, and exits 1", { timeout: 20_000 }, async (t) => {
+  const { err, code } = await startOnStoreAt(t, SCHEMA_VERSION - 1);
+  assert.equal(code, 1, err);
+  assert.match(err, new RegExp(`^agentrun-serve: the store at .*store\\.sqlite is schema version ${SCHEMA_VERSION - 1}, and this release \\(version ${SCHEMA_VERSION}\\) can't open a store an earlier release set up\\.$`, "m"));
+  assert.match(err, /--data <new folder>/);
+  assert.match(err, /--data \/data\/<new folder> --listen 0\.0\.0\.0 --port 7340 --drain-timeout 6s/);
+  assert.match(err, /\(docker run or compose arguments: --data/);
+  assert.match(err, /^On Render the Docker Command replaces the image's entrypoint too, so it must be the whole start command shown in "Before you upgrade" in the release notes\.$/m);
+  assert.match(err, /^Keep the old folder as it is: the earlier release still opens it\.$/m);
+  assert.equal(err.match(/agentrun-serve:/g).length, 1, err);
+  assert.doesNotMatch(err, /\n\s+at /);
+});
+
+test("the bin on a store a later release set up says to run that release, once, with no stack, and exits 1", { timeout: 20_000 }, async (t) => {
+  const { err, code } = await startOnStoreAt(t, SCHEMA_VERSION + 1);
+  assert.equal(code, 1, err);
+  assert.match(err, new RegExp(`^agentrun-serve: the store at .*store\\.sqlite is schema version ${SCHEMA_VERSION + 1}, set up by a later release than this one \\(this release knows version ${SCHEMA_VERSION}\\)\\. Run that release or a later one\\.$`, "m"));
+  assert.equal(err.match(/agentrun-serve:/g).length, 1, err);
+  assert.doesNotMatch(err, /\n\s+at /);
 });

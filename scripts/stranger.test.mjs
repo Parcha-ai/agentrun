@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile, readdir } from 'node:fs/promises';
 import test from 'node:test';
-import { compareVersions, examplesInstallArgs, exitCodeOf, extractSnippet, isMissing, judge, loadSpec, parseIndex, readmeInstallArgs, runCommand, selectExamples, strangerEnv, validateSpec } from './stranger.mjs';
+import { exitCodeOf, extractSnippet, isMissing, judge, loadSpec, runCommand, strangerEnv, validateSpec } from './stranger.mjs';
 
 const readme = ['# Title', '', '## Install', '```sh', 'npm i x', '```', '', '## Offline tests', 'text', '```js', 'one();', '```', '```js', 'two();', '```', '### Sub', '```js', 'sub();', '```', '## Next', '```js', 'next();', '```', ''].join('\n');
 
@@ -47,11 +47,6 @@ test('every spec in the repository is valid and every snippet it runs is in its 
       const text = extractSnippet(await readFile(new URL(`../${file.readme}`, import.meta.url), 'utf8'), file);
       for (const [from] of file.replace ?? []) assert.ok(text.includes(from), `${name}: ${from}`);
     }
-    if (loaded.readmeInstall) {
-      // The README's install line installs the spec's package, and reads without a shell.
-      const line = extractSnippet(await readFile(new URL(`../${loaded.readmeInstall.readme}`, import.meta.url), 'utf8'), loaded.readmeInstall);
-      readmeInstallArgs(line, new Map([[loaded.package, 'packed.tgz']]));
-    }
   }
 });
 
@@ -73,69 +68,12 @@ test("every spec's companions are its package's repository dependencies, transit
   }
 });
 
-test("a README's install line keeps its own arguments, with this tree's companions after them, and must name the package", () => {
-  const line = 'npm install @parcha/pi-durable-agent@beta @earendil-works/pi-durable@1.3.0\n';
-  const packed = new Map([['@parcha/pi-durable-agent', '/packs/agent.tgz']]);
-  assert.deepEqual(readmeInstallArgs(line, packed, ['/packs/dsl.tgz', '/packs/pi.tgz']),
-    ['install', '/packs/agent.tgz', '@earendil-works/pi-durable@1.3.0', '/packs/dsl.tgz', '/packs/pi.tgz']);
-  assert.throws(() => readmeInstallArgs('npm install @earendil-works/pi-durable@1.3.0\n', packed, ['/packs/dsl.tgz']), /does not install @parcha\/pi-durable-agent/);
-});
-
-test("a README's install line is installed as written, with this tree's packed package in its place", () => {
-  const line = 'npm install @parcha/pi-durable-disk@beta @earendil-works/pi-durable @earendil-works/pi-ai @earendil-works/chord\n';
-  assert.deepEqual(readmeInstallArgs(line), ['install', '@parcha/pi-durable-disk@beta', '@earendil-works/pi-durable', '@earendil-works/pi-ai', '@earendil-works/chord']);
-  assert.deepEqual(readmeInstallArgs(line, new Map([['@parcha/pi-durable-disk', '/packs/disk.tgz']])),
-    ['install', '/packs/disk.tgz', '@earendil-works/pi-durable', '@earendil-works/pi-ai', '@earendil-works/chord']);
-  assert.deepEqual(readmeInstallArgs('# from an empty directory\nnpm i x@1.2.3 --save-dev\n', new Map([['x', 'x.tgz']])), ['install', 'x.tgz', '--save-dev']);
-  assert.throws(() => readmeInstallArgs(line, new Map([['@parcha/agentrun-dsl', 'dsl.tgz']])), /does not install @parcha\/agentrun-dsl/);
-  assert.throws(() => readmeInstallArgs('npm install a\nnpm install b\n'), /one command, not 2/);
-  assert.throws(() => readmeInstallArgs('npx pi-durable-disk\n'), /runs npm install/);
-  assert.throws(() => readmeInstallArgs('npm install "a@>=1 <2"\n'), /needs a shell/);
-  assert.throws(() => readmeInstallArgs('npm install a; rm -rf b\n'), /needs a shell/);
-});
-
-test('a spec that names a README install line names where it is', () => {
-  const spec = { package: 'p', install: ['dsl'], command: ['x'], expect: { pattern: 'x' }, timeoutMs: 1 };
-  assert.throws(() => validateSpec({ ...spec, readmeInstall: { readme: 'R.md', heading: 'H' } }, 'p'), /readmeInstall.fence/);
-  assert.equal(validateSpec({ ...spec, readmeInstall: { readme: 'R.md', heading: 'H', fence: 'sh' } }, 'p').readmeInstall.fence, 'sh');
-});
-
 test('a child killed by a signal, or closed with no code, is a failing exit', () => {
   assert.equal(exitCodeOf(0, null), 0);
   assert.equal(exitCodeOf(3, null), 3);
   assert.equal(exitCodeOf(null, 'SIGKILL'), 137);
   assert.equal(exitCodeOf(null, 'SIGTERM'), 143);
   assert.equal(exitCodeOf(null, null), 1);
-});
-
-test('the local box spec accepts the host kernel name, and the Docker spec requires Linux', async () => {
-  const output = name => `0 ${name} host 6.8.0 #1 SMP x86_64 GNU/Linux\n\n`;
-  const [linux, darwin] = ['Linux', 'Darwin'];
-  const local = await loadSpec('pi-transport');
-  const docker = await loadSpec('pi-transport-docker');
-  assert.deepEqual([linux, darwin].map(name => judge(local, { exitCode: 0, stdout: output(name), stderr: '', timedOut: false }).length), [0, 0]);
-  assert.equal(judge(docker, { exitCode: 0, stdout: output(linux), stderr: '', timedOut: false }).length, 0);
-  assert.equal(judge(docker, { exitCode: 0, stdout: output(darwin), stderr: '', timedOut: false }).length, 1);
-});
-
-test('the vision spec accepts exactly the output its README shows under the command, and nothing more or less', async () => {
-  const vision = await loadSpec('pi-vision');
-  const [file] = vision.files;
-  const shown = extractSnippet(await readFile(new URL(`../${file.readme}`, import.meta.url), 'utf8'), { heading: file.heading, fence: 'text' });
-  const ran = over => judge(vision, { exitCode: 0, stdout: shown, stderr: '', timedOut: false, ...over }).length;
-  assert.equal(ran({}), 0);
-  assert.deepEqual([ran({ stdout: `${shown}more\n` }), ran({ stdout: shown.slice(1) }), ran({ stdout: shown.replace('B2=1250.5', 'B2=1250') }), ran({ stderr: 'a warning\n' })], [1, 1, 1, 1]);
-});
-
-test("the agent-home spec accepts exactly the output its README shows under the command, followed by nothing but Node's warning lines", async () => {
-  const agent = await loadSpec('pi-durable-agent');
-  const [file] = agent.files;
-  const shown = extractSnippet(await readFile(new URL(`../${file.readme}`, import.meta.url), 'utf8'), { heading: file.heading, fence: 'text' });
-  const ran = over => judge(agent, { exitCode: 0, stdout: shown, stderr: '', timedOut: false, ...over }).length;
-  // node:sqlite is experimental on Node 22, and Node says so on stderr.
-  const warning = '(node:42) ExperimentalWarning: SQLite is an experimental feature and might change at any time\n(Use `node --trace-warnings ...` to show where the warning was created)\n';
-  assert.deepEqual([ran({}), ran({ stderr: warning })], [0, 0]);
-  assert.deepEqual([ran({ stdout: `${shown}more\n` }), ran({ stdout: shown.slice(1) }), ran({ stdout: shown.replace('save lease: true', 'save lease: false') }), ran({ stderr: 'a warning\n' }), ran({ stderr: `${warning}an error\n` })], [1, 1, 1, 1, 1]);
 });
 
 test('the browser spec accepts exactly the output its README shows under the command, and nothing more or less', async () => {
@@ -145,26 +83,6 @@ test('the browser spec accepts exactly the output its README shows under the com
   const ran = over => judge(browser, { exitCode: 0, stdout: shown, stderr: '', timedOut: false, ...over }).length;
   assert.equal(ran({}), 0);
   assert.deepEqual([ran({ stdout: `${shown}more\n` }), ran({ stdout: shown.slice(1) }), ran({ stdout: shown.replace('forty-two', 'forty-three') }), ran({ stderr: 'a warning\n' })], [1, 1, 1, 1]);
-});
-
-test('the git-remote spec accepts exactly the output its README shows under the quickstart, and nothing more or less', async () => {
-  const gitRemote = await loadSpec('pi-git-remote');
-  const [file] = gitRemote.files;
-  const shown = extractSnippet(await readFile(new URL(`../${file.readme}`, import.meta.url), 'utf8'), { heading: file.heading, fence: '' });
-  const ran = over => judge(gitRemote, { exitCode: 0, stdout: shown, stderr: '', timedOut: false, ...over }).length;
-  assert.equal(ran({}), 0);
-  assert.deepEqual([ran({ stdout: `${shown}more\n` }), ran({ stdout: shown.slice(1) }), ran({ stdout: shown.replace('again: false', 'again: true') }), ran({ stderr: 'a warning\n' })], [1, 1, 1, 1]);
-});
-
-test('the learn spec accepts the output its README shows under the quickstart with a real sha for <sha>, and nothing more or less', async () => {
-  const learn = await loadSpec('pi-agent-learn');
-  const [file] = learn.files;
-  const shown = extractSnippet(await readFile(new URL(`../${file.readme}`, import.meta.url), 'utf8'), { heading: file.heading, fence: '' });
-  assert.ok(shown.includes('your repo at <sha>)'), 'the README shows the seeded commit as <sha>');
-  const printed = shown.replace('your repo at <sha>)', 'your repo at 6c2011ad512a)');
-  const ran = over => judge(learn, { exitCode: 0, stdout: printed, stderr: '', timedOut: false, ...over }).length;
-  assert.equal(ran({}), 0);
-  assert.deepEqual([ran({ stdout: shown }), ran({ stdout: printed.replace('6c2011ad512a', '6c2011a') }), ran({ stdout: `${printed}more\n` }), ran({ stdout: printed.slice(1) }), ran({ stdout: printed.replace('(used 3)', '(used 4)') }), ran({ stderr: 'a warning\n' })], [1, 1, 1, 1, 1, 1]);
 });
 
 // ---- the examples' Since cells ----
@@ -178,75 +96,6 @@ const index = [
   '| [planned-move](planned-move/) | moves | Archil and Daytona | 0.1.0-beta.14 | no |',
   '', 'text after the table', '',
 ].join('\n');
-
-test('versions compare as releases and betas do: beta.9 is older than beta.10, a release is newer than its betas', () => {
-  assert.equal(compareVersions('0.1.0-beta.9', '0.1.0-beta.10'), -1);
-  assert.equal(compareVersions('0.1.0-beta.13', '0.1.0-beta.13'), 0);
-  assert.equal(compareVersions('0.1.0-beta.14', '0.1.0-beta.13'), 1);
-  assert.equal(compareVersions('0.1.0', '0.1.0-beta.14'), 1);
-  assert.equal(compareVersions('0.1.1-beta.1', '0.1.0'), 1);
-  assert.throws(() => compareVersions('checkout', '0.1.0'), /not a version/);
-});
-
-test("the index's example rows are read by their Since and CI headers, and a file's row (not a directory) is left out", () => {
-  assert.deepEqual(parseIndex(index), [
-    { name: '01-durable-chat', since: 'checkout', ci: 'no' },
-    { name: 'kill-9', since: '0.1.0-beta.13', ci: 'yes' },
-    { name: 'fork-into-many', since: '0.1.0-beta.14', ci: 'yes' },
-    { name: 'planned-move', since: '0.1.0-beta.14', ci: 'no' },
-  ]);
-  assert.throws(() => parseIndex('| Example | CI |\n|---|---|\n'), /needs "Since" and "CI"/);
-  assert.throws(() => parseIndex('no table'), /no table/);
-});
-
-test("a keyless example whose Since is at or below the registry's beta is walked, one above it is skipped with its reason", () => {
-  const rows = parseIndex(index);
-  const now = selectExamples(rows, '0.1.0-beta.13');
-  assert.deepEqual(now.run, [{ name: 'kill-9', since: '0.1.0-beta.13', version: '0.1.0-beta.13' }]);
-  assert.deepEqual(now.skipped, [
-    { name: '01-durable-chat', reason: 'not keyless (CI "no")' },
-    { name: 'fork-into-many', reason: "needs 0.1.0-beta.14, and the registry's beta is 0.1.0-beta.13" },
-    { name: 'planned-move', reason: 'not keyless (CI "no")' },
-  ]);
-  assert.deepEqual(selectExamples(rows, '0.1.0-beta.14').run.map(example => example.name), ['kill-9', 'fork-into-many']);
-  assert.throws(() => selectExamples([{ name: 'x', since: 'checkout', ci: 'yes' }], '0.1.0-beta.13'), /published version, not "checkout"/);
-});
-
-test('on a platform with a floor, an example installs the later of its Since and the floor, or is skipped until the registry has it', () => {
-  const rows = parseIndex(index);
-  // macOS runs no release before 0.1.0-beta.14: kill-9 (Since 0.1.0-beta.13) installs 0.1.0-beta.14 there.
-  assert.deepEqual(selectExamples(rows, '0.1.0-beta.14', '0.1.0-beta.14').run, [
-    { name: 'kill-9', since: '0.1.0-beta.13', version: '0.1.0-beta.14' },
-    { name: 'fork-into-many', since: '0.1.0-beta.14', version: '0.1.0-beta.14' },
-  ]);
-  const early = selectExamples(rows, '0.1.0-beta.13', '0.1.0-beta.14');
-  assert.deepEqual(early.run, []);
-  assert.deepEqual(early.skipped.find(example => example.name === 'kill-9'), { name: 'kill-9', reason: "needs 0.1.0-beta.14 on this platform, and the registry's beta is 0.1.0-beta.13" });
-  assert.deepEqual(selectExamples(rows, '0.1.0-beta.14').run.map(example => example.version), ['0.1.0-beta.13', '0.1.0-beta.14'], 'no floor: the Since');
-  const spec = { package: 'p', install: ['x'], command: ['x'], expect: { pattern: 'x' }, timeoutMs: 1, examples: { readme: 'R.md', heading: 'H', fence: 'sh', dir: 'd', timeoutMs: 1 } };
-  assert.deepEqual(validateSpec({ ...spec, examples: { ...spec.examples, platformFloors: { darwin: '0.1.0-beta.14' } } }, 'p').examples.platformFloors, { darwin: '0.1.0-beta.14' });
-  assert.throws(() => validateSpec({ ...spec, examples: { ...spec.examples, platformFloors: { darwin: 'soon' } } }, 'p'), /not a version/);
-});
-
-test("the install is the index's own install line with the package at the example's Since, and nothing else changes", () => {
-  const block = ['npm init -y && npm pkg set type=module', 'npm install @parcha/pi-durable-disk@beta @earendil-works/pi-durable @earendil-works/pi-ai @earendil-works/chord', 'node main.ts', ''].join('\n');
-  assert.deepEqual(examplesInstallArgs(block, '@parcha/pi-durable-disk', '0.1.0-beta.13'), ['install', '@parcha/pi-durable-disk@0.1.0-beta.13', '@earendil-works/pi-durable', '@earendil-works/pi-ai', '@earendil-works/chord']);
-  assert.throws(() => examplesInstallArgs('node main.ts\n', '@parcha/pi-durable-disk', '1.0.0'), /one npm install line, not 0/);
-  assert.throws(() => examplesInstallArgs('npm install @parcha/pi-durable-disk @x/y\n', '@parcha/pi-durable-disk', '1.0.0'), /names @parcha\/pi-durable-disk@beta/);
-});
-
-test("every keyless example in the repository's index names a published-looking version, and its directory is there", async () => {
-  const dir = new URL('../packages/pi-durable-disk/examples/', import.meta.url);
-  const rows = parseIndex(await readFile(new URL('README.md', dir), 'utf8'));
-  assert.ok(rows.some(row => row.name === 'kill-9'), 'the index lists kill-9');
-  const { run } = selectExamples(rows, '999.0.0');
-  assert.ok(run.length >= 4, `at least four keyless examples are walked, not ${run.length}`);
-  const listing = new Set(await readdir(dir));
-  for (const { name } of run) assert.ok(listing.has(name), `${name} has a directory`);
-  const spec = await loadSpec('pi-durable-disk');
-  const block = extractSnippet(await readFile(new URL(`../${spec.examples.readme}`, import.meta.url), 'utf8'), spec.examples);
-  examplesInstallArgs(block, spec.package, '0.1.0-beta.13');
-});
 
 test("an example's run ends after its command exits and a short grace, even if a process outside its group keeps an output pipe open", async () => {
   // The command starts a detached child (a group of its own, so the timeout's group kill cannot reach it) that inherits the

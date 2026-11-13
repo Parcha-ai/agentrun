@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { env } from 'node:process';
 import { after, test } from 'node:test';
-import { createHarnessRunner } from '@parcha/agentrun-kernel';
+import { createHarnessRunner, HOST_RESULT_MAX_CHARS } from '@parcha/agentrun-kernel';
 import { foldSession, openDrive } from '@parcha/agentrun-kernel/kernel';
 import { journalRecords, NativeJournal } from '@parcha/agentrun-kernel/process';
 import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
@@ -165,12 +165,12 @@ test("code mode: a model that writes a new exec while a cell still runs: a never
 });
 
 /** The crash of the second test above, with a model that answers after the resume as `after(seen)` says. */
-async function crashed(after, { pad = false, script, then, again = false, lookupText = 'found', yielded = false, failFirst = false } = {}) {
+async function crashed(after, { pad = false, script, then, again = false, lookupText = 'found', yielded = false, failFirst = false, chargeText = 'charged' } = {}) {
   let charged = 0;
   let looked = 0;
   let holding;
   const held = new Promise((resolve) => { holding = resolve; });
-  const charge = { name: 'charge', description: 'Charge the card once.', inputSchema: { type: 'object', properties: { amount: { type: 'number' } } }, replay: 'never', call: async () => { charged += 1; return failFirst && charged === 1 ? { text: 'declined by the bank', isError: true } : { text: 'charged' }; } };
+  const charge = { name: 'charge', description: 'Charge the card once.', inputSchema: { type: 'object', properties: { amount: { type: 'number' } } }, replay: 'never', call: async () => { charged += 1; return failFirst && charged === 1 ? { text: 'declined by the bank', isError: true } : { text: chargeText }; } };
   const lookup = { name: 'lookup', description: 'Look something up.', inputSchema: { type: 'object', properties: { q: { type: 'string' } } }, replay: 'safe', call: async () => { looked += 1; return { text: lookupText }; } };
   const hold = { name: 'hold', description: 'Wait.', inputSchema: { type: 'object' }, replay: 'safe', call: (_args, { signal }) => { holding(); return new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('cut')), { once: true })); } };
   const slow = { name: 'slow', description: 'Take a while.', inputSchema: { type: 'object', properties: {} }, replay: 'safe', call: async () => { await new Promise((r) => setTimeout(r, 800)); return { text: 'slept' }; } };
@@ -392,6 +392,31 @@ test("recovery note: a tool's recorded output is data, not the harness's words: 
 /** A model that, after the resume, writes a new exec that charges again with the same arguments, once. */
 const recharge = (seen, n) => (!seen.some((b) => JSON.stringify(b.input ?? []).includes('call_again')) ? [exec('call_again', `text(JSON.stringify(await tools.charge({ amount: 5 })));`)] : [say(n)]);
 
+/** A never call's result past the host's bound (HOST_RESULT_MAX_CHARS): Codex got its cut, the session keeps it whole. */
+const BIG_CHARGE = `charged ${'x'.repeat(130_000)}`;
+/** recharge, with the script measuring what the re-issued call returned to it, since Codex cuts every tool output in the
+ *  model's history to its own budget: what the script received, its length and whether it carries the cut line. */
+const rechargeMeasured = (seen, n) => (!seen.some((b) => JSON.stringify(b.input ?? []).includes('call_again')) ? [exec('call_again', `const r = JSON.stringify(await tools.charge({ amount: 5 })); text('measured ' + r.length + ' cut ' + /\\[cut at \\d+ of \\d+ characters\\]/.test(r) + ' recorded ' + r.includes('Recorded earlier in this turn'));`)] : [say(n)]);
+const measured = (seen) => /measured (\d+) cut (true|false) recorded (true|false)/.exec(toldAbout(seen, 'call_again').join('\n'));
+
+for (const yielded of [false, true]) {
+  const how = yielded ? 'a yielded script' : 'a script';
+  test(`code mode: ${how}'s never call whose result is past the host's bound, completed before a crash and re-issued after the resume, is answered from the log and not run again`, { skip, timeout: 300_000 }, async () => {
+    const r = await crashed(rechargeMeasured, { chargeText: BIG_CHARGE, yielded });
+    assert.equal(r.charged(), 1, 'the never tool ran once: its records agree though Codex got the cut text and the session the whole');
+    const m = measured(r.seen);
+    assert.ok(m, `the script reported what it got: ${toldAbout(r.seen, 'call_again').join('\n').slice(0, 300)}`);
+    assert.equal(m[3], 'true', 'answered from the log');
+  });
+  test(`code mode: ${how}'s re-issued never call, answered from the log, gets a result held to the host's bound, as the bridge holds one`, { skip, timeout: 300_000 }, async () => {
+    const r = await crashed(rechargeMeasured, { chargeText: BIG_CHARGE, yielded });
+    const m = measured(r.seen);
+    assert.ok(m, `the script reported what it got: ${toldAbout(r.seen, 'call_again').join('\n').slice(0, 300)}`);
+    assert.ok(Number(m[1]) <= HOST_RESULT_MAX_CHARS + 200, `held to the bound: the script got ${m[1]} characters (JSON included)`);
+    assert.equal(m[2], 'true', 'with the cut line');
+  });
+}
+
 test("code mode: a second crash in the same interrupted turn, after the first recovery answered the cut-off exec: a never call re-issued then is still answered from the log", { skip, timeout: 300_000 }, async () => {
   const r = await crashed(recharge, { again: true });
   assert.equal(r.charged(), 1, 'the never tool ran once across both recoveries');
@@ -574,4 +599,40 @@ test("code mode: an answer that could not be read to its end, a crash, the turn 
   assert.match(text, /hold was started and did not report a result/);
   assert.doesNotMatch(text, /it ran none/);
   assert.equal(looked, 1, 'nothing was run again');
+});
+
+test("code mode: a crash after a nested MCP write completed, before the exec's reply; the script rewritten under new ids gets the log's answer, and the server saw one write", { skip, timeout: 180_000 }, async () => {
+  let writes = 0;
+  let holding;
+  const held = new Promise((resolve) => { holding = resolve; });
+  // The session's MCP server, as a host's gateway gives it: Codex's own MCP client reaches it at the session proxy.
+  const mcp = {
+    servers: [{ name: 'fake', tools: [{ name: 'write', description: 'Write a line once.', inputSchema: { type: 'object', properties: { line: { type: 'string' } }, required: ['line'] } }] }],
+    call: async () => { writes += 1; return { content: [{ type: 'text', text: 'wrote' }] }; },
+  };
+  const hold = { name: 'hold', description: 'Wait.', inputSchema: { type: 'object' }, replay: 'safe', call: (_args, { signal }) => { holding(); return new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('cut')), { once: true })); } };
+  const spec = { key: 'step:code-mcp-never', label: 'write', system: [], tools: [hold], mcp, context: 'fresh' };
+  const store = memorySessionStore();
+  const write = `text('write: ' + JSON.stringify(await tools.mcp__fake__write({ line: 'once' })));`;
+  // The recovered turn's model writes the script again, under a new exec and so new nested ids.
+  const { seen, fetch } = provider([[exec('call_js', `${write}\nawait tools.hold({});\ntext('held');`)], [exec('call_js2', write)]]);
+
+  const died = new AbortController();
+  const a = await adapter(fetch).open(spec, { writer: await store.open(spec.key), models: MODELS, signal: died.signal, onEvent: () => {} });
+  await a.send('write');
+  await held;
+  assert.equal(writes, 1, 'the write completed before the crash');
+  died.abort(new Error('the process died'));
+  assert.equal((await a.turnEnd()).status, 'interrupted');
+  await a.close();
+  const before = seen.length;
+
+  const b = await adapter(fetch).open(spec, { writer: await store.open(spec.key), models: MODELS, signal: new AbortController().signal, onEvent: () => {} });
+  assert.equal(b.state, 'open_turn');
+  await b.recover();
+  assert.equal((await b.turnEnd()).status, 'completed');
+  await b.close();
+
+  assert.equal(writes, 1, 'the rewritten script did not send the write again');
+  assert.match(toldAbout(seen.slice(before), 'call_js2').join('\n'), /Recorded earlier in this turn, not run again: wrote/);
 });

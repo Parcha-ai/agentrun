@@ -1,99 +1,103 @@
-// The sealed Stagehand's creation (src/driver/sealed.ts): one more try when the extension is still running an earlier
-// attach's init, a cancelled attach that never starts an init of its own, and attach steps that name where they went.
+// The sealed Stagehand's attach steps (src/driver/sealed.ts): a step that names where it went, and a cancelled attach that
+// stops at once and hands anything that still attaches later back to be let go; and the driver's own use of them, over a
+// Stagehand module that stands in for the real one.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { BrowserFailureError } from "../dist/core/custody.js";
-import { STAGEHAND_INIT_IN_PROGRESS } from "../dist/driver/stagehand.js";
-import { attachStep, createSealed, initInProgress, throwIfCancelled } from "../dist/driver/sealed.js";
+import { attachStep, throwIfCancelled, untilCancelled } from "../dist/driver/sealed.js";
+import { stagehandDriver } from "../dist/driver/stagehand.js";
 
-/** The error Stagehand.create throws when the extension refuses an init: its JSON-RPC error as the cause. */
-const busy = () => Object.assign(new Error("init failed"), { cause: { code: -32603, message: STAGEHAND_INIT_IN_PROGRESS } });
-/** A create that answers each call from `answers` in turn: a value is returned, an Error thrown. */
-const creates = (...answers) => {
-  const calls = { create: 0, wait: 0 };
-  const create = async () => { const answer = answers[calls.create++]; if (answer instanceof Error) throw answer; return answer; };
-  const wait = async () => { calls.wait += 1; };
-  return { calls, create, wait };
-};
-
-test("the public message is the one the sealed steps recognise, and only an error caused by it counts as an init in progress", () => {
-  assert.equal(STAGEHAND_INIT_IN_PROGRESS, "Stagehand initialization is already in progress");
-  assert.equal(initInProgress(busy()), true);
-  assert.equal(initInProgress(new Error(STAGEHAND_INIT_IN_PROGRESS)), false, "the text alone, with no JSON-RPC cause, is not the extension's refusal");
-  assert.equal(initInProgress(Object.assign(new Error("x"), { cause: { code: "-32603", message: STAGEHAND_INIT_IN_PROGRESS } })), false, "a code that is not a number");
-  assert.equal(initInProgress(null), false);
-});
-
-test("a first create that succeeds is returned, with no wait", async () => {
-  const c = creates("stagehand");
-  assert.equal(await createSealed(c.create, c.wait, "127.0.0.1:9222"), "stagehand");
-  assert.deepEqual(c.calls, { create: 1, wait: 0 });
-});
-
-test("any other error from the first create is thrown as it is, with no wait and no second create", async () => {
-  const other = new Error("Chrome went away");
-  const c = creates(other);
-  await assert.rejects(createSealed(c.create, c.wait, "h"), (error) => error === other);
-  assert.deepEqual(c.calls, { create: 1, wait: 0 });
-});
-
-test("an init still running in the extension is waited out once, and the instance is created once more only after that wait ends", async () => {
-  const c = creates(busy(), "second");
-  let release;
-  const held = new Promise((resolve) => { release = resolve; });
-  const wait = () => { c.calls.wait += 1; return held; };
-  const result = createSealed(c.create, wait, "h");
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(c.calls, { create: 1, wait: 1 }, "no second create while the earlier init is still running");
-  release();
-  assert.equal(await result, "second");
-  assert.deepEqual(c.calls, { create: 2, wait: 1 });
-});
-
-test("a call cancelled before the wait starts no wait and no init of its own", async () => {
-  const c = creates(busy(), "never");
-  const controller = new AbortController();
-  const reason = new Error("the turn ended");
-  controller.abort(reason);
-  await assert.rejects(createSealed(c.create, c.wait, "h", controller.signal), (error) => error === reason);
-  assert.deepEqual(c.calls, { create: 1, wait: 0 });
-});
-
-test("a call cancelled during the wait starts no init of its own, and a reason that is not an Error ends it as an AbortError", async () => {
-  const controller = new AbortController();
-  const c = creates(busy(), "never");
-  const wait = async () => { c.calls.wait += 1; controller.abort("gone"); };
-  await assert.rejects(createSealed(c.create, wait, "h", controller.signal), (error) => error instanceof Error && error.name === "AbortError" && error.message === "the attach was cancelled");
-  assert.deepEqual(c.calls, { create: 1, wait: 1 });
-});
-
-test("a second refusal is the browser still busy: browser_unavailable, retryable, naming the host and the 60 s it waited", async () => {
-  const c = creates(busy(), busy());
-  await assert.rejects(createSealed(c.create, c.wait, "127.0.0.1:41234"), (error) => {
-    assert.ok(error instanceof BrowserFailureError);
-    assert.equal(error.failure.code, "browser_unavailable");
-    assert.equal(error.failure.retryable, true);
-    assert.match(error.message, /^The browser at 127\.0\.0\.1:41234 is still finishing an earlier connection after 60 s\./);
-    return true;
-  });
-  assert.deepEqual(c.calls, { create: 2, wait: 1 });
-});
-
-test("any other error from the second create is thrown as it is", async () => {
-  const other = new Error("the extension crashed");
-  const c = creates(busy(), other);
-  await assert.rejects(createSealed(c.create, c.wait, "h"), (error) => error === other);
-});
+const later = () => { let resolve, reject; const promise = new Promise((y, n) => { resolve = y; reject = n; }); return { promise, resolve, reject }; };
+const tick = () => new Promise((resolve) => setImmediate(resolve));
 
 test("a failed attach step names the host it went to and keeps the original as its cause; a step that succeeds is untouched", async () => {
-  const step = attachStep("10.0.0.5:9222");
+  const step = attachStep("cdp.example.com:9222");
   const cause = { toString: () => "[object Object]" };
-  await assert.rejects(step(Promise.reject(cause)), (error) => error.message === "attaching to the browser at 10.0.0.5:9222 failed: [object Object]" && error.cause === cause);
-  await assert.rejects(step(Promise.reject(new Error("ECONNREFUSED"))), (error) => error.message === "attaching to the browser at 10.0.0.5:9222 failed: ECONNREFUSED");
+  await assert.rejects(step(Promise.reject(cause)), (error) => error.message === "attaching to the browser at cdp.example.com:9222 failed: [object Object]" && error.cause === cause);
+  await assert.rejects(step(Promise.reject(new Error("ECONNREFUSED"))), (error) => error.message === "attaching to the browser at cdp.example.com:9222 failed: ECONNREFUSED");
   assert.equal(await step(Promise.resolve(7)), 7);
 });
 
-test("throwIfCancelled does nothing for a live signal or none", () => {
+test("throwIfCancelled does nothing for a live signal or none, and throws the reason, or an AbortError, for an ended one", () => {
   throwIfCancelled(undefined);
   throwIfCancelled(new AbortController().signal);
+  const reason = new Error("the turn ended");
+  assert.throws(() => throwIfCancelled(AbortSignal.abort(reason)), (error) => error === reason);
+  assert.throws(() => throwIfCancelled(AbortSignal.abort("gone")), (error) => error.name === "AbortError" && error.message === "the attach was cancelled");
+});
+
+test("untilCancelled: with no signal, or one that never ends, the step's own outcome", async () => {
+  const released = [];
+  assert.equal(await untilCancelled(Promise.resolve("a"), undefined, (late) => released.push(late)), "a");
+  assert.equal(await untilCancelled(Promise.resolve("b"), new AbortController().signal, (late) => released.push(late)), "b");
+  const failed = new Error("refused");
+  await assert.rejects(untilCancelled(Promise.reject(failed), new AbortController().signal, (late) => released.push(late)), (error) => error === failed);
+  assert.deepEqual(released, [], "nothing is released that the call returned");
+});
+
+test("untilCancelled: a cancel ends the call at once, and the step that succeeds afterwards is released", async () => {
+  const step = later();
+  const controller = new AbortController();
+  const released = [];
+  const call = untilCancelled(step.promise, controller.signal, (late) => released.push(late));
+  const reason = new Error("the reconnect's budget ran out");
+  controller.abort(reason);
+  await assert.rejects(call, (error) => error === reason);
+  assert.deepEqual(released, []);
+  step.resolve("browser");
+  await tick();
+  assert.deepEqual(released, ["browser"], "the late attach is let go");
+});
+
+test("untilCancelled: a signal already ended rejects without waiting, and still releases the step's late success; a late failure is dropped", async () => {
+  const released = [];
+  const ok = later();
+  await assert.rejects(untilCancelled(ok.promise, AbortSignal.abort("gone"), (late) => released.push(late)), (error) => error.name === "AbortError");
+  ok.resolve("late");
+  const bad = later();
+  const controller = new AbortController();
+  const call = untilCancelled(bad.promise, controller.signal, (late) => released.push(late));
+  controller.abort();
+  await assert.rejects(call, (error) => error.name === "AbortError");
+  bad.reject(new Error("failed after the cancel"));
+  await tick();
+  assert.deepEqual(released, ["late"]);
+});
+
+/** A Stagehand module whose connect and create each wait for the test, recording what the driver does with the browser. */
+function fakeStagehand() {
+  const events = [];
+  const steps = { connect: later(), create: later() };
+  const browser = { disconnect: async () => { events.push("disconnect started"); await tick(); events.push("disconnected"); } };
+  const module = {
+    localBrowser: { connect: async () => { events.push("connect"); return steps.connect.promise.then(() => browser); } },
+    Stagehand: { create: async () => { events.push("create"); return steps.create.promise; } },
+  };
+  return { events, steps, driver: stagehandDriver({ stagehand: async () => module }) };
+}
+const TARGET = { sdkCdpUrl: "ws://127.0.0.1:9/devtools/browser/x" };
+
+test("the driver: a cancel while create runs disconnects the browser, then fails with the cancel; the create's late answer is dropped", async () => {
+  const fake = fakeStagehand();
+  const call = new AbortController();
+  const attaching = fake.driver(TARGET, call.signal);
+  fake.steps.connect.resolve();
+  while (!fake.events.includes("create")) await tick();
+  const reason = new Error("the turn ended");
+  call.abort(reason);
+  await assert.rejects(attaching, (error) => error === reason);
+  assert.deepEqual(fake.events, ["connect", "create", "disconnect started", "disconnected"], "disconnected before the failure reached the caller");
+  fake.steps.create.resolve({ late: true });
+  await tick();
+  assert.equal(fake.events.filter((event) => event === "disconnect started").length, 1, "the late create releases nothing more");
+});
+
+test("the driver: a create that fails disconnects the browser before the failure reaches the caller", async () => {
+  const fake = fakeStagehand();
+  const attaching = fake.driver(TARGET, new AbortController().signal);
+  fake.steps.connect.resolve();
+  while (!fake.events.includes("create")) await tick();
+  const failed = new Error("init refused");
+  fake.steps.create.reject(failed);
+  await assert.rejects(attaching, (error) => error === failed);
+  assert.deepEqual(fake.events, ["connect", "create", "disconnect started", "disconnected"]);
 });

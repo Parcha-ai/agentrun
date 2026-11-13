@@ -5,9 +5,11 @@ import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, utimesSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { openStore } from "@parcha/pi-durable-agent";
+import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { planImport, runImport } from "../dist/import.js";
 import * as sources from "../dist/import-sources.js";
+import { openSqliteStore } from "../dist/store/index.js";
+import { listRuns } from "../dist/store-reads/runs.js";
 import { at, codexSession, piSession, sessionId, writeSession } from "./fixtures/import-sessions.mjs";
 import { scratch } from "./support.mjs";
 
@@ -42,11 +44,12 @@ async function titles(t, write, extra = {}) {
   mkdirSync(project, { recursive: true });
   write(home, project);
   const data = join(root, "agents");
-  const store = openStore(data);
-  t.after(() => store.close());
+  const store = await openSqliteStore({ dataDir: data, role: "server" });
+  t.after(async () => await store.close());
   const options = { home, env: ENV, temp: join(root, "tmp"), ...extra };
   await runImport(store, await planImport(options), options);
-  return Object.fromEntries(store.listRuns().map((run) => [run.importedFrom.session, JSON.parse(readFileSync(join(data, "runs", run.id, "serve.json"), "utf8")).title]));
+  const runs = await listRuns(store, {}, ctx);
+  return Object.fromEntries(await Promise.all(runs.map(async (run) => [run.importedFrom.session, (await store.runs.launch(run.id)).body.title])));
 }
 
 test("a Claude Code session that opens with a slash command is titled by the person's first words, never the command's markup", async (t) => {

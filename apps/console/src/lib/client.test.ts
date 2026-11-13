@@ -64,7 +64,31 @@ describe("createClient", () => {
   });
 });
 
+describe("raiseCap", () => {
+  it("raises a run's spend cap with PATCH /v2/runs/{id} and only max_cost_usd, as same-origin JSON, and answers what the server says", async () => {
+    const answer = { run_id: "r 1", max_cost_usd: 1.03, resumed: true, message_id: "m1", status: "input_required", state: "waiting" };
+    const { fn, calls } = fakeFetch(() => json(200, answer));
+    const v2 = createClient({ fetch: fn });
+    expect(await v2.raiseCap("r 1", 1.03)).toEqual(answer);
+    expect([calls[0].init?.method, calls[0].url, JSON.parse(String(calls[0].init?.body))]).toEqual(["PATCH", "/v2/runs/r%201", { max_cost_usd: 1.03 }]);
+    expect(new Headers(calls[0].init?.headers).get("content-type")).toBe("application/json");
+    expect(calls[0].init?.credentials).toBe("same-origin");
+  });
+});
+
 describe("follow", () => {
+  it("with no onRows, follows a run's status alone: each page to onPage, the cursor kept, no rows merged or held", async () => {
+    const first = running.body as unknown as TimelinePage;
+    const done: TimelinePage = { ...first, reset: false, rows: [], unchanged: true, final: true, status: "completed", state: "idle", next_after: first.next_after + 1 };
+    const pages = [first, done];
+    const { fn, calls } = fakeFetch(() => json(200, pages.shift()));
+    const statuses: string[] = [];
+    const out = await follow(createClient({ fetch: fn }), "r1", { onPage: (p) => statuses.push(p.status), waitMs: 1, minDelayMs: 0 });
+    expect(calls.map((c) => new URL(c.url, "http://x").searchParams.get("after"))).toEqual([null, String(first.next_after)]);
+    expect(statuses).toEqual([first.status, "completed"]);
+    expect(out.status).toBe("completed");
+  });
+
   it("applies each page from the previous cursor until the server says final, and never duplicates a row", async () => {
     const first = running.body as unknown as TimelinePage;
     const again: TimelinePage = { ...first, reset: false, rows: first.rows.slice(-1), final: false, next_after: first.next_after + 1 };
@@ -113,6 +137,37 @@ describe("agents", () => {
       expect(c.init?.body).toBe("{}");
       expect(c.init?.credentials).toBe("same-origin");
     }
+  });
+
+  it("retires a learned skill's SKILL.md and a draft's README.md through the note's retire route, slashes percent-encoded, under If-Match", async () => {
+    const { fn, calls } = fakeFetch(() => new Response("---\nname: find-policies\nstatus: retired\n---\n", { status: 200, headers: { "content-type": "text/markdown", etag: '"skill-v2"' } }));
+    const v2 = createClient({ fetch: fn });
+    const done = await v2.retireNote("refunds", "skills/find-policies/SKILL.md", '"skill-v1"');
+    await v2.retireNote("refunds", "workflows/check-refunds/README.md", '"readme-v1"');
+    expect(calls.map((c) => `${c.init?.method} ${c.url}`)).toEqual([
+      "POST /v2/agents/refunds/learning/files/skills%2Ffind-policies%2FSKILL.md/retire",
+      "POST /v2/agents/refunds/learning/files/workflows%2Fcheck-refunds%2FREADME.md/retire",
+    ]);
+    expect(new Headers(calls[0].init?.headers).get("if-match")).toBe('"skill-v1"');
+    expect(new Headers(calls[1].init?.headers).get("if-match")).toBe('"readme-v1"');
+    expect(calls[0].init?.credentials).toBe("same-origin");
+    expect(done).toEqual({ note: "---\nname: find-policies\nstatus: retired\n---\n", etag: '"skill-v2"' });
+  });
+
+  it("makes a learned workflow an agent through its promote route, the name percent-encoded, as same-origin JSON with an empty body under its Idempotency-Key; its warnings show on the new agent's next read", async () => {
+    const warnings = [{ code: "no_model_key", message: "No key for its model yet." }];
+    const made = { agent_id: "check-refunds", revision: "rv1", revisions: 1, kind: "workflow", archived_at: null, warnings, definition: { version: 1, name: "check-refunds", workflow: {} } };
+    const { fn, calls } = fakeFetch((c) => (c.init?.method === "POST" ? json(201, made) : new Response(JSON.stringify({ ...made, warnings: undefined }), { status: 200, headers: { "content-type": "application/json", etag: '"rv1"' } })));
+    const v2 = createClient({ fetch: fn });
+    const answer = await v2.promoteWorkflow("refunds", "check refunds", "key-1");
+    expect(answer).toMatchObject({ agent_id: "check-refunds", kind: "workflow" });
+    expect(`${calls[0].init?.method} ${calls[0].url}`).toBe("POST /v2/agents/refunds/learning/workflows/check%20refunds/promote");
+    expect(new Headers(calls[0].init?.headers).get("content-type")).toBe("application/json");
+    expect(calls[0].init?.body).toBe("{}");
+    expect(new Headers(calls[0].init?.headers).get("idempotency-key")).toBe("key-1");
+    expect(calls[0].init?.credentials).toBe("same-origin");
+    const read = await v2.getAgent("check-refunds");
+    expect(read.agent.warnings).toEqual(warnings);
   });
 
   it("lists runs in one state, or the archived ones, with the server's list parameters", async () => {
@@ -237,18 +292,38 @@ describe("paging", () => {
 });
 
 describe("the owner's session", () => {
-  it("reads a server without accounts (404 on the session route) as such, instead of throwing", async () => {
-    const { fn } = fakeFetch(() => json(404, { error: { code: "not_found", message: "no route /v2/auth/session", retryable: false } }));
-    expect(await createClient({ fetch: fn }).session()).toEqual({ status: 404, body: null });
+  it("reads a server without accounts by its answer (accounts: false), as any other session read", async () => {
+    const { fn } = fakeFetch(() => json(200, { accounts: false, secrets_writable: true }));
+    expect(await createClient({ fetch: fn }).session()).toEqual({ status: 200, body: { accounts: false, secrets_writable: true } });
   });
-  it("signs in and sets up as same-origin JSON, and signs out", async () => {
+  it("signs in and sets up as same-origin JSON, signs this browser out, and signs out everywhere", async () => {
     const { fn, calls } = fakeFetch(() => json(200, { signed_in: true }));
     const v2 = createClient({ fetch: fn });
-    await v2.signIn("pw-1"); await v2.setup("pw-2", "c-1"); await v2.signOut();
+    await v2.signIn("pw-1"); await v2.setup("pw-2", "c-1"); await v2.signOut(); await v2.signOutEverywhere();
     expect(calls.map((c) => `${c.init?.method} ${c.url} ${c.init?.body}`)).toEqual([
-      'POST /v2/auth/sign-in {"password":"pw-1"}', 'POST /v2/setup {"password":"pw-2","code":"c-1"}', "POST /v2/auth/sign-out {}",
+      'POST /v2/auth/sign-in {"password":"pw-1"}', 'POST /v2/setup {"password":"pw-2","code":"c-1"}', "POST /v2/auth/sign-out {}", "POST /v2/auth/sign-out-everywhere {}",
     ]);
     expect(calls.every((c) => c.init?.credentials === "same-origin")).toBe(true);
+  });
+});
+
+describe("setup's import status", () => {
+  it("reads a 200 that says there is no offer as none, and a 404 (no such route without accounts, or to a caller not signed in) or a 403 too", async () => {
+    const answers: [number, unknown][] = [
+      [200, { offer: false }],
+      [404, { error: { code: "not_found", message: "no route /v2/setup/import", retryable: false } }],
+      [403, { error: { code: "forbidden", message: "this read must come from this server's page", retryable: false } }],
+    ];
+    const { fn, calls } = fakeFetch(() => json(...answers.shift()!));
+    const v2 = createClient({ fetch: fn });
+    expect([await v2.setupImport(), await v2.setupImport(), await v2.setupImport()]).toEqual([null, null, null]);
+    expect(calls.map((c) => `${c.init?.method} ${c.url}`)).toEqual(Array(3).fill("GET /v2/setup/import"));
+  });
+  it("passes an offer and an import's state through as the server says them", async () => {
+    const answers: unknown[] = [{ counting: true }, { projects: 1, sessions: 2 }, { state: "done", agents: 1, runs: 2, skipped: 0 }];
+    const { fn } = fakeFetch(() => json(200, answers.shift()));
+    const v2 = createClient({ fetch: fn });
+    expect([await v2.setupImport(), await v2.setupImport(), await v2.setupImport()]).toEqual([{ counting: true }, { projects: 1, sessions: 2 }, { state: "done", agents: 1, runs: 2, skipped: 0 }]);
   });
 });
 
@@ -284,14 +359,12 @@ describe("allPages and a 422", () => {
 });
 
 describe("the session's errors", () => {
-  it("only a 404 reads as a server without accounts: any other refusal on /auth/session is that refusal", async () => {
-    for (const status of [500, 401, 503]) {
+  it("every refusal on /auth/session is that refusal, a 404 too: a server without accounts answers it 200", async () => {
+    for (const status of [500, 401, 503, 404]) {
       const { fn } = fakeFetch(() => json(status, { error: { code: status === 401 ? "unauthenticated" : "internal", message: "refused", retryable: false } }));
       const err = await createClient({ fetch: fn }).session().catch((e) => e);
       expect(err).toBeInstanceOf(ClientError);
       expect(err.status).toBe(status);
     }
-    const { fn } = fakeFetch(() => json(404, { error: { code: "not_found", message: "no route /v2/auth/session", retryable: false } }));
-    expect(await createClient({ fetch: fn }).session()).toEqual({ status: 404, body: null });
   });
 });

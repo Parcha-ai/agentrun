@@ -33,6 +33,17 @@ export async function sendOnce<R>(keys: ReturnType<typeof keeper>, runId: string
   return r;
 }
 
+/** A keeper per run: a send whose answer was lost keeps its key while another run's send goes out, so a retry of it is
+ *  the same request. Each run's key clears only when its own send lands (sendOnce's `done`). */
+export function keepersByRun(newKey: () => string = uuid): (runId: string) => ReturnType<typeof keeper> {
+  const kept = new Map<string, ReturnType<typeof keeper>>();
+  return (runId) => {
+    let k = kept.get(runId);
+    if (!k) { k = keeper(newKey); kept.set(runId, k); }
+    return k;
+  };
+}
+
 /** The next page of runs added to those shown: the server's cursor is an offset, so a run a new one pushed down is sent
  *  again and is kept once. */
 export function appendRuns(held: Run[], page: Run[]): Run[] {

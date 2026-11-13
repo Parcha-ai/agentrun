@@ -2,14 +2,14 @@
 // binary it would run against the pins, and refuses a mismatch with a typed error a host maps to the run's failure line.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, existsSync, mkdtempSync, openSync, readFileSync, readSync, rmSync, truncateSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { codexTarget, findCodex } from '../dist/binary.js';
 import { localMachine } from '../dist/host/machine.js';
 import { CODEX_ROUTES, gatewayHandler } from '../dist/host/process.js';
-import { codexPins, verifyCodex, verifyCodexBinary } from '../dist/verify.js';
+import { codexPins, verifyCodex, verifyCodexBinary, verifyCodexBinaryAsync } from '../dist/verify.js';
 import { CODEX_BINARY_SHA256, CODEX_NPM_INTEGRITY, CODEX_VERSION, CodexNotInstalled, CodexPinMismatch } from '../dist/versions.js';
 
 const ROOT = mkdtempSync(join(tmpdir(), 'agentrun-codex-pins-'));
@@ -48,6 +48,68 @@ test("a binary whose sha256 is not the pinned build's is refused, typed, with th
   const result = verifyCodexBinary({ path: other.path }, { version: '0.164.0', sha256: 'f'.repeat(64) });
   assert.ok(mismatch('binary_sha256', 'f'.repeat(64), other.sha256)(result), String(result));
   assert.equal(result.path, other.path);
+});
+
+/** A `mib` MiB executable that says `out` when asked its version: its script, then zeros the shell never reaches (a
+ *  sparse file), with its sha256, hashed here a chunk at a time. */
+function large(name, out, mib) {
+  const path = join(ROOT, name);
+  writeFileSync(path, `#!/bin/sh\necho "${out}"\nexit 0\n`);
+  truncateSync(path, mib * 2 ** 20);
+  chmodSync(path, 0o755);
+  const hash = createHash('sha256');
+  const fd = openSync(path, 'r');
+  const chunk = Buffer.alloc(2 ** 20);
+  for (let n; (n = readSync(fd, chunk)) > 0; ) hash.update(chunk.subarray(0, n));
+  closeSync(fd);
+  return { path, sha256: hash.digest('hex') };
+}
+
+test("a binary is hashed a chunk at a time, never read whole: checking a 128 MiB one leaves the process's peak memory where it was", () => {
+  const big = large('large', 'codex-cli 0.164.0', 128);
+  const before = process.resourceUsage().maxRSS;
+  assert.deepEqual(verifyCodexBinary({ path: big.path }, { version: '0.164.0', sha256: big.sha256 }), { path: big.path });
+  const grown = (process.resourceUsage().maxRSS - before) / 1024;
+  assert.ok(grown < 32, `checking a 128 MiB binary raised the peak by ${Math.round(grown)} MiB`);
+});
+
+test('a binary is checked once per identity in a process: the same file answers again at once; touched, it is checked again', () => {
+  const asked = join(ROOT, 'asked');
+  const path = join(ROOT, 'counted');
+  writeFileSync(path, `#!/bin/sh\necho x >> "${asked}"\necho "codex-cli 0.164.0"\n`);
+  chmodSync(path, 0o755);
+  const pins = { version: '0.164.0', sha256: createHash('sha256').update(readFileSync(path)).digest('hex') };
+  const checks = () => (existsSync(asked) ? readFileSync(asked, 'utf8').split('\n').filter(Boolean).length : 0);
+  assert.deepEqual(verifyCodexBinary({ path }, pins), { path });
+  assert.deepEqual(verifyCodexBinary({ path }, pins), { path });
+  assert.equal(checks(), 1, 'the same binary, asked its version once');
+  const later = new Date(Date.now() + 5_000);
+  utimesSync(path, later, later);
+  assert.deepEqual(verifyCodexBinary({ path }, pins), { path });
+  assert.equal(checks(), 2, 'touched: checked again');
+  assert.ok(mismatch('version', '0.165.0', '0.164.0')(verifyCodexBinary({ path }, { ...pins, version: '0.165.0' })), 'other pins: checked against them');
+  assert.ok(mismatch('version', '0.165.0', '0.164.0')(verifyCodexBinary({ path }, { ...pins, version: '0.165.0' })), 'a refusal is never kept');
+  assert.equal(checks(), 4);
+});
+
+test("the host's check hands its event loop back while the binary answers --version, and the adapter's own check then answers from it", async () => {
+  // The binary answers only once this process has run a callback it queued after starting the check: a check that held
+  // the event loop (a synchronous --version) never lets that callback run once the binary has started, and the binary gives up after 5 s with another
+  // version. A server ran that check in its event loop, so every request and open store transaction waited on it.
+  const go = join(ROOT, 'go');
+  const asked = join(ROOT, 'asked-free');
+  const path = join(ROOT, 'waits');
+  writeFileSync(path, `#!/bin/sh\necho x >> "${asked}"\ni=0\nwhile [ ! -e "${go}" ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i+1)); done\nif [ -e "${go}" ]; then echo "codex-cli 0.164.0"; else echo "codex-cli 0.0.0"; fi\n`);
+  chmodSync(path, 0o755);
+  const pins = { version: '0.164.0', sha256: createHash('sha256').update(readFileSync(path)).digest('hex') };
+  const checked = verifyCodexBinaryAsync({ path }, pins);
+  // Released only once the binary has started (its first line writes `asked`): a check that ran --version synchronously
+  // would hold this interval back until the binary gave up, so only an awaited --version passes.
+  const release = setInterval(() => { if (existsSync(asked)) { clearInterval(release); writeFileSync(go, ''); } }, 10);
+  assert.deepEqual(await checked, { path });
+  assert.deepEqual(verifyCodexBinary({ path }, pins), { path }, "the adapter's check: answered from the host's");
+  assert.equal(readFileSync(asked, 'utf8').split('\n').filter(Boolean).length, 1, 'the binary was asked its version once');
+  assert.ok(mismatch('version', '0.165.0', '0.164.0')(await verifyCodexBinaryAsync({ path }, { ...pins, version: '0.165.0' })), 'a refusal, the same as the synchronous check gives');
 });
 
 test('a binary that reports another version is refused, typed; the pinned one passes', () => {

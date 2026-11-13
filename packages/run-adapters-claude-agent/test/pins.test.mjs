@@ -3,11 +3,11 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, existsSync, mkdtempSync, openSync, readFileSync, readSync, rmSync, truncateSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
-import { CLAUDE_AGENT_CLI_VERSION, CLAUDE_AGENT_PACKAGE, CLAUDE_AGENT_SDK_INSTALL, CLAUDE_AGENT_SDK_VERSION, ClaudeAgentNotInstalled, ClaudeAgentPinMismatch, claudeAgentAdapter, claudeAgentExecutable, verifyClaudeAgent, verifyClaudeAgentCli } from '@parcha/agentrun-harness-claude';
+import { CLAUDE_AGENT_CLI_VERSION, CLAUDE_AGENT_PACKAGE, CLAUDE_AGENT_SDK_INSTALL, CLAUDE_AGENT_SDK_VERSION, ClaudeAgentNotInstalled, ClaudeAgentPinMismatch, claudeAgentAdapter, claudeAgentExecutable, verifyClaudeAgent, verifyClaudeAgentCli, verifyClaudeAgentCliAsync } from '@parcha/agentrun-harness-claude';
 import { fakeSdk } from '@parcha/agentrun-harness-claude/testing';
 import { sandboxSpawn } from '../dist/spawn.js';
 
@@ -50,6 +50,68 @@ test("a CLI whose sha256 is not the pinned build's is refused, typed, with the p
   const result = verifyClaudeAgentCli(other.path, { sha256: 'f'.repeat(64), version: '2.1.286' });
   assert.ok(mismatch('cli_sha256', 'f'.repeat(64), other.sha256)(result), String(result));
   assert.equal(result.path, other.path);
+});
+
+/** A `mib` MiB CLI that says `out` when asked its version: its script, then zeros the shell never reaches (a
+ *  sparse file), with its sha256, hashed here a chunk at a time. */
+function large(name, out, mib) {
+  const path = join(ROOT, name);
+  writeFileSync(path, `#!/bin/sh\necho "${out}"\nexit 0\n`);
+  truncateSync(path, mib * 2 ** 20);
+  chmodSync(path, 0o755);
+  const hash = createHash('sha256');
+  const fd = openSync(path, 'r');
+  const chunk = Buffer.alloc(2 ** 20);
+  for (let n; (n = readSync(fd, chunk)) > 0; ) hash.update(chunk.subarray(0, n));
+  closeSync(fd);
+  return { path, sha256: hash.digest('hex') };
+}
+
+test("a CLI is hashed a chunk at a time, never read whole: checking a 128 MiB one leaves the process's peak memory where it was", () => {
+  const big = large('large', '2.1.286 (stand-in)', 128);
+  const before = process.resourceUsage().maxRSS;
+  assert.deepEqual(verifyClaudeAgentCli(big.path, { sha256: big.sha256, version: '2.1.286' }), { path: big.path });
+  const grown = (process.resourceUsage().maxRSS - before) / 1024;
+  assert.ok(grown < 32, `checking a 128 MiB CLI raised the peak by ${Math.round(grown)} MiB`);
+});
+
+test('a CLI is checked once per identity in a process: the same file answers again at once; touched, it is checked again', () => {
+  const asked = join(ROOT, 'asked');
+  const path = join(ROOT, 'counted');
+  writeFileSync(path, `#!/bin/sh\necho x >> "${asked}"\necho "2.1.286 (stand-in)"\n`);
+  chmodSync(path, 0o755);
+  const pins = { sha256: createHash('sha256').update(readFileSync(path)).digest('hex'), version: '2.1.286' };
+  const checks = () => (existsSync(asked) ? readFileSync(asked, 'utf8').split('\n').filter(Boolean).length : 0);
+  assert.deepEqual(verifyClaudeAgentCli(path, pins), { path });
+  assert.deepEqual(verifyClaudeAgentCli(path, pins), { path });
+  assert.equal(checks(), 1, 'the same CLI, asked its version once');
+  const later = new Date(Date.now() + 5_000);
+  utimesSync(path, later, later);
+  assert.deepEqual(verifyClaudeAgentCli(path, pins), { path });
+  assert.equal(checks(), 2, 'touched: checked again');
+  assert.ok(mismatch('cli_version', '2.1.999', '2.1.286')(verifyClaudeAgentCli(path, { ...pins, version: '2.1.999' })), 'other pins: checked against them');
+  assert.ok(mismatch('cli_version', '2.1.999', '2.1.286')(verifyClaudeAgentCli(path, { ...pins, version: '2.1.999' })), 'a refusal is never kept');
+  assert.equal(checks(), 4);
+});
+
+test("the host's check hands its event loop back while the CLI answers --version, and the adapter's own check then answers from it", async () => {
+  // The CLI answers only once this process has run a callback it queued after starting the check: a check that held the
+  // event loop (a synchronous --version) never lets that callback run, and the CLI gives up after 5 s with an unpinned
+  // version. A server ran that check in its event loop, so every request and open store transaction waited on it.
+  const go = join(ROOT, 'go');
+  const asked = join(ROOT, 'asked-free');
+  const path = join(ROOT, 'waits');
+  writeFileSync(path, `#!/bin/sh\necho x >> "${asked}"\ni=0\nwhile [ ! -e "${go}" ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i+1)); done\nif [ -e "${go}" ]; then echo "2.1.286 (stand-in)"; else echo "2.1.0 (held)"; fi\n`);
+  chmodSync(path, 0o755);
+  const pins = { sha256: createHash('sha256').update(readFileSync(path)).digest('hex'), version: '2.1.286' };
+  const checked = verifyClaudeAgentCliAsync(path, pins);
+  // Released only once the binary has started (its first line writes `asked`): a check that ran --version synchronously
+  // would hold this interval back until the binary gave up, so only an awaited --version passes.
+  const release = setInterval(() => { if (existsSync(asked)) { clearInterval(release); writeFileSync(go, ''); } }, 10);
+  assert.deepEqual(await checked, { path });
+  assert.deepEqual(verifyClaudeAgentCli(path, pins), { path }, "the adapter's check: answered from the host's");
+  assert.equal(readFileSync(asked, 'utf8').split('\n').filter(Boolean).length, 1, 'the CLI was asked its version once');
+  assert.ok(mismatch('cli_version', '2.1.999', '2.1.286')(await verifyClaudeAgentCliAsync(path, { ...pins, version: '2.1.999' })), 'a refusal, the same as the synchronous check gives');
 });
 
 test("a CLI that is not the pinned version is refused, typed; the pinned one passes", () => {

@@ -1,4 +1,4 @@
-import type { Meta, StoryObj } from "@storybook/react";
+import type { Meta, StoryObj } from "@storybook/react-vite";
 import { SignIn } from "@/components/SignIn";
 import { recorded } from "@/fixtures";
 import { signInProblem } from "@/lib/auth";
@@ -15,6 +15,8 @@ const refusal = (name: string) => {
 export const SignInCard: Story = { render: () => <SignIn mode="sign_in" onSubmit={async () => null} /> };
 export const WrongPassword: Story = { render: () => <SignIn mode="sign_in" problem={refusal("auth.sign-in-wrong")} onSubmit={async () => null} /> };
 export const FirstVisit: Story = { render: () => <SignIn mode="setup" onSubmit={async () => null} /> };
+export const FirstVisitOnThisMachine: Story = { render: () => <SignIn mode="setup" offer={{ projects: 3, sessions: 41 }} onSubmit={async () => null} /> };
+export const FirstVisitCounting: Story = { render: () => <SignIn mode="setup" offer={{ counting: true }} onSubmit={async () => null} /> };
 export const FirstVisitWithCode: Story = { render: () => <SignIn mode="setup" code="" onSubmit={async () => null} /> };
 export const PasswordTooShort: Story = { render: () => <SignIn mode="setup" problem={refusal("auth.setup-short")} onSubmit={async () => null} /> };
 export const OwnerAlreadySet: Story = { render: () => <SignIn mode="setup" problem={refusal("auth.setup-again")} onSubmit={async () => null} /> };

@@ -34,6 +34,8 @@ export function isPrivateAddress(ip: string): boolean {
   const groups = net.isIPv6(ip) ? v6Groups(ip) : null;
   if (!groups) return true;
   if (groups.slice(0, 5).every((group) => group === 0) && groups[5] === 0xffff) return isPrivateAddress([groups[6]! >> 8, groups[6]! & 0xff, groups[7]! >> 8, groups[7]! & 0xff].join("."));
+  // 6to4 (2002::/16, RFC 3056) carries an IPv4 address in its next 32 bits, which a relay delivers to: judged as that one.
+  if (groups[0] === 0x2002) return isPrivateAddress([groups[1]! >> 8, groups[1]! & 0xff, groups[2]! >> 8, groups[2]! & 0xff].join("."));
   return V6_PRIVATE.some(([base, bits]) => inV6(groups, v6Groups(base)!, bits));
 }
 
@@ -124,23 +126,4 @@ export async function publicFetch(url: string, options: PublicFetchOptions = {})
       await dispatcher.close().catch(() => undefined);
     }
   }
-}
-
-/** An HTML page's title, its text as markdown, and the absolute http(s) URLs it links to (resolved against its
- *  `<base href>` or `url`), each once, in page order. */
-export async function readPage(html: string, url: string): Promise<{ title: string; text: string; links: string[] }> {
-  const [{ parse }, { NodeHtmlMarkdown }] = await Promise.all([import("node-html-parser"), import("node-html-markdown")]);
-  const root = parse(html);
-  let base = url;
-  const baseHref = root.querySelector("base[href]")?.getAttribute("href");
-  if (baseHref) { try { base = new URL(baseHref, url).href; } catch { /* a base that does not parse: the page's own URL stands */ } }
-  const links = new Set<string>();
-  for (const anchor of root.querySelectorAll("a[href]")) {
-    try {
-      const link = new URL(anchor.getAttribute("href")!, base);
-      link.hash = "";
-      if (/^https?:$/.test(link.protocol)) links.add(link.href);
-    } catch { /* an href that does not parse is no link */ }
-  }
-  return { title: root.querySelector("title")?.text.trim() ?? "", text: NodeHtmlMarkdown.translate(html, { keepDataImages: false }).trim(), links: [...links] };
 }

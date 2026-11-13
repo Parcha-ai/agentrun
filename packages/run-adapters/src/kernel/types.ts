@@ -1,11 +1,6 @@
-// Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
-// From github.com/vercel-labs/durable-harness, packages/harness-world/src/types.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, 2026-10-27: only EffectRecord's field list is kept from that file, identical because the copied process files read it; everything else here is written for AgentRun.
-//
-// The kernel the copied harness code runs on: the slice of a durable driver's interface it calls, implemented over
-// AgentRun's own SessionStore (drive.ts). Field names follow the code that calls them, so a copied file runs unchanged
-// apart from its imports. The kernel is written fresh, except two declarations matched to upstream so the copied files
-// compile against them: EffectRecord here and EffectFailure in errors.ts.
+// The kernel the harness code runs on: the slice of a durable driver's interface it calls, implemented over AgentRun's
+// own SessionStore (drive.ts). Written for AgentRun; no longer pinned to vercel-labs/durable-harness's types (its
+// process files, now AgentRun's own, read EffectRecord's fields as that file named them; see NOTICE).
 import type { JsonValue, SessionWriter, ToolImage } from "../types.js";
 
 export type ReplayPolicy = "safe" | "never";
@@ -15,9 +10,18 @@ export type SubmissionKind = "prompt" | "steer" | "followUp" | "withdraw";
 export interface Submission {
   id: string;
   kind: SubmissionKind;
+  /** What the person sent. In the session's state (foldSession), a prompt or follow-up after `carry` withdraws holds
+   *  their words first (drive.ts `carrying`); the record keeps the person's own. */
   text?: string;
   /** For a withdraw: the submission it withdraws. */
   target?: string;
+  /** For a withdraw of a prompt or follow-up: its text stays in the conversation, carried into the next prompt or
+   *  follow-up, whose `text` in the session's state (foldSession) holds it first, pending or placed. A person's stop
+   *  withdraws this way (settleTurn): what they asked is kept, never run on its own. */
+  carry?: true;
+  /** For a `carry` withdraw of a placed prompt or follow-up its CLI never recorded (process/settle.ts `unsent`):
+   *  its text is carried as an unplaced one's is, and it stays placed, so nothing sends it on its own. */
+  unsent?: true;
   receivedAt: Date;
 }
 
@@ -66,9 +70,6 @@ export interface EffectOptions {
   replay: ReplayPolicy;
   input: unknown;
   placed?: string[];
-  /** Where the effect must run and what it needs; recorded with the intent, not acted on by this kernel. */
-  requires?: string;
-  needs?: string[];
 }
 
 export interface EffectIO {
@@ -89,7 +90,6 @@ export interface KernelWorld {
 export interface DriveContext {
   readonly runId: string;
   readonly world: KernelWorld;
-  readonly config: unknown;
   state(): SessionState;
   effect<T>(key: string, options: EffectOptions, fn: (io: EffectIO) => Promise<T>): Promise<T>;
   isMemoized(key: string): boolean;
@@ -116,9 +116,6 @@ export interface HostTool<Input = any> {
   description: string;
   inputSchema: object;
   replay: ReplayPolicy;
-  /** Where the tool must run, and what it needs: passed to the effect's intent. */
-  requires?: string;
-  needs?: string[];
   /** Its answer: the text, or the text with the images it shows. Recorded as the call's outcome, so a call answered
    *  from the record answers with the same images. */
   execute(input: Input, io: HostToolIO): Promise<string | ToolOutput>;

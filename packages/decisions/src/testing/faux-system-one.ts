@@ -104,6 +104,8 @@ export default async function fauxSystemOne(input: string | URL | Request, init:
   if (failOn && stateText.includes(failOn)) return json({ error: { message: "faux unavailable" } }, 503);
   const answers = Object.fromEntries(Object.entries(questions).map(([id, q]) => [id, answer(q, [model, id, q.instructions, stateText], stateText)]));
   const inputTokens = Math.max(120, Math.round(120 * Buffer.byteLength(stateText) / 1024)) + 800 * images;
-  return json({ id: `faux-${createHash("sha256").update(model + stateText).digest("hex").slice(0, 16)}`, model: `${model} (faux)`, answers,
+  // Parallel's Decisions model through OpenRouter cites the web as `annotations` (live, 2026-11-06): url_citation entries.
+  const annotations = model.startsWith("parallel/") ? [{ type: "url_citation", url_citation: { url: "https://registry.example.test/widgets", title: "Example Widgets, Inc.", content: "Incorporated in Delaware." } }] : undefined;
+  return json({ id: `faux-${createHash("sha256").update(model + stateText).digest("hex").slice(0, 16)}`, model: `${model} (faux)`, answers, ...(annotations ? { annotations } : {}),
     usage: { input_tokens: inputTokens, output_tokens: 0, cost: inputTokens * PRICE_PER_TOKEN } });
 }

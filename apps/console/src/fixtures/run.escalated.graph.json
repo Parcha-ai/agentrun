@@ -294,7 +294,6 @@
       "decisions": 1,
       "effects": 0,
       "elapsed_ms": 3860
-    },
-    "stale": false
+    }
   }
 }

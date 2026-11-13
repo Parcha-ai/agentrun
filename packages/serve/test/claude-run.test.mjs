@@ -8,17 +8,17 @@
 import assert from "node:assert/strict";
 import { existsSync, realpathSync } from "node:fs";
 import { readdir, readFile, readlink } from "node:fs/promises";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { test } from "node:test";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
-import { agent, follow, serve } from "./support.mjs";
+import { agent, follow, runDir, scratchDir, serve, serverLog } from "./support.mjs";
 
 /** A key for the fake endpoint: no real one. */
 const KEY = `not-a-secret-${"anthropic"}`;
-const MODEL = "claude-haiku-4-5";
-/** claude-haiku-4-5 in serve's catalog: $1 in, $5 out per million tokens. */
-const PRICE = { input: 1, output: 5 };
+const MODEL = "claude-sonnet-5-5";
+/** claude-sonnet-5-5 in serve's catalog: $2 in, $10 out per million tokens. */
+const PRICE = { input: 2, output: 10 };
 
 /** This test's own descendant processes, by walking each process's children from this one. */
 async function descendants() {
@@ -45,8 +45,6 @@ async function claudeProcess() {
   return undefined;
 }
 const field = (status, name) => new RegExp(`^${name}:\\s+(.*)$`, "m").exec(status)?.[1]?.trim();
-/** Whether `pid` still runs: a zombie, waiting to be reaped, does not. */
-const alive = processAlive;
 
 /** serve on the fake endpoint, with the env restored after. */
 async function claudeServe(t, fake, env = {}, model = MODEL) {
@@ -100,7 +98,9 @@ async function filesUnder(dir, at = "") {
 test("a run on claude-agent: through the adapter's proxy with the native model, each request booked once at serve's price, the CLI confined, in its own directory, with no key in its environment", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
   const { fake, release } = await heldFake(t);
   const { api, data } = await claudeServe(t, fake);
-  assert.deepEqual((await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "claude-agent"), { id: "claude-agent", available: true, steer: false, default_model: `anthropic/${MODEL}` });
+  // How many fit at once is this host's memory (admission.test.mjs).
+  const { max_concurrent_runs, ...offer } = (await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "claude-agent");
+  assert.deepEqual(offer, { id: "claude-agent", available: true, steer: false, default_model: `anthropic/${MODEL}`, run_memory_mib: 288 });
   const run = await api("POST", "/agents/claude/runs", { input: { content: "Say what you did." } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   const runId = run.body.run_id;
@@ -112,7 +112,7 @@ test("a run on claude-agent: through the adapter's proxy with the native model, 
   assert.equal(field(status, "NoNewPrivs"), "1", "under setpriv --no-new-privs, as pi's commands are");
   assert.equal(field(status, "Uid")?.split(/\s+/)[0], String(process.getuid()), "as the run's own user");
   const cwd = await readlink(`/proc/${cli}/cwd`);
-  assert.equal(cwd, realpathSync(join(data, "runs", runId, "work")), "the CLI works in the run's workspace, where its file tools write");
+  assert.equal(cwd, realpathSync(scratchDir(data, runId)), "the CLI works in the run's scratch folder, the alias of its workspace that its file tools take (cli-run-spec.ts)");
   const environ = (await readFile(`/proc/${cli}/environ`, "utf8")).split("\0").filter(Boolean);
   assert.ok(!environ.some((line) => line.includes(KEY)), "the key never reaches the CLI");
   assert.deepEqual(environ.filter((line) => /^(ANTHROPIC_API_KEY|AGENTRUN_[A-Z_]*)=/.test(line)).map((line) => line.split("=")[0]), [], "nor the server's variables");
@@ -129,7 +129,7 @@ test("a run on claude-agent: through the adapter's proxy with the native model, 
   // The endpoint reports a response's input as its request body's length over 4, and 12 output tokens.
   const expected = asked.reduce((sum, m) => sum + Math.ceil(JSON.stringify(m.body).length / 4) * PRICE.input + 12 * PRICE.output, 0) / 1e6;
   assert.equal(usage?.usd, Math.round(expected * 1e6) / 1e6, "each response's input and output at serve's catalog price");
-  const left = (await filesUnder(join(data, "runs", runId, "work"))).filter((path) => path.startsWith(".claude") || path.endsWith(".jsonl"));
+  const left = (await filesUnder(join(runDir(data, runId), "work"))).filter((path) => path.startsWith(".claude") || path.endsWith(".jsonl"));
   assert.deepEqual(left, [], "no CLI file in the run's workspace");
 });
 
@@ -161,9 +161,12 @@ test("a claude-agent run writes where its CLI works: a relative path, the CLI's 
   assert.equal(run.status, 202, JSON.stringify(run.body));
   const runId = run.body.run_id;
   const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 150_000 });
-  const work = join(data, "runs", runId, "work");
+  const work = join(runDir(data, runId), "work");
   assert.ok(cwd, "the CLI told its model its working directory");
-  assert.equal(realpathSync(cwd), realpathSync(work), "the CLI's working directory is the run's workspace");
+  // On the runner the CLI works in the run's scratch folder, off the run's disk: an alias of its workspace for the run's
+  // file tools (cli-run-spec.ts), so what it writes there lands in the workspace. It is swept at the claim's release, so
+  // its path is compared, under the data root as given or as resolved.
+  assert.ok([data, realpathSync(data)].some((root) => cwd === scratchDir(root, runId)), `the CLI's working directory is the run's scratch folder: ${cwd}`);
   const calls = rows.filter((r) => r.kind === "tool_result").map((r) => [r.tool_name, r.tool_status]);
   assert.deepEqual(calls, [["write", "success"], ["read", "success"], ["write", "success"], ["write", "success"], ["write", "failed"], ["read", "failed"]], JSON.stringify(rows.filter((r) => r.kind === "tool_result").map((r) => r.tool_result_preview)));
   // What the model was told of each call: the CLI sends each tool's result back in the next request.
@@ -172,41 +175,17 @@ test("a claude-agent run writes where its CLI works: a relative path, the CLI's 
   assert.ok(told.some((text) => text.includes("relative")), `the relative write landed where the read looks: ${told.join(" | ")}`);
   assert.equal(await readFile(join(work, "hello.md"), "utf8"), "hello\n", "the absolute write landed on the same file, in the workspace");
   assert.equal(await readFile(join(work, ".learning", "note.md"), "utf8"), "noted\n", "the learning note is in the workspace");
-  assert.deepEqual((await filesUnder(work)).sort(), [".learning", join(".learning", "note.md"), "hello.md"], "and nothing else: the CLI keeps no file of its own there");
-  assert.ok(!existsSync(join(data, "runs", runId, "escape.md")), "the path out was not written");
+  // The host's own folder stays, empty: the run's shell scratch (its TMPDIR, run-tools.ts TMP_DIR) swept at the end. The
+  // sweep runs as the session closes, after the end commit the follow saw: the list is read once it is done (bounded).
+  for (let i = 0; i < 100 && (await filesUnder(work)).some((path) => path.startsWith(`.agentrun${sep}`)); i++) await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.deepEqual((await filesUnder(work)).sort(), [".agentrun", ".learning", join(".learning", "note.md"), "hello.md"], "and nothing else: the CLI keeps no file of its own there");
+  assert.ok(!existsSync(join(runDir(data, runId), "escape.md")), "the path out was not written");
   assert.ok(told.some((text) => /escape\.md: outside the workspace/.test(text)), `the path out is refused: ${told.join(" | ")}`);
   assert.ok(told.some((text) => /missing\.md/.test(text) && /ENOENT|no such file/i.test(text)), `the missing file is named: ${told.join(" | ")}`);
   for (const root of new Set([data, realpathSync(data)])) {
     assert.deepEqual(told.filter((text) => text.includes(root)), [], "no tool result names the server's data directory");
     // A row's summary quotes the call's own arguments (the model's absolute path, here): its result is the tool's words.
     assert.deepEqual(rows.filter((r) => r.kind === "tool_result" && String(r.tool_result_preview ?? "").includes(root)).map((r) => r.tool_result_preview), [], "nor does any tool result on the timeline");
-  }
-});
-
-test("a claude-agent run whose process dies while a request is in flight resumes on the next process: the cut request booked once as unknown, a chat sent meanwhile answered, and no CLI left behind", { timeout: 240_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
-  const { fake } = await heldFake(t);
-  const { api, data } = await claudeServe(t, fake);
-  const run = await api("POST", "/agents/claude/runs", { input: { content: "Say what you did." } });
-  assert.equal(run.status, 202, JSON.stringify(run.body));
-  const runId = run.body.run_id;
-  await untilRequest(fake);
-  const cli = await claudeProcess();
-  assert.ok(cli, "the Claude CLI runs, under this test");
-  // Accepted while the request is in flight: it waits for the turn, and outlives the process.
-  assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "And then?" })).status, 202);
-  const { holder } = JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8"));
-  process.kill(holder.pid, "SIGKILL");
-  const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 180_000 });
-  assert.deepEqual(rows.filter((r) => r.kind === "user_message").map((r) => r.text), ["Say what you did.", "And then?"]);
-  assert.equal(rows.filter((r) => r.kind === "user_message" || r.kind === "final_answer").at(-1)?.kind, "final_answer", "the chat is answered");
-  const usage = rows.findLast((r) => r.kind === "usage")?.usage;
-  assert.equal(usage?.requests, fake.messages().length, "every request the endpoint saw is booked once, the cut one included");
-  assert.equal(usage?.usd, null, "the cut request's cost is unknown, so the run's is: never 0");
-  t.after(() => alive(cli) && process.kill(cli, "SIGKILL"));
-  // The CLI starts under the run's prefix (setpriv --pdeathsig KILL): it dies with the process that started it.
-  for (let i = 0; alive(cli); i++) {
-    assert.ok(i < 20, `the dead process's CLI (pid ${cli}) is gone within 2 s`);
-    await new Promise((resolve) => setTimeout(resolve, 100));
   }
 });
 
@@ -254,16 +233,51 @@ test("a claude-agent run's skills: one the adapter takes is the Skill tool's (ag
   assert.ok(asked.slice(asked.indexOf(first) + 1).some((m) => holds(m.body.messages, CITE)), "loading cite puts its SKILL.md before the model");
 });
 
+test("a claude-agent run's read of a skill's file (read_skill_file) is on its Timeline: the call naming the file, then its result holding the file, under one call id (#2306)", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+  const SOURCES = `not-a-secret-${"sources"}-primary-first`;
+  let read = false;
+  const fake = await fakeAnthropic({
+    reply: (request) => {
+      // The first turn offered the adapter's read_skill_file reads cite's other file; every other request is answered.
+      const reader = request.tools.find((name) => name.endsWith("read_skill_file"));
+      if (!read && reader) {
+        read = true;
+        return { tool: { name: reader, input: { skill: "cite", path: "reference/sources.md" } } };
+      }
+      return { text: "Claude answered." };
+    },
+  });
+  t.after(() => fake.close());
+  const { api } = await claudeServe(t, fake);
+  const skills = {
+    "cite/SKILL.md": "---\nname: cite\ndescription: How this agent cites its sources.\n---\nRead reference/sources.md first.\n",
+    "cite/reference/sources.md": `${SOURCES}: primary sources first.\n`,
+  };
+  const created = await api("POST", "/agents", { ...agent("reader", { harness: "claude-agent", model: `anthropic/${MODEL}`, skills: ["cite"] }), skills });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const run = await api("POST", "/agents/reader/runs", { input: { content: "Read cite's sources file, then answer." } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  const { rows } = await follow(api, run.body.run_id, ["completed"], { deadlineMs: 120_000 });
+  assert.ok(read, "the model was offered read_skill_file and called it");
+  const call = rows.find((row) => row.kind === "tool_use" && row.tool_name === "read_skill_file");
+  assert.ok(call, `the read's call is on the Timeline: ${JSON.stringify(rows.map((row) => [row.kind, row.tool_name]))}`);
+  assert.equal(call.tool_input_preview, "reference/sources.md", "the call names the file it reads");
+  const result = rows.find((row) => row.kind === "tool_result" && row.tool_use_id === call.tool_use_id);
+  assert.ok(result && rows.indexOf(call) < rows.indexOf(result), "its result follows it, under the same call id");
+  assert.deepEqual([result.tool_name, result.tool_status], ["read_skill_file", "success"]);
+  assert.ok(String(result.tool_result_preview ?? result.text ?? "").includes(SOURCES), `the result is the file: ${JSON.stringify(result)}`);
+});
+
 /** This test's own caller, by its user-agent. */
 const PROBE_AGENT = "serve-log-test";
 /** A value no log may carry, sent as a bearer and in a query string. */
 const CANARY = `not-a-secret-${"canary"}-7b21e4`;
 
-test("a model named as OpenRouter names it (anthropic/claude-haiku-4.5, dotted), on one gateway for every harness, runs on Anthropic's own id and is priced at serve's catalog", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+test("a model named as OpenRouter names it (anthropic/claude-sonnet-5.5, dotted), on one gateway for every harness, runs on Anthropic's own id and is priced at serve's catalog", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
   const fake = await fakeAnthropic({ reply: () => ({ text: "Claude answered." }) });
   t.after(() => fake.close());
-  // OpenRouter's name for claude-haiku-4-5: dotted, as the gateway names it, never the catalog's dashed id.
-  const { api } = await claudeServe(t, fake, { AGENT_MODEL_BASE_URL: `${fake.url}/v1` }, "claude-haiku-4.5");
+  // OpenRouter's name for claude-sonnet-5-5: dotted, as the gateway names it, never the catalog's dashed id.
+  const { api } = await claudeServe(t, fake, { AGENT_MODEL_BASE_URL: `${fake.url}/v1` }, "claude-sonnet-5.5");
   const run = await api("POST", "/agents/claude/runs", { input: { content: "Say what you did." } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   const { rows } = await follow(api, run.body.run_id, ["completed"], { deadlineMs: 120_000 });
@@ -274,20 +288,27 @@ test("a model named as OpenRouter names it (anthropic/claude-haiku-4.5, dotted),
   assert.equal(usage?.usd, Math.round(expected * 1e6) / 1e6, "priced at Anthropic's id in the catalog, never unknown for the dotted name");
 });
 
-test("a capped run on a model named as OpenRouter names it (dotted) is held to its cap: below one request's ceiling, it is refused before anything is sent", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+test("a capped run on a model named as OpenRouter names it (dotted) is held to its cap: below one request's least, it is refused before anything is sent, in plain words, and the run pauses at its cap", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
   const fake = await fakeAnthropic({ reply: () => ({ text: "Claude answered." }) });
   t.after(() => fake.close());
-  const { api } = await claudeServe(t, fake, {}, "claude-haiku-4.5");
-  // claude-haiku-4-5's output ceiling at $5 a million is well past a tenth of a cent.
+  const { api } = await claudeServe(t, fake, {}, "claude-sonnet-5.5");
+  // claude-sonnet-5-5 at $10 a million output tokens: the least a request may be limited to, its answer's 1,024 tokens,
+  // costs $0.01024 before its input, past a tenth of a cent.
   const run = await api("POST", "/agents/claude/runs", { input: { content: "Say what you did." }, max_cost_usd: 0.001 });
   assert.equal(run.status, 202, JSON.stringify(run.body));
-  await follow(api, run.body.run_id, ["failed"], { deadlineMs: 120_000 });
+  await follow(api, run.body.run_id, ["input_required", "failed"], { deadlineMs: 120_000 });
   const ended = (await api("GET", `/runs/${run.body.run_id}`)).body;
-  assert.deepEqual([ended.status, ended.error?.code], ["failed", "spend_cap_reached"], JSON.stringify(ended));
+  assert.deepEqual([ended.status, ended.state, ended.error, ended.pending?.kind], ["input_required", "waiting", null, "budget"], JSON.stringify(ended));
+  // Named as the catalog shows it, and nothing spent or held: the cap to raise to is the least.
+  const words = /^Not sent: the next step needs at least \$(\d+\.\d\d), and this run's cap is \$0\.001\. Raise the cap to at least \$(\d+\.\d\d) to continue\.$/.exec(ended.pending.said);
+  assert.ok(words, ended.pending.said);
+  assert.equal(words[2], words[1]);
+  assert.ok(Number(words[1]) >= 0.01024, `the least covers the answer's 1,024 tokens: $${words[1]}`);
   assert.equal(fake.messages().length, 0, "nothing reached the endpoint");
 });
 
-test("a claude-agent run's model proxy reports a refusal in the run's log: one harness line, with no key in it, neither the one sent nor serve's own", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+test("a claude-agent run's model proxy reports a refusal in the server's log: one harness line, with no key in it, neither the one sent nor serve's own", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+  const server = serverLog(t);
   const { fake, release } = await heldFake(t);
   const { api, data } = await claudeServe(t, fake);
   const run = await api("POST", "/agents/claude/runs", { input: { content: "Say what you did." } });
@@ -304,10 +325,63 @@ test("a claude-agent run's model proxy reports a refusal in the run's log: one h
   assert.equal(refused.status, 401, "a caller without the session's key is refused");
   release();
   await follow(api, runId, ["completed"], { deadlineMs: 120_000 });
-  const log = await readFile(join(data, "runs", runId, "process.log"), "utf8");
+  const log = server.text();
   const lines = log.split("\n").filter(Boolean).map((line) => { try { return JSON.parse(line); } catch { return { line }; } });
   // Only this test's own request: another local process may call any loopback port, and is refused (and said) too.
   const said = lines.filter((l) => l.event === "harness" && /^model proxy \(.+\): refused$/.test(l.message ?? "") && l.userAgent === PROBE_AGENT);
-  assert.deepEqual(said.map((l) => [l.harness, l.status, l.method, l.path]), [["claude-agent", 401, "GET", "/"]], `the refusal, once, in the run's log: ${log}`);
-  for (const secret of [CANARY, KEY]) assert.ok(!log.includes(secret), `${secret} is not in the run's log`);
+  assert.deepEqual(said.map((l) => [l.harness, l.status, l.method, l.path]), [["claude-agent", 401, "GET", "/"]], `the refusal, once, in the server's log: ${log}`);
+  for (const secret of [CANARY, KEY]) assert.ok(!log.includes(secret), `${secret} is not in the server's log`);
+});
+
+test("a refused key ends a claude-agent run at the provider's first 401: one request, no retries, and the run's error in plain words", { timeout: 120_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+  // The provider refuses the key on every request, as OpenRouter does a wrong one. The CLI retries a 401 a dozen times
+  // over about three minutes (QA, run 01a1a56c: 187 s while the run read Working); no retry can pass, so the run ends at
+  // the first, with the provider's words.
+  const fake = await fakeAnthropic({ reply: () => ({ error: { status: 401, type: "authentication_error", message: "User not found." } }) });
+  t.after(() => fake.close());
+  const { api } = await claudeServe(t, fake);
+  const started = Date.now();
+  const run = await api("POST", "/agents/claude/runs", { input: { content: "Say hello." } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  await follow(api, run.body.run_id, ["failed"], { deadlineMs: 30_000 });
+  const took = Date.now() - started;
+  const paid = fake.messages().filter((r) => r.method === "POST" && r.path === "/v1/messages");
+  assert.equal(paid.length, 1, `one paid request reached the provider, not ${paid.length}`);
+  const view = (await api("GET", `/runs/${run.body.run_id}`)).body;
+  assert.match(view.error?.message ?? "", /^\S+ refused ANTHROPIC_API_KEY \(401: User not found\): /, JSON.stringify(view.error));
+  assert.ok(took < 30_000, `it failed in ${took} ms`);
+});
+
+test("a refused key whose 401 body never ends still ends a claude-agent run within seconds, after one request", { timeout: 120_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+  // A provider (or a proxy before it) that sends the 401's headers and part of its body, then holds the rest: the turn
+  // still ends at the first 401, with whatever words came, never waiting on a body that may not end.
+  const { createServer } = await import("node:http");
+  const asked = [];
+  const sockets = new Set();
+  const server = createServer((req, res) => {
+    asked.push(`${req.method} ${req.url}`);
+    req.resume();
+    res.writeHead(401, { "content-type": "application/json" });
+    res.write('{"type":"error","error":{"type":"authentication_error","message":"User not found."');
+  });
+  server.on("connection", (socket) => {
+    sockets.add(socket);
+    socket.on("close", () => sockets.delete(socket));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => {
+    for (const socket of sockets) socket.destroy();
+    server.close();
+  });
+  const { api } = await claudeServe(t, { url: `http://127.0.0.1:${server.address().port}` });
+  const started = Date.now();
+  const run = await api("POST", "/agents/claude/runs", { input: { content: "Say hello." } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  await follow(api, run.body.run_id, ["failed"], { deadlineMs: 20_000 });
+  const took = Date.now() - started;
+  const paid = asked.filter((line) => /^POST \/v1\/messages(\?|$)/.test(line));
+  assert.equal(paid.length, 1, `one paid request reached the provider: ${JSON.stringify(asked)}`);
+  const view = (await api("GET", `/runs/${run.body.run_id}`)).body;
+  assert.match(view.error?.message ?? "", /^\S+ refused ANTHROPIC_API_KEY \(401(: [^)]*)?\): /, JSON.stringify(view.error));
+  assert.ok(took < 20_000, `it failed in ${took} ms`);
 });

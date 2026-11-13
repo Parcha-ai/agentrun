@@ -66,8 +66,9 @@ const slowClosing = (driver, ms = 500) => async (...args) => {
   return { ...d, close: async () => { await new Promise((resolve) => setTimeout(resolve, ms)); await d.close(); } };
 };
 
-/** The crash-and-resume example's shutdown: release, close the extension, close the Harness, and no drain. The release
- *  task must start while the driver is still closing, or the Harness closes before it runs and the Chrome stays up. */
+/** The crash-and-resume example's shutdown: release, close the extension, close the Harness, and no drain. Closing the
+ *  Harness cancels a release task that has not released yet, so the release waits until the task has, however fast the
+ *  driver closed. */
 async function releaseWithoutDrain(t, { executablePath, args, driver }) {
   const profiles = await scratch(t, "release-cdp-");
   const dir = scratchSync(t, "release-cdp-store-");
@@ -88,6 +89,38 @@ async function releaseWithoutDrain(t, { executablePath, args, driver }) {
 
 test("a host that releases, closes the extension and closes the Harness with no drain leaves no Chrome (fake Chrome, a driver as slow to close as Stagehand)", async (t) => {
   await releaseWithoutDrain(t, { executablePath: FAKE, args: [], driver: slowClosing(stubDriver) });
+});
+
+test("a host that releases, closes the extension and closes the Harness with no drain leaves no Chrome (fake Chrome, a driver that closes at once)", async (t) => {
+  // Stagehand 4.4's disconnect can take milliseconds: the release must not count on the driver's close to give its task time.
+  await releaseWithoutDrain(t, { executablePath: FAKE, args: [], driver: stubDriver });
+});
+
+test("a drain covers only the releases before it: one released after it is waited for at close, so its Chrome is gone too (fake Chrome, a driver that closes at once)", async (t) => {
+  const profiles = await scratch(t, "release-cdp-");
+  const dir = scratchSync(t, "release-cdp-store-");
+  const provider = cdpProvider({ chrome: { executablePath: FAKE, profileRoot: profiles, args: [], confineExtension: false } });
+  const { harness, browser } = await open(await openNodeJsonlStorage(dir, ctx), { provider, driver: stubDriver, responses: browsesOnce() });
+  const browse = async (conversation) => {
+    await (await conversation.submit({ type: "input", content: "Look at the page." }, ctx)).wait(ctx);
+    const pid = pidOf((await harness.snapshot(browser.docs.Sessions, conversation.id, ctx)).sessions[0].resourceId);
+    t.after(() => { if (isRunning(pid)) process.kill(-pid, "SIGKILL"); }, { timeout: 30_000 });
+    return pid;
+  };
+  // The first conversation is released and drained: the host has bounded that release's wait itself.
+  const first = await harness.root(ctx, { agent: AGENT, init: init(browser) });
+  const firstPid = await browse(first);
+  await browser.release(first, "close", ctx);
+  await browser.drain(harness, ctx);
+  assert.equal(isRunning(firstPid), false, "the drained release stopped the first Chrome");
+  // The same Harness goes on: a second conversation browses, is released, and the host closes with no drain after it.
+  const second = await harness.createConversation({ ownership: { kind: "ownerless" }, agent: AGENT, init: init(browser) }, ctx);
+  const secondPid = await browse(second);
+  await browser.release(second, "close", ctx);
+  await browser.close();
+  await harness.close(ctx);
+  assert.equal(isRunning(secondPid), false, "the Chrome released after the drain is gone once the Harness has closed");
+  assert.equal(await until(() => processesNaming(profiles).length === 0, 2_000), true, "no process of either Chrome is left");
 });
 
 test("a host that releases, closes the extension and closes the Harness with no drain leaves no real Chrome (Stagehand)", { skip: NO_CHROME, timeout: 120_000 }, async (t) => {

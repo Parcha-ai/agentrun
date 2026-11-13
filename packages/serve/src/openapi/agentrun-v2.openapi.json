@@ -2472,6 +2472,7 @@
           },
           "browser": {
             "type": "string",
+            "description": "The browser a run's `browser` tool drives here: the vendor it resolves to under the server's tool settings (`browserbase` or `kernel`) when `tools[]` lists `browser` as available, else `none`.",
             "enum": [
               "browserbase",
               "chrome",
@@ -3154,6 +3155,7 @@
         }
       },
       "Effort": {
+        "description": "How hard a run works. It sets the model's thinking level, and adds a short note on how to work right after the agent's instructions, on every harness: low answers directly, medium plans briefly and checks once, high plans each part, fills the gaps and reviews. A run started with none thinks at its agent revision's own thinking level, else the host's default, and gets no note.",
         "type": "string",
         "enum": [
           "low",

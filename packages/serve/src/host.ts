@@ -1,16 +1,21 @@
-// What one host can hold, and whether it can work now. The cap on concurrent runs comes from its memory: each run is a
-// process of its own, about 67 MiB of private memory with the faux model (measured), and the server itself about 100 MiB
-// resident. Health reads the agent store and the free disk under the data directory.
+// What one host can hold, and whether it can work now. Runs are admitted by memory: each run is a process of its own,
+// and each reserves what a run of its harness takes (its entry's runMib, harness-table.ts) out of the memory the host has less the
+// server's own (SERVER_MIB). Health reads the server's store and the free disk under the data directory. A start here opens
+// a browser only where there is one to open.
 import { statfs } from "node:fs/promises";
 import { totalmem } from "node:os";
-import { openStoreReader } from "@parcha/pi-durable-agent";
 import { REQUEST_BUSY_MS, whenFree } from "./agents.js";
+import type { Store } from "./store/index.js";
+import { DEFAULT_HARNESS, HARNESSES } from "./harness.js";
+import { builtinHarness } from "./harness-table.js";
 
 const MiB = 2 ** 20;
-/** Memory the server keeps for itself, before any run. */
+/** Memory the server keeps for itself, before any run, in MiB. Measured with the runs' (harness-table.ts): the server's anon
+ *  3 s after its start, 32 starts at limits of 512M to 2048M, was 58 to 81 MB, with no peak at the start over that;
+ *  reserved for the high end, 81, plus 47 (+58%), since what it holds grows with the agents and runs it keeps. That is
+ *  with the pinned binaries' sha256 checked a chunk at a time: a start that reads the codex binary (294 MB) and the
+ *  claude-agent CLI (230 MB) whole sat at 341 to 348 MB on a host of 1 GB or less. */
 export const SERVER_MIB = 128;
-/** Memory a run's process takes: the measured 67 MiB, rounded up. */
-export const RUN_MIB = 72;
 /** Free disk under the data directory below which health fails, unless the server says otherwise. */
 export const MIN_FREE_MIB = 64;
 
@@ -21,10 +26,38 @@ export function hostMemory(): number {
   return limit > 0 && limit < total ? limit : total;
 }
 
-/** The default cap on concurrent runs: (memory − the server's 128 MiB) / 72 MiB a run, never under 1. */
-export const defaultMaxRuns = (memory: number): number => Math.max(1, Math.floor((memory / MiB - SERVER_MIB) / RUN_MIB));
+/** The memory runs may hold on a host of `memory` bytes, in MiB: all of it less the server's own. */
+export const runsMemoryMib = (memory: number): number => Math.floor(memory / MiB) - SERVER_MIB;
 
-/** The cap: `given`, else `AGENTRUN_MAX_RUNS`, else the default for this host's memory. */
+/** What a run of `harness` reserves, in MiB. A harness outside the table (no saved revision names one) reserves the most. */
+export const runMibOf = (harness: string | undefined): number => builtinHarness(harness)?.runMib ?? Math.max(...HARNESSES.map((id) => builtinHarness(id)!.runMib));
+
+/** How many runs of `harness` alone fit on a host of `memory` bytes. One whose entry says one always fits (pi, the
+ *  default) always has one place, as before runs were admitted by memory: a server too small for even that still runs
+ *  one at a time. */
+export function runsThatFit(harness: string, memory: number): number {
+  const fit = Math.max(0, Math.floor(runsMemoryMib(memory) / runMibOf(harness)));
+  return builtinHarness(harness)?.oneAlwaysFits ? Math.max(1, fit) : fit;
+}
+
+/** The default cap on how many runs at once: as many pi runs, the smallest, as fit. */
+export const defaultMaxRuns = (memory: number): number => runsThatFit(DEFAULT_HARNESS, memory);
+
+const sizeOf = (mib: number): string => `${Math.round(mib)} MB`;
+/** "a pi run", "an opencode run". */
+const aRun = (harness: string): string => `${/^[aeiou]/i.test(harness) ? "an" : "a"} ${harness} run`;
+/** "pi", "pi and codex", "pi, claude-agent and codex". */
+const listed = (names: string[]): string => (names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names.at(-1)}` : names.join(""));
+
+/** Why no run of `harness` can ever start on a host of `memory` bytes, in words; undefined when one fits. */
+export function neverFits(harness: string, memory: number): string | undefined {
+  if (runsThatFit(harness, memory) > 0) return undefined;
+  const fit = HARNESSES.filter((id) => runsThatFit(id, memory) > 0);
+  return `This server has ${sizeOf(memory / MiB)} of memory and keeps ${sizeOf(SERVER_MIB)} for itself; ${aRun(harness)} needs about ${sizeOf(runMibOf(harness))} more, so it can't start here. ${listed(fit)} runs fit.`;
+}
+
+/** The cap on how many runs at once: `given`, else `AGENTRUN_MAX_RUNS`, else the default for this host's memory. A runner
+ *  holds at most this many; a run past it waits queued, never refused for a place. */
 export function maxRunsOf(env: NodeJS.ProcessEnv, given?: number): number {
   const value = given ?? (env.AGENTRUN_MAX_RUNS ? Number(env.AGENTRUN_MAX_RUNS) : defaultMaxRuns(hostMemory()));
   if (!Number.isSafeInteger(value) || value < 1) throw new Error(`max runs is a positive integer (--max-runs, AGENTRUN_MAX_RUNS), not ${given ?? env.AGENTRUN_MAX_RUNS}`);
@@ -33,23 +66,32 @@ export function maxRunsOf(env: NodeJS.ProcessEnv, given?: number): number {
 
 export type Health = { status: "ok" | "failing"; checks: { store: "ok" | "does_not_open"; disk: "ok" | "below_floor" | "cannot_check" } };
 
-/** Whether the store in `data` opens for a read, and its disk has `minFreeBytes` free; a disk it cannot measure fails.
- *  Says no path and no number. `fsStat` is node's statfs unless a test gives another. */
-export async function healthOf(data: string, minFreeBytes: number, fsStat: typeof statfs = statfs): Promise<Health> {
-  let store: Health["checks"]["store"] = "ok";
+/** How long health waits for the store's one read before it reads as failing (ms). */
+export const HEALTH_STORE_MS = 2_000;
+
+/** Whether the server's store (`store`, the one it opened: SQLite in the data directory, or Postgres when
+ *  AGENTRUN_STORE_URL names one) answers one read within HEALTH_STORE_MS, and the data directory's disk has
+ *  `minFreeBytes` free; a disk it cannot measure fails. Says no path and no number. `fsStat` is node's statfs unless a
+ *  test gives another. */
+export async function healthOf(store: Pick<Store, "agents">, data: string, minFreeBytes: number, fsStat: typeof statfs = statfs): Promise<Health> {
+  let answered: Health["checks"]["store"] = "ok";
+  let timer: NodeJS.Timeout | undefined;
   try {
-    await whenFree(() => {
-      const reader = openStoreReader(data, { busyTimeoutMs: 0 });
-      try {
-        reader.listAgents();
-      } finally {
-        reader.close();
-      }
-    }, REQUEST_BUSY_MS);
+    // One indexed read of an id no agent has: the store's own connection, never a second open of a file.
+    const read = whenFree(() => store.agents.get("health-check"), REQUEST_BUSY_MS);
+    read.catch(() => undefined);
+    await Promise.race([read, new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error("the store did not answer")), HEALTH_STORE_MS);
+    })]);
   } catch {
-    store = "does_not_open";
+    answered = "does_not_open";
+  } finally {
+    clearTimeout(timer);
   }
   const free = await fsStat(data).then((fs) => fs.bavail * fs.bsize, () => undefined);
   const disk = free === undefined ? "cannot_check" : free >= minFreeBytes ? "ok" : "below_floor";
-  return { status: store === "ok" && disk === "ok" ? "ok" : "failing", checks: { store, disk } };
+  return { status: answered === "ok" && disk === "ok" ? "ok" : "failing", checks: { store: answered, disk } };
 }
+
+/** Whether `--open` opens a browser here: not in CI, and on Linux or FreeBSD only with a display. */
+export const canOpen = (env: NodeJS.ProcessEnv, platform: NodeJS.Platform = process.platform): boolean => !env.CI && (!["linux", "freebsd"].includes(platform) || Boolean(env.DISPLAY || env.WAYLAND_DISPLAY));

@@ -31,13 +31,15 @@ type SubmissionData = Omit<Submission, "receivedAt"> & { receivedAt: string };
 export function foldSession(runId: string, records: readonly SessionRecord[]): SessionState {
   const state: SessionState = { runId, status: "running", submissions: [], placed: new Set(), withdrawn: new Set(), effects: new Map(), effectOrder: [] };
   const byStep = new Map<string, EffectRecord>();
+  const carry = carrying();
   for (const record of records) {
     if (record.kind === KERNEL_RECORDS.submission) {
       const data = record.data as unknown as SubmissionData;
       if (state.submissions.some((s) => s.id === data.id)) continue;
-      state.submissions.push({ ...data, receivedAt: new Date(data.receivedAt) });
       // A withdraw lands only while its target is not placed yet.
       if (data.kind === "withdraw" && data.target && !state.placed.has(data.target)) state.withdrawn.add(data.target);
+      const text = carry(state, data);
+      state.submissions.push({ ...data, ...(text === undefined ? {} : { text }), receivedAt: new Date(data.receivedAt) });
     } else if (record.kind === KERNEL_RECORDS.start) {
       const data = record.data as unknown as StartData;
       const existing = state.effects.get(data.key);
@@ -67,6 +69,43 @@ export function foldSession(runId: string, records: readonly SessionRecord[]): S
   return state;
 }
 
+/** What the next prompt or follow-up says of the ones a stop withdrew before any work on them began (`carry`). */
+export const stoppedLine = (count: number): string =>
+  count === 1 ? "(The message above was stopped before any work on it began.)" : "(The messages above were stopped before any work on them began.)";
+
+/** The carry, as the fold meets each submission: a prompt or follow-up after withdraws with `carry` of prompts and
+ *  follow-ups (those since the one before it, in order, with whatever each of them carried, so several stops before a
+ *  message all reach it) holds their texts first, then `stoppedLine`, then its own. A steer neither carries nor is
+ *  carried. It is the submission's text in the session's state, so every reader of it, pending or placed (the
+ *  harness's send, and a crash's recovery of a placed message its CLI never recorded), has the stopped words. */
+function carrying(): (state: SessionState, data: SubmissionData) => string | undefined {
+  // Each prompt's and follow-up's own words, and the words it carried.
+  const own = new Map<string, { kind: Submission["kind"]; text?: string }>();
+  const carried = new Map<string, string[]>();
+  let waiting: string[] = [];
+  return (state, data) => {
+    if (data.kind === "withdraw") {
+      // A withdraw that landed (its target unplaced), or one of a placed target its CLI was never sent (`unsent`).
+      const landed = data.target !== undefined && (state.withdrawn.has(data.target) || (data.unsent === true && state.placed.has(data.target)));
+      const target = data.carry && landed ? own.get(data.target!) : undefined;
+      if (target && (target.kind === "prompt" || target.kind === "followUp")) {
+        waiting.push(...(carried.get(data.target!) ?? []), ...(target.text ? [target.text] : []));
+        carried.delete(data.target!);
+      }
+      return data.text;
+    }
+    own.set(data.id, { kind: data.kind, text: data.text });
+    if (data.kind === "steer" || !waiting.length) return data.text;
+    const before = waiting;
+    waiting = [];
+    carried.set(data.id, before);
+    return `${before.join("\n\n")}\n\n${stoppedLine(before.length)}\n\n${data.text ?? ""}`;
+  };
+}
+
+/** The submissions the harness has yet to place, oldest first, each with its text as the fold made it: a prompt or
+ *  follow-up after a stop's withdraw carries the stopped text first (`carrying`), so the person's earlier words stay in
+ *  the conversation, and the stopped turn never runs on its own. */
 export function pendingSubmissions(state: SessionState): Submission[] {
   return state.submissions.filter((s) => s.kind !== "withdraw" && !state.placed.has(s.id) && !state.withdrawn.has(s.id));
 }
@@ -79,7 +118,6 @@ export interface OpenDriveOptions {
   /** The session's writer (`SessionStore.open`): the drive writes only through it, and its key is the session's. */
   writer: SessionWriter;
   signal: AbortSignal;
-  config?: unknown;
   attempt?: number;
   deadline?: number;
   live?: (event: unknown) => void;
@@ -133,8 +171,7 @@ export async function openDrive(options: OpenDriveOptions): Promise<Drive> {
   const drive: Drive = {
     runId: key,
     // The copied code's own writes (a journal's blobs) go through the same queue as the drive's.
-    world: { store: { key: writer.key, read: () => writer.read(), append: (written) => append([...written]) } },
-    config: options.config,
+    world: { store: { key: writer.key, read: () => writer.read(), append: (written) => append([...written]), sync: () => queue.then(() => writer.sync()) } },
     attempt: options.attempt ?? 0,
     ...(options.deadline === undefined ? {} : { deadline: options.deadline }),
     signal,
@@ -168,6 +205,9 @@ export async function openDrive(options: OpenDriveOptions): Promise<Drive> {
       if (known?.status === "completed") return known.output as T;
       if (known?.status === "failed") throw new EffectFailure(known.error ?? { message: "failed" });
       if (known?.status === "running" || inflight.has(k)) throw new Fatal(`agentrun-kernel: effect ${k} is already running in this drive`);
+      // A writer with no sync cannot make the start of an effect that may not run twice durable: refused before its
+      // start is written, so no intent is left without an outcome.
+      if (effectOptions.replay !== "safe" && typeof writer.sync !== "function") throw new Fatal(`agentrun-kernel: effect ${k} may not run twice, and the session's writer has no sync to make its start durable`);
       if (signal.aborted) throw signal.reason;
       const placing = effectOptions.placed ?? [];
       // A withdraw already in the log beat this placement: refuse before writing anything, so no intent is left for
@@ -181,6 +221,9 @@ export async function openDrive(options: OpenDriveOptions): Promise<Drive> {
         // A withdraw appended while this intent was being written beat the placement: what the caller would send next
         // is not what the log placed, so it must rebuild instead of running.
         if (placing.length && state.effects.get(k)?.placed.length !== placing.length) throw new Restart(`agentrun-kernel: effect ${k} placed a withdrawn submission; the drive must be rebuilt`);
+        // An effect that may not run twice runs only once its start is durable: after a lost box the next drive finds
+        // the start with no end and reports it interrupted, rather than finding nothing and running it again.
+        if (effectOptions.replay !== "safe") await writer.sync();
         const partial: unknown[] = [];
         let output: T;
         try {

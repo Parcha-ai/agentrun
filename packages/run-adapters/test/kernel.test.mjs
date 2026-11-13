@@ -235,7 +235,7 @@ test('K10, held: the second call is issued while the first intent write is held 
   let entered;
   const holding = new Promise((resolve) => { entered = resolve; });
   // The session's writer, with its next append held open until the test releases it.
-  const writer = { key: inner.key, read: () => inner.read(), append: async (records) => { if (holdNext) { holdNext = false; entered(); await gate; } return inner.append(records); } };
+  const writer = { key: inner.key, sync: () => inner.sync(), read: () => inner.read(), append: async (records) => { if (holdNext) { holdNext = false; entered(); await gate; } return inner.append(records); } };
   const drive = await openDrive({ writer, signal: new AbortController().signal });
   let ran = 0;
   const fn = async () => { ran += 1; return 'paid'; };
@@ -317,7 +317,7 @@ test('a withdraw written while the placement is being decided: the placement pla
   let holdNext = false;
   let release;
   const gate = new Promise((resolve) => { release = resolve; });
-  const writer = { key: inner.key, read: () => inner.read(), append: (records) => (chain = chain.then(async () => { if (holdNext) { holdNext = false; await gate; } await inner.append(records); })) };
+  const writer = { key: inner.key, sync: () => inner.sync(), read: () => inner.read(), append: (records) => (chain = chain.then(async () => { if (holdNext) { holdNext = false; await gate; } await inner.append(records); })) };
   const drive = await openDrive({ writer, signal: new AbortController().signal });
   for (const id of ['a', 'b']) await drive.submit({ id, kind: 'prompt', text: id });
   const stale = drive.pending();
@@ -340,7 +340,7 @@ test("two appends at once, the first resolved after the second: the live state i
   let calls = 0;
   let releaseFirst;
   const firstHeld = new Promise((resolve) => { releaseFirst = resolve; });
-  const writer = { key: inner.key, read: () => inner.read(), append: async (records) => {
+  const writer = { key: inner.key, sync: () => inner.sync(), read: () => inner.read(), append: async (records) => {
     const n = (calls += 1);
     const durable = inner.append(records);
     await durable;
@@ -365,7 +365,7 @@ test("two appends at once, the first resolved after the second: the live state i
 test('an append that fails does not stall or fail the ones after it: a later submit lands and is folded', async () => {
   const inner = await memorySessionStore().open('run-1');
   let failNext = false;
-  const writer = { key: inner.key, read: () => inner.read(), append: async (records) => { if (failNext) { failNext = false; throw new Error('the disk is full'); } await inner.append(records); } };
+  const writer = { key: inner.key, sync: () => inner.sync(), read: () => inner.read(), append: async (records) => { if (failNext) { failNext = false; throw new Error('the disk is full'); } await inner.append(records); } };
   const drive = await openDrive({ writer, signal: new AbortController().signal });
   failNext = true;
   await assert.rejects(drive.submit({ id: 'x', kind: 'prompt', text: 'lost' }), /the disk is full/, 'the caller gets its own error');
@@ -380,7 +380,7 @@ test("a blob write goes through the drive's queue too: it waits behind an append
   const gate = new Promise((resolve) => { release = resolve; });
   let holdNext = false;
   const calls = [];
-  const writer = { key: inner.key, read: () => inner.read(), append: async (records) => { calls.push(records[0].kind); if (holdNext) { holdNext = false; await gate; } await inner.append(records); } };
+  const writer = { key: inner.key, sync: () => inner.sync(), read: () => inner.read(), append: async (records) => { calls.push(records[0].kind); if (holdNext) { holdNext = false; await gate; } await inner.append(records); } };
   const drive = await openDrive({ writer, signal: new AbortController().signal });
   holdNext = true;
   const submitting = drive.submit({ id: 'p', kind: 'prompt', text: 'hi' });
@@ -401,7 +401,7 @@ test('a built-in call begun twice before its intent is durable runs once: the se
   let release;
   const gate = new Promise((resolve) => { release = resolve; });
   let holdNext = false;
-  const writer = { key: inner.key, read: () => inner.read(), append: async (records) => { if (holdNext) { holdNext = false; await gate; } await inner.append(records); } };
+  const writer = { key: inner.key, sync: () => inner.sync(), read: () => inner.read(), append: async (records) => { if (holdNext) { holdNext = false; await gate; } await inner.append(records); } };
   const drive = await openDrive({ writer, signal: new AbortController().signal });
   const calls = new BuiltinCalls(drive, { live: false });
   const call = { callId: 'c1', name: 'Bash', input: { command: 'pay' }, replay: 'never' };
@@ -426,7 +426,7 @@ test('refresh() reads nothing: an effect that completes while a read of the sess
   let release;
   const gate = new Promise((resolve) => { release = resolve; });
   let holdRead = false;
-  const writer = { key: inner.key, read: async () => { reads += 1; const records = await inner.read(); if (holdRead) { holdRead = false; await gate; } return records; }, append: (records) => inner.append(records) };
+  const writer = { key: inner.key, sync: () => inner.sync(), read: async () => { reads += 1; const records = await inner.read(); if (holdRead) { holdRead = false; await gate; } return records; }, append: (records) => inner.append(records) };
   const drive = await openDrive({ writer, signal: new AbortController().signal });
   const atOpen = reads;
   holdRead = true;
@@ -454,7 +454,7 @@ test('a blob whose first write was cut short, written again whole with another p
 test("a duplicate begin whose first call's outcome could not be written stops with the drive: no result made up", async () => {
   const inner = await memorySessionStore().open('run-1');
   // The writer refuses the call's outcome, as a fenced one does.
-  const writer = { key: inner.key, read: () => inner.read(), append: async (records) => { if (records.some((r) => r.kind === KERNEL_RECORDS.end)) throw new SessionFenced('run-1'); await inner.append(records); } };
+  const writer = { key: inner.key, sync: () => inner.sync(), read: () => inner.read(), append: async (records) => { if (records.some((r) => r.kind === KERNEL_RECORDS.end)) throw new SessionFenced('run-1'); await inner.append(records); } };
   const drive = await openDrive({ writer, signal: new AbortController().signal });
   const calls = new BuiltinCalls(drive, { live: false });
   const call = { callId: 'c1', name: 'Bash', input: { command: 'pay' }, replay: 'never' };

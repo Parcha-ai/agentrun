@@ -5,26 +5,28 @@ AgentRun defines workflows that combine tools, code, Jev system one decisions, a
 <a id="quickstart"></a>
 ## Start with an example
 
-Use Node 22.19+ or 24.2+ and npm. Follow the [support example](../README.md#run-the-support-example) to install, build and run the support example without credentials. It searches for an answer, checks it, and calls an agent only when investigation is needed. [Connect your own tools and models](support-quickstart.md) after the scripted example works.
+Use Node 24.22.3 or newer and npm. Follow the [support example](examples.md#run-the-support-example) to install, build and run the support example without credentials. It searches for an answer, checks it, and calls an agent only when investigation is needed. [Connect your own tools and models](support-quickstart.md) after the scripted example works.
 
-For TypeScript authoring and reusable child workflows, follow the [research tutorial](authoring.md). The [standalone starter](../examples/starter/README.md) runs outside this checkout. See [all examples](examples.md) for their commands and failure paths. To watch an agent read and look at files, start at [`examples/vision-agent`](../examples/vision-agent/README.md): `npm run demo:vision -- examples/document-check` runs it on scripted models, free and with no key, with `ffmpeg`, `ffprobe`, `pdftoppm` and `pdftotext` on your path. `lake-mead` commits its images too; the six other vision examples fetch their files first (120 MB to 342 MB): add `--fetch-sources`.
+For TypeScript authoring and reusable child workflows, follow the [research tutorial](authoring.md). The [standalone starter](../examples/starter/README.md) runs outside this checkout. See [all examples](examples.md) for their commands and failure paths.
+
+To run agents and workflows behind an HTTP API and a console instead of in your own process, start [AgentRun Server](../packages/serve/README.md). To run the interpreter inside your own application, see [Integrate with your application](host-integration.md).
 
 ## Inspect the smaller triage workflow
 
 In your project, install the core and save the complete triage workflow:
 
 ```sh
-npm install @parcha/agentrun-dsl@beta
-npx @parcha/agentrun-dsl@beta example workflow.json
-npx @parcha/agentrun-dsl@beta validate workflow.json --trusted
-npx @parcha/agentrun-dsl@beta dry-run workflow.json --trusted
+npm install @parcha/agentrun-dsl@latest
+npx @parcha/agentrun-dsl@latest example workflow.json
+npx @parcha/agentrun-dsl@latest validate workflow.json --trusted
+npx @parcha/agentrun-dsl@latest dry-run workflow.json --trusted
 ```
 
 `example` refuses to overwrite a file. `--trusted` acknowledges that JavaScript in a workflow may execute during validation. Dry-run synthesizes the declared input schema; a workflow without one starts from `{}`. Supply your own JSON object when needed:
 
 ```sh
-npx @parcha/agentrun-dsl@beta validate workflow.json input.json --trusted
-npx @parcha/agentrun-dsl@beta dry-run workflow.json input.json --trusted
+npx @parcha/agentrun-dsl@latest validate workflow.json input.json --trusted
+npx @parcha/agentrun-dsl@latest dry-run workflow.json input.json --trusted
 ```
 
 Structural checks, including unknown node fields, always run. Supplied inputs also check the input schema and reachable input keys. Dry-run checks synthetic execution wiring, not model quality or effect delivery. Its `status` says whether every check ran: `passed`, `failed` (`ok` is false, `problems` say why), or `not_run`: `ok` stays true, but a path could not be exercised (for example, a synthetic judgment escalated or a schema cannot be synthesized), and `skipped` gives the reasons. A `not_run` result is not execution proof. `agentrun-dsl dry-run` exits 1 on a failure and 0 otherwise; with `--strict` it exits 3 when the status is `not_run`.
@@ -90,7 +92,7 @@ The `input` contract, when supplied, is checked before execution. A completed wo
 <a id="jev"></a>
 ## Add live Jev system one decisions
 
-Jev is the optional TypeSafe model adapter for typed judgments. This section makes a live model request, unlike the offline demo. Install `@parcha/agentrun-jev@beta` alongside the core and obtain authorized TypeSafe access through your provider or organization. Configure `TYPESAFE_API_KEY` in the server environment using your existing secret-management process. If your organization uses a gateway, also use its configured `TYPESAFE_BASE_URL`. Do not put credentials in browser code or commit them to this source tree.
+Jev is the optional TypeSafe model adapter for typed judgments. This section makes a live model request, unlike the offline demo. Install `@parcha/agentrun-jev@latest` alongside the core and obtain authorized TypeSafe access through your provider or organization. Configure `TYPESAFE_API_KEY` in the server environment using your existing secret-management process. If your organization uses a gateway, also use its configured `TYPESAFE_BASE_URL`. Do not put credentials in browser code or commit them to this source tree.
 
 In your project after configuring access, save this as `live-triage.mjs` and run `node live-triage.mjs`. A live model can return a different answer from the scripted fixture:
 
@@ -111,122 +113,6 @@ console.log(demo.result);
 A `judge` schema is a flat object. Boolean properties become Noul questions (a probability from 0 to 1 that the answer is yes), string enums become Choice questions, and appropriately declared integer levels become Score questions. Descriptions carry the questions; criteria carry the meaning of choices. The typed result lands at `as`, and the raw answers and confidence at `<as>$answers`.
 
 Confidence is a model output, not an empirically calibrated accuracy guarantee. The demo's 70% threshold is illustrative. Test thresholds on your own fixed cases before using them for consequential decisions.
-
-<a id="pi"></a>
-## Let Pi build and run a workflow
-
-Pi drafts a typed workflow for your task, checks it, dry-runs it for free, runs it, and shows every node on its graph. With [Pi installed](../packages/pi/README.md#install) (1.0.4 to below 1.4; CI tests 1.0.4, 1.1.0, 1.2.0 and 1.3.0), run these commands in your project:
-
-```sh
-pi install npm:@parcha/agentrun-pi@beta -l
-pi --offline
-```
-
-`-l` installs in this project. `--offline` skips startup downloads, not intentional model calls. Pi asks whether you trust the project before loading its extension on first launch. If the install stops with "Project is not trusted", add `--approve`. Pi starts with `read`, `bash`, `edit` and `write` active; `pi --tools read,grep,find,ls,agentrun` gives workflows the read-only tools and keeps the AgentRun tool on. If Pi is already open, use `/reload` first. The npm package includes the extension and the authoring skill; no AgentRun checkout is needed.
-
-Inside Pi, `/agentrun demo` runs a scripted research workflow and shows its graph without a model call. `/agentrun status` confirms that the authoring skill loaded.
-
-With model access configured in Pi, describe a task:
-
-```text
-/agentrun Research how this repository handles cancellation. Investigate the runtime and tests separately, then report the gaps with file references.
-```
-
-Pi then takes five steps, and you can step in at each one:
-
-1. **Draft.** Pi asks the `agentrun` tool to describe the tools this session offers and the workflow language, then drafts a workflow from them. It is typed: each step that asks a model names the JSON Schema its answer must match.
-2. **Check.** Pi inspects the complete draft with its input. Inspection checks the structure, the schemas, the state paths between steps and the tools each step calls, and runs no code. Pi repairs what it reports and inspects again.
-3. **Dry-run.** Pi dry-runs the inspected workflow on synthetic values, or on the input you gave, with no model, Jev or tool call, so it costs nothing. `passed` means every check ran, `failed` lists the problems, and `not_run` names a check that could not run and proves nothing. A boolean whose schema leaves it open (no `const` or `enum`) is `false` in a dry run, so an `escalate` on such a boolean being `false` always fires there, and the dry run reports `not_run` with that escalation in `skipped`; the steps after it are not exercised. Run one yourself with `/agentrun dry-run`; a workflow with code nodes needs `/agentrun dry-run --trusted`.
-4. **Run.** Pi runs the workflow when you ask it to, or you run it with `/agentrun run`. Agent steps use Pi's current model. Code nodes and the `bash`, `edit` and `write` tools run only after you issue `/agentrun run --trusted`, and only for that run.
-5. **Graph.** `/agentrun` opens the graph. Every node is on it with its state: planned before a run, then running, succeeded, failed or interrupted, and skipped when a route chose another branch. These are the moments `nodeStatus` from `@parcha/agentrun-dsl/graph` reads from a durable run, named for a person: planned and skipped are `not-run`, running is `working`, succeeded is `done`, failed is `failed`, and interrupted is a node still `working` when the run stopped, or `not-run` when it left no mark: a code node cut off before its commit leaves none, so `not-run` does not prove that a node never started. Select a node for its contract, its instructions or criteria, and what the run observed. Closing the view does not stop the run; `/agentrun stop` asks it to stop.
-
-To see the graph before anything runs, ask for a preview ("Do not run it yet."): Pi stops before the run and says so. `/agentrun save <name>` and `/agentrun load <name>` keep a definition in this project for new input; a save keeps neither the input nor permission to run. Jev access is needed only for system one decisions. See [Pi setup and limits](../packages/pi/README.md).
-
-### Embed the Pi SDK
-
-Use `createPiHostRunner` inside an existing Pi extension or `createPiRunner` with a configured standalone SDK runtime. Supply tools explicitly. The runner forwards schema and review feedback to the same agent session, bounds turns and submissions, and honors cancellation.
-
-For authoring, `authorWorkflow` from `@parcha/agentrun-dsl` retains a candidate and its feedback without activating it. Pass it a Pi runner as its `runNode`. Supply your own acceptance callback to evaluate behavior. Without that callback, acceptance checks structure only.
-
-For an authoritative SOP, supply complete `rubricSections` during authoring and the same source text through runtime `sop`. The author conservatively requires every generative node to carry all supplied sections and rejects semantic paths that cannot carry them. See [Pi SDK setup](../packages/pi/README.md#sdk-embed-the-runner) for configuration and limits.
-
-<a id="learn"></a>
-## An agent that learns
-
-[`@parcha/pi-agent-learn`](../packages/pi-agent-learn/README.md) gives a pi-durable agent a git repository to learn in, so what it learns between runs is a commit a person can read, diff and revert. The host owns git: no model tool commits or pushes, and no writer can change `agent.json` or `AGENTS.md`.
-
-While it works, the agent notes what would help a later run with one tool, `learn`, which makes no model call. At the end of the run the host proposes the notes on the run's own branch, `runs/<run id>`, once the guard has checked them for secrets and for values from the case. `curate` is the only step that writes `main`. It asks a judge, one typed question at a time, whether a note is general, whether it narrows the rules, and whether it repeats, replaces or contradicts a learning already there; an uncertain answer holds the note. Each run it curates becomes one commit on `main`. Every later run starts from one commit of `main` and reads what was learned there in a short `<learned>` section of its prompt. A bad lesson is undone with a `git revert` of that commit, or, once a later run has used it, retired in one more commit; history keeps it either way.
-
-Saved workflows earn their place on receipts. A workflow the agent saves with the `agentrun` tool goes to the run's branch with its notes, and curation judges it on its own document, never on what the agent wrote about it: a workflow that names a case, carries a fixed answer or carries an instruction beyond the job its rules describe is refused. When the host passes the text the run read, a workflow that copies 40 or more characters of it is withheld from the proposal. An admitted workflow reaches `main` as a trial skill, described by its input and output fields, and later runs are offered it. The host can also run a proven workflow itself before the agent says anything (`planServing`, `serve`): the active revision, or, while a newer revision is on trial, the one it superseded, so a run the workflow finishes costs no agent turn and the trial still earns its place through the agent. Curation then counts each run's uses of it, read from the workflow tasks in the run's store, the host's served runs included, each a use of its own revision with the host's verdict on its output. A trial whose last two uses, in two runs, all completed is promoted. A revision whose last two uses failed or escalated is demoted, and the one before it comes back. The host sets both thresholds.
-
-The core of a run, from the README's quickstart. `repo` is an `openRepo` repository of [`@parcha/pi-git-remote`](#git-remote) whose `main` holds the learnings, `models` has the `model` the run uses, and `workspace` is the run's working directory, an absolute path:
-
-```js
-import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import { createRegistry, Harness, MemoryStorage } from "@earendil-works/pi-durable";
-import { agentLearn, collectCandidates, seedLearning } from "@parcha/pi-agent-learn";
-
-const registry = createRegistry();
-registry.install(agentLearn());
-const harness = await Harness.open(new MemoryStorage(), { models, registry }, ctx);
-await seedLearning({ repo, target: harness, into: workspace });
-const conversation = await harness.root(ctx, { agent: { model, instructions: "Research the company." } });
-await (await conversation.submit({ type: "input", content: "Check Acme." }, ctx)).wait(ctx);
-console.log(await collectCandidates(harness));
-```
-
-`seedLearning` records the commit the run starts from and copies its learnings into the run's working directory; a restarted host never moves the run to a newer commit. `collectCandidates` returns what the run noted. `proposeLearning` commits the notes and the run's saved workflows to `runs/<run id>`, and `curate` merges what passes to `main`. The [quickstart](../packages/pi-agent-learn/README.md#quickstart-no-key-no-network) runs these steps with no key on pi-ai's scripted model. [`examples/agent-learn`](../examples/agent-learn/README.md) (`npm run demo:learn`) runs the whole loop with a scripted model and judge: a maintainer's correction learned in one run and applied in the next, a rule retired, and a saved workflow admitted as a trial, promoted on three clean uses, then demoted when a new revision escalates twice. Until the package is published, both run from a checkout of this repository.
-
-<a id="git-remote"></a>
-### Its own git repository
-
-[`@parcha/pi-git-remote`](../packages/pi-git-remote/README.md) is the repository the host keeps for its agent. The host commits files to branches, pushes them by sha, merges and reverts, and checks a branch out into a directory the agent reads. It builds commits with git's plumbing on a temporary index, with no working tree. No hook, filter, merge driver, fsmonitor or credential helper from either repository runs, and a push is never forced. Flags cannot stop git from reading the host repository's own config and `info/attributes`, so a host repository someone else can write runs that person's merge driver: keep `dir`, and a local remote's directory, out of the agent's reach, never inside a run's working directory. A commit with a `Run-Id` trailer is made once, so a restarted host commits nothing twice.
-
-The remote is a bare repository on this machine (`local`), any https git host (`https`) or code.storage (`codeStorage`). An https credential reaches git only on file descriptor 3, never in argv, the environment, a URL or a file. The core is plain Node over the git CLI and does not import pi. Its `./coding-agent` subpath is a pi coding-agent extension that checks a ref out for a session and commits the allowlisted changes to `sessions/{sessionId}` when the session ends.
-
-With the package installed and git 2.40 or later, save this as `repo.mjs` in an empty directory and run `node repo.mjs`:
-
-```js
-import { execFileSync } from "node:child_process";
-import { local, openRepo } from "@parcha/pi-git-remote";
-
-execFileSync("git", ["init", "-q", "--bare", "--template=", "-b", "main", "acme.git"]);
-const repo = await openRepo({ dir: "host", remote: local("acme.git") });
-const seed = await repo.commitTo("main", { files: { "AGENTS.md": "# Rules\n\nCite every claim.\n" }, message: "seed" });
-await repo.push(seed.sha, "main");
-const files = { "inbox/run-1.md": "Registries match the legal name without the suffix.\n" };
-const run = await repo.commitTo("runs/run-1", { files, message: "run-1 proposes", trailers: { "Run-Id": "run-1" } });
-await repo.push(run.sha, "runs/run-1");
-await repo.push((await repo.merge("runs/run-1", "main")).sha, "main");
-console.log((await repo.log()).map((c) => c.subject).join(" | "));
-```
-
-It prints `run-1 proposes | seed`: the run's branch reached `main` as a fast-forward. Until the package is published, the README's [quickstart](../packages/pi-git-remote/README.md#quickstart-no-key-no-network) runs the same steps from a checkout of this repository. The [README](../packages/pi-git-remote/README.md) has every method, what never runs, the path limits and the remotes.
-
-<a id="transport"></a>
-## Run an agent's tools where each step needs them
-
-[`@parcha/pi-transport`](../packages/pi-transport/README.md) runs a pi agent's tools on another machine: this machine, a Docker container, or a Daytona or Modal sandbox, behind one `Box` interface. The session, its store and its model calls stay with the host; only the tools go to the box. Use it when a step needs a machine the host is not: a GPU, more memory, or a sandbox apart from the host for code the agent writes and runs. Jev can choose the machine for each step from a one-line purpose you give each environment.
-
-Install it with `npm install @parcha/pi-transport@beta`. This runs with no key and no Docker. The box is a directory on this machine, with no isolation:
-
-```js
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { localBoxes } from "@parcha/pi-transport/box/local";
-import { boxEnv } from "@parcha/pi-transport/hands";
-
-const created = await localBoxes({ root: "./boxes" }).create({ maxLifetimeMs: 10 * 60_000 }, BACKGROUND_CONTEXT);
-if (!created.ok) throw created.error;
-const box = created.value;
-
-const env = boxEnv(box);
-await env.writeFile("notes/a.txt", "hello from the box\n", BACKGROUND_CONTEXT);
-const ran = await env.exec("cat notes/a.txt", { timeout: 10, onOutput: (text) => process.stdout.write(text) }, BACKGROUND_CONTEXT);
-console.log(ran.ok ? `exit ${ran.value.exitCode}` : ran.error);
-await box.destroy(BACKGROUND_CONTEXT);
-```
-
-`boxEnv` is pi's `ExecutionEnv`, so a pi-durable Harness given it as `env` runs the agent's `read`, `write`, `edit` and `bash` in the box. For a container, use `dockerBoxes()` from `@parcha/pi-transport/box/docker`. The [package README](../packages/pi-transport/README.md) covers the providers, the config that sends each conversation's tools to an environment, and Jev's placement.
 
 <a id="primitives"></a>
 ## The primitives
@@ -304,7 +190,7 @@ Verification questions assess the evidence given to them. They are not an indepe
 - **Trusted execution.** JavaScript runs in the process. Validation can execute probes. Run unknown workflows in a host-controlled isolation boundary.
 - **State ownership.** Input and seeded state must be structured-cloneable. The runtime copies caller input and each map item or parallel branch. Parallel branches that change the same top-level field conflict, including nested mutations; unchanged copies are not writes.
 - **Admission.** Required adapters and all named SOP sections are checked before any node runs, including untaken branches and child workflows. Invalid input contracts are reported as `WorkflowInputInvalidError`.
-- **Cancellation.** Core adapters receive signals; effect deadlines and caller cancellation bound the core's wait for an injected effect, while Pi and Jev bound their own callers. An uncooperative tool can continue its effect after cancellation. Synchronous JavaScript can block the process. There is no general hard-kill sandbox here.
+- **Cancellation.** Core adapters receive signals; effect deadlines and caller cancellation bound the core's wait for an injected effect, while the Jev adapter bounds its own calls. An uncooperative tool can continue its effect after cancellation. Synchronous JavaScript can block the process. There is no general hard-kill sandbox here.
 - **Effects.** The host implements `runEffect`, enforces tools and file access, verifies promised files, and handles custody. Idempotency keys help a host deduplicate; they do not confer exactly-once delivery. Inspect uncertain outcomes before retrying. An admitted effect still pending at cutoff throws `EffectOutcomeUnknownError` (`effect_outcome_unknown`) and is never retried automatically. Its `settlement` promise retains any eventual fulfillment or rejection, and `effect.late_settled` reports that evidence to the host. Late settled results are not memoized, committed, or delivered. A result already known to be late throws `EffectDeadlineExceededError` with `lateResult`. Concurrent failures can return an `AggregateError`; inspect its `errors` recursively for every uncertain effect, with the original failure retained as `cause`.
 - **Escalation in collections.** Pure map escalation emits `map.escalated`, keeps the triggering item's local state, and does not call the failure persistence hook. Completed sibling state is not promoted as a completed map. If cancellation leaves uncertain effects, the run rejects with an `AggregateError`; inspect its `errors` and `cause` for public `EscalationSignal` and `EffectOutcomeUnknownError` instances. Reconcile effects before retrying. No escalation evidence is discarded.
 - **Failures in collections.** Under recovery a collected failure is committed with its item before the map goes on, and every later process ends the item on it without running its body; a store without `recovery.failItem` and `recovery.itemFailure` cannot hold such a map, and it is refused before any step runs. An item whose call the driver left with an unknown outcome is refused as `FROZEN_EFFECT_UNKNOWN`, never collected. A failed item's spend still counts. Run a collecting workflow only once every process that can open the run is on a release that knows `onItemFailure`: an earlier release refuses the workflow at its open, which fails its task and ends the agent nodes in flight, and they start again in new conversations at the cost of those turns (in the reference kill storm, 4.27 to 4.30 model requests per committed turn with old processes against 3.04 and 3.40 without (the medians of four 50-seed storms), about 33% more).
@@ -338,9 +224,13 @@ The question guard applies before an adapter request. Static judge/verifier ques
 
 ```sh
 npm run check
+npm run build:daemon -w @parcha/agentrun-computer
 npm run verify:packages
 npm run export:source
 ```
+
+Build the computer daemon before package verification: `build:daemon` needs Go on PATH and writes the daemon binaries
+`@parcha/agentrun-computer` publishes, and verification stops when its archive lacks them.
 
 The test suite checks structure, composition, decision handling, verification, effects, cancellation, SDK contracts, and retained candidates. Package verification installs tarballs into an empty consumer. Scripted model responses prove execution behavior, not model quality.
 

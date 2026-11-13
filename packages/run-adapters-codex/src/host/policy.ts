@@ -13,9 +13,12 @@
 // `max_output_tokens` is clamped. No tool the provider runs on its own passes: web search, which the CLI
 // adds whatever its config says, is dropped, and any other provider-hosted tool is refused. A session with Codex's own web
 // search on (`webSearch: "live"`) is the one exception: the live search tool the pinned CLI sends then passes, exactly as
-// recorded (any other web search tool is refused), and each search the provider ran is booked at its per-call price
-// (`withWebSearches`). A function or custom tool
-// that is not one of the session's names is dropped, so the model is offered exactly the host's tools. A code-mode
+// recorded (any other web search tool is refused), while the host's web_search setting allows it at that request
+// (`searchAllowed`, read per request: a deny or ask set mid-run drops it from the next one), and each search the provider
+// ran is booked at its per-call price (`withWebSearches`). A function or custom tool
+// that is not one of the session's names is dropped, so the model is offered exactly the host's tools. A remote MCP
+// server's granted tools come in a namespace of their own (`mcp__<server>`, each tool by its own name), and only those
+// pass. A code-mode
 // model's request carries Codex's own `exec` and `wait` in an `additional_tools` item; those pass, and nothing else in
 // the item does (the sub-agent and user-input tools it also lists are dropped), so the model is offered exactly the
 // host's tools, called from `exec` as nested ones.
@@ -25,7 +28,7 @@
 // inside `input_tokens`; they are booked apart (as pi-ai books them), and reasoning tokens inside `output_tokens`. The
 // searches a response ran are read from the same event, its `tool_usage.web_search.num_requests`.
 import type { IncomingHttpHeaders } from "node:http";
-import { providerInputOverhead, ProxyRefusal, type ModelProxyOptions, type ProviderPolicy, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-kernel/host";
+import { providerInputOverhead, ProxyRefusal, responsesImagesIn, type ModelProxyOptions, type ProviderPolicy, type ProxyRequestContext, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-kernel/host";
 
 export const CODEX_RESPONSES_ROUTES: readonly ProxyRoute[] = Object.freeze([
   { method: "GET", path: "/", local: 404 },
@@ -42,6 +45,10 @@ const SCHEMA_FORMAT_KEYS = new Set(["type", "name", "schema", "strict"]);
 const DROPPED_KEYS = new Set(["client_metadata"]);
 /** What `include` may ask for: the encrypted reasoning the CLI sends back on its next request (`store` is false). */
 const INCLUDE = new Set(["reasoning.encrypted_content"]);
+/** What the host's own side request (ProxyRequestContext.host) may carry beside: a native search's limit on its hosted
+ *  calls (`max_tool_calls`, which only narrows it) and the sources its results cite. */
+const SIDE_KEYS = new Set(["max_tool_calls"]);
+const SIDE_INCLUDE = new Set(["web_search_call.action.sources"]);
 /** Provider-hosted tools the CLI adds to every request whatever its config says: dropped, never offered. */
 const DROPPED_TOOLS = new Set(["web_search", "web_search_preview"]);
 /** The web search tool the pinned CLI sends with `web_search = "live"` through the session's provider, recorded
@@ -88,11 +95,19 @@ export interface CodexPolicyOptions {
   model: string;
   /** The session's own tool names: every other tool definition is dropped. */
   tools: readonly string[];
+  /** The granted tools of the session's remote MCP servers, `mcp__<server>__<tool>`: the pinned CLI offers a server's tools
+   *  in a namespace named `mcp__<server>`, each by the server's own name. */
+  mcpTools?: readonly string[];
   /** The most output tokens one request may ask for. Default 32 000. */
   maxOutputTokens?: number;
   /** Codex's own web search, live: the live search tool the pinned CLI sends passes, and a `tool_choice` naming it. Each
    *  response's usage then carries the searches it ran (`webSearches`), which `withWebSearches` prices. Default off. */
   webSearch?: "live";
+  /** With `webSearch`: whether the host lets the session search now (its web_search setting, SessionIO.permission), asked
+   *  before each request that offers the live search. The provider runs a search inside the request, where no gate sees
+   *  it, so a request sent while this is false (or throws) offers no search, as a session without one sends it; a
+   *  `tool_choice` naming the search is then refused. Absent: the live search is offered whenever `webSearch` is on. */
+  searchAllowed?: () => Promise<boolean>;
   /** Told, before Codex has the piece of an answer, what the answer carries: `response()` when an answer starts, and
    *  `exec(callId)` for each code-mode `exec` call it holds. The session ties a script's nested calls to the `exec` of the
    *  latest answer, which is known here before Codex can run anything of it. */
@@ -102,8 +117,8 @@ export interface CodexPolicyOptions {
 const isPlain = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
 /** A list of tool definitions with no provider-hosted tool but the live web search when `search` is on, less any not the
- *  session's own. */
-function ownTools(tools: unknown, allowed: ReadonlySet<string>, search = false): unknown[] {
+ *  session's own: `allowed` by name, `mcp` (`mcp__<server>__<tool>`) in a server's namespace. */
+function ownTools(tools: unknown, allowed: ReadonlySet<string>, search = false, mcp: ReadonlySet<string> = new Set()): unknown[] {
   if (!Array.isArray(tools)) throw new ProxyRefusal(400, "tools is not a list");
   const out: unknown[] = [];
   for (const tool of tools) {
@@ -117,8 +132,9 @@ function ownTools(tools: unknown, allowed: ReadonlySet<string>, search = false):
     }
     if (DROPPED_TOOLS.has(type)) continue;
     if (type === "namespace") {
-      // A namespace holds the tools of a built-in family: only the session's own ones stay, and an empty one goes.
-      const kept = ownTools(tool.tools, allowed);
+      // A namespace holds the tools of a built-in family, or of an MCP server (`mcp__<server>`): only the session's own ones
+      // stay, and an empty one goes.
+      const kept = ownTools(tool.tools, name.startsWith("mcp__") ? new Set([...mcp].flatMap((own) => (own.startsWith(`${name}__`) ? [own.slice(name.length + 2)] : []))) : allowed);
       if (kept.length) out.push({ ...tool, tools: kept });
       continue;
     }
@@ -127,6 +143,9 @@ function ownTools(tools: unknown, allowed: ReadonlySet<string>, search = false):
   }
   return out;
 }
+
+/** The function and custom tools a side request offers, by name (its own client tools). */
+const sideToolNames = (tools: unknown): ReadonlySet<string> => new Set(Array.isArray(tools) ? tools.filter((tool) => isPlain(tool) && (tool.type === "function" || tool.type === "custom") && typeof tool.name === "string").map((tool) => (tool as { name: string }).name) : []);
 
 /** `tool_choice` as the provider gets it: a mode, a function of the session's own, or the web search when it is on. */
 function toolChoice(choice: unknown, allowed: ReadonlySet<string>, search = false): unknown {
@@ -244,6 +263,110 @@ function endValue(text: string, key: "usage" | "tool_usage"): unknown {
   }
 }
 
+/**
+ * Whether the provider stopped the answer on its content filter: the stream's terminal event (or a whole body) is an
+ * `incomplete` response whose `incomplete_details.reason` is `content_filter`. Read by parsing each `data:` line on its
+ * own, as endValue reads the usage, never by matching text; an answer cut at its output limit (`max_output_tokens`) is not one.
+ *
+ * The terminal event carries the whole response (its output, encrypted reasoning included), so its line can be longer
+ * than the proxy keeps of an answer; then the proxy's start of that line is read. The response's fields come in a fixed
+ * order, `id`, `object`, `created_at`, `status`, `background`, `error`, `incomplete_details`, then `instructions`, the
+ * tools and the output (OpenAI's; a LiteLLM gateway's, `id`, `created_at`, `incomplete_details`, ..., `output`, keeps it
+ * ahead of the output too), so `incomplete_details` is near the line's start. It is read only on a line that is the event's
+ * own: one the SSE `event: response.incomplete` names (OpenAI's API), or whose data says `"type":"response.incomplete"`
+ * before its `"response":{` (a gateway that sends each event as its data alone: LiteLLM), as the first
+ * `"incomplete_details":{` after `"response":{` (one JSON object), whatever the JSON's spacing.
+ */
+export function filtered(text: string, lineStarts: readonly string[] = []): boolean {
+  const end = answerEnd(text, lineStarts);
+  return isPlain(end) && end.status === "incomplete" && isPlain(end.incomplete_details) && end.incomplete_details.reason === "content_filter";
+}
+
+/**
+ * Whether the provider cut the answer at its output limit: its end is an `incomplete` response whose
+ * `incomplete_details.reason` is `max_output_tokens`, with the output tokens its usage reports when the end was read whole.
+ * Read as `filtered` reads its stop, but keyed only on the data's own `type` (`response.incomplete`), never on an `event:`
+ * line: a gateway's Responses stream is data alone. Any other reason (`content_filter`) is no cut. Codex 0.164 takes a cut
+ * answer as a stream error and asks for it again, each time paid; the harness ends the turn first.
+ */
+export function cut(text: string, lineStarts: readonly string[] = []): { outputTokens?: number } | undefined {
+  const end = answerEnd(text, lineStarts, false);
+  if (!(isPlain(end) && end.status === "incomplete" && isPlain(end.incomplete_details) && end.incomplete_details.reason === "max_output_tokens")) return undefined;
+  const output = isPlain(end.usage) ? end.usage.output_tokens : undefined;
+  return typeof output === "number" && Number.isSafeInteger(output) && output >= 0 ? { outputTokens: output } : {};
+}
+
+/** The response an answer ends with: its stream's terminal event's, a whole body's, or a kept line start's (`filtered`).
+ *  `byName`: a kept start an `event: response.incomplete` line names is the stop's too (else only its data's type). */
+function answerEnd(text: string, lineStarts: readonly string[], byName = true): unknown {
+  let end = terminalResponse(text.split("\n"), false, byName);
+  if (end === undefined) {
+    const whole = text.trimStart();
+    if (whole.startsWith("{")) {
+      try {
+        const body = JSON.parse(whole) as unknown;
+        if (isPlain(body) && body.object === "response") end = body;
+      } catch {}
+    }
+  }
+  return end ?? terminalResponse(lineStarts, true, byName);
+}
+
+/** The response of the last terminal event in `lines` (`filtered`), each `data:` line parsed on its own; with `starts`,
+ *  the lines are kept starts, and one that is a `response.incomplete` event's (by its name when `byName`, or its data's
+ *  type ahead of its response) is read from its start. */
+function terminalResponse(lines: readonly string[], starts: boolean, byName = true): unknown {
+  let end: unknown;
+  let named = false;
+  for (const line of lines) {
+    if (line.startsWith("event:")) {
+      named = byName && line.slice(6).trim() === "response.incomplete";
+      continue;
+    }
+    if (!line.startsWith("data:")) continue;
+    const data = line.slice(5).trim();
+    const incomplete = named || ownIncomplete(data);
+    named = false;
+    if (!data.startsWith("{")) continue;
+    try {
+      const event: unknown = JSON.parse(data);
+      if (isPlain(event) && typeof event.type === "string" && PAID_END.has(event.type)) end = event.response;
+    } catch {
+      // A line the window cut (skipped), or a kept start the event's name says is the stop's.
+      if (starts && incomplete) end = startOfResponse(data) ?? end;
+    }
+  }
+  return end;
+}
+
+const RESPONSE_KEY = /"response"\s*:\s*\{/;
+const INCOMPLETE_TYPE = /"type"\s*:\s*"response\.incomplete"/;
+const DETAILS_KEY = /"incomplete_details"\s*:\s*\{/;
+
+/** Whether a kept start's data is a `response.incomplete` event's own: its `type` says so ahead of its `response` (a
+ *  quote of it in an answer's text is escaped, so it never reads as one). */
+function ownIncomplete(data: string): boolean {
+  const type = data.search(INCOMPLETE_TYPE);
+  const response = data.search(RESPONSE_KEY);
+  return type >= 0 && (response < 0 || type < response);
+}
+
+/** The status and `incomplete_details` of the response a `response.incomplete` event's line starts with (`filtered`), or
+ *  undefined when the line's kept start does not hold them. */
+function startOfResponse(data: string): Record<string, unknown> | undefined {
+  const response = data.search(RESPONSE_KEY);
+  if (response < 0) return undefined;
+  const found = DETAILS_KEY.exec(data.slice(response));
+  if (!found) return undefined;
+  const json = objectAt(data, response + found.index + found[0].length - 1);
+  if (json === undefined) return undefined;
+  try {
+    return { status: "incomplete", incomplete_details: JSON.parse(json) as unknown };
+  } catch {
+    return undefined;
+  }
+}
+
 /** The usage a Responses answer reports at its end (`endValue`), or undefined, an unknown cost, when it reports none. */
 export function usageOf(text: string): ProxyUsage | undefined {
   return usageFrom(endValue(text, "usage"));
@@ -270,12 +393,12 @@ function itemsIn(value: unknown, type: string): number {
  * Responses API documents no prompt of its own that it adds on these routes (no hosted tool passes the policy but a
  * session's live web search, below), and the framing it puts around each input item and tool definition is a few tokens
  * each, fewer than the bytes of the JSON keys that item already spends in the body. An image is billed by its area, not
- * its bytes: each adds the most it can be billed as. A file input (a PDF, billed by its pages) has no stated bound, so a
+ * its bytes: each counts at the most it can be billed as, in place of the bytes its data URL takes in the body. A file input (a PDF, billed by its pages) has no stated bound, so a
  * body with one cannot be measured: this throws, and the request's input is unknown.
  */
 export function responsesServerInputOverhead(body: Record<string, unknown>): number {
   if (itemsIn(body.input, "input_file") > 0) throw new Error("a file input's billed size has no stated bound");
-  return providerInputOverhead("openai-responses", { tools: Array.isArray(body.tools) && body.tools.length > 0, images: itemsIn(body.input, "input_image") }) as number;
+  return providerInputOverhead("openai-responses", { tools: Array.isArray(body.tools) && body.tools.length > 0, images: responsesImagesIn(body.input), ...(typeof body.model === "string" ? { model: body.model } : {}) }) as number;
 }
 
 /** The text of a tool output item: a string, or the text of each of its parts. */
@@ -392,59 +515,160 @@ function watchResponse(announce: NonNullable<CodexPolicyOptions["announce"]>): {
   };
 }
 
+/** The tokens a request keeps for its answer when its output is limited. */
+export const ANSWER_TOKENS_LEAST = 1024;
+/** What a reasoning request at each effort is allowed for its reasoning beside its answer, when its output is limited:
+ *  OpenAI's reasoning shares `max_output_tokens` and takes no budget, so a limit under its reasoning comes back
+ *  incomplete with no answer. The figures are pi-ai's thinking budgets by level (xhigh at high's). */
+export const REASONING_TOKENS_ALLOWED: Readonly<Record<string, number>> = Object.freeze({ minimal: 1024, low: 2048, medium: 8192, high: 16384, xhigh: 16384 });
+
+/** The output tokens a Responses body asks for at most: its `max_output_tokens` (as `apply` clamped it). */
+export function responsesOutputAsked(body: Record<string, unknown>): number | undefined {
+  const asked = body.max_output_tokens;
+  return typeof asked === "number" && Number.isSafeInteger(asked) && asked > 0 ? asked : undefined;
+}
+
+/** The least output a Responses body may be limited to and still answer: 1,024 tokens, plus its reasoning effort's
+ *  allowance when it reasons. */
+export function responsesOutputLeast(body: Record<string, unknown>): number {
+  const effort = isPlain(body.reasoning) && typeof body.reasoning.effort === "string" ? body.reasoning.effort : undefined;
+  return ANSWER_TOKENS_LEAST + (effort === undefined ? 0 : REASONING_TOKENS_ALLOWED[effort] ?? 0);
+}
+
+/** The reasoning tokens a Responses request may bill that its stream never shows (only a summary of its reasoning
+ *  streams): its effort's budget; none at effort `none`; and with no effort the body says (the model then reasons at its
+ *  own default, or not at all), its output limit, `fallback` when the body names none: the conservative side. An
+ *  estimate, as the efforts' budgets are not limits the provider keeps: a stopped request counts the part of it that
+ *  did not stream (less `responsesReasoningBytes` of what it sent), never past its hold. */
+export function responsesReasoningHidden(body: Record<string, unknown>, fallback: number): number {
+  const effort = isPlain(body.reasoning) && typeof body.reasoning.effort === "string" ? body.reasoning.effort : undefined;
+  if (effort === "none") return 0;
+  const budget = effort === undefined ? undefined : REASONING_TOKENS_ALLOWED[effort];
+  return budget ?? responsesOutputAsked(body) ?? fallback;
+}
+
+/** The Responses stream's events whose deltas are reasoning: its summary, and its reasoning text where a model sends it. */
+const REASONING_DELTAS: ReadonlySet<string> = new Set(["response.reasoning_summary_text.delta", "response.reasoning_text.delta"]);
+
+/** The bytes of reasoning one Responses stream event carries: a reasoning delta's text, UTF-8; 0 for answer text, a
+ *  function call's arguments and every other event. */
+export function responsesReasoningBytes(event: string): number {
+  const data = event.split("\n").filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trimStart()).join("\n");
+  if (!data.startsWith("{")) return 0;
+  const parsed = JSON.parse(data) as { type?: unknown; delta?: unknown };
+  return typeof parsed.type === "string" && REASONING_DELTAS.has(parsed.type) && typeof parsed.delta === "string" ? Buffer.byteLength(parsed.delta, "utf8") : 0;
+}
+
+/** The Responses stream's events whose deltas are content: answer text, reasoning, and a tool call's input. */
+const CONTENT_DELTAS: ReadonlySet<string> = new Set([
+  "response.output_text.delta", "response.reasoning_summary_text.delta", "response.reasoning_text.delta",
+  "response.function_call_arguments.delta", "response.custom_tool_call_input.delta",
+]);
+
+/** The bytes of content one Responses stream event carries: a content delta's text, UTF-8, never the framing around it
+ *  (its sequence number, item id, indexes, logprobs, obfuscation); 0 for every other event. */
+export function responsesContentBytes(event: string): number {
+  const data = event.split("\n").filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trimStart()).join("\n");
+  if (!data.startsWith("{")) return 0;
+  const parsed = JSON.parse(data) as { type?: unknown; delta?: unknown };
+  return typeof parsed.type === "string" && CONTENT_DELTAS.has(parsed.type) && typeof parsed.delta === "string" ? Buffer.byteLength(parsed.delta, "utf8") : 0;
+}
+
+/** A Responses body with its output limited to `max` tokens, reasoning included: never raised, and never longer. */
+export function limitResponsesOutput(body: Record<string, unknown>, max: number): Record<string, unknown> {
+  const asked = responsesOutputAsked(body);
+  return { ...body, max_output_tokens: asked === undefined ? max : Math.min(asked, max) };
+}
+
+/** `body` (a Responses body) with `text` as a note the model reads after everything the client sent: one developer message
+ *  at the end of `input`. Caching is by prefix, so the earlier items stay a hit; the client's next request, which sends
+ *  its own input whole, does not carry it. */
+export function addResponsesNote(body: Record<string, unknown>, text: string): Record<string, unknown> {
+  const input = Array.isArray(body.input) ? body.input : [];
+  return { ...body, input: [...input, { type: "message", role: "developer", content: [{ type: "input_text", text }] }] };
+}
+
 export function codexPolicy(options: CodexPolicyOptions): ProviderPolicy {
   const allowed = new Set(options.tools);
+  const mcp = new Set(options.mcpTools ?? []);
   const maxOutputTokens = options.maxOutputTokens ?? 32_000;
   const search = options.webSearch === "live";
   return {
     id: "codex",
     routes: CODEX_RESPONSES_ROUTES,
+    addNote: addResponsesNote,
     keyOf(headers: IncomingHttpHeaders) {
       const auth = String(headers.authorization ?? "");
       return auth.startsWith("Bearer ") ? auth.slice(7) : "";
     },
     authHeaders: (credential) => ({ authorization: `Bearer ${credential}` }),
-    apply(body) {
-      if (!isPlain(body)) throw new ProxyRefusal(400, "the body is not a JSON object");
-      const out: Record<string, unknown> = {};
-      for (const [key, value] of Object.entries(body)) {
-        if (DROPPED_KEYS.has(key)) continue;
-        if (!BODY_KEYS.has(key)) throw new ProxyRefusal(400, "the body has a field the Codex policy does not allow");
-        out[key] = value;
-      }
-      if (out.include !== undefined && (!Array.isArray(out.include) || !out.include.every((item) => typeof item === "string" && INCLUDE.has(item)))) {
-        throw new ProxyRefusal(400, "include asks for an item the Codex policy does not allow");
-      }
-      if (out.stream !== undefined && typeof out.stream !== "boolean") throw new ProxyRefusal(400, "stream is not a boolean");
-      if (out.reasoning !== undefined && !isPlain(out.reasoning)) throw new ProxyRefusal(400, "reasoning is not an object");
-      if (out.text !== undefined) out.text = textOptions(out.text);
-      if (out.tools !== undefined) out.tools = ownTools(out.tools, allowed, search);
-      if (out.tool_choice !== undefined) out.tool_choice = toolChoice(out.tool_choice, allowed, search);
-      if (Array.isArray(out.input) && out.input.some((item) => isPlain(item) && item.type === "additional_tools")) {
-        // While a script that yielded still runs, the model is offered `wait` and not `exec`: one script is live at a time.
-        const offerExec = !cellRunning(out.input);
-        out.input = out.input.map((item) => codeModeCarrier(item, offerExec));
-        // One `exec` is open at a time (the session's barrier for a code-mode call rests on it): a code-mode request that allows
-        // parallel calls is refused, and one that says nothing is sent with them off. A classic request is as the CLI sent it.
-        if (out.parallel_tool_calls !== undefined && typeof out.parallel_tool_calls !== "boolean") throw new ProxyRefusal(400, "parallel_tool_calls is not a boolean");
-        if (out.parallel_tool_calls === true) throw new ProxyRefusal(400, "parallel tool calls are not allowed in code mode: the model writes one exec at a time");
-        out.parallel_tool_calls = false;
-      }
-      const asked = typeof out.max_output_tokens === "number" && out.max_output_tokens > 0 ? out.max_output_tokens : maxOutputTokens;
-      return { ...out, model: options.model, store: false, max_output_tokens: Math.min(asked, maxOutputTokens) };
+    apply(body, _route, context) {
+      // The live search, offered by the request, goes only while the host says web_search may run now: read before this
+      // request is shaped, never once for the session. A read that fails offers none.
+      const asking = search && options.searchAllowed && isPlain(body) && Array.isArray(body.tools) && body.tools.some((tool) => isPlain(tool) && tool.type === "web_search");
+      if (!asking) return shaped(body, context, search);
+      return options.searchAllowed!().then((now) => shaped(body, context, now === true), () => shaped(body, context, false));
     },
-    usageOf: search ? (text): CodexUsage | undefined => {
+    usageOf: search ? (text, body): CodexUsage | undefined => {
       const usage = usageOf(text);
+      // A request that offered no search (`body`, the one it was sent with: a host's side request through the session's
+      // port, a learned workflow's node that offers only `submit`) ran none: 0, read from the request, never an unknown
+      // count that would make its whole known cost unknown (withWebSearches). One that offered it reads its answer.
+      const offered = Array.isArray(body?.tools) && (body.tools as unknown[]).some((tool) => typeof tool === "object" && tool !== null && isLiveSearch(tool as Record<string, unknown>));
+      if (usage && body && !offered) return { ...usage, webSearches: 0 };
       return usage && { ...usage, webSearches: webSearchesOf(text) ?? null };
     } : usageOf,
+    filtered,
+    cut,
     watch: options.announce ? () => watchResponse(options.announce!) : undefined,
     unwatched: options.announce ? () => options.announce!.failed() : undefined,
     modelOf: (body) => (typeof body.model === "string" ? body.model : undefined),
     // The content a web search feeds the model is billed as input, and neither it nor the searches one response runs has a
     // stated bound: a body that offers web search has no input bound (undefined), so its input is unmeasured.
+    outputAsked: responsesOutputAsked,
+    outputLeast: responsesOutputLeast,
+    reasoningHidden: (body) => responsesReasoningHidden(body, maxOutputTokens),
+    reasoningBytesOf: responsesReasoningBytes,
+    contentBytesOf: responsesContentBytes,
+    limitOutput: limitResponsesOutput,
     serverInputOverhead: search ? (body) => {
       if (Array.isArray(body.tools) && body.tools.some((tool) => isPlain(tool) && tool.type === "web_search")) return undefined;
       return responsesServerInputOverhead(body);
     } : responsesServerInputOverhead,
   };
+
+  /** The body the provider gets, the live search offered only when `searchNow`. */
+  function shaped(body: unknown, context: ProxyRequestContext | undefined, searchNow: boolean): Record<string, unknown> {
+    if (!isPlain(body)) throw new ProxyRefusal(400, "the body is not a JSON object");
+    // The host's own request beside Codex's (ProxyRequestContext.host) offers its own client tools (a learned workflow
+    // node's `submit`); every other rule is the session's, a provider-hosted tool refused as ever.
+    const own = context?.host !== undefined ? sideToolNames(body.tools) : allowed;
+    const out: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(body)) {
+      if (DROPPED_KEYS.has(key)) continue;
+      if (!BODY_KEYS.has(key) && !(context?.host !== undefined && SIDE_KEYS.has(key))) throw new ProxyRefusal(400, "the body has a field the Codex policy does not allow");
+      out[key] = value;
+    }
+    if (out.include !== undefined && (!Array.isArray(out.include) || !out.include.every((item) => typeof item === "string" && (INCLUDE.has(item) || (context?.host !== undefined && SIDE_INCLUDE.has(item)))))) {
+      throw new ProxyRefusal(400, "include asks for an item the Codex policy does not allow");
+    }
+    if (out.stream !== undefined && typeof out.stream !== "boolean") throw new ProxyRefusal(400, "stream is not a boolean");
+    if (out.reasoning !== undefined && !isPlain(out.reasoning)) throw new ProxyRefusal(400, "reasoning is not an object");
+    if (out.text !== undefined) out.text = textOptions(out.text);
+    // Without the search now, its tool is dropped as a session without one drops it (DROPPED_TOOLS).
+    if (out.tools !== undefined) out.tools = ownTools(out.tools, own, searchNow, mcp);
+    if (out.tool_choice !== undefined) out.tool_choice = toolChoice(out.tool_choice, own, searchNow);
+    if (Array.isArray(out.input) && out.input.some((item) => isPlain(item) && item.type === "additional_tools")) {
+      // While a script that yielded still runs, the model is offered `wait` and not `exec`: one script is live at a time.
+      const offerExec = !cellRunning(out.input);
+      out.input = out.input.map((item) => codeModeCarrier(item, offerExec));
+      // One `exec` is open at a time (the session's barrier for a code-mode call rests on it): a code-mode request that allows
+      // parallel calls is refused, and one that says nothing is sent with them off. A classic request is as the CLI sent it.
+      if (out.parallel_tool_calls !== undefined && typeof out.parallel_tool_calls !== "boolean") throw new ProxyRefusal(400, "parallel_tool_calls is not a boolean");
+      if (out.parallel_tool_calls === true) throw new ProxyRefusal(400, "parallel tool calls are not allowed in code mode: the model writes one exec at a time");
+      out.parallel_tool_calls = false;
+    }
+    const asked = typeof out.max_output_tokens === "number" && out.max_output_tokens > 0 ? out.max_output_tokens : maxOutputTokens;
+    return { ...out, model: options.model, store: false, max_output_tokens: Math.min(asked, maxOutputTokens) };
+  }
 }

@@ -16,22 +16,28 @@
       "platform": "linux"
     },
     "runtimes": [
-      "pi-durable-disk"
+      "runner"
     ],
     "harnesses": [
       {
         "id": "pi",
-        "available": true
+        "available": true,
+        "steer": true,
+        "default_model": "faux/faux-1"
       },
       {
         "id": "claude-agent",
         "available": false,
-        "reason": "This server does not run claude-agent yet."
+        "steer": false,
+        "reason": "claude-agent needs ANTHROPIC_API_KEY.",
+        "default_model": null
       },
       {
         "id": "codex",
         "available": false,
-        "reason": "This server does not run codex yet."
+        "steer": false,
+        "reason": "codex needs OPENAI_API_KEY, or a gateway in AGENT_MODEL_BASE_URL.",
+        "default_model": null
       }
     ],
     "models": {
@@ -88,20 +94,8 @@
         ]
       },
       {
-        "name": "fetch_page",
-        "summary": "Fetch one public web page: { ok, url, status, title, text, links }; a private or local address, or a scheme other than http(s), is refused.",
-        "nodes": true,
-        "calls": true,
-        "available": true,
-        "harnesses": [
-          "pi",
-          "claude-agent",
-          "codex"
-        ]
-      },
-      {
         "name": "web_fetch",
-        "summary": "Read one public web page through Parallel's extract where PARALLEL_API_KEY is set, else (or when Parallel answers no page) fetched as fetch_page fetches it: fetch_page's Page plus via, \"parallel\" or \"direct\"; a URL fetch_page refuses is refused, never sent to Parallel.",
+        "summary": "Read one public web page through Parallel's extract where PARALLEL_API_KEY is set, else (or when Parallel answers no page) fetched through the guarded direct fetch: its Page plus via, \"parallel\" or \"direct\"; a URL the guarded fetch refuses is refused, never sent to Parallel.",
         "nodes": true,
         "calls": true,
         "available": true,
@@ -309,6 +303,50 @@
       "idempotency_ttl_s": 86400,
       "input_wait_s": null,
       "max_cost_usd": null
+    },
+    "places": {
+      "modes": [
+        "runner",
+        "sandbox"
+      ],
+      "default_place": {
+        "mode": "runner"
+      },
+      "default_reason": "new agents run on the runner, because the docker box is unavailable here: docker is not set up on this server",
+      "boxes": [
+        {
+          "id": "docker",
+          "available": false,
+          "reason": "docker is not set up on this server",
+          "state": "unavailable"
+        },
+        {
+          "id": "modal",
+          "available": false,
+          "reason": "modal is not set up on this server",
+          "state": "unavailable"
+        },
+        {
+          "id": "daytona",
+          "available": false,
+          "reason": "daytona is not set up on this server",
+          "state": "unavailable"
+        }
+      ],
+      "allow": [
+        "pypi.org",
+        "files.pythonhosted.org",
+        "registry.npmjs.org",
+        "registry.yarnpkg.com",
+        "github.com",
+        "codeload.github.com"
+      ]
+    },
+    "learning": {
+      "grade_model": null,
+      "pending": true,
+      "approve": false,
+      "approve_needs": "password"
     }
   }
 }

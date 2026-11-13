@@ -19,8 +19,8 @@ When this runs from a pipeline or a periodic QA job, the scope is fixed here and
 
 ## How to run
 
-Node 22.19 or later on 22 (`.nvmrc` pins 22.23.2), or 24.2 or later. Node 23 and 24.0 to 24.1 are refused. npm 11
-is the documented toolchain, but `npm ci` also works with npm 10.9 (the npm bundled with Node 22.23.2).
+Node 24.22.3 or later (`.nvmrc` pins 24.22.3); anything older is refused. npm 11
+is the documented toolchain.
 
 ```sh
 npm ci --ignore-scripts
@@ -28,7 +28,7 @@ npm run build   # the console first (apps/console, skipped when its dist is curr
 ```
 
 Start it with the launcher, which hands secrets to the server over a pipe:
-`packages/serve/launcher/agentrun-serve --data DIR --port N [--drain-timeout 8s]`, on its default loopback listen
+`packages/serve/launcher/agentrun-serve --data DIR --port N`, on its default loopback listen
 address.
 `node packages/serve/dist/cli.js` also works, but then the secrets stay in the environment.
 
@@ -39,19 +39,19 @@ there and never print it.
 | Env | Why |
 | --- | --- |
 | `TMPDIR`, `--data` | Use a fresh data dir and a temp dir of its own per run, so no earlier run's state is read. |
-| `XDG_CONFIG_HOME` | The launcher writes `agentrun/seal.key` there. Point it at a QA dir so your own config directory is never touched. |
+| `XDG_CONFIG_HOME` | Point it at a QA dir so your own config directory is never touched. The seal key is `AGENTRUN_SEAL_KEY`, else `<data>/seal/seal.key`, made at the server's first start; nothing is kept under the config home. |
 | `AGENT_MODEL_BASE_URL`, `AGENT_MODEL_API_KEY`, `AGENT_MODEL` | Gateway for the pi and codex harnesses (OpenAI Responses). Point them at your gateway (its `/v1` base URL) and set `AGENT_MODEL` to a small, cheap model for smokes. |
 | `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY` | The claude-agent harness only, on Anthropic Messages. Your gateway may serve `/v1/messages` too. |
-| `AGENTRUN_MAX_RUNS` | Cap concurrent runs (3 is plenty for QA). |
+| `AGENTRUN_MAX_RUNS` | The most runs a runner holds at once (the server's `--max-runs`, a runner process's `--loops`), and the `max_concurrent_runs` capabilities report. It does not refuse a start: a run past it waits `queued` until a runner has a free loop. |
 | `PARALLEL_API_KEY`, `BROWSERBASE_API_KEY` + `BROWSERBASE_PROJECT_ID`, `TYPESAFE_API_KEY` | Optional. They unlock web_fetch via Parallel, the `browser` tool, and Jev decisions. Without a key, only the checks that need it are UNTESTED: web_fetch's direct fetch and its private-host refusal need none and always run. |
 
-Stop the server with SIGTERM to its exact PID. A busy run gets the drain timeout, then resumes at the next start.
+Stop the server with SIGTERM to its exact PID. The runner beside it stops every run where it can resume, and the next claim carries on from the run's journal.
 
 ## Auth recipe
 
 - API: `Authorization: Bearer $(cat DIR/.token)`. `GET /v2/health`, `GET /v2/capabilities` and `GET /v2/openapi.json`
-  need no credential. Anything else without a token is `401 unauthenticated`. A non-loopback `Host` on a loopback
-  bind is `403`.
+  need no credential. Anything else without a token is `401 unauthenticated`. A `Host` on a loopback bind
+  that is not `localhost`, `127.0.0.1`, `[::1]`, the public URL's name or an `--allow-host` name (any port) is `403`.
 - Console: `/` (`/console/`, `/setup` and `/sign-in` redirect there with 303). On the first visit, set the owner
   password (12 characters or more; labels `New password` and `Password again`). After that, sign in with the
   `Password` field. The session is a cookie, and the `?token=` link sets none while accounts are on.
@@ -78,21 +78,25 @@ Each row: entry point, then what makes it pass.
    `GET /v2/runs/{id}` to a terminal status (cap 300 s). Then check `GET /v2/runs/{id}/timeline` (`final: true`),
    `cost.usd`, `GET /v2/runs/{id}/files` and `GET /v2/runs/{id}/files/<path>`. Use a task that needs two files (two tool
    calls in one turn): see the open findings.
-9. **Spend cap**: a priced model and a `max_cost_usd` below its first request's worst case (see the caveats; `0.01` is
-   below it for most models) → `failed`, `error.code: spend_cap_reached`, `result: null`, no files. Check the worst
-   case first: a cap the first request fits under lets the run go on, and the check proves nothing.
+9. **Spend cap**: a priced model and a tiny `max_cost_usd`. A cap that can't buy the next request's least pauses the run:
+   `input_required` and `waiting`, `error` null, `pending.kind: "budget"` (with `cap_usd`, `spent_usd`, `needs_usd`,
+   `suggested_cap_usd`), a `spend_cap_reached` row on the timeline, the refused request unsent, no files; a higher cap
+   sends it. A cap that buys a smaller request limits it (its output is held to what the cap buys) and the run can
+   complete: e.g. `0.01` on luna completes and `0.0001` pauses. Only a refusal no cap fixes ends `failed`
+   (`spend_cap_reached`). See serve's README, "A run paused at its cap".
 10. **Cancel**: start a multi-step run, `POST /v2/runs/{id}/cancel` after its first tool_use → `cancelled` within a few
     seconds. Then `POST /v2/runs/{id}/messages {content}` → 409 `not_continuable`. The body takes `content` only.
 11. **Follow-up**: `POST /v2/runs/{id}/messages {content}` to a completed agentic run → back to `completed`. The
     timeline's user_message count goes up by exactly one and the original rows stay first.
-12. **Kernel durability, process crash**: during a multi-step run, take `holder.pid` from
-    `DIR/runs/<id>/run.json`. Check that its ppid is the server and its cmdline names the run dir, then `kill -KILL`
-    that exact PID. Pass: the server log says `its process went before the run ended; opening it again (1 of 3)`,
-    `run.json.generation` goes to 2, the run completes, and the timeline holds exactly one write per file.
-13. **Kernel durability, server restart**: SIGTERM the server mid-run; `run.json.status` reads `sleeping`. Restart on
-    the same data dir. Pass: the run resumes and completes with no duplicate writes. The prompt must say "do not
-    reply or stop until …", or the model may end its turn with a progress note before the signal and the case proves
-    nothing.
+12. **Kernel durability, runner crash**: start the server with `--no-runner` and a runner of its own
+    (`agentrun-serve runner --data DIR`; the same launcher and data directory), then a multi-step run. Take the runner's
+    name from the run's row in the store (`runs.runner`, with `runs.epoch` and `runs.claimed_until`) and `kill -KILL`
+    that runner's PID (its name is `<host>:<pid>:<id>`). Pass: once its claim has lapsed (30 s), a runner started again on
+    the same data directory claims the run, the row's `epoch` goes up by one, the run completes, and the timeline holds
+    exactly one write per file.
+13. **Kernel durability, server restart**: SIGTERM the server mid-run (its runner is beside it), then restart on the same data dir. Pass: the run
+    resumes and completes with no duplicate writes. The prompt must say "do not reply or stop until …", or the model may
+    end its turn with a progress note before the signal and the case proves nothing.
 14. **web_fetch**: a revision naming `web_fetch`, fetching `https://example.com` → `ok:true` with `via: direct` (or
     `parallel` with the key). A loopback URL and the link-local cloud metadata address → `refused: … not a public
     host`.
@@ -113,7 +117,8 @@ Each row: entry point, then what makes it pass.
     Playground (`#/playground`: send a run, then "Open this run" to follow it live), Runs plus a state filter
     (`#/runs?status=cancelled`), run detail tabs Report/Timeline/Files and the file viewer, and a workflow run's
     Graph. Capture console errors and HTTP ≥ 400 per page. The page CSP is
-    `default-src 'self'`, so any violation is a finding.
+    `default-src 'self'` (plus the Keys page's provider icons from Google's favicon service), so any violation is a
+    finding.
 
 ## Subsystems
 
@@ -124,9 +129,11 @@ edits only its own subsection.
 
 ### Kernel (runs, journal, cap, harness adapters)
 
-Code: `packages/serve/src/{runs,app,harness-app,harness,adapters,cap,request-start}.ts`, `packages/run-adapters`,
-`packages/run-adapters-claude-agent`, `packages/run-adapters-codex`, `packages/pi-durable-disk`, and the timeline of
-`packages/pi-durable-agent`. Rows 8 to 13 of the core catalog are its checks on a live model; the checks below are the
+Code: the runner (`packages/serve/src/runner/`: its claim and renewal, `dispatch.ts`, the adapter, workflow and learning
+loops, the journal and the end of a run), the one store (`packages/serve/src/store/`: the run's row, its claim fence, its
+command rows and its journal tables), the run's write half (`runs-over-store.ts`) and read half (`run-view.ts`,
+`store-reads/`), `packages/serve/src/{harness,cap}.ts`, and `packages/run-adapters`,
+`packages/run-adapters-claude-agent` and `packages/run-adapters-codex`. Rows 8 to 13 of the core catalog are its checks on a live model; the checks below are the
 same ground with no key.
 
 **Seam.**
@@ -134,14 +141,14 @@ same ground with no key.
 | | Names on main |
 | --- | --- |
 | Serves | `POST /v2/agents/{id}/runs` (`input`, `revision`, `effort`, `max_cost_usd`), `GET /v2/runs`, `GET /v2/runs/{id}`, `GET /v2/runs/{id}/timeline` (pages or SSE), `POST /v2/runs/{id}/{messages,stop,cancel,pause,resume}`, `GET /v2/runs/{id}/graph`, `GET /v2/usage`, and `harnesses[]` in `GET /v2/capabilities` |
-| Run fields others read | `status`, `state`, `result.final_answer`, `error.code` (`spend_cap_reached`, `run_failed`, `escalated`), `cost.usd` (`null` when unknown) |
-| Journal | In the run's store, from `@parcha/pi-durable-agent/timeline`: `REQUEST_STARTED` (`heldUsd`, `capRefused`), `REQUEST_ENDED` (`heldUsd`, `unsent`), `REQUEST_COST`, `REQUEST_REFUSED`, `REQUEST_COST_PENDING`, `REQUEST_COST_LATE`, `REQUEST_CONTINUED`. Read through `timelineOf` and `runMetricsOf` |
-| Run directory | `DIR/runs/<id>/`: `run.json` (`status`, `holder.pid`, `generation`), `serve.json`, `store/run.sqlite`, `work/`, `process.log` |
-| Adapters it calls | `adapterFor(harness, env, needs: AdapterNeeds)` gives an `AgentAdapter` (`check`, `open`) for a `SessionSpec`, driven by `createHarnessRunner`. There the cap is the runner's `beforeRequest`, asked by `startModelProxy` under a `ProviderPolicy`; on pi it wraps the models (`capModels`) |
-| Takes from the tool plane | `TOOLS` (`ToolEntry`), bound on pi as a `ToolBinding`; `hostTools()` gives claude-agent and codex `HostTool[]`, each with its `REPLAY` (`safe` or `never`) |
-| Takes from places | The revision's `definition.place`: `runner` (the default: a local process under `confinePrefix()`) or `sandbox` with a `box`. A sandbox run on a box this server lacks is `409 agent_not_runnable` naming it (`boxAvailability`); `places` in capabilities lists the boxes, none available yet. `startServe({ box })` takes a `BoxHost` that sweeps the boxes runs left (the run's `box.json`) |
-| Gives the console | The routes above, and `GET /v2/stats` `analytics`, summed from the `RunMetrics` each run's `carryBack` stores |
-| Gives the learning loop | Not wired into serve yet. The seam is run-adapters' `followUpOnce` (one more turn, held to `reserveUsd`), which learn's `reflectBudget` sizes |
+| Run fields others read | `status`, `state`, `result.final_answer`, `error.code` (`spend_cap_reached`, `moderated`, `run_failed`, `escalated`), `cost.usd` (`null` when unknown) |
+| Journal | In the run's rows of the store (`pi_entries`, `pi_tasks`, `pi_submissions`), from `packages/serve/src/timeline`: `REQUEST_STARTED` (`heldUsd`, `capRefused`), `REQUEST_ENDED` (`heldUsd`, `unsent`), `REQUEST_COST`, `REQUEST_REFUSED`, `REQUEST_COST_PENDING`, `REQUEST_COST_LATE`, `REQUEST_CONTINUED`. Read through `timelineOf` and `runMetricsOf` |
+| Run directory | `DIR/disk/agents/<agent>/runs/<id>/work/`; the run's record is in the store, not its folder. The run's claim is its row in `runs` (`epoch`, `runner`, `claimed_until`), and a message, stop, cancel, raise or approval is a row of `commands` that its runner reads |
+| Adapters it calls | `dispatch.ts` reads the run's launch record and picks its loop (`harness-loops.ts` `resolveRunnerLoop`); `adapter-loop.ts` drives an `AgentAdapter` (`check`, `open`) for a `SessionSpec`: pi is `runner/adapters/pi.ts`, the others are `packages/run-adapters-*`. The cap is the loop's `beforeRequest` on the run's model port (`modelPortFor`), the one ledger for every harness; a CLI harness's requests reach it through `startModelProxy` under a `ProviderPolicy` |
+| Takes from the tool plane | `TOOLS` (`ToolEntry`, `tools.ts`); a run's session carries `HostTool[]`, each with its `REPLAY` class (`safe` or `never`), which the loop's side-effect rule (`runner/side-effects.ts`) reads before a call |
+| Takes from places | The run's Workspace and its computer, both opened at the claim (`workspace/run-workspace.ts`, `workspace/computer-for-claim.ts`), from the revision's `computer` setting (`definition.place` is its API view); see Places below |
+| Gives the console | The routes above, and `GET /v2/stats` `analytics`, summed from the `RunMetrics` each run's end writes to its row |
+| Gives the learning loop | Not wired into serve yet. |
 
 **Alone.** No model key, no tool key, no box and no console. Build as in [How to run](#how-to-run), without the console
 lines. Then:
@@ -152,56 +159,65 @@ lines. Then:
   ```sh
   Q=$(mktemp -d)
   env -i PATH="$PATH" HOME="$Q" TMPDIR="$Q" node packages/serve/dist/cli.js --data "$Q/data" --port 0 \
-    --drain-timeout 2s --faux packages/serve/test/fixtures/faux-output-priced.mjs
+    --faux packages/serve/test/fixtures/faux-output-priced.mjs
   ```
 
   Drive it with the README's quick-start calls; the token is in `$Q/data/.token`. The faux model answers by the message:
   `What is six times seven?` gives `The answer is 42.`, `Take your time.` holds its answer for 60 s, `Answer once <file>
   exists.` gives `Now.` once the file exists, and a follow-up `<message>` to `Take your time.` gives
   `On <message>: done.`.
-- claude-agent and codex run alone only inside the tests. `startServe({ fauxHarness })` puts every harness but pi on
-  run-adapters' `fauxAdapter`; the CLI has no flag for it, and no environment variable turns it on. `claude-run` drives
+- claude-agent and codex run alone only inside the tests. `startServe({ harnessTable })` names a test module of harness table
+  entries (serve's test/fixtures/faux-table.mjs puts every harness but pi on run-adapters' `fauxAdapter`); the CLI has
+  no flag for it, and no environment variable of the server's own turns it on. `claude-run` drives
   the pinned Claude CLI against `fakeAnthropic`, and `codex-run` drives agentrun-harness-codex's app-server stand-in. From
   `packages/serve`:
 
   ```sh
-  node --test --test-reporter=tap test/runs.test.mjs test/harness-run.test.mjs test/cap-unknown.test.mjs \
-    test/harness-cap.test.mjs test/claude-run.test.mjs test/codex-run.test.mjs test/recovery.test.mjs
+  node --test --test-reporter=tap test/harness-run.test.mjs test/cap-unknown.test.mjs \
+    test/claude-run.test.mjs test/codex-run.test.mjs
   ```
 
   The checks below name these files without `.test.mjs`.
 
 **Checks.** Each reads `GET /v2/runs/{id}` once the run's timeline says `final: true`, unless it names another route.
-The journal is the `entries` table of the run's `store/run.sqlite`.
+The journal is the run's rows of the store's `pi_entries` table.
 
 1. **Each harness answers.** For every entry of `harnesses[]` with `available: true`, a run ends `completed` with
    `result.final_answer` set and `cost.usd` a number. Each paid request is counted once. Alone: pi through the CLI
    (`What is six times seven?`); claude-agent and codex in `harness-run`, `claude-run` and `codex-run`.
-2. **The cap refuses before anything is sent.** `max_cost_usd: 1`, below one request's worst case: `failed`,
-   `error.code: spend_cap_reached`, `result: null`, `cost.usd: 0`. The journal's only request mark is
-   `agentrun.request_started` with `capRefused: true`. Alone: pi through the CLI; claude-agent and codex in
-   `claude-run` and `codex-run`.
+2. **The cap refuses before anything is sent.** `max_cost_usd: 1`, below one request's worst case: the run pauses,
+   `input_required` and `waiting`, `error` null, `pending.kind: "budget"` (`spent_usd` 0, `needs_usd` the request's
+   least), `result: null`, `cost.usd: 0`. The journal's only request mark is `agentrun.request_started` with
+   `capRefused: true`, and a higher cap sends it (`PATCH /v2/runs/{id}` `{max_cost_usd}`). Only a refusal no cap
+   fixes (a spend nobody knows, no output ceiling, no price) ends `failed`, `spend_cap_reached`. Alone: pi through the
+   CLI, `adapter-pi-cap-park`, `cap-raise` and `runner-cap-raise`; claude-agent and codex in `claude-run`, `codex-run` and `cap-raise`.
 3. **A stopped request counts at the worst case the cap held.** `Take your time.` at `max_cost_usd: 2`; once it reads
    `working`, `POST /v2/runs/{id}/stop` (`stopped: true`) leaves it `input_required`. A message is a `follow_up`, and
-   the run ends `failed`, `spend_cap_reached`, its `error.message` saying `with $1.638400 spent`. At `10` the follow-up
-   completes. `cost.usd` is `null` both ways. Read before `final`, at the first poll that shows the terminal status, it
+   the cap counts the stopped request at the worst case it held ($1.6384). Its request is limited to what is left of
+   the cap; if what is left can't buy that request's least, the run pauses at it (`input_required`,
+   `pending.kind: "budget"`, `spent_usd` 1.6384) with nothing more sent. Either way the run never ends `failed` for room.
+   At `10` the follow-up completes. `cost.usd` is `null` both ways. Read before `final`, at the first poll that shows the terminal status, it
    can still be the live figure (`0`, or `0.0004` after the follow-up). The stopped request's `agentrun.request_ended`
    mark carries `heldUsd: 1.6384`. Alone: pi through the CLI, and `cap-unknown`. For claude-agent and codex,
-   `harness-cap` covers a crash mid-request and run-adapters' `held-worst-case.test.mjs` a request cut short; no test
-   stops one through serve.
+   run-adapters' `held-worst-case.test.mjs` covers a request cut short, and `adapter-cli-record` a tool call a crash cut
+   (ended interrupted when the session opens again), on a scripted CLI adapter, not the real binaries. A runner lost
+   with a request out is covered on pi only, by `adapter-pi-cap-raise-crash`; no test crashes claude-agent or codex
+   through the runner.
 4. **Cancel ends the run and nothing more is sent.** `POST /v2/runs/{id}/cancel` on a working run answers `202` with
    `cancel_requested: true`; the run ends `cancelled`, a second cancel says `already_terminal: true`, and a message is
-   `409 not_continuable`. A request cut by the cancel leaves `cost.usd` `null`. Alone: `runs` (pi, on
-   `Take your time.`) and `harness-run` (codex, cancelled while a request is out).
+   `409 not_continuable`. A request cut by the cancel leaves `cost.usd` `null`. Alone: `runner-stop-withdraw`,
+   which ends a run on a stop or cancel row through the runner and the store, and `adapter-pi-cap-cancel`, a stop or
+   cancel of a run parked at its cap.
 5. **A crash or a restart resumes the run.** Restart: `Answer once <file> exists.`; once it reads `working`, SIGTERM
-   the server's own PID. It exits within `--drain-timeout` plus 3 s, the run's `holder.pid` exits with it, and
-   `run.json` reads `sleeping`. Start it again on the same `--data` and make the file: the run ends `completed` with
-   `Now.`. Crash: `kill -KILL` the run's `holder.pid`; the run opens again and completes, each paid request counted
-   once. Alone: the restart on pi through the CLI, and `recovery`; the crash in `harness-run` and `claude-run`, and in
-   `codex-run`, which checks that no Codex process is left behind.
+   the server's own PID; the runner beside it stops the run where it can resume. Start it again on the same `--data` and
+   make the file: the run ends `completed` with `Now.`. Crash: with a runner of its own (core row 12), `kill -KILL` the
+   runner named in the run's row (`runs.runner`); once the claim lapses, a runner started again claims the run, which
+   completes, each paid request counted once. Alone: `store-resume`, `store-claim-lease`, `runner-close-claim` and
+   `runner-process`; `adapter-pi-claim-lost` for a claim lost mid-turn, and `adapter-pi-cap-raise-crash` for a runner lost
+   around a raise's follow-up.
 6. **A multi-tool turn completes on claude-agent and codex.** Two tool calls in one model response end `completed`,
-   each call shown before its result under the answer that asked for it, none interrupted. Alone:
-   `node --test test/harness-multi-tool.test.mjs` from `packages/serve`. On a live model it is part of row 8.
+   each call shown before its result under the answer that asked for it, none interrupted. Its faux-model test was
+   deleted at the cutover merge (follow-up #2078). On a live model it is part of row 8.
 
 ### Tool plane
 
@@ -227,96 +243,134 @@ land (native and picked web search and tool settings, monid on every harness, th
 - **Tests.** `startServe({ faux, fauxWeb, fauxParallel, fauxMonid })` in `packages/serve/test` replaces the model, the
   resolver and HTTP for fetches, Parallel and monid with `test/fixtures/faux-*.mjs`. The faux harness
   (`faux-harness.mjs`) stands in for claude-agent and codex.
-  `node --test packages/serve/test/{fetch-page,web-fetch,host-tools,harness-run,monid,tool-keys,secret-custody}.test.mjs`
+  `node --test packages/serve/test/{web-fetch-direct,web-fetch,host-tools,harness-run,monid,tool-keys,secret-custody}.test.mjs`
   runs the plane end to end that way.
 - **On a QA server.** `--faux MODULE` scripts the model's tool calls (see "The faux model" in `packages/serve/README.md`),
-  so a run calls `fetch_page`, `web_fetch`, `read`, `write` and `edit` with no model key. `fetch_page` and `web_fetch`
-  then read real public pages; nothing else leaves the box.
+  so a run calls `web_fetch`, `read`, `write` and `edit` with no model key.
+  `web_fetch` then reads real public pages; nothing else leaves the box.
 
 **Checks when the tool plane changed.**
 1. Every name in `GET /v2/settings/tool-keys` `unlocks` is a tool `GET /v2/capabilities` binds, on the harnesses it lists,
    and `missing` names the key each tool still needs.
-2. `fetch_page` and `web_fetch` refuse loopback, private, link-local and metadata addresses and ports other than 80/443,
-   at the first hop and after a redirect; a refused URL is never sent to Parallel.
+2. `web_fetch` refuses loopback,
+   private, link-local and metadata addresses and ports other than 80/443, at the first hop and after a redirect; a
+   refused URL is never sent to Parallel.
 3. A tool key reaches only a run that names a tool it unlocks, over the pipe, never in any process's environment; a saved
    key exists on disk only sealed (no plaintext under the data directory).
-4. On claude-agent and codex, the host tools (`read`, `write`, `edit`, `fetch_page`, `web_fetch`) run and are journaled
-   with their replay class; a `write` cut off by a crash comes back interrupted, never re-run.
+4. On claude-agent and codex, the host tools (`read`, `write`, `edit`, `web_fetch`, and
+   `web_search` where it is not the harness's own) run and are journaled with their replay class; a `write` cut off by a
+   crash comes back interrupted, never re-run.
 5. A `monid.run` is sent once and never retried; a wallet refusal (402) or a workspace control (`BLOCKED`) comes back
    by name; an answer over 60,000 characters is filed under `work/evidence/monid/`.
-6. On pi, `web_search` searches Exa's keyless endpoint with no key: only `{query, numResults}` leaves the server; a 429
-   is a tool error naming the rate limit, never a hang.
+6. On pi with no native search, `web_search` searches through Parallel where the server holds a Parallel key (its fee a
+   `Tool cost` line), else Exa's keyless endpoint with no key: only `{query, numResults}` leaves the server, over IPv4;
+   past Exa's free limit it is tried once more, then a tool error in our words (`Free web search is rate-limited right
+   now…`), never Exa's fix text and never a hang.
 
-### Places (boxes, home, files)
+### Places (computers, workspace, files)
 
-**Seam.** It takes a run's `BoxSpec` from the kernel (`workspace`, `env`, `network`, `mounts`) and the run directory
-the run's files go to. It gives back:
+Code: `packages/serve/src/workspace/` (the Workspace and where a run's tools run), `packages/serve/src/computers.ts`,
+`computer-setting.ts`, `computer-routes.ts` and `faux-computers.ts`, and `packages/computer` (the computer protocol, its
+daemon and its providers).
 
-- `Box` and `BoxProvider` from `@parcha/pi-transport`. Only a provider whose `BoxProvider.mounts` is true binds
-  `mounts` (Docker, as bind mounts); every other provider refuses a spec with any as `unsupported`.
-- `@parcha/pi-transport/sync`: the safe extractor (`extractTar`, `openExtractor`, `removeEntries`) and the sync layer
-  (`seedDir`/`pullDir`, `seedAgentHome`/`pullAgentHome`, `HOST_OWNED_HOME`), each answering with a receipt.
-- `@parcha/pi-transport/home`: the checkpoint vault (`CheckpointVault`, `localVault`, `pullCheckpoint`), which keeps a
-  box's tree as data and never unpacks it on the host; and `checkpointStore`/`verifyStore` with `UntrustedStoreOptions`,
-  which read a box-made SQLite store through `withUntrustedStore` (internal to the package).
-- Internal to pi-transport: `bwrapArgs`, `bwrapFiles` and `probeBwrap` (`src/box/bwrap-args.ts`).
-- `@parcha/pi-transport/testing`: `registerBoxConformance`, and fake providers for each box (`fakeBoxes` and the
-  provider-shaped fakes).
-- Serve: `GET /v2/runs/{id}/files` and `GET /v2/runs/{id}/files/{path}`, and the sweep before any run starts
-  (`sweepBoxes`, `settleBox`, `Quarantine` in `packages/serve/src/box/sweep.ts`).
-- Serve, an agent's place (`packages/serve/src/place.ts`): `definition.place` is `{mode: "runner"}` or
-  `{mode: "sandbox", box}`, checked by `placeIssues`; `GET /v2/capabilities` answers `places` (`placesOf`). A sandbox
-  place saves with a warning at `definition.place`, and its run is 409 `agent_not_runnable` with `details.box`.
-- Serve, the box registry (`packages/serve/src/boxes.ts`): `AGENTRUN_BOXES` lists the boxes to probe once at start
-  (`boxRegistry`), and the start log's `event=boxes` line says which are available and why the others aren't. Box
-  keys (`BOX_KEYS`) stay with the server.
+**Seam.** It takes the agent's `computer` setting (`{kind, provider?}` on the revision, `computer-setting.ts`) and the
+run's claim from the kernel. It gives back:
 
-Not on main yet: the registry feeding `places` (capabilities and run refusals still say no box is set up), runs in a
-box, a files API for the agent's home, and uploads. Each one extends this section when it lands.
+- The Workspace (`workspace/workspace.ts`): one root folder, paths relative to it only (`workspace/paths.ts`). Two
+  backends: the local folder (`local.ts`, Mode 1: `<data>/disk/agents/<agent>/runs/<id>/work`) and the owner's Archil disk
+  (`archil.ts`, Mode 2). `openRunWorkspace` (`run-workspace.ts`) opens a run's at its claim.
+- The run's computer at the claim (`computerForClaim` in `workspace/computer-for-claim.ts`): the setting is resolved in the
+  server's mode against the computer package's kind registry (`resolve-computer.ts`), started for the run under its
+  claim (labels `agentrun.run` and `agentrun.epoch`; the run's folder mounted only where the provider mounts it), and
+  released once at the run's end. A computer that cannot be had is refused in words with `computer_unavailable`; kind
+  `none` is no computer. Providers are made from `@parcha/agentrun-computer` with the keys the store holds
+  (`workspace/computer-providers.ts`). A desktop or phone has a hold on who drives it, the agent or its owner
+  (`workspace/computer-hold.ts`).
+- The run's tools on its Workspace (`workspace/run-tools.ts`). The shell is in the computer when there is one (the folder
+  at `/workspace`); with none, Archil's serverless exec in Mode 2 (a command runs 295 s at most), and no shell at all in
+  Mode 1, where a run has the file tools alone.
+- Serve, Settings → Computers (`computers.ts`): `GET /v2/computers`, `PUT /v2/computers/{provider}/keys` (sealed in the
+  store; a key set in the environment overrides a saved one) and `POST /v2/computers/{provider}/test`; and Archil's
+  (`archil-routes.ts`): `GET`, `PUT` and `DELETE /v2/workspace/archil` and `POST /v2/workspace/archil/test`. `GET
+  /v2/capabilities` answers `computers` and `places`.
+- Serve, an agent's place (`place.ts`, `computer-setting.ts`): `definition.place` is `{mode: "runner"}` or
+  `{mode: "sandbox", box}`, the API view of the computer setting (`runner` is kind `none`, `sandbox` a sandbox on that
+  provider; a desktop, phone or browser reads `runner`). A setting this server cannot serve saves with a warning at
+  `definition.place`, and its run is `409 agent_not_runnable` in the same words.
+- Serve, a run's files: `GET /v2/runs/{id}/files` and `GET /v2/runs/{id}/files/{path}`; and what a run is told of them
+  (`packages/serve/src/run-manifest.ts`): `firstMessage` adds one line to an agentic run's first message, `Files for this
+  run: "inputs/<path>" (<size>), ...`, each name quoted, at most `MANIFEST_ENTRIES` (20), from the run's `work/inputs/`,
+  as `runner/adapter-run-spec.ts` and `runner/cli-run-spec.ts` send it, on every harness.
+- Serve, a run's computer as the run shows it (`computer-view.ts`: `GET /v2/runs/{id}/computer`, who drives now), read from
+  the store through `computerHoldOf`; `computer-routes.ts` holds the owner's take-over and hand-back routes.
 
-**Alone.** Everything else is faked: boxes by fake providers, the model by the faux model. Put a `docker` that exits
-1 first on `PATH`, even where Docker is installed, so nothing reaches a daemon by accident:
+**Alone.** Computers are faked: `--faux` swaps in three faux providers (`faux-computers.ts`: `faux-sandbox`,
+`faux-broken` and a faux desktop), and the workspace tests use a fake computer (`test/workspace-fake-computer.mjs`). Put
+a `docker` that exits 1 first on `PATH`, even where Docker is installed, so nothing reaches a daemon by accident:
 
 ```sh
 mkdir -p "$TMPDIR/qa-bin" && printf '#!/bin/sh\nexit 1\n' > "$TMPDIR/qa-bin/docker" && chmod +x "$TMPDIR/qa-bin/docker"
 export PATH="$TMPDIR/qa-bin:$PATH"
 npm ci --ignore-scripts
-
-# pi-transport: vitest on source, no build
-npm test -w @parcha/pi-transport -- box- fake-boxes   # every box on fakes, Docker's argv without a daemon, bwrap
-npm test -w @parcha/pi-transport -- sync-extract sync-run-files home-vault     # hostile archives and boxes
-npm test -w @parcha/pi-transport -- home-untrusted-store                       # once on Node 22, once on Node 24
-
-# serve: node:test over dist, on the faux model
 npm run build
-(cd packages/serve && node --test test/place.test.mjs test/boxes.test.mjs test/files.test.mjs \
-  test/box-sweep.test.mjs test/box-record.test.mjs)
+(cd packages/serve && node --test test/workspace-local.test.mjs test/workspace-run-tools.test.mjs \
+  test/workspace-resolve-computer.test.mjs test/workspace-computer-for-claim.test.mjs test/computers.test.mjs \
+  test/computers-route.test.mjs test/faux-computers.test.mjs test/computer-setting.test.mjs test/place.test.mjs \
+  test/files.test.mjs test/run-manifest.test.mjs)
+npm test -w @parcha/agentrun-computer
 ```
 
-The Docker variant runs only where Docker exists, as CI's `transport-docker` job does:
-`docker pull debian:bookworm-slim && npm run test:live:docker -w @parcha/pi-transport`. Each `.live` file the `box-`
-filter picks up skips itself without its `PI_TRANSPORT_LIVE_*` variable, so the commands above start no real box.
-`boxes.test.mjs` puts its own fake `docker` first on `PATH` and answers Daytona from a loopback fake; never set a box key
-or a real `docker` on `PATH` for a server under test.
+The Docker variant runs only where Docker exists, as CI's `computer-docker` job does: `AGENTRUN_COMPUTER_LIVE_DOCKER=1
+npm run test:docker -w @parcha/agentrun-computer` (without the variable, every Docker test skips). The other providers' suites need that vendor's key; never set one, or a real `docker` on
+`PATH`, for a server under test.
 
 **Checks when it changed.**
 
-1. **Places**: `place.test.mjs` passes. Each wrong shape is a 422 at `definition.place` and nothing is saved; a sandbox
-   place saves with a warning naming its box, and its run is 409 `agent_not_runnable` with that box; an edit with no
-   place keeps the agent's.
-2. **Box registry and keys**: `boxes.test.mjs` passes. A name in `AGENTRUN_BOXES` that is no box refuses the start;
-   each probe is bounded; no key's value is in an offer, a reason or the log; a box key set in the server's environment
-   reaches no run's process.
-3. **Hostile archives and home pulls**: `sync-extract`, `home-vault` and `sync-run-files` pass. Nothing is written
-   outside the destination, no link, device or fifo is created, a setuid mode is capped, a pull never reverts a file the
-   host changed (`host_changed`), and `learning/` is never written back.
-4. **Box-made stores**: `home-untrusted-store` passes on Node 22 and on Node 24. A store with a trigger, a view, an
-   `ATTACH` or a hot journal is refused, and nothing in it runs.
-5. **Box arguments and mounts**: `box-bwrap-args` matches its golden vectors and refuses a workspace with a link in it;
-   `box-bwrap-probe` refuses a setuid or too-old `bwrap`; `box-docker.test` refuses a missing source, a relative path,
-   a `..` segment, a target of `/` and a repeated target before `docker run`; `box-local` refuses any mount.
-6. **Run files and the sweep**: `files.test.mjs` never lists or serves a dotfile or a symlink, and refuses `..` with the
-   contract's codes; `box-sweep.test.mjs` reaps a box whose writer is gone and quarantines one it cannot empty.
+1. **Place and computer setting**: `place.test.mjs` and `computer-setting.test.mjs` pass. Each wrong shape is a 422 at
+   `definition.place`, and nothing is saved; a setting this server cannot serve saves with a warning, and its run is 409
+   `agent_not_runnable` in the same words; an edit with no place keeps the agent's; a place and a computer that disagree
+   are refused.
+2. **Computers and keys**: `computers.test.mjs` and `computers-route.test.mjs` pass. A kind no provider can serve here is
+   not offered, and says why; a key save takes only the names the provider declares, seals each, and answers names and
+   saved flags, never a value; a provider's test reads its account once and fails in plain words with no key in them.
+3. **The claim's computer**: `workspace-resolve-computer` and `workspace-computer-for-claim` pass. No setting is the
+   server's default; a provider whose required keys are not saved is refused at the claim, naming the keys and Settings →
+   Computers; a Mode 1 sandbox on Docker is made under the run's labels with its folder mounted, and released once; a
+   desktop's view closes `released` or `ended`.
+4. **Run tools**: `workspace-run-tools` passes. With no computer in Mode 1 a run has no shell, and `read` refuses a file
+   of the server's outside the folder; with none in Mode 2 a command runs 295 s at most; with a computer, `bash` and `read`
+   go through it with none of the server's environment.
+5. **Run files**: `files.test.mjs` never lists or serves a dotfile or a symlink, and refuses `..` with the contract's
+   codes.
+6. **Run files told**: `run-manifest.test.mjs` passes. A run given `notes.txt` is sent "Summarize the attached file."
+   plus `Files for this run: "inputs/notes.txt" (<n> B).`, reads it and answers with its text; on claude-agent and codex
+   the first `user_message` names both files with their sizes; a run given none is sent its `content` unchanged; a name
+   with `", ` or an RTL override stays inside its quotes, escaped; a link at `work/inputs` lists nothing.
+7. **An Android phone, end to end** (live: it rents one cloud Android from the phone harness, a few minutes at about
+   5 cents a minute; UNTESTED without its key). The phone's version comes from the server's API alone: QA runs no adb.
+   What the server needs:
+   - `adb` (Android platform-tools) on the server's `PATH`: the phone provider drives the phone with it. The deploy
+     image carries it on amd64 (r35.0.2); on arm64, or a host without it, `GET /v2/computers` shows `phone-harness`
+     not ready with `adb isn't installed on this server (no adb command on PATH): install Android platform-tools, then
+     restart AgentRun`, and the case is UNTESTED.
+   - The key saved: `PUT /v2/computers/phone-harness/keys {"PHONE_HARNESS_API_KEY": …}`, then
+     `POST /v2/computers/phone-harness/test` → ok, with words on what it read and nothing rented. `GET /v2/computers`
+     shows `phone-harness` ready.
+   - No live session on the account before the case (`GET https://api.phone-harness.com/sessions`, the key as a bearer:
+     none `provisioning` or `ready`), so the run's phone is the account's one live session.
+
+   The case: an agent whose computer is `{ "kind": "phone", "provider": "phone-harness" }` (an Android: the provider
+   makes no iPhone yet), with instructions to use its phone, and a run whose input is "Open the Settings app on your phone,
+   find which Android version the phone runs (Settings → About phone), and answer with that version number alone."
+   Once the phone is connected, the run's timeline (`GET /v2/runs/{id}/timeline`) has a `phase` row with the phone's own
+   words for its version, read with getprop when it connected: `The phone is ready: Android <version> (<arch>), from
+   Phone harness.`
+
+   It passes when the run completes; its timeline shows that row, then `phone_open` of `com.android.settings` (or a tap
+   that opens it) and a `phone_tree` or `phone_screen` read of the About phone page; its final answer names the version
+   in that row (a phone of this account said `15`); the phone is released at the run's end (a minute later the
+   account lists no session `provisioning` or `ready`: `GET https://api.phone-harness.com/sessions`, the key as a
+   bearer); and no key is in any answer, the timeline or the server's log.
 
 ### Console, import and analytics
 
@@ -358,7 +412,7 @@ node --input-type=module -e '
 **Checks.**
 
 1. The console loads at `/` and signs in: setup, then the password. With `AGENTRUN_ACCOUNTS=0` the printed
-   link signs the browser in and the token leaves the address.
+   link (`?launch=<code>`) signs the browser in and the code leaves the address; a `?token=` link signs nothing in.
 2. An agent is created from New agent with its defaults, and a run is started from its page. Once the workflow
    starter is on main (#1315), a workflow agent is created from it too.
 3. One run on a priced faux model (`packages/serve/test/fixtures/faux-priced.mjs`): its timeline's usage row, its
@@ -403,6 +457,7 @@ _Written by the lane that owns this subsystem._
 - Fixed by #1357, re-check with console check 2: the console's New agent with default tools was refused with 422,
   because `pdf_pages` and `llm` (call-only tools) were ticked by default.
 - Fixed by #1356, re-check with tool plane check 1: tool keys listed `web_search` and the `monid.*` tools as unlocked,
-  but no such tool was bound.
+  but no such tool was bound. Fixed for `web_search` by its binding as well: it is bound on every harness now, and the
+  Parallel key lists it again as a tool it unlocks.
 - Not in the server yet: effort packs and output types, native web search, places and boxes, the kernel learning loop,
   and `output`/`place` on the run request.

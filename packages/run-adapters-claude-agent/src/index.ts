@@ -1,10 +1,12 @@
 // The Claude Agent SDK as an AgentRun harness adapter (id `claude-agent`). Written for AgentRun.
-export { CLAUDE_AGENT_ALSO_OFF, CLAUDE_AGENT_CLI_SKILL_NAMES, CLAUDE_AGENT_DIGESTS, CLAUDE_AGENT_ID, CLAUDE_AGENT_MAX_IMAGE_BYTES, CLAUDE_AGENT_SKILLS_PLUGIN, claudeAgentAdapter, claudeAgentCliPins, skillProblems, thinkingOf, toolImageProblems, verifyClaudeAgent, verifyClaudeAgentCli } from "./adapter.js";
+export { CLAUDE_AGENT_ALSO_OFF, CLAUDE_AGENT_CLI_SKILL_NAMES, CLAUDE_AGENT_DIGESTS, CLAUDE_AGENT_ID, CLAUDE_AGENT_MAX_IMAGE_BYTES, CLAUDE_AGENT_SKILLS_PLUGIN, claudeAgentAdapter, claudeAgentCliPins, skillProblems, thinkingOf, toolImageProblems, verifyClaudeAgent, verifyClaudeAgentCli, verifyClaudeAgentCliAsync } from "./adapter.js";
 export { CLAUDE_AGENT_PACKAGE, ClaudeAgentNotInstalled, ClaudeAgentPinMismatch, ClaudeAgentThinkingOff } from "./errors.js";
 export type { ClaudeAgentPin } from "./errors.js";
 export type { ClaudeAgentAdapterOptions, ClaudeAgentProvider, ClaudeAgentSkill, ClaudeAgentThinking } from "./adapter.js";
 export { CLAUDE_AGENT_SDK_INSTALL, CLAUDE_AGENT_SDK_VERSION, CLAUDE_CODE_VERSION as CLAUDE_AGENT_CLI_VERSION } from "./versions.js";
-export { findClaudeExecutable as claudeAgentExecutable } from "./binary.js";
-export { anthropicPolicy, CLAUDE_WEB_SEARCH_TOOL, CLAUDE_WEB_SEARCH_USD, OWN_TOOL_PREFIX, thinks } from "./host/policy.js";
+export { findClaudeExecutable as claudeAgentExecutable, platformSuffix as claudeAgentPlatform } from "./binary.js";
+export { anthropicPolicy, CLAUDE_WEB_SEARCH_TOOL, CLAUDE_WEB_SEARCH_USD, OWN_TOOL_PREFIX, thinks, withWebSearches } from "./host/policy.js";
 export type { AnthropicPolicyOptions, AnthropicUsage } from "./host/policy.js";
 export type { ChildCommand, ConfineChild } from "./host/machine.js";
+export { listedTools, MCP_OUTPUT_TOKENS, RESULT_SIZE_KEY, toolServer, type ToolServerModules } from "./host/tool-server.js";
+export type { ServedTool } from "./host/tool-server.js";

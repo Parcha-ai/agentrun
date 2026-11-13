@@ -21,8 +21,8 @@ await saveReceipt();
 let temporary;
 
 try {
-  const [major, minor] = process.versions.node.split('.').map(Number);
-  assert.ok(major > 22 || major === 22 && minor >= 19, 'Source verification requires Node.js >=22.19.0');
+  const [major, minor, patch] = process.versions.node.split('.').map(Number);
+  assert.ok(major > 24 || major === 24 && (minor > 22 || minor === 22 && patch >= 3), 'Source verification requires Node.js >=24.22.3');
   assert.equal(process.argv.length, 2, 'Usage: node scripts/verify-source.mjs');
   temporary = await mkdtemp(join(tmpdir(), 'agentrun-source-consumer-'));
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => /^(?:PATH|SystemRoot|TMPDIR|TEMP|TMP|LANG|LC_ALL)$/i.test(key)));
@@ -35,12 +35,15 @@ try {
   assert.equal(hash(bytes), sourceReceipt.archive.sha256, 'Archive hash differs from export receipt');
   assert.equal(bytes.length, sourceReceipt.archive.size, 'Archive size differs from export receipt');
   receipt.archive = { sha256: hash(bytes), size: bytes.length };
-  async function run(command, args, cwd = temporary, expectedExit = 0, offline = false) {
+  // Each command is capped at 180 s against a hang, except the source tree's install and whole build, which take most of
+  // this check's time (about 100 s for the whole check on a normal runner) and get 600 s, so a slow runner isn't a failure.
+  const LONG_MS = 600_000;
+  async function run(command, args, cwd = temporary, expectedExit = 0, offline = false, timeoutMs = 180_000) {
     const record = { command: [command === process.execPath ? 'node' : command, ...args], network: offline ? 'prohibited' : 'allowed' };
     receipt.commands.push(record);
     try {
       const result = await exec(command, args, { cwd, env: offline ? { ...env, NODE_OPTIONS: `--import=${join(temporary, 'deny-network.mjs')}` } : env,
-        timeout: 180_000, maxBuffer: 16 * 1024 * 1024 });
+        timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024 });
       Object.assign(record, result, { exitCode: 0 });
     } catch (error) {
       Object.assign(record, { stdout: error.stdout ?? '', stderr: error.stderr ?? '', exitCode: error.code ?? null });
@@ -85,10 +88,10 @@ syncBuiltinESMExports();
   env.npm_config_userconfig = join(temporary, 'user.npmrc');
   env.npm_config_globalconfig = join(temporary, 'global.npmrc');
   env.npm_config_cache = join(temporary, 'npm-cache');
-  await run('npm', ['ci', '--ignore-scripts', '--no-audit', '--no-fund'], consumer);
+  await run('npm', ['ci', '--ignore-scripts', '--no-audit', '--no-fund'], consumer, 0, false, LONG_MS);
   // The console's own lockfile, outside the workspaces: installed here, with the network, as the root build would.
-  await run('npm', ['ci', '--ignore-scripts', '--no-audit', '--no-fund'], join(consumer, 'apps', 'console'));
-  await run('npm', ['run', 'build'], consumer, 0, true);
+  await run('npm', ['ci', '--ignore-scripts', '--no-audit', '--no-fund'], join(consumer, 'apps', 'console'), 0, false, LONG_MS);
+  await run('npm', ['run', 'build'], consumer, 0, true, LONG_MS);
   const demo = await run('npm', ['run', 'demo'], consumer, 0, true);
   assert.match(demo, /Report: Pilot the repository workflow first\./);
   assert.match(demo, /3 subquestions researched; 3 sources retained\./);
@@ -118,10 +121,8 @@ syncBuiltinESMExports();
   assert.equal(inspected.checked, 'structure-only');
   assert.ok(inspected.nodes.some(node => node.kind === 'workflow' && node.childWorkflow === 'research-one-question'));
   receipt.graph = { name: inspected.name, sha256: inspected.sha256, nodes: inspected.nodes.length };
-  receipt.piExtension = JSON.parse(await run(process.execPath, ['scripts/verify-pi-install.mjs'], consumer, 0, true));
-  assert.equal(receipt.piExtension.nativeSkillExpansion, true);
   receipt.status = 'passed';
-  console.log('Downloaded source: install, build, demos, graph export/inspection, and native Pi discovery passed. Receipt: .release/source-consumer.json');
+  console.log('Downloaded source: install, build, demos and graph export/inspection passed. Receipt: .release/source-consumer.json');
 } catch (error) {
   receipt.status = 'failed';
   receipt.error = error instanceof Error ? error.message : 'Unknown source verification failure';

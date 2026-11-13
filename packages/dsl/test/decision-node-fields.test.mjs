@@ -379,3 +379,27 @@ test('T6: the published schema and the author guide carry the four fields', () =
 });
 
 void DecisionProviderError;
+
+test('T7d: a provider that says its cut call was never sent (unsent) keeps its own code: a failed decision, not one for review', async () => {
+  // Cut by the node's timeoutMs before it sent anything (a check before the request, say): the provider says so.
+  const early = { ...provider('parallel'), sent: 0, decide: async (_request, ctx) => {
+    await new Promise((resolve) => { if (ctx.signal.aborted) resolve(); else ctx.signal.addEventListener('abort', resolve, { once: true }); });
+    throw new DecisionProviderError('timeout', 'cut before the request was sent', { attempts: 0, unsent: true });
+  } };
+  const error = new DecisionProviderError('timeout', 'x', { unsent: true });
+  assert.equal(error.unsent, true, 'the error carries it');
+  assert.equal(new DecisionProviderError('timeout', 'x').unsent, undefined, 'and only when the provider says so');
+  const outcome = await outcomeOf(runWorkflow(doc([judge({ provider: 'parallel', timeoutMs: 200 })]), INPUT, hosted([early], { deadlineMs: 60_000 })));
+  assert.equal(outcome.status, 'threw', JSON.stringify(outcome).slice(0, 300));
+  assert.match(outcome.message, /cut before the request was sent/, 'the provider\'s timeout, not an interrupted decision');
+});
+
+test('T2e: a node\'s verify is asked of the default provider: a host without it refuses the node before any node runs', async () => {
+  const parallel = provider('parallel');
+  const agent = { node: 'agent', label: 'work', instructions: 'Do it.', out: 'Out', as: 'work', tools: [], verify: { out: 'Check' } };
+  const workflow = doc([agent]);
+  const refused = await outcomeOf(runWorkflow(workflow, INPUT, { runNode: async () => ({ ok: true }), ...hosted([parallel], { fallback: 'jev' }) }));
+  assert.equal(refused.status, 'threw');
+  assert.match(refused.message, /agent node "work" \(verify\) names the decision provider jev, which this host does not have/);
+  assert.doesNotThrow(() => dsl.assertWorkflowCapabilities(workflow.root, { runNode: async () => ({}), ...hosted([parallel]) }, workflow), 'a host whose default provider is there accepts it');
+});

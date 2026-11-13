@@ -42,7 +42,8 @@ const register = join(root, "spec/lean/sweep/capture-register.mjs");
 
 const suites = [
   ["packages/dsl/test", /\.test\.mjs$/],
-  ["packages/pi/test", /\.test\.mjs$/],
+  // serve's durable workflow engine (packages/serve/src/workflow), the tests root's test:workflows runs in the lean pool.
+  ["packages/serve/test", /^(?:durable-|node-|record-|pi-runner|typed-submit-contract)[\w.-]*\.test\.mjs$/],
   ["examples", /\.test\.mjs$/],
 ];
 /** The finished captures in a directory; a `.tmp` file is a write whose process died before its rename. */

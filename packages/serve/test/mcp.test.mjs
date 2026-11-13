@@ -2,10 +2,9 @@
 // an agent made and run to its answer, its file and its events; the Bearer token taken and nothing else (no cookie, no
 // credential, no foreign Origin, no GET); each tool answering as its /v2 routes do; and llms.txt, public.
 import assert from "node:assert/strict";
-import { readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { readFile } from "node:fs/promises";
 import { test } from "node:test";
-import { call, cookieOf, scratch, serve, withEnv } from "./support.mjs";
+import { call, cookieOf, serve } from "./support.mjs";
 
 const TOOLS = ["whoami", "agents_list", "agents_create", "agents_revise", "runs_start", "runs_get", "runs_events", "runs_files", "runs_respond", "runs_cancel"];
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -184,8 +183,8 @@ test("agents_create and agents_revise pass any other definition field through to
   assert.deepEqual(made.definition.place, { mode: "runner" });
   assert.equal(made.definition.instructions, "Answer.", "a field named outright wins over the same one in definition");
   assert.deepEqual((await v2(server, "GET", "/agents/placed")).body.definition.place, { mode: "runner" });
-  const revised = (await mcp.tool("agents_revise", { agent_id: "placed", definition: { place: { mode: "sandbox", box: "bwrap" } }, note: "boxed" })).structuredContent;
-  assert.deepEqual([revised.revisions, revised.definition.place, revised.definition.instructions], [2, { mode: "sandbox", box: "bwrap" }, "Answer."], "the place changes, the rest stays");
+  const revised = (await mcp.tool("agents_revise", { agent_id: "placed", definition: { place: { mode: "sandbox", box: "docker" } }, note: "boxed" })).structuredContent;
+  assert.deepEqual([revised.revisions, revised.definition.place, revised.definition.instructions], [2, { mode: "sandbox", box: "docker" }, "Answer."], "the place changes, the rest stays");
   // A field the route refuses is its own 422, by field; a definition that is no object is the tool's.
   const refused = await mcp.tool("agents_create", { id: "bad", name: "Bad", instructions: "Answer.", definition: { input_schema: {} } }, { ok: false });
   assert.deepEqual([refused.structuredContent.error.code, refused.structuredContent.error.fields.map((f) => f.field)], ["input_invalid", ["definition.input_schema"]]);
@@ -194,12 +193,40 @@ test("agents_create and agents_revise pass any other definition field through to
   assert.deepEqual([nulled.structuredContent.error.code, nulled.structuredContent.error.fields.map((f) => f.field)], ["input_invalid", ["definition.input_schema"]]);
   const unplaced = await mcp.tool("agents_revise", { agent_id: "placed", definition: { place: null } }, { ok: false });
   assert.deepEqual([unplaced.structuredContent.error.code, unplaced.structuredContent.error.fields[0].field], ["input_invalid", "definition.place"]);
-  assert.deepEqual((await v2(server, "GET", "/agents/placed")).body.definition.place, { mode: "sandbox", box: "bwrap" }, "a refused revise changes nothing");
+  assert.deepEqual((await v2(server, "GET", "/agents/placed")).body.definition.place, { mode: "sandbox", box: "docker" }, "a refused revise changes nothing");
+  // A default cap: set through definition, kept by a revise that leaves it out, refused as null (only 0 clears it), and
+  // cleared by 0.
+  assert.equal((await mcp.tool("agents_revise", { agent_id: "placed", definition: { max_cost_usd: 0.5 } })).structuredContent.definition.max_cost_usd, 0.5);
+  assert.equal((await mcp.tool("agents_revise", { agent_id: "placed", instructions: "Answer, capped." })).structuredContent.definition.max_cost_usd, 0.5, "kept");
+  const nullCap = await mcp.tool("agents_revise", { agent_id: "placed", definition: { max_cost_usd: null } }, { ok: false });
+  assert.deepEqual([nullCap.structuredContent.error.code, nullCap.structuredContent.error.fields.map((f) => f.field)], ["input_invalid", ["definition.max_cost_usd"]]);
+  assert.equal((await mcp.tool("agents_revise", { agent_id: "placed", definition: { max_cost_usd: 0 } })).structuredContent.definition.max_cost_usd, undefined, "cleared by 0");
   const wrong = await mcp.tool("agents_revise", { agent_id: "placed", definition: "sandbox" }, { ok: false });
   assert.deepEqual([wrong.structuredContent.error.code, wrong.structuredContent.error.fields[0].field], ["input_invalid", "definition"]);
   // The tools say so.
   const { tools } = (await mcp.request("tools/list")).result;
   for (const name of ["agents_create", "agents_revise"]) assert.equal(tools.find((tool) => tool.name === name).inputSchema.properties.definition.type, "object", name);
+});
+
+test("agents_revise naming only place replaces the computer the old place said, naming only computer replaces the place, and only one revise naming both that disagree is refused", async (t) => {
+  const server = await serve(t);
+  const mcp = mcpClient(server);
+  await mcp.tool("agents_create", { id: "moved", name: "Moved", instructions: "Answer.", definition: { place: { mode: "runner" } } });
+  assert.deepEqual((await v2(server, "GET", "/agents/moved")).body.definition.computer, { kind: "none" }, "the read shows the place's computer beside it");
+  // Only place: the computer the old place said is replaced by the new place's, never carried beside it.
+  const boxed = (await mcp.tool("agents_revise", { agent_id: "moved", definition: { place: { mode: "sandbox", box: "docker" } } })).structuredContent;
+  assert.deepEqual([boxed.definition.place, boxed.definition.computer], [{ mode: "sandbox", box: "docker" }, { kind: "sandbox", provider: "docker" }]);
+  // Only computer: the place is its view, replaced the same way.
+  const desk = (await mcp.tool("agents_revise", { agent_id: "moved", definition: { computer: { kind: "desktop", provider: "e2b" } } })).structuredContent;
+  assert.deepEqual([desk.definition.computer, desk.definition.place], [{ kind: "desktop", provider: "e2b" }, { mode: "runner" }]);
+  // Both, agreeing: one setting.
+  const agreed = (await mcp.tool("agents_revise", { agent_id: "moved", definition: { computer: { kind: "sandbox", provider: "daytona" }, place: { mode: "sandbox", box: "daytona" } } })).structuredContent;
+  assert.deepEqual([agreed.definition.computer, agreed.definition.place], [{ kind: "sandbox", provider: "daytona" }, { mode: "sandbox", box: "daytona" }]);
+  // Both, disagreeing, in the one revise: the route's 422, in its words; nothing changes.
+  const two = await mcp.tool("agents_revise", { agent_id: "moved", definition: { computer: { kind: "phone", provider: "phone-harness" }, place: { mode: "sandbox", box: "docker" } } }, { ok: false });
+  assert.equal(two.structuredContent.error.code, "input_invalid");
+  assert.deepEqual(two.structuredContent.error.fields.map((f) => [f.field, f.message]), [["definition.place", "computer and place say two settings: give one (place is computer's v2 view)"]]);
+  assert.deepEqual((await v2(server, "GET", "/agents/moved")).body.definition.computer, { kind: "sandbox", provider: "daytona" }, "a refused revise changes nothing");
 });
 
 test("runs_get names the question a waiting run asked, runs_respond answers it, and runs_cancel ends another", async (t) => {
@@ -228,17 +255,15 @@ test("GET /v2/runs/{id}/timeline takes a limit: pages of at most that many rows,
   await mcp.tool("agents_create", { id: "calc", name: "Calc", instructions: "Answer." });
   const { run_id } = (await mcp.tool("runs_start", { agent_id: "calc", input: { content: "What is six times seven?" } })).structuredContent;
   await mcp.until(run_id, ["completed"]);
-  // The status reads completed before the run is settled, and settling replaces its rows with the store's (the live
-  // run:start and run:end rows go): every read is made once the timeline says final, so all of them see the same rows.
-  let whole;
-  for (const end = Date.now() + 5_000; !(whole = (await v2(server, "GET", `/runs/${run_id}/timeline`)).body).final; await sleep(50)) {
-    assert.ok(Date.now() < end, `the run's timeline is final within 5 s: ${JSON.stringify({ status: whole.status, rows: whole.rows.map((r) => r.id) })}`);
-  }
+  // A run is settled once its end is in the store (settled = terminal): the first read after it reads completed is final.
+  const whole = (await v2(server, "GET", `/runs/${run_id}/timeline`)).body;
+  assert.equal(whole.final, true, `final at the first read after completed: ${JSON.stringify({ status: whole.status, rows: whole.rows.map((r) => r.id) })}`);
   const first = (await v2(server, "GET", `/runs/${run_id}/timeline?limit=1`)).body;
   assert.deepEqual([first.rows.length, first.has_more], [1, true]);
   const rest = (await v2(server, "GET", `/runs/${run_id}/timeline?after=${first.next_after}&limit=500`)).body;
   assert.deepEqual([...first.rows, ...rest.rows].map((r) => r.id).sort(), whole.rows.map((r) => r.id).sort());
   for (const limit of ["0", "501", "x"]) assert.equal((await v2(server, "GET", `/runs/${run_id}/timeline?limit=${limit}`)).status, 400, limit);
+  assert.deepEqual((await v2(server, "GET", `/runs/${run_id}/timeline`)).body.rows.map((r) => r.id), whole.rows.map((r) => r.id), "no row a reader saw goes");
 });
 
 test("the protocol's own refusals: an unknown method or tool, a batch, bad JSON, a malformed message, another method than POST, an unknown protocol version", async (t) => {
@@ -308,29 +333,22 @@ test("the MCP SDK's own client connects, lists the ten tools and calls one", asy
   assert.deepEqual((await client.callTool({ name: "agents_list", arguments: {} })).structuredContent, { agents: [], next_cursor: null });
 });
 
-test("the timeline's limit, read while an answered run's end is carried back: its pages are the whole timeline, and the same rows once the run is final", async (t) => {
-  // The run's process cannot exit while the gate's file is missing: the reads below land between the answer and the
-  // carry back, the window "GET /v2/runs/{id}/timeline takes a limit" can land in on a loaded machine.
-  const gate = join(await scratch(t), "gate");
-  withEnv(t, { EXIT_GATE: gate });
-  const server = await serve(t, { faux: new URL("./fixtures/faux-answer-slow-exit.mjs", import.meta.url).pathname });
+test("a run paused at its spend cap: the instructions, runs_get and runs_respond say it waits for its cap to be raised and is not answered; runs_get gives pending kind budget, and runs_respond is refused 409 budget_reached", async (t) => {
+  const server = await serve(t, { faux: new URL("./fixtures/faux-output-priced.mjs", import.meta.url).pathname });
   const mcp = mcpClient(server);
-  await mcp.tool("agents_create", { id: "calc", name: "Calc", instructions: "Answer." });
-  const { run_id } = (await mcp.tool("runs_start", { agent_id: "calc", input: { content: "What is six times seven?" } })).structuredContent;
-  await mcp.until(run_id, ["completed"]);
-  /** The whole timeline's ids, checked against the same timeline read one row, then the rest. */
-  const read = async () => {
-    const whole = (await v2(server, "GET", `/runs/${run_id}/timeline`)).body;
-    const first = (await v2(server, "GET", `/runs/${run_id}/timeline?limit=1`)).body;
-    const rest = (await v2(server, "GET", `/runs/${run_id}/timeline?after=${first.next_after}&limit=500`)).body;
-    assert.deepEqual([...first.rows, ...rest.rows].map((r) => r.id).sort(), whole.rows.map((r) => r.id).sort());
-    return { ids: whole.rows.map((r) => r.id), final: whole.final };
-  };
-  const answered = await read();
-  assert.equal(answered.final, false, "read before the run's end is carried back");
-  await writeFile(gate, "");
-  for (const end = Date.now() + 30_000; !(await v2(server, "GET", `/runs/${run_id}/timeline?wait_ms=1000`)).body.final; ) assert.ok(Date.now() < end, "the run's end is carried back");
-  const ended = await read();
-  assert.equal(ended.final, true);
-  assert.deepEqual(ended.ids, answered.ids, "no row a reader saw goes when the run's end is carried back");
+  const init = await mcp.request("initialize", INIT);
+  assert.match(init.result.instructions, /pending kind budget.*paused at its spend cap.*do not answer it/s);
+  const { tools } = (await mcp.request("tools/list")).result;
+  const described = Object.fromEntries(tools.map((tool) => [tool.name, tool.description]));
+  assert.match(described.runs_get, /\{kind: "budget", cap_usd, spent_usd, needs_usd, suggested_cap_usd, said, at\}/);
+  assert.match(described.runs_get, /waits for its cap to be raised, PATCH \/v2\/runs\/\{run_id\} \{max_cost_usd\}, which a person decides; suggested_cap_usd is a raise that resumes it/);
+  assert.match(described.runs_respond, /paused at its spend cap \(pending kind budget\) takes no message: 409 budget_reached/);
+  // The run: a $0.05 cap under the least of one request ($0.1024), paused before anything was sent.
+  await mcp.tool("agents_create", { id: "capped", name: "Capped", instructions: "Answer." });
+  const started = await v2(server, "POST", "/agents/capped/runs", { input: { content: "hi" }, max_cost_usd: 0.05 });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const paused = await mcp.until(started.body.run_id, ["input_required", "failed"]);
+  assert.deepEqual([paused.status, paused.state, paused.pending?.kind, paused.pending?.cap_usd], ["input_required", "waiting", "budget", 0.05], JSON.stringify(paused));
+  const refused = await mcp.tool("runs_respond", { run_id: started.body.run_id, content: "go on" }, { ok: false });
+  assert.match(JSON.stringify(refused), /budget_reached/);
 });

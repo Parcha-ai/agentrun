@@ -2,11 +2,11 @@
 
 Typed workflows that your agent writes. It drafts a workflow, checks it, dry-runs it for free, then runs it; `@parcha/agentrun-dsl/graph` turns the workflow into its graph. The core provides the v2 workflow types, validator, interpreter, events, schema, and an offline CLI. Supply agent, judgment, and effect functions only when a workflow needs them.
 
-Beta, on npm under the `beta` dist-tag (`npm view @parcha/agentrun-dsl dist-tags`). Requires Node 22.19+; TypeScript consumers require TypeScript 5.4+.
+Beta, on npm under the `latest` dist-tag (`npm view @parcha/agentrun-dsl dist-tags`). Requires Node 24.22.3+; TypeScript consumers require TypeScript 5.4+.
 
 ```sh
-npm install @parcha/agentrun-dsl@beta
-npx @parcha/agentrun-dsl@beta demo
+npm install @parcha/agentrun-dsl@latest
+npx @parcha/agentrun-dsl@latest demo
 ```
 
 For the JavaScript API, save this as `demo.mjs` and run `node demo.mjs`:
@@ -17,28 +17,28 @@ const { result } = await runTriageDemo('billing');
 console.log(result.output); // { queue: 'billing', priority: 'normal' }
 ```
 
-The demo runs real control flow with scripted judgments. `ambiguous` escalates. No model SDK or API key is required by the core. Optional `@parcha/agentrun-jev` and `@parcha/agentrun-pi` adapters add live judgments and agent steps.
+The demo runs real control flow with scripted judgments. `ambiguous` escalates. No model SDK or API key is required by the core. The optional `@parcha/agentrun-jev` adapter adds live judgments; your host supplies agent steps through `runNode`.
 
 ## From a draft to a run
 
 A workflow is a JSON document of typed nodes: each node that asks a model names the JSON Schema its answer must match, and the workflow names the schemas of its input and output. An agent writes the document. This package checks it, tries it without a model, and runs it.
 
-1. **Draft.** In Pi, `/agentrun <task>` has the agent draft the workflow with the packaged author skill (see [the Pi extension](../pi/README.md)). In your own host, `authorWorkflow` gives your agent the same author contract and keeps the candidate and its feedback without running it.
+1. **Draft.** In your own host, `authorWorkflow` gives your agent the packaged author contract and keeps the candidate and its feedback without running it.
 2. **Check.** `validateWorkflow(workflow)` checks the structure, the schemas, the state paths between nodes and the predicates, with no model call. A refused workflow lists its `issues`: each names the node or schema at fault with a JSON Pointer `path`, and the rule it breaks with a `code`, so the agent repairs that node and checks again. `inspectWorkflow` shows the tree and the tools and adapters it needs, without running any code.
 3. **Dry-run, for free.** `dryRunWorkflow(workflow)` runs the whole workflow on synthetic values made from its schemas, with no model, Jev or tool call. Its `status` is `passed` when every check ran, `failed` with the `problems`, or `not_run` when a check could not run, with the reasons in `skipped`. A `not_run` dry run proves nothing.
 4. **Run.** `runWorkflow(workflow, input, deps)` runs it with your agent, judgment and effect functions, and returns an output that matches the output schema, or an escalation. `deps` is the object of adapters your application supplies (`runNode`, `runJudge`, `runEffect`); [Integrate with your application](https://github.com/Parcha-ai/agentrun/blob/main/docs/host-integration.md) says what each one owes the engine.
-5. **Watch every node.** `workflowGraph(workflow)` from `@parcha/agentrun-dsl/graph` lists every node and edge from the JSON alone, and `nodeStatus` marks each node `done`, `working`, `failed` or `not-run` from what a durable run kept, and `escalated` where the run's terminal result says it stopped. Pi's `/agentrun` view draws the same graph, with each node's state as the run goes.
+5. **Watch every node.** `workflowGraph(workflow)` from `@parcha/agentrun-dsl/graph` lists every node and edge from the JSON alone, and `nodeStatus` marks each node `done`, `working`, `failed` or `not-run` from what a durable run kept, and `escalated` where the run's terminal result says it stopped. The AgentRun console draws the same graph for a workflow run, with each node's state as the run goes.
 
 The same checks from a shell, in the project where you installed the package, on one of the author skill's examples that ships with it (an agent extracts the change in each release note, then summarizes the migration):
 
 ```sh
 cp node_modules/@parcha/agentrun-dsl/skills/author/examples/review-release-notes.json workflow.json
-npx @parcha/agentrun-dsl@beta inspect workflow.json
-npx @parcha/agentrun-dsl@beta validate workflow.json --trusted
-npx @parcha/agentrun-dsl@beta dry-run workflow.json --trusted
+npx @parcha/agentrun-dsl@latest inspect workflow.json
+npx @parcha/agentrun-dsl@latest validate workflow.json --trusted
+npx @parcha/agentrun-dsl@latest dry-run workflow.json --trusted
 ```
 
-Its dry run is `passed`: every node ran on synthetic values, with no model call. The demo's workflow (`npx @parcha/agentrun-dsl@beta example demo.json`) comes back `not_run` instead: its confidence check escalates on a synthetic answer, so the queue choice after it is not exercised, and `skipped` says so. `dry-run --strict` exits 3 on `not_run`, for a script that must stop there; a failure exits 1.
+Its dry run is `passed`: every node ran on synthetic values, with no model call. The demo's workflow (`npx @parcha/agentrun-dsl@latest example demo.json`) comes back `not_run` instead: its confidence check escalates on a synthetic answer, so the queue choice after it is not exercised, and `skipped` says so. `dry-run --strict` exits 3 on `not_run`, for a script that must stop there; a failure exits 1.
 
 ### Run it with no key
 
@@ -95,7 +95,7 @@ Save its input as `total.input.json`:
 Then run it:
 
 ```sh
-npx @parcha/agentrun-dsl@beta run total.json total.input.json --trusted
+npx @parcha/agentrun-dsl@latest run total.json total.input.json --trusted
 ```
 
 It prints `"status": "complete"` and an output with `"total": 6`. The shipped examples each need an adapter, so `run` stops on them naming it: `review-release-notes.json` needs `runNode`, `evidence-gate.json` needs `runJudge`, and `read-file.json` and `read-source-decision.json` need `runEffect` (the latter also `runJudge`). Run those with `runWorkflow` and your own adapters.
@@ -174,8 +174,8 @@ The package root exports a deliberate API. The beta retains agent, structured-ou
 | Build judgment adapters | `compileQuestions`, `validateAnswers`, `answersToValue`, `answersSidecar`, `answerConfidence`, `deriveConfidence`, `completeConfidence`, `refusedQuestions`, `SYSTEM_ONE_LIMITS`, `SystemOneError`; `SystemOneQuestion`, `SystemOneAnswer`, `SystemOneResult`, `SystemOneRetryClass`, `CompiledQuestions`, `AnswersSidecar`, `ConfidenceSource`. |
 | Plug in a decision model | `judgeFromProvider` (a `DecisionProvider` as `runJudge`), `checkCapabilities`, `DecisionProviderError`; `DecisionProvider`, `DecisionCapabilities`, `DecisionRequest`, `DecisionContext`, `DecisionOutcome`, `DecisionEvidence`, `ProviderAnswer`, `CostBasis`. `@parcha/agentrun-dsl/testing` has `registerDecisionProviderConformance`, the suite a provider's own tests register: exact answers, a null cost never read as 0, typed errors, abort and deadline, no key in what it returns or throws, its declared limits refused before sending, a refusal kept as one. Jev's provider is `jevProvider` in `@parcha/agentrun-jev`; Parallel's is in `@parcha/agentrun-decisions`. |
 | Integrate a host | `runWorkflowSlice`, `assertWorkflowCapabilities`, `desugarWorkflow`, `resolveSchemaForWorkflow`, `stageSchemaForNode`, `submissionSchemaForNode`, `mergeStageDelta`, `REPORT_SCHEMA`, `SHELL_RESULT_SCHEMA`, `getPath`, `predicateMatches`, `deniedGlobalReferences`. |
-| Author workflows | `authorContract`, `renderAuthorContract` (text and sha256), `renderAuthorHostAddendum`, `authorWorkflow`, `candidatePolicyErrors`, `applyHostOutputTypes`, `AUTHOR_SKILL_NAME`, `authorSkillDirectory`, `loadAuthorReference`, `loadAuthorSkillBundle`; `AuthorHostAddendum`, `AuthorWorkflowOptions`, `AuthoredWorkflow`, `CandidatePolicyOptions`. The one author contract and its packaged skill (`skills/author`); a host adds only an addendum. See [the author contract](../../docs/authoring.md#one-author-contract). |
-| Language vocabulary | `WORKFLOW_NODE_KINDS`, `GENERATIVE_NODE_KINDS`, `JUDGMENT_NODE_KINDS`, `NODE_FIELDS`, `IGNORED_NODE_FIELDS`, `WORKFLOW_PREDICATES`, `MECHANICAL_PREDICATES`, `PREDICATE_FIELDS`, `FIELD_TYPES`, `EFFORT_LEVELS`, `THINKING_LEVELS`, `MODEL_TIERS`, `CALL_TRANSPORTS`, `CALL_RETRY_CLASSES`, `EFFECT_FAILURE_CODES`, `PROSE_ARTIFACT_TYPES`; `WorkflowNodeKind`, `WorkflowPredicateName`, `FieldType`. The validator and the author contract read these same constants. |
+| Author workflows | `authorContract`, `renderAuthorContract` (text and sha256), `renderAuthorHostAddendum`, `authorWorkflow`, `applyHostOutputTypes`, `authorSkillDirectory`, `loadAuthorReference`, `loadAuthorSkillBundle`; `AuthorHostAddendum`, `AuthorWorkflowOptions`, `AuthoredWorkflow`, `CandidatePolicyOptions`. The one author contract and its packaged skill (`skills/author`); a host adds only an addendum. See [the author contract](../../docs/authoring.md#one-author-contract). |
+| Language vocabulary | `GENERATIVE_NODE_KINDS`, `JUDGMENT_NODE_KINDS`, `NODE_FIELDS`, `IGNORED_NODE_FIELDS`, `WORKFLOW_PREDICATES`, `MECHANICAL_PREDICATES`, `PREDICATE_FIELDS`, `FIELD_TYPES`, `EFFORT_LEVELS`, `THINKING_LEVELS`, `MODEL_TIERS`, `CALL_TRANSPORTS`, `CALL_RETRY_CLASSES`, `EFFECT_FAILURE_CODES`, `PROSE_ARTIFACT_TYPES`; `WorkflowNodeKind`, `WorkflowPredicateName`, `FieldType`. The validator and the author contract read these same constants. |
 | Test without a model | `synthesizeInstance`, `synthesizeAnswers`, `DryRunOptions`, `DryRunResult`. Synthetic answers exercise execution mechanics; they do not establish judgment quality. A dry run stops after `maxSteps` synthetic steps (10,000 by default) or at its `signal`, with `skipped` saying so. |
 
 A `code` node runs in the host process through the package's own executor, which shadows common globals and is not a sandbox. A host that runs code from an untrusted author supplies `deps.runCode`: the interpreter then hands it each code node with the state and the transform's context, merges what it returns under the same patch rules and state checks, and never executes a code body itself, not even as a validation probe. `dryRunWorkflow` takes the same `runCode` option and honors it the same way. `validateWorkflow` is synchronous and cannot call a host executor: a host that has one validates with `executeCode: false`, as `runWorkflow` and `dryRunWorkflow` do for it. `deniedGlobalReferences` names the globals a code body reaches for (a lint, never a boundary), so such a host can refuse the node before it runs. A failed effect carries a closed `code` from `EFFECT_FAILURE_CODES` on its `EffectFailure` and on every `effect.failed` event (null when the failure is not an `EffectFailure` with a listed code; any other typed error's own code rides as `error_code`), and `retry.on` names codes as well as retry classes.

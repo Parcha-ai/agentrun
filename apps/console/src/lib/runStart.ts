@@ -1,5 +1,7 @@
-export type StartBody = { input: unknown; revision?: string; effort?: string; max_cost_usd?: number };
-export type StartForm = { text: string; revision?: string; effort?: string; maxCostUsd?: string };
+export type StartBody = { input: unknown; revision?: string; effort?: string; max_cost_usd?: number; file_ids?: string[]; repo?: string };
+/** `fileIds`: the files the run names (uploaded with POST /v2/files), copied into its `inputs/` before it starts.
+ *  `repo`: the GitHub repository (owner/name) the run reaches; empty takes the agent's one bound repository. */
+export type StartForm = { text: string; revision?: string; effort?: string; maxCostUsd?: string; fileIds?: string[]; repo?: string };
 
 /** The body of `POST /v2/agents/{id}/runs` from the form. An agentic run's input is its first message, `{content}`; a
  *  workflow run's is its typed input, as JSON. A workflow run takes no spend cap (the server refuses one). */
@@ -18,6 +20,14 @@ export function startBody(kind: "agentic" | "workflow", f: StartForm): { ok: tru
     const cap = Number(f.maxCostUsd);
     if (!Number.isFinite(cap) || cap <= 0) return { ok: false, field: "max_cost_usd", message: "A spend cap is a positive number of dollars." };
     body.max_cost_usd = cap;
+  }
+  if (f.fileIds?.length) body.file_ids = [...f.fileIds];
+  // The repository field is the agent form's alone; a workflow start never reads it (a value kept from the agent
+  // the person switched from is not sent, nor checked).
+  const repo = kind === "agentic" ? f.repo?.trim() : undefined;
+  if (repo) {
+    if (!/^[^/\s]+\/[^/\s]+$/.test(repo)) return { ok: false, field: "repo", message: "A repository is owner/name, like Parcha-ai/agentrun." };
+    body.repo = repo;
   }
   return { ok: true, body };
 }
@@ -42,7 +52,15 @@ function derefIn(root: Schema, schemas: Record<string, Schema>) {
 
 /** A workflow's input to start from: its input schema's first example (or default), else the schema's shape with empty
  *  values (an object's required fields, a list empty, a string ""). Null when the workflow names no input schema. */
-export function exampleInput(workflow: unknown): { text: string; from: "example" | "shape"; fields: { name: string; note?: string }[] } | null {
+/** The line under a workflow's input box: its example to edit, or its required fields to fill, naming the optional fields
+ *  it also takes (left out of the box, so its own pre-fill never fails the schema). `then` is the button's verb. */
+export function exampleHint(example: NonNullable<ReturnType<typeof exampleInput>>, then: "run" | "start"): string {
+  if (example.from === "example") return `The workflow's example input. Edit it, then ${then}.`;
+  const also = example.optional.length ? ` It also takes ${example.optional.join(", ")}, if you add ${example.optional.length === 1 ? "it" : "them"}.` : "";
+  return `The workflow's input, its required fields empty. Fill them in, then ${then}.${also}`;
+}
+
+export function exampleInput(workflow: unknown): { text: string; from: "example" | "shape"; fields: { name: string; note?: string }[]; optional: string[] } | null {
   const w = workflow as { input?: { schemaId?: string }; schemas?: Record<string, Schema> } | null;
   const declared = w?.input?.schemaId ? w.schemas?.[w.input.schemaId] : undefined;
   if (!declared) return null;
@@ -50,7 +68,7 @@ export function exampleInput(workflow: unknown): { text: string; from: "example"
   const schema = deref(declared)!;
   const fields = Object.entries(schema.properties ?? {}).map(([name, p]) => { const d = deref(p); return { name, ...(d?.description ? { note: d.description } : {}) }; });
   const given = schema.examples?.[0] ?? schema.default;
-  if (given !== undefined) return { text: JSON.stringify(given, null, 2), from: "example", fields };
+  if (given !== undefined) return { text: JSON.stringify(given, null, 2), from: "example", fields, optional: [] };
   const shape = (given: Schema | undefined, depth = 0): unknown => {
     const s = deref(given);
     if (!s || depth > 4) return null;
@@ -58,14 +76,17 @@ export function exampleInput(workflow: unknown): { text: string; from: "example"
     if (s.default !== undefined) return s.default;
     if (s.enum?.length) return s.enum[0];
     const t = Array.isArray(s.type) ? s.type[0] : s.type;
-    if (t === "object" || s.properties) return Object.fromEntries(Object.entries(s.properties ?? {}).filter(([k]) => !s.required || s.required.includes(k)).map(([k, v]) => [k, shape(v, depth + 1)]));
+    // Only the fields the schema requires: an optional one filled with an empty value can fail its own constraint (a
+    // minLength, a pattern), so it is left for the person to add (#1926).
+    if (t === "object" || s.properties) return Object.fromEntries(Object.entries(s.properties ?? {}).filter(([k]) => (s.required ?? []).includes(k)).map(([k, v]) => [k, shape(v, depth + 1)]));
     if (t === "array") return [];
     if (t === "string") return "";
     if (t === "number" || t === "integer") return 0;
     if (t === "boolean") return false;
     return null;
   };
-  return { text: JSON.stringify(shape(schema), null, 2), from: "shape", fields };
+  const required = new Set(schema.required ?? []);
+  return { text: JSON.stringify(shape(schema), null, 2), from: "shape", fields, optional: fields.map((f) => f.name).filter((n) => !required.has(n)) };
 }
 
 // One Idempotency-Key per request, as messages use it too (lib/idempotency.ts).
@@ -74,11 +95,12 @@ export { keeper };
 
 const sh = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 
-/** The request as cURL for the code pane. The token is `$AGENTRUN_TOKEN`: a value never appears. */
+/** The request as cURL for the code pane. The key is `$AGENTRUN_API_KEY`, an API client's (the server's own token is
+ *  AGENTRUN_TOKEN, never a client's): a value never appears. */
 export function curlFor(origin: string, agentId: string, body: StartBody, key: string): string {
   return [
-    `curl -X POST ${sh(`${origin}/v2/agents/${encodeURIComponent(agentId)}/runs`)} \\`,
-    `  -H "Authorization: Bearer $AGENTRUN_TOKEN" \\`,
+    `curl -X POST ${sh(`${origin}/v2/agents/${agentId ? encodeURIComponent(agentId) : "{agent_id}"}/runs`)} \\`,
+    `  -H "Authorization: Bearer $AGENTRUN_API_KEY" \\`,
     `  -H 'Content-Type: application/json' \\`,
     `  -H ${sh(`Idempotency-Key: ${key}`)} \\`,
     `  -d ${sh(JSON.stringify(body))}`,
