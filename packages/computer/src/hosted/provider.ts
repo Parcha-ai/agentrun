@@ -525,8 +525,8 @@ export class HostedProvider implements ComputerProvider {
 				if (differ.length > 0) return this.#fail("exists", otherSpecWords(name, "was made", differ));
 				const attached = await this.#attached(machine, signal);
 				// The image and an Archil mount are in the labels; the user, the network, and a size where the vendor takes
-				// one in a spec, are read back.
-				const sizes = (["cpus", "memoryMb"] as const).filter((field) => this.host.facts.specFields?.includes(field));
+				// one in a spec and reads it back, are read back. A vendor that reads no size back (Modal) cannot show a drift.
+				const sizes = (["cpus", "memoryMb"] as const).filter((field) => this.host.facts.specFields?.includes(field) && attached.ok && attached.value.spec[field] !== undefined);
 				const drift = attached.ok ? readBackDiffer({ ...spec, user: this.#userOf(spec) }, attached.value.spec, ["user", "network", ...sizes]) : [];
 				if (drift.length > 0) return this.#fail("exists", otherSpecWords(name, "was made", drift));
 				if (attached.ok) return ok({ id: attached.value.id, name: attached.value.name, ...(attached.value.notes ? { notes: attached.value.notes } : {}) });
