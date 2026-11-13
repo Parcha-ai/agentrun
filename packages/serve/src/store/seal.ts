@@ -31,6 +31,8 @@ export const sealedAt = {
   },
   /** A run's computer session's live viewer token (browser-live.ts): one row per run, computer kind and session tag. */
   liveViewer: (runId: string, kind: string, tag: string): SealedAt => ({ table: "computer_viewers", row: `${runId}/${kind}:${tag}`, column: "sealed" }),
+  /** A run's launch secrets: the MCP credentials its caller handed it for its `per_run` servers (mcp_auth). */
+  runLaunch: (runId: string): SealedAt => ({ table: "run_launch", row: runId, column: "sealed" }),
 };
 
 /** The AAD a value at `at` is sealed under. A part with the separator in it is refused: no two places share an AAD. */
@@ -80,4 +82,25 @@ export function openMcpCredential(key: Buffer, row: { readonly name: string; rea
     return { unusable: "damaged", why: `the MCP server ${row.name}'s credential was saved for another address than the one it has now` };
   }
   return { credential: credential as McpCredential & { origin: string } };
+}
+
+/** The MCP credentials a run's caller handed it (`mcp_auth` at its start or with a message), by server name: each one's
+ *  headers and the origin of the server's url when it was handed, so a server moved since never receives them. */
+export type RunMcpAuth = Readonly<Record<string, { readonly headers: Readonly<Record<string, string>>; readonly origin: string }>>;
+
+/** Seals a run's handed MCP credentials as its launch's sealed column (AAD run_launch|<run_id>|sealed). */
+export function sealRunMcpAuth(key: Buffer, runId: string, auth: RunMcpAuth): Uint8Array {
+  return sealColumn(key, sealedAt.runLaunch(runId), JSON.stringify({ mcp: auth }));
+}
+
+/** A run's handed MCP credentials, opened: none when its launch holds none; undefined when the bytes do not open under
+ *  `key` for this run (sealed for another run, or under another key). */
+export function openRunMcpAuth(key: Buffer, runId: string, sealed: Uint8Array | null): RunMcpAuth | undefined {
+  if (sealed === null) return {};
+  try {
+    const opened = JSON.parse(unsealColumn(key, sealedAt.runLaunch(runId), sealed).toString("utf8")) as { mcp?: RunMcpAuth };
+    return opened.mcp ?? {};
+  } catch {
+    return undefined;
+  }
 }
