@@ -190,6 +190,11 @@ describe("CostChart", () => {
     expect(text(host)).toContain("No run with a known cost yet.");
     expect(text(host)).toContain("run the same job about 20 times");
   });
+  it("draws the mix even when no run has a known cost: the chart says what is needed, the strip still shows who finished each run", () => {
+    const host = draw(series([run(1, "agent", null), run(2, "workflow", null), run(3, "workflow", null)]));
+    expect(text(host)).toContain("No run with a known cost yet.");
+    expect(host.querySelector('[data-testid="execution-mix"]')).not.toBeNull();
+  });
   it("keeps the level after the takeover when the takeover is older than the runs read, without its marker", () => {
     const host = draw({ ...sample, runs: sample.runs.slice(40), total_runs: 80 });
     expect(text(host)).toContain("After takeover $0.128 · 7.0x cheaper");

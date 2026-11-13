@@ -70,6 +70,15 @@ export function CostChart({ data, on, width: fixed }: { data: LearningCost; on: 
           <p className="font-mono text-body">{points.length ? "One run so far." : "No run with a known cost yet."}</p>
           <p className="mx-auto mt-1 max-w-prose text-body text-muted-foreground">{HOW}</p>
         </div>
+        {/* Who finished each run does not need a cost: the strip draws on the runs' own axis whenever there are runs. */}
+        {data.runs.length > 0 && (() => {
+          const w = Math.max(300, room), slot = (w - M.left - M.right) / (data.runs.at(-1)!.n - data.runs[0]!.n + 1);
+          return (
+            <figure ref={fig} className="px-4 pb-3">
+              <Mix runs={data.runs} width={w} x={(n) => M.left + (n - data.runs[0]!.n + 0.5) * slot} step={slot} plot={[M.left, w - M.right]} takeover={s.takeover?.n ?? null} />
+            </figure>
+          );
+        })()}
       </Card>
     );
   }
