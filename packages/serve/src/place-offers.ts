@@ -8,7 +8,7 @@
 // lists it, an empty value or `none` sets up no box, and a name in it that is no box refuses the start. Every reason says
 // what to do next. Docker is probed (`docker version`); Daytona and Modal are offered when the keys their computer
 // provider requires are set (the server's environment, else saved in Settings → Computers), and are not asked anything
-// at the start: a key the vendor refuses fails the run's computer start, in the vendor's words. bwrap is in no release.
+// at the start: a key the vendor refuses fails the run's computer start, in the vendor's words.
 import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { userInfo } from "node:os";
@@ -21,7 +21,7 @@ import { withoutSecrets } from "./secrets.js";
 export const remoteNoList = (id: "daytona" | "modal"): string => `a ${id === "daytona" ? "Daytona" : "Modal"} computer is never made with a host list, so a ${id} box has no network`;
 
 /** Every box a place may name, in the order capabilities lists them. */
-export const BOX_IDS = ["bwrap", "docker", "modal", "daytona"] as const;
+export const BOX_IDS = ["docker", "modal", "daytona"] as const;
 export type BoxId = (typeof BOX_IDS)[number];
 
 /** A box as capabilities show it: whether this server has it, and why when not (or how it was checked); `state`, which
@@ -190,15 +190,13 @@ export type PlaceOffersOptions = {
   fauxDocker?: boolean;
 };
 
-/** Every box, in BOX_IDS order, as this server has it at its start (`env`: its environment, its secrets readable): bwrap
- *  is in no release; a box AGENTRUN_BOXES does not list is not enabled; docker by its probe (or `fauxDocker`); daytona
+/** Every box, in BOX_IDS order, as this server has it at its start (`env`: its environment, its secrets readable): a box AGENTRUN_BOXES does not list is not enabled; docker by its probe (or `fauxDocker`); daytona
  *  and modal by their keys. Rejects only for a name in AGENTRUN_BOXES that is no box. No reason holds a key or an answer's body. */
 export async function placeOffers(env: NodeJS.ProcessEnv, options: PlaceOffersOptions = {}): Promise<BoxOffer[]> {
   const enabled = enabledBoxes(env);
   const keyOf = options.keyOf ?? (async (name: string) => env[name] || undefined);
   return Promise.all(
     BOX_IDS.map(async (id): Promise<BoxOffer> => {
-      if (id === "bwrap") return { id, available: false, reason: NOT_YET };
       // The tests' faux docker stands in whatever AGENTRUN_BOXES lists, as the old faux box did.
       if (id === "docker" && options.fauxDocker) return { id, available: true, reason: "a faux docker (tests)" };
       if (!enabled.has(id)) return { id, available: false, reason: notEnabled(id, enabled) };
@@ -207,7 +205,6 @@ export async function placeOffers(env: NodeJS.ProcessEnv, options: PlaceOffersOp
     }),
   );
 }
-const NOT_YET = "the bwrap box is not in this release yet: use the docker box";
 
 /** What each available box reaches, from the server's host list (`allow`, box-settings.ts boxAllowOf): Docker's
  *  computers through their egress proxy (an allowlist), with the Docker host's own addresses it refuses when the server

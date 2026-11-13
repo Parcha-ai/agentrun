@@ -9,8 +9,11 @@ import { askedForDryRun } from "./learn/reflect.js";
 import type { Status } from "./run-view.js";
 
 /** A run's end-of-run turn: the job's outcome, the newest store entry before the turn and, once the run ended, the newest
- *  after it (its rows are those between), its deadline, and how it ended. */
-export type Reflect = { outcome: Status; after: number; until?: number; deadline: string; ended?: true; timedOut?: true };
+ *  after it (its rows are those between), its deadline, and how it ended. `earlier`: the turns of the run's earlier ends,
+ *  each closed (a follow-up opened the run again after it looked back), whose rows are the turn's too. */
+export type Reflect = { outcome: Status; after: number; until?: number; deadline: string; ended?: true; timedOut?: true; earlier?: readonly ReflectSpan[] };
+/** One earlier end-of-run turn of a run: the store entry before it, and the run's end entry that closed it. */
+export type ReflectSpan = { readonly after: number; readonly until: number };
 /** The run asked its end-of-run turn and has not ended since. */
 export const reflecting = (run: { meta: { reflect?: Reflect } }) => run.meta.reflect !== undefined && run.meta.reflect.until === undefined;
 /** A row's store entry, from its id (`<conversation>:<entry>[:...]`); NaN for a row no entry made (a live one, usage). */
@@ -20,7 +23,7 @@ const entryOf = (id: string) => Number(id.split(":")[1]);
 export function reflects(reflect: Reflect | undefined, id: string | number): boolean {
   if (!reflect) return false;
   const entry = typeof id === "number" ? id : entryOf(id);
-  if (Number.isInteger(entry)) return entry > reflect.after && (reflect.until === undefined || entry <= reflect.until);
+  if (Number.isInteger(entry)) return (entry > reflect.after && (reflect.until === undefined || entry <= reflect.until)) || (reflect.earlier ?? []).some(({ after, until }) => entry > after && entry <= until);
   return reflect.until === undefined && typeof id === "string" && id.includes(":live:");
 }
 /** `rows` with the end-of-run turn's labelled: never the run's answer (meaningful skips the label), its answer shown as

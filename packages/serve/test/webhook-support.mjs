@@ -12,9 +12,8 @@ import { DatabaseSync } from "node:sqlite";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { commitWrites } from "@earendil-works/pi-durable/testing";
 import { openSqliteStore } from "../dist/store/index.js";
-import { startServe } from "../dist/index.js";
 import { schemaProblems } from "./schema-support.mjs";
-import { client, FAUX, printed, startInProcessRunner } from "./support.mjs";
+import { client, FAUX, printed, startInProcessRunner, startServe } from "./support.mjs";
 
 // The spec's own library, in the lockfile through the Anthropic SDK: what a receiver would install.
 export const { Webhook } = createRequire(import.meta.url)("standardwebhooks");

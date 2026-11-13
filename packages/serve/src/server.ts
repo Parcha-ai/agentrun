@@ -35,7 +35,7 @@ import { healthOf, hostMemory, maxRunsOf, MIN_FREE_MIB, runsThatFit } from "./ho
 import { IMPORT_ASKED } from "./import.js";
 import type { ImportAnswer, ImportTask } from "./import-worker.js";
 import { answerStoreCall, type StoreCall } from "./import-proxy.js";
-import { gradeModelOf, LEARNING_LABEL, learningBudgetOf, type LearningMode, learningOf, learnsOf, seedOf } from "./learning.js";
+import { gradeModelOf, LEARNING_LABEL, learningBudgetOf, type LearningMode, learningOf, learnsOf, RUN_LEARNING_USE, seedOf } from "./learning.js";
 import { agentLearning, learningLog, learningNotes, noteBody, pendingCount, promotable, readNote, secretsShown, sendNote, statusesOf, writeNote } from "./learning-routes.js";
 import type { DraftDecisions } from "./learn/skills.js";
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
@@ -44,7 +44,7 @@ import { boxAvailability, boxesLine, defaultPlaceOf, NEW_AGENT_TOOLS, newAgentPl
 import { boxAllowOf, boxAllowSetIn } from "./box-settings.js";
 import { dockerLimitsOf } from "./workspace/computer-deps.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
-import { answerPage, byOwnerSession, heldSessions, isJson, overHttps, ownerCookie, ownOrigin, sendHostRefused, signedIn } from "./page.js";
+import { answerPage, byOwnerSession, ConsoleSessions, heldSessions, isJson, overHttps, ownerCookie, ownOrigin, sendHostRefused, signedIn } from "./page.js";
 import { hostFix, hostName, loopbackNames } from "./host-check.js";
 import { computerViewerLink, familyReaches, type LiveFamily, liveViewerById, liveViewerFor, liveViewerLink, OpenViewers, proxyLiveUpgrade, serveViewerFile } from "./browser-live.js";
 import { browserHandBack, handBackTarget } from "./browser-commands.js";
@@ -110,6 +110,7 @@ import { HOOK_TOLERANCE_S } from "./standard-webhooks.js";
 import { GitHubConnect, GitHubConnection, INSTALLED_PATH, startedHere as gitHubStartedHere, stateCookie } from "./github-connection.js";
 import { FAUX_GITHUB, FAUX_GITHUB_FILE, startFauxGitHub } from "./github-faux.js";
 import { GITHUB_API } from "./github.js";
+import { bindingOf, REPO_NAME } from "./run-repo.js";
 import { HookCut, receivePush } from "./push-handler.js";
 import type { TriggerAdapter } from "./trigger-adapter.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
@@ -311,6 +312,10 @@ export type ServeOptions = {
   githubMcpOrigin?: string;
   /** A test's seam: how long a hook's body has to arrive, whole (default 30 s: push-handler.ts HOOK_BODY_MS). */
   hookBodyMs?: number;
+  /** A test's seam: awaited by a message (a person's, or a trigger's firing) once its checks have passed and just before its
+   *  command row is written, with the run's id and the message's text, so a test can hold a message at the run's door while
+   *  the run's state changes under it (runs-over-store.ts message). */
+  beforeSubmit?: (runId: string, content: string) => Promise<void> | void;
   /** A test's seam: the folder the template packages are read from, in place of the package's own (templates.ts). */
   templates?: string;
   /** The waits before each try again of a webhook delivery (default 5 s, 5 min, 30 min, 2 h, 5 h and 10 h: webhooks.ts RETRY_MS). */
@@ -338,7 +343,9 @@ export function fauxEnvOf(options: ServeOptions): NodeJS.ProcessEnv {
 /** `setupUrl`: with accounts and no password yet, the page that sets it (with its code when setup needs one);
  *  `setupOpen`: whether that setup takes no code (open setup on a loopback listener). */
 /** `boxesLine`: what the start's banner says of the boxes, in words (place.ts boxesLine). */
-export type Serve = { url: string; baseUrl: string; port: number; token: string; tokenFile: string | null; tokenMade: boolean; setupUrl?: string; setupOpen?: boolean; boxesLine: string; close(): Promise<void>;
+/** `launchCode`: with no accounts, the code of the console's link this start prints (`/?launch=<code>`), which gives the
+ *  browser that opens it a console session (page.ts ConsoleSessions). */
+export type Serve = { url: string; baseUrl: string; port: number; token: string; tokenFile: string | null; tokenMade: boolean; setupUrl?: string; setupOpen?: boolean; launchCode?: string; boxesLine: string; close(): Promise<void>;
   /** What a stop waits on: the runs whose processes still finish their turn, and the longest it waits on them. */
   stopping(): { runs: number; boundMs: number } };
 
@@ -1188,6 +1195,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const modelOf = (_entry: AgentEntry, revision: Revision) => runModelRef(env, revision);
   const startDeps: StartDeps = {
     runBodyIssues,
+    boundRepos: async (agentId) => bindingOf(await store.triggers.list(agentId), agentId),
     pinnedOf,
     inputIssuesOf,
     explainRun,
@@ -1292,6 +1300,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     runView: (forStore, runId) => viewOverStore(forStore, runId, viewDepsFor(ownOriginOf())),
   });
   const triggerDeps: TriggerTargetDeps = {
+    ...(options.beforeSubmit ? { beforeSubmit: options.beforeSubmit } : {}),
     start: startDeps,
     getAgent: async (agentId: string) => (await getAgent(store, agentId)) ?? undefined,
     needAgent,
@@ -1326,6 +1335,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // (0.0.0.0 in the image, a LAN address), the first visit takes the printed code even with no public address.
   const openSetup = options.openSetup === true && isLoopback(host);
   const owner = options.accounts ? new Owner(data, openSetup, (line) => void process.stdout.write(`${line}\n`), options.signInAddresses) : undefined;
+  // With no accounts, the console's sessions: made by the link this start prints, never from the token (page.ts).
+  const consoleSessions = owner ? undefined : new ConsoleSessions();
   // Who a sign-in comes from, for its limit: the socket's peer, or, from a trusted proxy only, the client it forwards for.
   const trusted = (() => {
     if (!options.trustedProxies?.length) return undefined;
@@ -1864,9 +1875,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     }
     // A pinned send whose destination parameter was not given is denied, never let go anywhere: said, by its gate name.
     const unpinned: InputIssue[] = made.unpinned.map(({ tool, parameters: named }) => ({ field: `pins.${tool}`, reason: NOT_SET_UP, message: `${tool}'s arguments are fixed by ${named.map((one) => `the ${one} parameter`).join(" and ")}, which was not given, so the agent was made with ${tool} set to deny: it can't call it at all. Apply again with ${named.join(" and ")} set to let it.` }));
-    // A GitHub tool the package grants that Connect GitHub's App may not use (its manifest asks for less), where the github
-    // MCP server runs on the App's tokens: said now, before a run's first call is refused (template-github-permissions.ts).
-    const appShort = appPermissionWarnings({ name: pkg.name, mcp: saved }, (server) => mcpMeta.get(server)?.auth === "github_app");
+    // A GitHub tool the package grants that an installation of Connect GitHub's App does not hold the permission for (read
+    // from GitHub, never assumed), where the github MCP server runs on the App's tokens: said now, before a run's first
+    // call is refused; or that the check could not be made (template-github-permissions.ts).
+    const appShort = await appPermissionWarnings({ name: pkg.name, mcp: saved }, (server) => mcpMeta.get(server)?.auth === "github_app", () => githubConnect.installationPermissions(stopping.signal));
     // A webhook trigger's secret is in no apply answer: each one's warning sends the person to the console for it.
     const hooks = made.triggers.flatMap((trigger, i) => (isObject(trigger.source) && trigger.source.kind === "webhook" ? [templateTriggerSecret(i)] : []));
     // Each github trigger: what it runs on, when made (a note, never a lack); skipped, what to do about it.
@@ -2058,7 +2070,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
 
   /** A run create's body as POST /agents/{id}/runs checks it before it reads the agent: each field issue. */
   function runBodyIssues(body: Json): InputIssue[] {
-    const issues = unknownFields(body, ["input", "revision", "file_ids", "effort", "max_cost_usd", "cap_mode", "quote_id", "archil_disk"]);
+    const issues = unknownFields(body, ["input", "revision", "file_ids", "effort", "max_cost_usd", "cap_mode", "quote_id", "learning", "archil_disk", "repo"]);
+    if (body.repo !== undefined && !(typeof body.repo === "string" && REPO_NAME.test(body.repo))) issues.push({ field: "repo", reason: "wrong_type", message: "repo is a GitHub repository as owner/name, one the agent is bound to" });
     if (body.archil_disk !== undefined) {
       const disk = body.archil_disk;
       const extra = isObject(disk) ? Object.keys(disk).filter((key) => key !== "disk_id") : [];
@@ -2071,6 +2084,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (body.max_cost_usd !== undefined && !(typeof body.max_cost_usd === "number" && body.max_cost_usd > 0 && Number.isFinite(body.max_cost_usd))) issues.push({ field: "max_cost_usd", reason: "wrong_type", message: "max_cost_usd is a number above 0" });
     if (body.cap_mode !== undefined && !(CAP_MODES as readonly unknown[]).includes(body.cap_mode)) issues.push({ field: "cap_mode", reason: "not_an_option", message: `cap_mode is one of ${CAP_MODES.join(", ")}` });
     if (body.file_ids !== undefined && !Array.isArray(body.file_ids)) issues.push({ field: "file_ids", reason: "wrong_type", message: "file_ids is a list of file ids" });
+    if (body.learning !== undefined && body.learning !== RUN_LEARNING_USE) issues.push({ field: "learning", reason: "not_an_option", message: `learning is "${RUN_LEARNING_USE}" (the run starts from what its agent learned and keeps nothing), or absent (its agent's own)` });
     return issues;
   }
 
@@ -2738,7 +2752,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           if (typeof content !== "string" || !/\S/.test(content)) throw invalid([{ field: "content", reason: content === undefined ? "missing" : "wrong_type", message: "content is a non-empty string" }]);
           if (content.length > MAX_MESSAGE) throw invalid([{ field: "content", reason: "too_long", message: `content is at most ${MAX_MESSAGE} characters` }]);
           // Its mcp_auth replaces the run's handed credentials in the steer's own write, so the turn it starts uses them.
-          const { mode, messageId } = await message(store, run, content, seal ? { launchSealed: seal(run.id) } : {});
+          const { mode, messageId } = await message(store, run, content, { ...(seal ? { launchSealed: seal(run.id) } : {}), ...(options.beforeSubmit ? { beforeSubmit: options.beforeSubmit } : {}) });
           // The run's state after the command row is written (the run view): the runner applies the steer; the client polls.
           const { status, state } = await runStatusState(run.id);
           return { status: 202, body: { run_id: run.id, message_id: messageId, mode, status, state, poll_after_ms: 1000 } };
@@ -3333,7 +3347,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (owner && (raw === "/v2/setup" || raw === "/v2/setup/import" || raw.startsWith("/v2/auth/"))) return void ownerRoute(req, res, raw.slice(3), owner).catch(fail);
     if (raw === MCP_PATH) return void mcp(req, res).catch(fail);
     if (raw === "/llms.txt") return void answerLlms(req, res).catch(fail);
-    if (answerPage(req, res, raw, { token, authFailed, console: options.console, takesBytes, ...(owner ? { owner } : {}), ...(options.publicUrl ? { publicUrl: options.publicUrl } : {}) })) return;
+    if (answerPage(req, res, raw, { token, authFailed, console: options.console, takesBytes, ...(owner ? { owner } : {}), ...(consoleSessions ? { sessions: consoleSessions } : {}), ...(options.publicUrl ? { publicUrl: options.publicUrl } : {}) })) return;
     // Under --faux only: a faux desktop's live view, a page on this server's own address (faux-computers.ts viewPage), so
     // a run's take-over has a viewer to open in the console's real-browser flows. Gone after the computer's release.
     if (options.faux && raw.startsWith(`${FAUX_VIEW_PATH}/`)) {
@@ -3680,6 +3694,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     tokenFile,
     tokenMade: stored?.made ?? false,
     ...(setupUrl ? { setupUrl, setupOpen: openSetup } : {}),
+    ...(consoleSessions ? { launchCode: consoleSessions.code } : {}),
     boxesLine: boxesLine(boxOffers, enabledBoxes(env), boxAllow, boxesByDefault(env)),
     // Once: a second call, at any time, is the first one's promise, so a close repeated after the next server started
     // never writes this data root's record again (the next server's, by then).

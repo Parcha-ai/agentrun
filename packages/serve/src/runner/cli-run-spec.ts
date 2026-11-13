@@ -131,10 +131,17 @@ type CapPrice = { input: number; output: number; cacheRead: number; cacheWrite: 
  *  (DATA_ENV). The run environment's secrets, and the keys added, are readable by name and never enumerable: the
  *  harness's model route finds the key its requests carry (model.ts, `env[row.field]`) while a program spawned with this
  *  environment carries none. A spread would drop every secret the launcher handed the runner, and the route would send no
- *  key. The data directory is a plain variable, which a spawn carries. */
-function cliRunEnv(env: NodeJS.ProcessEnv | undefined, data: string, claimed: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+ *  key. The data directory is a plain variable, which a spawn carries. So is the run's resolved tool plane (`plane`,
+ *  TOOL_PLANE_ENV, not a secret), as main hands its per-run process: the adapter reads web_search's there (adapters.ts
+ *  nativeOptions: claude-agent's WebSearch, codex's live search, admitted by its proxy's policy and priced with it), so a
+ *  run whose plane resolves it to native gets the harness's own search (#2458), this run's alone; whatever the runner's
+ *  own environment says of a plane is never the run's. Whether each search runs is the tool's setting at that search
+ *  (SessionIO.permission, the gate), never this plane, which is frozen when the run is made. */
+export function cliRunEnv(env: NodeJS.ProcessEnv | undefined, data: string, claimed: NodeJS.ProcessEnv = {}, plane?: RunLaunch["plane"]): NodeJS.ProcessEnv {
   const out = withModelKeys(env ?? {}, claimed);
   Object.defineProperty(out, DATA_ENV, { value: data, enumerable: true, writable: true, configurable: true });
+  delete out[TOOL_PLANE_ENV];
+  if (plane && Object.keys(plane).length) Object.defineProperty(out, TOOL_PLANE_ENV, { value: JSON.stringify(plane), enumerable: true, writable: true, configurable: true });
   return out;
 }
 
@@ -249,7 +256,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // Before the session opens: a refusal (a pin that cannot be made, a pinned meta tool) ends the run in its words.
   // A credential the claim opens mid-run (a GitHub App token, a per_run server's handed one) joins the run's redactors.
   const hold = (values: string[]) => { for (const redact of [...(run.redact ? [heldRedactor(run.redact)] : []), cut]) redact.hold(values); };
-  const mcp = await mcpForClaim({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, work: () => runFolder(deps.data, runRow.agentId, claim.runId), launchInput: launch.input, hold, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}) });
+  const mcp = await mcpForClaim({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, work: () => runFolder(deps.data, runRow.agentId, claim.runId), launchInput: launch.input, hold, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}) });
   // The claim's MCP goes to the loop, which lets it go; a build that throws lets it go itself.
   holds.hold({ passed: mcp });
 
@@ -323,7 +330,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // those it would refuse, and is handed the rest), then the effort guidance.
   const start = learningStartOf(launch);
   // A start whose seed failed tells the run nothing: it is never asked what to keep (learning-end.ts drops it).
-  const laid = start && !seedFailed(start) ? laidLearned(body.instructions ?? "", start.section) : (body.instructions ?? "");
+  const laid = start && !seedFailed(start) ? laidLearned(body.instructions ?? "", start.section, start.use === true) : (body.instructions ?? "");
   const check = await entry.skillCheck?.();
   // The revision's own skills laid before they are read, as the pi spec lays them (adapter-run-spec.ts).
   await layOwnSkills(ws.workspace, (revisionRow.skills ?? {}) as Record<string, string>, { computer: (launch as { computer?: ComputerSetting }).computer?.kind });
@@ -352,7 +359,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // Settings → Model keys runs the next run with no restart, as one set where AgentRun starts does.
   const claimed = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, revisionRow as unknown as Parameters<typeof claimSecrets>[1], launch);
   for (const redact of [...(run.redact ? [heldRedactor(run.redact)] : []), cut]) holdClaimed(redact, claimed);
-  const env = cliRunEnv(deps.env, deps.data, claimed);
+  const env = cliRunEnv(deps.env, deps.data, claimed, launch.plane);
   const chosen = await modelsOf(entry, env, modelAskOf(launch.model, body.model));
   // The CLI's own process (the Claude CLI, Codex, OpenCode) starts under the no_new_privs pi's commands start under
   // (adapters.ts' noNewPrivsPrefix): on Linux, setpriv --no-new-privs, so a setuid program or file capability it

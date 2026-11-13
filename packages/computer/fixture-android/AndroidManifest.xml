@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The ui fixture as an Android app (src/conformance/ui-fixture.ts): one Activity, a floating window of 320 by 320
+     points over the launcher. Built by scripts/build-ui-fixture.mjs; its SDK versions come from android-sdk.mjs. Back
+     goes through onBackPressed (enableOnBackInvokedCallback false), so the second page's back returns home on every
+     release the fixture runs on. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="ai.agentrun.uifixture">
+	<application android:label="UI fixture" android:allowBackup="false" android:enableOnBackInvokedCallback="false">
+		<activity
+			android:name=".FixtureActivity"
+			android:exported="true"
+			android:label="UI fixture"
+			android:theme="@android:style/Theme.DeviceDefault.Light.Dialog.NoActionBar">
+			<intent-filter>
+				<action android:name="android.intent.action.MAIN" />
+				<category android:name="android.intent.category.LAUNCHER" />
+			</intent-filter>
+		</activity>
+	</application>
+</manifest>

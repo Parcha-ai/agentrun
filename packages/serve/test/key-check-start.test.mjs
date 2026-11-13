@@ -12,8 +12,7 @@ import { calls as bbCalls, KEY as BB_KEY, release as releaseBrowserbase } from "
 import { calls as monidCheckCalls } from "./fixtures/faux-monid-check.mjs";
 import { KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
 import { schemaProblems } from "./schema-support.mjs";
-import { startServe } from "../dist/index.js";
-import { client, FAUX, scratch, serve, withEnv } from "./support.mjs";
+import { client, FAUX, scratch, serve, startServe, withEnv } from "./support.mjs";
 
 const FAUX_BROWSERBASE = new URL("./fixtures/faux-browserbase-check.mjs", import.meta.url).pathname;
 const FAUX_MONID = new URL("./fixtures/faux-monid.mjs", import.meta.url).pathname;

@@ -12,7 +12,7 @@ import { ERROR_STATUS } from "./errors.js";
 import { TAKE_OVER_MINUTES } from "./computer-routes.js";
 import { LAUNCH_LOST, SETUP_LOST } from "./files.js";
 import { HARNESSES } from "./harness.js";
-import { LEARNING_LABEL, LEARNING_MODES, LEARNING_REASONS, LEARNING_STATES } from "./learning.js";
+import { LEARNING_LABEL, LEARNING_MODES, LEARNING_REASONS, LEARNING_STATES, RUN_LEARNING_USE } from "./learning.js";
 import { CHEAPER_AFTER_RUNS, COST_CSV_COLUMNS, COST_RUNS_DEFAULT, COST_RUNS_MAX, RUN_PATHS } from "./learning-cost.js";
 import { MODEL_SOURCES, THINKING_LEVELS } from "./model.js";
 import { BOX_IDS, BOX_NETWORKS, BOX_STATES } from "./place-offers.js";
@@ -227,7 +227,13 @@ const TOOL_KEYS_VIEW = closed({
 });
 const KEY_ID = { name: "key_id", in: "path", required: true, description: "The tool key: one of GET /settings/tool-keys' ids.", schema: { type: "string" } };
 /** The InputIssue reasons a saved MCP server's refusals give that the contract's enum lacks (mcp-probe.ts). */
-const MCP_ISSUE_REASONS = ["redirect", "not_https", "too_many_tools", "tools_too_large", "reserved", "expired"] as const;
+const MCP_ISSUE_REASONS = ["redirect", "not_https", "too_many_tools", "tools_too_large", "reserved", "expired", "registration_unavailable"] as const;
+/** Whether an MCP server's OAuth sign-in brings its own client, and the callback URL a hand-made one must name
+ *  (mcp-oauth.ts McpSignIns.registration). */
+const MCP_SIGN_IN_CLIENT = closed({
+  registration: { type: "boolean", description: "Whether its sign-in can start with no Client ID entered: its authorization server's metadata names a registration endpoint (or takes a client metadata document this server publishes). False when it publishes no metadata or offers neither: a sign-in then needs a Client ID and Secret, and POST .../oauth/start without `client_id` is 422 on `client_id`, reason `registration_unavailable`." },
+  callback: { type: "string", format: "uri", description: "Where this server's sign-in sends the browser back (AGENTRUN_PUBLIC_URL's address when set, never the address a request came to): the callback URL an OAuth app made by hand must name." },
+});
 /** The private-network hosts an MCP server's authorization server may be on (mcp-private-hosts.ts). */
 const PRIVATE_HOSTS = closed({ hosts: { type: "array", maxItems: MAX_PRIVATE_HOSTS, items: { type: "string", minLength: 1, maxLength: 253 }, description: "Host names or IP addresses, as kept: lowercase, every final dot dropped, an IPv6 address in brackets." } });
 const PRIVATE_HOSTS_RULE = "A listed host may resolve to private-network addresses (10/8, 172.16/12, 192.168/16, 100.64/10, fc00::/7), and still only over https; every address it resolves to is checked, and the request goes to an address checked. Loopback, link-local (cloud metadata among them), unspecified, multicast and broadcast addresses, this machine's and this server's own are refused whatever the list says. The server's sign-in and a runner's token refresh read the list at each use.";
@@ -434,6 +440,7 @@ const LEARNING_REASON = {
     "`cancelled`: a person cancelled the run. `crashed`: the run's process went. `reflect_timeout`, `reflect_failed`: the end-of-run turn did not end in time, or ended on an error.",
     "`empty`: the turn's answer gave no note, or the run was not asked its end-of-run turn because its only tool work was its learned workflows, each answering, with nothing said after its first message (its `detail` says so). `unparsed`: it gave notes out of format (no ```note block, one not closed or named twice), and none was kept. `propose_failed`: what it answered could not be checked. `checker`: the checks refused it, at its end or at the merge, and nothing was written to git.",
     "`grader`: the grader's verdict was not to keep them. `grade_failed`: the grader gave no verdict, or the grade or the merge failed.",
+    "`use`: the run was started with `learning: \"use\"`: it started from what its agent learned and keeps nothing, so it was never asked its end-of-run turn.",
   ].join(" "),
 };
 // ---- learning/1: what a person sees and controls of an agent's learning (learning-routes.ts) ---------------------------
@@ -2044,6 +2051,12 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
   RunCreate: {
     mcp_auth: { ...MCP_RUN_AUTH, description: `${MCP_RUN_AUTH.description as string} Each names a saved MCP server whose \`auth.type\` is per_run (422 at \`mcp_auth.<server>\` otherwise, no run made). Sealed into the run's launch for its life, read at each claim, and erased by the write that ends it; never in its saved body, its timeline, its view or an Idempotency-Key's fingerprint (a retry with a new credential answers the first request's run).` },
     cap_mode: { ...CAP_MODE, description: `${CAP_MODE.description as string} Absent: the agent's (its definition's \`cap_mode\`), else expected. 422 not_allowed for a run with no cap.` },
+    learning: { enum: [RUN_LEARNING_USE], description: "`use`: the run starts from what its agent learned (its notes, learned skills and learned workflows, as a run that learns is given them), whatever its agent's `learning` says, and keeps nothing: no end-of-run turn, no proposal, no grade and no merge, at its end or after a follow-up. Its `learning` reads `seeded` while it runs, then `dropped` with reason `use`. So many runs of one agent read one learned state, frozen (a held-out evaluation). On a server whose learning is off it is given nothing, as every run there. Absent: the agent's own (`learning: true` learns). 422 not_an_option for anything else.", "x-agentrun-serve": "learning/1" },
+    repo: {
+      type: "string", pattern: "^[^/\\s]+/[^/\\s]+$",
+      description: "The GitHub repository (`owner/name`) this run reaches: the one its GitHub App token is made for, so its github MCP calls are scoped to it. It must be one the agent is bound to (a repository its GitHub triggers' `accept` names on `/repository/full_name`); another is 422 at `repo` in words naming the repositories it is bound to. Absent: the agent's repository when it is bound to exactly one and the first message names none; otherwise the repository a `https://github.com/<owner>/<repo>` URL in the first message names. A run a trigger starts takes its repository from its event, and `repo` there is 422.",
+      "x-agentrun-serve": "runrepo/1",
+    },
     archil_disk: {
       type: "object", additionalProperties: false, required: ["disk_id"],
       properties: { disk_id: { type: "string", pattern: "^dsk-[0-9a-f]{16}$", description: "The disk id Archil returned when the disk was made (`dsk-` and 16 hex digits): Archil's API addresses disks by id, not by owner/name. In this server's Archil region (the account key's)." } },
@@ -2806,7 +2819,13 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   details["x-agentrun-serve-details"] = {
     agent_not_runnable: NOT_RUNNABLE_DETAILS, system_file_forbidden: FORBIDDEN_DETAILS,
     external_body_conflict: closed({ external: closed({ source: { type: "string" }, kind: { type: "string" }, id: { type: "string" }, version: { type: "string", description: "The version already run with another definition, as text." } }, "The reference and version POST /runs named.") }),
-    auth_required: closed({ auth: { enum: ["bearer", "oauth"], description: "What the MCP server asks for: `oauth` when it names protected-resource metadata, else `bearer`." }, status: { enum: [401, 403] } }),
+    auth_required: closedWith({
+      auth: { enum: ["bearer", "oauth"], description: "What the MCP server asks for: `oauth` when it names protected-resource metadata, else `bearer`." },
+      status: { enum: [401, 403] },
+    }, {
+      oauth: { ...MCP_SIGN_IN_CLIENT, description: "With `auth: oauth`, when the sign-in's discovery could be made." },
+    }),
+    input_invalid: { type: "object", additionalProperties: false, properties: { oauth: { ...MCP_SIGN_IN_CLIENT, description: "With field `client_id`, reason `registration_unavailable` (POST .../oauth/start): as a preview's `details.oauth`, `registration` false." } } },
     upstream_failed: { type: "object", additionalProperties: false, properties: { status: { type: "integer", description: "The MCP server's HTTP status, when it answered one." } } },
     sign_in_held: { type: "object", additionalProperties: false, minProperties: 1, maxProperties: 1, properties: { held_by: { type: "string", description: "The run that holds the sign-in's save lease." }, handed_to: { type: "string", description: "A run still going that was handed the sign-in (signins/1)." } } },
     wrong_origin: closed({ open: { type: "string", format: "uri", description: "Where to open the console to sign in: the address the authorization server sends the browser back to." } }),
