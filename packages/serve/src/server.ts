@@ -131,7 +131,9 @@ import type { DraftAsk } from "./learn/skills.js";
 import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./uploads.js";
 import { entryAt, listFiles, sendFile as sendWorkspaceFile, viewOf } from "./run-files.js";
 import { COMPUTER_ROUTES, computerHoldOf, computerRoute, runViewedKind } from "./computer-routes.js";
-import { PROVIDERS as COMPUTER_PROVIDERS, SETTING_KINDS, servingRefusals } from "@parcha/agentrun-computer";
+import { ATTACH_PATH, AttachHub, PROVIDERS as COMPUTER_PROVIDERS, SETTING_KINDS, servingRefusals } from "@parcha/agentrun-computer";
+import { createAttachRoutes, pairedView } from "./computer-attach.js";
+import { pairedRefusal, withPaired } from "./workspace/attached-computers.js";
 import { COMPUTER_TOOLS, hostToolDefs } from "@parcha/agentrun-kernel/kernel";
 import { archilRoute, createArchilRoutes, liveRunsOnDisk } from "./archil-routes.js";
 import { agentDiskOf, ARCHIL_DISK_ID, archilSettingsFromEnv, inArchilMode } from "./archil-settings.js";
@@ -358,6 +360,9 @@ export function fauxEnvOf(options: ServeOptions): NodeJS.ProcessEnv {
 /** `launchCode`: with no accounts, the code of the console's link this start prints (`/?launch=<code>`), which gives the
  *  browser that opens it a console session (page.ts ConsoleSessions). */
 export type Serve = { url: string; baseUrl: string; port: number; token: string; tokenFile: string | null; tokenMade: boolean; setupUrl?: string; setupOpen?: boolean; launchCode?: string; boxesLine: string; close(): Promise<void>;
+  /** The live sockets of the computers paired with this server (computer-attach.ts): a runner beside the server in this
+   *  process takes it (runner/beside.ts), so its runs can use them. */
+  attachHub: AttachHub;
   /** Whether this server is a local install (listening on loopback, reached at no address off it): the one kind whose own
    *  runner beside it may reach an MCP server's URL on loopback (runner/beside.ts mcpLoopback). Only that runner is told:
    *  it is this process's finding, never a store's, so another host's runner on a shared store never inherits it. */
@@ -447,6 +452,13 @@ export const ROUTES: readonly Route[] = [
   { method: "GET", pattern: /^\/computers$/, name: "listComputers" },
   { method: "PUT", pattern: /^\/computers\/([^/]+)\/keys$/, name: "saveComputerKeys" },
   { method: "POST", pattern: /^\/computers\/([^/]+)\/test$/, name: "testComputer" },
+  // A person's own computer paired with this server (computer-attach.ts): the owner's code, the driver's trade of it for
+  // its token (no token of the server's: the code is the credential), the attach socket (a WebSocket: the server's
+  // upgrade takes it; a plain GET is told so), and a computer's removal.
+  { method: "POST", pattern: /^\/computers\/pairings$/, name: "createPairing" },
+  { method: "POST", pattern: /^\/computers\/pair$/, name: "pairComputer" },
+  { method: "GET", pattern: /^\/computers\/attach$/, name: "attachComputer" },
+  { method: "DELETE", pattern: /^\/computers\/([^/]+)$/, name: "deleteComputer" },
   { method: "GET", pattern: /^\/workspace\/archil$/, name: "getWorkspaceArchil" },
   { method: "PUT", pattern: /^\/workspace\/archil$/, name: "putWorkspaceArchil" },
   { method: "DELETE", pattern: /^\/workspace\/archil$/, name: "deleteWorkspaceArchil" },
@@ -882,6 +894,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     ...(options.onStoreLost ? { onOwnerLost: options.onStoreLost } : {}),
   }), (error) => onSqlite && error instanceof StoreOwned, replacedUntil, waitingForReplaced);
   stops.push(() => store.close());
+  // The person's own computers paired with this server (computer-attach.ts): their live sockets are this process's hub,
+  // which the runner beside the server shares (Serve.attachHub), so one process holds them. A second server on this
+  // store is refused above (its owner lock).
+  const attachHub = new AttachHub();
+  const attach = createAttachRoutes({ store, hub: attachHub, log: (event, fields) => (log ? log(logLine(event, fields)) : void process.stderr.write(`agentrun-serve: ${logLine(event, fields)}\n`)) });
   // The data root's own lock, once the store is held (so a deploy on Postgres waits at the store's owner lock first): the
   // store's lock holds one store, but the data root also holds what the server writes beside it (its token, its seal key,
   // uploads, harness installs, learning folders), which two servers on two stores (two Postgres schemas, or SQLite and
@@ -1074,6 +1091,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const hostWhy = hostCommandRefusals(COMPUTER_PROVIDERS, process.env.PATH);
   const computersOf = (): ComputerRoutes => (computerRoutes ??= createComputerRoutes({
     store, sealKey, tools: kindTools, mode: folderModeOf(store, process.env), env: process.env,
+    paired: { rows: () => store.pairedComputers.list(), viewOf: (row, serves) => pairedView(row, attachHub, serves) },
     ...(options.faux
       // --faux's providers stand in for every vendor's, a local one's daemon included.
       ? { kinds: fauxOf().kinds, factories: fauxOf().factories, keyTable: fauxOf().keyTable }
@@ -1096,12 +1114,20 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const modeNow = async (): Promise<1 | 2> => ((await folderModeOf(store, process.env)()) === "disk" ? 2 : 1);
   /** The registry a run's claim resolves against (claimKinds), as its runner composes it. */
   const claimRegistry = () => claimKinds(options.faux ? { faux: fauxOf() } : {});
-  const computerReady = async (setting: { kind: string; provider?: string; image?: string; gpu?: { type: string; count: number } }) =>
-    computerReadiness(setting, await modeNow(), claimRegistry(), keyReader(store, sealKey, own(withSecrets(process.env, "own"))), dockerAnswers, boxAllow, (provider) => (Object.hasOwn(hostWhy, provider) ? hostWhy[provider] : undefined));
+  // A paired computer is one more provider of the registry (workspace/attached-computers.ts), ready while its driver is
+  // attached to this process's hub.
+  const computerReady = async (setting: { kind: string; provider?: string; image?: string; gpu?: { type: string; count: number } }) => {
+    const paired = await store.pairedComputers.list();
+    const row = paired.find((one) => one.id === setting.provider);
+    const offline = row ? pairedRefusal(row, attachHub) : undefined;
+    if (offline) return { refused: offline };
+    return computerReadiness(setting, await modeNow(), withPaired(claimRegistry(), paired), keyReader(store, sealKey, own(withSecrets(process.env, "own"))), dockerAnswers, boxAllow, (provider) => (Object.hasOwn(hostWhy, provider) ? hostWhy[provider] : undefined));
+  };
   /** Where a run of an agent with computer `setting` has its shell here now (resolve-computer.ts runShellOf, in the
    *  folder mode of now, over the registry the claim reads): what runnable.ts lets a sandbox-only tool on the runner by,
    *  and capabilities show bash by. In Mode 2 a run with no computer has bash on Archil's serverless exec. */
-  const shellOf = async (setting: { kind: string; provider?: string; image?: string }) => runShellOf(setting, await modeNow(), claimRegistry());
+  const shellOf = async (setting: { kind: string; provider?: string; image?: string }) =>
+    runShellOf(setting, await modeNow(), setting.provider === undefined ? claimRegistry() : withPaired(claimRegistry(), await store.pairedComputers.list()));
   /** The shell this server can give a template's agent now (templates.ts pickComputer's `shell`), by the rules a run
    *  has it by (shellOf): Archil's serverless exec on the runner in Mode 2 (bash alone); else the box a new agent is saved
    *  with (Docker), where it answers now (computerReady asks the daemon, not the start's offers: a Docker stopped since
@@ -2579,6 +2605,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const answer = await receivePush({ adapters, hooked: (id) => triggers.hookSource(id), ...(options.hookBodyMs !== undefined ? { bodyMs: options.hookBodyMs } : {}), ignored: (id, eventId) => triggers.ignored(id, eventId), listening: (kind) => triggers.listening(kind), notice: async (adapterId, event, body) => (adapterId === "github" && event === "installation" ? githubConnect.installationEvent(body, (detail) => triggers.turnOff("github", detail)) : undefined), receive: (id, eventId, payload, attrs) => triggers.receive(id, eventId, payload, attrs), scoped: (kind, scope) => triggers.scoped(kind, scope), setting: (adapterId, scope, field) => triggerSettings.get(adapterId)?.get(scope, field), refused: authFailed, say: (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`)) }, req, /^\/hooks\/([^/]+)$/.exec(path)![1]!);
       return send(res, answer.status, answer.body, answer.headers ?? {});
     }
+    // A paired computer's driver trading its pairing code for its token: the code is its credential (computer-attach.ts),
+    // limited by source address before anything in the body is checked.
+    if (found.name === "pairComputer") return send(res, 201, await attach.pair(await bodyOf(req), clientOf(req)), { "cache-control": "no-store" });
     // An MCP server's OAuth sign-in: the browser coming back from its authorization server carries no token (the state
     // it brings is the check, mcp-oauth.ts), and the client metadata document is for that server to fetch.
     if (found.name === "mcpOAuthCallback") {
@@ -2934,6 +2963,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         }, store, { context: ctx });
         return send(res, 200, answer, { "cache-control": "no-store" });
       }
+      case "createPairing":
+        return send(res, 201, await attach.createPairing(), { "cache-control": "no-store" });
+      case "attachComputer":
+        throw new ApiError("bad_request", `${ATTACH_PATH} is the attach WebSocket: a paired computer's driver dials it with Upgrade: websocket and its own token`);
+      case "deleteComputer":
+        await attach.remove(id);
+        return void res.writeHead(204, { "cache-control": "no-store" }).end();
       case "listComputers":
       case "saveComputerKeys":
       case "testComputer": {
@@ -3496,8 +3532,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // address sends its own name as Origin too, which the Origin check below would take, so its Host is what gives it
     // away. Its name alone, on any port, as the HTTP routes check it.
     if (names && !names.has(hostName(req.headers.host) ?? "")) return deny("403 Forbidden");
-    // API-only: a run's live view is the console's, and refused with it.
+    // API-only: a run's live view is the console's, and refused with it; so are paired computers (Settings).
     if (options.apiOnly) return deny("404 Not Found");
+    // A paired computer's driver dialing its attach socket (computer-attach.ts): its token, not the owner's, lets it in.
+    if (raw === ATTACH_PATH) {
+      return attach.upgrade(req, socket, head, (status, words = "", headers = {}) => {
+        if (status.startsWith("401")) authFailed(raw, "attach_token");
+        const lines = Object.entries({ ...headers, "content-type": "text/plain; charset=utf-8", "content-length": String(Buffer.byteLength(words)) }).map(([name, value]) => `${name}: ${value}\r\n`).join("");
+        socket.end(`HTTP/1.1 ${status}\r\nConnection: close\r\n${lines}\r\n${words}`);
+      });
+    }
     if (!viewing || !ID.test(viewing[1]!) || !/^\/v\/[A-Za-z0-9_-]{22}\/ws$/.test(viewing[3]!)) return deny("404 Not Found");
     // A browser always sends its page's origin on a WebSocket, which no other page's script can forge: this server's own
     // (as this request reaches it, or its public address, which a TLS proxy that rewrites Host or drops
@@ -3801,6 +3845,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     await webhooks.close();
     // An upgraded socket is no connection closeAllConnections ends, and server.close waits for it.
     viewers.close();
+    await attach.close();
     await new Promise((done) => (server.close(done), server.closeAllConnections()));
     await mcpStopped;
     await githubStopped;
@@ -3821,6 +3866,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     ...(setupUrl ? { setupUrl, setupOpen: openSetup } : {}),
     ...(consoleSessions ? { launchCode: consoleSessions.code } : {}),
     boxesLine: boxesLine(boxOffers, enabledBoxes(env), boxAllow, boxesByDefault(env)),
+    attachHub,
     localInstall,
     // Once: a second call, at any time, is the first one's promise, so a close repeated after the next server started
     // never writes this data root's record again (the next server's, by then).

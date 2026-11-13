@@ -176,6 +176,11 @@ export type Recorded<T> = { request: { method: string; path: string }; status: n
 /** GET /v2/computers: each kind, whether this server offers it, and its providers. */
 export type Computers = Answer<"listComputers">;
 export type ComputerKindView = Computers["kinds"][number];
+/** A person's own computer paired with this server: its name, what it paired as, its driver's build, whether it is
+ *  attached now, and the run that holds it. */
+export type PairedComputer = Computers["paired"][number];
+/** POST /v2/computers/pairings' answer: a code good once, until it expires. */
+export type Pairing = Answer<"createPairing">;
 /** A provider of computers: its secrets ("computer:<provider>:<KEY>", set or not, where from and when, never a value),
  *  the full names of those it requires, whether it is metered, and whether a run could have it now. */
 export type ComputerProvider = Answer<"saveComputerKeys">;
