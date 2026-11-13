@@ -5,7 +5,10 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, readdir, symlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
+import { SCHEMA_VERSION } from "../dist/store/schema.js";
+import { openSqliteStore } from "../dist/store/sqlite/store.js";
 import { client, FAUX, scratch, serve, startServe } from "./support.mjs";
 
 /** The error startServe refused with, or null after closing the server it should not have started. */
@@ -79,4 +82,42 @@ test("the bin prints the refusal and exits 1", { timeout: 20_000 }, async (t) =>
   const code = child.exitCode ?? (await new Promise((resolve) => child.once("exit", resolve)));
   assert.equal(code, 1, err);
   assert.match(err, /^agentrun-serve: .* holds an earlier version's data \(old\/agent\.sqlite\)/m);
+});
+
+/** The bin started on a data directory whose store says `version`: its stderr and exit code. */
+const startOnStoreAt = async (t, version) => {
+  const data = join(await scratch(t), "agents");
+  const store = await openSqliteStore({ dataDir: data, role: "server" });
+  await store.close();
+  const raw = new DatabaseSync(join(data, "store.sqlite"));
+  raw.exec(`UPDATE store_meta SET schema_version = ${version}`);
+  raw.close();
+  const child = spawn(process.execPath, [new URL("../dist/cli.js", import.meta.url).pathname, "--data", data, "--port", "0", "--faux", FAUX], { stdio: ["ignore", "ignore", "pipe"], env: { ...process.env, HOME: dirname(data) } });
+  const killer = setTimeout(() => child.kill("SIGTERM"), 10_000);
+  t.after(() => (clearTimeout(killer), child.kill("SIGTERM")));
+  let err = "";
+  for await (const chunk of child.stderr) err += chunk;
+  const code = child.exitCode ?? (await new Promise((resolve) => child.once("exit", resolve)));
+  return { err, code };
+};
+
+test("the bin on a store an earlier release set up says what to do, once, with no stack, and exits 1", { timeout: 20_000 }, async (t) => {
+  const { err, code } = await startOnStoreAt(t, SCHEMA_VERSION - 1);
+  assert.equal(code, 1, err);
+  assert.match(err, new RegExp(`^agentrun-serve: the store at .*store\\.sqlite is schema version ${SCHEMA_VERSION - 1}, and this release \\(version ${SCHEMA_VERSION}\\) can't open a store an earlier release set up\\.$`, "m"));
+  assert.match(err, /--data <new folder>/);
+  assert.match(err, /--data \/data\/<new folder> --listen 0\.0\.0\.0 --port 7340 --drain-timeout 6s/);
+  assert.match(err, /\(docker run or compose arguments: --data/);
+  assert.match(err, /^On Render the Docker Command replaces the image's entrypoint too, so it must be the whole start command shown in "Before you upgrade" in the release notes\.$/m);
+  assert.match(err, /^Keep the old folder as it is: the earlier release still opens it\.$/m);
+  assert.equal(err.match(/agentrun-serve:/g).length, 1, err);
+  assert.doesNotMatch(err, /\n\s+at /);
+});
+
+test("the bin on a store a later release set up says to run that release, once, with no stack, and exits 1", { timeout: 20_000 }, async (t) => {
+  const { err, code } = await startOnStoreAt(t, SCHEMA_VERSION + 1);
+  assert.equal(code, 1, err);
+  assert.match(err, new RegExp(`^agentrun-serve: the store at .*store\\.sqlite is schema version ${SCHEMA_VERSION + 1}, set up by a later release than this one \\(this release knows version ${SCHEMA_VERSION}\\)\\. Run that release or a later one\\.$`, "m"));
+  assert.equal(err.match(/agentrun-serve:/g).length, 1, err);
+  assert.doesNotMatch(err, /\n\s+at /);
 });

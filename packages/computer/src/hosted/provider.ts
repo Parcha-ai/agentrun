@@ -1237,7 +1237,7 @@ export class HostedProvider implements ComputerProvider {
 	}
 
 	/**
-	 * Moves the deadline to now + ttlMs, never earlier than it is, never past create's time plus the cap (init's maximum):
+	 * Moves the deadline to now + ttlMs, refusing one earlier than it is (before any vendor call), never past create's time plus the cap (init's maximum):
 	 * the vendor's timer (setTimer, then read back) or the janitor's label (setLabels) first, then init's own deadline, to
 	 * the end the vendor reads back. The deadline returned is the one init took.
 	 */
@@ -1254,7 +1254,10 @@ export class HostedProvider implements ComputerProvider {
 		if (target > most.getTime()) {
 			return this.#fail("limit", `${new Date(target).toISOString()} is past ${most.toISOString()}, the most this computer may live: create's time plus this provider's ${seconds(this.#maxLifetimeMs)} cap`);
 		}
-		if (current !== undefined && target <= current.getTime()) return ok({ deadline: current });
+		if (current !== undefined && target < current.getTime()) {
+			return this.#fail("refused", `${new Date(target).toISOString()} is earlier than ${current.toISOString()}, the deadline ${ref.name} has now: an extend moves the deadline later, never earlier`);
+		}
+		if (current !== undefined && target === current.getTime()) return ok({ deadline: current });
 		const { requestMs } = this.#timeouts;
 		let end: Date;
 		const setTimer = this.host.setTimer?.bind(this.host);
