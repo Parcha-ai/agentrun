@@ -404,6 +404,15 @@ export interface CallContext {
 	signal?: AbortSignal;
 }
 
+/**
+ * create's context: requestId is the caller's id of this request (serve passes the run's claim; a conformance run one
+ * per create). A hosted provider names the computer from it, so a retry of the same request finds the computer the
+ * first one made instead of making a second; one that ended is refused as exists.
+ */
+export interface CreateContext extends CallContext {
+	requestId: string;
+}
+
 /** attach's context: with a claim, an agent's computer is brought back and taken by that run, under that epoch. */
 export interface AttachContext extends CallContext {
 	claim?: ComputerClaim;
@@ -442,7 +451,7 @@ export interface ComputerProvider {
 	readonly version: string;
 	capabilities(): ComputerCapabilities;
 	check(spec: ComputerSpec): Refusal[];
-	create(spec: ComputerSpec, context?: { signal?: AbortSignal }): Promise<Result<CreatedComputer>>;
+	create(spec: ComputerSpec, context: CreateContext): Promise<Result<CreatedComputer>>;
 	/**
 	 * Finds one computer this provider made, by its id or by labels, with the spec read back from it; none or several is
 	 * an error in words. With context.claim (a provider that declares persistence): the agent's computer is brought back
