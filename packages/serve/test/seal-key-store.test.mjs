@@ -12,10 +12,9 @@ import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } 
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { scratch, withEnv } from "./support.mjs";
+import { scratch, startServe, withEnv } from "./support.mjs";
 import { dropSchema, freshSchema, PG_URL, postgresOnly } from "./store-target.mjs";
 
-const { startServe } = await import("../dist/server.js");
 const { openSqliteStore, openPostgresStore, sealColumn, sealedAt } = await import("../dist/store/index.js");
 const { startRunnerProcess } = await import("../dist/runner/main.js");
 const { importCommand } = await import("../dist/import.js");
