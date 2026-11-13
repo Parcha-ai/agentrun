@@ -18,6 +18,7 @@ import type { LearnedWorkflow } from "../learning.js";
 import type { RunLaunch } from "../run-launch.js";
 import type { Store } from "../store/store.js";
 import { inputIssues, isObject, type Json } from "../validate.js";
+import { type GuardRow, guardsOf } from "../learned-nodes.js";
 
 /** The root entry a run served workflow-first keeps, once the workflow's call ended: which workflow, at which learned
  *  revision, under which call, and how it ended. A later claim that finds it never runs the workflow again. */
@@ -134,12 +135,14 @@ export function pathOf(entries: readonly { readonly kind: string; readonly data?
 }
 
 /** The run-record fields a learning run's metrics carry (learning-curve reads path, learned_revision and workflow): the
- *  path it took, the learned revision it ran on, and the workflow that served it first and its digest (the breaker's
- *  key), when one did. None for a run that does not learn. */
-export function pathMetrics(launch: RunLaunch, entries: readonly { readonly kind: string; readonly data?: unknown }[]): { path?: RunPath; learned_revision?: string; workflow?: string; workflow_digest?: string } {
+ *  path it took, the learned revision it ran on, the workflow that served it first and its digest (the breaker's key),
+ *  when one did, and each step guard's check of its learned workflows' calls (`guards`, learned-nodes.ts guardsOf), when
+ *  one ran. None for a run that does not learn. */
+export function pathMetrics(launch: RunLaunch, entries: readonly { readonly kind: string; readonly data?: unknown }[]): { path?: RunPath; learned_revision?: string; workflow?: string; workflow_digest?: string; guards?: GuardRow[] } {
   if (!launch.learning) return {};
   const { path, workflow, digest } = pathOf(entries);
-  return { path, ...(launch.learning.seed ? { learned_revision: launch.learning.seed } : {}), ...(workflow ? { workflow } : {}), ...(digest ? { workflow_digest: digest } : {}) };
+  const guards = guardsOf(entries);
+  return { path, ...(launch.learning.seed ? { learned_revision: launch.learning.seed } : {}), ...(workflow ? { workflow } : {}), ...(digest ? { workflow_digest: digest } : {}), ...(guards.length ? { guards } : {}) };
 }
 
 /** The agent's first input on a handback: the hand-back first (which workflow, and its own words for why, the trace the

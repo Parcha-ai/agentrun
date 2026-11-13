@@ -807,7 +807,7 @@ const longNodes = (dsl: DraftReader, doc: unknown): DraftProblem[] =>
  *  makes before any node runs) with the runner's deps: none when it can run every one. */
 const unrunnableNodes = (dsl: DraftReader, doc: unknown): DraftProblem[] => {
   const workflow = dsl.desugarWorkflow(doc as Workflow);
-  const runner = { runNode: async () => ({}), runEffect: async () => ({}) };
+  const runner = { runNode: async () => ({}), runEffect: async () => ({}), guardStep: async () => ({ p: 1 }) };
   try {
     dsl.assertWorkflowCapabilities(workflow.root, runner as never, workflow);
     return [];

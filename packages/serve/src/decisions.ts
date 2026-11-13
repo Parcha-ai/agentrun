@@ -158,6 +158,9 @@ export function providersNamed(nodes: readonly Record<string, unknown>[]): strin
       if ((predicate as { predicate?: unknown } | undefined)?.predicate === "ask") add(predicate);
     }
     if (node.verify) ids.add(DEFAULT_DECISION_PROVIDER);
+    // A step guard that reads Jev (runner/step-guard.ts) asks Jev, whatever provider its node names.
+    const signal = (node.guard as { signal?: unknown } | undefined)?.signal;
+    if (signal === "jev" || signal === "both") ids.add("jev");
   }
   return [...ids];
 }
@@ -228,13 +231,18 @@ export async function decisionProvidersIn(env: NodeJS.ProcessEnv): Promise<{ pro
   return decisionProvidersFrom(decisionKeysOf(env), env);
 }
 
+/** The Jev route the keys `handed` name, as a Jev client takes it: TypeSafe's own on its key, else OpenRouter's;
+ *  undefined for neither. A decision node's Jev and a step guard's (runner/step-guard.ts) both. */
+export const jevRouteOf = (handed: Record<string, string>): { provider: "typesafe" | "openrouter"; apiKey: string } | undefined =>
+  handed[JEV_KEY_ENV] !== undefined ? { provider: "typesafe", apiKey: handed[JEV_KEY_ENV] } : handed[JEV_OPENROUTER_KEY_ENV] !== undefined ? { provider: "openrouter", apiKey: handed[JEV_OPENROUTER_KEY_ENV] } : undefined;
+
 /** The decision providers on the keys `handed` (by name), with each provider's faux fetch read from `env` under --faux: Jev
  *  (TypeSafe's or OpenRouter's route), Parallel (its own API or OpenRouter), and OpenRouter's Decisions models. Undefined
  *  when `handed` names no provider key. The one builder behind decisionProvidersOf (the per-run pipe) and decisionProvidersIn
  *  (the runner's store), so both routes build the same providers. */
 async function decisionProvidersFrom(handed: Record<string, string>, env: NodeJS.ProcessEnv): Promise<{ providers: Record<string, DecisionProvider>; default: string } | undefined> {
   const providers: Record<string, DecisionProvider> = {};
-  const jev = handed[JEV_KEY_ENV] !== undefined ? { apiKey: handed[JEV_KEY_ENV] } : handed[JEV_OPENROUTER_KEY_ENV] !== undefined ? { provider: "openrouter" as const, apiKey: handed[JEV_OPENROUTER_KEY_ENV] } : undefined;
+  const jev = jevRouteOf(handed);
   if (jev) {
     const [{ jevProvider }, faux] = await Promise.all([import("@parcha/agentrun-jev"), fauxFetch(env, FAUX_JEV_ENV)]);
     providers.jev = jevProvider({ ...jev, ...(faux ? { fetch: faux } : {}) });

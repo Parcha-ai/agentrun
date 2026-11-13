@@ -22,7 +22,8 @@ import type { TSchema } from "typebox";
 import { defineTool, ROOT_CONVERSATION_ID, type ToolRegistration } from "@earendil-works/pi-durable";
 import { registerLabel, registerOutcome } from "./timeline/index.js";
 import { sideRequests } from "./cap.js";
-import { LEARNED_NODES, LEARNED_NODES_MAX, type LearnedNode } from "./learned-nodes.js";
+import { type GuardRow, LEARNED_NODES, LEARNED_NODES_MAX, type LearnedNode } from "./learned-nodes.js";
+import { type GuardJev, guardJevOf, guardLine, rowOf, stepGuard } from "./runner/step-guard.js";
 import { draftProblems, LEARNED_MAX_TURNS } from "./learn/index.js";
 import { type LearnedWorkflow, workflowLine } from "./learning.js";
 import type { ModelRef } from "./model.js";
@@ -186,6 +187,9 @@ export type LearnedWorkflowRun = {
   /** The gate's whole decision of an MCP node's call with its arguments, as the run's own call of the tool gets it
    *  (RunGate.decide: deny, argument pins, ask, no approver). Required for an MCP node: one with none is never sent. */
   decide?: (tool: string, args: unknown) => Promise<"allow" | "ask" | { deny: string }>;
+  /** The Jev a step guard asks (runner/step-guard.ts GuardJev); none: the run's own, on the Jev key `env` holds
+   *  (guardJevOf). A test's fake. */
+  guardJev?: GuardJev;
 };
 
 /** The most characters of a learned workflow's output its answer holds, monid's bound (monid.ts CLIP): within the
@@ -255,8 +259,10 @@ const HANDBACK_FIELDS = 20;
 const HANDBACK_VALUE = 2_000;
 
 /** The steps a learned workflow ran, as one line after its words: each node's label, kind and status. */
-const stepsLine = (nodes: readonly LearnedNode[]): string =>
-  nodes.length ? `\nIts steps: ${nodes.map(({ label, kind, status }) => `${label} (${kind}) ${status}`).join("; ")}.` : "";
+const stepsLine = (nodes: readonly LearnedNode[]): string => {
+  const guards = nodes.flatMap(({ guard }) => (guard ? [guardLine(guard)] : []));
+  return (nodes.length ? `\nIts steps: ${nodes.map(({ label, kind, status }) => `${label} (${kind}) ${status}`).join("; ")}.` : "") + (guards.length ? `\nIts guards: ${guards.join("; ")}.` : "");
+};
 
 /** What a learned workflow that escalated says to whoever takes the job on: the step that handed it back and its own
  *  words for why, the steps it ran, and what it had found (its state's top-level fields, each whole or named by its
@@ -406,15 +412,28 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
     const booked = ledger ? { ledger: { call: callId, record: ledger.record } } : {};
     return effect(given, { signal: own, env: run.env, work: run.work, ...(run.complete ? { complete: run.complete } : {}), ...booked });
   };
+  // Its step guards (runner/step-guard.ts): Jev made once, on first need, and each request booked under the call's ledger.
+  let jevMade: Promise<GuardJev | undefined> | undefined;
+  const jev = () => (jevMade ??= run.guardJev ? Promise.resolve(run.guardJev) : guardJevOf(run.env));
+  const guardStep = stepGuard({ jev, ...(ledger ? { ledger } : {}), call: ledger?.call ?? LEARNED_WORKFLOW_TOOL });
+  // Each guard's check by its step's execution path, as the DSL decided it: its node.end (the same path) puts it on the
+  // step's trace, where the run's metrics read it (guards) and a hand-back says it.
+  const guarded = new Map<string, GuardRow>();
   // Each node as it ends, by the DSL's own event: what the call's timeline row shows of it.
   const onEvent = (event: { type: string; label: string; detail?: unknown; executionPath?: string }) => {
+    if (event.type === "guard.evaluated") {
+      const row = rowOf(String(event.label), event.detail);
+      if (row) guarded.set(event.executionPath ?? String(event.label), row);
+      return;
+    }
     if (event.type !== "node.end" || nodes.length >= LEARNED_NODES_MAX) return;
     const detail = (event.detail ?? {}) as { kind?: unknown; status?: unknown; duration_ms?: unknown };
     const ran = typeof event.executionPath === "string" ? ranOn.get(event.executionPath) : undefined;
-    nodes.push({ label: String(event.label), kind: String(detail.kind ?? ""), status: String(detail.status ?? ""), duration_ms: typeof detail.duration_ms === "number" ? detail.duration_ms : 0, ...ran });
+    const guard = guarded.get(event.executionPath ?? String(event.label));
+    nodes.push({ label: String(event.label), kind: String(detail.kind ?? ""), status: String(detail.status ?? ""), duration_ms: typeof detail.duration_ms === "number" ? detail.duration_ms : 0, ...ran, ...(guard ? { guard } : {}) });
   };
   try {
-    const result = await dsl.runWorkflow(doc, input as Record<string, unknown>, { runNode: runNode as never, runEffect: runEffect as never, onEvent, ...(signal ? { signal } : {}) } as never);
+    const result = await dsl.runWorkflow(doc, input as Record<string, unknown>, { runNode: runNode as never, runEffect: runEffect as never, guardStep, onEvent, ...(signal ? { signal } : {}) } as never);
     if (result.status === "escalated") return { text: learnedText(handedBackText(flow.name, result.escalation, result.state, nodes)), isError: true, nodes };
     if (result.status !== "complete") return refuse(`it ended ${(result as { status: string }).status}`);
     return { text: learnedText(learnedOutput(result.output)), isError: false, nodes };
