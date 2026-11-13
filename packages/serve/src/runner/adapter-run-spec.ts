@@ -486,6 +486,10 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     ...(route.like ? { like: route.like } : {}),
     ...(route.price ? { price: route.price as never } : {}),
     ...(route.fetch ? { fetch: route.fetch } : {}),
+    // The run's web_search is its provider's hosted search (the launch's plane, as its start resolved it): the session's
+    // proxy admits that search's one request (it goes through the session's port: buildToolHost's `search`) and books it
+    // with each search it ran.
+    ...(launch.plane?.web_search === "native" ? { webSearch: true } : {}),
     tiers: tierRoutes,
   });
 
@@ -703,16 +707,17 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     endPatch: async () => {
       // The root's entries and every conversation a task of the run owns (a subagent's): a child's requests are the run's.
       const entries = await agentEntriesOf(deps.journal(claim), context);
-      const { metrics, costUsd } = runMetrics(entries as never, { ...(launch.effort !== undefined ? { effort: launch.effort } : {}) });
-      // Its paid tool calls (a Parallel search's, a monid call's, a person's browser time) and its decisions (a learned
-      // workflow's decision nodes, LS-07), booked on the run's one ledger (each on its cap, in its own session, not on the
-      // root), are the run's cost too; any of them unknown leaves the run's unknown.
-      // A decision's cost is what its booking says it charged (bookedSpend over its own session's records, as the CLI spec
-      // reads it): one that reported none is unknown, never the hold the cap counted it at (ledger.decisions.spentUsd).
-      const decisions = bookedSpend((await journalEntries(deps.journal(claim), context)) as never, "decisions").usd;
-      const total = runEndCost({ model: costUsd, paid: run.ledger?.paid ? run.ledger.paid.spentUsd() : 0, decisions });
-      // An unknown cost is written as null, never left out: a follow-up's end clears the cost an earlier end stored, and an
-      // end that says nothing leaves the $0 the run read before its first response (a request a cancel cut may be billed).
+      const { metrics } = runMetrics(entries as never, { ...(launch.effort !== undefined ? { effort: launch.effort } : {}) });
+      // Its cost is its booking's, as a CLI run's is (metrics.ts bookedSpend, the one reader): every model request its
+      // session's proxy booked, pi's own answers and its side calls (a learned workflow's nodes, web_search's hosted search
+      // with its fee) alike, and its decisions (a learned workflow's decision nodes, LS-07; one that reported none is
+      // unknown, never the cap's hold for it). A request a cancel or a stop cut while it streamed is booked at no known cost
+      // (the provider may bill what it streamed), so the run's cost is unknown, never the $0 its cut answer carries.
+      const all = (await journalEntries(deps.journal(claim), context)) as never;
+      // Its paid tool calls (a Parallel search's, a monid call's, a person's browser time), booked on the run's one ledger
+      // (each on its cap, in its own session, not on the root), are the run's cost too; any part unknown leaves the run's unknown.
+      const total = runEndCost({ model: bookedSpend(all, "model").usd, paid: run.ledger?.paid ? run.ledger.paid.spentUsd() : 0, decisions: bookedSpend(all, "decisions").usd });
+      // An unknown cost is written as null, never left out: a follow-up's end clears the cost an earlier end stored.
       return { costUsd: total, metrics };
     },
     // The pass's resources go once the loop writes nothing more through them: its tools' end (background processes ended,
@@ -833,7 +838,8 @@ export async function learnedWorkflowHostTool(opts: {
   // (ledger.pause). A run whose keys give none runs no decision node: the check refuses it before any node runs.
   const providers = await decisionProvidersIn(opts.env);
   const decisions = providers ? { decisions: { providers, book: opts.run.ledger.decisions, pause: (refusal: Refusal) => opts.run.ledger.pause(refusal) } } : {};
-  const tool = learnedWorkflowTool({ workflows: flows, granted: opts.granted, ...(opts.plane ? { plane: opts.plane } : {}), env: opts.env, work: opts.work, models: tieredModels(byProvider) as never, modelOf, policy: opts.permissions.policy, denyFrom: opts.permissions.denyFrom, refresh: opts.permissions.refresh, decide: opts.permissions.decide, mcpTools, ...decisions, ...(opts.workspace ? { workspace: opts.workspace } : {}), ...(opts.modelName ? { modelName: opts.modelName } : {}) });
+  // A call node's native web_search goes through the session's port too, labelled web_search, as the run's own does.
+  const tool = learnedWorkflowTool({ workflows: flows, granted: opts.granted, ...(opts.plane ? { plane: opts.plane } : {}), env: opts.env, work: opts.work, models: tieredModels(byProvider) as never, modelOf, search: () => opts.run.ledger.models(WEB_SEARCH_TOOL), policy: opts.permissions.policy, denyFrom: opts.permissions.denyFrom, refresh: opts.permissions.refresh, decide: opts.permissions.decide, mcpTools, ...decisions, ...(opts.workspace ? { workspace: opts.workspace } : {}), ...(opts.modelName ? { modelName: opts.modelName } : {}) });
   return hostToolOf(LEARNED_WORKFLOW_TOOL, tool as never, opts.ctx) ?? undefined;
 }
 
@@ -912,6 +918,9 @@ export function buildToolHost(opts: {
     // browser holds and settles its calls here (host.ledger.paid), never on this process's own spend, and a refusal at the
     // cap parks the run (pause). browserListed reads it to fail closed.
     ledger: run.ledger,
+    // A native web_search's models: the session's port under a side key labelled web_search, so the search request goes
+    // through the run's one route (its proxy, policy, key, price and cap), this run's alone (#2458).
+    search: () => run.ledger.models(WEB_SEARCH_TOOL),
     // The run's one redactor: the browser's answers pass it inside their call, before pi stores them (tools.ts).
     redact: opts.redact,
     liveViewers: liveViewersOf(opts.store, opts.sealKey, claim, opts.redact),
