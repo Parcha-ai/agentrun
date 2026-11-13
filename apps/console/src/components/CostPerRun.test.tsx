@@ -15,10 +15,10 @@ const sample = SAMPLE as unknown as LearningCost;
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.innerHTML = ""; });
 
-function draw(data: LearningCost, on = true) {
+function draw(data: LearningCost, on = true, width = 900) {
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
-  act(() => root!.render(createElement(CostChart, { data, on, width: 900 })));
+  act(() => root!.render(createElement(CostChart, { data, on, width })));
   return host;
 }
 const text = (host: HTMLElement) => host.textContent ?? "";
@@ -85,6 +85,15 @@ describe("CostChart", () => {
     expect(text(host)).toContain("Rolling mean of 5 runs");
     expect(text(host)).toContain("1 run costs more than");
     expect(text(host)).toContain("1 run's cost is not known: left out.");
+  });
+  it("on a phone the level's words are short enough to clear the line's drop", () => {
+    const host = draw(sample, true, 390);
+    expect(text(host)).toContain("After $0.128 · 7x cheaper");
+    expect(text(host)).not.toContain("After takeover $0.128");
+  });
+  it("carries the takeover marker down through the mix, ringed in the card colour", () => {
+    const marker = draw(sample).querySelector('[data-testid="mix-takeover"]');
+    expect([...marker!.querySelectorAll("path")].map((p) => p.getAttribute("class"))).toEqual(["stroke-card", "stroke-chart-workflow"]);
   });
   it("names each path in the legend with its runs, and colours its dots by a chart token", () => {
     const host = draw(sample);

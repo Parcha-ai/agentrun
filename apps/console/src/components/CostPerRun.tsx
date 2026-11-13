@@ -168,7 +168,7 @@ export function CostChart({ data, on, width: fixed }: { data: LearningCost; on: 
             {afterFrom !== null && s.after && (
               <g>
                 <path d={`M${x(afterFrom)},${y(s.after.mean_usd)}H${M.left + plotW}`} className="stroke-foreground" strokeWidth={1} strokeDasharray="2 3" />
-                <Label x={M.left + plotW - 4} y={y(s.after.mean_usd) - 8} anchor="end" strong>After takeover {level(s.after.mean_usd)}{cheaper ? ` · ${cheaper}` : ""}</Label>
+                <Label x={M.left + plotW - 4} y={y(s.after.mean_usd) - 8} anchor="end" strong>{width < 520 ? "After" : "After takeover"} {level(s.after.mean_usd)}{cheaper ? ` · ${cheaper}` : ""}</Label>
               </g>
             )}
             <path d={line} fill="none" className="stroke-foreground" strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
@@ -279,7 +279,13 @@ function Mix({ runs, width, x, step, plot, takeover }: { runs: readonly CostRun[
             </g>
           );
         })}
-        {onPlot && <path d={`M${x(takeover!)},${MIX_M.top}V${MIX_M.top + height}`} className="stroke-chart-workflow" strokeWidth={1.5} />}
+        {/* The takeover marker carried down from the plot, with a 2px card ring so it reads over a workflow column too. */}
+        {onPlot && (
+          <g data-testid="mix-takeover">
+            <path d={`M${x(takeover!)},${MIX_M.top}V${MIX_M.top + height}`} className="stroke-card" strokeWidth={5.5} />
+            <path d={`M${x(takeover!)},${MIX_M.top}V${MIX_M.top + height}`} className="stroke-chart-workflow" strokeWidth={1.5} />
+          </g>
+        )}
       </svg>
       {shown && (
         <div className={cn("pointer-events-none absolute z-raised whitespace-nowrap border bg-card px-2 py-1 font-mono text-label shadow-float", tipLeft && "-translate-x-full")}
