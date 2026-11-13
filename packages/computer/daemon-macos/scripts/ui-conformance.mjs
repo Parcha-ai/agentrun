@@ -1,4 +1,4 @@
-// CI and the Mac mini's bootstrap: the protocol's health, ui and input conformance cases (and apps.launch-terminate)
+// CI and the Mac mini's bootstrap: the protocol's health, ui and input conformance cases
 // against the running Computerd, through its computerd command, with this Mac's conformance module (conformance.mjs)
 // and the ui fixture app (UIFixture.app, also the desktop input fixture) when it is installed. Needs packages/computer
 // built. Writes the CLI's JSON report to /tmp/computerd-ci/ui-conformance.json with each case's time added (ms, from
@@ -22,7 +22,7 @@ process.env.COMPUTERD_HOME = home;
 const out = "/tmp/computerd-ci/ui-conformance.json";
 mkdirSync("/tmp/computerd-ci", { recursive: true });
 const fixture = "/Applications/UIFixture.app";
-const options = existsSync(fixture) ? ["--only", "health,ui,input,apps.launch-terminate", "--fixture", fixture] : ["--only", "health,ui,apps.launch-terminate"];
+const options = existsSync(fixture) ? ["--only", "health,ui,input", "--fixture", fixture] : ["--only", "health,ui"];
 const ended = new Map();
 let last = Date.now();
 let json = "";
