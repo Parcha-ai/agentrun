@@ -405,6 +405,12 @@ export interface CallContext {
 	signal?: AbortSignal;
 }
 
+/** One value Settings offers for a picked key (keyChoices): the value saved, and the words a person picks it by. */
+export interface KeyChoice {
+	value: string;
+	label: string;
+}
+
 /**
  * create's context: requestId is the caller's id of this request, not of the computer (serve passes the run's claim; a
  * conformance run one per create). Required, with no generated fallback. Every provider names the computer from it
@@ -523,6 +529,13 @@ export interface ComputerProvider {
 	 * key. Optional.
 	 */
 	testConnection?(context?: CallContext): Promise<Result<{ detail: string }>>;
+	/**
+	 * The values Settings offers for a key a person picks rather than types (its descriptor key's `picked`), by the
+	 * create() option it fills, read from the vendor with the provider's other keys and never making a computer: Orgo's
+	 * workspaces, each its id and its name. ok with each value and its words; an error in words where there is none to
+	 * pick (an account with no workspace) or the read failed. Optional; a provider whose descriptor picks a key has it.
+	 */
+	keyChoices?(option: string, context?: CallContext): Promise<Result<KeyChoice[]>>;
 	/**
 	 * The image its computers start from, made ready on its engine before the first create: built from its recipe, or
 	 * pulled by name, when the engine lacks it; ok with the tag to put in spec.image. `onWait` is told once, before a build

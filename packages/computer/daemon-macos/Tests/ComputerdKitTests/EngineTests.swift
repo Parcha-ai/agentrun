@@ -513,6 +513,37 @@ final class EngineTests: XCTestCase {
 		XCTAssertEqual(gone.window, "closed")
 	}
 
+	/// One rule for "the step closed the app's last window", whatever the step: a press on the window's Close button (by
+	/// Accessibility, or by the pointer when it has no AXPress), a click, and a key chord each answer window "closed", the
+	/// step ran and changed the window, and no error.
+	func testEveryStepKindThatClosesTheLastWindowAnswersClosed() async throws {
+		os.add(9, "button", name: "Close", frame: Rect(700, 70, 80, 30), parent: 2, actions: ["AXPress"])
+		os.add(10, "button", name: "Close by pointer", frame: Rect(700, 120, 80, 30), parent: 2)
+		os.add(11, "menuitem", name: "super+w", actions: ["AXPress"])
+		let closes: Set<String> = ["ax.AXPress 9", "bg.click 740,135 left 1", "ax.AXPress 11"]
+		os.react = { entry, os in
+			if closes.contains(entry) { os.with { $0.hasWindow = false } }
+		}
+		let cases: [(String, (UiObserveResult) -> Step, Route)] = [
+			("press by Accessibility", { .press(self.ref($0, "Close")) }, .semantic),
+			("press by the pointer", { .press(self.ref($0, "Close by pointer")) }, .background),
+			("click", { .click(.ref(self.ref($0, "Close")), button: nil, count: nil) }, .semantic),
+			("key", { _ in .key("super+w") }, .semantic),
+		]
+		for (what, step, route) in cases {
+			os.hasWindow = true
+			let engine = os.engine()
+			let r = try await engine.observe(UiObserveParams())
+			let closed = try await engine.act(UiActParams(steps: [step(r)]))
+			XCTAssertEqual(closed.window, "closed", what)
+			XCTAssertNil(closed.state, what)
+			XCTAssertTrue(closed.changed, what)
+			XCTAssertNil(stepError(closed, 0), "\(what): \(stepError(closed, 0)?.message ?? "")")
+			XCTAssertEqual(ran(closed, 0)?.0, route, what)
+			XCTAssertEqual(ran(closed, 0)?.1, true, "\(what): a window that closed is a change")
+		}
+	}
+
 	func testAStepThatQuitsTheAppIsNotFoundInWords() async throws {
 		let engine = os.engine()
 		_ = try await engine.observe(UiObserveParams())

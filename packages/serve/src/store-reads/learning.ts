@@ -14,7 +14,7 @@ import { said, STOPPED } from "../learning-words.js";
 import { type Impact, type ImpactLearning, learningImpact, noteRuns, notesRead } from "../learning-run.js";
 import { costSummary, type CostRun, type CostSummary, RUN_PATHS, type RunPath, runCostOf } from "../learning-cost.js";
 import { runPathOf, workflowNameOf } from "../runner/learning-end.js";
-import { PAST_RUNS, servedAnswerOf, servedAnswerStands, servedOf, workflowCostsOf } from "../runner/workflow-first.js";
+import { PAST_RUNS, type PastRun, servedAnswerOf, servedAnswerStands, servedOf, workflowCostsOf } from "../runner/workflow-first.js";
 import { type Reflect, reflects } from "../reflect-range.js";
 import type { NoteRuns } from "../learning.js";
 import { type NoteFiles, notesOf } from "../usage.js";
@@ -28,6 +28,7 @@ import { KINDS } from "../runner/journal-kinds.js";
 import { keptOf, learnedOf, lostOf, type DroppedData, type GradedData, type KeptProposal, type MergedData } from "../runner/learning-loop.js";
 import { promotedOf } from "../learn/compile.js";
 import { promotionsOf } from "../learn/promote.js";
+import { GENERAL_UNCHECKED } from "../learn/general.js";
 import type { Store } from "../store/store.js";
 
 /** A run's learning end: the Learning fields its end sets. */
@@ -49,9 +50,9 @@ function answeredOf(row: KeptRow): Pick<Learning, "answered_at" | "job_cost_usd"
   return { answered_at: row.answered_at, job_cost_usd: usdOrNull(row.job_cost_usd), look_back_usd: usdOrNull(row.look_back_usd) };
 }
 
-/** Run `runId`'s learning end; null when the run kept no learning. Proposed while its learning run has not ended. */
-export async function runLearningEnd(store: Store, runId: string): Promise<RunLearningEnd | null> {
-  const kept = await store.learning.proposal(runId);
+/** Run `runId`'s learning end (its newest round's, or round `round`'s); null when the run kept no learning. Proposed while its learning run has not ended. */
+export async function runLearningEnd(store: Store, runId: string, round?: number): Promise<RunLearningEnd | null> {
+  const kept = await store.learning.proposal(runId, round);
   if (!kept) return null;
   const row = (kept.proposal ?? {}) as KeptRow;
   return { ...(await endOfKept(store, kept, row)), ...answeredOf(row), ...compiledOf(row) };
@@ -96,20 +97,24 @@ async function endOfKept(store: Store, kept: NonNullable<Awaited<ReturnType<Stor
   // What the grade spent: the graded entry's, or what a grade that failed spent before it did.
   const spent = graded ?? (dropped && "usd" in dropped ? { usd: dropped.usd ?? null, tokens: dropped.tokens ?? null } : undefined);
   const cost = spent ? { cost_usd: { grade: spent.usd }, tokens: { grade: spent.tokens ?? null } } : {};
+  // A generality check that could not run (learning-loop.ts `unchecked`) is said after the end's words: the grader read
+  // every note. Its provider's error stays in the journal.
+  const skipped = (graded?.unchecked ?? dropped?.unchecked) !== undefined;
+  const withSkip = (detail: string | null) => (skipped ? [detail, GENERAL_UNCHECKED].filter(Boolean).join(" ") : detail);
   if (merged && graded) {
     // Each item as the merge settled it: its record's verdict (a note it left out is no longer kept, and says why). A merge
     // recorded with none (before the record kept it) reads no item decisions.
     const verdict = merged.verdict;
     const what = verdict ? learnedOf(keptOf(row.proposal, verdict), verdict) : { learned: [], pending: [], skills: [], workflows: [] };
     return {
-      state: "merged", reason: null, detail: merged.detail, at: endedAt, ...left, ...(verdict ? { verdict } : {}), graded: { ...graded.graded }, ...cost, merged: merged.commit,
+      state: "merged", reason: null, detail: withSkip(merged.detail), at: endedAt, ...left, ...(verdict ? { verdict } : {}), graded: { ...graded.graded }, ...cost, merged: merged.commit,
       learned: what.learned, ...(what.pending.length ? { pending: what.pending } : {}), ...(what.skills.length ? { skills: what.skills } : {}), ...(what.workflows.length ? { workflows: what.workflows } : {}),
     };
   }
   const reason = (dropped?.reason ?? null) as Learning["reason"];
   const lost = reason === "grader" ? lostOf(row.proposal) : [];
   return {
-    state: "dropped", reason, detail: dropped?.detail ?? null, at: endedAt,
+    state: "dropped", reason, detail: withSkip(dropped?.detail ?? null), at: endedAt,
     ...(dropped?.problems?.length ? { problems: [...dropped.problems] as Learning["problems"] } : left),
     // The verdict, when one was given; the blobs it read only go with a merge (the server kept them for its merge alone).
     ...(graded ? { verdict: graded.verdict } : {}), ...cost, ...(lost.length ? { lost } : {}),
@@ -213,17 +218,12 @@ export async function agentCostOverStore(store: Store, agentId: string, limit = 
   for (const run of ended) {
     if (!kinds.has(run.revisionId)) kinds.set(run.revisionId, (await store.agents.revision(run.revisionId))?.kind);
     if (kinds.get(run.revisionId) === "workflow") continue;
-    const started = await learningStartOfRun(store, run.id);
-    const { looked, grade } = await learningSpendOf(store, run.id, run.costUsd);
-    const { path, workflow } = pathOfRow(run.metrics, started);
-    runs.push({ n: runs.length + 1, run_id: run.id, started_at: new Date(run.startedAt).toISOString(), path, workflow, learned_revision: started?.seed ?? null, ...runCostOf(run.costUsd, looked, grade) });
+    runs.push(await costRunOf(store, run, runs.length + 1));
   }
-  // Each learned workflow that ran first, where it stands against the money rule (workflow-first.ts workflowCostsOf), the
-  // one the run's launch reads: a workflow over the line shows `needs_revision` with its two numbers.
-  // The runner's own history (workflow-first.ts pastOf: the agent's newest PAST_RUNS runs), so the page and the launch's
-  // decision agree.
-  const recent = new Set((await store.runs.list({ agentId, limit: PAST_RUNS })).map((run) => run.id));
-  const workflows = workflowCostsOf(ended.filter((run) => recent.has(run.id) && kinds.get(run.revisionId) !== "workflow"));
+  // Each learned workflow that ran first, where it stands against the money rule (workflow-first.ts workflowCostsOf), over
+  // the runs the run's launch reads (pastRunsOverStore) at the all-in cost this series shows: a workflow over the line
+  // shows `needs_revision` with its two numbers, so the page and the launch's decision agree.
+  const workflows = workflowCostsOf(await pastRunsOverStore(store, agentId, new Map(runs.map((run) => [run.run_id, run.total_usd]))));
   return { runs: runs.slice(Math.max(0, runs.length - limit)), summary: costSummary(runs), total_runs: runs.length, unknown_cost_runs: runs.filter((run) => run.total_usd === null).length, workflows };
 }
 
@@ -242,6 +242,46 @@ async function learningSpendOf(store: Store, runId: string, rowUsd: number | nul
   const looked = answeredOf((kept.proposal ?? {}) as KeptRow);
   const learningRun = kept.learningRunId ? await store.runs.get(kept.learningRunId) : undefined;
   return { looked, grade: learningRun && FINAL_STATES.includes(learningRun.state) ? (learningRun.costUsd ?? null) : 0 };
+}
+
+type RunRecord = NonNullable<Awaited<ReturnType<Store["runs"]["get"]>>>;
+
+/** A run's own cost and what learning added for it (runCostOf): its row's cost, every round of its learning (a run a
+ *  follow-up opened again, a review's or a person's, learned in rounds: every round's look-back and grade, roundsSpendOf,
+ *  never the newest round's alone), else its one round's (learningSpendOf). `total_usd` is the run's all-in cost, the one
+ *  the cost page shows and the money rule reads (pastRunsOverStore); null when any part is unknown. */
+export async function allInOf(store: Store, run: RunRecord): Promise<ReturnType<typeof runCostOf>> {
+  // Every round's (learningSpendOf over the rounds: what its row spent after its job answered is learning, roundsLooked).
+  const { looked, grade } = await learningSpendOf(store, run.id, run.costUsd);
+  return runCostOf(run.costUsd, looked, grade);
+}
+
+/** One run of the cost series, as number `n` of it: its figures (allInOf) and its path (agentCostOverStore's loop body,
+ *  and a learning batch's row once the run's learning has settled). */
+export async function costRunOf(store: Store, run: RunRecord, n: number): Promise<CostRun> {
+  const started = await learningStartOfRun(store, run.id);
+  const { path, workflow } = pathOfRow(run.metrics, started);
+  return { n, run_id: run.id, started_at: new Date(run.startedAt).toISOString(), path, workflow, learned_revision: started?.seed ?? null, ...(await allInOf(store, run)) };
+}
+
+/** The runs the money rule reads for agent `agentId` (runner/workflow-first.ts costLineOf), one set for the run's launch
+ *  and the cost page: of its newest PAST_RUNS runs, each that ended (ended, stopped or failed), is neither imported nor
+ *  archived nor a workflow revision's run, with its all-in cost (allInOf). `known`: all-in costs already read, by run id
+ *  (the cost page's series), read again for no run. */
+export async function pastRunsOverStore(store: Store, agentId: string, known?: ReadonlyMap<string, number | null>): Promise<PastRun[]> {
+  const kinds = new Map<string, string | undefined>();
+  const kept: RunRecord[] = [];
+  for (const run of await store.runs.list({ agentId, limit: PAST_RUNS })) {
+    if (run.agentId !== agentId || !FINAL_STATES.includes(run.state) || run.importedFrom || run.archivedAt !== null) continue;
+    if (!kinds.has(run.revisionId)) kinds.set(run.revisionId, (await store.agents.revision(run.revisionId))?.kind);
+    if (kinds.get(run.revisionId) !== "workflow") kept.push(run);
+  }
+  // A few reads a run, a batch at a time: a launch reads up to PAST_RUNS of them.
+  const past: PastRun[] = [];
+  for (let at = 0; at < kept.length; at += 16) {
+    past.push(...(await Promise.all(kept.slice(at, at + 16).map(async (run) => ({ metrics: run.metrics, startedAt: run.startedAt, allInUsd: known?.has(run.id) ? known.get(run.id)! : (await allInOf(store, run)).total_usd })))));
+  }
+  return past;
 }
 
 /** The path run `runId` took and the learned workflow it ran, the one classifier its run record keeps (metrics.path,

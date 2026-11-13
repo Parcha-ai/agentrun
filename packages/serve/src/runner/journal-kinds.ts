@@ -95,6 +95,13 @@ export const KINDS = {
    *  sent it to. On the node log (NODE_LOG_SESSION), for GET /runs/{id}/graph's nodes' `model` (graph-view.ts). Neither a
    *  call nor a message. */
   nodeModel: "agentrun.node.model",
+  /** A learning run's generality pre-check (learn/general.ts), its Jev requests about to leave: committed and made
+   *  durable before they do, as a grade request's record is (learning-ask.ts bookedAsk), so a restart that finds one with
+   *  no answer after it books what they spent as unknown (null) before it asks again. Paid, and Jev dedupes none. */
+  learningGeneralSent: "agentrun.learning.general.sent",
+  /** That check's end, kept before the grader starts: its scores, or why it could not run (`unchecked`), and what it spent.
+   *  A restart reuses it and never asks Jev again. */
+  learningGeneral: "agentrun.learning.general",
   /** A learning run's grade: the verdict and what it spent, written before its merge (a resumed run never asks again). */
   learningGraded: "agentrun.learning.graded",
   /** A learning run's merge: the new main and its commit, with the run's end. */

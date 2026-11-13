@@ -72,7 +72,7 @@ function oneFieldOf(schema: unknown): string | undefined {
  *  each sees the answer as the run presents it. No schema: the output as it is. With one: an output whose fenced json
  *  block already meets it, as it is; else its value shaped to the schema (the output as JSON when it parses, else its
  *  text; a value that is no object fills the schema's one field, oneFieldOf: a one-field workflow's bare "5462" is
- *  `{"mcc": "5462"}`, never the number), the first shape that meets the schema, fenced as the answer's one json block;
+ *  `{"mcc": "5462"}`, never the number; an object output is only itself), the first shape that meets the schema, fenced as the answer's one json block;
  *  `value` is what structuredAnswer reads back from `text`. None meets it: why, and the job goes back to the agent. */
 export function answerAsServed(output: string, schema: unknown): { text: string; value: unknown } | { why: string } {
   if (schema === undefined) return { text: output, value: output };
@@ -87,7 +87,8 @@ export function answerAsServed(output: string, schema: unknown): { text: string;
   } catch {
     // Not JSON: its text alone.
   }
-  values.push(output);
+  // An object output is its own shape: one that fails the schema goes back to the agent, never as its own text in a field.
+  if (!isObject(values[0])) values.push(output);
   const shapes = values.flatMap((value) => (isObject(value) || field === undefined ? [value] : [value, { [field]: value }]));
   const meets = shapes.find((shape) => !compiled.check(shape).length);
   if (meets !== undefined) return { text: `\`\`\`json\n${JSON.stringify(meets, null, 2)}\n\`\`\``, value: meets };
