@@ -2232,7 +2232,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             served = step;
             // A replay run (runner/promotion.ts) ends on its workflow's step whichever way it ended: its hand-back is the
             // agent's recorded answer for that input, read from the graded run, never asked of the agent again.
-            if (served?.outcome === "answered" || (served?.outcome === "handed_back" && spec.workflowFirst.replay)) turnsOver = true;
+            if (served?.outcome === "answered" || (served?.outcome === "handed_back" && spec.workflowFirst?.replay)) turnsOver = true;
             else if (served?.outcome === "handed_back") {
               // The agent's first input: the handback, the server's (its row "AgentRun: …"), the job whole after it. Cut of
               // every secret the runner holds: the workflow's words may quote what its steps read.
