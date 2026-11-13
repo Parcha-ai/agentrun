@@ -9,7 +9,8 @@
 //   - workflow_first false, an input no workflow fits: the agent takes the run from its first turn, path "agent".
 //   - learned_workflow set to ask: the run parks on the step before any node runs; approved, it runs.
 //   - a stop while the step is asked: the claim that holds it ends the run stopped.
-//   - no breaker: a handback is an escalation, never a failure; one fitting workflow serves whatever its past runs.
+//   - the money rule: a workflow whose last 10 served runs cost more than the agent by hand stops running first, and the
+//     run asks for its revision; under it, at a new digest, under 10 runs or with no by-hand baseline, it serves.
 // pi's model and the node's go through the session proxy to a loopback gateway; no sleeps, no port races. The same on a
 // CLI harness (the faux one the harness table hands the runner): one loop serves every harness.
 import assert from "node:assert/strict";
@@ -37,7 +38,7 @@ const { sendCommand } = await import("../dist/runner/commands.js");
 const { LEARNED_WORKFLOW_TOOL } = await import("../dist/learned-workflow.js");
 const { runTimeline, runEntries, runReflect } = await import("../dist/store-reads/journal.js");
 const { said } = await import("../dist/learning-words.js");
-const { fits, workflowFirstOf, pathMetrics, servedOf, WORKFLOW_FIRST } = await import("../dist/runner/workflow-first.js");
+const { COST_WINDOW, costLineOf, fits, workflowDigest, workflowFirstOf, pathMetrics, reviseOf, servedOf, WORKFLOW_FIRST } = await import("../dist/runner/workflow-first.js");
 const { resolveSchemaForWorkflow } = await import("@parcha/agentrun-dsl");
 
 const SEAL_KEY = Buffer.alloc(32, 7);
@@ -61,6 +62,8 @@ const answerFlow = {
   ] },
 };
 const FLOWS = [{ name: "answer", description: "Answers a question as a number", workflow: answerFlow }];
+/** The digest of FLOWS' workflow as its seed lays it (workflow.json, JSON.stringify of it). */
+const DIGEST = workflowDigest({ workflow: JSON.stringify(answerFlow) });
 
 const offers = (body, name) => (body?.tools ?? []).some((tool) => tool?.name === name);
 const hasResult = (body) => (body?.messages ?? []).some((message) => Array.isArray(message.content) && message.content.some((block) => block?.type === "tool_result"));
@@ -85,7 +88,7 @@ const until = async (done, what, ms = 40_000) => {
 /** A pi run of an agent that learned `answer`, on `input`; the node submits `{answer, sure}` (`sure` false hands back);
  *  the agent, when asked, answers AGENT_SAYS. `toolSettings` on the revision; `approve`: answer the run's first ask ("stop":
  *  stop the run while it waits instead). */
-async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION }, sure = true, learned = true, workflowFirst, toolSettings, approve = false } = {}) {
+async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION }, sure = true, learned = true, workflowFirst, toolSettings, approve = false, past = [] } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-workflow-first-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -111,7 +114,12 @@ async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION 
   const price = (_model, usage) => ((usage.input ?? 0) * 3 + (usage.output ?? 0) * 15 + (usage.cacheRead ?? 0) * 0.3 + (usage.cacheWrite ?? 0) * 3.75) / 1e6;
   const route = { model: MODEL, provider: { api: "anthropic-messages", origin: gw.url, credential: () => `not-a-secret-${"pi"}` }, cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, outputCeiling: 8_192, price, fetch: globalThis.fetch };
   const logs = [];
-  const deps = { env: {}, data: dir, journal: (claim) => store.journal(claim), store, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim: async () => ({ release: async () => {} }), log: (line) => logs.push(line) };
+  // `past`: earlier runs of the agent, newest first, as its store lists them (the money rule's read): laid before the
+  // store's own rows, every other read the store's.
+  const runsOf = { ...store.runs, list: async (filter) => [...past, ...(await store.runs.list(filter))] };
+  for (const key of Object.getOwnPropertyNames(Object.getPrototypeOf(store.runs) ?? {})) if (typeof store.runs[key] === "function" && key !== "list" && key !== "constructor") runsOf[key] = store.runs[key].bind(store.runs);
+  const depStore = past.length ? new Proxy(store, { get: (target, key) => (key === "runs" ? runsOf : typeof target[key] === "function" ? target[key].bind(target) : target[key]) }) : store;
+  const deps = { env: {}, data: dir, journal: (claim) => store.journal(claim), store: depStore, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim: async () => ({ release: async () => {} }), log: (line) => logs.push(line) };
   // `approve: "stop-at-gate"`: the person's stop lands while the first claim is at the step's gate (the run's own gate,
   // asked before the ask is), so the claim that parks on the ask holds the stop. `claims`: the specs built, one per claim.
   let claims = 0;
@@ -202,6 +210,7 @@ test("handed back: the guard holds, the same run goes on to the agent with the w
   assert.equal(row.metrics?.path, "handed_back", JSON.stringify(row.metrics));
   assert.equal(row.metrics?.learned_revision, seed);
   assert.equal(row.metrics?.workflow, "answer");
+  assert.equal(row.metrics?.workflow_digest, DIGEST, "the digest is the workflow text's");
   assert.ok(requests.some((request) => request.host === LEARNED_WORKFLOW_TOOL) && requests.some((request) => request.host === undefined), `node and agent requests both booked: ${JSON.stringify(requests)}`);
   assert.ok((row.costUsd ?? 0) > 0, `the run's cost: ${row.costUsd}`);
 });
@@ -257,20 +266,73 @@ test("learned_workflow set to ask: a stop that lands while the step is asked is 
   assert.equal(gateway.requests.length, 0, "the workflow never ran, the agent never asked");
 });
 
-test("workflowFirstOf: one fitting workflow serves, whatever its past runs; none, two, a workflow run, no learning start, or workflow_first false do not", async () => {
+/** Earlier runs of the agent, newest first, as the store lists them: `served` runs of FLOWS' workflow at `digest` (path
+ *  handed_back), each at `servedUsd`, then `byHand` runs on the agent's path, each at `byHandUsd`. */
+const pastRuns = ({ served = COST_WINDOW, servedUsd = 0.5, byHand = 3, byHandUsd = 0.2, digest = DIGEST } = {}) => {
+  const at = Date.UTC(2026, 10, 12);
+  const row = (i, metrics, costUsd) => ({ id: `past-${i}`, agentId: "agent-1", revisionId: "rev-1", state: "ended", startedAt: at - i * 60_000, endedAt: at - i * 60_000 + 1_000, costUsd, metrics, importedFrom: null, archivedAt: null, epoch: 1, runner: null });
+  return [
+    ...Array.from({ length: served }, (_, i) => row(i, { path: "handed_back", workflow: "answer", workflow_digest: digest, learned_revision: "s" }, servedUsd)),
+    ...Array.from({ length: byHand }, (_, i) => row(served + i, { path: "agent", learned_revision: "s" }, byHandUsd)),
+  ];
+};
+
+test("money rule: a workflow whose last 10 served runs cost more than the agent by hand stops running first, and the run asks for a revision", async (t) => {
+  const { row, gateway, entries, logs } = await piRun(t, { past: pastRuns({ servedUsd: 0.5, byHandUsd: 0.2 }) });
+  assert.equal(row.state, "ended", JSON.stringify(row));
+  assert.equal(row.metrics?.path, "agent", `the agent took the run: ${JSON.stringify(row.metrics)}`);
+  assert.equal(gateway.requests.filter(isNode).length, 0, "the workflow never ran");
+  const revise = entries.findLast((entry) => entry.kind === WORKFLOW_FIRST)?.data;
+  assert.deepEqual(revise, { workflow: "answer", digest: DIGEST, revision: revise?.revision, outcome: "needs_revision", served_usd: 0.5, by_hand_usd: 0.2, runs: COST_WINDOW }, "the run's journal keeps why, with the two numbers");
+  assert.ok(logs.some((line) => /answer cost \$0\.5 a run over its last 10 served runs, at or over \$0\.2 by hand/.test(line)), JSON.stringify(logs));
+  const ask = gateway.requests.find((request) => /no longer runs first: over its last 10 runs it served it cost \$0\.5 a run, against \$0\.2 a run by hand/.test(textOf(request.body)));
+  assert.ok(ask, `the end-of-run turn asked for a revision: ${gateway.requests.map((request) => textOf(request.body).slice(-400)).join("\n---\n")}`);
+  assert.match(textOf(ask.body), /give `answer` again whole under its name/);
+});
+
+test("money rule: under the by-hand cost, a new digest, fewer than 10 served runs, or no by-hand baseline: the workflow serves", async (t) => {
+  for (const [why, past] of [
+    ["under the by-hand cost", pastRuns({ servedUsd: 0.1, byHandUsd: 0.2 })],
+    ["a new revision of it (another digest's runs)", pastRuns({ servedUsd: 0.5, byHandUsd: 0.2, digest: "fedcba9876543210" })],
+    ["9 served runs", pastRuns({ served: COST_WINDOW - 1, servedUsd: 0.5, byHandUsd: 0.2 })],
+    ["no by-hand baseline", pastRuns({ servedUsd: 0.5, byHand: 0 })],
+  ]) {
+    await t.test(why, async (t) => {
+      const { row, logs } = await piRun(t, { past });
+      assert.equal(row.metrics?.path, "workflow", `${why}: ${JSON.stringify(row.metrics)}`);
+      if (why === "no by-hand baseline") assert.ok(logs.some((line) => /no by-hand cost to hold answer to/.test(line)), JSON.stringify(logs));
+    });
+  }
+});
+
+test("costLineOf: the newest 10 served runs at the digest against the agent's by-hand runs, or the runs before the workflow when there are none", () => {
+  const at = Date.UTC(2026, 10, 12);
+  const run = (i, metrics, costUsd) => ({ metrics, costUsd, startedAt: at - i * 60_000 });
+  const served = (i, usd, extra = {}) => run(i, { path: i % 2 ? "workflow" : "handed_back", workflow: "answer", workflow_digest: "d", ...extra }, usd);
+  const rows = [...Array.from({ length: 12 }, (_, i) => served(i, i < 10 ? 0.3 : 9)), run(12, { path: "agent" }, 0.1), run(13, { path: "agent" }, 0.3), run(14, { path: "agent" }, null)];
+  assert.deepEqual(costLineOf(rows, "answer", "d"), { served: { runs: 10, mean_usd: 0.3 }, by_hand: { runs: 2, mean_usd: 0.2 } }, "the newest 10 served; by hand, cost known");
+  assert.deepEqual(costLineOf(rows, "answer", "e").served, { runs: 0, mean_usd: null }, "another digest: none served");
+  assert.deepEqual(costLineOf([...rows.slice(0, 12), run(20, {}, 0.4), run(21, null, 0.6)], "answer", "d").by_hand, { runs: 2, mean_usd: 0.5 }, "no agent path: the runs before the workflow's first");
+  assert.equal(costLineOf(rows.slice(0, 12), "answer", "d").by_hand, null, "no baseline at all");
+  assert.equal(reviseOf([]), undefined);
+  assert.deepEqual(reviseOf([{ kind: WORKFLOW_FIRST, data: { workflow: "answer", digest: "d", outcome: "needs_revision", served_usd: 1, by_hand_usd: 0.5, runs: 10 } }]), { workflow: "answer", digest: "d", served_usd: 1, by_hand_usd: 0.5, runs: 10 });
+  assert.equal(servedOf([{ kind: WORKFLOW_FIRST, data: { workflow: "answer", digest: "d", outcome: "needs_revision" } }]), undefined, "a revision ask served nothing");
+});
+
+test("workflowFirstOf: one fitting workflow serves; none, two, a workflow run, no learning start, or workflow_first false do not", async () => {
   const flow = (name, required) => ({ name, description: "", workflow: JSON.stringify({ ...answerFlow, name, schemas: { ...answerFlow.schemas, In: { type: "object", required, properties: Object.fromEntries(required.map((key) => [key, { type: "string" }])) } } }) });
   const launch = { input: { content: "c", question: "q" }, learning: { seed: "abc" } };
   const logs = [];
   const log = (line) => logs.push(line);
-  const one = await workflowFirstOf("agentic", [flow("answer", ["question"])], launch, log);
+  const { serve: one } = await workflowFirstOf("agentic", [flow("answer", ["question"])], launch, log);
   assert.deepEqual({ ...one, digest: typeof one.digest }, { name: "answer", digest: "string", input: launch.input, revision: "abc" });
-  assert.equal(await workflowFirstOf("agentic", [flow("answer", ["question"]), flow("other", ["content"])], launch, log), undefined, "two fit: the agent's");
+  assert.deepEqual(await workflowFirstOf("agentic", [flow("answer", ["question"]), flow("other", ["content"])], launch, log), {}, "two fit: the agent's");
   assert.ok(logs.some((line) => /2 of 2 learned workflows fit/.test(line)), JSON.stringify(logs));
-  assert.equal(await workflowFirstOf("agentic", [flow("answer", ["missing"])], launch, log), undefined, "none fit");
-  assert.equal(await workflowFirstOf("agentic", [flow("answer", [])], launch, log), undefined, "no required field: never fits");
-  assert.equal(await workflowFirstOf("workflow", [flow("answer", ["question"])], launch, log), undefined, "a workflow run is not agentic");
-  assert.equal(await workflowFirstOf("agentic", [flow("answer", ["question"])], { ...launch, learning: undefined }, log), undefined, "no learning start");
-  assert.equal(await workflowFirstOf("agentic", [flow("answer", ["question"])], { ...launch, workflowFirst: false }, log), undefined, "forced to the agent");
+  assert.deepEqual(await workflowFirstOf("agentic", [flow("answer", ["missing"])], launch, log), {}, "none fit");
+  assert.deepEqual(await workflowFirstOf("agentic", [flow("answer", [])], launch, log), {}, "no required field: never fits");
+  assert.deepEqual(await workflowFirstOf("workflow", [flow("answer", ["question"])], launch, log), {}, "a workflow run is not agentic");
+  assert.deepEqual(await workflowFirstOf("agentic", [flow("answer", ["question"])], { ...launch, learning: undefined }, log), {}, "no learning start");
+  assert.deepEqual(await workflowFirstOf("agentic", [flow("answer", ["question"])], { ...launch, workflowFirst: false }, log), {}, "forced to the agent");
   assert.equal(fits({ name: "x", description: "", workflow: "not json" }, launch.input, resolveSchemaForWorkflow), false);
   // The run record carries the path only for a run that learns, as the run-end classifier gives it.
   assert.deepEqual(pathMetrics({ input: {} }, { path: "workflow", workflow: "answer" }), {});
