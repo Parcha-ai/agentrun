@@ -6,7 +6,7 @@
 // also saves each width and theme, before and during the hover.
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { check } from "../harness.mjs";
+import { check, markExample } from "../harness.mjs";
 
 const SAMPLE = JSON.parse(readFileSync(new URL("../../src/components/CostPerRun.sample.json", import.meta.url), "utf8"));
 export const WIDTHS = [1440, 820, 390];
@@ -42,7 +42,7 @@ export default {
     // The held-out headline: none recorded reads nothing under the empty state; one posted through the real API shows.
     const none = await api("GET", `/agents/${encodeURIComponent(id)}/learning/evals`);
     check(none.status === 200 && none.body.evals.length === 0, `a fresh agent's evals: ${none.status} ${JSON.stringify(none.body)}`);
-    const posted = await api("POST", `/agents/${encodeURIComponent(id)}/learning/evals`, { name: "invoice bench, sealed test", label_source: "invented labels", n: 200, correct: 188, cost_per_task_usd: 0.12, baseline_cost_per_task_usd: 0.89 });
+    const posted = await api("POST", `/agents/${encodeURIComponent(id)}/learning/evals`, { name: "invoice bench, sealed test", label_source: "invented labels", n: 200, correct: 188, cost_per_task_usd: 0.128, baseline_cost_per_task_usd: 0.89 });
     check(posted.status === 201, `POST /learning/evals answered ${posted.status}: ${JSON.stringify(posted.body)}`);
     await page.route(new RegExp(`/v2/agents/${encodeURIComponent(id)}/learning/cost(\\?.*)?$`), (route) => route.fulfill({ json: { ...SAMPLE, agent: id } }));
     const shots = process.env.E2E_SHOTS;
@@ -59,10 +59,11 @@ export default {
         await page.evaluate(() => document.fonts.ready);
         check(await page.evaluate((t) => document.documentElement.classList.contains(t), theme), `${theme} ${width}px: the page is not in the ${theme} theme`);
         const heldOut = await page.getByTestId("held-out-test").textContent();
-        check(/200 jobs it never learned from/.test(heldOut ?? "") && /94%95% interval 89\.8% to 96\.5%, n=200/.test(heldOut ?? "") && /7\.4x cheaper/.test(heldOut ?? ""), `${theme} ${width}px: the held-out card says ${heldOut}`);
+        check(/200 jobs it never learned from/.test(heldOut ?? "") && /94%95% interval 89\.8% to 96\.5%, n=200/.test(heldOut ?? "") && /7\.0x cheaper/.test(heldOut ?? ""), `${theme} ${width}px: the held-out card says ${heldOut}`);
+        if (shots) await markExample(page.getByTestId("held-out-test"));
         if (shots && width === WIDTHS[0]) await page.getByTestId("held-out-test").screenshot({ path: join(shots, `held-out-${theme}-${width}.png`) });
         const headline = await card.locator("h3 + p").textContent();
-        check(/before learning, .* after takeover: 7x cheaper/.test(headline ?? ""), `${theme} ${width}px: the headline says ${headline}`);
+        check(/before learning, .* after takeover: 7\.0x cheaper/.test(headline ?? ""), `${theme} ${width}px: the headline says ${headline}`);
         const m = await page.evaluate(measure);
         check(m, `${theme} ${width}px: no chart`);
         if (m.plotWidth > m.cardWidth + 0.5) wrong.push(`${theme} ${width}px: the plot is ${m.plotWidth}px in a ${m.cardWidth}px card`);
@@ -72,6 +73,7 @@ export default {
         // A hover two thirds of the way along: a run after the takeover, by the learned workflow.
         // The card whole in the page's one scroller before it is shot: a card past the scroller's bottom is cut there.
         await card.scrollIntoViewIfNeeded();
+        if (shots) await markExample(card);
         if (shots) await card.screenshot({ path: join(shots, `cost-per-run-${theme}-${width}.png`) });
         const plot = card.locator('[tabindex="0"] > svg');
         await plot.scrollIntoViewIfNeeded();

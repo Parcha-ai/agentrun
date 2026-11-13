@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { CostChart, CostPerRun, HOW } from "./CostPerRun";
 import SAMPLE from "./CostPerRun.sample.json";
 import { ClientError, type Client } from "@/lib/client";
-import { blocksOf, blockSizeOf, level, nearest, niceTop, pct, plotted, rollingMean, runTicks, usd, windowOf, yTicksOf, yTopOf } from "@/lib/costPerRun";
+import { blocksOf, blockSizeOf, level, nearest, niceTop, pct, plotted, rollingMean, runTicks, timesOf, usd, windowOf, yTicksOf, yTopOf } from "@/lib/costPerRun";
 import type { CostRun, LearningCost } from "@/lib/v2";
 
 // The cost per run chart (GET /v2/agents/{id}/learning/cost): the invented invoice-sorter agent's 80 runs, its cost
@@ -57,6 +57,12 @@ describe("the chart's arithmetic", () => {
   });
 });
 
+describe("the ratio format", () => {
+  it("says a tenth under 10x and a whole number from 10x, one format for the headline card and the chart", () => {
+    expect([timesOf(7), timesOf(7.4), timesOf(6.953), timesOf(9.94), timesOf(9.96), timesOf(10), timesOf(12.4), timesOf(0.5), timesOf(104.6)]).toEqual(["7.0x", "7.4x", "7.0x", "9.9x", "10x", "10x", "12x", "0.5x", "105x"]);
+  });
+});
+
 describe("the execution mix's arithmetic", () => {
   it("cuts every run, its cost known or not, one a column up to 20, then into blocks of 5 or more, about 20 blocks at most", () => {
     expect([blockSizeOf(3), blockSizeOf(20), blockSizeOf(21), blockSizeOf(80), blockSizeOf(400), blockSizeOf(1000)]).toEqual([1, 1, 5, 5, 20, 50]);
@@ -78,9 +84,9 @@ describe("the execution mix's arithmetic", () => {
 describe("CostChart", () => {
   it("shows the drop: the levels before and after, the takeover, and how many times cheaper", () => {
     const host = draw(sample);
-    expect(text(host)).toContain("$0.890 a run before learning, $0.128 after takeover: 7x cheaper");
+    expect(text(host)).toContain("$0.890 a run before learning, $0.128 after takeover: 7.0x cheaper");
     expect(text(host)).toContain("Workflow took over, run 21");
-    expect(text(host)).toContain("After takeover $0.128 · 7x cheaper");
+    expect(text(host)).toContain("After takeover $0.128 · 7.0x cheaper");
     expect(text(host)).toContain("Before learning $0.890");
     expect(text(host)).toContain("Rolling mean of 5 runs");
     expect(text(host)).toContain("1 run costs more than");
@@ -94,7 +100,7 @@ describe("CostChart", () => {
   });
   it("on a phone the level's words are short enough to clear the line's drop", () => {
     const host = draw(sample, true, 390);
-    expect(text(host)).toContain("After $0.128 · 7x cheaper");
+    expect(text(host)).toContain("After $0.128 · 7.0x cheaper");
     expect(text(host)).not.toContain("After takeover $0.128");
   });
   it("carries the takeover marker down through the mix as one line on the left edge of the takeover's block, never a ring cutting a column", () => {
@@ -183,7 +189,7 @@ describe("CostChart", () => {
   });
   it("keeps the level after the takeover when the takeover is older than the runs read, without its marker", () => {
     const host = draw({ ...sample, runs: sample.runs.slice(40), total_runs: 80 });
-    expect(text(host)).toContain("After takeover $0.128 · 7x cheaper");
+    expect(text(host)).toContain("After takeover $0.128 · 7.0x cheaper");
     expect(text(host)).not.toContain("Workflow took over, run 21");
   });
   it("says only the latest runs are drawn when the server sent fewer than there are", () => {

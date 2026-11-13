@@ -32,7 +32,7 @@ describe("the held-out headline", () => {
     });
     expect(headlineOf({ ...RESULT, baseline_cost_per_task_usd: null })).toMatchObject({ cost: "$0.120", costVs: "$0.120 a task; by hand not counted" });
     expect(headlineOf({ ...RESULT, cost_per_task_usd: null, baseline_cost_per_task_usd: null })).toMatchObject({ cost: "Not counted", costVs: "The test did not count the cost a task." });
-    expect(headlineOf({ ...RESULT, cost_per_task_usd: 1.78 }).cost).toBe("2x the cost");
+    expect(headlineOf({ ...RESULT, cost_per_task_usd: 1.78 }).cost).toBe("2.0x the cost");
     // A free baseline has no ratio: the dollar figures, never "Infinityx the cost".
     expect(headlineOf({ ...RESULT, baseline_cost_per_task_usd: 0 })).toMatchObject({ cost: "$0.120", costVs: "$0.120 a task vs $0 by hand" });
   });

@@ -2,7 +2,7 @@ import { type KeyboardEvent, type PointerEvent, useEffect, useMemo, useRef, useS
 import { Bone } from "@/components/Skeleton";
 import { problem, ProblemCard } from "@/components/learningProblem";
 import type { Client } from "@/lib/client";
-import { type Block, blockSizeOf, blocksOf, level, nearest, PATHS, pathOf, pct, plotted, type Point, rollingMean, runTicks, usd, windowOf, yTicksOf, yTopOf } from "@/lib/costPerRun";
+import { type Block, blockSizeOf, blocksOf, level, nearest, PATHS, pathOf, pct, plotted, type Point, rollingMean, runTicks, timesOf, usd, windowOf, yTicksOf, yTopOf } from "@/lib/costPerRun";
 import { when } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { CostRun, LearningCost } from "@/lib/v2";
@@ -93,7 +93,7 @@ export function CostChart({ data, on, width: fixed }: { data: LearningCost; on: 
   const afterFrom = s.takeover ? Math.max(s.takeover.n, first) : null;
   const line = points.map((p, i) => `${i ? "L" : "M"}${x(p.n).toFixed(1)},${y(mean[i]!).toFixed(1)}`).join("");
   const at = active === null ? null : points[active]!;
-  const cheaper = s.times_cheaper !== null ? `${s.times_cheaper}x cheaper` : null;
+  const cheaper = s.times_cheaper !== null ? `${timesOf(s.times_cheaper)} cheaper` : null;
   const headline = s.before && s.after ? `${level(s.before.mean_usd)} a run before learning, ${level(s.after.mean_usd)} after takeover${cheaper ? `: ${cheaper}` : ""}` : null;
 
   const pick = (e: PointerEvent<SVGSVGElement>) => {

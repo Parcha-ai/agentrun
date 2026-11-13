@@ -7,7 +7,7 @@
 // each width and theme.
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { check } from "../harness.mjs";
+import { check, markExample } from "../harness.mjs";
 
 export const WIDTHS = [1440, 820, 390];
 const step = (label, instructions) => ({ node: "extract", label, instructions, out: "Answer", as: label });
@@ -41,7 +41,7 @@ export default {
     await page.route(new RegExp(`/v2/agents/${encodeURIComponent(id)}/learning/workflows/invoice-sorter/revisions(\\?.*)?$`), (route) => route.fulfill({ json: { name: "invoice-sorter", revisions: REVISIONS, total: REVISIONS.length, truncated: false } }));
     const shots = process.env.E2E_SHOTS;
     if (shots) mkdirSync(shots, { recursive: true });
-    const shoot = async (box, name) => { if (shots) await box.screenshot({ path: join(shots, name) }); };
+    const shoot = async (box, name) => { if (shots) { await markExample(box); await box.screenshot({ path: join(shots, name) }); } };
     for (const theme of ["light", "dark"]) {
       await page.evaluate((t) => localStorage.setItem("agentrun.theme", t), theme);
       for (const width of WIDTHS) {

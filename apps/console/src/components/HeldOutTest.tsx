@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Bone } from "@/components/Skeleton";
 import { problem, ProblemCard } from "@/components/learningProblem";
 import type { Client } from "@/lib/client";
-import { level } from "@/lib/costPerRun";
+import { level, timesOf } from "@/lib/costPerRun";
 import { when } from "@/lib/format";
 import type { LearningEval, LearningEvals } from "@/lib/v2";
 
@@ -20,12 +20,12 @@ const percent = (share: number) => `${Math.round(share * 1000) / 10}%`;
 export function headlineOf(record: LearningEval) {
   const { cost_per_task_usd: learned, baseline_cost_per_task_usd: hand } = record;
   const counted = learned !== null && hand !== null;
-  const times = counted && learned > 0 ? Math.round((hand / learned) * 10) / 10 : null;
+  const times = counted && learned > 0 ? hand / learned : null;
   const [lo, hi] = record.ci;
   return {
     accuracy: percent(record.accuracy),
     accuracyVs: `95% interval ${percent(lo!)} to ${percent(hi!)}, n=${record.n.toLocaleString("en-US")}`,
-    cost: !counted ? (learned !== null ? level(learned) : "Not counted") : times === null || hand === 0 ? level(learned) : times >= 1 ? `${times}x cheaper` : `${Math.round((learned / hand) * 10) / 10}x the cost`,
+    cost: !counted ? (learned !== null ? level(learned) : "Not counted") : times === null || hand === 0 ? level(learned) : times >= 1 ? `${timesOf(times)} cheaper` : `${timesOf(learned / hand)} the cost`,
     costVs: counted ? `${level(learned)} a task vs ${level(hand)} by hand` : learned !== null ? `${level(learned)} a task; by hand not counted` : "The test did not count the cost a task.",
   };
 }

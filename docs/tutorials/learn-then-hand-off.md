@@ -60,7 +60,7 @@ it took (the agent by hand, a learned workflow that handed back, or the workflow
 the agent's cost before learning as a dashed line, a marker at the first run the workflow finished alone, and the
 level after it. Once 20 runs stand behind that level, it says how many times cheaper it is.
 
-![The cost per run chart: about $0.89 a run by hand, a marker where the learned workflow took over at run 21, then about $0.13 a run, 7x cheaper; under it, who finished each block of 5 runs, the learned workflow's share growing from run 21](../assets/tutorials/cost-per-run.png)
+![The cost per run chart: about $0.89 a run by hand, a marker where the learned workflow took over at run 21, then about $0.13 a run, 7.0x cheaper (marked Example data); under it, who finished each block of 5 runs, the learned workflow's share growing from run 21](../assets/tutorials/cost-per-run.png)
 
 The chart above is an invented agent's runs. `agentrun learning cost <agent> --format csv` writes your agent's series as
 CSV, to plot or check yourself (`GET /v2/agents/{id}/learning/cost` answers it as JSON).
@@ -76,12 +76,12 @@ platform computes from the counts, and the cost a task against by hand.
 ```sh
 cat > eval.json <<'JSON'
 { "name": "invoice bench, sealed test", "label_source": "invented labels", "n": 200, "correct": 188,
-  "cost_per_task_usd": 0.12, "baseline_cost_per_task_usd": 0.89 }
+  "cost_per_task_usd": 0.128, "baseline_cost_per_task_usd": 0.89 }
 JSON
 agentrun learning record-eval mcc --body @eval.json
 ```
 
-![The held-out test card: 94% held-out accuracy, 95% interval 89.8% to 96.5% over 200 jobs, and 7.4x cheaper a task than by hand](../assets/tutorials/held-out-test.png)
+![The held-out test card: 94% held-out accuracy, 95% interval 89.8% to 96.5% over 200 jobs, and 7.0x cheaper a task than by hand ($0.128 against $0.890), both marked Example data](../assets/tutorials/held-out-test.png)
 
 Only counts go in: never the jobs themselves. Until a test is recorded the card says "Not measured yet"; the tab
 never passes the agent's own runs off as a held-out figure.
