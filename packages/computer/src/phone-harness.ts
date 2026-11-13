@@ -32,7 +32,7 @@ import {
 	type Rect,
 	type ScreenWatchResult,
 } from "./protocol.js";
-import { AdbUiSource } from "./phone-ui.js";
+import { type AdbUiInput, AdbUiSource } from "./phone-ui.js";
 import { UiEngine } from "./ui-engine.js";
 import {
 	type AttachedComputer,
@@ -957,7 +957,7 @@ class AdbClient implements ComputerClient {
 	/** The ui group over uiautomator and adb's input; a dump waits for the phone to be idle, so every look is settled. */
 	readonly #ui = new UiEngine(
 		new AdbUiSource(
-			{ scale: () => this.#scale, dump: (signal) => this.#dump(signal), check: (actions) => this.#check(actions), input: (actions, signal) => this.#input(actions, signal) },
+			{ scale: () => this.#scale, dump: (signal) => this.#dump(signal), check: (actions) => this.#check(actions), hold: (step, signal) => this.#hold(step, signal) },
 			() => this.#size,
 		),
 		{ quietMs: 0 },
@@ -1287,13 +1287,21 @@ class AdbClient implements ComputerClient {
 	#inTurn(actions: unknown, signal: AbortSignal): Promise<Call> {
 		const waitedOut = (): Call =>
 			ok({ done: 0, failed: { index: 0, kind: "aborted", message: "action 0: the batch was aborted while it waited for the batch before it; none of it ran" } } satisfies InputActionsResult);
+		return this.#turn(() => this.#actions(actions, signal), waitedOut, signal);
+	}
+
+	/**
+	 * Work run in the phone's input turn, after every batch or ui step before it and whole before the next: an
+	 * input.actions batch, or a ui step's batches and the dumps between them. Cancelled while it waits, it runs nothing.
+	 */
+	#turn<T>(work: () => Promise<T>, waitedOut: () => T, signal: AbortSignal): Promise<T> {
 		let started = false;
-		const turn = this.#inputs.then((): Promise<Call> | Call => {
+		const turn = this.#inputs.then((): Promise<T> | T => {
 			started = true;
-			return signal.aborted ? waitedOut() : this.#actions(actions, signal);
+			return signal.aborted ? waitedOut() : work();
 		});
 		this.#inputs = turn.catch(() => undefined);
-		return new Promise<Call>((resolve, reject) => {
+		return new Promise<T>((resolve, reject) => {
 			const stop = () => {
 				if (!started) resolve(waitedOut());
 			};
@@ -1421,8 +1429,16 @@ class AdbClient implements ComputerClient {
 	 * A ui step's actions, as one batch in its turn with input.actions' batches (never interleaved with one): every
 	 * action is checked before the first runs.
 	 */
+	/** A ui step, in the input turn: its batches run there, never queued behind it (which would wait on itself). */
+	#hold<T>(step: (input: AdbUiInput) => Promise<Result<T>>, signal: AbortSignal): Promise<Result<T>> {
+		const either = this.#either(signal);
+		const waitedOut = (): Result<T> => fail("aborted", "the step was aborted while it waited for the batch before it; none of it ran");
+		return this.#turn(() => step((actions, inner) => this.#input(actions, inner)), waitedOut, either);
+	}
+
+	/** One batch of a ui step, which holds the turn already. */
 	async #input(actions: InputAction[], signal: AbortSignal): Promise<Result<void>> {
-		const ran = await this.#inTurn(actions, this.#either(signal));
+		const ran = await this.#actions(actions, this.#either(signal));
 		if (!ran.ok) return ran;
 		const { failed } = ran.value as InputActionsResult;
 		return failed === undefined ? ok(undefined) : fail(failed.kind, failed.message.replace(/^action \d+: /, ""));

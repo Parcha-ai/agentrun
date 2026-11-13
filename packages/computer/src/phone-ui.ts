@@ -5,18 +5,22 @@ import { type Features, type InputAction, MAX_ACTIONS, MAX_KEY_REPEAT, type Poin
 import { fail, ok, type Result } from "./result.js";
 import { chordKeys, type UiElement, type UiRun, type UiSource, type UiStepContext, type UiView } from "./ui-engine.js";
 
-/** What the ui needs of the phone: its pixels per point, its tree, and one input action run through input.actions. */
+/** One step's actions as one batch: the phone checks every action (its text, its keys, its points, the batch's limits) before it runs the first. */
+export type AdbUiInput = (actions: InputAction[], signal: AbortSignal) => Promise<Result<void>>;
+
+/** What the ui needs of the phone: its pixels per point, its tree, and its input, run as input.actions runs. */
 export interface AdbUiPhone {
 	scale(): number;
 	/** uiautomator's dump, its XML. */
 	dump(signal: AbortSignal): Promise<Result<string>>;
 	/**
-	 * One step's actions as one batch: the phone checks every action (its text, its keys, its points, the batch's
-	 * limits) before it runs the first, so a step that would fail part way (after a set's deletes, say) changes nothing.
+	 * Runs one step holding the phone's input: no other batch (an input.actions call on the same connection) runs
+	 * between the step's batches and its dumps, so a tap, the read of the focus it gave, and the text after it are one
+	 * turn. A step that waits its turn and is cancelled runs nothing.
 	 */
-	input(actions: InputAction[], signal: AbortSignal): Promise<Result<void>>;
+	hold<T>(step: (input: AdbUiInput) => Promise<Result<T>>, signal: AbortSignal): Promise<Result<T>>;
 	/**
-	 * Whether input would take these actions, running none: a step that taps a field and reads its focus before it
+	 * Whether its input would take these actions, running none: a step that taps a field and reads its focus before it
 	 * types checks what it will type first, so text the phone cannot type sends not even the tap.
 	 */
 	check(actions: InputAction[]): Result<void>;
@@ -213,15 +217,20 @@ export class AdbUiSource implements UiSource {
 		return fail("unsupported", "ui.image is off on a phone driven over adb: take one with screen.shot");
 	}
 
-	async run(step: UiStep, { element, foreground }: UiStepContext, signal: AbortSignal): Promise<Result<UiRun>> {
-		if (!foreground) return fail("denied", "this phone takes input only as the phone's own (the foreground route), and this call does not allow it: pass foreground: true");
+	async run(step: UiStep, context: UiStepContext, signal: AbortSignal): Promise<Result<UiRun>> {
+		if (!context.foreground) return fail("denied", "this phone takes input only as the phone's own (the foreground route), and this call does not allow it: pass foreground: true");
 		// A disabled control takes no tap, so a set or a type into it would put its text in whatever field has the focus:
 		// any step on one by its ref is refused, with nothing sent.
+		const { element } = context;
 		if (element?.flags?.includes("disabled")) return fail("refused", `${element.name ?? "the element"} is disabled on this phone: a step on it would act on whatever has the focus instead, so nothing was sent`);
+		return this.phone.hold((send) => this.#run(step, element, send, signal), signal);
+	}
+
+	async #run(step: UiStep, element: UiElement | undefined, send: AdbUiInput, signal: AbortSignal): Promise<Result<UiRun>> {
 		const scale = this.phone.scale();
 		const px = ([x, y]: Point): [number, number] => [Math.round(x * scale), Math.round(y * scale)];
 		const at = (target: Point | string | undefined) => px(Array.isArray(target) ? (target as Point) : centre((element as UiElement).bounds));
-		const input = (...actions: InputAction[]) => this.phone.input(actions, signal);
+		const input = (...actions: InputAction[]) => send(actions, signal);
 		const done = (ran: Result<void>): Result<UiRun> => (ran.ok ? ok({ route: "foreground", verified: false }) : ran);
 		if ("press" in step) return done(await input({ type: "tap", at: at(step.press) }));
 		if ("click" in step) {
@@ -253,7 +262,7 @@ export class AdbUiSource implements UiSource {
 			const keys: InputAction[] = [];
 			for (const key of ["backspace", "delete"]) for (let left = erase; left > 0; left -= MAX_KEY_REPEAT) keys.push({ type: "key", keys: [key], repeat: Math.min(MAX_KEY_REPEAT, left) });
 			const rest = [...keys, ...(step.value === "" ? [] : [{ type: "type" as const, text: step.value }])];
-			const tapped = await this.#focus(at(step.set), target, step.set, rest, signal);
+			const tapped = await this.#focus(send, at(step.set), target, step.set, rest, signal);
 			if (!tapped.ok) return tapped;
 			return done(await input(...rest));
 		}
@@ -262,7 +271,7 @@ export class AdbUiSource implements UiSource {
 			if (step.into !== undefined) {
 				// Text typed after a tap on anything but a field goes to whatever field has the focus, so a ref is a field's.
 				if (element !== undefined && element.role !== "textbox" && element.role !== "searchbox") return fail("refused", `${step.into} is a ${element.role}, not a text field: type into a field`);
-				const tapped = await this.#focus(at(step.into), element, Array.isArray(step.into) ? JSON.stringify(step.into) : step.into, typed, signal);
+				const tapped = await this.#focus(send, at(step.into), element, Array.isArray(step.into) ? JSON.stringify(step.into) : step.into, typed, signal);
 				if (!tapped.ok) return tapped;
 			}
 			return done(await input(...typed));
@@ -290,10 +299,10 @@ export class AdbUiSource implements UiSource {
 	 * focused element; a tap at a point must leave a field focused. Otherwise nothing more is sent. What follows the tap
 	 * is checked first, so a step the phone cannot finish sends not even the tap.
 	 */
-	async #focus(point: [number, number], field: UiElement | undefined, named: string, then: InputAction[], signal: AbortSignal): Promise<Result<void>> {
+	async #focus(send: AdbUiInput, point: [number, number], field: UiElement | undefined, named: string, then: InputAction[], signal: AbortSignal): Promise<Result<void>> {
 		const whole = this.phone.check([{ type: "tap", at: point }, ...then]);
 		if (!whole.ok) return whole;
-		const tapped = await this.phone.input([{ type: "tap", at: point }], signal);
+		const tapped = await send([{ type: "tap", at: point }], signal);
 		if (!tapped.ok) return tapped;
 		const dumped = await this.phone.dump(signal);
 		if (!dumped.ok) return dumped;

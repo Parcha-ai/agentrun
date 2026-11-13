@@ -830,6 +830,47 @@ test("a ui step the phone cannot finish runs nothing: a set to text adb cannot t
 	assert.equal((await searchField(client)).value, "wifi", "the field keeps its text");
 });
 
+test("a set holds the phone's input from its tap to its text: an input.actions batch that arrives while it reads the focus waits until the set ends", { timeout: 10_000 }, async () => {
+	const fake = fakePhoneHarness();
+	// The set's read of the focus (the first dump after its tap) waits until the test lets it go. armed: where the set's shells start.
+	let armed = false;
+	let reading;
+	const read = new Promise((resolve) => (reading = resolve));
+	let release;
+	const released = new Promise((resolve) => (release = resolve));
+	const run = async (args, options) => {
+		if (armed !== false && args.includes("uiautomator dump /dev/tty") && fake.shells().slice(armed).some((command) => command.startsWith("input tap"))) {
+			armed = false;
+			reading();
+			await released;
+		}
+		return fake.adb.run(args, options);
+	};
+	const adb = Object.assign(run, { run, server: fake.adb.server });
+	const { provider } = await setup({}, { fetch: fake.fetch, adb, now: fake.clock.now, sleep: fake.clock.sleep });
+	const { value: ref } = await provider.create(SPEC);
+	const { value: connection } = await provider.connect(ref);
+	const { client } = connection;
+	await client.call("apps.launch", { id: SETTINGS });
+	await client.call("input.actions", { actions: [{ type: "tap", at: [100, 40] }] });
+	const field = await searchField(client);
+	const before = fake.shells().length;
+	armed = before;
+	const set = client.call("ui.act", { steps: [{ set: field.ref, value: "wifi" }], foreground: true });
+	await read;
+	const other = client.call("input.actions", { actions: [{ type: "button", name: "back" }] });
+	for (let turn = 0; turn < 5; turn++) await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(fake.shells().slice(before).filter((command) => command.startsWith("input keyevent KEYCODE_BACK")).length, 0, "the batch waits for the set");
+	release();
+	const done = await set;
+	assert.deepEqual(done.value.steps, [{ route: "foreground", verified: false }], JSON.stringify(done));
+	assert.deepEqual(await other, { ok: true, value: { done: 1 } });
+	const order = fake.shells().slice(before).filter((command) => /^input (tap|text|keyevent KEYCODE_BACK)/.test(command));
+	assert.deepEqual([order[0].split(" ")[1], order.at(-2), order.at(-1)], ["tap", "input text 'wifi'", "input keyevent KEYCODE_BACK"], JSON.stringify(order));
+	await connection.close();
+	await provider.release(ref, "delete");
+});
+
 test("a literal %s is typed as %s, not as a space: input text's escape never meets text that holds it", async () => {
 	const { provider } = await setup();
 	const { value: ref } = await provider.create(SPEC);
@@ -966,9 +1007,11 @@ test("set clears a multiline field's whole text wherever the tap leaves the care
 		scale: () => 1,
 		dump: async () => ({ ok: true, value: xml }),
 		check: () => ({ ok: true, value: undefined }),
-		async input(actions) {
-			for (const action of actions) this.one(action);
-			return { ok: true, value: undefined };
+		hold(step) {
+			return step(async (actions) => {
+				for (const action of actions) this.one(action);
+				return { ok: true, value: undefined };
+			});
 		},
 		one(action) {
 			if (action.type === "key") {
@@ -1002,7 +1045,7 @@ test("an empty field's hint is not its value: an expect never meets it; a field 
 	assert.equal(typed.value, "maps");
 	// The dump cannot say the hint is showing, so the field may hold that very text: a set erases it anyway.
 	const ran = [];
-	const source = new AdbUiSource({ scale: () => 1, dump: async () => ({ ok: true, value: xml("Search apps").replace("<node ", '<node focused="true" ') }), check: () => ({ ok: true, value: undefined }), input: async (actions) => (ran.push(...actions), { ok: true, value: undefined }) }, () => [100, 50]);
+	const source = new AdbUiSource({ scale: () => 1, dump: async () => ({ ok: true, value: xml("Search apps").replace("<node ", '<node focused="true" ') }), check: () => ({ ok: true, value: undefined }), hold: (step) => step(async (actions) => (ran.push(...actions), { ok: true, value: undefined })) }, () => [100, 50]);
 	const view = { app: { id: "com.example", name: "Example" }, window: { id: "w", bounds: [0, 0, 100, 50] }, elements: [empty] };
 	const set = await source.run({ set: "@e1", value: "maps" }, { element: empty, view, foreground: true }, new AbortController().signal);
 	assert.equal(set.ok, true, JSON.stringify(set));
@@ -1020,7 +1063,7 @@ test("a labeled control keeps the other text it shows as its desc; a step on a d
 	assert.equal(button.desc, "Pay $5");
 	assert.deepEqual(field.flags, ["disabled"]);
 	const ran = [];
-	const source = new AdbUiSource({ scale: () => 1, dump: async () => ({ ok: false, error: { code: "unsupported", message: "unused" } }), check: () => ({ ok: true, value: undefined }), input: async (actions) => (ran.push(...actions), { ok: true, value: undefined }) }, () => [100, 120]);
+	const source = new AdbUiSource({ scale: () => 1, dump: async () => ({ ok: false, error: { code: "unsupported", message: "unused" } }), check: () => ({ ok: true, value: undefined }), hold: (step) => step(async (actions) => (ran.push(...actions), { ok: true, value: undefined })) }, () => [100, 120]);
 	const view = { app: { id: "com.example", name: "Example" }, window: { id: "com.example", bounds: [0, 0, 100, 120] }, elements: [button, field] };
 	for (const step of [{ set: "@e2", value: "new" }, { type: "new", into: "@e2" }]) {
 		const refused = await source.run(step, { element: field, view, foreground: true }, new AbortController().signal);
@@ -1048,7 +1091,7 @@ test("type into a ref that is no field is refused with nothing sent; a field tha
 	const view = { app: { id: "com.example", name: "Example" }, window: { id: "com.example", bounds: [0, 0, 100, 180] }, elements: parseUiElements(screen(), 1, [100, 180]).value.elements };
 	let ran = [];
 	let after = screen("to");
-	const source = new AdbUiSource({ scale: () => 1, dump: async () => ({ ok: true, value: after }), check: () => ({ ok: true, value: undefined }), input: async (actions) => (ran.push(...actions), { ok: true, value: undefined }) }, () => [100, 180]);
+	const source = new AdbUiSource({ scale: () => 1, dump: async () => ({ ok: true, value: after }), check: () => ({ ok: true, value: undefined }), hold: (step) => step(async (actions) => (ran.push(...actions), { ok: true, value: undefined })) }, () => [100, 180]);
 	const run = (step, element) => source.run(step, { element, view, foreground: true }, new AbortController().signal);
 	const notField = await run({ type: "hello", into: "@e1" }, button);
 	assert.equal(notField.error?.code, "refused", JSON.stringify(notField));
@@ -1077,7 +1120,7 @@ test("type into a ref that is no field is refused with nothing sent; a field tha
 
 test("a phone's set: a toggle takes on or off only, a field too long to clear in one step is refused before any input", async () => {
 	const ran = [];
-	const phone = { scale: () => 1, dump: async () => ({ ok: false, error: { code: "unsupported", message: "unused" } }), check: () => ({ ok: true, value: undefined }), input: async (actions) => (ran.push(...actions), { ok: true, value: undefined }) };
+	const phone = { scale: () => 1, dump: async () => ({ ok: false, error: { code: "unsupported", message: "unused" } }), check: () => ({ ok: true, value: undefined }), hold: (step) => step(async (actions) => (ran.push(...actions), { ok: true, value: undefined })) };
 	const source = new AdbUiSource(phone, () => [400, 400]);
 	const view = { app: { id: "com.example", name: "Example" }, window: { id: "w", bounds: [0, 0, 400, 400] }, elements: [] };
 	const toggle = { key: "t", role: "switch", name: "Wi-Fi", bounds: [0, 0, 100, 40] };
