@@ -49,12 +49,15 @@ macOS 14 or later.
    login. macOS lists it under System Settings > General > Login Items & Extensions. The window's **Remove** unloads
    it and deletes the plist.
 
-3. **Grant it.** The window lists three grants. Click each **Allow…** and switch Computerd on in System Settings:
+3. **Grant it.** The grants window opens the System Settings pane of the first grant still missing beside it. Drag the
+   window's Computerd tile into the pane's list; its rows tick as the grants come in, the next pane opens, and the
+   window closes once all three are in:
    - **Accessibility**: to read windows and press their buttons.
+   - **Post Event** (from the same Accessibility list): to click and type into a window.
    - **Screen Recording** (Screen & System Audio Recording): to see windows and the screen.
-   - **Post Event** (listed under Accessibility): to click and type into a window.
 
-   Then click **Raise it now** for the screen capture alert and answer it, so it never appears in the middle of a task.
+   In the window after it, click **Raise it now** for the screen capture alert and answer it, so it never appears in
+   the middle of a task.
 
 4. **Check it.**
 

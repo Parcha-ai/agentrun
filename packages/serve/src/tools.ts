@@ -43,6 +43,7 @@ import { waitingAsk } from "./browser-commands.js";
 import { runnerSecrets } from "./runner/redact.js";
 import { HANDOVER_WAITING, type HandoverAnswered } from "./runner/journal-kinds.js";
 import type { LiveHandover, LiveViewerStore } from "./browser-live.js";
+import { provenFor, type RunnerLive } from "./live-reach.js";
 import { clearWaitEnded, markWaitEnded } from "./browser-wait-ended.js";
 import type { Claim, Store } from "./store/store.js";
 import { type RunSignIn, runSignIn, verifyRunSignIn } from "./sign-ins-store.js";
@@ -115,6 +116,9 @@ export type ToolHost = {
    *  binding reads `liveViewers`, never them directly. Absent, no viewer is handed over (browser-live.ts
    *  sessionHandovers), and nothing is written in the run's folder. */
   liveViewers?: { put(handover: LiveHandover): Promise<boolean>; drop(tag?: string): Promise<void> };
+  /** On a runner on another host than its server (live-reach.ts runnerLiveOf): where its browser's viewer listens, the host
+   *  its hand-over names, and the key the server's proof is checked with. Absent: loopback. */
+  liveAt?: RunnerLive;
   /** The one store, for the live-viewer seam above, the run's saved sign-in (its runs and sign-ins, read under `claim`),
    *  the sign-in verify the runner saves, and the Screen tab's ended state (settings: browser-wait-ended.ts). */
   store?: LiveViewerStore & Pick<Store, "runs" | "signIns" | "settings">;
@@ -481,7 +485,14 @@ const browserTool: ToolEntry = {
         return { outcome: stood.state, at: stood.at, ...(stood.reason !== undefined ? { reason: stood.reason } : {}) };
       },
     });
-    const view = createLiveView({ hostOrigin: "'self'", gates, takeOver: { take: (tag) => hands.take(tag) } });
+    // On a runner on another host than its server, the viewer listens on the runner's live address and takes no page or
+    // socket without the server's proof for its own path id (live-reach.ts).
+    const at = host.liveAt;
+    const admit = at ? (req: { readonly url?: string; readonly headers: Record<string, string | string[] | undefined> }) => {
+      const id = /^\/v\/([A-Za-z0-9_-]{22})(?:\/ws)?(?:\?|$)/.exec(req.url ?? "")?.[1];
+      return id !== undefined && provenFor(req as never, at, id);
+    } : undefined;
+    const view = createLiveView({ hostOrigin: "'self'", gates, takeOver: { take: (tag) => hands.take(tag) }, ...(at ? { listen: { bind: at.bind, host: at.host }, admit: admit! } : {}) });
     const watched = handedProvider ? liveViewProvider(handedProvider as never, view) : undefined;
     const provider = () => {
       if (refused) throw refused;
@@ -489,7 +500,7 @@ const browserTool: ToolEntry = {
     };
     // Each session's viewer reaches the server as it launches, and goes as it ends: through the store, under the run's claim
     // (host.liveViewers); never a file in the run's folder, which is the agent's workspace.
-    const viewers = live.sessionHandovers(host.liveViewers);
+    const viewers = live.sessionHandovers(host.liveViewers, at?.host);
     const onSession = (row: { session: { tag: string }; liveView: { fullscreen: string } | null }, change: string) => viewers.changed(row, change);
     // Its session time is the run's spend, at its provider's price, and held under the run's cap (browser-cost.ts).
     const providerName = (parts.provider as { name?: string } | undefined)?.name ?? vendor;

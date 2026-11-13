@@ -103,8 +103,8 @@ const allowedEndpoints = {
     ['dist/providers/cdp.js', 'http://127.0.0.1:${own.port}'],
     // The fake provider in the test kit (`./testing`) serves its pages from a loopback server of its own.
     ['dist/testing/backend.js', 'http://127.0.0.1:${server.address().port}'],
-    // The live view starts its own server on loopback when the host mounts none (never 0.0.0.0), and tells the host the viewer's address.
-    ['dist/live-view/server.js', 'http://127.0.0.1:${s.address().port}'],
+    // The live view starts its own server when the host mounts none (loopback unless the host names another address with its proof), and tells the host the viewer's address.
+    ['dist/live-view/server.js', 'http://${at.host}:${s.address().port}'],
   ],
   computer: [
     // The local browser asks the Chrome it started for its DevTools path, on the loopback port that Chrome chose.

@@ -1,12 +1,13 @@
 #if os(macOS)
 import AppKit
 import ApplicationServices
+import ComputerdKit
 import CoreGraphics
 import Foundation
 import ScreenCaptureKit
 
-/// The grants Computerd needs, each checked and asked for, and the capture alert raised once on purpose so it never
-/// pops in the middle of a task.
+/// The grants Computerd needs, each checked, the System Settings panes that give them, and the capture alert raised once
+/// on purpose so it never pops in the middle of a task.
 public enum Permissions {
 	public enum Grant: String, CaseIterable, Sendable {
 		case accessibility = "Accessibility"
@@ -30,25 +31,33 @@ public enum Permissions {
 			}
 		}
 
-		/// Shows the system's own prompt; the person answers in System Settings.
-		public func request() {
-			switch self {
-			case .accessibility:
-				let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-				_ = AXIsProcessTrustedWithOptions(options)
-			case .screenRecording: _ = CGRequestScreenCaptureAccess()
-			case .postEvent: _ = CGRequestPostEventAccess()
-			}
-		}
-
-		/// The System Settings pane where it is switched on.
-		public var settings: URL {
-			let pane = self == .screenRecording ? "Privacy_ScreenCapture" : "Privacy_Accessibility"
-			return URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)")!
-		}
+		/// The anchor of the Privacy & Security pane whose list gives it. Post Event comes with Accessibility's list.
+		public var anchor: String { self == .screenRecording ? "Privacy_ScreenCapture" : "Privacy_Accessibility" }
 	}
 
 	public static var missing: [Grant] { Grant.allCases.filter { !$0.granted } }
+
+	/// The grants in now, by name, for the grants window's board.
+	public static var granted: Set<String> { Set(Grant.allCases.filter(\.granted).map(\.rawValue)) }
+
+	/// What System Settings calls the pane with this anchor on this Mac (its window's title once the anchor opens it).
+	static func paneName(_ anchor: String) -> String {
+		if anchor == "Privacy_ScreenCapture" {
+			if #available(macOS 15, *) { return "Screen & System Audio Recording" }
+			return "Screen Recording"
+		}
+		if #available(macOS 27, *) { return "Device Control and Data Access" }
+		return "Accessibility"
+	}
+
+	/// The panes that hold Computerd's grants, each with its grants, in Grant's order: one tile each in the grants window.
+	public static var panes: [GrantsBoard.Pane] {
+		var anchors: [String] = []
+		for grant in Grant.allCases where !anchors.contains(grant.anchor) { anchors.append(grant.anchor) }
+		return anchors.map { anchor in
+			GrantsBoard.Pane(name: paneName(anchor), anchor: anchor, grants: Grant.allCases.filter { $0.anchor == anchor }.map(\.rawValue))
+		}
+	}
 
 	static let alertKey = "captureAlertRaised"
 

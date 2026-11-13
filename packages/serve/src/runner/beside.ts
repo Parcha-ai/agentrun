@@ -36,8 +36,7 @@ export async function runnerBeside(dataDir: string, { loops, drainMs, env, janit
   const { startRunner } = await import("./runner.js");
   const { dispatchRunner } = await import("./harness-loops.js");
   const { routeOf } = await import("./model-route.js");
-  const { openRunnerStore, runEnv } = await import("./main.js");
-  const { computerDepsFrom } = await import("../workspace/index.js");
+  const { openRunnerStore, runEnv, runnerComputers } = await import("./main.js");
   // The server's store, the runner's one way in (main.ts openRunnerStore, store/open.ts): Postgres when this process's
   // AGENTRUN_STORE_URL secret names one, else SQLite in the data directory; a schema it does not know is RunnerRefused.
   const { store } = await openRunnerStore(dataDir, process.env, (message) => void process.stderr.write(`agentrun-serve runner: ${message}\n`), undefined);
@@ -55,14 +54,14 @@ export async function runnerBeside(dataDir: string, { loops, drainMs, env, janit
   }
   // The beside-runner sees the server's environment as a separate runner would (runEnv, not withoutFaux): so an API run on
   // a --faux server reaches the faux gateway and its computers. The run's claim-time computer is composed once, the one way
-  // (workspace/computer-deps.ts computerDepsFrom), from that same environment; a Docker computer's mounts by where this
-  // process's Docker has the data directory (box-paths.ts), read once.
+  // (main.ts runnerComputers, a desktop's or a phone's live view with it), from that same environment; a Docker computer's
+  // mounts by where this process's Docker has the data directory (box-paths.ts), read once.
   const runs = env ?? runEnv(process.env);
   const { dockerPathsForRuns } = await import("../box-paths.js");
   const { hostAddressesOnce } = await import("../docker-host-addresses.js");
   const { PROVIDERS } = await import("@parcha/agentrun-computer");
   const { hostCommandRefusals } = await import("../computers.js");
-  const computers = computerDepsFrom({ env: runs, store, sealKey: seal.key, dockerPaths: () => dockerPathsForRuns(runs, dataDir), hostAddresses: () => hostAddressesOnce(runs), hostWhy: hostCommandRefusals(PROVIDERS, process.env.PATH) });
+  const computers = runnerComputers(store, runs, seal.key, { dockerPaths: () => dockerPathsForRuns(runs, dataDir), hostAddresses: () => hostAddressesOnce(runs), hostWhy: hostCommandRefusals(PROVIDERS, process.env.PATH) });
   // `mcpLoopback`: the server beside it is a local install (Serve.localInstall), so its runs may reach an MCP server on
   // loopback; any other runner's runs never do.
   const createLoop = dispatchRunner({ env: runs, data: dataDir, journal: (claim) => store.journal(claim), store, sealKey: seal.key, routeOf, computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps, ...(mcpLoopback ? { mcpLoopback: true } : {}) });

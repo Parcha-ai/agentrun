@@ -46,9 +46,10 @@ import { dockerLimitsOf } from "./workspace/computer-deps.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { answerPage, byOwnerSession, ConsoleSessions, heldSessions, isJson, overHttps, ownerCookie, ownOrigin, sendHostRefused, signedIn } from "./page.js";
 import { hostFix, hostName, loopbackNames } from "./host-check.js";
-import { computerViewerLink, familyReaches, type LiveFamily, liveViewerById, liveViewerFor, liveViewerLink, OpenViewers, proxyLiveUpgrade, serveViewerFile } from "./browser-live.js";
+import { computerViewerLink, familyReaches, type LiveFamily, type LiveHandover, liveViewerById, liveViewerFor, liveViewerLink, OpenViewers, proxyLiveUpgrade, serveViewerFile, viewerAnswers } from "./browser-live.js";
 import { browserHandBack, handBackTarget } from "./browser-commands.js";
 import { type ComputerOf, computerView } from "./computer-view.js";
+import { liveReachOf } from "./live-reach.js";
 import { screenWaitEnded } from "./browser-wait-ended.js";
 import { durationMs, logLine } from "./print.js";
 import { type RunMoment, type State, type Status } from "./run-view.js";
@@ -127,14 +128,14 @@ import { readApprovers, writeApprovers } from "./server-approvers.js";
 import type { DraftAsk } from "./learn/skills.js";
 import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./uploads.js";
 import { entryAt, listFiles, sendFile as sendWorkspaceFile, viewOf } from "./run-files.js";
-import { COMPUTER_ROUTES, computerHoldOf, computerRoute } from "./computer-routes.js";
+import { COMPUTER_ROUTES, computerHoldOf, computerRoute, runViewedKind } from "./computer-routes.js";
 import { PROVIDERS as COMPUTER_PROVIDERS, SETTING_KINDS, servingRefusals } from "@parcha/agentrun-computer";
 import { COMPUTER_TOOLS, hostToolDefs } from "@parcha/agentrun-kernel/kernel";
 import { archilRoute, createArchilRoutes, liveRunsOnDisk } from "./archil-routes.js";
 import { agentDiskOf, ARCHIL_DISK_ID, archilSettingsFromEnv, inArchilMode } from "./archil-settings.js";
 import { computerOfPlace, type ComputerKind, type ComputerSetting, type PlaceView } from "./computer-setting.js";
 import { computerCapabilities, type ComputerRoutes, createComputerRoutes, folderModeOf, hostCommandRefusals, type KindRegistry, settingsComputerRoute } from "./computers.js";
-import { FAUX_VIEW_PATH, type FauxComputers, fauxComputers } from "./faux-computers.js";
+import { type FauxComputers, fauxComputers } from "./faux-computers.js";
 import { runComputerField } from "./run-computer.js";
 import { writesHeld } from "./workspace.js";
 import { agentComputerOf, agentComputerView, agentHomeFolder, claimKinds, computerProviderFactories, computerProviderMakers, computerReadiness, dockerHostAddressesOf, isWorkspaceError, localWorkspace, reconcileAgentComputer, runShellOf, serverRunWorkspace, type ShellPlace, storeLedger, type Workspace } from "./workspace/index.js";
@@ -1021,6 +1022,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const adapters = options.triggerAdapters ?? TRIGGER_ADAPTERS;
   const openapi = openapiDocument((operationId) => ROUTES.find((r) => r.name === operationId)?.capability, adapters);
   const sealKey = seal.key;
+  // Its runners on other hosts (AGENTRUN_RUNNER_HOSTS): a viewer's row naming one of their hosts is dialled there, with
+  // the proxy's proof under the seal key (live-reach.ts); any other host is never dialled.
+  const reach = liveReachOf(env, sealKey);
+  const answers = (handover: LiveHandover): Promise<boolean> => viewerAnswers(handover, reach);
   // Settings → Computers and the owner's Archil settings, over the one store (computers.ts, archil-routes.ts), built once
   // at the first request, when the server's own address is known (--faux's desktop view is a page on it). The real kind
   // registry and each provider's create() are the computer package's (kinds.ts, providers.ts providerFor); under --faux,
@@ -1032,7 +1037,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     kind === "none" ? [] : kind === "sandbox" ? hostToolDefs({ maxExecS: 600, shell: "computer" }).map((def) => def.name).filter((name) => !localTools.has(name))
       : kind === "browser" ? browserToolNames : [...COMPUTER_TOOLS];
   let faux: FauxComputers | undefined;
-  const fauxOf = (): FauxComputers => (faux ??= fauxComputers({ viewerBase: ownOriginOf() }));
+  const fauxOf = (): FauxComputers => (faux ??= fauxComputers());
   /** Whether a computer on a provider that binds a folder of this machine (Docker) can be had here now: Settings →
    *  Computers' view and a run's start check (below) both ask it. Where AGENTRUN_BOXES lists Docker and it is no faux
    *  Docker, its daemon is asked (docker-daemon.ts: a short `docker version`, its answer kept a while and asked again, so a
@@ -1071,19 +1076,21 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   }));
   /** Whether an agent's computer setting can be had here now, by the answers the runner's claim gives (resolve-computer.ts
    *  computerReadiness): over the registry the claim reads (workspace/computer-deps.ts claimKinds, asked with what the
-   *  runner composes with: runner/main.ts gives it no faux, so the package's, under --faux too), in the folder mode of
-   *  now, with keys read as the runner reads them (the secrets this process was started with, withSecrets "own", as
+   *  runner composes with: under --faux, faux's, as runner/main.ts runnerComputers gives its runs' faux; else the
+   *  package's), in the folder mode of now, with keys read as the runner reads them (the secrets this process was started with, withSecrets "own", as
    *  runner/main.ts runEnv hands them; else the saved one). What runnable.ts checks for an agent with
    *  a computer setting, in place of the box check; whether Docker answers here is dockerAnswers', and whether a
    *  provider's program is on this machine is hostWhy's, read at the start. */
   /** The server's folder mode now: 2 when the owner's Archil settings are saved (the run's folder on the disk), else 1. */
   const modeNow = async (): Promise<1 | 2> => ((await folderModeOf(store, process.env)()) === "disk" ? 2 : 1);
+  /** The registry a run's claim resolves against (claimKinds), as its runner composes it. */
+  const claimRegistry = () => claimKinds(options.faux ? { faux: fauxOf() } : {});
   const computerReady = async (setting: { kind: string; provider?: string; image?: string; gpu?: { type: string; count: number } }) =>
-    computerReadiness(setting, await modeNow(), claimKinds({}), keyReader(store, sealKey, own(withSecrets(process.env, "own"))), dockerAnswers, boxAllow, (provider) => (Object.hasOwn(hostWhy, provider) ? hostWhy[provider] : undefined));
+    computerReadiness(setting, await modeNow(), claimRegistry(), keyReader(store, sealKey, own(withSecrets(process.env, "own"))), dockerAnswers, boxAllow, (provider) => (Object.hasOwn(hostWhy, provider) ? hostWhy[provider] : undefined));
   /** Where a run of an agent with computer `setting` has its shell here now (resolve-computer.ts runShellOf, in the
    *  folder mode of now, over the registry the claim reads): what runnable.ts lets a sandbox-only tool on the runner by,
    *  and capabilities show bash by. In Mode 2 a run with no computer has bash on Archil's serverless exec. */
-  const shellOf = async (setting: { kind: string; provider?: string; image?: string }) => runShellOf(setting, await modeNow(), claimKinds({}));
+  const shellOf = async (setting: { kind: string; provider?: string; image?: string }) => runShellOf(setting, await modeNow(), claimRegistry());
   /** The shell this server can give a template's agent now (templates.ts pickComputer's `shell`), by the rules a run
    *  has it by (shellOf): Archil's serverless exec on the runner in Mode 2 (bash alone); else the box a new agent is saved
    *  with (Docker), where it answers now (computerReady asks the daemon, not the start's offers: a Docker stopped since
@@ -1297,7 +1304,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     withheld: (_store, runId) => withheldOverStore(store, runId, viewDepsFor(ownOriginOf())),
     cutValues: (_store, runId) => runCutValues({ serverSecrets, signIns }, store, runId),
     context: ctx,
-    liveViewer: (runId: string) => liveViewerLink(store, sealKey, runId),
+    liveViewer: (runId: string) => liveViewerLink(store, sealKey, runId, answers),
   };
   // The run timeline reader over the store (run-reads-over-store runTimelines): one change-numbered RowLog per run, synced
   // from its journal (store-reads) on each read, its view (viewOverStore) for status/state/cost and whether it is final.
@@ -2828,15 +2835,18 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // liveViewerLink/computerViewerLink, under the seal key); who drives, from the cut's computerHoldOf over the store.
         const hold = await computerHoldOf(store, run.id);
         const kept = await keptBrowserOf(store, run.id);
+        // A desktop or a phone (the run's revision's computer) whose screen is not open now is still the run's computer:
+        // none with its kind, never off as if the agent had none (#2170).
+        const viewed = family === "computer" ? await runViewedKind(store, run.id) : undefined;
         const view = await computerView({
           viewer: async () => {
             if (family === "browser") {
-              const link = await liveViewerLink(store, sealKey, run.id);
+              const link = await liveViewerLink(store, sealKey, run.id, answers);
               return link === undefined ? undefined : { kind: "browser" as const, viewer: link.viewer };
             }
-            return computerViewerLink(store, sealKey, run.id);
+            return computerViewerLink(store, sealKey, run.id, answers);
           },
-          computer: () => computerOf(kept, env, family),
+          computer: () => (viewed ? { kind: viewed } : computerOf(kept, env, family)),
           hold: () => hold,
           // A going run's browser let go while it waited for its person: the Screen tab says so, with when. One settings
           // row (browser-wait-ended.ts), never the run's journal: this is read on every Screen poll.
@@ -3327,7 +3337,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // them), a /browser/live path a browser's alone (familyReaches).
     const handover = await liveViewerFor(store, sealKey, runId, rest);
     if (handover === undefined || !familyReaches(family, handover)) throw new ApiError("not_found", `this run's ${family} has no live view at that address`);
-    await serveViewerFile(req, res, rest);
+    // A desktop's or a phone's viewer gets the computer viewer's page (computer-viewer.ts), a browser's pi-browser's.
+    await serveViewerFile(req, res, rest, (handover.kind ?? "browser") === "browser" ? "browser" : "computer");
   }
 
   /** The origin of the address people open (`publicUrl`, AGENTRUN_PUBLIC_URL), lowercased; none, undefined. */
@@ -3381,14 +3392,6 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (raw === MCP_PATH) return void mcp(req, res).catch(fail);
     if (raw === "/llms.txt") return void answerLlms(req, res).catch(fail);
     if (answerPage(req, res, raw, { token, authFailed, console: options.console, takesBytes, ...(owner ? { owner } : {}), ...(consoleSessions ? { sessions: consoleSessions } : {}), ...(options.publicUrl ? { publicUrl: options.publicUrl } : {}) })) return;
-    // Under --faux only: a faux desktop's live view, a page on this server's own address (faux-computers.ts viewPage), so
-    // a run's take-over has a viewer to open in the console's real-browser flows. Gone after the computer's release.
-    if (options.faux && raw.startsWith(`${FAUX_VIEW_PATH}/`)) {
-      const page = fauxOf().viewPage(raw);
-      if (page === undefined) return fail(new ApiError("not_found", `no faux desktop at ${raw}`));
-      res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }).end(req.method === "HEAD" ? undefined : page);
-      return;
-    }
     if (!raw.startsWith("/v2/")) return fail(new ApiError("not_found", `no route ${raw}; the API is under /v2`));
     // A run's id needs no decoding: one that is not an id as sent (a stray or malformed escape) is no run's, and is never
     // decoded here, where a throw would leave the request listener.
@@ -3436,7 +3439,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const admitted = () => held.some((value) => owner.valid(value));
       if (!admitted()) return deny("401 Unauthorized");
       viewers.watch(socket, admitted);
-      proxyLiveUpgrade(req, socket, head, handover, viewing[3]!, () => { piping = true; });
+      proxyLiveUpgrade(req, socket, head, handover, viewing[3]!, () => { piping = true; }, reach);
     })().catch(() => (piping ? void socket.destroy() : deny("500 Internal Server Error")));
   });
   const first = options.port ?? DEFAULT_PORT;
