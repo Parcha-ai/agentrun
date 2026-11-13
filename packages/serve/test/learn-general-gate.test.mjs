@@ -334,7 +334,7 @@ test("a restart while Jev's requests were out: what they spent is unknown (null,
   assert.equal(graded.usd, null, "the cut requests' cost is unknown, so the grade's is");
   assert.equal(graded.verdict.items.find((item) => item.file === ONE_MERCHANT.file).question, "General", "the second answer screens");
   assert.equal((await store.runs.get("learn-1")).costUsd, null, "the run's cost is unknown, never the second check's alone");
-  assert.ok(second.calls.log.some((line) => /generality check .*cut .*unknown/.test(line)), second.calls.log.join("\n"));
+  assert.ok(second.calls.log.some((line) => /generality check .*was cut, so what it spent is unknown/.test(line)), second.calls.log.join("\n"));
 });
 
 test("a restart after the check failed: it is not asked again, its skip and unknown cost stand", async (t) => {
