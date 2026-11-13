@@ -2458,8 +2458,9 @@ the API's control URL) is a later change: `platform: "ios"` is refused in words.
     its own calls; the last close ends phoned (its stdin closes), then drops the adb transport. A phoned that ends on
     its own fails its connections' calls with `gone`, and the next connect starts another.
   - A phoned holds the phone's UiAutomation until it exits, a moment after its stdin closes, so the next phoned on a
-    phone starts only once the last is gone: the provider keeps each phoned's pid (its shell writes it before
-    `app_process` takes its place) and waits on the phone up to 10 s for that process to end, kills it then, and fails
+    phone starts only once the last is gone: the provider keeps each phoned's pid and start time (its shell writes them
+    before `app_process` takes its place, so a pid another process took later is not it) and waits on the phone up to
+    10 s for that process to end, kills it then, and fails
     the connect in words if a kill leaves it running. A UiAutomation held by something else (`uiautomator dump`, an
     instrumentation test, Appium) is not waited for: the first ui call is `unsupported` in words that name them.
   - Neither the endpoint nor the code is ever in a spawned adb's argv, which `/proc` shows to every user of the host.

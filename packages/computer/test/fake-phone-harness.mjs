@@ -29,12 +29,12 @@ process.once("exit", () => rmSync(jarDir, { recursive: true, force: true }));
 export const PHONED_JAR = join(jarDir, "phoned.jar");
 writeFileSync(PHONED_JAR, "phoned stand-in jar\n");
 /**
- * The service adb's exec: runs to start phoned, as the provider sends it: sh's pid to a file of its own, then the jar,
- * app_process in sh's place, and stderr to a log.
+ * The service adb's exec: runs to start phoned, as the provider sends it: sh's pid and start time to a file of its own,
+ * then the jar, app_process in sh's place, and stderr to a log.
  */
-export const PHONED_SERVICE = /^exec:echo \$\$ >(\/data\/local\/tmp\/phoned-[0-9a-f]{16}-[0-9a-f]{8}\.pid); CLASSPATH=(\/data\/local\/tmp\/phoned-[0-9a-f]{16}\.jar) exec app_process \/ ai\.agentrun\.phoned\.android\.Main 2>(\/data\/local\/tmp\/phoned-[0-9a-f]{16}\.log)$/;
-/** The provider's wait for a phoned to be gone (a shell loop on the phone): the pid it waits for. */
-const UNTIL_GONE = /^p=(\d+); alive\(\) \{/;
+export const PHONED_SERVICE = /^exec:s=\$\(cat \/proc\/\$\$\/stat\); s=\$\{s##\*"\) "\}; set -- \$s; echo \$\$ \$\{20\} >(\/data\/local\/tmp\/phoned-[0-9a-f]{16}-[0-9a-f]{8}\.pid); CLASSPATH=(\/data\/local\/tmp\/phoned-[0-9a-f]{16}\.jar) exec app_process \/ ai\.agentrun\.phoned\.android\.Main 2>(\/data\/local\/tmp\/phoned-[0-9a-f]{16}\.log)$/;
+/** The provider's wait for a phoned to be gone (a shell loop on the phone): the pid and start time it waits for. */
+const UNTIL_GONE = /^p=(\d+); t=(\d+); alive\(\) \{/;
 
 /** A clock whose sleep() moves time on at once: no test waits on the wall clock. */
 export function fakeClock(start = Date.now()) {
@@ -241,7 +241,7 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 	/**
 	 * connected and unlocked: the adb server's endpoints, and those whose connection took the code; files: the phone's
 	 * files by path, as their sha256; text: the small files the phone's sh wrote (phoned's pid), by path; phoned: each
-	 * phoned the phone started ({ jar, log, pid, ended, gone, stream: the provider's end of its stdio, which a test
+	 * phoned the phone started ({ jar, log, pid, start, ended, gone, stream: the provider's end of its stdio, which a test
 	 * destroys as a phone that kills phoned does }), in order, where ended is its stdio's end and gone its process's;
 	 * killed: the pids the provider's wait killed; calls: every request the stand-in phoneds read.
 	 */
@@ -409,7 +409,7 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 			const gone = UNTIL_GONE.exec(shellService[1]);
 			if (gone && phone.unlocked.has(serial)) {
 				ran.push(shellService[1]);
-				return { ok: true, value: await untilGone(Number(gone[1])) };
+				return { ok: true, value: await untilGone(Number(gone[1]), gone[2]) };
 			}
 			const out = shellOn(serial, shellService[1]);
 			return { ok: true, value: out.value.stdout.toString("utf8") };
@@ -426,11 +426,12 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 	const serverCalls = [];
 
 	/**
-	 * The provider's wait for the phoned of pid to be gone: exited once its process ends; past the wait's bound (a
-	 * phoned that exits only when killed, or never), killed, or still running.
+	 * The provider's wait for the phoned of pid and start time to be gone: exited once its process ends (or when the pid
+	 * is another process's, one of another start time); past the wait's bound (a phoned that exits only when killed, or
+	 * never), killed, or still running.
 	 */
-	async function untilGone(pid) {
-		const one = phone.phoned.find((started) => started.pid === pid);
+	async function untilGone(pid, start) {
+		const one = phone.phoned.find((started) => started.pid === pid && started.start === start);
 		if (one === undefined || one.gone) return "exited\n";
 		if (one.exits === "eof") {
 			await one.exited;
@@ -477,7 +478,9 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 			Object.assign(started, { pid: 4000 + index, exits, exited, kill: () => kill() });
 		}
 		started.exited.then(() => (started.gone = true));
-		phone.text.set(pidFile, `${started.pid}\n`);
+		// Its start time in clock ticks since boot: a test changes it to say the pid is now another process's.
+		started.start = String(7000 + index);
+		phone.text.set(pidFile, `${started.pid} ${started.start}\n`);
 		started.stream = stream;
 		stream.once("close", onEnd);
 		if (!streams.has(serial)) streams.set(serial, new Set());

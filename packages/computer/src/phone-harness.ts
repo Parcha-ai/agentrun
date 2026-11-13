@@ -81,12 +81,22 @@ const PHONED_EXIT_S = 10;
 const PHONED_KILL_S = 2;
 
 /**
- * A shell command for the phone that waits until process pid is gone (a zombie counts: it holds nothing), up to
- * PHONED_EXIT_S; then kills it and waits PHONED_KILL_S more. Its last line is exited, killed or running.
+ * A phoned's process on its phone: its pid and its start time (/proc/<pid>/stat's 22nd field, in clock ticks since
+ * boot), which together name it even once the pid is another process's.
  */
-function untilGone(pid: number): string {
+interface PhonedProcess {
+	pid: number;
+	start: string;
+}
+
+/**
+ * A shell command for the phone that waits until the process is gone (a zombie counts: it holds nothing; so does
+ * another process that took its pid), up to PHONED_EXIT_S; then kills it and waits PHONED_KILL_S more. Its last line is
+ * exited, killed or running. /proc/<pid>/stat less its "<pid> (<name>) " gives the state as $1 and the start time as ${20}.
+ */
+function untilGone({ pid, start }: PhonedProcess): string {
 	const wait = (seconds: number) => `n=0; while alive && [ $n -lt ${seconds * 10} ]; do sleep 0.1; n=$((n+1)); done`;
-	return `p=${pid}; alive() { s=$(cat /proc/$p/stat 2>/dev/null); case $s in ""|*") Z "*) return 1;; esac; }; ${wait(PHONED_EXIT_S)}; alive || { echo exited; exit 0; }; kill -9 $p 2>/dev/null; ${wait(PHONED_KILL_S)}; alive && echo running || echo killed`;
+	return `p=${pid}; t=${start}; alive() { s=$(cat /proc/$p/stat 2>/dev/null) || return 1; s=\${s##*") "}; set -- $s; [ "$1" != Z ] && [ "\${20}" = "$t" ]; }; ${wait(PHONED_EXIT_S)}; alive || { echo exited; exit 0; }; kill -9 $p 2>/dev/null; ${wait(PHONED_KILL_S)}; alive && echo running || echo killed`;
 }
 
 const VERSION: string = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
@@ -483,10 +493,11 @@ export class PhoneHarnessProvider implements ComputerProvider {
 	 */
 	readonly #daemons = new Map<string, Promise<Result<Phoned>>>();
 	/**
-	 * Each endpoint's last phoned, by its pid on the phone, until it is seen gone: the next phoned there starts only once
-	 * it is (#lastGone), since it holds the phone's one accessibility connection until it exits, after its connection closed.
+	 * Each endpoint's last phoned, by its process on the phone, until it is seen gone: the next phoned there starts only
+	 * once it is (#lastGone), since it holds the phone's one accessibility connection until it exits, after its
+	 * connection closed.
 	 */
-	readonly #lastPhoned = new Map<string, number>();
+	readonly #lastPhoned = new Map<string, PhonedProcess>();
 	readonly #phonedPath: string;
 	readonly #apks: readonly string[];
 	/** Each file the provider puts on its phones (phoned's jar, the APKs), read once: its bytes' sha256 names it there. */
@@ -1103,8 +1114,11 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		let started = this.#daemons.get(endpoint);
 		if (started === undefined) {
 			const starting: Promise<Result<Phoned>> = this.#startPhoned(endpoint, id, adb, onPhone, () => {
-				// phoned ended on its own (the phone killed it, or it failed): the next connect starts another.
-				if (this.#daemons.get(endpoint) === starting) this.#daemons.delete(endpoint);
+				// phoned ended on its own (the phone killed it, or it failed): the next connect starts another, once this start
+				// is done, so its pid is kept before that start waits on it.
+				void starting.then(() => {
+					if (this.#daemons.get(endpoint) === starting) this.#daemons.delete(endpoint);
+				});
 			});
 			started = starting;
 			this.#daemons.set(endpoint, starting);
@@ -1204,10 +1218,11 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		if (!placed.ok) return placed;
 		const gone = await this.#lastGone(endpoint, transport, onPhone);
 		if (!gone.ok) return gone;
-		// sh writes its own pid, which app_process takes over by exec, to a file of this start's own: read back after hello.
+		// sh writes its pid and start time, which app_process keeps as it takes sh's place by exec, to a file of this start's
+		// own (the 22nd field of /proc/<pid>/stat is ${20} once its "<pid> (<name>) " is cut), read back after hello.
 		const base = remote.slice(0, -".jar".length);
 		const pidFile = `${base}-${randomBytes(4).toString("hex")}.pid`;
-		const stream = await this.#adb.open(`exec:echo $$ >${pidFile}; CLASSPATH=${remote} exec app_process / ai.agentrun.phoned.android.Main 2>${base}.log`, { timeoutMs: ADB_TIMEOUT_MS, transport });
+		const stream = await this.#adb.open(`exec:s=$(cat /proc/$$/stat); s=\${s##*") "}; set -- $s; echo $$ \${20} >${pidFile}; CLASSPATH=${remote} exec app_process / ai.agentrun.phoned.android.Main 2>${base}.log`, { timeoutMs: ADB_TIMEOUT_MS, transport });
 		if (!stream.ok) return stream;
 		const socket = stream.value;
 		socket.once("close", ended);
@@ -1223,13 +1238,13 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		// Read whether or not it said hello: one that did not may still run, and the next phoned here waits for it as well.
 		const read = await onPhone(`shell:cat ${pidFile} && rm -f ${pidFile}`, transport);
 		const said = read.ok ? read.value.trim() : "";
-		const pid = /^[1-9][0-9]*$/.test(said) ? Number(said) : undefined;
-		if (pid !== undefined) this.#lastPhoned.set(endpoint, pid);
+		const fields = /^([1-9][0-9]*) ([0-9]+)$/.exec(said);
+		if (fields) this.#lastPhoned.set(endpoint, { pid: Number(fields[1]), start: fields[2] });
 		if (!hello.ok) {
 			await end();
 			return vendorFail("phone-harness",`phoned did not say hello on the phone (${hello.error.code}: ${redactWords(hello.error.message)}); its log on the phone is ${base}.log`);
 		}
-		if (pid === undefined) {
+		if (!fields) {
 			await end();
 			const why = read.ok ? `it read ${show(redactWords(said.split("\n")[0] ?? ""))}` : redactWords(read.error.message);
 			return vendorFail("phone-harness", `phoned said hello, and its process id could not be read back from the phone (${why}): without it the next phoned could start before this one lets go of the phone's accessibility`);
@@ -1243,9 +1258,10 @@ export class PhoneHarnessProvider implements ComputerProvider {
 	 * taken ("already registered" at its first ui call), so none starts while the last one runs.
 	 */
 	async #lastGone(endpoint: string, transport: string, onPhone: OnPhone): Promise<Result<void>> {
-		const pid = this.#lastPhoned.get(endpoint);
-		if (pid === undefined) return ok(undefined);
-		const waited = await onPhone(`shell:${untilGone(pid)}`, transport);
+		const last = this.#lastPhoned.get(endpoint);
+		if (last === undefined) return ok(undefined);
+		const { pid } = last;
+		const waited = await onPhone(`shell:${untilGone(last)}`, transport);
 		if (!waited.ok) return waited;
 		const said = waited.value.trim().split("\n").at(-1) ?? "";
 		if (said === "running") {
