@@ -13,7 +13,7 @@ import { Hearing } from "../heard.js";
 import { redactedAnswer } from "../key-refusal.js";
 import { LEARNED_NODES, LEARNED_NODES_MAX } from "../learned-nodes.js";
 import { labelled, type Reflect } from "../reflect-range.js";
-import { reflectFrom } from "../runner/end-of-run.js";
+import { reflectRanges } from "../runner/end-of-run.js";
 import { journalEntries, journalRecords } from "../runner/journal-reader.js";
 import { endedAnswer, KINDS } from "../runner/journal-kinds.js";
 import { bookedSpend, cliModelWorked, costIsBooked } from "../runner/metrics.js";
@@ -27,14 +27,16 @@ export async function runEntries(store: Store, runId: string, context: Context):
   return entries.slice().sort((a, b) => Number(a.id ?? 0) - Number(b.id ?? 0));
 }
 
-/** Where a run's end-of-run turn is in its journal, as the server's Reflect names it for labelled(): `after`, the entry
- *  before its input; `until`, the run's end entry once written. Undefined for a run that asked none. */
-export async function runReflect(store: Store, runId: string, context: Context): Promise<Pick<Reflect, "after" | "until"> | undefined> {
+/** Where a run's end-of-run turn is in its journal, as the server's Reflect names it for labelled(): its newest round's
+ *  `after`, the entry before its input, and `until`, the run's end entry once written; `earlier`, each earlier round's (a
+ *  follow-up opened the run again after it). Undefined for a run that asked none. */
+export async function runReflect(store: Store, runId: string, context: Context): Promise<Pick<Reflect, "after" | "until" | "earlier"> | undefined> {
   const records = await journalRecords(store.readJournal(runId), context);
-  const from = reflectFrom(records.submissions ?? [], records.entries);
-  if (from === undefined) return undefined;
-  const end = records.entries.find((entry) => entry.kind === KINDS.end && Number(entry.id) >= from);
-  return { after: from - 1, ...(end ? { until: Number(end.id) } : {}) };
+  const ranges = reflectRanges(records.submissions ?? [], records.entries);
+  const newest = ranges.at(-1);
+  if (newest === undefined) return undefined;
+  const earlier = ranges.slice(0, -1).flatMap(({ from, until }) => (until === undefined ? [] : [{ after: from - 1, until }]));
+  return { after: newest.from - 1, ...(newest.until !== undefined ? { until: newest.until } : {}), ...(earlier.length ? { earlier } : {}) };
 }
 
 /** The CLI record (a harness whose own records are resume log only, record "loop": adapter-loop.ts openCliRecord) as the
