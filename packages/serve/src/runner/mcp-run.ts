@@ -70,9 +70,8 @@ export interface McpForClaimOptions {
   readonly fetch?: typeof fetch;
   readonly callBounds?: { callMs?: number; connectMs?: number };
   readonly githubTimer?: GithubTimer;
-  /** The run's one redactor (the spec's `cut`): every credential value the claim step opens, refreshes or mints is held by
-   *  it as it is handed over (mcp-claim.ts `redact`). */
-  readonly redact?: { hold(values: readonly string[]): void };
+  /** Each credential value the claim opens, refreshes or mints, for the run's redactors (mcp-claim.ts `hold`). */
+  readonly hold?: (values: string[]) => void;
 }
 
 /** A call as the loop's gate is asked about it: the tool by its catalog name. */
@@ -126,7 +125,7 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
       ...(githubApp ? { githubApp } : {}),
       ...(options.githubMcpOrigin ? { githubMcpOrigin: options.githubMcpOrigin } : {}),
       ...(options.githubTimer ? { githubTimer: options.githubTimer } : {}),
-      ...(options.redact ? { redact: options.redact } : {}),
+      ...(options.hold ? { hold: options.hold } : {}),
     });
   } catch (error) {
     held.abort();

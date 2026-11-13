@@ -203,7 +203,7 @@ test("every credential value the claim hands over is held by the run's redactor 
     store: on.store, claim, grants: ["mcp:live/add", "mcp:gh/add"], sealKey: KEY, signal: new AbortController().signal,
     githubApp: { mint: async () => ({ ok: true, token: minted.shift(), expires_at: Date.now() + HOUR }), target: { repo: "acme/widgets" } },
     githubMcpOrigin: origin, githubTimer: (fire) => (armed.push(fire), { clear() {} }),
-    redact: { hold: (values) => held.push(...values) },
+    hold: (values) => held.push(...values),
   });
   t.after(() => step.release());
   for (const value of [`Bearer ${TOKEN}`, TOKEN, NEXT, `Bearer ${first}`, first]) assert.ok(held.includes(value), `held at the claim: ${value.slice(0, 20)}`);

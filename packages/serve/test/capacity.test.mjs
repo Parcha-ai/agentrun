@@ -65,28 +65,33 @@ test("a run that has failed gives its place back once its process exits: a start
   await follow(api, started.body.run_id, ["failed"]);
 });
 
-// SKIP (follow-up #2058): a message to a run that completed or was stopped answers 409 not_continuable: the store does not open the run again
-test.skip("two follow-ups to a completed run that both wait for a place reach it: one reopens the run, the other waits for that; the reopen gives its place back when it ends again", { timeout: 90_000 }, async (t) => {
-  const gate = join(await scratch(t), "gate");
-  await writeFile(gate, "");
-  withEnv(t, { EXIT_GATE: gate });
-  const { api } = await serve(t, { maxRuns: 1, faux: new URL("./fixtures/faux-answer-slow-exit.mjs", import.meta.url).pathname });
+test("two follow-ups to a completed run while its one place is held: both are taken at once and wait for the place to run, one reopens the run, the other waits for that; the reopen gives its place back when it ends again", { timeout: 90_000 }, async (t) => {
+  const dir = await scratch(t);
+  const { api, data, runnerBeats } = await serve(t, { maxRuns: 1 });
   assert.equal((await api("POST", "/agents", agent("calc"))).status, 201);
   const { body: first } = await api("POST", "/agents/calc/runs", { input: { content: "First." } });
   await follow(api, first.run_id, ["completed"]);
-  // A second run answers, and its process cannot exit: it holds the one place while the follow-ups wait for it.
-  await rm(gate);
-  const { body: holder } = await api("POST", "/agents/calc/runs", { input: { content: "Hold." } });
-  for (let i = 0; (await api("GET", `/runs/${holder.run_id}`)).body.status !== "completed"; i++) {
-    assert.ok(i < 400, "the holding run answers");
+  // A second run works until the test lets it go: it holds the one place while the follow-ups wait for it.
+  const { body: holder } = await api("POST", "/agents/calc/runs", { input: { content: busy(dir, "go") } });
+  await follow(api, holder.run_id, ["working"]);
+  // The messages route writes each follow-up and answers at once; the run they reopen waits for the place to run them.
+  const statuses = [];
+  for (const content of ["And again?", "And once more?"]) statuses.push(await api("POST", `/runs/${first.run_id}/messages`, { content }));
+  assert.deepEqual(statuses.map((a) => a.status), [202, 202], JSON.stringify(statuses.map((a) => a.body)));
+  // Two polls of the runner after both were written (a beat starts each poll, and the next poll starts only once the
+  // last one's claims landed): a runner with a free place would have claimed the reopened run by now.
+  for (let since = runnerBeats(), i = 0; runnerBeats() < since + 3; i++) {
+    assert.ok(i < 400, "the runner polls");
     await sleep(50);
   }
-  const waiting = [];
-  for (const [i, content] of ["And again?", "And once more?"].entries()) waiting.push(await held(api, `/runs/${first.run_id}/messages`, { content }, `follow-up-${i}`));
-  assert.ok(waiting.every((one) => one.at() === undefined), "both wait for the place");
-  await writeFile(gate, "");
-  const statuses = await Promise.all(waiting.map((one) => one.answer));
-  assert.deepEqual(statuses.map((a) => a.status), [202, 202], JSON.stringify(statuses.map((a) => a.body)));
+  const db = new DatabaseSync(join(data, "store.sqlite"), { readOnly: true, timeout: 5_000 });
+  const run = db.prepare("SELECT state, runner FROM runs WHERE id = ?").get(first.run_id);
+  const steers = db.prepare("SELECT taken_at FROM commands WHERE run_id = ? AND kind = 'steer'").all(first.run_id);
+  db.close();
+  assert.deepEqual({ ...run }, { state: "running", runner: null }, "reopened, and not claimed while the working run holds the one place");
+  assert.deepEqual(steers.map((row) => row.taken_at), [null, null], "neither follow-up is taken while the place is held");
+  await writeFile(join(dir, "go"), "");
+  await follow(api, holder.run_id, ["completed"]);
   const { rows } = await follow(api, first.run_id, ["completed"]);
   const sent = rows.filter((r) => r.kind === "user_message").map((r) => r.text);
   assert.deepEqual([...sent].sort(), ["And again?", "And once more?", "First."].sort(), "both messages reached the run");

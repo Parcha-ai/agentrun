@@ -29,9 +29,9 @@ const { viewOverStore } = await import("../dist/store-view.js");
 // lapses a claim mid-run (its request sent twice, a run parked at its cap, a stop's wait hung, as the 1 s lease did).
 const TIMING = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 30 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const GPT6 = builtinModels({}).getModel("openrouter", "openai/gpt-6-sol");
+const GPT6 = builtinModels({}).getModel("openrouter", "openai/gpt-6.1-sol");
 const THRESHOLD = GPT6.cost.tiers[0].inputTokensAbove; // 272000
-/** calculateCost's price of a request's usage on gpt-6-sol (tiered), as the proxy books it. */
+/** calculateCost's price of a request's usage on gpt-6.1-sol (tiered), as the proxy books it. */
 const bookOf = (input, output) => calculateCost(GPT6, { input, output, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }).total;
 
 /** A one-model-node workflow (extract): it reads {question} and submits {answer}. */
@@ -59,10 +59,10 @@ function submitOrigin(usage) {
   };
 }
 
-/** The gpt-6-sol provider for the workflow spec: the catalog's cost as the cap's price (tiers included), calculateCost as
+/** The gpt-6.1-sol provider for the workflow spec: the catalog's cost as the cap's price (tiers included), calculateCost as
  *  the proxy's booking (tiered), the scripted origin as its upstream. */
 function gpt6Provider(fetch) {
-  const model = "openai/gpt-6-sol";
+  const model = "openai/gpt-6.1-sol";
   return () => ({
     modelId: model,
     api: "anthropic-messages",
@@ -132,7 +132,7 @@ async function sessionRecords(store) {
 }
 
 /** A store with one queued workflow run (its launch body) and a runner on the workflow loop with the money spec.
- *  `providerOf` defaults to the gpt-6-sol provider on a submit origin; a test gives its own (a stalling origin for a stop). */
+ *  `providerOf` defaults to the gpt-6.1-sol provider on a submit origin; a test gives its own (a stalling origin for a stop). */
 async function worldWith(t, { capUsd, question, usage, providerOf, workflow = answerFlow(), journalOf, specOf: wrapSpec }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-wf-money-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });

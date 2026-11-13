@@ -66,21 +66,6 @@ export function lintRecordRoot(schema: unknown): string[] {
   return admitsObject ? [] : [`the record schema's root type must be "object", not ${JSON.stringify(type)}`];
 }
 
-/** What an author should fix in a record schema, for a host or a validator to report: the root findings above, and
- *  a schema that declares its fields and requires one that is not among them, which the tool's shown fields never
- *  name. A record of the second kind can still be delivered (the tool's parameters are open, and the delivery
- *  contract that ends the node's task carries the schema with its `required`), so a runner does not refuse it. A
- *  schema that declares no `properties` is not held to it. */
-export function lintRecordSchema(schema: unknown): string[] {
-  const problems = lintRecordRoot(schema);
-  if (!schema || typeof schema !== "object" || Array.isArray(schema)) return problems;
-  const { properties, required } = schema as { properties?: unknown; required?: unknown };
-  const declared = properties && typeof properties === "object" && !Array.isArray(properties) ? properties as Record<string, unknown> : null;
-  const undeclared = Array.isArray(required) && declared ? required.filter((name) => typeof name !== "string" || !Object.hasOwn(declared, name)) : [];
-  if (undeclared.length) problems.push(`the record schema requires ${undeclared.map((name) => JSON.stringify(name)).join(", ")}, which its properties do not declare`);
-  return problems;
-}
-
 type Validator = { Check(value: unknown): boolean; Errors(value: unknown): Iterable<{ instancePath?: string; path?: string; message: string }> };
 const validators = new WeakMap<object, Validator | null>();
 /** The schema's compiled validator, or null for a schema the compiler refuses. */

@@ -14,7 +14,7 @@ import { after, test } from "node:test";
 import { PROVIDERS, SETTING_KINDS, servingRefusals } from "@parcha/agentrun-computer";
 import { putSealedKey } from "../dist/server-keys.js";
 import { archilClaim, archilWorkspace, computerForClaim, computerProviderMakers } from "../dist/workspace/index.js";
-import { archilControlFake } from "./archil-control-fake.mjs";
+import { agentDiskStore, archilControlFake } from "./archil-control-fake.mjs";
 import { FakeArchilDisk } from "./fixtures/archil-fake.mjs";
 import { readBackOf } from "./fixtures/archil-readback.mjs";
 import { storeOn } from "./store-helpers.mjs";
@@ -30,7 +30,7 @@ const MODAL_ID = `fake-test-modal-id-${"0001"}`;
 const MODAL_SECRET = `fake-test-modal-secret-${"0001"}`;
 const E2B_KEY = `fake-test-key-e2b-${"0001"}`;
 const ARCHIL_KEY = "fake-test-key-archil-account-0001";
-const SETTINGS = { diskId: "dsk-00000000000fake0", region: "aws-us-east-1", s3Url: "https://s3.green.us-east-1.aws.prod.archil.com" };
+const SETTINGS = { diskId: "dsk-00000000000fa4e0", region: "aws-us-east-1", s3Url: "https://s3.green.us-east-1.aws.prod.archil.com" };
 /** Each remote sandbox's saved keys, and the options providerFor is given from them (computer-keys.ts). */
 const PROVIDER_KEYS = {
   daytona: { keys: { DAYTONA_API_KEY: DAYTONA_KEY }, options: { apiKey: DAYTONA_KEY } },
@@ -61,7 +61,7 @@ async function archilSandbox(t, provider = "daytona", { existing = [] } = {}) {
   await putSealedKey(store, sealKey, "archil.api_key", ARCHIL_KEY);
   const disk = new FakeArchilDisk();
   const controller = new AbortController();
-  const claim = await archilClaim({ settings: SETTINGS, keys: store.sealedKeys, sealKey, signal: controller.signal, makeDisk: () => disk, mount: { runId: "run-1", epoch: 3, ttlMs: 86_400_000, baseUrl: control.baseUrl } });
+  const claim = await archilClaim({ settings: SETTINGS, keys: store.sealedKeys, sealKey, signal: controller.signal, makeDisk: () => disk, run: { agentId: "a", launch: { diskId: SETTINGS.diskId, kind: "agent" }, store: agentDiskStore("a", SETTINGS.diskId) }, mount: { runId: "run-1", epoch: 3, ttlMs: 86_400_000, baseUrl: control.baseUrl } });
   const workspace = archilWorkspace(disk, "agents/a/runs/run-1/work", { region: SETTINGS.region, mountToken: () => claim.token() });
   const scratch = realpathSync(mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-archil-sandbox-")));
   dirs.push(scratch);

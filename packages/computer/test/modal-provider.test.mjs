@@ -44,11 +44,9 @@ const tagsFor = (spec, name, deadline, user = "2510:2510") => ({
 	[SPEC_TAG]: JSON.stringify({
 		image: spec.image,
 		user,
-		network: spec.network,
 		cpus: spec.cpus ?? 2,
 		memoryMb: spec.memoryMb ?? 4096,
 		workdir: spec.workdir ?? "/work",
-		runtime: "vm",
 	}),
 });
 /** A computer as create leaves one, seeded straight into the fake. */
@@ -222,7 +220,7 @@ test("create of a GPU computer: Modal's GPU option on its gVisor runtime, record
 	assert.equal(params.runtime, "gvisor", "Modal offers GPUs on gVisor only");
 	assert.equal(params.gpu, "A100-80GB:2", "the SDK's gpu: the type, then :count");
 	const recorded = JSON.parse(params.tags[SPEC_TAG]);
-	assert.deepEqual([recorded.runtime, recorded.gpu], ["gvisor", gpu], "the spec tag records the runtime and the GPUs");
+	assert.deepEqual(recorded.gpu, gpu, "the spec tag records the GPUs, and with them the runtime: gVisor, Modal's one GPU runtime");
 	assert.equal(params.command.at(-1), "--own-network", "one flag on every runtime: init picks how it makes the fence");
 	// gVisor's init made the fence inside a user namespace: hello read it back, and create says so in a note.
 	assert.ok(created.value.notes?.some((note) => note.startsWith("fence: userns-netns")), JSON.stringify(created.value.notes));
@@ -930,7 +928,7 @@ test("list: this provider's running sandboxes with every label, by tags through 
 				seeded({ name: "computer-000000000001", tags: { team: "a" }, deadline }),
 				seeded({ name: "computer-000000000002", tags: { team: "a", [DEADLINE]: "tomorrow" } }),
 				seeded({ name: "computer-000000000003", tags: { team: "b" } }),
-				seeded({ name: "computer-000000000004", tags: { team: "a" }, spec: { ...SPEC, network: "open" } }),
+				seeded({ name: "computer-000000000004", tags: { team: "a" } }),
 				{ tags: { [COMPUTER]: "1", team: "a", [NAME]: "not-ours" } },
 				seeded({ name: "computer-000000000005", tags: { team: "a" }, running: false }),
 			],
@@ -943,7 +941,7 @@ test("list: this provider's running sandboxes with every label, by tags through 
 		[
 			["computer-000000000001", "running", "none", deadline],
 			["computer-000000000002", "running", "none", undefined],
-			["computer-000000000004", "running", "open", listed.value[2].deadline?.toISOString()],
+			["computer-000000000004", "running", "none", listed.value[2].deadline?.toISOString()],
 		],
 	);
 	assert.equal(listed.value[0].labels.team, "a");
@@ -1002,9 +1000,6 @@ test("attach refuses a drifted computer in words and leaves it running", async (
 		[{ deadline: new Date(Date.now() + 2 * DAY_MS).toISOString() }, /24 hours/],
 		[{ deadline: "soon" }, /deadline/],
 		[{ tags: { [SPEC_TAG]: "not json" } }, /spec/],
-		[{ tags: { [SPEC_TAG]: JSON.stringify({ image: "x", user: "1000:1000", network: "none", cpus: 2, memoryMb: 4096, workdir: "/work", runtime: "gvisor" }) } }, /runtime/],
-		// A computer an earlier version made records no runtime: refused, never read as vm (the breaking change).
-		[{ tags: { [SPEC_TAG]: JSON.stringify({ image: "x", user: "1000:1000", network: "none", cpus: 2, memoryMb: 4096, workdir: "/work" }) } }, /runtime: the tag agentrun\.computer\.spec says nothing/],
 	];
 	for (const [options, pattern] of cases) {
 		const { provider, fake } = setup({}, { sandboxes: [seeded(options)] });
@@ -1029,14 +1024,11 @@ test("attach: an id that is not this provider's, or a sandbox that has finished,
 	assert.equal(fake.names().includes("sandbox.exec"), false);
 });
 
-test("network: none is read back by the probe from inside; open is open; a change is refused in words", async () => {
-	const { provider, fake } = setup({}, { sandboxes: [seeded(), seeded({ name: "computer-000000000002", spec: { ...SPEC, network: "open" } })] });
+test("network: none is read back by the probe from inside; a change is refused in words", async () => {
+	const { provider, fake } = setup({}, { sandboxes: [seeded()] });
 	const none = refOf(fake);
-	const open = refOf(fake, "computer-000000000002");
 	assert.deepEqual(await provider.network(none), { ok: true, value: "none" });
 	assert.equal(fake.execRuns.length, 1, "none was probed");
-	assert.deepEqual(await provider.network(open), { ok: true, value: "open" });
-	assert.equal(fake.execRuns.length, 1, "open needs no probe: nothing is wider");
 	assert.deepEqual(await provider.network(none, "none"), { ok: true, value: "none" });
 	const wider = await provider.network(none, "open");
 	assert.equal(wider.error?.code, "refused");

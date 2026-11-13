@@ -33,7 +33,7 @@ async function mappedRun(s, items) {
 }
 
 test("a workflow map item's label holding a key this server keeps is served cut on the graph", { timeout: 120_000 }, async (t) => {
-  const s = await server(t, { agentTools: false, env: { AGENT_MODEL: "openai/gpt-6-sol", OPENAI_API_KEY: CUT_KEY } });
+  const s = await server(t, { agentTools: false, env: { AGENT_MODEL: "openai/gpt-6.1-sol", OPENAI_API_KEY: CUT_KEY } });
   assert.equal((await s.api("POST", "/agents", flowAgent("mapped", mapped, { tools: ["llm"] }))).status, 201);
   const runId = await mappedRun(s, [`${"x".repeat(150)}${CUT_KEY}`]);
   const graph = await s.api("GET", `/runs/${runId}/graph`);
@@ -62,7 +62,7 @@ test("a workflow map item's label holding the sign-in pointer its run was handed
 });
 
 test("the whole graph view is cut, not its parts alone: the workflow and its structure echo a node's words, and a pointer the run was handed and a key this server keeps in them are served cut", { timeout: 120_000 }, async (t) => {
-  const s = await server(t, { agentTools: false, env: { AGENT_MODEL: "openai/gpt-6-sol", OPENAI_API_KEY: CUT_KEY } });
+  const s = await server(t, { agentTools: false, env: { AGENT_MODEL: "openai/gpt-6.1-sol", OPENAI_API_KEY: CUT_KEY } });
   const pointer = pointerOf();
   // A node's own words (its label and its escalation's summary) in the workflow, as an agent's author might paste them:
   // the graph serves the workflow and its structure beside the run's parts.

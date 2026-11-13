@@ -6,7 +6,6 @@
     "agentrun",
     "agent",
     "pi",
-    "pi-durable",
     "server",
     "api"
   ],
@@ -50,7 +49,6 @@
     "test:pg": "node scripts/test-pg.mjs"
   },
   "dependencies": {
-    "@browserbasehq/sdk": ">=2.20.0 <3",
     "@earendil-works/pi-agent-core": "1.5.0",
     "@earendil-works/pi-coding-agent": "1.5.0",
     "@modelcontextprotocol/client": "2.4.0",
