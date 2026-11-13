@@ -15,7 +15,7 @@ import type { AuthorHostAddendum } from "@parcha/agentrun-dsl";
 import { LEARNED_MAX_TURNS, frontMatter, WORKFLOW_NAME, WORKFLOWS_DIR } from "./skills.js";
 import { NOTE_BLOCK, parseReflection, SKILL_BLOCK, WORKFLOW_BLOCK } from "./reflect.js";
 import { NOTE_FILE } from "./notes.js";
-import { PROMOTE_BAR, type PromotionRecord, promotionOf } from "./promote.js";
+import { championOf, PROMOTE_BAR, type PromotionRecord, promotionOf } from "./promote.js";
 
 /** How many active notes an agent keeps before its look-back compiles its job. */
 export const COMPILE_AFTER_NOTES = 3;
@@ -99,6 +99,16 @@ export function promotedOf(records: readonly PromotionRecord[], workflow: string
   if (own?.decided === "promote") return true;
   if (records.some((one) => one.workflow === workflow && one.decided === "promote" && one.source === "refit" && one.refit?.from === digest)) return true;
   return own?.decided === "hold" ? false : undefined;
+}
+
+/** The learned workflows whose newest revision other than their champion (learn/promote.ts championOf, which serves while
+ *  that revision is held) is held: each one's compile turn is asked for a revision (once per hold). A champion's own
+ *  graded hold counts: with it held there is no champion. */
+export function heldNamesOf(records: readonly PromotionRecord[]): Set<string> {
+  return new Set([...new Set(records.map(({ workflow }) => workflow))].filter((name) => {
+    const champion = championOf(records, name)?.digest;
+    return records.findLast((one) => one.workflow === name && one.digest !== champion)?.decided === "hold";
+  }));
 }
 
 /** Whether a run's look-back compiles its agent's job: the run completed, the agent has no learned workflow (active or
@@ -306,7 +316,7 @@ function heldLine(workflow: string, held: HeldAsk): string {
   const why = replay
     ? `replayed on ${replay.n} of the agent's graded inputs, it was right ${pct(replay.wf_acc)} of the time (${replay.handed_back} handed back, each scored on the agent's answer), against the agent's ${pct(replay.agent_acc)}: ${replay.delta >= 0 ? "+" : ""}${(replay.delta * 100).toFixed(1)} pts, more than ${PROMOTE_BAR * 100} pts under.`
     : `it was held (${clean(held.reason, 400).replace(/\n/g, " ").replace(/\.$/, "")}).`;
-  return `Your learned workflow \`${workflow}\` does not run first: ${why} It stays held, and the agent does every run, until a new revision of it.`;
+  return `Your learned workflow \`${workflow}\` does not run first: ${why} It stays held until a new revision of it.`;
 }
 
 /** What each tool a call node may run takes and gives, one line each (reflect.ts said this under a draft ask). */

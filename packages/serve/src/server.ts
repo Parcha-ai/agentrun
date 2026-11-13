@@ -72,7 +72,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { type AgenticBody, type McpCredentialMark, type NewRevision, openStore, type RevisionPlace, type RunMcpAuth, type RunRow, sealRunMcpAuth, type Store, StoreOwned, storeTarget, type WorkflowBody } from "./store/index.js";
 import { answerOf, logged } from "./agents.js";
 import { FINAL_STATES } from "./store/store.js";
-import { type Grade, GRADE_SOURCES, type GradeSource, gradeView, promotionsOf, putGrade } from "./learn/promote.js";
+import { type Grade, GRADE_SOURCES, type GradeSource, gradeView, promotionsOf, putGrade, servingOf } from "./learn/promote.js";
 import { runModelRef } from "./model.js";
 // The v2 run statuses, as the run view names them (run-view.ts Status), for the list filter's validation. */
 const STATUSES = ["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"] as const;
@@ -3198,8 +3198,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // Each learned workflow's promotion records, oldest first (learn/promote.ts): its replays' numbers and decisions,
         // its refits, its holds. Aggregates only; each workflow's name as the other learning reads show it.
         const shown = await learningShown(id);
-        const promotions = (await promotionsOf(store.settings, id)).map((one) => ({ ...one, workflow: shown.name(one.workflow) }));
-        return send(res, 200, { agent: id, promotions });
+        const records = await promotionsOf(store.settings, id);
+        const promotions = records.map((one) => ({ ...one, workflow: shown.name(one.workflow) }));
+        const serving = servingOf(records).map((one) => ({ ...one, workflow: shown.name(one.workflow) }));
+        return send(res, 200, { agent: id, promotions, serving });
       }
       case "listLearningNotes":
       case "listLearningLog":

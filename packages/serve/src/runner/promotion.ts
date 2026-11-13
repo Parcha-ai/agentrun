@@ -9,6 +9,10 @@
 // digest is promoted on its passing dry run, as before, and its record says so. A serving digest is checked once per
 // REFIT_EVERY more graded runs it served: its thresholds refit (a new revision when they move and still clear the bar),
 // and held when its graded runs fall below the bar. Escalation never holds a workflow: a hand-back is the agent's answer.
+// The champion keeps serving meanwhile: while the folder's revision (the challenger) replays, or once it is held, the
+// digest promoted last (learn/promote.ts championOf) serves the run, read from the learning commit its record names, so
+// a wrong served grade asks for a revision and never stops the workflow serving. The challenger serves once its replay
+// promotes it. Only the money rule (workflow-first.ts) and a graded hold of the champion itself stop it.
 import type { Context } from "@earendil-works/chord";
 import type { LearnedWorkflow } from "../learning.js";
 import { LEARNING_LABEL } from "../learning.js";
@@ -18,12 +22,14 @@ import { uuidv7 } from "../runs-over-store.js";
 import { FINAL_STATES, type RunRow, type Store, StoreConstraint } from "../store/store.js";
 import { runTimeline } from "../store-reads/journal.js";
 import { isObject, type Json } from "../validate.js";
-import { clears, type Grade, gradesOf, PROMOTE_BAR, type PromotionRecord, promotionOf, promotionsOf, recordPromotion, REFIT_EVERY, REPLAY_INPUTS, REPLAY_MIN, type ReplayRow, replayScore, answerCorrect, thresholdsOf } from "../learn/promote.js";
+import { championOf, clears, type Grade, gradesOf, PROMOTE_BAR, type PromotionRecord, promotionOf, promotionsOf, recordPromotion, REFIT_EVERY, REPLAY_INPUTS, REPLAY_MIN, type ReplayRow, replayScore, answerCorrect, thresholdsOf } from "../learn/promote.js";
 import { type RefitRow, refitGuards } from "../learn/refit.js";
 import { fits, workflowDigest } from "./workflow-first.js";
 import { learningCommit } from "../learn/commit.js";
 import type { LearningFolder } from "../learn/folder.js";
 import { recordOnly } from "../learn/promote.js";
+import type { Shown } from "../learning.js";
+import { workflowsAt } from "./learning-seed.js";
 
 /** A replay run still not ended this long after its replay started counts as handed back (the agent's answer). */
 export const REPLAY_DEADLINE_MS = 60 * 60 * 1000;
@@ -39,15 +45,19 @@ export interface PromotionDeps {
   readonly launch: RunLaunch;
   readonly context: Context;
   readonly log: (line: string) => void;
-  /** Writes a refit's new workflow text onto the agent's learning folder (a merge as `id`, from the claim's seed); true
-   *  when it landed. Absent: no refit is written. */
-  readonly commit?: (files: { path: string; text: string }[], reason: string, id: string) => Promise<boolean>;
+  /** Writes a refit's new workflow text onto the agent's learning folder (a merge as `id`, from the claim's seed); the
+   *  learning commit it landed as, or null when it did not. Absent: no refit is written. */
+  readonly commit?: (files: { path: string; text: string }[], reason: string, id: string) => Promise<string | null>;
+  /** The learned workflow `name` as the learning folder held it active at `commit` (a champion's text), or undefined when
+   *  it held none by that name. Absent: no champion serves. */
+  readonly champion?: (name: string, commit: string) => Promise<LearnedWorkflow | undefined>;
   readonly now?: () => number;
 }
 
 /** The claim's promotion ports: `folder`, the agent's learning folder where the run's place keeps it, a refit's revision
- *  written on it as a merge from the claim's seed (a workflow.json changed on main since is a conflict, never written over). */
-export function claimPromotion(deps: Omit<PromotionDeps, "commit"> & { readonly folder: () => LearningFolder }): PromotionDeps {
+ *  written on it as a merge from the claim's seed (a workflow.json changed on main since is a conflict, never written over),
+ *  and a champion read from it at its record's commit, cut of the server's secrets (`shown`) as the claim's lay is. */
+export function claimPromotion(deps: Omit<PromotionDeps, "commit" | "champion"> & { readonly folder: () => LearningFolder; readonly shown: () => Promise<Shown> }): PromotionDeps {
   const seed = deps.launch.learning?.seed;
   return {
     ...deps,
@@ -56,11 +66,12 @@ export function claimPromotion(deps: Omit<PromotionDeps, "commit"> & { readonly 
       try {
         const done = await learningCommit(folder.workspace, { kind: "merge", runId: id, reason, files, graded: {}, ...(seed ? { seed } : {}) });
         if (!done.ok) deps.log(`workflow-first: a refit could not be written (${done.reason})`);
-        return done.ok;
+        return done.ok ? done.commit : null;
       } finally {
         await folder.end();
       }
     },
+    champion: async (name, commit) => (await workflowsAt({ folder: deps.folder, shown: deps.shown }, commit)).find((one) => one.name === name),
   };
 }
 
@@ -75,18 +86,39 @@ export function replayLaid(launch: RunLaunch, laid: readonly LearnedWorkflow[]):
 }
 
 const iso = (ms: number) => new Date(ms).toISOString();
+/** The claim's seed as a record's `commit`: the learning commit the laid workflow's text was read from. */
+const seedOf = (deps: Pick<PromotionDeps, "launch">): { commit?: string } => (deps.launch.learning?.seed ? { commit: deps.launch.learning.seed } : {});
 const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
 
-/** The gate workflowFirstOf asks (its `promoted`): whether `workflow` at `digest` serves this run first. */
-export const promotionGate = (deps: PromotionDeps) => async (workflow: LearnedWorkflow, digest: string): Promise<boolean> => {
+/** The gate workflowFirstOf asks (its `promoted`): the workflow that serves this run first, when `workflow` (laid at
+ *  `digest`, the folder's revision) is the one, or its champion while that revision replays or is held (championOf, its
+ *  text read from its record's commit); undefined when none serves (the agent takes the run). */
+export const promotionGate = (deps: PromotionDeps) => async (workflow: LearnedWorkflow, digest: string): Promise<LearnedWorkflow | undefined> => {
   try {
-    return await promoted(deps, workflow, digest);
+    if (await promoted(deps, workflow, digest)) return workflow;
+    return await championFor(deps, workflow, digest);
   } catch (error) {
     // A promotion that could not be read or written leaves the run to its agent: never a workflow served unchecked.
     deps.log(`workflow-first: ${workflow.name}'s promotion could not be read (${(error as Error)?.message ?? error}); the agent takes this run`);
-    return false;
+    return undefined;
   }
 };
+
+/** The champion of `workflow` when it is not the laid revision at `digest`: its text at its record's commit (its digest
+ *  checked), still serving after its graded check (stillServing, with no refit: a refit written now would land over the
+ *  challenger on the folder's main). Undefined when there is none, it cannot be read, or its graded runs held it. */
+async function championFor(deps: PromotionDeps, workflow: LearnedWorkflow, digest: string): Promise<LearnedWorkflow | undefined> {
+  const champion = championOf(await promotionsOf(deps.store.settings, deps.agentId), workflow.name);
+  if (!champion || champion.digest === digest || !deps.champion) return undefined;
+  const text = champion.commit ? await deps.champion(workflow.name, champion.commit).catch(() => undefined) : undefined;
+  if (!text || workflowDigest(text) !== champion.digest) {
+    deps.log(`workflow-first: ${workflow.name}'s champion at ${champion.digest} could not be read from its learning commit; the agent takes this run`);
+    return undefined;
+  }
+  if (!(await stillServing({ ...deps, commit: undefined }, text, champion.digest, champion))) return undefined;
+  deps.log(`workflow-first: ${workflow.name}'s champion at ${champion.digest} serves this run while ${digest} is not promoted`);
+  return text;
+}
 
 async function promoted(deps: PromotionDeps, workflow: LearnedWorkflow, digest: string): Promise<boolean> {
   const { store, agentId, log } = deps;
@@ -94,13 +126,13 @@ async function promoted(deps: PromotionDeps, workflow: LearnedWorkflow, digest: 
   const record = promotionOf(await promotionsOf(store.settings, agentId), workflow.name, digest);
   if (record?.decided === "promote") return await stillServing(deps, workflow, digest, record);
   if (record?.decided === "hold") {
-    log(`workflow-first: ${workflow.name} at ${digest} is held (${record.reason}); the agent takes this run`);
+    log(`workflow-first: ${workflow.name} at ${digest} is held (${record.reason}); it does not serve this run`);
     return false;
   }
   if (record?.decided === "replaying") {
     const decided = await settle(deps, workflow, digest, record);
     if (!decided) {
-      log(`workflow-first: ${workflow.name} at ${digest} is replaying on ${plural(record.runs?.length ?? 0, "graded input")}; the agent takes this run`);
+      log(`workflow-first: ${workflow.name} at ${digest} is replaying on ${plural(record.runs?.length ?? 0, "graded input")}; it does not serve this run`);
       return false;
     }
     return decided.decided === "promote";
@@ -108,7 +140,7 @@ async function promoted(deps: PromotionDeps, workflow: LearnedWorkflow, digest: 
   const graded = await gradedInputs(deps, workflow);
   if (graded.length < REPLAY_MIN) {
     const reason = graded.length ? `${plural(graded.length, "graded input")} it fits, fewer than ${REPLAY_MIN}: promoted on its passing dry run` : `no graded input it fits: promoted on its passing dry run`;
-    const kept = await recordPromotion(store.settings, agentId, { workflow: workflow.name, digest, at: iso(now()), decided: "promote", source: "dry_run", reason }, (was) => was === undefined);
+    const kept = await recordPromotion(store.settings, agentId, { workflow: workflow.name, digest, at: iso(now()), decided: "promote", source: "dry_run", reason, ...seedOf(deps) }, (was) => was === undefined);
     if (kept.decided === "promote" && kept.source === "dry_run") log(`workflow-first: ${workflow.name} at ${digest}: ${kept.reason}`);
     return kept.decided === "promote";
   }
@@ -116,8 +148,8 @@ async function promoted(deps: PromotionDeps, workflow: LearnedWorkflow, digest: 
   // start each once.
   const runs: string[] = [];
   for (const one of graded) runs.push(await startReplay(deps, workflow, digest, one));
-  const kept = await recordPromotion(store.settings, agentId, { workflow: workflow.name, digest, at: iso(now()), decided: "replaying", source: "replay", reason: `replaying on the agent's last ${plural(graded.length, "graded input")} it fits`, runs }, (was) => was === undefined);
-  log(`workflow-first: ${workflow.name} at ${digest} is new: replaying it on the agent's last ${plural(graded.length, "graded input")} before it serves; the agent takes this run`);
+  const kept = await recordPromotion(store.settings, agentId, { workflow: workflow.name, digest, at: iso(now()), decided: "replaying", source: "replay", reason: `replaying on the agent's last ${plural(graded.length, "graded input")} it fits`, runs, ...seedOf(deps) }, (was) => was === undefined);
+  log(`workflow-first: ${workflow.name} at ${digest} is new: replaying it on the agent's last ${plural(graded.length, "graded input")} before it serves`);
   return kept.decided === "promote";
 }
 
@@ -235,6 +267,7 @@ async function settle(deps: PromotionDeps, workflow: LearnedWorkflow, digest: st
   const decided = await recordPromotion(store.settings, agentId, {
     workflow: workflow.name, digest, at: iso(now()), decided: ok ? "promote" : "hold", source: "replay", reason,
     replay: { ...score, of: read.rows.map((row) => row.of), cost_usd: read.cost }, ...(record.runs ? { runs: record.runs } : {}),
+    ...(record.commit ? { commit: record.commit } : seedOf(deps)),
   }, (was) => was?.decided === "replaying");
   if (decided.decided === "replaying") return undefined;
   log(`workflow-first: ${workflow.name} at ${digest} ${decided.decided === "promote" ? "promoted" : "held"}: ${decided.reason}`);
@@ -299,7 +332,7 @@ async function refitAndWrite(deps: PromotionDeps, workflow: LearnedWorkflow, dig
   const moved = refit.guards.map((one) => `${one.node} ${one.was} -> ${one.threshold}${one.fit ? " (fit)" : ""}`).join(", ");
   const reason = `refit ${workflow.name}'s guards over ${why} (${plural(rows.length, "row")}): ${moved}`;
   const landed = await deps.commit([{ path: `workflows/${workflow.name}/workflow.json`, text: refit.text }], reason, `refit-${digest}-${next}`);
-  if (!landed) {
+  if (landed === null) {
     deps.log(`workflow-first: ${workflow.name}'s refit did not land on its learning folder; it keeps its thresholds`);
     return false;
   }
@@ -308,7 +341,7 @@ async function refitAndWrite(deps: PromotionDeps, workflow: LearnedWorkflow, dig
     workflow: workflow.name, digest: next, at: iso(now()), decided: "promote", source: "refit",
     reason: `${reason}: the workflow ${(refit.wf_acc * 100).toFixed(1)}%, the agent ${(refit.agent_acc * 100).toFixed(1)}% on those rows`,
     replay: { n: refit.n, agree, agent_acc: refit.agent_acc, wf_acc: refit.wf_acc, delta: refit.delta, handed_back: refit.handed_back, of: replayed.map((row) => row.of) },
-    refit: { from: digest, guards: refit.guards },
+    refit: { from: digest, guards: refit.guards }, commit: landed,
   }, (was) => was === undefined);
   deps.log(`workflow-first: ${reason}; the new revision (${next}) serves from the next run`);
   return true;

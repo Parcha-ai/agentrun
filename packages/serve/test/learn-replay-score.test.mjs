@@ -4,7 +4,7 @@
 // `both` guard only on 30 rows with 5 wrong.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { answerCorrect, clears, escalates, putGrade, gradesOf, promotionOf, recordOnly, recordPromotion, promotionsOf, replayScore, sameAnswer, thresholdsOf } from "../dist/learn/promote.js";
+import { answerCorrect, championOf, clears, escalates, putGrade, servingOf, gradesOf, promotionOf, recordOnly, recordPromotion, promotionsOf, replayScore, sameAnswer, thresholdsOf } from "../dist/learn/promote.js";
 import { FIT_MIN_ROWS, fitLogistic, refitGuards } from "../dist/learn/refit.js";
 
 const guard = (node, p, threshold = 0) => ({ node, signal: "self", self: p ?? undefined, p, threshold, escalated: false });
@@ -20,6 +20,15 @@ test("answers are the same as JSON values; a replay's answer takes the agent's g
   assert.equal(answerCorrect('{"mcc":"5812","why":"x"}', { answer: "zzz", correct: false, expected: { mcc: "5812" } }), true, "expected fields decide");
   assert.equal(answerCorrect('{"mcc":"5813"}', { answer: '{"mcc":"5812"}', correct: true, expected: { mcc: "5812" } }), false);
   assert.equal(answerCorrect(null, { answer: "5", correct: true }), false);
+});
+
+test("a workflow whose output is one text field answers that text (learnedOutput): its expected field reads the bare answer", () => {
+  // A workflow with output {mcc} is served as "5999", not {"mcc":"5999"}: the one expected field is the answer itself.
+  assert.equal(answerCorrect("5812", { answer: '{"mcc":"5812","why":"x"}', correct: true, expected: { mcc: "5812" } }), true);
+  assert.equal(answerCorrect(" 5812\n", { answer: "x", correct: false, expected: { mcc: "5812" } }), true, "trimmed");
+  assert.equal(answerCorrect("5999", { answer: "x", correct: true, expected: { mcc: "5812" } }), false);
+  assert.equal(answerCorrect("5812", { answer: "x", correct: true, expected: { mcc: "5812", tier: "low" } }), false, "two fields: a bare text holds neither");
+  assert.equal(answerCorrect("[\"5812\"]", { answer: "x", correct: true, expected: { mcc: "5812" } }), false);
 });
 
 test("a hand-back in replay is the agent's recorded answer, never a failure: escalations do not lower the workflow's accuracy", () => {
@@ -81,6 +90,24 @@ test("refit: each guard's cheapest threshold that keeps the bar; a too-high guar
   assert.deepEqual(same.guards, []);
 });
 
+test("refit raises the guard that catches the wrong answers, not the first one: never a hand-back of every input when one step's guard does it", () => {
+  // The walk's case: read's p is 0.9 on every row (never wrong); pick's p is 0.3 on the two rows it gets wrong, else 0.9.
+  // Taking the steps in order, read alone could only meet the bar at 0.999 (every row back to the agent), and pick then
+  // fell to the bottom: the refit served a workflow that hands back everything. Both start under every p they see.
+  const text = JSON.stringify({ ...FLOW, root: { ...FLOW.root, steps: [{ ...FLOW.root.steps[0], guard: { signal: "jev", threshold: 0.5 } }, { ...FLOW.root.steps[1], guard: { signal: "jev", threshold: 0.2 } }] } });
+  const rows = [];
+  for (let i = 0; i < 8; i++) {
+    const wrong = i < 2;
+    rows.push({ guards: [{ node: "read", signal: "jev", jev: 0.9, p: 0.9, threshold: 0.5, escalated: false }, { node: "pick", signal: "jev", jev: wrong ? 0.3 : 0.9, p: wrong ? 0.3 : 0.9, threshold: 0.2, escalated: false }], answered: true, wfCorrect: !wrong, agentCorrect: 1 });
+  }
+  const refit = refitGuards(text, rows, "2026-11-13T00:00:00.000Z");
+  const by = Object.fromEntries(refit.guards.map((one) => [one.node, one]));
+  assert.equal(by.pick.threshold, 0.9, "pick goes up past its wrong rows' 0.3");
+  assert.equal(by.read.threshold, 0.001, "read never hurt: it comes down");
+  assert.equal(refit.handed_back, 2, "only the two wrong rows go back");
+  assert.equal(refit.delta, 0);
+});
+
 test("refit fits a `both` guard's logistic only on 30 rows with 5 wrong, else keeps it", () => {
   const text = JSON.stringify(FLOW);
   const rowsOf = (n, wrongEvery) => Array.from({ length: n }, (_, i) => {
@@ -116,4 +143,34 @@ test("grades and promotion records over the settings table: a run's newer grade 
   assert.deepEqual(second.runs, ["x"], "the first claim's replay stands");
   await recordPromotion(settings, "a", { ...replaying, decided: "promote" }, (now) => now?.decided === "replaying");
   assert.equal(promotionOf(await promotionsOf(settings, "a"), "w", "d1").decided, "promote");
+});
+
+test("champion/challenger: the digest promoted last serves while a newer revision replays or is held; its own graded hold stops it; a promoted challenger takes over", () => {
+  const rec = (digest, decided, source = "replay", extra = {}) => ({ workflow: "answer", digest, at: "t", decided, source, reason: "r", ...extra });
+  const champion = rec("c1", "promote", "dry_run", { commit: "s1" });
+  // A wrong served grade asked for a revision: c2 replays. The champion serves; c2 is replaying.
+  let records = [champion, rec("c2", "replaying")];
+  assert.equal(championOf(records, "answer"), champion);
+  assert.deepEqual(servingOf(records), [{ workflow: "answer", digest: "c1", replaying: "c2" }]);
+  // The champion's graded check marks it again (a newer record of the same digest): still the champion.
+  const marked = { ...champion, checked: 20 };
+  records = [champion, rec("c2", "replaying"), marked];
+  assert.equal(championOf(records, "answer"), marked);
+  assert.deepEqual(servingOf(records), [{ workflow: "answer", digest: "c1", replaying: "c2" }]);
+  // c2's replay holds it: the champion keeps serving, nothing replays.
+  records = [champion, rec("c2", "replaying"), rec("c2", "hold")];
+  assert.equal(championOf(records, "answer")?.digest, "c1");
+  assert.deepEqual(servingOf(records), [{ workflow: "answer", digest: "c1", replaying: null }]);
+  // c2's replay promotes it: c2 is the champion from here on, even when c1 is marked checked after.
+  records = [champion, rec("c2", "replaying"), rec("c2", "promote"), marked];
+  assert.equal(championOf(records, "answer")?.digest, "c2");
+  assert.deepEqual(servingOf(records), [{ workflow: "answer", digest: "c2", replaying: null }]);
+  // The champion's own graded runs hold it (source graded): no champion; never the one before it.
+  records = [champion, rec("c2", "replaying"), rec("c2", "promote"), rec("c2", "hold", "graded")];
+  assert.equal(championOf(records, "answer"), undefined);
+  assert.deepEqual(servingOf(records), [{ workflow: "answer", digest: null, replaying: null }]);
+  // A refit's new revision is promoted on its rows: the champion. Another workflow's records are its own.
+  records = [champion, rec("c3", "promote", "refit", { refit: { from: "c1", guards: [] } }), { ...rec("x1", "replaying"), workflow: "other" }];
+  assert.equal(championOf(records, "answer")?.digest, "c3");
+  assert.deepEqual(servingOf(records), [{ workflow: "answer", digest: "c3", replaying: null }, { workflow: "other", digest: null, replaying: "x1" }]);
 });
