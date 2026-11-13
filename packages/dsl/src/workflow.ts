@@ -3272,6 +3272,8 @@ function checkDecisionProviders(node: WorkflowNode, deps: WorkflowDeps, workflow
   if (node.node === "sift") asked.push({ choice: node, types: questionsOf(node.out), count: null, what: `sift node "${label}"` });
   if (node.node === "pick") asked.push({ choice: node, types: ["choice"], count: 1, what: `pick node "${label}"` });
   if (node.node === "route" && !routesByValue(node)) asked.push({ choice: node as RouteByJudgmentNode, types: ["choice"], count: 1, what: `route node "${label}"` });
+  // A node's `verify` is asked of the host's default decision provider (no provider of its own): a host without it refuses the node.
+  if ("verify" in node && node.verify) { const types = questionsOf(node.verify.out); asked.push({ choice: {} as DecisionChoice, types, count: types.length, what: `${node.node} node "${label}" (verify)` }); }
   for (const pred of [node.node === "loop" ? node.until : undefined, node.node === "escalate" ? node.when : undefined]) {
     if ((pred as AskPredicate | undefined)?.predicate === "ask") asked.push({ choice: pred as AskPredicate, types: ["noul"], count: 1, what: `${node.node} node "${label}" (ask predicate)` });
   }

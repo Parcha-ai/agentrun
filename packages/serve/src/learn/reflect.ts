@@ -6,7 +6,7 @@
 import { createHash } from "node:crypto";
 import { CAPS } from "./check.js";
 import { INDEX_FILE, INDEX_LINES } from "./notes.js";
-import { LEARNED_MCP_TOOL, SKILL_NAME } from "./skills.js";
+import { type DraftDecisions, draftDecisionProviders, LEARNED_MCP_TOOL, SKILL_NAME } from "./skills.js";
 
 /** Control and invisible characters: none may reach the prompt through a value the host puts in it. */
 const UNSEEN = /[\p{Cc}\p{Cf}]/u;
@@ -35,10 +35,14 @@ const printable = (tool: string): boolean => TOOL_NAME.test(tool) || LEARNED_MCP
  *  summary), said under the ask, one line each (at most DESCRIBED_MAX characters, unseen characters and line breaks made
  *  spaces); one for a tool not in `tools` is left out. Nothing is described unless a draft is asked for. `workflows`, false
  *  for a run of a revision that says `learning: "notes"`: the prompt asks for notes and a skill alone, says to keep no
- *  workflow draft, and asks for none (`draftFor` and `described` are not said). */
-export function reflectPrompt(options: { dir: string; active: number; tools?: readonly string[]; draftFor?: readonly string[]; described?: readonly { readonly name: string; readonly does: string }[]; workflows?: boolean; handedBack?: string }): string {
-  const { dir, active, tools = [], draftFor = [], described = [], workflows = true, handedBack } = options;
+ *  workflow draft, and asks for none (`draftFor` and `described` are not said). `decisions`, the run's decision providers
+ *  (skills.ts DraftDecisions, the one the draft check reads): with a provider it has (draftDecisionProviders), a draft may
+ *  use judge, pick and sift nodes; without, the prompt bans them as it always did. */
+export function reflectPrompt(options: { dir: string; active: number; tools?: readonly string[]; draftFor?: readonly string[]; described?: readonly { readonly name: string; readonly does: string }[]; workflows?: boolean; decisions?: DraftDecisions; handedBack?: string; revise?: ReviseAsk }): string {
+  const { dir, active, tools = [], draftFor = [], described = [], workflows = true, decisions, handedBack, revise } = options;
   if (handedBack !== undefined && !SKILL_NAME.test(handedBack)) throw new Error("the workflow that handed the run back must be a workflow's name");
+  if (revise !== undefined && !SKILL_NAME.test(revise.workflow)) throw new Error("the workflow asked to be revised must be a workflow's name");
+  const judges = draftDecisionProviders(decisions).length > 0;
   if (typeof dir !== "string" || dir === "" || dir.startsWith("/") || UNSEEN.test(dir)) throw new Error("the directory must be a path relative to the run's workspace, with no control or unseen characters");
   if (!Number.isSafeInteger(active) || active < 0) throw new Error("the count of active notes must be a whole number, 0 or more");
   if (!Array.isArray(tools) || tools.some((tool) => typeof tool !== "string" || !printable(tool))) throw new Error("each tool must be a tool's name");
@@ -110,6 +114,7 @@ export function reflectPrompt(options: { dir: string; active: number; tools?: re
       "on later runs, before you: it answers alone, or ends on an `escalate` node and hands the case back to you with what it found.",
       "Give each of its model nodes `\"tier\": \"fast\"`; a step that needs your own judgment names no tier, and runs on your model.",
       ...(handedBack ? [handbackAsk(handedBack)] : []),
+      ...(revise ? [reviseAsk(revise)] : []),
       ...(draftFor.length ? [draftAsk(draftFor), ...describedLines(described, tools)] : []),
     ] : []),
     "",
@@ -128,7 +133,9 @@ export function reflectPrompt(options: { dir: string; active: number; tools?: re
     "",
     ...(workflows ? [
       "A workflow draft does the job as one workflow DSL document: front matter with one line that says what it does and",
-      "when to use it, then the JSON. It uses model and tool-call nodes only: no judge, pick or sift node, no code node, no shell or",
+      "when to use it, then the JSON. " + (judges
+        ? "It uses model and tool-call nodes, and may use judge (answers a question about a value), pick (chooses one of several options) and sift (keeps the items that pass a test) nodes, which run on this run's decision provider under its cap and tool policy; no code node, no shell or"
+        : "It uses model and tool-call nodes only: no judge, pick or sift node, no code node, no shell or"),
       `executor call. Its model nodes name no tool. ${tools.length ? `Its call nodes may run only these tools: ${tools.join(", ")}.` : "It has no call node on a tool."} At most ${CAPS.file} bytes of JSON.`,
       "To change a draft you were given, give it again whole under its name.",
       "Its schemas are declared once under `schemas`, and `input` and `output` name one each by `schemaId`, never a schema",
@@ -164,6 +171,19 @@ const describedLines = (described: readonly { readonly name: string; readonly do
 /** The one line that asks for a revision of the learned workflow that ran first on this run and handed it back. */
 const handbackAsk = (name: string): string =>
   `Your learned workflow \`${name}\` ran first on this run and handed it back to you. If a change to it would have let it finish this case, give \`${name}\` again whole under its name with that change; if handing this case back was right, keep it as it is.`;
+
+/** A learned workflow the money rule stopped from running first (runner/workflow-first.ts costLineOf): its name, and its
+ *  cost a run over its last `runs` served runs against the agent's by hand, in dollars. */
+export interface ReviseAsk {
+  readonly workflow: string;
+  readonly served_usd: number;
+  readonly by_hand_usd: number;
+  readonly runs: number;
+}
+
+/** The one line that asks for a revision of the learned workflow the money rule stopped from running first. */
+const reviseAsk = ({ workflow, served_usd, by_hand_usd, runs }: ReviseAsk): string =>
+  `Your learned workflow \`${workflow}\` no longer runs first: over its last ${runs} runs it served it cost $${served_usd} a run, against $${by_hand_usd} a run by hand, so you took this run from the start. To have it run first again, give \`${workflow}\` again whole under its name, changed to finish more cases alone or to spend less on each; a new version runs first again and is held to the same line.`;
 
 /** The one line that asks for a workflow draft of a skill's job, by the skill's name. */
 const draftAsk = (names: readonly string[]): string => {

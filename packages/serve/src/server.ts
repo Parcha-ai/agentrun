@@ -37,6 +37,7 @@ import type { ImportAnswer, ImportTask } from "./import-worker.js";
 import { answerStoreCall, type StoreCall } from "./import-proxy.js";
 import { gradeModelOf, LEARNING_LABEL, learningBudgetOf, type LearningMode, learningOf, learnsOf, seedOf } from "./learning.js";
 import { agentLearning, learningLog, learningNotes, noteBody, pendingCount, promotable, readNote, secretsShown, sendNote, statusesOf, writeNote } from "./learning-routes.js";
+import type { DraftDecisions } from "./learn/skills.js";
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
 import { openapiDocument, servedOpenapi, UNSUPPORTED } from "./openapi.js";
 import { boxAvailability, boxesLine, defaultPlaceOf, NEW_AGENT_TOOLS, newAgentPlace, noBoxReason, type Place, placesOf, resolvePlace } from "./place.js";
@@ -68,7 +69,7 @@ import { watchRun } from "./live/stream.js";
 import { stats as statsOverStore } from "./store-reads/stats.js";
 import { analytics as analyticsOverStore } from "./store-reads/analytics.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { type AgenticBody, type McpCredentialMark, type NewRevision, openStore, type RevisionPlace, type RunRow, type Store, StoreOwned, storeTarget, type WorkflowBody } from "./store/index.js";
+import { type AgenticBody, type McpCredentialMark, type NewRevision, openStore, type RevisionPlace, type RunMcpAuth, type RunRow, sealRunMcpAuth, type Store, StoreOwned, storeTarget, type WorkflowBody } from "./store/index.js";
 import { answerOf, logged } from "./agents.js";
 import { FINAL_STATES } from "./store/store.js";
 import { runModelRef } from "./model.js";
@@ -88,12 +89,13 @@ import { bootSealKey, withSealKey } from "./seal-key.js";
 import { ServerLockHeldError, takeServerLock } from "./server-lock.js";
 import { DRAIN_TIMEOUT } from "./runner/beside.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
-import { agentLearningOverStore, learningCountsOverStore, learningSpendOverStore } from "./store-reads/learning.js";
+import { agentCostOverStore, agentLearningOverStore, learningCountsOverStore, learningSpendOverStore } from "./store-reads/learning.js";
+import { costCsv, learningCostQuery } from "./learning-cost.js";
 import { keyOf, SEAL_KEY_ENV, TOOL_FIELDS } from "./tool-keys.js";
 import { toolKeysOverStore } from "./tool-keys-store.js";
 import { SIGN_INS_DIR, vendorsOver } from "./sign-ins.js";
 import { signInsOverStore } from "./sign-ins-store.js";
-import { MCP_AUTH_TYPES, type McpTool } from "./mcp-probe.js";
+import { MCP_AUTH_TYPES, mcpAuthOf, type McpTool } from "./mcp-probe.js";
 import { mcpServersOverStore } from "./mcp-servers-store.js";
 import { privateHostsRoute } from "./mcp-private-hosts.js";
 import { metaToolOf } from "./mcp-meta.js";
@@ -127,7 +129,7 @@ import { COMPUTER_ROUTES, computerHoldOf, computerRoute } from "./computer-route
 import { PROVIDERS as COMPUTER_PROVIDERS, SETTING_KINDS, servingRefusals } from "@parcha/agentrun-computer";
 import { capabilityToolDefs, hostToolDefs } from "@parcha/agentrun-kernel/kernel";
 import { archilRoute, createArchilRoutes, liveRunsOnDisk } from "./archil-routes.js";
-import { agentDiskOf, ARCHIL_DISK_ID, inArchilMode } from "./archil-settings.js";
+import { agentDiskOf, ARCHIL_DISK_ID, archilSettingsFromEnv, inArchilMode } from "./archil-settings.js";
 import { computerOfPlace, type ComputerKind, type ComputerSetting, type PlaceView } from "./computer-setting.js";
 import { computerCapabilities, type ComputerRoutes, createComputerRoutes, folderModeOf, hostCommandRefusals, type KindRegistry, settingsComputerRoute } from "./computers.js";
 import { FAUX_VIEW_PATH, type FauxComputers, fauxComputers } from "./faux-computers.js";
@@ -309,6 +311,10 @@ export type ServeOptions = {
   githubMcpOrigin?: string;
   /** A test's seam: how long a hook's body has to arrive, whole (default 30 s: push-handler.ts HOOK_BODY_MS). */
   hookBodyMs?: number;
+  /** A test's seam: awaited by a message (a person's, or a trigger's firing) once its checks have passed and just before its
+   *  command row is written, with the run's id and the message's text, so a test can hold a message at the run's door while
+   *  the run's state changes under it (runs-over-store.ts message). */
+  beforeSubmit?: (runId: string, content: string) => Promise<void> | void;
   /** A test's seam: the folder the template packages are read from, in place of the package's own (templates.ts). */
   templates?: string;
   /** The waits before each try again of a webhook delivery (default 5 s, 5 min, 30 min, 2 h, 5 h and 10 h: webhooks.ts RETRY_MS). */
@@ -476,6 +482,7 @@ export const ROUTES: readonly Route[] = [
   // Answered before routing (mcp.ts), with the token only: listed here for the document.
   { method: "POST", pattern: /^\/mcp$/, name: "callMcp" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning$/, name: "getAgentLearning" },
+  { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/cost$/, name: "getLearningCost" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/notes$/, name: "listLearningNotes" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/log$/, name: "listLearningLog" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/files\/([^/]+)$/, name: "readLearningFile" },
@@ -749,6 +756,9 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   dockerLimitsOf(process.env);
   // The Docker host's addresses an operator names (workspace/computer-deps.ts): a bad entry stops the start, in words.
   dockerHostAddressesOf(process.env);
+  // The Archil settings an operator sets (archil-settings.ts ARCHIL_SETTINGS_ENV): one of the region and S3 URL without the
+  // other, or a value the PUT would refuse, stops the start, in words naming each variable.
+  archilSettingsFromEnv(process.env);
   const boxAllow = boxAllowOf(process.env);
   const maxRuns = maxRunsOf(process.env, options.maxRuns);
   const learning = learningOf(process.env, options.learning);
@@ -1028,7 +1038,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // probe Docker: a provider whose program is missing is not ready, and its words say what to install.
   const hostWhy = hostCommandRefusals(COMPUTER_PROVIDERS, process.env.PATH);
   const computersOf = (): ComputerRoutes => (computerRoutes ??= createComputerRoutes({
-    store, sealKey, tools: kindTools, mode: folderModeOf(store), env: process.env,
+    store, sealKey, tools: kindTools, mode: folderModeOf(store, process.env), env: process.env,
     ...(options.faux
       // --faux's providers stand in for every vendor's, a local one's daemon included.
       ? { kinds: fauxOf().kinds, factories: fauxOf().factories, keyTable: fauxOf().keyTable }
@@ -1048,7 +1058,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  a computer setting, in place of the box check; whether Docker answers here is dockerAnswers', and whether a
    *  provider's program is on this machine is hostWhy's, read at the start. */
   /** The server's folder mode now: 2 when the owner's Archil settings are saved (the run's folder on the disk), else 1. */
-  const modeNow = async (): Promise<1 | 2> => ((await folderModeOf(store)()) === "disk" ? 2 : 1);
+  const modeNow = async (): Promise<1 | 2> => ((await folderModeOf(store, process.env)()) === "disk" ? 2 : 1);
   const computerReady = async (setting: { kind: string; provider?: string; image?: string; gpu?: { type: string; count: number } }) =>
     computerReadiness(setting, await modeNow(), claimKinds({}), keyReader(store, sealKey, own(withSecrets(process.env, "own"))), dockerAnswers, boxAllow, (provider) => (Object.hasOwn(hostWhy, provider) ? hostWhy[provider] : undefined));
   /** Where a run of an agent with computer `setting` has its shell here now (resolve-computer.ts runShellOf, in the
@@ -1193,7 +1203,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         await archil.checkLaunchDisk(named);
         return { diskId: named, kind: "launch" };
       }
-      if (!(await inArchilMode(store))) return undefined;
+      if (!(await inArchilMode(store, process.env))) return undefined;
       const own = await agentDiskOf(store, agentId);
       if (own?.removing) throw new ApiError("agent_not_runnable", `The agent ${agentId}'s Archil disk ${own.diskId} is being removed (DELETE /v2/agents/${agentId}/archil): start the run once that is done, and it gets a new disk.`);
       return own ? { diskId: own.diskId, kind: "agent" } : undefined;
@@ -1256,7 +1266,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // (liveViewerLink, the one the runner's browser tool wrote under its claim), opened with the server's seal key. The
   // timeline route keeps its own stub (store-reads journal + SSE) until E2c's timeline lands.
   const runReadsDeps: RunReadsDeps = {
-    runWorkspace: (_store, runId) => serverRunWorkspace(store, runId, { data, sealKey }),
+    runWorkspace: (_store, runId) => serverRunWorkspace(store, runId, { data, sealKey, env: process.env }),
     env,
     runFacts: (_store, runId) => factsOverStore(store, runId, viewDepsFor(ownOriginOf())),
     withheld: (_store, runId) => withheldOverStore(store, runId, viewDepsFor(ownOriginOf())),
@@ -1278,6 +1288,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     runView: (forStore, runId) => viewOverStore(forStore, runId, viewDepsFor(ownOriginOf())),
   });
   const triggerDeps: TriggerTargetDeps = {
+    ...(options.beforeSubmit ? { beforeSubmit: options.beforeSubmit } : {}),
     start: startDeps,
     getAgent: async (agentId: string) => (await getAgent(store, agentId)) ?? undefined,
     needAgent,
@@ -1532,7 +1543,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   /** The tools a learned draft of agent `id` may name, as a run's merge reads them (learning-run.ts draftTools): its
    *  current revision's, those the gate allows under the server's settings and the agent's own. `entry`: the agent as the
    *  caller already read it, so what it checks and what it copies are one revision's (a promotion). */
-  async function learnedDraftToolsOf(id: string, entry?: AgentEntry): Promise<{ tools: string[]; gated: Record<string, string>; deniedBy: Record<string, "agent" | "server" | "default">; ask?: DraftAsk }> {
+  async function learnedDraftToolsOf(id: string, entry?: AgentEntry): Promise<{ tools: string[]; gated: Record<string, string>; deniedBy: Record<string, "agent" | "server" | "default">; ask?: DraftAsk; decisions?: DraftDecisions }> {
     const revision = (entry ?? (await needAgent(id))).revision;
     if (revision?.kind !== "agentic") return { tools: [], gated: {}, deniedBy: {} };
     const [{ learnedDraftTools, mcpGrantsListed }, { permissionFrom }, { learnedAskFits }] = await Promise.all([import("./tools.js"), import("./tool-gate.js"), import("./learned-workflow.js")]);
@@ -1546,7 +1557,21 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // `deniedBy`: where each deny was set (the agent's tool settings, the server's), which a refused draft's words name.
     const { tools, gated, deniedBy, asked } = learnedDraftTools(mcpGrantsListed(body.tools ?? [], (name) => listed.get(name) ?? []), (name) => gate(name).permission, undefined, (name) => gate(name).from, { mcp: true, approvers: await readApprovers(store.settings) });
     // #2424's card rule (learnedAskFits): a restored draft whose ask-set MCP tools would not all show is refused.
-    return { tools, gated, deniedBy, ask: { asked, fits: learnedAskFits } };
+    const ask = { asked, fits: learnedAskFits };
+    // A draft's decision nodes (LS-07), as a run's learning end checks them: on this server's decision providers (its
+    // keys, saved ones among them: env), each held to the gate by its bare id; deny alone refuses one.
+    const [{ decisionProvidersIn }, { DECISION_PROVIDER_KEYS }] = await Promise.all([import("./decisions.js"), import("./tool-plane.js")]);
+    const providers = await decisionProvidersIn(env);
+    if (!providers) return { tools, gated, deniedBy, ask };
+    const decided: Record<string, string> = {};
+    const decisionDeniedBy: Record<string, "agent" | "server" | "default"> = {};
+    for (const provider of DECISION_PROVIDER_KEYS) {
+      const { permission, from } = gate(provider);
+      if (permission === "allow") continue;
+      decided[provider] = permission;
+      if (permission === "deny") decisionDeniedBy[provider] = from as "agent" | "server" | "default";
+    }
+    return { tools, gated, deniedBy, ask, decisions: { providers: providers.providers, default: providers.default, gated: decided, deniedBy: decisionDeniedBy } };
   }
   async function needAgent(id: string): Promise<AgentEntry> {
     const entry = ID.test(id) ? await agents.get(id) : null;
@@ -1836,9 +1861,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     }
     // A pinned send whose destination parameter was not given is denied, never let go anywhere: said, by its gate name.
     const unpinned: InputIssue[] = made.unpinned.map(({ tool, parameters: named }) => ({ field: `pins.${tool}`, reason: NOT_SET_UP, message: `${tool}'s arguments are fixed by ${named.map((one) => `the ${one} parameter`).join(" and ")}, which was not given, so the agent was made with ${tool} set to deny: it can't call it at all. Apply again with ${named.join(" and ")} set to let it.` }));
-    // A GitHub tool the package grants that Connect GitHub's App may not use (its manifest asks for less), where the github
-    // MCP server runs on the App's tokens: said now, before a run's first call is refused (template-github-permissions.ts).
-    const appShort = appPermissionWarnings({ name: pkg.name, mcp: saved }, (server) => mcpMeta.get(server)?.auth === "github_app");
+    // A GitHub tool the package grants that an installation of Connect GitHub's App does not hold the permission for (read
+    // from GitHub, never assumed), where the github MCP server runs on the App's tokens: said now, before a run's first
+    // call is refused; or that the check could not be made (template-github-permissions.ts).
+    const appShort = await appPermissionWarnings({ name: pkg.name, mcp: saved }, (server) => mcpMeta.get(server)?.auth === "github_app", () => githubConnect.installationPermissions(stopping.signal));
     // A webhook trigger's secret is in no apply answer: each one's warning sends the person to the console for it.
     const hooks = made.triggers.flatMap((trigger, i) => (isObject(trigger.source) && trigger.source.kind === "webhook" ? [templateTriggerSecret(i)] : []));
     // Each github trigger: what it runs on, when made (a note, never a lack); skipped, what to do about it.
@@ -1898,10 +1924,35 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  at the public URL or the server's own address. */
   const linkOrigin = (req: IncomingMessage): string => (options.publicUrl ?? (req.headers.host ? ownOrigin(req) : url)).replace(/\/+$/, "");
 
+  /** A run body's `mcp_auth` taken out of it, before anything else reads the body: the credentials a run's caller hands
+   *  its per_run MCP servers for this run alone (mcp-probe.ts mcpAuthOf). They never reach the run's saved body, its
+   *  timeline, an idempotency fingerprint (a retry with a fresh credential replays its first answer) or a log: only the
+   *  seal `sealer` makes, which seals them for the run's id into its launch row (store/seal.ts sealRunMcpAuth), bound to
+   *  each server's origin then. The request calls `sealer` only for new work, inside its idempotent work: there each
+   *  entry must name a saved per_run server, else 422, nothing written. A retry its key already answered replays that
+   *  answer even when the server has since changed or gone, since it does no new work. */
+  function handedMcpAuth(body: Json): { body: Json; sealer: () => Promise<((runId: string) => Uint8Array) | undefined> } {
+    if (body.mcp_auth === undefined) return { body, sealer: async () => undefined };
+    const { mcp_auth, ...rest } = body;
+    const sealer = async () => {
+      const issues: InputIssue[] = [];
+      const handed = mcpAuthOf(mcp_auth, issues);
+      const auth: Record<string, RunMcpAuth[string]> = {};
+      for (const [server, headers] of Object.entries(handed ?? {})) {
+        const row = await store.mcp.server(server);
+        if (row?.auth !== "per_run") issues.push({ field: `mcp_auth.${server}`, reason: "not_an_option", message: row ? `The MCP server ${server} keeps its own credential (auth ${row.auth}): only a per_run server takes one from a run.` : `No MCP server ${server} is saved here.` });
+        else auth[server] = { headers, origin: new URL(row.url).origin };
+      }
+      if (issues.length) throw invalid(issues);
+      return (runId: string) => sealRunMcpAuth(sealKey, runId, auth);
+    };
+    return { body: rest, sealer };
+  }
+
   async function createRun(req: IncomingMessage, agentId: string) {
     const entry = await needAgent(agentId);
     if (entry.agent.archivedAt) throw new ApiError("agent_not_runnable", `The agent ${agentId} is archived: unarchive it to run it.`, { details: { archived_at: new Date(entry.agent.archivedAt).toISOString() } });
-    const body = await bodyOf(req);
+    const { body, sealer } = handedMcpAuth(await bodyOf(req));
     return idempotent(req, `/agents/${agentId}/runs`, body, async (origin) => {
       // A run the store started under this key, though no answer was kept (its server went down first): that run, as it is now.
       const first = origin && (await agents.request(() => agents.store.runOfOrigin(origin.key)));
@@ -1910,7 +1961,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const headers: Record<string, string> = { location: `/v2/runs/${first.runId}`, "idempotent-replayed": "true" };
         return { status: 202, body: await viewOverStore(store, first.runId, viewDepsFor(linkOrigin(req))), headers };
       }
-      const run = await startRunOf(entry, body, { ...(origin ? { origin } : {}) });
+      const seal = await sealer();
+      const run = await startRunOf(entry, body, { ...(origin ? { origin } : {}), ...(seal ? { sealed: seal } : {}) });
       // Its view from the store: the run and its launch were inserted in one transaction, so the view reads it whole.
       return { status: 202, body: await viewOverStore(store, run.id, viewDepsFor(linkOrigin(req))), headers: { location: `/v2/runs/${run.id}` } };
     });
@@ -1922,7 +1974,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  Its first run makes the agent, a version's first run its revision; a later run of the version reuses both
    *  (runs-over-store startInline). The answer is POST /agents/{agent_id}/runs' own: 202 and the run. */
   async function createInlineRun(req: IncomingMessage) {
-    const body = await bodyOf(req);
+    const { body, sealer } = handedMcpAuth(await bodyOf(req));
     const { external, definition, skills, note, revision: pinned, ...run } = body;
     const given = { definition, ...(skills !== undefined ? { skills } : {}), ...(note !== undefined ? { note } : {}) };
     const issues: InputIssue[] = [
@@ -1954,7 +2006,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const headers: Record<string, string> = { location: `/v2/runs/${first.runId}`, "idempotent-replayed": "true" };
         return { status: 202, body: await viewOverStore(store, first.runId, viewDepsFor(linkOrigin(req))), headers };
       }
-      const started = await startInline(store, startDeps, inline, run, { ...(origin ? { origin } : {}) });
+      const seal = await sealer();
+      const started = await startInline(store, startDeps, inline, run, { ...(origin ? { origin } : {}), ...(seal ? { sealed: seal } : {}) });
       return { status: 202, body: await viewOverStore(store, started.id, viewDepsFor(linkOrigin(req))), headers: { location: `/v2/runs/${started.id}` } };
     });
   }
@@ -2675,14 +2728,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "sendMessage": {
         const run = await needRun(id);
         if (run.kind === "workflow") throw unsupported("messages.steer_workflow_runs", "A workflow run takes no messages here: its workflow runs to its end, or a cancel ends it.");
-        const body = await bodyOf(req);
+        const { body, sealer } = handedMcpAuth(await bodyOf(req));
         const answer = await idempotent(req, `/runs/${id}/messages`, body, async () => {
+          const seal = await sealer();
           const extra = unknownFields(body, ["content"]);
           if (extra.length) throw invalid(extra);
           const content = body.content;
           if (typeof content !== "string" || !/\S/.test(content)) throw invalid([{ field: "content", reason: content === undefined ? "missing" : "wrong_type", message: "content is a non-empty string" }]);
           if (content.length > MAX_MESSAGE) throw invalid([{ field: "content", reason: "too_long", message: `content is at most ${MAX_MESSAGE} characters` }]);
-          const { mode, messageId } = await message(store, run, content);
+          // Its mcp_auth replaces the run's handed credentials in the steer's own write, so the turn it starts uses them.
+          const { mode, messageId } = await message(store, run, content, { ...(seal ? { launchSealed: seal(run.id) } : {}), ...(options.beforeSubmit ? { beforeSubmit: options.beforeSubmit } : {}) });
           // The run's state after the command row is written (the run view): the runner applies the steer; the client polls.
           const { status, state } = await runStatusState(run.id);
           return { status: 202, body: { run_id: run.id, message_id: messageId, mode, status, state, poll_after_ms: 1000 } };
@@ -3049,6 +3104,20 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // launch, journal and learning end.
         const { counts, impact, notes } = await agentLearningOverStore(store, id);
         return send(res, 200, await agentLearning(data, id, await learningShown(id), counts, impact, notes));
+      }
+      case "getLearningCost": {
+        await needAgent(id);
+        // The agent's cost per run over the one store (agentCostOverStore): each ended run's figures and path, aggregates only.
+        const { limit, csv } = learningCostQuery(url);
+        const read = await agentCostOverStore(store, id, limit);
+        // Each workflow's name as the other learning reads show it: one that holds a secret or a sign-in's value is cut.
+        const shown = await learningShown(id);
+        const cost = { ...read, runs: read.runs.map((run) => (run.workflow === null ? run : { ...run, workflow: shown.name(run.workflow) })), workflows: read.workflows.map((one) => ({ ...one, workflow: shown.name(one.workflow) })) };
+        if (csv) {
+          res.writeHead(200, { "content-type": "text/csv; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff", "content-disposition": `attachment; filename="${id}-cost-per-run.csv"` });
+          return void res.end(costCsv(cost.runs));
+        }
+        return send(res, 200, { agent: id, ...cost });
       }
       case "listLearningNotes":
       case "listLearningLog":

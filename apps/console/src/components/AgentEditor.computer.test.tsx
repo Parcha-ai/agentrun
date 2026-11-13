@@ -110,7 +110,10 @@ describe("AgentEditor, the Computer step", () => {
     expect(providerRadio(host, "orgo")!.disabled).toBe(false);
     expect(providerRadio(host, "e2b")!.disabled).toBe(true);
     expect(providerRadio(host, "e2b")!.closest("label")!.textContent).toContain("fixture: E2B needs E2B_API_KEY saved");
-    expect(host.querySelector('[aria-label="The loop gets"]')!.textContent).toContain("read, write, edit, bash, screen.shot, input.actions");
+    const tools = host.querySelector('[aria-label="Tools this computer adds"]')!;
+    expect(tools.textContent).toBe("This computer adds these tools: read, write, edit, bash, screen.shot, input.actions");
+    expect(tools.querySelector(".caps")).toBeNull();
+    expect(host.textContent).not.toMatch(/the loop gets/i);
   });
 
   it("a kind picked takes its first ready provider, and the pick is saved as the computer", async () => {

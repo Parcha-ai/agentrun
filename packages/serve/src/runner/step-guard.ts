@@ -4,20 +4,19 @@
 //   - self: the step's own confidence (an agent or decide node submits one beside its record; a judge, pick or sift's is
 //     its weakest answer's), read by the DSL.
 //   - jev: one Jev call (TypeSafe's System One, JEV_GUARD_MODEL pinned) over the step's input and output, a yes/no
-//     question (the guard's `question`, else DEFAULT_GUARD_QUESTION); its yes-probability is the signal.
+//     question (the guard's `question`, else DEFAULT_GUARD_QUESTION); its yes-probability is the signal. Asked as a
+//     decision of the call (guardJevOn, over the learned workflow's own judge: learned-workflow.ts learnedJudge, the
+//     run's decision providers, its gate on the provider jev, its one cap), so it is booked and capped as a decision
+//     node's is: the workflow's cost.
 //   - both: a logistic the job's graded runs fitted (`fit`: p = 1 / (1 + e^-(b + w·[self, jev])), raw probabilities in,
 //     never logits), else the lower of the two. A single signal with a fit goes through it too (a Platt fit): a raw Jev
 //     probability is badly calibrated until fitted (OG1: ECE 0.21 raw, 0.03 fitted), so a threshold is set on fitted p.
 // No signal is no evidence the step is right: a guard whose Jev call failed, or a step that reported no confidence, has
-// no p and hands back, never passes. Each Jev call is a paid request of the learned_workflow call (paid-calls.ts
-// paidRequest: held at TypeSafe's published price for its input before it is sent, booked under the call), so it is
-// the workflow's cost, under the run's cap. Every check is a row the run keeps (GuardRow, in its LEARNED_NODES trace and
-// its metrics `guards`): B4's promotion replay and threshold refit read them.
-import type { GuardStepParams, GuardVerdict, StepGuard } from "@parcha/agentrun-dsl";
-import { DECISION_KEY_FD_ENV, decisionKeysOf, FAUX_JEV_ENV, fauxFetch, handedKeys, jevRouteOf } from "../decisions.js";
-import { JEV_INPUT_USD } from "../decision-cap.js";
-import { money } from "../cap.js";
-import { bookedIn, type Fee, type Ledger, paidRequest } from "../paid-calls.js";
+// no p and hands back, never passes: so does a run with no Jev (no key, or jev set to deny). Every check is a row the
+// run keeps (GuardRow, in its LEARNED_NODES trace and its metrics `guards`): B4's promotion replay and threshold refit
+// read them.
+import type { DecisionProvider, GuardStepParams, GuardVerdict, StepGuard, WorkflowDeps } from "@parcha/agentrun-dsl";
+import { JEV_OPENROUTER_KEY_ENV } from "../decisions.js";
 import type { GuardRow } from "../learned-nodes.js";
 
 /** The Jev model a guard asks, pinned (https://docs.typesafe.ai/models, read 2026-11-13: jev-1.14.0 is current, and
@@ -36,8 +35,9 @@ const GUARD_QUESTION_ID = "right";
 /** One guard check, as the run keeps it (learned-nodes.ts GuardRow). */
 export type { GuardRow };
 
-/** One Jev request as a guard sends it: a state and its questions, answered with their answers and what it cost. */
-export type GuardJev = (request: { state: unknown; questions: Record<string, unknown>; signal?: AbortSignal }) => Promise<{ answers: Record<string, { type: string; noul?: number }>; cost_usd?: number | null }>;
+/** One Jev request as a guard sends it: the step it guards (its label, its execution path, its item in a map), the
+ *  state and its questions; answered with their answers. */
+export type GuardJev = (request: { label: string; executionPath: string; item?: { index: number }; state: unknown; questions: Record<string, unknown>; signal?: AbortSignal }) => Promise<{ answers: Record<string, { type: string; noul?: number }> }>;
 
 const sigmoid = (z: number): number => 1 / (1 + Math.exp(-z));
 
@@ -59,58 +59,34 @@ function part(value: unknown): unknown {
   return { cut: `${Buffer.from(text, "utf8").subarray(0, GUARD_PART_BYTES).toString("utf8")}…`, bytes: Buffer.byteLength(text, "utf8") };
 }
 
-/** A Jev request's hold and charge: TypeSafe's published price for its input, one token a byte of its body (its output
- *  is free), as the decision cap holds a Jev decision (decision-cap.ts holdOf). */
-export const jevGuardFee = (body: string): Fee => {
-  const tokens = Buffer.byteLength(body, "utf8");
-  return { name: "Jev's step guard", tool: "learned_workflow", by: "typesafe", usd: Math.round(tokens * JEV_INPUT_USD * 1e9) / 1e9, basis: `TypeSafe's published price for Jev, ${money(JEV_INPUT_USD * 1e6)} a million input tokens, for ${tokens} tokens at most` };
-};
-
-/** How long a guard's Jev request has, its attempts included: a guard that hears nothing hands back. */
-export const GUARD_JEV_DEADLINE_MS = 30_000;
-
-/** The run's Jev for its guards: the client a workflow's decision nodes ask (decisions.ts decisionProvidersFrom's
- *  jevProvider, the same route and keys: the claim's own, which learnedDecisionKeys put on its environment for a
- *  workflow with a Jev guard (providersNamed), or a per-run process's on its pipe), pinned to JEV_GUARD_MODEL, each
- *  request a paid one of the call it runs in (paidRequest, at jevGuardFee). Undefined with no Jev key. */
-export async function guardJevOf(env: NodeJS.ProcessEnv): Promise<GuardJev | undefined> {
-  const route = jevRouteOf(env[DECISION_KEY_FD_ENV] !== undefined ? handedKeys(env) : decisionKeysOf(env));
-  if (!route) return undefined;
-  const [{ jevProvider }, faux] = await Promise.all([import("@parcha/agentrun-jev"), fauxFetch(env, FAUX_JEV_ENV)]);
-  const send = faux ?? globalThis.fetch;
-  // Each request booked as it is sent, at its body's price, under the call the guard runs in.
-  const fetch = (url: string | URL | Request, init?: RequestInit) => paidRequest(jevGuardFee(typeof init?.body === "string" ? init.body : ""), () => send(url as never, init));
-  const jev = jevProvider({ ...route, model: JEV_GUARD_MODEL[route.provider], fetch: fetch as never });
-  let asked = 0;
-  return async (request) => {
-    const own = request.signal ?? new AbortController().signal;
-    return (await jev.decide({ label: "guard", kind: "judge", state: request.state, questions: request.questions } as never, { decisionId: `guard-${(asked += 1)}`, signal: own, deadlineMs: GUARD_JEV_DEADLINE_MS })) as never;
-  };
+/** A guard's Jev as a decision of the run: `judge` (the learned workflow's own, learned-workflow.ts learnedJudge: held to
+ *  the run's gate on the provider jev, admitted on its one cap, settled at what it charged) asked of Jev, on the pinned
+ *  model of `jev`'s route (its key's: TypeSafe's own, or OpenRouter's), under the step's label and execution path with
+ *  `#guard`, so its receipt is its own. */
+export function guardJevOn(judge: NonNullable<WorkflowDeps["runJudge"]>, jev: Pick<DecisionProvider, "needs">): GuardJev {
+  const model = jev.needs.includes(JEV_OPENROUTER_KEY_ENV) ? JEV_GUARD_MODEL.openrouter : JEV_GUARD_MODEL.typesafe;
+  return async (request) => (await judge({ label: `${request.label} guard`, kind: "judge", provider: "jev", model, state: request.state, questions: request.questions, executionPath: `${request.executionPath}#guard`, ...(request.item ? { item: request.item } : {}), ...(request.signal ? { signal: request.signal } : {}) } as never)) as never;
 }
 
-/** The DSL's guardStep for one learned_workflow call: Jev asked (through `jev`, made on first need) only for a guard that
- *  reads it, its request booked under the call's ledger as `<call>/<step>@<path>#guard`; p by guardP, NaN (no p) when
- *  a signal it reads is missing. */
-export function stepGuard(opts: { jev: () => Promise<GuardJev | undefined>; ledger?: Ledger; call: string }): (params: GuardStepParams) => Promise<GuardVerdict> {
+/** The DSL's guardStep for one learned_workflow call: Jev asked (`jev`; none: no Jev signal) only for a guard that reads
+ *  it; p by guardP, NaN (no p, so the step hands back) when a signal it reads is missing. */
+export function stepGuard(jev: GuardJev | undefined): (params: GuardStepParams) => Promise<GuardVerdict> {
   return async (params) => {
     const { guard } = params;
-    let jev: number | null = null;
-    if (guard.signal !== "self") {
-      const ask = await opts.jev().catch(() => undefined);
-      if (ask) {
-        const ledger = opts.ledger ? { ...opts.ledger, call: `${opts.call}/${params.label}@${params.executionPath}${params.item ? `#${params.item.index}` : ""}#guard` } : undefined;
-        try {
-          const answered = await bookedIn(ledger, () => ask({ state: { step: params.label, input: part(params.input), output: part(params.output) }, questions: { [GUARD_QUESTION_ID]: { type: "noul", instructions: guard.question?.trim() || DEFAULT_GUARD_QUESTION, criteria: GUARD_CRITERIA } }, ...(params.signal ? { signal: params.signal } : {}) }));
-          const noul = answered.answers?.[GUARD_QUESTION_ID]?.noul;
-          jev = typeof noul === "number" && Number.isFinite(noul) ? noul : null;
-        } catch (error) {
-          // A stop is the call's stop; any other failure leaves no Jev signal, so the step hands back.
-          if (params.signal?.aborted) throw error;
-        }
+    let read: number | null = null;
+    if (guard.signal !== "self" && jev) {
+      try {
+        const answered = await jev({ label: params.label, executionPath: params.executionPath, ...(params.item ? { item: params.item } : {}), state: { step: params.label, input: part(params.input), output: part(params.output) }, questions: { [GUARD_QUESTION_ID]: { type: "noul", instructions: guard.question?.trim() || DEFAULT_GUARD_QUESTION, criteria: GUARD_CRITERIA } }, ...(params.signal ? { signal: params.signal } : {}) });
+        const noul = answered.answers?.[GUARD_QUESTION_ID]?.noul;
+        read = typeof noul === "number" && Number.isFinite(noul) ? noul : null;
+      } catch (error) {
+        // A stop is the call's stop; any other failure (a refusal of the gate or the cap, Jev's own) leaves no Jev
+        // signal, so the step hands back.
+        if (params.signal?.aborted) throw error;
       }
     }
-    const p = guardP(guard, { self: params.self, jev });
-    return { p: p ?? Number.NaN, jev };
+    const p = guardP(guard, { self: params.self, jev: read });
+    return { p: p ?? Number.NaN, jev: read };
   };
 }
 

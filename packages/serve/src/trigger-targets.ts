@@ -19,6 +19,8 @@ const NO_CAP = "The run has no spend cap: a trigger only messages a run with one
 /** What the trigger target policy needs that lives elsewhere: the run-start leaves (StartDeps, shared with the create
  *  route), the agent reads, and the run view that gives a run's live moment and its v2 status. */
 export interface TriggerTargetDeps {
+  /** A test's seam (ServeOptions.beforeSubmit): awaited by a firing's message after its checks, before its row is written. */
+  readonly beforeSubmit?: (runId: string, content: string) => Promise<void> | void;
   /** The run-start leaves, shared with the create route (runs-over-store.StartDeps). */
   readonly start: StartDeps;
   /** The agent an id names, with its current revision; undefined when unknown (the agent store's getAgent). */
@@ -133,6 +135,7 @@ export function triggerTargets(store: Store & RunsStore, deps: TriggerTargetDeps
           answers: false,
           origin: from,
           requestId: key,
+          ...(deps.beforeSubmit ? { beforeSubmit: deps.beforeSubmit } : {}),
           queue: async (command) => {
             const done = await store.triggers.message({ triggerId, key }, run.id, command, bound);
             return done && "skipped" in done ? { skipped: done.skipped } : undefined;

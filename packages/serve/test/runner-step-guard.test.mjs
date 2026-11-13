@@ -4,7 +4,8 @@
 //     whose first input carries the workflow's trace with the guard's row; path handed_back.
 //   - one at or above it serves: the workflow's answer is the run's, path workflow.
 //   - a guard that reads Jev asks it once, on the Jev key the claim opened for the workflow (claim-secrets.ts
-//     learnedDecisionKeys), and its price is the run's cost beside the node's model request.
+//     learnedDecisionKeys), as a decision of the run (its one cap, ledger.decisions): what it charged is the run's cost
+//     beside the node's model request.
 //   - every check is a row of the run record: metrics.guards. The same on a CLI harness.
 // pi's model and the node's go through the session proxy to a loopback gateway; Jev is the tests' fake (faux-jev.mjs,
 // every yes 0.92) under the faux switch, on its canary key. No sleeps, no port races.
@@ -131,10 +132,10 @@ async function piRun(t, { guard, confidence, env = {} }) {
   return { row, turns, timeline, entries, gateway: gw };
 }
 
-/** What the run's booking holds: its model requests' $ (a turn with usage) and its paid steps' (a turn without). */
+/** What the run's booking holds: its model requests' $ (a turn with usage) and its decisions' (a turn without). */
 const sumUsd = (turns) => turns.reduce((sum, turn) => sum + (typeof turn.usd === "number" ? turn.usd : 0), 0);
 const modelUsd = (turns) => sumUsd(turns.filter((turn) => turn.usage));
-const paidUsd = (turns) => turns.filter((turn) => !turn.usage).map((turn) => turn.usd);
+const decisionUsd = (turns) => turns.filter((turn) => !turn.usage).map((turn) => turn.usd);
 
 test("a step its own confidence puts under its guard's threshold hands the job back mid-run: the agent gets the trace with the guard's row", async (t) => {
   const { row, timeline, entries, gateway } = await piRun(t, { guard: { signal: "self", threshold: 0.7 }, confidence: 0.3 });
@@ -157,7 +158,7 @@ test("a step sure enough of itself serves: the workflow's answer is the run's, p
   assert.ok(gateway.requests.every(isNode), "no agent request");
   assert.equal(row.metrics?.path, "workflow", JSON.stringify(row.metrics));
   assert.deepEqual(row.metrics?.guards, [{ node: "answer", signal: "self", self: 0.9, p: 0.9, threshold: 0.7, escalated: false }]);
-  assert.deepEqual(paidUsd(turns), [], "a self guard asks Jev nothing");
+  assert.deepEqual(decisionUsd(turns), [], "a self guard asks Jev nothing");
   assert.ok(Math.abs((row.costUsd ?? 0) - modelUsd(turns)) < 1e-9, `a self guard costs nothing: ${row.costUsd} vs ${modelUsd(turns)}`);
 });
 
@@ -170,9 +171,9 @@ test("both: Jev asked once on the claim's key, the lower of the two decides, and
   const calls = jev.calls();
   assert.equal(calls.length, 1, JSON.stringify(calls));
   assert.equal(calls[0].authorized, true, "on the canary key the claim opened");
-  // Its one paid step on the run's ledger, at TypeSafe's price for what it sent (a token a byte); the run's cost is the
-  // node's model request and it together.
-  const [jevUsd, ...others] = paidUsd(served.turns);
+  // Its one decision on the run's cap, at what Jev charged (the faux reports no cost: TypeSafe's published price for its
+  // input tokens); the run's cost is the node's model request and it together.
+  const [jevUsd, ...others] = decisionUsd(served.turns);
   assert.deepEqual(others, [], JSON.stringify(served.turns));
   assert.ok(jevUsd > 0 && jevUsd < 0.0001, `the Jev call is booked: ${JSON.stringify(served.turns)}`);
   assert.ok(Math.abs((served.row.costUsd ?? 0) - (modelUsd(served.turns) + jevUsd)) < 1e-12, `the run's cost is the node's and Jev's: ${served.row.costUsd} vs ${modelUsd(served.turns)} + ${jevUsd}`);
