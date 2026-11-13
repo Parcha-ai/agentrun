@@ -155,5 +155,20 @@ final class MacTests: XCTestCase {
 		// A modifier pressed on its own is the keyboard too.
 		XCTAssertTrue(PersonWatch.kinds.contains(.flagsChanged))
 	}
+
+	/// The grants window shows one tile per pane: Accessibility's list gives Post Event too, so three grants are two panes.
+	func testEveryGrantIsInOnePaneAndTheBoardSeesThemAll() {
+		let panes = Permissions.panes
+		XCTAssertEqual(panes.map(\.anchor), ["Privacy_Accessibility", "Privacy_ScreenCapture"])
+		XCTAssertEqual(panes[0].grants, ["Accessibility", "Post Event"])
+		XCTAssertEqual(panes[1].grants, ["Screen Recording"])
+		XCTAssertTrue(["Accessibility", "Device Control and Data Access"].contains(panes[0].name), panes[0].name)
+		XCTAssertTrue(panes[1].name.hasPrefix("Screen"), panes[1].name)
+		XCTAssertEqual(Set(panes.flatMap(\.grants)), Set(Permissions.Grant.allCases.map(\.rawValue)))
+		// A runner without grants: the board opens the first pane still waiting, and is done only with every grant.
+		var board = GrantsBoard(panes: panes)
+		let steps = board.observe(Permissions.granted)
+		XCTAssertEqual(steps == [.done], Permissions.missing.isEmpty)
+	}
 }
 #endif
