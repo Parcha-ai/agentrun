@@ -330,6 +330,14 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
         options.onSocket?.(row.id, ws);
         void hub.accept(pairedOf(row), attach).then(async (said) => {
           if (!said.ok) return log("computer_refused", { computer: row.id, code: said.error.code, why: said.error.message });
+          // The row read for the token may be older than a removal that committed, and its hub.revoke, while this socket
+          // was still being accepted (a Postgres read and write are separate connections): read the row again, now that the
+          // socket is the hub's. A removal committing after this read revokes the hub's socket after this accept, closing it.
+          const now = await paired.get(row.id);
+          if (now === undefined || now.revokedAt !== null) {
+            hub.revoke(row.id, `${row.name} was removed from this server's console: pair it again to use it`);
+            return log("computer_refused", { computer: row.id, why: "removed while it attached" });
+          }
           await paired.seen(row.id, said.value as unknown as Record<string, unknown>);
           log("computer_attached", { computer: row.id, driver: said.value.version });
         }).catch((error: unknown) => {
