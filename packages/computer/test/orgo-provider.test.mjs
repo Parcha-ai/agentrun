@@ -53,7 +53,9 @@ function seeded({ api, channel }, { labels = SPEC.labels, status = "running", de
 test("Orgo: the provider takes its key and workspace as options, reads no environment, and says what is missing without the key", async () => {
 	const api = fakeOrgoApi();
 	assert.throws(() => create({ workspaceId: WORKSPACE, fetch: api.fetch }), /apiKey/);
-	assert.throws(() => create({ apiKey: KEY, fetch: api.fetch }), (error) => /workspaceId/.test(error.message) && !error.message.includes(KEY));
+	// No workspace named: it is built, and reads the key's account's one workspace when first needed (orgo-workspaces.test.mjs).
+	assert.ok(create({ apiKey: KEY, fetch: api.fetch }) instanceof OrgoProvider);
+	assert.throws(() => create({ apiKey: KEY, workspaceId: "../other", fetch: api.fetch }), (error) => /workspaceId/.test(error.message) && !error.message.includes(KEY));
 	assert.throws(() => create({ apiKey: KEY, workspaceId: WORKSPACE, fetch: api.fetch, apiUrl: "http://orgo.example/api" }), /https/);
 	assert.throws(() => create({ apiKey: KEY, workspaceId: WORKSPACE, fetch: api.fetch, user: "0:0" }), /root/);
 	const built = create({ apiKey: KEY, workspaceId: WORKSPACE, fetch: api.fetch });

@@ -39,10 +39,11 @@ export const ORGO_PARKED = [
 export const ORGO = defineProvider({
 	id: "orgo",
 	label: "Orgo",
-	// The workspace this server's computers live in: every Orgo provider is built in one, and lists only it.
+	// The workspace this server's computers live in: every Orgo provider lists only it. Unsaved, it is the key's account's
+	// one workspace; with several, a person picks one by name in Settings (orgo-workspaces.ts).
 	keys: [
 		{ name: "ORGO_API_KEY", option: "apiKey", required: true },
-		{ name: "ORGO_WORKSPACE_ID", option: "workspaceId", required: true },
+		{ name: "ORGO_WORKSPACE_ID", option: "workspaceId", required: false, picked: true },
 	],
 	metered: true,
 	// None yet: an Archil mount needs an Orgo template that bakes the helper.

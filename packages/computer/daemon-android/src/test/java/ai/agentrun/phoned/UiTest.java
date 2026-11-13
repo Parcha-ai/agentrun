@@ -257,6 +257,154 @@ final class UiTest {
 		eq("met", phone.call("ui.act", "{\"steps\":[],\"expect\":{\"text\":\"Bluetooth, pairing\"}}").get("expect"));
 	}
 
+	static void testAWindowExpectWaitsForTheAppsMainWindowAndStandsAlone() throws Exception {
+		Check.Phone phone = new Check.Phone();
+		phone.call("apps.launch", "{\"id\":\"" + FakeDevice.FIXTURE + "\"}");
+		String target = "\"target\":{\"app\":\"" + FakeDevice.FIXTURE + "\"}";
+		Map<String, Object> seen = phone.call("ui.observe", "{" + target + "}");
+		String home = (String) map(seen.get("window")).get("id");
+		String next = null;
+		for (Object n : list(seen, "nodes")) if ("next".equals(map(n).get("id"))) next = (String) map(n).get("ref");
+		// No window of that title comes: unmet after its timeout, never not_found.
+		eq("unmet", phone.call("ui.act", "{" + target + ",\"steps\":[],\"expect\":{\"window\":{\"title\":\"No such window\"},\"timeoutMs\":300}}").get("expect"));
+		// A phone's windows are ordinary ones: a dialog is never met, and a window is.
+		eq("unmet", phone.call("ui.act", "{" + target + ",\"steps\":[],\"expect\":{\"window\":{\"role\":\"dialog\"},\"timeoutMs\":300}}").get("expect"));
+		eq("met", phone.call("ui.act", "{" + target + ",\"steps\":[],\"expect\":{\"window\":{\"role\":\"window\"}}}").get("expect"));
+		// Next opens the second page, a new window of the app: the expect waits for it and answers its state.
+		Map<String, Object> second = phone.call("ui.act", "{" + target + ",\"steps\":[{\"press\":\"" + next + "\"}],\"expect\":{\"window\":{\"title\":\"Second page\"}}}");
+		eq("met", second.get("expect"));
+		eq(true, second.get("changed"));
+		Map<String, Object> now = phone.call("ui.observe", "{" + target + "}");
+		eq("Second page", map(now.get("window")).get("title"));
+		yes(!home.equals(map(now.get("window")).get("id")), "the second page is a window of its own");
+		refuses("invalid", () -> phone.call("ui.act", "{\"steps\":[],\"expect\":{\"window\":{}}}"));
+		refuses("invalid", () -> phone.call("ui.act", "{\"steps\":[],\"expect\":{\"window\":{\"title\":\"x\"},\"text\":\"x\"}}"));
+		refuses("invalid", () -> phone.call("ui.act", "{\"steps\":[],\"expect\":{\"window\":{\"name\":\"x\"}}}"));
+		refuses("invalid", () -> phone.call("ui.act", "{\"steps\":[],\"expect\":{\"window\":{\"role\":\"pane\"}}}"));
+	}
+
+	static void testAWindowExpectMayBeginBeforeItsAppHasAWindow() throws Exception {
+		Check.Phone phone = new Check.Phone();
+		// The app is starting and its window is not in the tree yet: what a window expect alone waits for.
+		phone.device.windowLagMs = 600;
+		phone.device.apps().launch(FakeDevice.FIXTURE, null);
+		String target = "\"target\":{\"app\":\"" + FakeDevice.FIXTURE + "\"}";
+		refuses("not_found", () -> phone.call("ui.observe", "{" + target + "}"));
+		Map<String, Object> waited = phone.call("ui.act", "{" + target + ",\"steps\":[],\"expect\":{\"window\":{\"title\":\"UI fixture\"}}}");
+		eq("met", waited.get("expect"));
+		eq(true, waited.get("changed"));
+		Map<String, Object> answered = phone.call("ui.observe", "{" + target + ",\"since\":\"" + waited.get("state") + "\"}");
+		eq("UI fixture", map(answered.get("window")).get("title"));
+		eq(0, list(map(answered.get("diff")), "added").size());
+		// An act with steps needs its window to run them on: not_found, as before.
+		phone.device.apps().terminate(FakeDevice.FIXTURE);
+		phone.device.apps().launch(FakeDevice.FIXTURE, null);
+		refuses("not_found", () -> phone.call("ui.act", "{" + target + ",\"steps\":[{\"key\":\"enter\"}],\"expect\":{\"window\":{\"title\":\"UI fixture\"}}}"));
+	}
+
+	static void testAWindowExpectIsJudgedOnTheFinalViewItAnswers() throws Exception {
+		Check.Phone phone = new Check.Phone();
+		phone.call("apps.launch", "{\"id\":\"" + FakeDevice.FIXTURE + "\"}");
+		String target = "\"target\":{\"app\":\"" + FakeDevice.FIXTURE + "\"}";
+		Map<String, Object> seen = phone.call("ui.observe", "{" + target + "}");
+		String next = null;
+		for (Object n : list(seen, "nodes")) if ("next".equals(map(n).get("id"))) next = (String) map(n).get("ref");
+		// The second page shows, then the app leaves it while the act settles: a look that once held never decides the
+		// act. The answer is unmet, and its state is the window the phone shows.
+		phone.device.secondStaysMs = FakeDevice.NEXT_ANIMATE_MS + 50;
+		Map<String, Object> flashed = phone.call("ui.act", "{" + target + ",\"steps\":[{\"press\":\"" + next + "\"}],\"expect\":{\"window\":{\"title\":\"Second page\"},\"timeoutMs\":1000}}");
+		eq("unmet", flashed.get("expect"));
+		Map<String, Object> now = phone.call("ui.observe", "{" + target + ",\"since\":\"" + flashed.get("state") + "\"}");
+		eq("UI fixture", map(now.get("window")).get("title"));
+		eq(0, list(map(now.get("diff")), "added").size());
+		// A second page that stays is met, and answers its own state. The fixture's home window is a new one, with new refs.
+		phone.device.secondStaysMs = 0;
+		String again = null;
+		for (Object n : list(phone.call("ui.observe", "{" + target + "}"), "nodes")) if ("next".equals(map(n).get("id"))) again = (String) map(n).get("ref");
+		yes(again != null, "the fixture's home window has its Next");
+		Map<String, Object> stayed = phone.call("ui.act", "{" + target + ",\"steps\":[{\"press\":\"" + again + "\"}],\"expect\":{\"window\":{\"title\":\"Second page\"},\"timeoutMs\":1000}}");
+		eq("met", stayed.get("expect"));
+		Map<String, Object> then = phone.call("ui.observe", "{" + target + ",\"since\":\"" + stayed.get("state") + "\"}");
+		eq("Second page", map(then.get("window")).get("title"));
+		eq(0, list(map(then.get("diff")), "added").size());
+	}
+
+	static void testAWindowTargetsExpectReadsItsOwnAppsMainWindow() throws Exception {
+		Check.Phone phone = new Check.Phone();
+		phone.call("apps.launch", "{\"id\":\"" + FakeDevice.FIXTURE + "\"}");
+		String fixture = (String) map(phone.call("ui.observe", "{\"target\":{\"app\":\"" + FakeDevice.FIXTURE + "\"}}").get("window")).get("id");
+		// Another app's window comes in front of the fixture's.
+		FakeNode root = FakeNode.of("android.widget.FrameLayout").at(0, 0, 1080, 2400).pkg("com.example.other");
+		synchronized (phone.device) {
+			phone.device.windows.add(0, new FakeDevice.FakeWindow(99, "Other app", new ai.agentrun.phoned.device.Rect(0, 0, 1080, 2400), root));
+			phone.device.changed();
+		}
+		String target = "\"target\":{\"window\":\"" + fixture + "\"}";
+		// A wait aimed at the fixture's window reads the fixture's main window, never the app in front.
+		eq("unmet", phone.call("ui.act", "{" + target + ",\"steps\":[],\"expect\":{\"window\":{\"title\":\"Other app\"},\"timeoutMs\":300}}").get("expect"));
+		Map<String, Object> met = phone.call("ui.act", "{" + target + ",\"steps\":[],\"expect\":{\"window\":{\"title\":\"UI fixture\"},\"timeoutMs\":300}}");
+		eq("met", met.get("expect"));
+		Map<String, Object> answered = phone.call("ui.observe", "{" + target + ",\"since\":\"" + met.get("state") + "\"}");
+		eq("UI fixture", map(answered.get("window")).get("title"));
+	}
+
+	static void testAWindowWaitWhoseAppNeverShowsAWindowAnswersClosedWithNoState() throws Exception {
+		Check.Phone phone = new Check.Phone();
+		phone.call("apps.launch", "{\"id\":\"" + FakeDevice.FIXTURE + "\"}");
+		// The fixture is in front; the wait is for an app that shows no window, and ends without one.
+		Map<String, Object> waited = phone.call("ui.act", "{\"target\":{\"app\":\"com.example.absent\"},\"steps\":[],\"expect\":{\"window\":{\"title\":\"Absent\"},\"timeoutMs\":300}}");
+		eq("unmet", waited.get("expect"));
+		eq("closed", waited.get("window"));
+		yes(!waited.containsKey("state"), "no state of the app in front: " + waited);
+	}
+
+	static void testASetThatTheAppTakesBackIsNotVerified() throws Exception {
+		Check.Phone phone = new Check.Phone();
+		phone.device.internet();
+		Map<String, Object> seen = phone.call("ui.observe", "{}");
+		Map<String, Object> toggle = null;
+		for (Object n : list(seen, "nodes")) if ("switch".equals(map(n).get("role"))) toggle = map(n);
+		yes(toggle != null, "the row's own switch is listed");
+		// The app turns Wi-Fi back on a moment after the switch is set off: the set reads back at once, and is not held.
+		FakeNode wifi = phone.device.wifi;
+		wifi.on(a -> {
+			if (a.equals("ACTION_CLICK") && !wifi.checked) phone.device.after(UiDriver.SET_HOLD_MS / 2, () -> {
+				wifi.checked = true;
+				phone.device.changed();
+			});
+		});
+		Map<String, Object> acted = phone.call("ui.act", "{\"steps\":[{\"set\":\"" + toggle.get("ref") + "\",\"value\":\"off\"}]}");
+		eq(Json.obj("route", "semantic", "verified", false), step(acted, 0));
+		eq(true, wifi.checked);
+		// One the app keeps holds.
+		wifi.on(a -> {});
+		Map<String, Object> kept = phone.call("ui.act", "{\"steps\":[{\"set\":\"" + toggle.get("ref") + "\",\"value\":\"off\"}]}");
+		eq(Json.obj("route", "semantic", "verified", true), step(kept, 0));
+		eq(false, wifi.checked);
+	}
+
+	static void testASetWhoseTextTheAppTrimsInTheHoldIsNotVerified() throws Exception {
+		Check.Phone phone = new Check.Phone();
+		phone.device.internet();
+		Map<String, Object> field = phone.node(phone.call("ui.observe", "{}"), "Network name");
+		FakeNode name = null;
+		synchronized (phone.device) {
+			for (FakeDevice.FakeWindow w : phone.device.windows) for (FakeNode n : w.root.children) if ("com.android.settings:id/name".equals(n.viewId)) name = n;
+		}
+		yes(name != null, "the fixture's Network name field");
+		// The field takes " Home " as set, then trims it a moment later: the text it holds is no longer what was set.
+		FakeNode taken = name;
+		taken.on(a -> {
+			if (a.equals("ACTION_SET_TEXT")) phone.device.after(UiDriver.SET_HOLD_MS / 2, () -> {
+				taken.text = taken.text.trim();
+				phone.device.changed();
+			});
+		});
+		Map<String, Object> acted = phone.call("ui.act", "{\"steps\":[{\"set\":\"" + field.get("ref") + "\",\"value\":\" Home \"}]}");
+		eq(Json.obj("route", "semantic", "verified", false), step(acted, 0));
+		eq("Home", taken.text);
+	}
+
 	static void testRowNamingSkipsActionableChildren() {
 		FakeNode row = FakeNode.of("android.widget.LinearLayout").at(0, 0, 100, 100).tappable();
 		FakeNode box = FakeNode.of("android.widget.CheckBox").at(80, 10, 95, 30).text("Remember");

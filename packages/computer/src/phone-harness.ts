@@ -9,7 +9,7 @@
 // in memory by default): list, attach, release and the janitor see only the sessions the ledger names, never another
 // session on the same account.
 import { execFile } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { createConnection } from "node:net";
@@ -17,6 +17,7 @@ import type { Duplex } from "node:stream";
 import { basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DaemonClient } from "./client.js";
+import { CreateRequests, endedWords, labelsDiffer, otherSpecWords } from "./create-requests.js";
 import { PHONE_GROUPS, PHONE_HARNESS } from "./descriptors/phone-harness.js";
 import type { KindCapabilities } from "./kinds.js";
 import type { MountKind } from "./mount.js";
@@ -30,6 +31,7 @@ import {
 	type ComputerProvider,
 	type ComputerRef,
 	type ComputerSpec,
+	type CreateContext,
 	type CreatedComputer,
 	checkGpu,
 	checkTenure,
@@ -75,8 +77,10 @@ const VERSION: string = JSON.parse(readFileSync(new URL("../package.json", impor
 
 /** One phone this provider made, as its ledger keeps it. */
 export interface PhoneLedgerEntry {
-	/** The session's id, the computer's id and name. */
+	/** The session's id, the computer's id. */
 	id: string;
+	/** The computer's name, its request's (computerNameFor): a create of the same request finds the phone by it. */
+	name: string;
 	labels: Record<string, string>;
 	/** The image create was asked for, read back as asked. */
 	image: string;
@@ -98,10 +102,23 @@ export interface PhoneLedgerEntry {
 
 /** The ledger's id for a create not answered yet. */
 const pendingId = (requestKey: string) => `pending-${requestKey}`;
+/** The Idempotency-Key of a request: every create of one request id sends the same key, so the service can tell them one. */
+const requestKeyOf = (requestId: string) => createHash("sha256").update(requestId, "utf8").digest("hex");
+/**
+ * How a spec differs from a phone of its request, as the ledger reads it back: its labels and its image, every field of
+ * a spec check() lets a phone ask for but its network (always open) and its lifetime (each create counts its own).
+ */
+function phoneDiffer(spec: ComputerSpec, labels: Record<string, string>, image: string, seen: string): string[] {
+	const differ = labelsDiffer(spec.labels ?? {}, labels, seen);
+	if (spec.image !== image) differ.push(`image: asked ${spec.image}, ${seen} ${image}`);
+	return differ;
+}
 
 /** Where the provider keeps its phones' labels: the vendor keeps none. Each call may be sync or async. */
 export interface PhoneLedger {
 	put(entry: PhoneLedgerEntry): void | Promise<void>;
+	/** entry put only while the ledger holds none under its id, in one step (two writers never both put it): whether it was. */
+	claim(entry: PhoneLedgerEntry): boolean | Promise<boolean>;
 	get(id: string): PhoneLedgerEntry | undefined | Promise<PhoneLedgerEntry | undefined>;
 	list(): PhoneLedgerEntry[] | Promise<PhoneLedgerEntry[]>;
 	remove(id: string): void | Promise<void>;
@@ -112,6 +129,7 @@ export function memoryLedger(): PhoneLedger {
 	const entries = new Map<string, PhoneLedgerEntry>();
 	return {
 		put: (entry) => void entries.set(entry.id, structuredClone(entry)),
+		claim: (entry) => !entries.has(entry.id) && (entries.set(entry.id, structuredClone(entry)), true),
 		get: (id) => structuredClone(entries.get(id)),
 		list: () => [...entries.values()].map((entry) => structuredClone(entry)),
 		remove: (id) => void entries.delete(id),
@@ -134,6 +152,7 @@ function guardedLedger(ledger: PhoneLedger): PhoneLedger {
 		};
 	return {
 		put: guard("written", (entry: PhoneLedgerEntry) => ledger.put(entry)),
+		claim: guard("written", (entry: PhoneLedgerEntry) => ledger.claim(entry)),
 		get: guard("read", (id: string) => ledger.get(id)),
 		list: guard("read", () => ledger.list()),
 		remove: guard("written", (id: string) => ledger.remove(id)),
@@ -424,6 +443,12 @@ export class PhoneHarnessProvider implements ComputerProvider {
 	readonly #fetch: typeof globalThis.fetch;
 	readonly #adb: AdbTransport;
 	readonly #ledger: PhoneLedger;
+	/** Each create in flight, and the names of the phones this provider ended (create-requests.ts). Past this process, the
+	 *  ledger's released entry is what holds, until the service has ended the phone. */
+	readonly #requests = new CreateRequests();
+	/** The Idempotency-Keys whose pending entry a create here claimed, kept until it is removed: a pending entry of one is
+	 *  this provider's own (no create of it is in flight, CreateRequests shares those), so a retry here sends the POST. */
+	readonly #claimed = new Set<string>();
 	readonly #maxLifetimeMs: number;
 	readonly #readyMs: number;
 	readonly #pollMs: number;
@@ -594,14 +619,96 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		return ok(undefined);
 	}
 
+	/**
+	 * Forgets a phone the service ended: its request is spent first, so a retry of it is refused exists (endedWords),
+	 * never a second POST /sessions, and then its entry goes.
+	 */
+	async #forget(entry: PhoneLedgerEntry): Promise<void> {
+		this.#requests.end(entry.name);
+		await this.#ledger.remove(entry.id);
+	}
+
 	#deadlineOf(session: Session, fallback: number): string {
 		return new Date(typeof session.expires_at === "number" && Number.isFinite(session.expires_at) ? session.expires_at * 1000 : fallback).toISOString();
 	}
 
 	// --- the provider ----------------------------------------------------------------------------------------------
 
-	create(spec: ComputerSpec, context: { signal?: AbortSignal } = {}): Promise<Result<CreatedComputer>> {
-		return ledgerSafe(() => this.#create(spec, context));
+	/**
+	 * Makes a phone, once per request (provider.md, Idempotent create): context.requestId names it (computerNameFor) and
+	 * gives the POST's Idempotency-Key. A request whose phone the ledger holds answers that phone once it is ready; one
+	 * released is refused exists; a create of a request in flight here waits for the first (CreateRequests).
+	 */
+	create(spec: ComputerSpec, context: CreateContext): Promise<Result<CreatedComputer>> {
+		const refusals = this.check(spec);
+		return ledgerSafe(() =>
+			this.#requests.create(spec, context, {
+				refuse: fail,
+				...(refusals.length > 0 ? { refused: refusals.map(({ field, message }) => `${field}: ${message}`).join("; ") } : {}),
+				make: (name) => this.#create(spec, name, requestKeyOf(context.requestId), context.signal),
+			}),
+		);
+	}
+
+	/**
+	 * The phone the ledger holds for a request, or undefined when it holds none: one whose create's answer was lost is
+	 * asked for by its key first, and recorded when the service made it. One released, or ended, is refused exists; one
+	 * of another spec is refused exists; one still starting is waited for, within readyMs.
+	 */
+	async #held(spec: ComputerSpec, name: string, requestKey: string, signal?: AbortSignal): Promise<Result<CreatedComputer> | undefined> {
+		const entries = await this.#ledger.list();
+		let entry = entries.find((one) => one.name === name && one.request === undefined);
+		const pending = entries.find((one) => one.id === pendingId(requestKey));
+		if (entry === undefined && pending !== undefined) {
+			const recovered = await this.#api("GET", `/sessions/requests/${requestKey}`);
+			if (!recovered.ok) return recovered.error.code === "not_found" ? undefined : recovered;
+			const session = sessionOf(recovered.value.json, `GET /sessions/requests/${requestKey}`);
+			if (!session.ok) return session;
+			// Claimed, never put over an entry another create recorded while the service answered: that one, and its release
+			// marker, stand. One already forgotten was released and is gone.
+			const found: PhoneLedgerEntry = { id: session.value.id, name, labels: { ...pending.labels }, image: pending.image, deadline: this.#deadlineOf(session.value, Date.parse(pending.deadline)) };
+			entry = (await this.#ledger.claim(found)) ? found : await this.#ledger.get(found.id);
+			await this.#ledger.remove(pending.id);
+			if (entry === undefined) return fail("exists", endedWords(name));
+		}
+		if (entry === undefined) return undefined;
+		if (entry.released !== undefined || this.#now() >= Date.parse(entry.deadline)) return fail("exists", endedWords(name));
+		const differ = phoneDiffer(spec, entry.labels, entry.image, "read back");
+		if (differ.length > 0) return fail("exists", otherSpecWords(name, "was made", differ));
+		// The same wait a fresh create makes, within readyMs; a phone that ended, or reached its deadline as it started, is
+		// spent. One not ready in time is left to the create that made it, which ends it.
+		const ready = await this.#ready(entry.id, this.#now(), signal);
+		if (!ready.ok) return ready.error.code === "gone" ? fail("exists", endedWords(name)) : ready;
+		if (this.#now() >= Date.parse(this.#deadlineOf(ready.value, Date.parse(entry.deadline)))) return fail("exists", endedWords(name));
+		return ok({ id: entry.id, name });
+	}
+
+	/**
+	 * Waits until the phone id is ready, within readyMs counted from `from`, each read bounded by what readyMs has left so
+	 * a stalled one cannot hold the wait past it: the ready session, or why not. gone: the service ended the phone, or it
+	 * did not start; timeout: readyMs passed; aborted: the signal fired.
+	 */
+	async #ready(id: string, from: number, signal?: AbortSignal): Promise<Result<Session>> {
+		for (;;) {
+			if (signal?.aborted) return fail("aborted", `create was aborted while the phone ${id} started`);
+			const left = this.#readyMs - (this.#now() - from);
+			const bound = Math.max(1, Math.min(this.#requestMs, left));
+			const read = await this.#session(id, signal, bound);
+			if (!read.ok && read.error.code === "timeout") {
+				// A read cut off by its own bound (requestMs) while readyMs has time left is one slow answer, not the deadline:
+				// ask again. Only a read bounded by what readyMs had left, or the check below, ends the wait.
+				if (bound < left && this.#now() - from < this.#readyMs) {
+					await this.#sleep(this.#pollMs);
+					continue;
+				}
+				return fail("timeout", `the phone ${id} was not ready within ${this.#readyMs / 1000} s: ${read.error.message}`);
+			}
+			if (!read.ok) return fail(read.error.code, `the phone ${id} did not start: ${read.error.message}`);
+			if (read.value.state === "ready") return read;
+			if (read.value.state !== "provisioning") return fail("gone", `the phone ${id} did not start: ${this.#clean(read.value.error ?? read.value.state)}`);
+			if (this.#now() - from >= this.#readyMs) return fail("timeout", `the phone ${id} was not ready within ${this.#readyMs / 1000} s`);
+			await this.#sleep(this.#pollMs);
+		}
 	}
 
 	attach(ref: { id: string } | { labels: Record<string, string> }, context: CallContext = {}): Promise<Result<AttachedComputer>> {
@@ -633,16 +740,33 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		return daemonWatch(this, ref, handlers, options);
 	}
 
-	async #create(spec: ComputerSpec, { signal }: { signal?: AbortSignal } = {}): Promise<Result<CreatedComputer>> {
-		const refusals = this.check(spec);
-		if (refusals.length > 0) return fail("refused", refusals.map(({ field, message }) => `${field}: ${message}`).join("; "));
+	async #create(spec: ComputerSpec, name: string, requestKey: string, signal?: AbortSignal): Promise<Result<CreatedComputer>> {
 		if (signal?.aborted) return fail("aborted", "create was aborted before the phone harness was asked");
-		const from = this.#now();
-		const requestKey = randomBytes(16).toString("hex");
+		const looked = this.#now();
 		const body = { platform: "android", kind: "emulator", timeout_seconds: Math.ceil(runLifetimeMs(spec) / 1000) };
-		// The key goes into the ledger before the POST: whatever answers are lost, list() can find the phone by it.
+		// The key goes into the ledger before the POST: whatever answers are lost, list() can find the phone by it. It is
+		// claimed, never put over another's: a create of the request in another provider on the same ledger (another
+		// process) holds the request's spec there, and one of another spec is refused before it can POST the same key.
+		// One of the same spec waits for that create's phone (#held finds it by the key, and never ends it): only the
+		// create that holds the claim owns the phone, to end it if it gives up. A claim older than any create's POST and
+		// its recovery (readyMs and twice requestMs from this look) is one whose create ended unrecorded: this one sends.
 		const pending = pendingId(requestKey);
-		await this.#ledger.put({ id: pending, labels: { ...(spec.labels ?? {}) }, image: spec.image, deadline: new Date(from + runLifetimeMs(spec)).toISOString(), request: requestKey });
+		const stale = looked + this.#readyMs + 2 * this.#requestMs;
+		for (;;) {
+			const held = await this.#held(spec, name, requestKey, signal);
+			if (held !== undefined) return held;
+			if (await this.#ledger.claim({ id: pending, name, labels: { ...(spec.labels ?? {}) }, image: spec.image, deadline: new Date(this.#now() + runLifetimeMs(spec)).toISOString(), request: requestKey })) break;
+			const other = await this.#ledger.get(pending);
+			// Gone since: that create has ended, with a phone or none; look again.
+			if (other === undefined) continue;
+			const differ = phoneDiffer(spec, other.labels, other.image, "in flight");
+			if (differ.length > 0) return fail("exists", otherSpecWords(name, "is being made", differ));
+			if (this.#claimed.has(requestKey) || this.#now() >= stale) break;
+			if (signal?.aborted) return fail("aborted", `create was aborted while another create of this request made ${name}`);
+			await this.#sleep(this.#pollMs);
+		}
+		this.#claimed.add(requestKey);
+		const from = this.#now();
 		const posted = await this.#api("POST", "/sessions", { body, headers: { "Idempotency-Key": requestKey }, ...(signal ? { signal } : {}) });
 		const cancelled = !posted.ok && posted.error.code === "aborted";
 		let first = posted.ok ? sessionOf(posted.value.json, "POST /sessions") : undefined;
@@ -661,6 +785,7 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		} else if (!posted.ok) {
 			// The phone harness refused the request: nothing was made, and the key is forgotten.
 			await this.#ledger.remove(pending);
+			this.#claimed.delete(requestKey);
 			return posted;
 		}
 		if (first === undefined || !first.ok) return vendorFail("phone-harness","POST /sessions answered no session");
@@ -678,46 +803,37 @@ export class PhoneHarnessProvider implements ComputerProvider {
 			}
 		};
 		const named = await record(async () => {
-			await this.#ledger.put({ id, labels: { ...(spec.labels ?? {}) }, image: spec.image, deadline: this.#deadlineOf(first.value, from + runLifetimeMs(spec)) });
+			await this.#ledger.put({ id, name, labels: { ...(spec.labels ?? {}) }, image: spec.image, deadline: this.#deadlineOf(first.value, from + runLifetimeMs(spec)) });
 			await this.#ledger.remove(pending);
+			this.#claimed.delete(requestKey);
 		});
 		if (!named.ok) return named;
 		const ended = async (code: ComputerErrorCode, words: string) => {
+			// A phone create gave up on: its request is spent, as one released.
+			this.#requests.end(name);
 			const gone = await this.#end(id);
 			return fail(code, `${words}; ${gone.ok ? "it was ended" : `it could not be ended (${gone.error.message})`}`);
 		};
 		if (cancelled) return ended("aborted", `create was aborted during POST /sessions, after the service made the phone ${id}`);
-		let session = first.value;
-		for (;;) {
-			if (signal?.aborted) return ended("aborted", `create was aborted while the phone ${id} started`);
-			// A read takes no longer than readyMs has left, so a stalled one cannot hold create past it.
-			const left = this.#readyMs - (this.#now() - from);
-			const bound = Math.max(1, Math.min(this.#requestMs, left));
-			const read = await this.#session(id, signal, bound);
-			if (!read.ok && read.error.code === "timeout") {
-				// A read cut off by its own bound (requestMs) while readyMs has time left is one slow answer, not the deadline:
-				// ask again. Only a read bounded by what readyMs had left, or the deadline check below, ends the phone.
-				if (bound < left && this.#now() - from < this.#readyMs) {
-					await this.#sleep(this.#pollMs);
-					continue;
-				}
-				return ended("timeout", `the phone ${id} was not ready within ${this.#readyMs / 1000} s: ${read.error.message}`);
-			}
-			if (!read.ok) return ended(read.error.code === "gone" ? "vendor" : read.error.code,`the phone ${id} did not start: ${read.error.message}`);
-			session = read.value;
-			if (session.state === "ready") break;
-			if (session.state !== "provisioning") return ended("vendor",`the phone ${id} did not start: ${this.#clean(session.error ?? session.state)}`);
-			if (this.#now() - from >= this.#readyMs) return ended("timeout", `the phone ${id} was not ready within ${this.#readyMs / 1000} s`);
-			await this.#sleep(this.#pollMs);
-		}
+		const ready = await this.#ready(id, from, signal);
+		if (!ready.ok) return ended(ready.error.code === "gone" ? "vendor" : ready.error.code, ready.error.message);
+		const session = ready.value;
 		const deadline = this.#deadlineOf(session, from + runLifetimeMs(spec));
-		const kept = await record(() => this.#ledger.put({ id, labels: { ...(spec.labels ?? {}) }, image: spec.image, deadline }));
+		// The entry as kept now: a create of the same request on another provider may have answered this phone while it
+		// started (#held), and its caller released it. That release stands: never written over, and the phone not answered.
+		let released = false;
+		const kept = await record(async () => {
+			const now = await this.#ledger.get(id);
+			released = now === undefined || now.released !== undefined;
+			if (!released) await this.#ledger.put({ ...now, id, name, labels: { ...(spec.labels ?? {}) }, image: spec.image, deadline });
+		});
 		if (!kept.ok) return kept;
+		if (released) return fail("exists", endedWords(name));
 		const took = this.#now() - from;
 		if (this.#now() >= Date.parse(deadline)) {
 			return ended("timeout", `the phone ${id}'s lifetime of ${runLifetimeMs(spec) / 1000} s ended before it was ready (it took ${Math.round(took / 100) / 10} s)`);
 		}
-		return ok({ id, name: id });
+		return ok({ id, name });
 	}
 
 	async #attach(ref: { id: string } | { labels: Record<string, string> }, { signal }: CallContext = {}): Promise<Result<AttachedComputer>> {
@@ -737,12 +853,12 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		const id = (entry as PhoneLedgerEntry).id;
 		const session = await this.#session(id, signal);
 		if (!session.ok) {
-			if (session.error.code === "gone") await this.#ledger.remove(id);
+			if (session.error.code === "gone") await this.#forget(entry as PhoneLedgerEntry);
 			return session;
 		}
 		if (session.value.state !== "ready" && session.value.state !== "provisioning") return fail("gone", `${id} is ${session.value.state}`);
 		const deadline = new Date(this.#deadlineOf(session.value, Date.parse((entry as PhoneLedgerEntry).deadline)));
-		return ok({ id, name: id, spec: { image: (entry as PhoneLedgerEntry).image, user: SHELL_USER, network: "open", deadline, kind: "android" } });
+		return ok({ id, name: (entry as PhoneLedgerEntry).name, spec: { image: (entry as PhoneLedgerEntry).image, user: SHELL_USER, network: "open", deadline, kind: "android" } });
 	}
 
 	/**
@@ -782,17 +898,17 @@ export class PhoneHarnessProvider implements ComputerProvider {
 					await this.#ledger.remove(listed.id);
 					continue;
 				}
-				entry = { id: made.id, labels: { ...entry.labels }, image: entry.image, deadline: this.#deadlineOf(made, Date.parse(entry.deadline)) };
+				entry = { id: made.id, name: entry.name, labels: { ...entry.labels }, image: entry.image, deadline: this.#deadlineOf(made, Date.parse(entry.deadline)) };
 				await this.#ledger.put(entry);
 				await this.#ledger.remove(listed.id);
 			}
 			if (entry.released !== undefined) {
 				// Released, and being ended: never listed. Forgotten once the listing leaves it out and its own GET is a 404,
 				// or once its deadline has passed.
-				if (this.#now() > Date.parse(entry.deadline)) await this.#ledger.remove(entry.id);
+				if (this.#now() > Date.parse(entry.deadline)) await this.#forget(entry);
 				else if (!live.has(entry.id)) {
 					const read = await this.#session(entry.id, signal);
-					if (!read.ok && read.error.code === "gone") await this.#ledger.remove(entry.id);
+					if (!read.ok && read.error.code === "gone") await this.#forget(entry);
 				}
 				continue;
 			}
@@ -801,7 +917,7 @@ export class PhoneHarnessProvider implements ComputerProvider {
 				// Not in the listing: its own GET says whether the service ended it (404), and only then is it forgotten.
 				const read = await this.#session(entry.id, signal);
 				if (!read.ok && read.error.code === "gone") {
-					await this.#ledger.remove(entry.id);
+					await this.#forget(entry);
 					continue;
 				}
 				if (!read.ok) return read;
@@ -809,7 +925,7 @@ export class PhoneHarnessProvider implements ComputerProvider {
 			}
 			if (!carries(entry.labels, labels) || out.some((info) => info.ref.id === entry.id)) continue;
 			out.push({
-				ref: { id: entry.id, name: entry.id },
+				ref: { id: entry.id, name: entry.name },
 				labels: { ...entry.labels },
 				deadline: new Date(this.#deadlineOf(session, Date.parse(entry.deadline))),
 				state: session.state === "ready" || session.state === "provisioning" ? "running" : "stopped",
@@ -831,6 +947,8 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		if (how === "stop") return fail("unsupported", "a cloud phone has no stop: release it with delete, which ends the session");
 		if (how !== "delete") return fail("unsupported", `a cloud phone is kept for no agent (the phone harness declares no persistence), so release ${JSON.stringify(how)} is refused and the phone is left as it is: release it with delete`);
 		const entry = await this.#ledger.get(ref.id);
+		// A released phone's request is spent: the same request id again is refused, never made a second time.
+		if (entry !== undefined) this.#requests.end(entry.name);
 		if (entry?.released !== undefined) {
 			// Released already, and the service may still be ending it: ok. Its own GET says whether it is gone, and then it is
 			// forgotten; a phone the service still holds running is sent its DELETE again.

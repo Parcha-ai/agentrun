@@ -19,7 +19,7 @@ const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
 after(closeOpenSessions);
 
 /** The run's own model, free: its requests always fit, so only the paid call meets the cap. */
-const FREE = { id: "claude-sonnet-4-5", api: "anthropic-messages", price: { input: 0, output: 0 }, outputCeiling: 8_192 };
+const FREE = { id: "claude-sonnet-5-5", api: "anthropic-messages", price: { input: 0, output: 0 }, outputCeiling: 8_192 };
 
 /** A run under a cap of `capUsd` whose one tool `pay` makes one paid call (`call()`), then answers: the run's row, its
  *  budget entries, what the tool was answered, and how many times the call's provider was reached. */

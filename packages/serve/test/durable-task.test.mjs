@@ -13,7 +13,7 @@ import { runWorkflow } from '@parcha/agentrun-dsl';
 import { openRecovery, recoveryBound, withRecovery, workspaceFiles } from '@parcha/agentrun-dsl/recovery';
 import { createWorkflowExtension } from '../dist/workflow/task.js';
 import { documentStore } from '../dist/workflow/store.js';
-import { durableDoc, readJournal } from '../dist/workflow/readers.js';
+import { durableDoc, readJournal } from './durable-file.mjs';
 
 const root = mkdtempSync(join(tmpdir(), 'agentrun-durable-task-'));
 after(() => rmSync(root, { recursive: true, force: true }));

@@ -40,6 +40,8 @@ export interface Previous {
   readonly cachedTokens: number;
   readonly inputTokens: number;
   readonly boundTokens: number;
+  /** Its bound was its provider's count, not its bytes: used only for a next request bounded the same way. */
+  readonly counted?: boolean;
   readonly endedAt: number;
 }
 

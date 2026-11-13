@@ -42,7 +42,7 @@ const until = async (done, what, ms = 30_000) => {
 async function asking(t, input, env = {}, hook = undefined) {
   const log = join(await scratch(t), "browser.jsonl");
   withEnv(t, { BROWSERBASE_API_KEY: "fake-test-key", BROWSERBASE_PROJECT_ID: "fake-project", FAUX_BROWSER_LOG: log, ...env }, KEYS);
-  const server = await serve(t, { accounts: true, openSetup: true, console: await builtConsole(t), fauxBrowser: FAUX_BROWSER, faux: BROWSE_ASK_BROWSE });
+  const server = await serve(t, { accounts: true, openSetup: true, console: await builtConsole(t), fauxBrowser: FAUX_BROWSER, faux: BROWSE_ASK_BROWSE, webhookPrivateTargets: true });
   const origin = `http://127.0.0.1:${server.port}`;
   const made = await call(server.port, { method: "POST", path: "/v2/setup", headers: { ...json, origin }, body: { password: PASSWORD } });
   assert.equal(made.status, 201, made.text);

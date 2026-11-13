@@ -27,7 +27,7 @@ const comparable = (learning) => {
 /** The grader's answer that gives `verdict` again (parseVerdict's input). */
 const answerOf = (verdict) => JSON.stringify({
   merge: verdict.merge, reason: verdict.reason,
-  items: verdict.items.map((item) => ({ file: item.file, decision: item.pending ? "pending" : item.keep ? "keep" : "drop", ...(item.origin ? { origin: item.origin } : {}), ...(item.question ? { question: item.question } : {}), why: item.why })),
+  items: verdict.items.map((item) => ({ file: item.file, decision: item.pending ? "pending" : item.keep ? "keep" : "drop", general: item.keep, ...(item.origin ? { origin: item.origin } : {}), ...(item.question ? { question: item.question } : {}), why: item.why })),
 });
 
 /** Scenario `golden`'s run, ended in the store with its kept proposal and its learning run, and that learning run run by

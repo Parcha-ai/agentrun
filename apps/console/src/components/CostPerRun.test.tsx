@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { CostChart, CostPerRun, HOW } from "./CostPerRun";
 import SAMPLE from "./CostPerRun.sample.json";
 import { ClientError, type Client } from "@/lib/client";
-import { level, nearest, niceTop, plotted, rollingMean, runTicks, usd, windowOf, yTopOf } from "@/lib/costPerRun";
+import { blocksOf, blockSizeOf, level, nearest, niceTop, pct, plotted, rollingMean, runTicks, timesOf, usd, windowOf, yTicksOf, yTopOf } from "@/lib/costPerRun";
 import type { CostRun, LearningCost } from "@/lib/v2";
 
 // The cost per run chart (GET /v2/agents/{id}/learning/cost): the invented invoice-sorter agent's 80 runs, its cost
@@ -15,10 +15,10 @@ const sample = SAMPLE as unknown as LearningCost;
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.innerHTML = ""; });
 
-function draw(data: LearningCost, on = true) {
+function draw(data: LearningCost, on = true, width = 900) {
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
-  act(() => root!.render(createElement(CostChart, { data, on, width: 900 })));
+  act(() => root!.render(createElement(CostChart, { data, on, width })));
   return host;
 }
 const text = (host: HTMLElement) => host.textContent ?? "";
@@ -57,16 +57,78 @@ describe("the chart's arithmetic", () => {
   });
 });
 
+describe("the ratio format", () => {
+  it("says a tenth under 10x and a whole number from 10x, one format for the headline card and the chart", () => {
+    expect([timesOf(7), timesOf(7.4), timesOf(6.953), timesOf(9.94), timesOf(9.96), timesOf(10), timesOf(12.4), timesOf(0.5), timesOf(104.6)]).toEqual(["7.0x", "7.4x", "7.0x", "9.9x", "10x", "10x", "12x", "0.5x", "105x"]);
+  });
+  it("rounds once: 10.46 is 10x, not 11x", () => {
+    expect([timesOf(10.46), timesOf(9.96), timesOf(7.04)]).toEqual(["10x", "10x", "7.0x"]);
+  });
+});
+
+describe("the execution mix's arithmetic", () => {
+  it("cuts every run, its cost known or not, one a column up to 20, then into blocks of 5 or more, about 20 blocks at most", () => {
+    expect([blockSizeOf(3), blockSizeOf(20), blockSizeOf(21), blockSizeOf(80), blockSizeOf(400), blockSizeOf(1000)]).toEqual([1, 1, 5, 5, 20, 50]);
+    const blocks = blocksOf(sample.runs, 5);
+    expect(blocks).toHaveLength(16);
+    expect(blocks[4]).toEqual({ from: 21, to: 25, runs: 5, counts: { agent: 1, handed_back: 1, workflow: 3 } });
+    const short = blocksOf(sample.runs.slice(0, 7), 5);
+    expect(short.map((b) => [b.from, b.to, b.runs])).toEqual([[1, 5, 5], [6, 7, 2]]);
+    expect([pct(3, 5), pct(1, 3), pct(0, 0)]).toEqual(["60%", "33%", "0%"]);
+  });
+  it("steps the cost axis cleanly from 0 to its top: never a quarter of 5", () => {
+    expect(yTicksOf(0.005)).toEqual([0, 0.001, 0.002, 0.003, 0.004, 0.005]);
+    expect(yTicksOf(1)).toEqual([0, 0.25, 0.5, 0.75, 1]);
+    expect(yTicksOf(0.25)).toEqual([0, 0.05, 0.1, 0.15, 0.2, 0.25]);
+    expect(yTicksOf(2)).toEqual([0, 0.5, 1, 1.5, 2]);
+  });
+});
+
 describe("CostChart", () => {
   it("shows the drop: the levels before and after, the takeover, and how many times cheaper", () => {
     const host = draw(sample);
-    expect(text(host)).toContain("$0.890 a run before learning, $0.128 after takeover: 7x cheaper");
+    expect(text(host)).toContain("$0.890 a run before learning, $0.128 after takeover: 7.0x cheaper");
     expect(text(host)).toContain("Workflow took over, run 21");
-    expect(text(host)).toContain("After takeover $0.128 · 7x cheaper");
+    expect(text(host)).toContain("After takeover $0.128 · 7.0x cheaper");
     expect(text(host)).toContain("Before learning $0.890");
     expect(text(host)).toContain("Rolling mean of 5 runs");
     expect(text(host)).toContain("1 run costs more than");
     expect(text(host)).toContain("1 run's cost is not known: left out.");
+  });
+  it("before any workflow has finished a run, the mix's last words say who did, not 0% by the workflow", () => {
+    const host = draw(series([run(1, "agent", 0.002), run(2, "agent", 0.003), run(3, "handed_back", 0.002)]));
+    const mix = host.querySelector('[data-testid="execution-mix"]')!;
+    expect(mix.textContent).toContain("Last run: 100% handed back");
+    expect(mix.textContent).not.toContain("by the learned workflow");
+  });
+  it("on a phone the level's words are short enough to clear the line's drop", () => {
+    const host = draw(sample, true, 390);
+    expect(text(host)).toContain("After $0.128 · 7.0x cheaper");
+    expect(text(host)).not.toContain("After takeover $0.128");
+  });
+  it("carries the takeover marker down through the mix as one line on the left edge of the takeover's block, never a ring cutting a column", () => {
+    const mix = draw(sample).querySelector<HTMLElement>('[data-testid="execution-mix"]')!;
+    const marker = mix.querySelector('[data-testid="mix-takeover"]')!;
+    const paths = [...marker.querySelectorAll("path")];
+    expect(paths.map((p) => p.getAttribute("class"))).toEqual(["stroke-chart-workflow"]);
+    // Runs 21 to 25 are a whole block starting at the takeover: its hover target begins where the line is.
+    const targets = [...mix.querySelectorAll("svg g")].map((g) => g.querySelector("rect")).filter((r): r is SVGRectElement => !!r && r.getAttribute("fill-opacity") === "0");
+    const edge = Number(targets[4]!.getAttribute("x"));
+    expect(Number(/^M([\d.]+),/.exec(paths[0]!.getAttribute("d")!)![1])).toBeCloseTo(edge, 1);
+  });
+  it("tiles the mix in whole blocks on the run axis: every block as wide as the others, the last one alone shorter, no gap between", () => {
+    const mix = draw(sample).querySelector<HTMLElement>('[data-testid="execution-mix"]')!;
+    const targets = [...mix.querySelectorAll("svg g")].map((g) => g.querySelector("rect")).filter((r): r is SVGRectElement => !!r && r.getAttribute("fill-opacity") === "0");
+    const spans = targets.map((r) => [Number(r.getAttribute("x")), Number(r.getAttribute("width"))] as const);
+    expect(spans).toHaveLength(16);
+    for (let i = 1; i < spans.length; i++) expect(spans[i]![0]).toBeCloseTo(spans[i - 1]![0] + spans[i - 1]![1], 1);
+    for (const [, w] of spans) expect(w).toBeCloseTo(spans[0]![1], 1);
+  });
+  it("gives a run whose cost is unknown its own column even when the last runs are unknown", () => {
+    const host = draw(series([run(1, "agent", 0.5), run(2, "agent", 0.5), run(3, "agent", null), run(4, "handed_back", null), run(5, "workflow", null)]));
+    const mix = host.querySelector<HTMLElement>('[data-testid="execution-mix"]')!;
+    const xs = [...mix.querySelectorAll("svg g")].map((g) => g.querySelector("rect")).filter((r): r is SVGRectElement => !!r && r.getAttribute("fill-opacity") === "0").map((r) => Number(r.getAttribute("x")));
+    expect(new Set(xs.map((v) => Math.round(v))).size).toBe(5);
   });
   it("names each path in the legend with its runs, and colours its dots by a chart token", () => {
     const host = draw(sample);
@@ -89,6 +151,25 @@ describe("CostChart", () => {
     expect(rows).toHaveLength(80);
     expect(rows[43]!.textContent).toContain("unknown");
   });
+  it("draws the execution mix on the run axis: a column a block, a segment a path it took, the last block's share said", () => {
+    const host = draw(sample);
+    const mix = host.querySelector<HTMLElement>('[data-testid="execution-mix"]')!;
+    expect(mix.textContent).toContain("Who finished each run, by 5");
+    expect(mix.textContent).toContain("Last 5 runs: 100% by the learned workflow");
+    const segments = [...mix.querySelectorAll("svg rect")].filter((r) => r.getAttribute("class")?.startsWith("fill-chart-"));
+    expect(segments).toHaveLength(21);
+    expect(mix.querySelector(".sr-only")!.textContent).toContain("Runs 21 to 25: by the agent 1, handed back 1, learned workflow 3");
+    act(() => { mix.querySelectorAll("svg g")[4]!.dispatchEvent(new MouseEvent("pointerover", { bubbles: true })); });
+    expect(mix.querySelector(".shadow-float")!.textContent).toBe("Runs 21 to 25By the agent 1 (20%)Handed back 1 (20%)Learned workflow 3 (60%)");
+  });
+  it("draws a column a run up to 20 runs, each named as one run", () => {
+    const runs = [...Array.from({ length: 4 }, (_, i) => run(i + 1, "agent", 0.002)), run(5, "handed_back", 0.003)];
+    const mix = draw(series(runs, { before: { runs: 5, mean_usd: 0.002 } })).querySelector<HTMLElement>('[data-testid="execution-mix"]')!;
+    expect(mix.textContent).toContain("Who finished each run");
+    expect(mix.textContent).not.toContain(", by ");
+    expect([...mix.querySelectorAll("svg rect")].filter((r) => r.getAttribute("class")?.startsWith("fill-chart-"))).toHaveLength(5);
+    expect(mix.querySelector(".sr-only")!.textContent).toContain("Run 5: handed back 1");
+  });
   it("leaves the times-cheaper figure out under 20 runs after the takeover, and says when it comes", () => {
     const runs = [...Array.from({ length: 10 }, (_, i) => run(i + 1, "agent", 1)), ...Array.from({ length: 5 }, (_, i) => run(i + 11, "workflow", 0.1))];
     const host = draw(series(runs, { takeover: { n: 11, run_id: "run_11" }, before: { runs: 10, mean_usd: 1 }, after: { runs: 5, mean_usd: 0.1 } }));
@@ -109,16 +190,23 @@ describe("CostChart", () => {
     expect(text(host)).toContain("No run with a known cost yet.");
     expect(text(host)).toContain("run the same job about 20 times");
   });
+  it("draws the mix even when no run has a known cost: the chart says what is needed, the strip still shows who finished each run", () => {
+    const host = draw(series([run(1, "agent", null), run(2, "workflow", null), run(3, "workflow", null)]));
+    expect(text(host)).toContain("No run with a known cost yet.");
+    expect(host.querySelector('[data-testid="execution-mix"]')).not.toBeNull();
+  });
   it("keeps the level after the takeover when the takeover is older than the runs read, without its marker", () => {
     const host = draw({ ...sample, runs: sample.runs.slice(40), total_runs: 80 });
-    expect(text(host)).toContain("After takeover $0.128 · 7x cheaper");
+    expect(text(host)).toContain("After takeover $0.128 · 7.0x cheaper");
     expect(text(host)).not.toContain("Workflow took over, run 21");
   });
   it("says a learned workflow that costs more than the agent by hand no longer runs first, with the two levels", () => {
-    const host = draw({ ...sample, workflows: [{ workflow: "sort-invoice", digest: "0123456789abcdef", state: "needs_revision", served: { runs: 10, mean_usd: 0.95 }, by_hand: { runs: 19, mean_usd: 0.889921 } }] });
-    expect(text(host)).toContain("sort-invoice no longer runs first: $0.950 a run over its last 10 runs, at or over $0.890 a run by hand. Its next run asks the agent for a new version, which runs first again.");
+    const host = draw({ ...sample, workflows: [{ workflow: "sort-invoice", digest: "0123456789abcdef", state: "needs_revision", served: { runs: 10, mean_usd: 0.95 }, by_hand: { runs: 19, mean_usd: 0.889921 }, unknown_cost_runs: 0 }] });
+    expect(text(host)).toContain("sort-invoice no longer runs first: $0.950 a run all-in over its last 10 runs, at or over $0.890 a run by hand. Its next run asks the agent for a new version, which runs first again.");
     act(() => root!.unmount()); document.body.innerHTML = "";
-    expect(text(draw({ ...sample, workflows: [{ workflow: "sort-invoice", digest: "0123456789abcdef", state: "serving", served: { runs: 10, mean_usd: 0.1 }, by_hand: { runs: 19, mean_usd: 0.889921 } }] }))).not.toContain("no longer runs first");
+    expect(text(draw({ ...sample, workflows: [{ workflow: "sort-invoice", digest: "0123456789abcdef", state: "needs_revision", served: { runs: 10, mean_usd: 0.95 }, by_hand: { runs: 19, mean_usd: 0.889921 }, unknown_cost_runs: 2 }] }))).toContain("at or over $0.890 a run by hand. 2 runs of unknown cost left out. Its next run");
+    act(() => root!.unmount()); document.body.innerHTML = "";
+    expect(text(draw({ ...sample, workflows: [{ workflow: "sort-invoice", digest: "0123456789abcdef", state: "serving", served: { runs: 10, mean_usd: 0.1 }, by_hand: { runs: 19, mean_usd: 0.889921 }, unknown_cost_runs: 0 }] }))).not.toContain("no longer runs first");
   });
   it("says only the latest runs are drawn when the server sent fewer than there are", () => {
     const host = draw({ ...sample, total_runs: 1200 });

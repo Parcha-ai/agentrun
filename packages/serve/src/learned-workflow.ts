@@ -44,6 +44,7 @@ import { ARGS_PREVIEW_BYTES, deniedText, type SettingFrom } from "./tool-gate.js
 import type { DenyFrom } from "./refusal-words.js";
 import { allows, CALL_TOOLS, learnedDraftTools, toolOf, workflowTools } from "./tools.js";
 import type { Complete } from "./llm.js";
+import type { SearchOn } from "./web-search.js";
 import type { Workspace } from "./workspace/workspace.js";
 import type { DecisionProvider } from "@parcha/agentrun-dsl";
 import type { Refusal } from "@parcha/agentrun-kernel";
@@ -182,6 +183,9 @@ export type LearnedWorkflowRun = {
   modelName?(tier: string | undefined): string | undefined;
   /** The `llm` tool's completion, for a call node that names it. */
   complete?: Complete;
+  /** The run's models a call node's native web_search goes through (EffectRun.search): on the runner, the session's
+   *  port. */
+  search?: SearchOn;
   /** The run's gate's permission of a tool now (tool-gate.ts RunGate policy): a call node's tool set to ask or deny is
    *  refused before any node runs, and asked again as each call node runs, a composed workflow's inner ones too, so one
    *  set to either since the call began is refused there, never run. Required: a learned workflow never runs a tool
@@ -439,7 +443,7 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
     if (permission === "ask") throw new Error(`This ${tool} call needs a person's approval, which a workflow's call node cannot wait for; it was not run.`);
     // Its paid requests booked under the tool's call, as a call of its own: the node, its execution path, its item in a map.
     const booked = ledger ? { ledger: { call: callId, record: ledger.record } } : {};
-    return effect(given, { signal: own, env: run.env, work: run.work, ...(run.complete ? { complete: run.complete } : {}), ...booked });
+    return effect(given, { signal: own, env: run.env, work: run.work, ...(run.complete ? { complete: run.complete } : {}), ...(run.search ? { search: run.search } : {}), ...booked });
   };
   // Its step guards (runner/step-guard.ts): a guard's Jev is a decision of the call, on the run's decisions (its judge,
   // its gate, its one cap); a run with no Jev provider has no Jev signal, so a guard that reads one hands back.
