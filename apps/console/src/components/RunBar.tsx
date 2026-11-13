@@ -80,7 +80,7 @@ export function RunBar({ agent, efforts, v2, go, blocked, limits, upload = sendU
             placeholder={workflow ? "The workflow's input, as JSON" : "The run's first message"}
             onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void start(); } }}
             className={cn("min-w-0 flex-1 resize-y max-sm:order-first max-sm:basis-full", workflow ? "leading-[1.6]" : "max-sm:h-10")} />
-          <div className="flex shrink-0 items-center gap-3 max-sm:order-last max-sm:gap-2">
+          <div data-controls className="flex items-center gap-3 max-sm:order-last max-sm:min-w-0 max-sm:max-w-full max-sm:flex-wrap max-sm:gap-2 sm:shrink-0">
             {efforts.length > 0 && (
               <div className="flex items-center gap-2" title="How hard the model thinks before it answers. default leaves it to the agent.">
                 <span className="flex flex-col leading-tight"><label htmlFor="runbar-effort" className="caps text-label text-muted-foreground">Effort</label><span className="text-label text-muted-foreground max-sm:hidden">How hard the model thinks</span></span>
@@ -107,8 +107,9 @@ export function RunBar({ agent, efforts, v2, go, blocked, limits, upload = sendU
         <div className="mt-3 flex flex-wrap items-center gap-2 max-sm:mt-0">
           <div className="min-w-0 flex-1"><FilePicker attachments={attachments} limits={limits} disabled={!!blocked} compact /></div>
           <CodingAgentHandoff label="Run with your coding agent" className="max-sm:hidden"
-            unavailable={attachments.items.length ? "Remove the attached files first: they are for a run started here, and are deleted when you leave this page. Your coding agent uploads its own." : undefined}
-            context={() => ({ kind: "run", agentId: agent.agent_id, revision: agent.revision, ...(built.ok ? { input: built.body.input } : {}), ...(effort ? { effort } : {}) })} />
+            unavailable={attachments.items.length ? "Remove the attached files first: they are for a run started here, and are deleted when you leave this page. Your coding agent uploads its own."
+              : !built.ok && built.field === "max_cost_usd" && cap.trim() ? "Fix the spend cap first: the handoff carries it, and a cap that is not a positive number of dollars cannot be handed over." : undefined}
+            context={() => ({ kind: "run", agentId: agent.agent_id, revision: agent.revision, ...(built.ok ? { input: built.body.input } : {}), ...(effort ? { effort } : {}), ...(built.ok && built.body.max_cost_usd !== undefined ? { maxCostUsd: built.body.max_cost_usd } : {}) })} />
         </div>
       </div>
       {example && <p className="mt-2 font-mono text-label text-muted-foreground">{exampleHint(example, "run")}</p>}

@@ -78,6 +78,45 @@ describe("RunBar, the Spend cap box", () => {
     expect(m.starts).toEqual([]);
   });
 
+  const handoff = async (m: ReturnType<typeof mount>) => {
+    const b = [...m.host.querySelectorAll("button")].find((x) => x.textContent?.trim() === "Run with your coding agent")!;
+    await act(async () => { b.click(); });
+    for (let i = 0; i < 6; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    return { b, prompt: document.querySelector<HTMLTextAreaElement>('[role="dialog"] textarea')?.value ?? "" };
+  };
+
+  it("a typed cap reaches the coding-agent handoff's request, and an empty box hands over none", async () => {
+    const typed = mount(agent());
+    typed.write("hi");
+    typed.set(typed.box()!, "0.75");
+    const withCap = await handoff(typed);
+    expect(withCap.prompt).toContain('"max_cost_usd": 0.75');
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    const empty = mount(agent());
+    empty.write("hi");
+    const without = await handoff(empty);
+    expect(without.prompt).toContain("POST /v2/agents/capper/runs");
+    expect(without.prompt).not.toContain("max_cost_usd");
+  });
+
+  it("a cap that is not a number turns the handoff off and says why at the button", () => {
+    const m = mount(agent());
+    m.write("hi");
+    m.set(m.box()!, "abc");
+    const b = [...m.host.querySelectorAll("button")].find((x) => x.textContent?.trim() === "Run with your coding agent")!;
+    expect(b.disabled).toBe(true);
+    expect(b.getAttribute("title")).toContain("spend cap");
+  });
+
+  it("the phone's controls wrap instead of overflowing the row", () => {
+    const m = mount(agent());
+    const controls = m.host.querySelector("[data-controls]")!;
+    expect(controls.className).toContain("max-sm:flex-wrap");
+    expect(controls.className).toContain("max-sm:min-w-0");
+    expect(controls.className).toContain("sm:shrink-0");
+    expect(controls.className).not.toMatch(/(^|\s)shrink-0/);
+  });
+
   it("a start refused for its cap says the server's words at the box, and not again in the list under the refusal", async () => {
     const said = "Raise the cap to at least $0.10: one request of this model can cost that much.";
     const refusal = Object.assign(new ClientError(422, "input_invalid", "The request's fields are not valid."), { fields: [{ field: "max_cost_usd", reason: "below_least", message: said }] });
