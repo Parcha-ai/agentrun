@@ -318,6 +318,15 @@ public struct Policy: Sendable, Equatable, Codable {
 			throw RPCError.denied("this Mac's owner allows Computerd to touch only \(apps!.joined(separator: ", ")), not \(app)")
 		}
 	}
+
+	/// Whether `caller` may use what `grant` covers: the socket always; the paired server only when the owner lists it.
+	public func grants(_ grant: ServerGrant, to caller: Caller) -> Bool {
+		caller == .local || (server ?? []).contains(grant)
+	}
+
+	public func check(_ grant: ServerGrant, for caller: Caller) throws {
+		guard grants(grant, to: caller) else { throw RPCError.denied(Self.ungranted(grant)) }
+	}
 }
 
 /// What the Mac's owner may grant the server it is paired with, as policy.json's "server" lists it. A value not here
@@ -329,6 +338,16 @@ public enum ServerGrant: String, Sendable, Codable, CaseIterable {
 	case files
 	/// screen.shot, screen.read and screen.watch: the whole screen, whichever apps are on it.
 	case screen
+
+	/// The grant a method needs, by its group: exec.*; files.* and tar.*; screen.*. nil for every other method.
+	public init?(method: String) {
+		switch method.prefix(while: { $0 != "." }) {
+		case "exec": self = .exec
+		case "files", "tar": self = .files
+		case "screen": self = .screen
+		default: return nil
+		}
+	}
 
 	var what: String {
 		switch self {

@@ -55,12 +55,13 @@ public enum MacPlatform {
 		return text.isEmpty ? nil : text
 	}
 
-	/// The owner's policy; a policy file that does not parse allows no app at all, never every app.
+	/// The owner's policy; a policy file that does not parse allows no app at all, never every app, and grants the
+	/// paired server nothing.
 	public static func policy() -> Policy {
 		do {
 			return try Policy.load()
 		} catch {
-			log("\(error): allowing no app until it is fixed")
+			log("\(error): allowing no app and granting the paired server nothing until it is fixed")
 			return Policy(apps: [])
 		}
 	}

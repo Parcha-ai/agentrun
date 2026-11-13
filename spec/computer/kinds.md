@@ -15,8 +15,11 @@ computer's `hello` repeats it. Each kind allows these operating systems and daem
 
 The daemon modes are in [`stdio.md`](stdio.md#how-the-daemon-gets-in-the-daemon-modes). A mode says whether
 `computerd init` runs in the computer, keeping init's promises about programs, and nothing about who answers the wire:
-an attached Mac's Computerd and a phone's own agent are `none`, and a Mac still declares `exec` and `files` as groups
-when it offers them, just not as Core.
+an attached Mac's Computerd and a phone's own agent are `none`. An attached Mac offers `exec`, `files` and its screen
+only when its owner's grant says so (`"server"` in its `policy.json`): with the grant it declares `exec` and `files` as
+groups, just not as Core; without it it declares neither, and its `screen.capture` feature is off, saying who can switch
+it on and where. It still declares the `screen` group, which a desktop needs to be given to an agent, and refuses each
+`exec`, `files`, `tar` and `screen` call it was not granted, whatever its `hello` said.
 
 ## Groups
 
@@ -101,7 +104,7 @@ window per app, as on a phone) leaves out "New window", and the window cases ski
 
 A driver's conformance image installs the fixture, built for its OS from that description. Its cases are Full: a
 computer without it skips them in words. Where it is installed, the Core cases `apps.launch-terminate`,
-`apps.launch-window` and `ui.observe-shape` use it too, so a computer that offers no exec or files (an attached Mac, a phone) still runs them;
+`apps.launch-window` and `ui.observe-shape` use it too, so a computer that offers no exec or files (an attached Mac without its owner's grant, a phone) still runs them;
 without it they use a phone's Settings app, or the input fixture written with files. They check observe's shape on a known window, refs that survive a change and
 go `stale` when their element leaves, a point refused `stale` once its window changed, an expect met and one unmet, the
 route each step reports (in every case, never a route whose feature is off, nor foreground on a call that did not

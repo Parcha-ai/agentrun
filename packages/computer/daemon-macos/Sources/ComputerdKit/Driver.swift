@@ -43,15 +43,29 @@ public final class Driver: Sendable {
 		ui = UIEngine(platform: platform, policy: policy, timing: timing)
 	}
 
-	/// hello: what the computer is, and each feature on or off with the reason.
+	/// hello: what the computer is, what this connection offers, and each feature on or off with the reason.
 	public func hello() -> HelloResult {
-		HelloResult(os: machine.os, osVersion: machine.osVersion, kind: machine.kind, arch: machine.arch, groups: Self.groups, screen: platform.capture.screenInfo(), features: features(), device: machine.device)
+		HelloResult(os: machine.os, osVersion: machine.osVersion, kind: machine.kind, arch: machine.arch, groups: groups(), screen: platform.capture.screenInfo(), features: features(), device: machine.device)
+	}
+
+	/// The groups this connection offers: every one on the socket; on an attached connection, exec and files only by the
+	/// owner's grant. screen stays either way, since a desktop needs it to be given to an agent: the screen.capture
+	/// feature says whether it is on.
+	public func groups() -> [Group] {
+		Self.groups.filter { group in
+			switch group {
+			case .exec: policy.grants(.exec, to: caller)
+			case .files: policy.grants(.files, to: caller)
+			default: true
+			}
+		}
 	}
 
 	/// Each feature on, or off with why. Without the tree (Accessibility) the window's image still comes and steps at
 	/// its points still run; without the tree and the image, ui.observe is refused.
 	public func features() -> [String: Feature] {
 		[
+			FeatureName.screenCapture: policy.grants(.screen, to: caller) ? platform.capture.feature : .off(Policy.ungranted(.screen)),
 			FeatureName.appsBackground: platform.workspace.backgroundLaunch,
 			FeatureName.tree: platform.accessibility.feature,
 			FeatureName.image: platform.capture.feature,
@@ -109,6 +123,12 @@ public final class Driver: Sendable {
 
 		r.on("ui.observe", UiObserveParams.self) { try await self.ui.observe($0) }
 		r.on("ui.act", UiActParams.self) { try await self.ui.act($0) }
+
+		// The owner's grants, on every call whatever hello said: exec, files and tar, and the screen are the paired
+		// server's only when policy.json's "server" lists them.
+		r.guarding { method in
+			if let grant = ServerGrant(method: method) { try self.policy.check(grant, for: self.caller) }
+		}
 		return r
 	}
 
