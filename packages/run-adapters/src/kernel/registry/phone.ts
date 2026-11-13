@@ -71,11 +71,12 @@ const run = (tool: string, body: (phone: NonNullable<Hands["phone"]>, args: Reco
 /** A node's class as a model reads it: the platform's, its package or iOS prefix dropped ("Button", "EditText"). */
 const classOf = (role: string) => role.replace(/^XCUIElementType/, "").split(".").pop() || role;
 const clip = (text: string) => (text.length > PHONE_TREE_TEXT_CHARS ? `${text.slice(0, PHONE_TREE_TEXT_CHARS - 1)}…` : text);
-/** One node, on one line: its class, its text or label (else its first inner text, marked so), its id, whether it is a
- *  field (and in focus), its center to tap and its bounds. */
+/** One node, on one line: its class, its label or text (else its first inner text, marked so) and the text a labeled
+ *  node holds, its id, whether it is a field (and in focus), its center to tap and its bounds. */
 function nodeLine(node: PhoneNode): string {
-  const own = node.text || node.label;
-  const name = own ? JSON.stringify(clip(own)) : node.inner ? `${JSON.stringify(clip(node.inner))} (inner text)` : "";
+  const own = node.label || node.text;
+  const holds = node.label && node.text && node.text !== node.label ? ` holding ${JSON.stringify(clip(node.text))}` : "";
+  const name = own ? `${JSON.stringify(clip(own))}${holds}` : node.inner ? `${JSON.stringify(clip(node.inner))} (inner text)` : "";
   const { x, y, w, h } = node.bounds;
   const state = node.editable ? `a field${node.focused ? ", focused" : ""}; ` : node.focused ? "focused; " : "";
   const center = `(${Math.round(x + w / 2)}, ${Math.round(y + h / 2)})`;

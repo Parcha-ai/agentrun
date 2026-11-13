@@ -6,7 +6,7 @@ import { Chip } from "@/components/ui/chip";
 import { Spinner } from "@/components/ui/spinner";
 import { clock } from "@/lib/format";
 import { mcpToolLabel } from "@/lib/mcp";
-import { rowDetail, rowFailed, rowPaused, type Step, steps } from "@/lib/timeline";
+import { rowDetail, rowFailed, rowPaused, rowRefused, type Step, steps } from "@/lib/timeline";
 import { kindWithModel, ranOnWords } from "@/lib/nodeModel";
 import { cn } from "@/lib/utils";
 import type { LearnedNode, TimelineRow } from "@/lib/v2";
@@ -104,7 +104,9 @@ function Row({ step, last, waitingChip }: { step: Step; last: boolean; waitingCh
               {row.kind === "waiting" && <Chip tone="warning">{waitingChip ?? "Input required"}</Chip>}
               {awaitsApproval(row) && <Chip tone="warning">Approval required</Chip>}
               {failed && <Chip tone="error">Error</Chip>}
-              {row.agent_label && <Chip>{row.agent_label}</Chip>}
+              {/* A call refused before it ran never failed: a neutral chip, never the red Error one (its row says why). */}
+              {rowRefused(row) && <Chip tone="muted" title="Not run: refused before it ran">Refused</Chip>}
+              {row.agent_label && <Chip label title={row.agent_label}>{row.agent_label}</Chip>}
               {step.ms !== undefined && <span className="font-mono text-label">{took(step.ms)}</span>}
               {step.times && <span className="font-mono text-label">{step.times} times{step.until ? ` over ${took(Math.max(0, Date.parse(step.until) - Date.parse(row.timestamp)))}` : ""}</span>}
             </span>
