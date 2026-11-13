@@ -1,7 +1,7 @@
 // Every MCP tool call passes the run's one tool gate on a harness with its own MCP client, claude-agent and codex,
 // through the API: with the server's mcp:fake/* set to deny the call is refused and the fake MCP server sees nothing;
-// with no setting it asks, parks, and the owner's allow runs it exactly once; set to allow it runs once with no one
-// asked. pi's rows are mcp-gate.test.mjs's (deny by key and by mcp:fake/*, the ask, allow by key and by mcp:fake/*).
+// with no setting it asks, parks, and the owner's allow runs it exactly once (or, set to allow while it waits, the
+// setting's allow, the flip waking the run); set to allow it runs once with no one asked. pi's rows are mcp-gate.test.mjs's (deny by key and by mcp:fake/*, the ask, allow by key and by mcp:fake/*).
 // claude-agent runs the pinned Agent SDK and Claude CLI against a scripted Messages endpoint; codex the stand-in for
 // Codex's app-server, whose MCP client calls the session proxy as Codex does, its "model" the turn's text said through
 // serve's gateway. No key, no network.
@@ -132,15 +132,14 @@ for (const harness of HARNESSES) {
     assert.equal(calls(fake).length, 1, "run exactly once");
   });
 
-  test(`${harness}: a call parked on its person, its tool then set to allow, is answered by the setting at the run's next claim: it runs once and its approval row reads allowed by the setting`, { timeout: 240_000 }, async (t) => {
-    const { api, fake, answer, run } = await setup(t, harness);
+  test(`${harness}: a call parked on its person, its tool then set to allow, is answered by the setting, the flip alone waking the run: it runs once and its approval row reads allowed by the setting`, { timeout: 240_000 }, async (t) => {
+    const { api, fake, run } = await setup(t, harness);
     const runId = await run(`flip-${harness}`);
     await follow(api, runId, ["input_required"], { deadlineMs: 180_000 });
-    const pending = (await api("GET", `/runs/${runId}`)).body.pending;
+    assert.equal((await api("GET", `/runs/${runId}`)).body.pending?.kind, "approval", "parked on the call's approval");
     assert.equal(calls(fake).length, 0, "nothing sent while it waits");
+    // No one answers: the flip wakes the run, and its claim finds the setting at allow.
     assert.equal((await api("PUT", "/settings/tools", { "mcp:fake/*": { permission: "allow" } })).status, 200);
-    // A flip alone wakes no run: the claim the person's answer starts is the one that finds the setting at allow.
-    assert.equal(await answer(runId, pending.id, { decision: "allow" }), 204);
     const { rows } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 180_000 });
     assert.match(await answerOf(api, runId), /5/);
     assert.equal(calls(fake).length, 1, "run exactly once");

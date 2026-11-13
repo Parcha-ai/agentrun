@@ -57,6 +57,10 @@ export interface ReflectDeps {
   /** The grade model the server names (learning.ts gradeModelOf: --grade-model, AGENTRUN_SERVE_GRADE_MODEL, else
    *  AGENT_MODEL_STRONG), carried on the learning run's launch; none, the agent's own model grades it, as main's. */
   readonly gradeModel?: string;
+  /** The cap the learning run's grade runs under, read once the turn closed (learning-end.ts gradeCapOf): what the run's
+   *  cap leaves once everything the run spent is counted, carried on the learning run's launch as its own cap, so the
+   *  grade never takes the run past its cap. Undefined for an uncapped run: its grade is capped by nothing. */
+  readonly gradeCap?: (runId: string) => Promise<number | undefined>;
   /** Which end of the run this is: 1, its first (the default); an end after a follow-up opened the run again is the next
    *  round, asked anew (its prompt says it looked back before), kept as a proposal of its own beside the earlier rounds'
    *  (every row the hook gives carries it), graded and merged by a learning run of its own. */
@@ -195,9 +199,12 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
       const detail = checked.reason === "empty" ? said.empty : checked.reason === "unparsed" ? said.unparsed : said.checker(checked.problems as never);
       return close([droppedRow(turn, checked.reason, detail, checked)]);
     }
+    // The learning run's cap: what the run's cap leaves now its look-back is spent, read after the checks (a read that
+    // fails is no room, never no cap: the grade is then skipped, never run past the cap).
+    const capUsd = deps.gradeCap ? await deps.gradeCap(input.runId).catch(() => 0) : undefined;
     return close([
       { table: "learning_proposals", row: { turn, proposal: { ...checked, detail: said.proposed(checked.notes, checked.skills, checked.workflows) } } },
-      { table: "learning_run", row: { id: deps.newRunId(), ...(deps.gradeModel ? { model: deps.gradeModel } : {}) } },
+      { table: "learning_run", row: { id: deps.newRunId(), ...(deps.gradeModel ? { model: deps.gradeModel } : {}), ...(capUsd !== undefined ? { capUsd } : {}) } },
     ]);
   };
   return async (input) => roundOf(await hook(input), round);
