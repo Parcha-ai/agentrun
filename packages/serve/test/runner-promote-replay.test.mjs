@@ -7,10 +7,14 @@
 //   - a replay whose answers are wrong holds the digest: the run after it is the agent's;
 //   - fewer than five graded inputs: promoted on its passing dry run, as before, and the record says so;
 //   - champion/challenger: a promoted digest (the champion) keeps serving while a newer revision of it replays, and after
-//     that revision's replay holds it; the revision serves only once its replay promotes it.
+//     that revision's replay holds it; the revision serves only once its replay promotes it;
+//   - one challenger at a time: a newer revision supersedes the one replaying; that one's replay runs are cancelled (no
+//     new one starts), its record says superseded, and the champion serves throughout.
 // The graded runs are records the promotion reads (their grade, launch and row), on a pi run of the faux gateway.
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
+import { createServer } from "node:http";
+import { Readable } from "node:stream";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -61,9 +65,38 @@ const until = async (done, what, ms = 60_000) => {
   }
 };
 
+/** A proxy in front of the gateway that holds each request whose body `held` matches until the caller goes away (a
+ *  cancelled run's aborted request), so a run asking one stays in flight. */
+async function holdingProxy(t, origin, held) {
+  const holding = new Set();
+  const server = createServer(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const body = Buffer.concat(chunks);
+    if (held(body.toString("utf8"))) {
+      holding.add(res);
+      res.on("close", () => holding.delete(res));
+      return;
+    }
+    const headers = Object.fromEntries(Object.entries(req.headers).filter(([key]) => !["host", "content-length", "connection"].includes(key)));
+    const answer = await fetch(`${origin}${req.url}`, { method: req.method, headers, ...(body.length ? { body } : {}) });
+    res.writeHead(answer.status, Object.fromEntries([...answer.headers].filter(([key]) => !["content-length", "content-encoding", "transfer-encoding", "connection"].includes(key))));
+    if (answer.body) Readable.fromWeb(answer.body).pipe(res);
+    else res.end();
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(async () => {
+    for (const res of holding) res.destroy();
+    server.closeAllConnections?.();
+    await new Promise((resolve) => server.close(resolve));
+  });
+  return { url: `http://127.0.0.1:${server.address().port}`, holding };
+}
+
 /** An agent that learned `answer` and `graded` graded runs (their grade's `expected` fields: `expected`), a runner
- *  claiming every run from its stored launch. The node submits `{answer: 42, sure}`. */
-async function world(t, { graded = 6, expected = { answer: 42 }, sure = true, flows = FLOWS, submit } = {}) {
+ *  claiming every run from its stored launch. The node submits `{answer: 42, sure}`. `hold`: a model request whose body
+ *  it matches is held until its run is cancelled. */
+async function world(t, { graded = 6, expected = { answer: 42 }, sure = true, flows = FLOWS, submit, hold } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-promote-replay-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -91,7 +124,8 @@ async function world(t, { graded = 6, expected = { answer: 42 }, sure = true, fl
   runsOf.launch = async (id) => (old.has(id) ? { runId: id, body: old.get(id), sealed: null, createdAt: 1 } : store.runs.launch(id));
   const depStore = new Proxy(store, { get: (target, key) => (key === "runs" ? runsOf : typeof target[key] === "function" ? target[key].bind(target) : target[key]) });
   const price = (_model, usage) => ((usage.input ?? 0) * 3 + (usage.output ?? 0) * 15) / 1e6;
-  const route = { model: MODEL, provider: { api: "anthropic-messages", origin: gw.url, credential: () => `not-a-secret-${"pi"}` }, cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, outputCeiling: 8_192, price, fetch: globalThis.fetch };
+  const proxy = hold ? await holdingProxy(t, gw.url, hold) : undefined;
+  const route = { model: MODEL, provider: { api: "anthropic-messages", origin: proxy?.url ?? gw.url, credential: () => `not-a-secret-${"pi"}` }, cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, outputCeiling: 8_192, price, fetch: globalThis.fetch };
   const logs = [];
   const deps = { env: {}, data: dir, journal: (claim) => store.journal(claim), store: depStore, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim: async () => ({ release: async () => {} }), log: (line) => logs.push(line) };
   const specOf = async (claim, run) => adapterRunSpecFromLaunch(readLaunchBody((await store.runs.launch(claim.runId)).body), run, deps, claim);
@@ -106,7 +140,7 @@ async function world(t, { graded = 6, expected = { answer: 42 }, sure = true, fl
     return ended(id);
   };
   const replays = async () => (await server.runs.list({ agentId: "agent-1" })).filter((row) => row.id !== "run-1" && row.id !== "run-2");
-  return { server, gw, logs, start, ended, replays, seed, dir };
+  return { server, gw, logs, start, ended, replays, seed, dir, proxy };
 }
 
 test("a new digest with graded inputs replays before it serves: the agent takes the run meanwhile; within the bar, the next run is served first", { timeout: 180_000 }, async (t) => {
@@ -237,6 +271,20 @@ test("a replay held with a guard set too low gets one refit: the cheapest thresh
 const revisedFlow = { ...answerFlow, root: { ...answerFlow.root, steps: [{ ...answerFlow.root.steps[0], instructions: "Answer the question, revision two; say whether you are sure." }, answerFlow.root.steps[1]] } };
 const REVISED = workflowDigest({ workflow: JSON.stringify(revisedFlow) });
 
+/** `run` (served at `digest`) graded wrong, then `flow`, its revision, landed on the folder's main from `seed`, as the
+ *  end-of-run turn lands one. */
+async function reviseOn(w, run, digest, flow, seed) {
+  await putGrade(w.server.settings, "agent-1", { run, correct: false, source: "feedback", at: new Date().toISOString(), path: "workflow", workflow: "answer", digest });
+  const folder = learningWorkspace({ mode: "local", data: w.dir, agentId: "agent-1" });
+  try {
+    const merged = await learningCommit(folder.workspace, { kind: "merge", runId: `revise-${run}`, reason: `revise answer: ${run} was graded wrong`, graded: {}, seed,
+      files: [{ path: "workflows/answer/workflow.json", text: JSON.stringify(flow) }, { path: "workflows/answer/README.md", text: readmeOf("answer", "Answers a question as a number") }] });
+    assert.equal(merged.ok, true, JSON.stringify(merged));
+  } finally {
+    await folder.end();
+  }
+}
+
 /** The world with answerFlow promoted at the folder's seed (the champion, as a claim records it), one run it served graded
  *  wrong, then its revision landed on the folder's main as the end-of-run turn lands one. */
 async function championWorld(t, opts = {}) {
@@ -244,15 +292,7 @@ async function championWorld(t, opts = {}) {
   await recordPromotion(w.server.settings, "agent-1", { workflow: "answer", digest: DIGEST, at: new Date().toISOString(), decided: "promote", source: "dry_run", reason: "promoted on its passing dry run", commit: w.seed }, (was) => was === undefined);
   const served = await w.start("run-1", "What is six times seven");
   assert.deepEqual([served.metrics?.path, served.metrics?.workflow_digest], ["workflow", DIGEST], "the champion serves");
-  await putGrade(w.server.settings, "agent-1", { run: "run-1", correct: false, source: "feedback", at: new Date().toISOString(), path: "workflow", workflow: "answer", digest: DIGEST });
-  const folder = learningWorkspace({ mode: "local", data: w.dir, agentId: "agent-1" });
-  try {
-    const merged = await learningCommit(folder.workspace, { kind: "merge", runId: "revise-run-1", reason: "revise answer: run-1 was graded wrong", graded: {}, seed: w.seed,
-      files: [{ path: "workflows/answer/workflow.json", text: JSON.stringify(revisedFlow) }, { path: "workflows/answer/README.md", text: readmeOf("answer", "Answers a question as a number") }] });
-    assert.equal(merged.ok, true, JSON.stringify(merged));
-  } finally {
-    await folder.end();
-  }
+  await reviseOn(w, "run-1", DIGEST, revisedFlow, w.seed);
   const settled = async () => until(async () => {
     const mine = (await w.server.runs.list({ agentId: "agent-1" })).filter((row) => !/^run-/.test(row.id));
     return mine.length === 6 && mine.every((row) => ["ended", "failed", "stopped"].includes(row.state) && row.runner === null) && mine;
@@ -291,4 +331,59 @@ test("champion/challenger: a revision its replay holds never serves; the champio
   assert.deepEqual(records.filter((one) => one.digest === REVISED).map(({ decided }) => decided), ["replaying", "hold"]);
   assert.equal(records.filter((one) => one.digest === DIGEST).at(-1).decided, "promote", "a held revision never stops its champion");
   assert.deepEqual(servingOf(records), [{ workflow: "answer", digest: DIGEST, replaying: null }]);
+});
+
+/** revisedFlow's own revision (a second wrong served grade's), so its digest is new again. */
+const thirdFlow = { ...answerFlow, root: { ...answerFlow.root, steps: [{ ...answerFlow.root.steps[0], instructions: "Answer the question, revision three; say whether you are sure." }, answerFlow.root.steps[1]] } };
+const THIRD = workflowDigest({ workflow: JSON.stringify(thirdFlow) });
+const FINAL = ["ended", "failed", "stopped"];
+
+test("one challenger at a time: two wrong grades in a row, the first revision's replay is cancelled and superseded; replay runs stay bounded and the champion serves throughout", { timeout: 180_000 }, async (t) => {
+  // Revision two's replay runs ask the model and are held there, in flight, until cancelled.
+  const w = await championWorld(t, { hold: (body) => body.includes("revision two") });
+  const { server, start, logs, proxy, dir } = w;
+  const replaysOf = async (digest) => (await server.runs.list({ agentId: "agent-1" })).filter((row) => !/^run-/.test(row.id)).filter((row) => row.id && digestOf.get(row.id) === digest);
+  const digestOf = new Map();
+  const second = await start("run-2", "What is seven times six");
+  assert.deepEqual([second.metrics?.path, second.metrics?.workflow_digest], ["workflow", DIGEST], `the champion serves while revision two replays: ${logs.join("\n")}`);
+  const firstReplay = (await promotionsOf(server.settings, "agent-1")).find((one) => one.digest === REVISED && one.decided === "replaying");
+  assert.equal(firstReplay?.runs?.length, 6, "revision two replays on the six graded inputs");
+  for (const id of firstReplay.runs) digestOf.set(id, REVISED);
+  await until(() => proxy.holding.size === 6, "revision two's six replay runs in flight, each held at its model request");
+  // A second wrong served grade: revision three lands on the folder's main, on top of revision two.
+  await reviseOn(w, "run-2", DIGEST, thirdFlow, (await seedOf(dir, "agent-1")).sha);
+  const third = await start("run-3", "What is six times seven, again");
+  assert.deepEqual([third.metrics?.path, third.metrics?.workflow_digest], ["workflow", DIGEST], `the champion serves while revision three replays: ${JSON.stringify(third.metrics)}\n${logs.join("\n")}`);
+  const records = await promotionsOf(server.settings, "agent-1");
+  const superseded = records.filter((one) => one.digest === REVISED).at(-1);
+  assert.deepEqual({ decided: superseded.decided, by: superseded.superseded_by }, { decided: "superseded", by: THIRD }, JSON.stringify(records));
+  assert.match(superseded.reason, /superseded by .* a newer revision/);
+  const thirdReplay = records.find((one) => one.digest === THIRD && one.decided === "replaying");
+  assert.equal(thirdReplay?.runs?.length, 6, "revision three replays on the six graded inputs");
+  for (const id of thirdReplay.runs) digestOf.set(id, THIRD);
+  assert.deepEqual(servingOf(records), [{ workflow: "answer", digest: DIGEST, replaying: THIRD }], "the console reads revision three replaying, never revision two");
+  // Revision two's replay runs end cancelled, their model requests aborted; what each spent stays booked on it.
+  const cancelled = await until(async () => {
+    const rows = await replaysOf(REVISED);
+    return rows.length === 6 && rows.every((row) => FINAL.includes(row.state) && row.runner === null) && rows;
+  }, "revision two's replay runs ended");
+  for (const row of cancelled) {
+    assert.deepEqual([row.state, row.outcome], ["stopped", "cancelled"], JSON.stringify(row));
+    assert.equal(row.metrics?.path, "replay", `a cancelled replay is still a replay on the cost series: ${JSON.stringify(row.metrics)}`);
+  }
+  assert.equal(proxy.holding.size, 0, "no request of revision two still held");
+  await until(async () => {
+    const rows = await replaysOf(THIRD);
+    return rows.length === 6 && rows.every((row) => FINAL.includes(row.state) && row.runner === null);
+  }, "revision three's replay runs ended");
+  // Revision three's replay is within the bar: it serves the next run. Replay runs in all: 6 + 6, no new one of revision two.
+  const fourth = await start("run-4", "What is seven times six, again");
+  assert.deepEqual([fourth.metrics?.path, fourth.metrics?.workflow_digest], ["workflow", THIRD], JSON.stringify(fourth.metrics));
+  const all = (await server.runs.list({ agentId: "agent-1" })).filter((row) => !/^run-/.test(row.id));
+  assert.equal(all.length, 12, "every replay run is one of the two revisions' six");
+  const after = await promotionsOf(server.settings, "agent-1");
+  assert.deepEqual(after.filter((one) => one.digest === REVISED).map(({ decided }) => decided), ["replaying", "superseded"]);
+  assert.deepEqual(after.filter((one) => one.digest === THIRD).map(({ decided }) => decided), ["replaying", "promote"]);
+  assert.deepEqual(servingOf(after), [{ workflow: "answer", digest: THIRD, replaying: null }]);
+  assert.ok(logs.some((line) => line.includes(`${REVISED} superseded by ${THIRD} while it replayed; 6 replay runs cancelled`)), logs.join("\n"));
 });

@@ -92,13 +92,13 @@ export type CompileAttempt = { readonly ok: boolean; readonly errors: readonly s
 export type CompiledRecord = { readonly workflow: string; readonly from_notes: readonly string[]; readonly attempts: readonly CompileAttempt[]; readonly digest?: string; readonly promoted?: boolean };
 
 /** Whether the draft a compile kept at `digest` serves (learn/promote.ts records, newest wins): true once promoted, or
- *  once a threshold refit of it was (its new revision serves in its place); false while held; undefined while it is
- *  replayed or before its first claim decides it. */
+ *  once a threshold refit of it was (its new revision serves in its place); false while held, or once a newer revision
+ *  superseded it; undefined while it is replayed or before its first claim decides it. */
 export function promotedOf(records: readonly PromotionRecord[], workflow: string, digest: string): boolean | undefined {
   const own = promotionOf(records, workflow, digest);
   if (own?.decided === "promote") return true;
   if (records.some((one) => one.workflow === workflow && one.decided === "promote" && one.source === "refit" && one.refit?.from === digest)) return true;
-  return own?.decided === "hold" ? false : undefined;
+  return own?.decided === "hold" || own?.decided === "superseded" ? false : undefined;
 }
 
 /** The learned workflows whose newest revision other than their champion (learn/promote.ts championOf, which serves while
