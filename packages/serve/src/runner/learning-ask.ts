@@ -4,7 +4,8 @@
 // request it refuses is never sent (the ask throws GradeOverCap, and the loop skips the grade); its record
 // is written and made durable before it leaves, and its cost booked when it answers (modelPortFor); and it reaches the
 // provider only through the kernel's model proxy, which admits and books it (startModelProxy with the booking's port).
-// What it spent is that booking's, and its tokens the answer's usage: the grade's cost_usd and tokens.
+// What it spent is that booking's, and its tokens the answer's usage: the grade's cost_usd and tokens. Each answer, and
+// each refusal, carries the booking's whole spend (`booked`): an earlier attempt's requests are the grade's too.
 import { randomBytes } from "node:crypto";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
@@ -115,7 +116,8 @@ export function bookedAsk(options: BookedAskOptions): LearningLoopDeps["ask"] {
         const target = models.getModel(PROVIDER, model);
         // Refused by the cap before it left: nothing of it was sent or spent, and the grade is not run (GradeOverCap),
         // however its client came back.
-        const overCap = () => (refused ? new GradeOverCap(refused.refuse, refused.forGood === true) : undefined);
+        // What the grade spent before it is its records' (every attempt's requests), never $0 for an earlier attempt's.
+        const overCap = () => (refused ? new GradeOverCap(refused.refuse, refused.forGood === true, { usd: booking.spentUsd(), turns: booking.turns() }) : undefined);
         let answer: Answer;
         try {
           answer = (await models.completeSimple(target as never, { messages: [{ role: "user", content: request.prompt, timestamp: Date.now() }] } as never, { signal, maxTokens: request.maxTokens } as never)) as unknown as Answer;
@@ -136,7 +138,8 @@ export function bookedAsk(options: BookedAskOptions): LearningLoopDeps["ask"] {
         // pi-ai counts cache reads and writes apart from input, as the grade's tokens do.
         const used = answer.usage;
         const tokens: Tokens | null = used ? { input: used.input, cache_read: used.cacheRead ?? 0, cache_write: used.cacheWrite ?? 0, output: used.output } : null;
-        return { text, usd, tokens };
+        // The grade's records after it: every grade request of the learning run, an earlier attempt's included.
+        return { text, usd, tokens, booked: { usd: after, turns: booking.turns() } };
       } finally {
         await proxy.close().catch(() => undefined);
       }

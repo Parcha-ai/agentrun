@@ -13,6 +13,10 @@
 // own (the phone's) is given the store's computer ledger. Nothing here knows a vendor: the registry, the providers' create
 // and a test's stand-ins are passed in.
 //
+// A paired computer (a person's own, attached-computers.ts) is one more provider of the registry for the claim, by its
+// id: claimed through the hub of the server's process (the computer package's attachedProvider), released by ending the
+// run's hold, never made or deleted.
+//
 // A persistent setting (the agent's own computer, agent-computer.ts) is made once under the agent's owner (this server's
 // id and the agent's), found again by its owner at each later claim and attached under the new claim, and detached, not
 // deleted, at the run's end. A run that finds it held by another run still going is refused, naming that run.
@@ -25,6 +29,7 @@ import { getSealedKey } from "../server-keys.js";
 import type { Store } from "../store/index.js";
 import { type AgentComputerHold, agentComputerOf, forgetAgentComputer, holdAgentComputer, keepAgentComputer, liveHolderOf, reconcileAgentComputer, serverIdOf } from "./agent-computer.js";
 import type { MountCheck } from "./attach.js";
+import { type AttachedComputers, pairedProvider, withPaired } from "./attached-computers.js";
 import { computerHold, type HeldComputer, heldHands } from "./computer-hold.js";
 import { type ProviderLedger, storeLedger } from "./computer-ledger.js";
 import { type ClaimBrowser, type ClaimSide, type ComputerSetting, type ComputerSettingKind, type KindRegistry, type LaunchedComputer, type ProviderEntry, providerKeys, resolveComputer } from "./resolve-computer.js";
@@ -135,6 +140,9 @@ export interface ComputerForClaimDeps {
    *  phone's adb not on PATH), in words that say how to fix it, or undefined: refused with code computer_unavailable
    *  before anything is rented. Absent: not asked. */
   readonly hostWhy?: (provider: string) => string | undefined;
+  /** The paired computers (attached-computers.ts): each one more provider of `kinds` for this claim, claimed through the
+   *  hub of this process. Absent: none is. */
+  readonly attached?: AttachedComputers;
   /** Why this run's harness takes no computer of `kind`, in words (a CLI harness's of a browser), or undefined: a kind
    *  it refuses is refused with code computer_unavailable before anything is made. Absent: every kind. */
   readonly refuseKind?: (kind: Exclude<ComputerSettingKind, "none">) => string | undefined;
@@ -502,32 +510,41 @@ export async function computerForClaim(
   deps: ComputerForClaimDeps,
 ): Promise<ClaimComputer> {
   const table = deps.keyTable ?? KEY_TABLE;
+  // The paired computers, each one more provider of the registry (attached-computers.ts): a setting names one by its id.
+  const paired = deps.attached ? await deps.attached.rows() : [];
+  const kinds = withPaired(deps.kinds, paired);
   /** The computer this claim started (one per claim): its ref id tags its live view, and its watch feeds it. */
   let made: { readonly id: string; readonly machine?: string; readonly watch?: WatchOf } | undefined;
   /** The provider entry it was started from: a phone's platform where the computer did not say it. */
   let madeBy: ProviderEntry | undefined;
+  /** A vendor's provider (or a local one's), made with the keys and the configuration the setting selected: that
+   *  configuration is built by its own create() options (Orgo's Windows: { os: "windows" }), beside the keys'. */
+  const vendorProvider = async (entry: ProviderEntry, keys: Readonly<Record<string, string>>, configuration: { readonly options?: Readonly<Record<string, unknown>> }): Promise<ComputerProvider> => {
+    const make = Object.hasOwn(deps.providers, entry.id) ? deps.providers[entry.id] : undefined;
+    if (!make) throw new Error(`this server has no ${entry.label} provider to start one with`);
+    const options = providerOptions(entry.id, keys, deps.settings ?? {}, table);
+    if (!options.ok) throw new Error(options.error.message);
+    return make({ ...options.options, ...configuration.options }, { ledger: storeLedger(store.computerLedger, entry.id), ...(launch.boxAllow === undefined ? {} : { boxAllow: launch.boxAllow }) });
+  };
   const side: ClaimSide = {
-    keysOf: providerKeys(deps.kinds, deps.keyOf ?? (async (name) => (deps.sealKey ? await getSealedKey(store, deps.sealKey, name) : undefined))),
+    keysOf: providerKeys(kinds, deps.keyOf ?? (async (name) => (deps.sealKey ? await getSealedKey(store, deps.sealKey, name) : undefined))),
     answers: deps.answers ?? (async () => false),
     ...(deps.daemon ? { daemon: deps.daemon } : {}),
     async launch(entry, { kind, keys, configuration, mount, gpu, persistent, signal }) {
       const ownLaunch = deps.launch && (deps.launches?.(entry.id) ?? true) ? deps.launch : undefined;
       // An agent's own computer needs its agent and the store's record of it; the server's launch (--faux) keeps none.
       if (persistent && (ownLaunch || launch.agentId === undefined || store.settings === undefined)) throw new Error("this run can't keep its agent's own computer here: start it again with persistent off");
-      if (ownLaunch) {
+      // A paired computer is claimed through the hub of this process (attachedProvider), never made: --faux's launch,
+      // which stands in for the vendors', is not its.
+      const pairedRow = paired.find((row) => row.id === entry.id);
+      if (ownLaunch && !pairedRow) {
         const own = await ownLaunch(entry, { kind, keys, configuration, ...(mount ? { mount } : {}), ...(gpu ? { gpu } : {}), ...(signal ? { signal } : {}) });
         const ownWatch = (own as unknown as { watch?: WatchOf }).watch;
         made = { id: own.id, ...(ownWatch ? { watch: ownWatch } : {}) };
         madeBy = entry;
         return own;
       }
-      const make = Object.hasOwn(deps.providers, entry.id) ? deps.providers[entry.id] : undefined;
-      if (!make) throw new Error(`this server has no ${entry.label} provider to start one with`);
-      const options = providerOptions(entry.id, keys, deps.settings ?? {}, table);
-      if (!options.ok) throw new Error(options.error.message);
-      // The configuration the setting selected is built by its own create() options (Orgo's Windows: { os: "windows" }),
-      // beside the keys'.
-      const provider = await make({ ...options.options, ...configuration.options }, { ledger: storeLedger(store.computerLedger, entry.id), ...(launch.boxAllow === undefined ? {} : { boxAllow: launch.boxAllow }) });
+      const provider = pairedRow ? pairedProvider(pairedRow, deps.attached?.hub) : await vendorProvider(entry, keys, configuration);
       // What this provider makes, as it declares it: the spec asks for one of its networks, within its lifetime
       // (computer-deps.ts computerSpecOf).
       const { network: networks, maxLifetimeMs } = provider.capabilities();
@@ -578,7 +595,7 @@ export async function computerForClaim(
     },
   };
 
-  const resolved = await resolveComputer(await settingOf(launch, store), deps.mode, deps.kinds, side);
+  const resolved = await resolveComputer(await settingOf(launch, store), deps.mode, kinds, side);
   if ("refused" in resolved) throw unavailable(resolved.refused);
   if (resolved.kind === "none") return { computer: undefined, release: noop };
   const refusedKind = deps.refuseKind?.(resolved.kind);

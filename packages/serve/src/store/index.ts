@@ -3,7 +3,7 @@ export { AgentArchived, AnswerTaken, CommandTaken, endedReason, ExternalBodyConf
 export type {
   ConstraintRule,
   AgentRow, Agents, AlsoRow, ChannelPost, Claim, Command, ComputerLedger, ComputerLedgerRow, Firing, FiringChange, FiringRow, FiringStatus, FiringStreak, Journal, Live, LiveRow, Mcp, McpCredentialMark, McpRemoved, McpOauth, McpOauthPendingRow, McpPinRow,
-  McpServerRow, McpServerStamp, McpServerWrite, NewFiring, NewRevision, NewTrigger, ReleasedState, RevisionRow, RunPatch, RunRow, Runs, RunState, SealedKeyRow, SealedKeys, SealedPlane, SealedSecretRow, SealedSecrets, SettingRow, Settings, Staged,
+  McpServerRow, McpServerStamp, McpServerWrite, NewFiring, NewPairedComputer, NewRevision, NewTrigger, PairedComputerRow, PairedComputers, ReleasedState, RevisionRow, RunPatch, RunRow, Runs, RunState, SealedKeyRow, SealedKeys, SealedPlane, SealedSecretRow, SealedSecrets, SettingRow, Settings, Staged,
   StagedTake, Store, StoreRole, TemplatePackage, Templates, TriggerDef, TriggerPatch, TriggerRow, Triggers, TriggerScope, TriggerSettingRow,
   TriggerSettings, Channels, ChannelAttemptRow, ChannelPostRow, ChannelToldRow, ImportedFrom, ImportSource, ImportRunInput, JournalReads, RunOrigin, RunOutcome, RunLaunchInput, RunLaunchRow, Learning,
   LearningProposal, LiveViewerRow, LiveViewers, SignIns, SignInRow, SignInTombstoneRow, UpdatedRun, ViewerKind,

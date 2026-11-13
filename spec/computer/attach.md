@@ -31,7 +31,7 @@ On the console's **Computers** page the owner presses **Pair a computer**. The c
 `POST /v2/computers/pairings` with the owner's session and shows what comes back:
 
 ```json
-{"code":"K7PD-W3QX","expiresAt":"2026-11-12T18:40:00Z","download":"https://<server>/downloads/computerd"}
+{"code":"K7PD-W3QX","expires_at":"2026-11-12T18:40:00.000Z"}
 ```
 
 - The code is eight characters a person reads and types: two groups of four, no 0, O, 1 or I
@@ -62,8 +62,11 @@ The server checks the code: it must exist, be unused and unexpired. It then burn
 under the code's owner, with its name, its `hello` and the time. The answer:
 
 ```json
-{"computer":"cmp_8f2k3j","token":"art_4c1f...e93a"}
+{"computer":"cmp-8f2k3jq7m4xw9tnb","token":"art_4c1f...e93a"}
 ```
+
+- The computer's id is `cmp-` and 16 lowercase letters and digits: an id an agent's computer setting names as its
+  provider, `{"kind":"desktop","provider":"cmp-8f2k3jq7m4xw9tnb"}`.
 
 - The token is the machine's long-lived credential: 32 random bytes, prefixed `art_` so a secret scanner knows it. It
   is shown only in this answer. The app keeps it in the OS's keychain (the macOS login keychain, Android's
@@ -182,8 +185,11 @@ The server maps an attached computer to a provider so a run takes it like any ot
 
 ## What serve needs
 
-These touch files under the current hold (serve's `computers.ts`, `openapi.ts`, `resolve-computer.ts`,
-`computer-for-claim.ts`, the generated clients) and land when it lifts:
+Built in serve: the routes and the socket in `computer-attach.ts`, the provider in `workspace/attached-computers.ts`
+(a paired computer is one more provider of the kind registry, named by its id), the claim in `computer-for-claim.ts`,
+the page in the console's Settings → Computers. Where it differs from the list below: a server has one owner, so the
+tables have no owner column; the code's expiry is `expires_at`; and the page has no download link yet. The end-to-end
+test is `packages/serve/test/computer-attach-e2e.test.mjs`.
 
 1. **A store table** of paired computers: id, owner, name, the `hello` it paired as, the driver build of its last
    `hello`, labels, the token's SHA-256, created and last-seen times, and a revoked flag. Pairing codes: the code's
@@ -198,7 +204,9 @@ These touch files under the current hold (serve's `computers.ts`, `openapi.ts`, 
 4. **Resolve and claim**: `resolve-computer.ts` builds `attachedProvider` for a computer setting that names a paired
    computer; `computer-for-claim.ts` claims it (`create`) for the run and releases it at the run's end.
 5. **More than one serve process**: a computer's socket lands on one process. Until claims route to the process that
-   holds the socket, attached computers need serve to run as one process, or a sticky route by computer id.
+   holds the socket, attached computers need serve to run as one process, or a sticky route by computer id. Built: the
+   runner beside the server shares its `AttachHub`; a runner of its own process refuses a paired computer at the claim
+   in words that say so.
 6. **The console**: a "pair a computer" page that shows the code and the paired computers, online or offline.
 
 ## Open questions

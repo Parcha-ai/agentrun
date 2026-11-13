@@ -619,7 +619,7 @@ Settings → Computers. The kind says what the agent is given, and the provider 
 |---|---|---|
 | `none` | The run's folder alone: no computer, and no provider (`{"kind": "none"}`) | |
 | `sandbox` | A Linux shell, with files and processes | `docker`, `daytona`, `modal`, `e2b` |
-| `desktop` | The computer's tools (`computer_observe`, `computer_act`, `computer_screenshot`, `computer_script`), and a shell where its provider mounts the run's folder | `docker` (with an image that has an X server), `e2b`, `orgo` |
+| `desktop` | The computer's tools (`computer_observe`, `computer_act`, `computer_screenshot`, `computer_script`), and a shell where its provider mounts the run's folder | `docker` (with an image that has an X server), `e2b`, `orgo`, or [a paired computer](#a-persons-own-computer) by its id |
 | `phone` | A rented Android, through the same computer tools | `phone-harness` |
 | `browser` | A hosted browser (the browser tools) | `browserbase`, `kernel` |
 
@@ -695,6 +695,40 @@ one computer that it keeps between runs, instead of a fresh one for each run:
 - Archiving the agent, turning `persistent` off, or moving the setting to another provider or image deletes it.
 - The computer is owned by this server's id (kept in its store) and the agent's id, so two servers on one vendor
   account never take each other's. The janitor deletes an agent's computer only once its agent no longer wants it.
+
+#### A person's own computer
+
+A computer of your own (a laptop, a desktop, a phone) can be an agent's computer. A driver on it dials this server and
+holds the connection open, so the computer needs no open port and this server needs no address of its
+([spec/computer/attach.md](../../spec/computer/attach.md)). This server knows no OS: a paired computer is what its
+driver's hello says it is (its kind, os, device, screen, capability groups and features), and a driver on any OS that
+passes the binding's conformance cases (below) needs no change here.
+
+- **Pair it.** Settings → Computers → Pair a computer shows a code, such as `K7PD-W3QX` (`POST /v2/computers/pairings`),
+  and this server's address. The code pairs one computer, once, within 10 minutes. Type both into the driver: it trades
+  the code for its own token (`POST /v2/computers/pair`, which takes no token of this server's) and keeps that token in
+  the OS's keychain. This server keeps only the token's SHA-256. A wrong, used or expired code is a 404, and each source
+  address gets 10 tries a minute.
+- **It attaches.** The driver dials `GET /v2/computers/attach`, a WebSocket with its token and the subprotocol
+  `agentrun.computer.0.2`, and dials again when the connection drops. `GET /v2/computers` lists it under `paired` as its
+  hello says, online or offline, with the run that holds it and the time that hold ends by, and as a provider, named by
+  its name and os, of each kind its hello serves (`desktop`, `phone`), ready while it is online.
+- **An agent uses it.** `computer: {"kind": "desktop", "provider": "cmp-8f2k3jq7m4xw9tnb"}` names it by its id. A run
+  claims it at its start (one run at a time: another is refused while one holds it) and releases it at its end, or at
+  its lifetime, released or not; it is never made, stopped or deleted. A run of an agent whose computer is offline is
+  refused at its start, saying to open its driver. A run uses what the hello's groups and features allow.
+- **Remove it.** Remove on its row (`DELETE /v2/computers/{computer_id}`) ends its token and closes its connection; a
+  run holding it loses it. Pairing it again gives it a new id.
+- **One process.** A computer's connection lands on one server process, and only a run in that process can use it:
+  run `agentrun-serve start` with its runner beside the server (the default). A runner started apart
+  (`agentrun-serve runner`, beside a server started with `--no-runner`) refuses a paired computer at the claim, saying
+  so. A second server on one store is already refused by the store's owner lock, on SQLite and Postgres alike.
+- **Conformance.** `node dist/attach-conformance-cli.js [--port 7392] [--listen 127.0.0.1]` runs the binding's cases
+  against whatever driver pairs with the code it prints: pair, a wrong or used code, ping, a quiet minute, a redial
+  after each close it must redial after (4408, 1000, 1001, 4409) and after a drop, a binary frame (1003), a frame over
+  1 MiB (1009), a second socket with the same token (4409 to the older), and revoke (4401, no redial). It runs a store
+  of its own in a scratch directory, prints PASS or FAIL for each case, and exits 0 when all pass; it takes about five
+  minutes. The revoke case leaves the driver unpaired. Serve's tests run the same cases against a test driver.
 
 **Where the run's folder lives.** A server keeps its runs' folders in one of two modes:
 
