@@ -16,7 +16,7 @@
       "platform": "linux"
     },
     "runtimes": [
-      "pi-durable-disk"
+      "runner"
     ],
     "harnesses": [
       {
@@ -314,12 +314,6 @@
       },
       "default_reason": "new agents run on the runner, because the docker box is unavailable here: docker is not set up on this server",
       "boxes": [
-        {
-          "id": "bwrap",
-          "available": false,
-          "reason": "bwrap is not set up on this server",
-          "state": "unavailable"
-        },
         {
           "id": "docker",
           "available": false,

@@ -48,6 +48,7 @@ const RULE_WORDS: Record<string, string> = {
   edited: "a change to a note it had (a new note replaces an old one instead)",
   deleted: "a deleted note",
   exists: "a note under a name already taken",
+  duplicate: "a note that says what another one says",
   too_large: `a note over ${CAPS.note / 1024} KB`,
   too_many_notes: `more than ${CAPS.newNotes} new notes`,
   note: "a note whose header is not in shape",
@@ -130,6 +131,8 @@ export const said = {
   /** A run whose only work was its learned workflows, each answering, with nothing said after its first message: it was
    *  not asked to look back (runner/learning-end.ts onlyLearnedWorkflows). */
   onlyWorkflow: "Nothing new: the run only ran a learned workflow.",
+  /** A run started with `learning: "use"`: it read what its agent learned and kept nothing, as asked. */
+  use: "Used what its agent learned; this run keeps nothing.",
   /** A merge whose every item the owner has since retired: nothing it learned is kept now. */
   retiredSince: "What it learned was retired since.",
   /** The run's answer gave its notes, but not in the format asked for, so none was read. */
@@ -181,6 +184,10 @@ export function notKept(verdict: Pick<Verdict, "reason" | "items">, lost: readon
   return said_.replace(/^Not kept: /, `Not kept, ${named}: `);
 }
 
+/** The why of a note main already holds the same (a run's new note, or a skill re-filed as one: runner/learning-loop.ts
+ *  takenOnMain): no change, so no words of a run's learning say it, the merge's own or a read's rebuilt from its verdict. */
+export const SAME_NOTE = "The same rule is already one of the agent's notes.";
+
 /** A run's learning in words as a read says them, whole: what it learned and what waits for the owner's OK, or why the
  *  grader kept nothing, said again from its parts (`learned`, `pending`, `verdict`) each cut by `cut` first (the host's
  *  secrets as they are now), and the whole line cut again, as notKept's is: a skill's or a workflow's file names it in
@@ -192,10 +199,10 @@ export function wordsOf(learning: Pick<Learning, "state" | "reason" | "detail" |
     const kept = Array.isArray(learned) ? learned : [];
     const waiting = Array.isArray(pending) ? pending.filter((note) => typeof note?.name === "string") : [];
     const files = [...(Array.isArray(learning.skills) ? learning.skills : []), ...(Array.isArray(learning.workflows) ? learning.workflows : [])].filter((file) => typeof file?.file === "string" && typeof file.name === "string");
-    if (kept.length || waiting.length || files.length) return cut(said.merged(kept.map((note) => ({ name: cut(note.name), supersedes: note.supersedes })), waiting.map((note) => ({ name: cut(note.name) })), files.map((file) => ({ file: file.file, name: cut(file.name), ...(file.pending ? { pending: true as const } : {}) })), (verdict?.items ?? []).filter((item) => !item.keep && typeof item.why === "string").map((item) => ({ why: cut(item.why) })), Array.isArray(learning.problems) ? learning.problems : []));
+    if (kept.length || waiting.length || files.length) return cut(said.merged(kept.map((note) => ({ name: cut(note.name), supersedes: note.supersedes })), waiting.map((note) => ({ name: cut(note.name) })), files.map((file) => ({ file: file.file, name: cut(file.name), ...(file.pending ? { pending: true as const } : {}) })), (verdict?.items ?? []).filter((item) => !item.keep && typeof item.why === "string" && item.why !== SAME_NOTE).map((item) => ({ why: cut(item.why) })), Array.isArray(learning.problems) ? learning.problems : []));
   }
   if (learning.state === "dropped" && learning.reason === "grader" && verdict) {
-    // serve.json's `lost` is read as untrusted: an entry out of shape is left out. The whole line is cut again, the names
+    // the stored `lost` is read as untrusted: an entry out of shape is left out. The whole line is cut again, the names
     // in it included.
     const lost = Array.isArray(learning.lost) ? learning.lost.filter((file) => typeof file?.file === "string") : [];
     return cut(notKept({ reason: cut(verdict.reason), items: (verdict.items ?? []).map((item) => ({ ...item, why: cut(item.why) })) }, lost));

@@ -21,6 +21,15 @@ describe("startBody", () => {
     expect(startBody("agentic", { text: "Go.", maxCostUsd: "-1" })).toMatchObject({ ok: false, field: "max_cost_usd" });
     expect(startBody("agentic", { text: "Go.", maxCostUsd: "0" })).toMatchObject({ ok: false, field: "max_cost_usd" });
   });
+
+  it("names the repository when given as owner/name, and refuses anything else", () => {
+    expect(startBody("workflow", { text: '{"a":1}', repo: "not a repo" })).toEqual({ ok: true, body: { input: { a: 1 } } });
+    expect(startBody("workflow", { text: '{"a":1}', repo: "a/b" })).toEqual({ ok: true, body: { input: { a: 1 } } });
+    expect(startBody("agentic", { text: "Go.", repo: " Parcha-ai/agentrun " })).toEqual({ ok: true, body: { input: { content: "Go." }, repo: "Parcha-ai/agentrun" } });
+    expect(startBody("agentic", { text: "Go.", repo: "" })).toEqual({ ok: true, body: { input: { content: "Go." } } });
+    expect(startBody("agentic", { text: "Go.", repo: "agentrun" })).toMatchObject({ ok: false, field: "repo" });
+    expect(startBody("agentic", { text: "Go.", repo: "a/b/c" })).toMatchObject({ ok: false, field: "repo" });
+  });
 });
 
 describe("keeper", () => {
@@ -46,7 +55,7 @@ describe("curlFor", () => {
   it("is the request as cURL, with the token from the environment, never a value", () => {
     const c = curlFor("http://127.0.0.1:7340", "meeting-notes", { input: { content: "It's done." } }, "k1");
     expect(c).toContain("curl -X POST 'http://127.0.0.1:7340/v2/agents/meeting-notes/runs'");
-    expect(c).toContain('-H "Authorization: Bearer $AGENTRUN_TOKEN"');
+    expect(c).toContain('-H "Authorization: Bearer $AGENTRUN_API_KEY"');
     expect(c).toContain("-H 'Idempotency-Key: k1'");
     expect(c).toContain(`-d '{"input":{"content":"It'\\''s done."}}'`);
   });

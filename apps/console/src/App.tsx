@@ -11,7 +11,6 @@ import { McpServersPage } from "@/components/McpServersPage";
 import { ModelKeyCard } from "@/components/ModelKeyCard";
 import { useSecrets } from "@/lib/secrets";
 import { NoModelBanner } from "@/components/NoModelBanner";
-import { BoxImageBanner } from "@/components/BoxImageBanner";
 import { WebhookPage } from "@/components/WebhookPage";
 import { ComputersPage } from "@/components/ComputersPage";
 import { WorkspacePage } from "@/components/WorkspacePage";
@@ -39,12 +38,12 @@ import { allPages, type Capabilities, ClientError, createClient, type ImportOffe
 import { createConnection } from "@/lib/connection";
 import { appendRuns, keeper, keepersByRun, sendOnce, uuid } from "@/lib/idempotency";
 import { waitingOf } from "@/lib/learning";
-import { asksPerson, hasOwnRun, mergeNeeds, type Needs, pollSettled, rerunBody } from "@/lib/needs";
-import { placesOf, preparingBox } from "@/lib/place";
+import { asksPerson, FAILED_WINDOW_MS, failureCount, hasOwnRun, mergeNeeds, type Needs, pollSettled, rerunBody } from "@/lib/needs";
+import { placesOf } from "@/lib/place";
 import { type Problem, problem } from "@/lib/problem";
 import { type Template, templateHarness, tryTemplate } from "@/lib/templates";
 import { githubReturnOf } from "@/lib/github";
-import { signInOf } from "@/lib/mcp";
+import { addOf, signInOf } from "@/lib/mcp";
 import { toolChoices, toolGates } from "@/lib/toolSettings";
 import type { HandBackOutcome, Run, RunStatus } from "@/lib/v2";
 
@@ -53,7 +52,7 @@ const MODEL_CHECK_MS = 10_000;
 
 /** `agent`: an agent's page (at `tab`), or with `edit` its editor; null is a new agent's editor. `runsOf`, `status` and
  *  `archived` (for runs): the runs list's filters. `settings`: a settings page. */
-type Where = { section: Section; template?: string; run?: string; trigger?: string | null; kind?: "schedule" | "webhook" | "github"; agent?: string | null; edit?: boolean; tool?: string; tab?: string; notes?: string[]; runsOf?: string; archived?: boolean; status?: RunStatus; settings?: SettingsPage; signIn?: ReturnType<typeof signInOf>; github?: ReturnType<typeof githubReturnOf> };
+type Where = { section: Section; template?: string; run?: string; trigger?: string | null; kind?: "schedule" | "webhook" | "github"; agent?: string | null; edit?: boolean; tool?: string; tab?: string; notes?: string[]; runsOf?: string; archived?: boolean; status?: RunStatus; settings?: SettingsPage; signIn?: ReturnType<typeof signInOf>; add?: ReturnType<typeof addOf>; github?: ReturnType<typeof githubReturnOf> };
 /** The page an address opens. Exported for its test. */
 export function route(h: string = location.hash): Where {
   let m = h.match(/^#\/runs\/([^/?]+)$/);
@@ -84,7 +83,7 @@ export function route(h: string = location.hash): Where {
   // #/settings/workspace and #/settings/webhook; a later one is one more name here.
   // #/settings/mcp, with an OAuth sign-in's outcome when the server sends the browser back there.
   m = h.match(/^#\/settings\/mcp(?:\?(.*))?$/);
-  if (m) return { section: "settings", settings: "mcp", signIn: signInOf(m[1]) };
+  if (m) { const add = addOf(m[1]); return { section: "settings", settings: "mcp", signIn: signInOf(m[1]), ...(add ? { add } : {}) }; }
   // #/settings/github, with what the way back from GitHub said (github=connected, or error&reason=<code>).
   m = h.match(/^#\/settings\/github(?:\?(.*))?$/);
   if (m) { const github = githubReturnOf(m[1]); return { section: "settings", settings: "github", ...(github ? { github } : {}) }; }
@@ -304,9 +303,14 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   const [needsProblem, setNeedsProblem] = useState<string | null>(null);
   const [ownRun, setOwnRun] = useState<boolean | null>(null);
   const [needsTry, setNeedsTry] = useState(0);
+  // The failed runs Mission Control's last read of Needs you listed (its effect below), kept across that effect's restarts.
+  const failedSeenRef = useRef<Set<string> | null>(null);
   // Whether the runs asking a person have been read at least once: until then the Needs input tile's count is unknown,
   // never the empty list a failed first read leaves (a later failure keeps the last list, and its count).
   const [askingRead, setAskingRead] = useState(false);
+  // The same for the failures of the last 24 h (the Failed tile) and the runs working now (Active's "running now").
+  const [failedRead, setFailedRead] = useState(false);
+  const [liveRead, setLiveRead] = useState(false);
   const [runs, setRuns] = useState<Run[] | null>(null);
   const [cursor, setCursor] = useState<string | null>(null);
   const [more, setMore] = useState(false);
@@ -473,8 +477,15 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   // Back after the server was away: Mission Control reads again what may have moved meanwhile, keeping the page.
   useResumed(() => setMissionTry((n) => n + 1));
   useEffect(() => {
-    if (where.section !== "mission") return;
+    // Left Mission Control: its counts are read afresh on the way back, so the failed runs seen start over.
+    if (where.section !== "mission") { failedSeenRef.current = null; return; }
     let live = true;
+    // The failed runs the last read listed: one it did not (a run that failed since) reads the page's counts again, so the
+    // failed total under the Failed tile and list ("See all N") never falls behind them. GET /stats is no cheap read (the
+    // store's counts and analytics, and every run's row), so it is read again only then, never on every poll. Kept across
+    // the reads' restarts (Run again restarts them, needsTry): a run that fails before the restarted reads' first one is
+    // still one the last read did not list.
+    const failedSeen = failedSeenRef;
     // Up to 100 runs of each status, newest first; each read lands apart, and one that fails keeps its section's last answer.
     const upTo = (status: RunStatus) => allPages((cursor) => v2.listRuns(50, cursor, { status }), (p) => p.runs, 2);
     // With them, every active agent, for which wait for their owner's OK on what they learned (`learning.pending`): a
@@ -485,9 +496,17 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
       .then(([asking, failed, working]) => {
         if (!live) return;
         const reads = [asking, failed, working];
-        const day = Date.now() - 86_400_000;
+        const day = Date.now() - FAILED_WINDOW_MS;
         setNeedsProblem(mergeNeeds(null, reads).problem);
         if (reads[0]?.status === "fulfilled") setAskingRead(true);
+        if (reads[1]?.status === "fulfilled") {
+          setFailedRead(true);
+          const ids = reads[1].value.map((r) => r.run_id);
+          const seen = failedSeen.current;
+          if (seen && ids.some((id) => !seen.has(id))) setMissionTry((n) => n + 1);
+          failedSeen.current = new Set(ids);
+        }
+        if (reads[2]?.status === "fulfilled") setLiveRead(true);
         setNeeds((prev) => {
           const { needs: next } = mergeNeeds(prev, reads);
           return { asking: next.asking.filter(asksPerson), failed: next.failed.filter((r) => Date.parse(r.ended_at ?? r.created_at) > day), live: next.live };
@@ -562,14 +581,11 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   // The server's learning switch: undefined until its capabilities are read, null on a server without learning.
   const learningCap = caps ? ((caps as unknown as { features?: { learning?: "on" | "off" } }).features?.learning ?? null) : undefined;
   editorCaps.learning = learningCap ?? undefined;
-  // While no model is ready, or a box's image is still coming, the capabilities are read again every MODEL_CHECK_MS and
-  // whenever the page comes back into view, so the bar (and the first screen's card, and its box line) goes by itself
-  // once a key is set where the server starts, or saved, or once the box is ready.
+  // While no model is ready, the capabilities are read again every MODEL_CHECK_MS and whenever the page comes back into
+  // view, so the bar (and the first screen's card) goes by itself once a key is set where the server starts, or saved.
   const modelsReady = caps?.models.ready;
-  const boxComing = preparingBox(placesOf(caps));
-  const preparing = !!boxComing;
   useEffect(() => {
-    if (modelsReady !== false && !preparing) return;
+    if (modelsReady !== false) return;
     // Through the one guarded reader, so an older answer never undoes a newer one. The timer starts no read while its last
     // one is still answering: a read slower than MODEL_CHECK_MS would otherwise be overtaken by the next tick's, and its
     // answer dropped. Coming back into view always reads now, and that newer answer is the one that lands.
@@ -582,14 +598,17 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
     const timer = setInterval(tick, MODEL_CHECK_MS);
     window.addEventListener("focus", again);
     return () => { clearInterval(timer); window.removeEventListener("focus", again); };
-  }, [v2, modelsReady, preparing]);
+  }, [v2, modelsReady]);
   return (
     <ScheduleNames.Provider value={scheduleNames}>
     <Shell active={where.section} settings={settingsOffered.length > 0} triggers={scheduling} onNavigate={nav} onSignOut={() => {
       // The card comes back only once the server ended the session: a sign-out that did not reach it says so instead.
-      v2.signOut().then(onSignedOut, (e) => setSignOutError(e instanceof ClientError ? e.message : "The sign-out did not reach the server. Try again."));
+      // A sign-out leaves the page as a move does: a page with unsaved changes asks first, and Leave signs out.
+      const out = () => void v2.signOut().then(onSignedOut, (e) => setSignOutError(e instanceof ClientError ? e.message : "The sign-out did not reach the server. Try again."));
+      if (!holdsMove(null, out)) out();
     }} onSignOutEverywhere={() => {
-      v2.signOutEverywhere().then(onSignedOut, (e) => setSignOutError(e instanceof ClientError ? e.message : "The sign-out did not reach the server. Try again."));
+      const out = () => void v2.signOutEverywhere().then(onSignedOut, (e) => setSignOutError(e instanceof ClientError ? e.message : "The sign-out did not reach the server. Try again."));
+      if (!holdsMove(null, out)) out();
     }} banners={<>
       {signOutError && <p className="border-b bg-card px-5 py-3 font-mono text-body text-destructive-text md:px-8" role="alert">Not signed out: {signOutError}</p>}
       {imported && (
@@ -604,8 +623,8 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
         ? <Banner tone="error" className="m-8" actions={<Button type="button" size="xs" onClick={() => setRetry((n) => n + 1)}>Try again</Button>}><p className="font-mono">The agents could not be read: {startError}</p></Banner>
         : where.section === "settings"
         ? <Settings active={where.settings ?? "keys"} offered={settingsOffered}>
-            {where.settings === "tools" ? <ToolsPage v2={v2} choices={choices} gates={gates} onSaved={readCaps} onOpen={readCaps} />
-              : where.settings === "mcp" ? <McpServersPage v2={v2} signIn={where.signIn} writable={secretsWritable} whyNot={secretsWhyNot} />
+            {where.settings === "tools" ? <ToolsPage v2={v2} choices={choices} gates={gates} harnesses={editorCaps.harnesses} onSaved={readCaps} onOpen={readCaps} />
+              : where.settings === "mcp" ? <McpServersPage v2={v2} signIn={where.signIn} add={where.add} writable={secretsWritable} whyNot={secretsWhyNot} />
               : where.settings === "github" ? <GitHubPage v2={v2} returned={where.github} />
               : where.settings === "computers" ? <ComputersPage v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} />
               : where.settings === "workspace" ? <WorkspacePage v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} />
@@ -616,12 +635,11 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
         // The first screen asks for a model key while the server says no agent that names no model runs here yet.
         ? <div className="flex h-full flex-col">
             {caps?.models.ready === false && <ModelKeyCard v2={v2} needs={caps.models.needs} model={caps.models.default} onSaved={readCaps} writable={secretsWritable} whyNot={secretsWhyNot} />}
-            {boxComing && <BoxImageBanner box={boxComing} />}
             <div className="min-h-0 flex-1">
               <MissionControl view={mission} error={missionError} onRetry={() => setMissionTry((n) => n + 1)}
                 scope={{ range: statsRange, onRange: setStatsRange, agent: statsAgent, onAgent: setStatsAgent, refreshing: missionReading && mission !== null }}
-                asking={needs && askingRead ? needs.asking.length : null}
-                needsYou={needs && <NeedsYouStrip asking={needs.asking} failed={needs.failed} live={needs.live} learning={learningWaits} problem={needsProblem} agentName={agentName} onAnswer={answer} onApprove={approve} onHandBack={handBack} onRunAgain={runAgain} onStop={stop} />}
+                asking={needs && askingRead ? needs.asking.length : null} failed={needs && failedRead ? failureCount(needs.failed) : null} live={needs && liveRead ? needs.live.length : null}
+                needsYou={needs && <NeedsYouStrip asking={needs.asking} failed={needs.failed} failedAll={mission?.runs.failed} live={needs.live} learning={learningWaits} problem={needsProblem} agentName={agentName} onAnswer={answer} onApprove={approve} onHandBack={handBack} onRunAgain={runAgain} onStop={stop} />}
                 startHere={ownRun === false ? <StartHere harnesses={editorCaps.harnesses} tools={editorCaps.tools} onTry={tryIt} imported={importedRuns}
                   keyCard={keyCardSavesModel} /> : undefined} />
             </div>

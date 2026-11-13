@@ -1,8 +1,6 @@
 export { answeredUnpriced, createHarnessRunner, modelPortFor, sessionSpendOf, SUBMIT_TOOL, RUNNER_RECORDS } from "./runner.js";
 export { runBooking, type RunSessions } from "./run-booking.js";
 export type { Admission, BeforeRequest, Refusal, HarnessRunner, HarnessRunnerOptions, InFlight, ModelBooking, ModelPortEvent, ModelPortOptions, SessionCost } from "./runner.js";
-export { DELEGATE_RESULT_SCHEMA, DELEGATE_TOOL, delegateProblems, delegateTool } from "./delegate.js";
-export type { DelegateAgent, DelegateEvent, DelegateOptions } from "./delegate.js";
 export { HarnessRunError, SessionFenced, TurnParked } from "./errors.js";
 export { toolSchemaProblems } from "./schema-check.js";
 export { READ_SKILL_FILE, readSkillFileTool, SKILL_BYTES, skillProblems } from "./skill-files.js";
@@ -13,5 +11,5 @@ export { bookRequest, isConnectCode, isGatewayTimeout, rejectionCode } from "./b
 export type { Booked, Ended, Priced } from "./booking.js";
 export type {
   AdapterCapabilities, AdapterEvent, AdapterSession, AgentAdapter, AdapterFacts, GateAnswer, GateCall, SessionPort, Wire, HarnessEvent, HostTool, McpCallResult, McpClient, McpTool, ToolImage, JsonValue, ModelPort, ModelTicket, ModelRequest, ModelUsage, NoteRequest,
-  NodeRequest, SessionIO, SessionMcp, SessionRecord, SessionSpec, SessionState, SessionStore, SessionWriter, TurnStatus,
+  NodeRequest, SessionIO, SessionMcp, SessionRecord, SessionSpec, SessionState, SessionStore, SessionWriter, ToolPermission, TurnStatus,
 } from "./types.js";

@@ -40,6 +40,8 @@ export interface Previous {
   readonly cachedTokens: number;
   readonly inputTokens: number;
   readonly boundTokens: number;
+  /** Its bound was its provider's count, not its bytes: used only for a next request bounded the same way. */
+  readonly counted?: boolean;
   readonly endedAt: number;
 }
 
@@ -123,6 +125,9 @@ export interface RefusalFigures {
   readonly needsUsd: number;
   readonly leastCapUsd: number;
   readonly boundUsd?: number;
+  /** A paid call's refusal: the call (its name, hold and basis), so a pause that lands after the refusal can say it again
+   *  with the run's spend as it is then (paidRefusal). */
+  readonly step?: { readonly name: string; readonly holdUsd: number; readonly basis: string };
 }
 
 /** How a step ended, for settle: a model request's as booking.ts reads it; a paid call's charge (null: it did not say). */

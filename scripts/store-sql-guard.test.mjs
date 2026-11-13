@@ -13,19 +13,6 @@ const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const STORE = "packages/serve/src/store/";
 /** The files outside the store that held SQL when the store landed. Each goes at the cutover. */
 const TODAY = [
-  "packages/pi-durable-agent/src/agent-store.ts",
-  "packages/pi-durable-agent/src/pack-shared.ts",
-  "packages/pi-durable-agent/src/serve/read.ts",
-  "packages/pi-durable-agent/src/store.ts",
-  "packages/pi-durable-agent/src/workflow.ts",
-  "packages/pi-durable-disk/src/barriers.ts",
-  "packages/pi-durable-disk/src/run.ts",
-  "packages/pi-durable-disk/src/status.ts",
-  "packages/pi-durable-disk/src/store.ts",
-  "packages/pi/src/durable/readers.ts",
-  "packages/pi/src/durable/recording.ts",
-  "packages/serve/src/cap.ts",
-  "packages/serve/src/run-db.ts",
   "packages/serve/src/server-lock.ts",
 ];
 /** A SQLite file named in source: only the store picks its file (a data directory is all anyone else passes). */
@@ -33,21 +20,7 @@ const SQLITE_FILE = /\.sqlite\b/;
 /** The files outside the store that named a .sqlite file when the store took its data directory. Each goes at the
  *  cutover; the list only shrinks. */
 const TODAY_FILE = [
-  "packages/pi-durable-agent/src/agent-store.ts",
-  "packages/pi-durable-agent/src/home.ts",
-  "packages/pi-durable-agent/src/pack-shared.ts",
-  "packages/pi-durable-agent/src/pack.ts",
-  "packages/pi-durable-agent/src/runs.ts",
-  "packages/pi-durable-agent/src/serve/store.ts",
-  "packages/pi-durable-agent/src/store.ts",
-  "packages/pi-durable-agent/src/unpack.ts",
-  "packages/pi-durable-agent/src/vault.ts",
-  "packages/pi-durable-disk/src/barriers.ts",
-  "packages/pi-durable-disk/src/confine.ts",
-  "packages/pi-durable-disk/src/run.ts",
-  "packages/pi-durable-disk/src/status.ts",
   "packages/serve/src/import.ts",
-  "packages/serve/src/run-db.ts",
   "packages/serve/src/server.ts",
   "packages/serve/src/stats.ts",
 ];
@@ -148,21 +121,8 @@ test("the list only shrinks: a listed file with no SQL left is taken off it", ()
 
 const withDriver = roots.flatMap(sources).filter((file) => driversIn(readFileSync(join(ROOT, file), "utf8"), file).length > 0);
 /** The files outside the store that took a SQLite driver when the guard began reading imports. Each goes at the cutover;
- *  the list only shrinks. One file joined it after: pi/src/durable/readers.ts loads node:sqlite through createRequire,
- *  which the guard first saw when it learnt that form. */
+ *  the list only shrinks. */
 const TODAY_DRIVER = [
-  "packages/pi-durable-agent/src/agent-store.ts",
-  "packages/pi-durable-agent/src/home.ts",
-  "packages/pi-durable-agent/src/pack-shared.ts",
-  "packages/pi-durable-agent/src/pack.ts",
-  "packages/pi-durable-agent/src/serve/read.ts",
-  "packages/pi-durable-agent/src/store.ts",
-  "packages/pi-durable-disk/src/run.ts",
-  "packages/pi-durable-disk/src/status.ts",
-  "packages/pi-durable-disk/src/store.ts",
-  "packages/pi/src/durable/readers.ts",
-  "packages/pi/src/signin/store.ts",
-  "packages/serve/src/run-db.ts",
   "packages/serve/src/server-lock.ts",
 ];
 

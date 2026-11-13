@@ -41,6 +41,11 @@ function shaped(snapshot) {
     assert.deepEqual(extra, [], `no key SNAPSHOT.md does not name: ${JSON.stringify(value).slice(0, 200)}`);
     for (const key of required) assert.ok(key in value, `${key} is there: ${JSON.stringify(value).slice(0, 200)}`);
   };
+  // A retired item's retired_from says what its restore gives back, active or pending; any other item has none.
+  const retiredFrom = (value) => {
+    if (value.status === "retired") assert.ok(value.retired_from === undefined || ["active", "pending"].includes(value.retired_from), `retired_from is active or pending: ${JSON.stringify(value).slice(0, 200)}`);
+    else assert.equal(value.retired_from, undefined, `only a retired item says retired_from: ${JSON.stringify(value).slice(0, 200)}`);
+  };
   const history = (value) => {
     keys(value, ["at"], ["last", "retire", "person"]);
     for (const change of [value.last, value.retire, value.person].filter(Boolean)) keys(change, ["kind", "by", "at"]);
@@ -50,11 +55,14 @@ function shaped(snapshot) {
   assert.match(snapshot.main, HEX);
   keys(snapshot.index, ["oid", "bytes"]);
   for (const one of snapshot.notes) {
-    keys(one, ["file", "oid", "bytes", "name", "description", "type", "status", "origin", "supersedes", "superseded_by", "order", "history"]);
+    // retired_from: past v1, additive, on a retired note alone (the status its restore gives back).
+    keys(one, ["file", "oid", "bytes", "name", "description", "type", "status", "origin", "supersedes", "superseded_by", "order", "history"], ["retired_from"]);
+    retiredFrom(one);
     history(one.history);
   }
   for (const one of [...snapshot.skills, ...snapshot.workflows]) {
-    keys(one, ["name", "file", "description", "status", "run", "files", "oid", "bytes", "order", "history"], ["links"]);
+    keys(one, ["name", "file", "description", "status", "run", "files", "oid", "bytes", "order", "history"], ["links", "retired_from"]);
+    retiredFrom(one);
     for (const file of one.files) keys(file, ["path", "oid", "bytes"]);
     history(one.history);
   }
@@ -168,7 +176,7 @@ export function folderSuite(backend, make) {
     const lines3 = odd.split("\n").slice(0, -1);
     assert.deepEqual((await readRunDiff(ws, "run-c")).files, [{ path: "odd.md", status: "added", patch: `@@ -0,0 +1,${lines3.length} @@\n${lines3.map((l) => `+${l}\n`).join("")}` }]);
     // A person's write keeps no diff file.
-    await commitChange(ws, await readSnapshot(ws), personChange("retired", "odd.md", { "odd.md": retire(odd) }));
+    await commitChange(ws, await readSnapshot(ws), personChange("retired", "odd.md", { "odd.md": retire(odd, "active") }));
     assert.deepEqual((await ws.list(DIFFS_DIR)).map((e) => e.name), ["run-a.json", "run-b.json", "run-c.json"]);
     await matchesMain(ws);
   });
@@ -200,7 +208,7 @@ export function folderSuite(backend, make) {
     const ops = [];
     folderTestHooks.exec = (argv) => ops.push(argv[2]);
     try {
-      await writeLearning(ws, async ({ snapshot }) => ({ result: null, change: personChange("retired", "quote-sources.md", { "check-units.md": edited, "quote-sources.md": retire(SOURCES) }) }));
+      await writeLearning(ws, async ({ snapshot }) => ({ result: null, change: personChange("retired", "quote-sources.md", { "check-units.md": edited, "quote-sources.md": retire(SOURCES, "active") }) }));
     } finally {
       folderTestHooks.exec = undefined;
     }
@@ -234,7 +242,7 @@ export function folderSuite(backend, make) {
     files["ask-first.md"] = approve(files["ask-first.md"]);
     snap = await step(personChange("approved", "ask-first.md", files, true), "approve");
     assert.deepEqual(snap.log[0].by, { user: true, via: "console" });
-    files["check-units.md"] = retire(files["check-units.md"]);
+    files["check-units.md"] = retire(files["check-units.md"], "active");
     snap = await step(personChange("retired", "check-units.md", files), "retire");
     const retired = snap.notes.find((n) => n.file === "check-units.md");
     assert.deepEqual([retired.status, retired.history.retire?.kind, retired.history.person?.kind], ["retired", "retired", "retired"]);
@@ -321,7 +329,7 @@ export function folderSuite(backend, make) {
     assert.equal(writes, 1);
   });
 
-  test(`${backend}: learningCommit (COMMIT-API v1): a merge with a held note and a supersede is one exec and idempotent; a stale graded oid is a conflict; a name main holds is refused; a person's stale ifMatch is a conflict; a failing exec is unavailable`, async () => {
+  test(`${backend}: learningCommit (COMMIT-API v1): a merge with a held note and a supersede is one exec and idempotent; a stale graded oid is a conflict; a name main holds is left out alone; a person's stale ifMatch is a conflict; a failing exec is unavailable`, async () => {
     const { ws } = await make();
     // A folder with no main: made in the same call.
     const first = await execsOf(() => learningCommit(ws, { kind: "person", action: "created", file: "check-units.md", text: UNITS, ifMatch: null }));
@@ -343,16 +351,19 @@ export function folderSuite(backend, make) {
     assert.equal(text(await ws.read("MEMORY.md")), indexOf({ "units-v2.md": V2 }));
     assert.equal((await readRunDiff(ws, "run-c1")).merge, merged.result.main);
     const again = await execsOf(() => learningCommit(ws, merge));
-    assert.deepEqual([again.result, again.ops], [{ ok: true, main: snap.main, commit: snap.main, files: merged.result.files }, []], "merged once: nothing written again");
+    // The run's merge on main already (a retry after a crash): its commit, said `already`, and nothing written again.
+    assert.deepEqual([again.result, again.ops], [{ ok: true, main: snap.main, commit: snap.main, files: merged.result.files, already: true }, []], "merged once: nothing written again");
     // A graded oid that is another blob on main now, on a note the merge would mark: a conflict, named by the note that
     // marks it, nothing written. One the merge leaves alone stands.
     const V3 = note("Units v3", "Convert, always", "Best.\n", "supersedes: [units-v2.md]\n");
     const stale = await learningCommit(ws, { kind: "merge", runId: "run-c2", reason: "x", files: [{ path: "units-v3.md", text: V3 }], graded: { "units-v2.md": unitsOid } });
     assert.deepEqual([stale.ok, stale.reason, stale.problems.map((p) => [p.path, p.detail])], [false, "conflict", [["units-v3.md", "units-v2.md changed after the grade read it"]]]);
     assert.equal((await readSnapshot(ws)).main, snap.main, "nothing written");
-    // A new note named like a note on main: refused.
+    // A new note named like a note on main: settled alone, never a refusal of the merge (learn/SPEC.md, the merge): the
+    // same rule main's note says is no change, left out (`same`), and nothing is written.
     const taken = await learningCommit(ws, { kind: "merge", runId: "run-c3", reason: "x", files: [{ path: "units-v2.md", text: V2 }], graded: {} });
-    assert.deepEqual([taken.ok, taken.reason, taken.problems?.map((p) => p.rule)], [false, "refused", ["exists"]], JSON.stringify(taken));
+    assert.deepEqual([taken.ok, taken.files, taken.left], [true, [], [{ path: "units-v2.md", reason: "same" }]], JSON.stringify(taken));
+    assert.equal((await readSnapshot(ws)).main, snap.main, "nothing written");
     // A person's write by an ETag main moved past: a conflict. By the right one: lands.
     const edited = note("Units v2", "Convert to the answer's unit, always", "Better.\n", "supersedes: [check-units.md]\n");
     const v2oid = snap.notes.find((n) => n.file === "units-v2.md").oid;
@@ -396,7 +407,8 @@ export function folderSuite(backend, make) {
     const main = await readMain(ws, { notes: [{ file: "units-v2.md", text: V2 }] });
     const unitsOid = (await readSnapshot(ws)).notes[0].oid;
     assert.deepEqual(main, { active: [{ file: "check-units.md", name: "Check units", description: "Convert every amount to one unit before comparing" }], superseded: [{ file: "check-units.md", text: UNITS }], graded: { "check-units.md": unitsOid } });
-    assert.deepEqual(await readMain(ws, { notes: [{ file: "check-units.md", text: UNITS }] }), { problems: [{ rule: "exists", path: "check-units.md", detail: "the folder has a note by this name" }] });
+    // A new note named like one main holds is left out of the grade and settled alone (`taken`), never a refusal.
+    assert.deepEqual(await readMain(ws, { notes: [{ file: "check-units.md", text: UNITS }] }), { active: [{ file: "check-units.md", name: "Check units", description: "Convert every amount to one unit before comparing" }], superseded: [], graded: {}, taken: [{ path: "check-units.md", reason: "same" }] });
     const HELD = note("Held v3", "A risky rule", "Hold it.\n", "supersedes: [check-units.md]\nrisky: true\n");
     const one = await learningCommit(ws, { kind: "merge", runId: "run-h", reason: "Held.", files: [{ path: "held-v3.md", text: HELD }], held: ["held-v3.md"], graded: {} });
     assert.equal(one.ok, true, JSON.stringify(one));
@@ -436,7 +448,7 @@ export function folderSuite(backend, make) {
     await learningInit(ws);
     const one = await commitChange(ws, await readSnapshot(ws), personChange("created", "check-units.md", { "check-units.md": UNITS }));
     const atMain = await seedBase(ws, one.main);
-    await commitChange(ws, await readSnapshot(ws), personChange("retired", "check-units.md", { "check-units.md": retire(UNITS) }));
+    await commitChange(ws, await readSnapshot(ws), personChange("retired", "check-units.md", { "check-units.md": retire(UNITS, "active") }));
     const older = await execsOf(() => seedBase(ws, one.main));
     assert.deepEqual(older.ops, ["read"]);
     assert.deepEqual({ files: [...older.result.base.files], active: older.result.base.active.map((n) => n.file), kept: older.result.kept }, { files: [...atMain.base.files], active: atMain.base.active.map((n) => n.file), kept: atMain.kept }, "the same base from git's own read as from the snapshot it had");
@@ -463,7 +475,7 @@ export function folderSuite(backend, make) {
     // Held: every entry at the seed's top, the pending note's file among them (never laid, but main holds it).
     const top = ["MEMORY.md", "ask-first.md", "check-units.md", "skills"];
     assert.deepEqual({ ...atMain.result, held: [...atMain.result.held].sort() }, { ok: true, files: expected, refused: [], held: top }, "a pending note and a held skill are never laid");
-    await commitChange(ws, await readSnapshot(ws), personChange("retired", "check-units.md", { ...files, "check-units.md": retire(UNITS) }));
+    await commitChange(ws, await readSnapshot(ws), personChange("retired", "check-units.md", { ...files, "check-units.md": retire(UNITS, "active") }));
     const older = await execsOf(() => readSeed(ws, one.main));
     assert.deepEqual(older.ops, ["read"]);
     assert.deepEqual({ ...older.result, held: [...older.result.held].sort() }, { ok: true, files: expected, refused: [], held: top }, "the same files, read by git at the seed");

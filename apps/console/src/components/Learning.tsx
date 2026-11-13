@@ -4,6 +4,7 @@ import { workflowGraph } from "@dsl/graph";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { problem, ProblemCard } from "@/components/learningProblem";
+import { CostPerRun } from "@/components/CostPerRun";
 import { LearningSwitch } from "@/components/LearningSwitch";
 import { GraphLegend, WorkflowGraph } from "@/components/WorkflowGraph";
 import { Banner } from "@/components/ui/banner";
@@ -13,7 +14,7 @@ import { type Client, ClientError } from "@/lib/client";
 import { markdown, runLabel, when, runTitle as shownTitle } from "@/lib/format";
 import {
   type AgentLearning, bodyOf, type LearningChange, change, costsShown, dropKind, dropWords, fileFor, impactWords, learningCost, type LearningNote, money, type NoteParts, noteParts,
-  APPROVE_SIGN_IN, type Approval, approval, CHANGED, changeWords, HOST_RUNS, type LastChange, RESTORE_SIGN_IN, RESTORES, type Retired, isPending, NO_VERSION, type NoteProblem, WAITS_WHY, notes, noteText, NOTE_TYPES, provenance, runsWord, shownImpact, took, TYPE_HINT, typeLabel,
+  APPROVE_SIGN_IN, type Approval, approval, CHANGED, changeWords, HOST_RUNS, type LastChange, RESTORE_SIGN_IN, restores, type Retired, UNREADABLE_RETIRED, isPending, NO_VERSION, type NoteProblem, WAITS_WHY, notes, noteText, NOTE_TYPES, provenance, runsWord, shownImpact, took, TYPE_HINT, typeLabel,
   counted, type LearnedItem, PROMOTE_SIGN_IN, PROMOTES, statusFile, supersedesOf,
 } from "@/lib/learning";
 import { keeper } from "@/lib/idempotency";
@@ -82,7 +83,7 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places, on
     );
   };
 
-  const on = agent.definition.learning === true;
+  const on = agent.definition.learning === true || agent.definition.learning === "notes";
   const readOnly = !!agent.archived_at;
   const all = useMemo(() => [...(view?.notes.items ?? []), ...later.items], [view, later.items]);
   const active = all.filter((x) => x.status === "active");
@@ -150,6 +151,7 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places, on
     <div className="space-y-6">
       {stale}
       <Empty on={on} lookedBack={lookedBack} switchRow={switchRow(true)} onAdd={readOnly ? undefined : () => setAdding(true)} />
+      <CostPerRun v2={v2} agentId={agent.agent_id} on={on} quiet />
       <NotKept runs={runs} />
     </div>
   );
@@ -173,6 +175,7 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places, on
         </section>
       )}
       {shownImpact(view.impact) ? <ImpactCard impact={view.impact} /> : view.impact === null && on && <p className="font-mono text-small text-muted-foreground">{IMPACT_LATER}</p>}
+      <CostPerRun v2={v2} agentId={agent.agent_id} on={on} />
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
         <div className="min-w-0 space-y-6">
         <section className="min-w-0 space-y-3" aria-label="Notes">
@@ -335,7 +338,7 @@ function SavedSwitch({ agent, v2, onAgent, server, disabled, quiet }: { agent: A
     setShown(null); setBusy(false);
   };
   return (
-    <LearningSwitch id={`learns-${agent.agent_id}`} className="px-4 py-4" quiet={quiet} checked={shown ?? agent.definition.learning === true} onChange={(v) => void flip(v)}
+    <LearningSwitch id={`learns-${agent.agent_id}`} className="px-4 py-4" quiet={quiet} checked={shown ?? (agent.definition.learning === true || agent.definition.learning === "notes")} onChange={(v) => void flip(v)}
       busy={busy} disabled={disabled} server={server}
       problem={trouble ? <ProblemCard problem={failed(trouble, "the agent", "Learning was not changed.")} className="mt-2" /> : null} />
   );
@@ -581,8 +584,10 @@ function lastChangeLine(last: LastChange | undefined): string | null {
   return last && last.kind !== "learned" ? `${changeWords(last.kind, last.by)} · ${when(last.at)}` : null;
 }
 
-/** Who retired one and when, as the server names it (`retired`), else just "Retired". */
+/** Who retired one and when, as the server names it (`retired`), else just "Retired"; one whose file can't be read says
+ *  so and how to fix it, never who retired it (UNREADABLE_RETIRED). */
 function retiredLine(retired: Retired | undefined): string {
+  if (retired?.by === "host") return UNREADABLE_RETIRED;
   return retired ? `${changeWords("retired", retired.by)} · ${when(retired.at)}` : "Retired";
 }
 
@@ -693,7 +698,7 @@ function PromoteConfirm({ name, keys, promote, onDone }: { name: string; keys: R
  *  again (`onChanged`). A version changed since says so and reads it again; one no longer retired (restored elsewhere)
  *  reads it again; a token is told restoring takes the password sign-in; a refusal by the checks a new one passes shows
  *  the server's words, and it stays retired. */
-function RestoreConfirm({ name, kind, restore, onChanged, onDone }: { name: string; kind: "note" | "skill" | "workflow"; restore: () => Promise<unknown>; onChanged: () => void | Promise<void>; onDone: () => void }) {
+function RestoreConfirm({ name, kind, from, restore, onChanged, onDone }: { name: string; kind: "note" | "skill" | "workflow"; from: Retired["from"] | undefined; restore: () => Promise<unknown>; onChanged: () => void | Promise<void>; onDone: () => void }) {
   const [busy, setBusy] = useState(false);
   const [said, setSaid] = useState<ReactNode>(null);
   const yes = useRef<HTMLButtonElement>(null);
@@ -720,7 +725,7 @@ function RestoreConfirm({ name, kind, restore, onChanged, onDone }: { name: stri
   return (
     <div role="alertdialog" aria-label={`Restore ${name}?`} onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); onDone(); } }}
       className="flex flex-wrap items-center gap-3 border-t bg-card px-5 py-3">
-      <p className="min-w-0 flex-1 text-body"><span className="font-semibold">Restore it?</span> {RESTORES}</p>
+      <p className="min-w-0 flex-1 text-body"><span className="font-semibold">Restore it?</span> {restores(from)}</p>
       {said && <div className="w-full">{said}</div>}
       <Button ref={yes} size="sm" variant="solid" onClick={() => void go()} disabled={busy}>{busy ? "Restoring" : "Yes, restore"}</Button>
       <Button size="sm" variant="ghost" onClick={onDone} disabled={busy}>Keep</Button>
@@ -859,7 +864,7 @@ function Earlier({ notes: list, all, from, focus, runs, v2, agentId, readOnly, o
             <p className="mt-1 font-mono text-label text-muted-foreground">
               {x.status === "superseded" && x.superseded_by ? <>Replaced by <button type="button" onClick={() => toNote(x.superseded_by!)} className="text-foreground/80 underline-offset-2 hover:text-foreground hover:underline">{nameOf(x.superseded_by)}</button></> : retired ? retiredLine(x.retired) : null}
             </p>
-            {restoring === x.file && <div className="-mx-4 mt-2"><RestoreConfirm name={x.name} kind="note" restore={() => v2.restoreNote(agentId, x.file, x.etag!)} onChanged={onChanged} onDone={() => setRestoring(null)} /></div>}
+            {restoring === x.file && <div className="-mx-4 mt-2"><RestoreConfirm name={x.name} kind="note" from={x.retired?.from} restore={() => v2.restoreNote(agentId, x.file, x.etag!)} onChanged={onChanged} onDone={() => setRestoring(null)} /></div>}
             {opened && (
               <div className="-mx-4 mt-2 border-t pt-1">
                 <p className="mt-2 px-5 text-body text-muted-foreground">{x.description}</p>
@@ -910,7 +915,7 @@ function EarlierLearned({ kind, items, v2, agentId, runs, readOnly, onChanged }:
             {x.description && <p className="mt-1 text-small text-muted-foreground">{x.description}</p>}
             <p className="mt-1 font-mono text-label text-muted-foreground">{retiredLine(x.retired)}</p>
             {/* Restored by the file that says whether it is in use (a skill's SKILL.md, a draft's README), on the listed version. */}
-            {restoring === x.file && <div className="-mx-4 mt-2"><RestoreConfirm name={x.name} kind={kind} restore={() => v2.restoreNote(agentId, statusFile(x), x.etag)} onChanged={onChanged} onDone={() => setRestoring(null)} /></div>}
+            {restoring === x.file && <div className="-mx-4 mt-2"><RestoreConfirm name={x.name} kind={kind} from={x.retired?.from} restore={() => v2.restoreNote(agentId, statusFile(x), x.etag)} onChanged={onChanged} onDone={() => setRestoring(null)} /></div>}
             {shown.has(x.file) && (
               <div className="-mx-4 mt-2 border-t pt-1">
                 <FileText v2={v2} agentId={agentId} file={x.file} etag={x.etag} kind={kind} label={`the ${kind} ${x.name}`} />

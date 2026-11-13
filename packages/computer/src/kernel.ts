@@ -1,6 +1,5 @@
-// Kernel as a computer of kind browser: each computer is a Kernel browser, over Kernel's REST API with fetch (no SDK),
-// or through a KernelRequest a host gives (pi-browser's own). Labels ride the browser's own tags; attach and list find a
-// browser by them; connect hands over its cdp_ws_url, which a driver dials; stream is its browser_live_view_url. Both
+// Kernel as a computer of kind browser: each computer is a Kernel browser, over Kernel's REST API with fetch (no SDK). Labels
+// ride the browser's own tags; attach and list find a browser by them; connect hands over its cdp_ws_url, which a driver dials; stream is its browser_live_view_url. Both
 // URLs are secrets: they stay in memory and never reach a ref, a list, an error's words or a report.
 //
 // Calls: POST /browsers (create, with timeout_seconds and tags), GET /browsers/{id} (read; 404 or deleted_at once
@@ -8,13 +7,23 @@
 // paged by X-Has-More and X-Next-Offset), and
 // DELETE /browsers/{id} (release). The key is a bearer token.
 //
+// A session's own options (spec.browser): viewport and headless ride the create body (stealth false: Kernel's stealth
+// mode brings its own proxy, which nothing here prices yet, so it is not declared); a profile is a
+// Kernel profile by name, { name: pointer, save_changes: save }, made first if Kernel does not know it (GET
+// /profiles/{name}, then POST /profiles; a 409 is another process making it). Profiles: POST /profiles { name } and
+// DELETE /profiles/{name}.
+//
 // Kernel's timeout_seconds is an idle timeout: Kernel ends a browser that long after its last CDP or live-view
 // connection closes, and sets no wall clock. So lifetimeMs is the longest a browser lives unwatched, at most Kernel's
 // largest idle timeout (72 h), and list reads no deadline.
+import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { KERNEL } from "./descriptors/kernel.js";
+import { BROWSER_IMAGE } from "./descriptors/shared.js";
 import {
+	type BrowserComputerProvider,
+	type BrowserProfiles,
 	cdpUrlProblem,
-	BROWSER_IMAGE,
 	type BrowserStream,
 	browserClient,
 	browserHello,
@@ -32,36 +41,43 @@ import {
 	labelsOf,
 	labelsProblem,
 	memoryUrls,
+	pointerOk,
 	queryable,
 	type ReleaseConfirm,
 	recoverCreate,
 	releaseConfirmed,
 	restCall,
+	type RestInit,
 	type RestReply,
 	type UrlStore,
-	vendorFail,
+	causedFail,
 	vendorFailure,
 	withoutCreateLabel,
 } from "./browser.js";
 import type { KindCapabilities } from "./kinds.js";
 import type { MountKind } from "./mount.js";
-import type {
-	AttachedComputer,
-	CallContext,
-	ComputerCapabilities,
-	ComputerConnection,
-	ComputerInfo,
-	ComputerProvider,
-	ComputerRef,
-	ComputerSpec,
-	CreatedComputer,
-	NetworkForm,
-	NetworkPolicy,
-	NetworkSpec,
-	Refusal,
+import {
+	type AttachedComputer,
+	type BrowserFeatures,
+	type CallContext,
+	type ComputerCapabilities,
+	type ComputerConnection,
+	type ComputerInfo,
+	type ComputerProvider,
+	type ComputerRef,
+	type ComputerSpec,
+	type CreatedComputer,
+	type NetworkPolicy,
+	type NetworkSpec,
+	type Refusal,
+	type ReleaseHow,
+	runLifetimeMs,
 } from "./provider.js";
-import { fail, ok, type Result } from "./result.js";
+import { failFor, ok, type Result, vendorFail } from "./result.js";
 import { connectionError } from "./test-connection.js";
+
+/** This module's failures: one with code vendor names Kernel. */
+const fail = failFor("kernel");
 
 const VERSION: string = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 const NAME = "Kernel";
@@ -76,12 +92,10 @@ export const KERNEL_MAX_LIFETIME_MS = 259_200_000;
 const MAX_PAGES = 100;
 
 /** A browser takes no mount. */
-export const MOUNT: readonly MountKind[] = [];
-/** The network a Kernel browser runs on: Kernel's own, open; it cannot be closed or narrowed. */
-export const NETWORK: readonly NetworkForm[] = ["open"];
+export const MOUNT: readonly MountKind[] = KERNEL.mounts;
 
-/** The one configuration it offers, the kind registry's entry (kinds.ts): a browser with a CDP target and a live view. */
-export const CAPABILITIES: readonly KindCapabilities[] = [{ kind: "browser", groups: ["cdp", "stream"] }];
+/** The one configuration it offers, its descriptor's: a browser with a CDP target and a live view. */
+export const CAPABILITIES: readonly KindCapabilities[] = KERNEL.capabilities;
 
 /** A browser as Kernel answers it; only what the provider reads. */
 export interface KernelBrowser {
@@ -97,9 +111,9 @@ export interface KernelBrowser {
 /**
  * One Kernel request, never retried: a create sent twice would be a second paid browser. It answers 404 as a reply,
  * and throws on any other failure, with the HTTP status as `status`; the provider returns that as a result whose hidden
- * cause is the thrown error, so a host that gave its own request rethrows its own error.
+ * cause is the thrown error.
  */
-export type KernelRequest = (method: string, route: string, init?: { body?: unknown; query?: URLSearchParams; signal?: AbortSignal }) => Promise<RestReply>;
+export type KernelRequest = (method: string, route: string, init?: RestInit) => Promise<RestReply>;
 
 /** Kernel's REST API over fetch: the default request. */
 export function kernelRest({ apiKey, apiUrl = KERNEL_API_URL, fetch: fetcher = fetch }: { apiKey: string; apiUrl?: string; fetch?: typeof fetch }): KernelRequest {
@@ -107,45 +121,46 @@ export function kernelRest({ apiKey, apiUrl = KERNEL_API_URL, fetch: fetcher = f
 	return (method, route, init = {}) => restCall(o, method, route, `${method} ${callName(route)}`, init);
 }
 
-/** A route as a failure names it: ids out, so no session id reads as a secret's neighbour. */
-const callName = (route: string) => route.replace(/\/browsers\/[^/?]+/, "/browsers/{id}");
+/** A route as a failure names it: ids and names out, so no session id reads as a secret's neighbour and no profile's name (a pointer) is in words. */
+const callName = (route: string) => route.replace(/\/browsers\/[^/?]+/, "/browsers/{id}").replace(/\/profiles\/[^/?]+/, "/profiles/{name}");
 const text = (value: unknown) => (typeof value === "string" ? value.trim() : "");
 
 export interface KernelProviderOptions {
-	/** With apiUrl and fetch, the REST request is built from it; required unless request is given. */
+	/** With apiUrl and fetch, the REST request is built from it. */
 	apiKey?: string;
+	/** Kernel's API; default KERNEL_BASE_URL in env (a server behind a gateway that fronts it), else Kernel's own. */
 	apiUrl?: string;
+	/** The host's own variables its descriptor declares (hostEnv): KERNEL_BASE_URL alone. */
+	env?: Readonly<Record<string, string | undefined>>;
 	fetch?: typeof fetch;
-	/** One Kernel request, a host's own; default the REST one. */
-	request?: KernelRequest;
-	/** Where the signed CDP URLs are held; default a Map of this provider's own. */
-	urls?: UrlStore;
-	/** Where the live views' URLs are held; default a Map of this provider's own. */
-	liveUrls?: UrlStore;
 	confirm?: ReleaseConfirm;
 	sleep?: (ms: number) => Promise<void>;
 }
 
-/** What a host may add to a browser's create body: Kernel's own fields (headless, stealth, viewport, a profile, extensions). */
-export type KernelBrowserSettings = Record<string, unknown>;
-
 const refOf = (id: string): ComputerRef => ({ id, name: id });
 
+const statusOf = (error: unknown) => (error as { status?: unknown } | null)?.status;
+
+/** What a Kernel browser offers beyond the protocol, a fresh copy each time. */
+const KERNEL_BROWSER = (): BrowserFeatures => ({ timeout: "inactivity", minLifetimeMs: KERNEL_MIN_LIFETIME_MS, profiles: { settleMs: 0 }, headless: true });
+
 /** Computers that are Kernel browsers. */
-export class KernelProvider implements ComputerProvider {
+export class KernelProvider implements ComputerProvider, BrowserComputerProvider {
 	readonly id = "kernel";
 	readonly version = VERSION;
+	readonly profiles: BrowserProfiles = { create: (context) => this.#createProfile(context), remove: (pointer, context) => this.#removeProfile(pointer, context) };
 	readonly #request: KernelRequest;
 	readonly #urls: UrlStore;
 	readonly #live: UrlStore;
 	readonly #confirm: ReleaseConfirm;
 	readonly #sleep: (ms: number) => Promise<void>;
 
-	constructor({ apiKey, apiUrl, fetch: fetcher, request, urls, liveUrls, confirm = DEFAULT_CONFIRM, sleep = defaultSleep }: KernelProviderOptions) {
-		if (request === undefined && (typeof apiKey !== "string" || apiKey === "")) throw new Error("set options.apiKey to a Kernel API key, or options.request to a host's own Kernel request: the provider reads no environment");
-		this.#request = request ?? kernelRest({ apiKey: apiKey as string, ...(apiUrl ? { apiUrl } : {}), ...(fetcher ? { fetch: fetcher } : {}) });
-		this.#urls = urls ?? memoryUrls();
-		this.#live = liveUrls ?? memoryUrls();
+	constructor({ apiKey, apiUrl, env = {}, fetch: fetcher, confirm = DEFAULT_CONFIRM, sleep = defaultSleep }: KernelProviderOptions) {
+		if (typeof apiKey !== "string" || apiKey === "") throw new Error("set options.apiKey to a Kernel API key: the provider reads no environment");
+		const api = apiUrl || env.KERNEL_BASE_URL?.trim() || undefined;
+		this.#request = kernelRest({ apiKey, ...(api ? { apiUrl: api } : {}), ...(fetcher ? { fetch: fetcher } : {}) });
+		this.#urls = memoryUrls();
+		this.#live = memoryUrls();
 		this.#confirm = confirm;
 		this.#sleep = sleep;
 	}
@@ -153,19 +168,21 @@ export class KernelProvider implements ComputerProvider {
 	/**
 	 * A browser: Kernel ends a browser after its idle timeout (lifetime vendor), at most 72 h; it reaches the open web;
 	 * each browser is its own VM. Kernel's replays and file APIs are not wired here, so recordings and downloads are not
-	 * declared.
+	 * declared. Its sessions' timeout is idle time (inactivity); a browser may be headless and opens a profile, which
+	 * Kernel has written back once the browser is deleted (settleMs 0). Its stealth mode is not declared.
 	 */
 	capabilities(): ComputerCapabilities {
 		return {
 			kind: "browser",
 			lifetime: "vendor",
-			network: [...NETWORK],
+			network: [...KERNEL.network],
 			isolation: "vm",
 			os: "linux",
 			daemon: "none",
 			groups: [...(CAPABILITIES[0] as KindCapabilities).groups],
 			maxLifetimeMs: KERNEL_MAX_LIFETIME_MS,
 			release: ["delete"],
+			browser: KERNEL_BROWSER(),
 		};
 	}
 
@@ -175,14 +192,27 @@ export class KernelProvider implements ComputerProvider {
 
 	/**
 	 * Makes a browser at most once, with the lifetime as its idle timeout in whole seconds and the labels as its tags.
-	 * settings are Kernel's own create fields a host adds; what the protocol sets wins over them.
+	 * spec.browser is the session's own options, each refused by check() unless declared; a profile is made first if
+	 * Kernel does not know it.
 	 */
-	async create(spec: ComputerSpec, { signal, settings = {} }: { signal?: AbortSignal; settings?: KernelBrowserSettings } = {}): Promise<Result<CreatedComputer>> {
+	async create(spec: ComputerSpec, { signal }: { signal?: AbortSignal } = {}): Promise<Result<CreatedComputer>> {
 		const refusals = this.check(spec);
 		if (refusals.length > 0) return fail("refused", refusals.map(({ field, message }) => `${field}: ${message}`).join("; "));
 		if (signal?.aborted) return fail("aborted", "create was aborted before Kernel was called");
+		const options = spec.browser;
+		if (options?.profile !== undefined) {
+			const ensured = await this.#ensureProfile(options.profile.pointer, signal);
+			if (!ensured.ok) return causedFail(ensured.error.code, `the profile could not be made ready: ${ensured.error.message}; no browser was made`, causeOf(ensured), "kernel");
+		}
 		const written = { [CREATE_LABEL]: createLabelValue(), ...spec.labels };
-		const body = { ...settings, timeout_seconds: Math.ceil(spec.lifetimeMs / 1000), tags: written };
+		const body = {
+			...(options !== undefined ? { stealth: false } : {}),
+			...(options?.viewport ? { viewport: { width: options.viewport.width, height: options.viewport.height } } : {}),
+			...(options?.headless !== undefined ? { headless: options.headless } : {}),
+			...(options?.profile ? { profile: { name: options.profile.pointer, save_changes: options.profile.save } } : {}),
+			timeout_seconds: Math.ceil(runLifetimeMs(spec) / 1000),
+			tags: written,
+		};
 		let made: RestReply;
 		try {
 			made = await this.#request("POST", "/browsers", { body, ...(signal ? { signal } : {}) });
@@ -190,7 +220,7 @@ export class KernelProvider implements ComputerProvider {
 			const failed = vendorFailure("kernel", NAME, "POST /browsers", error);
 			if (failed.ok || !createUncertain(error)) return failed;
 			// The browser may have been made though its answer never came: found by its create label, never made again.
-			return vendorFail(failed.error.code, `${failed.error.message}; ${await this.#recover(written)}`, causeOf(failed));
+			return causedFail(failed.error.code, `${failed.error.message}; ${await this.#recover(written)}`, causeOf(failed), "kernel");
 		}
 		const browser = (made.json ?? {}) as KernelBrowser;
 		const id = text(browser.session_id);
@@ -204,12 +234,55 @@ export class KernelProvider implements ComputerProvider {
 		if (unusable !== undefined) {
 			// The browser is made and billed until its idle timeout: deleted here, not left to a later sweep.
 			const released = await this.release(refOf(id), "delete");
-			return fail("kernel", `Kernel POST /browsers made a browser with no CDP URL to hand over: ${unusable}; ${released.ok ? "the browser was released" : `the browser was not released (${released.error.code}), and its tags let a sweep find it`}`);
+			return vendorFail("kernel",`Kernel POST /browsers made a browser with no CDP URL to hand over: ${unusable}; ${released.ok ? "the browser was released" : `the browser was not released (${released.error.code}), and its tags let a sweep find it`}`);
 		}
 		this.#urls.set(id, url);
 		const live = text(browser.browser_live_view_url);
 		if (live !== "") this.#live.set(id, live);
 		return ok(refOf(id));
+	}
+
+	/** A browser names only a profile Kernel knows: made if it is not (GET, then POST); a 409 is another process making it. */
+	async #ensureProfile(name: string, signal?: AbortSignal): Promise<Result<void>> {
+		try {
+			const found = await this.#request("GET", `/profiles/${encodeURIComponent(name)}`, signal ? { signal } : {});
+			if (found.status !== 404) return ok(undefined);
+		} catch (error) {
+			return vendorFailure("kernel", NAME, "GET /profiles/{name}", error);
+		}
+		try {
+			const made = await this.#request("POST", "/profiles", { body: { name }, ...(signal ? { signal } : {}) });
+			if (made.status === 404) return vendorFailure("kernel", NAME, "POST /profiles", new BrowserVendorError(NAME, "POST /profiles", 404));
+			return ok(undefined);
+		} catch (error) {
+			return statusOf(error) === 409 ? ok(undefined) : vendorFailure("kernel", NAME, "POST /profiles", error);
+		}
+	}
+
+	/** A new profile under a random name, which is its pointer: one POST /profiles, never retried. */
+	async #createProfile({ signal }: CallContext = {}): Promise<Result<string>> {
+		const name = `agentrun-${randomBytes(12).toString("hex")}`;
+		const call = "POST /profiles";
+		let made: RestReply;
+		try {
+			made = await this.#request("POST", "/profiles", { body: { name }, ...(signal ? { signal } : {}) });
+		} catch (error) {
+			return vendorFailure("kernel", NAME, call, error);
+		}
+		if (made.status === 404) return vendorFailure("kernel", NAME, call, new BrowserVendorError(NAME, call, 404));
+		if ((made.json as { name?: unknown } | null)?.name !== name) return vendorFail("kernel", `Kernel ${call} answered ${made.status} with another profile's name than the one asked for`);
+		return ok(name);
+	}
+
+	/** Deletes the profile; one Kernel no longer knows is removed. The words never carry the pointer. */
+	async #removeProfile(pointer: string, { signal }: CallContext = {}): Promise<Result<void>> {
+		if (!pointerOk(pointer)) return fail("invalid", "a profile's pointer is a plain token, as profiles.create gave it");
+		try {
+			await this.#request("DELETE", `/profiles/${encodeURIComponent(pointer)}`, signal ? { signal } : {});
+			return ok(undefined);
+		} catch (error) {
+			return vendorFailure("kernel", NAME, "DELETE /profiles/{name}", error);
+		}
 	}
 
 	/**
@@ -241,8 +314,8 @@ export class KernelProvider implements ComputerProvider {
 			const reached = (error as { status?: unknown } | null)?.status !== undefined || failed.error.code === "aborted";
 			return fail(reached ? connectionError(failed.error).code : "unreachable", failed.error.message);
 		}
-		if (page.status === 404) return fail("kernel", `Kernel ${call} answered 404: the API URL is not Kernel's`);
-		if (!Array.isArray(page.json)) return fail("kernel", `Kernel ${call} answered ${page.status} (not_a_list)`);
+		if (page.status === 404) return vendorFail("kernel",`Kernel ${call} answered 404: the API URL is not Kernel's`);
+		if (!Array.isArray(page.json)) return vendorFail("kernel",`Kernel ${call} answered ${page.status} (not_a_list)`);
 		const n = page.json.length;
 		const more = page.headers.get("x-has-more") === "true" ? " or more" : "";
 		return ok({ detail: `Kernel answered: ${n}${more} active ${n === 1 && more === "" ? "browser" : "browsers"} in the organization` });
@@ -326,10 +399,10 @@ export class KernelProvider implements ComputerProvider {
 			}
 			if (page.headers.get("x-has-more") !== "true") return ok(found);
 			const next = Number(page.headers.get("x-next-offset"));
-			if (!Number.isInteger(next) || next <= offset) return fail("kernel", "Kernel reported more browsers without the next page's offset");
+			if (!Number.isInteger(next) || next <= offset) return vendorFail("kernel","Kernel reported more browsers without the next page's offset");
 			offset = next;
 		}
-		return fail("kernel", `Kernel kept answering more pages of browsers past ${MAX_PAGES}`);
+		return vendorFail("kernel",`Kernel kept answering more pages of browsers past ${MAX_PAGES}`);
 	}
 
 	async list(labels: Record<string, string>, { signal }: CallContext = {}): Promise<Result<ComputerInfo[]>> {
@@ -370,7 +443,7 @@ export class KernelProvider implements ComputerProvider {
 		}
 		// Whatever held it (create, a read, a host's url store), a URL a driver would dial is wss: on Kernel's own domain.
 		const unusable = cdpUrlProblem(url, NAME, CDP_DOMAIN);
-		if (unusable !== undefined) return fail("kernel", `the Kernel browser ${id} is not handed over: ${unusable}`);
+		if (unusable !== undefined) return vendorFail("kernel",`the Kernel browser ${id} is not handed over: ${unusable}`);
 		this.#urls.set(id, url);
 		const hello = browserHello(VERSION, this.capabilities().groups);
 		const client = browserClient(hello, (signal) => this.#alive(id, signal));
@@ -378,7 +451,7 @@ export class KernelProvider implements ComputerProvider {
 	}
 
 	/** Deletes the browser and waits until Kernel reads it as gone; one already deleted or unknown is released. */
-	async release(ref: ComputerRef, how: "stop" | "delete", { signal }: CallContext = {}): Promise<Result<void>> {
+	async release(ref: ComputerRef, how: ReleaseHow, { signal }: CallContext = {}): Promise<Result<void>> {
 		if (how !== "delete") return fail("refused", `a Kernel browser is released with "delete"; it cannot be stopped and kept, so ${String(how)} is refused and the browser is left as it is`);
 		const id = ref?.id;
 		const problem = idProblem(id, NAME);
@@ -417,8 +490,7 @@ export class KernelProvider implements ComputerProvider {
 }
 
 /**
- * The provider, built from its options alone, the key included (options.apiKey, or options.api / options.request, a
- * host's own transport); it reads no environment, and throws in words when the key is missing, never echoing one.
+ * The provider, built from its options alone, the key included (options.apiKey); it reads no environment, and throws in words when the key is missing, never echoing one.
  */
 export function create(options: KernelProviderOptions): KernelProvider {
 	return new KernelProvider(options ?? ({} as KernelProviderOptions));

@@ -391,3 +391,61 @@ test("a run whose learned workflow fails is still asked its end-of-run turn", as
   const kept = await w.server.learning.proposal("run-1");
   assert.equal(kept?.proposal?.state, "proposed", JSON.stringify(kept?.proposal));
 });
+
+// Walk 6 on #2479: a draft calling an MCP tool a deny holds is left out in words that name where the deny was set: the
+// agent's own tool settings ("for this agent"), or the server's ("on this server"), never the server for both.
+test("a run's workflow draft calling an MCP tool set to deny is left out naming where the deny was set: the agent's tool settings, or the server's (LS-07)", async (t) => {
+  const flow = {
+    v: 2, name: "file-ticket",
+    schemas: { Q: { type: "object", properties: { title: { type: "string" } }, required: ["title"] }, R: { type: "object" } },
+    input: { schemaId: "Q" }, output: { schemaId: "R", path: "r" },
+    root: { node: "call", label: "File the ticket", via: "tool", tool: "mcp:linear/create_issue", args: { title: "{title}" }, out: "R", as: "r", deadline_s: 30 },
+  };
+  const answer = `${REFLECTED}\n\n\`\`\`\`workflow file-ticket\n---\ndescription: Files a ticket; use when asked to file one\n---\n${JSON.stringify(flow)}\n\`\`\`\``;
+  const DENY = { "mcp:linear/create_issue": { permission: "deny" } };
+  for (const [where, place] of [["agent", "for this agent"], ["server", "on this server"]]) {
+    const w = await world(t, { instructions: "Answer.", tools: ["read", "mcp:linear/create_issue"], ...(where === "agent" ? { toolSettings: DENY } : {}), learning: true }, async (dir) => {
+      const seed = await seedOf(dir, "agent-1");
+      return runner(() => ({ given: [], seed: seed.sha, section: "", seedNotes: 0 }))(dir);
+    }, async (server) => {
+      await server.mcp.put({ name: "linear", url: "https://mcp.linear.example/mcp", auth: "none", tools: [{ name: "create_issue", description: "Create an issue", input_schema: { type: "object" } }], prices: { create_issue: 0.01 } });
+      if (where === "server") await saveToolSettings(server, DENY);
+    });
+    await w.start((deps) => learningEndOfRun(w.launch, deps), { script: [{ say: "The job's answer." }, { say: answer }] });
+    await w.ended();
+    const kept = await w.server.learning.proposal("run-1");
+    assert.equal(kept?.proposal?.workflows, 0, JSON.stringify(kept?.proposal));
+    const details = (kept.proposal.left ?? []).map(({ detail }) => detail);
+    assert.ok(details.includes(`This workflow's call node calls mcp:linear/create_issue, which is set to deny ${place}. (the call node at /root)`), `${where}: ${JSON.stringify(details)}`);
+  }
+});
+
+// LS-07: a learned workflow may run judge nodes on a run with decision providers, so the end-of-run prompt allows them
+// there (the draft check's own `decisions`, skills.ts draftDecisionProviders) and keeps its ban on a run with none.
+const { decisionProvidersIn } = await import("../dist/decisions.js");
+const FAUX_JEV = new URL("./fixtures/faux-jev.mjs", import.meta.url).pathname;
+const judgeDraft = `\`\`\`\`workflow check\n---\ndescription: Checks a claim; use when asked whether a claim is right\nexample: {"claim":"Six times seven is 42."}\n---\n${JSON.stringify({
+  v: 2, name: "check",
+  schemas: { In: { type: "object", required: ["claim"], properties: { claim: { type: "string" } } }, Check: { type: "object", required: ["right"], properties: { right: { type: "boolean", description: "Is the claim right?" } } } },
+  input: { schemaId: "In" }, output: { schemaId: "Check", path: "check" },
+  root: { node: "chain", steps: [{ node: "judge", label: "check", state: { claim: "{claim}" }, out: "Check", as: "check" }] },
+})}\n\`\`\`\``;
+
+test("on a run with decision providers the end-of-run prompt allows judge nodes and a drafted judge workflow is kept; with none the prompt bans them and the draft is left out", async (t) => {
+  for (const decided of [true, false]) {
+    const w = await world(t, { instructions: "Answer.", tools: ["read"], learning: true }, async (dir) => {
+      const seed = await seedOf(dir, "agent-1");
+      return runner(() => ({ given: [], seed: seed.sha, section: "", seedNotes: 0 }))(dir);
+    });
+    const providers = await decisionProvidersIn({ TYPESAFE_API_KEY: "fake-test-key", AGENTRUN_SERVE_FAUX: "1", AGENTRUN_SERVE_FAUX_JEV: FAUX_JEV });
+    assert.ok(providers?.providers.jev, "setup: the faux Jev");
+    await w.start((deps) => learningEndOfRun(w.launch, { ...deps, ...(decided ? { decisionProviders: async () => providers } : {}) }), { script: [{ say: "The job's answer." }, { say: `${REFLECTED}\n\n${judgeDraft}` }, { say: REFLECTED }] });
+    const row = await w.ended();
+    const turn = await w.turnOf(row);
+    const prompt = turn.users[1].replace(/\s+/g, " ");
+    assert.equal(prompt.includes("no judge, pick or sift node"), !decided, `the ban follows the run's decisions: ${prompt.slice(prompt.indexOf("A workflow draft does"), prompt.indexOf("A workflow draft does") + 400)}`);
+    const kept = await w.server.learning.proposal("run-1");
+    assert.equal(kept?.proposal?.state, "proposed", JSON.stringify(kept?.proposal));
+    assert.equal(kept.proposal.workflows, decided ? 1 : 0, `the judge draft is ${decided ? "kept" : "left out"}: ${JSON.stringify(kept.proposal).slice(0, 400)}`);
+  }
+});

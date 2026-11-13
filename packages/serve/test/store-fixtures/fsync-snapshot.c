@@ -1,7 +1,7 @@
 // A box loss, simulated: preloaded into a writer, this keeps a copy of every file under FSYNC_SNAPSHOT_DIR as it stood at
 // its last fsync or fdatasync (`<file>.synced`). What was written and never synced is what a lost box takes with it, so
 // a reader that puts each `.synced` copy back in place of its file sees what a box loss would have left. The store's own
-// copy of pi-durable-disk's shim (which the cutover deletes with that package).
+// shim, kept with the store.
 #define _GNU_SOURCE
 #include <dlfcn.h>
 #include <fcntl.h>

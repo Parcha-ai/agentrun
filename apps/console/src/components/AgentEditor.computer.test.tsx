@@ -13,7 +13,7 @@ let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 
 const places = placesOf({ places: { modes: ["runner", "sandbox"], default_place: { mode: "runner" }, boxes: [{ id: "docker", available: true }] } });
-const tools = toolOffers([{ name: "read", available: true }, { name: "bash", available: true, sandbox_only: true }]);
+const tools = toolOffers([{ name: "read", available: true, harnesses: ["pi", "claude-agent", "codex", "opencode"] }, { name: "bash", available: true, sandbox_only: true, harnesses: ["pi"] }]);
 const caps = { harnesses: [{ id: "pi", available: true }], thinking: ["low"], tools, places };
 const agent = (definition: Record<string, unknown> = {}): Agent => ({
   agent_id: "computed", kind: "agentic", revision: "rv1", revisions: 1, archived_at: null,
@@ -110,7 +110,10 @@ describe("AgentEditor, the Computer step", () => {
     expect(providerRadio(host, "orgo")!.disabled).toBe(false);
     expect(providerRadio(host, "e2b")!.disabled).toBe(true);
     expect(providerRadio(host, "e2b")!.closest("label")!.textContent).toContain("fixture: E2B needs E2B_API_KEY saved");
-    expect(host.querySelector('[aria-label="The loop gets"]')!.textContent).toContain("read, write, edit, bash, screen.shot, input.actions");
+    const tools = host.querySelector('[aria-label="Tools this computer adds"]')!;
+    expect(tools.textContent).toBe("This computer adds these tools: read, write, edit, bash, screen.shot, input.actions");
+    expect(tools.querySelector(".caps")).toBeNull();
+    expect(host.textContent).not.toMatch(/the loop gets/i);
   });
 
   it("a kind picked takes its first ready provider, and the pick is saved as the computer", async () => {

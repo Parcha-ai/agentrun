@@ -11,7 +11,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { after, before, describe, it } from "node:test";
-import { DockerProvider, ensureImage, RECIPE_LABEL, recipeHash, recipeTag } from "../../dist/index.js";
+import { DockerProvider } from "../../dist/docker.js";
+import { ensureImage, RECIPE_LABEL, recipeHash, recipeTag } from "../../dist/index.js";
 
 const LIVE = process.env.AGENTRUN_COMPUTER_LIVE_DOCKER === "1";
 const INDEX = new URL("../../dist/index.js", import.meta.url).href;
@@ -87,14 +88,14 @@ describe("the provider's image on real Docker", { skip: LIVE ? false : "set AGEN
 		made.add(tag);
 		assert.deepEqual(await ensureImage({ recipe: text }), {
 			ok: false,
-			error: { code: "docker", message: `the recipe of ${tag} failed at the step \`RUN ${step}\` with exit code 1: fix that step` },
+			error: { code: "vendor", vendor: "docker", message: `the recipe of ${tag} failed at the step \`RUN ${step}\` with exit code 1: fix that step` },
 		});
 		assert.throws(() => docker("image", "inspect", tag), /No such image/i, "nothing was tagged");
 		const unparsed = recipe(`BOGUS ${nonce}`);
 		made.add(recipeTag(unparsed));
 		assert.deepEqual(await ensureImage({ recipe: unparsed }), {
 			ok: false,
-			error: { code: "docker", message: `Docker could not parse the recipe of ${recipeTag(unparsed)} at line 2: fix that line` },
+			error: { code: "vendor", vendor: "docker", message: `Docker could not parse the recipe of ${recipeTag(unparsed)} at line 2: fix that line` },
 		});
 	});
 
@@ -107,7 +108,7 @@ describe("the provider's image on real Docker", { skip: LIVE ? false : "set AGEN
 		const nowhere = `127.0.0.1:9/agentrun-nosuch:${randomBytes(4).toString("hex")}`;
 		assert.deepEqual(await ensureImage({ image: nowhere }, { timeoutMs: 120_000 }), {
 			ok: false,
-			error: { code: "docker", message: `the registry could not be reached to pull ${nowhere}: run docker pull ${nowhere} on this machine to see why` },
+			error: { code: "vendor", vendor: "docker", message: `the registry could not be reached to pull ${nowhere}: run docker pull ${nowhere} on this machine to see why` },
 		});
 	});
 });

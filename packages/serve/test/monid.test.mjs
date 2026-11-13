@@ -209,8 +209,7 @@ test("capabilities list the three, on every harness: missing MONID_API_KEY on a 
   assert.deepEqual((await listed()).map((tool) => [tool.name, tool.available, tool.missing]), NAMES.map((name) => [name, true, undefined]));
 });
 
-// SKIP (follow-up #2089): with the key set, a claude-agent run's monid_run call does not run
-test.skip("a revision naming the three saves with a warning on a keyless server and its run is 409, on pi and claude-agent alike; with the key the claude-agent one runs", { timeout: 60_000 }, async (t) => {
+test("a revision naming the three saves with a warning on a keyless server and its run is 409, on pi and claude-agent alike; with the key the claude-agent one runs", { timeout: 60_000 }, async (t) => {
   withEnv(t, {}, ["MONID_API_KEY"]);
   const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), fauxMonid: FAUX_MONID });
   const saved = await api("POST", "/agents", agent("finder", { tools: NAMES }));

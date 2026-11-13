@@ -14,7 +14,7 @@ export type ComputerOf = { kind: ComputerKind } | { off: string };
 /** The answer, as openapi.ts getRunComputer documents it. */
 export type ComputerAnswer =
   | { state: "off"; hold: ComputerHold; why?: string }
-  | { state: "none"; kind: ComputerKind; hold: ComputerHold }
+  | { state: "none"; kind: ComputerKind; hold: ComputerHold; ended?: { at: string; why: string } }
   | { state: "live"; kind: ComputerKind; viewer: string; hold: ComputerHold };
 
 export async function computerView(deps: {
@@ -22,14 +22,17 @@ export async function computerView(deps: {
   viewer(): Promise<{ kind: ComputerKind; viewer: string } | undefined>;
   /** The run's computer, read only when no viewer is open. */
   computer(): ComputerOf;
-  /** Who drives now. TODO: hold from computerHoldOf(store, runId), the store-backed take-over; until then the agent
-   *  drives, as no seam answers. */
+  /** Who drives now. */
   hold?(): ComputerHold;
+  /** Why the run's browser is not up, read only for a `none` browser: let go while the run waited for its person, and none
+   *  opened since (browser-wait-ended.ts), with when; undefined otherwise. */
+  ended?(): Promise<{ at: string; why: string } | undefined>;
 }): Promise<ComputerAnswer> {
   const hold = deps.hold?.() ?? "agent";
   const open = await deps.viewer();
   if (open) return { state: "live", kind: open.kind, viewer: open.viewer, hold };
   const computer = deps.computer();
   if ("off" in computer) return { state: "off", hold: "agent", why: computer.off };
-  return { state: "none", kind: computer.kind, hold };
+  const ended = computer.kind === "browser" ? await deps.ended?.() : undefined;
+  return ended ? { state: "none", kind: computer.kind, hold, ended } : { state: "none", kind: computer.kind, hold };
 }

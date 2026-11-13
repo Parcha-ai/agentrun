@@ -393,3 +393,13 @@ test('T7d: a provider that says its cut call was never sent (unsent) keeps its o
   assert.equal(outcome.status, 'threw', JSON.stringify(outcome).slice(0, 300));
   assert.match(outcome.message, /cut before the request was sent/, 'the provider\'s timeout, not an interrupted decision');
 });
+
+test('T2e: a node\'s verify is asked of the default provider: a host without it refuses the node before any node runs', async () => {
+  const parallel = provider('parallel');
+  const agent = { node: 'agent', label: 'work', instructions: 'Do it.', out: 'Out', as: 'work', tools: [], verify: { out: 'Check' } };
+  const workflow = doc([agent]);
+  const refused = await outcomeOf(runWorkflow(workflow, INPUT, { runNode: async () => ({ ok: true }), ...hosted([parallel], { fallback: 'jev' }) }));
+  assert.equal(refused.status, 'threw');
+  assert.match(refused.message, /agent node "work" \(verify\) names the decision provider jev, which this host does not have/);
+  assert.doesNotThrow(() => dsl.assertWorkflowCapabilities(workflow.root, { runNode: async () => ({}), ...hosted([parallel]) }, workflow), 'a host whose default provider is there accepts it');
+});

@@ -11,13 +11,14 @@ import { writeLaunch } from "./run-launch.js";
 
 /** A learning run's launch body: the learning harness, the run that learned as its input, and where it runs (on the
  *  runner, no box: its only writes are the learning folder's one script). */
-/** A learning run's launch: harness "learning", its input the run that learned, and `model`, the grade model when one is
- *  named (gradeModelOf; none: the agent's own grades it, as main's). No cap: main caps no grade. */
+/** A learning run's launch: harness "learning", its input the run that learned (and the round it grades, past the first),
+ *  and `model`, the grade model when one is named (gradeModelOf; none: the agent's own grades it, as main's). No cap: main
+ *  caps no grade. */
 /** A WHERE condition on `runs`: the run is no built-in learning run (one a kept learning names, queued with it), which no
  *  list of runs names. */
 export const NOT_A_LEARNING_RUN = "id NOT IN (SELECT learning_run_id FROM learning_proposals WHERE learning_run_id IS NOT NULL)";
 
-export const learningLaunchOf = (runId: string, model?: string) => ({ harness: "learning", input: { runId }, title: `Learning from ${runId}`, place: { mode: "runner" }, ...(model ? { model } : {}) });
+export const learningLaunchOf = (runId: string, model?: string, round = 1) => ({ harness: "learning", input: { runId, ...(round > 1 ? { round } : {}) }, title: `Learning from ${runId}`, place: { mode: "runner" }, ...(model ? { model } : {}) });
 
 /** The lock a write of a run's sign_in_handed and a sign-in's forget both take (Dialect.lockKey): the forget's check of
  *  the running runs' hashes and a launch's write of them are serialized, as SQLite's one writer serializes them. */
@@ -89,13 +90,13 @@ export async function applyRunPatch(tx: Pick<SqliteExecutor, "run" | "get">, cla
       case "channel_told":
         await tx.run("INSERT INTO channel_told (channel, run_id, marker, at) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING", each.row.channel, claim.runId, each.row.marker, now);
         break;
-      // The run's kept learning, of the run's own agent, naming the learning run the same end queues (wherever the end
-      // lists it); kept once (an end replayed after a crash keeps the first).
+      // The run's kept learning of one round, of the run's own agent, naming the learning run the same end queues (wherever
+      // the end lists it); kept once a round (an end replayed after a crash keeps the first).
       case "learning_proposals": {
         const queued = also.find((one): one is Extract<AlsoRow, { table: "learning_run" }> => one.table === "learning_run");
         await tx.run(
-          "INSERT INTO learning_proposals (run_id, agent_id, turn, proposal, learning_run_id, created_at) SELECT id, agent_id, ?, ?, ?, ? FROM runs WHERE id = ? ON CONFLICT (run_id) DO NOTHING",
-          JSON.stringify(each.row.turn ?? null), JSON.stringify(each.row.proposal ?? null), queued?.row.id ?? null, now, claim.runId,
+          "INSERT INTO learning_proposals (run_id, round, agent_id, turn, proposal, learning_run_id, created_at) SELECT id, ?, agent_id, ?, ?, ?, ? FROM runs WHERE id = ? ON CONFLICT (run_id, round) DO NOTHING",
+          each.row.round ?? 1, JSON.stringify(each.row.turn ?? null), JSON.stringify(each.row.proposal ?? null), queued?.row.id ?? null, now, claim.runId,
         );
         break;
       }
@@ -108,7 +109,7 @@ export async function applyRunPatch(tx: Pick<SqliteExecutor, "run" | "get">, cla
         // Its launch row, with it: harness "learning" (the runner's loop factory picks the learning loop by it), its input
         // the run that learned. Written once, as the run is.
         if (!(await tx.get("SELECT 1 AS found FROM run_launch WHERE run_id = ?", each.row.id))) {
-          await writeLaunch(tx, each.row.id, { body: learningLaunchOf(claim.runId, each.row.model) }, now);
+          await writeLaunch(tx, each.row.id, { body: learningLaunchOf(claim.runId, each.row.model, each.row.round) }, now);
         }
         break;
     }
@@ -116,10 +117,43 @@ export async function applyRunPatch(tx: Pick<SqliteExecutor, "run" | "get">, cla
   return runOf(row);
 }
 
+/** The one reopen a run that ended may take (runs.reopen, and a run's end with a person's message waiting): back to running
+ *  with no runner (released: a runner claims it at once), its end's own fields cleared, its epoch, journal, cost and
+ *  metrics kept. `where` holds only for an agentic run that ended completed or that a person stopped (state 'stopped',
+ *  outcome 'stopped': its turn ended, never the run, as main's stop leaves one), not imported and not a learning run. A
+ *  cancelled run, a failed one and a workflow run are over for good. */
+export const REOPEN_SET = "state = 'running', runner = NULL, claimed_until = NULL, wake_at = NULL, backoff_until = NULL, ended_at = NULL, summary = NULL, outcome = NULL";
+export const reopenableWhere = (d: Dialect): string => `(state = 'ended' OR (state = 'stopped' AND outcome = 'stopped')) AND imported_from IS NULL
+  AND EXISTS (SELECT 1 FROM revisions WHERE revisions.id = runs.revision_id AND revisions.kind = 'agentic')
+  AND NOT EXISTS (SELECT 1 FROM run_launch WHERE run_launch.run_id = runs.id AND ${d.jsonText("run_launch.body", ["harness"])} = 'learning')`;
+
 /** After a write that made the run final has taken its own rows: every command row of the run still untaken is refused
  *  with the end's reason, in that same transaction. The store takes no new row on a final run (RunFinal), so a row the
- *  end left untaken would stay so for good, as it would if the runner died right after the end. */
-export async function refuseLeftovers(tx: Pick<SqliteExecutor, "run">, runId: string, state: RunState | undefined, now: number): Promise<void> {
+ *  end left untaken would stay so for good, as it would if the runner died right after the end.
+ *  But a person's message (a steer row) that came while the run was ending, after its turn's answer (its end-of-run turn,
+ *  or before its end: the adapter loop leaves it untaken), opens a run that ended completed again, in this same
+ *  transaction, as main answers such a message once the end is in (runs.ts message: a completed run opens again, its
+ *  message the next turn): the run is back to running and released (REOPEN_SET), the message waits untaken for the next
+ *  claim, which runs it as a new turn, and only the run's other rows are refused. Every message so lands on one path: in
+ *  before the end, it opens the run here; after it, the store refuses a new row (RunFinal) and runs.reopen takes it.
+ *  A person's stop is the same (reopenableWhere): a message waiting at it is the run's next turn, as main's stop leaves a
+ *  message submitted before it to run; a cancel's refuses it. A run left final here has its launch secrets erased (its
+ *  launch row's `sealed`); a run opened again keeps the ones its waiting message wrote. */
+export async function refuseLeftovers(tx: Pick<SqliteExecutor, "run" | "get">, runId: string, state: RunState | undefined, now: number, dialect: Dialect = SQLITE): Promise<void> {
   if (state !== "ended" && state !== "stopped" && state !== "failed") return;
+  if (state === "ended" || state === "stopped") {
+    const reopened = await tx.get<{ id: string }>(
+      `UPDATE runs SET ${REOPEN_SET} WHERE id = ? AND ${reopenableWhere(dialect)}
+        AND EXISTS (SELECT 1 FROM commands WHERE commands.run_id = runs.id AND commands.taken_at IS NULL AND commands.kind = 'steer') RETURNING id`,
+      runId,
+    );
+    if (reopened) {
+      await tx.run("UPDATE commands SET taken_at = ?, refused = ? WHERE run_id = ? AND taken_at IS NULL AND kind <> 'steer'", now, endedReason(state), runId);
+      return;
+    }
+  }
   await tx.run("UPDATE commands SET taken_at = ?, refused = ? WHERE run_id = ? AND taken_at IS NULL", now, endedReason(state), runId);
+  // The run is over: the secrets its launch held for its life go with this same commit. A message that opens it again
+  // hands its own (runs.reopen).
+  await tx.run("UPDATE run_launch SET sealed = NULL WHERE run_id = ? AND sealed IS NOT NULL", runId);
 }

@@ -10,7 +10,8 @@ import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { after, before, describe, it } from "node:test";
-import { DockerProvider, EPOCH_LABEL, RUN_LABEL, releaseOlder, runLabels } from "../../dist/index.js";
+import { DockerProvider } from "../../dist/docker.js";
+import { EPOCH_LABEL, RUN_LABEL, releaseOlder, runLabels } from "../../dist/index.js";
 
 const LIVE = process.env.AGENTRUN_COMPUTER_LIVE_DOCKER === "1";
 const TEST_LABEL = "agentrun.test.run";
@@ -95,9 +96,9 @@ describe("run and epoch labels on Docker", { skip: LIVE ? false : "set AGENTRUN_
 	});
 
 	it("releaseOlder of the other run at its own epoch releases nothing; at epoch 4 it takes the run over", async () => {
-		assert.deepEqual(await releaseOlder(provider, other, 1), { ok: true, value: { released: [], kept: [refs.other], unproven: [] } });
+		assert.deepEqual(await releaseOlder(provider, other, 1), { ok: true, value: { released: [], detached: [], kept: [refs.other], unproven: [] } });
 		const taken = await releaseOlder(provider, run, 4);
-		assert.deepEqual(taken, { ok: true, value: { released: [refs.e3], kept: [], unproven: [] } });
+		assert.deepEqual(taken, { ok: true, value: { released: [refs.e3], detached: [], kept: [], unproven: [] } });
 		assert.deepEqual(ours(), [refs.other.name]);
 	});
 });

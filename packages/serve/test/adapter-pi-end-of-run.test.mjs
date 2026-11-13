@@ -14,7 +14,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { openSqliteStore } from "../dist/store/index.js";
 import { startRunner } from "../dist/runner/runner.js";
-import { closeOpenSessions, openSessions, piAdapterSpec } from "./conformance-pi-adapter.mjs";
+import { closeOpenSessions, openSessions, piAdapterSpec, scriptedOrigin } from "./conformance-pi-adapter.mjs";
 
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
@@ -313,6 +313,11 @@ test("pi through the adapter: a lost claim during the end-of-run turn writes no 
   // The steady lease: the claim is lost by the runner's close, never by a stall of a loaded box lapsing a short one (which
   // let runner-a take the run back and ask its step a second time, CI 11-11).
   const { start, until, toldRows, endEntries } = await setup(t, STEADY);
+  // Every request the model got, on both claims: the end-of-run turn's reaches it once, the next claim's ask answered
+  // from its submission, never a second paid turn.
+  const requests = [];
+  const script = [{ say: "done" }, { say: "a note" }];
+  const fetch = scriptedOrigin(script, requests);
   let asked;
   const firstAsked = new Promise((resolve) => (asked = resolve));
   const seen = [];
@@ -324,7 +329,7 @@ test("pi through the adapter: a lost claim during the end-of-run turn writes no 
     await new Promise((resolve) => input.signal.addEventListener("abort", resolve, { once: true }));
     throw new Error("aborted");
   };
-  const runnerA = await start(loopWith(piAdapterSpec({ script: [{ say: "done" }, { say: "a note" }], tools: {}, hooks: quiet }), {}, { endOfRun: first }), "runner-a");
+  const runnerA = await start(loopWith(piAdapterSpec({ script, tools: {}, hooks: quiet }, { fetch }), {}, { endOfRun: first }), "runner-a");
   await firstAsked;
   await runnerA.close();
   assert.equal(endEntries(), 0, "no end while the step was cut off");
@@ -335,9 +340,11 @@ test("pi through the adapter: a lost claim during the end-of-run turn writes no 
     assert.deepEqual(answer, { ended: true, answer: "a note" }, "the resumed turn's answer is the one already given");
     return { also: [told("second")] };
   };
-  await start(loopWith(piAdapterSpec({ script: [{ say: "done" }, { say: "a note" }], tools: {}, hooks: quiet }), {}, { endOfRun: second }), "runner-b");
+  await start(loopWith(piAdapterSpec({ script, tools: {}, hooks: quiet }, { fetch }), {}, { endOfRun: second }), "runner-b");
   await until((row) => row.state === "ended" && row.runner === null, "the run did not end on the next claim");
   assert.deepEqual(seen, ["first", "second"], "asked again on the next claim");
+  const reflect = requests.filter((body) => JSON.stringify(body.messages ?? []).includes("What did you learn?"));
+  assert.equal(reflect.length, 1, `the end-of-run request reached the model once, across both claims: ${requests.length} requests`);
   assert.equal(endEntries(), 1, "one end");
   assert.deepEqual(toldRows().map((row) => row.marker), ["second"], "only the finished step's row");
 });
@@ -406,8 +413,8 @@ test("pi through the adapter: a cut step that never answers (its store stalled) 
   await until((row) => row.state === "stopped" && row.runner === null, "the run did not stop");
 });
 
-test("pi through the adapter: a person's steer during the end-of-run turn is not swallowed by it: left for the end's own words, the turn not told", async (t) => {
-  const { server, start, until } = await setup(t);
+test("pi through the adapter: a person's steer during the end-of-run turn is not swallowed by it: left untaken for the end, which opens the run again with it as a new turn of its own, as main's", async (t) => {
+  const { server, start, until, endEntries } = await setup(t);
   // The end-of-run turn calls `slow`; the steer is sent once that call runs, and the call returns once the steer is in.
   let started;
   const reflectCallRuns = new Promise((resolve) => (started = resolve));
@@ -415,9 +422,15 @@ test("pi through the adapter: a person's steer during the end-of-run turn is not
   const steerIn = new Promise((resolve) => (sent = resolve));
   const slow = { name: "slow", replaySafe: true, ask: false, run: async () => (started(), await steerIn, "slow done") };
   let steerRow;
+  // The person sends one message, during the first end-of-run turn. The step is asked again at the reopened run's own end
+  // (its turn answered from its submission then): it sends nothing more.
+  let steered = false;
   const endOfRun = async (input) => {
     if (input.cut) return undefined;
+    const first = !steered;
+    steered = true;
     const steering = (async () => {
+      if (!first) return;
       await reflectCallRuns;
       steerRow = await server.command("run-1", { kind: "steer", body: { text: "one more thing" } });
       sent();
@@ -427,10 +440,11 @@ test("pi through the adapter: a person's steer during the end-of-run turn is not
     return { also: [told("ended" in answer ? `answered:${answer.answer}` : "timed-out")] };
   };
   await start(loopWith(piAdapterSpec({ script: [{ say: "done" }, { call: "slow" }, { say: "a note" }], tools: { slow }, hooks: quiet }), {}, { endOfRun }), "runner-a");
-  await until((row) => row.state === "ended" && row.runner === null, "the run did not end");
+  // The first end opens the run again with the steer (run-patch.ts refuseLeftovers); the run ends once more after its turn.
+  await until((row) => row.state === "ended" && row.runner === null && endEntries() === 2, "the run did not end twice");
   const rows = await server.commands("run-1", 0);
   const steer = rows.find((row) => row.id === steerRow.id);
-  assert.ok(steer.refused !== null, `the steer is refused at the end in words, not taken by the end-of-run turn: ${JSON.stringify(steer)}`);
+  assert.ok(steer.takenAt !== null && steer.refused === null, `the steer is taken as a turn of its own after the end, never by the end-of-run turn nor refused: ${JSON.stringify(steer)}`);
 });
 
 test("pi through the adapter: an end-of-run turn past its deadline is aborted and answers timedOut; the run still ends", async (t) => {

@@ -1,4 +1,4 @@
-// The driver of every browser computer (AgentRun's browser kind: Browserbase's, Kernel's, or the `local` provider's
+// The driver of every browser computer (AgentRun's browser kind: Browserbase's, Kernel's, or the `local-chrome` provider's
 // Chrome on this machine), over its CDP URL: raw CDP, with no Stagehand and nothing loaded into the browser. snapshot is
 // Chrome's accessibility tree with "frame-node" ids, and run takes actions alone (an op, a snapshot id, a value), each
 // carried out with CDP input events and answered with one line of what changed; run code is refused in words, since the
@@ -241,9 +241,9 @@ export function cdpDriver(): DriverFactory<PageDriver> {
         return page.evaluate(`(${LOCATE_JS}).call(document, ${JSON.stringify(selector)})`) as Promise<Located>;
       },
 
-      screenshot: async ({ type = "png", quality, fullPage, clip }: ScreenshotOptions) => {
-        const data = await page.screenshot({ type, ...(quality === undefined ? {} : { quality }), ...(fullPage === undefined ? {} : { fullPage }), ...(clip ? { clip } : {}) });
-        return { data, mimeType: type === "jpeg" ? "image/jpeg" : "image/png" };
+      screenshot: async (options: ScreenshotOptions) => {
+        const data = await page.screenshot(options);
+        return { data, mimeType: options.type === "jpeg" ? "image/jpeg" : "image/png" };
       },
 
       // One evaluate reads all four, so they are one document's.

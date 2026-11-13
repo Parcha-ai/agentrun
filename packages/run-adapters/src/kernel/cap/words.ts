@@ -35,10 +35,14 @@ export const suggestedRaise = (cap: number, spentUsd: number, needsUsd: number):
   return up > cap + CAP_TOLERANCE ? up : Math.floor(cap + CAP_TOLERANCE) + 1;
 };
 
+/** A spend in words, to the nearest cent; one above $0 that rounds to it is "less than a cent", never "$0", which would
+ *  say the run spent nothing. */
+export const spentMoney = (usd: number): string => (usd > 0 && centsMoney(usd) === "$0" ? "less than a cent" : centsMoney(usd));
+
 /** What a run has spent of its cap: and what it holds for steps still running, when that is a cent or more. */
 const spentOf = (spent: number, held: number, cap: number): string => {
   const holds = centsMoney(held);
-  return holds !== "$0" ? `spent ${centsMoney(spent)} and holds ${holds} for steps still running, of its ${money(cap)} cap` : `spent ${centsMoney(spent)} of its ${money(cap)} cap`;
+  return holds !== "$0" ? `spent ${spentMoney(spent)} and holds ${holds} for steps still running, of its ${money(cap)} cap` : `spent ${spentMoney(spent)} of its ${money(cap)} cap`;
 };
 
 /** A model request what is left cannot buy the least of. */
@@ -55,7 +59,7 @@ export function paidRefusal(cap: number, spent: number, held: number, name: stri
   const leastCapUsd = raiseFigure(cap, spent + held + holdUsd);
   return {
     text: `${SPEND_CAP_REACHED}: Not sent: this run has ${spentOf(spent, held, cap)}, and the next step, ${name}, could cost up to ${money(holdUsd)} (${basis}). Raise the cap to at least $${leastCapUsd.toFixed(2)} to continue.`,
-    figures: { spentUsd: spent + held, needsUsd: holdUsd, leastCapUsd },
+    figures: { spentUsd: spent + held, needsUsd: holdUsd, leastCapUsd, step: { name, holdUsd, basis } },
   };
 }
 

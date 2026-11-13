@@ -145,8 +145,12 @@ test("each conversation counts its own calls: a conversation a tool opens has a 
 
 test("the count holds across a claim moved to another runner: it is read from the journal, never kept in memory", async (t) => {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-tool-budget-"));
-  const server = await openSqliteStore({ dataDir: dir, role: "server" });
-  const runnerStores = [await openSqliteStore({ dataDir: dir, role: "runner" }), await openSqliteStore({ dataDir: dir, role: "runner" })];
+  // The stores' clock: real time plus `clock.skewMs`, so the killed runner's claim runs out by moving the stores' now past
+  // its until, never by waiting on a short real lease.
+  const clock = { skewMs: 0 };
+  const now = () => Date.now() + clock.skewMs;
+  const server = await openSqliteStore({ dataDir: dir, role: "server", now });
+  const runnerStores = [await openSqliteStore({ dataDir: dir, role: "runner", now }), await openSqliteStore({ dataDir: dir, role: "runner", now })];
   const runners = [];
   const { tools, ran, letSlowGo, slowStarted } = suiteTools();
   t.after(async () => {
@@ -162,10 +166,15 @@ test("the count holds across a claim moved to another runner: it is read from th
   const script = [{ call: "read" }, { call: "read" }, { call: "slow" }, { call: "read" }, { call: "read" }, { say: "done" }];
   const spec = piAdapterSpec({ script, tools, hooks: quiet }, { requests });
   const loop = createAdapterLoop(async (claim, run) => ({ ...(await spec(claim, run)), gate: gateOf(3) }), { restartLimit: MAX_RESTARTS });
-  // The first runner on a short lease, lost while its third call (slow) is out; the second takes the run once it lapses.
-  runners.push(startRunner({ store: runnerStores[0], createLoop: loop, name: "runner-a", leaseMs: 600, renewEveryMs: 150, stopMarginMs: 200, pollMs: 20, commandPollMs: 30 }));
-  await slowStarted;
+  // The first runner on a lease no stall outlasts, lost while its third call (slow) is out by the test's kill alone; the
+  // second takes the run once the stores' clock passes the first's claim. On a short real lease a stall could lose the
+  // first runner its claim before slow, and the claim it took again would be read here as the property's.
+  runners.push(startRunner({ store: runnerStores[0], createLoop: loop, name: "runner-a", ...TIMING }));
+  let slowOut = false;
+  void slowStarted.then(() => (slowOut = true));
+  await until(() => slowOut, "the first runner started slow", 20_000);
   runners[0].kill();
+  clock.skewMs += STEADY_LEASE.leaseMs * 2;
   runners.push(startRunner({ store: runnerStores[1], createLoop: loop, name: "runner-b", ...TIMING }));
   await until(async () => (await server.runs.get("run-1")).runner === "runner-b", "the second runner took the run", 10_000);
   letSlowGo();
@@ -212,7 +221,7 @@ async function packageWith(t, line) {
   mkdirSync(dir, { recursive: true });
   cpSync(REVIEW, dir, { recursive: true });
   const manifest = join(dir, "agent.md");
-  writeFileSync(manifest, readFileSync(manifest, "utf8").replace("budget: { per_run_usd: 2.00 }", line));
+  writeFileSync(manifest, readFileSync(manifest, "utf8").replace(/^budget: .*$/m, line));
   try {
     return { p: readPackage(dir), problems: [] };
   } catch (error) {

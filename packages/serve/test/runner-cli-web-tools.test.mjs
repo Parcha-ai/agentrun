@@ -5,8 +5,8 @@
 // run's one ledger (its paid-tools session, the fee counted once in the run's cost), and the run's record holds its
 // tool_use and tool_result rows. With web_fetch set to deny in the agent's settings or on the server, or set to ask where
 // no one can approve, the run's gate refuses the call in main's words, nothing is sent or booked, and the call is on the
-// record as on pi: its tool_use row and its tool_result row failed in those words. The harness's calls ask the run's gate first, as claude-agent's and
-// codex's own tool bridges do (bridged, below). Through the real loop: startRunner over createDispatchLoop and the CLI
+// record as on pi: its tool_use row and its tool_result row failed in those words. The faux harness's calls ask the run's
+// gate first, as claude-agent's and codex's own tool bridges do; bridged, below, keeps what it is handed. Through the real loop: startRunner over createDispatchLoop and the CLI
 // spec (cliRunSpecFromLaunch), on a real store; no sleeps, no port races.
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
@@ -82,31 +82,29 @@ function fakeParallel(t) {
   return sent;
 }
 
-/** `spec` with its harness's tool calls asking the run's gate first, as claude-agent's and codex's own tool bridges do
- *  (io.gate, before the call's flush and intent): a deny is the call's answer, in the gate's words, and the call is not
- *  run. The faux harness calls its session's tools directly, so this puts the bridge's ask in front of them. An ask is not
- *  part of this test. Each answer the harness is handed for a refused call is kept in `refused`. */
+/** `spec` with the answers its harness's gate hands it kept: the faux harness asks the run's gate before each call
+ *  (io.gate, before the call's flush and intent: run-adapters' askGate), as claude-agent's and codex's own tool bridges do;
+ *  a deny is the call's answer, in the gate's words, and the call is not run. An ask is not part of this test. Each answer
+ *  the harness is handed for a refused call is kept in `refused`. */
 function bridged(spec, refused) {
   const open = spec.adapter.open.bind(spec.adapter);
   return {
     ...spec,
     adapter: {
       ...spec.adapter,
-      open: (session, io) => open({
-        ...session,
-        tools: session.tools.map((tool) => ({
-          ...tool,
-          call: async (args, context) => {
-            const answer = io.gate ? await io.gate({ callId: context.callId, tool: tool.name, args: args ?? {} }) : "allow";
-            if (answer === "allow") return tool.call(args, context);
-            if ("deny" in answer) {
-              refused.push({ tool: tool.name, text: answer.deny });
-              return { text: answer.deny, isError: true };
+      open: (session, io) => open(session, {
+        ...io,
+        ...(io.gate
+          ? {
+              gate: async (call, ...rest) => {
+                const answer = await io.gate(call, ...rest);
+                if (answer !== "allow" && "deny" in answer) refused.push({ tool: call.tool, text: answer.deny });
+                if (answer !== "allow" && !("deny" in answer)) throw new Error(`${call.tool} was asked of a person, which this test does not answer`);
+                return answer;
+              },
             }
-            throw new Error(`${tool.name} was asked of a person, which this test does not answer`);
-          },
-        })),
-      }, io),
+          : {}),
+      }),
     },
   };
 }

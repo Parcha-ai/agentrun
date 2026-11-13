@@ -6,26 +6,62 @@ import http from "node:http";
 import path from "node:path";
 import test from "node:test";
 import { createRedactor, DOWNLOADS_MANIFEST, fetchDownloads, recordingHandle, safeDownloadName } from "../dist/index.js";
-import { browserbaseProvider } from "../dist/providers/browserbase.js";
 import { cdpProvider } from "../dist/providers/cdp.js";
-import { fakeBrowserbase } from "./fixtures/fake-browserbase.mjs";
 import { CHROME, NO_CHROME, skipIncapable } from "./fixtures/local-chrome.mjs";
 import { scratch } from "./fixtures/scratch.mjs";
 
 const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
-let keySeq = 0;
+let sessionSeq = 0;
+let fileSeq = 0;
 const spec = (tag) => ({ tag, maxLifetimeS: 600, idleTimeoutS: 60, proxies: false, verified: false, captcha: false, viewport: { width: 1000, height: 700 }, metadata: {} });
 
-async function browserbaseRig(t) {
-  const fake = fakeBrowserbase();
-  const provider = browserbaseProvider({ env: { BROWSERBASE_API_KEY: `dl-key-${(keySeq += 1)}` }, client: fake.sdk });
-  const ref = await provider.create(spec("ar-dl-1-1"), new AbortController().signal);
-  return { fake, provider, ref, workspace: await scratch(t, "dl-workspace-") };
+/** A provider that keeps a session's downloads at its vendor, as a hosted browser's host gives one (agentrun-serve's adapter over
+ *  a computer provider's downloads): each file's name is unique in its session (a vendor suffixes a timestamp), listed with its
+ *  size, and read as a stream cut past maxBytes. `calls` keeps each list and read, with the session it named. */
+function remoteDownloads() {
+  const files = new Map();
+  const calls = [];
+  const addDownload = (sessionId, name, content) => {
+    fileSeq += 1;
+    if (!files.has(sessionId)) files.set(sessionId, []);
+    files.get(sessionId).push({ name, bytes: Buffer.from(content), modifiedAt: new Date(Date.UTC(2026, 9, 6, 12, 0, fileSeq % 60)).toISOString() });
+  };
+  const provider = {
+    name: "remote",
+    caps: { profiles: false },
+    downloads: {
+      async list(ref) {
+        calls.push({ op: "list", session: ref.id });
+        return (files.get(ref.id) ?? []).map(({ name, bytes, modifiedAt }) => ({ name, sizeBytes: bytes.length, modifiedAt }));
+      },
+      async read(ref, name, maxBytes) {
+        calls.push({ op: "read", session: ref.id, name });
+        const file = (files.get(ref.id) ?? []).find((one) => one.name === name);
+        if (!file) throw new Error(`no download ${name} for session ${ref.id}`);
+        return (async function* () {
+          let total = 0;
+          for (let i = 0; i < file.bytes.length; i += 4) {
+            const chunk = file.bytes.subarray(i, i + 4);
+            total += chunk.byteLength;
+            if (total > maxBytes) throw new Error(`larger than the ${maxBytes}-byte limit`);
+            yield chunk;
+          }
+        })();
+      },
+    },
+  };
+  return { provider, addDownload, only: (op) => calls.filter((call) => call.op === op) };
+}
+
+async function remoteRig(t) {
+  const fake = remoteDownloads();
+  const ref = { id: `sess_${(sessionSeq += 1)}`, tag: "ar-dl-1-1" };
+  return { fake, provider: fake.provider, ref, workspace: await scratch(t, "dl-workspace-") };
 }
 const manifestOf = async (workspace) => JSON.parse(await readFile(path.join(workspace, DOWNLOADS_MANIFEST), "utf8"));
 
-test("browserbase downloads land in the workspace with their SHA-256; a second call fetches only what is new", async (t) => {
-  const { fake, provider, ref, workspace } = await browserbaseRig(t);
+test("a vendor's downloads land in the workspace with their SHA-256; a second call fetches only what is new", async (t) => {
+  const { fake, provider, ref, workspace } = await remoteRig(t);
   try {
     fake.addDownload(ref.id, "report-1719265797164.pdf", "PDF-bytes-one");
     fake.addDownload(ref.id, "table-1719265797999.csv", "a,b\n1,2\n");
@@ -38,7 +74,7 @@ test("browserbase downloads land in the workspace with their SHA-256; a second c
     assert.equal(await readFile(path.join(workspace, first.fetched[0].path), "utf8"), "PDF-bytes-one");
     assert.deepEqual((await manifestOf(workspace)).files.map((r) => [r.path, r.sha256, r.session]), first.fetched.map((f) => [f.path, f.sha256, ref.id]));
 
-    const reads = () => fake.only("get").filter((c) => c.options.__binaryResponse).length;
+    const reads = () => fake.only("read").length;
     const readsAfterFirst = reads();
     fake.addDownload(ref.id, "later-1719265800000.txt", "late");
     const second = await fetchDownloads({ provider, ref, session: ref.id, workspace });
@@ -49,12 +85,12 @@ test("browserbase downloads land in the workspace with their SHA-256; a second c
     const third = await fetchDownloads({ provider, ref, session: ref.id, workspace });
     assert.deepEqual([third.fetched.length, third.already_fetched.length], [0, 3]);
     assert.deepEqual((await readdir(path.join(workspace, "downloads"))).sort(), ["later-1719265800000.txt", "manifest.json", "report-1719265797164.pdf", "table-1719265797999.csv"], "no partial files are left");
-    assert.equal(fake.only("get").filter((c) => c.path === "/v1/downloads").every((c) => c.options.query.sessionId === ref.id), true);
+    assert.equal(fake.only("list").every((c) => c.session === ref.id), true);
   } finally { await rm(workspace, { recursive: true, force: true }); }
 });
 
 test("a deleted file is fetched again; a name taken by different bytes keeps both; hostile names stay inside downloads/", async (t) => {
-  const { fake, provider, ref, workspace } = await browserbaseRig(t);
+  const { fake, provider, ref, workspace } = await remoteRig(t);
   try {
     fake.addDownload(ref.id, "a.txt", "one");
     await fetchDownloads({ provider, ref, session: ref.id, workspace });
@@ -76,7 +112,7 @@ test("a deleted file is fetched again; a name taken by different bytes keeps bot
 });
 
 test("a file over the limit is skipped with its reason and the others still land; a symlinked downloads/ is refused", async (t) => {
-  const { fake, provider, ref, workspace } = await browserbaseRig(t);
+  const { fake, provider, ref, workspace } = await remoteRig(t);
   try {
     fake.addDownload(ref.id, "big.bin", "x".repeat(100));
     fake.addDownload(ref.id, "small.txt", "ok");
@@ -93,7 +129,7 @@ test("a file over the limit is skipped with its reason and the others still land
 });
 
 test("a third name for the same file name keeps all three: no rename ever replaces a file holding other bytes", async (t) => {
-  const { fake, provider, ref, workspace } = await browserbaseRig(t);
+  const { fake, provider, ref, workspace } = await remoteRig(t);
   try {
     const squat = `b-${sha("three").slice(0, 8)}.txt`;
     await mkdir(path.join(workspace, "downloads"), { recursive: true });
@@ -110,7 +146,7 @@ test("a third name for the same file name keeps all three: no rename ever replac
 });
 
 test("the per-call limit counts files this call fetches: files fetched before never starve the ones behind them", async (t) => {
-  const { fake, provider, ref, workspace } = await browserbaseRig(t);
+  const { fake, provider, ref, workspace } = await remoteRig(t);
   try {
     for (let i = 0; i < 5; i += 1) fake.addDownload(ref.id, `f${i}.txt`, `body ${i}`);
     const first = await fetchDownloads({ provider, ref, session: ref.id, workspace, maxFiles: 2 });
@@ -124,7 +160,7 @@ test("the per-call limit counts files this call fetches: files fetched before ne
 });
 
 test("two sessions that fetch identical bytes into one workspace each keep their record", async (t) => {
-  const a = await browserbaseRig(t); const b = await browserbaseRig(t);
+  const a = await remoteRig(t); const b = await remoteRig(t);
   try {
     a.fake.addDownload(a.ref.id, "report.pdf", "same bytes");
     b.fake.addDownload(b.ref.id, "report.pdf", "same bytes");
@@ -141,7 +177,7 @@ test("two sessions that fetch identical bytes into one workspace each keep their
 
 test("concurrent fetches into one workspace lose no record", async (t) => {
   const workspace = await scratch(t, "dl-workspace-");
-  const rigs = await Promise.all([1, 2, 3, 4].map(() => browserbaseRig(t)));
+  const rigs = await Promise.all([1, 2, 3, 4].map(() => remoteRig(t)));
   try {
     rigs.forEach((r, i) => { r.fake.addDownload(r.ref.id, `c${i}.txt`, `concurrent ${i}`); r.fake.addDownload(r.ref.id, `d${i}.txt`, `concurrent d ${i}`); });
     await Promise.all(rigs.map((r, i) => fetchDownloads({ provider: r.provider, ref: r.ref, session: `s${i}`, workspace })));
@@ -154,7 +190,7 @@ test("concurrent fetches into one workspace lose no record", async (t) => {
 test("concurrent calls fetching different bytes under one name keep both files, and every manifest row matches the file it names", async (t) => {
   for (let round = 0; round < 12; round += 1) {
     const workspace = await scratch(t, "dl-workspace-");
-    const rigs = await Promise.all([1, 2, 3].map(() => browserbaseRig(t)));
+    const rigs = await Promise.all([1, 2, 3].map(() => remoteRig(t)));
     try {
       rigs.forEach((r, i) => r.fake.addDownload(r.ref.id, "report.pdf", `different bytes ${round} ${i}`));
       await Promise.all(rigs.map((r, i) => fetchDownloads({ provider: r.provider, ref: r.ref, session: `s${i}`, workspace })));
@@ -167,7 +203,7 @@ test("concurrent calls fetching different bytes under one name keep both files, 
 });
 
 test("a download named like the lock or the manifest's temporary file blocks nothing", async (t) => {
-  const { fake, provider, ref, workspace } = await browserbaseRig(t);
+  const { fake, provider, ref, workspace } = await remoteRig(t);
   try {
     fake.addDownload(ref.id, "manifest.json.lock", "a file called that");
     fake.addDownload(ref.id, ".downloads.lock", "and a dotted one");
@@ -181,7 +217,7 @@ test("a download named like the lock or the manifest's temporary file blocks not
 });
 
 test("two remote files that trim to one local name keep a record each", async (t) => {
-  const { fake, provider, ref, workspace } = await browserbaseRig(t);
+  const { fake, provider, ref, workspace } = await remoteRig(t);
   try {
     fake.addDownload(ref.id, "a.txt", "identical");
     fake.addDownload(ref.id, " a.txt", "identical");

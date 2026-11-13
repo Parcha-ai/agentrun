@@ -7,7 +7,8 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { checkLifetime, DAYTONA_GPU_SNAPSHOT, DaytonaProvider, kindRefusals } from "../dist/index.js";
+import { DaytonaProvider } from "../dist/daytona.js";
+import { checkLifetime, DAYTONA_GPU_SNAPSHOT, kindRefusals } from "../dist/index.js";
 import { API, DEFAULT_SNAPSHOT, fakeDaytona, HOSTS, KEY, PROXY, scriptOf, statusText, VERSION, wordsOf } from "./fake-daytona.mjs";
 
 const SPEC = { image: "agentrun-debian", lifetimeMs: 600_000, network: "none" };
@@ -88,7 +89,7 @@ test("capabilities: a linux computer with init a child of Daytona's toolbox, a v
 		vendorAgentPorts: [2280],
 		// daytona-gpu's one H100 and its limits: its stop deletes it, it runs in region earth, its size is the snapshot's, and
 		// it takes no mount.
-		gpu: { types: ["H100"], max: 1, preemptible: true, stopDeletes: true, region: "earth", perGpu: { cpus: 16, memoryMb: 102400, diskMb: 409600 }, mounts: [] },
+		gpu: { types: ["H100"], max: 1, preemptible: true, stopDeletes: true, region: "earth", perGpu: { cpus: 16, memoryMb: 102400, diskMb: 409600 }, mounts: [], unmounted: { why: "Daytona's GPU runtime gives it no /dev/fuse", yet: false } },
 	});
 	assert.deepEqual(kindRefusals(provider.capabilities()), []);
 	assert.equal(provider.extend, undefined, "no extend()");
@@ -140,7 +141,7 @@ test("check() refuses in words, field by field, before any request", () => {
 	// A GPU computer is made from daytona-gpu: a spec names it or "default", never another snapshot.
 	for (const image of ["default", "daytona-gpu"]) assert.deepEqual(provider.check({ ...SPEC, image, gpu: { type: "H100", count: 1 } }), [], image);
 	assert.deepEqual(refused({ ...SPEC, gpu: { type: "H100", count: 1 } }), ["image"]);
-	assert.match(words({ ...SPEC, gpu: { type: "H100", count: 1 } }), /^a Daytona GPU computer is made from Daytona's GPU snapshot daytona-gpu alone, not "agentrun-debian": give "daytona-gpu" or "default"/);
+	assert.match(words({ ...SPEC, gpu: { type: "H100", count: 1 } }), /^a Daytona GPU computer here is made from the GPU snapshot daytona-gpu alone, not "agentrun-debian": give "daytona-gpu" or "default"/);
 	assert.deepEqual(refused({ ...SPEC, labels: { "agentrun.computer.deadline": "never" } }), ["labels"]);
 	assert.deepEqual(refused({ ...SPEC, labels: { team: 1 } }), ["labels"]);
 	assert.equal(fake.requests.length, 0, "check makes no request");
@@ -345,7 +346,7 @@ test("create() of a GPU computer asks Daytona for daytona-gpu and no resources, 
 	const box = setup();
 	const refusedBox = await box.provider.create({ ...SPEC, gpu });
 	assert.equal(refusedBox.ok, false);
-	assert.match(refusedBox.error.message, /image: a Daytona GPU computer is made from Daytona's GPU snapshot daytona-gpu alone/);
+	assert.match(refusedBox.error.message, /image: a Daytona GPU computer here is made from the GPU snapshot daytona-gpu alone/);
 	assert.equal(of(box.fake, "POST", "/api/sandbox").length, 0, "nothing was asked of Daytona");
 	const attached = await provider.attach({ id: made.value.id });
 	assert.equal(attached.ok, true, JSON.stringify(attached));
@@ -466,7 +467,7 @@ test("a create Daytona refuses is not retried, and a sandbox it may have made is
 	const { provider, fake } = setup({ fail: [{ method: "POST", path: /^\/api\/sandbox$/, status: 500, times: 1 }] });
 	const made = await provider.create(SPEC);
 	assert.equal(made.ok, false);
-	assert.equal(made.error.code, "daytona");
+	assert.deepEqual([made.error.code, made.error.vendor], ["vendor", "daytona"]);
 	assert.match(made.error.message, /Daytona did not create the sandbox: POST \/api\/sandbox: 500/);
 	assert.equal(created(fake).length, 1, "POST /sandbox is not idempotent: never retried");
 	const name = created(fake)[0].body.name;
@@ -491,7 +492,36 @@ test("a refused daemon upload deletes the sandbox and says so", async () => {
 	assert.match(made.error.message, /the daemon's upload was refused: POST \/toolbox\/[^ ]+\/files\/upload-v2: 403/);
 	assert.match(made.error.message, /was deleted/);
 	assert.equal(fake.sandboxes.size, 0);
+	assert.equal(of(fake, "POST", /\/files\/upload$/).length, 0, "a refusal that is not a 404 is never sent to the older route");
 	assert.equal(of(fake, "POST", /\/process\//).length, 0, "nothing runs after a refused upload");
+});
+
+test("a toolbox with no files/upload-v2 (404) gets the daemon through files/upload, and the computer starts", async () => {
+	const { provider, fake } = setup({ olderToolbox: true });
+	const made = await provider.create(SPEC);
+	assert.equal(made.ok, true, made.ok ? "" : made.error.message);
+	assert.equal(of(fake, "POST", /\/files\/upload-v2$/).length, 1, "the 404 is not retried");
+	const [upload] = of(fake, "POST", /\/files\/upload$/);
+	assert.match(upload.query.path, /^\/tmp\/agentrun-computerd-[0-9a-f]{16}$/);
+	assert.deepEqual(upload.body.file, { size: DAEMON_BYTES.length, sha256: DAEMON_SHA }, "the daemon's own bytes");
+	const [install] = of(fake, "POST", /\/process\/execute$/).map((r) => scriptOf(r.body.command));
+	assert.equal(install.args[0], upload.query.path, "the install takes the file the older route wrote");
+	assert.equal(deleted(fake).length, 0);
+
+	const refused = setup({ olderToolbox: true, uploadStatus: 403 });
+	const failed = await refused.provider.create(SPEC);
+	assert.equal(failed.ok, false);
+	assert.equal(failed.error.code, "denied", "the older route's refusal is the one that counts");
+	assert.match(failed.error.message, /the daemon's upload was refused: POST \/toolbox\/[^ ]+\/files\/upload-v2: 404 404 page not found, then POST \/toolbox\/[^ ]+\/files\/upload: 403/);
+	assert.equal(refused.fake.sandboxes.size, 0);
+
+	// 410 is not_found to a caller too, but only a 404 says the route is missing: nothing goes to the older route.
+	const gone = setup({ fail: [{ method: "POST", path: /\/files\/upload-v2$/, status: 410 }] });
+	const goneMade = await gone.provider.create(SPEC);
+	assert.equal(goneMade.ok, false);
+	assert.match(goneMade.error.message, /the daemon's upload was refused: POST \/toolbox\/[^ ]+\/files\/upload-v2: 410/);
+	assert.equal(of(gone.fake, "POST", /\/files\/upload$/).length, 0);
+	assert.equal(gone.fake.sandboxes.size, 0);
 });
 
 test("an install the snapshot cannot do, and a daemon that reads back other bytes, are refused and deleted", async () => {
@@ -1029,7 +1059,7 @@ test("release(): a DELETE that keeps failing is reported in words, with a forced
 	fake.knobs.fail = [{ method: "DELETE", path: /^\/api\/sandbox\/[^/]+$/, status: 500, times: 100 }];
 	const released = await provider.release(made.value, "delete");
 	assert.equal(released.ok, false);
-	assert.equal(released.error.code, "daytona");
+	assert.deepEqual([released.error.code, released.error.vendor], ["vendor", "daytona"]);
 	assert.match(released.error.message, /DELETE \/api\/sandbox\/[^ ]+: 500/);
 	assert.equal(of(fake, "POST", /\/stop$/).length, 1, "a forced stop before the last attempt");
 	assert.equal(of(fake, "POST", /\/stop$/)[0].url.endsWith("stop?force=true"), true);

@@ -38,9 +38,11 @@ test("a close's read of the stop rows and its loops' stop share one window, the 
   // A loop that ignores its stop and keeps committing, beside a read that never answers.
   const faux = fauxLoops({ stubborn: true, turnMs: 20 });
   t.after(() => faux.loops.forEach((loop) => (loop.halted = true)));
+  // The close's read stalls, not the claim's own read of the run's rows (a queued run's claim reads them too).
+  let stall = false;
   const stalled = new Proxy(store, {
     get(target, prop) {
-      if (prop === "commandsOf") return () => new Promise(() => {});
+      if (prop === "commandsOf") return (...args) => (stall ? new Promise(() => {}) : target.commandsOf(...args));
       const value = Reflect.get(target, prop, target);
       return typeof value === "function" ? value.bind(target) : value;
     },
@@ -50,6 +52,7 @@ test("a close's read of the stop rows and its loops' stop share one window, the 
   t.after(() => runner.close());
   await queue(server, "run-1");
   await until(() => faux.loops.length === 1, "the run claimed");
+  stall = true;
   const startedAt = Date.now();
   await runner.close();
   const took = Date.now() - startedAt;
@@ -61,15 +64,23 @@ test("a loop a stop row stops, still going at the end of the close's window, has
   const { server, runners: [store] } = await stores({ runners: 1 });
   // A loop whose stop() only notes the row (as the learning loop's did), and whose work ends only on its signal.
   const seen = { stops: [], aborted: null };
-  const createLoop = (deps) => ({
-    start: () => new Promise((resolve) => deps.signal.addEventListener("abort", () => ((seen.aborted = Date.now()), resolve({ state: "interrupted" })), { once: true })),
-    command: async () => ({ taken: true }),
-    stop: async (reason) => void seen.stops.push(reason.kind),
-  });
+  // The claim's first delivery (deps.delivered): the stop is sent only once it is done. Sent as soon as the run's row
+  // names the runner, the stop could land before the claim's read of a queued run's rows, and the claim then ends the
+  // run with no loop at all (a stop wins over a queued run's first input): no stop() ever, and a close with nothing to do.
+  let firstDelivery;
+  const createLoop = (deps) => {
+    firstDelivery = deps.delivered;
+    return {
+      start: () => new Promise((resolve) => deps.signal.addEventListener("abort", () => ((seen.aborted = Date.now()), resolve({ state: "interrupted" })), { once: true })),
+      command: async () => ({ taken: true }),
+      stop: async (reason) => void seen.stops.push(reason.kind),
+    };
+  };
   const runner = startRunner({ store, createLoop, name: "runner-a", ...TIMING, leaseMs: 8_000, stopMarginMs: 3_000 });
   t.after(() => runner.close());
   await queue(server, "run-1");
-  await until(async () => (await server.runs.get("run-1")).runner === "runner-a", "the run claimed");
+  await until(() => firstDelivery !== undefined, "the run claimed, its loop made");
+  await firstDelivery;
   await sendCommand(server, "run-1", { kind: "stop" });
   const startedAt = Date.now();
   await runner.close();
@@ -86,9 +97,11 @@ test("a close whose read of the stop rows never answers is bounded by the stop m
   // run ended stopped before the close read anything.
   let delivered = () => {};
   const firstDelivery = new Promise((resolve) => (delivered = resolve));
+  // The close's read stalls, not the claim's own read of the run's rows (a queued run's claim reads them too).
+  let stall = false;
   const stalled = new Proxy(store, {
     get(target, prop) {
-      if (prop === "commandsOf") return () => new Promise(() => {});
+      if (prop === "commandsOf") return (...args) => (stall ? new Promise(() => {}) : target.commandsOf(...args));
       if (prop === "commands") return (...args) => target.commands(...args).finally(() => delivered());
       const value = Reflect.get(target, prop, target);
       return typeof value === "function" ? value.bind(target) : value;
@@ -99,6 +112,7 @@ test("a close whose read of the stop rows never answers is bounded by the stop m
   t.after(() => runner.close());
   await queue(server, "run-1");
   await until(() => faux.loops.length === 1, "the run claimed");
+  stall = true;
   await firstDelivery;
   // One turn more: the runner's own continuation of that read (its cursor moved past what it found) has run.
   await new Promise((resolve) => setImmediate(resolve));

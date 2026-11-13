@@ -761,7 +761,8 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
     const { fauxEnvOf } = await import("./server.js");
     const { withoutFaux } = await import("./model.js");
     const serveOptions = options.serve ?? {};
-    const beside = await runnerBeside(join(scratch!, "data"), serveOptions.faux ? { env: { ...withoutFaux(process.env), ...fauxEnvOf({ data: join(scratch!, "data"), ...serveOptions } as Parameters<typeof fauxEnvOf>[0]) } } : {}).catch(async (error: unknown) => {
+    // Its run lines go to stderr: stdout is the eval's report.
+    const beside = await runnerBeside(join(scratch!, "data"), { onLine: (line) => console.error(line), ...(serveOptions.faux ? { env: { ...withoutFaux(process.env), ...fauxEnvOf({ data: join(scratch!, "data"), ...serveOptions } as Parameters<typeof fauxEnvOf>[0]) } } : {}) }).catch(async (error: unknown) => {
       await serve.close();
       removeTree(scratch!);
       throw error;
@@ -980,7 +981,8 @@ async function sameAsLocal(ctx: Ctx, one: EvalCase, agent: Json): Promise<void> 
   }
   const served = ctx.served;
   const view = JSON.parse(JSON.stringify(packageView(pkg))) as Json;
-  const differs = [...new Set([...Object.keys(view), ...Object.keys(served)])].filter((key) => !same(view[key], served[key]));
+  // computer_here is the server's answer to the package's computer list, never the package: not compared.
+  const differs = [...new Set([...Object.keys(view), ...Object.keys(served)])].filter((key) => key !== "computer_here" && !same(view[key], served[key]));
   const { parameters } = applyBodyOf(pkg, { parameters: one.parameters, grants: one.grants });
   const local = compiled(pkg, parameters, { mcp: [], defaultTools: [], grants: [] }).agent;
   const sha = (text: string) => createHash("sha256").update(text).digest("hex");

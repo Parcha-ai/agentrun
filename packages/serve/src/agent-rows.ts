@@ -1,5 +1,4 @@
-// The shapes an agent's revision and a run take where serve reads them as the file-era agent store wrote them (copied
-// from @parcha/pi-durable-agent's agent-store.ts and kinds.ts): a revision with its body,
+// The shapes an agent's revision and a run take where serve reads them as the file-era agent store wrote them: a revision with its body,
 // a run's row. The one store's own rows are store/store.ts'.
 import type { Workflow } from "@parcha/agentrun-dsl";
 import type { ImportSource } from "./store-reads/analytics.js";
@@ -14,7 +13,7 @@ export type RevisionComputer = { kind: string; provider?: string };
 export type PromptRule = { question: string; option: string; threshold: number };
 /** A prompt variant, keyed by id: one `base`, one `generic`, any number of `overlay`s, and at most one `question`. */
 export type PromptVariant = { role: "base" | "overlay" | "generic" | "question"; label: string; text: string; when?: PromptRule; criteria?: Record<string, string> };
-export type AgenticBody = { instructions: string; skills: Record<string, string>; tools: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; computer?: RevisionComputer; learning?: boolean; toolSettings?: Record<string, Record<string, string>>; approvals?: "never"; maxCostUsd?: number; capMode?: string; outputSchema?: Record<string, unknown>; maxToolCalls?: number };
+export type AgenticBody = { instructions: string; skills: Record<string, string>; tools: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; computer?: RevisionComputer; learning?: boolean | "notes"; toolSettings?: Record<string, Record<string, string>>; approvals?: "never"; maxCostUsd?: number; capMode?: string; outputSchema?: Record<string, unknown>; maxToolCalls?: number; checkout?: "pull_request" };
 export type WorkflowBody = { workflow: Workflow; skills: Record<string, string>; tools: string[]; harness?: string; place?: RevisionPlace; computer?: RevisionComputer; toolSettings?: Record<string, Record<string, string>>; approvals?: "never"; maxCostUsd?: number; capMode?: string };
 /** A revision, written once: `body.skills` maps a skill path to the SHA-256 of its text. */
 export type Revision = { id: string; agent: string; parent: string | null; createdAt: string; note?: string } & ({ kind: "agentic"; body: AgenticBody } | { kind: "workflow"; body: WorkflowBody });

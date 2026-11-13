@@ -10,7 +10,7 @@ import { agentFolderOf } from "../dist/files.js";
 import { agentHomeFolder } from "../dist/workspace/index.js";
 import { ROUTES } from "../dist/server.js";
 import { DEFINITION_FIELDS } from "../dist/validate.js";
-import { CAPABILITIES_SENT, DEFINITION_INPUT_OPTIONAL, DEFINITION_OPTIONAL, REQUEST_EXAMPLES, RUN_FIELDS_SENT, SIGN_IN_FIELDS_SENT } from "../dist/openapi.js";
+import { CAPABILITIES_SENT, DEFINITION_INPUT_OPTIONAL, DEFINITION_OPTIONAL, MCP_PREVIEW_SCOPE, REQUEST_EXAMPLES, RUN_FIELDS_SENT, SIGN_IN_FIELDS_SENT } from "../dist/openapi.js";
 import { schemaProblems } from "./schema-support.mjs";
 import { capabilities } from "../dist/index.js";
 import { note } from "./fixtures/faux-learn.mjs";
@@ -393,7 +393,7 @@ test("live answers meet the served document: capabilities, and an agent made, re
   const { api } = await serve(t);
   const check = (name, value) => assert.deepEqual(schemaProblems(doc, { $ref: `#/components/schemas/${name}` }, value), [], `${name}: ${JSON.stringify(value)}`);
   check("Capabilities", (await api("GET", "/capabilities")).body);
-  for (const [id, body] of [["on-pi", agent("on-pi", { model: "faux/faux-1", thinking: "high" })], ["on-claude", agent("on-claude", { harness: "claude-agent" })], ["in-runner", agent("in-runner", { place: { mode: "runner" } })], ["in-bwrap", agent("in-bwrap", { place: { mode: "sandbox", box: "bwrap" } })], ["in-sandbox", agent("in-sandbox", { place: { mode: "sandbox", box: "daytona" } })], ["on-codex", flowAgent("on-codex", undefined, { harness: "codex" })]]) {
+  for (const [id, body] of [["on-pi", agent("on-pi", { model: "faux/faux-1", thinking: "high" })], ["on-claude", agent("on-claude", { harness: "claude-agent" })], ["in-runner", agent("in-runner", { place: { mode: "runner" } })], ["in-docker", agent("in-docker", { place: { mode: "sandbox", box: "docker" } })], ["in-sandbox", agent("in-sandbox", { place: { mode: "sandbox", box: "daytona" } })], ["on-codex", flowAgent("on-codex", undefined, { harness: "codex" })]]) {
     const { warnings: _, ...made } = (await api("POST", "/agents", body)).body;
     const read = (await api("GET", `/agents/${id}`)).body;
     check("Agent", made);
@@ -401,8 +401,9 @@ test("live answers meet the served document: capabilities, and an agent made, re
   }
   // The document's place takes the two modes the server takes, and refuses what it refuses.
   const place = doc.components.schemas.DefinitionInput.properties.place;
-  for (const box of ["bwrap", "docker"]) assert.deepEqual(schemaProblems(doc, place, { mode: "sandbox", box }), []);
-  assert.notDeepEqual(schemaProblems(doc, place, { mode: "tool-box", box: "bwrap" }), []);
+  for (const box of ["docker", "modal"]) assert.deepEqual(schemaProblems(doc, place, { mode: "sandbox", box }), []);
+  assert.notDeepEqual(schemaProblems(doc, place, { mode: "sandbox", box: "bwrap" }), []);
+  assert.notDeepEqual(schemaProblems(doc, place, { mode: "tool-box", box: "docker" }), []);
   assert.notDeepEqual(schemaProblems(doc, place, { mode: "runner", box: "docker" }), []);
   // The same check sees a field the document does not hold: the positive control.
   assert.notDeepEqual(schemaProblems(doc, { $ref: "#/components/schemas/Capabilities" }, { ...(await api("GET", "/capabilities")).body, unheard_of: 1 }), []);
@@ -457,7 +458,7 @@ test("a timeline row's usage says where it shows here: a browser call's row carr
 });
 
 /** The closed list of a run's learning reasons, as the console's read shape names them. */
-const REASONS = ["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_timeout", "reflect_failed", "empty", "unparsed", "propose_failed", "checker", "grader", "grade_failed"];
+const REASONS = ["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_timeout", "reflect_failed", "empty", "unparsed", "propose_failed", "checker", "grader", "grade_failed", "use"];
 
 test("learning is this server's own addition, learning/1: the definition's switch, the server's in capabilities, a run's learning whole on its read and short in lists, its timeline row, the usage meter and the stats block, each enum whole, and the answers meet the document", { timeout: 120_000 }, async (t) => {
   const { api, baseUrl, data } = await serve(t);
@@ -641,7 +642,7 @@ test("a tool key's save documents every status it answers, 503 unavailable among
   assert.equal(save.responses["503"]?.$ref, "#/components/responses/Unavailable");
 });
 
-test("the served TimelineKind holds every kind pi-durable-agent's timeline declares, decision among them as decision-rows/1, and a decision row meets TimelineRow", async (t) => {
+test("the served TimelineKind holds every kind the timeline declares, decision among them as decision-rows/1, and a decision row meets TimelineRow", async (t) => {
   const { doc } = await served(t);
   // The kinds as the timeline's built declaration has them, comments dropped: the rows this server serves are its.
   const declaration = await readFile(new URL("timeline.d.ts", import.meta.resolve("../dist/timeline/index.js")), "utf8");
@@ -766,4 +767,13 @@ test("every InputIssue reason the MCP registry sends is one the document's Input
   }
   assert.ok(sent.has("redirect"), "the registry refuses a redirect with reason redirect");
   assert.deepEqual([...sent].filter((reason) => !listed.includes(reason)).sort(), []);
+});
+
+test("an MCP preview's tools are said to be the server's offer, not what the credential allows (a read-only token lists write tools too)", async (t) => {
+  const { doc } = await served(t);
+  const preview = doc.paths["/settings/mcp-servers/preview"].post;
+  assert.match(MCP_PREVIEW_SCOPE, /not what this credential allows/);
+  assert.match(MCP_PREVIEW_SCOPE, /refused by the MCP server/);
+  assert.ok(preview.description.includes(MCP_PREVIEW_SCOPE), preview.description);
+  assert.ok(preview.responses["200"].description.includes(MCP_PREVIEW_SCOPE), preview.responses["200"].description);
 });

@@ -5,14 +5,14 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
-import { DaytonaProvider, ModalProvider } from "../dist/index.js";
+import { DaytonaProvider } from "../dist/daytona.js";
+import { ModalProvider } from "../dist/modal.js";
 import * as daytona from "../dist/daytona.js";
 import * as docker from "../dist/docker.js";
 import * as e2b from "../dist/e2b.js";
 import * as modal from "../dist/modal.js";
 import { API, fakeDaytona, KEY } from "./fake-daytona.mjs";
 import { fakeDocker } from "./fake-docker.mjs";
-import { fakeE2B, KEY as E2B_KEY } from "./fake-e2b.mjs";
 import { DAEMON_IMAGE, fakeModal } from "./fake-modal.mjs";
 
 const dir = mkdtempSync(join(tmpdir(), "computer-provider-mount-"));
@@ -42,7 +42,7 @@ test("Daytona: MOUNT is [\"archil\"], what its provider declares", () => {
 });
 
 test("E2B: MOUNT is [\"archil\"], what its provider declares", () => {
-	const provider = new e2b.E2BProvider({ apiKey: E2B_KEY, Sandbox: fakeE2B().Sandbox, daemonPath: DAEMON });
+	const provider = new e2b.E2BProvider({ apiKey: "fake-test-key", Sandbox: Object.fromEntries(["create", "connect", "getInfo", "setTimeout", "kill", "list"].map((name) => [name, () => assert.fail(`Sandbox.${name} was called`)])), daemonPath: DAEMON });
 	assert.deepEqual([...e2b.MOUNT], ["archil"]);
 	assert.deepEqual([...e2b.MOUNT], declared(provider));
 });

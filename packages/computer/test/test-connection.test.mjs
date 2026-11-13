@@ -2,11 +2,10 @@
 // a key the vendor refused is unauthorized; the message never carries the key. Fakes only: no vendor, no Docker.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { DaytonaProvider, ModalProvider } from "../dist/index.js";
-import { E2BProvider } from "../dist/e2b.js";
+import { DaytonaProvider } from "../dist/daytona.js";
+import { ModalProvider } from "../dist/modal.js";
 import { fakeDaytona, KEY as DAYTONA_KEY, API } from "./fake-daytona.mjs";
 import { container, fakeDocker } from "./fake-docker.mjs";
-import { fakeE2B, KEY as E2B_KEY } from "./fake-e2b.mjs";
 import { fakeModal } from "./fake-modal.mjs";
 import { PhoneHarnessProvider } from "../dist/phone-harness.js";
 import { fakePhoneHarness, KEY as PHONE_KEY } from "./fake-phone-harness.mjs";
@@ -35,25 +34,6 @@ test("Daytona: a list by the provider's label; ok with the count; a refused key 
 	assert.ok(!refused.error.message.includes(DAYTONA_KEY), "the key is never in the words");
 });
 
-test("E2B: a list by the provider's metadata; ok with the count; a refused key is unauthorized", async () => {
-	let refuse = false;
-	const fake = fakeE2B({
-		onStep: (step) => {
-			if (refuse && step === "Sandbox.list") throw Object.assign(new Error("Unauthorized, please check your credentials."), { name: "AuthenticationError" });
-		},
-	});
-	const provider = new E2BProvider({ apiKey: E2B_KEY, Sandbox: fake.Sandbox });
-	const tested = await provider.testConnection();
-	assert.equal(tested.ok, true, JSON.stringify(tested));
-	assert.match(tested.value.detail, /E2B answered: 0 computers of this provider/);
-	assert.ok(!fake.calls.some(([name]) => name === "Sandbox.create"), "nothing made");
-	refuse = true;
-	const refused = await provider.testConnection();
-	assert.equal(refused.ok, false);
-	assert.equal(refused.error.code, "unauthorized");
-	assert.ok(!refused.error.message.includes(E2B_KEY));
-});
-
 /** Three computers of this provider's making by name, and one other: a key test counts the three from one listing. */
 const NAMES = ["computer-00000000000a", "computer-00000000000b", "computer-00000000000c"];
 
@@ -76,17 +56,6 @@ test("Daytona: on an account with several computers, one listing page counts the
 	assert.equal(tested.ok, true, JSON.stringify(tested));
 	assert.match(tested.value.detail, /^Daytona answered: 3 computers of this provider$/);
 	assert.deepEqual(fake.requests.map((r) => `${r.method} ${r.path}`), ["GET /api/sandbox"], "one read: no sandbox read back");
-});
-
-test("E2B: on an account with several computers, one listing page counts them, and getInfo reads none", async () => {
-	const fake = fakeE2B();
-	for (const name of NAMES) fake.add({ metadata: { "agentrun.computer": "1", "agentrun.computer.name": name } });
-	fake.add({ metadata: { "agentrun.computer": "1", "agentrun.computer.name": "someone-else" } });
-	const provider = new E2BProvider({ apiKey: E2B_KEY, Sandbox: fake.Sandbox });
-	const tested = await provider.testConnection();
-	assert.equal(tested.ok, true, JSON.stringify(tested));
-	assert.match(tested.value.detail, /^E2B answered: 3 computers of this provider$/);
-	assert.deepEqual(fake.names(), ["Sandbox.list", "paginator.nextItems"], "one page: getInfo reads no sandbox");
 });
 
 test("Modal: the provider's app read without creating it; ok whether it exists or not yet; an unauthenticated token is unauthorized", async () => {

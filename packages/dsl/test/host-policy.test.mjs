@@ -1,6 +1,7 @@
+import { WorkflowOutputInvalidError } from '../dist/workflow.js';
 import assert from "node:assert/strict";
 import test from "node:test";
-import { runWorkflow, validateWorkflow, WorkflowOutputInvalidError, HOST_STATE_KEY } from "../dist/index.js";
+import { runWorkflow, validateWorkflow, HOST_STATE_KEY } from "../dist/index.js";
 
 // A host policy is application code handed in through deps. These tests pin the boundary the engine
 // promises around it: the domain schema and the verifier always see the decoded domain value, host

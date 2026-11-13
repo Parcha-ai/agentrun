@@ -3,8 +3,8 @@ import { defaultPlaceOf, runsWhere } from "./agentForm";
 import { placeOf, placesOf } from "./place";
 
 // The place shapes are the server's (definition.place, Run.place, capabilities.places); the console names no box itself.
-const BOXES = [{ id: "bwrap", available: false, reason: "bwrap is not set up on this server." }, { id: "docker", available: true }, { id: "daytona", available: false, reason: "runs in the daytona box are not available yet" }];
-const PLACES = { modes: ["runner", "sandbox"], default_place: { mode: "runner" }, boxes: [{ id: "bwrap", available: false, reason: "bwrap is not set up on this server." }, { id: "docker", available: true }, { id: "daytona", available: false, reason: "runs in the daytona box are not available yet" }] };
+const BOXES = [{ id: "modal", available: false, reason: "modal is not set up on this server." }, { id: "docker", available: true }, { id: "daytona", available: false, reason: "runs in the daytona box are not available yet" }];
+const PLACES = { modes: ["runner", "sandbox"], default_place: { mode: "runner" }, boxes: [{ id: "modal", available: false, reason: "modal is not set up on this server." }, { id: "docker", available: true }, { id: "daytona", available: false, reason: "runs in the daytona box are not available yet" }] };
 
 describe("places", () => {
   it("reads a place as the server sends it, and nothing else as one", () => {

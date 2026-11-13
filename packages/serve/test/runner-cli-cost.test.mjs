@@ -25,6 +25,8 @@ const { journalSessions } = await import("../dist/runner/sessions.js");
 const { runTimeline } = await import("../dist/store-reads/journal.js");
 const { viewOverStore } = await import("../dist/store-view.js");
 const { readRun } = await import("../dist/store-reads/runs.js");
+const { metersOverStore, spentOverStore } = await import("../dist/store-reads/cap.js");
+const { costView } = await import("../dist/run-view.js");
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const SEAL_KEY = Buffer.alloc(32, 7);
@@ -85,7 +87,7 @@ async function cliRun(t, harness, instructions, { capUsd } = {}) {
   const view = await viewOverStore(server, RUN, { origin: "", serverSecrets: () => [] });
   const listed = await readRun(server, RUN, ctx);
   const turns = await bookedTurns(server, row);
-  return { row, usage, view, listed, turns };
+  return { row, usage, view, listed, turns, server };
 }
 
 /** The runner.turn records of every session of the run (key + data), read back through a reader's journal. */
@@ -106,10 +108,11 @@ test("a claude-agent run under a small cap parks at it once its booked spend lea
   const { row, view, turns } = await cliRun(t, "claude-agent", "Claude Code makes five cent calls.", { capUsd: 0.035 });
   const spent = eight(turns.reduce((sum, turn) => sum + (turn.bookedUsd ?? turn.usd ?? 0), 0));
   assert.equal(row.state, "parked", `the run parks at its cap, never runs on: ${JSON.stringify({ state: row.state, summary: row.summary })}`);
-  // Its first call is booked at $0.01; the next needs about $0.035 of room (its input and a 1,024-token answer at Sonnet's
-  // price), more than the $0.025 left, so it is never sent.
-  assert.deepEqual([turns.length, spent], [1, 0.01], `one request ran, booked at its price: ${JSON.stringify(turns)}`);
-  assert.match(row.summary, /^Not sent: this run has spent \$0\.01 of its \$0\.035 cap/, `the park names the booked spend: ${row.summary}`);
+  // Each call is booked at $0.01. The second is priced warm from the first (the cap's expected mode: the 10 tokens of
+  // input it reported and what the body grew by, and a 1,024-token answer at Sonnet's price), within the $0.025 left, so
+  // it runs; the third needs as much again, more than the $0.015 left, so it is never sent.
+  assert.deepEqual([turns.length, spent], [2, 0.02], `two requests ran, each booked at its price: ${JSON.stringify(turns)}`);
+  assert.match(row.summary, /^Not sent: this run has spent \$0\.02 of its \$0\.035 cap/, `the park names the booked spend: ${row.summary}`);
   assert.equal(eight(view?.cost?.usd ?? 0), spent, `and its view says that spend, never $0: ${JSON.stringify(view?.cost)}`);
 });
 
@@ -123,6 +126,23 @@ for (const harness of Object.keys(HARNESSES)) {
     assert.equal(usage.summary, "Cost: $0.0030 over 2 model requests", "in the renderer's words");
     assert.equal(eight(view?.cost?.usd ?? 0), 0.003, `its view's cost is the booking: ${JSON.stringify(view?.cost)}`);
     assert.equal(eight(listed?.costUsd ?? 0), 0.003, `its list row's cost too: ${JSON.stringify(listed)}`);
+  });
+
+  test(`a ${harness} run that answered with no model request booked reads its cost unknown, never $0`, { timeout: 90_000 }, async (t) => {
+    // The model answers through a route the session's proxy never sees: no runner.request, no runner.turn.
+    const { row, usage, view, listed, turns, server } = await cliRun(t, harness, "Answer past the proxy.");
+    assert.equal(row.state, "ended", `the run ended: ${JSON.stringify({ state: row.state, summary: row.summary })}`);
+    assert.deepEqual(turns, [], "nothing was booked");
+    assert.equal(row.costUsd, null, `the row's cost is unknown, never $0: ${row.costUsd}`);
+    assert.equal(view?.cost?.usd, null, `its view's cost is unknown: ${JSON.stringify(view?.cost)}`);
+    assert.equal(listed?.costUsd ?? null, null, `its list row's cost too: ${JSON.stringify(listed)}`);
+    // Its usage row says so: unknown, its model's work one charge with no price, never "$0 over 0 model requests".
+    assert.deepEqual(usage?.usage, { usd: null, requests: 0, so_far_usd: 0, unpriced: 1 }, `its usage row: unknown: ${JSON.stringify(usage)}`);
+    assert.equal(usage.summary, "Cost: unknown, its model's requests were not metered", "in words");
+    // As a run still going reads it (no stored cost yet): unknown from its rows, never the $0 before any request.
+    assert.equal(costView(await runTimeline(server, RUN, ctx, { settled: true }), undefined), null, "its live view reads unknown too");
+    assert.equal((await metersOverStore(server, RUN, ctx)).tokens, null, "its /usage tokens meter is unknown, never $0");
+    assert.equal(await spentOverStore(server, RUN, ctx), null, "and its spend as the cap reads it");
   });
 
   test(`a ${harness} run with a request whose price is unknown reads its cost unknown, with the known part, never $0`, { timeout: 90_000 }, async (t) => {

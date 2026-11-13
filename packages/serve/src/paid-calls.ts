@@ -207,7 +207,7 @@ export async function paidStep<T>(paid: PaidBooking, call: string | undefined, f
 async function paidOn(paid: PaidBooking, call: string, fee: Fee, send: () => Promise<Response>, chargeOf: (sent: Sent) => number | undefined): Promise<Response> {
   const id = `${call}#${(paidSeq += 1)}`;
   try {
-    await paid.admit({ id, name: fee.name, tool: fee.tool, holdUsd: fee.usd, basis: fee.basis, call, chargedBy: fee.by });
+    await paid.admit({ id, name: fee.name, holdUsd: fee.usd, basis: fee.basis, call, chargedBy: fee.by });
   } catch (error) {
     await pauseOn(error);
     const said = String((error as Error)?.message ?? error);

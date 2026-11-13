@@ -9,6 +9,7 @@ import type { Agent } from "@/lib/agentForm";
 import { agentsByName } from "@/lib/agents";
 import { ClientError } from "@/lib/client";
 import { curlFor, exampleHint, exampleInput, keeper, type StartBody, startBody, submitStart } from "@/lib/runStart";
+import { SpendCapMinimum } from "@/lib/spendCap";
 import { sendUpload, type Upload } from "@/lib/uploads";
 import { cn } from "@/lib/utils";
 
@@ -63,6 +64,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
   const [revision, setRevision] = useState("");
   const [effort, setEffort] = useState("");
   const [cap, setCap] = useState("");
+  const [repo, setRepo] = useState("");
   const [view, setView] = useState<"form" | "json">("form");
   const [pane, setPane] = useState<"code" | "response">(initialResult ? "response" : "code");
   const [lang, setLang] = useState<"curl" | "fetch">("curl");
@@ -82,11 +84,11 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
   const keys = useMemo(() => keeper(), []);
   // Files picked here are sent at once; the request names each once the server has it, and waits for the rest.
   const attachments = useAttachments({ upload, remove: removeUpload, limits, frozen: sending });
-  const built = startBody(kind, { text, revision, effort, maxCostUsd: cap, fileIds: attachments.fileIds });
+  const built = startBody(kind, { text, revision, effort, maxCostUsd: cap, fileIds: attachments.fileIds, repo });
   const body: StartBody = built.ok ? built.body : { input: kind === "agentic" ? { content: text } : text, ...(attachments.fileIds.length ? { file_ids: attachments.fileIds } : {}) };
   const key = agentId ? keys.keyFor(agentId, body) : "";
   const code = lang === "curl" ? curlFor(origin, agentId, body, key)
-    : `const res = await fetch(${JSON.stringify(`${origin}/v2/agents/${agentId || "{agent_id}"}/runs`)}, {\n  method: "POST",\n  headers: {\n    Authorization: \`Bearer \${process.env.AGENTRUN_TOKEN}\`,\n    "Content-Type": "application/json",\n    "Idempotency-Key": ${JSON.stringify(key)},\n  },\n  body: JSON.stringify(${JSON.stringify(body, null, 2).replace(/\n/g, "\n  ")}),\n});\nconsole.log(res.status, await res.json());`;
+    : `const res = await fetch(${JSON.stringify(`${origin}/v2/agents/${agentId || "{agent_id}"}/runs`)}, {\n  method: "POST",\n  headers: {\n    Authorization: \`Bearer \${process.env.AGENTRUN_API_KEY}\`,\n    "Content-Type": "application/json",\n    "Idempotency-Key": ${JSON.stringify(key)},\n  },\n  body: JSON.stringify(${JSON.stringify(body, null, 2).replace(/\n/g, "\n  ")}),\n});\nconsole.log(res.status, await res.json());`;
   const send = async () => {
     if (!built.ok || !onSend || attachments.busy) return;
     setSending(true);
@@ -177,8 +179,14 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
                     <div className="flex gap-2">{["", ...efforts].map((e) => <Button key={e || "default"} type="button" size="sm" aria-pressed={effort === e} onClick={() => setEffort(e)} className={effort === e ? "border-foreground hover:border-foreground" : "text-muted-foreground"}>{e || "default"}</Button>)}</div>
                   </Label>
                   {kind === "agentic" && (
+                    <Label name="repo" note={NOTES.repo} error={!built.ok && built.field === "repo" ? built.message : undefined}>
+                      <Input value={repo} onChange={(e) => setRepo(e.target.value)} placeholder="owner/name" />
+                    </Label>
+                  )}
+                  {kind === "agentic" && (
                     <Label name="max_cost_usd" note={NOTES.max_cost_usd} error={!built.ok && built.field === "max_cost_usd" ? built.message : undefined}>
                       <Input value={cap} onChange={(e) => setCap(e.target.value)} inputMode="decimal" placeholder="e.g. 0.50" />
+                      <p className="mt-1.5 text-small text-muted-foreground"><SpendCapMinimum /></p>
                     </Label>
                   )}
                 </>
@@ -203,7 +211,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
             <>
               <div className="flex gap-5 border-b px-5 text-small md:px-6">{(["curl", "fetch"] as const).map((l) => <button key={l} type="button" onClick={() => setLang(l)} className={cn("-mb-px border-b-2 py-2.5", lang === l ? "border-primary" : "border-transparent text-muted-foreground")}>{l === "curl" ? "cURL" : "JavaScript"}</button>)}</div>
               <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words px-5 py-5 font-mono text-small leading-[1.8] md:px-6">{code}</pre>
-              <footer className="border-t px-5 py-3 text-small text-muted-foreground md:px-6">The same request from your code: set AGENTRUN_TOKEN in your environment.</footer>
+              <footer className="border-t px-5 py-3 text-small text-muted-foreground md:px-6">The same request from your code: set AGENTRUN_API_KEY in your environment.</footer>
             </>
           ) : result && (
             <>
@@ -240,6 +248,7 @@ const NOTES = {
   revision: "Empty runs the current revision.",
   effort: "How hard the model thinks. Empty uses the agent's own.",
   max_cost_usd: "A spend cap in dollars; empty means none.",
+  repo: "The GitHub repository the run reaches, owner/name. It must be one the agent is bound to; empty takes the agent's one repository.",
 } as const;
 
 function Label({ name, required, note, error, children }: { name: string; required?: boolean; note?: string; error?: string; children: React.ReactNode }) {

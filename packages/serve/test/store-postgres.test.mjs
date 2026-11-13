@@ -738,15 +738,18 @@ test("a store holding two answers to one approval is refused migration 0003 in w
   await queued(store);
   await store.close();
   // The store as a build before 0003 left it, after an approve and a deny of call-1 raced and both were written; call-2 has
-  // one answer, which the migration keeps as it is.
+  // one answer, which the migration keeps as it is. Every migration from 0003 on is unrecorded, so the open applies them
+  // again from 0003 (0004 on runs.outcome's check runs twice unharmed).
   await sql(schema, "DROP INDEX commands_one_answer");
-  await sql(schema, "DELETE FROM schema_migrations WHERE version = 3");
+  await sql(schema, "DELETE FROM schema_migrations WHERE version >= 3");
   const answer = async (kind, call) => (await sql(schema, "INSERT INTO commands (run_id, kind, body, created_at) VALUES ('run-1', $1, $2, 0) RETURNING id", kind, JSON.stringify({ approval: call })))[0].id;
   const first = await answer("approve", "call-1");
   const second = await answer("deny", "call-1");
   const other = await answer("deny", "call-2");
   let words = "";
-  await assert.rejects(openPostgresStore({ url: PG_URL, schema }), (error) => {
+  // A store that opens anyway is closed before the case fails: left open, its pool and owner lock keep the file's process
+  // alive past its last case, and the whole Postgres job waits on it to its limit instead of failing this case by name.
+  await assert.rejects(openPostgresStore({ url: PG_URL, schema }).then((opened) => opened.close()), (error) => {
     words = error.message;
     return true;
   });
@@ -840,6 +843,39 @@ test("a runner process on a schema not set up is refused in the SQLite words, na
   assert.ok(error instanceof RunnerRefused, String(error));
   assert.equal(error.message, `The store in the Postgres schema ${schema} is not set up yet: start the server on the Postgres schema ${schema} first, then the runner.`);
   assert.ok(!error.message.includes(PG_URL), "the URL is not in the words");
+});
+
+test("a run's outcome takes 'stopped' and 'cancelled' on a fresh schema and on one an earlier build set up (every migration before the outcome's) and migrated since", ONLY, async (t) => {
+  const outcomeCheck = async (schema) => (await sql(schema, "SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conrelid = 'runs'::regclass AND conname = 'runs_outcome_check'")).map((row) => row.def);
+  const widened = migrationsIn().find((m) => m.name === "runs_outcome_stop_or_cancel").version;
+  for (const from of ["fresh", "earlier"]) {
+    const schema = await schemaFor(t);
+    if (from === "earlier") {
+      // A schema an earlier build set up (the migrations before the outcome's: its CHECK takes no stop), migrated by this
+      // build's server.
+      const connection = await PgConnection.open({ url: PG_URL, schema });
+      try {
+        await connection.withClient((c) => migrate(c, schema, 0, migrationsIn().filter((m) => m.version < widened)));
+      } finally {
+        await connection.close();
+      }
+      const [before] = await outcomeCheck(schema);
+      assert.ok(before && !before.includes("stopped"), `the earlier CHECK takes no stop: ${before}`);
+    }
+    const store = await openPostgresStore({ url: PG_URL, schema });
+    try {
+      await store.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer." } });
+      for (const [id, outcome] of [["run-stopped", "stopped"], ["run-cancelled", "cancelled"]]) {
+        await store.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" });
+        await store.runs.update(await store.claim(id, "runner-a", { leaseMs: 30_000 }), { state: "stopped", summary: outcome, outcome });
+        assert.equal((await store.runs.get(id)).outcome, outcome, `${from}: ${outcome}`);
+      }
+    } finally {
+      await store.close();
+    }
+    await assert.rejects(sql(schema, "UPDATE runs SET outcome = 'paused' WHERE id = 'run-stopped'"), /runs_outcome_check/, `${from}: any other outcome is refused`);
+    assert.equal((await outcomeCheck(schema)).length, 1, `${from}: one CHECK on the outcome`);
+  }
 });
 
 // #2333's Postgres half: a transaction's deadline from its begin counts only time this process could run. Other work that

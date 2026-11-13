@@ -32,7 +32,7 @@ export const ARCHIL_HELPER = "/usr/local/sbin/agentrun-archil";
 export const ARCHIL_GATE = "/opt/agentrun/archil-mounted";
 const HELPER_SHA = createHash("sha256").update(readFileSync(new URL("../box/agentrun-archil", import.meta.url))).digest("hex");
 /** What the preflight prints in a computer as the Archil image makes it. */
-export const GOOD_PREFLIGHT = ["uid 0", `helper ${HELPER_SHA} -rwxr-xr-x 0 0`, "archil Archil Client: v0.10.1-1793222256, 1001, proto=Version2", "tool 2510:2510", "sudo none"].join("\n");
+export const GOOD_PREFLIGHT = ["uid 0", `helper ${HELPER_SHA} -rwxr-xr-x 0 0`, "archil Archil Client: v0.10.1-1793222256, 1001, proto=Version2", "tool 2510:2510", "sudo none", "fuse present"].join("\n");
 /** The verb of a root command: the helper's, the preflight, or the gate; undefined for any other command. */
 export function rootVerb(command) {
 	if (command?.[0] === ARCHIL_HELPER) return command[1];
@@ -517,6 +517,11 @@ export function fakeModal({ create = "ok", box = {}, tags: tagPatch = {}, sandbo
 					return handle(id);
 				};
 				if (create === "fail") return Promise.reject(new InvalidError("Image build failed: COPY --from could not pull the image"));
+				// Modal's bound on a sandbox's tags, keys and values together, in its words (the qa36 live run's).
+				const tagBytes = Object.entries(params.tags ?? {}).reduce((sum, [key, value]) => sum + Buffer.byteLength(key) + Buffer.byteLength(value), 0);
+				if (tagBytes > 512) {
+					return Promise.reject(Object.assign(new Error(`/modal.client.ModalClient/SandboxCreateV2 INVALID_ARGUMENT: a sandbox's cumulative tags size (${tagBytes} bytes) cannot exceed 512 bytes`), { name: "ClientError", code: 3 }));
+				}
 				if (create === "slow" || create === "late") {
 					const held = deferred();
 					fake.held.push(held);

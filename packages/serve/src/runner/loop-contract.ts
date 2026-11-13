@@ -36,8 +36,10 @@ export type EndOfRunTurn = (input: {
   /** The run was cut before it could look back: by a person's stop (`stopped`), by one during the end-of-run turn
    *  (`stopped-looking`), or by a fault (`faulted`). The step must not call `ask`: it returns only what a cut run keeps. */
   readonly cut?: "stopped" | "stopped-looking" | "faulted";
-  /** `again`: the turn asked once more in the same session (its first answer out of format), as its own request. */
-  ask(prompt: string, opts: { readonly origin: "reflect"; readonly deadlineMs: number; readonly again?: true }): Promise<EndOfRunAnswer>;
+  /** `again`: the turn asked once more in the same session (its first answer out of format), as its own request.
+   *  `round`: which end of the run this is (1, its first, when absent): an end after a follow-up opened the run again is
+   *  a later round, asked of the model anew under a request of its own. */
+  ask(prompt: string, opts: { readonly origin: "reflect"; readonly deadlineMs: number; readonly again?: true; readonly round?: number }): Promise<EndOfRunAnswer>;
   readonly signal: AbortSignal;
 }) => Promise<{ readonly also: readonly AlsoRow[] } | undefined>;
 
@@ -69,6 +71,13 @@ export class ClaimRefused extends Error {
 /** The end a person's stop or cancel writes: stopped, in words that say which. A cancel's are main's ("cancelled"). */
 export function endedBy(cancel: boolean | undefined): string {
   return cancel ? "cancelled" : "stopped by a person";
+}
+
+/** The run's end on a person's stop or a cancel, as every loop and the runner write it: state 'stopped', words that say
+ *  which (endedBy), and the outcome the store tells them apart by: 'stopped' (the turn is over, never the run, as main's
+ *  stop leaves a run: a message reopens it) or 'cancelled' (over for good). */
+export function stopEnd(cancel: boolean | undefined): { readonly state: "stopped"; readonly summary: string; readonly outcome: "stopped" | "cancelled" } {
+  return { state: "stopped", summary: endedBy(cancel), outcome: cancel ? "cancelled" : "stopped" };
 }
 
 /** The refusal a denied call's model reads: serve's own words for a call a person denied (refusal-words.ts refusedText,

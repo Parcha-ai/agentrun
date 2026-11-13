@@ -148,6 +148,8 @@ export function observed(store, record) {
         return row;
       },
       claimable: (options) => store.runs.claimable(options),
+      claimsOf: (runner) => store.runs.claimsOf(runner),
+      launch: (runId) => store.runs.launch(runId),
       async claimMany(runner, k, options) {
         const claims = await store.runs.claimMany(runner, k, options);
         const at = Date.now();

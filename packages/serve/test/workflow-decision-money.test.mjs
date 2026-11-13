@@ -28,6 +28,9 @@ const { holdOf } = await import("../dist/decision-cap.js");
 const { putSealedKey } = await import("../dist/server-keys.js");
 const { servedTimelineRows } = await import("../dist/run-timeline-served.js");
 const { viewOverStore } = await import("../dist/store-view.js");
+const { journalSessions } = await import("../dist/runner/sessions.js");
+const { DECISION_SESSION } = await import("@parcha/agentrun-kernel/kernel/cap");
+const { sessionSpendOf } = await import("@parcha/agentrun-kernel");
 
 /** The faux System One service (serves OpenRouter's Decisions catalog and answers decisions), pointed at under --faux. */
 const FAUX_SYSTEM_ONE = fileURLToPath(new URL("../../decisions/dist/testing/faux-system-one.js", import.meta.url));
@@ -47,10 +50,10 @@ const askFlow = () => ({
   },
   input: { schemaId: "In" },
   output: { schemaId: "Verdict", path: "verdict" },
-  root: { node: "judge", label: "ask", provider: "openrouter", model: "openai/gpt-6-sol", state: { doc: "{doc}" }, out: "Verdict", as: "verdict" },
+  root: { node: "judge", label: "ask", provider: "openrouter", model: "openai/gpt-6.1-sol", state: { doc: "{doc}" }, out: "Verdict", as: "verdict" },
 });
 
-/** The gpt-6-sol decision price in OpenRouter's catalog (per token, per request, per image), as the parity test uses. */
+/** The gpt-6.1-sol decision price in OpenRouter's catalog (per token, per request, per image), as the parity test uses. */
 const priceOf = (overrides = {}) => ({ promptUsd: 1.25e-6, completionUsd: 10e-6, requestUsd: 0, imageUsd: 0, maxCompletionTokens: 4_096, ...overrides });
 
 /** An answer for each question by its type (the faux provider answers exactly what it is asked). */
@@ -78,9 +81,9 @@ function fauxOpenrouter({ price = priceOf(), costUsd = null, record } = {}) {
 
 /** A model provider that is never asked (a decision-only workflow runs no model node), for providerOf's default tier. */
 const idleModelProvider = () => () => ({
-  modelId: "openai/gpt-6-sol", api: "anthropic-messages", origin: "https://faux.invalid", credential: () => "not-a-secret-x",
-  policy: anthropicPolicy({ model: "openai/gpt-6-sol", tools: [] }), price: () => 0,
-  capModel: { id: "openai/gpt-6-sol", api: "anthropic-messages", price: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 }, outputCeiling: 128_000 },
+  modelId: "openai/gpt-6.1-sol", api: "anthropic-messages", origin: "https://faux.invalid", credential: () => "not-a-secret-x",
+  policy: anthropicPolicy({ model: "openai/gpt-6.1-sol", tools: [] }), price: () => 0,
+  capModel: { id: "openai/gpt-6.1-sol", api: "anthropic-messages", price: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 }, outputCeiling: 128_000 },
   fetch: async () => { throw new Error("the decision-only workflow asked a model, which it should not"); },
 });
 
@@ -169,17 +172,38 @@ async function waitRow(server, done, ms = 20_000) {
   }
 }
 
-test("a capped workflow's decision books main's hold: the provider reports no cost, so it settles at holdOf", async (t) => {
+/** The booking records (runner.request and runner.turn) of run-1's decisions session (DECISION_SESSION), read once the
+ *  run is at rest. */
+async function decisionRecords(store) {
+  const { harness } = await openRead(store);
+  try {
+    const sessions = journalSessions(harness, BACKGROUND_CONTEXT, store);
+    return (await sessions.read(DECISION_SESSION)).filter((record) => record.kind === "runner.request" || record.kind === "runner.turn");
+  } finally {
+    await harness.close(BACKGROUND_CONTEXT);
+  }
+}
+
+test("a capped workflow's decision whose provider reports no cost: the cap counts it at main's hold (holdOf), and the run's saved cost is unknown, never that hold", async (t) => {
   let sent;
   const decider = fauxOpenrouter({ price: priceOf(), costUsd: null, record: (request) => (sent = request) });
-  const { server } = await worldWith(t, { capUsd: 1, decider });
+  const { server, store } = await worldWith(t, { capUsd: 1, decider });
   const row = await waitRow(server, (r) => r.state !== "running" && r.state !== "queued" && r.runner === null);
   assert.equal(row.state, "ended", `the run ends: ${JSON.stringify(row)}`);
   assert.ok(sent, "the decision was sent to the provider");
-  // main's hold for the exact request the provider was sent (serve decision-cap.ts holdOf), under the run's mode.
+  // main's hold for the exact request the provider was sent (serve decision-cap.ts holdOf), under the run's mode: the
+  // cap's figure for it, booked as held.
   const hold = await holdOf({ id: "openrouter", priceOf: async () => priceOf() }, { label: "ask", kind: "judge", model: sent.model, state: sent.state, questions: sent.questions }, "expected");
   assert.ok("usd" in hold && hold.usd > 0, `main holds it at a figure: ${JSON.stringify(hold)}`);
-  assert.ok(Math.abs((row.costUsd ?? 0) - hold.usd) < 1e-12, `the run books main's hold ${hold.usd}: ${row.costUsd}`);
+  // The cap held it at main's hold, and its answer came back with no cost (its turn's usd null): the cap counts it at
+  // that hold (charged as held).
+  const records = await decisionRecords(store);
+  const request = records.find((record) => record.kind === "runner.request")?.data;
+  const turn = records.find((record) => record.kind === "runner.turn")?.data;
+  assert.ok(Math.abs((request?.heldUsd ?? 0) - hold.usd) < 1e-12, `held at main's hold ${hold.usd}: ${JSON.stringify(records)}`);
+  assert.equal(turn?.usd, null, `its answer reported no cost: ${JSON.stringify(turn)}`);
+  // As a cost it is unknown: the run's saved cost says so (null), as a pi run's does for a decision of no reported cost.
+  assert.equal(row.costUsd, null, `the run's cost is unknown, never the hold: ${row.costUsd}`);
 });
 
 test("a workflow's decision counts once in its cost: its served timeline's usage row and its view each say the run's one booked cost", async (t) => {
@@ -236,7 +260,7 @@ const mixedFlow = () => ({
   output: { schemaId: "Verdict", path: "verdict" },
   root: { node: "chain", steps: [
     { node: "extract", label: "note", instructions: "Note the doc.", out: "Mid", as: "note_out" },
-    { node: "judge", label: "ask", provider: "openrouter", model: "openai/gpt-6-sol", state: { doc: "{doc}" }, out: "Verdict", as: "verdict" },
+    { node: "judge", label: "ask", provider: "openrouter", model: "openai/gpt-6.1-sol", state: { doc: "{doc}" }, out: "Verdict", as: "verdict" },
   ] },
 });
 
@@ -270,8 +294,8 @@ const twoJudgeFlow = () => ({
   input: { schemaId: "In" },
   output: { schemaId: "Verdict", path: "verdict2" },
   root: { node: "chain", steps: [
-    { node: "judge", label: "ask1", provider: "openrouter", model: "openai/gpt-6-sol", state: { doc: "{doc}" }, out: "Verdict", as: "verdict1" },
-    { node: "judge", label: "ask2", provider: "openrouter", model: "openai/gpt-6-sol", state: { doc: "{doc}" }, out: "Verdict", as: "verdict2" },
+    { node: "judge", label: "ask1", provider: "openrouter", model: "openai/gpt-6.1-sol", state: { doc: "{doc}" }, out: "Verdict", as: "verdict1" },
+    { node: "judge", label: "ask2", provider: "openrouter", model: "openai/gpt-6.1-sol", state: { doc: "{doc}" }, out: "Verdict", as: "verdict2" },
   ] },
 });
 
@@ -361,4 +385,380 @@ test("a run without the decision provider's stored key fails: the provider the r
   const { server } = await sealedWorld(t, { seal: { TYPESAFE_API_KEY: `not-a-secret-${"jev"}` }, flow: chainProviders("parallel") });
   const row = await waitRow(server, (r) => r.state !== "running" && r.state !== "queued" && r.runner === null);
   assert.equal(row.state, "failed", `the run fails without the Parallel key: ${JSON.stringify(row)}`);
+});
+
+// ---- The cases the run's old in-process cap checked at its unit, here on the runner: a raise on a capped run, a raise
+// finishing its pause, a decision at its cap, the catalog down mid-run, a map's items under one cap, a hold kept only once
+// its request is admitted, and a refusal its provider did not bill.
+
+/** A decision price that is its request fee alone: the hold is exactly `usd`. */
+const feeOnly = (usd) => priceOf({ promptUsd: 0, completionUsd: 0, requestUsd: usd, maxCompletionTokens: 4_096 });
+
+/** The run's budget entries (its pauses at the cap), oldest first, and its row once `done` holds and no runner has it. */
+async function settledAt(server, store, done) {
+  const row = await waitRow(server, (r) => r.runner === null && done(r));
+  return { row, budgets: await rootEntries(store, KINDS.budget) };
+}
+
+/** Waits until the command `id` is taken or refused, and returns its row. */
+async function commandSettled(server, id, ms = 20_000) {
+  const from = Date.now();
+  for (;;) {
+    const row = (await server.commands("run-1", id - 1)).find((one) => one.id === id);
+    if (row && (row.takenAt !== null || row.refused !== null)) return row;
+    if (Date.now() - from > ms) return row;
+    await sleep(20);
+  }
+}
+
+test("a raise too small for the decision it parked at sends the run on, and the decision, judged again at the raised cap, parks it anew: its pause names the raised cap, never the old one", async (t) => {
+  const decider = fauxOpenrouter({ price: feeOnly(10), costUsd: null });
+  const { server, store } = await worldWith(t, { capUsd: 1, decider });
+  const first = await settledAt(server, store, (r) => r.state === "parked");
+  assert.deepEqual([first.row.state, first.budgets.length, first.budgets[0]?.pending.cap_usd], ["parked", 1, 1], JSON.stringify(first));
+
+  // $2 is above the $1 cap still refused but under the $10 the decision needs.
+  await sendCommand(server, "run-1", { kind: "raise", body: { capUsd: 2 } });
+  const again = await settledAt(server, store, (r) => r.state === "parked" && r.epoch > first.row.epoch);
+  assert.equal(again.row.state, "parked", `the decision, judged again at $2, parks the run anew: ${JSON.stringify(again.row)}`);
+  const pending = again.budgets.at(-1)?.pending;
+  assert.deepEqual([pending?.cap_usd, pending?.needs_usd], [2, 10], `the pause stands at the raised cap: ${JSON.stringify(again.budgets)}`);
+  const view = await viewOverStore(server, "run-1", { origin: "", serverSecrets: () => [] });
+  assert.deepEqual([view.status, view.pending?.kind, view.pending?.cap_usd], ["input_required", "budget", 2], `the person sees the pause at $2: ${JSON.stringify(view.pending)}`);
+  assert.equal(again.row.costUsd ?? 0, 0, "nothing was sent or booked");
+});
+
+test("a raise finishes a pause only above the cap still refused: the same raise again, or one under it, leaves the run parked where it stands; one past the need resumes it to its end with the pause gone", async (t) => {
+  let asked = 0;
+  const decider = fauxOpenrouter({ price: feeOnly(10), costUsd: 10, record: () => (asked += 1) });
+  const { server, store } = await worldWith(t, { capUsd: 1, decider });
+  const first = await settledAt(server, store, (r) => r.state === "parked");
+  await sendCommand(server, "run-1", { kind: "raise", body: { capUsd: 2 } });
+  const at2 = await settledAt(server, store, (r) => r.state === "parked" && r.epoch > first.row.epoch);
+  assert.equal(at2.budgets.at(-1)?.pending.cap_usd, 2, JSON.stringify(at2.budgets));
+
+  // The raise the run already has, again: a retry of the last, which resumed the pause before this one; it opens nothing.
+  const same = await sendCommand(server, "run-1", { kind: "raise", body: { capUsd: 2 } });
+  const sameRow = await commandSettled(server, same.id);
+  assert.ok(sameRow && (sameRow.takenAt !== null || sameRow.refused !== null), `the same raise again is answered: ${JSON.stringify(sameRow)}`);
+  // One under the cap the run has: refused in the cap's words.
+  const under = await sendCommand(server, "run-1", { kind: "raise", body: { capUsd: 1.5 } });
+  const underRow = await commandSettled(server, under.id);
+  assert.match(underRow?.refused ?? "", /only raised/, `a raise under the cap is refused: ${JSON.stringify(underRow)}`);
+  const still = await settledAt(server, store, (r) => r.state === "parked");
+  assert.deepEqual([still.row.state, still.budgets.at(-1)?.pending.cap_usd, still.row.costUsd ?? 0, asked], ["parked", 2, 0, 0], `the run stands parked at its $2 pause, nothing sent: ${JSON.stringify(still)}`);
+  const parkedView = await viewOverStore(server, "run-1", { origin: "", serverSecrets: () => [] });
+  assert.deepEqual([parkedView.pending?.kind, parkedView.pending?.cap_usd], ["budget", 2], `its pause still shows at $2: ${JSON.stringify(parkedView.pending)}`);
+
+  // Past the need: the pause is finished, the decision sent once, and the run ends with no pause to show.
+  await sendCommand(server, "run-1", { kind: "raise", body: { capUsd: 20 } });
+  const ended = await waitRow(server, (r) => r.state === "ended" && r.runner === null);
+  assert.equal(ended.state, "ended", JSON.stringify(ended));
+  assert.deepEqual([asked, Math.round((ended.costUsd ?? 0) * 1e9) / 1e9], [1, 10], "the decision sent once, booked at the $10 it charged");
+  const view = await viewOverStore(server, "run-1", { origin: "", serverSecrets: () => [] });
+  assert.equal(view.pending, null, `no pause once it ended: ${JSON.stringify(view.pending)}`);
+});
+
+test("a decision at its cap: a hold that is exactly the room left is sent and booked; one a hair over it parks the run unsent", async (t) => {
+  await t.test("exactly the room", async (t) => {
+    let asked = 0;
+    const decider = fauxOpenrouter({ price: feeOnly(0.4), costUsd: 0.4, record: () => (asked += 1) });
+    const { server } = await worldWith(t, { capUsd: 0.4, decider });
+    const row = await waitRow(server, (r) => r.state !== "running" && r.state !== "queued" && r.runner === null);
+    assert.deepEqual([row.state, asked, Math.round((row.costUsd ?? 0) * 1e9) / 1e9], ["ended", 1, 0.4], JSON.stringify(row));
+  });
+  await t.test("a hair over", async (t) => {
+    let asked = 0;
+    const decider = fauxOpenrouter({ price: feeOnly(0.4), costUsd: null, record: () => (asked += 1) });
+    const { server, store } = await worldWith(t, { capUsd: 0.3999, decider });
+    const parked = await settledAt(server, store, (r) => r.state === "parked");
+    assert.deepEqual([parked.row.state, asked, parked.budgets[0]?.pending.cap_usd, parked.budgets[0]?.pending.needs_usd], ["parked", 0, 0.3999, 0.4], JSON.stringify(parked));
+  });
+});
+
+test("OpenRouter's catalog down for a moment mid-run under a cap: the price is read again and the decision is sent, never stopped by the cap", async (t) => {
+  let down = 1;
+  let reads = 0;
+  let asked = 0;
+  const decider = { ...fauxOpenrouter({ price: feeOnly(0.01), costUsd: null, record: () => (asked += 1) }), priceOf: async () => { reads += 1; if (down-- > 0) throw new Error("catalog 503"); return feeOnly(0.01); } };
+  const { server } = await worldWith(t, { capUsd: 1, decider });
+  const row = await waitRow(server, (r) => r.state !== "running" && r.state !== "queued" && r.runner === null);
+  assert.deepEqual([row.state, asked, reads], ["ended", 1, 2], `read again, then sent: ${JSON.stringify(row)}`);
+});
+
+test("OpenRouter's catalog unreadable for good mid-run under a cap (down, or a 200 with no list of models): the decision is never sent and its node fails, never a stop of the cap's", async (t) => {
+  const { openrouterProvider } = await import("@parcha/agentrun-decisions");
+  for (const [name, answer] of [["down", () => new Response("upstream", { status: 503 })], ["no list", () => new Response("{}", { status: 200, headers: { "content-type": "application/json" } })]]) {
+    await t.test(name, async (t) => {
+      let calls = 0;
+      const real = openrouterProvider({ apiKey: `not-a-secret-${"openrouter"}`, fetch: async () => ((calls += 1), answer()) });
+      let asked = 0;
+      const decider = { ...fauxOpenrouter({ price: feeOnly(0.01), costUsd: null, record: () => (asked += 1) }), priceOf: (model) => real.priceOf(model) };
+      const { server, store } = await worldWith(t, { capUsd: 1, decider });
+      const row = await waitRow(server, (r) => r.state !== "running" && r.state !== "queued" && r.runner === null);
+      assert.equal(row.state, "failed", JSON.stringify(row));
+      assert.equal(asked, 0, "the decision was never sent");
+      assert.ok(calls >= 2, `the catalog was read again before the decision failed: ${calls}`);
+      assert.doesNotMatch(String(row.error ?? row.summary ?? ""), /spend_cap_reached|out of budget/, `a catalog outage is no stop of the cap's: ${JSON.stringify(row)}`);
+      assert.equal((await rootEntries(store, KINDS.budget)).length, 0, "nothing parked");
+    });
+  }
+});
+
+/** A map of two documents, each judged once (two decisions under one cap, at paths of their own). */
+const mapFlow = () => ({
+  v: 2, name: "mapped",
+  schemas: {
+    In: { type: "object", required: ["docs"], properties: { docs: { type: "array", items: { type: "string" } } } },
+    Verdict: { type: "object", additionalProperties: false, required: ["is_coi"], properties: { is_coi: { type: "boolean", description: "Is `doc` a certificate of incorporation?" } } },
+    Out: { type: "object", required: ["count"], properties: { count: { type: "integer" } } },
+  },
+  input: { schemaId: "In" },
+  output: { schemaId: "Out", path: "result" },
+  root: { node: "chain", steps: [
+    { node: "map", label: "each", itemsPath: "docs", as: "verdicts", resultPath: "verdict", maxConcurrency: 2,
+      body: { node: "judge", label: "ask", provider: "openrouter", model: "openai/gpt-6.1-sol", state: { doc: "{item}" }, out: "Verdict", as: "verdict" } },
+    { node: "code", label: "result", code: "(s) => ({ result: { count: s.verdicts.length } })" },
+  ] },
+});
+
+test("a map's two decisions under one cap with room for one: the run parks once at the item that does not fit, one raise sends it on, and each item is answered and booked once", async (t) => {
+  const asked = [];
+  const decider = fauxOpenrouter({ price: feeOnly(0.4), costUsd: 0.4, record: (request) => asked.push(request.state?.doc) });
+  const { server, store } = await worldWith(t, { capUsd: 0.5, flow: mapFlow(), input: { docs: ["first", "second"] }, decider });
+  const parked = await settledAt(server, store, (r) => r.state === "parked" || r.state === "ended" || r.state === "failed");
+  assert.equal(parked.row.state, "parked", `one item does not fit beside the other: ${JSON.stringify(parked)}`);
+  assert.equal(parked.budgets.length, 1, `one pause: ${JSON.stringify(parked.budgets)}`);
+  await sendCommand(server, "run-1", { kind: "raise", body: { capUsd: 2 } });
+  const ended = await waitRow(server, (r) => (r.state === "ended" || r.state === "failed") && r.runner === null);
+  assert.equal(ended.state, "ended", `the raise sends the run on to its end, never to a review: ${JSON.stringify(ended)}`);
+  assert.deepEqual([...asked].sort(), ["first", "second"], `each item asked once: ${JSON.stringify(asked)}`);
+  assert.ok(Math.abs((ended.costUsd ?? 0) - 0.8) < 1e-9, `each item booked once: ${ended.costUsd}`);
+});
+
+test("a decision's hold is kept only once the driver has admitted its request: a runner that dies at its first write after pricing a decision never leaves a hold the next claim counts beside asking the decision again", async (t) => {
+  // The stores' clock is real time plus `skew`, so the dead runner's claim is run out by moving it, never by waiting.
+  let skew = 0;
+  const now = () => Date.now() + skew;
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-wf-dec-crash-"));
+  const server = await openSqliteStore({ dataDir: dir, role: "server", now });
+  const real = await openSqliteStore({ dataDir: dir, role: "runner", now });
+  const second = await openSqliteStore({ dataDir: dir, role: "runner", now });
+  const runners = [];
+  // Runner A's last write never comes back while the case runs; once it is done (runner B holds the run under a later
+  // claim, so nothing A does now lands) it fails, so A's claim unwinds and its proxies close.
+  let unstick = () => {};
+  t.after(async () => {
+    unstick();
+    for (const runner of runners) await runner.close().catch(() => {});
+    for (const store of [real, second, server]) await store.close().catch(() => {});
+    rmSync(dir, { recursive: true, force: true });
+  });
+  // Runner A's store: once the decision is priced (armed), the next flush lands and then A dies there, before anything is
+  // sent: what that flush made durable (a hold, the driver's admission, or both) is what runner B finds.
+  let armed = false;
+  let died = false;
+  let diedNow;
+  const dead = new Promise((resolve) => (diedNow = resolve));
+  const store = new Proxy(real, { get(target, key) {
+    if (key === "flush") return async (...args) => {
+      await target.flush(...args);
+      if (!armed || died) return;
+      died = true;
+      runners[0].kill();
+      diedNow();
+      await new Promise((_, reject) => (unstick = () => reject(new Error("runner A died at this write"))));
+    };
+    const value = Reflect.get(target, key);
+    return typeof value === "function" ? value.bind(target) : value;
+  } });
+  const asked = [];
+  const base = fauxOpenrouter({ price: feeOnly(0.4), costUsd: 0.4, record: (request) => asked.push(request) });
+  const decider = { ...base, priceOf: async (model) => { if (!died) armed = true; return base.priceOf(model); } };
+  const providers = { providers: { openrouter: decider }, default: "openrouter" };
+  await server.agents.create({ id: "agent-1", name: "Flow" }, { id: "rev-1", kind: "workflow", body: { workflow: askFlow() } });
+  await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { doc: "Certificate of incorporation of Example Widgets, Inc." }, title: "t", place: { mode: "runner" }, max_cost_usd: 1 } });
+  runners.push(startRunner({ store, createLoop: createWorkflowLoop(workflowSpecOf({ store, providerOf: idleModelProvider(), decisionProvidersOf: () => providers })), name: "runner-a", ...TIMING }));
+  await dead;
+  assert.equal(asked.length, 0, "runner A died before the decision was sent");
+  // Runner A's claim runs out; runner B takes the run over.
+  skew += TIMING.leaseMs + 60_000;
+  runners.push(startRunner({ store: second, createLoop: createWorkflowLoop(workflowSpecOf({ store: second, providerOf: idleModelProvider(), decisionProvidersOf: () => providers })), name: "runner-b", ...TIMING }));
+  const ended = await waitRow(server, (r) => r.state !== "running" && r.state !== "queued" && r.runner === null);
+  // Runner A's write made the request admitted (runner B never asks it again: the driver escalates it, asked and never
+  // answered) or it did not (runner B asks it once). Either way the run counts it once at most: a hold kept before the
+  // admission would be counted cut beside runner B's own, $0.80 for one $0.40 decision.
+  assert.ok(asked.length <= 1, `asked at most once: ${asked.length}`);
+  assert.ok((ended.costUsd ?? 0) <= 0.4 + 1e-9, `the decision counted once at most, never its dead runner's hold beside a second ask: ${JSON.stringify(ended)}`);
+  if (asked.length === 1) assert.deepEqual([ended.state, Math.round((ended.costUsd ?? 0) * 1e9) / 1e9], ["ended", 0.4], `asked by runner B, booked at what it charged: ${JSON.stringify(ended)}`);
+  // Not asked: runner A's write admitted the request, so runner B took the run over and escalated it, asked and never
+  // answered, never a takeover that simply failed.
+  else assert.deepEqual([ended.state, ended.outcome, ended.epoch > 1], ["ended", "escalated", true], `runner B escalates the decision runner A admitted: ${JSON.stringify(ended)}`);
+});
+
+/** Whether a journal commit (its StorageWrite[][]) books a runner.turn: in a judge-only run, the decision's settle. */
+const settles = (batches) => Array.isArray(batches) && batches.flat().some((write) => write?.type === "entry" && write.value?.kind === "runner.turn");
+
+/** run-1 (askFlow, capped at $1) on runner A, which dies at a commit around its decision's settle: `at` "settle" dies at
+ *  the settle's own commit, which never lands; "receipt" lets the settle land and dies at the next commit, the driver's
+ *  receipt of the answer, which never lands. Runner B then takes the run over once A's claim runs out (the stores'
+ *  clock moved past it). The run's row once it rests, its decisions' booking records, and how often `decider` was asked. */
+async function lostAround(t, { at, price, costUsd }) {
+  let skew = 0;
+  const now = () => Date.now() + skew;
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-wf-dec-settle-"));
+  const server = await openSqliteStore({ dataDir: dir, role: "server", now });
+  const real = await openSqliteStore({ dataDir: dir, role: "runner", now });
+  const second = await openSqliteStore({ dataDir: dir, role: "runner", now });
+  const runners = [];
+  // Runner A's frozen commits never come back while the case runs; at its end they fail, so A's claim unwinds.
+  const frozen = [];
+  t.after(async () => {
+    for (const fail of frozen.splice(0)) fail(new Error("runner A died"));
+    for (const runner of runners) await runner.close().catch(() => {});
+    for (const store of [real, second, server]) await store.close().catch(() => {});
+    rmSync(dir, { recursive: true, force: true });
+  });
+  let settled = false;
+  let died = false;
+  let diedNow;
+  const dead = new Promise((resolve) => (diedNow = resolve));
+  const store = new Proxy(real, { get(target, key) {
+    if (key === "journal") return (claim) => new Proxy(target.journal(claim), { get(inner, property) {
+      const value = Reflect.get(inner, property, inner);
+      if (property !== "commit") return typeof value === "function" ? value.bind(inner) : value;
+      return async (...args) => {
+        if (!died) {
+          const settle = settles(args[0]);
+          if ((at === "settle" && settle) || (at === "receipt" && settled)) {
+            died = true;
+            runners[0].kill();
+            diedNow();
+          }
+          if (settle) settled = true;
+        }
+        if (died) return new Promise((_, reject) => frozen.push(reject));
+        return value.apply(inner, args);
+      };
+    } });
+    const value = Reflect.get(target, key);
+    return typeof value === "function" ? value.bind(target) : value;
+  } });
+  let asked = 0;
+  const decider = fauxOpenrouter({ price, costUsd, record: () => (asked += 1) });
+  const providers = { providers: { openrouter: decider }, default: "openrouter" };
+  await server.agents.create({ id: "agent-1", name: "Flow" }, { id: "rev-1", kind: "workflow", body: { workflow: askFlow() } });
+  await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { doc: "Certificate of incorporation of Example Widgets, Inc." }, title: "t", place: { mode: "runner" }, max_cost_usd: 1 } });
+  runners.push(startRunner({ store, createLoop: createWorkflowLoop(workflowSpecOf({ store, providerOf: idleModelProvider(), decisionProvidersOf: () => providers })), name: "runner-a", ...TIMING }));
+  // The bound's timer is cleared once `dead` wins, so a passing case leaves nothing keeping Node alive.
+  let bound;
+  try {
+    await Promise.race([dead, new Promise((_, reject) => (bound = setTimeout(() => reject(new Error(`runner A never reached the commit it dies at (${at})`)), 20_000)))]);
+  } finally {
+    clearTimeout(bound);
+  }
+  skew += TIMING.leaseMs + 60_000;
+  runners.push(startRunner({ store: second, createLoop: createWorkflowLoop(workflowSpecOf({ store: second, providerOf: idleModelProvider(), decisionProvidersOf: () => providers })), name: "runner-b", ...TIMING }));
+  const row = await waitRow(server, (r) => r.state !== "running" && r.state !== "queued" && r.runner === null, 30_000);
+  return { row, records: await decisionRecords(second), requests: await decisionRequestsOf(second), asked };
+}
+
+/** run-1's decision requests as its driver's document holds them (graph-view.ts reads the same pin): each one's status
+ *  and the cost its outcome was saved with. */
+async function decisionRequestsOf(store) {
+  const reads = store.readJournal("run-1");
+  try {
+    const driver = await reads.findDocument({ kind: "agentrun.driver", scope: { kind: "session" }, key: "run-1" }, "current", BACKGROUND_CONTEXT);
+    const value = driver ? (await reads.document(driver.id, "current", BACKGROUND_CONTEXT))?.value : undefined;
+    return Object.values(value?.state?.pin?.decisions ?? {}).flatMap((requests) => Object.values(requests)).map((request) => [request.status, request.cost_usd]);
+  } finally {
+    await reads.close(BACKGROUND_CONTEXT);
+  }
+}
+
+const near = (actual, expected, what) => assert.ok(typeof actual === "number" && Math.abs(actual - expected) < 1e-9, `${what}: ${actual}, not ${expected}`);
+
+// A decision's settle commits before its receipt (runner/workflow-spec.ts decisionJudging: `admitted` settles before the
+// driver saves the answer), so a crash never leaves a receipt that names a charge beside a booking it lost: lost at the
+// settle, the receipt is lost too, and the provider may have billed its worst case.
+test("a decision whose booking a crash lost at its settle never reached its receipt: the next claim counts it at its hold and bound, asks it no more, and sends the run to review", async (t) => {
+  const { row, records, requests, asked } = await lostAround(t, { at: "settle", price: feeOnly(0.4), costUsd: 0.1 });
+  assert.equal(asked, 1, "asked once, by runner A; never again by runner B");
+  assert.deepEqual([row.state, row.outcome, row.epoch > 1], ["ended", "escalated", true], `runner B finds the decision asked and never answered, and escalates it: ${JSON.stringify(row)}`);
+  // The answer never reached the driver's record: no charge is named beside the booking the crash lost.
+  assert.deepEqual(requests, [["interrupted", null]], "the driver's record of the request: interrupted, at no cost it knows");
+  const request = records.find((r) => r.kind === "runner.request")?.data;
+  const turns = records.filter((r) => r.kind === "runner.turn").map((r) => r.data);
+  assert.deepEqual([records.filter((r) => r.kind === "runner.request").length, turns.map((d) => [d.cut === true, d.usd])], [1, [[true, null]]], `one booking, cut by the next claim: ${JSON.stringify(records)}`);
+  near(sessionSpendOf(records).spentUsd, request.heldUsd + (request.boundUsd ?? 0), "the cap counts it at its hold and bound");
+  assert.equal(row.costUsd, null, `its cost is unknown, never its hold: ${JSON.stringify(row)}`);
+});
+
+test("a decision whose receipt a crash lost after its settle counts at what it charged on the next claim, never at its larger hold", async (t) => {
+  // Held at $0.40, charged $0.10.
+  const { row, records, requests, asked } = await lostAround(t, { at: "receipt", price: feeOnly(0.4), costUsd: 0.1 });
+  assert.equal(asked, 1, "asked once, by runner A; never again by runner B");
+  assert.deepEqual([row.state, row.outcome, row.epoch > 1], ["ended", "escalated", true], `the answer never reached a receipt, so runner B escalates the decision: ${JSON.stringify(row)}`);
+  assert.deepEqual(requests, [["interrupted", null]], "the driver's record of the request: interrupted; the settle alone holds the charge");
+  const request = records.find((r) => r.kind === "runner.request")?.data;
+  assert.ok(request.heldUsd > 0.1, `the hold is above the charge, so a hold counted in its place shows: ${JSON.stringify(request)}`);
+  assert.deepEqual(records.filter((r) => r.kind === "runner.turn").map((r) => [r.data.cut === true, r.data.usd]), [[false, 0.1]], `the settle runner A committed, and no cut beside it: ${JSON.stringify(records)}`);
+  near(sessionSpendOf(records).spentUsd, 0.1, "the cap counts what it charged");
+  near(row.costUsd, 0.1, "the run's cost");
+});
+
+test("a decision its provider refuses unbilled (rate limited) charged nothing: its hold is booked at $0, and the run's cost says $0", async (t) => {
+  const { DecisionProviderError } = await import("@parcha/agentrun-dsl");
+  let asked = 0;
+  const decider = { ...fauxOpenrouter({ price: feeOnly(0.4), costUsd: null }), decide: async () => { asked += 1; throw new DecisionProviderError("rate_limited", "too many requests"); } };
+  const { server } = await worldWith(t, { capUsd: 1, decider });
+  const row = await waitRow(server, (r) => r.state !== "running" && r.state !== "queued" && r.runner === null);
+  assert.deepEqual([row.state, asked, row.costUsd], ["failed", 1, 0], `asked once, refused unbilled, nothing counted: ${JSON.stringify(row)}`);
+});
+
+test("a decision the cap refuses inside its admission parks the run only once the driver's commit of its failed end has landed: a commit the store refuses there never leaves the run parked with the decision still asked", async (t) => {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-wf-dec-refused-commit-"));
+  const server = await openSqliteStore({ dataDir: dir, role: "server" });
+  const real = await openSqliteStore({ dataDir: dir, role: "runner" });
+  let runner;
+  t.after(async () => {
+    await runner?.close().catch(() => {});
+    await real.close().catch(() => {});
+    await server.close().catch(() => {});
+    rmSync(dir, { recursive: true, force: true });
+  });
+  // Once the decision is priced (armed), the first commit is the driver's admission of the request, which lands; the next
+  // is its end, failed and unsent after the cap refused it for room, which the store refuses.
+  let armed = false;
+  let stored = 0;
+  let refusedOne = false;
+  const store = new Proxy(real, { get(target, key) {
+    if (key === "journal") return (claim) => {
+      const journal = target.journal(claim);
+      return new Proxy(journal, { get(inner, property) {
+        const value = Reflect.get(inner, property, inner);
+        if (property !== "commit") return typeof value === "function" ? value.bind(inner) : value;
+        return async (...args) => {
+          if (armed && !refusedOne && stored >= 1) {
+            refusedOne = true;
+            throw new Error("the store refused this commit");
+          }
+          const result = await value.apply(inner, args);
+          if (armed && result.stored > 0) stored += 1;
+          return result;
+        };
+      } });
+    };
+    const value = Reflect.get(target, key);
+    return typeof value === "function" ? value.bind(target) : value;
+  } });
+  const base = fauxOpenrouter({ price: feeOnly(10), costUsd: null });
+  const decider = { ...base, priceOf: async (model) => { armed = true; return base.priceOf(model); } };
+  const providers = { providers: { openrouter: decider }, default: "openrouter" };
+  await server.agents.create({ id: "agent-1", name: "Flow" }, { id: "rev-1", kind: "workflow", body: { workflow: askFlow() } });
+  await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { doc: "Certificate of incorporation of Example Widgets, Inc." }, title: "t", place: { mode: "runner" }, max_cost_usd: 1 } });
+  runner = startRunner({ store, createLoop: createWorkflowLoop(workflowSpecOf({ store, providerOf: idleModelProvider(), decisionProvidersOf: () => providers })), name: "runner-a", ...TIMING });
+  const row = await waitRow(server, (r) => r.state !== "running" && r.state !== "queued" && r.runner === null);
+  assert.ok(refusedOne, "the store refused the commit after the admission");
+  assert.notEqual(row.state, "parked", `a refused commit of the decision's failed end is thrown, never a park with the decision still asked: ${JSON.stringify(row)}`);
 });

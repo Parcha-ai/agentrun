@@ -46,21 +46,23 @@ export async function githubAppAccess(
   store: { readonly triggerSettings: Pick<TriggerSettings, "get"> },
   sealKey: Buffer | undefined,
   firstInput: unknown,
-  { api = GITHUB_API, now = Date.now, fromGitHub = false, hold }: { api?: string; now?: () => number; fromGitHub?: boolean; hold?: (values: string[]) => void } = {},
+  { api = GITHUB_API, now = Date.now, fromGitHub = false, hold, repo }: { api?: string; now?: () => number; fromGitHub?: boolean; hold?: (values: string[]) => void; repo?: string } = {},
 ): Promise<GithubAppAccessAt | undefined> {
   if (!sealKey) return undefined;
   const app = await appOf(store, sealKey);
   if (!app) return undefined;
-  const target = githubTargetOf(isObject(firstInput) ? firstInput.content : firstInput, { payload: fromGitHub });
+  // `repo`: the launch's (run-launch.ts repo), which the server checked against the agent's binding at the start: a run a
+  // person started with `repo`, or whose agent is bound to one repository. It comes before any URL in the words.
+  const target = repo !== undefined ? { repo } : githubTargetOf(isObject(firstInput) ? firstInput.content : firstInput, { payload: fromGitHub });
   return {
     api,
     target,
     // The App read again before each mint: one disconnected or replaced since the claim makes no token for this run.
-    mint: async (to) => {
+    mint: async (to, permissions) => {
       // A read that fails throws on: the step's github_failed path keeps the token held until it expires, never a disconnect.
       const still = await appOf(store, sealKey);
       if (!still || still.appId !== app.appId || still.pem !== app.pem) return { ok: false, reason: "disconnected", message: "the GitHub App was disconnected or replaced on this server" };
-      const minted = await mintInstallationToken(api, app.appId, app.pem, to, now());
+      const minted = await mintInstallationToken(api, app.appId, app.pem, to, now(), permissions);
       if (minted.ok) hold?.([minted.token]);
       return minted;
     },

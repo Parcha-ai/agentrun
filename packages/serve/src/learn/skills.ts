@@ -273,14 +273,18 @@ export const isHeld = (text: string): boolean => learnedStatus(text) === "pendin
  *  retiredLearned), which take the `status:` line out whole, can edit. One set any other way reads unclear (learnedStatus:
  *  retired), never held or active, and no writer edits it, so a write never leaves part of it behind. The host writes
  *  only one-line statuses (held, retiredLearned). */
-export function statusOnOneLine(text: string): boolean {
+export const statusOnOneLine = (text: string): boolean => onOneLine(text, "status");
+
+/** Whether `key`, when the front matter sets it, is one plain line (`key: <value>`, nothing of it on the lines after):
+ *  statusOnOneLine's rule, for each key the host's writers take out whole (`status`, `retired_from`). */
+function onOneLine(text: string, key: string): boolean {
   const front = frontMatter(text);
-  if (!front?.has("status")) return true;
+  if (!front?.has(key)) return true;
   const lf = text.replace(/\r\n/g, "\n");
-  const own = lf.slice(4, closeOf(lf)).split("\n").find((line) => line.startsWith("status:"))?.slice("status:".length).trim() ?? "";
+  const own = lf.slice(4, closeOf(lf)).split("\n").find((line) => line.startsWith(`${key}:`))?.slice(key.length + 1).trim() ?? "";
   if (!own || /^[>|]/.test(own) || (/^["']/.test(own) && !closedQuote(own))) return false;
   // A plain value that wraps onto the next lines reads longer than its own line.
-  return unquote(own) === front.get("status");
+  return unquote(own) === front.get(key);
 }
 
 /** `text`, a SKILL.md or a draft's README.md, as the host merges one the grader held for its owner's OK: `status:
@@ -293,17 +297,36 @@ export function held(text: string): string {
 }
 
 /** `text`, a held SKILL.md or draft README.md, as the host leaves it when its owner approves it: its front matter with
- *  no `status` line, so it is given to every later run. Throws on a text with no front matter. */
+ *  no `status` or `retired_from` line, so it is given to every later run. Throws on a text with no front matter. */
 export function released(text: string): string {
   const front = frontOf(text);
   if (typeof front === "string") throw new Error(`it cannot be approved: ${front}`);
-  if (!statusOnOneLine(text)) throw new Error("it cannot be approved: its status is not one plain line");
-  const kept = front.lf.slice(4, front.end).split("\n").filter((line) => !line.startsWith("status:"));
+  // Its status and retired_from are taken out whole, so each must be one plain line; what is left reads back active, or
+  // the write fails: never an OK over a skill no run is given.
+  if (!statusOnOneLine(text) || !onOneLine(text, "retired_from")) throw new Error("it cannot be approved: its status is not one plain line");
+  const kept = front.lf.slice(4, front.end).split("\n").filter((line) => !line.startsWith("status:") && !line.startsWith("retired_from:"));
   const out = `---\n${kept.join("\n")}${front.lf.slice(front.end)}`;
-  // What it leaves reads back active, or the approve fails: never an OK over a skill no run is given.
   if (learnedStatus(out) !== "active") throw new Error(`it cannot be approved: its status would read ${learnedStatus(out)}`);
   return out;
 }
+
+/** The status a retired SKILL.md or draft README.md goes back to when a person restores it (`retired_from`, which its
+ *  retire recorded), read by the one reader (frontMatter: its quoting, its one-line rule): `active` only when it reads
+ *  `active` one way, on one plain line; `pending` otherwise, a retire that recorded none or one that reads unclear among
+ *  them (fail closed: only an approval makes a skill or a draft active). */
+export function retiredFrom(text: string): "active" | "pending" {
+  return onOneLine(text, "retired_from") && frontMatter(text)?.get("retired_from") === "active" ? "active" : "pending";
+}
+
+/** Whether a retired SKILL.md or draft README.md can be restored by the host's writer: its front matter reads one way
+ *  (frontMatter), and its `status` and `retired_from` are each one plain line, the only ones the writer takes out whole.
+ *  One that is not is refused until it is written so (a restore never edits half a value). */
+export const restorable = (text: string): boolean => frontMatter(text) !== undefined && statusOnOneLine(text) && onOneLine(text, "retired_from");
+
+/** `text`, a retired SKILL.md or draft README.md, as the host leaves it when a person restores it: back in the status its
+ *  retire recorded (retiredFrom), active, or waiting for its owner's OK. Throws on a text whose front matter does not read
+ *  one way, or whose status is not one plain line (released). */
+export const restoredLearned = (text: string): string => (retiredFrom(text) === "active" ? released(text) : held(released(text)));
 
 /** What a SKILL.md or a draft's README.md says of itself, the one reader of it (frontMatter), the server's and, through
  *  the folder's snapshot, the console's: `pending` while it waits for its owner's OK, `retired` once a person retired
@@ -318,15 +341,28 @@ export function learnedStatus(text: string): "active" | "pending" | "retired" {
   return status === "active" || status === "pending" ? status : "retired";
 }
 
-/** `text`, a SKILL.md or a draft's README.md, as a person's retire leaves it: `status: retired` last in its front matter
- *  (any status line before it dropped), so no later run is given it. Throws on a text with no front matter. */
+/** Whether `text` reads retired (learnedStatus) only because it can't be read: its front matter reads no way, its status
+ *  is not one plain line, or its status is none the host writes. No one retired it: a view says the host could not read
+ *  it, never that a run or a person retired it. */
+export function unclearFront(text: string): boolean {
+  const front = frontMatter(text);
+  return !front || !statusOnOneLine(text) || !["active", "pending", "retired"].includes(front.get("status") ?? "active");
+}
+
+/** `text`, a SKILL.md or a draft's README.md, as a person's retire leaves it: `status: retired` and `retired_from`, the
+ *  status it had (active, or pending while it waited for its owner's OK), last in its front matter (any such lines before
+ *  them dropped), so no later run is given it and its restore gives that status back. Throws on a text with no front
+ *  matter. */
 export function retiredLearned(text: string): string {
   const front = frontOf(text);
   if (typeof front === "string") throw new Error(`it cannot be retired: ${front}`);
-  if (!statusOnOneLine(text)) throw new Error("it cannot be retired: its status is not one plain line");
-  const kept = front.lf.slice(4, front.end).split("\n").filter((line) => !line.startsWith("status:"));
-  const out = `---\n${[...kept, "status: retired"].join("\n")}${front.lf.slice(front.end)}`;
-  if (!frontMatter(out) || learnedStatus(out) !== "retired") throw new Error("it cannot be retired: its front matter would not read retired");
+  if (!statusOnOneLine(text) || !onOneLine(text, "retired_from")) throw new Error("it cannot be retired: its status is not one plain line");
+  // What it goes back to on a restore: active only when it reads active now; anything else (held, or a text read as
+  // retired already) is held again (fail closed).
+  const from = learnedStatus(text) === "active" ? "active" : "pending";
+  const kept = front.lf.slice(4, front.end).split("\n").filter((line) => !line.startsWith("status:") && !line.startsWith("retired_from:"));
+  const out = `---\n${[...kept, "status: retired", `retired_from: ${from}`].join("\n")}${front.lf.slice(front.end)}`;
+  if (!frontMatter(out) || learnedStatus(out) !== "retired" || retiredFrom(out) !== from) throw new Error("it cannot be retired: its front matter would not read retired");
   return out;
 }
 
@@ -636,9 +672,64 @@ const toolingNodes = (dsl: DraftReader, doc: unknown): DraftProblem[] =>
 export const LEARNED_OUTPUT_PATH = "its output names no path: a learned workflow's output is the value at output.path";
 
 /** What a learned workflow is refused with when a node needs more than its runner gives the DSL (learned-workflow.ts:
- *  runNode and runEffect alone): a judge, pick or sift node, a route by question, a verify or an ask needs a decision
- *  provider (runJudge) a run is not given. Refused at learn time and before a call runs any node, never after. */
-export const LEARNED_NODES = "a learned workflow runs model and tool-call nodes";
+ *  runNode, runEffect, and runJudge only when the run has decision providers): a judge, pick or sift node, a route by
+ *  question, a verify or an ask on a run with none. Refused at learn time and before a call runs any node, never after. */
+export const LEARNED_NODES = "a learned workflow runs model and tool-call nodes, and decision nodes on a run with decision providers";
+
+/** A learned draft's decisions as its check reads them (LS-07): the decision providers the run has (by id, the DSL's
+ *  DecisionProvider each, decisions.ts decisionProvidersIn over its keys) and the one a node that names none is asked
+ *  of; `gated`, the provider ids the run's gate does not allow (by its setting, the provider's bare id as its settings
+ *  key: tool-plane.ts DECISION_PROVIDER_KEYS), of which deny alone refuses, and `deniedBy`, where each deny was set. With none, a decision node
+ *  is refused (LEARNED_NODES). */
+export type DraftDecisions = {
+  readonly providers: Readonly<Record<string, unknown>>;
+  readonly default: string;
+  readonly gated?: Readonly<Record<string, string>>;
+  readonly deniedBy?: Readonly<Record<string, SettingFrom>>;
+};
+
+/** The providers a draft's decision node may name on this run, by id, as the check reads them (unrunnableNodes: the run's
+ *  providers; gatedDecisions: deny alone refuses one). None when the run has no `decisions`, so a decision node is
+ *  refused (LEARNED_NODES): the one place the rule is read, for the check and for what the reflect prompt allows. */
+export const draftDecisionProviders = (decisions: DraftDecisions | undefined): string[] =>
+  decisions ? Object.keys(decisions.providers).filter((id) => !Object.hasOwn(decisions.gated ?? {}, id) || decisions.gated![id] !== "deny") : [];
+
+/** Each decision a draft asks, by the node that asks it (the DSL's inspection lists each node and its pointer, a composed
+ *  workflow's inner ones too): its kind, its pointer and its provider's id, the one it names or else `fallback`, the
+ *  run's default. A judge, pick or sift node; a route by question (not by value); a loop's or an escalate's ask
+ *  predicate; a model node's verify (asked of the default). */
+export function decisionsAsked(dsl: Pick<DraftReader, "inspectWorkflow">, doc: unknown, fallback: string): { kind: string; path: string; provider: string }[] {
+  return dsl.inspectWorkflow(doc).nodes.flatMap((node) => {
+    const fields = (at(doc, node.path) as Record<string, unknown> | undefined) ?? {};
+    const named = (choice: unknown) => {
+      const provider = (choice as { provider?: unknown } | undefined)?.provider;
+      return typeof provider === "string" ? provider : fallback;
+    };
+    const asked = (choice: unknown) => [{ kind: node.kind, path: node.path, provider: named(choice) }];
+    if (node.kind === "judge" || node.kind === "pick" || node.kind === "sift") return asked(fields);
+    if (node.kind === "route" && typeof fields.valuePath !== "string") return asked(fields);
+    if (node.kind === "loop" && (fields.until as { predicate?: unknown } | undefined)?.predicate === "ask") return asked(fields.until);
+    if (node.kind === "escalate" && (fields.when as { predicate?: unknown } | undefined)?.predicate === "ask") return asked(fields.when);
+    if (fields.verify && typeof fields.verify === "object") return [{ kind: node.kind, path: node.path, provider: fallback }];
+    return [];
+  });
+}
+
+/** What a decision node asking `provider` is refused with when the run's gate denies it, worded as a call node's tool is
+ *  (gatedNodes), with the node's place. */
+export const deniedDecisionWords = (provider: string, from: SettingFrom | undefined, kind: string, path: string): string =>
+  `This workflow's decision node asks ${provider}, which is set to deny ${denyPlace(from)}. (the ${kind} node at ${path})`;
+
+/** A draft's decision nodes whose provider the run's gate denies (`decisions.gated`): deny alone refuses, as the runner
+ *  hands a claim a provider's keys while its gate's policy is not deny (a provider is a settings key that is allow or
+ *  deny; a gate that reads no setting of it answers ask, which refuses nothing here). */
+const gatedDecisions = (dsl: DraftReader, doc: unknown, decisions: DraftDecisions | undefined): DraftProblem[] => {
+  if (!decisions?.gated) return [];
+  return decisionsAsked(dsl, doc, decisions.default).flatMap(({ kind, path, provider }) => {
+    const setting = Object.hasOwn(decisions.gated!, provider) ? decisions.gated![provider] : undefined;
+    return setting === "deny" ? [{ rule: "workflow" as const, detail: deniedDecisionWords(provider, decisions.deniedBy?.[provider], kind, path) }] : [];
+  });
+};
 
 /** Where a deny was set (tool-gate.ts SettingFrom), and its words (tool-gate.ts denyPlace), kept here so the learn
  *  module needs no import of the gate. */
@@ -769,9 +860,12 @@ const longNodes = (dsl: DraftReader, doc: unknown): DraftProblem[] =>
 
 /** The node the learned runner cannot run, as the DSL's own check says it (assertWorkflowCapabilities, which runWorkflow
  *  makes before any node runs) with the runner's deps: none when it can run every one. */
-const unrunnableNodes = (dsl: DraftReader, doc: unknown): DraftProblem[] => {
+const unrunnableNodes = (dsl: DraftReader, doc: unknown, decisions?: DraftDecisions): DraftProblem[] => {
   const workflow = dsl.desugarWorkflow(doc as Workflow);
-  const runner = { runNode: async () => ({}), runEffect: async () => ({}) };
+  // With the run's decision providers, a decision node is runnable when its provider is one of them and answers what it
+  // asks (the DSL's checkDecisionProviders): the same registry the call's judge is built on.
+  const judging = decisions ? { runJudge: async () => ({}), decisionProviders: { providers: decisions.providers, default: decisions.default } } : {};
+  const runner = { runNode: async () => ({}), runEffect: async () => ({}), ...judging };
   try {
     dsl.assertWorkflowCapabilities(workflow.root, runner as never, workflow);
     return [];
@@ -789,13 +883,14 @@ const issuesOf = (dsl: DraftReader, doc: unknown, tools?: readonly string[]) => 
  *  `validateWorkflow` judges it, with `executeCode: false` so no code it holds is run (a code node is syntax-checked),
  *  and with `tools`, so a node that names a tool outside them is its error: a harness's own tool (Bash, exec_command,
  *  apply_patch) is never on the list. A model node that names any tool is refused (MODEL_NODE_TOOLS), and a node the
- *  learned runner cannot run (LEARNED_NODES: a judge's). With no list it
+ *  learned runner cannot run (LEARNED_NODES: a judge's on a run with no `decisions`; with them, one whose provider the run
+ *  lacks or its gate holds to ask or deny). With no list it
  *  fails closed: a draft the DSL refuses only once given an empty list names a tool. */
 /** The MCP tools set to ask a learned call would ask its approver about (`asked`, learnedDraftTools), and whether a card
  *  names them all (`fits`: learned-workflow.ts learnedAskFits, the gate's own rule, handed in so it is never copied). */
 export type DraftAsk = { readonly asked: readonly string[]; readonly fits: (asks: readonly string[]) => boolean };
 
-export function draftProblems(dsl: DraftReader, text: string, tools?: readonly string[], gated: Readonly<Record<string, string>> = {}, deniedBy: Readonly<Record<string, SettingFrom>> = {}, ask?: DraftAsk): DraftProblem[] {
+export function draftProblems(dsl: DraftReader, text: string, tools?: readonly string[], gated: Readonly<Record<string, string>> = {}, deniedBy: Readonly<Record<string, SettingFrom>> = {}, ask?: DraftAsk, decisions?: DraftDecisions): DraftProblem[] {
   let doc: unknown;
   try {
     doc = JSON.parse(text);
@@ -809,7 +904,7 @@ export function draftProblems(dsl: DraftReader, text: string, tools?: readonly s
   if (issues.length) return issues.slice(0, 5).map((issue) => ({ rule: "workflow", detail: `the workflow DSL refuses it: ${issue.code} at ${issue.path || "/"}: ${issue.message.slice(0, 200)}` }));
   let out: DraftProblem[];
   try {
-    out = [...toolingNodes(dsl, doc), ...executableNodes(dsl, doc), ...unrunnableNodes(dsl, doc), ...longNodes(dsl, doc), ...gatedNodes(dsl, doc, gated, deniedBy), ...[...synthesisProblems(doc, dsl), ...loopProblems(doc)].map((detail) => ({ rule: "workflow" as const, detail }))];
+    out = [...toolingNodes(dsl, doc), ...executableNodes(dsl, doc), ...unrunnableNodes(dsl, doc, decisions), ...longNodes(dsl, doc), ...gatedNodes(dsl, doc, gated, deniedBy), ...gatedDecisions(dsl, doc, decisions), ...[...synthesisProblems(doc, dsl), ...loopProblems(doc)].map((detail) => ({ rule: "workflow" as const, detail }))];
     // A learned workflow answers the value at its output's path: one that names none would answer its whole state, which
     // fails its output schema when the call ends, after every node spent.
     const path = (doc as { output?: { path?: unknown } } | null)?.output?.path;

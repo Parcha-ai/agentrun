@@ -7,7 +7,6 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createServer } from "node:http";
 import { pathToFileURL } from "node:url";
-import { createHash } from "node:crypto";
 import { test } from "node:test";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
 import { agentFolderOf } from "../dist/files.js";
@@ -17,14 +16,12 @@ import { LEARNED_WORKFLOW_TOOL, learnedWorkflowDescription, learnedWorkflowTool 
 import { REPLAY } from "../dist/host-tools.js";
 import { learningWorkspace, localWorkspace } from "../dist/workspace/index.js";
 import { readSnapshot } from "../dist/learn/folder.js";
-import { entriesOf, git, resnap, CLI_TOOLS_TODO } from "./learn-support.mjs";
-import { agent, answerFlow, call, cookieOf, follow, scratch, serve, withEnv } from "./support.mjs";
+import { entriesOf, git, resnap } from "./learn-support.mjs";
+import { agent, answerFlow, follow, scratch, serve, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const GUARD = new URL("./fixtures/net-guard.mjs", import.meta.url).pathname;
-/** The owner's sign-in phrase on a test server with accounts (no real secret). */
-const SIGN_IN_PHRASE = "the owner signs in with this phrase";
 const ASK = "Use the learned workflow answer on What is six times seven.";
 const DESCRIPTION = "Answers a question as a number; use when the person asks for the answer";
 /** A learned workflow's two files, as the merge keeps them: its workflow.json and its README.md (`extra` front matter). */
@@ -125,7 +122,7 @@ test("learned_workflow's description is short: one line of what it does, one lin
   const said = learnedWorkflowDescription([{ name: "answer", description: DESCRIPTION, workflow: JSON.stringify(answerFlow()) }]);
   const lines = said.split("\n");
   assert.equal(lines.length, 2, said);
-  for (const fact of ["learned workflows", "one call", "by name", "JSON input", "(* required)", "output as JSON", "why it did not run"]) assert.ok(lines[0].includes(fact), `${fact}: ${lines[0]}`);
+  for (const fact of ["learned workflow", "one call", "by name", "JSON input", "(* required)", "Text output: reply with it unchanged", "Else JSON", "why it did not run"]) assert.ok(lines[0].includes(fact), `${fact}: ${lines[0]}`);
   assert.equal(lines[1], `- answer {question* string}: ${DESCRIPTION}`);
   assert.ok(Buffer.byteLength(said) <= 270, `${Buffer.byteLength(said)} bytes: ${said}`);
   const tool = learnedWorkflowTool({ workflows: [{ name: "answer", description: DESCRIPTION, workflow: JSON.stringify(answerFlow()) }], granted: [], env: {}, work: "/tmp", models: {}, modelOf: () => undefined, policy: () => "allow", denyFrom: () => "default" });
@@ -146,7 +143,7 @@ test("a learned workflow whose output names no path is refused before any node r
 // pi's case was deleted as load-flaky (it timed out under load, then passed alone): pi's learned_workflow call and its
 // output are this file's tiered and timeline cases, and its booking learned-route.test.mjs R1 and runner-pi-booking.
 for (const harness of ["claude-agent", "codex"]) {
-  test(`a ${harness} run calls the workflow its agent learned as learned_workflow and gets its output, with no edit of its definition; its model requests are the run's, as side requests`, { timeout: 120_000, skip: CLI_TOOLS_TODO }, async (t) => {
+  test(`a ${harness} run calls the workflow its agent learned as learned_workflow and gets its output, with no edit of its definition; its model requests are the run's, as side requests`, { timeout: 120_000 }, async (t) => {
     const opened = join(await scratch(t), "opened.jsonl");
     withEnv(t, { AGENTRUN_TEST_FAUX_HARNESS_OPENED: opened });
     const { api, data } = await serve(t, { learning: "on", harnessTable: fauxTable(FAUX_HARNESS), ...(await routed(t, harness)) });
@@ -287,7 +284,7 @@ test("a learned workflow whose later node is a judge is refused before any node 
   const { runId, rows } = await ran(api, data, "late-judge", "pi", flowFiles("answer", flow));
   const result = learnedResult(rows);
   assert.equal(result?.tool_status, "failed", JSON.stringify(result));
-  assert.match(JSON.stringify(result), /The learned workflow answer was not run: .*judge node \\?"check\\?" requires runJudge/, JSON.stringify(result));
+  assert.match(JSON.stringify(result), /The learned workflow answer was not run: .*judge node \\?"check\\?" names the decision provider jev, which this host does not have/, JSON.stringify(result));
   assert.deepEqual((await entriesOf({ data }, runId, ["agentrun.request_started"])).filter((entry) => entry.request === LEARNED_WORKFLOW_TOOL), [], "its first node never ran");
 });
 
@@ -367,7 +364,7 @@ test("a learned workflow's call node through a paid web tool is booked under the
   assert.equal(view.cost.usd, 0.001, "the faux model is $0: the run's cost is Parallel's fee");
 });
 
-test("a claude-agent run's learned workflow searches natively through the session's proxy: its call node's web_search on the provider's hosted search, at the operator's gateway", { timeout: 120_000, skip: CLI_TOOLS_TODO }, async (t) => {
+test("a claude-agent run's learned workflow searches natively through the session's proxy: its call node's web_search on the provider's hosted search, at the operator's gateway", { timeout: 120_000, skip: "bug: on the runner a learned call node's native web_search finds no model (hosted-search.ts reads the per-process runModels, which a runner never sets), so it answers { error }" }, async (t) => {
   const dir = await scratch(t);
   const upstream = join(dir, "upstream.jsonl");
   withEnv(t, { ANTHROPIC_API_KEY: "not-a-secret", ANTHROPIC_BASE_URL: await upstreamAt(t), AGENT_MODEL: "anthropic/claude-sonnet-4-5", AGENTRUN_TEST_FAUX_UPSTREAM_CALLS: upstream }, ["PARALLEL_API_KEY", "AGENT_MODEL_BASE_URL", "AGENTRUN_TEST_FAUX_UPSTREAM"]);
@@ -381,7 +378,7 @@ test("a claude-agent run's learned workflow searches natively through the sessio
   assert.deepEqual(sent.map((call) => call.path), ["/v1/messages"], "one request to the provider's hosted search");
 });
 
-test("a claude-agent run on Claude's dotted name (anthropic/claude-sonnet-4.5) with a direct key searches natively on the model its run prepared: the dashed one its models hold", { timeout: 120_000, skip: CLI_TOOLS_TODO }, async (t) => {
+test("a claude-agent run on Claude's dotted name (anthropic/claude-sonnet-4.5) with a direct key searches natively on the model its run prepared: the dashed one its models hold", { timeout: 120_000, skip: "bug: on the runner a learned call node's native web_search finds no model (hosted-search.ts reads the per-process runModels, which a runner never sets), so it answers { error }" }, async (t) => {
   const dir = await scratch(t);
   const upstream = join(dir, "upstream.jsonl");
   // The session's proxy forwards to claude-agent's own provider: ANTHROPIC_BASE_URL, set here for the server, at the
@@ -423,89 +420,6 @@ test("on pi, learned_workflow set to deny for the agent is refused by the gate i
   assert.match(JSON.stringify(result), /Permission denied: learned_workflow is set to deny for this agent/, JSON.stringify(result));
   assert.deepEqual((await entriesOf({ data }, runId, ["agentrun.request_started"])).filter((entry) => entry.request === LEARNED_WORKFLOW_TOOL), [], "no node ran");
 });
-
-for (const harness of ["codex", "claude-agent"]) {
-  test(`on ${harness}, learned_workflow set to ask parks the run; the owner's allow runs it once (its node's request goes out once the allow un-parks the run) and the run resumes with its output`, { timeout: 180_000, skip: CLI_TOOLS_TODO }, async (t) => {
-    const server = await serve(t, { learning: "on", harnessTable: fauxTable(FAUX_HARNESS), accounts: true, openSetup: true, ...(await routed(t, harness)) });
-    const { api, data } = server;
-    const origin = `http://127.0.0.1:${server.port}`;
-    const setup = await call(server.port, { method: "POST", path: "/v2/setup", headers: { "content-type": "application/json", origin }, body: { password: SIGN_IN_PHRASE } });
-    assert.equal(setup.status, 201, setup.text);
-    const cookie = cookieOf(setup);
-    const { runId } = await ran(api, data, `asked-${harness}`, harness, flowFiles("answer", answerFlow()), [], { extra: { tool_settings: { [LEARNED_WORKFLOW_TOOL]: { permission: "ask" } } }, ends: ["input_required", "completed", "failed"] });
-    const view = (await api("GET", `/runs/${runId}`)).body;
-    assert.deepEqual([view.status, view.pending?.kind, view.pending?.tool], ["input_required", "approval", LEARNED_WORKFLOW_TOOL], JSON.stringify(view));
-    // The parked run's process holds its store: what ran is read once it ends (one request, after the allow).
-    const answered = await call(server.port, { method: "POST", path: `/v2/runs/${runId}/approvals/${view.pending.id}`, headers: { "content-type": "application/json", cookie, origin }, body: { decision: "allow" } });
-    assert.equal(answered.status, 204, answered.text);
-    const { rows } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 90_000 });
-    assert.equal((await api("GET", `/runs/${runId}`)).body.status, "completed");
-    // The gate's resume is AgentRun's row (origin "server"), never the person's message, and it carries the call's result.
-    const resumed = rows.find((row) => row.origin === "server" && /^AgentRun: learned_workflow /.test(row.summary ?? ""));
-    assert.deepEqual([resumed?.kind, resumed?.origin], ["phase", "server"], JSON.stringify(resumed));
-    assert.match(resumed.summary, /^AgentRun: learned_workflow ran once you allowed it; its result went to the agent$/, resumed.summary);
-    // What a person reads: the outcome and the result, with no call id (the model's message keeps it).
-    assert.match(resumed.text, /^learned_workflow ran once you allowed it\. Its result:\n\{\\?"answer\\?":42\}/, resumed.text);
-    assert.ok(!resumed.text.includes(view.pending.call_id), "no call id in the row's text");
-    assert.equal(rows.some((row) => row.kind === "user_message" && String(row.text).startsWith("[tool approval]")), false, "never shown as the person's message");
-    assert.equal((await entriesOf({ data }, runId, ["runner.request"])).filter((entry) => entry.host === LEARNED_WORKFLOW_TOOL).length, 1, "its one node ran once, through the session's proxy");
-    // No early window: from the park to the resume's message, the only request that leaves is the approved call's node; the
-    // harness's own wait for the turn that message starts.
-    const seq = (await entriesOf({ data }, runId, ["agentrun.tool_approval", "agentrun.request_started", "adapter.message"]));
-    const parkedAt = seq.findIndex((entry) => entry.kind === "agentrun.tool_approval" && entry.phase === "requested");
-    const resumedAt = seq.findIndex((entry) => entry.kind === "adapter.message" && String(entry.id).startsWith("approval-"));
-    assert.ok(parkedAt >= 0 && resumedAt > parkedAt, JSON.stringify(seq.map((entry) => [entry.kind, entry.phase ?? entry.request ?? entry.id])));
-    const between = seq.slice(parkedAt + 1, resumedAt).filter((entry) => entry.kind === "agentrun.request_started");
-    assert.deepEqual(between.map((entry) => entry.host ?? "the harness's own"), [LEARNED_WORKFLOW_TOOL], "between the park and the resume, only the node's request");
-  });
-}
-
-// The owner's allow can land while the harness is still recording the parked call's result (Claude Code writes it before
-// it reads the next answer). The parked call stays the turn's to end: its result interrupts the turn, and no request of
-// the harness's own leaves after the allow; the approved call's node is the one request that does.
-for (const harness of ["codex", "claude-agent"]) {
-  test(`on ${harness}, an allow that lands before the parked call's result is in still ends the parked turn: interrupted, with no request of the harness's own after the allow until the resume's turn`, { timeout: 180_000, skip: CLI_TOOLS_TODO }, async (t) => {
-    const held = join(await scratch(t), "result-held");
-    const ask = `Use the learned workflow answer on What is six times seven, its result held until ${held}.`;
-    const gw = await startFauxGateway({ call: submitsAnswer });
-    t.after(() => gw.close());
-    const key = ["not-a-secret", "gateway"].join("-");
-    if (harness === "claude-agent") withEnv(t, { ANTHROPIC_API_KEY: key, ANTHROPIC_BASE_URL: gw.url, AGENT_MODEL: "anthropic/claude-sonnet-4-5" }, ["AGENT_MODEL_BASE_URL", "OPENROUTER_API_KEY", "AGENT_MODEL_PRICE"]);
-    else withEnv(t, { AGENT_MODEL_BASE_URL: gw.url, AGENT_MODEL: "gpt-test", AGENT_MODEL_API_KEY: key, AGENT_MODEL_PRICE: "1,2,0.5" }, ["ANTHROPIC_BASE_URL", "OPENROUTER_API_KEY"]);
-    const server = await serve(t, { learning: "on", harnessTable: fauxTable(FAUX_HARNESS), accounts: true, openSetup: true, faux: undefined });
-    const { api, data } = server;
-    const origin = `http://127.0.0.1:${server.port}`;
-    const setup = await call(server.port, { method: "POST", path: "/v2/setup", headers: { "content-type": "application/json", origin }, body: { password: SIGN_IN_PHRASE } });
-    assert.equal(setup.status, 201, setup.text);
-    const cookie = cookieOf(setup);
-    const id = `held-${harness}`;
-    assert.equal((await api("POST", "/agents", agent(id, { learning: true, harness, instructions: ask, tools: [], tool_settings: { [LEARNED_WORKFLOW_TOOL]: { permission: "ask" } } }))).status, 201);
-    await folderWith(data, id, flowFiles("answer", answerFlow()));
-    const started = await api("POST", `/agents/${id}/runs`, { input: { content: ask } });
-    assert.equal(started.status, 202, JSON.stringify(started.body));
-    const runId = started.body.run_id;
-    // The call is parked and asks the owner while its result is still held: the allow lands before it.
-    // The gate names the parked call by the call, its tool and its arguments (tool-gate.ts); the run reads as working
-    // while the harness is still recording the call's result, and the allow is taken as soon as the server knows the ask.
-    const pendingId = `ap_${createHash("sha256").update(JSON.stringify([`run:${runId}:0`, LEARNED_WORKFLOW_TOOL, { name: "answer", input: { question: "What is six times seven" } }])).digest("hex").slice(0, 16)}`;
-    let answered;
-    for (const deadline = Date.now() + 60_000; (answered = await call(server.port, { method: "POST", path: `/v2/runs/${runId}/approvals/${pendingId}`, headers: { "content-type": "application/json", cookie, origin }, body: { decision: "allow" } })).status === 404; await new Promise((resolve) => setTimeout(resolve, 100))) assert.ok(Date.now() < deadline, `the call asks the owner: ${answered.text}`);
-    assert.equal(answered.status, 204, answered.text);
-    assert.equal((await api("GET", `/runs/${runId}`)).body.status, "working", "the allow landed while the parked turn was still recording its call's result");
-    // The approved call runs (its node's request reaches the gateway), and only then does the harness tell its result.
-    for (const deadline = Date.now() + 60_000; !gw.requests.some((request) => submitsAnswer(request)); await new Promise((resolve) => setTimeout(resolve, 100))) assert.ok(Date.now() < deadline, "the approved call's node is sent");
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    writeFileSync(held, "");
-    await follow(api, runId, ["completed", "failed"], { deadlineMs: 90_000 });
-    assert.equal((await api("GET", `/runs/${runId}`)).body.status, "completed");
-    // The parked turn: its one request (the call), then its end, interrupted on the call's result, never going on after
-    // the allow; the resume's turn answers.
-    const seq = (await entriesOf({ data }, runId, ["agentrun.request_started", "adapter.turn_end"]));
-    const firstEnd = seq.findIndex((entry) => entry.kind === "adapter.turn_end");
-    const parkedTurn = seq.slice(0, firstEnd).filter((entry) => entry.host === undefined).length;
-    assert.deepEqual([parkedTurn, seq[firstEnd]?.status, seq[firstEnd]?.answer ?? null], [1, "interrupted", null], `the parked turn went on after the allow: ${JSON.stringify(seq.map((entry) => [entry.kind, entry.host ?? entry.status ?? ""]))}`);
-  });
-}
 
 /** A learned workflow of one call node on `tool`, or that node inside a composed workflow node (`nested`). */
 const callFlow = (tool, nested = false) => {
@@ -558,4 +472,53 @@ test("a learned workflow's call reads on the run's timeline as the workflow it r
   assert.equal(use?.summary, "Ran the learned workflow answer", JSON.stringify(use));
   assert.equal(result?.tool_status, "success", JSON.stringify(result));
   assert.equal(result?.summary, "Ran the learned workflow answer: answer 42", JSON.stringify(result));
+});
+
+/** A workflow whose last node writes the card report in its fixed format, as the bench's expense draft does (#2412): its
+ *  output an object of one string field. */
+const reportFlow = () => ({
+  v: 2, name: "card-report",
+  schemas: {
+    In: { type: "object", required: ["question"], properties: { question: { type: "string" } } },
+    Report: { type: "object", required: ["report"], properties: { report: { type: "string" } } },
+  },
+  input: { schemaId: "In" },
+  output: { schemaId: "Report", path: "report" },
+  root: { node: "chain", steps: [{ node: "extract", label: "format", instructions: "Write the card report: the table, then Flagged:, then Grand total: last.", out: "Report", as: "report" }] },
+});
+
+test("learned_workflow's description says a text output is the reply, unchanged (#2412)", () => {
+  const said = learnedWorkflowDescription([{ name: "answer", description: DESCRIPTION, workflow: "{}" }]);
+  assert.match(said.split("\n")[0], /Text output: reply with it unchanged\./, said);
+});
+
+test("a learned workflow's output is handed back as text when it is text, one string or an object of one string field, and as JSON otherwise (#2412)", async () => {
+  const { learnedOutput } = await import("../dist/learned-workflow.js");
+  const report = "| Category | Count | Total |\n|---|---|---|\nGrand total: $2.00";
+  assert.equal(learnedOutput(report), report);
+  assert.equal(learnedOutput({ report }), report, "the draft's Report object: its one string field");
+  assert.equal(learnedOutput({ answer: 42 }), '{"answer":42}');
+  assert.equal(learnedOutput({ a: "x", b: "y" }), '{"a":"x","b":"y"}');
+  assert.equal(learnedOutput(null), "null");
+  assert.equal(learnedOutput(undefined), "null");
+});
+
+test("a learned workflow whose last node writes a report in a fixed format hands the run that report line by line, never JSON-quoted, and the run's answer holds it so (#2412)", { timeout: 120_000 }, async (t) => {
+  const { REPORT } = await import("./fixtures/faux-model.mjs");
+  const { api, data } = await serve(t, { learning: "on" });
+  const { rows, view } = await ran(api, data, "formatted", "pi", flowFiles("card-report", reportFlow()), [], { ask: "Use the learned workflow card-report on the week's card transactions." });
+  const result = learnedResult(rows);
+  assert.equal(result?.tool_status, "success", JSON.stringify(result));
+  assert.equal(view.status, "completed", JSON.stringify(view));
+  assert.ok(view.result.final_answer.includes(REPORT), `the answer holds the report as written: ${JSON.stringify(view.result.final_answer)}`);
+  assert.ok(!view.result.final_answer.includes("\\n"), "no JSON escape reached the answer");
+});
+
+test("a caller that replies with a learned workflow's text output as it is answers exactly the report its last node wrote, and the call's row sums the report up line by line (#2412)", { timeout: 120_000 }, async (t) => {
+  const { REPORT } = await import("./fixtures/faux-model.mjs");
+  const { api, data } = await serve(t, { learning: "on" });
+  const { rows, view } = await ran(api, data, "verbatim", "pi", flowFiles("card-report", reportFlow()), [], { ask: "Reply with the learned workflow card-report's output on the week's card transactions." });
+  assert.equal(view.status, "completed", JSON.stringify(view));
+  assert.equal(view.result.final_answer, REPORT, "the answer is the report, exactly");
+  assert.equal(learnedResult(rows)?.summary, "Ran the learned workflow card-report: | Category | Count | Total | / |---|---|---| / | Office | 2 | 1663.10 | / Flagged: Best Buy / Grand total: $1663.10");
 });

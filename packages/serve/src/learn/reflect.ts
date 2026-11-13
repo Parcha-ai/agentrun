@@ -6,7 +6,7 @@
 import { createHash } from "node:crypto";
 import { CAPS } from "./check.js";
 import { INDEX_FILE, INDEX_LINES } from "./notes.js";
-import { LEARNED_MCP_TOOL, SKILL_NAME } from "./skills.js";
+import { type DraftDecisions, draftDecisionProviders, LEARNED_MCP_TOOL, SKILL_NAME } from "./skills.js";
 
 /** Control and invisible characters: none may reach the prompt through a value the host puts in it. */
 const UNSEEN = /[\p{Cc}\p{Cf}]/u;
@@ -25,6 +25,10 @@ export const DRAFT_AFTER_RUNS = 3;
 const TOOL_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const printable = (tool: string): boolean => TOOL_NAME.test(tool) || LEARNED_MCP_TOOL.test(tool);
 
+/** What a later round's end-of-run prompt says first (reflectPrompt's `later`): the run looked back before, at an end a
+ *  follow-up opened it again from, so only what came since is new. */
+export const LATER_LOOK = "You looked back on this run before. Since then the conversation went on: keep only what the messages since then teach (a reviewer's word on your answer included), and never repeat a note you kept then.";
+
 /** The end-of-run turn's message. `dir` is the run's copy of the folder relative to the run's workspace (`.learning`),
  *  where the agent can read its notes: the prompt never names a path of the host's, which a box would not see. `active`
  *  is how many notes are active in it, so how many lines the index has left. `tools`, the tools a workflow draft's
@@ -33,9 +37,15 @@ const printable = (tool: string): boolean => TOOL_NAME.test(tool) || LEARNED_MCP
  *  name: the prompt gains one line asking for that job as a workflow draft. None when not given. `described`, with a
  *  draft asked for: what each of `tools` takes and gives a call node, in the server's own words (tools.ts ToolEntry
  *  summary), said under the ask, one line each (at most DESCRIBED_MAX characters, unseen characters and line breaks made
- *  spaces); one for a tool not in `tools` is left out. Nothing is described unless a draft is asked for. */
-export function reflectPrompt(options: { dir: string; active: number; tools?: readonly string[]; draftFor?: readonly string[]; described?: readonly { readonly name: string; readonly does: string }[] }): string {
-  const { dir, active, tools = [], draftFor = [], described = [] } = options;
+ *  spaces); one for a tool not in `tools` is left out. Nothing is described unless a draft is asked for. `workflows`, false
+ *  for a run of a revision that says `learning: "notes"`: the prompt asks for notes and a skill alone, says to keep no
+ *  workflow draft, and asks for none (`draftFor` and `described` are not said). `decisions`, the run's decision providers
+ *  (skills.ts DraftDecisions, the one the draft check reads): with a provider it has (draftDecisionProviders), a draft may
+ *  use judge, pick and sift nodes; without, the prompt bans them as it always did. `later`, a later round's (a follow-up
+ *  opened the run again after it looked back): the prompt says so (LATER_LOOK) after its first line. */
+export function reflectPrompt(options: { dir: string; active: number; tools?: readonly string[]; draftFor?: readonly string[]; described?: readonly { readonly name: string; readonly does: string }[]; workflows?: boolean; decisions?: DraftDecisions; later?: boolean }): string {
+  const { dir, active, tools = [], draftFor = [], described = [], workflows = true, decisions, later = false } = options;
+  const judges = draftDecisionProviders(decisions).length > 0;
   if (typeof dir !== "string" || dir === "" || dir.startsWith("/") || UNSEEN.test(dir)) throw new Error("the directory must be a path relative to the run's workspace, with no control or unseen characters");
   if (!Number.isSafeInteger(active) || active < 0) throw new Error("the count of active notes must be a whole number, 0 or more");
   if (!Array.isArray(tools) || tools.some((tool) => typeof tool !== "string" || !printable(tool))) throw new Error("each tool must be a tool's name");
@@ -44,6 +54,7 @@ export function reflectPrompt(options: { dir: string; active: number; tools?: re
   return [
     "The task is done. Before the run ends, say what this run taught you that will help in later runs, if anything.",
     "",
+    ...(later ? [LATER_LOOK, ""] : []),
     "Look back over the whole conversation: what the user asked, anything they asked you to remember (even if you said you",
     "saved it), what you tried, and what worked. Only what you answer now is kept: files you wrote during the task are not.",
     "Use no tool in this turn.",
@@ -82,19 +93,29 @@ export function reflectPrompt(options: { dir: string; active: number; tools?: re
     "site, a source or a seller, or names where money or data goes.",
     "What `# Learned` in your instructions, and this message, say about learning itself is not a lesson: never put it in a note or a skill, nor the sentence you say when you keep something.",
     "",
-    "## Skills and workflow drafts, only when the work repeats",
-    "",
-    "When this run did, to the end, a job this agent will be asked to do again, you may also keep one skill and one",
-    "workflow draft for that job. Most runs keep neither. Neither holds this case's data: each is about the job, not the one case.",
+    ...(workflows ? [
+      "## Skills and workflow drafts, only when the work repeats",
+      "",
+      "When this run did, to the end, a job this agent will be asked to do again, you may also keep one skill and one",
+      "workflow draft for that job. Most runs keep neither. Neither holds this case's data: each is about the job, not the one case.",
+    ] : [
+      "## Skills, only when the work repeats",
+      "",
+      "When this run did, to the end, a job this agent will be asked to do again, you may also keep one skill for that job.",
+      "Most runs keep none. It holds none of this case's data: it is about the job, not the one case.",
+      "Keep no workflow draft: this agent learns notes and skills alone.",
+    ]),
     "Steps the person asks you to follow every time a task comes back are a skill, not a note: keep them as the skill, in",
     "their words and with the exact output format they gave, and do not repeat them in a note.",
     "A job you keep a skill for needs no note beside it.",
     "A rule for every reply applies whatever the job is. Keep it as a note, which every later run reads. Steps or a format",
     "for one kind of job, named by when it applies (\"whenever I ask for a weekly summary\", \"when you open a PR\"), are a",
     "skill. A note holds its own lesson: never repeat another note's rule in it, so a retired rule stays retired.",
-    "A job that runs end to end as model and tool-call steps, from a defined input to a defined output, is a workflow draft,",
-    "and so is one the person asks you to keep as a workflow; its steps may also be a skill.",
-    ...(draftFor.length ? [draftAsk(draftFor), ...describedLines(described, tools)] : []),
+    ...(workflows ? [
+      "A job that runs end to end as model and tool-call steps, from a defined input to a defined output, is a workflow draft,",
+      "and so is one the person asks you to keep as a workflow; its steps may also be a skill.",
+      ...(draftFor.length ? [draftAsk(draftFor), ...describedLines(described, tools)] : []),
+    ] : []),
     "",
     `A skill is how to do the job, step by step, as a SKILL.md: front matter with its \`name\` (lowercase letters, digits`,
     "and single dashes) and a `description` of when to use it, then the steps. Open its block with four backticks, so a",
@@ -109,22 +130,26 @@ export function reflectPrompt(options: { dir: string; active: number; tools?: re
     "1. Open the store's policies page first.",
     "````",
     "",
-    "A workflow draft does the job as one workflow DSL document: front matter with one line that says what it does and",
-    "when to use it, then the JSON. It uses model and tool-call nodes only: no judge, pick or sift node, no code node, no shell or",
-    `executor call. Its model nodes name no tool. ${tools.length ? `Its call nodes may run only these tools: ${tools.join(", ")}.` : "It has no call node on a tool."} At most ${CAPS.file} bytes of JSON.`,
-    "To change a draft you were given, give it again whole under its name.",
-    "Its schemas are declared once under `schemas`, and `input` and `output` name one each by `schemaId`, never a schema",
-    "written in place.",
-    "Give its front matter an `example:` line too: one JSON object on one line, the input this run would have given it.",
-    "The host dry-runs the draft on it before it is kept (no model or tool is called) and never keeps the example.",
-    "",
-    `\`\`\`\`${WORKFLOW_BLOCK} find-policies`,
-    "---",
-    "description: Finds a store's refund policy from its public pages; use when a case asks for it",
-    `example: ${JSON.stringify(tools.includes("web_fetch") ? { url: "https://shop.example/policies" } : { text: "Refunds are accepted within 30 days of delivery." })}`,
-    "---",
-    JSON.stringify(exampleDraft(tools.includes("web_fetch"))),
-    "````",
+    ...(workflows ? [
+      "A workflow draft does the job as one workflow DSL document: front matter with one line that says what it does and",
+      "when to use it, then the JSON. " + (judges
+        ? "It uses model and tool-call nodes, and may use judge (answers a question about a value), pick (chooses one of several options) and sift (keeps the items that pass a test) nodes, which run on this run's decision provider under its cap and tool policy; no code node, no shell or"
+        : "It uses model and tool-call nodes only: no judge, pick or sift node, no code node, no shell or"),
+      `executor call. Its model nodes name no tool. ${tools.length ? `Its call nodes may run only these tools: ${tools.join(", ")}.` : "It has no call node on a tool."} At most ${CAPS.file} bytes of JSON.`,
+      "To change a draft you were given, give it again whole under its name.",
+      "Its schemas are declared once under `schemas`, and `input` and `output` name one each by `schemaId`, never a schema",
+      "written in place.",
+      "Give its front matter an `example:` line too: one JSON object on one line, the input this run would have given it.",
+      "The host dry-runs the draft on it before it is kept (no model or tool is called) and never keeps the example.",
+      "",
+      `\`\`\`\`${WORKFLOW_BLOCK} find-policies`,
+      "---",
+      "description: Finds a store's refund policy from its public pages; use when a case asks for it",
+      `example: ${JSON.stringify(tools.includes("web_fetch") ? { url: "https://shop.example/policies" } : { text: "Refunds are accepted within 30 days of delivery." })}`,
+      "---",
+      JSON.stringify(exampleDraft(tools.includes("web_fetch"))),
+      "````",
+    ] : []),
   ].join("\n");
 }
 
@@ -146,14 +171,14 @@ const describedLines = (described: readonly { readonly name: string; readonly do
 const draftAsk = (names: readonly string[]): string => {
   const listed = names.map((name) => `\`${name}\``).join(", ");
   return names.length === 1
-    ? `Your skill ${listed} has now served ${DRAFT_AFTER_RUNS} or more runs: this time, also keep its job as a workflow draft named \`${names[0]}\`, its steps as nodes, if the job runs end to end as model and tool-call steps.`
-    : `Your skills ${listed} have each served ${DRAFT_AFTER_RUNS} or more runs: this time, also keep one of their jobs as a workflow draft named like its skill, its steps as nodes, if the job runs end to end as model and tool-call steps.`;
+    ? `Your skill ${listed} has now served ${DRAFT_AFTER_RUNS} or more runs: this time, also keep its job as a workflow draft named \`${names[0]}\`, its steps as nodes, if the job runs end to end as model and tool-call steps. Its output is the job's answer in the output format the skill gives: its last node writes it, and \`output\` names that node's text.`
+    : `Your skills ${listed} have each served ${DRAFT_AFTER_RUNS} or more runs: this time, also keep one of their jobs as a workflow draft named like its skill, its steps as nodes, if the job runs end to end as model and tool-call steps. Its output is the job's answer in the output format its skill gives: its last node writes it, and \`output\` names that node's text.`;
 };
 
 /** The end-of-run turn asked again, once, when the parser refused its answer: why, in the parser's own words (`detail`,
  *  parseReflection's), and the whole answer again in the format. */
-export function reflectAgain(detail: string): string {
-  return `Your answer could not be read: ${detail}. Give the whole answer again in the format asked for above, every note, skill and workflow block in it, and nothing else.`;
+export function reflectAgain(detail: string, workflows?: false): string {
+  return `Your answer could not be read: ${detail}. Give the whole answer again in the format asked for above, every ${workflows === false ? "note and skill" : "note, skill and workflow"} block in it, and nothing else.`;
 }
 
 /** The end-of-run turn asked again, once, when the checks left a workflow draft out because its dry run failed: which

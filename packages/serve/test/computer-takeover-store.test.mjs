@@ -138,24 +138,32 @@ async function setup(t, { computer = { kind: "desktop", provider: "e2b" } } = {}
     return { holds, releases, whenReleased, letGo, first, hold: { state: () => holds.at(-1).state() }, second: (more = {}) => begin(loopOf(), { ...options, ...more }) };
   };
   /** The run on a runner: its first look at the screen waits inside the shot until `letGo`; with `second`, its second look
-   *  waits too, until `letGoSecond`. */
+   *  waits too, until `letGoSecond`. `inSecondShot` settles once the second look is inside its shot: its call in flight. */
   const start = async ({ second = false } = {}) => {
     const hold = computerHold();
     let shotStarted;
     const inShot = new Promise((resolve) => (shotStarted = resolve));
+    let secondShotStarted;
+    const inSecondShot = new Promise((resolve) => (secondShotStarted = resolve));
     let letGo;
     const released = new Promise((resolve) => (letGo = resolve));
     let letGoSecond;
     const releasedSecond = second ? new Promise((resolve) => (letGoSecond = resolve)) : Promise.resolve();
     let shots = 0;
-    const held = heldHands({ screen: { shot: async () => { shots += 1; shotStarted(); await (shots === 1 ? released : releasedSecond); return { png: "AA==" }; } } }, hold);
+    const held = heldHands({ screen: { shot: async () => {
+      shots += 1;
+      if (shots === 1) shotStarted();
+      else secondShotStarted();
+      await (shots === 1 ? released : releasedSecond);
+      return { png: "AA==" };
+    } } }, hold);
     const look = { name: "look", replaySafe: true, run: async () => JSON.stringify(await held.screen.shot()) };
     // Two looks: the second is the agent's next call, parked while the person holds the desktop. (A run whose agent
     // answers instead waits at its end for the hand-back: startEnding.)
     const spec = piAdapterSpec({ script: [{ call: "look" }, { call: "look" }, { say: "done" }], tools: { look }, hooks: quiet });
     await begin(createAdapterLoop(async (claim, run) => ({ ...(await spec(claim, run)), agentId: "agent-1", computer: { kind: "desktop", hold } })));
     await inShot;
-    return { hold, letGo, letGoSecond };
+    return { hold, letGo, letGoSecond, inSecondShot };
   };
   /** The run on a runner whose agent looks once and then answers in plain text: its look waits inside the shot until
    *  `letGo`, so the person's take meets it, and the agent's answer comes while the person holds the desktop. The spec's
@@ -326,8 +334,27 @@ test("two hand-backs of one take-over: the first wins, the second is a 409 in wo
   assert.equal((await world.rows()).filter((row) => row === "You handed the desktop back").length, 1, "one hand-back on the Timeline");
 });
 
-// Deleted (flaky in the merge queue, follow-up #2173): "a take-over survives a server restart: it is read from the store,
-// never from the server's memory, and the new server hands it back".
+test("a take-over survives a server restart: it is read from the store, never from the server's memory, and the new server hands it back", async (t) => {
+  const world = await setup(t);
+  const run = await world.start();
+  await world.until(world.live, "the desktop is live");
+  await world.route("takeOverRunComputer");
+  // The take is the runner's to apply (the route only wrote the command): let the look end only once the hold is pending.
+  await world.until(async () => run.hold.state() === "pending", "the runner applied the take: pending");
+  run.letGo();
+  await world.until(async () => (await world.hold()) === "person", "the person holds the desktop");
+
+  await world.restart();
+  assert.equal(await world.hold(), "person", "the new server reads the take-over");
+  assert.equal(await world.live(), true);
+  // Taking it again is the same answer: one take is in force, and nothing new is written.
+  assert.deepEqual(await world.route("takeOverRunComputer"), { hold: "person" });
+  await world.route("handBackRunComputer");
+  await world.until(async () => (await world.hold()) === "agent" && run.hold.state() === "agent", "the new server's hand-back reached the runner");
+  await world.ended();
+  const said = await world.rows();
+  assert.equal(said.filter((row) => row === "You took over the desktop").length, 1, `one take on the Timeline:\n${said.join("\n")}`);
+});
 
 test("the agent's ask on its desktop: the run waits on it with pending kind computer and the Timeline says so; the hand-back's answer is the first, the agent gets it, and a different second answer is 409 in words", async (t) => {
   const world = await setup(t);
@@ -352,8 +379,7 @@ test("the agent's ask on its desktop: the run waits on it with pending kind comp
   assert.equal((await world.read()).pending, null, "the run waits on nothing once it ended");
 });
 
-// SKIP (follow-up #2432): the runner's onComputerHold signal does not give the take-over and hand-back rows in order
-test.skip("the runner's change signal (onComputerHold): a take-over row, then a hand-back row, are seen pending, person, then agent ended given, each after its journal entry; unsubscribed, nothing more", async (t) => {
+test("the runner's change signal (onComputerHold): a take-over row, then a hand-back row, are seen pending, person, then agent ended given, each after its journal entry; unsubscribed, nothing more", async (t) => {
   const world = await setup(t);
   // The second look waits too, so the run is still going (its desktop up) after the hand-back.
   const run = await world.start({ second: true });
@@ -381,8 +407,10 @@ test.skip("the runner's change signal (onComputerHold): a take-over row, then a 
   ]);
   assert.deepEqual(await Promise.all(checks), [true, true, true], "each after its journal entry exists");
   off();
-  // A second take while the second look is in flight: another listener hears it, the unsubscribed one does not.
-  await world.until(async () => run.hold.state() === "agent" && (await world.hold()) === "agent", "the second look is in flight");
+  // A second take while the second look is in flight: another listener hears it, the unsubscribed one does not. The look
+  // must be inside its shot when the take lands; a take with no call in flight goes straight to person, never pending.
+  await world.until(async () => run.hold.state() === "agent" && (await world.hold()) === "agent", "the desktop is the agent's again");
+  await run.inSecondShot;
   await world.route("takeOverRunComputer");
   await world.until(async () => still.length === 4, "the second take is signalled to the listener still subscribed");
   assert.equal(still[3].state, "pending");
@@ -472,7 +500,7 @@ test("a stop while the run waits for the hand-back ends it stopped at once, and 
   assert.deepEqual(run.ends, ["released"], "the release ends the take released");
 });
 
-test("a message while the run waits for the hand-back is not placed, so no turn starts that the run's end would cut (#2134 review)", { timeout: 120_000 }, async (t) => {
+test("a message while the run waits for the hand-back is not placed, so no turn starts that the run's end would cut; the end opens the run again with it (#2134 review)", { timeout: 120_000 }, async (t) => {
   const world = await setup(t);
   const run = await world.startEnding();
   await heldWhileAnswering(world, run);
@@ -482,11 +510,13 @@ test("a message while the run waits for the hand-back is not placed, so no turn 
   // Rows are handed to the run in order: the message meets the wait, then the hand-back ends it.
   const message = await world.server().command("run-1", { kind: "steer", body: { text: "one more thing" } });
   await world.route("handBackRunComputer");
+  // The message was left untaken for the run's end (no turn placed into the ending claim), and that end opened the run
+  // again with it: the next claim takes it as a new turn, and the run ends again on that turn's answer.
+  assert.deepEqual(await run.whenReleased(), [{ state: "agent", ends: ["given"] }], "the ending claim let the desktop go handed back");
   const row = await world.ended();
   assert.equal(row.state, "ended");
   const left = (await world.server().commands("run-1", 0)).find((command) => command.id === message.id);
-  assert.equal(left.refused, "the run ended before this command was taken", "the message was left for the end, no turn placed for it");
-  assert.deepEqual(await run.whenReleased(), [{ state: "agent", ends: ["given"] }]);
+  assert.ok(left.takenAt !== null && left.refused === null, `the message ran as the reopened run's turn, never refused: ${JSON.stringify(left)}`);
 });
 
 test("a take-over after the hand-back, while the run's end-of-run step runs, is refused in words, and the release never cuts a take (#2134 review)", { timeout: 120_000 }, async (t) => {
