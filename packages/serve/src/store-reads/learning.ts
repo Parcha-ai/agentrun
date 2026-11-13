@@ -278,7 +278,7 @@ export function laidOf(entries: readonly EntryLike[]): Laid {
 /** What every round of a run that a follow-up opened again spent (undefined for a run with one round): when its first
  *  round's job answered and what the job cost to then, the look-backs of every round added up, and every round's grade. A
  *  figure that is unknown in any round is unknown (null). */
-type RoundsSpend = { answered_at: unknown; job_cost_usd: number | null; look_back_usd: number | null; grade_usd: number | null };
+type RoundsSpend = { answered_at: string; job_cost_usd: number | null; look_back_usd: number | null; grade_usd: number | null };
 export async function roundsSpendOf(store: Store, runId: string): Promise<RoundsSpend | undefined> {
   const newest = await store.learning.proposal(runId);
   if (!newest || newest.round < 2) return undefined;
@@ -296,7 +296,7 @@ export async function roundsSpendOf(store: Store, runId: string): Promise<Rounds
     const spent = learningRun && FINAL_STATES.includes(learningRun.state) ? (learningRun.costUsd ?? null) : 0;
     grade = grade === null || spent === null ? null : grade + spent;
   }
-  if (!first || first.answered_at === undefined) return undefined;
+  if (!first || typeof first.answered_at !== "string") return undefined;
   return { answered_at: first.answered_at, job_cost_usd: first.job_cost_usd ?? null, look_back_usd: look, grade_usd: grade };
 }
 
