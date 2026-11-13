@@ -65,8 +65,8 @@ function TemplateList({ templates, go, playground }: { templates: TemplateView[]
                   {needsOf(t).map(([what, words]) => <div key={what} className="flex gap-2"><dt className="shrink-0">{what}</dt><dd className="min-w-0 break-words text-foreground/80">{words}</dd></div>)}
                 </dl>
                 <div className="mt-auto flex flex-wrap items-center gap-2 pt-4">
-                  {playground ? <Button size="sm" variant="solid" onClick={() => go(templatePlaygroundHref(t))}>Configure</Button> : <>
-                    <CodingAgentAction label="Run" prompt={runTemplatePrompt(location.origin, t)} playgroundHref={templatePlaygroundHref(t)} />
+                  {playground ? <Button size="sm" variant="primary" onClick={() => go(templatePlaygroundHref(t))}>Configure</Button> : <>
+                    <CodingAgentAction variant="primary" label="Run" prompt={runTemplatePrompt(location.origin, t)} playgroundHref={templatePlaygroundHref(t)} />
                     <Button size="sm" onClick={() => go(templateHash(t.name))}>Configure</Button>
                   </>}
                 </div>
@@ -329,8 +329,8 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
 
       <div className="mt-6 flex flex-wrap items-center gap-3">
         {playground
-          ? <Button size="sm" variant="solid" onClick={() => void apply()} disabled={applying || !!prepared.error}>{applying ? "Applying…" : "Apply"}</Button>
-          : <CodingAgentAction label="Run" prompt={runTemplatePrompt(location.origin, t, body)} playgroundHref={templatePlaygroundHref(t, body)} />}
+          ? <Button size="sm" variant="primary" onClick={() => void apply()} disabled={applying || !!prepared.error}>{applying ? "Applying…" : "Apply"}</Button>
+          : <CodingAgentAction variant="primary" label="Run" prompt={runTemplatePrompt(location.origin, t, body)} playgroundHref={templatePlaygroundHref(t, body)} />}
         {said && (!said.withIssues || issues.length > 0) && <p className="min-w-0 flex-1 text-body text-destructive-text" role="alert">{said.text}</p>}
       </div>
       {issues.filter((i) => !placed(i)).length > 0 && <div className="mt-2"><Issues issues={issues.filter((i) => !placed(i))} named /></div>}

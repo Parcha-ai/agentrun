@@ -25,10 +25,12 @@ const key = async (el: Element, k: string) => { await act(async () => { el.dispa
 const html = (node: ReactElement) => renderToStaticMarkup(node);
 
 describe("Button", () => {
-  it("draws its text on the solid fill in the fill's own foreground, never a literal", () => {
-    const solid = html(<Button variant="solid">Run</Button>);
-    expect(solid).toContain("text-primary-foreground");
-    expect(solid).not.toMatch(/text-(black|white)/);
+  it("uses the outlined primary treatment for both primary spellings", () => {
+    const primary = html(<Button variant="primary">Run</Button>);
+    expect(html(<Button variant="solid">Run</Button>)).toBe(primary);
+    expect(primary).toContain("border-primary");
+    expect(primary).toContain("text-primary-text");
+    expect(primary).not.toMatch(/text-(black|white)|\sbg-primary\s/);
   });
   it("has a size for every control height, and xs for a row", () => {
     for (const [size, cls] of [["xs", "h-7"], ["sm", "h-control-sm"], ["md", "h-control-md"], ["lg", "h-control-lg"], ["icon", "size-control-sm"]] as const) expect(html(<Button size={size}>x</Button>)).toContain(cls);

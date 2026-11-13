@@ -18,8 +18,9 @@ you add or restyle anything a person sees there.
    keyboard is (the focus ring). Nothing else is thicker.
 3. **Mono for structure, sans for prose.** JetBrains Mono for labels, buttons, chips, ids, numbers and code. Schibsted
    Grotesk for sentences. Two weights: 400 and 600.
-4. **Orange means AgentRun is acting or you can act.** Main action buttons use the orange fill (`bg-primary`),
-   including coding-agent handoffs. Compact secondary controls stay neutral; destructive actions use their own tone.
+4. **Orange means AgentRun is acting or you can act.** Each toolbar or form has at most one highlighted main action,
+   with an orange outline (`Button variant="primary"`), including coding-agent handoffs. Secondary controls stay
+   neutral; destructive actions use their own tone. Do not give adjacent actions equal primary emphasis.
    Orange words are `text-primary-text`. Never use orange for decoration.
 5. **Flat.** One shadow exists (`shadow-float`), only under what floats over the page.
 6. **Light and dark are equals.** Every token has both values, and every story shows both.
@@ -120,7 +121,7 @@ Controls in one row share one height. A target someone taps is at least 24px eac
 - The stylesheet squares fields and surfaces by default. `Button` and `buttonVariants` use `!rounded-action`
   (`--radius-action: 0.5rem`) for every action, including links, icon buttons and menu triggers. The coding-agent
   action uses the same radius on its single outer edge; its main action and chooser stay square inside that edge.
-  Its filled main action and chooser share the foreground, hover, open and focus treatment across the whole group,
+  Its outlined main action and chooser share the foreground, hover, open and focus treatment across the whole group,
   with no internal divider. Compact row actions keep the neutral secondary treatment.
 - The integrated build composer uses `!rounded-composer` (`--radius-composer: 1rem`). Keep this softer shape scoped
   to the build composer.
@@ -167,7 +168,7 @@ Import from `@/components/ui`.
 
 | Need | Use | Not |
 | --- | --- | --- |
-| An action | `Button`: `solid` (the page's one main action), `primary`, `outline` (default), `ghost`, `destructive`; sizes `xs`, `sm`, `md`, `lg`, `icon` | A `<button>` with its own border and caps. |
+| An action | `Button`: `primary` (one orange-outline main action per toolbar or form; `solid` is a legacy alias), `outline` (default), `ghost`, `destructive`; sizes `xs`, `sm`, `md`, `lg`, `icon` | A `<button>` with its own border and caps. |
 | A row or a card someone presses | A plain `<button>` or `<a>` with `hover:bg-accent` and `text-left` | `Button`. |
 | A state or a kind | `Chip` with a tone; a run's state through `StatusBadge` | A hand-built span. |
 | A text field | `Field` around `Input` or `Textarea`. `note` goes before the control, `hint` after it | A bare `<input>` with its own classes. |

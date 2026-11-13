@@ -17,7 +17,7 @@ function mount(two = false) {
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
   act(() => root!.render(createElement("div", null,
-    createElement(CodingAgentAction, { label: "Import agents", prompt, playgroundHref: "#/playground" }),
+    createElement(CodingAgentAction, { label: "Import agents", variant: "primary", prompt, playgroundHref: "#/playground" }),
     two && createElement(CodingAgentAction, { label: "Query", prompt }))));
   return host;
 }
@@ -38,11 +38,12 @@ describe("CodingAgentAction", () => {
     const group = document.querySelector('[role="group"][aria-label="Import agents options"]')!;
     const action = button("Import agents");
     const trigger = group.querySelector<HTMLButtonElement>('[aria-haspopup="menu"]')!;
-    expect(group.classList.contains("bg-primary")).toBe(true);
-    expect(group.classList.contains("text-primary-foreground")).toBe(true);
-    expect(group.classList.contains("hover:bg-primary/90")).toBe(true);
-    expect(group.classList.contains("data-[state=open]:bg-primary/90")).toBe(true);
-    expect(group.classList.contains("has-[:focus-visible]:bg-primary/90")).toBe(true);
+    expect(group.classList.contains("border-primary")).toBe(true);
+    expect(group.classList.contains("bg-primary")).toBe(false);
+    expect(group.classList.contains("text-primary-text")).toBe(true);
+    expect(group.classList.contains("hover:bg-primary/10")).toBe(true);
+    expect(group.classList.contains("data-[state=open]:bg-primary/10")).toBe(true);
+    expect(group.classList.contains("has-[:focus-visible]:bg-primary/10")).toBe(true);
     expect(group.classList.contains("!rounded-action")).toBe(true);
     expect(action.classList.contains("text-inherit")).toBe(true);
     expect(trigger.classList.contains("text-inherit")).toBe(true);
@@ -60,6 +61,16 @@ describe("CodingAgentAction", () => {
     const link = group.querySelector<HTMLAnchorElement>('a[title="Open in Codex app"]')!;
     expect(link.tabIndex).toBe(0);
     expect(new URL(link.href).searchParams.get("prompt")).toBe(prompt);
+  });
+
+  it("only highlights the designated main action when a toolbar has several dropdowns", () => {
+    const host = mount(true);
+    const groups = [...host.querySelectorAll('[role="group"]')];
+    expect(groups.filter(group => group.classList.contains("border-primary"))).toHaveLength(1);
+    const secondary = host.querySelector('[aria-label="Query options"]')!;
+    expect(secondary.classList.contains("border-border")).toBe(true);
+    expect(secondary.classList.contains("text-primary-text")).toBe(false);
+    expect(secondary.classList.contains("data-[state=open]:bg-accent")).toBe(true);
   });
 
   it("disables both actions as one control without leaving an active app link", () => {

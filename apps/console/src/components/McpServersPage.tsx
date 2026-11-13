@@ -66,7 +66,7 @@ export function McpServersPage({ v2, signIn, add, writable, whyNot = "sign_in", 
           </div>
           {!form && !composio && (
             <div className="flex gap-2">
-              <Button size="sm" variant="solid" onClick={() => setForm({})}>Add server</Button>
+              <Button size="sm" variant="primary" onClick={() => setForm({})}>Add server</Button>
               <Button size="sm" disabled={!writable} onClick={() => setComposio(true)}>Add from Composio</Button>
             </div>
           )}
@@ -188,7 +188,7 @@ function PrivateHosts({ v2 }: { v2: Client }) {
       {hosts && (
         <form onSubmit={(e) => void allow(e)} aria-label="Allow a private network host" className="flex gap-2">
           <Input name="mcp-private-host" aria-label="Host name or IP address" value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="auth.corp.example" spellCheck={false} autoCapitalize="off" autoCorrect="off" />
-          <Button type="submit" size="sm" variant="solid" disabled={busy || !draft.trim()}>Allow</Button>
+          <Button type="submit" size="sm" variant="primary" disabled={busy || !draft.trim()}>Allow</Button>
         </form>
       )}
       {problem && <Said problem={problem} />}
@@ -403,11 +403,11 @@ function ServerForm({ v2, saved, add, given, writable, signIn, onCancel, onSaved
       <div className="flex flex-wrap gap-2">
         {type === "oauth" && !writable ? null
           : type === "oauth" && needsSignIn
-          ? <Button type="submit" size="sm" variant="solid" disabled={busy || !url.trim()}>Sign in again with these settings</Button>
+          ? <Button type="submit" size="sm" variant="primary" disabled={busy || !url.trim()}>Sign in again with these settings</Button>
           : type === "oauth"
-          ? <Button type="button" size="sm" variant="solid" disabled={busy || !name.trim() || !url.trim()} onClick={() => void startSignIn()}>{saved ? "Sign in again" : "Sign in"}</Button>
+          ? <Button type="button" size="sm" variant={saved ? "outline" : "primary"} disabled={busy || !name.trim() || !url.trim()} onClick={() => void startSignIn()}>{saved ? "Sign in again" : "Sign in"}</Button>
           : <Button type="button" size="sm" disabled={busy || !url.trim()} onClick={runPreview}>Preview</Button>}
-        {(type !== "oauth" || (saved && !needsSignIn)) && <Button type="submit" size="sm" variant="solid" disabled={!canSave}>{busy ? "Working" : "Save"}</Button>}
+        {(type !== "oauth" || (saved && !needsSignIn)) && <Button type="submit" size="sm" variant={problem?.signIn && type !== "oauth" && writable ? "outline" : "primary"} disabled={!canSave}>{busy ? "Working" : "Save"}</Button>}
         <Button type="button" size="sm" onClick={() => { form.current?.reset(); onCancel(); }}>Cancel</Button>
       </div>
     </form>

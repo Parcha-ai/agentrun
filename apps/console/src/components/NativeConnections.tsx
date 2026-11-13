@@ -1,13 +1,13 @@
 import { useState } from "react";
 import { Banner, Button, Chip, Field, Input, Segmented } from "@/components/ui";
 import { RemoteConnections } from "@/components/RemoteConnections";
-import { CodingAgentAction } from "@/components/CodingAgentAction";
+import { CodingAgentAction, type CodingAgentActionProps } from "@/components/CodingAgentAction";
 import { connectExistingAgentsPrompt } from "@/lib/codingAgentPrompts";
 import { type Client, problemOf } from "@/lib/client";
 import { type NativeTarget, nativeRuntimeLabel, nativeSelectorLabel, nativeStateLabel } from "@/lib/native";
 
-export function ConnectExistingAgents() {
-  return <CodingAgentAction label="Connect agent" prompt={connectExistingAgentsPrompt(location.origin)} playgroundHref="#/agents/connect" playgroundLabel="Connection setup" />;
+export function ConnectExistingAgents({ variant }: Pick<CodingAgentActionProps, "variant">) {
+  return <CodingAgentAction variant={variant} label="Connect agent" prompt={connectExistingAgentsPrompt(location.origin)} playgroundHref="#/agents/connect" playgroundLabel="Connection setup" />;
 }
 
 /** Reads only the server host's explicitly selected project. It never presents browser-local discovery as possible. */

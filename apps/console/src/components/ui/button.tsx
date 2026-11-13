@@ -11,10 +11,10 @@ export const buttonVariants = cva(
       variant: {
         /** The default: any action that is not the page's one main action. */
         outline: "border-border bg-background hover:border-border-strong hover:bg-accent",
-        /** A secondary action that needs emphasis without the main action's fill. */
+        /** The one main action in a toolbar or form: orange outline, with a subtle hover tint. */
         primary: "border-primary text-primary-text hover:bg-primary/10",
-        /** The page's one main action. */
-        solid: "border-primary bg-primary text-primary-foreground hover:bg-primary/90",
+        /** Legacy primary-action spelling; kept equivalent while callers migrate. */
+        solid: "border-primary text-primary-text hover:bg-primary/10",
         /** An action that deletes or cannot be undone. */
         destructive: "border-destructive/60 text-destructive-text hover:bg-destructive/10",
         /** An action inside a dense row or a header, where a border would be noise. */

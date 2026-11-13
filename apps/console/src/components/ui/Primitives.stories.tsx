@@ -13,10 +13,10 @@ const noop = () => {};
 export const Buttons: Story = {
   render: () => (
     <Themes>
-      <Block title="Variants" note="One solid button a page, for its main action. Outline is the default.">
+      <Block title="Variants" note="One orange-outline primary action per toolbar or form. Other actions are neutral.">
         <div className="flex flex-wrap items-center gap-2">
-          <Button variant="solid"><Play aria-hidden /> Run agent</Button>
-          <Button variant="primary"><Plus aria-hidden /> New agent</Button>
+          <Button variant="primary"><Play aria-hidden /> Run agent</Button>
+          <Button><Plus aria-hidden /> New agent</Button>
           <Button>Cancel</Button>
           <Button variant="ghost">Skip</Button>
           <Button variant="destructive"><Trash2 aria-hidden /> Delete</Button>

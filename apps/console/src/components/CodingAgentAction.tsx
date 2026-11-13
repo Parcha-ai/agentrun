@@ -35,11 +35,11 @@ function usePreferredAgent() {
   return { agent, choose };
 }
 
-export type CodingAgentActionProps = { label: string; prompt: string; playgroundHref?: string; playgroundLabel?: string; disabled?: boolean; compact?: boolean; compactIcon?: ReactNode };
+export type CodingAgentActionProps = { label: string; prompt: string; playgroundHref?: string; playgroundLabel?: string; disabled?: boolean; compact?: boolean; compactIcon?: ReactNode; variant?: "outline" | "primary" };
 
 /** A remembered handoff destination. Selecting a destination only saves the preference; the main button opens or
  * copies the prompt. The menu lives above scroll containers and stays inside the viewport. */
-export function CodingAgentAction({ label, prompt, playgroundHref, playgroundLabel = "API playground", disabled, compact = false, compactIcon }: CodingAgentActionProps) {
+export function CodingAgentAction({ label, prompt, playgroundHref, playgroundLabel = "API playground", disabled, compact = false, compactIcon, variant = "outline" }: CodingAgentActionProps) {
   const { agent, choose } = usePreferredAgent();
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -109,8 +109,8 @@ export function CodingAgentAction({ label, prompt, playgroundHref, playgroundLab
   const actionTitle = compact ? `${label} · ${title}` : title;
   // One edge and focus ring belong to the whole control; its two actions stay independently operable.
   const actionClass = `h-full !rounded-none border-0 bg-transparent text-inherit hover:bg-transparent focus-visible:bg-transparent focus-visible:outline-none ${compact ? "px-2" : "pl-3 pr-1"}`;
-  const activeTone = compact ? "data-[state=open]:bg-accent has-[:focus-visible]:bg-accent" : "data-[state=open]:bg-primary/90 has-[:focus-visible]:bg-primary/90";
-  return <div ref={container} role="group" aria-label={`${label} options`} data-state={open ? "open" : "closed"} className={cn(buttonVariants({ variant: compact ? "outline" : "solid", size: "sm" }), "shrink-0 items-stretch gap-0 overflow-hidden px-0 has-[:focus-visible]:outline has-[:focus-visible]:outline-focus has-[:focus-visible]:outline-offset-focus has-[:focus-visible]:outline-ring", activeTone)}>
+  const activeTone = variant === "primary" ? "data-[state=open]:bg-primary/10 has-[:focus-visible]:bg-primary/10" : "data-[state=open]:bg-accent has-[:focus-visible]:bg-accent";
+  return <div ref={container} role="group" aria-label={`${label} options`} data-state={open ? "open" : "closed"} className={cn(buttonVariants({ variant, size: "sm" }), "shrink-0 items-stretch gap-0 overflow-hidden px-0 has-[:focus-visible]:outline has-[:focus-visible]:outline-focus has-[:focus-visible]:outline-offset-focus has-[:focus-visible]:outline-ring", activeTone)}>
     {href && !disabled
       ? <a href={href} title={actionTitle} aria-label={compact ? label : undefined} className={cn(buttonVariants({ variant: "ghost", size: "sm" }), actionClass)}>{content}</a>
       : <Button variant="ghost" size="sm" className={actionClass} disabled={disabled} title={actionTitle} aria-label={compact ? label : undefined} onClick={() => agent ? void copy() : setOpen(true)}>{content}</Button>}
