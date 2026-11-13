@@ -59,6 +59,7 @@ const options = {
       type: 'http' as const,
       url: workflows.url,
       headers: workflows.headers,
+      alwaysLoad: true, // This bridge has one small tool; avoid deferred tool search.
     },
   },
   // Add this only where your existing permission policy permits the bridge.
@@ -119,6 +120,8 @@ Ordinary checked learning first accepts reusable skills. After a skill has appea
 The initial bridge supports workflows over the explicitly registered callbacks. It supplies no default shell, arbitrary code executor, or model provider. Workflows needing agent or judge nodes require explicit backend `runNode` or `runJudge` adapters. Reflection cannot assume those adapters exist when you have not supplied them. Your backend remains responsible for the adapter's model credentials, policies and cost.
 
 When self-improving is Off, a fresh run receives no learned workflows. The bridge also revokes that run's capability when the native session finishes; it is not a permanent workflow endpoint for that agent. Notes/skills and workflow learning remain scoped to the stable AgentRun id and the accepted learning revision.
+
+An existing agent registered by the basic wrapper may be set to **Notes and skills only**. Choose full learning in its agent settings (or set `learning: true` through the owner API) to enable workflow promotion. Adding the bridge or passing `learning: true` to the wrapper never overrides an existing owner's learning setting.
 
 ## Prove learning and reuse
 

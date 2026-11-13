@@ -161,6 +161,8 @@ for (const runtime of ['claude', 'codex']) test(`${runtime} example wires native
       const { createClaudeWorkflowReleaseBackend } = await import('./sdk-learning/workflow-claude.mjs');
       backend = await createClaudeWorkflowReleaseBackend({ query: ({ prompt, options }) => (async function* () {
         assert.equal(options.model, 'keep-existing-model');
+        assert.equal(options.mcpServers.release.alwaysLoad, true, 'The fixed demo tools should be available without deferred tool search.');
+        assert.equal(options.mcpServers.agentrun_workflows.alwaysLoad, true);
         yield { type: 'result', subtype: 'success', is_error: false, result: await perform(prompt, options.mcpServers) };
       })() }, learning, { model: 'keep-existing-model' });
     } else {

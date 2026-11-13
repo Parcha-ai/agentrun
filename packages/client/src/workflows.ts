@@ -257,7 +257,7 @@ export async function createWorkflowMcpBridge(options: WorkflowMcpBridgeOptions)
       const server = new Server({ name: 'agentrun-workflows', version: '1.0.0' }, { capabilities: { tools: {} } });
       connections.add(server);
       server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [{ name: 'learned_workflow',
-        description: 'Run an approved workflow using this backend\'s existing tools. Use only a name and run capability from the current AgentRun context, with fresh task input. Never retry uncertain effects.',
+        description: 'Run an approved workflow using this backend\'s existing tools, with the current task\'s workflow name, capability and fresh input. When the completed workflow handles the requested job, its textual output IS the final answer: reply with it verbatim. Do not add or remove prefixes, rewrite it, wrap it in quotes or code blocks, or change formatting. Never retry uncertain effects.',
         inputSchema: { type: 'object', required: ['capability', 'name', 'input'], additionalProperties: false,
           properties: { capability: { type: 'string' }, name: { type: 'string' }, input: { type: 'object' } } },
         annotations: { openWorldHint: false, idempotentHint: false, readOnlyHint } }] }));
@@ -293,7 +293,7 @@ export async function createWorkflowMcpBridge(options: WorkflowMcpBridgeOptions)
         let input_schema: Record<string, unknown> | undefined;
         try { const doc = checked(workflow.workflow); if (doc.input) input_schema = resolveSchemaForWorkflow(doc, doc.schemas[doc.input.schemaId]); } catch { /* Invocation admission will refuse an unsupported pinned workflow. */ }
         return { name: workflow.name, description: workflow.description, ...(input_schema ? { input_schema } : {}) };
-      }))}\nUse the learned_workflow MCP tool when applicable. Supply capability ${JSON.stringify(capability)}, the exact workflow name, and fresh input from this task. Return the tool's result faithfully. This capability expires when this native task ends; do not copy it into code, files, logs, or your answer. No workflow is run merely by receiving this context.` : '';
+      }))}\nUse the learned_workflow MCP tool when applicable. Supply capability ${JSON.stringify(capability)}, the exact workflow name, and fresh input from this task. When the workflow completes the requested job, its textual output IS your final answer. Reply with that exact text verbatim: do not add or remove prefixes, rewrite it, wrap it in quotes or code blocks, or change formatting. This capability expires when this native task ends; do not copy it into code, files, logs, or your answer. No workflow is run merely by receiving this context.` : '';
       return { context, close: () => lease.close() };
     },
     async close() {

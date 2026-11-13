@@ -73,6 +73,8 @@ The native SDK configuration has two MCP servers: the existing release tools and
 
 The exported factories are `createClaudeWorkflowReleaseBackend(sdk, learning, existingOptions)` and `createCodexWorkflowReleaseBackend(createExistingCodex, learning, existingThreadOptions)`. For Codex, the construction callback receives the two demo MCP entries so your backend can merge them with its own configuration and retain its credentials. Both factories expose `report`, `flushLearning`, and `close`. The demo's tool policy allows only these fictional read-only callbacks; use your real tool policy in an application.
 
+Claude's three small demo MCP tools use `alwaysLoad: true` so a model can call them directly instead of spending its turn budget rediscovering deferred tools. Native filesystem settings are otherwise preserved. For a standalone fictional test, pass `settingSources: []` and an isolated temporary `cwd` to the Claude factory if personal/project instructions impose a different response style. That explicit demo configuration preserves SDK authentication and does not edit those files; do not strip an existing application's policy when integrating its real agent.
+
 Run the offline fixture, MCP transport and proof checks without making model calls:
 
 ```sh
