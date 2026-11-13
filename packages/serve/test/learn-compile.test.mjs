@@ -248,7 +248,8 @@ test("a note at the 4 KB cap a compiled workflow marks stays a note: the host's 
     await folder.end();
   }
   const repo = repoOf(data, "agent-1");
-  const compiled = git(repo, ["show", "main:full.md"]);
+  // git() trims its output: the note ends in its newline.
+  const compiled = `${git(repo, ["show", "main:full.md"])}\n`;
   assert.match(compiled, /compiled_into: refund-request/);
   assert.ok(Buffer.byteLength(compiled) > 4096, "the mark is on top of the cap");
   // A person's own read of it: the note checks pass it as it is on main.
