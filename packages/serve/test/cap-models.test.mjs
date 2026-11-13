@@ -5,8 +5,19 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { estimateContextTokens } from "@earendil-works/pi-ai/utils/estimate";
-import { capModels } from "../dist/cap.js";
-import { sideRequests } from "../dist/cap.js";
+import { capModels, paidCall, sideRequests, useSpend } from "../dist/cap.js";
+import { chargeOf, monidClient } from "../dist/monid.js";
+import fakeMonid, { KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
+import { bookedIn, PARALLEL_EXTRACT_USD, PARALLEL_SEARCH_USD } from "../dist/paid-calls.js";
+import { parallelExtract, webFetch } from "../dist/web-fetch.js";
+import { webSearch } from "../dist/web-search.js";
+import fakeParallel, { CANARY } from "./fixtures/faux-parallel.mjs";
+import { network } from "./fixtures/fake-network.mjs";
+/** A cap's refusals' figures (capModels' `refused`): what a refusal counts as spent and held, which its words say in cents. */
+const refusals = () => {
+  const all = [];
+  return { refused: async (figures) => void all.push(figures), last: () => all.at(-1) };
+};
 
 const usage = (total) => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total } });
 const model = (cost, maxTokens = 1_000) => ({ id: "m", name: "m", api: "fake", provider: "fake", baseUrl: "", reasoning: true, input: ["text"], cost, contextWindow: 128_000, maxTokens });
@@ -42,7 +53,7 @@ test("a request in flight holds its worst case: a second that fits alone but not
   const second = await capped.streamSimple(priced, context).result();
   assert.equal(sent.length, 1, "the second request was not sent while the first was in flight");
   assert.equal(second.stopReason, "error");
-  assert.match(second.errorMessage, /^spend_cap_reached: /);
+  assert.match(second.errorMessage, /^spend_cap_reached \(out of budget\): Not sent: /);
   sent[0].end(0.0001);
   await first.result();
   await new Promise((resolve) => setImmediate(resolve));
@@ -50,6 +61,170 @@ test("a request in flight holds its worst case: a second that fits alone but not
   assert.equal(sent.length, 2, "once the first answered ($0.0001 spent), the next fits");
   sent[1].end(0);
   await third.result();
+});
+
+/** A paid call (monid_run's, through paidCall) the test holds under way until it settles it with what it charged, or
+ *  fails it; resolved once the call is sent, past the cap's check. Settled at the test's end in any case, so a paid call
+ *  in a later test is never queued behind it. */
+async function underWay(t, usd) {
+  const call = { sent: false };
+  const answer = new Promise((resolve, reject) => Object.assign(call, { settle: resolve, fail: reject }));
+  call.paid = paidCall("monid_run", () => ((call.sent = true), answer), (charged) => charged, { usd, basis: "the price monid_inspect quoted" });
+  t.after(() => (call.settle(0), call.paid.catch(() => undefined)));
+  while (!call.sent) await new Promise((resolve) => setImmediate(resolve));
+  return call;
+}
+
+/** Whether a request was sent: one that was is ended at once, so a request the cap should have held never hangs the test. */
+const wentOut = (sent) => (sent.forEach((request) => request.end(0)), sent.length);
+
+test("a paid call under way holds what it is held at: a model request that fits only without it is refused, and goes once the call's charge is in", async (t) => {
+  // A request's worst case is $0.001 (1,000 output tokens at $1 a million) and monid's run is held at its $0.001 quote:
+  // the cap holds one of the two, not both.
+  const priced = model({ input: 0, output: 1, cacheRead: 0, cacheWrite: 0 });
+  const { models, sent } = fakeModels();
+  const seen = refusals();
+  const capped = await capModels(models, 0.0015, 0, { refused: seen.refused });
+  t.after(() => useSpend(undefined));
+  const call = await underWay(t, 0.001);
+  const request = capped.streamSimple(priced, context);
+  assert.equal(wentOut(sent), 0, "not sent while the paid call is under way");
+  const refused = await request.result();
+  assert.equal(refused.errorMessage, "spend_cap_reached (out of budget): Not sent: this run has spent $0 of its $0.0015 cap, and the next step needs at least $0.01. Raise the cap to at least $0.01 to continue.");
+  assert.ok(Math.abs(seen.last()?.spentUsd - 0.001) < 1e-12, `its figures count the call's hold, which its words round to $0: ${JSON.stringify(seen.last())}`);
+  call.settle(0.0002);
+  assert.deepEqual(await call.paid, { result: 0.0002 });
+  const admitted = capped.streamSimple(priced, context);
+  assert.equal(sent.length, 1, "once the call settled at $0.0002, the request fits: $0.0012 of $0.0015");
+  sent[0].end(0);
+  await admitted.result();
+});
+
+test("a paid call that fails counts at what it was held at, as a model request that fails with no answer does: its hold never just drops", async (t) => {
+  const priced = model({ input: 0, output: 1, cacheRead: 0, cacheWrite: 0 });
+  const { models, sent } = fakeModels();
+  const capped = await capModels(models, 0.0015, 0);
+  t.after(() => useSpend(undefined));
+  const call = await underWay(t, 0.001);
+  call.fail(new Error("monid's socket closed"));
+  await assert.rejects(call.paid, /socket closed/);
+  const request = capped.streamSimple(priced, context);
+  assert.equal(wentOut(sent), 0, "it may have been sent and charged: the run's spend keeps its $0.001");
+  const refused = await request.result();
+  assert.match(refused.errorMessage, /^spend_cap_reached \(out of budget\): Not sent: this run has spent less than a cent of its \$0\.0015 cap, and the next step needs at least \$0\.01\./);
+});
+
+test("a paid call the cap refuses while a model request is in flight names what is held for it apart from what the run has spent, in one format, with the cap that would run the call", async (t) => {
+  // $1,000 per million output tokens and 1,000 of them: the request in flight is held at $1. The run has spent $0.25 of
+  // its $1.50 cap; monid's run, quoted at $0.40, does not fit beside them.
+  const priced = model({ input: 0, output: 1_000, cacheRead: 0, cacheWrite: 0 });
+  const { models, sent } = fakeModels();
+  const capped = await capModels(models, 1.5, 0.25);
+  t.after(() => useSpend(undefined));
+  const first = capped.streamSimple(priced, context);
+  assert.equal(sent.length, 1, "the request is in flight, held at $1");
+  let ran = false;
+  const refused = await paidCall("monid_run", async () => ((ran = true), 0), (charged) => charged, { usd: 0.4, basis: "the price monid_inspect quoted" });
+  assert.equal(refused.refused, "spend_cap_reached: Not sent: this run has spent $0.25 and holds $1 for steps still running, of its $1.50 cap, and the next step, monid_run, could cost up to $0.40 (the price monid_inspect quoted). Raise the cap to at least $1.65 to continue.");
+  assert.equal(ran, false, "refused, not sent");
+  sent[0].end(0);
+  await first.result();
+});
+
+test("a paid call the cap refuses for an unknown spend says the cap in the same format as every other refusal", async (t) => {
+  const { models } = fakeModels();
+  await capModels(models, 1.5, null);
+  t.after(() => useSpend(undefined));
+  const refused = await paidCall("monid_run", async () => 0, (charged) => charged, { usd: 0.4, basis: "the price monid_inspect quoted" });
+  assert.equal(refused.refused, "spend_cap_reached: monid_run was not sent. What the run has spent is unknown, so its cap of $1.50 cannot be kept: the run is out of budget.");
+});
+
+test("a paid call's refusal names a cap that would run it, a cent above the cap at the least: a spend past a whole-cent cap by a hair still asks for more than that cap", async (t) => {
+  // $0.60 (and a hair) spent of a $1 cap: monid's $0.40 run passes it by a hair, and the cap that would run it is $1.01.
+  useSpend({ cap: 1, spent: () => 0.60000000001, add: () => {} });
+  t.after(() => useSpend(undefined));
+  const refused = await paidCall("monid_run", async () => 0, (charged) => charged, { usd: 0.4, basis: "the price monid_inspect quoted" });
+  assert.equal(refused.refused, "spend_cap_reached: Not sent: this run has spent $0.60 of its $1 cap, and the next step, monid_run, could cost up to $0.40 (the price monid_inspect quoted). Raise the cap to at least $1.01 to continue.");
+});
+
+test("a model request whose model has no price is refused saying \"not sent\" once, in the words its row shows after \"Not sent:\", its cap in the same format as every other refusal", async (t) => {
+  const { models, sent } = fakeModels();
+  const capped = await capModels(models, 1.5, 0, { unpriced: new Set(["m"]) });
+  t.after(() => useSpend(undefined));
+  const refused = await capped.streamSimple(model({ input: 0, output: 1, cacheRead: 0, cacheWrite: 0 }), context).result();
+  assert.equal(sent.length, 0, "not sent");
+  assert.equal(refused.errorMessage, "spend_cap_reached: Not sent: the next model request's model has no price here, so the run's cap of $1.50 cannot be kept: the run is out of budget.");
+});
+
+/** monid's run of `endpoint` on the tests' fake: /slow runs until it is stopped, /late answers TIMED_OUT. */
+const monidRun = (endpoint, options = {}, signal) => monidClient({ key: MONID_KEY, fetch: fakeMonid, ...options }).run({ provider: "faux", endpoint }, signal);
+/** Past the turn the cap's count of an ended request takes. */
+const settled = () => new Promise((resolve) => setImmediate(resolve));
+
+test("a paid call the run's stop cuts short, or one that times out, counts at what it was held at, never unknown: the next model request goes while that leaves room, and is refused for room once it does not", async (t) => {
+  // Each request's worst case is $0.001 and each monid run is held at its $0.001 quote: $0.0045 holds three runs and a
+  // request, not a $0.002 one.
+  const priced = model({ input: 0, output: 1, cacheRead: 0, cacheWrite: 0 });
+  const { models, sent } = fakeModels();
+  const seen = refusals();
+  const capped = await capModels(models, 0.0045, 0, { refused: seen.refused });
+  t.after(() => useSpend(undefined));
+  const hold = { usd: 0.001, basis: "the price monid_inspect quoted" };
+  // Stopped by the run's stop while monid runs it: monid is asked to stop it, and says nothing of a charge.
+  const stop = new AbortController();
+  const stopped = await paidCall("monid_run", () => monidRun("/slow", { sleep: async () => stop.abort() }, stop.signal), chargeOf, hold);
+  assert.match(stopped.result?.error ?? JSON.stringify(stopped), /was stopped by the caller; monid was asked to stop it/);
+  const next = capped.streamSimple(priced, context);
+  assert.equal(sent.length, 1, "the stopped call counts at its $0.001 hold, never unknown: the next request goes");
+  sent[0].end(0);
+  await next.result();
+  await settled();
+  // Past the run's wait, and monid's own TIMED_OUT: neither says what it charged.
+  const outlasted = await paidCall("monid_run", () => monidRun("/slow", { waitMs: 500, sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)) }), chargeOf, hold);
+  assert.match(outlasted.result?.error ?? JSON.stringify(outlasted), /did not end in 0\.5 s; monid was asked to stop it|no answer in 0\.5 s/);
+  const timedOut = await paidCall("monid_run", () => monidRun("/late"), chargeOf, hold);
+  assert.match(timedOut.result?.error ?? JSON.stringify(timedOut), /\(TIMED_OUT\)/);
+  const after = capped.streamSimple(priced, context);
+  assert.equal(sent.length, 2, "the three calls at their holds, $0.003, and this request's $0.001 fit the $0.0045 cap");
+  sent[1].end(0);
+  await after.result();
+  await settled();
+  // A request dearer than the room left is refused for room, naming what is spent: never for a spend unknown.
+  const refused = await capped.streamSimple(model({ input: 0, output: 2, cacheRead: 0, cacheWrite: 0 }), context).result();
+  assert.equal(sent.length, 2, "not sent");
+  assert.match(refused.errorMessage, /^spend_cap_reached \(out of budget\): Not sent: this run has spent less than a cent of its \$0\.0045 cap, /, "refused for room, never for a spend unknown");
+  assert.ok(Math.abs(seen.last()?.spentUsd - 0.003) < 1e-12, `the three calls at their holds as spent (#1539): ${JSON.stringify(seen.last())}`);
+});
+
+test("a paid call monid answers FAILED with no cost, or whose answer is lost, counts at what it was held at too: every charge a call does not say is held, whatever cut it short", async (t) => {
+  // Each request's worst case is $0.001 and each monid run is held at its $0.001 quote: $0.0035 holds two runs and a
+  // request, not a $0.002 one.
+  const priced = model({ input: 0, output: 1, cacheRead: 0, cacheWrite: 0 });
+  const { models, sent } = fakeModels();
+  const seen = refusals();
+  const capped = await capModels(models, 0.0035, 0, { refused: seen.refused });
+  t.after(() => useSpend(undefined));
+  const hold = { usd: 0.001, basis: "the price monid_inspect quoted" };
+  // /broken runs, then FAILS on its second read, its waits skipped: monid says nothing of a charge.
+  const failed = await paidCall("monid_run", () => monidRun("/broken", { sleep: async () => {} }), chargeOf, hold);
+  assert.match(failed.result?.error ?? JSON.stringify(failed), /failed inside monid \(FAILED\)/);
+  const next = capped.streamSimple(priced, context);
+  assert.equal(sent.length, 1, "the FAILED call counts at its $0.001 hold, never unknown: the next request goes");
+  sent[0].end(0);
+  await next.result();
+  await settled();
+  // Sent, and its answer lost on the way back: it may have gone ahead at monid.
+  const lost = await paidCall("monid_run", () => monidRun("/person/enrich", { fetch: async () => { throw new Error("offline"); } }), chargeOf, hold);
+  assert.match(lost.result?.error ?? JSON.stringify(lost), /offline: the run may have gone ahead at monid/);
+  const after = capped.streamSimple(priced, context);
+  assert.equal(sent.length, 2, "the two calls at their holds, $0.002, and this request's $0.001 fit the $0.0035 cap");
+  sent[1].end(0);
+  await after.result();
+  await settled();
+  const refused = await capped.streamSimple(model({ input: 0, output: 2, cacheRead: 0, cacheWrite: 0 }), context).result();
+  assert.equal(sent.length, 2, "not sent");
+  assert.match(refused.errorMessage, /^spend_cap_reached \(out of budget\): Not sent: this run has spent less than a cent of its \$0\.0035 cap, /, "refused for room, never for a spend unknown");
+  assert.ok(Math.abs(seen.last()?.spentUsd - 0.002) < 1e-12, `the two calls at their holds as spent (#1539): ${JSON.stringify(seen.last())}`);
 });
 
 /** The input bound: one token per UTF-8 byte of the request's context, which byte-level tokenizers never undercount. */
@@ -71,17 +246,19 @@ test("the input is priced at the cache-write price when it is dearer than input,
   }
 });
 
-test("the worst case is the model's full output ceiling, not the max tokens a request asks for: a thinking budget can raise any request to it", async () => {
-  // No input price, $1 per million output tokens, a ceiling of 1,000: the worst case is $0.001 whatever the request asks.
-  const priced = model({ input: 0, output: 1, cacheRead: 0, cacheWrite: 0 });
+test("a request is held at the output it is sent with: what it asks for, and on an API whose thinking takes a budget, the budget pi-ai adds to it", async () => {
+  // No input price, $1 per million output tokens, a ceiling of 1,000: asking 100 tokens with no thinking, the worst case is
+  // $0.0001; thinking on Anthropic's API, pi-ai adds the budget, so it is the ceiling's $0.001.
   const asks = { maxTokens: 100 };
-  for (const [cap, sends] of [[0.0005, 0], [0.0011, 1]]) {
+  const plain = model({ input: 0, output: 1, cacheRead: 0, cacheWrite: 0 });
+  const thinking = { ...plain, api: "anthropic-messages" };
+  for (const [priced, options, cap, sends] of [[plain, asks, 0.0005, 1], [thinking, { ...asks, reasoning: "high" }, 0.0005, 0], [thinking, { ...asks, reasoning: "high" }, 0.0011, 1]]) {
     const { models, sent } = fakeModels();
     const capped = await capModels(models, cap, 0);
-    const answer = capped.streamSimple(priced, context, asks);
-    assert.equal(sent.length, sends, `a cap of ${cap}: the worst case is the ceiling's $0.001, not the asked 100 tokens' $0.0001`);
+    const answer = capped.streamSimple(priced, context, options);
+    assert.equal(sent.length, sends, `${priced.api}, ${JSON.stringify(options)}, a cap of ${cap}`);
     if (sends) sent[0].end(0);
-    else assert.match((await answer.result()).errorMessage, /could cost up to \$0\.001000/);
+    else assert.match((await answer.result()).errorMessage, /^spend_cap_reached \(out of budget\): Not sent: the next step needs at least \$0\.01, and this run's cap is \$0\.0005\. Raise the cap to at least \$0\.01 to continue\.$/);
     await answer.result();
   }
 });
@@ -99,7 +276,7 @@ test("pi's input is bounded by its context's UTF-8 bytes, never pi's average: a 
   const capped = await capModels(models, cap, 0);
   const answer = await capped.streamSimple(priced, dense).result();
   assert.equal(sent.length, 0, "not sent: its byte bound passes the cap");
-  assert.match(answer.errorMessage, /^spend_cap_reached: /);
+  assert.match(answer.errorMessage, /^spend_cap_reached \(out of budget\): Not sent: /);
 });
 
 test("pi under a cap: a model serve has no price for is refused, a model the catalog lists at $0 passes", async () => {
@@ -117,10 +294,10 @@ test("pi under a cap: a model serve has no price for is refused, a model the cat
 });
 
 // The provider overhead table's figures, pinned here so a change to the table is a change to this test: Anthropic's tool-use
-// prompt with a forced tool (pi's context does not say how a tool is chosen, so the dearer is taken) and its per-image
-// maximum, Chat Completions' tool figure, and the assumed allowance for every kind without a documented one.
+// prompt with a forced tool (pi's context does not say how a tool is chosen, so the dearer is taken), the largest per-image
+// maximum (OpenAI's, for an image of unread size on a model of no known provider), Chat Completions' tool figure, and the assumed allowance for every kind without a documented one.
 const ANTHROPIC_TOOLS = 804;
-const ANTHROPIC_IMAGE = 4_784;
+const OPENAI_IMAGE = 73_800;
 const COMPLETIONS_TOOLS = 804;
 const ASSUMED_TOOLS = 2_048;
 const tool = { name: "lookup", description: "Look a thing up.", parameters: { type: "object", properties: {} } };
@@ -139,7 +316,9 @@ async function sentUnder(api, ctx, tokens) {
 
 test("pi's input adds what its provider adds server-side, from the model proxy's own table: an Anthropic model with tools and an image is held at the same figure", async () => {
   const ctx = { tools: [tool], messages: [{ role: "user", content: [{ type: "text", text: "What is this?" }, image], timestamp: 0 }] };
-  const tokens = bound(ctx) + ANTHROPIC_TOOLS + ANTHROPIC_IMAGE;
+  // The image (a size its header does not give) at the largest per-image maximum, its model ("m") being of no provider
+  // whose rule is known, in place of its base64's bytes.
+  const tokens = bound(ctx) + ANTHROPIC_TOOLS + OPENAI_IMAGE - image.data.length;
   assert.equal(await sentUnder("anthropic-messages", ctx, tokens * 1.001), true, "sent within its bound plus the overhead");
   assert.equal(await sentUnder("anthropic-messages", ctx, tokens * 0.999), false, "refused past it: the overhead is counted");
 });
@@ -165,6 +344,80 @@ test("a tool's own request adds its hosted tool's allowance to its input bound a
     const answer = capped.completeSimple(priced, search);
     assert.equal(requests.length, sent, `a cap of $${cap}`);
     requests[0]?.end(0.001);
-    if (!sent) assert.match((await answer).errorMessage, /^spend_cap_reached: /);
+    if (!sent) assert.match((await answer).errorMessage, /^spend_cap_reached \(out of budget\): Not sent: /);
   }
 });
+
+test("a Parallel search under way holds its fee for the cap: a model request beside it that fits only without it is refused, and goes once the search answered and charged nothing", async (t) => {
+  // A request's worst case is $0.001 (1,000 output tokens at $1 a million), and a fast search is held at its $0.001: a
+  // $0.0015 cap holds one of the two, never both, whichever branch, tool round or harness each comes from.
+  const mode = process.env.AGENTRUN_TEST_FAUX_PARALLEL_SEARCH;
+  process.env.AGENTRUN_TEST_FAUX_PARALLEL_SEARCH = "422";
+  t.after(() => (mode === undefined ? delete process.env.AGENTRUN_TEST_FAUX_PARALLEL_SEARCH : (process.env.AGENTRUN_TEST_FAUX_PARALLEL_SEARCH = mode)));
+  const priced = model({ input: 0, output: 1, cacheRead: 0, cacheWrite: 0 });
+  const { models, sent } = fakeModels();
+  const seen = refusals();
+  const capped = await capModels(models, 0.0015, 0, { refused: seen.refused });
+  t.after(() => useSpend(undefined));
+  // The search reaches Parallel and is held there until released.
+  let arrived, release;
+  const reached = new Promise((resolve) => (arrived = resolve));
+  const held = new Promise((resolve) => (release = resolve));
+  t.after(() => release());
+  const send = async (url, init) => (arrived(), await held, fakeParallel(url, init));
+  const records = [];
+  const ledger = { call: "c1", record: async (kind, data) => void records.push([kind, data.heldUsd ?? data.usd]) };
+  const search = bookedIn(ledger, () => webSearch({ query: "widgets", n: 2 }, parallelExtract(CANARY, send)));
+  await reached;
+  const request = capped.streamSimple(priced, context);
+  assert.equal(wentOut(sent), 0, "not sent while the search is under way");
+  // The refusal counts the search's fee as held (#1539's words, as main's paid-call hold test reads them).
+  assert.equal((await request.result()).errorMessage, "spend_cap_reached (out of budget): Not sent: this run has spent $0 of its $0.0015 cap, and the next step needs at least $0.01. Raise the cap to at least $0.01 to continue.");
+  assert.ok(Math.abs(seen.last()?.spentUsd - 0.001) < 1e-12, `its figures count the search's fee as held, which its words round to $0: ${JSON.stringify(seen.last())}`);
+  // Parallel refused the search (422): it charged nothing, and its hold is gone.
+  release();
+  assert.deepEqual(await search, { error: "Parallel's search answered 422" });
+  assert.deepEqual(records, [["agentrun.tool_started", PARALLEL_SEARCH_USD], ["agentrun.tool_cost", 0]]);
+  const admitted = capped.streamSimple(priced, context);
+  assert.equal(sent.length, 1, "with the search's hold released at $0, the request fits");
+  sent[0].end(0);
+  await admitted.result();
+});
+
+
+test("under a cap, a page's one Parallel extract is held as any Parallel request: a model request that fits only without its $0.001 is refused while the read is under way, and the page's later parts hold and ask nothing", async (t) => {
+  const priced = model({ input: 0, output: 1, cacheRead: 0, cacheWrite: 0 });
+  const { models, sent } = fakeModels();
+  const seen = refusals();
+  const capped = await capModels(models, 0.0015, 0, { refused: seen.refused });
+  t.after(() => useSpend(undefined));
+  let arrived, release;
+  const reached = new Promise((resolve) => (arrived = resolve));
+  const held = new Promise((resolve) => (release = resolve));
+  t.after(() => release());
+  const asked = [];
+  const text = `${"capped ".repeat(6_000)}end`;
+  const send = async (_url, init) => {
+    asked.push(JSON.parse(init.body).advanced_settings.full_content.max_chars_per_result);
+    arrived();
+    await held;
+    return new Response(JSON.stringify({ results: [{ url: "http://public.example/", title: "Capped", full_content: text }], errors: [] }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  const records = [];
+  const ledger = { call: "c1", record: async (kind, data) => void records.push([kind, data.heldUsd ?? data.usd]) };
+  const extract = parallelExtract(CANARY, send);
+  const pages = new Map();
+  const net = network();
+  const first = bookedIn(ledger, () => webFetch("http://public.example/", { ...net, parallel: extract, pages }));
+  await reached;
+  const request = capped.streamSimple(priced, context);
+  assert.equal(wentOut(sent), 0, "not sent while the extract is under way");
+  assert.match((await request.result()).errorMessage ?? "", /^spend_cap_reached \(out of budget\): Not sent: this run has spent \$0 of its \$0\.0015 cap/);
+  assert.ok(Math.abs(seen.last()?.spentUsd - 0.001) < 1e-12, `its figures count the extract as held, which its words round to $0: ${JSON.stringify(seen.last())}`);
+  release();
+  assert.equal((await first).via, "parallel");
+  const later = await bookedIn(ledger, () => webFetch("http://public.example/", { ...net, parallel: extract, pages, offset: 20_000 }));
+  assert.deepEqual([later.via, later.offset, asked], ["parallel", 20_000, [1_000_001]], "a later part from what the run read: no request");
+  assert.deepEqual(records, [["agentrun.tool_started", PARALLEL_EXTRACT_USD], ["agentrun.tool_cost", PARALLEL_EXTRACT_USD]], "held and charged once");
+});
+

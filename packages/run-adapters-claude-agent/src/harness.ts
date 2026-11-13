@@ -1,23 +1,21 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-claude-code/src/harness.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, imports rewritten for AgentRun; patches: 001-gate-always-on, 002-names, 003-comments, 008-tool-description-max, 009-tool-result-barrier-and-refusals, 010-served-tools-with-images, 011-session-skills, 013-recovery-note-system-prompt, 015-web-search
+// Changed by Parcha, and AgentRun's own since the port from upstream froze on 2026-11-07.
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, posix } from 'node:path';
+import type { GateAnswer, GateCall } from '@parcha/agentrun-kernel';
 import { type DriveContext, type Harness, type HostTool, type ReplayPolicy, Restart, type SessionState, type Submission, Unavailable } from './host/kernel.js';
 import {
   BuiltinCalls,
   CLAUDE_ROUTES,
-  type GatewayCap,
   gatewayCredential,
   type GatewayHandler,
   gatewayHandler,
   gatewayUrl,
   isBrandedMachine,
-  journalLedger,
-  ModelSteps,
   NativeJournal,
   openTurn,
   placeSubmissions,
@@ -27,7 +25,6 @@ import {
   replayBy,
   type SessionMachine,
   type SessionProcess,
-  settleAbandonedModelSteps,
   toolBridge,
   waitForSubmissions,
 } from './host/process.js';
@@ -35,7 +32,8 @@ import { durableEnv, nativeModelId } from './env.js';
 import { uuidFrom } from './ids.js';
 import { MessageQueue } from './inbox.js';
 import { sandboxSpawn } from './spawn.js';
-import { toolServer } from './host/tool-server.js';
+import { MCP_OUTPUT_TOKENS, toolServer } from './host/tool-server.js';
+import { resumeDanglingCalls } from './resume.js';
 import { JournalSessionStore } from './store.js';
 import { MCP_SERVER, TranscriptBuilder, type TurnEnd } from './transcript.js';
 import { CLAUDE_AGENT_CLI_SKILL_NAMES } from './cli-names.js';
@@ -74,10 +72,9 @@ import { assertAgentSdkVersion, CLAUDE_VM_EXECUTABLE } from './versions.js';
  * **The model.** The CLI's base URL is the VM's model port, its key the
  * attach's model key (`SessionMachine.modelKey`); every request it sends is
  * relayed to this drive's `gatewayHandler` (Claude's fixed table, the body
- * policy, the model allowlist, the budget, the credential), so the VM never
- * holds a credential (decision 6). The spend is kept in the session's
- * journal (`journalLedger`); a request past `sandbox({ budget })`'s turn or
- * session cap ends the turn at once with an `Unavailable` naming the cap.
+ * policy, the model allowlist, the credential), so the VM never holds a
+ * credential (decision 6). The spend is the runner's: each request is booked
+ * through the host's model port, and the host's cap bounds it.
  *
  * **Tools.** Tool-less by default: the app's `HostTool`s (`tools`) are the
  * CLI's only tools (`tools: []`), and the system prompt says so. With
@@ -90,7 +87,10 @@ import { assertAgentSdkVersion, CLAUDE_VM_EXECUTABLE } from './versions.js';
  * in the log; `PostToolUse` / `PostToolUseFailure` the outcome, after the
  * Drive's writes are flushed for a mutating call), so after a crash the
  * recovery note says which calls completed and which were interrupted ("may
- * have half-run"); nothing reruns one. Bash's timeout is clamped to what is
+ * have half-run"); nothing reruns one. A host-tool call the transcript left
+ * with no result and no intent (a park held it at the host's gate) runs on
+ * the resume, gate first, and its result is in the transcript before the CLI
+ * starts (`resumeDanglingCalls`). Bash's timeout is clamped to what is
  * left of the invocation, so a command never outlives it: one the clamp ends
  * is recorded as out of time, never left open. Claude Code runs its commands
  * under its own sandbox (bubblewrap, checked by a self-test in the VM before
@@ -133,8 +133,6 @@ export interface ClaudeSandbox {
   readonly env?: Readonly<Record<string, string>>;
   /** `sandbox({ network })`: what the CLI's own sandbox lets commands reach, and whether provider-hosted tools may run. */
   readonly network: ClaudeSandboxNetwork;
-  /** `sandbox({ budget })`'s dollar caps (`Infinity` turns one off). */
-  readonly budget: { readonly turnUsd: number; readonly sessionUsd: number };
   /** `sandbox({ commandTimeoutMs })`: the longest a Bash command may run. */
   readonly commandTimeoutMs?: number;
   /**
@@ -199,13 +197,28 @@ export interface ClaudeCodeHarnessOptions {
    * `claudeBuiltinReplay` (reads safe).
    */
   builtinReplay?: Record<string, ReplayPolicy> | ((name: string) => ReplayPolicy);
+  /**
+   * Remote MCP servers the CLI's own MCP client calls, each at the session's
+   * model proxy (`<modelUrl>/mcp/<name>`, behind the session's key), with the
+   * tools granted on each: those are allowed by name (`mcp__<name>__<tool>`)
+   * and each call is recorded as a built-in's. They are set over the CLI's
+   * stdin (`setMcpServers`), never in its argv. The proxy answers the
+   * handshake: an unreachable server shows at its first call. Default none.
+   */
+  mcpServers?: readonly { readonly name: string; readonly tools: readonly string[] }[];
+  /**
+   * The MCP library the session's tool server is built with, as the host
+   * loaded it from where it installed the Agent SDK. Default: imported by
+   * name.
+   */
+  toolServerModules?: Parameters<typeof toolServer>[3];
   /** Provider-hosted tools the model may use; default none. `web_search` turns the CLI's WebSearch on, built-ins off or
    *  not: each call recorded as a built-in's (the session's model proxy decides what the provider may run). */
   providerTools?: readonly ProviderTool[];
   /**
-   * The model, a native Anthropic id (`claude-sonnet-4-5`) or a Gateway one
-   * (`anthropic/claude-sonnet-4.5`, passed as its native id: `nativeModelId`).
-   * Default `claude-sonnet-4-5`.
+   * The model, a native Anthropic id (`claude-sonnet-5-5`) or a Gateway one
+   * (`anthropic/claude-sonnet-5.5`, passed as its native id: `nativeModelId`).
+   * Default `claude-sonnet-5-5`.
    */
   model?: string;
   /** The model of the CLI's small background calls (`nativeModelId` too). Default `model`. */
@@ -248,16 +261,41 @@ export interface ClaudeCodeHarnessOptions {
   unsandboxedCommands?: boolean;
   /** Called with the child's stderr tail when it exits mid-turn, the gateway's refusals, and SDK diagnostics. */
   log?: (message: string, fields?: Record<string, unknown>) => void;
+  /** The host's gate (SessionIO.gate), asked by the tool bridge about each call of `tools` before its intent. */
+  gate?: (call: GateCall) => Promise<GateAnswer>;
+  /** The clock a user turn's day is read from (dateLine). Default the system's. */
+  now?: () => Date;
 }
 
+/**
+ * The line a user turn starts with when the session's model was not yet told its day: today's date, in UTC.
+ *
+ * The CLI records a session's system prompt at its first request and every resume sends that record, so a date the
+ * host put there (serve's environment line) stays the first day's. Re-rendering it (`snapshot: false`) records nothing
+ * and drops the prompt-cache prefix, so the day rides in the turn instead: the first message sent on a day the model has
+ * not been told carries this line, in the CLI's transcript only (the host's log keeps the person's words). The
+ * session's first launch sends no line on its first day: its fresh system prompt is the one recorded.
+ */
+export function dateLine(now: Date): string {
+  return `Today is ${dayOf(now)} (UTC).`;
+}
+
+const dayOf = (now: Date) => now.toISOString().slice(0, 10);
+
+/** The effect a user message that told its model the day is recorded under (`date:<message uuid>`, input `{ day }`). */
+const DATE_EFFECT = 'date';
+
 /** The default model. */
-export const DEFAULT_MODEL = 'claude-sonnet-4-5';
+export const DEFAULT_MODEL = 'claude-sonnet-5-5';
 
 /** What the harness appends to the system prompt about the tools, before `instructions`, with the built-ins off and the app's tools there. */
 export const TOOLS_NOTE = `Your only tools are this app's, the mcp__${MCP_SERVER}__ tools; you have no shell, file, search or web tools of your own.`;
 
 /** `TOOLS_NOTE` with WebSearch on (`providerTools: ['web_search']`) and the other built-ins off. */
 export const WEB_SEARCH_NOTE = `Your only tools are this app's (the mcp__${MCP_SERVER}__ tools, if it has any) and WebSearch; you have no shell, file or fetch tools of your own.`;
+
+/** `TOOLS_NOTE` with the app's remote MCP servers (`mcpServers`) and the built-ins off. */
+export const MCP_NOTE = `Your only tools are this app's: the mcp__${MCP_SERVER}__ tools, if it has any, and those of its MCP servers (the other mcp__ tools); you have no shell, file, search or web tools of your own.`;
 
 /** `TOOLS_NOTE` for a session with no tools at all (built-ins off, no `tools`). */
 export const NO_TOOLS_NOTE = 'You have no tools in this session: no shell, file, search or web tools. Answer from the conversation.';
@@ -385,6 +423,29 @@ async function bwrapWorks(machine: SessionMachine, signal: AbortSignal): Promise
   }
 }
 
+/** The part of `query()`'s answer that sets its MCP servers. */
+type McpQuery = {
+  setMcpServers(servers: Record<string, unknown>): Promise<{ errors?: Record<string, string> }>;
+  mcpServerStatus(): Promise<{ name: string; status: string; error?: string }[]>;
+};
+
+/**
+ * The session's remote MCP servers, each an http entry at the model proxy's
+ * `/mcp/<name>` with the session's key, sent over the CLI's stdin (an entry
+ * in `options.mcpServers` would be in its argv). The in-process server
+ * (`own`) goes with them, since the call replaces the dynamic set. A server
+ * that did not connect throws: the turn fails rather than run without its
+ * tools. Each call may take `timeoutMs`, what is left of the invocation.
+ */
+async function connectMcp(q: McpQuery, machine: SessionMachine, names: readonly string[], own: Record<string, unknown>, timeoutMs: number): Promise<void> {
+  const entry = (name: string) => ({ type: 'http', url: `${machine.modelUrl}/mcp/${name}`, headers: { authorization: `Bearer ${machine.modelKey}` }, timeout: Math.floor(timeoutMs), alwaysLoad: true });
+  const set = await q.setMcpServers({ ...own, ...Object.fromEntries(names.map((name) => [name, entry(name)])) });
+  const status = new Map((await q.mcpServerStatus()).map((server) => [server.name, server]));
+  const error = (name: string) => (set.errors && Object.hasOwn(set.errors, name) ? set.errors[name] : undefined);
+  const failed = names.filter((name) => error(name) !== undefined || status.get(name)?.status !== 'connected');
+  if (failed.length) throw new Error(`the MCP server${failed.length > 1 ? 's' : ''} ${failed.join(', ')} did not connect: ${failed.map((name) => error(name) ?? status.get(name)?.error ?? status.get(name)?.status ?? 'no status').join('; ').slice(0, 300)}`);
+}
+
 export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harness {
   const tools = options.tools ?? [];
   const allowed = builtinTools(options.builtins);
@@ -397,6 +458,8 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
   const replay = typeof options.builtinReplay === 'function' ? options.builtinReplay : options.builtinReplay ? (name: string) => (options.builtinReplay as Record<string, ReplayPolicy>)[name] ?? claudeBuiltinReplay(name) : claudeBuiltinReplay;
   const providerTools = options.providerTools ?? [];
   const webSearch = providerTools.includes('web_search');
+  const mcpServers = options.mcpServers ?? [];
+  const mcpNames = new Set(mcpServers.flatMap((server) => server.tools.map((tool) => `mcp__${server.name}__${tool}`)));
   const log = options.log ?? (() => {});
   let sdk: Promise<ClaudeAgentSdk> | undefined;
   const loadSdk = (): Promise<ClaudeAgentSdk> => {
@@ -416,15 +479,12 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
 
   return {
     name: options.name ?? 'claude-agent',
-    // Each model request reaches the provider through the session's proxy (`ModelSteps.request`).
+    // Each model request reaches the provider through the session's proxy, which books it through the host's model port.
     modelCalls: 'self',
     async drive(ctx: DriveContext) {
       // Nothing to do (an idle wake, a chaos arming): no VM. A model step a
       // crash left open after its turn ended is closed (no request will retry it).
-      if (!recoveryNote(ctx.state()) && ctx.pending().length === 0) {
-        await settleAbandonedModelSteps(ctx);
-        return;
-      }
+      if (!recoveryNote(ctx.state()) && ctx.pending().length === 0) return;
       const sandbox = options.sandbox;
       if (!sandbox) throw sandboxRequired();
       const { query } = await loadSdk();
@@ -436,25 +496,17 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
       // that started the drive.
       const inDrive = AsyncLocalStorage.snapshot();
       const credential = options.credential ?? gatewayCredential;
-      // The handler also sees each model request start and end: the drive's
-      // model steps, written around a "Crash during: model" drill.
-      const steps = new ModelSteps(ctx, options.log ? { log: options.log } : {});
-      const ledger = journalLedger(journal, { records });
       if (ctx.deadline === undefined) log('claude-agent: the kernel gave no deadline; assuming a 300 s invocation', {});
       const deadline = ctx.deadline ?? Date.now() + ASSUMED_INVOCATION_MS;
       const handler = gatewayHandler({
         routes: CLAUDE_ROUTES,
         models: { model, ...(smallModel ? { smallModel } : {}) },
-        budget: sandbox.budget,
-        ledger,
         providerTools,
         network: sandbox.network === 'allow-all' || sandbox.network === 'deny-all' ? sandbox.network : 'custom',
         credential: () => inDrive(credential),
         target: options.gatewayUrl ?? gatewayUrl(),
-        track: steps.request,
-        onCap: (cap) => {
-          if (cap !== 'concurrency') ctx.halt?.(spendCapped(cap));
-        },
+        // A refused key fails the turn at the provider's first 401, in the words the CLI would end on after its retries.
+        onKeyRefused: (detail) => ctx.halt?.(new Error(`Failed to authenticate. API Error: 401${detail ? ` ${detail}` : ''}`)),
         // Without the app's own log, the handler's default: a refused model call is a warning in the Function's logs, not silence.
         ...(options.log ? { log: (message: string, fields?: Record<string, unknown>) => log(`claude-agent gateway: ${message}`, fields) } : {}),
       });
@@ -510,7 +562,12 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
             );
           },
         });
+        const gate = options.gate;
         const bridge = toolBridge(ctx, tools, {
+          // The host's gate before the intent, so a refused or parked call leaves nothing of its own written. The
+          // assistant line that made the call is in the log before the gate is asked: a park ends the claim, and the
+          // resume finds the call it held dangling in the transcript, under the same id (resumeDanglingCalls).
+          ...(gate ? { gate: async (call: GateCall) => (await store.barrier(call.callId, barrierMs), gate(call)) } : {}),
           // A `never` tool runs only once the assistant entry that asked for it is in the log.
           beforeNever: ({ callId }) => store.barrier(callId, barrierMs),
         });
@@ -536,7 +593,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
           } finally {
             calls.delete(running);
           }
-        });
+        }, options.toolServerModules);
 
         const allow = (updatedInput?: Record<string, unknown>) => ({ hookSpecificOutput: { hookEventName: 'PreToolUse' as const, permissionDecision: 'allow' as const, ...(updatedInput ? { updatedInput } : {}) } });
         const deny = (reason: string) => ({ hookSpecificOutput: { hookEventName: 'PreToolUse' as const, permissionDecision: 'deny' as const, permissionDecisionReason: reason } });
@@ -585,7 +642,8 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
                       return name === asked ? allow() : allow({ ...input, skill: name });
                     }
                     // WebSearch, when on, takes the built-ins' path below: its intent recorded before it runs.
-                    if (!builtinsOn && !(webSearch && hook.tool_name === 'WebSearch')) return deny("Not run: this session's only tools are its own.");
+                    // WebSearch and a granted MCP tool too.
+                    if (!builtinsOn && !(webSearch && hook.tool_name === 'WebSearch') && !mcpNames.has(hook.tool_name)) return deny("Not run: this session's only tools are its own.");
                     if (ctx.signal.aborted) return deny('the session stopped');
                     let updated: Record<string, unknown> | undefined;
                     const field = FILE_TOOLS[hook.tool_name];
@@ -668,15 +726,32 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
           ...(sandbox.commandTimeoutMs ? { bashTimeoutMs: sandbox.commandTimeoutMs } : {}),
           ...(sandbox.env ? { extra: sandbox.env } : {}),
           toolDescriptionMax: Math.max(0, ...bridge.tools.map((t) => t.description.length)),
+          // A host tool's result within the host's bound reaches the model whole (each tool is listed with it, too).
+          mcpOutputTokens: MCP_OUTPUT_TOKENS,
         });
+        // MCP tools are offered whole, never deferred behind the CLI's tool search, which the session's proxy does not carry.
+        if (mcpServers.length) vmEnv.ENABLE_TOOL_SEARCH = 'false';
         const sdkEnv = { ...vmEnv, CLAUDE_CONFIG_DIR: configDir };
         const disallowed = [...CLAUDE_BUILTINS_OFF, ...(providerTools.includes('web_search') ? [] : ['WebSearch']), ...(options.disallowedTools ?? [])].filter((name) => !(skills && name === 'Skill'));
         const sessionId = uuidFrom(ctx.runId);
+        // A host-tool call the transcript left dangling that never started (a park held it, or the process died before
+        // its intent): it runs now, the host's gate first, and its result is in the transcript before the CLI resumes it.
+        // One with an intent is left to the CLI's repair and the recovery note, as before; nothing ever runs one twice.
+        if (store.hasSession) await resumeDanglingCalls(ctx, bridge, store);
         // A turn a crash cut off: the harness's own account of it (which calls completed, which may have half-run) goes
         // in this drive's system prompt, not in a user message the model might answer back to the user. A resumed
         // session sends the system prompt recorded at its start (`snapshot`), whatever a later launch passes, so this
         // drive alone renders its own (`snapshot: false`, which records nothing: the next drive's is the recorded one).
         const recovered = recoverySystemNote(ctx.state());
+        // The day this drive's system prompt names, while the CLI holds no record of the session: its first launch's
+        // prompt is fresh, and the first launch with snapshot on records its own (a first launch that recovers records
+        // nothing). Once a record exists a resume sends it, whatever day it names, and a recovery's own fresh prompt is
+        // never recorded: every other day reaches the model in its turn (dateLine).
+        const now = options.now ?? (() => new Date());
+        const recordedDay = !store.hasSession ? dayOf(now()) : undefined;
+        /** A message the CLI's transcript holds told the model `day`. */
+        const told = (day: string) =>
+          ctx.state().effectOrder.some((e) => e.name === DATE_EFFECT && (e.input as { day?: unknown } | undefined)?.day === day && store.hasUser(e.key.slice(DATE_EFFECT.length + 1)));
         const queryOptions: QueryOptions = {
           model,
           cwd: machine.root,
@@ -691,7 +766,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
           hooks,
           ...(ownSandbox ? { sandbox: claudeSandboxSettings(machine, sandbox.network) } : {}),
           ...(bridge.tools.length ? { mcpServers: { [MCP_SERVER]: server } } : {}),
-          allowedTools: bridge.tools.map((t) => `mcp__${MCP_SERVER}__${t.name}`),
+          allowedTools: [...bridge.tools.map((t) => `mcp__${MCP_SERVER}__${t.name}`), ...mcpNames],
           permissionMode: 'dontAsk',
           strictMcpConfig: true,
           // No user, project or local settings (and so no CLAUDE.md): a model-planted .claude/ on the Drive is ignored.
@@ -703,7 +778,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
           systemPrompt: {
             type: 'preset',
             preset: 'claude_code',
-            append: [builtinsOn ? DRIVE_NOTE : webSearch ? WEB_SEARCH_NOTE : bridge.tools.length ? TOOLS_NOTE : NO_TOOLS_NOTE, options.instructions, recovered].filter(Boolean).join('\n\n'),
+            append: [builtinsOn ? DRIVE_NOTE : webSearch ? WEB_SEARCH_NOTE : mcpServers.length ? MCP_NOTE : bridge.tools.length ? TOOLS_NOTE : NO_TOOLS_NOTE, options.instructions, recovered].filter(Boolean).join('\n\n'),
             snapshot: !recovered,
           },
           ...(store.hasSession ? { resume: sessionId } : { sessionId }),
@@ -725,8 +800,9 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
         };
         const q = query({ prompt: input, options: queryOptions });
         const messages = q[Symbol.asyncIterator]();
+        if (mcpServers.length) await connectMcp(q as unknown as McpQuery, machine, mcpServers.map((server) => server.name), bridge.tools.length ? { [MCP_SERVER]: server } : {}, Math.max(1_000, deadline - Date.now()));
 
-        const send = async (text: string, placed: Submission[], how: { synthetic?: string; priority?: 'next' | 'later' } = {}) => {
+        const send = async (text: string, placed: Submission[], how: { synthetic?: string; priority?: 'next' | 'later'; covers?: string[] } = {}) => {
           // The drive's first message says, once, what the sandbox told it (a lost Drive).
           if (notes) {
             if (!how.synthetic) store.message({ type: 'message', role: 'user', text: notes, synthetic: 'environment' });
@@ -745,9 +821,17 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
           // (the key of its placement), so a recovery can find it in the
           // transcript (`lostPrompts`).
           const first = placed[0]?.id;
-          // A new turn's spend is keyed by its first submission; a steer joins the turn it steers, and a recovery note keeps the key of the turn it resumes (set before).
-          if (first && how.priority !== 'next' && !how.synthetic) ledger.turn(first);
           const uuid = !first ? randomUUID() : how.synthetic ? uuidFrom(`note:${first}`) : uuidFrom(first);
+          // A recovery message carries placed prompts' words: which, under its uuid, before it goes (lostPrompts reads it).
+          if (how.covers?.length) await ctx.effect(`covers:${uuid}`, { name: 'covers', replay: 'safe', input: { ids: how.covers } }, async () => true);
+          // The first message on a day the model was not told carries that day (dateLine), the session's recorded first
+          // day aside. Recorded under the message's uuid: the day counts as told once the transcript holds the message.
+          const at = now();
+          const day = dayOf(at);
+          if (!told(day)) {
+            if (day !== recordedDay) text = `${dateLine(at)}\n\n${text}`;
+            await ctx.effect(`${DATE_EFFECT}:${uuid}`, { name: DATE_EFFECT, replay: 'safe', input: { day } }, async () => day);
+          }
           outstanding.add(uuid);
           input.push({
             type: 'user',
@@ -866,10 +950,10 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
           const open = openTurn(ctx.state());
           const note = recovered && recoveryNote(ctx.state());
           if (note) {
-            if (open) ledger.turn(open.placed[0] ?? `open:${open.since}`);
             // The CLI answers again from the interrupted step: what a reader saw of its reply is replaced by what the log kept.
             ctx.live(restartEvent(note.turn));
-            await send(recoveryUserTurn(ctx.state(), store, note.pending), note.pending, { synthetic: 'recovery' });
+            const covers = [...(open ? lostPrompts(ctx.state(), open.placed, store) : []), ...note.pending.map((s) => s.id)];
+            await send(recoveryUserTurn(ctx.state(), store, note.pending), note.pending, { synthetic: 'recovery', covers });
             await runTurn();
           }
           // The inbox, one submission per turn.
@@ -881,8 +965,6 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
             await send(s.text ?? '', [s]);
             await runTurn();
           }
-          // A model step a crash left open that no request of this drive made again: closed.
-          await steps.settleAbandoned();
           // Let the CLI exit (stdin closed) and the SDK deliver its last mirror frames.
           input.end();
           await drain(messages, 10_000);
@@ -907,8 +989,6 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
         if (!ctx.signal.aborted) await Promise.race([Promise.allSettled([store.flush(), journal.flush()]), new Promise((r) => setTimeout(r, 2000).unref())]);
         // Nothing the model started outlives the drive: the session's processes in the VM are killed (the VM and the Drive stay).
         if (held) await held.close().catch(() => {});
-        // No model step outlives the drive.
-        await steps.close();
         if (configDir) await rm(configDir, { recursive: true, force: true }).catch(() => {});
       }
     },
@@ -941,13 +1021,6 @@ export function protectedPath(root: string, path: string): boolean {
   return PROTECTED_DIRS.some((d) => {
     const base = posix.join(root, d);
     return abs === base || abs.startsWith(`${base}/`);
-  });
-}
-
-/** A spend cap the model calls reached: the turn ends, saying which (§5.5 step 6). */
-function spendCapped(cap: Exclude<GatewayCap, 'concurrency'>): Unavailable {
-  return new Unavailable(`The turn stopped: the ${cap === 'turnUsd' ? "turn's" : "session's"} model spend reached its cap (sandbox({ budget: { ${cap} } })).`, {
-    hint: `Raise sandbox({ budget: { ${cap} } }) to let the session spend more.`,
   });
 }
 
@@ -1019,8 +1092,10 @@ const RECOVERY_STATUS: Record<NonNullable<ReturnType<typeof recoveryNote>>['call
  */
 export function lostPrompts(state: SessionState, placed: string[], store: Pick<JournalSessionStore, 'hasUser'>): string[] {
   const said = new Set(state.submissions.filter((s) => s.kind === 'prompt' || s.kind === 'steer' || s.kind === 'followUp').map((s) => s.id));
+  // A prompt a recovery message carried (its cover, by the message's uuid) is recorded once the transcript holds that message.
+  const covered = new Set(state.effectOrder.filter((e) => e.name === 'covers' && e.key.startsWith('covers:') && store.hasUser(e.key.slice('covers:'.length))).flatMap((e) => (e.input as { ids?: string[] } | undefined)?.ids ?? []));
   return placed.filter((id) => {
-    if (!said.has(id)) return false;
+    if (!said.has(id) || covered.has(id)) return false;
     const placement = state.effectOrder.find((e) => e.name === 'place' && e.key.startsWith('place:') && e.placed.includes(id));
     const first = placement ? placement.key.slice('place:'.length) : id;
     return !store.hasUser(uuidFrom(first)) && !store.hasUser(uuidFrom(`note:${first}`));

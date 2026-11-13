@@ -66,7 +66,8 @@ test("the recorded request reaches the provider as the policy shapes it: the ses
   assert.deepEqual([f.body.model, f.body.store, f.body.max_output_tokens, f.body.include], ['session-model', false, 32_000, ['reasoning.encrypted_content']]);
   // web search, the CLI's built-ins and its multi-agent namespace are not the session's: only `lookup` is offered.
   assert.deepEqual(f.body.tools.map((t) => `${t.type}:${t.name}`), ['function:lookup']);
-  assert.deepEqual(asked, [{ model: 'session-model', inputTokensMax: Buffer.byteLength(f.raw, 'utf8') }], "the runner is asked about the applied body's model, with its input bound: the sent body's bytes");
+  // With the output the body asks for (the policy's clamp, 32,000) and the least it may be limited to and still answer.
+  assert.deepEqual(asked, [{ model: 'session-model', inputTokensMax: Buffer.byteLength(f.raw, 'utf8'), outputTokensAsked: 32_000, outputTokensLeast: 1_024 }], "the runner is asked about the applied body's model, with its input bound (the sent body's bytes), its output and its least");
   const sent = JSON.stringify(f);
   for (const id of ['<x-codex-installation-id>', '<session_id>', 'sid', 'tid', 'rid', 'wid', 'codex_exec', KEY]) assert.ok(!sent.includes(id), `${id} does not reach the provider`);
 });
@@ -83,11 +84,28 @@ test("the Responses API adds no billed input the body does not carry: the input 
 const imageItem = { type: 'input_image', image_url: 'data:image/png;base64,iVBORw0KGgo=' };
 const withImages = (n) => ({ ...RECORDED_REQUEST, tools: [{ type: 'function', name: 'lookup', parameters: { type: 'object', properties: {} } }], input: [...RECORDED_REQUEST.input, { type: 'function_call_output', call_id: 'c1', output: Array.from({ length: n }, () => imageItem) }] });
 
-test("each image adds the most one image is billed as on the Responses API, 73,800 tokens (30,000 patches x 2.46), through the shared figures", () => {
+test("each image counts at the most one image is billed as on the Responses API, 73,800 tokens (30,000 patches x 2.46), in place of its data URL's bytes, through the shared figures", () => {
   const policy = codexPolicy({ model: 'session-model', tools: ['lookup'] });
+  const bytes = imageItem.image_url.length;
   assert.equal(host.OPENAI_IMAGE_TOKENS_MAX, 73_800);
-  assert.deepEqual([withImages(1), withImages(3)].map((body) => policy.serverInputOverhead(body)), [73_800, 3 * 73_800]);
-  assert.equal(policy.serverInputOverhead(withImages(1)), host.providerInputOverhead?.('openai-responses', { tools: true, images: 1 }), 'the policy and the shared function agree');
+  assert.deepEqual([withImages(1), withImages(3)].map((body) => policy.serverInputOverhead(body)), [73_800 - bytes, 3 * (73_800 - bytes)]);
+  assert.equal(policy.serverInputOverhead(withImages(1)), host.providerInputOverhead?.('openai-responses', { tools: true, images: [{ bytes }] }), 'the policy and the shared function agree');
+});
+
+test("a 1280x720 screenshot on an OpenAI model counts at its tiles (1,105: 3 x 2 tiles of 512 px at 170 and a base of 85, about a thousand tokens), never the 73,800 maximum or its megabyte of base64; at detail low, 85", () => {
+  const policy = codexPolicy({ model: 'session-model', tools: ['lookup'] });
+  // A PNG's header saying 1280x720, and a megabyte of pixel data after it, as a real screen's.
+  const png = Buffer.alloc(1_000_000);
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13]).copy(png, 0);
+  png.write('IHDR', 12, 'latin1');
+  png.writeUInt32BE(1280, 16);
+  png.writeUInt32BE(720, 20);
+  const url = `data:image/png;base64,${png.toString('base64')}`;
+  const screen = (detail) => ({ ...RECORDED_REQUEST, model: 'gpt-5.1-codex', tools: [{ type: 'function', name: 'lookup', parameters: { type: 'object', properties: {} } }], input: [...RECORDED_REQUEST.input, { type: 'function_call_output', call_id: 'c1', output: [{ type: 'input_image', image_url: url, ...(detail ? { detail } : {}) }] }] });
+  const counted = (body) => policy.serverInputOverhead(body) + url.length;
+  assert.equal(counted(screen()), 1105, 'its tiles');
+  assert.ok(counted(screen()) < 73_800 / 50, 'never the per-image maximum');
+  assert.equal(counted(screen('low')), 85, 'detail low');
 });
 
 test("a body with a file input (billed by its pages, with no stated bound) leaves the input bound unmeasured, so a cap treats it as unknown", async () => {
@@ -113,13 +131,15 @@ test("a request whose body fits what is left, but not with its image's allowance
     await send(p.url, { body });
     return sent;
   };
-  // Room for the body's bytes and all of the image's allowance but one token: refused, the provider sees nothing.
+  // Room for the body's bytes and all of the image's allowance but one token: refused, the provider sees nothing. The
+  // allowance is counted in place of the bytes its data URL takes in the body.
+  const allowance = 73_800 - imageItem.image_url.length;
   let bytes;
-  const refused = await sentBy((r) => { bytes = r.inputTokensMax - 73_800; return bytes + 73_800 - 1; });
+  const refused = await sentBy((r) => { bytes = r.inputTokensMax - allowance; return bytes + allowance - 1; });
   assert.equal(refused.length, 0);
-  const passed = await sentBy(() => bytes + 73_800);
+  const passed = await sentBy(() => bytes + allowance);
   assert.equal(passed.length, 1);
-  assert.equal(Buffer.byteLength(passed[0], 'utf8'), bytes, 'the bound is the sent body\'s bytes plus the image allowance');
+  assert.equal(Buffer.byteLength(passed[0], 'utf8'), bytes, 'the bound is the sent body\'s bytes plus the image allowance, less its data URL\'s bytes');
 });
 
 test("the recorded stream's usage is booked from response.completed, read as JSON", async () => {
@@ -612,4 +632,179 @@ test("web search live: the count is the terminal event's own; an earlier event's
   // A completed event with no tool_usage, whole or longer than the window: unknown.
   assert.deepEqual(await book({}), unknown);
   assert.deepEqual(await book({ output: [reasoning] }), unknown);
+});
+
+test("a remote MCP server's granted tools pass in the namespace the pinned CLI offers them in (mcp__<server>); its other tools, another server's and a bare name do not", () => {
+  const policy = codexPolicy({ model: 'm', tools: ['lookup'], mcpTools: ['mcp__fake__add'] });
+  const fn = (name) => ({ type: 'function', name, description: name, parameters: { type: 'object', properties: {} } });
+  // As Codex 0.164 sent a granted server through a loopback proxy: one namespace per server, each tool by its own name.
+  const body = { model: 'x', input: [], tools: [fn('lookup'), { type: 'namespace', name: 'mcp__fake', description: '', tools: [fn('add'), fn('delete_thing')] }, { type: 'namespace', name: 'mcp__other', description: '', tools: [fn('add')] }, fn('add')] };
+  const out = policy.apply(body);
+  assert.deepEqual(out.tools.map((tool) => (tool.type === 'namespace' ? `${tool.name}:${tool.tools.map((t) => t.name).join(',')}` : tool.name)), ['lookup', 'mcp__fake:add']);
+  assert.equal(codexPolicy({ model: 'm', tools: ['lookup'] }).apply(body).tools.length, 1, 'with no grant, no MCP tool passes');
+});
+
+test("a stopped Responses request's hidden reasoning, as the policy reads it from the body: its effort's budget; with no effort (or no reasoning object), its max_output_tokens, the conservative side; with effort none, none", () => {
+  const policy = codexPolicy({ model: 'session-model', tools: [] });
+  const hidden = (body) => policy.reasoningHidden?.(body);
+  assert.deepEqual(
+    [hidden({ reasoning: { effort: 'minimal' } }), hidden({ reasoning: { effort: 'low' } }), hidden({ reasoning: { effort: 'medium', summary: 'auto' } }), hidden({ reasoning: { effort: 'high' } }), hidden({ reasoning: { effort: 'xhigh' } })],
+    [1_024, 2_048, 8_192, 16_384, 16_384],
+    'each effort, its budget',
+  );
+  assert.equal(hidden({ reasoning: { effort: 'none' } }), 0, 'effort none: no reasoning');
+  assert.equal(hidden({ reasoning: { summary: 'auto' }, max_output_tokens: 32_000 }), 32_000, 'no effort: its output limit');
+  assert.equal(hidden({ max_output_tokens: 20_000 }), 20_000, 'no reasoning object: its output limit, as the model may reason at its default');
+});
+
+test("the reasoning a Responses stream shows, as the policy reads each event: a reasoning summary's or reasoning text's delta counts its bytes; answer text, a function call's arguments and every other event count none", () => {
+  const policy = codexPolicy({ model: 'session-model', tools: [] });
+  const event = (type, extra) => `event: ${type}\ndata: ${JSON.stringify({ type, ...extra })}`;
+  const bytes = (e) => policy.reasoningBytesOf?.(e);
+  assert.deepEqual(
+    [
+      bytes(event('response.reasoning_summary_text.delta', { item_id: 'rs_1', delta: 'Weighing é ✓' })),
+      bytes(event('response.reasoning_text.delta', { item_id: 'rs_1', delta: 'step two' })),
+      bytes(event('response.output_text.delta', { item_id: 'msg_1', delta: 'The answer' })),
+      bytes(event('response.function_call_arguments.delta', { item_id: 'fc_1', delta: '{"q":"x"}' })),
+      bytes(event('response.completed', { response: {} })),
+    ],
+    [Buffer.byteLength('Weighing é ✓'), Buffer.byteLength('step two'), 0, 0, 0],
+  );
+});
+
+test("a Codex request whose hidden reasoning (a short summary) came before 8,000 bytes of answer text, then stopped, counts all it was sent and the reasoning budget its summary left unseen: the text does not stand in for the reasoning", async () => {
+  const summary = 'Weighing the layouts and the totals. '.repeat(8);
+  const text = 'The ledger balances once the March entries move to April. '.repeat(140).slice(0, 8_000);
+  const sse = (type, extra) => `event: ${type}\ndata: ${JSON.stringify({ type, ...extra })}\n\n`;
+  const stream = sse('response.created', { response: { id: 'resp_1' } }) + sse('response.reasoning_summary_text.delta', { item_id: 'rs_1', delta: summary })
+    + Array.from({ length: 8 }, (_, i) => sse('response.output_text.delta', { item_id: 'msg_1', delta: text.slice(i * 1_000, (i + 1) * 1_000) })).join('');
+  const reports = [];
+  let reported;
+  const done = new Promise((resolve) => (reported = resolve));
+  // The provider holds the stream open after the text, until the proxy aborts it (the client left).
+  const p = await startModelProxy({
+    policy: codexPolicy({ model: 'session-model', tools: ['lookup'] }),
+    hooks: { beforeRequest: async () => {}, afterRequest: async (u) => { reports.push(u); reported(); } },
+    model: 'session-model',
+    origin: 'https://provider.invalid',
+    credential: () => 'provider-secret',
+    price: (_model, u) => (u.input + u.output + u.cacheRead) / 1e6,
+    fetch: async (_url, init) => new Response(new ReadableStream({
+      start(c) { c.enqueue(new TextEncoder().encode(stream)); init.signal.addEventListener('abort', () => c.error(new Error('aborted')), { once: true }); },
+    }), { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+  }, KEY);
+  after(() => p.close());
+  await new Promise((resolve) => {
+    const { hostname, port } = new URL(p.url);
+    const req = request({ host: hostname, port, method: 'POST', path: '/v1/responses', headers: { 'content-type': 'application/json', authorization: `Bearer ${KEY}`, accept: 'text/event-stream' } }, (res) => {
+      let read = 0;
+      // The person stops once the text has reached the harness.
+      res.on('data', (chunk) => { read += chunk.length; if (read >= Buffer.byteLength(stream)) { req.destroy(); resolve(); } });
+      res.on('error', resolve);
+      res.on('close', resolve);
+    });
+    req.on('error', resolve);
+    req.end(JSON.stringify({ ...RECORDED_REQUEST, reasoning: { effort: 'medium', summary: 'auto' }, tools: [{ type: 'function', name: 'lookup', parameters: { type: 'object', properties: {} } }] }));
+  });
+  await done;
+  const [booked] = reports;
+  // The host's figure for a stop, as serve's cap counts it on a gpt-5-class model: 20,000 input tokens at $1.25 a million,
+  // and what it counts of output plus 1,024 tokens at $10 a million, within the 32,000 the request was sent with.
+  const stoppedUsd = (tokens) => 20_000 * 1.25 / 1e6 + Math.min(32_000, tokens + 1_024) * 10 / 1e6;
+  const store = (await import('@parcha/agentrun-kernel/testing')).memorySessionStore();
+  const booking = await modelPortFor(await store.open('chat:text'), { key: 'chat:text', beforeRequest: () => ({ holdUsd: stoppedUsd(32_000), stoppedUsd }) });
+  await booking.models.beforeRequest({ model: 'session-model' });
+  await booking.models.afterRequest(booked);
+  const nano = (usd) => Math.round(usd * 1e9) / 1e9;
+  // All it was sent, and medium's 8,192-token budget less the summary's bytes.
+  assert.deepEqual(
+    { streamed: booked.stoppedAfterBytes, hidden: booked.stoppedHiddenTokens, reasoning: booked.stoppedReasoningBytes, counted: nano(booking.spentUsd()) },
+    { streamed: Buffer.byteLength(summary) + Buffer.byteLength(text), hidden: 8_192, reasoning: Buffer.byteLength(summary), counted: nano(stoppedUsd(Buffer.byteLength(summary) + Buffer.byteLength(text) + 8_192 - Buffer.byteLength(summary))) },
+    'the summary and the text it sent, and the unseen reasoning, count',
+  );
+});
+
+test("the content a Responses stream shows, as the policy reads each event: answer text, reasoning and tool call arguments count their delta's bytes; the wire's own fields and every other event count none", () => {
+  const policy = codexPolicy({ model: 'session-model', tools: [] });
+  const event = (type, extra) => `event: ${type}\ndata: ${JSON.stringify({ type, ...extra })}`;
+  const bytes = (e) => policy.contentBytesOf?.(e);
+  assert.deepEqual(
+    [
+      bytes(event('response.output_text.delta', { sequence_number: 9, item_id: 'msg_1', output_index: 1, content_index: 0, delta: 'The answer é', logprobs: [], obfuscation: 'Xk3a9QwE' })),
+      bytes(event('response.reasoning_summary_text.delta', { item_id: 'rs_1', delta: 'Weighing' })),
+      bytes(event('response.reasoning_text.delta', { item_id: 'rs_1', delta: 'step two' })),
+      bytes(event('response.function_call_arguments.delta', { item_id: 'fc_1', delta: '{"q":"x"}' })),
+      bytes(event('response.custom_tool_call_input.delta', { item_id: 'ct_1', delta: 'ls -la' })),
+      bytes(event('response.created', { response: { id: 'resp_1' } })),
+      bytes(event('response.completed', { response: {} })),
+    ],
+    [Buffer.byteLength('The answer é'), 8, 8, 9, 6, 0, 0],
+  );
+});
+
+/** The #1592 walk on codex, as the provider streams it: a response.created and a response.in_progress that each echo the
+ *  request (its instructions and tool definitions, several kB), then answer text a few characters a delta in the
+ *  Responses API's own framing (sequence number, item id, indexes, logprobs, obfuscation), then the person's stop. The
+ *  cap holds the request at what is left (5,000 tokens of output here), counts the stop at what it streamed plus 1,024
+ *  tokens, and refuses the next request unless 1,024 tokens fit. */
+async function codexWalk({ perMillion, cap, chars }) {
+  const tools = Array.from({ length: 6 }, (_, i) => ({ type: 'function', name: `tool_${i}`, description: `Tool ${i}: ${'reads a page of the ledger and returns its rows with their dates and amounts. '.repeat(12)}`, parameters: { type: 'object', properties: { path: { type: 'string' }, page: { type: 'number' } }, required: ['path'] } }));
+  const echoed = { id: 'resp_1', object: 'response', status: 'in_progress', model: 'session-model', instructions: 'You are a careful bookkeeper. '.repeat(20), tools, reasoning: { effort: 'none' }, output: [], usage: null };
+  const text = 'The quarterly figures reconcile once the deferred revenue moves into the period it was earned in. '.repeat(14).slice(0, chars);
+  let seq = 0;
+  const event = (type, extra) => `event: ${type}\ndata: ${JSON.stringify({ type, sequence_number: seq++, ...extra })}\n\n`;
+  const stream = event('response.created', { response: echoed }) + event('response.in_progress', { response: echoed })
+    + event('response.output_item.added', { output_index: 1, item: { id: 'msg_0a1b2c3d4e5f60718293a4b5c6d7e8f9', type: 'message', status: 'in_progress', content: [], role: 'assistant' } })
+    + event('response.content_part.added', { item_id: 'msg_0a1b2c3d4e5f60718293a4b5c6d7e8f9', output_index: 1, content_index: 0, part: { type: 'output_text', annotations: [], logprobs: [], text: '' } })
+    + Array.from({ length: Math.ceil(text.length / 3) }, (_, i) => event('response.output_text.delta', { item_id: 'msg_0a1b2c3d4e5f60718293a4b5c6d7e8f9', output_index: 1, content_index: 0, delta: text.slice(i * 3, i * 3 + 3), logprobs: [], obfuscation: 'Xk3a9QwEr' })).join('');
+  const reports = [];
+  let reported;
+  const done = new Promise((resolve) => (reported = resolve));
+  const p = await startModelProxy({
+    policy: codexPolicy({ model: 'session-model', tools: ['lookup'] }),
+    hooks: { beforeRequest: async () => {}, afterRequest: async (u) => { reports.push(u); reported(); } },
+    model: 'session-model',
+    origin: 'https://provider.invalid',
+    credential: () => 'provider-secret',
+    price: (_model, u) => (u.input + u.output + u.cacheRead) / 1e6,
+    fetch: async (_url, init) => new Response(new ReadableStream({
+      start(c) { c.enqueue(new TextEncoder().encode(stream)); init.signal.addEventListener('abort', () => c.error(new Error('aborted')), { once: true }); },
+    }), { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+  }, KEY);
+  after(() => p.close());
+  await new Promise((resolve) => {
+    const { hostname, port } = new URL(p.url);
+    const req = request({ host: hostname, port, method: 'POST', path: '/v1/responses', headers: { 'content-type': 'application/json', authorization: `Bearer ${KEY}`, accept: 'text/event-stream' } }, (res) => {
+      let read = 0;
+      // The person stops once these characters have reached the harness.
+      res.on('data', (chunk) => { read += chunk.length; if (read >= Buffer.byteLength(stream)) { req.destroy(); resolve(); } });
+      res.on('error', resolve);
+      res.on('close', resolve);
+    });
+    req.on('error', resolve);
+    req.end(JSON.stringify({ ...RECORDED_REQUEST, reasoning: { effort: 'none' }, tools: [{ type: 'function', name: 'lookup', parameters: { type: 'object', properties: {} } }] }));
+  });
+  await done;
+  const [booked] = reports;
+  const price = (tokens) => tokens * perMillion / 1e6;
+  const stoppedUsd = (tokens) => price(Math.min(5_000, tokens + 1_024));
+  const store = (await import('@parcha/agentrun-kernel/testing')).memorySessionStore();
+  const booking = await modelPortFor(await store.open('chat:walk'), { key: 'chat:walk', beforeRequest: (r) => (r.spentUsd === null || r.spentUsd + price(1_024) > cap ? { refuse: 'spend_cap_reached' } : { holdUsd: cap - r.spentUsd, stoppedUsd }) });
+  await booking.models.beforeRequest({ model: 'session-model' });
+  await booking.models.afterRequest(booked);
+  const nano = (usd) => Math.round(usd * 1e9) / 1e9;
+  const goOn = await booking.models.beforeRequest({ model: 'session-model' }).then(() => 'admitted', (error) => `refused: ${error?.message ?? error}`);
+  return { wire: Buffer.byteLength(stream), text: Buffer.byteLength(text), seen: { streamed: booked.stoppedAfterBytes, counted: nano(booking.spentUsd()), goOn }, want: { streamed: Buffer.byteLength(text), counted: nano(stoppedUsd(Buffer.byteLength(text))), goOn: 'admitted' } };
+}
+
+test("the #1592 walk on codex: a request at $100 a million output tokens under a $0.50 cap, stopped after 1,146 characters of answer text after the stream's echo of the request, counts that text and the allowance, not its whole hold, and the next request ('Go on.') is admitted", async () => {
+  const run = await codexWalk({ perMillion: 100, cap: 0.5, chars: 1_146 });
+  assert.ok(run.wire > 10 * run.text, `setup: the wire is the provider's framing and echo, ${run.wire} bytes for ${run.text} of text`);
+  assert.deepEqual(run.seen, run.want, 'the text it showed and the allowance, $0.217 of the $0.50 cap, and "Go on." goes');
+});
+
+test("the #1592 walk on codex at a catalog price: $10 a million output tokens under a $0.05 cap, stopped after 1,170 characters after the echo, counts that text and the allowance, far below its hold, and 'Go on.' is admitted", async () => {
+  const run = await codexWalk({ perMillion: 10, cap: 0.05, chars: 1_170 });
+  assert.deepEqual(run.seen, run.want, 'the text and the allowance, $0.02194 of the $0.05 cap, and "Go on." goes');
 });

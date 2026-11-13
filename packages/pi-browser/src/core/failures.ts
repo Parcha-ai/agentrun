@@ -13,7 +13,10 @@ export type BrowserFailure = {
   ok: false;
   code: FailureCode;
   retryable: boolean;
-  effect: "none" | "possibly_effected";
+  /** `partial`: a run of several actions stopped partway, the first `completed` of them done. */
+  effect: "none" | "possibly_effected" | "partial";
+  /** With `partial`: how many of the run's actions ran before it stopped. */
+  completed?: number;
   message: string;
   /** Provider or page text, at most 2,000 characters; redacted before it reaches the model. */
   detail?: string;
@@ -24,6 +27,16 @@ export type BrowserFailure = {
 };
 
 export type Next = { action: "drive_page" | "other_source" | "browser_relaunch"; note: string };
+
+/** A run of several actions that stopped partway on an error a call's own handling must still see as it is (a dropped
+ *  connection, whose driver is let go): the error is passed on as it is, marked with how many of the run's actions ran. */
+export const PARTIAL = Symbol.for("pi-browser.partial");
+export type PartialRun = { completed: number; of: number };
+/** The mark PARTIAL left on `error`, if any. */
+export const partialOf = (error: unknown): PartialRun | undefined => (error !== null && typeof error === "object" ? (error as { [PARTIAL]?: PartialRun })[PARTIAL] : undefined);
+/** `failure` as a run stopped partway says it: partial, with how many ran, before its own words. */
+export const asPartial = (failure: BrowserFailure, partial: PartialRun): BrowserFailure =>
+  ({ ...failure, effect: "partial", completed: partial.completed, message: `${partial.completed} of the ${partial.of} actions ran, then this one failed: ${failure.message}` });
 
 export const browserFailure = (code: FailureCode, message: string, options: { retryable?: boolean; effect?: BrowserFailure["effect"]; detail?: string } = {}): BrowserFailure =>
   ({ ok: false, code, retryable: options.retryable ?? false, effect: options.effect ?? "none", message, ...(options.detail === undefined ? {} : { detail: options.detail }) });
@@ -96,13 +109,23 @@ function withCause(own: string, cause: unknown): string {
   return `${own}${text}${tag}`;
 }
 
+/** The HTTP status an error carries. Stagehand wraps SDK failures with { cause }: the status may live on the cause. */
+const statusOf = (error: unknown, fact = transportFactOf(error)): number =>
+  fact.status ?? Number(field(error, "statusCode") ?? field(field(error, "cause"), "statusCode") ?? NaN);
+
+/** The provider refused the call (401 or 403): its own answer that it did nothing. */
+export function isRefusal(error: unknown): boolean {
+  const status = statusOf(error);
+  return status === 401 || status === 403;
+}
+
 export function classifyBrowserError(error: unknown, effectful: boolean, facts: FailureFacts = {}): BrowserFailure {
   // Stagehand wraps SDK failures with { cause }: the HTTP status and the real message live on the cause.
   const cause = field(error, "cause");
   const own = error instanceof Error ? error.message : String(error);
   const message = (facts.redact ?? ((text: string) => text))(withCause(own, cause));
   const fact = transportFactOf(error);
-  const status = fact.status ?? Number(field(error, "statusCode") ?? field(cause, "statusCode") ?? NaN);
+  const status = statusOf(error, fact);
   const effect = effectful ? "possibly_effected" : "none";
   const detail = message.slice(0, 2_000);
   if (facts.aborted || fact.errorName === "AbortError") return browserFailure("aborted", "The browser call was cancelled by the run.", { effect, detail });

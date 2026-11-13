@@ -47,6 +47,17 @@ test('check(): a root with not, if/then or an enum is used as given', () => {
   }
 });
 
+test("check(): a remote MCP server's granted tool meets the same checks, so the CLI never drops one the session was granted", () => {
+  const mcp = (inputSchema) => ({ ...spec({ type: 'object' }), tools: [], mcp: { servers: [{ name: 'fake', tools: [{ name: 'pick', inputSchema }] }], call: async () => ({ content: [] }) } });
+  const object = { type: 'object', properties: { a: { type: 'string' }, b: { type: 'string' } } };
+  assert.deepEqual(adapter.check(mcp(object)), []);
+  for (const key of ['anyOf', 'allOf', 'oneOf']) {
+    const said = adapter.check(mcp({ ...object, [key]: [{ required: ['a'] }, { required: ['b'] }] }));
+    assert.deepEqual(said.map((p) => p.split(': ').slice(0, 2).join(': ')), [`mcp__fake__pick: /${key}`]);
+  }
+  assert.ok(adapter.check(mcp({ type: 'string' })).some((p) => p.startsWith('mcp__fake__pick: /')), 'a root that is not an object');
+});
+
 test('the pinned CLI: a run with one tool whose root is not an object is refused before it starts, naming the tool and "/", and makes no request', { skip, timeout: 120_000 }, async (t) => {
   let main = 0;
   const provider = await fakeAnthropic({ reply: (r) => (r.model === 'claude-sonnet-5-5' && main++ === 0 ? { tool: { name: 'mcp__hands__submit', input: { value: { answer: 'ok' } } } } : { text: 'done' }) });

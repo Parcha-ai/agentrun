@@ -41,7 +41,9 @@ registerDecisionProviderConformance('openrouter', {
       if (reply.kind === 'status') return json({ error: { message: 'refused', code: reply.status } }, reply.status);
       if (reply.kind === 'malformed') return json('{"answers": [not json');
       if (reply.kind === 'lost') throw Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' }) });
-      return json({ id: 'gen-1', model: 'liquid/d1', answers: reply.answers, usage: { input_tokens: 120, output_tokens: 0, cost: 0.0000024 } });
+      // The sources a model that cites the web gives, as OpenRouter returns them: url_citation annotations.
+      const annotations = (reply.evidence ?? []).map(({ url, title, excerpts }) => ({ type: 'url_citation', url_citation: { url, title, content: excerpts?.[0] ?? '' } }));
+      return json({ id: 'gen-1', model: 'liquid/d1', answers: reply.answers, annotations, usage: { input_tokens: 120, output_tokens: 0, cost: 0.0000024 } });
     };
     return { provider: openrouterProvider({ ...settings, fetch }), calls: () => calls };
   },
@@ -78,8 +80,9 @@ test('images go as base64 JSON assets under their tokens with the image header, 
   assert.equal(sent.headers['content-type'], 'application/json', 'OpenRouter refuses a multipart body (live: "invalid content-type: multipart/form-data")');
   const body = JSON.parse(sent.body);
   assert.deepEqual(body.assets, { '<page1>': { type: 'image', format: 'png', data_base64: Buffer.from(PNG).toString('base64') } });
-  // A model other than Jev reads an image only as a top-level item of an array state: the node's object state goes as one.
-  assert.deepEqual(body.state, [{ doc: 'acme.pdf' }, '<page1>']);
+  // A model other than Jev reads an image only as a top-level item of an array state: the node's object state goes as one,
+  // with the field each image stood in named in the first item.
+  assert.deepEqual(body.state, [{ doc: 'acme.pdf', image_fields: ['page'] }, '<page1>']);
   // Jev reads a token anywhere, inside text too, and gets the state as the node wrote it.
   await openrouterProvider({ ...settings, fetch }).decide({ ...request, model: 'typesafe/jev-1.14', state: { doc: 'acme.pdf', note: 'see <page1>' } }, ctx());
   assert.deepEqual(JSON.parse(seen[1].init.body).state, { doc: 'acme.pdf', note: 'see <page1>' });
@@ -219,6 +222,25 @@ test("the image check runs inside the request's deadline and ends on its cancel:
   assert.deepEqual(posts, [], 'nothing was sent');
 });
 
+test('an object state with several images names, in order, the field each image item stood in, so the model can tell them apart', async () => {
+  const { fetch, seen } = fakeFetch([answered(), answered()]);
+  const images = { '<i1>': { bytes: PNG, mime: 'image/png', ref: 'pages/invoice/1.png' }, '<i2>': { bytes: PNG, mime: 'image/png', ref: 'pages/receipt/1.png' } };
+  const request = { label: 'x', kind: 'judge', state: { invoice: '<i1>', receipt: '<i2>', vendor: 'Acme' }, questions: { holds: { type: 'noul', instructions: 'Does the receipt match the invoice?' } }, model: 'liquid/d1', images };
+  await openrouterProvider({ ...settings, fetch }).decide(request, ctx());
+  const body = JSON.parse(seen[0].init.body);
+  assert.deepEqual(body.state, [{ vendor: 'Acme', image_fields: ['invoice', 'receipt'] }, '<i1>', '<i2>']);
+  assert.deepEqual(Object.keys(body.assets), ['<i1>', '<i2>']);
+  // A state with a field of its own named image_fields keeps it; the names go under _image_fields.
+  await openrouterProvider({ ...settings, fetch }).decide({ ...request, state: { image_fields: 'theirs', receipt: '<i2>', invoice: '<i1>' } }, ctx());
+  assert.deepEqual(JSON.parse(seen[1].init.body).state, [{ image_fields: 'theirs', _image_fields: ['receipt', 'invoice'] }, '<i2>', '<i1>']);
+  // The faux service, which refuses images anywhere but as top-level items as OpenRouter does, takes the shape.
+  process.env.AGENTRUN_FAUX_SYSTEM_ONE_DELAY_MS = '0';
+  try {
+    const outcome = await openrouterProvider({ apiKey: KEY, fetch: fauxSystemOne }).decide(request, ctx());
+    validateAnswers(request.questions, outcome.answers);
+  } finally { delete process.env.AGENTRUN_FAUX_SYSTEM_ONE_DELAY_MS; }
+});
+
 test("through judgeFromProviders, a node's timeoutMs that cuts the image check is timeout and unsent, never a decision for review", async () => {
   const posts = [];
   const silent = (url, init) => {
@@ -237,4 +259,55 @@ test("through judgeFromProviders, a node's timeoutMs that cuts the image check i
   assert.equal(await within(1500, judge({ ...ask, signal: cancel.signal }).catch((error) => { caught = error; throw error; })), 'rejected aborted');
   assert.equal(caught.unsent, true);
   assert.deepEqual(posts, [], 'nothing was sent');
+});
+
+test("priceOf: a Decisions model's price as the public catalog lists it, read with the catalog; null for a model it lists no price for", async () => {
+  const { default: faux } = await import("../dist/testing/faux-system-one.js");
+  const seen = [];
+  const provider = openrouterProvider({ apiKey: `not-a-secret-${"openrouter"}`, fetch: (url, init) => (seen.push(new URL(String(url)).pathname), faux(url, init)) });
+  assert.deepEqual(await provider.priceOf("liquid/d1"), { promptUsd: 0.00000002, completionUsd: 0, requestUsd: 0, imageUsd: 0, maxCompletionTokens: null });
+  assert.equal(await provider.priceOf("acme/unlisted-decider"), null);
+  assert.deepEqual(seen, ["/api/v1/models"], "the catalog is read once");
+});
+
+test('url_citation annotations are the evidence, in the shape Parallel citations take', async () => {
+  const annotations = [
+    { type: 'url_citation', url_citation: { url: 'https://example.test/a', title: 'Page A', content: 'Line from A.' } },
+    { type: 'url_citation', url_citation: { url: 'https://example.test/b', title: 'Page B', content: 'Line from B.' } },
+    { type: 'other', note: 'not a citation' },
+  ];
+  const { fetch } = fakeFetch([answered({ annotations })]);
+  const outcome = await openrouterProvider({ ...settings, fetch }).decide({ questions: QUESTIONS, state: {} }, ctx());
+  assert.deepEqual(outcome.evidence, [
+    { url: 'https://example.test/a', title: 'Page A', excerpts: ['Line from A.'], scope: 'call' },
+    { url: 'https://example.test/b', title: 'Page B', excerpts: ['Line from B.'], scope: 'call' },
+  ]);
+  assert.equal(openrouterProvider(settings).capabilities.evidence, 'citations', 'the provider now gives citations where its model does');
+});
+
+test('a reported usage.cost above 0 is booked as reported; a cost of 0 is unpriced: unknown, never a known $0', async () => {
+  const { fetch } = fakeFetch([answered({ usage: { input_tokens: 10, output_tokens: 0, cost: 0.0004 } })]);
+  const priced = await openrouterProvider({ ...settings, fetch }).decide({ questions: QUESTIONS, state: {} }, ctx());
+  assert.deepEqual([priced.cost_usd, priced.cost_basis], [0.0004, 'reported']);
+  const { fetch: zero } = fakeFetch([answered({ usage: { input_tokens: 10, output_tokens: 0, cost: 0 } })]);
+  const free = await openrouterProvider({ ...settings, fetch: zero }).decide({ questions: QUESTIONS, state: {} }, ctx());
+  assert.deepEqual([free.cost_usd, free.cost_basis], [null, 'unknown'], 'a $0 report (a model the catalog prices at 0) is no price');
+});
+
+test("priceOf: a catalog that cannot be read throws CatalogUnreadable, never a price or null, and is read again on the next call", async () => {
+  const { default: faux } = await import("../dist/testing/faux-system-one.js");
+  let down = true;
+  const provider = openrouterProvider({ apiKey: `not-a-secret-${"openrouter"}`, fetch: async (url, init) => (down && new URL(String(url)).pathname.endsWith("/v1/models") ? new Response("{}", { status: 503 }) : faux(url, init)) });
+  await assert.rejects(provider.priceOf("liquid/d1"), { name: "CatalogUnreadable", message: "OpenRouter's catalog could not be read" });
+  down = false;
+  assert.equal((await provider.priceOf("liquid/d1"))?.promptUsd, 0.00000002, "read again once it answers");
+});
+
+test("priceOf: a catalog that answers 200 with no list of models is one that cannot be read: CatalogUnreadable, never kept, and read again next time", async () => {
+  const { default: faux } = await import("../dist/testing/faux-system-one.js");
+  let broken = true;
+  const provider = openrouterProvider({ apiKey: `not-a-secret-${"openrouter"}`, fetch: async (url, init) => (broken && new URL(String(url)).pathname.endsWith("/v1/models") ? new Response("{}", { status: 200, headers: { "content-type": "application/json" } }) : faux(url, init)) });
+  await assert.rejects(provider.priceOf("liquid/d1"), { name: "CatalogUnreadable" });
+  broken = false;
+  assert.equal((await provider.priceOf("liquid/d1"))?.promptUsd, 0.00000002, "read again once it answers a list");
 });

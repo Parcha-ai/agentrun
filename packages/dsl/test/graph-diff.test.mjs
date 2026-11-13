@@ -10,7 +10,7 @@ import { graphDiff, workflowGraph } from '@parcha/agentrun-dsl/graph';
 const schemas = { Any: { type: 'object' } };
 const flow = (root) => ({ v: 2, name: 'take', schemas, output: { schemaId: 'Any' }, root });
 const chain = (...steps) => ({ node: 'chain', steps });
-const fetch = (label) => ({ node: 'call', label, via: 'tool', tool: 'fetch_page', args: {}, out: 'Any', as: label });
+const fetch = (label) => ({ node: 'call', label, via: 'tool', tool: 'read_page', args: {}, out: 'Any', as: label });
 const extract = (label) => ({ node: 'extract', label, instructions: 'Copy it.', out: 'Any', as: label });
 const judge = (label) => ({ node: 'judge', label, out: 'Any', as: label });
 const escalate = (label) => ({ node: 'escalate', label, kind: 'needs_input', stage: 'read', summary: 'Stopped.' });

@@ -4,8 +4,8 @@
 //
 // The seam types of the person/model mutex (DriveState, DrivingGate, DrivingGates) live in core/driving.ts, where the model side uses them; they are
 // re-exported from here.
-import type { DriveState, DrivingGate, DrivingGates } from "../core/driving.js";
-export type { DriveState, DrivingGate, DrivingGates };
+import type { DriveState, DrivingGate, DrivingGates, HoldEnd } from "../core/driving.js";
+export type { DriveState, DrivingGate, DrivingGates, HoldEnd };
 
 // Coordinates in `mouse` and `wheel` are CSS pixels of the page: the `w` x `h` the latest frame carries, not canvas pixels.
 
@@ -32,18 +32,29 @@ export type NavMessage =
 /** Answers the JS dialog the page is showing (alert, confirm, prompt, beforeunload). */
 export type DialogAnswer = { type: "dialog"; accept: boolean; promptText?: string };
 
-export type ClientMessage = Hello | InputMessage | NavMessage | DialogAnswer;
+/** A take-over viewer's hands (LiveViewOptions.takeOver): `take` asks to hold the browser, `give` hands it back. */
+export type HandsMessage = { type: "take" } | { type: "give" };
+
+export type ClientMessage = Hello | InputMessage | NavMessage | DialogAnswer | HandsMessage;
 
 export type ServerMessage =
-  /** Sent once, after a valid hello. */
-  | { type: "ready"; drive: DriveState }
+  /** Sent once, after a valid hello. `readOnly`: the viewer watches and never drives (LiveViewOptions.readOnly); `takeOver`: it drives only while
+   *  it holds the browser (LiveViewOptions.takeOver), and `held` says whether it does now; neither: it may drive. */
+  | { type: "ready"; drive: DriveState; readOnly?: true; takeOver?: true; held?: boolean }
+  /** A take-over viewer's hold began (`held: true`), or ended (`held: false`, why, and the host's words when it gave them: a spend cap's). */
+  | { type: "hold"; held: true }
+  | { type: "hold"; held: false; reason: HoldEnd; message?: string }
+  /** A `take` the host refused, in its words (a spend cap with no room for the person's time). Nothing changed. */
+  | { type: "take_refused"; message: string }
   | { type: "status"; drive: DriveState }
   /** The page shown: its address and title, sent when either changes and at every followed-page change. */
   | { type: "page"; url: string; title: string }
+  /** The browser has no page to show (one that starts with none, or whose last page closed): until a page opens there is nothing to draw. */
+  | { type: "no_page" }
   | { type: "dialog"; kind: "alert" | "confirm" | "prompt" | "beforeunload"; message: string; defaultPrompt?: string }
   | { type: "dialog_closed" }
   /** One input or nav message was not delivered, and why. */
-  | { type: "held"; reason: "agent_acting" | "no_page" | "bad_message" | "busy" }
+  | { type: "held"; reason: "agent_acting" | "no_page" | "bad_message" | "busy" | "read_only" | "not_taken" | "taking" }
   | { type: "refused"; reason: RefusalReason }
   | { type: "ended"; reason: "released" | "browser_closed" };
 
@@ -77,13 +88,16 @@ export type StreamHandlers = {
    *  (the viewer is slow). No frame is kept after the handler returns, and none is ever written anywhere. */
   frame(jpeg: Buffer, page: { w: number; h: number }, ack: () => void): void;
   page(page: { url: string; title: string }): void;
+  /** The browser has no page to follow: none when the stream starts, or its last one closed. A page that opens next is announced by `page`. */
+  noPage?(): void;
   dialog(dialog: { kind: "alert" | "confirm" | "prompt" | "beforeunload"; message: string; defaultPrompt?: string } | null): void;
   /** The browser's socket ended and was not asked to. */
   closed(): void;
 };
 export type Stream = {
   input(message: InputMessage): Promise<void>;
-  nav(message: NavMessage): Promise<void>;
+  /** `live` is false once the command was let go (handed back, and the agent's call went on): a nav of several steps checks it before each. */
+  nav(message: NavMessage, live?: () => boolean): Promise<void>;
   dialog(answer: DialogAnswer): Promise<void>;
   close(): void;
 };
@@ -132,6 +146,8 @@ export function parseClientMessage(raw: string): ClientMessage | null {
     case "nav":
       if (m.action === "back" || m.action === "reload") return { type: "nav", action: m.action };
       return m.action === "url" && word(m.url, LIMITS.url) && viewerMayOpen(m.url) ? { type: "nav", action: "url", url: m.url } : null;
+    case "take":
+    case "give": return Object.keys(m).length === 1 ? { type: m.type } : null;
     case "dialog":
       if (typeof m.accept !== "boolean" || (m.promptText !== undefined && (typeof m.promptText !== "string" || m.promptText.length > LIMITS.promptText))) return null;
       return { type: "dialog", accept: m.accept, ...(m.promptText !== undefined ? { promptText: m.promptText } : {}) };

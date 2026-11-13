@@ -21,7 +21,7 @@ export type {
   ModelTier, AgentContext, WorkflowEffort, WorkflowThinking, VerifyClause,
   AskPredicate, DecisionEvidenceMode, DecisionImages, MechanicalPredicate, Predicate, ValidationCode, ValidationIssue, ValidateWorkflowOptions,
 } from "./workflow.js";
-export { dryRunWorkflow, synthesizeInstance } from "./dry-run.js";
+export { dryRunWorkflow, SYNTHESIS_BUDGET, SynthesisTooLarge, synthesizeInstance, type SynthesisBudget } from "./dry-run.js";
 export type { DryRunOptions, DryRunResult } from "./dry-run.js";
 
 export {
@@ -34,7 +34,8 @@ export type {
   CompiledQuestions, AnswersSidecar, ConfidenceSource,
 } from "./system-one.js";
 
-export { judgeFromProvider, judgeFromProviders, checkCapabilities, DecisionProviderError, imageDimensions } from "./decision-provider.js";
+export { judgeFromProvider, judgeFromProviders, checkCapabilities, chargedCost, DecisionProviderError, imageDimensions } from "./decision-provider.js";
+export { evidenceOf, EVIDENCE_EXCERPT_MAX, EVIDENCE_EXCERPTS_PER_ITEM, EVIDENCE_ITEMS_MAX, EVIDENCE_TEXT_MAX, EVIDENCE_TITLE_MAX, type EvidenceOptions } from "./evidence.js";
 export type {
   DecisionProvider, DecisionCapabilities, DecisionInput, DecisionRequest, DecisionContext, DecisionEvidence, DecisionOutcome,
   ProviderAnswer, CostBasis, DecisionProviderErrorCode, DecisionImage, LoadImage, JudgeFromProviderOptions,
@@ -47,9 +48,9 @@ export {
   stageSchemaForNode, submissionSchemaForNode, mergeStageDelta,
   REPORT_SCHEMA, SHELL_RESULT_SCHEMA,
   // Document helpers a host facade needs to speak about a workflow without re-implementing the walk.
-  childSteps, declaredWrites, terminalArtifactType, artifactNodeIsProse, schemaProblems, HOST_STATE_KEY,
-  // Host-side data helpers the interpreter itself uses: the same normalization and reference shaping.
-  buildReferenceContext, normalizeStringNullsForSchema, parseCsvRows,
+  childSteps, declaredWrites, artifactNodeIsProse, schemaProblems, HOST_STATE_KEY,
+  // The host-side normalization the interpreter itself uses.
+  normalizeStringNullsForSchema,
 } from "./workflow.js";
 export { compileTransform, compileTransformSyntax, deniedGlobalReferences } from "./code-exec.js";
 export { resolveSchemaForWorkflow } from "./schema-references.js";
@@ -58,12 +59,12 @@ export { getPath, predicateMatches } from "./predicates.js";
 export type { StopPredicate, AcceptPredicate } from "./predicates.js";
 
 export {
-  authorContract, renderAuthorContract, renderAuthorHostAddendum, candidatePolicyErrors, applyHostOutputTypes, authorWorkflow,
-  AUTHOR_SKILL_NAME, authorSkillDirectory, loadAuthorReference, loadAuthorSkillBundle,
+  authorContract, renderAuthorContract, renderAuthorHostAddendum, applyHostOutputTypes, authorWorkflow,
+  authorSkillDirectory, loadAuthorReference, loadAuthorSkillBundle,
 } from "./author.js";
 export type { AuthorHostAddendum, CandidatePolicyOptions, AuthorWorkflowOptions, AuthoredWorkflow, HostOutputTypeOptions } from "./author.js";
 export {
-  WORKFLOW_NODE_KINDS, GENERATIVE_NODE_KINDS, JUDGMENT_NODE_KINDS, NODE_FIELDS, HOST_NODE_FIELDS, IGNORED_NODE_FIELDS,
+  GENERATIVE_NODE_KINDS, JUDGMENT_NODE_KINDS, NODE_FIELDS, HOST_NODE_FIELDS, IGNORED_NODE_FIELDS,
   MECHANICAL_PREDICATES, WORKFLOW_PREDICATES, PREDICATE_FIELDS, FIELD_TYPES,
   EFFORT_LEVELS, THINKING_LEVELS, MODEL_TIERS, AGENT_CONTEXTS, CALL_TRANSPORTS, CALL_RETRY_CLASSES, EFFECT_FAILURE_CODES, PROSE_ARTIFACT_TYPES,
 } from "./vocabulary.js";

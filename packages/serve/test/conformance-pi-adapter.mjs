@@ -1,0 +1,144 @@
+// The harness conformance suite's pi subject THROUGH the adapter contract (the one-ledger ruling, B2c): pi as an
+// AgentAdapter (runner/adapters/pi.ts) driven by the kernel's generic adapter loop (runner/adapter-loop.ts), the same
+// loop that drives claude-agent, codex and opencode. pi's model requests go through the session's model proxy like the
+// CLI harnesses', so the runner's booking is the one ledger; here the proxy's upstream is a scripted Anthropic origin (its
+// `fetch`), whose answer to a request is the script step the conversation has reached: the number of answers the model
+// has given so far, read from the request's own messages, so a resumed run (a new process) picks up at its step.
+import { strictOptions } from "./strict-options.mjs";
+
+const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
+const { piAdapter } = await import("../dist/runner/adapters/pi.js");
+const { MAX_RESTARTS } = await import("../dist/runner/conformance/harness.js");
+
+export const MODEL = "claude-sonnet-4-5";
+const sse = (events) => new Response(events.map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(""), { status: 200, headers: { "content-type": "text/event-stream" } });
+const textOf = (message) => (typeof message?.content === "string" ? message.content : (message?.content ?? []).map((part) => (part.type === "text" ? part.text : "")).join(""));
+
+/** The text of the newest tool result a request carries (a denied call's refusal among them), its text blocks joined. */
+function lastResultOf(body) {
+  const results = (body.messages ?? []).flatMap((message) => (Array.isArray(message.content) ? message.content : [])).filter((part) => part.type === "tool_result");
+  const content = results.at(-1)?.content;
+  return typeof content === "string" ? content : (content ?? []).map((part) => (part.type === "text" ? part.text : "")).join("");
+}
+
+/** The tool names a Messages request offers its model. */
+export const offeredTools = (body) => (body?.tools ?? []).map((tool) => tool.name).filter((name) => typeof name === "string");
+
+/** A fetch that answers Anthropic's Messages API as `script` says, one step per request. Records every request body.
+ *  As a model does, it calls only a tool the request offers (the faux model's rule): a scripted call of a tool the request
+ *  does not offer is answered as text naming it unoffered, so a request that lost its tools on the way (a proxy policy
+ *  dropping them) shows as the run going wrong, never as the call it could not have made. */
+export function scriptedOrigin(script, requests = []) {
+  return async (_url, init = {}) => {
+    const body = JSON.parse(String(init.body ?? "{}"));
+    requests.push(body);
+    const step = (body.messages ?? []).filter((message) => message.role === "assistant").length;
+    const next = script[step];
+    const usage = { input_tokens: 100, output_tokens: 10 };
+    const start = { type: "message_start", message: { id: `msg_${step}`, type: "message", role: "assistant", model: body.model, content: [], stop_reason: null, usage: { input_tokens: usage.input_tokens, output_tokens: 1 } } };
+    // A call, or several in one round ({ calls: [{ call, args }, …] }, which pi runs in parallel).
+    const scripted = next && "calls" in next ? next.calls : next && "call" in next ? [next] : undefined;
+    const offered = offeredTools(body);
+    const unoffered = scripted?.filter((each) => !offered.includes(each.call)).map((each) => each.call) ?? [];
+    const calls = unoffered.length === 0 ? scripted : undefined;
+    if (unoffered.length > 0) {
+      return sse([
+        start,
+        { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+        { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: `(not offered: ${unoffered.join(", ")})` } },
+        { type: "content_block_stop", index: 0 },
+        { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: usage.output_tokens } },
+        { type: "message_stop" },
+      ]);
+    }
+    if (calls) {
+      const blocks = calls.flatMap((each, index) => [
+        { type: "content_block_start", index, content_block: { type: "tool_use", id: `toolu_${step}_${index}`, name: each.call, input: {} } },
+        { type: "content_block_delta", index, delta: { type: "input_json_delta", partial_json: JSON.stringify(each.args ?? {}) } },
+        { type: "content_block_stop", index },
+      ]);
+      return sse([
+        start,
+        ...blocks,
+        { type: "message_delta", delta: { stop_reason: "tool_use", stop_sequence: null }, usage: { output_tokens: usage.output_tokens } },
+        { type: "message_stop" },
+      ]);
+    }
+    // The newest person message with text (a steer, once one was placed), not a tool result.
+    const hasText = (message) => typeof message.content === "string" || (Array.isArray(message.content) && message.content.some((part) => part.type === "text"));
+    const lastPerson = [...(body.messages ?? [])].reverse().find((message) => message.role === "user" && hasText(message));
+    const text = next === undefined ? "" : "say" in next ? next.say : "sayLastResult" in next ? lastResultOf(body) : textOf(lastPerson);
+    return sse([
+      start,
+      { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+      { type: "content_block_delta", index: 0, delta: { type: "text_delta", text } },
+      { type: "content_block_stop", index: 0 },
+      // A cut step: the model stops at its output limit as it says it (Anthropic's max_tokens, pi's stopReason "length").
+      { type: "message_delta", delta: { stop_reason: next?.cut ? "max_tokens" : "end_turn", stop_sequence: null }, usage: { output_tokens: usage.output_tokens } },
+      { type: "message_stop" },
+    ]);
+  };
+}
+
+/** The suite's tools as the host's tools (HostTool): replay-safe or at most once, each calling the suite's own. A tool
+ *  with `images` answers with them beside its text (a screenshot). */
+export function hostTools(tools) {
+  return Object.values(tools).map((tool) => ({
+    name: tool.name,
+    description: `The suite's ${tool.name} tool.`,
+    inputSchema: { type: "object", properties: {} },
+    replay: tool.replaySafe ? "safe" : "never",
+    call: async (args, context) => ({ text: String(await tool.run(args ?? {}, context.signal)), ...(tool.images ? { images: tool.images } : {}) }),
+  }));
+}
+
+/** Every session this module's adapters opened and nobody closed yet. A crash case freezes its loop in-process
+ *  (runner.kill() stops nothing), so that session's model proxy keeps listening; a test file closes these at its end. */
+export const openSessions = new Set();
+export async function closeOpenSessions() {
+  for (const session of [...openSessions]) await session.close().catch(() => undefined);
+}
+
+/** `adapter` with each session it opens tracked in openSessions until closed. */
+function tracked(adapter) {
+  return {
+    ...adapter,
+    open: async (spec, io) => {
+      const session = await adapter.open(spec, io);
+      const close = session.close.bind(session);
+      session.close = async () => {
+        openSessions.delete(session);
+        await close();
+      };
+      openSessions.add(session);
+      return session;
+    },
+  };
+}
+
+/** The adapter loop for the suite's setup: pi through the adapter, its model through the session proxy to the script. */
+export function piAdapterSpec(setup, options = {}) {
+  strictOptions("piAdapterSpec's setup", setup, ["script", "tools", "hooks", "agentId"]);
+  strictOptions("piAdapterSpec", options, ["fetch", "requests", "price", "system"]);
+  const { script, tools, hooks, agentId } = setup;
+  return (_claim, run) => ({
+    ...(agentId ? { agentId } : {}),
+    adapter: tracked(piAdapter({ run, model: MODEL, provider: { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => `not-a-secret-${"x"}` }, fetch: options.fetch ?? scriptedOrigin(script, options.requests), price: options.price ?? (() => 0) })),
+    session: { key: "root", label: "root", system: options.system ?? ["Follow the script."], tools: hostTools(tools), context: "fresh" },
+    input: "Follow the script.",
+    // The run's one cap, uncapped: every paid request still books through it (the adapter loop's only booking path).
+    runCap: { capUsd: () => undefined, modelOf: () => undefined },
+    hooks,
+    gate: (call) => (tools[call.tool]?.ask ? "ask" : "allow"),
+  });
+}
+
+/** The subject the suite runs: pi through the adapter. */
+export const piAdapterSubject = {
+  name: "pi through the adapter",
+  // pi ends a turn at a length stop (its generation answers with it), so no step of the same turn follows a cut answer:
+  // a run goes on from one only on a later message, and the run's end still reads its last answer (adapter-loop cutLast).
+  unsupported: { "length-mid-run": "a cut answer ends pi's turn, so no later step of the same turn can follow it" },
+  process: { module: import.meta.url, export: "piAdapterSubject" },
+  createLoop: (setup) => createAdapterLoop(piAdapterSpec(setup), { restartLimit: MAX_RESTARTS }),
+};

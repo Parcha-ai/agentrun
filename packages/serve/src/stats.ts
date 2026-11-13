@@ -1,32 +1,39 @@
 // GET /v2/stats, this server's own route: the agent store's counts and cost sums (AgentStoreReader.stats, SQL
 // aggregates over store.sqlite), with what only the runs this server holds can say. Nothing under runs/ is opened: a
 // running run this server does not hold has no status here, and is counted as unknown, never as active or not waiting.
-import type { AnalyticsFilter, AnalyticsGroup, StoreAnalytics, StoreStats } from "@parcha/pi-durable-agent";
-import { nameOf } from "@parcha/pi-durable-agent/timeline";
+// The learning counts are each run's learning as the store keeps it (learning-run.ts counts).
+import type { StoreStats } from "./store-reads/stats.js";
+import type { AnalyticsFilter, AnalyticsGroup, PendingEnd, StoreAnalytics } from "./store-reads/analytics.js";
+import { nameOf } from "./timeline/index.js";
 import { ApiError } from "./errors.js";
-import { type Runs, type Status, statusOf } from "./runs.js";
+import { type Status } from "./run-view.js";
 import { ID } from "./validate.js";
 
 type Bucket = "active" | "needs_input" | "status_unknown";
-/** Where a running row this server holds is counted, by its status (a paused workflow run is held, so active). One it holds as ended, its end not yet written to
- *  the store, is neither active nor waiting: unknown. */
-const BUCKET: Record<Status, Bucket> = { queued: "active", working: "active", paused: "active", input_required: "needs_input", completed: "status_unknown", failed: "status_unknown", cancelled: "status_unknown" };
+/** Where a running row is counted, by its status (a paused workflow run is active). Over the store a run's status is its
+ *  view's (viewOverStore); a run with none here is unknown, never active or not waiting. */
+const BUCKET: Partial<Record<Status, Bucket>> = { queued: "active", working: "active", paused: "active", input_required: "needs_input" };
 
 /** As GET /usage rounds its sums; null stays null. */
 const round = (usd: number | null) => (usd === null ? null : Math.round(usd * 1e6) / 1e6);
 
-export function statsView(stats: StoreStats, runs: Runs) {
+/** GET /stats's counts, from the store's aggregates (StoreStats) and each running row's status read over the store
+ *  (`statusOf`, viewOverStore): the runner writes a run's end to the store before it lets it go, so this server holds no
+ *  run ended-but-unstored, and `pending` is empty (kept a parameter for an older server's shape). */
+export function statsView(stats: StoreStats, statusOf: (id: string) => Status | undefined, pending: Readonly<Record<string, PendingEnd>> = {}) {
   const running: Record<Bucket, number> = { active: 0, needs_input: 0, status_unknown: 0 };
   for (const id of stats.running) {
-    const run = runs.held(id);
-    running[run ? BUCKET[statusOf(run).status] : "status_unknown"] += 1;
+    if (pending[id]) continue;
+    const status = statusOf(id);
+    running[(status && BUCKET[status]) ?? "status_unknown"] += 1;
   }
+  const ends = Object.values(pending);
   const usd = round(stats.cost.usd);
   return {
     agents: stats.agents,
-    runs: { total: stats.runs.total, active: running.active, needs_input: running.needs_input, failed: stats.runs.failed, needs_review: stats.runs.escalated, status_unknown: running.status_unknown },
+    runs: { total: stats.runs.total, active: running.active, needs_input: running.needs_input, failed: stats.runs.failed + ends.filter((end) => end === "failed").length, needs_review: stats.runs.escalated, status_unknown: running.status_unknown },
     per_agent: stats.byAgent.map((a) => ({ agent_id: a.id, name: a.name, runs: a.runs })),
-    cost: { usd, basis: usd === null ? null : "estimate", unknown_runs: stats.cost.unknown },
+    cost: { usd, basis: usd === null ? null : "estimate", unknown_runs: stats.cost.unknown - ends.length },
     archived: { agents: stats.archivedAgents, runs: stats.archivedRuns },
   };
 }
@@ -85,3 +92,6 @@ export function analyticsView(a: StoreAnalytics, filter: AnalyticsFilter) {
     tools: a.tools.map((t) => ({ tool: t.tool, label: nameOf(t.tool), calls: t.calls, errors: t.errors })),
   };
 }
+
+/** How the runs that tried to learn fared: learning-run.ts's, beside the counts that use it, and named here as before. */
+export { learningStats } from "./learning-run.js";

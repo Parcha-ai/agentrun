@@ -100,3 +100,29 @@ test('recoverySystemNote says exactly this for a turn with a call in each status
   await shared.placeSubmissions(drive, [drive.pending()[0]]);
   assert.equal(shared.recoverySystemNote(drive.state()), EXPECTED_NO_CALLS_NOTE);
 });
+
+test("the tool bridge holds a result to HOST_RESULT_MAX_CHARS: a longer one keeps its start and says where it was cut, flagged truncated, a failure's text too, never half a surrogate pair", async () => {
+  const BOUND = 120_000;
+  const drive = await openDrive({ writer: await memorySessionStore().open('run-3'), signal: new AbortController().signal });
+  const tool = (name, execute) => ({ name, description: name, inputSchema: { type: 'object' }, replay: 'safe', execute });
+  // Pairs across where the cut falls, from an even start and from an odd one: one of the two cuts lands inside a pair.
+  const paired = (start) => `${'a'.repeat(start)}${'\u{1F600}'.repeat(100)}${'b'.repeat(200_000)}`;
+  const whole = { even: paired(BOUND - 100), odd: paired(BOUND - 101) };
+  const bridge = shared.toolBridge(drive, [
+    tool('even', async () => whole.even), tool('odd', async () => whole.odd),
+    tool('fits', async () => 'f'.repeat(BOUND)), tool('fails', async () => { throw new Error('e'.repeat(300_000)); }),
+  ]);
+  for (const name of ['even', 'odd']) {
+    const result = await bridge.call(name, {}, `c-${name}`);
+    assert.deepEqual([result.isError, result.truncated], [false, true], name);
+    assert.ok(result.text.length <= BOUND, `${name}: ${result.text.length} characters`);
+    const note = /\n\[cut at (\d+) of (\d+) characters\]$/.exec(result.text);
+    assert.ok(note, `${name} says where it was cut`);
+    assert.deepEqual([Number(note[2]), result.text.slice(0, note.index)], [whole[name].length, whole[name].slice(0, Number(note[1]))], name);
+    assert.doesNotMatch(result.text, /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/, `${name}: no half of a pair`);
+  }
+  assert.deepEqual(await bridge.call('fits', {}, 'c-fits'), { text: 'f'.repeat(BOUND), isError: false }, 'a result at the bound is whole');
+  const failed = await bridge.call('fails', {}, 'c-fails');
+  assert.deepEqual([failed.isError, failed.truncated, failed.text.length <= BOUND], [true, true, true]);
+  assert.match(failed.text, /^e+\n\[cut at \d+ of 300000 characters\]$/);
+});

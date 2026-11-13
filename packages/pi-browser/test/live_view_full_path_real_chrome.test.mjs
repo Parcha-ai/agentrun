@@ -3,13 +3,13 @@
 // protocol, so a difference between the two is visible in the test output (nothing printed names a token or a URL of the viewer).
 import assert from "node:assert/strict";
 import http from "node:http";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { rm } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { createLiveView } from "../dist/live-view/index.js";
 import { cdpProvider } from "../dist/providers/cdp.js";
 import { connect } from "./fixtures/ws-client.mjs";
+import { scratch } from "./fixtures/scratch.mjs";
 import { CHROME, NO_CHROME } from "./fixtures/local-chrome.mjs";
 
 const settle = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -88,13 +88,19 @@ const clickLikeAPerson = async (tab, p) => {
 
 const USER = "alice";
 const PASS = "Pa55-w0rd!";
-const SPY = `window.__sent = []; (() => { const send = WebSocket.prototype.send; WebSocket.prototype.send = function (data) { try { if (typeof data === "string") { const m = JSON.parse(data); if (m.type !== "hello") window.__sent.push(m); } } catch {} return send.call(this, data); }; })();`;
+/** Test-only: holds each frame's decode in the viewer this long, as a loaded machine does (F21: a click sent before the viewer had drawn a frame maps to no point on the page and is dropped). */
+const FRAME_DELAY_MS = Number(process.env.LIVE_VIEW_TEST_FRAME_DELAY_MS) || 0;
+const SLOW_FRAMES = FRAME_DELAY_MS ? `(() => { const decode = window.createImageBitmap; window.createImageBitmap = (...args) => new Promise((go) => setTimeout(go, ${FRAME_DELAY_MS})).then(() => decode(...args)); })();` : "";
+const SPY = `window.__sent = []; (() => { const send = WebSocket.prototype.send; WebSocket.prototype.send = function (data) { try { if (typeof data === "string") { const m = JSON.parse(data); if (m.type !== "hello") window.__sent.push(m); } } catch {} return send.call(this, data); }; })(); window.__drawn = 0; (() => { const draw = CanvasRenderingContext2D.prototype.drawImage; CanvasRenderingContext2D.prototype.drawImage = function (...args) { const out = draw.apply(this, args); window.__drawn += 1; return out; }; })();${SLOW_FRAMES}`;
+/** The viewer has drawn a frame of the target, so it maps a click to a point on the page: a click before that maps to none and is dropped. The canvas's own width is no sign of it (an
+ *  undrawn canvas is 300 wide); the frame's draw is (SPY counts them), and the viewer takes the frame's size in the same callback. */
+const drewFrame = (viewerTab) => until(() => viewerTab.evaluate(`window.__drawn > 0`));
 /** The messages as one line each: what a reader compares. */
 const short = (m) => m.type === "mouse" ? `mouse ${m.action} ${m.x},${m.y} ${m.button} n=${m.clickCount} mod=${m.modifiers ?? 0}` : m.type === "key" ? `key ${m.action} ${JSON.stringify(m.key)} ${m.code} vk=${m.windowsVirtualKeyCode} text=${JSON.stringify(m.text ?? null)} mod=${m.modifiers ?? 0}` : JSON.stringify(m);
 
 async function rig(t) {
   const web = await site();
-  const root = await mkdtemp(path.join(process.env.TMPDIR || tmpdir(), "lv-full-"));
+  const root = await scratch(t, "lv-full-");
   const target = cdpProvider({ chrome: { executablePath: CHROME, profileRoot: path.join(root, "target") } });
   const viewer = cdpProvider({ chrome: { executablePath: CHROME, profileRoot: path.join(root, "viewer") } });
   const refs = [];
@@ -122,7 +128,7 @@ test("full path: the viewer page driven with CDP mouse and keys like a person lo
   const r = await rig(t);
   const viewerTab = await openTab(r.viewerCdp, r.view.fullscreen, SPY);
   r.tabs.push(viewerTab);
-  assert.ok(await until(() => viewerTab.evaluate(`document.getElementById("screen").width > 100`)), "the viewer drew a frame of the target");
+  assert.ok(await drewFrame(viewerTab), "the viewer drew a frame of the target");
   await settle(500);
   const geo = await viewerTab.evaluate(`(() => { const c = document.getElementById("screen"); const b = c.getBoundingClientRect(); return { l: b.left, t: b.top, w: b.width, h: b.height, cw: c.width, ch: c.height, dpr: devicePixelRatio, iw: innerWidth, ih: innerHeight }; })()`);
   const f = await r.pageTab.evaluate(FIELDS);
@@ -188,7 +194,7 @@ test("full path: every shape of typed key a driver sends reaches the field, and 
   const r = await rig(t);
   const viewerTab = await openTab(r.viewerCdp, r.view.fullscreen, SPY);
   r.tabs.push(viewerTab);
-  assert.ok(await until(() => viewerTab.evaluate(`document.getElementById("screen").width > 100`)), "the viewer drew a frame of the target");
+  assert.ok(await drewFrame(viewerTab), "the viewer drew a frame of the target");
   await settle(500);
   const failures = [];
   for (const [name, make] of Object.entries(SHAPES)) {
@@ -213,7 +219,7 @@ test("full path: a viewer window at devicePixelRatio 2 maps clicks to the page's
   r.tabs.push(viewerTab);
   await viewerTab.send("Emulation.setDeviceMetricsOverride", { width: 800, height: 600, deviceScaleFactor: 2, mobile: false });
   await viewerTab.send("Page.navigate", { url: r.view.fullscreen });
-  assert.ok(await until(() => viewerTab.evaluate(`document.getElementById("screen").width > 100`)), "the viewer drew a frame of the target");
+  assert.ok(await drewFrame(viewerTab), "the viewer drew a frame of the target");
   await settle(500);
   const geo = await viewerTab.evaluate(`(() => { const b = document.getElementById("screen").getBoundingClientRect(); return { l: b.left, t: b.top, w: b.width, h: b.height, dpr: devicePixelRatio }; })()`);
   assert.equal(geo.dpr, 2);
@@ -229,7 +235,7 @@ async function focused(t) {
   const r = await rig(t);
   const viewerTab = await openTab(r.viewerCdp, r.view.fullscreen, SPY);
   r.tabs.push(viewerTab);
-  assert.ok(await until(() => viewerTab.evaluate(`document.getElementById("screen").width > 100`)), "the viewer drew a frame of the target");
+  assert.ok(await drewFrame(viewerTab), "the viewer drew a frame of the target");
   await settle(500);
   const geo = await viewerTab.evaluate(`(() => { const b = document.getElementById("screen").getBoundingClientRect(); return { l: b.left, t: b.top, w: b.width, h: b.height }; })()`);
   const f = await r.pageTab.evaluate(FIELDS);

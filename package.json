@@ -1,27 +1,29 @@
 {
   "name": "agentrun-dsl-workspace",
   "private": true,
-  "version": "0.1.0-beta.28",
+  "version": "0.1.0-beta.36",
   "type": "module",
   "workspaces": [
     "packages/*"
   ],
   "engines": {
-    "node": ">=22.19.0"
+    "node": ">=24.22.3"
   },
   "scripts": {
-    "build": "node scripts/check-node.mjs && node scripts/build-console.mjs && npm run build --workspaces --if-present",
-    "test": "npm run test --workspaces --if-present",
+    "build": "node scripts/check-node.mjs && node scripts/build-console.mjs && node scripts/build-workspaces.mjs",
+    "test": "node scripts/test-workspaces.mjs",
+    "test:changed": "node scripts/test-workspaces.mjs --changed",
+    "test:affected": "node scripts/test-affected.mjs --run",
     "typecheck": "npm run typecheck --workspaces --if-present && tsc -p examples/tsconfig.json",
-    "check": "npm run build && node scripts/generate-schema.mjs --check && node scripts/generate-author-contract.mjs --check && node scripts/generate-author-references.mjs --check && npm run typecheck && npm test && npm run test:release && npm run test:examples && npm run test:viewer",
+    "check": "npm run build && node scripts/generate-schema.mjs --check && node scripts/generate-author-contract.mjs --check && node scripts/generate-author-references.mjs --check && node scripts/generate-clients.mjs --check && node scripts/generate-computer-spec.mjs --check && npm run typecheck && npm test && npm run test:release && npm run test:examples",
     "demo": "node scripts/check-node.mjs && node examples/run-typed-research.ts",
     "demo:triage": "node packages/dsl/dist/cli.js demo",
     "verify:packages": "node scripts/verify-packages.mjs",
-    "verify:port": "node scripts/port-durable-harness.mjs --check",
-    "test:release": "node --test scripts/*.test.mjs scripts/recording/*.test.mjs",
-    "test:examples": "node --test examples/*.test.mjs examples/web/*.test.mjs examples/web/agent/*.test.mjs examples/web/agents/*/*.test.mjs examples/agent-learn/*.test.mjs",
-    "test:viewer": "tsc -p apps/viewer/tsconfig.json && node --test apps/viewer/test/*.test.ts",
-    "demo:typed": "node scripts/check-node.mjs && node examples/run-typed-research.ts",
+    "check:direction": "node scripts/check-direction.mjs",
+    "test:release": "node --test scripts/*.test.mjs",
+    "test:e2e": "node apps/console/e2e/run.mjs",
+    "test:examples": "node --test examples/*.test.mjs",
+    "test:workflows": "node --test packages/serve/test/durable-*.test.mjs packages/serve/test/node-*.test.mjs packages/serve/test/record-*.test.mjs packages/serve/test/pi-runner*.test.mjs packages/serve/test/typed-submit-contract.test.mjs",
     "test:typed-example": "tsc -p examples/tsconfig.json && node --test examples/typed-research.test.mjs",
     "demo:research": "node examples/research-live.mjs --summary",
     "eval:research": "node examples/research-eval.mjs --summary",
@@ -30,17 +32,15 @@
     "export:source": "node scripts/export-source.mjs",
     "demo:support": "node scripts/check-node.mjs && node examples/run-support-answer.mjs",
     "demo:rank": "node scripts/check-node.mjs && node examples/run-rank-candidates.mjs",
-    "demo:reference": "node scripts/check-node.mjs && node --no-warnings=ExperimentalWarning examples/reference/run.ts",
-    "demo:kill": "node scripts/check-node.mjs && node --no-warnings=ExperimentalWarning examples/reference/kill-anywhere.ts",
-    "demo:hero": "node scripts/check-node.mjs && node --no-warnings=ExperimentalWarning examples/hero/run.ts",
-    "demo:issue-triage": "node scripts/check-node.mjs && node --no-warnings=ExperimentalWarning examples/issue-triage/run.ts",
-    "demo:vision": "node scripts/check-node.mjs && node --no-warnings=ExperimentalWarning examples/vision-agent/run.ts",
-    "demo:learn": "node scripts/check-node.mjs && node --no-warnings=ExperimentalWarning examples/agent-learn/demo.mjs",
     "test:support": "node --test examples/support-answer.test.mjs examples/support-answer-runner.test.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "ajv": "^8.18.0",
+    "e2b": "2.63.0",
+    "modal": "0.11.1",
+    "playwright-core": "1.64.1",
+    "pyright": "1.1.414",
     "typescript": "5.9.3",
     "typescript-json-schema": "^0.68.0",
     "yaml": "2.9.0",
@@ -56,7 +56,6 @@
   "homepage": "https://agentrun.ai",
   "license": "Apache-2.0",
   "overrides": {
-    "zod": "$zod",
-    "undici@8.10.2": "8.12.2"
+    "zod": "$zod"
   }
 }

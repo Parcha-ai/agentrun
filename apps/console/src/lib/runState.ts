@@ -5,7 +5,7 @@ export type MessageMode = "steer" | "answer" | "follow_up";
 /** The server's `features.messages` (GET /v2/capabilities): which modes it takes. */
 export type MessageFeatures = { steer: boolean; answer: boolean; follow_up: boolean; steer_workflow_runs: boolean };
 /** Whether a harness steers mid-turn: the server's own `capabilities.harnesses[].steer` when it says, and otherwise pi
- *  alone (serve's steersMidTurn). An unnamed harness is the default, pi. On one that does not, a message to a working run
+ *  alone (serve's harness table: each entry's steer). An unnamed harness is the default, pi. On one that does not, a message to a working run
  *  waits for the turn's end: the server answers `follow_up`, so the console offers that, not a steer. */
 export function harnessSteers(harness: string | undefined, harnesses: { id: string; available?: boolean; steer?: boolean }[]): boolean {
   const id = harness ?? "pi";

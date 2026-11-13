@@ -13,6 +13,14 @@ const LOCK_FILE = ".downloads.lock";
 export const MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024;
 export const MAX_DOWNLOAD_FILES = 50;
 
+/** What a skipped download the browser is still writing says: the next call files it. */
+export const STILL_DOWNLOADING = "still downloading; call browser_downloads again";
+/** A provider's read of a file the browser was still writing (its bytes or its name moved while it was read). */
+export class DownloadNotSettled extends Error {
+  readonly code = "not_settled";
+  constructor(name: string) { super(`${name} changed while it was read`); }
+}
+
 /** The handle `browser_release` returns for a session's recording; the host's `read` door resolves it. */
 export const recordingHandle = (sessionId: string): string => `session:${sessionId}`;
 
@@ -77,6 +85,7 @@ export async function fetchDownloads(options: { provider: Pick<BrowserProvider, 
   for (const file of remote) {
     const known = manifest.files.find((row) => sameRemote(row, session, file));
     if (known && (await exists(path.join(workspace, known.path)))) { result.already_fetched.push(entry(known)); continue; }
+    if (file.downloading) { result.skipped.push({ name: file.name, reason: STILL_DOWNLOADING }); continue; }
     // Counts attempts, not places in the provider's list, so files fetched before never starve the ones behind them.
     if (attempted >= (options.maxFiles ?? MAX_DOWNLOAD_FILES)) { result.skipped.push({ name: file.name, reason: "over the per-call file limit; call again" }); continue; }
     attempted += 1;
@@ -117,7 +126,8 @@ export async function fetchDownloads(options: { provider: Pick<BrowserProvider, 
       result.fetched.push(entry(row));
     } catch (error) {
       await rm(part, { force: true });
-      result.skipped.push({ name: file.name, reason: error instanceof Error ? (options.redact ?? ((text: string) => text))(error.message).slice(0, 200) : "the read failed" });
+      const reason = error instanceof DownloadNotSettled ? STILL_DOWNLOADING : error instanceof Error ? (options.redact ?? ((text: string) => text))(error.message).slice(0, 200) : "the read failed";
+      result.skipped.push({ name: file.name, reason });
     }
   }
   return result;

@@ -17,7 +17,19 @@ harness adapter the way they run on Pi, durable in AgentRun's own store.
   Agent adapter does), and then the node fails `aborted`. Run again with the same step, it resumes from its records: a
   call that finished during the pause is never run, or paid for, again.
 - `AgentAdapter` is the interface a harness implements: `check` refuses a session before anything is spent (a fork it
-  cannot make), and `open` restores a session from its records.
+  cannot make), and `open` restores a session from its records. A session's `settleOpenTurn()` ends a turn its records
+  still hold open (one the person stopped), interrupted, and runs nothing, so the turn is never resumed. A prompt it
+  stopped before the harness placed it stays in the conversation: the next prompt or follow-up carries its text first,
+  with a line saying it was stopped before any work on it began. The carry is in that message's text in the session's
+  state, so a crash's recovery of it, placed but never recorded by the CLI, sends the stopped words too. So does a
+  prompt the harness placed and its CLI never took (the stop came between the two), carried by `settleTurn`'s `unsent`.
+  Whether the CLI took it is the CLI's own record as the session keeps it, the history a resumed CLI is given:
+  claude-agent's transcript, Codex's rollout (Codex answers `turn/start` before it writes the message, and the Claude
+  SDK writes a message to the CLI at once, so a stop can kill either before it records it). A prompt that record lacks
+  the next turn's model never saw, so carrying it never sends it twice. OpenCode marks a prompt just before it sends it,
+  and a marked one is never carried. A recovery message records which placed prompts it carries before it goes, so once
+  the CLI holds it they count as recorded, across a chain of recoveries. A follow-up's own prompt, named to the settle
+  (`opening`), is withdrawn and never carried.
 - `SessionStore` is the run's store for sessions. A session is written only through a writer, and `open(key)` takes the
   session: every writer opened earlier for that key is fenced from then on, and its appends are refused
   (`SessionFenced`) with nothing written. The runner opens one writer per attempt and hands it to the adapter, so a
@@ -26,16 +38,15 @@ harness adapter the way they run on Pi, durable in AgentRun's own store.
 - `./kernel` is the durable kernel an adapter runs on (`openDrive` over the session's writer): an effect's intent, then
   at most one outcome; after a crash a `safe` effect runs again and a `never` one is reported interrupted, never run
   again. So a tool that costs money per call (a paid search) is `never`: `safe` means free to run again. A drive whose writer was fenced gets a `Restart` at its next write, so it never runs a new effect.
-  `followUpOnce` sends one more turn into a session that has answered, with a prompt the host names, at most once: it
-  is a `never` effect on its own key (`followUpKey(session, name)`), so a crash inside it leaves it interrupted, and the
-  turn a crash cut off is settled (`settleOpenTurn`), never resumed. Its prompt's submission has an id of its own
-  (`follow-up:<key>`), and the settle is named only that one, so it never withdraws a person's message. Its
-  `beforeRequest` goes ahead of the host's and holds the follow-up's paid requests to `reserveUsd`, counted from its
-  first request; an unknown spend is refused.
-  `followUpState(records)` tells a host, before it resumes an open turn, whether that turn is a follow-up's.
   `./process` is the shared layer for harnesses that run as a child process: the native journal, the transcript, the
   recovery note, the tool bridge, the built-ins' hook-pair calls, the inbox (and `waitForSubmissions`, for a harness that
-  waits for input while a turn runs), and `zodShapeFromJsonSchema`, for harness SDKs whose tool APIs take zod.
+  waits for input while a turn runs), `zodShapeFromJsonSchema`, for harness SDKs whose tool APIs take zod, and
+  `settleTurn`, the transcript's end for a turn a session settles (`settleOpenTurn`).
+- `./kernel/cap` is the one spend cap every harness books through, the same rule and words for each: it admits a paid step
+  (a model request on any harness, a decision, a priced tool) under the run's cap at the catalog's price, tiers included,
+  holds and books it, and a step that does not fit parks the run for a raise. `beforeRequestOf` is the check on the
+  runner's booking (the model proxy's requests); `createCap`/`openCap` is the host's own ledger (decisions, priced tools);
+  `parkOf`, `checkRaise` and `followUpOf` decide what a refusal and a raise do to the run.
 - `./host` is the session's model proxy, provider-neutral: on the loopback interface, it admits only the session's key,
   only the routes a `ProviderPolicy` lists (by exact path text, with no query or one the route lists exactly; a route
   may also be answered by the proxy, or be free, like a token count), and strict JSON, has the policy shape or refuse the

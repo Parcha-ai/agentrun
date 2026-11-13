@@ -18,12 +18,14 @@ try {
   await writeFile(fixture, `import { z } from 'zod';
 import {defineWorkflow,runTypedWorkflow} from '../packages/dsl/dist/index.js';
 import {createJevRunner,type JevOptions} from '../packages/jev/dist/index.js';
-import {createPiRunner,type PiRunnerOptions} from '../packages/pi/dist/index.js';
+import {AgentRun,AgentRunError,type ClientOptions,type Run} from '../packages/client/dist/index.js';
 import {openRecovery,withRecovery,memoryStore,type RecoveryJournal,type RecoveryStore} from '../packages/dsl/dist/recovery/index.js';
 const workflow=defineWorkflow({name:'floor',schemas:{Input:z.strictObject({text:z.string()}),Output:z.strictObject({text:z.string()})},input:'Input',output:{schema:'Output',path:'result'},steps:[{node:'code',label:'copy',code:'s=>({result:{text:s.text}})'}]});
-async function consumer(jev:JevOptions,pi:PiRunnerOptions){
- const result=await runTypedWorkflow(workflow,{text:'typed'},{runJudge:createJevRunner(jev),runNode:createPiRunner(pi)});
+async function consumer(jev:JevOptions,options:ClientOptions,runId:string){
+ const result=await runTypedWorkflow(workflow,{text:'typed'},{runJudge:createJevRunner(jev)});
  if(result.status==='complete'){const text:string=result.output.text;void text;}
+ // A server's run, through the typed client: waited on until it ends.
+ try{const run:Run=await new AgentRun(options).runs.wait(runId);void run;}catch(error){if(error instanceof AgentRunError)void error.message;}
  // @ts-expect-error input must keep its inferred string type.
  await runTypedWorkflow(workflow,{text:42},{});
 }
@@ -33,7 +35,7 @@ void openStore;
 async function recover(){const driver=await openRecovery(memoryStore(),workflow,{key:'floor'});const deps=withRecovery(driver,{});await driver.close();return deps;}
 void recover;\n`);
   await exec('npm', ['install', '--prefix', compiler, '--ignore-scripts', '--no-audit', '--no-fund', '--save-exact', 'typescript@5.4.5'], { cwd: root, timeout: 120_000, maxBuffer: 1024 * 1024 });
-  const result = await exec(process.execPath, [join(compiler, 'node_modules/typescript/bin/tsc'), '--noEmit', '--strict', '--target', 'ES2022', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', fixture], { cwd: root, timeout: 60_000, maxBuffer: 4 * 1024 * 1024 });
+  const result = await exec(process.execPath, [join(compiler, 'node_modules/typescript/bin/tsc'), '--noEmit', '--strict', '--target', 'ES2022', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', '--types', 'node', fixture], { cwd: root, timeout: 60_000, maxBuffer: 4 * 1024 * 1024 });
   process.stdout.write(result.stdout);
   await writeFile(join(root, '.release/typescript-floor.json'), JSON.stringify({ status: 'passed', typescript: '5.4.5', node: process.version }, null, 2) + '\n');
   console.log('All package declarations and inferred boundary contracts compile with TypeScript 5.4.5.');

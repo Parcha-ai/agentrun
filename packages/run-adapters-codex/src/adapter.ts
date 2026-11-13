@@ -9,23 +9,36 @@
 // The host's skills (`skills`) are the only skills Codex lists to the model: written into the session's CODEX_HOME at the
 // start of every drive, where Codex finds a user's skills even in a turn with no environment, and Codex's own bundled
 // skills turned off. With no shell, the model reads a skill's files with `read_skill_file`.
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { join } from "node:path";
-import { READ_SKILL_FILE, readSkillFileTool, skillProblems, toolSchemaProblems, type HostSkill } from "@parcha/agentrun-kernel";
-import type { AdapterEvent, AdapterSession, AgentAdapter, HostTool, SessionIO, SessionSpec, TurnStatus } from "@parcha/agentrun-kernel";
+import { HOST_RESULT_MAX_CHARS, READ_SKILL_FILE, hostedTool, readSkillFileTool, skillProblems, toolSchemaProblems, type HostSkill } from "@parcha/agentrun-kernel";
+import type { AdapterEvent, AdapterSession, AgentAdapter, GateCall, HostTool, SessionIO, SessionSpec, TurnStatus } from "@parcha/agentrun-kernel";
 import { abortedOutcome, openDrive, SessionHalt, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-kernel/kernel";
 import { pendingSubmissions } from "@parcha/agentrun-kernel/kernel";
-import { recoveryNote, transcriptOf } from "@parcha/agentrun-kernel/process";
-import { CODEX_VERSION } from "./binary.js";
+import { NativeJournal, recoveryNote, settleTurn, transcriptOf } from "@parcha/agentrun-kernel/process";
+import { CODEX_MCP_CLIENT } from "./mcp.js";
 import { codexSchemaProblems, describedDescription } from "./schema.js";
+import { markParked } from "./scripts.js";
 import { withCheckedBinary } from "./host/sandbox.js";
 import { verifyCodex } from "./verify.js";
-import { codexHarness, type CodexHarnessOptions } from "./harness.js";
+import { codexHarness, type CodexHarnessOptions, owedSubmissions } from "./harness.js";
+import { isRolloutPath, isSessionMeta, rolloutStream, summarizeRollout, THREAD_STREAM } from "./rollout.js";
 import { type ConfineChild, localMachine, type MachineSeed, sessionDir } from "./host/machine.js";
-import { serialWriter, type ModelProxyOptions } from "@parcha/agentrun-kernel/host";
+import { serialWriter, startModelProxy, type ModelProxyOptions } from "@parcha/agentrun-kernel/host";
+import { codexPolicy, withWebSearches } from "./host/policy.js";
+import { toolImageProblems } from "./tool-images.js";
 
 /** A name app-server accepts for a dynamic tool. */
 const TOOL_NAME = /^[A-Za-z0-9_-]{1,64}$/;
+
+/**
+ * Codex's `tool_output_token_limit`: the host's result bound (HOST_RESULT_MAX_CHARS), as Codex counts it. Codex keeps a
+ * tool's output in the model's history within its truncation policy (10,000 tokens for each model its catalog holds, less
+ * for one it does not) and cuts the middle of a longer one; this sets the policy. Codex counts a token as four bytes of
+ * UTF-8, and a character (a UTF-16 unit) takes at most three, so a result within the bound in any script takes at most
+ * three quarters of a token a character: not a quarter, which holds for ASCII alone.
+ */
+export const CODEX_TOOL_OUTPUT_TOKENS = Math.ceil((HOST_RESULT_MAX_CHARS * 3) / 4);
 
 export interface CodexProvider {
   /** The provider's origin (`https://api.openai.com`): the proxy forwards to its `/v1/responses` only. */
@@ -64,6 +77,9 @@ export interface CodexAdapterOptions {
   log?: (message: string, fields?: Record<string, unknown>) => void;
   /** For tests: a command that speaks app-server's protocol instead of Codex (needs AGENTRUN_CODEX_STANDIN=1 under a test runner). */
   standIn?: { command: string; args?: string[]; env?: Record<string, string> };
+  /** The Codex binary to run, as the host installed it (its path, and its platform package's version): checked against
+   *  the pins as one found here is. Default: found beside this package (findCodex). */
+  binary?: { path: string; packageVersion?: string };
   /** For tests: the fetch the model proxy forwards with. */
   fetch?: typeof fetch;
 }
@@ -72,7 +88,7 @@ export interface CodexAdapterOptions {
  *  The call runs as a kernel effect, whose intent is durable in the session's records before `execute` is entered, so a
  *  crash inside a `never` tool is always reported, never repeated. The copied harness's wait for Codex's own `function_call`
  *  line before it runs such a tool is a second guard (the transcript Codex resumes from), not the one that protects it. */
-function kernelTool(tool: HostTool): KernelTool {
+export function kernelTool(tool: HostTool): KernelTool {
   return {
     name: tool.name,
     // Codex strips some keywords from the schema its model is given: they are said in plain words in the description
@@ -83,19 +99,28 @@ function kernelTool(tool: HostTool): KernelTool {
     async execute(input, io) {
       // The effect's step is `tool:<Codex call id>#<attempt>`: the host sees Codex's call id.
       const callId = (io.stepId ?? "").replace(/^tool:/, "").replace(/#\d+$/, "");
-      const result = await tool.call(input, { callId, signal: io.signal });
+      // The step's attempt: above 0 when a crash cut an earlier attempt and the kernel runs the call again.
+      const attempt = Number(/#(\d+)$/.exec(io.stepId ?? "")?.[1] ?? 0);
+      const result = await tool.call(input, { callId, signal: io.signal, attempt });
+      // A call the host parked for a person's approval did not run: recorded so before its answer, the waiting text.
+      if (result.parked) await markParked(io.ctx, callId);
       if (result.isError) throw new Error(result.text);
-      return result.text;
+      if (!result.images?.length) return result.text;
+      // An image the model can't be sent is the call's error, by the tool's name and the image, not a request refused later.
+      const wrong = toolImageProblems(tool.name, result.images);
+      if (wrong) throw new Error(wrong);
+      // With its images, recorded with the outcome: the answer to Codex carries them after the text (code-mode.ts withImages).
+      return { text: result.text, images: result.images.map((image) => ({ mimeType: image.mimeType, data: image.data })) };
     },
   };
 }
 
 /** The adapter's event for a harness live event, if it has one. */
 function adapterEvent(event: unknown): AdapterEvent | undefined {
-  const e = event as { type?: string; delta?: unknown; name?: unknown; callId?: unknown; args?: unknown; isError?: unknown };
+  const e = event as { type?: string; delta?: unknown; name?: unknown; callId?: unknown; args?: unknown; isError?: unknown; truncated?: unknown };
   if (e?.type === "text" && typeof e.delta === "string") return { type: "text", delta: e.delta };
   if (e?.type === "tool_start" && typeof e.name === "string") return { type: "tool_start", callId: String(e.callId ?? ""), name: e.name, args: e.args };
-  if (e?.type === "tool_end" && typeof e.name === "string") return { type: "tool_end", callId: String(e.callId ?? ""), name: e.name, isError: e.isError === true };
+  if (e?.type === "tool_end" && typeof e.name === "string") return { type: "tool_end", callId: String(e.callId ?? ""), name: e.name, isError: e.isError === true, ...(e.truncated === true ? { truncated: true as const } : {}) };
   return undefined;
 }
 
@@ -110,6 +135,18 @@ function skillsSeed(skills: readonly HostSkill[]): MachineSeed {
   return { dir: "codex-home", files: Object.fromEntries(skills.flatMap((skill) => Object.entries(skill.files).map(([path, text]) => [`${SKILLS_DIR}/${skill.name}/${path}`, text]))) };
 }
 
+/**
+ * The mirrored rollout the next drive resumes Codex from, by the harness's own rule (harness.ts, `resume`: the last
+ * thread, its first line `session_meta`, its path the one the harness derives); none when it would start a new thread.
+ * The settle reads only this, so it and the next Codex agree on what Codex has. The copied harness keeps its own copy
+ * of the rule: its own patch budget has no room for a call here.
+ */
+export async function resumedRollout(journal: NativeJournal): Promise<string[]> {
+  const thread = journal.records<{ threadId: string; path: string }>(THREAD_STREAM).at(-1)?.data;
+  const restored = thread ? (await journal.read<string>(rolloutStream(thread.threadId))).map((r) => r.data) : [];
+  return thread && isSessionMeta(restored[0]) && isRolloutPath(thread.path, thread.threadId) ? restored : [];
+}
+
 export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
   if (options.webSearch !== undefined && options.webSearch !== "live") throw new TypeError("agentrun-harness-codex: webSearch is \"live\" or absent");
   // The skills first: a skill Codex would skip or list under another name is the host's to fix, binary or not.
@@ -119,7 +156,7 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
   const seed = skills.length ? skillsSeed(skills) : undefined;
   // The binary is checked once, here, against the pins: a mismatch or a missing binary is the host's to report, before
   // any run starts (CodexPinMismatch, CodexNotInstalled). A test's stand-in runs no Codex.
-  const checked = options.standIn ? undefined : verifyCodex().path;
+  const checked = options.standIn ? undefined : verifyCodex(options.binary).path;
   const modelFor = (spec: SessionSpec): string => {
     if (typeof options.model === "string") return options.model;
     return (spec.tier && spec.tier !== "default" ? options.model[spec.tier] : undefined) ?? options.model.default;
@@ -127,8 +164,7 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
 
   return {
     id: "codex",
-    version: CODEX_VERSION,
-    capabilities: () => ({ fork: false }),
+    capabilities: () => ({ mcpClient: CODEX_MCP_CLIENT }),
     check(spec) {
       const problems: string[] = [];
       if (spec.context === "fork") problems.push("Codex sessions cannot fork another session's transcript; declare context: \"fresh\"");
@@ -162,18 +198,21 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
       if (!dir) throw new Error("agentrun-harness-codex: a session needs a private directory: the host lends one (io.dir), or pass sessionsDir");
 
       // With skills the model also reads their files (read_skill_file), from the session's own copy of them.
-      const tools: HostTool[] = skills.length ? [...spec.tools, readSkillFileTool(join(sessionDir(dir, "codex-home"), SKILLS_DIR), skills.map((skill) => ({ name: skill.name, files: Object.keys(skill.files) })))] : spec.tools;
+      const tools: HostTool[] = skills.length ? [...spec.tools, hostedTool(io, readSkillFileTool(join(sessionDir(dir, "codex-home"), SKILLS_DIR), skills.map((skill) => ({ name: skill.name, files: Object.keys(skill.files) }))))] : spec.tools;
 
       const effort = spec.effort ?? spec.thinking;
       const harnessOptions: CodexHarnessOptions = {
         tools: tools.map(kernelTool),
+        // The host's gate, asked about each host-tool call before its intent is written.
+        ...(io.gate ? { gate: (call: GateCall) => io.gate!(call) } : {}),
         builtins: false,
         // Codex's bundled skills (imagegen, skill-installer, ...), which it writes under `$CODEX_HOME/skills/.system` at every
         // start, are off in every session, skills or not: the model is shown the host's skills and no others.
         // Codex's `<permissions instructions>` message is off too. It describes Codex's own sandbox ("`sandbox_mode` is
         // `read-only`: The sandbox only permits reading files"), which binds only Codex's built-in tools, and those are off
         // here. The host's tools write, and a model that believed the message refused to write at all (autoqa F13).
-        config: { skills: { bundled: { enabled: false } }, include_permissions_instructions: false },
+        // A host tool's result within the host's bound reaches the model whole (CODEX_TOOL_OUTPUT_TOKENS).
+        config: { skills: { bundled: { enabled: false } }, include_permissions_instructions: false, tool_output_token_limit: CODEX_TOOL_OUTPUT_TOKENS },
         model: modelFor(spec),
         ...(spec.system.length ? { instructions: spec.system.join("\n\n") } : {}),
         ...(effort ? { effort } : {}),
@@ -190,7 +229,12 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
             ...(io.cwd ? { cwd: io.cwd } : {}),
             ...(options.confine ? { confine: options.confine } : {}),
             ...(seed ? { seed } : {}),
+            // The built-ins are off: Codex's own apply_patch, with no environment to run in, is offered to no model
+            // (catalog.ts). A stand-in runs no Codex, so it has no catalog to read.
+            ...(checked !== undefined ? { catalog: { command: checked, ...(options.log ? { log: options.log } : {}) } } : {}),
             ...(options.webSearch ? { webSearch: options.webSearch } : {}),
+            // A granted MCP server's tools: Codex's own MCP client calls them at the proxy (mcp.ts).
+            ...(spec.mcp?.servers.length ? { mcp: spec.mcp } : {}),
             proxy: {
               hooks: io.models,
               tools: tools.map((t) => t.name),
@@ -214,7 +258,9 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
       const open = () => openDrive({ writer, signal: io.signal, live });
       let drive = await open();
       const initial = drive.state();
-      let state: AdapterSession["state"] = recoveryNote(initial) || pendingSubmissions(initial).length
+      // A turn is open while the session holds input no turn placed, or a turn with no end (its recovery note).
+      const holdsTurn = (folded: typeof initial) => Boolean(recoveryNote(folded)) || pendingSubmissions(folded).length > 0;
+      let state: AdapterSession["state"] = holdsTurn(initial)
         ? "open_turn"
         : initial.submissions.length === 0 && turnsIn(drive).length === 0 ? "new" : "idle";
 
@@ -226,17 +272,24 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
         state = "idle";
         running = (async () => {
           let outcome: { status: TurnStatus; error?: string };
+          // A turn whose answer the model cut at its output limit says so on its turn_end: stopReason "length", with the cut
+          // answer's output tokens when the provider said them.
+          let stop: { stopReason?: "length"; outputTokens?: number } = {};
           try {
             await harness.drive(current);
-            const ended = turnsIn(current).slice(before).at(-1)?.data as { status?: TurnStatus; error?: string } | undefined;
+            const ended = turnsIn(current).slice(before).at(-1)?.data as { status?: TurnStatus; error?: string; stopReason?: string; outputTokens?: unknown } | undefined;
+            if (ended?.stopReason === "length") stop = { stopReason: "length", ...(typeof ended.outputTokens === "number" ? { outputTokens: ended.outputTokens } : {}) };
             outcome = ended?.status ? { status: ended.status, ...(ended.error ? { error: ended.error } : {}) } : { status: "failed", error: "the turn ended with no outcome in the session's records" };
           } catch (error) {
             // Stopped by the session or its host: interrupted. Halted by anything else: failed, naming why.
             outcome = current.signal.aborted
               ? abortedOutcome(current.signal, io.signal)
               : { status: "failed", error: String((error as Error)?.message ?? error).slice(0, 500) };
+            // A stop that landed before this turn ran (while send() was still recording its prompt) found no turn to stop,
+            // and reads the session as it was: the turn is open now, its prompt pending, so it reads open_turn.
+            if (current.signal.aborted) state = holdsTurn(current.state()) ? "open_turn" : "idle";
           }
-          io.onEvent({ type: "turn_end", status: outcome.status });
+          io.onEvent({ type: "turn_end", status: outcome.status, ...stop });
           return outcome;
         })();
         return running;
@@ -249,6 +302,32 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
         if (drive.signal.aborted && !io.signal.aborted) drive = await open();
       };
 
+      // The session's host port (AdapterSession.port): the host's own requests beside Codex's (a learned workflow's node)
+      // on the session's route, built from the drive proxy's own pieces (the same policy, origin, credential, price and the
+      // session's booking, io.models), but on a listener the session holds: a drive's machine closes its proxy when the
+      // drive ends (a park ends the turn; a restart opens none), and an approved call runs before any turn. It serves side
+      // keys only: Codex never holds its key, and the policy's exec watch (announce) never sees these requests. Its policy
+      // object is its own, as a side call's should be. Closed with the session, or when the host lets the session go.
+      // Started once the session's drive is open, the last step that can fail: an open that fails leaves no listener.
+      const search = options.webSearch === "live";
+      const hostPort = await startModelProxy({
+        policy: codexPolicy({ model: modelFor(spec), tools: [], ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}), ...(search ? { webSearch: "live" as const } : {}) }),
+        hooks: io.models,
+        model: modelFor(spec),
+        origin: options.provider.origin,
+        credential: async () => (await options.provider.credential()) ?? "",
+        ...(options.price ? { price: search ? withWebSearches(options.price) : options.price } : {}),
+        ...(options.log ? { log: options.log } : {}),
+        ...(options.fetch ? { fetch: options.fetch } : {}),
+      }, randomBytes(32).toString("base64url"));
+      let hostClosed = false;
+      const closeHost = async () => {
+        if (hostClosed) return;
+        hostClosed = true;
+        await hostPort.close().catch(() => {});
+      };
+      io.signal.addEventListener("abort", () => void closeHost(), { once: true });
+      if (io.signal.aborted) await closeHost();
       return {
         get state() { return state; },
         async send(text) {
@@ -261,6 +340,21 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
           await ready();
           void run();
         },
+        async settleOpenTurn(options = {}) {
+          if (state !== "open_turn") throw new Error("agentrun-harness-codex: there is no turn to settle");
+          await ready();
+          // The turn's end in the session's own transcript, as a turn that ends writes it: the next open finds no open turn,
+          // and the next turn carries no recovery of this one. Nothing is sent. A prompt the turn placed that Codex never
+          // recorded (the stop came before its rollout held it: Codex answers turn/start first) is carried into the next
+          // message, as an unplaced one is; a follow-up's own is not. The record is the rollout as the session keeps it (its
+          // mirror, which a stopped drive adds nothing to), the rollout the next Codex is resumed from: a prompt it lacks the
+          // next turn's model never saw, so carrying it never sends it twice.
+          const folded = drive.state();
+          const rollout = await resumedRollout(new NativeJournal(drive));
+          const unsent = owedSubmissions(folded, recoveryNote(folded)?.turn.placed ?? [], summarizeRollout(rollout).clientIds).map((s) => s.id);
+          await settleTurn(drive, { unsent, ...(options.opening === undefined ? {} : { host: options.opening }) });
+          state = "idle";
+        },
         async turnEnd() {
           if (!running) throw new Error("agentrun-harness-codex: no turn is in flight");
           return running;
@@ -268,13 +362,20 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
         async interrupt() {
           drive.halt?.(new SessionHalt("interrupted"));
           await running?.catch(() => {});
+          // The turn it stopped is still open in the session (an interrupt writes no end, and a prompt it stopped before
+          // the harness placed it is still pending): open_turn, so a host that is done with it settles it here.
+          if (holdsTurn(drive.state())) state = "open_turn";
         },
         async close() {
           if (closed) return;
           closed = true;
           drive.halt?.(new SessionHalt("closed"));
           await running?.catch(() => {});
+          await closeHost();
         },
+        // The session's one model route, for the host's own request beside Codex's: the session's host port, which never
+        // restarts once closed.
+        port: (label: string) => (closed || hostClosed ? undefined : { url: hostPort.url, key: hostPort.sideKey(label), model: modelFor(spec), api: "openai-responses" as const }),
       };
     },
   };

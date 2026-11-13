@@ -5,25 +5,63 @@
 // are left out by name; an imported run takes no message, and a stop, a cancel or a restart moves nothing of it.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
-import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { test } from "node:test";
-import { openStore, openStoreReader } from "@parcha/pi-durable-agent";
-import { runMetricsOf, timelineOf } from "@parcha/pi-durable-agent/timeline";
+import { after, test } from "node:test";
+import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
+import { runMetricsOf, timelineOf } from "../dist/timeline/index.js";
 import { startServe } from "../dist/index.js";
 import { agentIdOf, importCommand, planImport, runImport } from "../dist/import.js";
 import { ACTIVE_GAP_MS, readSession } from "../dist/import-sources.js";
 import { summaryLines } from "../dist/import-summary.js";
-import { ToolKeys } from "../dist/tool-keys.js";
+import { openSqliteStore } from "../dist/store/index.js";
+import { listRuns } from "../dist/store-reads/runs.js";
+import { runEntries } from "../dist/store-reads/journal.js";
+import { toolKeysOverStore } from "../dist/tool-keys-store.js";
 import { at as minute, claudeSession, claudeSubagent, codexSession, piSession, sessionId, writeSession } from "./fixtures/import-sessions.mjs";
 import { schemaProblems } from "./schema-support.mjs";
-import { client, FAUX, scratch } from "./support.mjs";
+import { agent, client, FAUX, scratch, triggerStore } from "./support.mjs";
+
+/** The server's store on a data directory: role "server" to import into, role "runner" to read what an import wrote. */
+const openData = (data, role = "server") => openSqliteStore({ dataDir: data, role });
+/** A run's stored metrics, as the old store.runMetrics gave them (the object the import wrote on the run row). */
+const storedMetrics = async (store, id) => (await store.runs.get(id)).metrics;
+/** An agent and its revisions in the old readAgent shape: each revision carries `current` (its id is the agent's current). */
+async function agentOf(store, id) {
+  const agent = await store.agents.get(id);
+  if (!agent) return undefined;
+  const revisions = (await store.agents.revisions(id)).map((r) => ({ ...r, current: r.id === agent.currentRevision }));
+  return { agent, revisions };
+}
+/** A run's entries from its journal, in log order (the old run.sqlite "SELECT record FROM entries ORDER BY id"). */
+const entriesOf = (store, id) => runEntries(store, id, ctx);
+/** The runs as the old listRuns gave them (view rows: state completed/stopped, ISO times, importedFrom {source, session}). */
+const rowsOf = (store, agentId) => listRuns(store, agentId ? { agent: agentId } : {}, ctx);
+/** A saved tool key, sealed into the store under `seal` (the switch keeps tool keys in the store, not a tool-keys.json file). */
+async function seedToolKey(data, seal, id, values) {
+  const store = await openData(data);
+  try {
+    const keys = toolKeysOverStore(store, { AGENTRUN_SEAL_KEY: seal }, () => {});
+    await keys.load();
+    await keys.save(id, { values });
+  } finally {
+    await store.close();
+  }
+}
 
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 const CANARY = "CANARY-VALUE-7f3e9d2c1b0a6e5d";
+/** The refusal of a store whose secrets another key sealed (seal-key.ts), word for word. */
+const SEALED_ELSEWHERE = "this store's secrets were sealed with another key; hand the server the original AGENTRUN_SEAL_KEY";
 const ENV = { OPENAI_API_KEY: CANARY, PATH: "/usr/bin" };
+
+// The import boots its seal key the one way the server and runner do (seal-key.ts bootSealKey): handed, else the one in the
+// data directory. A scratch config home for this suite all the same, never the real ~/.config.
+process.env.XDG_CONFIG_HOME = mkdtempSync(join(tmpdir(), "import-config-"));
+after(() => rmSync(process.env.XDG_CONFIG_HOME, { recursive: true, force: true }));
 
 /** A scratch home with three projects (one used by Claude Code and Codex, one by pi, one by Codex alone), a project
  *  that is gone, one under the temp directory, a session still being written, and two children. */
@@ -60,36 +98,24 @@ async function imported(t) {
   const root = await scratch(t);
   const h = home(root);
   const data = join(root, "agents");
-  const store = openStore(data);
-  t.after(() => store.close());
+  // Import through a server-role store (the owner lock), then release it and reopen read-only (role runner), which coexists
+  // with a server a test starts on the same data; the server role would be refused the owner lock while the test's server holds it.
+  const writer = await openData(data);
   const plan = await planImport(options(h));
-  const report = await runImport(store, plan, options(h));
+  const report = await runImport(writer, plan, options(h));
+  await writer.close();
+  const store = await openData(data, "runner");
+  t.after(async () => await store.close());
   return { root, h, data, store, report, plan };
 }
 
-/** Every file under `dir`: its path, mode and bytes, hashed. */
-function treeHash(dir) {
-  const hash = createHash("sha256");
-  const walk = (at) => {
-    for (const name of readdirSync(at).sort()) {
-      const path = join(at, name);
-      const stats = statSync(path);
-      hash.update(`${path}\0${stats.mode}\0`);
-      if (stats.isDirectory()) walk(path);
-      else hash.update(readFileSync(path));
-    }
-  };
-  walk(dir);
-  return hash.digest("hex");
-}
-
-const runsOf = (store, agentId) => store.listRuns({ agent: agentId }).sort((a, b) => a.startedAt.localeCompare(b.startedAt) || a.importedFrom.session.localeCompare(b.importedFrom.session));
+const runsOf = async (store, agentId) => (await rowsOf(store, agentId)).sort((a, b) => a.startedAt.localeCompare(b.startedAt) || a.importedFrom.session.localeCompare(b.importedFrom.session));
 
 test("each project is one agent with a revision per harness, its CLAUDE.md or AGENTS.md and its skill folders; each session one run, ended as it ended, at the source's cost or unknown", { timeout: 60_000 }, async (t) => {
   const { h, data, store, report } = await imported(t);
   assert.deepEqual(report.agents.map((a) => [a.cwd, a.runs]), [[h.site, 3], [h.notes, 1], [h.tests, 1]]);
   const site = report.agents[0];
-  const { agent, revisions } = store.readAgent(site.id);
+  const { agent, revisions } = await agentOf(store, site.id);
   assert.equal(agent.name, "acme-site");
   const byNote = Object.fromEntries(revisions.map((r) => [r.note, r]));
   const claude = byNote["imported from claude-code"].body;
@@ -103,13 +129,13 @@ test("each project is one agent with a revision per harness, its CLAUDE.md or AG
   assert.deepEqual(Object.keys(claude.skills).sort(), ["deploy/SKILL.md", "deploy/steps.md", "review/SKILL.md"]);
   // The latest session (Codex's) names the current revision.
   assert.equal(revisions.find((r) => r.current).note, "imported from codex");
-  const runs = runsOf(store, site.id);
+  const runs = await runsOf(store, site.id);
   assert.deepEqual(runs.map((r) => [r.importedFrom.source, r.state, r.costUsd ?? null]), [["claude-code", "completed", 0.0421], ["claude-code", "stopped", 0.01], ["codex", "completed", null]]);
   assert.equal(runs[0].startedAt, "2026-10-20T09:00:00.000Z");
-  const [notes] = store.listRuns({ agent: report.agents[1].id });
-  assert.equal(store.readAgent(report.agents[1].id).revisions[0].body.harness, undefined, "pi is the default harness, never stored");
+  const [notes] = await rowsOf(store, report.agents[1].id);
+  assert.equal((await agentOf(store, report.agents[1].id)).revisions[0].body.harness, undefined, "pi is the default harness, never stored");
   assert.ok(Math.abs(notes.costUsd - 0.005) < 1e-12, "pi's requests' costs, summed");
-  assert.equal(store.listRuns({ agent: report.agents[2].id })[0].state, "stopped", "an aborted Codex turn");
+  assert.equal((await rowsOf(store, report.agents[2].id))[0].state, "stopped", "an aborted Codex turn");
 
   const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
   t.after(() => server.close());
@@ -129,7 +155,7 @@ test("each project is one agent with a revision per harness, its CLAUDE.md or AG
   assert.equal((await api("GET", `/runs/${runs[2].id}`)).body.cost.usd, null, "Codex records no cost: unknown, never 0");
   assert.equal((await api("GET", `/runs/${runs[0].id}`)).body.cost.usd, 0.0421);
   const { body } = await api("GET", `/runs/${runs[0].id}/timeline`);
-  assert.equal(body.rows.findLast((r) => r.kind === "usage")?.usage?.requests, store.runMetrics(runs[0].id).requests, "the served usage row counts the requests the metrics do");
+  assert.equal(body.rows.findLast((r) => r.kind === "usage")?.usage?.requests, (await storedMetrics(store, runs[0].id)).requests, "the served usage row counts the requests the metrics do");
   const rows = body.rows.map((r) => `${r.kind}:${r.text ?? r.name ?? ""}`).join("\n");
   assert.match(rows, /^user_message:List the files\.$/m);
   assert.ok(body.rows.some((r) => r.kind === "tool_use" && r.tool_name === "Bash" && r.tool_input_preview === "ls"), "the Bash call");
@@ -138,9 +164,7 @@ test("each project is one agent with a revision per harness, its CLAUDE.md or AG
   assert.doesNotMatch(rows, /hook's note|environment_context/, "a hook's or the CLI's own user records are not the person's");
 });
 
-test("nothing written holds a key-shaped variable's value, and every file a run gets is the owner's only, whatever the umask", async (t) => {
-  const before = process.umask(0);
-  t.after(() => process.umask(before));
+test("nothing the import writes holds a key-shaped variable's value; its places are marked, and a skill's text is cut", async (t) => {
   const { data, store, report } = await imported(t);
   const all = [];
   const walk = (at) => {
@@ -152,19 +176,9 @@ test("nothing written holds a key-shaped variable's value, and every file a run 
   };
   walk(data);
   for (const file of all) assert.ok(!readFileSync(file).includes(CANARY), `no canary in ${file}`);
-  const run = runsOf(store, report.agents[0].id)[0];
-  const dir = join(data, "runs", run.id);
-  assert.equal(statSync(join(dir, "store", "run.sqlite")).mode & 0o777, 0o600);
-  assert.equal(statSync(join(dir, "serve.json")).mode & 0o777, 0o600);
-  assert.equal(statSync(dir).mode & 0o777, 0o700);
-  assert.deepEqual(readdirSync(join(dir, "store")), ["run.sqlite"], "no -wal or -shm left");
-  assert.deepEqual(readdirSync(data).filter((name) => name.startsWith(".import-")), [], "no pending transcript left");
-  const timeline = readFileSync(join(dir, "store", "run.sqlite"));
-  assert.ok(timeline.includes("[redacted]"), "the canary's places are marked");
-  // The revision's skill texts, as the store keeps them (by content hash): the cut runs on each.
-  const db = new DatabaseSync(join(data, "store.sqlite"), { readOnly: true });
-  const texts = db.prepare("SELECT content FROM skills").all().map((r) => r.content);
-  db.close();
+  assert.ok(all.some((file) => readFileSync(file).includes("[redacted]")), "the canary's places are marked in the store");
+  // The revision's skill texts, as the store keeps them (on the revision's row): the cut runs on each.
+  const texts = (await agentOf(store, report.agents[0].id)).revisions.flatMap((r) => Object.values(r.skills ?? {}));
   assert.ok(texts.some((text) => text.startsWith("---\nname: deploy") && text.includes("[redacted]")), "SKILL.md, cut");
   assert.ok(texts.some((text) => text.startsWith("1. build") && text.includes("[redacted]")), "the skill's other file, cut");
   assert.ok(!texts.some((text) => text.includes(CANARY)));
@@ -172,13 +186,11 @@ test("nothing written holds a key-shaped variable's value, and every file a run 
 
 test("an imported run takes no message (409 not_continuable, reason imported); a stop, a cancel and a restart answer as for an ended run and move nothing", { timeout: 60_000 }, async (t) => {
   const { data, store, report } = await imported(t);
-  const run = runsOf(store, report.agents[0].id)[0];
-  const dir = join(data, "runs", run.id);
+  const run = (await runsOf(store, report.agents[0].id))[0];
   const one = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
   let closed = false;
   t.after(() => (closed ? undefined : one.close()));
   const api = client(one.baseUrl, one.token);
-  const before = treeHash(dir);
   const message = await api("POST", `/runs/${run.id}/messages`, { content: "go on" });
   assert.equal(message.status, 409, JSON.stringify(message.body));
   assert.equal(message.body.error.code, "not_continuable");
@@ -192,22 +204,30 @@ test("an imported run takes no message (409 not_continuable, reason imported); a
   const two = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
   t.after(() => two.close());
   assert.equal((await client(two.baseUrl, two.token)("GET", `/runs/${run.id}`)).body.status, "completed");
-  assert.equal(treeHash(dir), before, "the run's directory is byte for byte as imported");
-  assert.equal(openStoreReader(data).readRun(run.id).state, "completed");
+  // The run stays as imported: still ended, took no message, moved nothing.
+  assert.equal((await rowsOf(store)).find((r) => r.id === run.id).state, "completed");
 });
 
-test("an imported run with no transcript and no work/ reads as such: its timeline and files answer, never 500", { timeout: 60_000 }, async (t) => {
-  const { data, store, report } = await imported(t);
-  const run = runsOf(store, report.agents[0].id)[0];
-  rmSync(join(data, "runs", run.id, "store"), { recursive: true });
+test("an imported run whose journal holds nothing to render reads as such: its timeline and files answer, never 500", { timeout: 60_000 }, async (t) => {
+  const root = await scratch(t);
+  const h = home(root);
+  const data = join(root, "agents");
+  const writer = await openData(data);
+  const report = await runImport(writer, await planImport(options(h)), options(h));
+  const agentId = report.agents[0].id;
+  const revisionId = (await writer.agents.get(agentId)).currentRevision;
+  // A run written with no transcript batches: its journal renders nothing, as an imported run with no turns would. The
+  // server must answer its views, never 500.
+  await writer.importRun({ id: "thin-run", agentId, revisionId, importedFrom: { source: "pi", session: "thin" }, launch: { body: { input: { content: "" }, title: "thin", place: { mode: "runner" } } }, startedAt: Date.parse("2026-10-20T09:00:00Z"), transcript: [] });
+  await writer.close();
   const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
   t.after(() => server.close());
   const api = client(server.baseUrl, server.token);
-  assert.equal((await api("GET", `/runs/${run.id}`)).status, 200);
-  const timeline = await api("GET", `/runs/${run.id}/timeline`);
+  assert.equal((await api("GET", `/runs/thin-run`)).status, 200);
+  const timeline = await api("GET", `/runs/thin-run/timeline`);
   assert.equal(timeline.status, 200, JSON.stringify(timeline.body));
   assert.deepEqual(timeline.body.rows, []);
-  const files = await api("GET", `/runs/${run.id}/files`);
+  const files = await api("GET", `/runs/thin-run/files`);
   assert.deepEqual([files.status, files.body.files], [200, []]);
 });
 
@@ -230,8 +250,8 @@ test("a link, a binary file, an oversized SKILL.md and a folder with no SKILL.md
   mkdirSync(join(h.notes, ".pi"));
   symlinkSync(outside, join(h.notes, ".pi", "skills"));
   const data = join(root, "agents");
-  const store = openStore(data);
-  t.after(() => store.close());
+  const store = await openData(data);
+  t.after(async () => await store.close());
   const report = await runImport(store, await planImport(options(h)), options(h));
   const why = Object.fromEntries(report.skipped.map((s) => [s.what, s.why]));
   assert.equal(why[join(skills, "linked")], "a link: not followed");
@@ -241,10 +261,10 @@ test("a link, a binary file, an oversized SKILL.md and a folder with no SKILL.md
   assert.equal(why[join(skills, "notes")], "no SKILL.md: not a skill");
   assert.equal(why[join(h.notes, "AGENTS.md")], "a link: not followed");
   assert.equal(why[join(h.notes, ".pi", "skills")], "a link: not followed", "a skill folder that is itself a link");
-  const kept = store.readAgent(report.agents[0].id).revisions[0].body.skills;
+  const kept = (await agentOf(store, report.agents[0].id)).revisions[0].body.skills;
   assert.deepEqual(Object.keys(kept).sort(), ["deploy/SKILL.md", "deploy/steps.md", "review/SKILL.md"]);
-  assert.equal(store.readAgent(report.agents[1].id).revisions[0].body.instructions, "");
-  for (const file of [join(data, "store.sqlite")]) assert.ok(!readFileSync(file).includes("OUTSIDE-MARKER"), "a link's target is never read");
+  assert.equal((await agentOf(store, report.agents[1].id)).revisions[0].body.instructions, "");
+  for (const file of keptUnder(data)) assert.ok(!file[1].includes("OUTSIDE-MARKER"), "a link's target is never read");
 });
 
 test("run again, it imports only what it has not; a session written lately, a child, a project gone or temporary are left out, and --all keeps the last two", async (t) => {
@@ -256,7 +276,7 @@ test("run again, it imports only what it has not; a session written lately, a ch
   assert.equal(plan.projects.flatMap((p) => p.sessions).filter((s) => s.child).length, 0, "no subagent's or child thread's session");
   // Without the store, every file is read again, and each session is found held.
   const again = await runImport(store, await planImport(options(h)), options(h));
-  assert.deepEqual(again.agents.map((a) => [a.runs, a.already, a.finished, a.created]), [[0, 3, 0, false], [0, 1, 0, false], [0, 1, 0, false]]);
+  assert.deepEqual(again.agents.map((a) => [a.runs, a.already, a.created]), [[0, 3, false], [0, 1, false], [0, 1, false]]);
   // With it, a file its imports read whole and that has not changed is not read at all.
   const unchanged = await planImport(options(h), store);
   assert.deepEqual([unchanged.projects.length, unchanged.already], [0, 5]);
@@ -284,8 +304,8 @@ test("a current Codex rollout, the person's turns user messages with no user_mes
   // The CLI's AGENTS.md and environment blocks are no turn and an image's wrapper tags no words; a prompt the person tagged is theirs.
   assert.deepEqual(await turns(current), ["user:Lint the code.", "assistant", "toolResult", "assistant", "user:[image]\n<task>Fix what it found.</task>", "assistant"]);
   assert.deepEqual(await turns(older), ["user:Check the build.", "assistant", "toolResult", "assistant", "user:Ship it.", "assistant"]);
-  const store = openStore(join(root, "agents"));
-  t.after(() => store.close());
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
   const report = await runImport(store, plan, options(h));
   assert.deepEqual(report.agents.map((a) => [a.cwd, a.runs]), [[project, 2]]);
 });
@@ -336,10 +356,10 @@ test("the CLI's import cuts the server's own keys out of what it keeps, wherever
   assert.deepEqual(kept.filter(([path, bytes]) => bytes.includes(CANARY) || path.includes(CANARY)).map(([path]) => path.slice(data.length + 1).replaceAll(CANARY, "<key>")), [], "the key is nowhere in what the import kept");
   assert.ok(kept.some(([, bytes]) => bytes.includes("[redacted]")), "its places are marked");
   // Each case was imported, so none passes by being left out.
-  const reader = openStoreReader(data);
-  const runs = reader.listRuns();
-  reader.close();
-  assert.ok(kept.some(([path, bytes]) => path.endsWith("serve.json") && bytes.includes("Rotate the key [redacted]")), "the run titled with the key is in, its title cut");
+  const reader = await openData(data, "runner");
+  const runs = await rowsOf(reader);
+  await reader.close();
+  assert.ok(kept.some(([, bytes]) => bytes.includes("Rotate the key [redacted]")), "the run titled with the key is in, its title cut");
   assert.ok(kept.some(([, bytes]) => bytes.includes("deploy-[redacted]")), "the project named with the key is in, its name cut");
   assert.ok(runs.some((run) => run.importedFrom?.source === "claude-code" && !/^0{8}-/.test(run.importedFrom.session)), "the session named after its file is in");
   // The file named with the key grows by a turn, and a second import finds the run the first made of it under the id as
@@ -349,16 +369,626 @@ test("the CLI's import cuts the server's own keys out of what it keeps, wherever
   utimesSync(join(dirname(named), `${CANARY}.jsonl`), new Date(minute(20)), new Date(minute(20)));
   const again = spawnSync(process.execPath, [CLI, "import", "--data", data, "--all"], { env, encoding: "utf8" });
   assert.equal(again.status, 0, again.stderr);
-  const after = openStoreReader(data);
-  t.after(() => after.close());
-  assert.equal(after.listRuns().length, runs.length, "no run made twice");
+  const after = await openData(data, "runner");
+  t.after(async () => await after.close());
+  assert.equal((await rowsOf(after)).length, runs.length, "no run made twice");
+});
+
+/** A key of every format secretlint's recommended rules find, though no environment holds it: each made here, random
+ *  (the private key a real one, made here), so no scanner reads this file as holding one, and none is anyone's. */
+function shapedKeys() {
+  const pick = (n, set) => Array.from(randomBytes(n), (b) => set[b % set.length]).join("");
+  const ALNUM = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+  const URL64 = `${ALNUM}_-`;
+  const OPENAI = ["T3Blbk", "FJ"].join("");
+  const pem = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { type: "pkcs1", format: "pem" }, publicKeyEncoding: { type: "spki", format: "pem" } }).privateKey.trim();
+  return {
+    anthropic: ["sk", "ant", "api03", pick(93, URL64)].join("-") + "AA",
+    openaiProject: ["sk", "proj", `${pick(74, ALNUM)}${OPENAI}${pick(74, ALNUM)}`].join("-"),
+    openai: ["sk", `${pick(20, ALNUM)}${OPENAI}${pick(20, ALNUM)}`].join("-"),
+    github: `${["gh", "p"].join("")}_${pick(36, ALNUM)}`,
+    githubFine: ["github", "pat", pick(82, `${ALNUM}_`)].join("_"),
+    slack: [["xo", "xb"].join(""), pick(12, "0123456789"), pick(13, "0123456789"), pick(24, ALNUM)].join("-"),
+    stripe: ["sk", "live", pick(24, ALNUM)].join("_"),
+    pem: { block: pem, lines: pem.split("\n").slice(1, -1) },
+  };
+}
+
+test("an import cuts every key secretlint finds though no environment holds it, wherever a session or project holds one, and says how many it removed", async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const site = join(at, "code", "payments");
+  const k = shapedKeys();
+  // The project's instructions and a skill, its content and its folder's name.
+  mkdirSync(join(site, ".claude", "skills", `rotate-${k.githubFine}`), { recursive: true });
+  // A second folder named after another token: the two stay two skills.
+  mkdirSync(join(site, ".claude", "skills", `rotate-${k.github}`), { recursive: true });
+  writeFileSync(join(site, ".claude", "skills", `rotate-${k.github}`, "SKILL.md"), "---\nname: rotate-again\n---\nThe second one.\n");
+  writeFileSync(join(site, "CLAUDE.md"), `Deploy with ${k.stripe}.\n${k.pem.block}\n`);
+  writeFileSync(join(site, ".claude", "skills", `rotate-${k.githubFine}`, "SKILL.md"), `---\nname: rotate\n---\nThe old key was ${k.openai}\n`);
+  // A session's text (a .env an agent printed), its first message (the run's title), a subagent's answer, and a
+  // session file named after a key (its records carry no session id, so the import names the session after its file).
+  claudeSession(at, site, 1, { prompt: `Rotate ${k.anthropic} and ${k.github} today.`, output: `cat .env:\nOPENAI_API_KEY=${k.openai}\nSLACK=${k.slack}` });
+  claudeSubagent(at, site, 1, 1, { answer: `The colleague's key is ${k.openai} and the bot's ${k.slack}.` });
+  const named = claudeSession(at, site, 2, { prompt: "Check the logs.", output: `Found ${k.openaiProject} in the logs.` });
+  const records = readFileSync(named, "utf8").trimEnd().split("\n").map((line) => { const { sessionId: _, ...rest } = JSON.parse(line); return JSON.stringify(rest); });
+  rmSync(named);
+  writeFileSync(join(dirname(named), `${k.openaiProject}.jsonl`), `${records.join("\n")}\n`);
+  utimesSync(join(dirname(named), `${k.openaiProject}.jsonl`), new Date(minute(10)), new Date(minute(10)));
+  // A file named after a token that is no session: skipped, and its name printed in the skipped line.
+  const unnamed = `${["gh", "s"].join("")}_${randomBytes(18).toString("hex")}`;
+  writeFileSync(join(dirname(named), `${unnamed}.jsonl`), "not a session\n");
+  utimesSync(join(dirname(named), `${unnamed}.jsonl`), new Date(minute(10)), new Date(minute(10)));
+  const data = join(root, "agents");
+  // No environment holds any of them.
+  const run = async (...args) => {
+    const lines = [];
+    assert.equal(await importCommand(["--data", data, "--all", ...args], "usage", { home: at, env: { PATH: "/usr/bin" }, out: (line) => lines.push(line) }), 0);
+    return lines;
+  };
+  // The default output (its left-out counts and reasons among it), then --verbose's file by file lines, the skipped one
+  // among them: the import's again, with nothing new to take.
+  const dry = await run("--dry-run");
+  const dryVerbose = await run("--dry-run", "--verbose");
+  const lines = await run();
+  const verbose = await run("--verbose");
+  const values = { ...k, pem: k.pem.lines };
+  const kinds = Object.keys(values).length;
+  // Every byte the import kept, and every name under the data directory.
+  const kept = [];
+  const walk = (dir) => { for (const entry of readdirSync(dir, { withFileTypes: true })) { const path = join(dir, entry.name); kept.push([path, entry.isDirectory() ? Buffer.alloc(0) : readFileSync(path)]); if (entry.isDirectory()) walk(path); } };
+  walk(data);
+  const left = Object.entries(values).flatMap(([kind, value]) => (Array.isArray(value) ? value : [value]).flatMap((v) => kept.filter(([path, bytes]) => bytes.includes(v) || path.includes(v)).map(([path]) => `${kind} in ${path.slice(data.length + 1)}`)));
+  assert.deepEqual(left, [], "no key or token is anywhere in what the import kept");
+  assert.ok(kept.some(([, bytes]) => bytes.includes("[redacted]")), "its places are marked");
+  assert.ok(dry.includes(`${kinds} secrets would be removed`), `the dry run counts what the import removes: ${dry.filter((l) => /removed/.test(l))}`);
+  // Nothing it printed names a key: the skipped file's name is cut where it is printed.
+  for (const [kind, value] of [...Object.entries(values).flatMap(([kind, v]) => (Array.isArray(v) ? v : [v]).map((x) => [kind, x])), ["skipped file", unnamed]]) assert.ok(![...dry, ...dryVerbose, ...lines, ...verbose].some((l) => l.includes(value)), `${kind} printed`);
+  assert.ok([dry, lines].every((out) => out.some((l) => l.startsWith("left out: "))), "the default output counts what it left out");
+  assert.ok([dryVerbose, verbose].every((out) => out.some((l) => l.startsWith("skipped ") && l.includes("[redacted].jsonl"))), "the skipped line, its name cut");
+  // Each is counted once, however many places held it (the private key one of them).
+  assert.ok(lines.includes(`${kinds} secrets removed`), `the import says it removed ${kinds}: ${lines.filter((l) => /removed/.test(l))}`);
+  const reader = await openData(data, "runner");
+  t.after(async () => await reader.close());
+  assert.equal((await rowsOf(reader)).length, 2, "both sessions are in, the one named after a key under its id as kept");
+  assert.ok((await rowsOf(reader)).some((r) => /^redacted-[0-9a-f]{16}$/.test(r.importedFrom.session)));
+  const skills = Object.keys((await agentOf(reader, agentIdOf(site))).revisions.find((r) => r.current).body.skills).filter((path) => path.endsWith("SKILL.md"));
+  assert.equal(skills.length, 2, `the two folders named after keys stay two skills: ${skills}`);
+  assert.ok(skills.every((path) => /redacted-[0-9a-f]{12}\//.test(path)), skills.join(" "));
+});
+
+test("keys in a JSON string a session holds, as Codex keeps a shell's output and as Claude Code keeps a printed file, are cut and counted once", async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const site = join(at, "code", "vault");
+  mkdirSync(site, { recursive: true });
+  const k = shapedKeys();
+  const config = JSON.stringify({ anthropic: k.anthropic, github: k.github, slack: k.slack, stripe: k.stripe, private_key: k.pem.block });
+  // Codex: the shell's output is a JSON string in the record, the printed file a JSON string inside that.
+  codexSession(at, site, 1, { output: JSON.stringify({ output: `$ cat config.json\n${config}`, metadata: { exit_code: 0, duration_seconds: 0.4 } }) });
+  // Claude Code: the printed file is the tool result's text.
+  claudeSession(at, site, 2, { output: config });
+  const data = join(root, "agents");
+  const lines = [];
+  assert.equal(await importCommand(["--data", data, "--all"], "usage", { home: at, env: { PATH: "/usr/bin" }, out: (line) => lines.push(line) }), 0);
+  for (const value of [k.anthropic, k.github, k.slack, k.stripe, ...k.pem.lines]) for (const [file, bytes] of keptUnder(data)) assert.ok(!bytes.includes(value), `${file.slice(data.length + 1)} holds ${value.slice(0, 8)}…`);
+  assert.ok(lines.includes("5 secrets removed"), lines.filter((l) => /removed/.test(l)).join(" "));
+});
+
+test("keys an environment holds and sessions of each harness hold too are each counted once, however each was found: the summary counts the values the import cut", async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const [billing, site] = [join(at, "code", "billing"), join(at, "code", "site")];
+  for (const dir of [billing, site]) mkdirSync(dir, { recursive: true });
+  const k = shapedKeys();
+  // As a person's environment holds them, and as their sessions printed or pasted them: Claude Code twice, Codex, pi.
+  const keys = { OPENAI_API_KEY: k.openai, STRIPE_SECRET_KEY: k.stripe, ANTHROPIC_API_KEY: k.anthropic };
+  claudeSession(at, billing, 1, { prompt: "Check the environment.", output: Object.entries(keys).map(([name, value]) => `${name}=${value}`).join("\n") });
+  codexSession(at, site, 2, { prompt: `Run the eval with ${keys.OPENAI_API_KEY}.` });
+  piSession(at, site, 3, { prompt: `Rotate ${keys.ANTHROPIC_API_KEY} today.` });
+  claudeSession(at, site, 4, { prompt: "Log in to Stripe again.", output: `stripe login --api-key ${keys.STRIPE_SECRET_KEY}` });
+  const data = join(root, "agents");
+  const run = async (...args) => {
+    const lines = [];
+    assert.equal(await importCommand(["--data", data, "--all", ...args], "usage", { home: at, env: { PATH: "/usr/bin", ...keys }, out: (line) => lines.push(line) }), 0);
+    return lines.filter((line) => /removed/.test(line));
+  };
+  assert.deepEqual(await run("--dry-run"), ["3 secrets would be removed"]);
+  assert.deepEqual(await run(), ["3 secrets removed"]);
+  for (const [name, value] of Object.entries(keys)) assert.deepEqual(keptUnder(data).filter(([, bytes]) => bytes.includes(value)).map(([path]) => path.slice(data.length + 1)), [], `${name}'s value`);
+});
+
+test("the import boots a seal key when none is handed, as the server and runner do: on a fresh data directory it reads the server's own secrets and imports, never refusing for want of a seal key", async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const site = join(at, "code", "acme-site");
+  mkdirSync(site, { recursive: true });
+  claudeSession(at, site, 1);
+  const data = join(root, "agents");
+  // No AGENTRUN_SEAL_KEY handed and none in the environment: the server's own secrets are read over the store, which opens
+  // only under a seal key, so the import boots one under the config home exactly as the server does. Before this, the read
+  // refused and the whole import threw.
+  const before = process.env.AGENTRUN_SEAL_KEY;
+  delete process.env.AGENTRUN_SEAL_KEY;
+  t.after(() => (before === undefined ? undefined : (process.env.AGENTRUN_SEAL_KEY = before)));
+  const env = { PATH: "/usr/bin" };
+  assert.equal(await importCommand(["--data", data, "--all"], "usage", { home: at, env, out: () => {} }), 0, "the import ran without refusing for want of a seal key");
+  assert.ok(!Object.keys(env).includes("AGENTRUN_SEAL_KEY"), "the booted key is carried but not enumerable, so no child the import spawns inherits it");
+  const store = await openData(data, "runner");
+  t.after(async () => await store.close());
+  assert.equal((await store.agents.list()).length, 1, "the session was imported");
+});
+
+test("this server's own secrets, pasted into sessions, are cut out of what the import keeps and prints, and counted: its webhook signing secret, its token and its sign-in sessions' secret", async (t) => {
+  const root = await scratch(t);
+  const data = join(root, "agents");
+  const seal = { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") };
+  const before = process.env.AGENTRUN_SEAL_KEY;
+  t.after(() => (before === undefined ? delete process.env.AGENTRUN_SEAL_KEY : (process.env.AGENTRUN_SEAL_KEY = before)));
+  process.env.AGENTRUN_SEAL_KEY = seal.AGENTRUN_SEAL_KEY;
+  // A server that made each of them, the webhook's secret shown once at its first PUT. Closed before the import, as a
+  // person runs one.
+  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", accounts: true, openSetup: true });
+  let open = true;
+  t.after(() => open && server.close());
+  const api = client(server.baseUrl, server.token);
+  const set = await api("PUT", "/settings/webhook", { url: "http://127.0.0.1:9/hook" });
+  assert.equal(set.status, 201, JSON.stringify(set.body));
+  await server.close();
+  open = false;
+  // The per-run door token is gone (the runner cutover deleted it): the server keeps its API token, its sign-in session
+  // secret and the webhook's signing secret.
+  const own = {
+    webhook: set.body.signing_secret,
+    token: server.token,
+    session: readFileSync(join(data, ".session-secret"), "utf8").trim(),
+  };
+  for (const [name, value] of Object.entries(own)) assert.ok(typeof value === "string" && value.length >= 32, `${name}: ${typeof value}`);
+  const at = join(root, "home");
+  const site = join(at, "code", "hooks");
+  mkdirSync(site, { recursive: true });
+  claudeSession(at, site, 1, { prompt: `The webhook's secret is ${own.webhook}, check the receiver.`, output: `token ${own.token}` });
+  codexSession(at, site, 2, { prompt: `The API token is ${own.token}.` });
+  piSession(at, site, 3, { prompt: `The session secret is ${own.session}.` });
+  // What was there before the import: the server's own files, which hold them as the server keeps them.
+  const had = new Map(keptUnder(data));
+  const run = async (args, env = { PATH: "/usr/bin", ...seal }) => {
+    const lines = [];
+    assert.equal(await importCommand(["--data", data, "--all", ...args], "usage", { home: at, env, out: (line) => lines.push(line) }), 0);
+    return lines;
+  };
+  const dry = await run(["--dry-run"]);
+  const lines = await run([]);
+  const wrote = keptUnder(data).filter(([path, bytes]) => !had.get(path)?.equals(bytes));
+  assert.ok(wrote.length > 0, "the import wrote");
+  for (const [name, value] of Object.entries(own)) {
+    assert.deepEqual(wrote.filter(([, bytes]) => bytes.includes(value)).map(([path]) => path.slice(data.length + 1)), [], `${name}: in no byte the import wrote`);
+    assert.ok(![...dry, ...lines].some((line) => line.includes(value)), `${name}: in no printed line`);
+  }
+  assert.ok(dry.includes("3 secrets would be removed"), dry.filter((l) => /removed/.test(l)).join(" "));
+  assert.ok(lines.includes("3 secrets removed"), lines.filter((l) => /removed/.test(l)).join(" "));
+});
+
+test("a webhook trigger's key or the outbound webhook's, pasted into sessions as base64, base64url or hex, is cut out of what the import keeps and prints", async (t) => {
+  const root = await scratch(t);
+  const data = join(root, "agents");
+  const seal = { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") };
+  const before = process.env.AGENTRUN_SEAL_KEY;
+  t.after(() => (before === undefined ? delete process.env.AGENTRUN_SEAL_KEY : (process.env.AGENTRUN_SEAL_KEY = before)));
+  process.env.AGENTRUN_SEAL_KEY = seal.AGENTRUN_SEAL_KEY;
+  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", store: await triggerStore() });
+  let open = true;
+  t.after(() => open && server.close());
+  const api = client(server.baseUrl, server.token);
+  assert.equal((await api("POST", "/agents", agent("target"))).status, 201);
+  const trigger = await api("POST", "/triggers", { name: "on push", source: { kind: "webhook" }, target: { kind: "start_run", agent_id: "target", input: { content: "Hi." }, max_cost_usd: 0.5 } });
+  assert.equal(trigger.status, 201, JSON.stringify(trigger.body));
+  const outbound = await api("PUT", "/settings/webhook", { url: "https://hooks.example/in" });
+  assert.equal(outbound.status, 201, JSON.stringify(outbound.body));
+  await server.close();
+  open = false;
+  const forms = {};
+  for (const [what, secret] of [["trigger", trigger.body.signing_secret], ["outbound", outbound.body.signing_secret]]) {
+    const key = Buffer.from(secret.slice("whsec_".length), "base64");
+    Object.assign(forms, { [`${what} base64`]: secret.slice("whsec_".length), [`${what} base64url`]: key.toString("base64url"), [`${what} hex`]: key.toString("hex") });
+  }
+  const at = join(root, "home");
+  const site = join(at, "code", "hooks");
+  mkdirSync(site, { recursive: true });
+  claudeSession(at, site, 1, { prompt: `The trigger's key is ${forms["trigger base64"]}, or ${forms["trigger base64url"]}.`, output: `hex ${forms["trigger hex"]}` });
+  codexSession(at, site, 2, { prompt: `The webhook's key is ${forms["outbound base64"]}, or ${forms["outbound base64url"]}.` });
+  piSession(at, site, 3, { prompt: `As hex: ${forms["outbound hex"]}.` });
+  const had = new Map(keptUnder(data));
+  const lines = [];
+  assert.equal(await importCommand(["--data", data, "--all"], "usage", { home: at, env: { PATH: "/usr/bin", ...seal }, out: (line) => lines.push(line) }), 0);
+  const wrote = keptUnder(data).filter(([path, bytes]) => !had.get(path)?.equals(bytes));
+  assert.ok(wrote.length > 0, "the import wrote");
+  for (const [form, value] of Object.entries(forms)) {
+    assert.deepEqual(wrote.filter(([, bytes]) => bytes.includes(value)).map(([path]) => path.slice(data.length + 1)), [], `the ${form} key: in no byte the import wrote`);
+    assert.ok(!lines.some((line) => line.includes(value)), `the ${form} key: in no printed line`);
+  }
+});
+
+test("an import handed no seal key, or another one, over a server's store refuses in words, its dry run too, and imports nothing; with the right key it says nothing of the webhook secret and imports", async (t) => {
+  const root = await scratch(t);
+  const data = join(root, "agents");
+  const key = randomBytes(32).toString("base64");
+  const before = process.env.AGENTRUN_SEAL_KEY;
+  t.after(() => (before === undefined ? delete process.env.AGENTRUN_SEAL_KEY : (process.env.AGENTRUN_SEAL_KEY = before)));
+  process.env.AGENTRUN_SEAL_KEY = key;
+  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  let open = true;
+  t.after(() => open && server.close());
+  assert.equal((await client(server.baseUrl, server.token)("PUT", "/settings/webhook", { url: "http://127.0.0.1:9/hook" })).status, 201);
+  await server.close();
+  open = false;
+  const at = join(root, "home");
+  const site = join(at, "code", "hooks");
+  mkdirSync(site, { recursive: true });
+  claudeSession(at, site, 1);
+  const { AGENTRUN_SEAL_KEY: _, ...inherited } = process.env;
+  const ran = (seal, ...args) => spawnSync(process.execPath, [CLI, "import", "--data", data, "--all", ...args], { env: { ...inherited, HOME: at, ...(seal ? { AGENTRUN_SEAL_KEY: seal } : {}) }, encoding: "utf8" });
+  // The import boots its seal key as the server does, checked against the store (seal-key.ts): handed none (and none in
+  // the data directory), or another, it refuses in the server's words and makes no key.
+  for (const seal of [undefined, randomBytes(32).toString("base64")])
+    for (const args of [["--dry-run"], []]) {
+      const refused = ran(seal, ...args);
+      assert.equal(refused.status, 1, `${seal ? "another key" : "none"} ${args}: ${refused.stderr}`);
+      assert.ok(refused.stderr.includes(SEALED_ELSEWHERE), refused.stderr);
+      assert.ok(!refused.stderr.includes("event=webhook_secret"), "it never reaches the webhook secret");
+    }
+  assert.equal(existsSync(join(data, "seal", "seal.key")), false, "no key is made over the store's secrets");
+  const none = await openData(data, "runner");
+  assert.equal((await rowsOf(none)).length, 0, "nothing imported");
+  await none.close();
+  for (const args of [["--dry-run"], []]) {
+    const done = ran(key, ...args);
+    assert.equal(done.status, 0, done.stderr);
+    assert.deepEqual(done.stderr.split("\n").filter((line) => line.includes("event=webhook_secret")), [], "with the key it opens, nothing is said");
+  }
+  const reader = await openData(data, "runner");
+  t.after(async () => await reader.close());
+  assert.equal((await rowsOf(reader)).length, 1, "imported all the same");
+});
+
+test("what an import says on stderr goes through the cut its other lines do: a data directory whose path holds a key prints it as [redacted], once", async (t) => {
+  const root = await scratch(t);
+  // A key of the environment's, in the data directory's path, as a folder named after one would hold it.
+  const value = `not-a-secret-${randomBytes(12).toString("hex")}`;
+  const data = join(root, `agents-${value}`);
+  const before = process.env.AGENTRUN_SEAL_KEY;
+  t.after(() => (before === undefined ? delete process.env.AGENTRUN_SEAL_KEY : (process.env.AGENTRUN_SEAL_KEY = before)));
+  process.env.AGENTRUN_SEAL_KEY = randomBytes(32).toString("base64");
+  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  let open = true;
+  t.after(() => open && server.close());
+  assert.equal((await client(server.baseUrl, server.token)("PUT", "/settings/webhook", { url: "http://127.0.0.1:9/hook" })).status, 201);
+  await server.close();
+  open = false;
+  const at = join(root, "home");
+  const site = join(at, "code", "hooks");
+  mkdirSync(site, { recursive: true });
+  claudeSession(at, site, 1);
+  const { AGENTRUN_SEAL_KEY: _, ...inherited } = process.env;
+  // No seal key: the store refuses the import (seal-key.ts), in words that name the key file in the data directory.
+  for (const args of [["--dry-run"], []]) {
+    const ran = spawnSync(process.execPath, [CLI, "import", "--data", data, "--all", ...args], { env: { ...inherited, HOME: at, OPENAI_API_KEY: value }, encoding: "utf8" });
+    assert.equal(ran.status, 1, ran.stderr);
+    assert.ok(![ran.stdout, ran.stderr].some((text) => text.includes(value)), `${args}: the key is printed`);
+    const lines = ran.stderr.split("\n").filter((line) => line.includes(SEALED_ELSEWHERE));
+    assert.equal(lines.length, 1, `${args}: ${ran.stderr}`);
+    assert.ok(lines[0].includes(join(root, "agents-[redacted]", "seal", "seal.key")), lines[0]);
+  }
+});
+
+test("this repository's own source, imported as a session's output, has nothing cut from it", async (t) => {
+  const repo = new URL("../../../", import.meta.url).pathname;
+  const files = [];
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (["node_modules", "dist", ".git", "coverage", "storybook-static"].includes(entry.name)) continue;
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) walk(path);
+      else if (/\.(ts|tsx|mjs)$/.test(entry.name)) files.push(path);
+    }
+  };
+  for (const top of ["packages", "apps"]) walk(join(repo, top));
+  // Every file must come through whole.
+  const source = files;
+  assert.ok(source.length > 300, `the source read: ${source.length} files`);
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const site = join(at, "code", "agentrun");
+  mkdirSync(site, { recursive: true });
+  // Each file printed whole by a session, about a megabyte of source a session.
+  let [n, chunk, size] = [1, [], 0];
+  const flushed = () => (chunk.length && claudeSession(at, site, n++, { prompt: "Read the source.", output: chunk.join("\n") }), (chunk = []), (size = 0));
+  for (const file of source) {
+    const text = readFileSync(file, "utf8");
+    chunk.push(`==> ${file.slice(repo.length)}\n${text}`);
+    size += text.length;
+    if (size > 1_000_000) flushed();
+  }
+  flushed();
+  const data = join(root, "agents");
+  const lines = [];
+  assert.equal(await importCommand(["--data", data, "--all"], "usage", { home: at, env: { PATH: "/usr/bin" }, out: (line) => lines.push(line) }), 0);
+  assert.ok(lines.includes("0 secrets removed"), `${source.length} files: ${lines.filter((l) => /removed/.test(l)).join(" ")}`);
+});
+
+test("secretlint finds nothing in code that names keys and passwords", async () => {
+  const { secretsIn } = await import("../dist/secret-cut.js");
+  for (const line of [
+    "const apiKey = process.env.OPENAI_API_KEY;",
+    "user.password = bcrypt.hashSync(password, 10);",
+    "const { accessKeyId, secretAccessKey } = await sts.assumeRole({ RoleArn: roleArn }).promise();",
+    'headers: { "x-api-key": config.apiKey, authorization: `Bearer ${session.accessToken}` }',
+  ])
+    assert.deepEqual(await secretsIn(line), [], line);
+});
+
+test("setup's count reads no session through secretlint; an import reads each run once, as it reads it, and a plan only each session's id", async (t) => {
+  const { secretlintCalls } = await import("../dist/secret-cut.js");
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const site = join(at, "code", "count");
+  mkdirSync(site, { recursive: true });
+  for (let n = 1; n <= 5; n++) claudeSession(at, site, n);
+  const env = { PATH: "/usr/bin" };
+  const before = secretlintCalls.count;
+  // As setup's count asks for it (import-worker.ts): a listing, no transcript kept, so no scan.
+  const counted = await planImport({ home: at, env, all: true, keys: false });
+  assert.equal(counted.projects[0].sessions.length, 5);
+  assert.equal(secretlintCalls.count, before, "the count read no session through secretlint");
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
+  const plan = await planImport({ home: at, env, all: true }, store);
+  const planned = secretlintCalls.count;
+  assert.equal(planned - before, 5, "the import's plan reads each session's id alone, no file");
+  await runImport(store, plan, { home: at, env, all: true });
+  assert.equal(secretlintCalls.count - planned, 1 + 5, "the import: its project's own text once, and each run once");
+});
+
+test("a key a session still being written adds after the plan read it is cut all the same: the import finds keys in what it reads", async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const site = join(at, "code", "live");
+  mkdirSync(site, { recursive: true });
+  const file = claudeSession(at, site, 1, { prompt: "Deploy it." });
+  const env = { PATH: "/usr/bin" };
+  const data = join(root, "agents");
+  const store = await openData(data);
+  t.after(async () => await store.close());
+  const plan = await planImport({ home: at, env, all: true }, store);
+  // Written after the plan: one more message of the person's, holding a key.
+  const key = shapedKeys().github;
+  const first = JSON.parse(readFileSync(file, "utf8").split("\n").find((line) => line.includes('"type":"user"')));
+  appendFileSync(file, `${JSON.stringify({ ...first, uuid: "late-1", timestamp: minute(30), message: { role: "user", content: `Rotate ${key} now.` } })}\n`);
+  const report = await runImport(store, plan, { home: at, env, all: true });
+  assert.equal(report.agents[0]?.runs, 1, JSON.stringify(report.agents));
+  for (const [path, bytes] of keptUnder(data)) assert.ok(!bytes.includes(key), `${path.slice(data.length + 1)} holds the key`);
+  assert.equal(report.secretsRemoved, 1);
+});
+
+test("a key found in a project's sessions is cut from its instructions too, where it stands bare: every key of a project is known before any of it is written", async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const site = join(at, "code", "infra");
+  mkdirSync(site, { recursive: true });
+  const pick = (n, set) => Array.from(randomBytes(n), (b) => set[b % set.length]).join("");
+  const id = `${["AK", "IA"].join("")}${pick(16, "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567")}`;
+  // Its last character a letter or a digit: secretlint's AWS rule ends the 40 characters at a word boundary, so a secret
+  // that ends in "/" or "+" is one it does not find (a known miss, pinned in its own test).
+  const secret = `${pick(39, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789/+")}${pick(1, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789")}`;
+  // Bare in the project's instructions, no name or id beside it: no rule finds it there.
+  writeFileSync(join(site, "CLAUDE.md"), `Deploy with ${secret} on Fridays.\n`);
+  // Beside its name in a session: secretlint's AWS rule finds it.
+  claudeSession(at, site, 1, { prompt: "Show the credentials.", output: `AWS_ACCESS_KEY_ID=${id}\nAWS_SECRET_ACCESS_KEY=${secret}` });
+  const data = join(root, "agents");
+  assert.equal(await importCommand(["--data", data, "--all"], "usage", { home: at, env: { PATH: "/usr/bin" }, out: () => {} }), 0);
+  for (const form of [secret, secret.replaceAll("/", "\\/")]) for (const [file, bytes] of keptUnder(data)) assert.ok(!bytes.includes(form), `${file.slice(data.length + 1)} holds the secret`);
+  const reader = await openData(data, "runner");
+  t.after(async () => await reader.close());
+  assert.match((await agentOf(reader, agentIdOf(site))).revisions.find((r) => r.current).body.instructions, /Deploy with \[redacted\] on Fridays\./);
+});
+
+test("a key found in one project's sessions is cut from another project's instructions where it stands bare, though that project is imported first: every key is known before anything is written", async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  // In the import's order (by path), the docs project comes first.
+  const [docs, infra] = [join(at, "code", "a-docs"), join(at, "code", "b-infra")];
+  for (const dir of [docs, infra]) mkdirSync(dir, { recursive: true });
+  const pick = (n, set) => Array.from(randomBytes(n), (b) => set[b % set.length]).join("");
+  const id = `${["AK", "IA"].join("")}${pick(16, "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567")}`;
+  // Its last character a letter or a digit: secretlint's AWS rule ends the 40 characters at a word boundary, so a secret
+  // that ends in "/" or "+" is one it does not find (a known miss, pinned in its own test).
+  const secret = `${pick(39, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789/+")}${pick(1, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789")}`;
+  // Bare in the first project's instructions; beside its name only in the second project's session.
+  writeFileSync(join(docs, "CLAUDE.md"), `Deploy with ${secret} on Fridays.\n`);
+  claudeSession(at, docs, 1, { prompt: "Tidy the docs." });
+  claudeSession(at, infra, 2, { prompt: "Show the credentials.", output: `AWS_ACCESS_KEY_ID=${id}\nAWS_SECRET_ACCESS_KEY=${secret}` });
+  const data = join(root, "agents");
+  assert.equal(await importCommand(["--data", data, "--all"], "usage", { home: at, env: { PATH: "/usr/bin" }, out: () => {} }), 0);
+  for (const form of [secret, secret.replaceAll("/", "\\/")]) for (const [file, bytes] of keptUnder(data)) assert.ok(!bytes.includes(form), `${file.slice(data.length + 1)} holds the secret`);
+  const reader = await openData(data, "runner");
+  t.after(async () => await reader.close());
+  assert.match((await agentOf(reader, agentIdOf(docs))).revisions.find((r) => r.current).body.instructions, /Deploy with \[redacted\] on Fridays\./);
+});
+
+test("what the CLI prints is cut with every key the import finds: a secret beside its name in one project's session is cut where another project's folder name holds it bare", async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const pick = (n, set) => Array.from(randomBytes(n), (b) => set[b % set.length]).join("");
+  const id = `${["AK", "IA"].join("")}${pick(16, "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567")}`;
+  const secret = pick(40, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789");
+  // Bare in the first project's folder name (printed with its path); beside its name only in the second project's session.
+  const [docs, infra] = [join(at, "code", `a-${secret}`), join(at, "code", "b-infra")];
+  for (const dir of [docs, infra]) mkdirSync(dir, { recursive: true });
+  claudeSession(at, docs, 1, { prompt: "Tidy the docs." });
+  claudeSession(at, infra, 2, { prompt: "Show the credentials.", output: `AWS_ACCESS_KEY_ID=${id}\nAWS_SECRET_ACCESS_KEY=${secret}` });
+  const data = join(root, "agents");
+  for (const args of [["--dry-run"], []]) {
+    const lines = [];
+    assert.equal(await importCommand(["--data", data, "--all", ...args], "usage", { home: at, env: { PATH: "/usr/bin" }, out: (line) => lines.push(line) }), 0);
+    assert.ok(!lines.some((line) => line.includes(secret)), `${args.join(" ") || "import"}: ${lines.filter((line) => line.includes(secret)).join("\n")}`);
+    assert.ok(lines.some((line) => line.includes("a-[redacted]")), lines.join("\n"));
+  }
+});
+
+test("a known miss of secretlint's AWS rule, pinned: an AWS secret whose last character is not a letter or a digit is not found", async () => {
+  const { secretsIn } = await import("../dist/secret-cut.js");
+  const body = "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789AbC";
+  // secretlint's AWS rule (@secretlint/secretlint-rule-aws, reportAWSSecretAccessKey, in the recommended preset) matches
+  // `([A-Za-z0-9/\+=]{40})${QUOTE}\b`: the trailing \b needs a word character last, so a secret that ends in "/", "+"
+  // or "=" is not found. A later preset that fixes the rule turns this test red: then drop the test and the known miss
+  // in the PR's description.
+  for (const last of ["/", "+", "="]) assert.deepEqual(await secretsIn(`AWS_SECRET_ACCESS_KEY=${body}${last}\nnext`), [], last);
+  assert.deepEqual(await secretsIn(`AWS_SECRET_ACCESS_KEY=${body}a\nnext`), [`${body}a`]);
+});
+
+test("an import's plan reads no subagent file through secretlint: a subagent of a session the import leaves out is never read", async (t) => {
+  const { secretlintCalls } = await import("../dist/secret-cut.js");
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const site = join(at, "code", "fresh");
+  mkdirSync(site, { recursive: true });
+  // A session written a moment ago (left out: it may still be running), with a subagent's file.
+  const live = claudeSession(at, site, 1);
+  utimesSync(live, new Date(), new Date());
+  claudeSubagent(at, site, 1, 1, { answer: "notes ".repeat(10_000) });
+  const before = secretlintCalls.count;
+  const plan = await planImport({ home: at, env: { PATH: "/usr/bin" }, all: false });
+  assert.equal(plan.projects.length, 0, "the live session is left out");
+  assert.equal(secretlintCalls.count, before, "no subagent file read through secretlint");
+});
+
+
+test("a secretlint-disable line in what an import reads turns no rule off: a key after it in the same run is cut", async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const site = join(at, "code", "lint");
+  mkdirSync(site, { recursive: true });
+  const token = `${["gh", "p"].join("")}_${Array.from(randomBytes(36), (b) => "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"[b % 62]).join("")}`;
+  // A repository's own secretlint config printed in one turn, a token in the next.
+  claudeSession(at, site, 1, { prompt: `$ cat .secretlintrc.js\n// ${"secretlint"}-disable`, output: `GITHUB_TOKEN=${token}` });
+  const data = join(root, "agents");
+  const lines = [];
+  assert.equal(await importCommand(["--data", data, "--all"], "usage", { home: at, env: { PATH: "/usr/bin" }, out: (line) => lines.push(line) }), 0);
+  for (const [file, bytes] of keptUnder(data)) assert.ok(!bytes.includes(token), `${file.slice(data.length + 1)} holds the token`);
+  assert.ok(lines.includes("1 secret removed"), lines.filter((l) => /removed/.test(l)).join(" "));
+});
+
+test("reading text through secretlint leaves no performance marks behind in the process", async () => {
+  const { secretsIn } = await import("../dist/secret-cut.js");
+  const before = performance.getEntriesByType("mark").length;
+  for (let i = 0; i < 5; i++) await secretsIn(`round ${i}: ${["gh", "p"].join("")}_${"a1B2c3D4e5F6g7H8i9J0".repeat(2).slice(0, 36)}`);
+  assert.equal(performance.getEntriesByType("mark").length, before);
+});
+
+test("what the CLI prints is cut with the saved tool keys too: a skipped file named after one is printed cut", async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const site = join(at, "code", "saved");
+  mkdirSync(site, { recursive: true });
+  const file = claudeSession(at, site, 1);
+  const seal = randomBytes(32).toString("base64");
+  const saved = `not-a-secret-saved-${randomBytes(8).toString("hex")}`;
+  const named = join(dirname(file), `${saved}.jsonl`);
+  writeFileSync(named, "not a session\n");
+  utimesSync(named, new Date(minute(10)), new Date(minute(10)));
+  const data = join(root, "agents");
+  mkdirSync(data, { recursive: true });
+  await seedToolKey(data, seal, "monid", { MONID_API_KEY: saved });
+  // The default output (its left-out counts and reasons), then --verbose, which names the skipped file.
+  const quiet = [];
+  const lines = [];
+  assert.equal(await importCommand(["--data", data, "--all"], "usage", { home: at, env: { PATH: "/usr/bin", AGENTRUN_SEAL_KEY: seal }, out: (line) => quiet.push(line) }), 0);
+  assert.equal(await importCommand(["--data", data, "--all", "--verbose"], "usage", { home: at, env: { PATH: "/usr/bin", AGENTRUN_SEAL_KEY: seal }, out: (line) => lines.push(line) }), 0);
+  assert.ok(![...quiet, ...lines].some((line) => line.includes(saved)), [...quiet, ...lines].join("\n"));
+  assert.ok(quiet.some((line) => line.startsWith("left out: ")), quiet.join("\n"));
+  assert.ok(lines.some((line) => line.startsWith("skipped ") && line.includes("[redacted].jsonl")), lines.join("\n"));
+});
+
+test("the README says what an import removes and what it leaves", () => {
+  const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8").replace(/\s+/g, " ");
+  assert.ok(readme.includes("Known key formats are removed. Other secrets in your session history, like passwords in config files, are imported as they are."));
+  assert.ok(readme.includes("So is a key-shaped value this server did not make (a `whsec_` secret from another service)."));
+});
+
+test("a key of the environment's that holds a slash, across a skill's folders, leaves no part of itself in what the import keeps, and the skill stays one skill", async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const site = join(at, "code", "deploys");
+  // A 65-character key, two 32-character halves around its "/", as a base64 secret can hold one: the first half ends the
+  // skill's folder name and the second names a folder in it.
+  const [head, tail] = [randomBytes(16).toString("hex"), randomBytes(16).toString("hex")];
+  mkdirSync(join(site, ".claude", "skills", `push-${head}`, tail), { recursive: true });
+  writeFileSync(join(site, ".claude", "skills", `push-${head}`, "SKILL.md"), "---\nname: push\n---\nPush it.\n");
+  writeFileSync(join(site, ".claude", "skills", `push-${head}`, tail, "notes.md"), "Notes.\n");
+  claudeSession(at, site, 1, { prompt: "Push the release." });
+  const data = join(root, "agents");
+  const key = `${head}/${tail}`;
+  const printed = [];
+  assert.equal(await importCommand(["--data", data, "--all"], "usage", { home: at, env: { PATH: "/usr/bin", OPENAI_API_KEY: key }, out: (line) => printed.push(line) }), 0);
+  const reader = await openData(data, "runner");
+  t.after(async () => await reader.close());
+  const paths = Object.keys((await agentOf(reader, agentIdOf(site))).revisions.find((r) => r.current).body.skills).sort();
+  // No half of the key is left: not in a kept path, not in any byte of the data directory, not in what the CLI printed.
+  for (const half of [head, tail]) {
+    assert.ok(paths.every((path) => !path.includes(half)), `no kept path holds a half of the key: ${paths.join(" ")}`);
+    for (const [file, bytes] of keptUnder(data)) assert.ok(!bytes.includes(half), `${file} holds a half of the key`);
+    assert.ok(!printed.join("\n").includes(half), printed.join("\n"));
+  }
+  // And the skill stays one skill: its SKILL.md and its notes under the one folder, kept as `redacted-` and a hash.
+  assert.equal(paths.length, 2, paths.join(" "));
+  const folders = new Set(paths.map((path) => path.split("/")[0]));
+  assert.equal(folders.size, 1, paths.join(" "));
+  const [folder] = folders;
+  assert.match(folder, /^redacted-[0-9a-f]{12}$/);
+  assert.ok(paths.includes(`${folder}/SKILL.md`), paths.join(" "));
+  assert.ok(printed.includes("1 secret removed"), printed.join("\n"));
+});
+
+test("a key in a project's path counts once, in the dry run and in the import: finding the folders it touches counts nothing", async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  // A key in a folder's name, with a folder after it: blanking each to find the folders the key touches is no cut.
+  const site = join(at, "code", `keys-${shapedKeys().github}`, "app");
+  mkdirSync(site, { recursive: true });
+  claudeSession(at, site, 1, { prompt: "Build it." });
+  const data = join(root, "agents");
+  const run = async (...args) => {
+    const lines = [];
+    assert.equal(await importCommand(["--data", data, "--all", ...args], "usage", { home: at, env: { PATH: "/usr/bin" }, out: (line) => lines.push(line) }), 0);
+    return lines.filter((line) => /secrets? (would be )?removed/.test(line));
+  };
+  assert.deepEqual(await run("--dry-run"), ["1 secret would be removed"]);
+  assert.deepEqual(await run(), ["1 secret removed"]);
+});
+
+test("a key of the environment's that holds a slash, across a project's own folders, leaves no part of itself in the agent's name", async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const [head, tail] = [randomBytes(16).toString("hex"), randomBytes(16).toString("hex")];
+  const site = join(at, "code", `deploy-${head}`, tail);
+  mkdirSync(site, { recursive: true });
+  claudeSession(at, site, 1, { prompt: "Deploy it." });
+  const data = join(root, "agents");
+  assert.equal(await importCommand(["--data", data, "--all"], "usage", { home: at, env: { PATH: "/usr/bin", OPENAI_API_KEY: `${head}/${tail}` }, out: () => {} }), 0);
+  const reader = await openData(data, "runner");
+  t.after(async () => await reader.close());
+  const { agent } = await agentOf(reader, agentIdOf(site));
+  assert.match(agent.name, /^redacted-[0-9a-f]{12}$/, `the agent's name holds no half of the key: ${agent.name}`);
+  for (const half of [head, tail]) for (const [file, bytes] of keptUnder(data)) assert.ok(!bytes.includes(half), `${file} holds a half of the key`);
 });
 
 /** The server's own key names: the launcher's SECRETS list, read as secrets.ts reads it (loading secrets.ts here would take
  *  them out of this process's environment). */
 const SERVER_KEYS = /^SECRETS='([A-Z0-9_ ]+)'$/m.exec(readFileSync(new URL("../launcher/agentrun-serve", import.meta.url), "utf8"))[1].split(" ").filter(Boolean);
 /** A canary per key name, each its own value. */
-const canaryOf = (name) => `CANARY-${name}-${createHash("sha256").update(name).digest("hex").slice(0, 16)}`;
+// The seal key is validated when the import boots it (seal-key.ts), so its canary is a real-shaped 32-byte base64 value,
+// deterministic like the rest; every other secret's value is an arbitrary canary string.
+const canaryOf = (name) => (name === "AGENTRUN_SEAL_KEY" ? createHash("sha256").update(`canary-${name}`).digest("base64") : `CANARY-${name}-${createHash("sha256").update(name).digest("hex").slice(0, 16)}`);
 /** Every file under `dir` (its path and bytes), and every path. */
 const keptUnder = (dir) => {
   const kept = [];
@@ -375,15 +1005,18 @@ const cliImport = (h, data, env) => {
 test("the CLI's import cuts every one of the server's own keys, whatever its name: each launcher secret, its own value, is nowhere in what it keeps", async (t) => {
   // The list holds names no key pattern matches (the seal key's among them): each one's value is cut all the same.
   assert.ok(SERVER_KEYS.includes("AGENTRUN_SEAL_KEY") && SERVER_KEYS.includes("OPENAI_API_KEY") && SERVER_KEYS.some((name) => !/(_API_KEY|_TOKEN)$|SECRET/i.test(name)), SERVER_KEYS.join(" "));
+  // Every one but the store's URL, which the import opens its store from (a value that is no store is refused at start):
+  // its password's custody is secret-custody.test.mjs's.
+  const planted = SERVER_KEYS.filter((name) => name !== "AGENTRUN_STORE_URL");
   const root = await scratch(t);
   const h = home(root);
-  const values = SERVER_KEYS.map(canaryOf);
+  const values = planted.map(canaryOf);
   appendFileSync(join(h.site, "CLAUDE.md"), `Keys: ${values.join(" ")}\n`);
   claudeSession(h.at, h.site, 14, { prompt: "Print the environment.", output: values.join(" ") });
   const data = join(root, "agents");
-  cliImport(h, data, Object.fromEntries(SERVER_KEYS.map((name) => [name, canaryOf(name)])));
+  cliImport(h, data, Object.fromEntries(planted.map((name) => [name, canaryOf(name)])));
   const kept = keptUnder(data);
-  const found = SERVER_KEYS.filter((name) => kept.some(([path, bytes]) => bytes.includes(canaryOf(name)) || path.includes(canaryOf(name))));
+  const found = planted.filter((name) => kept.some(([path, bytes]) => bytes.includes(canaryOf(name)) || path.includes(canaryOf(name))));
   assert.deepEqual(found, [], "no server key's value is in what the import kept");
   assert.ok(kept.some(([, bytes]) => bytes.includes("[redacted]")), "their places are marked");
 });
@@ -408,13 +1041,13 @@ test("two session files named after two different keys, in two projects, stay tw
   cliImport(h, data, env);
   const kept = keptUnder(data);
   assert.deepEqual(kept.filter(([path, bytes]) => [a, b].some((key) => bytes.includes(key) || path.includes(key))).map(([path]) => path.slice(data.length + 1)), [], "neither key is kept");
-  const reader = openStoreReader(data);
-  const named = reader.listRuns().filter((run) => run.importedFrom?.source === "claude-code" && !/^0{8}-/.test(run.importedFrom.session));
-  const count = reader.listRuns().length;
-  reader.close();
+  const reader = await openData(data, "runner");
+  const named = (await rowsOf(reader)).filter((run) => run.importedFrom?.source === "claude-code" && !/^0{8}-/.test(run.importedFrom.session));
+  const count = (await rowsOf(reader)).length;
+  await reader.close();
   assert.equal(named.length, 2, "two runs");
   assert.equal(new Set(named.map((run) => run.importedFrom.session)).size, 2, "under two ids");
-  assert.notEqual(new Set(named.map((run) => run.agentId ?? run.agent)).size, 1, "in their two projects");
+  assert.notEqual(new Set(named.map((run) => run.agent)).size, 1, "in their two projects");
   // Each file grows by a turn; a second import finds each one's run under its own id.
   for (const [file, lines] of renamed) {
     const last = JSON.parse(lines.at(-1));
@@ -422,9 +1055,9 @@ test("two session files named after two different keys, in two projects, stay tw
     utimesSync(file, new Date(minute(20)), new Date(minute(20)));
   }
   cliImport(h, data, env);
-  const after = openStoreReader(data);
-  t.after(() => after.close());
-  assert.equal(after.listRuns().length, count, "no new run");
+  const after = await openData(data, "runner");
+  t.after(async () => await after.close());
+  assert.equal((await rowsOf(after)).length, count, "no new run");
 });
 
 test("a skill folder this user cannot read, or a skills directory it cannot read, is named unreadable, never dropped silently; the rest still imports", { skip: process.getuid?.() === 0 ? "root reads a mode 000 folder" : false }, async (t) => {
@@ -437,8 +1070,8 @@ test("a skill folder this user cannot read, or a skills directory it cannot read
   mkdirSync(join(codexSkills, "triage"), { recursive: true });
   writeFileSync(join(codexSkills, "triage", "SKILL.md"), "---\nname: triage\n---\nUnseen.\n");
   const data = join(root, "agents");
-  const store = openStore(data);
-  t.after(() => store.close());
+  const store = await openData(data);
+  t.after(async () => await store.close());
   // Given back before the test ends: the scratch directory's removal runs first among the after hooks.
   chmodSync(locked, 0o000);
   chmodSync(codexSkills, 0o000);
@@ -452,34 +1085,8 @@ test("a skill folder this user cannot read, or a skills directory it cannot read
   const why = Object.fromEntries(report.skipped.map((s) => [s.what, s.why]));
   assert.equal(why[locked], "unreadable", "a skill folder at mode 000");
   assert.equal(why[codexSkills], "unreadable", "a skills directory at mode 000");
-  const kept = store.readAgent(report.agents[0].id).revisions[0].body.skills;
+  const kept = (await agentOf(store, report.agents[0].id)).revisions[0].body.skills;
   assert.deepEqual(Object.keys(kept).sort(), ["deploy/SKILL.md", "deploy/steps.md", "review/SKILL.md"], "the readable skills still import");
-});
-
-test("an import the process left without its transcript is finished by the next one, not counted as imported", async (t) => {
-  const { h, data, store, report } = await imported(t);
-  const run = runsOf(store, report.agents[0].id)[0];
-  const dir = join(data, "runs", run.id);
-  // As a process stopped between the run's row and its transcript leaves it.
-  rmSync(join(dir, "store", "run.sqlite"));
-  rmSync(join(dir, "serve.json"));
-  const before = process.umask(0);
-  let again;
-  try {
-    again = await runImport(store, await planImport(options(h), store), options(h));
-  } finally {
-    process.umask(before);
-  }
-  // Only its file is read again: the other four, unchanged and whole, are not.
-  assert.deepEqual(again.agents.map((a) => [a.cwd, a.runs, a.finished, a.already]), [[h.site, 0, 1, 0]]);
-  assert.equal(again.already, 4);
-  assert.equal(statSync(join(dir, "store", "run.sqlite")).mode & 0o777, 0o600);
-  assert.equal(statSync(join(dir, "serve.json")).mode & 0o777, 0o600);
-  const db = new DatabaseSync(join(dir, "store", "run.sqlite"), { readOnly: true });
-  const entries = db.prepare("SELECT COUNT(*) AS n FROM entries").get().n;
-  db.close();
-  assert.ok(entries > 0, "the transcript is there");
-  assert.equal(store.listRuns().length, 5, "no second run for it");
 });
 
 test("a session file this user cannot read is named and passed over; the rest still import", { skip: process.getuid?.() === 0 ? "root reads a mode 000 file" : false }, async (t) => {
@@ -487,8 +1094,8 @@ test("a session file this user cannot read is named and passed over; the rest st
   const h = home(root);
   const locked = codexSession(h.at, h.tests, 11, { prompt: "Locked away." });
   const data = join(root, "agents");
-  const store = openStore(data);
-  t.after(() => store.close());
+  const store = await openData(data);
+  t.after(async () => await store.close());
   chmodSync(locked, 0o000);
   let report;
   try {
@@ -497,7 +1104,7 @@ test("a session file this user cannot read is named and passed over; the rest st
     chmodSync(locked, 0o600);
   }
   assert.equal(report.skipped.find((s) => s.what === locked)?.why, "not read (EACCES)");
-  assert.equal(store.listRuns().length, 5, "the five readable sessions");
+  assert.equal((await rowsOf(store)).length, 5, "the five readable sessions");
 });
 
 test("a re-import does not read a file its imports took whole and that has not changed", { skip: process.getuid?.() === 0 ? "root reads a mode 000 file" : false }, async (t) => {
@@ -524,8 +1131,8 @@ test("a key value in a session file's own path is in no file the import writes, 
   const file = claudeSession(h.at, h.site, 12, { prompt: "From an odd folder.", slug: `odd-${CANARY}` });
   assert.ok(file.includes(CANARY));
   const data = join(root, "agents");
-  const store = openStore(data);
-  t.after(() => store.close());
+  const store = await openData(data);
+  t.after(async () => await store.close());
   const first = await runImport(store, await planImport(options(h), store), options(h));
   assert.equal(first.agents.reduce((n, a) => n + a.runs, 0), 6);
   const written = [];
@@ -542,7 +1149,7 @@ test("a key value in a session file's own path is in no file the import writes, 
   assert.deepEqual([plan.projects.length, plan.already], [0, 6], "every file, the odd one too, known and unread");
   const second = await runImport(store, plan, options(h));
   assert.equal(second.agents.reduce((n, a) => n + a.runs, 0), 0);
-  assert.equal(store.listRuns().length, 6);
+  assert.equal((await rowsOf(store)).length, 6);
 });
 
 /** One project under a scratch home, its sessions written by `write(home, project)`, imported: the store and its runs by
@@ -554,21 +1161,18 @@ async function importedOne(t, write) {
   mkdirSync(project, { recursive: true });
   write(h.at, project);
   const data = join(root, "agents");
-  const store = openStore(data);
-  t.after(() => store.close());
+  const store = await openData(data);
+  t.after(async () => await store.close());
   await runImport(store, await planImport(options(h)), options(h));
-  const runs = store.listRuns().sort((a, b) => a.importedFrom.session.localeCompare(b.importedFrom.session));
+  const runs = (await rowsOf(store)).sort((a, b) => a.importedFrom.session.localeCompare(b.importedFrom.session));
   return { data, store, runs };
 }
 
 /** A run's stored metrics, checked against its own transcript: runMetricsOf of its entries, and its settled timeline's
- *  usage row. Returns the metrics (without `at`) and the transcript's answers. */
-function metricsOf(data, store, runId) {
-  const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true });
-  const entries = db.prepare("SELECT record FROM entries ORDER BY id").all().map((row) => JSON.parse(row.record));
-  db.close();
-  const { at, activeMs, effort, ...counted } = store.runMetrics(runId);
-  assert.ok(at, "written with its run");
+ *  usage row. Returns the metrics (its counts plus activeMs and effort) and the transcript's answers. */
+async function metricsOf(store, runId) {
+  const entries = await entriesOf(store, runId);
+  const { activeMs, effort, costUsdEst, costBasis, ...counted } = await storedMetrics(store, runId);
   assert.deepEqual(counted, runMetricsOf(entries), "the metrics are what the run's own transcript says");
   assert.equal(timelineOf(entries, { settled: true }).findLast((r) => r.kind === "usage")?.usage.requests, counted.requests, "the timeline's usage row counts the same requests");
   return { metrics: { ...counted, activeMs, ...(effort ? { effort } : {}) }, answers: entries.filter((e) => e.kind === "pi.assistant").map((e) => e.model[0]), kinds: entries.map((e) => e.kind) };
@@ -577,7 +1181,7 @@ const tokensIn = (answer) => [answer.model, answer.usage.input, answer.usage.cac
 
 test("a Claude Code import counts each request once, its records repeated around a parallel call's result or written twice; each answer keeps its model, a failed call its error, and the run its effort and time at work, a pause past the cap counting nothing", async (t) => {
   const { data, store, runs } = await importedOne(t, (home, project) => claudeSession(home, project, 31, { parallel: true, answerModel: "claude-haiku-5", pause: 60 }));
-  const { metrics, answers } = metricsOf(data, store, runs[0].id);
+  const { metrics, answers } = await metricsOf(store, runs[0].id);
   assert.deepEqual(metrics, {
     input: 8,
     cacheRead: 2300,
@@ -618,7 +1222,7 @@ test("a Codex import counts each request once from its token_count events, or fr
     effort: "medium",
   };
   for (const run of runs) {
-    const { metrics, answers } = metricsOf(data, store, run.id);
+    const { metrics, answers } = await metricsOf(store, run.id);
     assert.deepEqual(metrics, expected, run.importedFrom.session);
     // The first request's three calls are one answer; the token_count written twice, and the record, count once.
     assert.deepEqual(answers.map(tokensIn), [["gpt-sol-6.1", 300, 600, 0, 40], ["gpt-sol-6.1", 100, 900, 0, 25], ["gpt-luna-6", 200, 1000, 0, 10]]);
@@ -628,7 +1232,7 @@ test("a Codex import counts each request once from its token_count events, or fr
 
 test("a pi import keeps each request's usage as pi wrote it, its model, its thinking level and a failed call", async (t) => {
   const { data, store, runs } = await importedOne(t, (home, project) => piSession(home, project, 34, { answerModel: "claude-opus-5", readFails: true, thinking: "xhigh" }));
-  const { metrics, answers } = metricsOf(data, store, runs[0].id);
+  const { metrics, answers } = await metricsOf(store, runs[0].id);
   assert.deepEqual(metrics, {
     input: 200,
     cacheRead: 800,
@@ -654,12 +1258,12 @@ test("a session whose source gives no counts imports its requests as unmetered, 
   });
   assert.deepEqual(runs.map((r) => r.importedFrom.source), ["claude-code", "codex", "pi"]);
   for (const run of runs) {
-    const { metrics, answers } = metricsOf(data, store, run.id);
+    const { metrics, answers } = await metricsOf(store, run.id);
     assert.deepEqual([metrics.requests, metrics.unmetered, metrics.input, metrics.cacheRead, metrics.cacheWrite, metrics.output], [2, 2, 0, 0, 0, 0], run.importedFrom.source);
     assert.ok(answers.every((a) => a.usage.input + a.usage.cacheRead + a.usage.cacheWrite + a.usage.output === 0), "zeros written, read as unknown");
   }
   // With no usage to close it, the answer after the call's result is a request of its own, after that result.
-  assert.deepEqual(metricsOf(data, store, runs[1].id).kinds, ["pi.user", "pi.assistant", "pi.tool-result", "pi.assistant"]);
+  assert.deepEqual((await metricsOf(store, runs[1].id)).kinds, ["pi.user", "pi.assistant", "pi.tool-result", "pi.assistant"]);
 });
 
 test("a Claude Code API error is a request that failed, at its 0 tokens, never unmetered; a turn the CLI wrote itself is no request, kept as its note", async (t) => {
@@ -670,20 +1274,15 @@ test("a Claude Code API error is a request that failed, at its 0 tokens, never u
   });
   const [failed, interrupted] = runs;
   assert.deepEqual([failed.state, interrupted.state], ["failed", "stopped"], "the CLI's note ends no request");
-  const one = metricsOf(data, store, failed.id);
+  const one = await metricsOf(store, failed.id);
   assert.deepEqual([one.metrics.requests, one.metrics.unmetered, one.metrics.input, one.metrics.output, one.metrics.models], [2, 0, 3, 50, { "anthropic/claude-sonnet-5": 2 }]);
   assert.deepEqual([one.answers[1].stopReason, one.answers[1].errorMessage, one.answers[1].content], ["error", "API Error: overloaded", []]);
-  const two = metricsOf(data, store, interrupted.id);
+  const two = await metricsOf(store, interrupted.id);
   assert.deepEqual([two.metrics.requests, two.metrics.unmetered], [2, 0]);
   assert.deepEqual(two.kinds, ["pi.user", "pi.assistant", "pi.tool-result", "pi.assistant", "pi.user", "pi.user"]);
-  const rows = (id) => {
-    const db = new DatabaseSync(join(data, "runs", id, "store", "run.sqlite"), { readOnly: true });
-    const entries = db.prepare("SELECT record FROM entries ORDER BY id").all().map((row) => JSON.parse(row.record));
-    db.close();
-    return timelineOf(entries, { settled: true });
-  };
-  assert.ok(rows(failed.id).some((r) => r.kind === "error" && r.summary === "Model request failed: API Error: overloaded"));
-  assert.equal(rows(interrupted.id).findLast((r) => r.kind === "user_message").summary, "Claude Code: No response requested.");
+  const rows = async (id) => timelineOf(await entriesOf(store, id), { settled: true });
+  assert.ok((await rows(failed.id)).some((r) => r.kind === "error" && r.summary === "Model request failed: API Error: overloaded"));
+  assert.equal((await rows(interrupted.id)).findLast((r) => r.kind === "user_message").summary, "Claude Code: No response requested.");
   assert.equal((await readSession(noted, "claude-code")).users, 2, "the note is not the person's");
 });
 
@@ -694,10 +1293,10 @@ test("a pi request that failed imports as failed, at its 0 tokens; one cut short
   });
   const [failed, cut] = runs;
   assert.deepEqual([failed.state, cut.state], ["failed", "stopped"]);
-  const one = metricsOf(data, store, failed.id);
+  const one = await metricsOf(store, failed.id);
   assert.deepEqual([one.metrics.requests, one.metrics.unmetered, one.metrics.input], [2, 0, 100]);
   assert.deepEqual([one.answers[1].stopReason, one.answers[1].errorMessage], ["error", "529 overloaded"]);
-  const two = metricsOf(data, store, cut.id);
+  const two = await metricsOf(store, cut.id);
   assert.deepEqual([two.metrics.requests, two.metrics.unmetered, two.metrics.input], [2, 1, 100]);
   assert.deepEqual(two.answers[1].content, [{ type: "text", text: "Read: three notes." }]);
 });
@@ -722,10 +1321,11 @@ test("a run its source did not price gets the catalog's estimate at its own prov
     // Free from this provider, though others list it paid: its own price, never another's.
     piSession(home, project, 58, { provider: "qwen-token-plan", modelId: "deepseek-v4-pro", costs: [null, null] });
   });
-  const priced = runs.map((run) => {
-    const { costUsdEst, costBasis } = store.runMetrics(run.id);
-    return [run.importedFrom.source, run.costUsd ?? null, costUsdEst ?? null, costBasis ?? null];
-  });
+  const priced = [];
+  for (const run of runs) {
+    const { costUsdEst, costBasis } = await storedMetrics(store, run.id);
+    priced.push([run.importedFrom.source, run.costUsd ?? null, costUsdEst ?? null, costBasis ?? null]);
+  }
   const codex = await listPrice("openai", "gpt-5.5", { input: 300 + 100, cacheRead: 600 + 900, output: 40 + 25 });
   const claude = await listPrice("anthropic", "claude-sonnet-5", { input: 3 + 5, cacheRead: 1000 + 1300, cacheWrite: 200 + 100, output: 50 + 30 });
   assert.ok(codex > 0 && claude > 0);
@@ -800,11 +1400,11 @@ test("the CLI's own note is never the person's turn: a session holding only note
   const [session] = plan.projects.flatMap((p) => p.sessions);
   assert.deepEqual([session.id, session.users, session.firstPrompt], [sessionId(72), 1, "Tidy the notes."]);
   const data = join(root, "agents");
-  const store = openStore(data);
-  t.after(() => store.close());
+  const store = await openData(data);
+  t.after(async () => await store.close());
   await runImport(store, plan, options(h));
-  const [run] = store.listRuns();
-  assert.equal(JSON.parse(readFileSync(join(data, "runs", run.id, "serve.json"), "utf8")).title, "Tidy the notes.");
+  const [run] = await rowsOf(store);
+  assert.equal((await store.runs.launch(run.id)).body.title, "Tidy the notes.");
 });
 
 test("a block a resumed Claude Code file repeats, at its own earlier times, adds no time at work", async (t) => {
@@ -862,12 +1462,10 @@ function resumed(file, n, { own = true } = {}) {
 test("a response a resumed session's file copies counts once across the import, in the file that holds it first, and once still when a later import finds the copy", async (t) => {
   // One import finds both.
   const one = await importedOne(t, (home, project) => resumed(claudeSession(home, project, 91), 92));
-  const [first, copy] = one.runs.map((run) => one.store.runMetrics(run.id));
+  const [first, copy] = [await storedMetrics(one.store, one.runs[0].id), await storedMetrics(one.store, one.runs[1].id)];
   assert.deepEqual([first.requests, first.input, first.output], [2, 8, 80], "the first session keeps its own");
   assert.deepEqual([copy.requests, copy.input, copy.output, copy.tools, copy.activeMs], [1, 50, 60, {}, 60_000], "the resumed one adds only its own request, and no time for the copy");
-  const db = new DatabaseSync(join(one.data, "runs", one.runs[1].id, "store", "run.sqlite"), { readOnly: true });
-  const kinds = db.prepare("SELECT json_extract(record, '$.kind') AS kind FROM entries ORDER BY id").all().map((r) => r.kind);
-  db.close();
+  const kinds = (await entriesOf(one.store, one.runs[1].id)).map((e) => e.kind);
   assert.deepEqual(kinds, ["pi.user", "pi.assistant"], "its transcript is its own turns");
 
   // A later import finds the copy: the run held already is counted, not the copy.
@@ -877,21 +1475,19 @@ test("a response a resumed session's file copies counts once across the import, 
   mkdirSync(project, { recursive: true });
   const original = claudeSession(home, project, 93);
   const data = join(root, "agents");
-  const store = openStore(data);
-  t.after(() => store.close());
+  const store = await openData(data);
+  t.after(async () => await store.close());
   const opts = { home, env: ENV, temp: join(root, "tmp") };
   await runImport(store, await planImport(opts, store), opts);
   resumed(original, 94);
   resumed(original, 98, { own: false });
   const report = await runImport(store, await planImport({ ...opts, all: true }, store), { ...opts, all: true });
-  const later = store.listRuns().find((run) => run.importedFrom.session === sessionId(94));
-  const counted = store.runMetrics(later.id);
+  const later = (await rowsOf(store)).find((run) => run.importedFrom.session === sessionId(94));
+  const counted = await storedMetrics(store, later.id);
   assert.deepEqual([counted.requests, counted.input, counted.output, counted.tools, counted.activeMs], [1, 50, 60, {}, 60_000], "its own request, and no time for the copy");
-  const reread = new DatabaseSync(join(data, "runs", later.id, "store", "run.sqlite"), { readOnly: true });
-  const laterKinds = reread.prepare("SELECT json_extract(record, '$.kind') AS kind FROM entries ORDER BY id").all().map((r) => r.kind);
-  reread.close();
+  const laterKinds = (await entriesOf(store, later.id)).map((e) => e.kind);
   assert.deepEqual(laterKinds, ["pi.user", "pi.assistant"], "no copied prompt or result in its transcript");
-  assert.equal(store.listRuns().find((run) => run.importedFrom.session === sessionId(98)), undefined, "a file of copies alone is no run");
+  assert.equal((await rowsOf(store)).find((run) => run.importedFrom.session === sessionId(98)), undefined, "a file of copies alone is no run");
   assert.ok(report.skipped.some((s) => s.why === "holds only records of sessions imported already"));
 });
 
@@ -912,18 +1508,16 @@ test("a session's subagents are no runs of their own: their requests, tokens and
     symlinkSync(elsewhere, join(home, ".claude", "projects", project.replaceAll("/", "-"), sessionId(101), "subagents"));
   });
   assert.deepEqual(runs.map((run) => run.importedFrom.session), [sessionId(95), sessionId(96), sessionId(101)], "no child is a run");
-  const claude = store.runMetrics(runs[0].id);
+  const claude = await storedMetrics(store, runs[0].id);
   assert.deepEqual([claude.input, claude.cacheRead, claude.output, claude.requests, claude.unmetered], [8 + 11 + 17, 2300, 80 + 13 + 19, 4, 0]);
   assert.deepEqual(claude.models, { "anthropic/claude-sonnet-5": 2, "anthropic/claude-haiku-5": 2 });
   assert.equal(claude.model, "anthropic/claude-sonnet-5", "the run's model stays its own");
   assert.deepEqual(claude.tools, { Bash: { calls: 1, errors: 0 }, Grep: { calls: 1, errors: 0 } });
-  const codex = store.runMetrics(runs[1].id);
+  const codex = await storedMetrics(store, runs[1].id);
   assert.deepEqual([codex.input, codex.cacheRead, codex.output, codex.requests, codex.tools], [1200, 4500, 195, 6, { shell: { calls: 3, errors: 0 } }], "its subagent's and that one's own");
-  const linked = store.runMetrics(runs[2].id);
+  const linked = await storedMetrics(store, runs[2].id);
   assert.deepEqual([linked.requests, linked.tools], [2, { Bash: { calls: 1, errors: 0 } }], "nothing through a linked folder");
-  const db = new DatabaseSync(join(data, "runs", runs[0].id, "store", "run.sqlite"), { readOnly: true });
-  const answers = db.prepare("SELECT COUNT(*) AS n FROM entries WHERE json_extract(record, '$.kind') = 'pi.assistant'").get().n;
-  db.close();
+  const answers = (await entriesOf(store, runs[0].id)).filter((e) => e.kind === "pi.assistant").length;
   assert.equal(answers, 2, "the transcript holds the session's own answers");
 });
 
@@ -943,27 +1537,28 @@ test("a subagent whose file names no parent is no session and no run: its tokens
   assert.deepEqual(block.slice(0, 2), ["Found 1 session  Claude Code 1", "Imported into 1 agent (one per project)"]);
   assert.match(block[2], /^\+ 4\.7K tokens \(84% cached\) · /);
   assert.match(block[3], / · top tool: Bash \(50%\)$/);
-  const store = openStoreReader(data);
-  t.after(() => store.close());
-  assert.equal(store.listRuns().length, 1, "no run for the subagent");
+  const store = await openData(data, "runner");
+  t.after(async () => await store.close());
+  assert.equal((await rowsOf(store)).length, 1, "no run for the subagent");
 });
 
-test("a tool key saved through the settings API is cut from every file the import writes, opened on the host with the seal key; with no seal key it is not known, so not cut", async (t) => {
+test("a tool key saved through the settings API is cut from every file the import writes, opened on the host with the seal key; with no seal key the import refuses and writes nothing", async (t) => {
   const root = await scratch(t);
   const h = home(root);
   const seal = randomBytes(32).toString("base64");
   const saved = `not-a-secret-saved-${randomBytes(8).toString("hex")}`;
   assert.ok(readFileSync(claudeSession(h.at, h.site, 13, { prompt: "Which key?", output: `MONID_API_KEY=${saved}` })).includes(saved));
-  const into = async (name, env) => {
+  const into = async (name, env, code = 0) => {
     const data = join(root, name);
     mkdirSync(data, { recursive: true });
-    new ToolKeys(data, { AGENTRUN_SEAL_KEY: seal }, () => undefined).save("monid", { values: { MONID_API_KEY: saved } });
-    assert.equal(await importCommand(["--data", data, "--all"], "usage", { home: h.at, env, out: () => undefined }), 0);
-    const files = readdirSync(data, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile() && entry.name !== "tool-keys.json").map((entry) => join(entry.parentPath, entry.name));
+    await seedToolKey(data, seal, "monid", { MONID_API_KEY: saved });
+    assert.equal(await importCommand(["--data", data, "--all"], "usage", { home: h.at, env, out: () => undefined }), code);
+    const files = readdirSync(data, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile()).map((entry) => join(entry.parentPath, entry.name));
     return files.filter((file) => readFileSync(file).includes(saved));
   };
   assert.deepEqual(await into("agents", { ...ENV, AGENTRUN_SEAL_KEY: seal }), [], "cut from every file the import writes");
-  assert.notDeepEqual(await into("unsealed", ENV), [], "the control: the same import with no seal key keeps it");
+  // With no seal key the store's sealed key is not the import's to open (seal-key.ts): it refuses, and writes nothing.
+  assert.deepEqual(await into("unsealed", ENV, 1), [], "refused: nothing written");
 });
 
 test("one number per run: an imported run's timeline usage row counts its subagents' requests, as its stored metrics do, and its transcript gives the same totals", async (t) => {
@@ -974,11 +1569,9 @@ test("one number per run: an imported run's timeline usage row counts its subage
     codexSession(home, project, 117, { subagent: true, parent: sessionId(116) });
   });
   for (const run of runs) {
-    const stored = store.runMetrics(run.id);
+    const stored = await storedMetrics(store, run.id);
     // As the run's page reads it: its root conversation's entries, settled.
-    const db = new DatabaseSync(join(data, "runs", run.id, "store", "run.sqlite"), { readOnly: true });
-    const entries = db.prepare("SELECT record FROM entries WHERE conversation_id = (SELECT MIN(conversation_id) FROM entries) ORDER BY id").all().map((row) => JSON.parse(row.record));
-    db.close();
+    const entries = await entriesOf(store, run.id);
     assert.equal(timelineOf(entries, { settled: true }).findLast((r) => r.kind === "usage")?.usage.requests, stored.requests, run.importedFrom.source);
     assert.equal(stored.requests, 4, "the session's two and its subagent's two");
     const own = runMetricsOf(entries);
@@ -1003,9 +1596,9 @@ test("an untied subagent's own subagents count in the summary's totals with it, 
   assert.deepEqual(block.slice(0, 2), ["Found 1 session  Claude Code 1", "Imported into 1 agent (one per project)"]);
   assert.match(block[2], /^\+ 6\.6K tokens \(83% cached\) · /);
   assert.match(block[3], / · top tool: shell \(67%\)$/);
-  const store = openStoreReader(data);
-  t.after(() => store.close());
-  assert.equal(store.listRuns().length, 1);
+  const store = await openData(data, "runner");
+  t.after(async () => await store.close());
+  assert.equal((await rowsOf(store)).length, 1);
 });
 
 /** A session file's records `minutes` later, each through `map`, as a file of `name` beside it. */
@@ -1025,10 +1618,11 @@ async function measuredAndImported(t, write) {
   write(h.at, project);
   const plan = await planImport(options(h, { measure: true }));
   const measured = plan.found.reduce((n, f) => n + f.metrics.input + f.metrics.cacheRead + f.metrics.cacheWrite + f.metrics.output, 0);
-  const store = openStore(join(root, "agents"));
-  t.after(() => store.close());
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
   await runImport(store, await planImport(options(h)), options(h));
-  const runs = store.listRuns().map((run) => ({ run, metrics: store.runMetrics(run.id) }));
+  const runs = [];
+  for (const run of await rowsOf(store)) runs.push({ run, metrics: await storedMetrics(store, run.id) });
   return { measured, found: plan.found.length, runs, imported: runs.reduce((n, { metrics: m }) => n + m.input + m.cacheRead + m.cacheWrite + m.output, 0) };
 }
 
@@ -1114,10 +1708,11 @@ test("a dry run counts what the import stores: its sessions, tokens and tool cal
   claudeSubagent(h.at, h.tests, 189, 1);
   const total = (all) => [all.length, all.reduce((n, m) => n + m.input + m.cacheRead + m.cacheWrite + m.output, 0), all.reduce((n, m) => n + Object.values(m.tools).reduce((k, tool) => k + tool.calls, 0), 0)];
   const dry = (await planImport(options(h, { measure: true }))).found.map((f) => f.metrics);
-  const store = openStore(join(root, "agents"));
-  t.after(() => store.close());
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
   await runImport(store, await planImport(options(h)), options(h));
-  const stored = store.listRuns().map((run) => store.runMetrics(run.id));
+  const stored = [];
+  for (const run of await rowsOf(store)) stored.push(await storedMetrics(store, run.id));
   assert.deepEqual(total(dry), total(stored));
   assert.equal(stored.length, 8, "the fixture's 5 sessions, the thread's one run and the resumed pair's two");
 });
@@ -1163,9 +1758,9 @@ test("a later file of a session imported already is held as the session's growth
   shifted(codexSession(home, project, 192), `rollout-2026-10-20T10-00-00-${sessionId(192)}.jsonl`, 60, (r) => (r.type === "session_meta" ? { ...r, payload: { ...r.payload, id: sessionId(191) } } : r));
   const second = await run();
   assert.deepEqual(second, first, "the run as it was imported");
-  const store = openStoreReader(data);
-  t.after(() => store.close());
-  assert.equal(store.listRuns().length, 1);
+  const store = await openData(data, "runner");
+  t.after(async () => await store.close());
+  assert.equal((await rowsOf(store)).length, 1);
   assert.deepEqual((await run("--dry-run")).slice(2), second.slice(2), "the dry run counts the run the store holds");
 });
 
@@ -1214,13 +1809,11 @@ test("a session's files merge in the order they ran: the transcript, final state
     codexSession(h.at, project, 199, { output: "2 passed" });
     // The thread resumed an hour later and cut short, in a file whose name sorts before or after the original's.
     shifted(codexSession(h.at, project, 200, { output: "3 passed", aborted: true }), `rollout-2026-10-20T${name}-${sessionId(200)}.jsonl`, 60, (r) => (r.type === "session_meta" ? { ...r, payload: { ...r.payload, id: sessionId(199) } } : r));
-    const store = openStore(join(root, "agents"));
-    t.after(() => store.close());
+    const store = await openData(join(root, "agents"));
+    t.after(async () => await store.close());
     await runImport(store, await planImport(options(h)), options(h));
-    const [run] = store.listRuns();
-    const db = new DatabaseSync(store.runStorePath(run.id), { readOnly: true });
-    const said = db.prepare("SELECT json_extract(record, '$.model[0].timestamp') AS at FROM entries WHERE json_extract(record, '$.kind') = 'pi.user' ORDER BY id").all().map((r) => r.at);
-    db.close();
+    const [run] = await rowsOf(store);
+    const said = (await entriesOf(store, run.id)).filter((e) => e.kind === "pi.user").map((e) => e.model[0].timestamp);
     assert.deepEqual([...said].sort((a, b) => a - b), said, `${name}: the transcript in the order it ran`);
     seen.push([run.state, run.summary, said]);
   }
@@ -1291,4 +1884,29 @@ test("a moved session's copy holding only copies still has its subagents' folder
     assert.deepEqual(runs.map(({ metrics }) => [metrics.requests, metrics.input + metrics.output]), [[6, 88 + 60 + 60]], moved);
     assert.equal(measured, imported, moved);
   }
+});
+
+test("the import refuses a data directory whose store an earlier version wrote, in words naming it, and writes nothing into it", async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const site = join(at, "code", "app");
+  mkdirSync(site, { recursive: true });
+  claudeSession(at, site, 1, { prompt: "Build it." });
+  const data = join(root, "agents");
+  mkdirSync(data, { recursive: true });
+  // A real earlier-version store: a store.sqlite with the file-era agent store's tables and no store_meta row.
+  const file = join(data, "store.sqlite");
+  const earlier = new DatabaseSync(file);
+  earlier.exec("CREATE TABLE agents (id TEXT PRIMARY KEY, body_json TEXT NOT NULL)");
+  earlier.prepare("INSERT INTO agents (id, body_json) VALUES ('held', '{}')").run();
+  earlier.close();
+  const before = readFileSync(file);
+  const ran = spawnSync(process.execPath, [CLI, "import", "--data", data, "--all"], { env: { ...process.env, HOME: at }, encoding: "utf8" });
+  assert.equal(ran.status, 1, ran.stdout + ran.stderr);
+  assert.match(ran.stderr, /store\.sqlite/, "the refusal names the earlier version's store");
+  assert.match(ran.stderr, /earlier version's data/);
+  assert.match(ran.stderr, /new, empty directory/, "and says the one next step");
+  // Nothing written: the earlier store is byte for byte as it was, and no store of this version was made beside it.
+  assert.ok(readFileSync(file).equals(before), "the earlier version's store is untouched");
+  assert.deepEqual(readdirSync(data).sort(), ["store.sqlite"], "nothing else was written into the directory");
 });

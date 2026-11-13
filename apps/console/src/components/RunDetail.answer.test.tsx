@@ -41,3 +41,26 @@ describe("RunDetail, the Files tab's count", () => {
     expect(page(f.run, f.page.rows, "report", files)).toContain(`Files ${f.files.length}`);
   });
 });
+
+// "Show N hidden" on the Files tab changes what it lists, and the tab bar's count follows it: the two agree.
+describe("RunDetail, Show hidden", () => {
+  it("moves the tab's count with the list", async () => {
+    const { act } = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    const f = runFixture("run.with-files");
+    const extra = (path: string): RunFile => ({ ...f.files[0]!, path });
+    const files = [...f.files, extra("__pycache__/a.cpython-312.pyc"), extra(".git/HEAD")];
+    const el = document.body.appendChild(document.createElement("div"));
+    const root = createRoot(el);
+    act(() => root.render(createElement(RunDetail, { run: f.run, agentName: "invoice-checker", messages: messageFeatures, harnessSteers: true, rows: f.page.rows, files, actions: {}, onMessage: () => {}, tab: "files" })));
+    const tab = () => [...el.querySelectorAll("button, [role=tab]")].find((b) => /^Files \d+$/.test(b.textContent ?? ""))?.textContent;
+    const listed = () => el.querySelectorAll("section li").length;
+    expect(tab()).toBe(`Files ${f.files.length}`);
+    act(() => [...el.querySelectorAll("button")].find((b) => b.textContent === "Show 2 hidden")!.click());
+    expect(tab()).toBe(`Files ${f.files.length + 2}`);
+    expect(listed()).toBe(f.files.length + 2);
+    act(() => root.unmount());
+    el.remove();
+  });
+});

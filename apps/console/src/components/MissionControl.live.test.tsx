@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "@/App";
 import { rangeFrom } from "@/lib/mission";
+import { pick } from "@/test/picker";
 
 // The page asks GET /v2/stats for the range picked (30 days first), and again for another range or one agent.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -28,7 +29,7 @@ async function open() {
     const u = new URL(url, "http://serve.test");
     if (u.pathname === "/v2/stats") asked.push(u.search);
     if (u.pathname === "/v2/auth/session") return json(200, { password_set: true, signed_in: true });
-    if (u.pathname === "/v2/capabilities") return json(200, { harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } });
+    if (u.pathname === "/v2/capabilities") return json(200, { models: { source: "providers", ready: true }, harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } });
     if (u.pathname === "/v2/stats") return json(200, stats());
     if (u.pathname === "/v2/runs" || u.pathname === "/v2/agents") return json(200, { runs: [], agents: [], next_cursor: null });
     return json(404, { error: { code: "not_found", message: u.pathname, retryable: false } });
@@ -38,7 +39,7 @@ async function open() {
   root = createRoot(host);
   act(() => root!.render(createElement(App)));
   const wait = async (ok: () => boolean) => { const end = Date.now() + 4000; while (!ok() && Date.now() < end) await act(async () => { await new Promise((r) => setTimeout(r, 25)); }); expect(ok()).toBe(true); };
-  await wait(() => !!host.textContent?.includes("Total cost"));
+  await wait(() => !!host.textContent?.includes("Needs input"));
   return { host, asked, wait };
 }
 
@@ -54,8 +55,8 @@ describe("Mission Control's range, against the server", () => {
     await act(async () => { radio("all").click(); });
     await wait(() => asked.length === 3);
     expect(asked[2]).toBe("");
-    const select = host.querySelector("select[aria-label='Agent']") as HTMLSelectElement;
-    await act(async () => { select.value = "calc"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    const select = host.querySelector("button[aria-haspopup=listbox][aria-label='Agent']") as HTMLButtonElement;
+    await pick(select, "calc");
     await wait(() => asked.length === 4);
     expect(asked[3]).toBe("?agent=calc");
   });

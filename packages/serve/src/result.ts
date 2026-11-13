@@ -1,9 +1,13 @@
-// A tool's result for the model, read the same by every pi-durable serve takes: 1.1 reads `content`, 1.2 and later
-// `output`, and a result with only one of them reaches the other as an empty result, with no error.
+// A tool's result for the model: its blocks under `output`, the key pi-durable reads (a result without it reaches the
+// model empty, with no error).
 import type { ToolExecutionResult } from "@earendil-works/pi-durable";
 
-/** `text` under both keys, with any other fields of the result. */
-export const forModel = (text: string, fields: Omit<ToolExecutionResult, "content" | "output"> = {}): ToolExecutionResult => {
-  const blocks = [{ type: "text" as const, text }];
-  return { ...fields, content: blocks, output: blocks } as unknown as ToolExecutionResult;
-};
+/** A block of a result for the model: text, or an image as pi-ai's `ImageContent`. */
+export type ModelBlock = { readonly type: "text"; readonly text: string } | { readonly type: "image"; readonly data: string; readonly mimeType: string };
+
+/** `blocks` under `output`, with any other fields of the result. */
+export const forModelBlocks = (blocks: readonly ModelBlock[], fields: Omit<ToolExecutionResult, "output"> = {}): ToolExecutionResult =>
+  ({ ...fields, output: blocks }) as unknown as ToolExecutionResult;
+
+/** `text` under `output`, with any other fields of the result. */
+export const forModel = (text: string, fields: Omit<ToolExecutionResult, "output"> = {}): ToolExecutionResult => forModelBlocks([{ type: "text", text }], fields);

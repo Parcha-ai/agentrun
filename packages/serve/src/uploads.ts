@@ -1,17 +1,17 @@
-// Uploads: a file reserved (POST /v2/files), its bytes sent (PUT /v2/files/{file_id}), and the ready files a run names
-// (`file_ids`) copied into its workspace before its process starts. Each file is `<data>/files/<file_id>/`: its bytes
+// Uploads: a file reserved (POST /v2/files) and its bytes sent (PUT /v2/files/{file_id}), or sent in one call (POST
+// /v2/files?path=..., the bytes the body); listed, read and deleted; and the ready files a run names (`file_ids`) held
+// for it at its start and copied into its workspace at its claim. Each file is `<data>/files/<file_id>/`: its bytes
 // (`bytes`) and its record (`file.json`, the contract's File), both 0600, the record written whole. A ready file's bytes
-// never change, and a run gets a copy of them, never a link: nothing a run does reaches the upload, and the run's file
-// reads (workspace.ts) refuse a file with a second link.
+// never change, and a run gets a copy of them through its Workspace, never a link: nothing a run does reaches the upload.
 import { createHash, randomBytes } from "node:crypto";
-import { createReadStream } from "node:fs";
-import { type FileHandle, lstat, mkdir, open, rename, unlink } from "node:fs/promises";
+import { copyFile, type FileHandle, link, lstat, mkdir, open, readdir, readFile, rename, rm, unlink } from "node:fs/promises";
+import { DISK_DIR } from "./server-fs.js";
 import { dirname, join } from "node:path";
-import { pipeline } from "node:stream/promises";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
-import { readJson, tempOf, writeDurable } from "./files.js";
-import { ID, type Json } from "./validate.js";
-import { typeOf } from "./workspace.js";
+import { typeOf } from "./file-types.js";
+import { readJson, serialBy, tempOf, writeDurable } from "./files.js";
+import { ID, type Json, unknownFields } from "./validate.js";
+import { type Entry, isWorkspaceError, type Workspace, workspaceAt } from "./workspace/index.js";
 
 /** `limits.max_upload_bytes`: the largest file a reservation names and a PUT sends. */
 export const MAX_UPLOAD_BYTES = 50 * 2 ** 20;
@@ -23,6 +23,9 @@ export const INPUTS_DIR = "inputs";
 export const UPLOADS_DIR = "files";
 const RECORD = "file.json";
 const BYTES = "bytes";
+/** Under the root: each started run's hold of its files until its claim copies them (Uploads.hold). A dot-name, never a
+ *  file id (ID starts with a letter or digit), so the files' list and the sweep pass it by. */
+const HELD_DIR = ".held";
 /** The `upload.expires_at` the answer to a reservation gives, which the contract requires: advisory, not enforced in this
  *  release. A later PUT is still taken, and nothing deletes an upload. */
 const UPLOAD_WINDOW_MS = 86_400_000;
@@ -32,13 +35,35 @@ const NAME_MAX = 255;
 const PATH_MAX = process.platform === "darwin" ? 1024 : 4096;
 /** A run id's room in a run's copy of a file: a UUIDv7's 36 characters. */
 const RUN_ID_ROOM = "x".repeat(36);
+/** An agent's folder's room on the disk: an id of up to 128 characters, a dash and 16 hex digits (agentDirName). */
+const AGENT_DIR_ROOM = "x".repeat(128 + 17);
 /** The room a run's copy may add to each segment: a suffix, at most one past the most files a run names. */
 const SUFFIX_ROOM = `-${MAX_FILES_PER_RUN + 1}`.length;
 const SHA256 = /^[0-9a-f]{64}$/;
+/** The temp files this module writes, by their exact names (files.ts tempOf: `<name>.<pid>.<12 hex digits>.tmp`): a file
+ *  sent in one call, as its bytes arrive, under the root; a PUT's bytes, in its file's folder. */
+const INCOMING_TEMP = /^\.incoming\.\d+\.[0-9a-f]{12}\.tmp$/;
+const BYTES_TEMP = /^bytes\.\d+\.[0-9a-f]{12}\.tmp$/;
 const FIELDS = ["path", "size_bytes", "content_type", "sha256"];
+/** What a file sent in one call takes in the query: its path, and when given its type and the hash its bytes must have. */
+const QUERY = ["path", "content_type", "sha256"];
+/** A request's types that say only "bytes", never the file's own: curl's `--data-binary` default and octet-stream. */
+const GENERIC_TYPES = new Set(["application/octet-stream", "application/x-www-form-urlencoded"]);
+/** Where a file's bytes go: its own PUT, as a path from the server's root, so it resolves against the server's address
+ *  as given (`http://host:port`) or as the contract's `/v2` server URL alike. */
+export const uploadUrl = (id: string): string => `/v2/files/${id}`;
 
-/** Test seam, tests only: called as a run's copy starts, with the run's work/, before any file is copied. */
-export const uploadTestHooks: { beforeCopy?: (work: string) => Promise<void> | void } = {};
+/** Test seams, tests only: as a run's copy starts, with the run's Workspace, before any file is copied; and as a file
+ *  sent in one call writes its record, with the file's folder, its bytes in place. */
+export const uploadTestHooks: { beforeCopy?: (workspace: Workspace) => Promise<void> | void; beforeRecord?: (dir: string) => Promise<void> | void } = {};
+
+/** The contract's FileUpload: the file, and where to send its bytes (for a file sent in one call, ready, a PUT of the
+ *  same bytes, which changes nothing). */
+export type FileUploadAnswer = { file: UploadedFile; upload: { method: "PUT"; url: string; expires_at: string } };
+
+/** A file sent in one call, its bytes in and checked, before it is made: `fingerprint` is what an Idempotency-Key is
+ *  matched on (its path, type, length and hash), `commit` makes it, ready, and `discard` drops the bytes of one not made. */
+export type Received = { fingerprint: Json; commit(): Promise<FileUploadAnswer>; discard(): Promise<void> };
 
 /** The contract's File: `pending` until its bytes arrive, then `ready`, its `sha256` the bytes' own. */
 export type UploadedFile = {
@@ -76,6 +101,20 @@ export function pathProblem(path: string): string | undefined {
   return undefined;
 }
 
+/** What a request sent, as its JSON (a string quoted), cut to 40 characters (an ellipsis the 40th when it is longer):
+ *  by code points, so a surrogate pair is never split. A value JSON.stringify cannot write (nested past the stack, as a
+ *  parsed body can be) is named as such: describing a bad value never fails the refusal. */
+const shown = (value: unknown): string => {
+  let json: string;
+  try {
+    json = JSON.stringify(value) ?? String(value);
+  } catch {
+    return "a value too deep to show";
+  }
+  const chars = [...json];
+  return chars.length > 40 ? `${chars.slice(0, 39).join("")}\u2026` : chars.join("");
+};
+
 /** `name` for the first, then `name-2`, `name-3`, ... before its extension (`report-2.pdf`), cut to fit a name on disk:
  *  its stem first, down to one character, then its extension. */
 export function suffixed(name: string, n: number): string {
@@ -104,7 +143,7 @@ const isFile = (value: Json | null): value is UploadedFile =>
 export class Uploads {
   /** The commit of each file's bytes in progress: one at a time per file, so of two PUTs at once one makes it ready and
    *  the other is checked against it. */
-  private readonly commits = new Map<string, Promise<void>>();
+  private readonly commits = new Map<string, Promise<unknown>>();
 
   /** `root`: `<data>/files`. */
   constructor(private readonly root: string) {}
@@ -115,7 +154,7 @@ export class Uploads {
   private problemOf(path: string): string | undefined {
     const problem = pathProblem(path);
     if (problem) return problem;
-    const longest = Buffer.byteLength(join(dirname(this.root), "runs", RUN_ID_ROOM, "work", INPUTS_DIR, path)) + path.split("/").length * SUFFIX_ROOM + 1;
+    const longest = Buffer.byteLength(join(dirname(this.root), DISK_DIR, "agents", AGENT_DIR_ROOM, "runs", RUN_ID_ROOM, "work", INPUTS_DIR, path)) + path.split("/").length * SUFFIX_ROOM + 1;
     return longest > PATH_MAX ? `path is too long for this server's disk: a run's copy of it would take up to ${longest} bytes, over ${PATH_MAX}` : undefined;
   }
 
@@ -126,9 +165,122 @@ export class Uploads {
     return isFile(record) && record.file_id === id ? record : null;
   }
 
+  /** Every file's id, newest first: a UUIDv7 sorts by its time. The files' list reads them a page at a time. */
+  async ids(): Promise<string[]> {
+    const names = await readdir(this.root).catch(() => [] as string[]);
+    return names.filter((name) => ID.test(name)).sort().reverse();
+  }
+
+  /** At a start, under the data directory's lock (one server per data directory, so no PUT of this server is in flight):
+   *  removes the temp files a crash left, by the exact names this module writes them under. That is `.incoming.*.tmp`
+   *  under the root, and `bytes.*.tmp` in a folder named as a file's id. Each goes only when lstat says it is a regular
+   *  file: a link or anything else named like one stays, nothing is followed, and only those folders are entered, one
+   *  level. A file's bytes and its record are never touched: a folder left with only its temp keeps the rest, as after a
+   *  failed PUT. A root that is not a real directory (a link to storage another server may share) is not swept at all: the
+   *  lock covers this data directory, not where a link goes. Answers how many it removed. */
+  async sweep(): Promise<number> {
+    if (!(await lstat(this.root).catch(() => null))?.isDirectory()) return 0;
+    let removed = 0;
+    const drop = async (path: string) => {
+      if (!(await lstat(path).catch(() => null))?.isFile()) return;
+      await unlink(path).then(() => void removed++, () => undefined);
+    };
+    for (const name of await readdir(this.root).catch(() => [] as string[])) {
+      if (INCOMING_TEMP.test(name)) await drop(join(this.root, name));
+      else if (ID.test(name) && (await lstat(join(this.root, name)).catch(() => null))?.isDirectory()) {
+        for (const inner of await readdir(join(this.root, name)).catch(() => [] as string[])) if (BYTES_TEMP.test(inner)) await drop(join(this.root, name, inner));
+      }
+    }
+    return removed;
+  }
+
+  /** Deletes the file `id`, pending or ready, or 404. A run that copied it keeps its copy. In turn with a PUT's commit, so
+   *  a PUT that ends after the delete answers 404 and makes nothing. */
+  async remove(id: string): Promise<void> {
+    await this.exclusive(id, async () => {
+      if (!(await this.get(id))) throw new ApiError("not_found", `no file ${id}: GET /v2/files lists the files this server keeps`);
+      await rm(join(this.root, id), { recursive: true, force: true });
+    });
+  }
+
+  /** The answer to a reservation, and to a file sent in one call. `upload.expires_at` is advisory (UPLOAD_WINDOW_MS). */
+  private answer(file: UploadedFile): FileUploadAnswer {
+    return { file, upload: { method: "PUT", url: uploadUrl(file.file_id), expires_at: new Date(Date.parse(file.created_at) + UPLOAD_WINDOW_MS).toISOString() } };
+  }
+
+  /** POST /v2/files?path=...: the body is the file's bytes, whatever its type but a multipart form (415, with the call
+   *  that works). The query takes `path`, and `content_type` and `sha256` when given; the length is the body's and the hash
+   *  its own. The type is `content_type`, else the request's when it names one (not octet-stream, not curl's form type),
+   *  else the path's extension's, else octet-stream. The bytes stream to a dot-named file of their own under the root,
+   *  never held whole; over MAX_UPLOAD_BYTES is 413, a `sha256` they do not have 422. Nothing is made until `commit`. */
+  async take(query: URLSearchParams, requestType: string | undefined, body: AsyncIterable<Buffer>): Promise<Received> {
+    const type = String(requestType ?? "").trim();
+    if (/^multipart\//i.test(type)) throw new ApiError("unsupported_media_type", "A multipart form is not taken: send the file's bytes as the body, as `curl --data-binary @plan.md \"$AGENTRUN_BASE_URL/files?path=plan.md\"` does.");
+    const issues: InputIssue[] = [...new Set(query.keys())].filter((key) => !QUERY.includes(key)).map((key) => ({ field: key, reason: "not_allowed", message: `A file sent in one call takes path, content_type and sha256 in the query; ${key} is not one.` }));
+    for (const key of QUERY) if (query.getAll(key).length > 1) issues.push({ field: key, reason: "duplicate", message: `${key} is given more than once` });
+    const path = query.get("path");
+    // An empty one is none.
+    const named = query.get("content_type") || null;
+    const sha = query.get("sha256");
+    if (path === null) issues.push({ field: "path", reason: "missing", message: "Name the file: POST /v2/files?path=<its path> with its bytes as the body, or a JSON reservation {path, size_bytes} and then PUT /v2/files/<id>.", fix: "Add ?path=<the file's name> to the URL." });
+    if (sha !== null && !SHA256.test(sha)) issues.push({ field: "sha256", reason: "bad_format", message: "sha256 is 64 lowercase hex digits" });
+    if (issues.length) throw invalid(issues);
+    const problem = this.problemOf(path!);
+    if (problem) throw new ApiError("invalid_file_path", problem);
+    const given = type && !GENERIC_TYPES.has(type.split(";")[0]!.trim().toLowerCase()) ? type : undefined;
+    const contentType = named ?? given ?? typeOf(path!) ?? "application/octet-stream";
+    await mkdir(this.root, { recursive: true, mode: 0o700 });
+    const temp = tempOf(join(this.root, ".incoming"));
+    const handle = await open(temp, "wx", 0o600);
+    try {
+      const hash = createHash("sha256");
+      let size = 0;
+      // Read to its end, as a PUT's: the client gets the refusal, not a reset; nothing past the limit is written.
+      for await (const chunk of body) {
+        size += chunk.length;
+        hash.update(chunk);
+        if (size <= MAX_UPLOAD_BYTES) await writeAll(handle, chunk);
+      }
+      if (size > MAX_UPLOAD_BYTES) throw new ApiError("payload_too_large", `the body is over ${MAX_UPLOAD_BYTES} bytes, this server's largest upload`, { details: { limit: "max_upload_bytes" } });
+      const sha256 = hash.digest("hex");
+      if (sha !== null && sha !== sha256) throw invalid([{ field: "sha256", reason: "invalid", message: `The body's SHA-256 is ${sha256}; the query names ${sha}.` }]);
+      await handle.sync();
+      await handle.close();
+      const fingerprint: Json = { sent_in_one_call: true, path: path!, content_type: contentType, size_bytes: size, sha256 };
+      let made = false;
+      return {
+        fingerprint,
+        commit: async () => {
+          const now = Date.now();
+          const file: UploadedFile = { file_id: uuidv7(now), path: path!, size_bytes: size, content_type: contentType, sha256, status: "ready", created_at: new Date(now).toISOString(), expires_at: null };
+          const dir = join(this.root, file.file_id);
+          await mkdir(dir, { mode: 0o700 });
+          try {
+            await rename(temp, join(dir, BYTES));
+            made = true;
+            await uploadTestHooks.beforeRecord?.(dir);
+            await writeDurable(join(dir, RECORD), `${JSON.stringify(file)}\n`);
+          } catch (error) {
+            // No record, no file: its folder and bytes go too, so nothing is left that the API cannot list or delete.
+            await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+            throw error;
+          }
+          return this.answer(file);
+        },
+        discard: async () => {
+          if (!made) await unlink(temp).catch(() => undefined);
+        },
+      };
+    } catch (error) {
+      await handle.close().catch(() => undefined);
+      await unlink(temp).catch(() => undefined);
+      throw error;
+    }
+  }
+
   /** POST /v2/files: the body checked as the contract's FileCreate, then a pending file; with where to send its bytes. */
-  async reserve(body: Json): Promise<{ file: UploadedFile; upload: { method: "PUT"; url: string; expires_at: string } }> {
-    const issues: InputIssue[] = Object.keys(body).filter((key) => !FIELDS.includes(key)).map((key) => ({ field: key, reason: "not_allowed", message: `The body keeps no field ${key}.` }));
+  async reserve(body: Json): Promise<FileUploadAnswer> {
+    const issues = unknownFields(body, FIELDS);
     if (typeof body.path !== "string") issues.push({ field: "path", reason: body.path === undefined ? "missing" : "wrong_type", message: "path is the file's relative path, a string" });
     if (!(Number.isSafeInteger(body.size_bytes) && (body.size_bytes as number) >= 0)) issues.push({ field: "size_bytes", reason: body.size_bytes === undefined ? "missing" : "wrong_type", message: "size_bytes is the file's length in bytes, an integer 0 or more" });
     if (body.content_type !== undefined && typeof body.content_type !== "string") issues.push({ field: "content_type", reason: "wrong_type", message: "content_type is a string" });
@@ -152,8 +304,7 @@ export class Uploads {
     await mkdir(this.root, { recursive: true, mode: 0o700 });
     await mkdir(join(this.root, file.file_id), { mode: 0o700 });
     await writeDurable(join(this.root, file.file_id, RECORD), `${JSON.stringify(file)}\n`);
-    // Relative to the server URL (`/v2`), as the contract's paths are.
-    return { file, upload: { method: "PUT", url: `/files/${file.file_id}`, expires_at: new Date(now + UPLOAD_WINDOW_MS).toISOString() } };
+    return this.answer(file);
   }
 
   /** PUT /v2/files/{file_id}: `body` is the bytes, streamed to a file of their own beside the record, never held whole.
@@ -165,7 +316,14 @@ export class Uploads {
     if (!file) throw new ApiError("not_found", `no file ${id}`);
     const dir = join(this.root, id);
     const temp = file.status === "pending" ? tempOf(join(dir, BYTES)) : undefined;
-    const handle = temp ? await open(temp, "wx", 0o600) : undefined;
+    // A DELETE that lands between the read above and this open has taken the folder: the file is gone, a 404. Any other
+    // failure of the open stays the server's own.
+    const handle = temp
+      ? await open(temp, "wx", 0o600).catch((error: NodeJS.ErrnoException) => {
+          if (error.code === "ENOENT") throw new ApiError("not_found", `no file ${id}: it was deleted as its bytes arrived`);
+          throw error;
+        })
+      : undefined;
     let closed = false;
     let kept = false;
     try {
@@ -188,13 +346,22 @@ export class Uploads {
             : undefined;
       const wrong = mismatch(file);
       if (wrong) throw wrong;
-      if (!handle || !temp) return file;
+      // Ready already: read again in turn with a DELETE, which may have removed it while these bytes arrived.
+      if (!handle || !temp)
+        return await this.exclusive(id, async () => {
+          const now = await this.get(id);
+          if (!now) throw new ApiError("not_found", `no file ${id}: it was deleted while its bytes arrived`);
+          const other = mismatch(now);
+          if (other) throw other;
+          return now;
+        });
       await handle.sync();
       closed = true;
       await handle.close();
       return await this.exclusive(id, async () => {
-        // Read again: another PUT may have made it ready meanwhile, with these bytes or others.
-        const now = (await this.get(id)) ?? file;
+        // Read again: another PUT may have made it ready meanwhile, with these bytes or others, or a DELETE removed it.
+        const now = await this.get(id);
+        if (!now) throw new ApiError("not_found", `no file ${id}: it was deleted while its bytes arrived`);
         if (now.status === "ready") {
           const other = mismatch(now);
           if (other) throw other;
@@ -214,13 +381,7 @@ export class Uploads {
 
   /** `work` in turn for file `id`. The chain holds only settled turns, so one that failed never fails the next. */
   private exclusive<T>(id: string, work: () => Promise<T>): Promise<T> {
-    const turn = (this.commits.get(id) ?? Promise.resolve()).then(work);
-    const settled = turn.then(() => undefined, () => undefined);
-    this.commits.set(id, settled);
-    void settled.then(() => {
-      if (this.commits.get(id) === settled) this.commits.delete(id);
-    });
-    return turn;
+    return serialBy(this.commits, id, work);
   }
 
   /** A run's `file_ids`: each a file that is ready, none twice, at most MAX_FILES_PER_RUN, or 422 at `file_ids`. */
@@ -233,63 +394,143 @@ export class Uploads {
     for (const [i, id] of ids.entries()) {
       const field = `file_ids[${i}]`;
       if (typeof id !== "string" || !ID.test(id)) {
-        issues.push({ field, reason: "wrong_type", message: `${field} is a file id` });
+        issues.push({ field, reason: "wrong_type", message: `${field} is ${shown(id)}, not a file id: use the file_id an upload answered (POST /v2/files answers it under file.file_id).` });
         continue;
       }
       const file = await this.get(id);
+      const problem = file?.status === "ready" ? this.problemOf(file.path) : undefined;
       if (!file) issues.push({ field, reason: "not_an_option", message: `There is no file ${id}: reserve it with POST /v2/files.` });
       else if (file.status !== "ready") issues.push({ field, reason: "invalid", message: `The file ${id} is not ready: send its bytes with PUT /v2/files/${id} first.` });
-      else if (this.problemOf(file.path)) issues.push({ field, reason: "invalid", message: `The file ${id} cannot be copied into a run here: ${this.problemOf(file.path)}.` });
+      else if (problem) issues.push({ field, reason: "invalid", message: `The file ${id} cannot be copied into a run here: ${problem}.` });
       else files.push(file);
     }
     if (issues.length) throw invalid(issues);
     return files;
   }
 
-  /** Copies `files` into `work/inputs/`, each at its `path` with its folders, in order, before the run's process exists:
-   *  a name taken already (the same path twice, or a file where another's folder goes) gets the next free suffix
-   *  (`notes-2.txt`, `docs-2/`), the same for the same files in the same order. Each copy is a new file, made as the
-   *  agent store makes a run's skill files (its mode from the umask): never a link to the upload. */
-  async copyInto(work: string, files: readonly UploadedFile[]): Promise<void> {
-    await uploadTestHooks.beforeCopy?.(work);
-    const base = join(work, INPUTS_DIR);
-    await mkdir(base, { recursive: true });
+  /** Copies `files` into the run's `inputs/` through its Workspace, each at its `path` with its folders, in order, before
+   *  the run's first turn: a name taken already (the same path twice, a file where another's folder goes, or what the
+   *  folder held before) gets the next free suffix (`notes-2.txt`, `docs-2/`), the same for the same files in the same
+   *  order. Each copy is a new file written whole by the Workspace, never a link to the upload; a link on the way fails
+   *  the copy (ESCAPE), and nothing is written through it. `bytesOf`: where each file's bytes are read (its upload's own,
+   *  or the run's hold of them, `held`). */
+  async copyInto(work: Workspace | string, files: readonly UploadedFile[], bytesOf: (file: UploadedFile) => string = (file) => join(this.root, file.file_id, BYTES)): Promise<void> {
+    const workspace = workspaceAt(work);
+    await uploadTestHooks.beforeCopy?.(workspace);
+    const names = takenNames(workspace);
     for (const file of files) {
       const segments = file.path.split("/");
-      let dir = base;
-      for (const segment of segments.slice(0, -1)) dir = join(dir, await folderIn(dir, segment));
-      await copyIn(dir, segments.at(-1)!, join(this.root, file.file_id, BYTES));
+      let dir = INPUTS_DIR;
+      for (const segment of segments.slice(0, -1)) dir = `${dir}/${free(await names(dir), segment, "dir")}`;
+      const name = free(await names(dir), segments.at(-1)!, "file");
+      await workspace.write(`${dir}/${name}`, await readFile(bytesOf(file)));
     }
+  }
+
+  /** At a run's start, before its row is written: each of its files (`ids`, ready) held for it under
+   *  `<root>/.held/<run id>/`, its record and its bytes (a hard link to the upload's, which never change once ready; a
+   *  copy where the disk links none). The run's claim copies from the hold (heldFiles), so a file deleted after the start
+   *  and before the claim is still the run's: a started run keeps the files it was started with. In turn with each file's
+   *  delete, so a hold either has the bytes or the start fails at that file (422, as readyFiles words it). */
+  async hold(runId: string, ids: readonly string[]): Promise<void> {
+    const dir = join(this.root, HELD_DIR, runId);
+    await mkdir(dir, { recursive: true, mode: 0o700 });
+    for (const [i, id] of ids.entries()) {
+      await this.exclusive(id, async () => {
+        const file = await this.get(id);
+        if (file?.status !== "ready") throw invalid([{ field: `file_ids[${i}]`, reason: "not_an_option", message: `There is no file ${id}: reserve it with POST /v2/files.` }]);
+        const bytes = join(dir, `${id}.${BYTES}`);
+        await link(join(this.root, id, BYTES), bytes).catch(async (error: NodeJS.ErrnoException) => {
+          if (error.code !== "EEXIST") await copyFile(join(this.root, id, BYTES), bytes);
+        });
+        await writeDurable(join(dir, `${id}.json`), `${JSON.stringify(file)}\n`);
+      });
+    }
+  }
+
+  /** The files run `runId` holds (hold), in `ids`' order: a file with no hold (a run started before holds, or one whose
+   *  hold went) read as it is now (readyFiles). With where each one's bytes are. */
+  async heldFiles(runId: string, ids: readonly string[]): Promise<{ files: UploadedFile[]; bytesOf: (file: UploadedFile) => string }> {
+    const dir = join(this.root, HELD_DIR, runId);
+    const held = new Map<string, UploadedFile>();
+    for (const id of ids) {
+      const record = ID.test(id) ? await readJson(join(dir, `${id}.json`)) : null;
+      if (isFile(record) && record.file_id === id && (await lstat(join(dir, `${id}.${BYTES}`)).catch(() => null))?.isFile()) held.set(id, record);
+    }
+    const live = await this.readyFiles(ids.filter((id) => !held.has(id)));
+    const now = new Map(live.map((file) => [file.file_id, file]));
+    return {
+      files: ids.map((id) => held.get(id) ?? now.get(id)!),
+      bytesOf: (file) => (held.has(file.file_id) ? join(dir, `${file.file_id}.${BYTES}`) : join(this.root, file.file_id, BYTES)),
+    };
+  }
+
+  /** Lets go of run `runId`'s hold: once its files are in its workspace, or when it ends without them (released). */
+  async release(runId: string): Promise<void> {
+    await rm(join(this.root, HELD_DIR, runId), { recursive: true, force: true });
+  }
+
+  /** The run ids that hold files here (hold), for a start's sweep of the holds of runs that ended. */
+  async holders(): Promise<string[]> {
+    return (await readdir(join(this.root, HELD_DIR)).catch(() => [] as string[])).filter((name) => ID.test(name));
   }
 }
 
-/** The folder `name` in `dir`, made or one already there, or the first suffixed name free of a file. */
-async function folderIn(dir: string, name: string): Promise<string> {
+/** The words a run fails in when its files cannot be copied into its workspace at its claim. */
+export const notCopied = (why: string): string => `The run's files could not be copied into its workspace: ${why}`;
+
+/** At a run's claim: its uploaded files (`ids`, the launch's file_ids) copied into its work/inputs/ once, from its hold
+ *  (Uploads.hold), and the hold let go. A resumed claim finds inputs/ there and copies nothing, so the copy's suffixes
+ *  never duplicate a file across claims. A copy that fails throws in notCopied's words: the run ends failed, saying why. */
+export async function copyRunFiles(data: string, runId: string, workspace: Workspace, ids: readonly string[]): Promise<void> {
+  const uploads = new Uploads(join(data, UPLOADS_DIR));
+  const copied = await workspace.list(INPUTS_DIR).then(() => true, () => false);
+  if (!copied) {
+    try {
+      const { files, bytesOf } = await uploads.heldFiles(runId, ids);
+      await uploads.copyInto(workspace, files, bytesOf);
+    } catch (error) {
+      // The run ends failed on this: its hold goes with it.
+      await uploads.release(runId).catch(() => undefined);
+      const why = error instanceof ApiError ? error.extra.fields?.map((issue) => issue.message).join("; ") || error.message : (error as Error).message;
+      throw new Error(notCopied(why), { cause: error });
+    }
+  }
+  await uploads.release(runId);
+}
+
+type Kind = Entry["kind"];
+
+/** The names in each folder of `workspace`, by its path, each read once from its listing (none for a folder not there
+ *  yet) and kept up to date with what the copy takes. */
+function takenNames(workspace: Workspace): (dir: string) => Promise<Map<string, Kind>> {
+  const folders = new Map<string, Promise<Map<string, Kind>>>();
+  return (dir) => {
+    let names = folders.get(dir);
+    if (!names) {
+      names = workspace.list(dir).then(
+        (entries) => new Map(entries.map((entry) => [entry.name, entry.kind])),
+        (error: unknown) => {
+          if (isWorkspaceError(error, "NOT_FOUND")) return new Map<string, Kind>();
+          throw error;
+        },
+      );
+      folders.set(dir, names);
+    }
+    return names;
+  };
+}
+
+/** `name`, or its first suffixed form, that `names` leaves free for a `kind`: a folder may go into one already there,
+ *  a file only where nothing is. The name is taken in `names`. */
+function free(names: Map<string, Kind>, name: string, kind: Kind): string {
   for (let n = 1; ; n++) {
     const candidate = suffixed(name, n);
-    try {
-      await mkdir(join(dir, candidate));
+    const there = names.get(candidate);
+    if (there === undefined) {
+      names.set(candidate, kind);
       return candidate;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     }
-    if ((await lstat(join(dir, candidate))).isDirectory()) return candidate;
-  }
-}
-
-/** A copy of `source` in `dir` as `name`, or the first suffixed name nothing holds. Created exclusive, so it is a new
- *  file and never what a name already pointed at. */
-async function copyIn(dir: string, name: string, source: string): Promise<string> {
-  for (let n = 1; ; n++) {
-    const candidate = suffixed(name, n);
-    let handle: FileHandle;
-    try {
-      handle = await open(join(dir, candidate), "wx");
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "EEXIST") continue;
-      throw error;
-    }
-    await pipeline(createReadStream(source), handle.createWriteStream());
-    return candidate;
+    if (kind === "dir" && there === "dir") return candidate;
   }
 }

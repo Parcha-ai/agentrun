@@ -1,12 +1,16 @@
+import { setImmediate as yieldToLoop } from "node:timers/promises";
 import { BrowserFailureError, FenceRefusal, refusedError, loadedNoPage, passedThrough, type AttachedSession, type BrowserDriver, type CustodyPort, type ToolOutput } from "./custody.js";
 import { defaultInline, type EvidenceRecord, type EvidenceSink } from "./evidence.js";
 import type { Decisions, PageVerdict } from "./decisions.js";
 import { fetchDownloads } from "./downloads.js";
-import { browserFailure, classifyBrowserError, transportFactOf, type BrowserFailure } from "./failures.js";
+import { asPartial, browserFailure, classifyBrowserError, partialOf, transportFactOf, type BrowserFailure, type PartialRun } from "./failures.js";
 import type { WorkspaceFiles } from "./host.js";
 import { createRepeatGuard, type RepeatGuard } from "./guard.js";
 import { regionOf, type Locate } from "./clip.js";
 import { captureWithinBudget, type ScreenshotOptions } from "./images.js";
+import { decodeEntities } from "./entities.js";
+import { FrameScan } from "./page-scan.js";
+import { dropOnLoop, htmlMarkdown, READ_DEADLINE_MS, READ_MAX_CHARS, thousands } from "./read-page.js";
 import { orderFacts, receiptFacts, sha256Hex } from "./receipts.js";
 import { scrubPageUrl, type Redact } from "./redact.js";
 import { UNANSWERED_CALL } from "./unanswered.js";
@@ -38,6 +42,7 @@ export function runnableCode(code: string): string {
 }
 
 export type RunAction =
+  | { op: "goto"; url: string }
   | { op: "click"; id: string }
   | { op: "hover"; id: string }
   | { op: "fill"; id: string; value: string }
@@ -47,12 +52,23 @@ export type RunAction =
 
 export type PageDriver = BrowserDriver & {
   snapshot(options?: { includeIframes?: boolean }): Promise<string>;
-  run(input: { code?: string; actions?: RunAction[] }): Promise<unknown>;
+  /** `checked`: an action after the first of a run of several, sent alone (driving-guard sends a batch one action at a time)
+   *  after the whole batch was checked against the page's snapshot: the page's address, which the batch's own earlier
+   *  actions may have moved (a same-page link), is not checked against the snapshot again. Its ids still are. */
+  run(input: { code?: string; actions?: RunAction[]; checked?: true; rest?: number }): Promise<unknown>;
+  /** Whether the last `run` moved the driver to another tab (it followed a tab the page opened, or left one that
+   *  closed): the batch's actions after it name the old tab's ids, so driving-guard sends none of them. `rest`, given to
+   *  `run`, is how many of the batch's actions follow the ones it was sent, for its answer to say they were not run.
+   *  Optional: a driver that never changes tabs has neither. */
+  movedTab?(): boolean;
   /** The page's URL, cheaply: no page content is read. */
   url(): Promise<string>;
   /** Drops every snapshot's element ids, so an action by an old id fails as a stale snapshot (a person changed the page, whatever its URL). Optional:
    *  a driver without ids has none to drop. */
   forgetSnapshots?(): void;
+  /** Checks a run's actions against the page's latest snapshot (every id there, the page still its address) without
+   *  sending any, failing as `run` would. Optional: a driver without it sends a run's actions as one batch. */
+  checkActions?(actions: RunAction[]): Promise<void>;
   screenshot(options: ScreenshotOptions): Promise<{ data: string; mimeType: string }>;
   /** Where an element or the viewport is now (see clip.ts); an element is scrolled into view first. Absent: no region can be placed. */
   locate?: Locate;
@@ -101,6 +117,20 @@ const pause = (ms: number, signal: AbortSignal | undefined) => new Promise<void>
 const text = (value: unknown, isError = false): ToolOutput =>
   ({ content: [{ type: "text", text: typeof value === "string" ? value : JSON.stringify(value) }], ...(isError ? { isError: true } : {}) });
 const withNews = (news: string, body: string) => (news ? `${news}\n\n${body}` : body);
+type Lost = { method: string; url: string };
+const LOST = Symbol("lost requests");
+/** An action's error carries the requests its call lost (`lost` is filled by the flush in the `finally` that follows the
+ *  throw), so the failure answer still tells them. */
+const withLost = (error: unknown, lost: Lost[]): unknown => {
+  const carrier = error !== null && typeof error === "object" ? error : Object.assign(new Error(String(error)), { cause: error });
+  Object.defineProperty(carrier, LOST, { value: lost, configurable: true });
+  return carrier;
+};
+const lostOf = (error: unknown): Lost[] => (error !== null && typeof error === "object" ? ((error as { [LOST]?: Lost[] })[LOST] ?? []) : []);
+/** Told to a call whose page sent requests the browser lost before they left it (Chrome's network service restarted under
+ *  them): they were not sent, so the model may send them again. */
+export const lostRequests = (lost: readonly Lost[]): string =>
+  `The browser lost ${lost.length === 1 ? "a request" : `${lost.length} requests`} your page made before ${lost.length === 1 ? "the request" : "they"} left the browser: ${lost.map((r) => `${r.method} ${r.url}`).join(", ")}. Chrome's network service restarted while ${lost.length === 1 ? "it was" : "they were"} on ${lost.length === 1 ? "its" : "their"} way, so ${lost.length === 1 ? "the request was" : "the requests were"} not sent. Make ${lost.length === 1 ? "it" : "them"} again if you still need ${lost.length === 1 ? "it" : "them"}.`;
 
 /** A read of a browser that has loaded no page yet: it is fresh, and the next step is to navigate, to the replaced
  *  session's last page when there is one. */
@@ -115,26 +145,24 @@ const MAX_FRAMES = 5;
 const FRAME_TEXT_CHARS = 200;
 const FRAME_TEXT_READ_CHARS = 20_000;
 const FRAME_SCAN_CHARS = 2_000_000;
+/** How much of the page one step of the frame scan reads before it yields the event loop. */
+const FRAME_STEP_CHARS = 32_768;
 /** What the judge is shown of the page's frames, in document order: a frame's content is not in the page's text, so a page whose content sits in a challenge frame reads as empty without it. `frames` are the distinct origins (origin only: a
  *  frame's path and query can carry a token; http(s) only; a relative source resolves against the page's `<base href>` when it has one, as the browser does) and `frameText` what the page puts inside the frame elements (the fallback a browser
  *  does not render, where a block page keeps its message), collapsed to one line and cut at 200 characters. A frame is an element: markup inside a script, a comment, a noscript or a template is not one, so it neither counts nor takes one of the five.
- *  A page that cannot be parsed gives none. */
+ *  The first FRAME_SCAN_CHARS of the page are read in one linear scan (FrameScan), FRAME_STEP_CHARS at a time with the event loop yielded between steps, so a big page never holds it. A page that cannot be read gives none. */
 async function framesOf(html: string, pageUrl: string, redact: Redact): Promise<{ frames: string[]; frameText: string[] }> {
   try {
-    const { parse } = await import("node-html-parser");
-    // HTML's own void elements (the parser's default list lacks `frame`, so an unclosed <frame> would swallow its sibling).
-    const root = parse(html.slice(0, FRAME_SCAN_CHARS), { voidTag: { tags: ["area", "base", "br", "col", "embed", "frame", "hr", "img", "input", "keygen", "link", "meta", "param", "source", "track", "wbr"] } });
+    const scan = new FrameScan(await dropOnLoop(html.slice(0, FRAME_SCAN_CHARS)), decodeEntities, FRAME_TEXT_READ_CHARS);
+    while (!scan.step(FRAME_STEP_CHARS)) await yieldToLoop();
+    const { frames, base: baseHref } = scan.result();
     let base = pageUrl;
-    const baseHref = root.querySelector("base[href]")?.getAttribute("href");
     if (baseHref) { try { base = new URL(baseHref, pageUrl).href; } catch { /* a base that does not parse: the page's own URL stands */ } }
     const origins = new Set<string>();
     const texts = new Set<string>();
-    for (const frame of root.querySelectorAll("iframe, frame")) {
+    for (const frame of frames) {
       if (origins.size >= MAX_FRAMES && texts.size >= MAX_FRAMES) break;
-      let inert = false;
-      for (let up = frame.parentNode; up; up = up.parentNode) if (up.rawTagName?.toLowerCase() === "template") { inert = true; break; }
-      if (inert) continue;
-      const source = frame.getAttribute("src")?.trim();
+      const source = frame.src?.trim();
       if (source && origins.size < MAX_FRAMES) {
         try {
           const url = new URL(source, base);
@@ -190,22 +218,23 @@ const factsOf = (p: Cut, now: string): PendingEffectFacts => ({
   sent: p.watched ? (p.sent ?? []).map((r) => ({ method: r.method, url: `${r.origin}${r.path}`, held: r.held })) : null,
 });
 
-async function markdown(html: string, fallback: string): Promise<Read> {
-  try {
-    const [{ parse }, { NodeHtmlMarkdown }] = await Promise.all([import("node-html-parser"), import("node-html-markdown")]);
-    const root = parse(html);
-    const main = root.querySelector("article") ?? root.querySelector("main") ?? root.querySelector("body") ?? root;
-    const md = NodeHtmlMarkdown.translate(main.toString(), { keepDataImages: false });
-    if (md.trim()) return { body: md, extractor: "readability-md", ext: "md" };
-  } catch {}
-  return { body: fallback, extractor: "inner-text", ext: "txt" };
+/** The page's main content as markdown (its first article, else main, else body: htmlMarkdown, off the event loop); the
+ *  browser's own text when the conversion gives nothing, fails or runs past `deadlineMs`. A page cut before it was read
+ *  says so on its last line. Rejects only with `signal`'s reason. */
+async function markdown(html: string, fallback: string, signal: AbortSignal | undefined, deadlineMs: number): Promise<Read> {
+  const read = await htmlMarkdown(html, { main: true, deadlineMs, ...(signal ? { signal } : {}) });
+  if (!read?.text.trim()) return { body: fallback, extractor: "inner-text", ext: "txt" };
+  const cut = read.truncated ? `\n\n(Cut: the page is ${thousands(read.html_chars!)} characters of HTML, and only the first ${thousands(READ_MAX_CHARS)} of its main content, scripts and styles aside, were read as markdown. browser_read with what: "text" gives all of its text.)` : "";
+  return { body: read.text + cut, extractor: "readability-md", ext: "md" };
 }
 
-export function pageTools({ guards = new Map<number, RepeatGuard>(), reconnect: timings = RECONNECT }: {
+export function pageTools({ guards = new Map<number, RepeatGuard>(), reconnect: timings = RECONNECT, readDeadlineMs = READ_DEADLINE_MS }: {
   /** Each conversation's repeat guard; a host that owns the conversation's lifecycle passes it to evict one. */
   guards?: Map<number, RepeatGuard>;
   /** The reconnect timings, for tests; hosts keep the defaults. */
   reconnect?: ReconnectTimings;
+  /** How long browser_read's markdown has before the browser's own text stands in (default READ_DEADLINE_MS), for tests. */
+  readDeadlineMs?: number;
 } = {}): Pick<BrowserToolImpls<PageDriver>, "snapshot" | "run" | "screenshot" | "browser_read" | "browser_upload" | "browser_downloads"> {
   const guardOf = (conversationId: number, redact: Redact) => guards.get(conversationId) ?? guards.set(conversationId, createRepeatGuard(redact)).get(conversationId)!;
 
@@ -244,8 +273,8 @@ export function pageTools({ guards = new Map<number, RepeatGuard>(), reconnect: 
         await pause(wait, call.signal);
         if (call.signal?.aborted) break;
       }
-      // The try's attach is bounded by what is left of the budget: one that waits on the browser (an earlier init still
-      // finishing in it) stops there instead of running past it. The timer is a ref'd one, cleared when the try ends, so a
+      // The try's attach is bounded by what is left of the budget: one that waits on the browser (a connection held on
+      // the way) stops there instead of running past it. The timer is a ref'd one, cleared when the try ends, so a
       // reconnect in progress keeps the process alive (AbortSignal.timeout's timer does not, and Node 22 then drains).
       const deadline = new AbortController();
       const timer = setTimeout(() => deadline.abort(new DOMException("the reconnect's budget ran out", "TimeoutError")), Math.max(0, until - Date.now()));
@@ -281,7 +310,17 @@ export function pageTools({ guards = new Map<number, RepeatGuard>(), reconnect: 
     const tell = (out: ToolOutput): ToolOutput => (facts || previous ? { ...out, details: { ...(out.details as object | undefined), ...(facts ? { pendingEffect: facts } : {}), ...(previous ? { previous_session: previous } : {}) } } : out);
     const done = (out: ToolOutput) => { guard.note(tool, args, null); return tell(out); };
     // The notice leads a failure, never after its own keys: a call told nothing else first reads it.
-    const fail = (failure: BrowserFailure) => { guard.note(tool, args, failure); return tell(text(news ? { notice: news, ...(previous ? { previous_session: previous } : {}), ...failure } : failure, true)); };
+    // A run of several actions that dropped partway (driving-guard's partway): its failure says how many ran.
+    let partial: PartialRun | undefined;
+    // Requests the failed action's call lost: told in the failure's message and listed in details, as on success.
+    let lostOnError: Lost[] = [];
+    const fail = (given: BrowserFailure) => {
+      const failure = partial ? asPartial(given, partial) : given;
+      guard.note(tool, args, failure);
+      const told = lostOnError.length ? { ...failure, message: `${failure.message} ${lostRequests(lostOnError)}` } : failure;
+      const out = tell(text(news ? { notice: news, ...(previous ? { previous_session: previous } : {}), ...told } : told, true));
+      return lostOnError.length ? { ...out, details: { ...(out.details as object | undefined), lost: lostOnError } } : out;
+    };
     let cuts: Cut[] = [];
     // A look after a refusal settles every refused cut in the chain whose warning a saved answer had already told; one this call is
     // telling stays until a later look, so a process that dies before this answer is saved tells it again.
@@ -325,6 +364,8 @@ export function pageTools({ guards = new Map<number, RepeatGuard>(), reconnect: 
       }
       return await looked(effect === null ? await body(s, news) : await dispatched(tool, port, call, s, effect, () => body(s, news)));
     } catch (error) {
+      partial = partialOf(error);
+      lostOnError = lostOf(error);
       const failure = await failureOf(error, effectful, port, call, action);
       if (failure.code !== "browser_unavailable" || error instanceof BrowserFailureError) return fail(failure);
       // A dropped CDP connection to a session the provider still runs: a read reconnects and runs once more; a run, which
@@ -369,10 +410,14 @@ export function pageTools({ guards = new Map<number, RepeatGuard>(), reconnect: 
       const codeSha = sha256Hex(JSON.stringify(args.code ?? args.actions));
       return perform("run", args, port, call, { effect: codeSha }, async (s, news) => {
         const sent: Array<{ method: string; url: string; held: string | null }> = [];
-        const stop = s.effects?.record((row) => { sent.push({ method: row.method, url: call.redact(`${row.origin}${row.path}`), held: row.held }); return port.journal(row); });
+        const lost: Lost[] = [];
+        const stop = s.effects?.record((row) => { sent.push({ method: row.method, url: call.redact(`${row.origin}${row.path}`), held: row.held }); return port.journal(row); },
+          (request) => { lost.push({ method: request.method, url: call.redact(`${request.origin}${request.path}`) }); });
         let value: unknown;
         try {
           value = await s.driver.run(args.code !== undefined ? { code: runnableCode(args.code) } : { actions: args.actions });
+        } catch (error) {
+          throw withLost(error, lost);
         } finally {
           await s.effects?.flush(call.signal).catch(() => undefined);
           stop?.();
@@ -382,7 +427,8 @@ export function pageTools({ guards = new Map<number, RepeatGuard>(), reconnect: 
         if (url && scrubPageUrl(url, call.redact) !== s.record.lastUrl) { guardOf(call.conversationId, call.redact).moved(); await port.navigated(url); }
         const reported = args.actions !== undefined && value && typeof value === "object" && typeof (value as { url?: unknown }).url === "string" ? { ...(value as object), url: pageUrl(call, (value as { url: string }).url) } : value;
         const shown = typeof reported === "string" ? reported : reported === undefined ? "(run completed; the code returned no value: end it with `return <value>` to get one back)" : JSON.stringify(reported, null, 2) ?? String(reported);
-        return { ...text(withNews(news, shown)), ...(sent.length ? { details: { sent } } : {}) };
+        const told = lost.length ? `${shown}\n\n${lostRequests(lost)}` : shown;
+        return { ...text(withNews(news, told)), ...(sent.length || lost.length ? { details: { ...(sent.length ? { sent } : {}), ...(lost.length ? { lost } : {}) } } : {}) };
       });
     },
 
@@ -396,7 +442,10 @@ export function pageTools({ guards = new Map<number, RepeatGuard>(), reconnect: 
         const url = pageUrl(call, await s.driver.url());
         const receipt = await file(s, call, { tool: "screenshot", args: region ? { ...requested, clip: region.clip, ...region.of } : requested, status: "ok", facts: { final_url: url }, body: Buffer.from(shot.data, "base64"), ext: shot.size.type === "png" ? "png" : "jpg" });
         const first = shot.adjusted?.first;
-        const adjusted = shot.adjusted && `adjusted: the first capture${first ? ` (${first.width}x${first.height})` : ""} was over the ${shot.adjusted.why === "long_edge" ? "2,000 px long edge" : "size"} budget; this is ${region ? "the clip" : "the viewport"} at ${shot.size.width}x${shot.size.height}`;
+        const over = shot.adjusted?.why === "long_edge" ? "was over the 2,000 px long edge budget" : shot.adjusted?.why === "base64_bytes" ? "was over the size budget" : "could not be measured";
+        const taken = shot.options.clip ? "the clip" : shot.options.fullPage ? "the full page" : "the viewport";
+        const scaled = shot.options.scale !== undefined && shot.options.scale < 1 ? ", scaled down" : "";
+        const adjusted = shot.adjusted && `adjusted: the first capture${first ? ` (${first.width}x${first.height})` : ""} ${over}; this is ${taken} at ${shot.size.width}x${shot.size.height}${scaled}`;
         const lines = [news, `url: ${url}`, `evidence: ${receipt.path ?? "(not filed)"}`, adjusted].filter(Boolean).join("\n");
         const media = { kind: "screenshot", path: receipt.bodyPath, mime: shot.mimeType, bytes: Buffer.from(shot.data, "base64").byteLength, width: shot.size.width, height: shot.size.height, ...(region ? { clip: region.clip, ...region.of } : {}), ...(ask ? { ask } : {}) };
         return { content: [{ type: "text", text: lines }, { type: "image", data: shot.data, mimeType: shot.mimeType }], details: { evidence: receipt.path, sha256: receipt.sha256, media } };
@@ -410,7 +459,7 @@ export function pageTools({ guards = new Map<number, RepeatGuard>(), reconnect: 
         // A browser that has loaded no page yet, on an about:blank nothing has written into, is fresh, not walled: it says
         // so, and where to go. A script that wrote a title or text into about:blank made a page, which is read.
         if (page.url === "about:blank" && loadedNoPage(s.record) && !page.title.trim() && !page.text.trim()) throw new BrowserFailureError(freshBrowser(s.replaced ?? null));
-        const read: Read = what === "markdown" ? await markdown(page.html, page.text)
+        const read: Read = what === "markdown" ? await markdown(page.html, page.text, call.signal, readDeadlineMs)
           : what === "html" ? { body: page.html, extractor: "raw", ext: "html" }
           : what === "text" ? { body: page.text, extractor: "inner-text", ext: "txt" }
           : { body: what === "url" ? pageUrl(call, page.url) : page.title, ext: "txt" };
@@ -442,14 +491,19 @@ export function pageTools({ guards = new Map<number, RepeatGuard>(), reconnect: 
       return perform("browser_upload", { path: asked, selector }, port, call, { effect: codeSha }, async (s, news) => {
         if (!s.driver.setInputFiles) throw refusedError("This browser driver cannot set a file input.");
         const sent: Array<{ method: string; url: string; held: string | null }> = [];
-        const stop = s.effects?.record((row) => { sent.push({ method: row.method, url: call.redact(`${row.origin}${row.path}`), held: row.held }); return port.journal(row); });
+        const lost: Lost[] = [];
+        const stop = s.effects?.record((row) => { sent.push({ method: row.method, url: call.redact(`${row.origin}${row.path}`), held: row.held }); return port.journal(row); },
+          (request) => { lost.push({ method: request.method, url: call.redact(`${request.origin}${request.path}`) }); });
         try {
           await s.driver.setInputFiles(selector, { name: file.name, mimeType: file.mime, buffer: file.bytes });
+        } catch (error) {
+          throw withLost(error, lost);
         } finally {
           await s.effects?.flush(call.signal).catch(() => undefined);
           stop?.();
         }
-        return { content: [{ type: "text", text: JSON.stringify({ ok: true, uploaded, selector, ...(news ? { notice: news } : {}) }) }], details: { uploaded, ...(sent.length ? { sent } : {}) } };
+        const notice = [news, lost.length ? lostRequests(lost) : ""].filter(Boolean).join(" ");
+        return { content: [{ type: "text", text: JSON.stringify({ ok: true, uploaded, selector, ...(notice ? { notice } : {}) }) }], details: { uploaded, ...(sent.length ? { sent } : {}), ...(lost.length ? { lost } : {}) } };
       });
     },
 

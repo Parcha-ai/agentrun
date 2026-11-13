@@ -2,25 +2,26 @@
 // of the revision's workflow; each node's state is `nodeStatus` over the journal's frame (and, once the run ended,
 // `readWorkflowRun`'s, with the task's end); a map's items, a route's branch taken and the interrupted decisions come
 // from the frame; the decisions are the receipts, each joined to its graph node by its execution path (`graphNodeOf`);
-// the calls and the nodes' times are the run process's node log (pause.ts).
+// the calls are the node log the runner keeps on the run's journal (KINDS.nodeEffect, each call's start and end).
 //
-// Where the frame and the receipts come from: while the run goes its process holds its store exclusively, so they are
-// the process's live view (pause.ts `live.json`), and the store is never opened (an open racing the process's own would
-// fail it). Once the run ended, the store.
-import { type NodeLine, readLiveView, readNodeLog } from "./pause.js";
+// Where the frame and the receipts come from: while the run goes, its live view (pause.ts `live.json`); once the run
+// ended, the store.
+import type { Context } from "@earendil-works/chord";
+import { llmAnswers, type NodeLine, readLiveView } from "./pause.js";
+import { KINDS } from "./runner/journal-kinds.js";
+import type { Store } from "./store/store.js";
 
 export type GraphNodeStatus = "pending" | "working" | "done" | "failed" | "stopped" | "escalated" | "not_run" | "needs_review";
 type Item = { index: number; status: GraphNodeStatus; executionPath: string; label?: string; branches?: Record<string, string> };
-type NodeView = { status: GraphNodeStatus; startedAt?: string; endedAt?: string; branch?: string; items?: Item[] };
+type NodeView = { status: GraphNodeStatus; startedAt?: string; endedAt?: string; branch?: string; items?: Item[]; model?: string; tier?: string };
+/** The model nodes (graph.ts's model kinds): each runs on its tier's model, else the run's own. */
+const MODEL_KINDS = new Set(["agent", "decide", "extract", "report"]);
 
 export type GraphInput = {
   run: { id: string; agent: string; revision: string; status: string; paused: boolean; startedAt: string; endedAt: string | null };
-  /** The run has ended: a node it never reached is `not_run`, not `pending`, and its store is read. */
+  /** The run has ended: a node it never reached is `not_run`, not `pending`, and its store is read, lock-free. */
   ended: boolean;
-  /** Read the live view even though the run ended: its store was busy. */
-  liveOnly?: boolean;
   workflow: unknown;
-  storeFile: string;
   /** The run's directory: its node log is there. */
   root: string;
   /** The run's input: what a map's items are read from before its state has them. */
@@ -29,6 +30,9 @@ export type GraphInput = {
   modelCost: number | null;
   /** How many of its llm calls' answers its node log held when its rows were last read: their cost is in `modelCost`. */
   llmRead?: number;
+  /** The one store and a context: an ended run's view, pin and decisions are read from its journal (store.readJournal). */
+  store: Store;
+  context: Context;
 };
 
 type Frame = { done?: string[]; states?: Record<string, unknown>; inputs?: Record<string, unknown>; steps?: Record<string, unknown>; routes?: Record<string, { branch?: string }>; decisions?: Record<string, Record<string, { status?: string }>>; failures?: Record<string, unknown>; partial?: { path?: string } };
@@ -36,30 +40,43 @@ type Frame = { done?: string[]; states?: Record<string, unknown>; inputs?: Recor
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const at = (state: unknown, path: string): unknown => path.split(".").reduce<unknown>((value, key) => (isObject(value) ? value[key] : undefined), state);
+/** A map item's label: the item, or its name, whole. The server redacts it, then cuts it (graph-served.ts servedGraphView), so the
+ *  whole label is what redaction sees: a key saved since an earlier poll is still found in it. */
 const labelOf = (item: unknown): string | undefined => {
-  if (typeof item === "string") return item.slice(0, 200);
+  if (typeof item === "string") return item;
   if (typeof item === "number") return String(item);
   if (!isObject(item)) return undefined;
   const named = item.name ?? item.label ?? item.title ?? item.id ?? item.file ?? item.path ?? item.url;
-  return typeof named === "string" || typeof named === "number" ? String(named).slice(0, 200) : undefined;
+  return typeof named === "string" || typeof named === "number" ? String(named) : undefined;
 };
 
+
+
 export async function runGraph(given: GraphInput) {
-  const [{ graphNodeOf, nodeStatus, workflowGraph }, { readWorkflowRun }, { durableDecisions, readJournal }] = await Promise.all([
-    import("@parcha/agentrun-dsl/graph"),
-    import("@parcha/pi-durable-agent/workflow"),
-    import("@parcha/agentrun-pi/durable"),
-  ]);
+  const { graphNodeOf, nodeStatus, workflowGraph } = await import("@parcha/agentrun-dsl/graph");
   const { id } = given.run;
   const graph = workflowGraph(given.workflow);
   let view: { status: Record<string, string>; escalatedAt?: { path: string }; escalation?: { kind: string | null } };
   let pin: Frame;
   let receipts: Array<Record<string, unknown>>;
   let readAt = new Date().toISOString();
-  if (given.ended && !given.liveOnly) {
-    view = await readWorkflowRun({ runId: id, storePath: given.storeFile, revision: { body: { workflow: given.workflow } } as never });
-    pin = ((readJournal(given.storeFile, id)?.state as { pin?: Frame } | undefined)?.pin) ?? {};
-    receipts = durableDecisions(given.storeFile);
+  if (given.ended) {
+    // From the one store's journal (store.readJournal): the run's view and pin as readWorkflowRun reads them, and its
+    // decisions as receipts.
+    const { store, context } = given;
+    const [{ decisionsOverStore }, { readWorkflowRunOver }] = await Promise.all([import("./store-reads/decisions.js"), import("./store-reads/workflow.js")]);
+    // The one reader of a workflow run's view over A (node status, outcome, escalation): the workflow-loop builder's.
+    view = (await readWorkflowRunOver(store, id, context)) ?? { status: {} };
+    const reads = store.readJournal(id);
+    try {
+      // The pin frame is the driver document's `state.pin`, as readWorkflowRun reads it internally over the journal.
+      const driver = await reads.findDocument({ kind: "agentrun.driver", scope: { kind: "session" }, key: id } as never, "current", context);
+      const driverValue = driver ? ((await reads.document(driver.id, "current", context))?.value as { state?: { pin?: Frame } } | undefined) : undefined;
+      pin = driverValue?.state?.pin ?? {};
+    } finally {
+      await reads.close(context);
+    }
+    receipts = await decisionsOverStore(store, id, context);
   } else {
     const live = await readLiveView(given.root);
     pin = (live?.pin as Frame | undefined) ?? {};
@@ -67,7 +84,10 @@ export async function runGraph(given: GraphInput) {
     if (live?.at) readAt = live.at;
     view = { status: nodeStatus(graph, { pin: pin as never, result: null }) as Record<string, string> };
   }
-  const lines = await readNodeLog(given.root);
+  // The call nodes' effects, as the runner logged each one's start and end on the run's journal (KINDS.nodeEffect).
+  const { runEntries } = await import("./store-reads/journal.js");
+  const entries = await runEntries(given.store, id, given.context);
+  const lines = entries.filter((entry) => entry.kind === KINDS.nodeEffect).map((entry) => entry.data as unknown as NodeLine);
   const nodeAt = (path: unknown) => (typeof path === "string" ? (graphNodeOf(graph, path)?.path ?? (graph.nodes.some((n) => n.path === path) ? path : undefined)) : undefined);
   const kinds = new Map(graph.nodes.map((node) => [node.path, node.kind]));
 
@@ -176,13 +196,15 @@ export async function runGraph(given: GraphInput) {
       questions: r.questions ?? null, answers: r.answers ?? null, evidence: r.evidence ?? [], rule: r.rule ?? null, action: r.action ?? null,
       cost_usd: typeof r.cost_usd === "number" ? r.cost_usd : null, cost_basis: r.cost_basis ?? null, latency_ms: r.latency_ms ?? null,
       state: r.state ?? null, state_truncated: r.state_truncated === true, error: typeof r.error === "string" ? r.error : null,
+      // Whole up to 64 KB (the DSL's receipt); `error_cut` marks one it kept cut, for the server to hold its tail back.
+      ...(r.error_truncated === true ? { error_cut: true } : {}),
       images: images.map((image) => ({ token: image.token ?? null, ref: image.ref ?? null, url: typeof image.ref === "string" ? runFile(image.ref) : null })),
     };
   });
 
   // The calls, each start paired with its end in order.
   const open = new Map<string, Extract<NodeLine, { t: "effect.start" }>[]>();
-  const effects: Array<{ node: string | null; executionPath: string | null; item: number | null; tool: string; status: string; input: unknown; output: unknown; error: string | null; startedAt: string; endedAt: string | null }> = [];
+  const effects: Array<{ node: string | null; executionPath: string | null; item: number | null; tool: string; status: string; input: unknown; output: unknown; error: string | null; error_cut?: boolean; startedAt: string; endedAt: string | null }> = [];
   const placeOf = new Map<Extract<NodeLine, { t: "effect.start" }>, number>();
   for (const line of lines) {
     if (line.t === "effect.start") {
@@ -194,17 +216,34 @@ export async function runGraph(given: GraphInput) {
       const start = open.get(`${line.path}\n${line.tool}\n${line.label}`)?.shift();
       if (!start) continue;
       const effect = effects[placeOf.get(start)!]!;
-      Object.assign(effect, { status: line.status, output: line.output ?? null, error: line.error ?? null, endedAt: line.at });
+      // An error is stored whole up to 64 KB (app.ts), longer ones cut and marked; one of a log from before, cut at 2000.
+      // Whole, as logged (up to 64 KB, app.ts); `error_cut` marks one stored cut, for the server to hold its tail back
+      // (graph-served.ts, which also takes one of exactly 2000 characters, from a log made before, as cut).
+      Object.assign(effect, { status: line.status, output: line.output ?? null, error: line.error ?? null, ...(line.error_truncated === true ? { error_cut: true } : {}), endedAt: line.at });
     }
   }
 
   // The run's spend: its decisions', its llm calls' and its model nodes'; one unknown makes it unknown. An llm call's cost
   // is a REQUEST_COST entry, in `modelCost` once the run's rows hold it: the first `llmRead` answers of the node log (an
   // answer is logged after its cost is committed). Only the later ones are counted from the node log.
-  const answers = lines.filter((line) => line.t === "effect.end" && line.tool === "llm" && line.status === "done");
-  const calls = answers.slice(given.llmRead ?? 0).map((line) => (line.t === "effect.end" && isObject(line.output) && typeof line.output.cost_usd === "number" ? line.output.cost_usd : null));
+  const calls = llmAnswers(lines).slice(given.llmRead ?? 0).map((line) => (isObject(line.output) && typeof line.output.cost_usd === "number" ? line.output.cost_usd : null));
   const costs: Array<number | null> = [...decisions.map((d) => d.cost_usd), ...calls, given.modelCost];
   const cost = costs.some((c) => c === null) ? null : Math.round((costs as number[]).reduce((a, b) => a + b, 0) * 1e8) / 1e8;
+  // Each model node's model: what its own execution ran on, as the runner kept it before running it (KINDS.nodeModel, by
+  // execution path), with the tier it asked for; a node a map runs once per item reads its newest execution's. A resumed
+  // claim keeps its own executions', so it never rewrites what an earlier node ran on. A decision node's model is its
+  // provider's, from its newest receipt. Any other node has none.
+  for (const entry of entries) {
+    const data = (entry.data ?? {}) as { path?: unknown; tier?: unknown; model?: unknown };
+    if (entry.kind !== KINDS.nodeModel || typeof data.model !== "string") continue;
+    const path = nodeAt(data.path);
+    const own = path ? nodes[path] : undefined;
+    if (!path || !own || !MODEL_KINDS.has(kinds.get(path) ?? "")) continue;
+    own.model = data.model;
+    if (typeof data.tier === "string") own.tier = data.tier;
+    else delete own.tier;
+  }
+  for (const decision of decisions) if (typeof decision.node === "string" && typeof decision.model === "string" && nodes[decision.node]) nodes[decision.node]!.model = decision.model;
   const startedMs = Date.parse(given.run.startedAt);
   const endMs = given.run.endedAt ? Date.parse(given.run.endedAt) : Date.now();
   return {

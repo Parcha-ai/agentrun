@@ -1,0 +1,16 @@
+{
+  "about": "The requests Settings → MCP servers and the agent editor send, in order, as their tests assert them; packages/serve/test/mcp-console-replay.test.mjs sends the same ones to a real server. {url} is an MCP server that takes {token}, {oauth_url} one behind OAuth.",
+  "requests": [
+    { "step": "preview, a wrong token", "method": "POST", "path": "/v2/settings/mcp-servers/preview", "body": { "url": "{url}", "auth": { "type": "bearer", "token": "{wrong_token}" } } },
+    { "step": "preview", "method": "POST", "path": "/v2/settings/mcp-servers/preview", "body": { "url": "{url}", "auth": { "type": "bearer", "token": "{token}" } } },
+    { "step": "save", "method": "PUT", "path": "/v2/settings/mcp-servers/fake", "body": { "url": "{url}", "auth": { "type": "bearer", "token": "{token}" } } },
+    { "step": "the list", "method": "GET", "path": "/v2/settings/mcp-servers" },
+    { "step": "save again, the token kept", "method": "PUT", "path": "/v2/settings/mcp-servers/fake", "body": { "url": "{url}", "auth": { "type": "bearer" } } },
+    { "step": "refresh", "method": "POST", "path": "/v2/settings/mcp-servers/fake/refresh", "body": {} },
+    { "step": "grant fake/add", "method": "PUT", "path": "/v2/agents/calc/definition", "body": { "definition": { "id": "calc", "version": 2, "name": "Calc", "instructions": "Answer.", "harness": "pi", "skills": [], "tools": ["read", "mcp:fake/add"] } } },
+    { "step": "preview, a server behind OAuth", "method": "POST", "path": "/v2/settings/mcp-servers/preview", "body": { "url": "{oauth_url}", "auth": { "type": "none" } } },
+    { "step": "sign in", "method": "POST", "path": "/v2/settings/mcp-servers/docs/oauth/start", "body": { "url": "{oauth_url}" } },
+    { "step": "delete", "method": "DELETE", "path": "/v2/settings/mcp-servers/fake" }
+  ],
+  "sign_in_return": "/#/settings/mcp?server=docs&sign_in=ok"
+}

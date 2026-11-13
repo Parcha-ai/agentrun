@@ -26,6 +26,11 @@ export function hiddenFile(path: string): boolean {
 /** What a run that completed with an empty answer reads as, on its Report tab and in its Answer step. */
 export const NO_ANSWER = "The agent finished without writing an answer.";
 
+/** When a record is read again after it moved, and again while the server says it is not settled: at once, then twice
+ *  more after these pauses. Shared by the latest run (LatestRun) and the agent's Analytics tab. */
+export const TRIES_MS = [0, 250, 1000];
+export const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 /** A guard for overlapping async reads: only the newest one begun, and not cancelled since, may land. */
 export function latest() {
   let at = 0;

@@ -30,3 +30,134 @@ describe("RunDetail, a run waiting on a question", () => {
     expect(shown).not.toContain("Asked you the question above.");
   });
 });
+
+// A run paused at its spend cap waits on a raise, not an answer: a message to it is refused (409 budget_reached).
+describe("RunDetail, a run paused at its spend cap", () => {
+  const f = runFixture("run.input_required.waiting.1");
+  // Words with no apostrophe: the page's markup escapes one (&#x27;), and these tests read its text as written.
+  const SAID = "Not sent: this run has spent $0.04 of its $0.05 cap, and the next step needs at least $0.11. Raise the cap to at least $0.16 to continue.";
+  const paused: Run = { ...f.run, pending: { kind: "budget", cap_usd: 0.05, spent_usd: 0, needs_usd: 0.1024, said: SAID, at: "2026-11-04T20:08:05.127Z" } };
+  it("shows the cap's words in the banner and offers no composer: no answer, no follow-up", () => {
+    const shown = page(paused, f.page.rows);
+    expect(shown).toContain("Paused at its $0.05 spend cap");
+    expect(shown).toContain(SAID);
+    expect(shown).not.toContain("Answer the question");
+    expect(shown).not.toContain("Ask a follow-up");
+    // The banner is the cap's, not a question's (the run's header keeps its status, input required).
+    expect(shown).not.toContain("Asked you the question above.");
+  });
+});
+
+// The Report tab of a run with no answer yet says what is true of it: working, waiting on the person, stopped or paused.
+// Only a queued or working run reads "Writing the answer"; one that ended says how (the error, the cancel, no answer).
+describe("RunDetail's Report tab before an answer", () => {
+  const report = (run: Run, rows: ReturnType<typeof runFixture>["page"]["rows"], messages = messageFeatures) =>
+    renderToStaticMarkup(createElement(RunDetail, { run, agentName: "invoice-checker", messages, harnessSteers: true, rows, files: [], actions: {}, onMessage: () => {}, tab: "report" }))
+      .replace(/<[^>]+>/g, " ").replace(/&#x27;/g, "'").replace(/\s+/g, " ");
+  const WRITING = "Writing the answer";
+
+  it("a run that asked a question waits for the answer, and points at the box below", () => {
+    const f = runFixture("run.input_required.waiting.1");
+    const shown = report(f.run, f.page.rows);
+    expect(shown).not.toContain(WRITING);
+    expect(shown).toContain("Waiting for your answer");
+    expect(shown).toContain("The run continues when you reply below.");
+  });
+
+  it("where the server takes no answer from here, it says it waits for one, never that a box below takes it", () => {
+    const f = runFixture("run.input_required.waiting.1");
+    const shown = report(f.run, f.page.rows, { ...messageFeatures, answer: false, follow_up: false, steer: false });
+    expect(shown).not.toContain(WRITING);
+    expect(shown).toContain("Waiting for your answer");
+    expect(shown).toContain("The run continues once the question is answered.");
+    expect(shown).not.toContain("reply below");
+  });
+
+  it("a budget pause the server sends without its figures (kind only) shows the pause without an amount, and its page still opens", () => {
+    for (const [name, state] of [["run.input_required.waiting.1", "waiting"], ["run.input_required.idle.1", "idle"]] as const) {
+      const f = runFixture(name);
+      const run = { ...f.run, state, pending: { kind: "budget" } } as unknown as Run;
+      const shown = report(run, f.page.rows);
+      expect(shown, name).toContain("Paused at its spend cap");
+      expect(shown, name).toContain("Its spend cap is reached. Raise the cap above to continue.");
+      expect(shown, name).not.toMatch(/undefined|NaN/);
+      // With a way to raise, the page still opens: no figure to name, so the banner offers no raise of its own.
+      const withRaise = renderToStaticMarkup(createElement(RunDetail, { run, agentName: "invoice-checker", messages: messageFeatures, harnessSteers: true, rows: f.page.rows, files: [], actions: { onRaiseCap: async () => { throw new Error("no raise"); } }, onMessage: () => {}, tab: "report" }));
+      expect(withRaise, name).not.toMatch(/undefined|NaN/);
+    }
+  });
+
+  it("a run paused at its spend cap says so, with what it spent of its cap from the served figures, and points at the raise above", () => {
+    const f = runFixture("run.input_required.waiting.1");
+    const said = "Not sent: this run has spent $0.04 of its $0.05 cap.";
+    const paused = { ...f.run, pending: { kind: "budget", cap_usd: 0.05, spent_usd: 0.04, needs_usd: 0.1024, said, at: "2026-11-04T20:08:05.127Z" } } as Run;
+    const shown = report(paused, f.page.rows);
+    expect(shown).not.toContain(WRITING);
+    expect(shown).not.toContain("Waiting for you ");
+    expect(shown).toContain("Paused at its spend cap");
+    expect(shown).toContain("It has spent $0.04 of its $0.05 cap. Raise the cap above to continue.");
+    // A server that sends the cap without the figures: said without them, never a figure it lacks.
+    const bare = report({ ...paused, pending: { kind: "budget", cap_usd: 0.05, said, at: "2026-11-04T20:08:05.127Z" } } as Run, f.page.rows);
+    expect(bare).toContain("Its $0.05 cap is reached. Raise the cap above to continue.");
+  });
+
+  it("a question the server names as one (pending.kind question) reads as a question", () => {
+    const f = runFixture("run.input_required.waiting.1");
+    const shown = report({ ...f.run, pending: { kind: "question", question: "Which currency are these amounts in: USD or EUR?", asked_at: f.run.created_at } }, f.page.rows);
+    expect(shown).toContain("Waiting for your answer");
+    expect(shown).toContain("The run continues when you reply below.");
+  });
+
+  it("a stopped run says it stopped before it wrote an answer, and that a message continues it", () => {
+    const f = runFixture("run.input_required.idle.1");
+    const shown = report(f.run, f.page.rows);
+    expect(shown).not.toContain(WRITING);
+    expect(shown).toContain("Stopped before it wrote an answer.");
+    expect(shown).toContain("Send a message below to continue it.");
+  });
+
+  it("a paused workflow run says it is paused, not writing", () => {
+    const f = runFixture("run.cancelled.idle.1");
+    const shown = report({ ...f.run, status: "paused", state: "idle", result: null }, f.page.rows);
+    expect(shown).not.toContain(WRITING);
+    expect(shown).toContain("Paused");
+    expect(shown).toContain("No new step starts until it's resumed. The answer appears here when it finishes.");
+  });
+
+  it("a failed run shows its error, a cancelled one says so, and a completed one with no answer says it gave none: none says writing", () => {
+    const failed = runFixture("run.failed.idle.3");
+    const f = report(failed.run, failed.page.rows);
+    expect(f).not.toContain(WRITING);
+    expect(f).toContain("The run failed");
+    expect(f).toContain(failed.run.error!.code);
+    const cancelled = runFixture("run.cancelled.idle.1");
+    const c = report(cancelled.run, cancelled.page.rows);
+    expect(c).not.toContain(WRITING);
+    expect(c).toContain("This run was cancelled.");
+    const done = runFixture("run.completed.idle.1");
+    const d = report({ ...done.run, result: null }, done.page.rows.filter((r) => r.kind !== "final_answer"));
+    expect(d).not.toContain(WRITING);
+    expect(d).toContain("The agent finished without writing an answer.");
+  });
+
+  it("a queued or working run is the one that is writing the answer", () => {
+    for (const name of ["run.queued.working.1", "run.working.working.1"]) {
+      const f = runFixture(name);
+      expect(report(f.run, f.page.rows), name).toContain(WRITING);
+    }
+  });
+});
+
+// A run opened on its Graph tab whose graph is not there (its read was refused): the default tab is open and the tab
+// row has a Tab stop, never a blank view no key leaves.
+describe("RunDetail, opened on a Graph tab that is not there", () => {
+  it("opens the run's default tab, selected and reachable", () => {
+    const f = runFixture("run.completed.idle.1");
+    const html = renderToStaticMarkup(createElement(RunDetail, { run: f.run, agentName: "invoice-checker", messages: messageFeatures, harnessSteers: true, rows: f.page.rows, files: [], actions: {}, onMessage: () => {}, tab: "graph" }));
+    const tabs = html.match(/<button[^>]*role="tab"[^>]*>[^<]*/g) ?? [];
+    expect(tabs.some((t) => t.endsWith("Graph"))).toBe(false);
+    const open = tabs.filter((t) => t.includes('aria-selected="true"'));
+    expect(open.length).toBe(1);
+    expect(open[0]).toContain('tabindex="0"');
+  });
+});

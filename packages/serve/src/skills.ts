@@ -1,10 +1,15 @@
-// A revision's skills as a run's harness gets them. pi and codex get every skill's SKILL.md inlined in the system prompt.
-// claude-agent loads skills itself (its Skill tool, from a local plugin the adapter writes): it gets each skill whole, every
-// file of it, and the prompt keeps only the skills its adapter would refuse. The adapter's own check (its exported
-// skillProblems) says which: serve takes any <name>/SKILL.md, the adapter only a lowercase name, a SKILL.md whose front
-// matter names the skill and describes it, plain file paths, and 1 MiB in all.
+// A revision's skills as a run's harness gets them. pi, when the run can read its files (a `read` or `bash` tool), gets
+// each skill's name, what it is for and its SKILL.md's path in the system prompt, and reads the SKILL.md when it fits the
+// step it is on (on demand); a run that cannot read files gets every skill's SKILL.md inlined there. claude-agent, codex
+// and opencode load skills themselves (claude-agent's Skill tool, from a local plugin the adapter writes; Codex's own skills
+// list, from the session's CODEX_HOME/skills; OpenCode's instructions; codex and opencode read a skill's files with
+// read_skill_file): each gets every skill whole, every file of it, and the prompt keeps only the skills its adapter would
+// refuse. The adapter's own check (its exported skillProblems) says which: serve takes any <name>/SKILL.md, the adapter
+// only a lowercase name, a SKILL.md whose front matter names the skill and describes it, plain file paths, and 1 MiB in
+// all.
+import { learnedFront } from "./learn/skills.js";
 import { skillNames } from "./validate.js";
-import { readWorkText } from "./workspace.js";
+import { type Workspace, workspaceAt } from "./workspace/index.js";
 
 /** A skill: its name (its directory under `.agents/skills/`), and each of its files' text by its path inside that
  *  directory (`SKILL.md`, `reference/sources.md`). */
@@ -19,14 +24,42 @@ export const READS_AT_ONCE = 16;
 /** `path` under the run's skills directory, as the workspace reads it. */
 const skillPath = (path: string) => [".agents", "skills", path].join("/");
 
-/** Each of `paths` under the run's skills directory as text, in order, READS_AT_ONCE at a time. Through no link
- *  (workspace.ts): a skill directory or file linked out of the workspace is refused, and the read fails. */
-async function readSkillFiles(work: string, paths: readonly string[]): Promise<string[]> {
+/** Each of `paths` under the run's skills directory as text, in order, READS_AT_ONCE at a time, read through the run's
+ *  Workspace, which follows no link: a skill directory or file linked out of it is refused, and the read fails. The
+ *  run's process still hands its folder's path. */
+async function readSkillFiles(given: Workspace | string, paths: readonly string[]): Promise<string[]> {
+  const work = workspaceAt(given);
   const texts: string[] = [];
   for (let at = 0; at < paths.length; at += READS_AT_ONCE) {
-    texts.push(...(await Promise.all(paths.slice(at, at + READS_AT_ONCE).map((path) => readWorkText(work, skillPath(path))))));
+    texts.push(...(await Promise.all(paths.slice(at, at + READS_AT_ONCE).map(async (path) => Buffer.from(await work.read(skillPath(path))).toString("utf8")))));
   }
   return texts;
+}
+
+/** The tools that read a file in the run's work/: a run with one is told where each skill is and reads it when it fits. */
+export const READING_TOOLS: readonly string[] = ["read", "bash"];
+/** Whether a run with `tools` reads its own files, so its skills can be given on demand. */
+export const readsFiles = (tools: readonly string[]): boolean => tools.some((tool) => READING_TOOLS.includes(tool));
+
+/** The line before the skills a run reads on demand. */
+export const ON_DEMAND = "Your skills follow: each one's name, what it is for and its file. When one fits the step you are on, read its SKILL.md whole before you act, and follow it; the files it names are in its folder.";
+/** The most of a skill's description its line carries. */
+const DESCRIPTION_MAX = 1024;
+
+/** What a skill is for, as its line says it: its SKILL.md's front matter description, else its first line of text (a
+ *  heading's words), else its name. One line, at most DESCRIPTION_MAX characters. */
+function describedBy(name: string, text: string): string {
+  const described = learnedFront(text)?.description;
+  const body = text.replace(/\r\n/g, "\n").replace(/^---\n[\s\S]*?\n---\n/, "");
+  const first = body.split("\n").map((line) => line.replace(/^#+\s*/, "").trim()).find(Boolean);
+  return (described || first || name).replace(/\s+/g, " ").trim().slice(0, DESCRIPTION_MAX);
+}
+
+/** The instructions, then each skill as a line: its name, what it is for and its SKILL.md's path under the run's
+ *  work/, which the run reads when the skill fits (on demand). */
+function listingWith(instructions: string, skills: readonly { name: string; files: Readonly<Record<string, string>> }[]): string {
+  const lines = skills.map(({ name, files }) => `- ${name}: ${describedBy(name, files["SKILL.md"] ?? "")} (${skillPath(`${name}/SKILL.md`)})`);
+  return [instructions.trim(), ...(lines.length ? [ON_DEMAND, lines.join("\n")] : [])].join("\n\n");
 }
 
 /** The instructions, then each skill's SKILL.md, by name. */
@@ -35,20 +68,22 @@ function promptWith(instructions: string, skills: readonly { name: string; files
   return [instructions.trim(), ...(blocks.length ? ["Your skills follow. Use the one that fits the step you are on.", ...blocks] : [])].join("\n\n");
 }
 
-/** The revision's instructions, then each skill's `<name>/SKILL.md` from the run's workspace, by name. */
-export async function promptOf(instructions: string, skillFiles: Iterable<string>, work: string): Promise<string> {
+/** The revision's instructions, then each skill's `<name>/SKILL.md` from the run's workspace, by name: whole, or, with
+ *  `onDemand` (the run reads its files: readsFiles), as a line naming it, what it is for and its path. */
+export async function promptOf(instructions: string, skillFiles: Iterable<string>, work: Workspace | string, { onDemand = false }: { onDemand?: boolean } = {}): Promise<string> {
   const names = skillNames(skillFiles);
   const texts = await readSkillFiles(work, names.map((name) => `${name}/SKILL.md`));
-  return promptWith(instructions, names.map((name, i) => ({ name, files: { "SKILL.md": texts[i]! } })));
+  const skills = names.map((name, i) => ({ name, files: { "SKILL.md": texts[i]! } }));
+  return onDemand ? listingWith(instructions, skills) : promptWith(instructions, skills);
 }
 
 /**
  * The revision's skills, by name, each with its files' text from the run's workspace (`work`). A file goes to the nearest
  * skill above it (`team/review/checklist.md` to `team/review` when there is a `team/review/SKILL.md`, else to `team`); a
- * file under no skill is no skill's. Only the revision's own files are read, through no link (workspace.ts): a refused
- * read fails, as promptOf's does.
+ * file under no skill is no skill's. Only the revision's own files are read, through the run's Workspace: a refused read
+ * fails, as promptOf's does.
  */
-export async function skillsOf(skillFiles: Iterable<string>, work: string): Promise<SkillFiles[]> {
+export async function skillsOf(skillFiles: Iterable<string>, work: Workspace | string): Promise<SkillFiles[]> {
   const paths = [...skillFiles].sort();
   const names = skillNames(paths);
   // The deepest first, so the first a path is under is the nearest.
@@ -73,9 +108,10 @@ export function splitSkills(skills: readonly SkillFiles[], check: SkillCheck): {
 }
 
 /** A run's system prompt, and the skills its harness loads itself. With the harness's `check`, the skills it takes are
- *  its own and leave the prompt; with none, every skill's SKILL.md is in the prompt (promptOf). */
-export async function systemOf(instructions: string, skillFiles: Iterable<string>, work: string, check?: SkillCheck): Promise<{ system: string; native: SkillFiles[] }> {
-  if (!check) return { system: await promptOf(instructions, skillFiles, work), native: [] };
+ *  its own and leave the prompt, and the ones it refuses stay inlined; with none, the skills are as promptOf gives them
+ *  (on demand, with `onDemand`). */
+export async function systemOf(instructions: string, skillFiles: Iterable<string>, work: Workspace | string, check?: SkillCheck, { onDemand = false }: { onDemand?: boolean } = {}): Promise<{ system: string; native: SkillFiles[] }> {
+  if (!check) return { system: await promptOf(instructions, skillFiles, work, { onDemand }), native: [] };
   const { native, inlined } = splitSkills(await skillsOf(skillFiles, work), check);
   return { system: promptWith(instructions, inlined), native };
 }

@@ -11,7 +11,7 @@ afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.in
 
 let seq = 0;
 const row = (over: Partial<TimelineRow>): TimelineRow => ({
-  id: `r${++seq}`, seq, kind: "tool_use", summary: "", text: null, timestamp: "2026-11-03T21:00:00Z", tool_name: null, tool_status: "success", ...over,
+  id: `r${++seq}`, seq, kind: "tool_use", summary: "", text: null, timestamp: "2026-11-03T21:00:00Z", created_at: "2026-11-03T21:00:00Z", agent_label: null, tool_use_id: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null, tool_name: null, tool_status: "success", ...over,
 });
 const html = (rows: TimelineRow[]) => renderToStaticMarkup(<Timeline rows={rows} live={false} fold={50} />);
 
@@ -84,7 +84,7 @@ describe("Timeline, a tool step's label", () => {
   });
 
   it("makes words of any other id, and says the same for a result row of the older shape", () => {
-    expect(labelOf("browser_release")).toBe("Browser release");
+    expect(labelOf("deploy_staging")).toBe("Deploy staging");
     expect(labelOf("runsGet")).toBe("Runs get");
     expect(labelOf("mcp__agentrun_serve__runs_get")).toBe("Runs get");
     expect(labelOf("web_fetch", { kind: "tool_result", tool_status: null })).toBe("Fetch");

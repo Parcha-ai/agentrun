@@ -1,10 +1,13 @@
-// The page APIs 4.1.0 cannot serve (the facade calls page.sendCDP and page.onCDP, which no v4 page has) are asserted to
+// The page APIs Stagehand 4.4.0 cannot serve (the facade calls page.sendCDP and page.onCDP, which no v4 page has) are asserted to
 // fail, so a fixed upstream flips this test.
 import assert from "node:assert/strict";
 import { rm } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { STAGEHAND_INFERENCE_REFUSED, stagehandDriver } from "../dist/driver/stagehand.js";
+import { createDrivingGates } from "../dist/core/driving.js";
+import { drivingGuard } from "../dist/core/driving-guard.js";
+import { staleSnapshotIdError } from "../dist/vendor/stagehand-facade/contract.js";
 import { cdpProvider } from "../dist/providers/cdp.js";
 import { CHROME, NO_CHROME, skipIncapable } from "./fixtures/local-chrome.mjs";
 import { startSite } from "./fixtures/site.mjs";
@@ -41,6 +44,14 @@ test("the Stagehand driver serves the page tools' contract on a real Chrome", { 
       assert.equal(await driver.run({ code: `await page.goto(${JSON.stringify(`${site.base}/a`)}); return await page.title();` }), "Page A");
       assert.equal(await driver.url(), `${site.base}/a`);
     });
+    await t.test("a goto action navigates as run code does, and a scheme other than http, https or about:blank is refused", async () => {
+      assert.deepEqual(await driver.run({ actions: [{ op: "goto", url: `${site.base}/a` }] }), { completed: 1, url: `${site.base}/a` });
+      await assert.rejects(driver.run({ actions: [{ op: "goto", url: "file:///etc/hostname" }] }), /goto takes an http or https URL/);
+      assert.equal(await driver.url(), `${site.base}/a`);
+      // A batch of gotos names no id: its check needs no snapshot, as the driving guard runs it on a fresh browser.
+      driver.forgetSnapshots();
+      await driver.checkActions([{ op: "goto", url: `${site.base}/a` }, { op: "goto", url: `${site.base}/a` }]);
+    });
     await t.test("page() returns the page's url, title, text and html", async () => {
       const page = await driver.page();
       assert.equal(page.url, `${site.base}/a`);
@@ -63,12 +74,21 @@ test("the Stagehand driver serves the page tools' contract on a real Chrome", { 
       assert.ok(link, "a link ID");
       assert.equal((await driver.run({ actions: [{ op: "click", id: link }] })).completed, 1);
       const form = await readAfterNavigation(() => driver.snapshot({}), (tree) => Boolean(idOf(tree, /^textbox/i) && idOf(tree, /button.*Submit/)));
-      await driver.run({ actions: [{ op: "fill", id: idOf(form, /^textbox/i), value: "Ada Lovelace" }, { op: "click", id: idOf(form, /button.*Submit/) }] });
+      const actions = [{ op: "fill", id: idOf(form, /^textbox/i), value: "Ada Lovelace" }, { op: "click", id: idOf(form, /button.*Submit/) }];
+      // Every action is checked against the snapshot before any is sent, in the facade's own words for a stale id.
+      await assert.rejects(driver.checkActions([actions[0], { op: "click", id: "999-999" }]), (error) => error.message === staleSnapshotIdError("999-999"));
+      await driver.checkActions(actions);
+      // Through the driving guard, as a model call runs it: the actions go one at a time, and the form still reaches the
+      // server once.
+      const gates = createDrivingGates();
+      const port = { session: async () => ({ tag: "sh-driver-run", driver, notice: null }), relaunch: async () => ({ tag: "sh-driver-run", driver }), release: async () => ({ released: true, sessionId: null }) };
+      const ran = await drivingGuard(async (_args, p) => ({ content: [{ type: "text", text: JSON.stringify(await (await p.session()).driver.run({ actions })) }] }), gates)({}, port, {});
+      assert.equal(JSON.parse(ran.content[0].text).completed, 2);
       assert.equal(await readAfterNavigation(() => driver.run({ code: AFTER_SUBMIT }), (value) => typeof value === "string"), "Submission 1 received for Ada Lovelace.");
       assert.equal(site.submissions(), 1);
     });
-    await t.test("screenshot honors type, quality and the css or device scale", async () => {
-      const png = await driver.screenshot({ type: "png", scale: "css" });
+    await t.test("screenshot honors type and quality, and takes a scale below 1 at one image pixel per CSS pixel", async () => {
+      const png = await driver.screenshot({ type: "png", scale: 0.5 });
       assert.equal(png.mimeType, "image/png");
       assert.deepEqual(pngSize(png.data), { width: 1000, height: (pngSize(png.data)).height });
       const jpeg = await driver.screenshot({ type: "jpeg", quality: 40.4 });
@@ -86,7 +106,7 @@ test("the Stagehand driver serves the page tools' contract on a real Chrome", { 
       'on("response")': `page.on("response", () => undefined); return "listening";`,
     };
     for (const [api, code] of Object.entries(unavailable)) {
-      await t.test(`${api} throws on Stagehand 4.1.0's page`, async () => {
+      await t.test(`${api} throws on Stagehand 4.4.0's page`, async () => {
         await assert.rejects(driver.run({ code }), /(sendCDP|onCDP) is not a function/, `${api} works now: the browser section can stop calling it unavailable`);
       });
     }
@@ -107,18 +127,18 @@ test("the Stagehand driver serves the page tools' contract on a real Chrome", { 
       assert.match(await again.url(), /^http:\/\/127\.0\.0\.1:\d+\//, "a second attach finds the same browser, its extension already loaded");
       await again.close();
     });
-    await t.test("an extension id the provider supplies is reset as well: an attach while another instance holds the runtime succeeds", async () => {
+    await t.test("one client at a time: an attach while another driver holds the browser is refused, and succeeds once that driver closes", async () => {
       const target = await provider.attach(ref);
       const holder = await stagehandDriver()(target, signal);
-      const socket = new WebSocket(target.sdkCdpUrl);
-      await new Promise((resolve) => { socket.onopen = resolve; });
-      const { extensions } = await new Promise((resolve) => { socket.onmessage = (e) => resolve(JSON.parse(String(e.data)).result); socket.send(JSON.stringify({ id: 1, method: "Extensions.getExtensions" })); });
-      socket.close();
-      const id = extensions.find((extension) => extension.name === "Stagehand Runtime").id;
-      const second = await stagehandDriver()({ ...target, extensionId: id }, signal);
-      assert.match(await second.url(), /^http:\/\/127\.0\.0\.1:\d+\//);
-      await second.close();
-      await holder.close().catch(() => undefined);
+      try {
+        await assert.rejects(stagehandDriver()(target, signal), /A Stagehand client is already connected/);
+        assert.match(await holder.url(), /^http:\/\/127\.0\.0\.1:\d+\//, "the refused attach left the holder's session working");
+      } finally { await holder.close(); }
+      for (let attach = 1; attach <= 2; attach += 1) {
+        const next = await stagehandDriver()(await provider.attach(ref), signal);
+        assert.match(await next.url(), /^http:\/\/127\.0\.0\.1:\d+\//, `attach ${attach} after the holder closed`);
+        await next.close();
+      }
     });
   } finally {
     await driver?.close().catch(() => undefined);
@@ -139,4 +159,74 @@ test("a failed open names the host the process dialed, and keeps the cause so th
   assert.equal(error.message.includes("localhost"), false);
   assert.ok(error.cause instanceof Error, "the original error is the cause");
   assert.equal(error.message.includes("SECRETKEY"), false, "the host only: never the path or the signing query");
+});
+
+test("a run of several actions on a real Chrome stops before an action that would land on a new document; a pushState move keeps the document and runs on", { skip: NO_CHROME, timeout: 120_000 }, async (t) => {
+  const http = await import("node:http");
+  // Each page: a link (the batch's first action) and a field at the same place (its second), so an old snapshot's xpath
+  // for the field finds a field on the next page too, and a fill that ran there is seen in the page's own value.
+  const body = (link) => `<!doctype html><title>t</title><body>${link}<input id="name" aria-label="Name"></body>`;
+  const server = http.createServer((req, res) => {
+    res.setHeader("content-type", "text/html");
+    const path = new URL(req.url, "http://x").pathname;
+    if (path === "/new") return res.end(body(`<a href="/other">Next page</a>`));
+    if (path === "/other") return res.end(body(`<a href="/new">Back</a>`));
+    if (path.startsWith("/push")) return res.end(body(`<a href="#" onclick="history.pushState({}, '', '/push/step-2'); return false;">Next step</a>`));
+    if (path === "/reload") return res.end(body(`<a href="#" onclick="location.reload(); return false;">Reload</a>`));
+    res.writeHead(404); res.end();
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => server.close(), { timeout: 30_000 });
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const root = await scratch(t, "stagehand-doc-");
+  const provider = cdpProvider({ chrome: { executablePath: CHROME, profileRoot: root, args: [LOOPBACK_ONLY] } });
+  const signal = new AbortController().signal;
+  const ref = await provider.create(spec("driver-doc"), signal);
+  let driver;
+  try {
+    try { driver = await stagehandDriver()(await provider.attach(ref), signal, { batchTimeoutMs: 10_000 }); }
+    catch (error) { if (skipIncapable(t, error)) return; throw error; }
+    const gates = createDrivingGates();
+    const idOf = (tree, pattern) => tree.split("\n").map((line) => line.match(/^\s*\[([^\]]+)\]\s*(.*)$/)).find((m) => m && pattern.test(m[2]))?.[1];
+    /** At `path`: a snapshot, then one model call of a click on its link and a fill of its field. */
+    const clickThenFill = async (path, tag) => {
+      await driver.run({ code: `await page.goto(${JSON.stringify(`${base}${path}`)}); return true;` });
+      const tree = await driver.snapshot({});
+      const actions = [{ op: "click", id: idOf(tree, /^link/i) }, { op: "fill", id: idOf(tree, /^textbox/i), value: "Ada" }];
+      assert.ok(actions.every((a) => a.id), `ids on ${path}: ${tree}`);
+      const port = { session: async () => ({ tag, driver, notice: null }), relaunch: async () => ({ tag, driver }), release: async () => ({ released: true, sessionId: null }) };
+      const out = await drivingGuard(async (_a, p) => {
+        const s = await p.session();
+        try { return { content: [{ type: "text", text: JSON.stringify(await s.driver.run({ actions })) }] }; }
+        catch (error) { return { content: [{ type: "text", text: JSON.stringify(error.failure ?? { message: error.message }) }], isError: true }; }
+      }, gates)({}, port, {});
+      // Settle, then read the page the browser shows: its address and whether the fill reached its field.
+      await new Promise((r) => setTimeout(r, 500));
+      const now = await driver.run({ code: `return await page.evaluate(() => ({ url: location.href, value: document.getElementById("name").value }));` });
+      return { out: JSON.parse(out.content[0].text), isError: out.isError === true, now };
+    };
+
+    await t.test("a link to another page: the fill is never sent to it", async () => {
+      const { out, isError, now } = await clickThenFill("/new", "driver-doc-1");
+      assert.equal(isError, true, JSON.stringify(out));
+      assert.deepEqual([out.code, out.effect, out.completed], ["stale_snapshot", "partial", 1], JSON.stringify(out));
+      assert.match(out.message, /snapshot again/);
+      assert.deepEqual(now, { url: `${base}/other`, value: "" }, "on the new page, and its field untouched");
+    });
+    await t.test("a pushState move: the same document, and the fill runs", async () => {
+      const { out, isError, now } = await clickThenFill("/push", "driver-doc-2");
+      assert.equal(isError, false, JSON.stringify(out));
+      assert.equal(out.completed, 2);
+      assert.deepEqual(now, { url: `${base}/push/step-2`, value: "Ada" });
+    });
+    await t.test("a reload: a new document at the same address, and the fill is never sent", async () => {
+      const { out, isError, now } = await clickThenFill("/reload", "driver-doc-3");
+      assert.equal(isError, true, JSON.stringify(out));
+      assert.deepEqual([out.code, out.completed], ["stale_snapshot", 1], JSON.stringify(out));
+      assert.deepEqual(now, { url: `${base}/reload`, value: "" });
+    });
+  } finally {
+    await driver?.close?.().catch(() => undefined);
+    await provider.release(ref);
+  }
 });

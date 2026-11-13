@@ -128,3 +128,60 @@ test('inspectWorkflow names a decision node\'s provider, model and image tokens'
   const node = inspectWorkflow(flow(judge({ provider: 'openrouter', model: 'liquid/d1' }))).nodes.find((n) => n.kind === 'judge');
   assert.deepEqual([node.provider, node.model, node.images], ['openrouter', 'liquid/d1', ['<page1>']]);
 });
+
+/** What `judge` does within `ms`: answered, rejected with its code, or still waiting. */
+async function within(ms, judging) {
+  let timer;
+  const settled = judging.then(() => 'answered', (error) => `rejected ${error?.code ?? error?.name}`);
+  return Promise.race([settled, new Promise((resolve) => { timer = setTimeout(() => resolve('still waiting'), ms); })]).finally(() => clearTimeout(timer));
+}
+const ASK = { label: 'seal', kind: 'judge', state: { page: '<p>' }, questions: { q: { type: 'noul', instructions: 'Sealed?' } }, images: { '<p>': 'pages/acme/1.png' } };
+
+test("the provider's deadline counts from before the images load: a loader that never ends is cut at it, as timeout, and nothing is sent", async () => {
+  const { provider, asked } = imageProvider();
+  const watching = (ref, { signal }) => new Promise((_, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
+  const deaf = () => new Promise(() => {});
+  for (const loadImage of [watching, deaf]) {
+    const started = Date.now();
+    assert.equal(await within(1500, judgeFromProviders({ providers: { jev: provider }, default: 'jev', deadlineMs: 100, loadImage })(ASK)), 'rejected timeout', loadImage.name);
+    assert.ok(Date.now() - started < 1000, `${loadImage.name}: cut at the deadline, not later`);
+  }
+  assert.equal(asked.length, 0, 'nothing was sent');
+});
+
+test("a node's shorter timeoutMs cuts a load as timeout, never outcome_unknown: nothing was sent", async () => {
+  const { provider, asked } = imageProvider();
+  const loadImage = (ref, { signal }) => new Promise((_, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
+  const judging = judgeFromProviders({ providers: { jev: provider }, default: 'jev', deadlineMs: 60_000, loadImage })({ ...ASK, timeoutMs: 50 });
+  assert.equal(await within(1500, judging), 'rejected timeout');
+  assert.equal(asked.length, 0);
+});
+
+test('the provider is given what is left of the deadline after the images loaded', async () => {
+  const seen = [];
+  const { provider } = imageProvider();
+  const decide = provider.decide;
+  provider.decide = (request, ctx) => { seen.push(ctx.deadlineMs); return decide(request, ctx); };
+  const loadImage = () => new Promise((resolve) => setTimeout(() => resolve({ bytes: PNG, mime: 'image/png' }), 80));
+  assert.equal(await within(1500, judgeFromProviders({ providers: { jev: provider }, default: 'jev', deadlineMs: 1000, loadImage })(ASK)), 'answered');
+  assert.equal(seen.length, 1);
+  assert.ok(seen[0] <= 1000 - 70 && seen[0] > 0, `the provider got ${seen[0]} ms of the 1000`);
+});
+
+test('a load that ends past the deadline before its timer can fire is cut before sending: no request on an expired budget', async () => {
+  // The loader blocks the thread past the deadline (synchronous work, as a slow decode or hash would), so the deadline's
+  // timer cannot fire while it runs, and the load completes after the deadline.
+  const blocking = () => { const until = Date.now() + 120; while (Date.now() < until); return Promise.resolve({ bytes: PNG, mime: 'image/png' }); };
+  const cases = [
+    ['the provider deadline', (provider) => judgeFromProvider(provider, { deadlineMs: 50, loadImage: blocking })(ASK)],
+    ['the registry deadline', (provider) => judgeFromProviders({ providers: { jev: provider }, default: 'jev', deadlineMs: 50, loadImage: blocking })(ASK)],
+    ["a node's shorter timeoutMs", (provider) => judgeFromProviders({ providers: { jev: provider }, default: 'jev', deadlineMs: 60_000, loadImage: blocking })({ ...ASK, timeoutMs: 50 })],
+  ];
+  for (const [what, judging] of cases) {
+    const { provider, asked } = imageProvider();
+    let caught;
+    assert.equal(await within(1500, judging(provider).catch((error) => { caught = error; throw error; })), 'rejected timeout', what);
+    assert.match(caught.message, /nothing was sent/, what);
+    assert.equal(asked.length, 0, `${what}: the provider was not called on an expired budget`);
+  }
+});

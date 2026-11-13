@@ -1,43 +1,69 @@
-// The pi-family peer ranges of every package in this repository follow one rule. pi-durable and chord are bounded below
-// pi 1.4, the next minor no package has been tested on: the family breaks in minors, and from 1.3 pins its own packages
-// to exact versions, so a fresh install is all one minor. The packages Pi provides to the
-// packages it loads (pi-ai, pi-agent-core, pi-coding-agent, pi-tui, typebox) are "*", as Pi's package guidance asks; a
-// pi version newer than the tested ones is guarded by the version legs and by `/agentrun status`, which flags a host
-// outside @parcha/agentrun-pi's range, not by a peer range.
+// The pi family in this repository is one version: pi 1.5.0, tracked at the latest (pi pins its own packages to exact
+// versions, so an install is one whole family). Every package depends on the family at exactly that version and names
+// it so in its peer ranges; the packages Pi itself provides to the packages it loads (pi-ai, pi-agent-core,
+// pi-coding-agent, pi-tui, typebox) stay "*", as Pi's package guidance asks. One typebox serves the whole tree: the one
+// pi-coding-agent pins, so no second copy nests under it. No CI leg, script or test installs an older pi.
 import assert from 'node:assert/strict';
-import { dirname } from 'node:path';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { HOST_PROVIDED, parseRange, readWorkspaces } from './pi-leg.mjs';
 
 const repo = dirname(dirname(fileURLToPath(import.meta.url)));
-const BOUNDED = ['@earendil-works/pi-durable', '@earendil-works/chord'];
-const CEILING = '1.4.0';
+/** The pi family's version: every @earendil-works package, pinned and peered at exactly this. */
+export const PI = '1.5.0';
+/** The one typebox of the tree: pi-coding-agent 1.5.0 pins it exactly. */
+export const TYPEBOX = '1.3.27';
+const FAMILY = '@earendil-works/';
+const HOST_PROVIDED = ['@earendil-works/pi-ai', '@earendil-works/pi-agent-core', '@earendil-works/pi-coding-agent', '@earendil-works/pi-tui', 'typebox'];
 
-const compare = (a, b) => {
-  const [x, y] = [a, b].map((version) => version.split('.').map(Number));
-  for (let i = 0; i < 3; i += 1) if (x[i] !== y[i]) return x[i] - y[i];
-  return 0;
-};
-/** Whether every version `range` accepts is below `ceiling`: one of its comparators caps it there, whatever the others
- *  say. A range with no such comparator is open above, however many versions a sample of it rejects. */
-const endsBelow = (range, peer, ceiling = CEILING) => parseRange(range, peer).some(({ op, version }) =>
-  (op === '<' && compare(version, ceiling) <= 0) || ((op === '<=' || op === '=') && compare(version, ceiling) < 0));
-
-test('a range ends below 1.4 only when one of its comparators caps it there', () => {
-  const peer = '@earendil-works/pi-durable';
-  for (const range of ['>=1.0.4 <1.4.0', '>=1.0.4 <=1.3.9', '1.3.0', '>=1.0.4 <1.3.0']) assert.equal(endsBelow(range, peer), true, range);
-  for (const range of ['>1.4.0 <2.0.0', '>=1.0.4', '>=1.0.4 <1.5.0', '>=1.0.4 <=1.4.0']) assert.equal(endsBelow(range, peer), false, range);
-  assert.throws(() => endsBelow('*', peer), /only a package Pi provides/);
+const workspaces = JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8')).workspaces.flatMap((pattern) => {
+  const base = join(repo, pattern.replace(/\/\*$/, ''));
+  return readdirSync(base, { withFileTypes: true }).filter((entry) => entry.isDirectory() && existsSync(join(base, entry.name, 'package.json')))
+    .map((entry) => ({ dir: join(base, entry.name), manifest: JSON.parse(readFileSync(join(base, entry.name, 'package.json'), 'utf8')) }));
 });
 
-for (const { name, manifest } of readWorkspaces(repo)) {
-  const peers = Object.entries(manifest.peerDependencies ?? {}).filter(([peer]) => BOUNDED.includes(peer) || HOST_PROVIDED.includes(peer));
-  if (!peers.length) continue;
-  test(`${name}: pi-durable and chord end below 1.4, and the packages Pi provides are "*"`, () => {
-    for (const [peer, range] of peers) {
-      if (HOST_PROVIDED.includes(peer)) assert.equal(range, '*', `${name}: ${peer} is "${range}"; Pi's package guidance asks for "*"`);
-      else assert.equal(endsBelow(range, peer), true, `${name}: ${peer} "${range}" does not end below ${CEILING}`);
+for (const { manifest } of workspaces) {
+  const deps = Object.entries({ ...manifest.dependencies, ...manifest.devDependencies });
+  const peers = Object.entries(manifest.peerDependencies ?? {});
+  if (![...deps, ...peers].some(([name]) => name.startsWith(FAMILY) || name === 'typebox')) continue;
+  test(`${manifest.name}: the pi family at exactly ${PI}, in its dependencies and its peer ranges; typebox at ${TYPEBOX}`, () => {
+    for (const [name, range] of deps) {
+      if (name.startsWith(FAMILY)) assert.equal(range, PI, `${manifest.name}: ${name} is "${range}"`);
+      if (name === 'typebox') assert.equal(range, TYPEBOX, `${manifest.name}: typebox is "${range}"`);
+    }
+    for (const [name, range] of peers) {
+      if (HOST_PROVIDED.includes(name)) assert.equal(range, '*', `${manifest.name}: ${name} is "${range}"; Pi's package guidance asks for "*"`);
+      else if (name.startsWith(FAMILY)) assert.equal(range, PI, `${manifest.name}: peer ${name} is "${range}"`);
     }
   });
 }
+
+test(`the lock holds one pi family (${PI}) and one typebox (${TYPEBOX})`, () => {
+  const lock = JSON.parse(readFileSync(join(repo, 'package-lock.json'), 'utf8')).packages;
+  const off = Object.entries(lock).filter(([path, entry]) => {
+    const name = path.slice(path.lastIndexOf('node_modules/') + 'node_modules/'.length);
+    if (!path.includes('node_modules/')) return false;
+    if (name.startsWith(FAMILY)) return entry.version !== PI;
+    return name === 'typebox' && entry.version !== TYPEBOX;
+  }).map(([path, entry]) => `${path}@${entry.version}`);
+  assert.deepEqual(off, []);
+});
+
+test('no CI leg, script or test installs an older pi', () => {
+  // The version legs and the scripts that ran them are gone: the family is one version, and the workspace is tested on it.
+  // (pi-family-pins.mjs and consumer-pi.mjs stay: the package checks' consumer installs read them, at the one version.)
+  for (const file of ['scripts/pi-leg.mjs', 'scripts/pi-leg.test.mjs', 'scripts/pi-cross-version.mjs']) {
+    assert.equal(existsSync(join(repo, file)), false, `${file} is gone`);
+  }
+  const ci = readFileSync(join(repo, '.github/workflows/ci.yml'), 'utf8');
+  for (const leg of ['pi-leg', 'pi-floor', 'pi-1-2', 'pi-cross-version', 'PI_LEGS', '--pi ']) assert.equal(ci.includes(leg), false, `ci.yml names ${leg}`);
+  // An older family named as a version a script or a test installs or expects.
+  const older = /@earendil-works\/[a-z-]+@1\.[0-4]\.\d|--pi\s+["']?1\.[0-4]\.\d|PI_EXPECT_VERSION/;
+  const sources = [
+    ...readdirSync(join(repo, 'scripts')).filter((name) => /\.m?js$/.test(name) && name !== 'pi-ranges.test.mjs').map((name) => join('scripts', name)),
+    ...workspaces.flatMap(({ dir }) => (existsSync(join(dir, 'test')) ? readdirSync(join(dir, 'test')).filter((name) => /\.test\.(m?js|ts)$/.test(name)).map((name) => join(dir, 'test', name)) : [])),
+  ];
+  const named = sources.filter((file) => older.test(readFileSync(join(repo, file.startsWith('/') ? file.slice(repo.length + 1) : file), 'utf8')));
+  assert.deepEqual(named.map((file) => file.replace(`${repo}/`, '')), []);
+});

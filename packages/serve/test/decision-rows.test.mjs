@@ -2,14 +2,15 @@
 // adds to the run's usage row.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CAPS } from "@parcha/pi-durable-agent/timeline";
+import { CAPS } from "../dist/timeline/index.js";
 import { decisionRows, withDecisions } from "../dist/decision-rows.js";
+import { soFarOf } from "../dist/run-view.js";
 
 const receipt = (over = {}) => ({
   id: "d1", at: "2026-10-29T23:00:00.000Z", node: "document_checks", kind: "judge", request: { index: 0, count: 1 }, status: "answered",
   answers: { is_coi: { type: "noul", noul: 0.97 }, internally_consistent: { type: "noul", noul: 0.09 } }, cost_usd: 0.004, ...over,
 });
-/** Userinfo is built at run time, so no credential-shaped URL sits in the source (as pi-durable-agent's timeline tests do). */
+/** Userinfo is built at run time, so no credential-shaped URL sits in the source. */
 const userinfo = (secret) => `${["us", "er"].join("")}:${secret}`;
 const usageRow = (usd, requests) => ({ id: "1:usage", timestamp: "2026-10-29T23:00:05.000Z", created_at: "2026-10-29T23:00:05.000Z", kind: "usage", summary: "Cost so far", agent_label: null, tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null, text: null, usage: { usd, requests } });
 
@@ -50,9 +51,35 @@ test("a decision's cost joins the run's usage row; one unknown makes the total u
   assert.deepEqual(known.at(-1).usage, { usd: 0.016, requests: 3 });
   assert.deepEqual(known.map((row) => row.kind), ["decision", "decision", "usage"]);
   const unknown = withDecisions([usageRow(0.01, 1)], [receipt(), receipt({ id: "d2", cost_usd: null })]);
-  assert.deepEqual(unknown.at(-1).usage, { usd: null, requests: 3 });
+  assert.deepEqual(unknown.at(-1).usage, { usd: null, requests: 3, so_far_usd: 0.014, unpriced: 1 }, "unknown, and what is known so far: the model requests' and the priced decision's");
   assert.equal(decisionRows([receipt({ cost_usd: null })])[0].usage.usd, null, "a decision whose cost is unknown says so on its row");
   assert.deepEqual(withDecisions([usageRow(0.01, 1)], []), [usageRow(0.01, 1)], "no decisions: the rows as they were");
+});
+
+test("a workflow whose model request was cut says on its usage row what it cost so far and how many charges have no price, its decisions' among them", () => {
+  const cut = { ...usageRow(null, 2), usage: { usd: null, requests: 2, so_far_usd: 0.01, unpriced: 1 } };
+  const row = withDecisions([cut], [receipt({ id: "d1", cost_usd: 0.004 }), receipt({ id: "d2", at: "2026-10-29T23:00:01.000Z", cost_usd: null })]).at(-1);
+  assert.deepEqual(row.usage, { usd: null, requests: 4, so_far_usd: 0.014, unpriced: 2 }, "the model row's known 0.01 and the priced decision's 0.004; the cut request and the unpriced decision");
+  assert.equal(row.summary, "Cost so far: $0.0140 known, 2 not priced, over 2 model requests and 2 decisions");
+  assert.deepEqual(withDecisions([usageRow(0.01, 1)], [receipt({ cost_usd: 0.004 })]).at(-1).usage, { usd: 0.014, requests: 2 }, "every cost known: neither field");
+});
+
+test("an ended workflow's usage row says its cost, never \"so far\": every cost known, what is known and how many are not priced, or unknown", () => {
+  const cut = { ...usageRow(null, 2), usage: { usd: null, requests: 2, so_far_usd: 0.01, unpriced: 1 } };
+  const ended = { ended: true };
+  assert.equal(withDecisions([usageRow(0.01, 1)], [receipt({ cost_usd: 0.004 })], undefined, ended).at(-1).summary, "Cost: $0.0140 over 1 model request and 1 decision");
+  assert.equal(withDecisions([cut], [receipt({ id: "d1", cost_usd: 0.004 })], undefined, ended).at(-1).summary, "Cost: $0.0140 known, 1 not priced, over 2 model requests and 1 decision");
+  assert.match(withDecisions([cut], null, undefined, ended).at(-1).summary, /^Cost: unknown over 2 model requests\b/);
+  // While it runs, what it has cost so far.
+  assert.match(withDecisions([cut], [receipt({ id: "d1", cost_usd: 0.004 })]).at(-1).summary, /^Cost so far: /);
+});
+
+test("a workflow whose decisions could not be read says plain unknown on the run: no figure so far that leaves its decisions out", () => {
+  const cut = { ...usageRow(null, 2), usage: { usd: null, requests: 2, so_far_usd: 0.01, unpriced: 1 } };
+  assert.equal(soFarOf([cut], null), undefined, "its decisions unreadable: how much they cost, and how many, no one knows");
+  assert.deepEqual(soFarOf([cut], { known: 0.004, unpriced: 1 }), { so_far_usd: 0.014, unpriced: 2 }, "read: the known part, and each charge with no price");
+  assert.deepEqual(soFarOf([cut]), { so_far_usd: 0.01, unpriced: 1 }, "a run with no decisions: its model requests' alone");
+  assert.deepEqual(withDecisions([cut], null).at(-1).usage, { usd: null, requests: 2 }, "and its usage row says unknown, as main's does");
 });
 
 test("decision rows sit among the run's rows by time, the usage row last", () => {

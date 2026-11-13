@@ -18,7 +18,7 @@
 // is dropped, so the model is offered exactly the host's tools. With `webSearch`, one hosted tool passes: Anthropic's web
 // search, exactly as the pinned CLI asks for it in the request its WebSearch tool makes. Usage is read from the stream's
 // `message_start` (input and cache tokens) and its last `message_delta` (output, and the searches the provider ran).
-import { providerInputOverhead, ProxyRefusal, type InputShape, type ProviderPolicy, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-kernel/host";
+import { messagesImagesIn, providerInputOverhead, ProxyRefusal, type InputCounter, type InputShape, type ProviderPolicy, type ProxyRequestContext, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-kernel/host";
 
 /** The prefix of the session's own tools, as the CLI names them (its in-process MCP server, `hands`). */
 export const OWN_TOOL_PREFIX = "mcp__hands__";
@@ -76,6 +76,8 @@ export interface AnthropicPolicyOptions {
   tools: readonly string[];
   /** The CLI's own tools the session has, offered by their own names beside its tools (`Skill`, when it has skills). */
   builtins?: readonly string[];
+  /** The granted tools of the session's remote MCP servers, as the CLI names them (`mcp__<server>__<tool>`). */
+  mcpTools?: readonly string[];
   /** The most output tokens one request may ask for. Default 128 000, what the pinned CLI asks for on current models. */
   maxOutputTokens?: number;
   /** Admit Anthropic's web search server tool (`CLAUDE_WEB_SEARCH_TOOL`), exactly as the pinned CLI asks for it; every
@@ -190,8 +192,81 @@ function thinking(value: unknown, maxTokens: number): unknown {
   return { ...value, budget_tokens: maxTokens - 1 };
 }
 
-/** The body the provider gets for a request on `route`. */
-export function applyAnthropic(body: unknown, route: ProxyRoute, options: AnthropicPolicyOptions): Record<string, unknown> {
+/** The tokens a request keeps for its answer when its output is limited, and the least thinking budget the provider
+ *  takes: a request that thinks may be limited to no less than both. */
+export const ANSWER_TOKENS_LEAST = 1024;
+export const THINKING_BUDGET_LEAST = 1024;
+
+/** The output tokens a Messages body asks for at most: its `max_tokens` (as `apply` clamped it). */
+export function anthropicOutputAsked(body: Record<string, unknown>): number | undefined {
+  return typeof body.max_tokens === "number" && Number.isSafeInteger(body.max_tokens) && body.max_tokens > 0 ? body.max_tokens : undefined;
+}
+
+/** The least output a Messages body may be limited to and still answer: 1,024 tokens, and with extended thinking on (a
+ *  budget) the provider's least budget beside them. Adaptive thinking takes no budget, so it needs none. */
+export function anthropicOutputLeast(body: Record<string, unknown>): number {
+  return isPlain(body.thinking) && body.thinking.type === "enabled" ? ANSWER_TOKENS_LEAST + THINKING_BUDGET_LEAST : ANSWER_TOKENS_LEAST;
+}
+
+/** The thinking tokens a Messages request may bill that its stream never shows: Claude 4-class models stream only a
+ *  summary of their thinking (and a redacted block shows none of it), so a request that thinks counts its thinking
+ *  budget, or its `max_tokens` when its thinking is adaptive (no budget); one with thinking off, none. A stopped request
+ *  counts the part of it that did not stream (less `anthropicReasoningBytes` of what it sent), never past its hold. */
+export function anthropicReasoningHidden(body: Record<string, unknown>): number {
+  const thinking = body.thinking;
+  if (!isPlain(thinking)) return 0;
+  if (thinking.type === "enabled") return typeof thinking.budget_tokens === "number" && Number.isFinite(thinking.budget_tokens) && thinking.budget_tokens > 0 ? thinking.budget_tokens : anthropicOutputAsked(body) ?? 0;
+  if (thinking.type === "adaptive") return anthropicOutputAsked(body) ?? 0;
+  return 0;
+}
+
+/** The bytes of thinking one Messages stream event carries: a thinking delta's text, UTF-8; 0 for text, a tool call's
+ *  JSON, a signature and every other event. */
+export function anthropicReasoningBytes(event: string): number {
+  const data = event.split("\n").filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trimStart()).join("\n");
+  if (!data.startsWith("{")) return 0;
+  const parsed = JSON.parse(data) as { type?: unknown; delta?: { type?: unknown; thinking?: unknown } };
+  return parsed.type === "content_block_delta" && parsed.delta?.type === "thinking_delta" && typeof parsed.delta.thinking === "string" ? Buffer.byteLength(parsed.delta.thinking, "utf8") : 0;
+}
+
+/** The bytes of content one Messages stream event carries: a text, thinking or tool-input delta's text, UTF-8, never
+ *  the framing around it; 0 for a signature and every other event. */
+export function anthropicContentBytes(event: string): number {
+  const data = event.split("\n").filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trimStart()).join("\n");
+  if (!data.startsWith("{")) return 0;
+  const parsed = JSON.parse(data) as { type?: unknown; delta?: { type?: unknown; text?: unknown; thinking?: unknown; partial_json?: unknown } };
+  if (parsed.type !== "content_block_delta" || !parsed.delta) return 0;
+  const { type, text, thinking, partial_json: json } = parsed.delta;
+  const piece = type === "text_delta" ? text : type === "thinking_delta" ? thinking : type === "input_json_delta" ? json : undefined;
+  return typeof piece === "string" ? Buffer.byteLength(piece, "utf8") : 0;
+}
+
+/** A Messages body with its output limited to `max` tokens, thinking included: `max_tokens` at most `max`, never raised,
+ *  and a thinking budget squeezed under it so that 1,024 tokens stay for the answer, never below the provider's least
+ *  budget. Only numbers get smaller, so the body is never longer. */
+export function limitAnthropicOutput(body: Record<string, unknown>, max: number): Record<string, unknown> {
+  const asked = anthropicOutputAsked(body);
+  const limited = asked === undefined ? max : Math.min(asked, max);
+  const out: Record<string, unknown> = { ...body, max_tokens: limited };
+  const thought = body.thinking;
+  if (isPlain(thought) && thought.type === "enabled" && typeof thought.budget_tokens === "number") {
+    const room = limited - ANSWER_TOKENS_LEAST;
+    if (thought.budget_tokens > room) {
+      const budget = Math.max(THINKING_BUDGET_LEAST, room);
+      if (budget >= limited) refuse(400, `max_tokens ${limited} leaves no room for the least thinking budget (${THINKING_BUDGET_LEAST}) and an answer`);
+      out.thinking = { ...thought, budget_tokens: budget };
+    }
+  }
+  return out;
+}
+
+/** The client tools a body offers, by name: the host's own side request (ProxyRequestContext.host) offers its own (a
+ *  learned workflow node's `submit`), never a provider-hosted one. */
+const clientToolNames = (tools: unknown): string[] => (Array.isArray(tools) ? tools.filter((tool) => isPlain(tool) && (tool.type === undefined || tool.type === "custom") && typeof tool.name === "string").map((tool) => (tool as { name: string }).name) : []);
+
+/** The body the provider gets for a request on `route`. `context.host`: the host's own request beside the CLI's, whose
+ *  client tools are its own; every other rule is the session's. */
+export function applyAnthropic(body: unknown, route: ProxyRoute, options: AnthropicPolicyOptions, context: ProxyRequestContext = {}): Record<string, unknown> {
   if (!isPlain(body)) return refuse(400, "the body is not an object");
   const count = route.path === "/v1/messages/count_tokens";
   onlyKeys(body, count ? COUNT_TOKENS_KEYS : MESSAGES_KEYS, count ? "count_tokens" : "messages");
@@ -202,7 +277,7 @@ export function applyAnthropic(body: unknown, route: ProxyRoute, options: Anthro
     blocks((message as Record<string, unknown>).content, "a message's content");
   }
   blocks(body.system, "system");
-  const allowed = new Set([...options.tools.map((name) => `${OWN_TOOL_PREFIX}${name}`), ...(options.builtins ?? [])]);
+  const allowed = context.host !== undefined ? new Set(clientToolNames(body.tools)) : new Set([...options.tools.map((name) => `${OWN_TOOL_PREFIX}${name}`), ...(options.builtins ?? []), ...(options.mcpTools ?? [])]);
   const tools = ownTools(body.tools, allowed, options.webSearch);
   const choice = body.tool_choice;
   const chosen = isPlain(choice) && typeof choice.name === "string" && (allowed.has(choice.name) || (options.webSearch === true && choice.name === "web_search"));
@@ -213,7 +288,7 @@ export function applyAnthropic(body: unknown, route: ProxyRoute, options: Anthro
   if (count) return out;
   // A main-model request that would not think is said, never passed silently (it is still forwarded: the CLI decides
   // its own requests, and this is the record that one went without reasoning).
-  if (body.model === options.model && !thinks(body)) {
+  if (context.host === undefined && body.model === options.model && !thinks(body)) {
     try { options.onThinkingDisabled?.({ model: options.model }); } catch { /* a host callback never breaks a request */ }
   }
   const most = options.maxOutputTokens ?? 128_000;
@@ -281,18 +356,67 @@ export function anthropicUsage(text: string): AnthropicUsage | undefined {
   return bookedUsage({ ...startUsage, ...(isPlain(lastDelta) ? lastDelta : {}) });
 }
 
-/** The Claude Agent CLI's provider policy for one session. */
-/** The image blocks in `value`, at any depth (a tool's result holds them). */
-function imagesIn(value: unknown): number {
-  if (Array.isArray(value)) return value.reduce((n: number, item) => n + imagesIn(item), 0);
-  if (!isPlain(value)) return 0;
-  return (value.type === "image" ? 1 : 0) + Object.values(value).reduce((n: number, item) => n + imagesIn(item), 0);
+/** Whether a Messages answer ended on the provider's refusal (`stop_reason: "refusal"`, its content filter): a whole body's
+ *  `stop_reason`, or a stream's last `message_delta` stop. Read by parsing, never by matching text, each SSE `data:` line
+ *  on its own, as anthropicUsage reads them. */
+export function anthropicFiltered(text: string): boolean {
+  const lines = text.split(/\r?\n/);
+  if (!lines.some((line) => line.startsWith("data:") || line.startsWith("event:"))) {
+    let body: unknown;
+    try { body = JSON.parse(text); } catch { return false; }
+    return isPlain(body) && body.stop_reason === "refusal";
+  }
+  let stop: unknown;
+  for (const line of lines) {
+    if (!line.startsWith("data:")) continue;
+    try {
+      const event: unknown = JSON.parse(line.slice(5));
+      if (isPlain(event) && event.type === "message_delta" && isPlain(event.delta) && "stop_reason" in event.delta) stop = event.delta.stop_reason;
+    } catch { /* cut at the kept window's edge, or not JSON: skipped */ }
+  }
+  return stop === "refusal";
 }
 
-/** The input tokens the provider bills for `body` that it does not carry (`providerInputOverhead`, with its sources): the
- *  tool-use system prompt when it has tools, and for each image the most it can be billed as, beyond its bytes. None
+/** Whether a Messages body (as `apply` kept it) is the turn's answer request: it offers the model one of the session's
+ *  tools, its own, built-in or remote (a remote MCP server's). The CLI's side calls (a title, a summary, a web search's
+ *  own request) offer none of them; in a session with no tools no request can be told from one, so each is the turn's. */
+export function anthropicAnswers(body: Record<string, unknown>, options: Pick<AnthropicPolicyOptions, "tools" | "builtins" | "mcpTools">): boolean {
+  const allowed = new Set([...options.tools.map((name) => `${OWN_TOOL_PREFIX}${name}`), ...(options.builtins ?? []), ...(options.mcpTools ?? [])]);
+  if (allowed.size === 0) return true;
+  return Array.isArray(body.tools) && body.tools.some((tool) => isPlain(tool) && typeof tool.name === "string" && allowed.has(tool.name));
+}
+
+/** The Claude Agent CLI's provider policy for one session. */
+/** The input tokens the provider bills for `body` beyond its bytes (`providerInputOverhead`, with its sources): the
+ *  tool-use system prompt when it has tools, and each image at the most it can be billed as by its size, in place of the
+ *  bytes its base64 takes in the body (below 0 for a screenshot, whose megabyte of base64 Claude bills as some 1,200
+ *  tokens). None
  *  can be said for a body with the web search tool: the provider bills the pages it finds as input, on each of its
  *  searches, so its input is unmeasured (undefined), never bounded by its bytes. */
+/** The fields of a Messages body the token-count endpoint takes (the rest, such as max_tokens and stream, it refuses). */
+const COUNTED_FIELDS = ["model", "messages", "system", "tools", "tool_choice", "thinking"] as const;
+/** The request headers the count is sent with: the credential's and the API's version and betas, nothing else. */
+const COUNT_HEADERS = new Set(["x-api-key", "authorization", "anthropic-version", "anthropic-beta"]);
+
+/**
+ * Anthropic's own count of a Messages request's input tokens: POST /v1/messages/count_tokens, free, on api.anthropic.com
+ * only ("Token counting", https://platform.claude.com/docs/en/build-with-claude/token-counting). The proxy asks it before
+ * each answer request on that origin (never through a gateway). Its `input_tokens` covers the request's
+ * system, messages, tools and images; the tool-use system prompt is added beside it (`margin`), in case the count leaves
+ * it out, so the bound never falls under what the request is billed.
+ */
+export const ANTHROPIC_INPUT_COUNTER: InputCounter = Object.freeze({
+  origin: "https://api.anthropic.com",
+  path: "/v1/messages/count_tokens",
+  body: (body: Record<string, unknown>) => Object.fromEntries(COUNTED_FIELDS.filter((field) => body[field] !== undefined).map((field) => [field, body[field]])),
+  headers: (sent: Record<string, string>) => Object.fromEntries(Object.entries(sent).filter(([name]) => COUNT_HEADERS.has(name.toLowerCase()))),
+  tokensOf: (answer: unknown) => (isPlain(answer) && typeof answer.input_tokens === "number" ? answer.input_tokens : undefined),
+  margin: (body: Record<string, unknown>) => {
+    const choice = isPlain(body.tool_choice) ? body.tool_choice.type : undefined;
+    return providerInputOverhead("anthropic-messages", { tools: Array.isArray(body.tools) && body.tools.length > 0, ...(choice === "auto" || choice === "none" || choice === "any" || choice === "tool" ? { toolChoice: choice } : {}), images: [] }) as number;
+  },
+});
+
 export function anthropicServerInputOverhead(body: Record<string, unknown>, searchAllowance?: number): number | undefined {
   const searches = offersWebSearch(body);
   if (searches && searchAllowance === undefined) return undefined;
@@ -300,15 +424,39 @@ export function anthropicServerInputOverhead(body: Record<string, unknown>, sear
   const shape: InputShape = {
     tools: Array.isArray(body.tools) && body.tools.length > 0,
     ...(choice === "auto" || choice === "none" || choice === "any" || choice === "tool" ? { toolChoice: choice } : {}),
-    images: imagesIn(body.messages),
+    images: messagesImagesIn(body.messages),
+    // Its images at the routed model's provider's rule (a gateway may route the Messages API to another vendor's model).
+    ...(typeof body.model === "string" ? { model: body.model } : {}),
   };
   return (providerInputOverhead("anthropic-messages", shape) as number) + (searches ? searchAllowance! : 0);
+}
+
+/** `body` (a Messages body) with `text` as a note the model reads after everything the Claude CLI sent: one text block, in
+ *  a <system-reminder>, at the end of the last user message (after its tool results), or a user message of its own after
+ *  a last message that is not one. A system message the CLI ends a request with (its environment note at a turn's start)
+ *  stays last: the API takes one only before an assistant message or at the end, so the note goes in the user message
+ *  before it. It carries no cache_control: every cache marker stays on the block it was on, so the cached prefix ends
+ *  where it did. The CLI's transcript never holds it. */
+export function addAnthropicNote(body: Record<string, unknown>, text: string): Record<string, unknown> {
+  const messages = Array.isArray(body.messages) ? body.messages : [];
+  const note = { type: "text", text: `<system-reminder>${text}</system-reminder>` };
+  // The system messages the request ends with, kept after the note.
+  let end = messages.length;
+  while (end > 0 && isPlain(messages[end - 1]) && (messages[end - 1] as { role?: unknown }).role === "system") end -= 1;
+  const trailing = messages.slice(end);
+  const last = messages[end - 1];
+  if (isPlain(last) && last.role === "user") {
+    const content = typeof last.content === "string" ? [{ type: "text", text: last.content }] : Array.isArray(last.content) ? last.content : [];
+    return { ...body, messages: [...messages.slice(0, end - 1), { ...last, content: [...content, note] }, ...trailing] };
+  }
+  return { ...body, messages: [...messages.slice(0, end), { role: "user", content: [note] }, ...trailing] };
 }
 
 export function anthropicPolicy(options: AnthropicPolicyOptions): ProviderPolicy {
   return {
     id: "anthropic",
     routes: CLAUDE_MESSAGES_ROUTES,
+    addNote: addAnthropicNote,
     keyOf: (headers) => {
       const auth = String(headers.authorization ?? "");
       return auth.startsWith("Bearer ") ? auth.slice(7) : "";
@@ -320,10 +468,19 @@ export function anthropicPolicy(options: AnthropicPolicyOptions): ProviderPolicy
       if (unknown.length) refuse(403, "an anthropic-beta value is not one the pinned CLI sends");
       return value;
     },
-    apply: (body, route) => applyAnthropic(body, route, options),
+    apply: (body, route, context) => applyAnthropic(body, route, options, context),
     // `apply` let through only the session's model or its small one.
     modelOf: (body) => (typeof body.model === "string" ? body.model : undefined),
     serverInputOverhead: options.webSearchAllowance === undefined ? anthropicServerInputOverhead : (body) => anthropicServerInputOverhead(body, options.webSearchAllowance),
+    outputAsked: anthropicOutputAsked,
+    countInput: ANTHROPIC_INPUT_COUNTER,
+    outputLeast: anthropicOutputLeast,
+    reasoningHidden: anthropicReasoningHidden,
+    reasoningBytesOf: anthropicReasoningBytes,
+    contentBytesOf: anthropicContentBytes,
+    limitOutput: limitAnthropicOutput,
     usageOf: anthropicUsage,
+    filtered: anthropicFiltered,
+    answers: (body) => anthropicAnswers(body, options),
   };
 }

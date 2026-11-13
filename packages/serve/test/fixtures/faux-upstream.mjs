@@ -49,7 +49,14 @@ function openai(body) {
 export default async function fakeUpstream(url, init = {}) {
   const path = new URL(String(url)).pathname;
   const headers = new Headers(init.headers);
-  const body = JSON.parse(typeof init.body === "string" ? init.body : new TextDecoder().decode(init.body));
+  // A request with no JSON body is no model request: a stranger's probe of a loopback port (a bare `GET /`, F3) is
+  // answered 400, never parsed into the test or filed among its calls.
+  let body;
+  try {
+    body = JSON.parse(typeof init.body === "string" ? init.body : new TextDecoder().decode(init.body ?? new Uint8Array()));
+  } catch {
+    return new Response("not a model request: its body is not JSON", { status: 400 });
+  }
   if (process.env.AGENTRUN_TEST_FAUX_UPSTREAM_CALLS) appendFileSync(process.env.AGENTRUN_TEST_FAUX_UPSTREAM_CALLS, `${JSON.stringify({ path, key: headers.get("x-api-key") ?? headers.get("authorization"), body })}\n`);
   if (path === "/v1/messages") return anthropic(body);
   if (path === "/v1/responses") return openai(body);

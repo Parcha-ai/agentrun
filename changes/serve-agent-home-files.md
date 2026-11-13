@@ -1,5 +1,0 @@
----
-packages: @parcha/agentrun-serve
-kind: feature
----
-Each agent now has a home, a directory of its own under the data directory that stays across its runs, named by its id in lower case and a hash of the id so ids that differ only in case never share one. `GET /v2/agents/{id}/home/files` lists its files in the shape of a run's file list, and `GET`, `PUT` and `DELETE` on a file's path below it read, write and remove one, whole and never through a link, up to `capabilities.home.max_file_bytes`. `learning/` is the server's: the list shows it as one entry with `host_owned: true` and none of its notes, and a read, write or delete at or under it, in any case, is `403 system_file_forbidden`, since its notes are read through `/v2/agents/{id}/learning`. Where the server has no `/proc/self/fd` to hold a write to its directory (macOS), `capabilities.home.writes` is `false` and a home's `PUT` and `DELETE` answer `501`. Runs do not see the home yet, and `GET`/`PUT /agents/{id}/home` still answer `501`.

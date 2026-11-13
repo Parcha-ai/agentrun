@@ -1,108 +1,15 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import { fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai/providers/faux";
 import { MemoryStorage } from "@earendil-works/pi-durable";
-import { openNodeJsonlStorage } from "@earendil-works/pi-durable/storage/jsonl/node";
-import { localSites } from "@parcha/pi-browser";
 import { FakeBackend, fakeDriver, hostRegistered } from "@parcha/pi-browser/testing";
-import { browserbaseProvider } from "../dist/providers/browserbase.js";
-import { fakeBrowserbase } from "./fixtures/fake-browserbase.mjs";
-import { scratchSync } from "./fixtures/scratch.mjs";
-import { AGENT, browsesOnce, counted, failing, FAILS_SESSION, init, open, PAGE, START, stubDriver, textOf, toolUse, until } from "./fixtures/storage-failure.mjs";
+import { AGENT, browsesOnce, counted, failing, FAILS_SESSION, init, open, PAGE, START, until } from "./fixtures/storage-failure.mjs";
 
 // A browser session whose release the store cannot record is still let go of: its driver is closed and the
 // provider releases it, and the record is left as it is, so a reopened run's reconcile finds the session gone.
 
-/** The root asks one use_website request; the child snapshots once and reports. */
-function oneChild(requestId) {
-  const respond = async (context) => {
-    const asked = textOf(context.messages.find((message) => message.role === "user"));
-    const answered = context.messages.at(-1).role === "toolResult";
-    if (asked.includes(`Start at ${START}`)) return answered ? fauxAssistantMessage([fauxText(`Read ${START}`)], { stopReason: "stop" }) : toolUse("snapshot", {});
-    return answered ? fauxAssistantMessage([fauxText("done")], { stopReason: "stop" }) : toolUse("use_website", { site: "shop", request_id: requestId, instructions: "Read the start page." });
-  };
-  return Array.from({ length: 20 }, () => respond);
-}
-const SHOP = { shop: { title: "The shop", description: "Prices of the store's products.", startUrl: START } };
-
 /** Every session the backend created had a release reach it. */
 const releasedAll = (backend) => backend.ledger.filter((row) => row.op === "create").every((made) => backend.ledger.some((row) => row.op === "release" && row.id === made.id));
-
-async function childWhoseStoreFails(t, storage) {
-  const backend = new FakeBackend({ start: START, pages: { [START]: PAGE } });
-  const { drivers, driver } = counted(fakeDriver(backend));
-  const sites = localSites(SHOP);
-  const { harness, browser } = await open(storage, { provider: backend.provider, driver, responses: oneChild(randomUUID()), sites: { port: sites, listing: await sites.list(new AbortController().signal) } });
-  t.after(async () => { await harness.close(ctx).catch(() => undefined); await browser.close(); });
-  const root = await harness.root(ctx, { agent: AGENT, init: init(browser) });
-  // Not awaited: a failed commit poisons the Session, and on pi-durable 1.1 the root's wait then never settles.
-  root.submit({ type: "input", content: "Read the shop." }, ctx).then((submission) => submission.wait(ctx)).catch(() => undefined);
-  return { backend, drivers };
-}
-
-test("a use_website child whose release the store cannot record still closes its driver and releases its session at the provider", async (t) => {
-  const { knobs, storage } = failing(new MemoryStorage());
-  knobs.releaseFails = 1;
-  const { backend, drivers } = await childWhoseStoreFails(t, storage);
-  assert.equal(await until(() => knobs.refused === 1, 10_000), true, "the child's release commit was refused");
-  assert.equal(await until(() => drivers.closed === drivers.opened), true, `the child's driver was closed: ${JSON.stringify(drivers)}`);
-  assert.equal(drivers.opened, 1);
-  assert.equal(await until(() => backend.liveCount() === 0), true, `the child's session was released at the provider: ${backend.ledger.map((row) => row.op).join(",")}`);
-  assert.equal(releasedAll(backend), true);
-});
-
-test("a use_website child whose report read throws a storage error still closes its driver and releases its session at the provider (#1113)", async (t) => {
-  // From pi-durable 1.2 this error fails the Session, so the child's release commit fails too; before 1.2 only the read fails.
-  class ReportReadFails extends MemoryStorage {
-    fails = 1;
-    async scanEntries(query, limit, cursor, context) {
-      if (query.order === "descending" && limit > 1 && this.fails > 0) { this.fails -= 1; throw new Error("the report read failed"); }
-      return super.scanEntries(query, limit, cursor, context);
-    }
-  }
-  const storage = new ReportReadFails();
-  const { backend, drivers } = await childWhoseStoreFails(t, storage);
-  assert.equal(await until(() => storage.fails === 0, 10_000), true, "the report read threw");
-  assert.equal(await until(() => drivers.closed === drivers.opened), true, `the child's driver was closed: ${JSON.stringify(drivers)}`);
-  assert.equal(drivers.opened, 1);
-  assert.equal(await until(() => backend.liveCount() === 0), true, `the child's session was released at the provider: ${backend.ledger.map((row) => row.op).join(",")}`);
-  assert.equal(releasedAll(backend), true);
-});
-
-test("a host release the store cannot record still closes the driver and releases the Browserbase session; the record is left as it is, and the next run's reconcile finds the session gone", async (t) => {
-  const dir = scratchSync(t, "release-storage-fails-");
-  const fake = fakeBrowserbase();
-  const sockets = [];
-  const env = { BROWSERBASE_API_KEY: `not-a-secret-storage-${process.pid}`, BROWSERBASE_BASE_URL: "https://proxy.example", BROWSERBASE_CONNECT_BASE_URL: "wss://proxy.example/ws" };
-  const provider = browserbaseProvider({ env, client: fake.sdk, sleep: async () => {}, downloadBehavior: async () => { const s = { open: true, close() { this.open = false; } }; sockets.push(s); return s; } });
-  const { drivers, driver } = counted(stubDriver);
-  const { knobs, storage } = failing(await openNodeJsonlStorage(dir, ctx));
-  const one = await open(storage, { provider, driver, responses: browsesOnce() });
-  const root = await one.harness.root(ctx, { agent: AGENT, init: init(one.browser) });
-  await (await root.submit({ type: "input", content: "Look at the shop." }, ctx)).wait(ctx);
-  assert.equal(fake.only("sessions.create").length, 1, "the snapshot opened a Browserbase session");
-  const id = [...fake.sessions.keys()][0];
-
-  knobs.releaseFails = 1;
-  await assert.rejects(one.browser.release(root, "close", ctx), "the release that could not be recorded is not reported as done");
-  assert.equal(knobs.refused, 1, "the release commit was refused");
-  assert.deepEqual([drivers.opened, drivers.closed], [1, 1], "the driver was closed");
-  assert.deepEqual(fake.only("sessions.update").map((call) => [call.id, call.body.status]), [[id, "REQUEST_RELEASE"]], "Browserbase was asked to release the session");
-  assert.equal(fake.sessions.get(id).releaseRequested, true);
-  assert.deepEqual(sockets.map((s) => s.open), [false], "the session's download socket was closed");
-  await one.harness.close(ctx).catch(() => undefined);
-  await one.browser.close();
-  assert.equal(fake.only("sessions.update").length, 1, "closing the extension released nothing twice");
-
-  // The next run on the same storage: the record still says live, and the provider says the session is gone.
-  const two = await open(await openNodeJsonlStorage(dir, ctx), { provider, driver, responses: browsesOnce() });
-  t.after(async () => { await two.harness.close(ctx); await two.browser.close(); });
-  const tag = (await two.harness.snapshot(two.browser.docs.Sessions, root.id, ctx)).sessions[0].tag;
-  assert.deepEqual(two.report, { released: [], kept: [], lost: [tag], unreachable: [] }, "the record was left live, and the next run's reconcile took the lost path");
-  assert.equal((await two.harness.snapshot(two.browser.docs.Sessions, root.id, ctx)).sessions[0].state, "released");
-});
 
 test("when a storage error fails the Session, closing the extension closes the driver and releases the session at the provider", { skip: !FAILS_SESSION && "pi-durable before 1.2 gives no sign that a failed commit poisoned the Session, so close learns of a failed store only from a release commit's own failure" }, async (t) => {
   const backend = new FakeBackend({ start: START, pages: { [START]: PAGE } });

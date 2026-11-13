@@ -31,7 +31,7 @@ test('a subschema with its own $id keeps its local refs, literal data is not rew
 // tool's input schema, so the keyword is left out of it (a harness that refuses unknown keywords would refuse the
 // tool). A property or definition NAMED criteria is data and stays. Validation still runs on the original schema.
 
-const triage = JSON.parse(readFileSync(new URL('../../../examples/issue-triage/workflow.json', import.meta.url), 'utf8'));
+const triage = JSON.parse(readFileSync(new URL('./fixtures/issue-triage.workflow.json', import.meta.url), 'utf8'));
 const criteria = { yes: 'It is.', no: 'It is not.' };
 // Every key named criteria in a schema tree, with the path it sits at.
 const criteriaKeys = (node, path = '') => !node || typeof node !== 'object' ? []

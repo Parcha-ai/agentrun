@@ -41,3 +41,27 @@ describe("Shell's theme switch", () => {
     expect(pick("Dark").getAttribute("aria-pressed")).toBe("true");
   });
 });
+
+// On a short screen (a phone on its side, 844x390) the sidebar is taller than the window: it scrolls, so Sign out at its
+// foot is always reachable.
+describe("Shell's sidebar on a short screen", () => {
+  it("scrolls at every width it shows at", () => {
+    mount();
+    const aside = document.querySelector("aside")!;
+    expect(aside.className.split(" ")).toContain("md:overflow-y-auto");
+  });
+});
+
+describe("Shell's navigation", () => {
+  const items = (schedules?: boolean) => {
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(Shell, { active: "triggers", triggers: schedules, children: "page" })));
+    return [...host.querySelectorAll('nav[aria-label="Navigation"] button')].map((b) => b.textContent?.trim());
+  };
+  it("offers Triggers where the server has them, after Runs, and not where it does not", () => {
+    expect(items(true)).toEqual(["Mission Control", "Playground", "Agents", "Templates", "Runs", "Triggers"]);
+    act(() => root?.unmount());
+    expect(items(false)).toEqual(["Mission Control", "Playground", "Agents", "Templates", "Runs"]);
+  });
+});
