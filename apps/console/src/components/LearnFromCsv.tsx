@@ -56,7 +56,7 @@ export function LearnFromCsv({ v2, agentId, onFinished, pollMs = POLL_MS }: { v2
     return (
       <div className="flex flex-wrap items-center gap-3">
         <p className="font-mono text-small text-muted-foreground" role="status">Learn from a CSV is not available right now: {error instanceof Error ? error.message : String(error)}.</p>
-        <Button size="sm" variant="outline" onClick={() => { setError(null); setAgain((n) => n + 1); }}>Try again</Button>
+        <Button size="sm" variant="outline" onClick={() => { setError(null); setAgain((n) => n + 1); }}>Read again</Button>
       </div>
     );
   const now = batch && running(batch);
