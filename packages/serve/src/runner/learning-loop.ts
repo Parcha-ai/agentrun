@@ -114,7 +114,7 @@ export interface LearningLoopDeps {
   /** Run `runId`'s merge, when it is on main already (learn/folder.ts readRunDiff: its diff file, named by the run as its
    *  commit's Run-Id trailer names it; a resume after its commit, before its end was recorded): the texts its own commit
    *  holds at these note paths, as that merge saved them, whatever main says of them since. Undefined when it is not. */
-  merged(ws: unknown, runId: string, paths: readonly string[]): Promise<{ readonly texts: Readonly<Record<string, string>> } | undefined>;
+  merged(ws: unknown, runId: string, paths: readonly string[], round?: number): Promise<{ readonly texts: Readonly<Record<string, string>> } | undefined>;
   /** The clock (epoch ms), for a parked run's wake. */
   now?(): number;
 }
@@ -492,7 +492,7 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
           let onMain: Readonly<Record<string, string>> = {};
           let already = false;
           try {
-            const merge = await learning.merged(ws, source.runId, notePaths);
+            const merge = await learning.merged(ws, source.runId, notePaths, source.round);
             already = merge !== undefined;
             onMain = merge ? merge.texts : notePaths.length ? await learning.mainTexts(ws, notePaths) : {};
           } catch (error) {

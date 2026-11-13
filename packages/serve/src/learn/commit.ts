@@ -326,8 +326,8 @@ export async function mainTexts(ws: Workspace, paths: readonly string[]): Promis
  *  `paths`, each a note's file (one it holds nothing at is not in it), read at that commit, those paths alone (textsAt:
  *  one read-only exec, bounded by the paths asked, never the whole folder or its log), never main's now, which a person
  *  may have edited since. Undefined when the run merged nothing here. */
-export async function mergedAt(ws: Workspace, runId: string, paths: readonly string[]): Promise<{ texts: Record<string, string> } | undefined> {
-  const diff = await readRunDiff(ws, runId);
+export async function mergedAt(ws: Workspace, runId: string, paths: readonly string[], round?: number): Promise<{ texts: Record<string, string> } | undefined> {
+  const diff = await readRunDiff(ws, runDiffKey(runId, round));
   if (!diff) return undefined;
   const texts = await textsAt(ws, diff.merge, paths);
   if (!texts) throw new Error(`the run's merge ${diff.merge} is not in the learning folder`);

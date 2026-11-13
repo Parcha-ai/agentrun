@@ -50,7 +50,7 @@ export function learningLoopFactory(deps: LearningFactoryDeps): LoopFactory {
     readMain: async (ws, proposal) => (await readMain(ws as Workspace, { notes: proposal.notes })) as GradeMain | { readonly problems: readonly Problem[] },
     commit: async (ws, change) => (await learningCommit(ws as Workspace, change as LearningChange)) as LearningCommitResult,
     mainTexts: (ws, paths) => mainTexts(ws as Workspace, paths),
-    merged: (ws, runId, paths) => mergedAt(ws as Workspace, runId, paths),
+    merged: (ws, runId, paths, round) => mergedAt(ws as Workspace, runId, paths, round),
     ...(deps.now ? { now: deps.now } : {}),
   });
 }
