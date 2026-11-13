@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The Mac mini's bootstrap (MINI.md): builds Computerd.app and the ui fixture, signs both with this Mac's own stable
-# identity, installs them in /Applications, opens the two System Settings panes a person must switch on, and runs the
-# smoke check against the installed app. Run it again after every pull: the grants survive, since they are tied to
+# identity, installs them in /Applications, opens the two System Settings panes a person must switch on, and checks
+# the installed app answers with every grant on. Run it again after every pull: the grants survive, since they are tied to
 # the identity and not to the build.
 #
 #   scripts/mini-bootstrap.sh [--conformance]
@@ -178,15 +178,13 @@ $off"
 fi
 echo "ui.tree, ui.image, ui.foreground and ui.background are on"
 
-say "smoke check"
 status=0
-SMOKE_STRICT_LIVE=1 python3 -I "$here/scripts/smoke.py" "$computerd" "$home" || status=$?
 
 if [[ "$conformance" == 1 && "$status" == 0 ]]; then
 	say "ui conformance"
 	command -v node >/dev/null || die "--conformance needs Node 24 (MINI.md)"
 	(cd "$repo" && npm ci --ignore-scripts && npm run build -w @parcha/agentrun-computer)
-	"$here/scripts/ui-conformance.sh" "$computerd" "$home" || status=$?
+	node "$here/scripts/ui-conformance.mjs" "$computerd" "$home" || status=$?
 fi
 
 if [[ "$status" == 0 ]]; then

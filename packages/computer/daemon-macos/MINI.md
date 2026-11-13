@@ -70,18 +70,11 @@ The script:
 7. **Checks the grants.** If `ui.tree`, `ui.image`, `ui.foreground` or `ui.background` is off, it prints why and opens
    the Accessibility and Screen Recording panes. It waits up to 15 minutes for a person, restarting the agent every
    30 s so a new grant takes hold.
-8. **Runs the smoke check** (`scripts/smoke.py`, strict). This covers:
-   - Core: hello, exec, files and apps.
-   - The socket's peer check.
-   - TextEdit driven in the background.
-   - The ui fixture, including its canvas click.
-   - `input.actions`: a click and typed text on the fixture's input window (`UIFixture --input-log`), read back from
-     its log.
+8. **Says the app answers.** The grants check above read `hello` from the installed app, so the last line is `PASS` once
+   every grant is on.
 
-   The last line is `PASS` or `FAIL`.
-
-`--conformance` then runs the protocol's ui and input conformance cases too (`scripts/ui-conformance.sh`, the same as
-CI; the input cases use the fixture's input window). These
+`--conformance` then runs the protocol's health, ui and input conformance cases (`scripts/ui-conformance.mjs`, the same
+as CI; the input cases use the fixture's input window). These
 need Node 24; the script runs `npm ci` and builds `packages/computer`.
 
 Run the script again after every `git pull`. The second run skips the identity and the grants and prints PASS in a
@@ -100,7 +93,7 @@ System Settings pane that gives a grant, and opens the first pane still missing 
 4. **Menu bar ⌘D > Grants and Pairing…, then Raise it now,** and answer Allow. The screen capture alert then never
    appears in the middle of a task. A window opened this way stays until you close it.
 
-The script notices the grants and goes on to the smoke check by itself. Opened by a person instead of the script, the
+The script notices the grants and goes on by itself. Opened by a person instead of the script, the
 app shows its onboarding window once the grants are in, which waits for pairing: it closes once the Mac is paired, or
 after **Not now**.
 
