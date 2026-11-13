@@ -22,6 +22,10 @@ import { heldRedactor, processSecretRedactor, type Redact } from "./redact.js";
 import { type LiveTickerOptions, withLiveTicker } from "./live-ticker.js";
 
 /** Most runs a runner holds at once, unless told (RunnerOptions.loops). */
+/** A final run's status as its end line says it: the store holds a cancel as state 'stopped' with outcome 'cancelled', so
+ *  the outcome tells a cancel from a person's resumable stop. */
+export const endedStatus = (run: { state: RunState; outcome?: string | null }): RunState | "cancelled" => (run.state === "stopped" && run.outcome === "cancelled" ? "cancelled" : run.state);
+
 export const RUNNER_LOOPS = 300;
 /** How long a claim lasts unless renewed, unless told (RunnerOptions.leaseMs). */
 export const RUNNER_LEASE_MS = 30_000;
@@ -136,7 +140,7 @@ export type RunnerEvent =
   /** A run's start, once: its first claim (from queued). `agent` and `kind` are ids, never a secret. */
   | { type: "started"; runId: string; agent: string; kind: string }
   /** A run's end, once it is final (ended, stopped, failed): its state and the cost its row holds. */
-  | { type: "ended"; runId: string; agent: string; status: RunState; costUsd: number }
+  | { type: "ended"; runId: string; agent: string; status: RunState | "cancelled"; costUsd: number | null }
   | { type: "claim-lost"; runId: string; epoch: number; why: "fenced" | "not-renewed" }
   | { type: "released"; runId: string; epoch: number; end: LoopEnd["state"] }
   | { type: "refused"; runId: string; commandId: number; reason: string }
@@ -247,6 +251,8 @@ export function startRunner(options: RunnerOptions): Runner {
       emit({ type: "started", runId: claim.runId, agent: run.agentId, kind: revision?.kind ?? "unknown" });
     })().catch(() => undefined);
     startLines.set(claim.runId, said);
+    // Once said the entry has done its work: a run another runner ends would otherwise leave it here for good.
+    void said.then(() => { if (startLines.get(claim.runId) === said) startLines.delete(claim.runId); });
     return said;
   };
   /** A run's end, said once its row is final: read after the run's release, so a stop that only released it (a shutdown,
@@ -255,10 +261,9 @@ export function startRunner(options: RunnerOptions): Runner {
     if (!store.runs.get) return;
     try {
       await startLines.get(claim.runId);
-      startLines.delete(claim.runId);
       const run = await store.runs.get(claim.runId);
       if (!run || !FINAL_STATES.includes(run.state)) return;
-      emit({ type: "ended", runId: claim.runId, agent: run.agentId, status: run.state, costUsd: Number((run.costUsd ?? 0).toFixed(6)) });
+      emit({ type: "ended", runId: claim.runId, agent: run.agentId, status: endedStatus(run), costUsd: run.costUsd === null || run.costUsd === undefined ? null : Number(run.costUsd.toFixed(6)) });
     } catch {
       // A line that could not be read is not said; the run's end stands.
     }
