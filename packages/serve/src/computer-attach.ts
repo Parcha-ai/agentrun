@@ -163,6 +163,8 @@ export type PairedView = {
   online: boolean;
   held_by_run: string | null;
   held_until: string | null;
+  /** The pairing (createPairing's id) whose code paired it. */
+  pairing: string;
   created_at: string;
   seen_at: string | null;
 };
@@ -197,6 +199,7 @@ export function pairedView(row: PairedComputerRow, hub: Pick<AttachHub, "online"
     online: hub.online(row.id),
     held_by_run: holder,
     held_until: until === undefined ? null : until.toISOString(),
+    pairing: row.pairingId,
     created_at: new Date(row.createdAt).toISOString(),
     seen_at: row.seenAt === null ? null : new Date(row.seenAt).toISOString(),
   };
@@ -270,11 +273,12 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_LINE_BYTES, clientTracking: false, handleProtocols: () => ATTACH_SUBPROTOCOL });
 
   /** POST /v2/computers/pairings: a new code, good once until it expires. The store keeps its hash. */
-  async function createPairing(): Promise<{ code: string; expires_at: string }> {
+  async function createPairing(): Promise<{ id: string; code: string; expires_at: string }> {
     const code = newPairingCode();
+    const id = `pairing-${randomBytes(9).toString("base64url")}`;
     const expiresAt = now() + PAIRING_CODE_TTL_MS;
-    await paired.addCode(sha256Hex(code), expiresAt);
-    return { code, expires_at: new Date(expiresAt).toISOString() };
+    await paired.addCode(id, sha256Hex(code), expiresAt);
+    return { id, code, expires_at: new Date(expiresAt).toISOString() };
   }
 
   /** POST /v2/computers/pair: the code traded for the computer's id and token, once; `address` the try's source. */

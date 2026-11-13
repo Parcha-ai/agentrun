@@ -294,12 +294,15 @@ export const STORE_DDL: readonly string[] = [
     driver TEXT NOT NULL,
     ${json("labels")},
     token_sha256 TEXT NOT NULL UNIQUE,
+    pairing_id TEXT NOT NULL UNIQUE,
     created_at INTEGER NOT NULL,
     seen_at INTEGER,
     revoked_at INTEGER
   ) STRICT`,
-  // A pairing code, by its SHA-256 alone (hex): good once, until expires_at. A used one is deleted as it pairs.
+  // A pairing code, by its SHA-256 alone (hex): good once, until expires_at. A used one is deleted as it pairs. `id` names
+  // the pairing (not the code): the console that made it reads it back on the computer the code made (paired_computers.pairing_id).
   `CREATE TABLE IF NOT EXISTS pairing_codes (
+    id TEXT NOT NULL UNIQUE,
     code_sha256 TEXT PRIMARY KEY,
     expires_at INTEGER NOT NULL
   ) STRICT`,

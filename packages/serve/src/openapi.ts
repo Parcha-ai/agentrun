@@ -667,11 +667,13 @@ const PAIRED_COMPUTER = closed({
   online: { type: "boolean", description: "Whether its driver is attached to this server now." },
   held_by_run: { type: ["string", "null"], description: "The run that holds it now; null when none does." },
   held_until: { type: ["string", "null"], format: "date-time", description: "When the holding run's hold ends, released or not: the run's lifetime. Past it the run's connections close and the next run may claim it, and the computer stays attached. Null when no run holds it." },
+  pairing: { type: "string", description: "The pairing (POST /computers/pairings' `id`) whose code paired it." },
   created_at: { type: "string", format: "date-time", description: "When it was paired." },
   seen_at: { type: ["string", "null"], format: "date-time", description: "When it last attached; null before its first." },
 });
 /** POST /computers/pairings' answer. */
 const PAIRING = closed({
+  id: { type: "string", description: "Names this pairing, not its code: the computer the code makes carries it as `pairing` in GET /computers' `paired`, so the page that made the code can tell its own code was used, and by which computer." },
   code: { type: "string", pattern: PAIRING_CODE_PATTERN.source, description: "The code to type into the driver, such as K7PD-W3QX." },
   expires_at: { type: "string", format: "date-time", description: "When it stops pairing; it is good once before then." },
 });

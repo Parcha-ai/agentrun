@@ -151,8 +151,9 @@ function offersOf(computer: PairedComputer): string {
  *  with its state and Remove. While a code is up the page reads the computers again every PAIRING_POLL_MS, and the
  *  computer that used the code is said by name. */
 function PairedSection({ v2, paired, reload }: { v2: Client; paired: PairedComputer[]; reload: () => void }) {
-  // The code shown, and the ids paired when it was made: a new id is the computer that used it.
-  const [pairing, setPairing] = useState<{ code: Pairing; before: ReadonlySet<string> } | null>(null);
+  // The code shown, as the server made it (its `id` names the pairing): the computer that used it is the one the server
+  // lists with that pairing, so another tab's pairing with another code never counts as this one's.
+  const [pairing, setPairing] = useState<{ code: Pairing } | null>(null);
   const [making, setMaking] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const [joined, setJoined] = useState<string | null>(null);
@@ -169,8 +170,8 @@ function PairedSection({ v2, paired, reload }: { v2: Client; paired: PairedCompu
   }, [live, reload]);
   useEffect(() => {
     if (!pairing) return;
-    const fresh = paired.find((computer) => !pairing.before.has(computer.id));
-    if (fresh) { setJoined(fresh.name); setPairing(null); }
+    const used = paired.find((computer) => computer.pairing === pairing.code.id);
+    if (used) { setJoined(used.name); setPairing(null); }
   }, [paired, pairing]);
 
   const make = async () => {
@@ -178,7 +179,7 @@ function PairedSection({ v2, paired, reload }: { v2: Client; paired: PairedCompu
     try {
       const code = await v2.createPairing();
       setNow(Date.now());
-      setPairing({ code, before: new Set(paired.map((computer) => computer.id)) });
+      setPairing({ code });
     } catch (e) {
       setProblem(problemOf(e));
     }

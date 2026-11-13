@@ -35,6 +35,13 @@ export const pairedOf = (row: PairedComputerRow): PairedComputer => ({
   labels: { ...row.labels },
 });
 
+/** The setting kinds the attach path has no connection for, with why and what to pair instead: a browser session needs
+ *  a CDP connection, which the attach socket does not carry. Kind-based, never by OS: a driver whose hello serves one of
+ *  these and no other kind is refused at pairing, and a paired row of one serves nothing. */
+const ATTACH_CANNOT: Readonly<Partial<Record<ComputerSettingKind, string>>> = {
+  browser: "a paired computer can't serve browser sessions yet, so pair a desktop or phone driver",
+};
+
 /** What a driver's hello lacks to serve `kind`, by the kind registry's rule (the computer package's SETTING_KINDS, which
  *  servingRefusals reads): "it says desktop but declares no input.pointer, input.keys", "it says android, which no
  *  desktop computer is"; undefined when the hello serves the kind. The one source of a paired computer's words for a
@@ -51,8 +58,11 @@ export function helloLacks(hello: Partial<HelloResult>, kind: ComputerSettingKin
 /** Why `name`'s driver may not pair: its hello serves no kind an agent's computer can be, so no agent could pick it; in
  *  words that say what it lacks and to update the driver. Undefined when it serves one. */
 export function servesNoKind(name: string, hello: Partial<HelloResult>): string | undefined {
-  const kinds = SETTING_KIND_NAMES.filter((kind) => kind !== "none");
+  const kinds = SETTING_KIND_NAMES.filter((kind) => kind !== "none" && !(kind in ATTACH_CANNOT));
   if (kinds.some((kind) => helloLacks(hello, kind) === undefined)) return undefined;
+  // A hello that is whole for a kind the attach path cannot carry says so, in that kind's words.
+  const carried = Object.entries(ATTACH_CANNOT).find(([kind]) => helloLacks(hello, kind as ComputerSettingKind) === undefined);
+  if (carried !== undefined) return `${name}'s driver is a ${carried[0]}: ${carried[1]}`;
   // The kind its machine kind is (a desktop's, a phone's) says what is missing; a machine kind no kind takes says that.
   const near = kinds.find((kind) => SETTING_KINDS[kind].machineKinds.some((one) => one === hello.kind));
   const lack = near === undefined ? `it says ${String(hello.kind ?? "nothing")}, which no kind of computer is` : helloLacks(hello, near);
@@ -65,7 +75,7 @@ export function servesNoKind(name: string, hello: Partial<HelloResult>): string 
 export function pairedEntry(row: PairedComputerRow, registry: Pick<KindRegistry, "SETTING_KINDS" | "servingRefusals">): ProviderEntry {
   const hello = row.hello as Partial<HelloResult>;
   const configuration = { kind: String(hello.kind ?? ""), groups: Array.isArray(hello.groups) ? [...hello.groups] : [] } as unknown as KindCapabilities;
-  const kinds = (Object.keys(registry.SETTING_KINDS) as ComputerSettingKind[]).filter((kind) => kind !== "none" && registry.servingRefusals(configuration, kind).length === 0);
+  const kinds = (Object.keys(registry.SETTING_KINDS) as ComputerSettingKind[]).filter((kind) => kind !== "none" && !(kind in ATTACH_CANNOT) && registry.servingRefusals(configuration, kind).length === 0);
   return {
     id: row.id,
     label: typeof hello.os === "string" ? `${row.name} (${hello.os})` : row.name,

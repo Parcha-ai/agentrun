@@ -75,6 +75,10 @@ test("pair a computer with a code; it is listed as its hello says, offline once 
   const lacking = await pairDriver({ address, code: pairing.body.code, name: NAME, hello: { ...DRIVER_HELLO, groups: ["screen"] } });
   assert.equal(lacking.status, 422, "a hello that serves no kind");
   assert.equal(lacking.body.error.fields?.[0]?.message, `${NAME}'s driver serves no kind: it says desktop but declares no input.pointer, input.keys: update the driver on ${NAME}`);
+  // A browser driver has no CDP connection on the attach path: refused in words, by its kind and not any OS, the code unspent.
+  const browser = await pairDriver({ address, code: pairing.body.code, name: "ada-chrome", hello: { ...DRIVER_HELLO, os: "linux", kind: "browser", groups: ["cdp"] } });
+  assert.equal(browser.status, 422, "a browser hello");
+  assert.equal(browser.body.error.fields?.[0]?.message, "ada-chrome's driver is a browser: a paired computer can't serve browser sessions yet, so pair a desktop or phone driver");
   const paired = await pairDriver({ address, code: pairing.body.code.toLowerCase(), name: NAME });
   assert.equal(paired.status, 201, `the code stays good after the protocol and kind refusals: ${JSON.stringify(paired.body)}`);
   const { computer, token } = paired.body;
@@ -113,6 +117,7 @@ test("pair a computer with a code; it is listed as its hello says, offline once 
     online: true,
     held_by_run: null,
     held_until: null,
+    pairing: pairing.body.id,
   });
   assert.ok(Date.parse(created_at) <= Date.parse(seen_at), `${created_at} ${seen_at}`);
   const offered = () => listed().then((res) => res.body.kinds.find((kind) => kind.kind === "desktop").providers.find((provider) => provider.id === computer));

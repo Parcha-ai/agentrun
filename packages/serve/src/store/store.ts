@@ -821,6 +821,8 @@ export interface PairedComputerRow {
   /** The driver build its last hello named. */
   readonly driver: string;
   readonly labels: Readonly<Record<string, string>>;
+  /** The pairing (addCode's id) whose code made it. */
+  readonly pairingId: string;
   readonly createdAt: number;
   /** When its last socket said hello; null before its first. */
   readonly seenAt: number | null;
@@ -840,8 +842,9 @@ export interface NewPairedComputer {
 /** Paired computers and the pairing codes that make them (store schema `paired_computers`, `pairing_codes`). A code is
  *  kept by its SHA-256 alone, good once until its expiry; a computer by its token's SHA-256. */
 export interface PairedComputers {
-  /** Keeps a new code's SHA-256 until `expiresAt`. Codes past their expiry go in the same write. */
-  addCode(codeSha256: string, expiresAt: number): Promise<void>;
+  /** Keeps a new code's SHA-256 until `expiresAt`, under the pairing `id` the computer it makes keeps. Codes past their
+   *  expiry go in the same write. */
+  addCode(id: string, codeSha256: string, expiresAt: number): Promise<void>;
   /** Burns the code and records `computer`, in one transaction: false, with nothing written, when no unexpired code has
    *  that SHA-256 (wrong, used or expired alike). */
   pair(codeSha256: string, computer: NewPairedComputer): Promise<boolean>;

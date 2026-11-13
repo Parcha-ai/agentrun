@@ -97,6 +97,10 @@ test("a hello that serves no kind is said in words naming what its driver lacks,
   assert.equal(servesNoKind("vesper-mac", HELLO), undefined);
   assert.equal(servesNoKind("vesper-mac", screenOnly), "vesper-mac's driver serves no kind: it says desktop but declares no input.pointer, input.keys: update the driver on vesper-mac");
   assert.equal(servesNoKind("pixel", { ...HELLO, kind: "android", groups: ["screen"] }), "pixel's driver serves no kind: it says android but declares no input.touch, apps: update the driver on pixel");
+  // A kind the attach path has no connection for (a browser's CDP) is refused by kind, whatever the OS.
+  const browserSays = "a paired computer can't serve browser sessions yet, so pair a desktop or phone driver";
+  assert.equal(servesNoKind("ada-chrome", { ...HELLO, os: "linux", kind: "browser", groups: ["cdp"] }), `ada-chrome's driver is a browser: ${browserSays}`);
+  assert.equal(servesNoKind("ada-chrome", { ...HELLO, os: "macos", kind: "browser", groups: ["cdp"] }), `ada-chrome's driver is a browser: ${browserSays}`);
   assert.equal(servesNoKind("box", { ...HELLO, kind: "toaster" }), "box's driver serves no kind: it says toaster, which no kind of computer is: update the driver on box");
 
   // Paired before its driver lost a group: its run is refused saying why, then the providers to pick instead.
@@ -108,7 +112,7 @@ test("a hello that serves no kind is said in words naming what its driver lacks,
 });
 
 test("a paired computer is listed as its hello says, the live one's while attached, with the run that holds it and the deadline its hold ends by", () => {
-  const row = { id: "cmp-abc", name: "desk", hello: { ...HELLO, os: "windows", osVersion: "11" }, driver: "0.2.0", labels: {}, createdAt: 0, seenAt: 1000, revokedAt: null };
+  const row = { id: "cmp-abc", name: "desk", hello: { ...HELLO, os: "windows", osVersion: "11" }, driver: "0.2.0", labels: {}, pairingId: "pairing-x", createdAt: 0, seenAt: 1000, revokedAt: null };
   const features = { "ui.tree": { off: "no grant" }, "ui.image": true };
   // A driver's malformed features are left out of the list: only true or {off: words} reach the console.
   const live = { ...row.hello, version: "0.2.1", osVersion: "11 24H2", device: { maker: "Acme", model: "Book" }, screen: { width: 1920, height: 1080, scale: 1 }, features: { ...features, "apps.launch": null, "ui.act": { off: 3 }, "ui.wait": "yes" } };
@@ -116,7 +120,7 @@ test("a paired computer is listed as its hello says, the live one's while attach
   const hub = (attached, holder) => ({ online: () => attached, hello: () => (attached ? live : undefined), claimed: () => (holder ? { "agentrun.run": holder } : undefined), deadline: () => (holder ? deadline : undefined) });
   assert.deepEqual(pairedView(row, hub(false), ["desktop"]), {
     id: "cmp-abc", name: "desk", kind: "desktop", serves: ["desktop"], unserved: null, os: "windows", os_version: "11", device: null, arch: "arm64", screen: null, groups: HELLO.groups, features: {},
-    driver: "0.2.0", online: false, held_by_run: null, held_until: null, created_at: new Date(0).toISOString(), seen_at: new Date(1000).toISOString(),
+    driver: "0.2.0", online: false, held_by_run: null, held_until: null, pairing: "pairing-x", created_at: new Date(0).toISOString(), seen_at: new Date(1000).toISOString(),
   });
   const held = pairedView(row, hub(true, "run-1"), ["desktop"]);
   assert.deepEqual({ os_version: held.os_version, device: held.device, screen: held.screen, features: held.features, driver: held.driver, online: held.online }, { os_version: "11 24H2", device: live.device, screen: live.screen, features, driver: "0.2.1", online: true });

@@ -11,14 +11,14 @@ const computer = (id, token = `token-${id}`) => ({ id, name: `${id}'s Mac`, hell
 test("a code pairs once, before it expires: a used, expired or unknown code pairs nothing, and two pairs at once with one code make one computer", async (t) => {
   const { store, clock } = await storeOn(t);
   const paired = store.pairedComputers;
-  await paired.addCode("code-a", clock.now + 60_000);
+  await paired.addCode("pairing-a", "code-a", clock.now + 60_000);
   assert.equal(await paired.pair("code-a", computer("cmp_a")), true, "a good code pairs");
   assert.equal(await paired.pair("code-a", computer("cmp_b")), false, "a used code pairs nothing");
   assert.equal(await paired.pair("code-unknown", computer("cmp_c")), false, "an unknown code pairs nothing");
-  await paired.addCode("code-old", clock.now + 1_000);
+  await paired.addCode("pairing-old", "code-old", clock.now + 1_000);
   clock.now += 1_000;
   assert.equal(await paired.pair("code-old", computer("cmp_d")), false, "a code at its expiry pairs nothing");
-  await paired.addCode("code-race", clock.now + 60_000);
+  await paired.addCode("pairing-race", "code-race", clock.now + 60_000);
   const both = await Promise.all([paired.pair("code-race", computer("cmp_e")), paired.pair("code-race", computer("cmp_f"))]);
   assert.deepEqual(both.filter(Boolean).length, 1, `one of two pairs at once wins: ${JSON.stringify(both)}`);
   assert.deepEqual((await paired.list()).map((row) => row.id).sort(), ["cmp_a", both[0] ? "cmp_e" : "cmp_f"].sort());
@@ -27,10 +27,10 @@ test("a code pairs once, before it expires: a used, expired or unknown code pair
 test("a paired computer is found by its token's hash and listed with what it paired as, until it is revoked; seen records its driver's last hello and build", async (t) => {
   const { store, clock } = await storeOn(t);
   const paired = store.pairedComputers;
-  await paired.addCode("code-1", clock.now + 60_000);
+  await paired.addCode("pairing-1", "code-1", clock.now + 60_000);
   await paired.pair("code-1", computer("cmp_one", "hash-one"));
   const row = await paired.byToken("hash-one");
-  assert.deepEqual({ ...row }, { id: "cmp_one", name: "cmp_one's Mac", hello: HELLO, driver: "0.2.0", labels: {}, createdAt: clock.now, seenAt: null, revokedAt: null });
+  assert.deepEqual({ ...row }, { id: "cmp_one", name: "cmp_one's Mac", hello: HELLO, driver: "0.2.0", labels: {}, pairingId: "pairing-1", createdAt: clock.now, seenAt: null, revokedAt: null });
   assert.equal(await paired.byToken("hash-other"), undefined, "another token finds none");
   clock.now += 5_000;
   const later = { ...HELLO, version: "0.2.1", groups: [...HELLO.groups, "apps"] };

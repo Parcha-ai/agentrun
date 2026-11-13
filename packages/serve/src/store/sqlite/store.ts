@@ -162,8 +162,8 @@ type SealedKeyRecord = { name: string; sealed: Uint8Array; updated_at: number };
 const sealedKeyOf = (r: SealedKeyRecord): SealedKeyRow => ({ name: r.name, sealed: Uint8Array.from(r.sealed), updatedAt: r.updated_at });
 type ComputerLedgerRecord = { provider: string; session_id: string; labels: string; detail: string; updated_at: number };
 const ledgerRowOf = (r: ComputerLedgerRecord): ComputerLedgerRow => ({ provider: r.provider, sessionId: r.session_id, labels: JSON.parse(r.labels), detail: JSON.parse(r.detail), updatedAt: r.updated_at });
-type PairedRecord = { id: string; name: string; hello: string; driver: string; labels: string; created_at: number; seen_at: number | null; revoked_at: number | null };
-const pairedOf = (r: PairedRecord): PairedComputerRow => ({ id: r.id, name: r.name, hello: JSON.parse(r.hello), driver: r.driver, labels: JSON.parse(r.labels), createdAt: r.created_at, seenAt: r.seen_at, revokedAt: r.revoked_at });
+type PairedRecord = { id: string; name: string; hello: string; driver: string; labels: string; pairing_id: string; created_at: number; seen_at: number | null; revoked_at: number | null };
+const pairedOf = (r: PairedRecord): PairedComputerRow => ({ id: r.id, name: r.name, hello: JSON.parse(r.hello), driver: r.driver, labels: JSON.parse(r.labels), pairingId: r.pairing_id, createdAt: r.created_at, seenAt: r.seen_at, revokedAt: r.revoked_at });
 type TriggerSettingRecord = { adapter: string; scope: string; field: string; sealed: string; updated_at: number };
 const triggerSettingOf = (r: TriggerSettingRecord): TriggerSettingRow => ({ adapter: r.adapter, scope: r.scope, field: r.field, sealed: r.sealed, updatedAt: r.updated_at });
 type McpOauthRecord = { state: string; server: string; sealed: Uint8Array; working: string | null; expires_at: number };
@@ -1198,22 +1198,23 @@ class SqliteStore implements Store {
       },
     };
 
-    const PAIRED = "SELECT id, name, hello, driver, labels, created_at, seen_at, revoked_at FROM paired_computers";
+    const PAIRED = "SELECT id, name, hello, driver, labels, pairing_id, created_at, seen_at, revoked_at FROM paired_computers";
     this.pairedComputers = {
-      addCode: async (codeSha256, expiresAt) => {
+      addCode: async (id, codeSha256, expiresAt) => {
         await db.write([
           { sql: "DELETE FROM pairing_codes WHERE expires_at <= ?", params: [now()] },
-          { sql: "INSERT INTO pairing_codes (code_sha256, expires_at) VALUES (?, ?)", params: [codeSha256, expiresAt] },
+          { sql: "INSERT INTO pairing_codes (id, code_sha256, expires_at) VALUES (?, ?, ?)", params: [id, codeSha256, expiresAt] },
         ]);
       },
       // The code is burned and the computer written in one transaction: a code two drivers send at once pairs one.
       pair: (codeSha256, computer) =>
         db.transaction(async (tx) => {
           const at = now();
-          if ((await tx.runCounted("DELETE FROM pairing_codes WHERE code_sha256 = ? AND expires_at > ?", codeSha256, at)) !== 1) return false;
+          const code = await tx.get<{ id: string }>("SELECT id FROM pairing_codes WHERE code_sha256 = ? AND expires_at > ?", codeSha256, at);
+          if (code === undefined || (await tx.runCounted("DELETE FROM pairing_codes WHERE code_sha256 = ? AND expires_at > ?", codeSha256, at)) !== 1) return false;
           await tx.run(
-            "INSERT INTO paired_computers (id, name, hello, driver, labels, token_sha256, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            computer.id, computer.name, JSON.stringify(computer.hello), String(computer.hello.version ?? ""), JSON.stringify(computer.labels), computer.tokenSha256, at,
+            "INSERT INTO paired_computers (id, name, hello, driver, labels, token_sha256, pairing_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            computer.id, computer.name, JSON.stringify(computer.hello), String(computer.hello.version ?? ""), JSON.stringify(computer.labels), computer.tokenSha256, code.id, at,
           );
           return true;
         }),

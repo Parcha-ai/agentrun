@@ -40,7 +40,7 @@ const daytona: ComputerProvider = { id: "daytona", name: "Daytona", metered: tru
 const DESK: PairedComputer = {
   id: "cmp-abc", name: "desk-1", kind: "desktop", serves: ["desktop"], unserved: null, os: "windows", os_version: "11", device: { maker: "Acme", model: "Book 14" }, arch: "x86_64",
   screen: { width: 1920, height: 1080, scale: 1 }, groups: ["screen", "input.pointer", "input.keys"], features: { "ui.tree": { off: "no accessibility grant" } },
-  driver: "0.2.0", online: true, held_by_run: null, held_until: null, created_at: "2026-11-12T10:00:30.000Z", seen_at: "2026-11-12T10:00:31.000Z",
+  driver: "0.2.0", online: true, held_by_run: null, held_until: null, pairing: "pairing-mine", created_at: "2026-11-12T10:00:30.000Z", seen_at: "2026-11-12T10:00:31.000Z",
 };
 const DESK_PROVIDER: ComputerProvider = { id: "cmp-abc", name: "desk-1 (windows)", metered: false, secrets: [], required: [], ready: true, ...NO_SHELL };
 const kind = (k: ComputerKindView["kind"], providers: ComputerProvider[], extra: Partial<ComputerKindView> = {}): ComputerKindView => ({ kind: k, offered: true, groups: [], tools: [], providers, ...extra });
@@ -262,7 +262,7 @@ describe("Settings → Computers", () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"], now: Date.parse("2026-11-12T10:00:00.000Z") });
     try {
       const withDesk: Computers = { ...view(), paired: [DESK], kinds: view().kinds.map((k) => (k.kind === "desktop" ? { ...k, providers: [...k.providers, DESK_PROVIDER] } : k)) };
-      const { v2, calls } = server([view(), view(), withDesk], () => json(201, { code: "K7PD-W3QX", expires_at: "2026-11-12T10:10:00.000Z" }));
+      const { v2, calls } = server([view(), view(), withDesk], () => json(201, { id: "pairing-mine", code: "K7PD-W3QX", expires_at: "2026-11-12T10:10:00.000Z" }));
       const { section, click, settle } = await open(v2);
       const mine = section("Your computers");
       expect(mine.textContent).toContain("None paired yet");
@@ -287,6 +287,29 @@ describe("Settings → Computers", () => {
       expect(section("Desktop").textContent).toContain("Also served by your computers: desk-1 (windows).");
       await tick(10_000);
       expect(calls.filter((c) => c.method === "GET"), "no reads once the code is used").toHaveLength(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps its own code up when a second tab's pairing adds a computer, and names only the computer its own code made", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"], now: Date.parse("2026-11-12T10:00:00.000Z") });
+    try {
+      const other: PairedComputer = { ...DESK, id: "cmp-other", name: "other-tab-pc", pairing: "pairing-other" };
+      const withOther: Computers = { ...view(), paired: [other] };
+      const withBoth: Computers = { ...view(), paired: [other, DESK] };
+      const { v2 } = server([view(), withOther, withBoth], () => json(201, { id: "pairing-mine", code: "K7PD-W3QX", expires_at: "2026-11-12T10:10:00.000Z" }));
+      const { section, click, settle } = await open(v2);
+      const mine = section("Your computers");
+      await click(mine, /^Pair a computer$/);
+      const tick = async (ms: number) => { await act(async () => { vi.advanceTimersByTime(ms); }); await settle(); };
+      await tick(2_000);
+      expect(mine.querySelector('[data-paired="cmp-other"]'), "the other tab's computer is listed").not.toBeNull();
+      expect(mine.querySelector("[data-code]")?.textContent, "this tab's code is still up").toBe("K7PD-W3QX");
+      expect(mine.textContent).not.toContain("Paired other-tab-pc.");
+      await tick(2_000);
+      expect(mine.querySelector("[data-code]")).toBeNull();
+      expect(mine.querySelector("[role=status]")?.textContent).toBe("Paired desk-1.");
     } finally {
       vi.useRealTimers();
     }
