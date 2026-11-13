@@ -84,6 +84,7 @@ export function createSdkLoop(
           };
           const source = await host.store.runs.get(claim.runId);
           if (!source) throw new Error("SDK run no longer exists.");
+          const supplied = (await sdkInbox(host.store, claim.runId)).learning_skills;
           const previous = await journalEntries(journal, ctx);
           if (previous.some((entry) => entry.kind === KINDS.end)) return { state: "ended" as const };
           const redacted = (value: string) => deps.redact?.(value) ?? value;
@@ -104,7 +105,12 @@ export function createSdkLoop(
                   data: { role: "person", text: (launch.input as { content: string }).content, at: Date.now() },
                 },
                 ...(launch.learning
-                  ? [{ kind: KINDS.learningLaid, data: { skills: launch.learning.skills ?? [], workflows: [] } }]
+                  ? [
+                      {
+                        kind: KINDS.learningLaid,
+                        data: { skills: supplied?.map((skill) => skill.name) ?? [], workflows: [] },
+                      },
+                    ]
                   : []),
               ]);
             let last = Math.max(

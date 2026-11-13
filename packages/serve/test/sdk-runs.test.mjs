@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { serve, client, follow } from "./support.mjs";
+import { git, resnap } from "./learn-support.mjs";
+import { agentFolderOf } from "../dist/files.js";
+import { seedOf } from "../dist/learning.js";
+import { SdkRuns } from "../dist/sdk/runs.js";
 
 async function register(api, id, learning = false, runtime = "claude-agent-sdk") {
   const response = await api("POST", "/agents", {
@@ -267,4 +273,60 @@ test("SDK registration refuses managed caps and oversized source policy before l
   assert.equal(capped.status, 409, JSON.stringify(capped.body));
   assert.match(capped.body.error.message, /backend SDK/);
   assert.equal((await store.runs.list({ agentId: id })).length, 0);
+});
+
+test("SDK skill receipts pin the budget-selected files and count only those supplied", async (t) => {
+  const server = await serve(t, { gradeModel: "anthropic/claude-sonnet-4-5" });
+  const { api, store, data } = server;
+  const id = await register(api, "sdk-skill-budget", "notes");
+  await seedOf(data, id);
+  const repo = join(agentFolderOf(data, id), "learning");
+  for (const [name, size] of [
+    ["first-big", 150 * 1024],
+    ["second-big", 150 * 1024],
+    ["small-one", 20],
+  ]) {
+    const path = join(repo, "skills", name, "SKILL.md");
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(
+      path,
+      `---\nname: ${name}\ndescription: Validate release status.\n---\n${"Check status before reporting.\n".repeat(Math.ceil(size / 31)).slice(0, size)}`,
+    );
+    git(repo, ["add", "--", `skills/${name}`]);
+    git(repo, ["commit", "-q", "-m", `Learn ${name}`]);
+  }
+  await resnap(data, id);
+  const started = await api("POST", `/agents/${id}/sdk-runs`, startBody, headers("skill-budget"));
+  assert.equal(started.status, 201, JSON.stringify(started.body));
+  const receipt = started.body;
+  assert.deepEqual(
+    receipt.learning.skills.map((skill) => skill.name),
+    ["first-big", "small-one"],
+  );
+  const launch = (await store.runs.launch(receipt.run_id)).body;
+  assert.deepEqual(
+    launch.learning.skills,
+    ["first-big", "small-one"],
+    "the launch pins selected skills, not every offered one",
+  );
+  // A changed workspace must not reselect a different skill on a retry or after a server restart.
+  mkdirSync(join(repo, ".agents", "skills", "first-big"), { recursive: true });
+  const sdk = new SdkRuns(store, data, server.token);
+  assert.deepEqual((await sdk.receipt(receipt.run_id, "https://run.test")).learning.skills, receipt.learning.skills);
+  const nowProtected = new SdkRuns(store, data, server.token, () => ["first-big"]);
+  await assert.rejects(
+    nowProtected.receipt(receipt.run_id, "https://run.test"),
+    (error) => error.code === "unavailable",
+  );
+  let view;
+  for (let i = 0; i < 40; i++) {
+    view = (await api("GET", `/runs/${receipt.run_id}`)).body;
+    if (view.learning?.detail === "Started from 2 skills.") break;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.equal(view.learning.detail, "Started from 2 skills.");
+  await client(server.baseUrl, receipt.token)("POST", `/sdk-runs/${receipt.run_id}/complete`, {
+    status: "cancelled",
+    answer: "",
+  });
 });

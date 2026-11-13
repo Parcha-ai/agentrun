@@ -12,6 +12,7 @@ import { chooseSkills, learningFolderOf, readerOf, seedFrom, secretsShown } from
 import { NATIVE_GRADE_INSTRUCTION_BYTES } from "../learn/grade.js";
 import { secretRedactor } from "../runner/redact.js";
 import { redactedOutput } from "../key-refusal.js";
+import { servedSkill } from "../learn/skills.js";
 
 export type SdkRuntime = "claude-agent-sdk" | "codex-sdk";
 export type SdkUsage = {
@@ -46,8 +47,11 @@ export type SdkInbox = {
   created_at: number;
   expires_at: number;
   batches: { sequence: number; events: SdkEvent[] }[];
+  /** Exact approved skill files delivered by the start receipt; absent on older SDK runs. */
+  learning_skills?: SdkSeedSkill[];
   completion?: SdkCompletion;
 };
+type SdkSeedSkill = { name: string; files: Record<string, string> };
 const keyOf = (id: string) => `sdk-run:${id}`;
 const TEXT_LIMIT = 128_000,
   BATCH_LIMIT = 256_000,
@@ -173,6 +177,7 @@ export class SdkRuns {
           "The learning seed could not be read. Retry after restoring the agent learning folder.",
         );
     }
+    const skills = learning ? await this.selectedSkills(entry.agent.id, learning.seed) : [];
     const cleaned = this.clean({ instructions, ...(model ? { model } : {}) });
     const runId = uuidv7();
     const launch: RunLaunch = {
@@ -185,7 +190,7 @@ export class SdkRuns {
         instructions: cleaned.instructions,
         ...(cleaned.model ? { model: cleaned.model } : {}),
       },
-      ...(learning ? { learning: { ...learning, notesOnly: true } } : {}),
+      ...(learning ? { learning: { ...learning, skills: skills.map((skill) => skill.name), notesOnly: true } } : {}),
     };
     const now = Date.now();
     await this.store.settings.put(keyOf(runId), {
@@ -193,6 +198,7 @@ export class SdkRuns {
       created_at: now,
       expires_at: now + 3_600_000,
       batches: [],
+      learning_skills: skills,
     } satisfies SdkInbox);
     try {
       await this.store.runs.create(
@@ -209,16 +215,33 @@ export class SdkRuns {
     const run = await this.store.runs.get(runId);
     if (!run) throw new ApiError("not_found", "SDK run not found.");
     const launch = (await this.store.runs.launch(runId)).body as unknown as RunLaunch;
-    let skills: readonly { name: string; files?: Readonly<Record<string, string>> }[] = [];
-    if (launch.learning) {
-      const folder = learningFolderOf(this.data, run.agentId);
-      try {
-        const seed = await seedFrom(launch.learning.seed, readerOf(folder.workspace));
-        skills = (await chooseSkills(folder.workspace, seed, [], secretsShown(this.secrets(), { local: true }))).taken;
-      } finally {
-        await folder.end();
-      }
+    let inbox = await sdkInbox(this.store, runId);
+    if (inbox.learning_skills === undefined) {
+      // Older runs did not persist their delivered files. Pin a receipt from their original
+      // commit now; do not claim these reconstructed files were supplied on an earlier attempt.
+      const skills = launch.learning ? await this.selectedSkills(run.agentId, launch.learning.seed) : [];
+      await this.modify(runId, (row) =>
+        row.learning_skills === undefined ? { ...row, learning_skills: skills } : row,
+      );
+      inbox = await sdkInbox(this.store, runId);
     }
+    const skills = inbox.learning_skills ?? [];
+    const shown = secretsShown(this.secrets(), { local: true });
+    if (
+      shown.holds(launch.learning?.section ?? "") ||
+      skills.some(
+        (skill) =>
+          shown.holds(skill.name) ||
+          Object.entries(skill.files).some(
+            ([path, text]) =>
+              shown.holds(path) || shown.holds(text) || (path === "SKILL.md" && shown.holds(servedSkill(text))),
+          ),
+      )
+    )
+      throw new ApiError(
+        "unavailable",
+        "The pinned SDK learning contains a protected value. Start a new run to receive a fresh safe seed.",
+      );
     return {
       run_id: runId,
       agent_id: run.agentId,
@@ -228,9 +251,19 @@ export class SdkRuns {
         enabled: !!launch.learning,
         revision: launch.learning?.seed ?? null,
         context: launch.learning?.section ?? "",
-        skills: skills.map((skill) => ({ name: skill.name, files: skill.files ?? {} })),
+        skills,
       },
     };
+  }
+  private async selectedSkills(agentId: string, revision: string | null): Promise<SdkSeedSkill[]> {
+    const folder = learningFolderOf(this.data, agentId);
+    try {
+      const seed = await seedFrom(revision, readerOf(folder.workspace));
+      const { taken } = await chooseSkills(folder.workspace, seed, [], secretsShown(this.secrets(), { local: true }));
+      return taken.map((skill) => ({ name: skill.name, files: { ...skill.files } }));
+    } finally {
+      await folder.end();
+    }
   }
   private async modify(runId: string, change: (row: SdkInbox) => SdkInbox, limit = TOTAL_LIMIT): Promise<void> {
     for (let retry = 0; retry < 20; retry++) {

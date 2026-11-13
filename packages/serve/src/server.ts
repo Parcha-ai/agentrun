@@ -2627,7 +2627,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const answer=await idempotent(req,path,body,async origin=>({status:201,body:await sdk.start(entry,body,{...startDeps,...(gradeModel?{gradeModel}:{})},origin,async model=>{
           try{const route=await gradeRouteFor({model,agentId:id},env,sdkModelRoute);await route.provider.credential();}catch{throw new ApiError("agent_not_runnable","Self-improving SDK runs need a working server model key and grading model. Configure Model keys or turn self-improving off.");}
         },linkOrigin(req))}));
-        return send(res,answer.status,answer.body,answer.headers);
+        // Re-read the pinned receipt even on an in-memory replay: credentials saved since
+        // the first response must still be withheld without reselecting a different seed.
+        const receipt=await sdk.receipt((answer.body as {run_id:string}).run_id,linkOrigin(req));
+        return send(res,answer.status,receipt,answer.headers);
       }
       case "listRemoteConnectors": return send(res, 200, await new RemoteConnectors(store).list());
       case "enrollRemoteConnector": return send(res, 200, await new RemoteConnectors(store).enroll(await bodyOf(req)));

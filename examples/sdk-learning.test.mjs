@@ -31,7 +31,7 @@ function fixture({ notes = [], skills = [], seedSkills = [], context = '' }) {
     },
     async flushLearning() {},
   });
-  return { calls, requests, run: () => demonstrate({ runtime: 'test', createBackend, fetch, baseUrl: 'https://server.example/v2', apiKey: 'fixture-key', agentPrefix: 'fixture' }) };
+  return { calls, requests, run: () => demonstrate({ runtime: 'test', createBackend, fetch, baseUrl: 'https://server.example/v2', apiKey: 'fake-test-key', agentPrefix: 'fixture' }) };
 }
 
 test('SDK live demo accepts a checked run-origin note and verifies fresh reuse without the teaching prompt', async () => {
@@ -92,7 +92,7 @@ test('Codex backend success evidence counts a completed MCP tool and excludes fa
     ],
   }; }, async runStreamed() { throw new Error('Not used in this test'); } }) };
   const backend = createCodexReleaseBackend(native, { agentId: 'backend', instructions: 'Read-only reports.',
-    baseUrl: 'https://server.example/v2', apiKey: 'fixture-owner', fetch, pollIntervalMs: 1 }, {});
+    baseUrl: 'https://server.example/v2', apiKey: 'fake-test-key', fetch, pollIntervalMs: 1 }, {});
   const result = await backend.report(TASK);
   await backend.flushLearning();
   assert.equal(result.toolCalls, 1);
