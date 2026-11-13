@@ -105,9 +105,9 @@ export function NeedsYouStrip({ asking, failed, failedAll, live, learning = [], 
       )}
       {groups.length > 0 && (
         <div className="border">
-          <p className="caps flex items-center justify-between border-b px-4 py-2.5 text-label text-muted-foreground">
+          <p className="caps flex items-center justify-between gap-3 border-b px-4 py-2.5 text-label text-muted-foreground">
             <span>Failed in the last 24 h · {failures}</span>
-            <a href="#/runs?status=failed" className="normal-case tracking-normal hover:text-foreground">{failedAll === undefined ? "All failed runs →" : `All ${failedAll} failed ${failedAll === 1 ? "run" : "runs"} →`}</a>
+            <a href="#/runs?status=failed" className="-my-1 py-1 normal-case tracking-normal hover:text-foreground">{failedAll === undefined ? "All failed runs →" : `All ${failedAll} failed ${failedAll === 1 ? "run" : "runs"} →`}</a>
           </p>
           <ul>{groups.map((g) => <Failure key={g.message} message={g.message} runs={g.runs} agentName={agentName} at={at} onRunAgain={onRunAgain} />)}</ul>
         </div>
@@ -171,7 +171,7 @@ function Paused({ run, pending, agentName }: { run: Run; pending: BudgetPending;
       <p className="flex min-w-0 items-center gap-2 text-body">
         <span className="size-2 shrink-0 bg-warning" aria-hidden />
         <span className="shrink-0 font-mono text-small">{agentName}</span>
-        <a href={runHref(run.run_id)} className="min-w-0 truncate text-muted-foreground hover:text-foreground">{runTitle(run)}</a>
+        <a href={runHref(run.run_id)} className="-my-1 min-w-0 truncate py-1 text-muted-foreground hover:text-foreground">{runTitle(run)}</a>
       </p>
       <p className="caps mt-2 text-label text-warning-text">{pausedWords(pending)}</p>
       {typeof pending.said === "string" && <p className="mt-1 text-prose leading-snug">{pending.said}</p>}
@@ -186,7 +186,7 @@ function Head({ run, agentName, since }: { run: Run; agentName: string; since?: 
     <p className="flex min-w-0 items-center gap-2 text-body">
       <span className="size-2 shrink-0 bg-warning" aria-hidden />
       <span className="shrink-0 font-mono text-small">{agentName}</span>
-      <a href={runHref(run.run_id)} className="min-w-0 truncate text-muted-foreground hover:text-foreground">{runTitle(run)}</a>
+      <a href={runHref(run.run_id)} className="-my-1 min-w-0 truncate py-1 text-muted-foreground hover:text-foreground">{runTitle(run)}</a>
       {since && <span className="ml-auto shrink-0 font-mono text-small text-muted-foreground">{since}</span>}
     </p>
   );

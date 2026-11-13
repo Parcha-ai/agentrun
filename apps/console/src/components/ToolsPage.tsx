@@ -1,3 +1,4 @@
+import { settingsBodyClass } from "@/components/Settings";
 import { useEffect, useRef, useState } from "react";
 import { RunError } from "@/components/RunError";
 import { PerHarness, PinNote, ToolTable, toolRows } from "@/components/ToolSettings";
@@ -84,53 +85,58 @@ export function ToolsPage({ v2, choices, gates = [], harnesses, onSaved, onOpen 
   };
   return (
     <div className="h-full overflow-auto">
-      <div className="mx-auto max-w-[1100px] space-y-6 px-6 py-8">
-        <div>
+      <div className="p-5 md:p-8">
+        {/* A table of every tool: it takes the page's whole width, with what it is said above it, a sentence a column. */}
+        <div className="mb-6">
           <p className="caps text-label text-muted-foreground">Settings</p>
           <h1 className="mt-1 text-2xl font-semibold">Tools</h1>
-          <p className="mt-2 text-lead text-muted-foreground">This server's provider for each tool that has a choice, and what it resolves to on each harness. A change is saved at once and applies to every run launched from then on. An agent with a provider of its own keeps it.</p>
-          {gates.length > 0 && <p className="mt-2 text-lead text-muted-foreground">Each tool's permission: <span className="font-mono text-body">allow</span> runs it, <span className="font-mono text-body">ask</span> makes the run wait for your approval at each call, <span className="font-mono text-body">deny</span> refuses it and tells the agent why. A permission applies at the next call, in runs already going too. An agent's own allow or ask takes the place of this server's; deny here refuses it for every agent.</p>}
+          <div className="mt-2 grid gap-x-10 gap-y-2 xl:grid-cols-2">
+          <p className="text-lead text-muted-foreground">This server's provider for each tool that has a choice, and what it resolves to on each harness. A change is saved at once and applies to every run launched from then on. An agent with a provider of its own keeps it.</p>
+          {gates.length > 0 && <p className="text-lead text-muted-foreground">Each tool's permission: <span className="font-mono text-body">allow</span> runs it, <span className="font-mono text-body">ask</span> makes the run wait for your approval at each call, <span className="font-mono text-body">deny</span> refuses it and tells the agent why. A permission applies at the next call, in runs already going too. An agent's own allow or ask takes the place of this server's; deny here refuses it for every agent.</p>}
+          </div>
         </div>
-        <section aria-label="This server's providers">
-          {rows.length ? (
-            <ToolTable label="This server's tool settings" rows={rows} settings={own} fallbackOf={(t) => t.default_provider} issues={byTool} busy={busy} onEdit={(edit) => void save(edit)}
-              refused={(_, permission) => permission === "deny"}
-              resolvesOf={(t, provider) => (provider === t.provider && readFor(t.name) ? <PerHarness choice={t} harnesses={harnesses} />
-                : capsRead === "reading" ? <span className="block font-mono text-small text-muted-foreground">reading…</span>
-                : <span className="block text-small text-muted-foreground">{capsRead === "failed" ? "What it resolves to couldn't be read." : "It changed while this page read it."} <Button type="button" onClick={retry} disabled={busy} size="xs" className="ml-1">Retry</Button></span>)} />
-          ) : <p className="border px-3 py-4 font-mono text-body text-muted-foreground">This server offers no tool with a choice of provider.</p>}
-          {rest.map((m) => <p key={m} className="mt-2 font-mono text-small text-destructive-text" role="alert">{m}</p>)}
-          {problem?.error && <div className="mt-3 border"><RunError error={problem.error} title="The change was not saved" /></div>}
-          {problem?.unread && (
-            <div className="mt-3 border p-3" role="alert">
-              <p className="font-mono text-small text-destructive-text">Couldn't read the current settings, so nothing was saved. Try again.</p>
-              <Button type="button" size="xs" className="mt-2" onClick={() => void save((current) => current)} disabled={busy}>Try again</Button>
-            </div>
-          )}
-          {/* A settings read that failed once the page shows settings: the table keeps the last ones read and says so, with
-              Try again. A save's answer is newer, so it clears this. */}
-          {loadError && (
-            <div className="mt-3 border p-3" role="alert">
-              <p className="font-mono text-small text-destructive-text">The tool settings could not be read again: {loadError.code}: {loadError.message}</p>
-              <p className="mt-1 text-small text-muted-foreground">The table shows the last ones read.</p>
-              <Button type="button" onClick={retry} disabled={busy} size="xs" className="mt-2">Try again</Button>
-            </div>
-          )}
-        </section>
-        {pinned.length > 0 && (
-          <section aria-label="Pinned tools">
-            <h2 className="caps text-small font-semibold">Pinned tools</h2>
-            <p className="mt-1 text-body text-muted-foreground">A pin bounds a tool's calls for every agent on this server, its own pin beside it.</p>
-            <ul className="mt-2 border">
-              {pinned.map(([name, setting]) => (
-                <li key={name} data-pin={name} className="border-b px-3 py-2.5 last:border-b-0">
-                  <p className="font-mono text-body">{name}</p>
-                  <PinNote setting={setting} />
-                </li>
-              ))}
-            </ul>
+        <div className={settingsBodyClass}>
+          <section aria-label="This server's providers">
+            {rows.length ? (
+              <ToolTable label="This server's tool settings" rows={rows} settings={own} fallbackOf={(t) => t.default_provider} issues={byTool} busy={busy} onEdit={(edit) => void save(edit)}
+                refused={(_, permission) => permission === "deny"}
+                resolvesOf={(t, provider) => (provider === t.provider && readFor(t.name) ? <PerHarness choice={t} harnesses={harnesses} />
+                  : capsRead === "reading" ? <span className="block font-mono text-small text-muted-foreground">reading…</span>
+                  : <span className="block text-small text-muted-foreground">{capsRead === "failed" ? "What it resolves to couldn't be read." : "It changed while this page read it."} <Button type="button" onClick={retry} disabled={busy} size="xs" className="ml-1">Retry</Button></span>)} />
+            ) : <p className="border px-3 py-4 font-mono text-body text-muted-foreground">This server offers no tool with a choice of provider.</p>}
+            {rest.map((m) => <p key={m} className="mt-2 font-mono text-small text-destructive-text" role="alert">{m}</p>)}
+            {problem?.error && <div className="mt-3 border"><RunError error={problem.error} title="The change was not saved" /></div>}
+            {problem?.unread && (
+              <div className="mt-3 border p-3" role="alert">
+                <p className="font-mono text-small text-destructive-text">Couldn't read the current settings, so nothing was saved. Try again.</p>
+                <Button type="button" size="xs" className="mt-2" onClick={() => void save((current) => current)} disabled={busy}>Try again</Button>
+              </div>
+            )}
+            {/* A settings read that failed once the page shows settings: the table keeps the last ones read and says so, with
+                Try again. A save's answer is newer, so it clears this. */}
+            {loadError && (
+              <div className="mt-3 border p-3" role="alert">
+                <p className="font-mono text-small text-destructive-text">The tool settings could not be read again: {loadError.code}: {loadError.message}</p>
+                <p className="mt-1 text-small text-muted-foreground">The table shows the last ones read.</p>
+                <Button type="button" onClick={retry} disabled={busy} size="xs" className="mt-2">Try again</Button>
+              </div>
+            )}
           </section>
-        )}
+          {pinned.length > 0 && (
+            <section aria-label="Pinned tools">
+              <h2 className="caps text-small font-semibold">Pinned tools</h2>
+              <p className="mt-1 text-body text-muted-foreground">A pin bounds a tool's calls for every agent on this server, its own pin beside it.</p>
+              <ul className="mt-2 border">
+                {pinned.map(([name, setting]) => (
+                  <li key={name} data-pin={name} className="border-b px-3 py-2.5 last:border-b-0">
+                    <p className="font-mono text-body">{name}</p>
+                    <PinNote setting={setting} />
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+        </div>
       </div>
     </div>
   );

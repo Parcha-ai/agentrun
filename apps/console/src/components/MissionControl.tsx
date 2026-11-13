@@ -28,7 +28,7 @@ export function MissionControl({ view, error, onRetry, scope, needsYou, asking, 
   if (!view) return <MissionSkeleton />;
   if (startHere) return (
     <div className="h-full overflow-auto">
-      <div className="mx-auto max-w-[1600px] space-y-6 px-6 py-8">
+      <div className="space-y-6 p-5 md:p-8">
         <h1 className="text-2xl font-semibold">Mission Control</h1>
         {startHere}
       </div>
@@ -58,13 +58,15 @@ export function MissionControl({ view, error, onRetry, scope, needsYou, asking, 
   ];
   return (
     <div className="h-full overflow-auto">
-      <div className="mx-auto max-w-[1600px] space-y-8 px-6 py-8">
+      <div className="space-y-8 p-5 md:p-8">
         <h1 className="text-2xl font-semibold">Mission Control</h1>
         {needsYou}
-        <ul className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">
+        {/* The server's counts: one strip of five cells, not five cards, so its inner lines are not read against the
+            four analytics cards under it; its outer edges are the page's. */}
+        <ul className="grid grid-cols-2 gap-px border bg-border xl:grid-cols-5">
           {tiles.map(([label, value, href, tone, note]) => {
             const body = <><p className="caps text-label text-muted-foreground">{label}</p><p className={cn("mt-2 font-mono text-xl font-semibold", tone)}>{value}</p>{note && <p className="mt-1 font-mono text-label text-muted-foreground">{note}</p>}</>;
-            return <li key={label}>{href ? <a href={href} className="block h-full border p-4 hover:border-border-strong hover:bg-accent">{body}</a> : <div className="h-full border p-4">{body}</div>}</li>;
+            return <li key={label} className="bg-background max-xl:last:col-span-2">{href ? <a href={href} className="block h-full p-4 -outline-offset-2 hover:bg-accent">{body}</a> : <div className="h-full p-4">{body}</div>}</li>;
           })}
         </ul>
         <section className="space-y-4" aria-label="Analytics">

@@ -74,3 +74,24 @@ describe("Shell's navigation", () => {
     expect(items(false)).toEqual(["Mission Control", "Playground", "Agents", "Templates", "Runs"]);
   });
 });
+
+describe("Shell, for the keyboard and the browser's tab", () => {
+  it("names the place in the document's title", () => {
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(Shell, { active: "runs", children: "page" })));
+    expect(document.title).toBe("Runs · AgentRun");
+    act(() => root!.render(createElement(Shell, { active: "agents", children: "page" })));
+    expect(document.title).toBe("Agents · AgentRun");
+  });
+
+  it("starts with a control that puts the focus on the page, past the navigation", () => {
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(Shell, { active: "mission", children: "page" })));
+    const first = host.querySelector("button, a[href], input")!;
+    expect(first.textContent).toBe("Skip to the page");
+    act(() => (first as HTMLButtonElement).click());
+    expect(document.activeElement).toBe(host.querySelector("main"));
+  });
+});

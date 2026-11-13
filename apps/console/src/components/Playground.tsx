@@ -1,6 +1,6 @@
 import { ToolBlockers } from "@/components/ToolBlockers";
 import { ArrowRight, Copy, Play } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { FilePicker, type UploadLimits, useAttachments } from "@/components/FilePicker";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Picker } from "@/components/ui/picker";
@@ -100,7 +100,8 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
   const placeholder = kind === "agentic" ? "The run's first message, e.g. Summarize the standup: we ship Friday." : '{ "subject": "...", "body": "..." }';
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden">
-      <div aria-label="Playground agent" className="flex shrink-0 flex-wrap items-center gap-3 border-b px-5 py-3 md:px-6">
+      <h1 className="sr-only">Playground</h1>
+      <div aria-label="Playground agent" className="flex shrink-0 flex-wrap items-center gap-3 border-b px-5 py-3 md:px-8">
         {/* No agent to pick: no field stands here, and the Request panel below says how to make the first one. */}
         {agents.length > 0 && (
           <div className="flex min-w-0 items-center gap-2 text-small">
@@ -120,8 +121,8 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
           {agents.length === 0 ? (
             // No agents: a form that cannot send helps no one. The way to the first agent, then what a request takes.
             <>
-              <header className="flex items-center justify-between border-b px-5 py-3 md:px-6"><span className="pb-1 text-lead font-semibold">Request</span></header>
-              <div className="min-h-0 flex-1 space-y-6 overflow-auto px-5 py-6 md:px-6">
+              <header className="flex items-center justify-between border-b px-5 py-3 md:px-8"><span className="pb-1 text-lead font-semibold">Request</span></header>
+              <div className="min-h-0 flex-1 space-y-6 overflow-auto px-5 py-6 md:px-8">
                 <div className="border border-primary/50 bg-primary/5 p-5">
                   <p className="caps text-label text-primary-text">No agents yet</p>
                   <h2 className="mt-2 text-xl font-semibold">Start a run</h2>
@@ -143,11 +144,11 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
             </>
           ) : (
             <>
-            <header className="flex items-center justify-between border-b px-5 py-3 md:px-6">
+            <header className="flex items-center justify-between border-b px-5 py-3 md:px-8">
               <span className="text-lead font-semibold">Request</span>
-              <span className="flex gap-4 text-small">{(["form", "json"] as const).map((v) => <button key={v} type="button" onClick={() => setView(v)} className={cn("border-b pb-1 capitalize", view === v ? "border-foreground" : "border-transparent text-muted-foreground")}>{v === "json" ? "JSON" : "Form"}</button>)}</span>
+              <span role="group" aria-label="Request as" className="flex gap-4 text-small">{(["form", "json"] as const).map((v) => <button key={v} type="button" aria-pressed={view === v} onClick={() => setView(v)} className={cn("min-h-6 border-b pb-1 capitalize", view === v ? "border-foreground" : "border-transparent text-muted-foreground")}>{v === "json" ? "JSON" : "Form"}</button>)}</span>
             </header>
-            <div className="min-h-0 flex-1 space-y-6 overflow-auto px-5 py-6 md:px-6">
+            <div className="min-h-0 flex-1 space-y-6 overflow-auto px-5 py-6 md:px-8">
               <div><h2 className="text-xl font-semibold">Start a run</h2><p className="mt-1 text-body text-muted-foreground">{agent ? `${agent.definition.name}: ${kind === "agentic" ? "an" : "a"} ${kind} agent.` : "Pick an agent."} The server answers 202 with the run; follow it on its page.</p></div>
               {view === "json" ? (
                 <>
@@ -159,8 +160,8 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
                 </>
               ) : (
                 <>
-                  <Label name={kind === "agentic" ? "input.content" : "input"} required error={!built.ok && built.field === "input" && text ? built.message : undefined}>
-                    <Textarea value={text} onChange={(e) => setText(e.target.value)} rows={kind === "agentic" ? 4 : 7} placeholder={placeholder} />
+                  <Label htmlFor="playground-input" name={kind === "agentic" ? "input.content" : "input"} required error={!built.ok && built.field === "input" && text ? built.message : undefined}>
+                    <Textarea id="playground-input" value={text} onChange={(e) => setText(e.target.value)} rows={kind === "agentic" ? 4 : 7} placeholder={placeholder} />
                     {example && (
                       <p className="mt-1 font-mono text-label text-muted-foreground">
                         {exampleHint(example, "start")}
@@ -179,20 +180,20 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
                     <div className="flex gap-2">{["", ...efforts].map((e) => <Button key={e || "default"} type="button" size="sm" aria-pressed={effort === e} onClick={() => setEffort(e)} className={effort === e ? "border-foreground hover:border-foreground" : "text-muted-foreground"}>{e || "default"}</Button>)}</div>
                   </Label>
                   {kind === "agentic" && (
-                    <Label name="repo" note={NOTES.repo} error={!built.ok && built.field === "repo" ? built.message : undefined}>
-                      <Input value={repo} onChange={(e) => setRepo(e.target.value)} placeholder="owner/name" />
+                    <Label htmlFor="playground-repo" name="repo" note={NOTES.repo} error={!built.ok && built.field === "repo" ? built.message : undefined}>
+                      <Input id="playground-repo" value={repo} onChange={(e) => setRepo(e.target.value)} placeholder="owner/name" />
                     </Label>
                   )}
                   {kind === "agentic" && (
-                    <Label name="max_cost_usd" note={NOTES.max_cost_usd} error={!built.ok && built.field === "max_cost_usd" ? built.message : undefined}>
-                      <Input value={cap} onChange={(e) => setCap(e.target.value)} inputMode="decimal" placeholder="e.g. 0.50" />
+                    <Label htmlFor="playground-cap" name="max_cost_usd" note={NOTES.max_cost_usd} error={!built.ok && built.field === "max_cost_usd" ? built.message : undefined}>
+                      <Input id="playground-cap" value={cap} onChange={(e) => setCap(e.target.value)} inputMode="decimal" placeholder="e.g. 0.50" />
                       <p className="mt-1.5 text-small text-muted-foreground"><SpendCapMinimum /></p>
                     </Label>
                   )}
                 </>
               )}
             </div>
-            <footer className="flex shrink-0 items-center justify-between gap-3 border-t px-5 py-3 md:px-6">
+            <footer className="flex shrink-0 items-center justify-between gap-3 border-t px-5 py-3 md:px-8">
               <span className="text-small text-muted-foreground">Sends a real request to this server.</span>
               <Button variant="primary" size="lg" onClick={send} disabled={!built.ok || !onSend || sending || !agentId || attachments.busy} title={attachments.busy ? "Waiting for the files to be sent" : undefined}><Play aria-hidden /> {sending ? "Sending" : "Send request"}</Button>
             </footer>
@@ -200,24 +201,24 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
           )}
         </section>
         <section aria-label="Code and response" className={cn("flex min-h-0 flex-col", !showCode && "short:hidden")}>
-          <header className="flex items-center justify-between border-b px-5 py-3 md:px-6">
-            <span className="flex gap-4 text-body">
-              <button type="button" onClick={() => setPane("code")} className={cn("border-b pb-1", pane === "code" ? "border-foreground" : "border-transparent text-muted-foreground")}>Code</button>
-              <button type="button" onClick={() => setPane("response")} disabled={!result} className={cn("border-b pb-1 disabled:opacity-45", pane === "response" ? "border-foreground" : "border-transparent text-muted-foreground")}>Response{result && <span className={cn("ml-2 font-mono", result.status < 300 ? "text-success-text" : "text-destructive-text")}>{result.status}</span>}</button>
+          <header className="flex items-center justify-between border-b px-5 py-3 md:px-8">
+            <span role="group" aria-label="Show" className="flex gap-4 text-body">
+              <button type="button" aria-pressed={pane === "code"} onClick={() => setPane("code")} className={cn("border-b pb-1", pane === "code" ? "border-foreground" : "border-transparent text-muted-foreground")}>Code</button>
+              <button type="button" aria-pressed={pane === "response"} onClick={() => setPane("response")} disabled={!result} className={cn("border-b pb-1 disabled:opacity-45", pane === "response" ? "border-foreground" : "border-transparent text-muted-foreground")}>Response{result && <span className={cn("ml-2 font-mono", result.status < 300 ? "text-success-text" : "text-destructive-text")}>{result.status}</span>}</button>
             </span>
             {pane === "code" && <Button size="icon" variant="outline" aria-label="Copy code" onClick={() => void navigator.clipboard?.writeText(code)}><Copy aria-hidden /></Button>}
           </header>
           {pane === "code" ? (
             <>
-              <div className="flex gap-5 border-b px-5 text-small md:px-6">{(["curl", "fetch"] as const).map((l) => <button key={l} type="button" onClick={() => setLang(l)} className={cn("-mb-px border-b-2 py-2.5", lang === l ? "border-primary" : "border-transparent text-muted-foreground")}>{l === "curl" ? "cURL" : "JavaScript"}</button>)}</div>
-              <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words px-5 py-5 font-mono text-small leading-[1.8] md:px-6">{code}</pre>
-              <footer className="border-t px-5 py-3 text-small text-muted-foreground md:px-6">The same request from your code: set AGENTRUN_API_KEY in your environment.</footer>
+              <div role="group" aria-label="Code in" className="flex gap-5 border-b px-5 text-small md:px-8">{(["curl", "fetch"] as const).map((l) => <button key={l} type="button" aria-pressed={lang === l} onClick={() => setLang(l)} className={cn("-mb-px border-b-2 py-2.5", lang === l ? "border-primary" : "border-transparent text-muted-foreground")}>{l === "curl" ? "cURL" : "JavaScript"}</button>)}</div>
+              <pre tabIndex={0} aria-label="The request as code" className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words px-5 py-5 font-mono text-small leading-[1.8] md:px-8">{code}</pre>
+              <footer className="border-t px-5 py-3 text-small text-muted-foreground md:px-8">The same request from your code: set AGENTRUN_API_KEY in your environment.</footer>
             </>
           ) : result && (
             <>
-              <p className="border-b px-5 py-2.5 font-mono text-small md:px-6"><span className={result.status < 300 ? "text-success-text" : "text-destructive-text"}>{result.status}</span> <span className="text-muted-foreground">{result.ms} ms</span></p>
+              <p className="border-b px-5 py-2.5 font-mono text-small md:px-8"><span className={result.status < 300 ? "text-success-text" : "text-destructive-text"}>{result.status}</span> <span className="text-muted-foreground">{result.ms} ms</span></p>
               {refusal && (
-                <p className="border-b px-5 py-2.5 font-mono text-small text-destructive-text md:px-6" role="alert">
+                <p className="border-b px-5 py-2.5 font-mono text-small text-destructive-text md:px-8" role="alert">
                   The run did not start: {refusal.message}{refusal.box ? <span className="text-muted-foreground"> (box: {refusal.box})</span> : null}
                   <ToolBlockers agentId={agentId} details={refusal.details} />
                   {refusal.more.length > 0 && <span className="mt-1 block">{refusal.more.map((f) => <span key={`${f.field}:${f.message}`} className="block">{f.field}: {f.message}</span>)}</span>}
@@ -227,11 +228,11 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
                 // The server answered 202: the run itself, followed until it ends, with the raw answer one click away.
                 <>
                   <div className="min-h-0 flex-1 overflow-hidden border-b short:overflow-auto">{live(result.runId)}</div>
-                  <details className="border-b px-5 py-2.5 md:px-6"><summary className="caps cursor-pointer text-label text-muted-foreground">Response body</summary>
+                  <details className="border-b px-5 py-2.5 md:px-8"><summary className="caps cursor-pointer text-label text-muted-foreground">Response body</summary>
                     <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words py-3 font-mono text-small leading-[1.8]">{JSON.stringify(result.body, null, 2)}</pre></details>
                 </>
-              ) : <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words px-5 py-5 font-mono text-small leading-[1.8] md:px-6">{JSON.stringify(result.body, null, 2)}</pre>}
-              {result.runId && <button type="button" onClick={() => onOpenRun?.(result.runId!)} className="caps flex items-center justify-between border-t px-5 py-4 text-small text-primary-text hover:bg-accent md:px-6">Open this run <ArrowRight className="size-4" aria-hidden /></button>}
+              ) : <pre tabIndex={0} aria-label="Response body" className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words px-5 py-5 font-mono text-small leading-[1.8] md:px-8">{JSON.stringify(result.body, null, 2)}</pre>}
+              {result.runId && <button type="button" onClick={() => onOpenRun?.(result.runId!)} className="caps flex items-center justify-between border-t px-5 py-4 text-small text-primary-text hover:bg-accent md:px-8">Open this run <ArrowRight className="size-4" aria-hidden /></button>}
             </>
           )}
         </section>
@@ -251,10 +252,13 @@ const NOTES = {
   repo: "The GitHub repository the run reaches, owner/name. It must be one the agent is bound to; empty takes the agent's one repository.",
 } as const;
 
-function Label({ name, required, note, error, children }: { name: string; required?: boolean; note?: string; error?: string; children: React.ReactNode }) {
+/** One field of the request under its name in the API. `htmlFor`: the id of the one control it names (a label, so a
+ *  press on the name goes to the field); without it the name is the name of the group of controls under it. */
+function Label({ name, htmlFor, required, note, error, children }: { name: string; htmlFor?: string; required?: boolean; note?: string; error?: string; children: React.ReactNode }) {
+  const id = useId();
   return (
-    <div>
-      <div className="mb-2 flex items-center justify-between"><span className="font-mono text-body">{name}</span>{required && <span className="text-label text-muted-foreground">required</span>}</div>
+    <div role={htmlFor ? undefined : "group"} aria-labelledby={htmlFor ? undefined : id}>
+      <div className="mb-2 flex items-center justify-between">{htmlFor ? <label htmlFor={htmlFor} className="font-mono text-body">{name}</label> : <span id={id} className="font-mono text-body">{name}</span>}{required && <span className="text-label text-muted-foreground">required</span>}</div>
       {children}
       {note && <p className="mt-1.5 text-small text-muted-foreground">{note}</p>}
       {error && <p className="mt-1.5 font-mono text-small text-destructive-text" role="alert">{error}</p>}

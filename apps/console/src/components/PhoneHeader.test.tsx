@@ -89,11 +89,12 @@ describe("the agent page's header on a phone", () => {
     expect(classes(description)).not.toContain("max-sm:line-clamp-2");
   });
 
-  it("the tabs keep one row: no wrap, less padding below 640", async () => {
+  it("the tabs keep one row: no wrap, less padding below 640, and a row too wide scrolls on its own", async () => {
     const host = await agentPage();
     const tab = host.querySelector('[role="tab"]')!;
-    expect(classes(tab)).toEqual(expect.arrayContaining(["whitespace-nowrap", "max-sm:px-2.5", "max-sm:py-2"]));
+    expect(classes(tab)).toEqual(expect.arrayContaining(["whitespace-nowrap", "max-sm:py-2.5"]));
     expect(classes(tab.parentElement)).not.toContain("flex-wrap");
+    expect(classes(tab.parentElement)).toContain("overflow-x-auto");
   });
 });
 
@@ -169,6 +170,6 @@ describe("the run page's header on a phone", () => {
     const fx = runFixture("run.completed.idle.1");
     const host = mount(createElement(RunDetail, { run: fx.run, agentName: "Invoice checker", messages: { modes: [] } as never, harnessSteers: false, rows: fx.page.rows, files: [] }));
     const tab = host.querySelector('[role="tab"]')!;
-    expect(classes(tab)).toEqual(expect.arrayContaining(["whitespace-nowrap", "max-sm:px-2.5", "max-sm:py-2"]));
+    expect(classes(tab)).toEqual(expect.arrayContaining(["whitespace-nowrap", "max-sm:py-2.5"]));
   });
 });

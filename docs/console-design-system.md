@@ -86,7 +86,10 @@ dark fill only, and words are `text-primary-text`.
 - `.caps` is mono, uppercase and tracked: buttons, tabs, chips and small labels. Never write `uppercase
   tracking-*` by hand.
 - Weights are `font-normal` and `font-semibold`. The bundled fonts carry no other weight.
-- A page has one `h1` (`text-2xl font-semibold`). Headings go down in order: `h1`, `h2`, `h3`.
+- A page has one `h1`: `text-2xl font-semibold`, in the sans face, also when it is a name (an agent's, a run's). A
+  page that shows no title (the Playground) has an `sr-only` one. Headings go down in order: `h1`, `h2`, `h3`.
+- A heading under the title is one of three: a section's (`text-lg font-semibold`), a panel's label (`caps text-small
+  font-semibold`), or a card's name for the thing it holds (`text-prose font-semibold`).
 
 ### Space and size
 
@@ -94,7 +97,7 @@ Space is Tailwind's 4px scale. These habits keep pages alike:
 
 | Where | Class |
 | --- | --- |
-| A page's gutter | `p-5 md:p-8` (or `px-5 md:px-8` on a full-width bar) |
+| A page's gutter | `p-5 md:p-8` (or `px-5 md:px-8` on a full-width bar). Every page's text starts on it and its content ends on it: a page fills the width it has, and a row of tabs puts its first label on it |
 | Between a page's panels | `gap-6` or `space-y-6` |
 | Inside a panel or a card | `p-4` |
 | Between controls in a row | `gap-2`; between a control and its words, `gap-3` |
@@ -106,10 +109,11 @@ Space is Tailwind's 4px scale. These habits keep pages alike:
 | `control-md` | `h-control-md` | 40px | A form's fields and buttons. The default. |
 | `control-lg` | `h-control-lg` | 44px | The one action of an empty page or the sign-in page. |
 | `sidebar-width` | `w-sidebar` | 220px | The navigation. |
-| `page-width` | `max-w-page` | 1100px | A page of forms or text. |
-| `page-width-wide` | `max-w-page-wide` | 1600px | A page of data: Mission Control, a run. |
+| `page-width` | `max-w-page` | 1100px | A page that is one message: what a template made. |
+| `page-width-wide` | `max-w-page-wide` | 1600px | Kept for a panel that must not grow past it. No page uses it: a page fills its width. |
 
-Controls in one row share one height. A target someone taps is at least 24px each way, and 44px in the navigation.
+Controls in one row share one height. A target someone taps is at least 24px each way, and 44px in the navigation;
+a small link in a row gets there with padding the layout does not see (`-my-1 py-1`).
 
 ### Lines, corners, shadow
 
@@ -170,7 +174,7 @@ Import from `@/components/ui`.
 | One choice of a few, all in view | `Segmented`; `Radio`s in a `<Field group>` when each needs a sentence | Buttons that look like tabs. |
 | Any of several | `Checkbox`; a native input with `accent-primary` where a row has its own layout | |
 | On or off, taking effect at once | `Switch` | A checkbox. |
-| A page's views | `Tabs`, with `tabPanelProps(id, value)` on the panel so each names the other | |
+| A page's views | `Tabs`, with `tabPanelProps(id, value)` on the panel so each names the other. A row of links that reads as tabs (Settings) uses `tabListClass` and `tabClass` | |
 | A place in the navigation | `NavItem` | |
 | A message that stays until its cause is gone | `Banner`; `bar` for the strip across the top of the shell | A coloured paragraph. |
 | A word that what you just did worked | `useToast()` | A banner that removes itself. |
@@ -228,9 +232,17 @@ Never write `outline-none` without a `focus-visible:` replacement drawn with the
   Banners sit above the page, outside its scroller. `main` is the page's only scroller.
 - **Breakpoints** are Tailwind's: write mobile first and add `md:` for the desktop layout. `max-sm:` tightens a
   phone. `short:` is for a viewport under 500px tall (a phone on its side). Do not add a breakpoint.
-- **Widths.** A page of forms or text is `max-w-page`; a page of data is `max-w-page-wide`. A line of prose is at
-  most `max-w-prose`.
-- A page works at 390px wide with no sideways scroll. A wide table scrolls inside its own panel.
+- **Widths.** A page fills the width it has, so nothing is left empty beside it on a wide screen. What changes with
+  the width is how its parts are laid out, never a margin:
+  - A page of data (Mission Control, a list, a table) is fluid: its tables stretch and its card grids take more columns.
+  - A form's fields flow in columns: `formColumnsClass` on the box that holds them (one column, two from `xl`, three
+    from `2xl`), filled top to bottom so the order read is the order Tab takes.
+  - A Settings page puts what it is (its title and sentence) in a column of its own beside its settings from `xl`:
+    `settingsPageClass`, `settingsIntroClass` and `settingsBodyClass`. One that is a table (Tools) keeps the title above.
+  - A reading column (a run's report and timeline) is centred, at most `max-w-4xl`.
+  - A line of prose is at most `max-w-prose`. Never write a width as a number (`max-w-[1100px]`).
+- A page works at 390px wide with no sideways scroll. A wide table scrolls inside its own panel, and so does a row
+  of tabs (`tabListClass`).
 
 ## Accessibility
 
@@ -238,7 +250,11 @@ These hold for every change. The primitives already do them; keep them when you 
 
 - Text passes 4.5:1 and a field's edge and the focus ring pass 3:1, in both themes. The test measures every pair in
   `src/design/tokens.ts`. Add a pair there when you put a text token on a new surface.
-- Everything works from the keyboard, in reading order, with a visible focus ring.
+- Everything works from the keyboard, in reading order, with a visible focus ring. The shell's first stop is "Skip to
+  the page". A set of like things (a chart's days, a row of tabs) is one stop, and the arrows move inside it.
+- A box that scrolls and holds no control (a wide table, a block of code) takes the focus itself: `tabIndex={0}` with
+  a `role="region"` and a name.
+- The browser's tab names the place ("Runs · AgentRun"); the shell sets it.
 - A control has a name: a `<label>`, visible text, or `aria-label` on an icon button. An icon beside words is
   `aria-hidden`.
 - A dialog traps the keyboard, closes on Escape and gives the focus back to what opened it.
@@ -251,7 +267,7 @@ These hold for every change. The primitives already do them; keep them when you 
 | Check | What it holds |
 | --- | --- |
 | `src/design-system.test.ts` | Every colour token has a light and a dark value. Tailwind names only tokens. The type scale, layers, durations and weights match this guide. Every text pair is 4.5:1 and every edge pair 3:1, in both themes. |
-| `src/design-system.sources.test.ts` | The console's own sources: no literal or palette colour, no size off the type scale, no weight but the two, no numbered layer, no rounded corner, no shadow but `shadow-float`, no duration off the scale, no `uppercase` by hand, no `dark:` variant, no `outline-none` without a replacement, no hand-built button or field outside `components/ui`, and no checkbox or radio without `accent-primary`. An exception is listed in the test with its reason, and a listed exception that no longer applies fails. |
+| `src/design-system.sources.test.ts` | The console's own sources: no literal or palette colour, no size off the type scale, no weight but the two, no numbered layer, no rounded corner, no shadow but `shadow-float`, no duration off the scale, no page title off its one style, no page width as a number, no `uppercase` by hand, no `dark:` variant, no `outline-none` without a replacement, no hand-built button or field outside `components/ui`, and no checkbox or radio without `accent-primary`. An exception is listed in the test with its reason, and a listed exception that no longer applies fails. |
 | `src/lib/utils.test.ts` | `cn()` knows the console's scales, so `text-body text-primary-text` keeps both classes. |
 | `src/components/ui/primitives.test.tsx` | Each primitive's keyboard and screen-reader contract, and that every design-system story renders in both themes. |
 

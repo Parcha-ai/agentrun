@@ -50,7 +50,7 @@ export function HeldOutCard({ result }: { result: LearningEval | null }) {
   return (
     <section className="min-w-0 border" aria-label="Held-out test" data-testid="held-out-test">
       <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 border-b px-4 py-3">
-        <h3 className="caps text-small font-semibold">Held-out test</h3>
+        <h2 className="caps text-small font-semibold">Held-out test</h2>
         {result && <p className="font-mono text-small text-muted-foreground">{result.n.toLocaleString("en-US")} jobs it never learned from · {result.name} · {when(result.recorded_at)}{result.learned_revision ? ` · revision ${result.learned_revision.slice(0, 7)}` : ""}</p>}
       </div>
       {result ? <Figures result={result} /> : (

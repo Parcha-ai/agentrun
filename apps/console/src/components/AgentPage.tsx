@@ -145,12 +145,12 @@ export function AgentPage({ v2, agentId, routePrefix, harnesses, efforts = [], g
       <header className="border-b px-5 py-4 max-sm:py-3 md:px-8">
         {/* On a phone the back button joins the name row (its word read, not shown), and Edit shows its icon alone. */}
         <div data-phone-row className="flex flex-col gap-3 max-sm:flex-row max-sm:items-center">
-          <button type="button" onClick={() => go(agent.archived_at ? "#/agents?archived=true" : "#/agents")} className="caps flex items-center gap-2 self-start text-label text-muted-foreground hover:text-foreground max-sm:-m-1 max-sm:self-center max-sm:p-1">
+          <button type="button" onClick={() => go(agent.archived_at ? "#/agents?archived=true" : "#/agents")} className="caps -my-1 flex items-center gap-2 self-start py-1 text-label text-muted-foreground hover:text-foreground max-sm:-m-1.5 max-sm:self-center max-sm:p-1.5">
             <ArrowLeft className="size-3.5" aria-hidden /> <span className="max-sm:sr-only">Agents</span>
           </button>
           <div className="flex flex-wrap items-center gap-3 max-sm:min-w-0 max-sm:flex-1 max-sm:flex-nowrap max-sm:gap-2">
             <Icon className="size-5 shrink-0 text-muted-foreground max-sm:hidden" aria-hidden />
-            <h1 className="min-w-0 truncate font-mono text-xl font-semibold max-sm:text-lg">{d.name}</h1>
+            <h1 className="min-w-0 truncate text-2xl font-semibold max-sm:text-lg">{d.name}</h1>
             <Chip>{agent.kind}</Chip>
             {agent.archived_at && <Chip tone="muted">Archived</Chip>}
             {d.approvals === "never" && <Chip tone="warning" title="Never ask: a call of this agent never waits for you. A tool set to deny, and a template's pins, still hold.">Unattended</Chip>}
@@ -163,7 +163,7 @@ export function AgentPage({ v2, agentId, routePrefix, harnesses, efforts = [], g
         {d.description && <p id="agent-description" className={cn("mt-2 max-w-3xl text-lead text-muted-foreground", !factsOpen && "max-sm:line-clamp-2")}>{d.description}</p>}
         {/* On a phone the facts fold into one line, which opens them; 640 px and up show the list. */}
         <button type="button" aria-expanded={factsOpen} aria-controls={d.description ? "agent-description agent-facts" : "agent-facts"} onClick={() => setFactsOpen((o) => !o)}
-          className="mt-1.5 flex w-full min-w-0 items-center gap-1.5 text-left font-mono text-small text-muted-foreground sm:hidden">
+          className="mt-0.5 flex min-h-6 w-full min-w-0 items-center gap-1.5 text-left font-mono text-small text-muted-foreground sm:hidden">
           <ChevronRight className={cn("size-3.5 shrink-0 transition-transform", factsOpen && "rotate-90")} aria-hidden />
           <span className="truncate">{facts.map(([, v]) => v).join(" · ")}</span>
         </button>
