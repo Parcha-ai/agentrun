@@ -29,6 +29,7 @@ import type { PhoneLedger, PhoneLedgerEntry, ProviderOptions } from "<index>";
 const entries = new Map<string, PhoneLedgerEntry>();
 export const ledger: PhoneLedger = {
 	put: async (entry) => void entries.set(entry.id, entry),
+	claim: async (entry) => !entries.has(entry.id) && (entries.set(entry.id, entry), true),
 	get: async (id) => entries.get(id),
 	list: async () => [...entries.values()],
 	remove: async (id) => void entries.delete(id),

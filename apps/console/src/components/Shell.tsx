@@ -67,20 +67,20 @@ export function Shell({ active, settings = false, triggers = false, onNavigate, 
   // The window never scrolls: the outer box is its height and clips, and the page's own scrollbar is <main>'s. Both are
   // relative, so nothing positioned inside (a menu, sr-only text) is placed in the document and stretches it.
   return (
-    <div className="relative flex h-dvh min-h-0 flex-col overflow-hidden bg-background text-foreground md:flex-row">
-      <header className="flex shrink-0 items-center justify-between border-b px-4 py-3 md:hidden">
+    <div className="relative flex h-dvh min-h-0 flex-col overflow-hidden bg-background text-foreground roomy:flex-row">
+      <header className="flex shrink-0 items-center justify-between border-b px-4 py-3 roomy:hidden">
         <Wordmark />
         <Button size="icon" className="size-9 [&_svg]:size-[18px]" aria-label="Navigation" aria-expanded={open} onClick={() => setOpen((v) => !v)}><Menu aria-hidden /></Button>
       </header>
       {/* It scrolls at every width it shows at: on a short screen (a phone on its side) its foot, Sign out, stays reachable. */}
-      <aside className={cn("shrink-0 flex-col border-r bg-background px-3 pb-4 pt-6 md:flex md:h-dvh md:w-sidebar md:overflow-y-auto", open ? "flex max-h-[60dvh] overflow-y-auto border-b md:max-h-none" : "hidden")}>
-        <div className="hidden px-3 pb-[30px] md:block"><Wordmark /></div>
+      <aside className={cn("shrink-0 flex-col border-r bg-background px-3 pb-4 pt-6 roomy:flex roomy:h-dvh roomy:w-sidebar roomy:overflow-y-auto", open ? "flex max-h-[60dvh] overflow-y-auto border-b roomy:max-h-none" : "hidden")}>
+        <div className="hidden px-3 pb-[30px] roomy:block"><Wordmark /></div>
         <nav aria-label="Navigation" className="flex flex-col gap-1">
           {NAV.filter((n) => (n.id !== "settings" || settings) && (n.id !== "triggers" || triggers)).map(({ id, label, Icon }) => (
             <NavItem key={id} icon={Icon} active={active === id} onClick={() => { onNavigate?.(id); setOpen(false); }}>{label}</NavItem>
           ))}
         </nav>
-        <div className="mt-4 md:mt-auto"><ThemeSwitch /></div>
+        <div className="mt-4 roomy:mt-auto"><ThemeSwitch /></div>
         <Button type="button" onClick={onSignOut} className="mt-2 justify-start gap-2.5 px-3">
           <LogOut aria-hidden /> Sign out
         </Button>

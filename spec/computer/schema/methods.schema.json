@@ -2923,7 +2923,7 @@
           "title": "steps"
         },
         "expect": {
-          "description": "What the caller expects to see once the steps ran, checked on the computer against the whole window, polled until\nit holds or timeoutMs passes. text: some node's name or value holds it. ref: the element exists. Both: that element's\nname or value holds the text. gone: the opposite of each. At least one of text and ref.",
+          "description": "What the caller expects to see once the steps ran, checked on the computer against the whole window, polled until\nit holds or timeoutMs passes. text: some node's name or value holds it. ref: the element exists. Both: that element's\nname or value holds the text. window: the act's app shows a window that matches it (its main one), whose state the\nact then answers. gone: the opposite of each. One of text and ref (or both), or window alone.",
           "$ref": "#/definitions/UiExpect",
           "title": "expect"
         },
@@ -2951,12 +2951,18 @@
           "title": "steps"
         },
         "state": {
-          "description": "The state after the steps, once the window settled (at most MAX_SETTLE_MS).",
+          "description": "The state after the steps, once the window settled (at most MAX_SETTLE_MS). Absent when window is \"closed\".",
           "type": "string",
           "title": "state"
         },
+        "window": {
+          "description": "\"closed\": a step closed the act's window and its app has no window left (super+w on the last one), so there is no\nstate to answer. The steps that ran keep their results. Absent while the act has a window.",
+          "const": "closed",
+          "type": "string",
+          "title": "window"
+        },
         "changed": {
-          "description": "The window's nodes or image changed between before the first step and the settled state.",
+          "description": "Whether the window changed between before the first step and the settled state: its nodes, or its image when it\nhas no nodes. True when the window closed.",
           "type": "boolean",
           "title": "changed"
         },
@@ -2972,12 +2978,11 @@
       },
       "required": [
         "changed",
-        "state",
         "steps"
       ]
     },
     "UiExpect": {
-      "description": "What the caller expects to see once the steps ran, checked on the computer against the whole window, polled until\nit holds or timeoutMs passes. text: some node's name or value holds it. ref: the element exists. Both: that element's\nname or value holds the text. gone: the opposite of each. At least one of text and ref.",
+      "description": "What the caller expects to see once the steps ran, checked on the computer against the whole window, polled until\nit holds or timeoutMs passes. text: some node's name or value holds it. ref: the element exists. Both: that element's\nname or value holds the text. window: the act's app shows a window that matches it (its main one), whose state the\nact then answers. gone: the opposite of each. One of text and ref (or both), or window alone.",
       "title": "UiExpect",
       "type": "object",
       "properties": {
@@ -2989,6 +2994,51 @@
           "description": "A driver's name for one element, such as \"@e12\". It stays good while its element exists, across states and steps;\nonce the element is gone, a step naming it is refused as `stale`. Refs are opaque and start with \"@\".",
           "type": "string",
           "title": "ref"
+        },
+        "window": {
+          "description": "A window of the act's app: its title holds title, and its role is role. At least one of the two.",
+          "type": "object",
+          "properties": {
+            "title": {
+              "type": "string",
+              "title": "title"
+            },
+            "role": {
+              "enum": [
+                "button",
+                "cell",
+                "checkbox",
+                "combobox",
+                "dialog",
+                "generic",
+                "group",
+                "heading",
+                "image",
+                "link",
+                "list",
+                "listitem",
+                "menu",
+                "menuitem",
+                "progressbar",
+                "radio",
+                "row",
+                "scrollarea",
+                "searchbox",
+                "slider",
+                "switch",
+                "tab",
+                "table",
+                "text",
+                "textbox",
+                "toolbar",
+                "window"
+              ],
+              "type": "string",
+              "title": "role"
+            }
+          },
+          "title": "window",
+          "additionalProperties": false
         },
         "gone": {
           "type": "boolean",
@@ -3206,46 +3256,7 @@
           "title": "app"
         },
         "window": {
-          "description": "bounds in screen points: where the window sits.",
-          "type": "object",
-          "properties": {
-            "id": {
-              "type": "string",
-              "title": "id"
-            },
-            "title": {
-              "type": "string",
-              "title": "title"
-            },
-            "bounds": {
-              "type": "array",
-              "items": [
-                {
-                  "type": "number",
-                  "title": "x"
-                },
-                {
-                  "type": "number",
-                  "title": "y"
-                },
-                {
-                  "type": "number",
-                  "title": "w"
-                },
-                {
-                  "type": "number",
-                  "title": "h"
-                }
-              ],
-              "minItems": 4,
-              "maxItems": 4,
-              "title": "bounds"
-            }
-          },
-          "required": [
-            "bounds",
-            "id"
-          ],
+          "$ref": "#/definitions/UiWindow",
           "title": "window"
         },
         "nodes": {
@@ -3651,6 +3662,84 @@
         }
       },
       "additionalProperties": false
+    },
+    "UiWindow": {
+      "description": "One window of an app.",
+      "title": "UiWindow",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "title": "id"
+        },
+        "title": {
+          "type": "string",
+          "title": "title"
+        },
+        "role": {
+          "description": "What it is, by the node roles: \"dialog\" for a sheet, an alert or a panel. Absent: \"window\".",
+          "enum": [
+            "button",
+            "cell",
+            "checkbox",
+            "combobox",
+            "dialog",
+            "generic",
+            "group",
+            "heading",
+            "image",
+            "link",
+            "list",
+            "listitem",
+            "menu",
+            "menuitem",
+            "progressbar",
+            "radio",
+            "row",
+            "scrollarea",
+            "searchbox",
+            "slider",
+            "switch",
+            "tab",
+            "table",
+            "text",
+            "textbox",
+            "toolbar",
+            "window"
+          ],
+          "type": "string",
+          "title": "role"
+        },
+        "bounds": {
+          "description": "In screen points: where the window sits.",
+          "type": "array",
+          "items": [
+            {
+              "type": "number",
+              "title": "x"
+            },
+            {
+              "type": "number",
+              "title": "y"
+            },
+            {
+              "type": "number",
+              "title": "w"
+            },
+            {
+              "type": "number",
+              "title": "h"
+            }
+          ],
+          "minItems": 4,
+          "maxItems": 4,
+          "title": "bounds"
+        }
+      },
+      "required": [
+        "bounds",
+        "id"
+      ]
     }
   }
 }

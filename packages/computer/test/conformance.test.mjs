@@ -2,13 +2,14 @@
 // no Docker, no daemon binary.
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { createPrivateKey } from "node:crypto";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 import { conformanceCases, formatReport, runConformance } from "../dist/index.js";
-import { main } from "../dist/conformance/cli.js";
+import { main, plantSecrets } from "../dist/conformance/cli.js";
 import { fakeComputers } from "./fake-computer.mjs";
 
 const IMAGE = "debian:bookworm-slim";
@@ -569,11 +570,11 @@ test("the CLI as a process prints a report of more than 1 MiB whole through a pi
 	assert.equal(code, 1, stderr);
 	assert.ok(stdout.length > 1024 * 1024, `${stdout.length} bytes`);
 	const report = JSON.parse(stdout);
-	assert.equal(report.results.length, 6);
+	assert.equal(report.results.length, 7);
 	// Every case that needs the computer fails on the refused create, at length. health.no-key-in-errors is skipped before
 	// it: the fixture takes no secret.
 	const failed = report.results.filter((result) => result.status === "fail");
-	assert.equal(failed.length, 5);
+	assert.equal(failed.length, 6);
 	for (const result of failed) assert.ok(result.reason.length > 512 * 1024, result.id);
 	assert.deepEqual(report.results.filter((result) => result.status === "skip").map((result) => result.id), ["health.no-key-in-errors"]);
 });
@@ -1033,4 +1034,14 @@ test("refusal-side provider cases pass only on the refusal they test: check's wo
 	// The good fake still passes all three.
 	const good = await runConformance(fakeComputers().provider, { image: IMAGE, cases: byId("provider.check-refuses", "provider.create-release", "provider.attach") });
 	assert.deepEqual(statuses(good), { "provider.check-refuses": "pass", "provider.create-release": "pass", "provider.attach": "pass" }, JSON.stringify(reasons(good)));
+});
+
+test("planted secrets: a *_SSH_KEY name gets a real private key and its body line is the secret, any other secret name gets the planted string", () => {
+	const { values, secrets } = plantSecrets(["COMPUTER_AGENT37_SSH_KEY", "COMPUTER_VENDOR_API_KEY"]);
+	assert.equal(createPrivateKey(values[0]).asymmetricKeyType, "ed25519");
+	assert.match(secrets[0], /^[A-Za-z0-9+/=]{64}$/);
+	assert.ok(values[0].split("\n").includes(secrets[0]));
+	assert.match(values[1], /^agentrun-planted-[0-9a-f]{24}$/);
+	assert.equal(secrets[1], values[1]);
+	assert.notEqual(plantSecrets(["X_SSH_KEY"]).secrets[0], secrets[0]);
 });

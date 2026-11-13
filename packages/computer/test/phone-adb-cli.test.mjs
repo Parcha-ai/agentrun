@@ -188,7 +188,7 @@ test("the conformance module's provider spawns adb from its environment with eve
 		AGENTRUN_COMPUTER_LIVE_PHONE_HARNESS: "1",
 	};
 	const provider = await conformance.createProvider({ env, fetch: fake.fetch, now: fake.clock.now, sleep: fake.clock.sleep });
-	const created = await provider.create({ image: "android", lifetimeMs: 60_000, network: "open" });
+	const created = await provider.create({ image: "android", lifetimeMs: 60_000, network: "open" }, { requestId: "adb-conformance" });
 	assert.equal(created.ok, true, JSON.stringify(created));
 	const connected = await provider.connect(created.value);
 	assert.equal(connected.ok, false);
@@ -210,7 +210,7 @@ test("the conformance module's adb option, given as a path, spawns that adb from
 		AGENTRUN_COMPUTER_LIVE_PHONE_HARNESS: "1",
 	};
 	const provider = await conformance.createProvider({ env, adb: adb.script, fetch: fake.fetch, now: fake.clock.now, sleep: fake.clock.sleep });
-	const created = await provider.create({ image: "android", lifetimeMs: 60_000, network: "open" });
+	const created = await provider.create({ image: "android", lifetimeMs: 60_000, network: "open" }, { requestId: "adb-option" });
 	assert.equal(created.ok, true, JSON.stringify(created));
 	const connected = await provider.connect(created.value);
 	assert.match(connected.error?.message ?? "", /adb start-server failed/);
@@ -222,7 +222,8 @@ test("the conformance module's adb option, given as a transport, is used as it i
 	const fake = fakePhoneHarness();
 	const env = { COMPUTER_PHONE_HARNESS_API_KEY: KEY, COMPUTER_PHONE_HARNESS_LEDGER: join(dir, "transport-ledger.json"), AGENTRUN_COMPUTER_LIVE_PHONE_HARNESS: "1" };
 	const provider = await conformance.createProvider({ env, adb: fake.adb, fetch: fake.fetch, now: fake.clock.now, sleep: fake.clock.sleep, phoned: PHONED_JAR });
-	const created = await provider.create({ image: "android", lifetimeMs: 60_000, network: "open" });
+	const created = await provider.create({ image: "android", lifetimeMs: 60_000, network: "open" }, { requestId: "adb-transport" });
+	assert.equal(created.ok, true, JSON.stringify(created));
 	const connected = await provider.connect(created.value);
 	assert.equal(connected.ok, true, JSON.stringify(connected));
 	assert.equal(fake.running().length, 1, "the given transport started phoned too");

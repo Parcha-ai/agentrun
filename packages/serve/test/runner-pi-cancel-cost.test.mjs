@@ -70,13 +70,13 @@ test("a pi run cancelled while its answer streams reads its cost unknown, never 
     rmSync(dir, { recursive: true, force: true });
   });
   await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer at length." } });
-  await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "Write a long answer." }, title: "t", place: { mode: "runner" }, harness: "pi", model: { provider: "anthropic", modelId: "claude-sonnet-4-5" } } });
+  await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "Write a long answer." }, title: "t", place: { mode: "runner" }, harness: "pi", model: { provider: "anthropic", modelId: "claude-sonnet-5-5" } } });
   const origin = holdingOrigin();
   const route = {
-    model: "claude-sonnet-4-5", provider: { api: "anthropic-messages", origin: "https://api.anthropic.com", credential: () => KEY },
+    model: "claude-sonnet-5-5", provider: { api: "anthropic-messages", origin: "https://api.anthropic.com", credential: () => KEY },
     fetch: origin.fetch,
-    price: (_model, usage) => ((usage.input ?? 0) * 3 + (usage.output ?? 0) * 15) / 1e6,
-    cost: { input: 3, output: 15, cacheRead: 0, cacheWrite: 0 }, outputCeiling: 64_000,
+    price: (_model, usage) => ((usage.input ?? 0) * 2 + (usage.output ?? 0) * 10) / 1e6,
+    cost: { input: 2, output: 10, cacheRead: 0, cacheWrite: 0 }, outputCeiling: 128_000,
   };
   const deps = {
     env: {}, data: dir, journal: (claim) => store.journal(claim), store, sealKey: Buffer.alloc(32, 5), routeOf: async () => route,

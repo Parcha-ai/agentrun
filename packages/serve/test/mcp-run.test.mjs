@@ -6,13 +6,13 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
-import { readdir, readFile } from "node:fs/promises";
+import { readdir, readFile, readlink, realpath } from "node:fs/promises";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
-import { agent, asOwner, follow, retried, runDir, scratch, serve as serveOf, startInProcessRunner, storeBytes, withEnv } from "./support.mjs";
+import { agent, asOwner, follow, retried, runDir, runRecordOf, scratch, serve as serveOf, startInProcessRunner, storeBytes, withEnv } from "./support.mjs";
 import { openSqliteStore, sealMcpCredential } from "../dist/store/index.js";
 import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
 
@@ -55,6 +55,19 @@ async function foldersUnder(dir) {
     if (entry.isDirectory()) out.push(join(dir, entry.name), ...(await foldersUnder(join(dir, entry.name))));
   }
   return out;
+}
+
+/** The processes on this machine whose working directory is inside run `runId`'s scratch folder under `scratch` (the
+ *  CLI's, which works there): read from /proc, each one that went meanwhile skipped. None on a machine with no /proc. */
+async function workingIn(scratch, runId) {
+  const pids = [];
+  scratch = await realpath(scratch).catch(() => scratch);
+  for (const pid of await readdir("/proc").catch(() => [])) {
+    if (!/^\d+$/.test(pid)) continue;
+    const cwd = await readlink(`/proc/${pid}/cwd`).catch(() => "");
+    if (cwd.startsWith(`${scratch}/`) && cwd.split("/").includes(runId)) pids.push(Number(pid));
+  }
+  return pids;
 }
 
 /** The files of a run's scratch folder (the CLI's home and config, its working directory), while it is there: it is swept
@@ -253,7 +266,7 @@ test("pi: a server whose address changed after the run started answers the run's
   assert.deepEqual([sent(fake.log, before), sent(moved.log, movedBefore)].map((log) => log.filter((entry) => entry.method === "initialize" || entry.method === "server/discover").length), [0, 0], `the run connected to neither: ${JSON.stringify([fake.log.slice(before), moved.log.slice(movedBefore)])}`);
 });
 
-test("claude-agent: the Claude CLI's own MCP client calls mcp:fake/add through the session's proxy; the fake saw the bearer, the CLI never held it", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+test("claude-agent: the Claude CLI's own MCP client calls mcp:fake/add through the session's proxy; the fake saw the bearer, the CLI never held it", { timeout: 180_000, skip: process.platform !== "linux" ? "the CLI process's exit is read from /proc: Linux only" : !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
   const anthropic = await fakeAnthropic({
     // The CLI's own background requests offer no tools: they get a plain answer.
     reply: (request) => (Object.keys(request.results).length ? { text: `The tool said: ${Object.values(request.results)[0]}` } : request.tools.includes("mcp__fake__add") ? { tool: { name: "mcp__fake__add", input: { a: 2, b: 3 } } } : { text: "Noted." }),
@@ -275,9 +288,14 @@ test("claude-agent: the Claude CLI's own MCP client calls mcp:fake/add through t
   const runId = await runOf(api, "claude-adder", "Add 2 and 3 with the add tool.");
   await held.reached;
   const scratchFiles = await scratchOf(data, runId);
-  // The scan reached the CLI's own folder (its home and state, made at the session's start); it may hold no file yet, as
-  // the CLI writes some only later: the scan of what is there is what proves no file of its holds the token.
-  assert.ok((await foldersUnder(join(data, "scratch"))).some((folder) => folder.endsWith(`/${runId}/harness`)), `the CLI's own folder is read: ${scratchFiles.map((file) => file.path).join(", ")}`);
+  // The CLI is found working in the run's scratch (so its exit, waited on below, is seen).
+  assert.ok((await workingIn(join(data, "scratch"), runId)).length > 0, "the CLI process works in the run's scratch");
+  // Mid-call is the one moment the CLI's own folder is there to be read (the claim's scratch folder is swept at the run's
+  // end, and a scan of a swept folder reads nothing): the scan reached it (its home, config, tmp and cache, made at the
+  // session's start), and no file in it holds the token. Before its first call the CLI may have written no file there
+  // yet (on a CI runner it had none; on a box only a passing fswatch probe in its tmp), so what is asserted is that the
+  // folder was read, never a count of files in it.
+  assert.ok((await foldersUnder(join(data, "scratch"))).some((folder) => folder.endsWith(`/${runId}/harness`)), `the CLI's own folder is read mid-call: ${JSON.stringify(scratchFiles.map((file) => file.path))}`);
   const leakedMidCall = scratchFiles.filter((file) => file.text.includes(TOKEN)).map((file) => file.path);
   assert.deepEqual(leakedMidCall, [], "no file of the CLI's own (its home, its MCP config) holds the token");
   held.release();
@@ -290,6 +308,18 @@ test("claude-agent: the Claude CLI's own MCP client calls mcp:fake/add through t
   const call = rows.find((row) => row.kind === "tool_use" && row.tool_name === "mcp__fake__add");
   assert.equal(call?.summary, "fake · add", JSON.stringify(rows.filter((row) => row.kind === "tool_use")));
   assert.deepEqual(calls(fake).map((entry) => [entry.tool, entry.authorization]), [["add", true]], "one call, with the bearer");
+  // After the run's end (its runner let the claim go) and the CLI process's exit (no process works in the run's scratch any
+  // more), the CLI's own files are all written: its home, its cache, its MCP client's log. The claim's scratch folder is
+  // swept at its end, so what is left of it (nothing, once swept) holds no token, and the scan of the whole data
+  // directory below reads anything the sweep left anywhere.
+  for (let i = 0; runRecordOf(data, runId).holder; i++) {
+    assert.ok(i < 600, `the run is let go: ${JSON.stringify(runRecordOf(data, runId))}`);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  for (let i = 0; (await workingIn(join(data, "scratch"), runId)).length; i++) {
+    assert.ok(i < 600, `the CLI process exits: ${JSON.stringify(await workingIn(join(data, "scratch"), runId))}`);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
   const leaked = (await dataFiles(data)).filter((file) => file.text.includes(TOKEN)).map((file) => file.path);
   assert.deepEqual(leaked, [], "no file under the data directory, the store among them, holds the token");
 });

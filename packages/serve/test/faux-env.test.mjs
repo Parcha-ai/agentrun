@@ -62,7 +62,7 @@ test("a faux name in the server's own environment, with no faux option, enables 
   const endpoint = await heldEndpoint(t);
   // The operator's environment holds a faux name (AGENTRUN_SERVE_FAUX, AGENTRUN_HARNESS_TABLE); the gateway is the run's model.
   const fauxEnv = { AGENTRUN_SERVE_FAUX: MARKER_MODULE, AGENTRUN_HARNESS_TABLE: MARKER_MODULE, AGENTRUN_TEST_FAUX_MARKER: marker };
-  const gatewayEnv = { AGENT_MODEL_BASE_URL: endpoint.url, AGENT_MODEL: "gpt-4o", AGENT_MODEL_API_KEY: "none" };
+  const gatewayEnv = { AGENT_MODEL_BASE_URL: endpoint.url, AGENT_MODEL: "gpt-6.1-sol", AGENT_MODEL_API_KEY: "none" };
   withEnv(t, { ...fauxEnv, ...gatewayEnv }, ["AGENTRUN_SERVE_FAUX", "AGENTRUN_HARNESS_TABLE", "AGENTRUN_TEST_FAUX_MARKER", "AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_API_KEY", "AGENT_MODEL_PRICE"]);
   // The server alone (no in-process runner): a separate agentrun-serve runner process claims and runs the run.
   const { api, data } = await serve(t, { faux: undefined, runner: false });

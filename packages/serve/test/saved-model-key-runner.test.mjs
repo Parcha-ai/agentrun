@@ -145,7 +145,7 @@ test("a claude-agent run on a model key saved in Settings → Model keys, with n
   const { api } = await serve(t, { faux: undefined });
   const key = `${canary}-anthropic`;
   await answered(api("PUT", "/settings/tool-keys/anthropic", { values: { ANTHROPIC_API_KEY: key } }), 204);
-  await answered(api("POST", "/agents", agent("claude-saved", { harness: "claude-agent", model: "anthropic/claude-haiku-4-5" })), 201);
+  await answered(api("POST", "/agents", agent("claude-saved", { harness: "claude-agent", model: "anthropic/claude-haiku-5-5" })), 201);
   const done = await ran(api, "claude-saved", "Say what you did.");
   assert.equal(done.status, "completed", `the claude-agent run on the saved key completes: ${JSON.stringify(done.run.error ?? done.run)}`);
   assert.ok(fake.messages().length > 0, "Claude Code's requests reached Anthropic's stand-in");

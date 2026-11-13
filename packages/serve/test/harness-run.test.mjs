@@ -703,6 +703,9 @@ for (const harness of ["claude-agent", "codex"]) {
       if (paid.some(([, usd]) => usd !== null)) break;
     }
     assert.deepEqual(paid, [["paid:Parallel's search", 0.001]], "held, and booked at its fee though its turn was stopped");
-    assert.notEqual((await api("GET", `/runs/${run.body.run_id}`)).body.cost.usd, null, "the run's cost is known");
+    // A cancel reads cancelled from its 202 on, so the poll above can return before the run's end lands with its cost.
+    let usd = null;
+    for (const end = Date.now() + 15_000; Date.now() < end && usd === null; await new Promise((resolve) => setTimeout(resolve, 200))) usd = (await api("GET", `/runs/${run.body.run_id}`)).body.cost.usd;
+    assert.notEqual(usd, null, "the run's cost is known");
   });
 }

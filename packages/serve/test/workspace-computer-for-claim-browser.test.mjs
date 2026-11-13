@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { readBackOf } from "@parcha/agentrun-computer";
+import { liveViewProvider } from "@parcha/pi-browser/live-view";
 import { claimBrowserProvider } from "../dist/browser-computer.js";
 import { putSealedKey } from "../dist/server-keys.js";
 import { computerForClaim, localWorkspace } from "../dist/workspace/index.js";
@@ -110,3 +111,40 @@ for (const [provider, keys, url] of [
     assert.deepEqual(record.released, [[`${provider}-1`, "delete"], [second.id, "delete"]]);
   });
 }
+
+test("a browser computer's live view rides the session the browser tool opened: one session per claim with the view open, and the desktop's viewer is never opened for it", async () => {
+  const dir = realpathSync(mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-claim-browser-view-")));
+  dirs.push(dir);
+  const root = join(dir, "work");
+  mkdirSync(root);
+  const store = {
+    agents: { revision: async () => undefined },
+    sealedKeys: { get: async () => undefined, put: async () => {}, remove: async () => {}, all: async () => [] },
+    computerLedger: { put: async () => {}, get: async () => undefined, list: async () => [], remove: async () => {} },
+  };
+  const url = "ws://127.0.0.1:9222/devtools/browser/abc";
+  const record = { created: [], released: [], connects: 0 };
+  const viewers = [];
+  const answer = await computerForClaim({ runId: "run-1", epoch: 2, computer: { kind: "browser", provider: "local-chrome" } }, store, {
+    mode: 1, kinds: KINDS, sealKey: randomBytes(32), providers: { "local-chrome": () => browserProvider("local-chrome", url, record) },
+    spec: () => ({ image: "browser", lifetimeMs: 600_000, network: "open" }), workspace: localWorkspace(root), check: { readBackOf, epoch: 2 },
+    // The desktop's and phone's viewer (computer-live.ts): never for a browser, whose view is the browser tool's own.
+    openComputerView: async (opened) => (viewers.push(opened), { ok: false, refused: "unused", message: "unused" }),
+  });
+  // The run's browser tool's provider, with pi-browser's live view over it, as the runner wraps it; its host records each
+  // view it opens and the CDP URL it was handed.
+  const opened = [];
+  const host = { known: (tag) => opened.find((one) => one.tag === tag)?.view ?? null, open: async (tag, cdpUrl) => { const view = { fullscreen: `http://127.0.0.1:1/v/${tag}` }; opened.push({ tag, cdpUrl, view }); return view; }, release: async () => {} };
+  const sessions = liveViewProvider(claimBrowserProvider(answer.computer.browser), host);
+  // The tool's first call opens the claim's one session; its driver attaches; a person opens the live view, twice.
+  const session = await sessions.create({ tag: "ar-run-1-1", maxLifetimeS: 120, idleTimeoutS: 60, proxies: false, verified: false, captcha: false, viewport: { width: 1288, height: 711 }, metadata: {} }, new AbortController().signal);
+  await sessions.attach(session);
+  const view = await sessions.liveView(session);
+  assert.equal(await sessions.liveView(session), view, "a second look is the same view");
+  assert.equal(record.created.length, 1, "one session for the claim, the live view open: the view opens none of its own");
+  assert.deepEqual(opened.map(({ tag, cdpUrl }) => [tag, cdpUrl]), [["ar-run-1-1", url]], "the view dials the tool's own session");
+  assert.deepEqual(viewers, [], "no desktop viewer for a browser");
+  await sessions.release(session);
+  await answer.release();
+  assert.deepEqual(record.released, [["local-chrome-1", "delete"]], "and that one session is let go once");
+});
