@@ -79,7 +79,10 @@ final class CodingTests: XCTestCase {
 		XCTAssertEqual(try KeyChord.parse("A"), KeyChord(modifiers: [], key: "A"))
 		XCTAssertEqual(try KeyChord.parse("shift"), KeyChord(modifiers: [], key: "shift"))
 		XCTAssertEqual(try KeyChord.parse("super+f5"), KeyChord(modifiers: [.cmd], key: "f5"))
-		for wrong in ["", "cmd+s", "Enter", "super+", "+", "a b", "tab+s", "super+return", " "] {
+		XCTAssertEqual(try KeyChord.parse("+"), KeyChord(modifiers: [], key: "+"))
+		XCTAssertEqual(try KeyChord.parse("shift++"), KeyChord(modifiers: [.shift], key: "+"))
+		XCTAssertEqual(try KeyChord.parse("ctrl+shift++").text, "ctrl+shift++")
+		for wrong in ["", "cmd+s", "Enter", "super+", "a b", "+++", "tab++", "tab+s", "super+return", " "] {
 			XCTAssertThrowsError(try KeyChord.parse(wrong), wrong)
 		}
 	}
