@@ -122,7 +122,7 @@ export function fauxComputers({ viewerBase }: { readonly viewerBase: string }): 
     const id = `faux-desktop-${++started}`;
     const png = greyPng(WIDTH, HEIGHT);
     live.add(id);
-    const hello: HelloResult = { protocol: "0.2", version: "faux", os: "linux", kind: "desktop", arch: "amd64", groups: [...DESKTOP_GROUPS] };
+    const hello: HelloResult = { protocol: "0.2", version: "faux", os: "linux", kind: "desktop", arch: "amd64", groups: [...DESKTOP_GROUPS], screen: { width: WIDTH, height: HEIGHT, scale: 1 } };
     const call = async (method: string, params: Record<string, unknown>) => {
       if (method === "hello") return { ok: true, value: hello };
       if (method === "screen.shot") return { ok: true, value: { id: `${id}-shot`, data: png.toString("base64"), eof: true, size: png.length, width: WIDTH, height: HEIGHT } };

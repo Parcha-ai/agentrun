@@ -22,7 +22,12 @@ const runNode = createHarnessRunner(
   is not sent, so the model is never told its files are read-only while the host's tools write them
   (`test/developer-messages.test.mjs`). A classic model is offered exactly the host's tools (and the runner's
   `submit`); a code-mode model is offered code mode's `exec` and `wait`, whose runtime has no Node modules, no process and no network, and
-  reaches the host's tools by their own names, as nested calls of the script it writes. The proxy passes `exec` and
+  reaches the host's tools by their own names, as nested calls of the script it writes. A nested call of a computer tool
+  answers the tool's value as JSON text, its images' data in it, for the script to `JSON.parse`; any other tool answers
+  its words and a line saying how many images it returned were not sent, since in code mode an image reaches a script only
+  as text (`test/code-mode-images-taken.test.mjs`). Codex's runtime takes no
+  binding of ours, so a script that wants the `computer` object itself calls `computer_script`, which runs in the host's
+  isolate with `computer` bound. The proxy passes `exec` and
   `wait` and drops the sub-agent and user-input tools Codex lists beside them; it keeps parallel tool calls off for a
   code-mode request, and offers no `exec` while a script that yielded still runs, so one script is live at a time. A
   nested call has an id of Codex's own (`exec-<uuid>`) that no line of the rollout carries and that names no `exec`, so
