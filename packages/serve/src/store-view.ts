@@ -418,7 +418,11 @@ export async function viewOverStore(store: Store, runId: string, deps: ViewDeps)
   const { row, runRow, launch, view, unshown, values, output, review: kept, structured } = run;
   const { status, state } = statusOf(view, factsOf(run));
   const terminal = TERMINAL.has(status);
-  const endedAtMs = terminal ? (runRow.endedAt ?? runRow.startedAt) : null;
+  // A cancel reads cancelled from its 202 (status terminal) while the runner is still cutting the turn: the run is settled
+  // only once the store holds its end (its row no longer running), so its end time, poll hint, timeline `final` and learning
+  // come from that end, never from the optimistic status. Later tool results, withdrawals and charges still stream in.
+  const ended = row.state !== "running";
+  const endedAtMs = terminal && ended ? (runRow.endedAt ?? runRow.startedAt) : null;
   const shownWords = (text: string): string => withoutLoopback(redacted(text, values));
   // The answer row's text is the answer as served (whole, through redactedAnswer, once per held value set, when the row
   // was cut; else the rows' redactor over what was never cut): served again through redactedAnswer once per that set.
@@ -459,7 +463,7 @@ export async function viewOverStore(store: Store, runId: string, deps: ViewDeps)
   // card), else its agent waiting on a person in its browser (browserPending), else the question its turn ended on (pendingOf).
   const redactor = redactorOf(values);
   const pending: Pending = !unshown && status === "input_required" && state === "waiting" ? (approvalOf(view, redactor) ?? run.budget ?? browserPending(run.browserAsk, redactor) ?? computerPending(run.computerAsk, redactor) ?? pendingOf(run.rows)) : null;
-  const settled = terminal;
+  const settled = terminal && ended;
 
   return {
     run_id: row.id,
@@ -496,8 +500,8 @@ export async function viewOverStore(store: Store, runId: string, deps: ViewDeps)
     imported_from: runRow.importedFrom ? { source: runRow.importedFrom.source, session: runRow.importedFrom.session } : null,
     trigger: launch?.trigger ?? null,
     // Cut by the run's one cut (the pointers it was handed among them), and none for a withheld run, as its words.
-    learning: unshown ? null : learningViewOf(run.learningEnd, secretsShown(values), terminal && settled),
-    poll_after_ms: terminal && settled ? 0 : 1000,
+    learning: unshown ? null : learningViewOf(run.learningEnd, secretsShown(values), settled),
+    poll_after_ms: settled ? 0 : 1000,
     last_progress_at: run.lastProgressAt,
   };
 }
@@ -522,7 +526,7 @@ export async function factsOverStore(store: Store, runId: string, deps: ViewDeps
   const run = await storeRunOf(store, runId, deps);
   if (!run) return undefined;
   const { status } = statusOf(run.view, factsOf(run));
-  const endedAtMs = TERMINAL.has(status) ? (run.runRow.endedAt ?? run.runRow.startedAt) : null;
+  const endedAtMs = TERMINAL.has(status) && run.row.state !== "running" ? (run.runRow.endedAt ?? run.runRow.startedAt) : null;
   return { kind: run.row.kind, revision: run.row.revision, agentId: run.row.agent, status, createdAt: iso(run.runRow.startedAt), endedAt: endedAtMs === null ? null : iso(endedAtMs), unshown: run.unshown };
 }
 
