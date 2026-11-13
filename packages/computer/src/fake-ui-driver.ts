@@ -200,8 +200,8 @@ export class FakeUiDriver implements UiSource {
 
 	/** Moves an app's window in front, or changes its size (points): a point read before a size change is then stale. */
 	place(app: string, bounds: [number, number, number, number]): void {
-		const window = this.#running.get(app)?.windows.at(-1);
-		if (window !== undefined) window.bounds = bounds;
+		const win = this.#running.get(app)?.windows.at(-1);
+		if (win !== undefined) win.bounds = bounds;
 	}
 
 	/** Ends every app, and every effect its windows had pending. */
@@ -213,14 +213,14 @@ export class FakeUiDriver implements UiSource {
 
 	/** Ends an app's windows: each one's pending effects are cancelled. */
 	#end(state: AppState): void {
-		for (const window of [...state.windows]) this.#closeWindow(state, window);
+		for (const win of [...state.windows]) this.#closeWindow(state, win);
 	}
 
 	/** Closes one window: its pending effects are cancelled, so a delayed press in it never lands anywhere else. */
-	#closeWindow(state: AppState, window: FakeWindow): void {
-		for (const timer of window.timers) clearTimeout(timer);
-		window.timers.clear();
-		state.windows = state.windows.filter((one) => one !== window);
+	#closeWindow(state: AppState, win: FakeWindow): void {
+		for (const timer of win.timers) clearTimeout(timer);
+		win.timers.clear();
+		state.windows = state.windows.filter((one) => one !== win);
 	}
 
 	/** A new window of the app on a screen, in front: its checked and focused start from the script, and nothing else is shared. */
@@ -228,18 +228,18 @@ export class FakeUiDriver implements UiSource {
 		// look() shows checked and focused from the window's state alone, never the script's flags: the state starts from them.
 		const scriptedWith = (flag: UiFlag) => Object.values(app.screens).flatMap((one) => one.elements.filter((element) => element.flags?.includes(flag)).map((element) => element.key));
 		const focus = app.screens[screen]?.elements.find((element) => element.flags?.includes("focused"))?.key;
-		const window: FakeWindow = { id, screen, history: [], values: new Map(), checked: new Set(scriptedWith("checked")), ...(focus === undefined ? {} : { focus }), animateUntil: 0, bounds, timers: new Set() };
-		state.windows.push(window);
-		return window;
+		const win: FakeWindow = { id, screen, history: [], values: new Map(), checked: new Set(scriptedWith("checked")), ...(focus === undefined ? {} : { focus }), animateUntil: 0, bounds, timers: new Set() };
+		state.windows.push(win);
+		return win;
 	}
 
 	/** Runs effect ms from now as a pending effect of window: never once the window closed (its timers are cancelled then). */
-	#later(state: AppState, window: FakeWindow, ms: number, effect: () => void): void {
+	#later(state: AppState, win: FakeWindow, ms: number, effect: () => void): void {
 		const timer = setTimeout(() => {
-			window.timers.delete(timer);
-			if (state.windows.includes(window)) effect();
+			win.timers.delete(timer);
+			if (state.windows.includes(win)) effect();
 		}, ms);
-		window.timers.add(timer);
+		win.timers.add(timer);
 	}
 
 	/** One method call on a connection, as a computer answers it; ui calls go through that connection's engine. */
@@ -375,9 +375,9 @@ export class FakeUiDriver implements UiSource {
 		const state = running;
 		const app = this.apps.get(view.app.id) as FakeApp;
 		// The window the step lands in, which it changes alone: a press there goes, opens or closes from it.
-		const window = state.windows.find((one) => one.id === view.window.id);
-		if (window === undefined) return fail("stale", `${view.window.id} closed before this step ran: observe again`);
-		const shown = app.screens[window.screen];
+		const win = state.windows.find((one) => one.id === view.window.id);
+		if (win === undefined) return fail("stale", `${view.window.id} closed before this step ran: observe again`);
+		const shown = app.screens[win.screen];
 		const scripted = (key: string | undefined) => shown.elements.find((one) => one.key === key);
 		/** A disabled element takes no effect by any route: by its ref it is refused, by a point or the focus it is ignored. */
 		const disabled = (one: FakeElement) => one.flags?.includes("disabled") ?? false;
@@ -402,9 +402,9 @@ export class FakeUiDriver implements UiSource {
 		const takes = (one: FakeElement, route: UiRun["route"]) => !disabled(one) && !(one.route === "foreground" && route !== "foreground");
 		const land = (hit: FakeElement | undefined, route: UiRun["route"], right = false): UiRun => {
 			if (hit === undefined || right || !takes(hit, route)) return { route, verified: false };
-			this.#press(state, window, hit);
+			this.#press(state, win, hit);
 			if (hit.counts !== true) return { route, verified: false };
-			window.values.set(hit.key, String(Number(window.values.get(hit.key) ?? hit.value ?? "0") + 1));
+			win.values.set(hit.key, String(Number(win.values.get(hit.key) ?? hit.value ?? "0") + 1));
 			return { route, verified: true };
 		};
 		const target = scripted(element?.key);
@@ -414,7 +414,7 @@ export class FakeUiDriver implements UiSource {
 				const route = pointer(target);
 				return route.ok ? ok(land(target, route.value)) : route;
 			}
-			this.#press(state, window, target as FakeElement);
+			this.#press(state, win, target as FakeElement);
 			return ok({ route: "semantic", verified: this.#shownAtOnce(target as FakeElement) });
 		}
 		if ("perform" in step) {
@@ -430,16 +430,16 @@ export class FakeUiDriver implements UiSource {
 			const via: Result<UiRun["route"]> = scriptedTarget.route === "foreground" ? pointer(scriptedTarget) : ok("semantic");
 			if (!via.ok) return via;
 			if (!takes(scriptedTarget, via.value)) return ok({ route: via.value, verified: false });
-			if (toggle && step.value === "on") window.checked.add(scriptedTarget.key);
-			else if (toggle) window.checked.delete(scriptedTarget.key);
+			if (toggle && step.value === "on") win.checked.add(scriptedTarget.key);
+			else if (toggle) win.checked.delete(scriptedTarget.key);
 			else {
-				const was = window.values.get(scriptedTarget.key);
-				window.values.set(scriptedTarget.key, step.value);
+				const was = win.values.get(scriptedTarget.key);
+				win.values.set(scriptedTarget.key, step.value);
 				// An app that refuses the value takes it back a moment later: the set ran, and does not hold (SET_HOLD_MS).
 				if (scriptedTarget.takesBack !== undefined) {
-					this.#later(state, window, scriptedTarget.takesBack, () => {
-						if (was === undefined) window.values.delete(scriptedTarget.key);
-						else window.values.set(scriptedTarget.key, was);
+					this.#later(state, win, scriptedTarget.takesBack, () => {
+						if (was === undefined) win.values.delete(scriptedTarget.key);
+						else win.values.set(scriptedTarget.key, was);
 					});
 				}
 			}
@@ -458,30 +458,30 @@ export class FakeUiDriver implements UiSource {
 		if ("type" in step) {
 			const field = (one: FakeElement) => one.role === "textbox" || one.role === "searchbox";
 			if (target !== undefined && !field(target)) return fail("refused", `${step.into} is a ${target.role}, not a text field: type into a field`);
-			const into = target ?? scripted(window.focus);
+			const into = target ?? scripted(win.focus);
 			const route = pointer(into);
 			if (!route.ok) return route;
 			if (into === undefined || !takes(into, route.value) || !field(into)) return ok({ route: route.value, verified: false });
 			// A field named by its ref is focused first, as a tap does, which runs what pressing it does: a field whose
 			// press opens another screen leaves the focus there, and nothing is typed.
 			if (target !== undefined) {
-				this.#press(state, window, target);
-				if (window.focus !== target.key) return fail("refused", `${step.into} did not take focus: nothing typed`);
+				this.#press(state, win, target);
+				if (win.focus !== target.key) return fail("refused", `${step.into} did not take focus: nothing typed`);
 			}
-			window.values.set(into.key, `${window.values.get(into.key) ?? into.value ?? ""}${step.type}`);
+			win.values.set(into.key, `${win.values.get(into.key) ?? into.value ?? ""}${step.type}`);
 			return ok({ route: route.value, verified: true });
 		}
 		if ("key" in step) {
-			const focused = scripted(window.focus);
+			const focused = scripted(win.focus);
 			const route = pointer(focused);
 			if (!route.ok) return route;
-			if (step.key === "enter" && focused?.enter !== undefined && takes(focused, route.value)) this.#apply(state, window, focused.enter);
+			if (step.key === "enter" && focused?.enter !== undefined && takes(focused, route.value)) this.#apply(state, win, focused.enter);
 			return ok({ route: route.value, verified: false });
 		}
 		if ("nav" in step) {
 			if (step.nav === "back") {
-				const back = window.history.pop();
-				if (back !== undefined) window.screen = back;
+				const back = win.history.pop();
+				if (back !== undefined) win.screen = back;
 			} else if (step.nav === "home") this.#front = undefined;
 			return ok({ route: "semantic", verified: true });
 		}
@@ -500,22 +500,22 @@ export class FakeUiDriver implements UiSource {
 		return element.press !== undefined && (element.press.after ?? 0) === 0;
 	}
 
-	#press(state: AppState, window: FakeWindow, element: FakeElement): void {
+	#press(state: AppState, win: FakeWindow, element: FakeElement): void {
 		if (element.role === "switch" || element.role === "checkbox") {
-			if (window.checked.has(element.key)) window.checked.delete(element.key);
-			else window.checked.add(element.key);
+			if (win.checked.has(element.key)) win.checked.delete(element.key);
+			else win.checked.add(element.key);
 		}
-		if (element.role === "textbox" || element.role === "searchbox") window.focus = element.key;
-		if (element.press !== undefined) this.#apply(state, window, element.press);
+		if (element.role === "textbox" || element.role === "searchbox") win.focus = element.key;
+		if (element.press !== undefined) this.#apply(state, win, element.press);
 	}
 
 	/**
 	 * A press's effect, from the window it landed in: go to a screen in that window, open another window, or close that
 	 * one. A delayed effect is that window's pending effect: it never lands once the window closed.
 	 */
-	#apply(state: AppState, window: FakeWindow, effect: FakeEffect): void {
+	#apply(state: AppState, win: FakeWindow, effect: FakeEffect): void {
 		const go = () => {
-			if (effect.close === true) return this.#closeWindow(state, window);
+			if (effect.close === true) return this.#closeWindow(state, win);
 			if (effect.open !== undefined) {
 				state.opened += 1;
 				const [x, y, w, h] = state.origin;
@@ -524,13 +524,13 @@ export class FakeUiDriver implements UiSource {
 				return;
 			}
 			if (effect.go === undefined) return;
-			window.history.push(window.screen);
-			window.screen = effect.go;
-			window.focus = undefined;
-			window.animateUntil = Date.now() + (effect.animateMs ?? 0);
+			win.history.push(win.screen);
+			win.screen = effect.go;
+			win.focus = undefined;
+			win.animateUntil = Date.now() + (effect.animateMs ?? 0);
 		};
 		if (!effect.after) return go();
-		this.#later(state, window, effect.after, go);
+		this.#later(state, win, effect.after, go);
 	}
 }
 
