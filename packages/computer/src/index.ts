@@ -153,6 +153,7 @@ export {
 	imagesOf,
 	type KindCapabilities,
 	kindOf,
+	kindServed,
 	type ProviderEntry,
 	PROVIDERS,
 	SETTING_KIND_NAMES,

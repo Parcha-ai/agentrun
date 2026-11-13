@@ -958,6 +958,9 @@ export interface ComputerLedgerRow {
 export interface ComputerLedger {
   /** Saves `labels` and `detail` for `provider`'s session `sessionId`, inserted or replaced in place. */
   put(provider: string, sessionId: string, labels: Readonly<Record<string, string>>, detail: Readonly<Record<string, unknown>>): Promise<void>;
+  /** Saves `labels` and `detail` for the session only while no row is kept for it, in one statement (two writers never
+   *  both claim it): true when it was saved; false, with nothing written, when a row was there. */
+  claim(provider: string, sessionId: string, labels: Readonly<Record<string, string>>, detail: Readonly<Record<string, unknown>>): Promise<boolean>;
   /** The session's row, or undefined when none is kept. */
   get(provider: string, sessionId: string): Promise<ComputerLedgerRow | undefined>;
   /** Every session of `provider`, by its id. */
@@ -968,6 +971,58 @@ export interface ComputerLedger {
    *  compare-and-set, so two writers that read one row never both write it): true when it was replaced; false, with
    *  nothing written, when the row changed since or is gone. */
   swap(provider: string, sessionId: string, was: { readonly labels: Readonly<Record<string, string>>; readonly detail: Readonly<Record<string, unknown>> }, labels: Readonly<Record<string, string>>, detail: Readonly<Record<string, unknown>>): Promise<boolean>;
+}
+
+/** A person's own machine paired with this server (spec/computer/attach.md, store schema `paired_computers`): its driver
+ *  dials the attach socket with the token pairing gave it, of which the store keeps only the SHA-256. */
+export interface PairedComputerRow {
+  readonly id: string;
+  /** What the person calls it. */
+  readonly name: string;
+  /** Its driver's last hello: at pairing, then each socket's (kind, os, groups, features). Kind and os stay what it
+   *  paired as, since a socket that says others is refused at hello; groups follow its driver, so an updated driver's
+   *  new groups serve the kinds they make. */
+  readonly hello: Readonly<Record<string, unknown>>;
+  /** The driver build its last hello named. */
+  readonly driver: string;
+  readonly labels: Readonly<Record<string, string>>;
+  /** The pairing (addCode's id) whose code made it. */
+  readonly pairingId: string;
+  readonly createdAt: number;
+  /** When its last socket said hello; null before its first. */
+  readonly seenAt: number | null;
+  /** When it was removed: its token no longer dials. Null while it is paired. */
+  readonly revokedAt: number | null;
+}
+
+/** What pairing records for a new computer: its row's own fields, and its token's SHA-256. */
+export interface NewPairedComputer {
+  readonly id: string;
+  readonly name: string;
+  readonly hello: Readonly<Record<string, unknown>>;
+  readonly labels: Readonly<Record<string, string>>;
+  readonly tokenSha256: string;
+}
+
+/** Paired computers and the pairing codes that make them (store schema `paired_computers`, `pairing_codes`). A code is
+ *  kept by its SHA-256 alone, good once until its expiry; a computer by its token's SHA-256. */
+export interface PairedComputers {
+  /** Keeps a new code's SHA-256 until `expiresAt`, under the pairing `id` the computer it makes keeps. Codes past their
+   *  expiry go in the same write. */
+  addCode(id: string, codeSha256: string, expiresAt: number): Promise<void>;
+  /** Burns the code and records `computer`, in one transaction: false, with nothing written, when no unexpired code has
+   *  that SHA-256 (wrong, used or expired alike). */
+  pair(codeSha256: string, computer: NewPairedComputer): Promise<boolean>;
+  /** The computer's row, removed or not; undefined when no computer has that id. */
+  get(id: string): Promise<PairedComputerRow | undefined>;
+  /** The paired (not removed) computer whose token has this SHA-256. */
+  byToken(tokenSha256: string): Promise<PairedComputerRow | undefined>;
+  /** Every paired computer not removed, oldest first. */
+  list(): Promise<PairedComputerRow[]>;
+  /** A socket of the computer said `hello` now: kept as its hello, and its build (`hello.version`) as its driver. */
+  seen(id: string, hello: Readonly<Record<string, unknown>>): Promise<void>;
+  /** Removes the computer: its token dials no more. False when it was not paired (unknown, or removed already). */
+  revoke(id: string): Promise<boolean>;
 }
 
 /** A trigger source's sealed setting as a row (store schema `trigger_settings`): its adapter, scope ("server" for the one
@@ -1148,6 +1203,8 @@ export interface Store {
   readonly sealedKeys: SealedKeys;
   /** The labels of the sessions a provider runs with none of its own (a phone provider's). */
   readonly computerLedger: ComputerLedger;
+  /** The people's own machines paired with this server, and the codes that pair them (spec/computer/attach.md). */
+  readonly pairedComputers: PairedComputers;
   /** Each trigger source's sealed settings (design 2.1): a value per adapter, scope and field. */
   readonly triggerSettings: TriggerSettings;
   /** The outbox of a channel the server sends itself, its tries and what it told each run. */

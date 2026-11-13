@@ -229,6 +229,8 @@ public protocol Workspace: Sendable {
 	var backgroundLaunch: Feature { get }
 	/// The pid of the app in front, if any.
 	var frontmost: Int32? { get }
+	/// Whether the app is running: one whose last window closed still is, and a ui.act then answers window "closed".
+	func running(_ id: String) -> Bool
 	func list() -> AppsListResult
 	func launch(_ id: String, url: String?, background: Bool) async throws
 	func terminate(_ id: String) throws

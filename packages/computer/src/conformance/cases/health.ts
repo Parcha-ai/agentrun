@@ -2,6 +2,7 @@
 // says it is; what the provider declares of itself, its capabilities() and each hello agree, at this protocol's
 // version; and no error the provider answers holds a key.
 import { GROUPS, PROTOCOL_VERSION } from "../../protocol.js";
+import { kindServed } from "../../kinds.js";
 import { kindRefusals } from "../../provider.js";
 import { type Case, coreGroups } from "../types.js";
 
@@ -65,6 +66,19 @@ export const healthCases: Case[] = [
 				else if (need === "vendor-agent") t.assert(Array.isArray(declared.vendorAgentPorts), `${who} must declare its vendor's agent's ports (vendorAgentPorts)`);
 				else t.assert((groups as string[]).includes(need), `${who} must declare ${need}`);
 			}
+		},
+	},
+	{
+		// A computer is handed to an agent by the setting kind its machine kind belongs to. A desktop whose hello lists no
+		// input.pointer passes every case it declares, and is refused the first time an agent is given it; this fails it
+		// here instead, by the groups it lacks.
+		id: "health.kind-served",
+		level: "core",
+		group: "health",
+		needs: [],
+		async run(t) {
+			const missing = kindServed(t.hello);
+			t.deepEqual(missing, [], `the groups a ${t.hello.os} ${t.hello.kind} must declare in hello to be given to an agent, which it lacks`);
 		},
 	},
 	{

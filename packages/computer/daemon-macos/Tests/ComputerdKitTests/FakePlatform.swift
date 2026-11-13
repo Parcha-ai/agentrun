@@ -26,6 +26,8 @@ final class FakeOS: @unchecked Sendable {
 	var window = UiWindow(id: "7", title: "Notes", bounds: Rect(100, 50, 800, 600))
 	/// False once the app's last window closed: then no target resolves.
 	var hasWindow = true
+	/// False once the app quit: then it has no window either.
+	var running = true
 	/// Once set, the next resolve answers the window it had and then swaps in this one, as an app does when its
 	/// first-run window gives way to the real one between finding a window and reading it.
 	var swapAfterResolve: UiWindow?
@@ -290,6 +292,8 @@ struct FakeWorkspace: Workspace {
 	var backgroundLaunch: Feature { .on }
 
 	var frontmost: Int32? { os.with { $0.frontPID } }
+
+	func running(_ id: String) -> Bool { os.with { $0.running && $0.app.id == id } }
 
 	func list() -> AppsListResult {
 		AppsListResult(apps: [App(id: "com.apple.Notes", name: "Notes"), App(id: "com.apple.Safari", name: "Safari")], foreground: os.with { $0.front })
