@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { isMessageRow } from "../dist/timeline/index.js";
 import { verify as hookRefusal } from "../dist/standard-webhooks.js";
-import { follow, runDir, scratch, serve, withEnv } from "./support.mjs";
+import { asOwner, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 import { MESSAGE_RUN, RUN_EXEC, firings, made } from "./trigger-support.mjs";
 
 const { Webhook } = createRequire(import.meta.url)("standardwebhooks");
@@ -146,6 +146,49 @@ test("a run that comes to wait on a person between the firing's check and its do
   assert.equal((await api("POST", `/runs/${run.run_id}/cancel`)).status, 202);
 });
 
+// What becomes of the row the door took while the run came to wait: it is not dropped. The runner refuses it while the run
+// waits (it answers no person), so it stays untaken; once the person answers and the run's turn ends, the store's end
+// reopens the run with that leftover steer and it runs as a new turn. The firing's `sent` is therefore true: the message
+// is delivered after the wait, never lost, and never as the answer.
+test("a trigger's message held at the door while the run comes to wait on a question is delivered after the person answers, as a turn of its own: the firing's sent is true, and the answer was the person's", { timeout: 120_000 }, async (t) => {
+  withEnv(t, SEAL);
+  const gate = join(await scratch(t), "gate");
+  let api;
+  const beforeSubmit = async (runId, content) => {
+    if (!content.startsWith("A new event came in.")) return;
+    await writeFile(gate, "");
+    const waits = async () => (await api("GET", `/runs/${runId}/timeline`)).body.rows.some((row) => row.kind === "waiting");
+    for (const end = Date.now() + 30_000; !(await waits()); await new Promise((resolve) => setTimeout(resolve, 50))) assert.ok(Date.now() < end, "the run asks");
+  };
+  const server = await serve(t, { beforeSubmit });
+  api = server.api;
+  await made(api, "asks", { tools: ["ask_person"] });
+  const run = (await api("POST", "/agents/asks/runs", { input: { content: `Pick a region once ${gate} exists.` }, max_cost_usd: 1 })).body;
+  await follow(api, run.run_id, ["working"]);
+  const { id, signing_secret: secret } = (await api("POST", "/triggers", messaging(run.run_id))).body;
+  assert.equal((await post(server.baseUrl, id, "eu", secret)).status, 202);
+  const [firing] = await firings(api, id, 1);
+  assert.deepEqual([firing.status, firing.reason], ["sent", null], JSON.stringify(firing));
+  await follow(api, run.run_id, ["input_required"]);
+  const held = (await server.store.commands(run.run_id, 0)).filter((command) => command.body?.origin?.trigger_id === id);
+  assert.equal(held.length, 1, "the trigger's row is at the store");
+  assert.equal(held[0].body.answers, false);
+  assert.deepEqual([held[0].refused], [null], "the question stands and the row is not refused while the run waits");
+  assert.equal((await api("POST", `/runs/${run.run_id}/messages`, { content: "eu" })).status, 202);
+  // The person's answer ends the turn; the leftover row then reopens the run and runs as its next turn.
+  const reached = async () => {
+    const [row] = (await server.store.commands(run.run_id, 0)).filter((command) => command.body?.origin?.trigger_id === id);
+    return row.takenAt !== null && row.refused === null;
+  };
+  for (const end = Date.now() + 60_000; !(await reached()); await new Promise((resolve) => setTimeout(resolve, 100))) assert.ok(Date.now() < end, "the held row is delivered after the answer");
+  const { rows } = await follow(api, run.run_id, ["completed"]);
+  const kinds = rows.map((row) => row.kind);
+  const answer = kinds.indexOf("user_message", kinds.indexOf("waiting"));
+  assert.equal(rows[answer].text, "eu", "the question's answer is the person's");
+  assert.ok(rows.slice(answer + 1).some((row) => String(row.text ?? "").startsWith("A new event came in.")), "the trigger's message ran after the answer, as a turn of its own");
+  assert.equal((await firings(api, id, 1))[0].status, "sent", "the history says sent, and it was");
+});
+
 /** The answers to approvals among a run's command rows (an allow, or a deny: a decline is one): what the run was told of them. */
 const answersOf = (commands) => commands.filter((command) => command.kind === "approve" || command.kind === "deny").map((command) => [command.kind, command.body]);
 
@@ -275,6 +318,38 @@ test("a run that comes to wait on a tool call's approval between the firing's ch
   const { rows } = await follow(api, run.run_id, ["input_required"]);
   assert.equal(rows.filter(isMessageRow).length, 1, "no message reached it");
   assert.equal((await api("POST", `/runs/${run.run_id}/cancel`)).status, 202);
+});
+
+test("a trigger's message held at the door while a tool call comes to wait for approval is delivered after the owner allows it, as a turn of its own: the firing's sent is true, and the allow answered the approval alone", { timeout: 120_000 }, async (t) => {
+  withEnv(t, SEAL);
+  const gate = join(await scratch(t), "gate");
+  let api;
+  const beforeSubmit = async (runId, content) => {
+    if (!content.startsWith("A new event came in.")) return;
+    await writeFile(gate, "");
+    const parked = async () => (await api("GET", `/runs/${runId}/timeline`)).body.rows.some((row) => row.kind === "tool_approval_requested");
+    for (const end = Date.now() + 30_000; !(await parked()); await new Promise((resolve) => setTimeout(resolve, 50))) assert.ok(Date.now() < end, "the call parks");
+  };
+  const server = await serve(t, { ...GATE, beforeSubmit });
+  api = server.api;
+  assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: "ask" } })).status, 200);
+  await made(api, "fetcher", { tools: ["web_fetch"] });
+  const run = (await api("POST", "/agents/fetcher/runs", { input: { content: `Fetch http://public.example/ once ${gate} exists.` }, max_cost_usd: 1 })).body;
+  await follow(api, run.run_id, ["working"]);
+  const { id, signing_secret: secret } = (await api("POST", "/triggers", messaging(run.run_id))).body;
+  assert.equal((await post(server.baseUrl, id, "eu", secret)).status, 202);
+  const [firing] = await firings(api, id, 1);
+  assert.deepEqual([firing.status, firing.reason], ["sent", null], JSON.stringify(firing));
+  let read;
+  for (const end = Date.now() + 30_000; (read = (await api("GET", `/runs/${run.run_id}`)).body).pending?.kind !== "approval"; await new Promise((resolve) => setTimeout(resolve, 50))) assert.ok(Date.now() < end, "the approval waits");
+  const triggers = async () => (await server.store.commands(run.run_id, 0)).filter((command) => command.body?.origin?.trigger_id === id);
+  assert.deepEqual((await triggers()).map((row) => row.refused), [null], "the row is not refused while the call waits");
+  assert.equal((await asOwner(server)("POST", `/runs/${run.run_id}/approvals/${read.pending.id}`, { decision: "allow" })).status, 204);
+  for (const end = Date.now() + 60_000; ((await triggers())[0]?.takenAt ?? null) === null; await new Promise((resolve) => setTimeout(resolve, 100))) assert.ok(Date.now() < end, "the held row is delivered after the allow");
+  assert.equal((await triggers())[0].refused, null);
+  assert.deepEqual(answersOf(await server.store.commands(run.run_id, 0)).map(([kind]) => kind), ["approve"], "the allow is the one answer");
+  const { rows } = await follow(api, run.run_id, ["completed"]);
+  assert.equal(rows.filter((row) => String(row.text ?? "").startsWith("A new event came in.")).length > 0, true, "the message ran as a turn of its own");
 });
 
 test("a firing never reaches a run paused at its spend cap (pending budget): it is skipped with the same reason, and the run still waits for its cap to be raised", { timeout: 120_000 }, async (t) => {
