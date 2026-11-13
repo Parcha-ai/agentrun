@@ -698,6 +698,23 @@ one computer that it keeps between runs, instead of a fresh one for each run:
   the run's folder from its disk with a mount credential minted for that run alone; Docker's sandbox is refused, since
   it cannot mount the disk.
 
+  The PUT is a secret write, so it takes the owner's signed-in session. A server with none to give it (API only, or
+  `AGENTRUN_ACCOUNTS=0` reached beyond loopback) is set where it is started instead: `AGENTRUN_ARCHIL_REGION` and
+  `AGENTRUN_ARCHIL_S3_URL` together, and `AGENTRUN_ARCHIL_IMAGE` for a pinned exec image, with the account key in
+  `ARCHIL_API_KEY`. Each agent's disk is then made on its first run, as with saved settings:
+
+  ```sh
+  AGENTRUN_ARCHIL_REGION=aws-us-east-1 AGENTRUN_ARCHIL_S3_URL=https://s3.example.com \
+  ARCHIL_API_KEY=... node packages/serve/dist/cli.js
+  ```
+
+  Each value is checked as the PUT checks it. One of the region and S3 URL without the other, or a value the PUT would refuse,
+  stops the start, in words naming each variable. Set, they win over saved settings, as `ARCHIL_API_KEY` wins over a
+  saved key, and nothing is written to the store: `GET /v2/workspace/archil` says `source: "env"` (saved ones say
+  `"console"`), and `PUT` and `DELETE` are `409 key_set_by_server`, since they are changed where the server is started.
+  Unset, the saved settings, if any, hold again. A runner started on its own (`agentrun-serve runner`) reads them from its
+  own environment, as it reads `ARCHIL_API_KEY`, so give it the same values.
+
 **Archil disks: one per agent.** In Mode 2 every agent has its own disk. It is made on the agent's first run that uses
 it, never when the agent is made, in the account key's region, named `agentrun-<server id>-i-<agent id>` (an id with
 characters Archil doesn't take, or past 46 of them, is `h-` with its first 21 safe characters and 24 hex digits of its
