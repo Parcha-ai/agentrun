@@ -537,16 +537,16 @@ export function usedOnly(started: NonNullable<RunLaunch["learning"]>, terminal: 
 export async function runLearningOverStore(store: Store, runId: string, shown: Shown, secrets: readonly string[], statuses?: (agentId: string) => Promise<ReadonlyMap<string, ItemStatus> | undefined>) {
   const started = await learningStartOfRun(store, runId);
   const row = await store.runs.get(runId);
-  // A kept compile's promotion (learn/promote.ts), as the agent's records say now: unread, it stays undecided.
-  if (end.compiled?.digest && row) {
-    const promoted = promotedOf(await promotionsOf(store.settings, row.agentId).catch(() => []), end.compiled.workflow, end.compiled.digest);
-    if (promoted !== undefined) end.compiled = { ...end.compiled, promoted };
-  }
   const settled = row !== undefined && FINAL_STATES.includes(row.state);
   // A run that only uses what its agent learned keeps no proposal: its learning is its start (seeded, then dropped `use`
   // once it ended), the same words its run view gives.
   const end = (await runLearningEnd(store, runId)) ?? (started?.use && row ? usedOnly(started, settled, timeOf(row.endedAt ?? row.startedAt)) : null);
   if (!end) return null;
+  // A kept compile's promotion (learn/promote.ts), as the agent's records say now: unread, it stays undecided.
+  if (end.compiled?.digest && row) {
+    const promoted = promotedOf(await promotionsOf(store.settings, row.agentId).catch(() => []), end.compiled.workflow, end.compiled.digest);
+    if (promoted !== undefined) end.compiled = { ...end.compiled, promoted };
+  }
   const used = started?.given.length || started?.skills?.length || started?.workflows?.length;
   const [reflect, rows, entries] = used ? await Promise.all([runReflect(store, runId, BACKGROUND_CONTEXT), runTimeline(store, runId, BACKGROUND_CONTEXT, { settled }), runEntries(store, runId, BACKGROUND_CONTEXT)]) : [undefined, [], []];
   const read = started?.given.length ? notesReadOf(started.given, reflect, rows) : [];
