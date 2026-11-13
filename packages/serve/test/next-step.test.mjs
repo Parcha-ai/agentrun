@@ -110,7 +110,6 @@ test("a box this server does not enable names the setting that enables it: in ca
   const { api } = await serve(t);
   const { places, tools } = (await api("GET", "/capabilities")).body;
   assert.deepEqual(places.boxes, [
-    { id: "bwrap", available: false, state: "unavailable", reason: "the bwrap box is not in this release yet: use the docker box" },
     { id: "docker", available: false, state: "unavailable", reason: ENABLE_DOCKER },
     { id: VM, available: false, state: "unavailable", reason: `not enabled on this server: start AgentRun with AGENTRUN_BOXES=${VM}` },
     { id: "daytona", available: false, state: "unavailable", reason: "not enabled on this server: start AgentRun with AGENTRUN_BOXES=daytona" },
@@ -174,7 +173,7 @@ test("the banner says in words which boxes are ready: none with nothing enabled,
 test("the banner's words for each mix of boxes: ready, listed and not ready", () => {
   const off = (id, reason) => ({ id, available: false, reason });
   const docker = { id: "docker", available: true };
-  const rest = [off("bwrap", "the bwrap box is not in this release yet: use the docker box"), off(VM, `not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker,${VM}`), off("daytona", "needs DAYTONA_API_KEY")];
+  const rest = [off(VM, `not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker,${VM}`), off("daytona", "needs DAYTONA_API_KEY")];
   assert.equal(boxesLine([docker, ...rest], new Set(["docker"])), "Boxes: docker is ready, so sandbox agents run their tools there.");
   assert.equal(boxesLine([docker, ...rest], new Set(["docker", "daytona"])), "Boxes: docker is ready, so sandbox agents run their tools there. daytona: needs DAYTONA_API_KEY.", "a listed box that is not ready says why");
   assert.equal(boxesLine([off("docker", "Docker isn't running on this machine (no docker command on PATH): install or start Docker, then restart AgentRun"), ...rest], new Set(["docker"])), `Boxes: none is ready, so sandbox agents do not run here. docker: Docker isn't running on this machine (no docker command on PATH): install or start Docker, then restart AgentRun. ${VM}: not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker,${VM}. daytona: needs DAYTONA_API_KEY.`);
