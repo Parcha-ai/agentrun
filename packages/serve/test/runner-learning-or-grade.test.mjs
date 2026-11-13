@@ -21,7 +21,7 @@ const { runLearningEnd } = await import("../dist/store-reads/learning.js");
 const KEY = `not-a-secret-${"openrouter"}`;
 const OR_ALONE = { OPENROUTER_API_KEY: KEY };
 const NOTE = { file: "retries.md", text: "---\nname: Retries\ndescription: Retry a flaky fetch twice\ntype: reference\n---\nRetry a flaky fetch twice.\n" };
-const KEEP = JSON.stringify({ merge: true, reason: "Worth keeping.", items: [{ file: "retries.md", decision: "keep", why: "useful" }] });
+const KEEP = JSON.stringify({ merge: true, reason: "Worth keeping.", items: [{ file: "retries.md", decision: "keep", general: true, why: "useful" }] });
 const USAGE = { input: 1_000, output: 40 };
 
 /** While `t` runs, a request to openrouter.ai goes to `gateway` at the same path and query; loopback as it is; any other

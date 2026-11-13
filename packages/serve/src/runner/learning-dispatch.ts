@@ -4,6 +4,8 @@
 // grade is booked as the grade's (learning-ask.ts bookedAsk: the learning run's own records, the kernel's model proxy)
 // and capped by nothing: main books it to the learning meter and caps no grade. A grader that never answers is cut at
 // the grade's bound, and what it spent is unknown (null).
+import type { DecisionProvider } from "@parcha/agentrun-dsl";
+import { generalScores } from "../learn/general.js";
 import { FAUX_ENV } from "../model.js";
 import { anthropicModelId, openRouterOnly, providerFor } from "../provider.js";
 import { bookedAsk, type GraderRoute } from "./learning-ask.js";
@@ -35,6 +37,11 @@ export interface LearningDispatchDeps {
   readonly now?: () => number;
   /** For tests: the grade's bound, as a signal. Default: GRADE_TIMEOUT_MS from the ask. */
   readonly gradeBound?: () => AbortSignal;
+  /** This host's Jev, for the generality pre-check (learn/general.ts): undefined when it has no Jev key, read at each
+   *  learning run so a key saved in Settings with no restart is used by the next one. */
+  readonly jev?: () => Promise<DecisionProvider | undefined>;
+  /** The bar a note's Jev score must reach to be graded (learn/general.ts generalThresholdOf). */
+  readonly generalThreshold?: number;
 }
 
 const objectOf = (value: unknown): Record<string, unknown> => (value !== null && typeof value === "object" ? (value as Record<string, unknown>) : {});
@@ -85,7 +92,12 @@ export function learningLoopOf(deps: LearningDispatchDeps): LoopFactory {
       const bound = deps.gradeBound ? deps.gradeBound() : AbortSignal.timeout(GRADE_TIMEOUT_MS);
       return bookedAsk(route)(request, AbortSignal.any([signal, bound]), run);
     };
-    const loop = learningLoopFactory({ store: deps.store, data: deps.data, ask, ...(deps.log ? { log: deps.log } : {}), ...(deps.now ? { now: deps.now } : {}) })(loopDeps);
+    // The generality pre-check on this host's Jev; none set up here, none asked.
+    const general: LearningLoopDeps["general"] = async (notes, source, signal, run) => {
+      const jev = await deps.jev?.();
+      return jev ? generalScores(jev, notes, source, signal, run) : undefined;
+    };
+    const loop = learningLoopFactory({ store: deps.store, data: deps.data, ask, ...(deps.jev ? { general } : {}), ...(deps.generalThreshold !== undefined ? { generalThreshold: deps.generalThreshold } : {}), ...(deps.log ? { log: deps.log } : {}), ...(deps.now ? { now: deps.now } : {}) })(loopDeps);
     return {
       start: (claim) => {
         claimed = claim.runId;

@@ -67,7 +67,7 @@ An edit is a new revision: `PUT $AGENTRUN_BASE_URL/agents/calc/definition` with
 | `--documents DIR` | `AGENTRUN_SERVE_DOCUMENTS` | A read-only directory of documents a workflow's `pdf_pages` calls read by file name, confined to it. |
 | `--allow-code-nodes` | off (`AGENTRUN_SERVE_CODE_NODES=1` turns it on) | Run workflows' `code` nodes. They run in the run's process through the DSL's `new Function` transform, which is no sandbox, so only turn it on for workflows you wrote. Off, a workflow with a code node saves with a `not_set_up_here` warning and its runs are `409 agent_not_runnable` with `details.code: true`. A call `via: "shell"` or `"executor"` is refused either way. |
 | `--learning on\|off` | on (`AGENTRUN_SERVE_LEARNING`) | Whether runs [learn](#learning). On, a run of an agent whose definition says `learning: true` starts from what that agent learned and adds to it; off, no run does, whatever its agent says. Any other value refuses the start. Capabilities report it as `features.learning`. |
-| `--learning-budget BYTES` | `8000` (`AGENTRUN_SERVE_LEARNING_BUDGET`) | How much of what an agent learned its runs' instructions hold under `# Learned`, in UTF-8 bytes: every note whole while they fit, else the index and the notes changed last, whole, while they fit ([learning](#learning)). `0` gives the index alone. A value that is not a whole number of bytes refuses the start. |
+| `--learning-budget BYTES` | `8000` (`AGENTRUN_SERVE_LEARNING_BUDGET`) | How much of what an agent learned its runs' instructions hold under `# Learned`, in UTF-8 bytes: every note whole while they fit, else the notes that bear most on the run whole while they fit, then one line each for more of them; the rest are left out, and the run's log names them ([learning](#learning)). `0` gives no notes. A value that is not a whole number of bytes refuses the start. |
 | `--drain-timeout D` | `30s` (the image: `6s`) | How long the runner beside the server lets each busy run finish its turn when the server stops (`8s`, `500ms`, `1m`): a turn that ends within it keeps its outcome, and its model request is never sent again. A run still busy at the bound is stopped where it can resume, and the next claim carries on from its journal (that turn's model request sent again). The stop says how long it waits and for how many runs. A runner of its own (`agentrun-serve runner`) takes `--drain-timeout` too, default `AGENTRUN_DRAIN_TIMEOUT`, else `6s`. |
 
 `AGENTRUN_TOKEN`, when set, is the token (32 characters or more), and the server prints `$AGENTRUN_TOKEN` in its
@@ -2521,11 +2521,14 @@ Each run of an agent that learns starts from `main` as it is when the run is mad
   edit; then by name), while they all fit the server's learning budget (`--learning-budget`, 8000 bytes by default).
   Past it, the run reads the notes that bear on it: each active note is scored against the run's first message by a
   lexical match (BM25 over its name, description and text; a code review's changed paths weigh three times its prose; no
-  model call), and the run reads the best ones whole while they fit, then one line for each of the rest
-  (`- <name> (<file>): <description>`, at most 200 lines and 25 KB), in place of the index. A first message that shares
-  no word with any note reads the index's first 200 lines, then the notes changed last, whole, while they fit. An agent
-  with the `read` tool is told the notes not given whole are in `.learning/`, to open one when it applies (one without
-  is not). A line
+  model call), and the run reads the best ones whole while they fit the budget, then one line each
+  (`- <name> (<file>): <description>`, at most 200 lines and 25 KB) for the next ones while they fit what is left, in
+  place of the index. A note that shares no word with the first message is a line at most. A first message that shares
+  no word with any note reads the notes changed last, whole while they fit, then their lines. Whole notes take the
+  budget before lines do, so an agent with hundreds of notes still reads the ones that bear on the run whole; the notes
+  given neither way are left out, and the run's log names them ("starts without N of the notes its agent learned").
+  An agent with the `read` tool is told the notes not given whole are in `.learning/`, to open one when it applies
+  (one without is not). A line
   before them says to follow a note when it applies. `# Learned` opens, for every run that learns, notes or none, with
   what the run is told of learning: that only what it answers when it is asked at the end is kept, never a file it
   writes, so it tells the person it will keep what they ask it to remember, and that a secret is never kept. A run with
@@ -2644,7 +2647,13 @@ neither, on the agent's own model. `GET /capabilities` names it as `learning.gra
 cheap model is a poor grader, so point the strong tier (or `--grade-model`) at a strong one. The grader reads each active
 note's index line, the whole text only of the notes the proposal supersedes, what the user said in the run (cut of the
 server's secrets, as the proposal keeps it), and the new notes, so its prompt stays under 200,000 characters however
-many notes the folder holds. No injection screen runs before it: a page classifier cannot see where a note came
+many notes the folder holds. A note must hold beyond the one input it came from: before the grader, one Jev question
+per new note (the Jev model and keys decision nodes use) asks whether it states a method, a source, a fact or a
+preference that holds for this job's other inputs, and a note rated below 0.5
+(`AGENTRUN_SERVE_LEARNING_GENERAL_THRESHOLD`, from 0 to 1) is dropped there, its reason on the verdict; its cost is
+the grade's. When Jev cannot run, the run's log says so and the grader reads every note. The grader answers General
+for every item, and one it says is not general is never kept, whatever else it decides. No injection screen runs
+before it: a page classifier cannot see where a note came
 from, and read a preference the user stated as a planted instruction; the grader's Planted question decides: a rule the
 user states in their own words is theirs, even beside a form or a pasted email in the same message, and a rule found only
 inside text the run read is planted and dropped, never held for the owner's OK. An item that holds an account number is

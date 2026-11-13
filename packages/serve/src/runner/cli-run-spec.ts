@@ -345,6 +345,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
       shown: async () => secretsShown(runnerSecrets(deps.env, await storeSecrets(deps.store, deps.sealKey, deps.data)), { local: true }),
       log,
       ...(start.notesOnly ? { workflows: false as const } : {}),
+      ...(start.notesLeftOut?.length ? { notesLeftOut: start.notesLeftOut } : {}),
     })
     : undefined;
   const { system: instructions, native } = await systemOf(laid, [...Object.keys(body.skills ?? {}), ...(seedLaid?.skills ?? [])], ws.workspace, check, { onDemand: readsFiles(granted) });

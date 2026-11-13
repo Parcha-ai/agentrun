@@ -16,7 +16,8 @@ import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/conte
 import type { Context } from "@earendil-works/chord";
 import { ROOT_CONVERSATION_ID, type StorageWrite } from "@earendil-works/pi-durable";
 import type { LearningProposal } from "../store/store.js";
-import { CONTRADICTED_REASON, CONTRADICTED_TWICE_REASON, CONTRADICTION_ASK, gradedItems, gradePrompt, parseVerdict, UNREADABLE_REASON, type IndexEntry, type NoteText, type Verdict } from "../learn/grade.js";
+import { GENERAL_THRESHOLD, ONE_CASE, type GeneralScores, type GeneralSource } from "../learn/general.js";
+import { CONTRADICTED_REASON, CONTRADICTED_TWICE_REASON, CONTRADICTION_ASK, gradedItems, gradePrompt, parseVerdict, UNREADABLE_REASON, type IndexEntry, type NoteText, type Verdict, type VerdictItem } from "../learn/grade.js";
 import { mergedNote, parseNoteFile, ruleOf } from "../learn/notes.js";
 import type { LearnedFile, NoteLearned, Tokens } from "../learning.js";
 import { learnedPlace } from "../learn/skills.js";
@@ -114,6 +115,14 @@ export interface LearningLoopDeps {
   merged(ws: unknown, runId: string, paths: readonly string[]): Promise<{ readonly texts: Readonly<Record<string, string>> } | undefined>;
   /** The clock (epoch ms), for a parked run's wake. */
   now?(): number;
+  /** The generality pre-check (learn/general.ts): each proposed note's Jev probability that it holds for inputs other
+   *  than the one it came from, by file, and what it cost. Undefined, or one that answers undefined (no Jev key on this
+   *  host), skips it: every note goes to the grader. One that throws (Jev down) skips it too, said in the log. */
+  general?(notes: readonly NoteText[], source: GeneralSource, signal: AbortSignal, run: string): Promise<GeneralScores | undefined>;
+  /** The bar a note's score must reach to go on to the grader (default GENERAL_THRESHOLD). */
+  generalThreshold?: number;
+  /** One line of the runner's log. */
+  log?(line: string): void;
 }
 
 const ROOT = ROOT_CONVERSATION_ID;
@@ -412,22 +421,50 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
             // A note named like one main holds now is settled alone, out of the grade (readMain's `taken`); the rest is
             // graded. Nothing left to grade keeps nothing.
             const taken = new Map((main.taken ?? []).map(({ path, reason }) => [path, reason]));
-            const grading = proposal.notes.filter(({ file }) => !taken.has(file));
-            const settledItems = [...taken].map(([file, reason]) => ({ file, keep: false, question: "Duplicate", why: reason === "same" ? SAME_NOTE : NOTE_NAME_TAKEN(file.replace(/\.md$/, "")) }));
+            let grading = proposal.notes.filter(({ file }) => !taken.has(file));
+            const settledItems: VerdictItem[] = [...taken].map(([file, reason]) => ({ file, keep: false, question: "Duplicate", why: reason === "same" ? SAME_NOTE : NOTE_NAME_TAKEN(file.replace(/\.md$/, "")) }));
+            // What the grade spends, as the server's grade counted it (grade.ts counter): each ask's dollars and tokens
+            // added, either unknown (null) once any ask's is, and an ask that fails spent what nobody knows. The
+            // generality pre-check's Jev requests count in its dollars.
+            let usd: number | null = 0;
+            let tokens: Tokens | null = { input: 0, cache_read: 0, cache_write: 0, output: 0 };
+            // The generality pre-check: a note Jev scores under the bar rests on its one input, and is dropped before the
+            // grader reads it, its why said with the grader's items. Jev down or not set up here: every note is graded.
+            let screened = false;
+            if (grading.length && learning.general) {
+              const threshold = learning.generalThreshold ?? GENERAL_THRESHOLD;
+              const input = proposal.asked?.[0] ?? proposal.triggered?.[0]?.text;
+              let checked: GeneralScores | undefined;
+              try {
+                checked = await learning.general(grading, { ...(source.instructions ? { job: source.instructions } : {}), ...(input !== undefined ? { input } : {}) }, AbortSignal.any([deps.signal, stopAsk.signal]), source.runId);
+              } catch (error) {
+                learning.log?.(`learning run ${claim.runId}: the generality check could not run, so the grader reads every note: ${(error as Error)?.message ?? String(error)}`);
+              }
+              if (checked) {
+                screened = true;
+                usd = checked.usd;
+                const scores = checked.scores;
+                const below = grading.filter(({ file }) => typeof scores[file] === "number" && scores[file]! < threshold);
+                settledItems.push(...below.map(({ file }) => ({ file, keep: false, question: "General", why: ONE_CASE(scores[file]!, threshold) })));
+                grading = grading.filter((note) => !below.includes(note));
+              }
+            }
+            // The notes the graded ones supersede, of those main gave: a dropped note's are not the grade's.
+            const replacing = new Set(grading.flatMap((note) => { const parsed = parseNoteFile(note.file, note.text); return Array.isArray(parsed) ? [] : parsed.supersedes; }));
+            const superseded = main.superseded.filter(({ file }) => replacing.has(file));
             if (!grading.length && !proposal.files?.length) {
-              const verdict: Verdict = { merge: false, reason: "Every new note is named like one the agent holds now.", items: settledItems };
-              await append(KINDS.learningDropped, { source: source.runId, reason: "grader", detail: notKept(verdict, lostOf(proposal)) } satisfies DroppedData, "ended");
+              const verdict: Verdict = { merge: false, reason: settledItems.some(({ question }) => question === "General") ? "No new note holds beyond the one input it came from, or each is named like one the agent holds now." : "Every new note is named like one the agent holds now.", items: settledItems };
+              // A proposal the generality check emptied is recorded as a grade (its verdict, each item's why, what the check
+              // spent) before it is dropped, so the run's learning reads why each note was left out.
+              if (screened) await append(KINDS.learningGraded, { source: source.runId, verdict, usd, tokens, graded: main.graded } satisfies GradedData);
+              await append(KINDS.learningDropped, { source: source.runId, reason: "grader", detail: notKept(verdict, lostOf(proposal)), usd, tokens } satisfies DroppedData, "ended");
               return { state: "ended" };
             }
             const items = gradedItems(grading as NoteText[], (proposal.files ?? []) as NoteText[]);
             const prompt = gradePrompt({
-              run: source.runId, ...(source.instructions ? { instructions: source.instructions } : {}), active: main.active, superseded: main.superseded, proposed: grading,
+              run: source.runId, ...(source.instructions ? { instructions: source.instructions } : {}), active: main.active, superseded, proposed: grading,
               ...(proposal.files?.length ? { files: proposal.files } : {}), ...(proposal.dryRuns ? { dryRuns: proposal.dryRuns } : {}), ...(proposal.drafted?.length ? { drafted: proposal.drafted } : {}), ...(proposal.asked ? { asked: proposal.asked } : {}), ...(proposal.triggered ? { triggered: proposal.triggered } : {}), ...(proposal.held ? { held: proposal.held } : {}),
             });
-            // What the grade spends, as the server's grade counted it (grade.ts counter): each ask's dollars and tokens
-            // added, either unknown (null) once any ask's is, and an ask that fails spent what nobody knows.
-            let usd: number | null = 0;
-            let tokens: Tokens | null = { input: 0, cache_read: 0, cache_write: 0, output: 0 };
             // `again`: what the grade is told after its last answer, below the same prompt.
             const ask = async (again?: string) => {
               // Stopped before this ask: nothing is sent, so nothing of it is spent (what it spent stays as it was).

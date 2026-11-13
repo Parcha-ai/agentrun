@@ -465,7 +465,7 @@ const noShown: Shown = { text: (text) => text, name: (name) => name, holds: () =
  *  names and the # Learned text (learnedParts, the one decision the runner puts in the prompt), the seed sha it starts
  *  from and the count of all the seed's notes before the budget picked `given` (seedNotes) — or given empty, seed null and no
  *  seedNotes when its seed cannot be read (a learning fault never refuses a run). */
-async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Revision, rbody: StartBody, input: unknown): Promise<{ given: NoteUsed[]; seed: string | null; section: string; seedNotes?: number; skills?: string[]; workflows?: string[]; notesOnly?: true; gradeModel?: string; seedFailed?: SeedFailed } | undefined> {
+async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Revision, rbody: StartBody, input: unknown): Promise<{ given: NoteUsed[]; seed: string | null; section: string; seedNotes?: number; notesLeftOut?: string[]; skills?: string[]; workflows?: string[]; notesOnly?: true; gradeModel?: string; seedFailed?: SeedFailed } | undefined> {
   const learns = deps.learning !== undefined && deps.learning !== "off" && revision.kind === "agentic" && learnsOf(rbody.learning);
   // `learning: "notes"`: its notes and skills, never a learned workflow (none offered, none asked for at its end).
   const notesOnly = rbody.learning === "notes" ? { notesOnly: true as const } : {};
@@ -481,7 +481,9 @@ async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Re
     // The notes and the # Learned text are the old start's one decision (learnedParts: one choice of the note selector), so
     // the runner lays exactly this section for exactly these notes and reads no learning folder. seedNotes is the whole
     // seed's note count, before the budget narrowed `given` (as the old seed_notes was).
-    const { section, given } = learnedParts(seeded.seed, options);
+    const { section, given, left } = learnedParts(seeded.seed, options);
+    // The notes the section names in no way, over the budget: the claim says them in the run's log (learning-seed.ts).
+    const notesLeftOut = left.map((note) => options.shown.name(note.file));
     // The learned skills the seed offers the run, by name: each with its files (one over a run's skill budget at all is held
     // by its size and never laid) and no host secret in it, as chooseSkills leaves them out. The claim lays them; the
     // end-of-run turn counts the runs each served (runner/learning-end.ts draftForOf).
@@ -489,7 +491,7 @@ async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Re
     // The learned workflows its learned_workflow tool runs, by name, as the claim chooses them (chooseWorkflows): what the
     // agent's impact counts a run as started from, beside its notes and skills.
     const workflows = notesOnly.notesOnly ? [] : chooseWorkflows(seeded.seed, options.shown).flows.map(({ name }) => name);
-    return { given: given.map(({ file, name }) => ({ file, name })), seed: seeded.seed.sha, section: section ?? "", seedNotes: Object.keys(seeded.seed.notes).length, ...(skills.length ? { skills } : {}), ...(workflows.length ? { workflows } : {}), ...notesOnly, ...grade };
+    return { given: given.map(({ file, name }) => ({ file, name })), seed: seeded.seed.sha, section: section ?? "", seedNotes: Object.keys(seeded.seed.notes).length, ...(notesLeftOut.length ? { notesLeftOut } : {}), ...(skills.length ? { skills } : {}), ...(workflows.length ? { workflows } : {}), ...notesOnly, ...grade };
   } catch {
     return { given: [], seed: null, section: "", seedFailed: "not_copied", ...notesOnly, ...grade };
   }

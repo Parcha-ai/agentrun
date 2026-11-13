@@ -16,7 +16,7 @@ const { routeOf: realRouteOf } = await import("../dist/runner/model-route.js");
 const { runLearningEnd } = await import("../dist/store-reads/learning.js");
 
 const NOTE = { file: "retries.md", text: "---\nname: Retries\ndescription: Retry a flaky fetch twice\ntype: reference\n---\nRetry a flaky fetch twice.\n" };
-const KEEP = JSON.stringify({ merge: true, reason: "Worth keeping.", items: [{ file: "retries.md", decision: "keep", why: "useful" }] });
+const KEEP = JSON.stringify({ merge: true, reason: "Worth keeping.", items: [{ file: "retries.md", decision: "keep", general: true, why: "useful" }] });
 const sse = (events) => new Response(events.map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(""), { status: 200, headers: { "content-type": "text/event-stream" } });
 /** The grader's provider: each request's model recorded, answered with KEEP. */
 const graderOrigin = (sent) => async (_url, init = {}) => {

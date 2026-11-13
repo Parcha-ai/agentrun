@@ -11,7 +11,9 @@ import { CASES, OPTIONS, SECRET } from "./note-selector-cases.mjs";
 const { byRecency, learnedParts, secretsShown } = await import("../dist/learning.js");
 const GOLDEN = JSON.parse(readFileSync(new URL("./fixtures/note-selector-golden.json", import.meta.url), "utf8"));
 
-test("the default selector, by recency, gives every case exactly what the server gave before the port: the section and the given notes", () => {
+// Within the budget the golden is what the server gave before the port; past it (B1, learn-loop SPEC), the newest notes
+// whole while they fit, then a line for each of the next while they fit, never the index alone.
+test("the default selector, by recency, gives every case the golden: the section and the given notes", () => {
   assert.equal(Object.keys(GOLDEN).length, CASES.length * OPTIONS.length);
   for (const [name, seed] of CASES) for (const [label, opts] of OPTIONS) {
     const key = `${name} | ${label}`;
@@ -55,20 +57,21 @@ const shown = secretsShown([SECRET]);
 const wholeFiles = (section) => [...section.matchAll(/^## .* \(([^)]+)\)$/gm)].map((m) => m[1]);
 const lineFiles = (section) => [...section.matchAll(/^- .* \(([^)]+)\): /gm)].map((m) => m[1]);
 
-test("past the budget, a run about one topic reads that topic's notes whole, best first, and one rule line for each of the rest in place of the index; by recency it read the newest", () => {
+test("past the budget, a run about one topic reads that topic's notes whole, best first, and one rule line each for more of them in place of the index; by recency it read the newest", () => {
   const seed = topical(40);
   const run = { input: { content: "Reconcile this month's invoices against the ledger; two are in a different currency." } };
   const relevant = learnedParts(seed, { budget: 8000, read: true, shown, run });
   const whole = wholeFiles(relevant.section);
   assert.ok(whole.length >= 3 && whole.every((file) => file.startsWith("invoices-")), `the invoice notes whole: ${whole.join(", ")}`);
   assert.ok(relevant.section.startsWith("What you learned in earlier runs: the notes that bear most on this run whole"), relevant.section.slice(0, 120));
-  // Every other note as one line, none twice, and the read tool told of the files.
+  // Other notes as one line each while they fit, none twice; the rest left out; and the read tool told of the files.
   const lines = lineFiles(relevant.section);
-  assert.deepEqual([...lines, ...whole].sort(), Object.keys(seed.notes).sort());
+  assert.ok(lines.length > 0, "lines for more of them");
+  assert.deepEqual([...lines, ...whole].sort(), relevant.given.map(({ file }) => file).sort(), "given: the notes whole or as a line");
+  assert.deepEqual([...relevant.given, ...relevant.left].map(({ file }) => file).sort(), Object.keys(seed.notes).sort(), "every note given or left out");
   assert.ok(relevant.section.includes("open one with the read tool"), "the read tool is told of the rest");
   assert.ok(!relevant.section.includes("- [Reconcile invoices"), "no index line: the rule lines take its place");
-  assert.deepEqual(relevant.given.map(({ file }) => file).sort(), Object.keys(seed.notes).sort(), "given: every note, whole or as a line");
-  assert.ok(Buffer.byteLength(relevant.section) < 8000 + 2_000, `about the budget: ${Buffer.byteLength(relevant.section)} bytes`);
+  assert.ok(Buffer.byteLength(relevant.section) <= 8000, `within the budget: ${Buffer.byteLength(relevant.section)} bytes`);
   // By recency the same run read the newest notes, whatever their topic.
   const recent = learnedParts(seed, { budget: 8000, read: true, shown, run, select: byRecency });
   assert.ok(wholeFiles(recent.section).some((file) => !file.startsWith("invoices-")), wholeFiles(recent.section).join(", "));
@@ -106,17 +109,19 @@ const MIGRATION_DIFF = ["Review this PR.", "diff --git a/db/migrations/0042.sql 
 
 test("the section by relevance fits the budget whole, its intro, blank lines and read-tool line counted, for a prose input and a diff, with the read tool and without", () => {
   for (const n of [40, 50]) for (const content of [REFUNDS, MIGRATION_DIFF]) for (const read of [true, false]) {
-    const { section, given } = learnedParts(topical(n), { budget: 8000, read, shown, run: { input: { content } } });
+    const { section, given, left } = learnedParts(topical(n), { budget: 8000, read, shown, run: { input: { content } } });
     assert.ok(Buffer.byteLength(section) <= 8000, `${n} notes, ${content.slice(0, 20)}, read ${read}: ${Buffer.byteLength(section)} bytes`);
     assert.ok(wholeFiles(section).length >= 1, "still some notes whole");
-    assert.equal(given.length, n, "every note given, whole or as a line");
+    assert.equal(given.length + left.length, n, "every note given, whole or as a line, or left out");
   }
 });
 
 test("notes that score the same are read newest first, as recency orders them: refunds-46 before refunds-06", () => {
   const whole = wholeFiles(learnedParts(topical(50), { budget: 8000, read: true, shown, run: { input: { content: REFUNDS } } }).section);
-  assert.ok(whole.every((file) => file.startsWith("refunds-")), whole.join(", "));
-  assert.deepEqual(whole, [...whole].sort((a, b) => Number(b.slice(-5, -3)) - Number(a.slice(-5, -3))), `newest first: ${whole.join(", ")}`);
+  // The refund notes first (a note that shares a lesser word, "page", may follow them while the budget has room).
+  const refunds = whole.filter((file) => file.startsWith("refunds-"));
+  assert.ok(refunds.length >= 3 && whole.slice(0, refunds.length).every((file) => file.startsWith("refunds-")), whole.join(", "));
+  assert.deepEqual(refunds, [...refunds].sort((a, b) => Number(b.slice(-5, -3)) - Number(a.slice(-5, -3))), `newest first: ${whole.join(", ")}`);
   assert.equal(whole[0], "refunds-46.md");
 });
 
@@ -136,7 +141,7 @@ test("past 25 KB of budget, the room kept for the rest's lines is only what is s
   assert.ok(choice.lines.length * 250 <= INDEX_BYTES && served <= budget, JSON.stringify({ whole: choice.whole.length, lines: choice.lines.length, served }));
 });
 
-test("whole notes demoted to lines to fit the budget never take the rule lines past what the index serves: the final section holds at most INDEX_LINES lines within INDEX_BYTES (#2274 review)", async () => {
+test("a selector's pick past the budget never takes the rule lines past what the index serves: lines go first, then whole notes, and the final section holds at most INDEX_LINES lines within INDEX_BYTES (#2274 review)", async () => {
   const { INDEX_BYTES, INDEX_LINES } = await import("../dist/learn/notes.js");
   const seed = topical(230);
   // A selector at the cap already: 200 lines (the most), and 20 notes whole that the budget cannot hold, so the section

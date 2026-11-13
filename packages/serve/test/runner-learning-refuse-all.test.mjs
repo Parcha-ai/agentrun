@@ -44,7 +44,7 @@ const putSetting = (server, adapter, scope, field, value) => server.triggerSetti
 const note = (name, body) => `---\nname: ${name}\ndescription: ${name}\ntype: reference\n---\n${body}\n`;
 const CLEAN = note("Retry slowly", "Wait a little longer after each failed call.");
 /** The grader keeps every item it is shown. */
-const KEEP = JSON.stringify({ merge: true, reason: "Worth keeping.", items: [{ file: "keys.md", decision: "keep", why: "useful" }, { file: "retry-slowly.md", decision: "keep", why: "useful" }] });
+const KEEP = JSON.stringify({ merge: true, reason: "Worth keeping.", items: [{ file: "keys.md", decision: "keep", general: true, why: "useful" }, { file: "retry-slowly.md", decision: "keep", general: true, why: "useful" }] });
 
 /** Every file of the agent's learning folder but git's own (its working tree, `.agentrun/snapshot.json`), by path. */
 function folderFiles(dir) {
