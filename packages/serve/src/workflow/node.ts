@@ -14,6 +14,7 @@ import {
   configure, defineDocFamily, type AgentChange, type ConversationId, type DocumentReader, type InputSubmissionDraft, type Submission,
   type TaskId, type Tx,
 } from "@earendil-works/pi-durable";
+import { durableWait } from "./pi-versions.js";
 import type { Disagreement } from "./record.js";
 import { deliveredRecord } from "./record-tool.js";
 
@@ -142,7 +143,8 @@ export async function runNodeAttempt(scope: NodeScope, attempt: NodeAttempt, con
   const handle = await scope.conversation(conversationId, context);
   if (!handle) throw new Error(`node attempt ${attempt.session} names conversation ${String(conversationId)}, which does not exist`);
   const submission = await handle.submit({ type: "input", content: attempt.user, requestId: `node:${attempt.session}` }, context);
-  const ended = await submission.wait(context);
+  // Never on the task's signal (durableWait): an abort while it registers rejects this wait, never one unhandled.
+  const ended = await durableWait((at) => submission.wait(at), context);
   const settled: NodeSettlement = ended.status === "unanswered"
     ? { status: "unanswered", reason: ended.reason, ...(ended.detail !== undefined ? { detail: ended.detail } : {}) } : { status: "done" };
   const delivered = await deliveredRecord(scope, conversationId, context);
