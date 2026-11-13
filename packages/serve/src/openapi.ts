@@ -1785,7 +1785,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       description: "Any of its fields. `enabled: false` stops its firings; `enabled: true` again, or a new source, goes on from now: the time it was off is skipped, never caught up. A firing already due goes on.",
       parameters: [TRIGGER_ID],
       requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, properties: TRIGGER_WRITE } } } },
-      responses: { "200": json(TRIGGER, "Changed."), ...errors(400, 401, 404, 409, 415, 422, 429, 500) },
+      responses: { "200": json(TRIGGER_READ, "Changed: the trigger as a read answers it, with its secret's metadata."), ...errors(400, 401, 404, 409, 415, 422, 429, 500) },
       ...TRIGGER_MARK,
     },
     delete: {

@@ -190,4 +190,6 @@ test("Composio's secret is in no view and not in the store's bytes, only the own
   assert.equal(create.secret, undefined, "the create takes no secret: it would make the CLI's create a secret write");
   assert.ok(doc.paths["/triggers/{trigger_id}/secret"].post.requestBody.content["application/json"].schema.properties.secret["x-agentrun-secret"]);
   assert.ok(JSON.stringify(doc).includes("composio"), "the scheme is documented");
+  const changed = doc.paths["/triggers/{trigger_id}"].patch.responses["200"].content["application/json"].schema;
+  assert.ok(changed.properties.secret, "a change's answer declares the secret metadata it carries");
 });
