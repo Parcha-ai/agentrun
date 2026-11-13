@@ -95,6 +95,11 @@ export type LearningEvals = Answer<"listLearningEvals">;
 export type LearningEval = LearningEvals["evals"][number];
 /** One run of that series. `path`: `workflow` a learned workflow finished it alone, `handed_back` one ran and the agent
  *  went on, `agent` none ran. */
+/** A learning batch (learn from rows): GET /v2/agents/{id}/learning/batches/{batch_id}'s answer, its list's headers, a start's body and a row. */
+export type LearningBatch = Answer<"getLearningBatch">;
+export type LearningBatchHead = Answer<"listLearningBatches">["batches"][number];
+export type LearningBatchStart = Body<"createLearningBatch">;
+export type LearningBatchRow = LearningBatch["rows"][number];
 export type CostRun = LearningCost["runs"][number];
 export type RunPath = CostRun["path"];
 /** GET /v2/agents/{id}/learning/workflows/{name}/revisions' answer: the commits on main that changed a learned workflow's
@@ -184,6 +189,10 @@ export type ComputerSecret = ComputerProvider["secrets"][number];
 export type ComputerKeysBody = Body<"saveComputerKeys">;
 /** POST /v2/computers/{provider}/test's answer. */
 export type ComputerTest = Answer<"testComputer">;
+/** GET /v2/computers/{provider}/choices: each picked key (the provider's `picked`), its choices read from the vendor, or
+ *  why there are none. */
+export type ComputerChoices = Answer<"listComputerChoices">;
+export type ComputerKeyChoices = ComputerChoices["choices"][number];
 /** GET /v2/workspace/archil: Archil (Mode 2) on or off, its disk settings, and its secret ("workspace:archil"), never a
  *  value. */
 export type Archil = Answer<"getWorkspaceArchil">;

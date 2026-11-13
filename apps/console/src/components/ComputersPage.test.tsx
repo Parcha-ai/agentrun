@@ -6,15 +6,18 @@ import { SETTINGS_PAGES } from "./Settings";
 import { SIGN_IN_TO_CHANGE } from "@/lib/secrets";
 import { route } from "@/App";
 import { createClient } from "@/lib/client";
-import type { ComputerKindView, ComputerProvider, Computers, ComputerSecret, PairedComputer } from "@/lib/v2";
+import type { ComputerChoices, ComputerKindView, ComputerProvider, Computers, ComputerSecret, PairedComputer } from "@/lib/v2";
 
-// Settings → Computers over GET /v2/computers, PUT /v2/computers/{provider}/keys and POST /v2/computers/{provider}/test:
+// Settings → Computers over GET /v2/computers, PUT /v2/computers/{provider}/keys, POST /v2/computers/{provider}/test and
+// GET /v2/computers/{provider}/choices (a picked key, Orgo's workspace, picked by name):
 // a section per kind with the server's why when it isn't offered, each provider under every kind it serves with its keys
 // as SecretRows by their KEY (never a value), required or Optional, with where each is set and when, and its why; the
 // metered line on a metered provider of a kind that bills by the minute; Paste or Replace of one key sends only that KEY and leaves no value in the
 // page, a removal sends null, a key the environment holds is greyed with nothing to paste, a refusal is said in the
 // server's words, and a test says the server's passed or failed.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+// The workspace picker's positioning watches its field's size; jsdom has no ResizeObserver.
+globalThis.ResizeObserver ??= class { observe() {} unobserve() {} disconnect() {} } as unknown as typeof ResizeObserver;
 
 /** Obvious fakes: none of these is a key anywhere. */
 const FAKE = "not-a-real-key-0123456789";
@@ -57,13 +60,16 @@ const view = (saved = false): Computers => ({
 
 type Call = { method: string; path: string; type: string | null; body: unknown };
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-/** A server that answers GET with `views` in turn (the last one again after), and PUT and POST with `write`. */
-function server(views: (Computers | Response)[], write: (call: Call) => Response | Promise<Response> = () => json(200, {})) {
+/** A server that answers GET with `views` in turn (the last one again after), a provider's choices GET with `choices`
+ *  in turn, and PUT and POST with `write`. */
+function server(views: (Computers | Response)[], write: (call: Call) => Response | Promise<Response> = () => json(200, {}), choices: (ComputerChoices | Response)[] = [{ choices: [] }]) {
   const calls: Call[] = [];
   let read = 0;
+  let chose = 0;
   const fetch = (async (url: string, init?: RequestInit) => {
     const call = { method: init?.method ?? "GET", path: String(url), type: new Headers(init?.headers).get("content-type"), body: init?.body ? JSON.parse(String(init.body)) : undefined };
     calls.push(call);
+    if (call.method === "GET" && call.path.endsWith("/choices")) { const c = choices[Math.min(chose++, choices.length - 1)]!; return c instanceof Response ? c : json(200, c); }
     if (call.method === "GET") { const v = views[Math.min(read++, views.length - 1)]!; return v instanceof Response ? v : json(200, v); }
     return write(call);
   }) as typeof globalThis.fetch;
@@ -228,6 +234,69 @@ describe("Settings → Computers", () => {
     await click(row("Desktop", "Orgo").querySelector("[data-confirm]")!, /^Remove$/);
     expect(calls.filter((c) => c.method === "PUT")).toEqual([{ method: "PUT", path: "/v2/computers/orgo/keys", type: "application/json", body: { ORGO_API_KEY: null } }]);
     expect(calls.filter((c) => c.method === "GET")).toHaveLength(2);
+  });
+
+  it("offers a picked key (Orgo's workspace) by name from the server's choices once the key is saved, never as a paste, and saves the one picked", async () => {
+    const WS = "computer:orgo:ORGO_WORKSPACE_ID";
+    const picking = (saved: boolean): ComputerProvider => ({ ...orgo, secrets: [secret("orgo", "ORGO_API_KEY", true), secret("orgo", "ORGO_WORKSPACE_ID", saved)], picked: [WS] });
+    const withOrgo = (p: ComputerProvider): Computers => ({ paired: [], kinds: [kind("desktop", [p])] });
+    const options = [{ value: "ws-a", label: "Alpha team" }, { value: "ws-b", label: "Beta team" }];
+    const { v2, calls } = server([withOrgo(picking(false)), withOrgo(picking(true))], () => json(200, picking(true)),
+      [{ choices: [{ key: "ORGO_WORKSPACE_ID", options }] }, { choices: [{ key: "ORGO_WORKSPACE_ID", options, saved: "ws-b" }] }]);
+    const { host, row, key, button, settle } = await open(v2);
+    const orgoRow = () => row("Desktop", "Orgo");
+    expect(button(key(orgoRow(), "ORGO_WORKSPACE_ID"), /^(Paste|Replace)$/), "a picked key is never pasted").toBeUndefined();
+    expect(calls.filter((c) => c.path.endsWith("/choices")).map((c) => c.path)).toEqual(["/v2/computers/orgo/choices"]);
+    const field = orgoRow().querySelector<HTMLButtonElement>('[data-choices="ORGO_WORKSPACE_ID"] button[aria-haspopup="listbox"]')!;
+    expect(field.textContent).toContain("Pick one");
+    expect(orgoRow().querySelector("[data-choice-note]")?.textContent).toBe("2 to pick from. Pick the one this server's computers use.");
+    await act(async () => { field.click(); });
+    await settle();
+    const listed = [...document.querySelectorAll('[role="listbox"] [role="option"]')];
+    expect(listed.map((o) => o.textContent), "names, never ids").toEqual(["Alpha team", "Beta team"]);
+    await act(async () => { (listed[1] as HTMLElement).click(); });
+    await settle();
+    expect(calls.filter((c) => c.method === "PUT")).toEqual([{ method: "PUT", path: "/v2/computers/orgo/keys", type: "application/json", body: { ORGO_WORKSPACE_ID: "ws-b" } }]);
+    // The page reads everything again: the key now set, and the choices with the saved one marked.
+    expect(orgoRow().querySelector<HTMLButtonElement>('[data-choices="ORGO_WORKSPACE_ID"] button[aria-haspopup="listbox"]')!.textContent).toContain("Beta team");
+    expect(orgoRow().querySelector("[data-choice-note]")?.textContent).toBe("Picked and saved on this server.");
+    expect(host.textContent).not.toContain("ws-b");
+  });
+
+  it("says why there is no workspace to pick, and that the only one is used while none is picked", async () => {
+    const WS = "computer:orgo:ORGO_WORKSPACE_ID";
+    const picking: ComputerProvider = { ...orgo, secrets: [secret("orgo", "ORGO_API_KEY", true), secret("orgo", "ORGO_WORKSPACE_ID", false)], picked: [WS] };
+    const none = server([{ paired: [], kinds: [kind("desktop", [picking])] }], undefined, [{ choices: [{ key: "ORGO_WORKSPACE_ID", why: "this Orgo key's account has no workspace: make one at orgo.ai" }] }]);
+    const first = await open(none.v2);
+    expect(first.row("Desktop", "Orgo").querySelector("[data-why]")?.textContent).toBe("this Orgo key's account has no workspace: make one at orgo.ai");
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    const one = server([{ paired: [], kinds: [kind("desktop", [picking])] }], undefined, [{ choices: [{ key: "ORGO_WORKSPACE_ID", options: [{ value: "ws-a", label: "Alpha team" }] }] }]);
+    const second = await open(one.v2);
+    expect(second.row("Desktop", "Orgo").querySelector("[data-choice-note]")?.textContent).toBe("The only one, Alpha team, is used while none is picked.");
+    // No key saved: no choices are read.
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    const unsaved = server([{ paired: [], kinds: [kind("desktop", [{ ...picking, secrets: [secret("orgo", "ORGO_API_KEY", false), secret("orgo", "ORGO_WORKSPACE_ID", false)] }])] }]);
+    const third = await open(unsaved.v2);
+    expect(third.row("Desktop", "Orgo").querySelector("[data-choices]")).toBeNull();
+    expect(unsaved.calls.some((c) => c.path.endsWith("/choices"))).toBe(false);
+  });
+
+  it("a picked key set in the environment: the picker is off and says that one is used; a saved one no longer offered: says so", async () => {
+    const WS = "computer:orgo:ORGO_WORKSPACE_ID";
+    const options = [{ value: "ws-a", label: "Alpha team" }, { value: "ws-b", label: "Beta team" }];
+    const fromEnv: ComputerProvider = { ...orgo, secrets: [secret("orgo", "ORGO_API_KEY", true), secret("orgo", "ORGO_WORKSPACE_ID", true, "env")], picked: [WS] };
+    const env = server([{ paired: [], kinds: [kind("desktop", [fromEnv])] }], undefined, [{ choices: [{ key: "ORGO_WORKSPACE_ID", options, saved: "ws-a" }] }]);
+    const first = await open(env.v2);
+    const envRow = first.row("Desktop", "Orgo");
+    expect(envRow.querySelector<HTMLButtonElement>('[data-choices="ORGO_WORKSPACE_ID"] button[aria-haspopup="listbox"]')!.disabled).toBe(true);
+    expect(envRow.querySelector("[data-choice-note]")?.textContent).toBe("Set in the environment where AgentRun starts, and that one is used: change ORGO_WORKSPACE_ID there.");
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    const gone: ComputerProvider = { ...fromEnv, secrets: [secret("orgo", "ORGO_API_KEY", true), secret("orgo", "ORGO_WORKSPACE_ID", true)] };
+    const stale = server([{ paired: [], kinds: [kind("desktop", [gone])] }], undefined, [{ choices: [{ key: "ORGO_WORKSPACE_ID", options }] }]);
+    const second = await open(stale.v2);
+    const staleRow = second.row("Desktop", "Orgo");
+    expect(staleRow.querySelector<HTMLButtonElement>('[data-choices="ORGO_WORKSPACE_ID"] button[aria-haspopup="listbox"]')!.disabled).toBe(false);
+    expect(staleRow.querySelector("[data-choice-note]")?.textContent).toBe("The ORGO_WORKSPACE_ID saved on this server is not one of these any more, and runs still ask for it: pick one.");
   });
 
   it("tests a provider: the server's passed with its detail, or failed with its why, wherever the provider shows", async () => {

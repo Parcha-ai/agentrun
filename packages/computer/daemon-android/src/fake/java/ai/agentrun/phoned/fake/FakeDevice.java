@@ -2,6 +2,7 @@ package ai.agentrun.phoned.fake;
 
 import ai.agentrun.phoned.RpcError;
 import ai.agentrun.phoned.device.AxNode;
+import ai.agentrun.phoned.device.AxRefusal;
 import ai.agentrun.phoned.device.Device;
 import ai.agentrun.phoned.device.Rect;
 import java.awt.Color;
@@ -9,6 +10,11 @@ import java.awt.Graphics2D;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.FileAlreadyExistsException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Iterator;
@@ -39,6 +45,8 @@ public final class FakeDevice implements Device {
 	public static final long SAVED_MS = 300;
 	public static final long NEXT_MS = 200;
 	public static final long NEXT_ANIMATE_MS = 300;
+	/** How long the fixture's Code field keeps a value set into it before it takes it back (TAKES_BACK_MS). */
+	public static final long TAKES_BACK_MS = 150;
 
 	static final int HOME_WINDOW = 1;
 	static final int SETTINGS_WINDOW = 10;
@@ -107,6 +115,10 @@ public final class FakeDevice implements Device {
 	public FakeNode search;
 	/** The fixture's canvas: its state counts the taps that reached it. */
 	public FakeNode canvas;
+	/** The fixture's Code field: it takes back any value set into it TAKES_BACK_MS later. */
+	public FakeNode code;
+	/** Sets into the Code field so far: a take-back undoes only the newest, as the app's restarted timer does. */
+	private int codeSets;
 
 	public FakeDevice(boolean virtualClock) {
 		this.virtual = virtualClock;
@@ -408,14 +420,22 @@ public final class FakeDevice implements Device {
 	}
 
 	/**
-	 * The fixture's home window: a heading, the Name field, the Wi-Fi switch (a row the app marks a Switch, its two texts
-	 * its name and its secondary text), Save, Next, and the Canvas, which no accessibility action reaches: its state is
-	 * the number of taps that reached it.
+	 * The fixture's home window: a heading, the Name field, the Code field (which takes back what is set into it), the
+	 * Wi-Fi switch (a row the app marks a Switch, its two texts its name and its secondary text), Save, Next, and the
+	 * Canvas, which no accessibility action reaches: its state is the number of taps that reached it. No New window: a
+	 * phone app has one window.
 	 */
 	public synchronized void fixture() {
 		FakeNode name = at(FakeNode.of("android.widget.EditText"), 16, 56, 200, 28).id(fixtureId("name"));
 		name.editable = true;
 		name.hint = "Name";
+		FakeNode field = at(FakeNode.of("android.widget.EditText"), 228, 56, 76, 28).id(fixtureId("code"));
+		field.editable = true;
+		field.hint = "Code";
+		field.on(a -> {
+			if (a.equals("ACTION_SET_TEXT")) takeBack(field);
+		});
+		code = field;
 		FakeNode wifiRow = at(FakeNode.of("android.widget.Switch"), 16, 96, 60, 28).id(fixtureId("wifi")).tappable();
 		wifiRow.checkable = true;
 		wifiRow.add(at(text("Wi-Fi", 0, 0, 0, 0), 16, 96, 60, 14), at(text("Networks nearby", 0, 0, 0, 0), 16, 110, 60, 14));
@@ -425,8 +445,18 @@ public final class FakeDevice implements Device {
 		canvas = at(FakeNode.of("android.widget.ImageView"), 16, 180, 200, 100).desc("Canvas").id(fixtureId("canvas"));
 		canvas.state = "0";
 		canvas.counts = true;
-		root.add(heading("UI fixture"), name, wifiRow, save, next, canvas);
+		root.add(heading("UI fixture"), name, field, wifiRow, save, next, canvas);
 		show(FIXTURE_WINDOW, "UI fixture", fixtureBounds(), root, FIXTURE);
+	}
+
+	/** The Code field's refusal: TAKES_BACK_MS after the newest value went in, it is empty again. */
+	private synchronized void takeBack(FakeNode field) {
+		int set = ++codeSets;
+		after(TAKES_BACK_MS, () -> {
+			if (set != codeSets || !field.alive || field.text == null || field.text.isEmpty()) return;
+			field.text = null;
+			changed();
+		});
 	}
 
 	/** Save's effect: the text Saved beside it, on the same window. */
@@ -551,7 +581,41 @@ public final class FakeDevice implements Device {
 	@Override
 	public Accessibility accessibility() {
 		if (!Boolean.TRUE.equals(features.get("ui.tree"))) throw RpcError.unsupported("the accessibility tree is not reachable: " + features.get("ui.tree"));
+		register();
 		return a11y;
+	}
+
+	/**
+	 * The phone's one UiAutomation registration, as a file every phoned on this phone shares (FakeMain's
+	 * phoned.fake.phone): created on the first ui call, as Ax connects, and refused while another holds it. Null: no
+	 * registration is kept, as in the unit tests.
+	 */
+	public Path axHolder;
+
+	private boolean registered;
+
+	private synchronized void register() {
+		if (axHolder == null || registered) return;
+		try {
+			Files.write(axHolder, String.valueOf(ProcessHandle.current().pid()).getBytes(StandardCharsets.UTF_8), StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
+			registered = true;
+		} catch (FileAlreadyExistsException e) {
+			// The system's own words when another UiAutomation is connected (UiAutomationManager).
+			throw AxRefusal.of(new IllegalStateException("UiAutomationService android.accessibilityservice.IAccessibilityServiceClient$Stub$Proxy@1 already registered!"));
+		} catch (IOException e) {
+			throw AxRefusal.of(e);
+		}
+	}
+
+	/** Lets go of the phone's UiAutomation registration, as Ax.close does. Safe to call twice. */
+	public synchronized void close() {
+		if (!registered) return;
+		registered = false;
+		try {
+			Files.deleteIfExists(axHolder);
+		} catch (IOException e) {
+			// The registration file is the test's; a stuck one shows as the next phoned's refusal.
+		}
 	}
 
 	private final Accessibility a11y = new Accessibility() {
@@ -645,6 +709,7 @@ public final class FakeDevice implements Device {
 			synchronized (FakeDevice.this) {
 				FakeNode f = focusedField();
 				if (f != null) f.text = (f.text == null ? "" : f.text) + text;
+				if (f != null && f == code) takeBack(f);
 				changed();
 			}
 		}

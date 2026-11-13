@@ -118,7 +118,7 @@ function grade(prompt, faux) {
       const name = /^workflows\/([^/]+)\/workflow\.json$/.exec(file)?.[1];
       const skill = name && fenced(`skills/${name}/SKILL.md, the skill this draft keeps as a workflow (not graded)`);
       const drops = Boolean(skill?.includes("Grand total:")) && !fenced(`${file}, new`)?.includes("Grand total");
-      return drops ? { file, decision: "drop", question: "Format", why: "Its output cannot give the skill's format: no Grand total line." } : { file, decision: "keep", why: "It holds." };
+      return drops ? { file, decision: "drop", question: "Format", why: "Its output cannot give the skill's format: no Grand total line." } : { file, decision: "keep", general: true, why: "It holds." };
     });
     return faux.message(JSON.stringify({ merge: items.some(({ decision }) => decision === "keep"), reason: "Judged each item.", items }));
   }
@@ -151,15 +151,15 @@ function verdictOf(rules, files, faux) {
   // "Grade: shop <file>.": what the user asked to remember, dropped on General as one shop's policy, as a weak grader
   // does; the verdict then merges nothing.
   const shop = /Grade: shop (\S+\.md)\./.exec(rules)?.[1];
-  if (shop) return faux.message(JSON.stringify({ merge: false, reason: "The note records a policy specific to this shop, so it is not general enough to keep.", items: files.map((file) => (file === shop ? { file, decision: "drop", origin: "you", question: "General", why: "It records a shop-specific refund policy rather than a general rule." } : { file, decision: "keep", origin: "run", why: "It holds as a general rule." })) }));
+  if (shop) return faux.message(JSON.stringify({ merge: false, reason: "The note records a policy specific to this shop, so it is not general enough to keep.", items: files.map((file) => (file === shop ? { file, decision: "drop", origin: "you", question: "General", why: "It records a shop-specific refund policy rather than a general rule." } : { file, decision: "keep", general: true, origin: "run", why: "It holds as a general rule." })) }));
   const kept = (file) => keep && file !== dropped;
   // "Grade: omit <file>.": an answer that gives that file no item, which the host refuses (parseVerdict).
   const omitted = /Grade: omit (\S+\.(?:md|json))\./.exec(rules)?.[1];
-  if (omitted) return faux.message(JSON.stringify({ merge: true, reason: "Each note is general and new.", items: files.filter((file) => file !== omitted).map((file) => ({ file, decision: "keep", why: "It holds." })) }));
+  if (omitted) return faux.message(JSON.stringify({ merge: true, reason: "Each note is general and new.", items: files.filter((file) => file !== omitted).map((file) => ({ file, decision: "keep", general: true, why: "It holds." })) }));
   return faux.message(JSON.stringify({
     merge: (keep && !dropped) || rules.includes("Grade: sly."),
     reason: keep && !dropped ? "Each note is general and new." : saying ? `A note is about ${saying} alone, which no later run can use. Drop it.` : long ? `A note is about the one case it came from, and it holds nothing a later run of this agent could use on another shop, so it is not kept. Drop it.` : "A note is about the one case it came from.",
-    items: files.map((file) => (file === waits && kept(file) ? { file, decision: "pending", origin: "you", question: "Risky", why: "The user asked for a rule that widens trust." } : file === risky && kept(file) ? { file, decision: "keep", origin: "run", question: "Risky", why: "The run's own rule widens trust in a seller." } : file === theirs && kept(file) ? { file, decision: "keep", origin: "you", why: "The user asked to keep it." } : { file, decision: kept(file) ? "keep" : "drop", ...(kept(file) ? {} : { question: "General" }), why: kept(file) ? "It holds as a general rule." : saying ? `It is about ${saying} alone, which no later run can use. Drop it.` : long ? "It is about the one case it came from, and it holds nothing a later run of this agent could use on another shop, so it is not kept. Drop it." : "It is about one case." })),
+    items: files.map((file) => (file === waits && kept(file) ? { file, decision: "pending", general: true, origin: "you", question: "Risky", why: "The user asked for a rule that widens trust." } : file === risky && kept(file) ? { file, decision: "keep", general: true, origin: "run", question: "Risky", why: "The run's own rule widens trust in a seller." } : file === theirs && kept(file) ? { file, decision: "keep", general: true, origin: "you", why: "The user asked to keep it." } : { file, decision: kept(file) ? "keep" : "drop", general: kept(file), ...(kept(file) ? {} : { question: "General" }), why: kept(file) ? "It holds as a general rule." : saying ? `It is about ${saying} alone, which no later run can use. Drop it.` : long ? "It is about the one case it came from, and it holds nothing a later run of this agent could use on another shop, so it is not kept. Drop it." : "It is about one case." })),
   }));
 }
 
@@ -209,9 +209,11 @@ export default function reply(context, faux) {
   })();
 }
 
-/** As a faux harness (claude-agent and codex): the job's answer, then the end-of-run turn's answer, its notes in it. */
+/** As a faux harness (claude-agent and codex): the job's answer, then the end-of-run turn's answer, its notes in it. With
+ *  "Follow up." in the instructions, one follow-up's answer ("Followed up.") and its end-of-run turn's (no note) after. */
 export function script(spec) {
   const system = spec.system.join("\n");
   const reads = readsOf(system).map((path) => ({ call: "read", args: { path }, usd: 0.001 }));
-  return [...reads, { say: answerOf(system), usd: 0.001 }, { end: true, usd: 0.001 }, { say: reflection(system, []), usd: 0.001 }, { end: true, usd: 0.001 }];
+  const followUp = /^Follow up\.$/m.test(system) ? [{ say: "Followed up.", usd: 0.001 }, { end: true, usd: 0.001 }, { say: answerWith([]), usd: 0.001 }, { end: true, usd: 0.001 }] : [];
+  return [...reads, { say: answerOf(system), usd: 0.001 }, { end: true, usd: 0.001 }, { say: reflection(system, []), usd: 0.001 }, { end: true, usd: 0.001 }, ...followUp];
 }

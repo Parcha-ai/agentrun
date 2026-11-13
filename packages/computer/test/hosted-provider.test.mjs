@@ -743,6 +743,18 @@ test("Archil: release stop lets the folder go (the final sync, then checkin as r
 	assert.match(notes[0].note, /was stopped, and/);
 });
 
+test("Archil: archilEgress (a documentation address here, RFC 5737) goes to the helper's mount as its last word; unset, the mount names no gateway; a malformed one is refused at construction", async () => {
+	const { provider, fake } = setup({ archilEgress: "192.0.2.40:18100:42050" }, { box: { reached: [] } });
+	made(await create(provider, ARCHIL_SPEC));
+	const mount = fake.rootRuns.find(({ verb }) => verb === "mount");
+	assert.equal(mount.argv.at(-1), "egress=192.0.2.40:18100:42050");
+	noToken(mount.argv, "the mount's argv");
+	const plain = setup({}, { box: { reached: [] } });
+	made(await create(plain.provider, ARCHIL_SPEC));
+	assert.ok(!plain.fake.rootRuns.find(({ verb }) => verb === "mount").argv.some((word) => word.startsWith("egress=")));
+	assert.throws(() => setup({ archilEgress: "192.0.2.40:8100:42050" }), /the Archil egress is <IPv4 gateway>:<mount lane>:<data lane>/);
+});
+
 test("Archil: connect gives a client that syncs after each call that may change the folder", async () => {
 	const { provider, fake } = setup({}, { box: { reached: [] } });
 	const ref = made(await create(provider, ARCHIL_SPEC));

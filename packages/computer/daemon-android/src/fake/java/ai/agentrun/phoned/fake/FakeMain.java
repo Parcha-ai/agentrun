@@ -7,6 +7,7 @@ import ai.agentrun.phoned.Wire;
 import java.io.FileDescriptor;
 import java.io.FileOutputStream;
 import java.io.OutputStream;
+import java.nio.file.Paths;
 
 /**
  * phoned's real core over the scripted phone, on stdio: what a fake adb server starts in place of app_process, so the
@@ -25,8 +26,16 @@ public final class FakeMain {
 		device.windowLagMs = 300;
 		device.openAnimationMs = 300;
 		device.windowSkewY = 1000;
+		// phoned.fake.phone: a directory standing for the phone, which keeps its one UiAutomation registration there for
+		// every phoned started on it. phoned.fake.exitMs: how long this phoned holds it after its stdin closes, as a
+		// phoned still ending its requests does.
+		String phone = System.getProperty("phoned.fake.phone");
+		if (phone != null) device.axHolder = Paths.get(phone, "uiautomation");
+		long exitMs = Long.getLong("phoned.fake.exitMs", 0L);
 		String home = args.length > 0 ? args[0] : "/tmp";
 		Wire.serve(System.in, protocolOut, new Phoned(device, Version.VALUE, new Exec(System.getenv(), home)));
+		if (exitMs > 0) Thread.sleep(exitMs);
+		device.close();
 		System.exit(0);
 	}
 }

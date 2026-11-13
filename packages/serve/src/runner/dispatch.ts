@@ -178,5 +178,8 @@ function dispatchLoop(deps: DispatchDeps, loopDeps: LoopDeps): Loop {
       earlyStop ??= reason;
       await started?.catch(() => undefined);
     },
+    keepsComputer(reason) {
+      return inner?.keepsComputer?.(reason) ?? false;
+    },
   };
 }

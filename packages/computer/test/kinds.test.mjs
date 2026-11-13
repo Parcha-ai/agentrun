@@ -93,7 +93,7 @@ test("PROVIDERS is the agreed table of ids, labels, key names, mounts and meteri
 		{ id: "modal", label: "Modal", keys: [key("MODAL_TOKEN_ID", "tokenId"), key("MODAL_TOKEN_SECRET", "tokenSecret")], metered: true },
 		{ id: "e2b", label: "E2B", keys: [key("E2B_API_KEY", "apiKey")], metered: true },
 		{ id: "agent37", label: "Agent37", keys: [key("AGENT37_API_KEY", "apiKey"), key("AGENT37_SSH_KEY", "sshKey")], metered: true },
-		{ id: "orgo", label: "Orgo", keys: [key("ORGO_API_KEY", "apiKey"), key("ORGO_WORKSPACE_ID", "workspaceId")], metered: true },
+		{ id: "orgo", label: "Orgo", keys: [key("ORGO_API_KEY", "apiKey"), { ...key("ORGO_WORKSPACE_ID", "workspaceId", false), picked: true }], metered: true },
 		{ id: "phone-harness", label: "Phone harness", keys: [key("PHONE_HARNESS_API_KEY", "apiKey")], metered: true },
 		{ id: "browserbase", label: "Browserbase", keys: [key("BROWSERBASE_API_KEY", "apiKey"), key("BROWSERBASE_PROJECT_ID", "projectId")], metered: true },
 		{ id: "kernel", label: "Kernel", keys: [key("KERNEL_API_KEY", "apiKey")], metered: true },

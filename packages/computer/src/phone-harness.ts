@@ -9,7 +9,7 @@
 // in memory by default): list, attach, release and the janitor see only the sessions the ledger names, never another
 // session on the same account.
 import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { createConnection } from "node:net";
@@ -72,6 +72,32 @@ const PHONE_TMP = "/data/local/tmp";
 const PUSH_TIMEOUT_MS = 120_000;
 /** How long phoned may take to start and answer hello: app_process starts a runtime first. */
 const HELLO_TIMEOUT_MS = 30_000;
+/**
+ * How long a phoned whose connection closed has to exit before the next phoned on its phone kills it: once its stdin
+ * ends it gives its running requests 3 s, lets go of the phone's accessibility and exits.
+ */
+const PHONED_EXIT_S = 10;
+/** How long a killed phoned has to be gone. */
+const PHONED_KILL_S = 2;
+
+/**
+ * A phoned's process on its phone: its pid and its start time (/proc/<pid>/stat's 22nd field, in clock ticks since
+ * boot), which together name it even once the pid is another process's.
+ */
+interface PhonedProcess {
+	pid: number;
+	start: string;
+}
+
+/**
+ * A shell command for the phone that waits until the process is gone (a zombie counts: it holds nothing; so does
+ * another process that took its pid), up to PHONED_EXIT_S; then kills it and waits PHONED_KILL_S more. Its last line is
+ * exited, killed or running. /proc/<pid>/stat less its "<pid> (<name>) " gives the state as $1 and the start time as ${20}.
+ */
+function untilGone({ pid, start }: PhonedProcess): string {
+	const wait = (seconds: number) => `n=0; while alive && [ $n -lt ${seconds * 10} ]; do sleep 0.1; n=$((n+1)); done`;
+	return `p=${pid}; t=${start}; alive() { s=$(cat /proc/$p/stat 2>/dev/null) || return 1; s=\${s##*") "}; set -- $s; [ "$1" != Z ] && [ "\${20}" = "$t" ]; }; ${wait(PHONED_EXIT_S)}; alive || { echo exited; exit 0; }; kill -9 $p 2>/dev/null; ${wait(PHONED_KILL_S)}; alive && echo running || echo killed`;
+}
 
 const VERSION: string = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 
@@ -466,6 +492,12 @@ export class PhoneHarnessProvider implements ComputerProvider {
 	 * has one accessibility connection to give. The last holder's release ends it before the disconnect.
 	 */
 	readonly #daemons = new Map<string, Promise<Result<Phoned>>>();
+	/**
+	 * Each endpoint's last phoned, by its process on the phone, until it is seen gone: the next phoned there starts only
+	 * once it is (#lastGone), since it holds the phone's one accessibility connection until it exits, after its
+	 * connection closed.
+	 */
+	readonly #lastPhoned = new Map<string, PhonedProcess>();
 	readonly #phonedPath: string;
 	readonly #apks: readonly string[];
 	/** Each file the provider puts on its phones (phoned's jar, the APKs), read once: its bytes' sha256 names it there. */
@@ -1081,9 +1113,12 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		}
 		let started = this.#daemons.get(endpoint);
 		if (started === undefined) {
-			const starting: Promise<Result<Phoned>> = this.#startPhoned(id, adb, onPhone, () => {
-				// phoned ended on its own (the phone killed it, or it failed): the next connect starts another.
-				if (this.#daemons.get(endpoint) === starting) this.#daemons.delete(endpoint);
+			const starting: Promise<Result<Phoned>> = this.#startPhoned(endpoint, id, adb, onPhone, () => {
+				// phoned ended on its own (the phone killed it, or it failed): the next connect starts another, once this start
+				// is done, so its pid is kept before that start waits on it.
+				void starting.then(() => {
+					if (this.#daemons.get(endpoint) === starting) this.#daemons.delete(endpoint);
+				});
 			});
 			started = starting;
 			this.#daemons.set(endpoint, starting);
@@ -1170,9 +1205,10 @@ export class PhoneHarnessProvider implements ComputerProvider {
 	/**
 	 * Starts phoned on the phone and says hello, after installing the apks option's APKs. The jar goes to the phone under
 	 * its sha256 (#place). phoned runs as the shell user through app_process (scrcpy's way in), on adb's exec: service,
-	 * whose socket carries its stdin and stdout raw; its stderr goes to a log beside the jar.
+	 * whose socket carries its stdin and stdout raw; its stderr goes to a log beside the jar. It starts once the
+	 * endpoint's last phoned is gone (#lastGone), and its pid is kept for the next start's wait.
 	 */
-	async #startPhoned(transport: string, adb: AdbRun, onPhone: OnPhone, ended: () => void): Promise<Result<Phoned>> {
+	async #startPhoned(endpoint: string, transport: string, adb: AdbRun, onPhone: OnPhone, ended: () => void): Promise<Result<Phoned>> {
 		const installed = await this.#install(transport, adb, onPhone);
 		if (!installed.ok) return installed;
 		const jar = await this.#fileAt(this.#phonedPath, (why) => `phoned, the phone's driver, is not at ${this.#phonedPath} (${why}): build it with npm run build:phoned, or give the provider's phoned option`);
@@ -1180,7 +1216,13 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		const remote = `${PHONE_TMP}/phoned-${jar.value.sha256.slice(0, 16)}.jar`;
 		const placed = await this.#place(transport, adb, onPhone, jar.value, remote, "phoned");
 		if (!placed.ok) return placed;
-		const stream = await this.#adb.open(`exec:CLASSPATH=${remote} app_process / ai.agentrun.phoned.android.Main 2>${remote.slice(0, -".jar".length)}.log`, { timeoutMs: ADB_TIMEOUT_MS, transport });
+		const gone = await this.#lastGone(endpoint, transport, onPhone);
+		if (!gone.ok) return gone;
+		// sh writes its pid and start time, which app_process keeps as it takes sh's place by exec, to a file of this start's
+		// own (the 22nd field of /proc/<pid>/stat is ${20} once its "<pid> (<name>) " is cut), read back after hello.
+		const base = remote.slice(0, -".jar".length);
+		const pidFile = `${base}-${randomBytes(4).toString("hex")}.pid`;
+		const stream = await this.#adb.open(`exec:s=$(cat /proc/$$/stat); s=\${s##*") "}; set -- $s; echo $$ \${20} >${pidFile}; CLASSPATH=${remote} exec app_process / ai.agentrun.phoned.android.Main 2>${base}.log`, { timeoutMs: ADB_TIMEOUT_MS, transport });
 		if (!stream.ok) return stream;
 		const socket = stream.value;
 		socket.once("close", ended);
@@ -1193,12 +1235,41 @@ export class PhoneHarnessProvider implements ComputerProvider {
 			await closed;
 		};
 		const hello = await client.call("hello", { client: `@parcha/agentrun-computer ${VERSION}` }, { signal: this.#timeout(HELLO_TIMEOUT_MS) });
+		// Read whether or not it said hello: one that did not may still run, and the next phoned here waits for it as well.
+		const read = await onPhone(`shell:cat ${pidFile} && rm -f ${pidFile}`, transport);
+		const said = read.ok ? read.value.trim() : "";
+		const fields = /^([1-9][0-9]*) ([0-9]+)$/.exec(said);
+		if (fields) this.#lastPhoned.set(endpoint, { pid: Number(fields[1]), start: fields[2] });
 		if (!hello.ok) {
 			await end();
-			const log = `${remote.slice(0, -".jar".length)}.log`;
-			return vendorFail("phone-harness",`phoned did not say hello on the phone (${hello.error.code}: ${redactWords(hello.error.message)}); its log on the phone is ${log}`);
+			return vendorFail("phone-harness",`phoned did not say hello on the phone (${hello.error.code}: ${redactWords(hello.error.message)}); its log on the phone is ${base}.log`);
+		}
+		if (!fields) {
+			await end();
+			const why = read.ok ? `it read ${show(redactWords(said.split("\n")[0] ?? ""))}` : redactWords(read.error.message);
+			return vendorFail("phone-harness", `phoned said hello, and its process id could not be read back from the phone (${why}): without it the next phoned could start before this one lets go of the phone's accessibility`);
 		}
 		return ok({ client, hello: hello.value, end });
+	}
+
+	/**
+	 * Waits until the endpoint's last phoned is gone from the phone, and kills it when it outstays PHONED_EXIT_S. A phone
+	 * has one accessibility connection to give, and phoned holds it until it exits: a phoned started before then finds it
+	 * taken ("already registered" at its first ui call), so none starts while the last one runs.
+	 */
+	async #lastGone(endpoint: string, transport: string, onPhone: OnPhone): Promise<Result<void>> {
+		const last = this.#lastPhoned.get(endpoint);
+		if (last === undefined) return ok(undefined);
+		const { pid } = last;
+		const waited = await onPhone(`shell:${untilGone(last)}`, transport);
+		if (!waited.ok) return waited;
+		const said = waited.value.trim().split("\n").at(-1) ?? "";
+		if (said === "running") {
+			return vendorFail("phone-harness", `the phoned of this phone's last connection (pid ${pid}) did not exit within ${PHONED_EXIT_S} s, nor ${PHONED_KILL_S} s after a kill, and it holds the phone's accessibility: no phoned starts beside it; release this phone and create another`);
+		}
+		if (said !== "exited" && said !== "killed") return vendorFail("phone-harness", `the wait for the last phoned on the phone (pid ${pid}) to exit answered ${show(redactWords(said))}`);
+		this.#lastPhoned.delete(endpoint);
+		return ok(undefined);
 	}
 }
 

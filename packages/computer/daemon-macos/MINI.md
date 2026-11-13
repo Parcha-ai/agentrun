@@ -124,10 +124,18 @@ task's calendar, its Notes folder and their notes (Recently Deleted too), and it
 event if it was still in the default calendar. Only one run goes at a time on a Mac (a lock in `/private/tmp`), so a
 sweep never removes a live run's sandbox.
 
+An app that wasn't running before the run is the run's own. The run starts it for the grant check and the sweep, then
+quits it. Its task starts it again and quits it at the end of the teardown, after the snapshot, so its window never
+sits in front of a later task's. Its windows aren't compared, since they go with it (what an app opens on launch
+varies: TextEdit's Open panel on CI, or nothing), and an app that doesn't quit counts as left behind. An app that was already running, a
+person's own on the mini, is left as it is. The snapshot and the teardown ask Calendar and Notes only while they run,
+since asking would start them.
+
 Before each task the script takes a snapshot of what it can see. That's every calendar with its count of today's
 events, every Notes folder with its count of notes, the five apps' onscreen windows by id, and the sandbox root. It
-reads names, counts and ids, never what an event, note or file holds. After the teardown it takes the snapshot again,
-and any difference is the task's `left`. The run's last line is `5/5 pass, 0 left behind` only when every task passed
+reads names, counts and ids, never what an event, note or file holds, and the calendars and folders only while
+Calendar and Notes run. After the teardown it takes the snapshot again, and any difference is the task's `left`
+(Calendar or Notes started or quit during the task among them). The run's last line is `5/5 pass, 0 left behind` only when every task passed
 and left nothing; otherwise it exits 1. The observations it writes have every name and value redacted to its length,
 unless it holds the run id or is a word the script looks for.
 
@@ -137,12 +145,14 @@ unless it holds the run id or is a word the script looks for.
 | mac.safari.follow-link | Safari | open the task's local page in the background, press the "Quarterly report" link by its ref, then the toolbar's Back button by its ref | the linked page's heading, then the first page's link |
 | mac.finder.rename-file | Finder | open the task's folder in the background, show it as a list, select draft.txt by its element, then rename it: enter, type "final", enter in the background, else the same with Finder brought forward. A file's name is an item that opens, not a field, so the driver refuses a set on it. Each way is judged by the disk, and the notes say which one renamed it | the folder holds final.txt and other.txt |
 | mac.textedit.edit-number | TextEdit | open the task's totals file in the background, select all and type the text with 42, by keys first (the window marks it Edited), then save with super+s (the mark goes) | the saved file is the new text, the other lines kept |
-| mac.calendar.new-event | Calendar | press Add Event, type a title into the quick event field and enter; move the event into the task's calendar through the inspector's calendar menu; escape | the task's calendar holds the event |
+| mac.calendar.new-event | Calendar | press Add Event, type a title into the quick event field and enter; move the event into the task's calendar through the inspector's calendar menu; enter in its title saves it (escape there dropped a new event on macOS 26) | the task's calendar holds the event |
 
-The sandbox needs Computerd's Automation grant for Calendar, Notes, Finder, TextEdit and Safari. Without it the script
-says which are missing and stops before it starts a task. To grant it, run the script once with `--ask-grants` while
-you are at the Mac and answer **OK** to each of the five prompts. They are listed afterwards in System Settings >
-Privacy & Security > Automation > Computerd. CI's runner has them seeded (`scripts/seed-tcc.sh`).
+The sandbox needs two kinds of grant for Computerd. One is Automation for Calendar, Notes, Finder, TextEdit and Safari.
+The other is full access to calendars: Calendar's AppleScript reads the calendar store for the process that sent the
+event, and without the grant a script that counts events gets no answer. Without them the script says which are
+missing and stops before it starts a task. To grant them, run the script once with `--ask-grants` while you are at the
+Mac and answer **OK** or **Allow** to each of the six prompts. They are listed afterwards in System Settings > Privacy &
+Security > Automation > Computerd and > Calendars. CI's runner has them seeded (`scripts/seed-tcc.sh`).
 
 ```sh
 python3 -I packages/computer/daemon-macos/scripts/mini-demos.py \
@@ -151,12 +161,22 @@ python3 -I packages/computer/daemon-macos/scripts/mini-demos.py \
 
 It writes these files under `/tmp/demos`:
 
-- `<task>.mp4`: the task recorded from `screen.watch`, with the current step written along the bottom. `frames-to-movie.swift` makes it, with AVFoundation, so Xcode is all it needs. The recording is the whole screen, the person's own windows included: `--no-movie` records nothing.
+- `<task>.mp4`, only with `--movie`: the task recorded from `screen.watch`, with the current step written along the bottom. `frames-to-movie.swift` makes it, with AVFoundation, so Xcode is all it needs. Each frame is cut to the task's window before it is written (`window-frames.swift`), and every window in front of it is painted black, but for the Dock's own window, which covers the display at the Dock's level and is clear but for the Dock (anything the Dock draws in it, Mission Control's thumbnails say, would show); a frame taken while the window moved, or while a window came in front or left, is not kept. The cut keeps the task's window whole, so in Notes, Calendar and Safari it shows the app's own lists (a person's folders, events and tabs). Without `--movie` nothing is recorded.
+
+  `--movie` records only on a demo machine: a CI runner (`GITHUB_ACTIONS=true`), or a user whose login name starts with `agentrun-demo` (a dedicated demo account, made by a person). Anywhere else, a person's own account such as the mini's, it exits 1 with the reason before anything is made or recorded. The login name comes from the user database by uid, not `$USER`, and no variable or flag unlocks it.
 - `demos.json`: every call with its latency in ms, the routes its steps took, its expect, and what each task left.
 - `demos.md`: the table of tasks, calls, steps, ms and what each left, then the run's line.
 
-Name one or more task ids to run only those. CI runs all five after the ui conformance cases, and reports them without
-failing the run.
+Name one or more task ids to run only those. CI runs all five with `--movie` after the ui conformance cases, and
+reports them without failing the run. On CI (`CI=true`) the observations are not redacted: the runner holds nothing of a
+person's.
+
+A fresh Mac's first-run state is answered in each task's setup, before its snapshot, never in its steps: Notes' and
+Calendar's first-run sheets are pressed away; a Notes that showed its Welcome sheet gets a setup folder made and removed
+again, so the "Turn On iCloud" alert it raises the first time anything is made is answered Cancel there; and Calendar's
+setup types into its quick event field and cancels it with escape before any event is made, since a fresh Calendar adds
+its own Scheduled Reminders calendar when that field first reads what is typed, then reads the list of calendars until
+it is still for 8 s.
 
 ## When something is off
 

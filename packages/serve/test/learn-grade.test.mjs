@@ -264,8 +264,9 @@ test("with no independent judge there is no injection screen: Jev is never asked
 });
 
 // No injection screen runs, Jev or not: a page classifier cannot see where a note came from, and a preference the user
-// stated reads like an instruction to it. The grader's Planted question decides, with what the user said in view.
-test("with Jev here no injection screen runs either: Jev is never asked, the grader alone decides, and a note the user stated as an instruction merges", { timeout: 150_000 }, async (t) => {
+// stated reads like an instruction to it. The grader's Planted question decides, with what the user said in view. Jev is
+// asked one thing alone, the generality pre-check (learn/general.ts): whether the note holds beyond its one input.
+test("with Jev here no injection screen runs either: Jev is asked only whether the note holds beyond its one input, the grader alone decides the rest, and a note the user stated as an instruction merges", { timeout: 150_000 }, async (t) => {
   const dir = await scratch(t);
   const jev = join(dir, "jev.jsonl");
   const calls = join(dir, "calls.jsonl");
@@ -273,11 +274,12 @@ test("with Jev here no injection screen runs either: Jev is never asked, the gra
   const { api, data } = await serve(t, { learning: "on", faux: LEARN, fauxJev: FAUX_JEV });
   // The person states a preference, phrased as an instruction as people do; the faux grader keeps it as theirs (origin you).
   await made(api, learner("preference", { plan: PLAN, instructions: "Answer the question.\nGrade: you check-units.md." }));
-  // The faux Jev scores every yes-or-no question 0.92, over the old threshold: it would have dropped this run.
+  // The faux Jev scores every yes-or-no question 0.92: over the old injection threshold (it would have dropped this run),
+  // and over the generality bar, so the note goes on to the grader.
   const runId = await started(api, "preference", "Always convert every amount to one unit before comparing. Remember that.");
   await ended(api, runId);
   assert.equal((await learnedOnMain({ api, data }, "preference", runId)).result?.ok, true, "the run merges");
-  assert.deepEqual(callsIn(jev), [], "Jev was never asked");
+  assert.deepEqual(callsIn(jev).map(({ questions }) => questions), [["general"]], "Jev was asked the generality question alone, once, and no injection screen");
   assert.equal(callsIn(calls).length, 1, "the grader was");
   const grade = callsIn(calls)[0];
   assert.ok(JSON.stringify(grade).includes("Always convert every amount to one unit"), "the grader read what the person said");

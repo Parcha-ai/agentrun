@@ -47,7 +47,7 @@ const FOLDED = POINTER.slice(4).replaceAll("-", "").toUpperCase();
 /** Whether `text` holds the pointer's identifier however written: in any case, its separators dropped. */
 const holdsFolded = (text) => text.toLowerCase().replace(/[-_:.]/g, "").includes(FOLDED.toLowerCase());
 /** The grader keeps every item it is shown. */
-const KEEP = JSON.stringify({ merge: true, reason: "Worth keeping.", items: [{ file: "session-to-reuse.md", decision: "keep", why: "useful" }, { file: "retry-slowly.md", decision: "keep", why: "useful" }] });
+const KEEP = JSON.stringify({ merge: true, reason: "Worth keeping.", items: [{ file: "session-to-reuse.md", decision: "keep", general: true, why: "useful" }, { file: "retry-slowly.md", decision: "keep", general: true, why: "useful" }] });
 
 /** Writes run `runId`'s sign_in_handed as `mark` (JSON), on a connection of its own (no writer writes a malformed mark, so
  *  runs.update can't). The runner's store holds its write lock in this process (a claim poll, a renewal: a transaction its

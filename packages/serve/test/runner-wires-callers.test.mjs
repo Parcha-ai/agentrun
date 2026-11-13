@@ -36,7 +36,7 @@ const { beforeRequestOf } = await import("../../run-adapters/dist/kernel/cap/ind
 const KEY = `not-a-secret-${"w"}`;
 const TIMING = { leaseMs: 1_000, renewEveryMs: 250, stopMarginMs: 300, pollMs: 20, commandPollMs: 30 };
 const NOTE = { file: "retries.md", text: "---\nname: Retries\ndescription: Retry a flaky fetch twice\ntype: reference\n---\nRetry a flaky fetch twice.\n" };
-const KEEP = JSON.stringify({ merge: true, reason: "Worth keeping.", items: [{ file: "retries.md", decision: "keep", why: "useful" }] });
+const KEEP = JSON.stringify({ merge: true, reason: "Worth keeping.", items: [{ file: "retries.md", decision: "keep", general: true, why: "useful" }] });
 /** The gateway env serve's operator sets: its own Responses route, priced $1 a million each way. */
 const GATEWAY_ENV = (url) => ({ AGENT_MODEL_BASE_URL: `${url}/v1`, AGENT_MODEL_API_KEY: KEY, AGENT_MODEL: "team-model", AGENT_MODEL_PRICE: "1,1" });
 
@@ -112,7 +112,8 @@ for (const wire of Object.keys(SOURCES)) {
     const refused = await gradeOn(t, route, 1e-9);
     assert.deepEqual(refused.end, { state: "ended" });
     assert.equal(gateway.requests.length, before, "past the cap: not sent");
-    assert.equal((await runLearningEnd(refused.store, "run-1"))?.reason, "grade_failed");
+    // Refused by the cap before it was sent: skipped for room, never a failure (learning-loop.ts GradeOverCap).
+    assert.equal((await runLearningEnd(refused.store, "run-1"))?.reason, "no_budget");
   });
 }
 

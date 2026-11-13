@@ -64,6 +64,12 @@ export type TimelineEvent = {
   /** On a learned workflow call's `tool_result` row (learned_workflow): each of the workflow's nodes that ran, as the
    *  workflow DSL ended it, in order (store-reads/journal.ts withLearnedNodes). This projector writes none. */
   learned_nodes?: { label: string; kind: string; status: string; duration_ms: number; model?: string; tier?: string }[];
+  /** On a tool call's `tool_result` row: each computer protocol call the tool made, in order (serve's computer-calls.ts):
+   *  its method, whether it answered, its ms, its error's code, and for ui.act each step's kind, route and readback.
+   *  Never a param's value or an answer's bytes. `computer_calls_dropped` counts the calls past the record's bound. This
+   *  projector writes none (store-reads/journal.ts withComputerCalls). */
+  computer_calls?: readonly { readonly method: string; readonly ok: boolean; readonly ms: number; readonly code?: string; readonly steps?: readonly { readonly do: string; readonly route?: string; readonly verified?: boolean; readonly error?: string }[]; readonly expect?: "met" | "unmet" }[];
+  computer_calls_dropped?: number;
 };
 
 /** A pi conversation entry as stored: `pi.assistant`, `pi.tool-result`, a host's own kind. */
@@ -191,6 +197,11 @@ export type TimelineOptions = {
   caps?: Partial<typeof CAPS>;
   /** Nothing is running: a call with no result is interrupted. */
   settled?: boolean;
+  /** The run's newest turn is over, cut by a stop or a cancel, while its process may live on: nothing of that turn is in
+   *  flight, so the usage row counts a request marked with no answer or end, and a paid call marked with no charge, as
+   *  cut, as a settled read counts them. The marks the runner writes once it has booked what the abort cut can land after
+   *  the turn reads over; they change nothing then. Its rows are as they are. */
+  turnCut?: boolean;
   /** The run has ended (completed, failed, cancelled): its usage row says its cost ("Cost: …"), never what it has cost
    *  "so far". A run settled and not ended (paused, its process let go) keeps "Cost so far". */
   ended?: boolean;
@@ -1009,7 +1020,7 @@ export function timelineOf(entries: readonly EntryLike[], options: TimelineOptio
   const projector = createProjector(options);
   for (const entry of entries) projector.push(entry);
   if (options.settled) for (const [id, call] of projector.open()) projector.interrupt(call, id);
-  const usage = projector.usage();
+  const usage = projector.usage(options.turnCut === true);
   return usage ? [...projector.rows(), usage] : [...projector.rows()];
 }
 

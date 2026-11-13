@@ -9,7 +9,7 @@
 // tools are the kernel registry's hands on the run's Workspace (runTools), and — once built through the ToolHost below —
 // tools.ts's full set (browser, web, MCP, decisions, monid) by their own names. The gate before a call's intent is the
 // run's revision's tool settings, read through runGate (approvals "never" among them), the adapter loop asking it.
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { defineExtension, type Extension, ROOT_CONVERSATION_ID, type ToolExecutionApi, type ToolRegistration } from "@earendil-works/pi-durable";
 import { type CapModel, type CapRefused, checkRaise, followUpOf, parkOf } from "@parcha/agentrun-kernel/kernel/cap";
@@ -38,7 +38,7 @@ import { effortGuidance } from "../effort-guidance.js";
 import { laidLearned, type LearnedWorkflow, learningFolderOf, secretsShown } from "../learning.js";
 import { laidOf, layLearningSeed } from "./learning-seed.js";
 import { learningWorkspace } from "../learn/folder.js";
-import { learningEndOfRun } from "./learning-end.js";
+import { learningEndOfRun, spentBesideOf } from "./learning-end.js";
 import { learnedAskFits, learnedAskShown, LEARNED_WORKFLOW_TOOL, learnedMcpTools, learnedWorkflowTool } from "../learned-workflow.js";
 import { PORT_PROVIDER, tieredModels, tierProvider } from "../port-models.js";
 import { promptOf, readsFiles } from "../skills.js";
@@ -49,6 +49,7 @@ import { runTools, type ToolResults, withKindTools } from "../workspace/run-tool
 import { copyRunFiles } from "../uploads.js";
 import { handedSignInReadsBack, signInReads } from "../sign-ins-store.js";
 import { UNREADABLE_SIGN_IN } from "../run-view.js";
+import { durableWait } from "../workflow/pi-versions.js";
 import { claimSecrets, hostDecisionKeys, learnedDecisionKeys, savedModelKeys, tierModelKeys, withModelKeys } from "./claim-secrets.js";
 import { type ClaimMcp, mcpForClaim } from "./mcp-run.js";
 import { type AdapterLoopOptions, type AdapterRun, type AdapterRunSpec, hostLifecycle, type RunCapConfig } from "./adapter-loop.js";
@@ -71,6 +72,8 @@ import type { RunComputerHold } from "./computer-journal.js";
 import type { ShellPlace } from "../workspace/resolve-computer.js";
 import type { Workspace } from "../workspace/workspace.js";
 import { type HeldRedact, heldRedactor, holdClaimed, runnerSecrets, secretRedactor } from "./redact.js";
+import { heldSpecOf } from "./held-run.js";
+import { loopComputerOf } from "./computer-channel.js";
 import { githubAppAccess } from "./github-app.js";
 import { type Checkout, prCheckoutForClaim } from "./pr-checkout.js";
 import { holdStored, storeSecrets } from "./store-secrets.js";
@@ -425,6 +428,8 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // A desktop's or a phone's hold (the person's take-over) wraps its ports: a call made while the person holds it waits,
   // and the agent's hand-over (computer_request_handoff) asks the person through it.
   holds.hold({ computer });
+  const loopComputer = loopComputerOf(computer.computer, computer.held);
+  const heldComputer = heldSpecOf(launch, loopComputer);
   // Under the agent's bash policy, its shell's environment is the policy's too (bash-read-only.ts policyEnv).
   const bashPolicy = bashPolicyOf(body.toolSettings);
   const tools = await runTools(ws.workspace, computer.computer, { mode, context, ...(computer.hold ? { hold: computer.hold } : {}), ...(bashPolicy === undefined ? {} : { bashPolicy }) });
@@ -524,6 +529,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   const capModel = capModelOf(route);
   // And each tier's model (tierRoutes, filled below), by the route its request names (its tier's proxy, ModelRequest.route),
   // priced as that route books it: one id the run's model and a tier share is priced apart, never at the other's price.
+  const besideOf = spentBesideOf(launch, deps.store, claim.runId);
   const runCap: RunCapConfig = {
     capUsd: () => launch.maxCostUsd,
     modelOf: (id, by) => {
@@ -532,6 +538,8 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
       return tierRoute && tierRoute.model === id ? capModelOf(tierRoute) : undefined;
     },
     ...(launch.capMode === "strict" ? { mode: "strict" as const } : {}),
+    // What its learning runs' grades took beside it, read by every gate with its own sessions (none: it queues none).
+    ...(besideOf ? { beside: besideOf } : {}),
   };
   // The run's cap figure and what a refusal does to it (parkOf, with the kernel's raise rule): present only when the run
   // has a cap. A park names the cap the loop holds the run to then (a raise's, else this one).
@@ -572,6 +580,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
       shown: async () => secretsShown(runnerSecrets(deps.env, await storeSecrets(deps.store, deps.sealKey, deps.data)), { local: true }),
       log,
       ...(start.notesOnly ? { workflows: false as const } : {}),
+      ...(start.notesLeftOut?.length ? { notesLeftOut: start.notesLeftOut } : {}),
     })
     : undefined;
   // The decision keys its learned workflows' typed questions need (claim-secrets.ts learnedDecisionKeys), read once the lay
@@ -713,9 +722,9 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     // The tool host's install lifecycle (its bindings' onConversation/beforeResume/beforeRelease), run by the adapter loop.
     lifecycle: life,
     agentId: runRow.agentId,
-    // The run's desktop or phone and the person's hold on it, as the claim made them: the loop shows it up and applies a
-    // take-over and a hand-back to it.
-    ...(computer.held ? { computer: computer.held } : {}),
+    // The run's computer as the claim made it, with the person's hold on a desktop or phone: the loop shows the hold up,
+    // applies a take-over and a hand-back to it, and answers the computer call channel's rows on it.
+    ...(loopComputer ? { computer: loopComputer } : {}),
     workRoot: root,
     // The end's metrics and cost, from the run's journal, as the old per-run end path read them (metrics.ts runMetrics =
     // runs.ts storedMetrics/costOf). A pi run adds its effort, no model (metrics.ts).
@@ -735,6 +744,9 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
       // An unknown cost is written as null, never left out: a follow-up's end clears the cost an earlier end stored.
       return { costUsd: total, metrics };
     },
+    // A run started with hold: true holds its computer for its owner (computer-held.ts): the loop waits for their start
+    // and release, and runs their calls on it.
+    ...(heldComputer ? { held: heldComputer } : {}),
     // The pass's resources go once the loop writes nothing more through them: its tools' end (background processes ended,
     // scratch swept), its computer let go, then its Workspace's end (Mode 2 sweeps the exec spill).
     // The run's Archil mount credential is revoked at its end on every outcome, even with no computer (the computer's
@@ -754,7 +766,8 @@ export function hostToolCtxOf(run: AdapterRun, context: Context, results: ToolRe
     env: async () => ({ cwd: root }) as never,
     commit: (change, at, options) => run.harness.commit(change, at, options),
     snapshot: ((...args: unknown[]) => Reflect.apply(run.harness.snapshot, run.harness, args)) as ToolExecutionApi["snapshot"],
-    waitForTask: (id, at) => run.harness.waitForTask(id, at),
+    // Never on the call's signal (durableWait): an abort while it registers rejects this wait, never one unhandled.
+    waitForTask: (id, at) => durableWait((bare) => run.harness.waitForTask(id, bare), at),
     agent: async (at) => {
       const conversation = await run.harness.conversation(ROOT_CONVERSATION_ID, at);
       if (!conversation) throw new Error("the run has no root conversation");

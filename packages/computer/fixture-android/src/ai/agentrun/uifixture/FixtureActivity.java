@@ -7,6 +7,8 @@ import android.graphics.drawable.ColorDrawable;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.text.Editable;
+import android.text.TextWatcher;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.MotionEvent;
@@ -26,9 +28,10 @@ import android.widget.TextView;
  * spec's bounds in points (dp), with its id as the resource id a driver reads ("ai.agentrun.uifixture:id/next").
  *
  * <ul>
- *   <li>home: the "UI fixture" heading, the Name field, the Wi-Fi switch (a row the app reports as a Switch, its two
- *       texts its name and its secondary text), Save, Next, and the Canvas, which no accessibility action reaches: its
- *       state description is the number of touches that reached it, "0" at launch.
+ *   <li>home: the "UI fixture" heading, the Name field, the Code field (which takes back any value set into it
+ *       TAKES_BACK_MS later), the Wi-Fi switch (a row the app reports as a Switch, its two texts its name and its
+ *       secondary text), Save, Next, and the Canvas, which no accessibility action reaches: its state description is
+ *       the number of touches that reached it, "0" at launch. No New window: a phone app has one window.
  *   <li>Save shows the text "Saved" SAVED_MS after its press; Next opens the second page NEXT_MS after its press,
  *       fading in over NEXT_ANIMATE_MS.
  *   <li>second: the "Second page" heading and Back, which returns home, as the system's back does.
@@ -40,6 +43,7 @@ public final class FixtureActivity extends Activity {
 	static final long SAVED_MS = 300;
 	static final long NEXT_MS = 200;
 	static final long NEXT_ANIMATE_MS = 300;
+	static final long TAKES_BACK_MS = 150;
 
 	private final Handler handler = new Handler(Looper.getMainLooper());
 	private FrameLayout home;
@@ -96,12 +100,8 @@ public final class FixtureActivity extends Activity {
 		FrameLayout page = page();
 		place(page, heading("UI fixture"), 16, 16, 300, 24);
 
-		EditText name = new EditText(this);
-		name.setHint("Name");
-		name.setSingleLine(true);
-		name.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
-		name.setPadding(px(4), 0, px(4), 0);
-		place(page, identified(name, "name", null), 16, 56, 200, 28);
+		place(page, field("Name", "name"), 16, 56, 200, 28);
+		place(page, code(), 228, 56, 76, 28);
 
 		place(page, wifi(), 16, 96, 60, 28);
 
@@ -149,6 +149,38 @@ public final class FixtureActivity extends Activity {
 			info.setCheckable(true);
 			info.setChecked(checked[0]);
 		});
+	}
+
+	private EditText field(String hint, String id) {
+		EditText field = new EditText(this);
+		field.setHint(hint);
+		field.setSingleLine(true);
+		field.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+		field.setPadding(px(4), 0, px(4), 0);
+		return identified(field, id, null);
+	}
+
+	/**
+	 * The Code field, which refuses its input as such an app does: TAKES_BACK_MS after the newest change to a value,
+	 * set or typed, it is empty again.
+	 */
+	private EditText code() {
+		EditText code = field("Code", "code");
+		Runnable takeBack = () -> code.setText("");
+		code.addTextChangedListener(new TextWatcher() {
+			@Override
+			public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+
+			@Override
+			public void onTextChanged(CharSequence s, int start, int before, int count) {}
+
+			@Override
+			public void afterTextChanged(Editable s) {
+				handler.removeCallbacks(takeBack);
+				if (s.length() > 0) handler.postDelayed(takeBack, TAKES_BACK_MS);
+			}
+		});
+		return code;
 	}
 
 	private Button button(String words, String id, Runnable click) {

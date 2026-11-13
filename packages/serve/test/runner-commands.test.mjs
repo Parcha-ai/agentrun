@@ -51,11 +51,14 @@ test("a command for an ended run is refused: in the insert once it is final, and
   // first delivery reads the run's rows once: a steer sent before that read is the loop's, never a late one. That read is
   // held here until the test lets it go (a loaded machine's slow first read), and the steer is sent only once the first
   // delivery is done (LoopDeps.delivered): the order comes from that, never from a clock. (The 10 s is a failure bound.)
+  // The runner's store hears no write (watchCommands), as a runner in another process does not: a row written beside it
+  // would reach the loop at once.
   let letFirstReadGo;
   const firstReadMayGo = new Promise((resolve) => (letFirstReadGo = resolve));
   let firstRead = true;
   const slowFirstRead = (store) => ({
     ...store,
+    watchCommands: () => () => {},
     commands: async (runId, after) => {
       if (firstRead) {
         firstRead = false;

@@ -24,7 +24,7 @@
 //
 // A run on a computer ends them through the computer (workspace/run-tools.ts, the kernel's endBackground): TERM to each
 // running group, KILL after 3 s, and an `ended` mark (with its display copy beside the log, in the run's files).
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import type { TSchema } from "typebox";
 import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";

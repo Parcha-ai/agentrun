@@ -11,7 +11,7 @@ import { accessSync, constants, statSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { type ComputerProvider, type GpuCapability, imagesOf } from "@parcha/agentrun-computer";
 import { BOX_ALLOW_ENV, boxAllowOf } from "./box-settings.js";
-import { KEY_TABLE, type KeyTable, type OptionsAnswer, type ProviderFactories, type ProviderSettings, providerOptions, testConnection } from "./computer-keys.js";
+import { KEY_TABLE, type KeyChoice, keyChoices, type KeyTable, type OptionsAnswer, type ProviderFactories, type ProviderSettings, providerOptions, testConnection } from "./computer-keys.js";
 import { COMPUTER_KINDS, type ComputerKind, type ComputerSetting, gpuOf } from "./computer-setting.js";
 import { inArchilMode } from "./archil-settings.js";
 import { daemonUp, type DockerDaemon, noDockerWords } from "./docker-daemon.js";
@@ -49,7 +49,7 @@ export interface ProviderEntry {
   readonly id: string;
   readonly label: string;
   readonly kinds: readonly ComputerKind[];
-  readonly keys: readonly { readonly name: string; readonly required: boolean }[];
+  readonly keys: readonly { readonly name: string; readonly required: boolean; readonly picked?: boolean }[];
   /** The mounts its computers take; none means it cannot mount the run's folder. */
   readonly mounts: readonly string[];
   /** The network forms its computers make ("none", "open", "allow"), as its descriptor declares them. Absent (a
@@ -146,8 +146,9 @@ export interface ComputerRoutesOptions {
  *  it needs. `network`: what this server's allow-list means for a vendor-hosted computer, in words (networkWords).
  *  `images`: the images it offers for the kind, by name, where it offers any to choose. `persistent`: present where an
  *  agent's computer of this kind can be kept between its runs (computer.persistent: true), with the images that keep one
- *  where it offers images to choose. */
-export type ProviderView = { id: string; name: string; metered: boolean; secrets: KeyMeta[]; required: string[]; ready: boolean; why?: string; network?: string; images?: string[]; persistent?: { images?: string[] }; gpu?: GpuView } & ShellChoice;
+ *  where it offers images to choose. `picked`: the names of the secrets a person picks from the vendor's own list
+ *  (GET /v2/computers/{provider}/choices) rather than pastes, where it has any. */
+export type ProviderView = { id: string; name: string; metered: boolean; secrets: KeyMeta[]; required: string[]; picked?: string[]; ready: boolean; why?: string; network?: string; images?: string[]; persistent?: { images?: string[] }; gpu?: GpuView } & ShellChoice;
 /** A choice's shell (workspace runShellOf, in this server's mode), the host tools it gives (the kernel registry's
  *  hostToolDefs for that shell) and what it leaves out in words (absent on a computer that mounts the folder). */
 export type ShellChoice = { shell: ShellPlace; host_tools: string[]; shell_note?: string };
@@ -183,6 +184,10 @@ export function networkWords(network: readonly string[] | undefined): string | u
 /** A kind; kind none, the one "no computer" choice, carries its ShellChoice itself (it has no providers). */
 export type KindView = { kind: ComputerKind; offered: boolean; why?: string; groups: string[]; tools: string[]; providers: ProviderView[] } & Partial<ShellChoice>;
 export type TestView = { ok: true; detail: string } | { ok: false; why: string };
+/** A picked key's choices (GET /v2/computers/{provider}/choices): its KEY, as PUT …/keys takes it, then the values the
+ *  vendor's list offers, each saved as it is and shown by its label, and `saved`, the one whose value is saved now, where
+ *  one is (it is among the options already, so it says nothing new); or why there are none to pick, in words. */
+export type KeyChoicesView = { key: string; options: KeyChoice[]; saved?: string } | { key: string; why: string };
 
 /** Why a key save is refused, before anything is saved: a name the provider does not declare, or a value that is not text. */
 export class KeysRefused extends Error {
@@ -299,7 +304,8 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
           const keeping = serving.filter((one) => one.persistence !== undefined);
           const keptImages = images.filter((image) => keeping.some((one) => (one.image ?? provider.defaultImage?.[kind]) === image));
           const persistent = keeping.length === 0 ? undefined : images.length > 0 ? { images: keptImages } : {};
-          return { id: provider.id, name: provider.label, metered: provider.metered, secrets: provider.keys.map((key) => metas.get(secretName("computer", provider.id, key.name))!), required: provider.keys.filter((key) => key.required).map((key) => secretName("computer", provider.id, key.name)), ready: why === undefined, ...(why ? { why } : {}), ...(network ? { network } : {}), ...(images.length > 0 ? { images } : {}), ...(persistent ? { persistent } : {}), ...(gpu ? { gpu: gpuView(gpu, provider.label, mode) } : {}), ...choice({ kind, provider: provider.id } as ComputerSetting) };
+          const picked = provider.keys.filter((key) => key.picked).map((key) => secretName("computer", provider.id, key.name));
+          return { id: provider.id, name: provider.label, metered: provider.metered, secrets: provider.keys.map((key) => metas.get(secretName("computer", provider.id, key.name))!), required: provider.keys.filter((key) => key.required).map((key) => secretName("computer", provider.id, key.name)), ...(picked.length > 0 ? { picked } : {}), ready: why === undefined, ...(why ? { why } : {}), ...(network ? { network } : {}), ...(images.length > 0 ? { images } : {}), ...(persistent ? { persistent } : {}), ...(gpu ? { gpu: gpuView(gpu, provider.label, mode) } : {}), ...choice({ kind, provider: provider.id } as ComputerSetting) };
         });
         const offered = kind === "none" || serving.some((provider) => unusable(kind, provider) === undefined);
         const why = offered ? undefined
@@ -355,6 +361,33 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
     return answer.ok ? { ok: true, detail: cut(answer.value.detail) } : { ok: false, why: cut(answer.error.message) };
   }
 
+  /** Each picked key of a provider (Orgo's workspace) with the values the vendor's list offers for it, read with its
+   *  saved keys (computer-keys.ts keyChoices), never making a computer; or why there are none, in words (a required key
+   *  not saved, an account with none). Its words pass the redactor as the test's do. Undefined for a provider this server
+   *  does not have. */
+  async function choices(providerId: string, signal?: AbortSignal): Promise<{ choices: KeyChoicesView[] } | undefined> {
+    const provider = providerOf(providerId);
+    if (!provider) return undefined;
+    const keys = await keysOf(provider);
+    const missing = missingKeys(provider, new Set(Object.keys(keys)));
+    const cut = (text: string): string => redacted(text, Object.values(keys));
+    const views: KeyChoicesView[] = [];
+    for (const key of provider.keys.filter((one) => one.picked)) {
+      if (missing.length) {
+        views.push({ key: key.name, why: keysWhy(provider, missing) });
+        continue;
+      }
+      const answer = await keyChoices(providerId, key.name, { keys, ...(signal ? { signal } : {}) }, factories, settings, keyTable);
+      if (!answer.ok) {
+        views.push({ key: key.name, why: cut(answer.error.message) });
+        continue;
+      }
+      const saved = answer.value.find((one) => one.value === keys[key.name])?.value;
+      views.push({ key: key.name, options: answer.value.map((one) => ({ value: one.value, label: cut(one.label) })), ...(saved === undefined ? {} : { saved }) });
+    }
+    return { choices: views };
+  }
+
   /** Why a run of an agent whose computer is `computer` cannot have it here, in words naming the setting to fill;
    *  undefined when it can. Checked at the claim: the provider must serve the kind (servingRefusals' words), fit this
    *  server's folder mode, give a sandbox the GPUs it asks for (checkGpu's words), have its daemon answer where it binds
@@ -401,7 +434,7 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
     return made as Pick<ComputerProvider, "release">;
   }
 
-  return { view, saveKeys, test, claimRefusal, claimOptions, providerFor };
+  return { view, saveKeys, test, choices, claimRefusal, claimOptions, providerFor };
 }
 
 export type ComputerRoutes = ReturnType<typeof createComputerRoutes>;
@@ -410,9 +443,9 @@ export type ComputerRoutes = ReturnType<typeof createComputerRoutes>;
  *  (PUT /v2/workspace/archil), else "local" (Mode 1). createComputerRoutes' `mode`. */
 export const folderModeOf = (store: { settings: Pick<Store["settings"], "get"> }, env: KeyEnv = {}) => async (): Promise<FolderMode> => ((await inArchilMode(store, env)) ? "disk" : "local");
 
-/** Settings → Computers' routes, by their operation names: GET /v2/computers, PUT /v2/computers/{provider}/keys and POST
- *  /v2/computers/{provider}/test. */
-export const COMPUTER_SETTINGS_ROUTES: ReadonlySet<string> = new Set(["listComputers", "saveComputerKeys", "testComputer"]);
+/** Settings → Computers' routes, by their operation names: GET /v2/computers, PUT /v2/computers/{provider}/keys, POST
+ *  /v2/computers/{provider}/test and GET /v2/computers/{provider}/choices. */
+export const COMPUTER_SETTINGS_ROUTES: ReadonlySet<string> = new Set(["listComputers", "saveComputerKeys", "testComputer", "listComputerChoices"]);
 
 const noProvider = (id: string | undefined): ApiError => new ApiError("not_found", `this server has no computer provider ${JSON.stringify(id ?? "")}: GET /v2/computers lists them`);
 
@@ -436,6 +469,11 @@ export async function settingsComputerRoute(routes: ComputerRoutes, name: string
   }
   if (name === "testComputer") {
     const answer = await routes.test(request.provider ?? "", request.signal);
+    if (answer === undefined) throw noProvider(request.provider);
+    return answer;
+  }
+  if (name === "listComputerChoices") {
+    const answer = await routes.choices(request.provider ?? "", request.signal);
     if (answer === undefined) throw noProvider(request.provider);
     return answer;
   }

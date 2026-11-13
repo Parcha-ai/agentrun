@@ -172,15 +172,15 @@ test("importing the package has no effect: sideEffects is false, and loading eve
   assert.deepEqual(JSON.parse(out.stdout), []);
 });
 
-test("pi-durable and chord are the pi family's one version, 1.5.0 exactly, the dev pins the same, and they are its only pi peers", () => {
+test("pi-durable and chord are the pi family's one version, 1.5.2 exactly, the dev pins the same, and they are its only pi peers", () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(SRC, "..", "package.json"), "utf8"));
   const pinned = ["@earendil-works/chord", "@earendil-works/pi-durable"];
   const peers = Object.entries(manifest.peerDependencies ?? {}).filter(([name]) => name.startsWith("@earendil-works/"));
   assert.deepEqual(peers.map(([name]) => name).sort(), [...pinned].sort());
   for (const name of pinned) {
-    assert.equal(manifest.peerDependencies[name], "1.5.0", `${name} is the family's exact version`);
+    assert.equal(manifest.peerDependencies[name], "1.5.2", `${name} is the family's exact version`);
     const pin = manifest.devDependencies?.[name];
-    if (pin) assert.equal(pin, "1.5.0", `${name} is developed on the version it names`);
+    if (pin) assert.equal(pin, "1.5.2", `${name} is developed on the version it names`);
   }
 });
 
