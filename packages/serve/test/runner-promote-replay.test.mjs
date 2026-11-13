@@ -9,7 +9,11 @@
 //   - champion/challenger: a promoted digest (the champion) keeps serving while a newer revision of it replays, and after
 //     that revision's replay holds it; the revision serves only once its replay promotes it;
 //   - one challenger at a time: a newer revision supersedes the one replaying; that one's replay runs are cancelled (no
-//     new one starts), its record says superseded, and the champion serves throughout.
+//     new one starts), its record says superseded, and the champion serves throughout; "newer" is the learning folder's
+//     main, never a run's launch time: a run pinned to an older commit supersedes nothing;
+//   - a replay that failed on its inputs (a step failed) is no evidence: held, never promoted on the agent's answers;
+//   - a replay run runs only while its revision replays, and only on that revision: else it ends failed, no agent;
+//   - a revision whose input the run does not fit (a new required field) leaves its champion serving the run.
 // The graded runs are records the promotion reads (their grade, launch and row), on a pi run of the faux gateway.
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -139,8 +143,13 @@ async function world(t, { graded = 6, expected = { answer: 42 }, sure = true, fl
     await server.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: launchOf(question, (await seedOf(dir, "agent-1")).sha) });
     return ended(id);
   };
+  /** A run launched now pinned to learning commit `at`, as a run made before main moved is. */
+  const startPinned = async (id, question, at) => {
+    await server.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: launchOf(question, at) });
+    return ended(id);
+  };
   const replays = async () => (await server.runs.list({ agentId: "agent-1" })).filter((row) => row.id !== "run-1" && row.id !== "run-2");
-  return { server, gw, logs, start, ended, replays, seed, dir, proxy };
+  return { server, gw, logs, start, startPinned, launchOf, ended, replays, seed, dir, proxy };
 }
 
 test("a new digest with graded inputs replays before it serves: the agent takes the run meanwhile; within the bar, the next run is served first", { timeout: 180_000 }, async (t) => {
@@ -386,4 +395,71 @@ test("one challenger at a time: two wrong grades in a row, the first revision's 
   assert.deepEqual(after.filter((one) => one.digest === THIRD).map(({ decided }) => decided), ["replaying", "promote"]);
   assert.deepEqual(servingOf(after), [{ workflow: "answer", digest: THIRD, replaying: null }]);
   assert.ok(logs.some((line) => line.includes(`${REVISED} superseded by ${THIRD} while it replayed; 6 replay runs cancelled`)), logs.join("\n"));
+});
+
+test("a replay whose workflow fails on every input (a step failed: a credential or tool the replay ran without) is no evidence: held, never promoted on the agent's answers", { timeout: 180_000 }, async (t) => {
+  // The node's answer is off its schema every time: the step fails, the workflow hands the run back on a failure.
+  const { server, start, replays } = await world(t, { submit: () => ({ answer: "forty-two", sure: true }) });
+  await start("run-1", "What is six times seven");
+  const runs = await until(async () => {
+    const all = await replays();
+    return all.length === 6 && all.every((row) => FINAL.includes(row.state) && row.runner === null) && all;
+  }, "the six replay runs ended");
+  assert.deepEqual(runs.map((row) => row.metrics?.replay?.outcome), runs.map(() => "failed"), JSON.stringify(runs.map((row) => row.metrics)));
+  const second = await start("run-2", "What is seven times six");
+  assert.equal(second.metrics?.path, "agent", `held: the agent takes the run: ${JSON.stringify(second.metrics)}`);
+  const decided = (await promotionsOf(server.settings, "agent-1")).at(-1);
+  assert.deepEqual({ decided: decided.decided, source: decided.source, n: decided.replay.n }, { decided: "hold", source: "replay", n: 0 });
+  assert.match(decided.reason, /only 0 replays answered or handed back \(6 failed/);
+});
+
+test("a replay run its claim cannot lay at its digest ends failed: the agent is never asked", { timeout: 120_000 }, async (t) => {
+  const { server, gw, launchOf, ended } = await world(t);
+  await server.runs.create({ id: "replay-stale", agentId: "agent-1", revisionId: "rev-1" }, { body: { ...launchOf("Question 0"), replay: { of: "graded-0", workflow: "answer", digest: "0000000000000000" } } });
+  const row = await ended("replay-stale");
+  assert.equal(row.state, "failed", JSON.stringify(row));
+  assert.match(row.summary ?? "", /laid no workflow by that name at that digest/);
+  assert.equal(gw.requests.length, 0, "no model request: neither the workflow nor the agent ran");
+});
+
+test("a replay run whose revision was superseded never runs, its cancel lost or not", { timeout: 120_000 }, async (t) => {
+  const { server, gw, launchOf, ended } = await world(t);
+  await recordPromotion(server.settings, "agent-1", { workflow: "answer", digest: DIGEST, at: new Date().toISOString(), decided: "superseded", source: "replay", reason: "superseded", superseded_by: "ffffffffffffffff", runs: ["replay-orphan"] }, (was) => was === undefined);
+  await server.runs.create({ id: "replay-orphan", agentId: "agent-1", revisionId: "rev-1" }, { body: { ...launchOf("Question 0"), replay: { of: "graded-0", workflow: "answer", digest: DIGEST } } });
+  const row = await ended("replay-orphan");
+  assert.equal(row.state, "failed", JSON.stringify(row));
+  assert.match(row.summary ?? "", /superseded by ffffffffffffffff/);
+  assert.equal(gw.requests.length, 0, "no model request");
+});
+
+test("a run pinned to an older revision, launched after the newest one's replay started, never supersedes it: the champion serves it", { timeout: 180_000 }, async (t) => {
+  const w = await championWorld(t);
+  const { server, start, startPinned, logs, dir } = w;
+  // Revision two is on main (no claim laid it yet); revision three lands on top of it, and a run at main starts its replay.
+  const two = (await seedOf(dir, "agent-1")).sha;
+  await reviseOn(w, "run-1b", DIGEST, thirdFlow, two);
+  const third = await start("run-3", "What is six times seven, again");
+  assert.deepEqual([third.metrics?.path, third.metrics?.workflow_digest], ["workflow", DIGEST]);
+  assert.equal((await promotionsOf(server.settings, "agent-1")).filter((one) => one.digest === THIRD).at(-1)?.decided, "replaying");
+  // A run pinned to revision two's commit, made after revision three's replay started.
+  const old = await startPinned("run-old", "What is seven times six", two);
+  assert.deepEqual([old.metrics?.path, old.metrics?.workflow_digest], ["workflow", DIGEST], `the champion serves the older pin: ${JSON.stringify(old.metrics)}\n${logs.join("\n")}`);
+  const records = await promotionsOf(server.settings, "agent-1");
+  assert.equal(records.filter((one) => one.digest === THIRD).at(-1)?.decided, "replaying", `revision three still replays: ${JSON.stringify(records)}`);
+  assert.deepEqual(records.filter((one) => one.digest === REVISED), [], "revision two starts nothing");
+  await until(async () => {
+    const mine = (await server.runs.list({ agentId: "agent-1" })).filter((row) => !/^run-/.test(row.id));
+    return mine.length === 6 && mine.every((row) => FINAL.includes(row.state) && row.runner === null);
+  }, "revision three's replay runs ended");
+});
+
+test("a revision that adds a required input field leaves its champion serving the inputs the champion takes", { timeout: 180_000 }, async (t) => {
+  const w = await world(t);
+  const { server, start, seed } = w;
+  await recordPromotion(server.settings, "agent-1", { workflow: "answer", digest: DIGEST, at: new Date().toISOString(), decided: "promote", source: "dry_run", reason: "promoted on its passing dry run", commit: seed }, (was) => was === undefined);
+  // The revision asks for a locale too: a run with a question alone does not fit it, and does fit the champion.
+  const wide = { ...answerFlow, schemas: { ...answerFlow.schemas, In: { type: "object", required: ["question", "locale"], properties: { question: { type: "string" }, locale: { type: "string" } } } } };
+  await reviseOn(w, "served-0", DIGEST, wide, seed);
+  const run = await start("run-1", "What is six times seven");
+  assert.deepEqual([run.metrics?.path, run.metrics?.workflow_digest], ["workflow", DIGEST], JSON.stringify(run.metrics));
 });

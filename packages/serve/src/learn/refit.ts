@@ -13,10 +13,10 @@ export const THRESHOLD_MIN = 0.001;
 export const THRESHOLD_MAX = 0.999;
 export const FIT_MIN_WRONG = 5;
 
-/** One row a refit reads: the guard rows of one input (each step's p known up to where it stopped), whether the workflow
- *  answered it alone with every guard passing record-only (`answered`), and if so whether that answer was right
- *  (`wfCorrect`); `agentCorrect`, the chance the agent's answer to it is right (its grade, 1 or 0, when known; the agent's
- *  mean accuracy when not). */
+/** One row a refit reads: the guard rows of one input (each step's p known up to where it stopped, `escalated` on the one
+ *  that handed it back), whether the workflow answered it alone with every guard passing record-only (`answered`), and if
+ *  so whether that answer was right (`wfCorrect`; null: unknown); `agentCorrect`, the chance the agent's answer to it is
+ *  right (its grade, 1 or 0, when known; the agent's mean accuracy when not). */
 export interface RefitRow {
   readonly guards: readonly GuardRow[];
   readonly answered: boolean;
@@ -85,20 +85,25 @@ function solve(a: number[][], b: number[]): number[] | undefined {
   return m.map((row, i) => row[n]! / row[i]!);
 }
 
-/** The rows' accuracies with p read through `pOf` and each step held to `thresholds`: a row that did not answer alone, or
- *  one any guard of hands back on, takes the agent's answer. */
+/** The rows' accuracies with p read through `pOf` and each step held to `thresholds`: a row any guard of hands back on
+ *  takes the agent's answer; one that answered alone, its grade. A row that did not answer alone because a guard handed
+ *  it back (one of its guards escalated) and that no guard would hand back at `thresholds` would have answered with an
+ *  answer nobody read: counted wrong, so a threshold never comes down past hand-backs with no evidence of what the
+ *  workflow says there. One that did not answer for another reason (a step failed, an escalate node) takes the agent's
+ *  answer at every threshold. */
 function scoreAt(rows: readonly RefitRow[], pOf: (row: GuardRow) => number | null, thresholds: ReadonlyMap<string, number>) {
   let [wf, agent, handed] = [0, 0, 0];
   for (const row of rows) {
     agent += row.agentCorrect;
-    const back = !row.answered || row.wfCorrect === null || row.guards.some((guard) => {
+    const under = row.guards.some((guard) => {
       const p = pOf(guard);
       return p === null || p < (thresholds.get(guard.node) ?? guard.threshold);
     });
-    if (back) {
+    const known = row.answered && row.wfCorrect !== null;
+    if (under || (!known && !row.guards.some((guard) => guard.escalated))) {
       handed += 1;
       wf += row.agentCorrect;
-    } else if (row.wfCorrect) wf += 1;
+    } else if (known && row.wfCorrect) wf += 1;
   }
   const n = rows.length || 1;
   return { wf_acc: wf / n, agent_acc: agent / n, handed_back: handed };
@@ -145,11 +150,12 @@ export function refitGuards(text: string, rows: readonly RefitRow[], now: string
   const agentAcc = scoreAt(rows, pOf, thresholds).agent_acc;
   const meets = (at: ReadonlyMap<string, number>) => scoreAt(rows, pOf, at).wf_acc >= agentAcc - PROMOTE_BAR - 1e-9;
   // Each guard's candidates: THRESHOLD_MIN (hands back nothing but a p under it), each p its rows read within the DSL's
-  // range, and THRESHOLD_MAX; a step no row reached keeps its own.
+  // range, its own threshold, and THRESHOLD_MAX; a step no row reached keeps its own.
   const candidatesOf = new Map<string, number[]>();
-  for (const label of was.keys()) {
+  for (const [label, own] of was) {
     const seen = rows.flatMap((row) => row.guards.filter((g) => g.node === label).map(pOf)).filter((p): p is number => p !== null);
-    if (seen.length) candidatesOf.set(label, [...new Set([THRESHOLD_MIN, ...seen.map((p) => Math.min(THRESHOLD_MAX, Math.max(THRESHOLD_MIN, round(p, 6)))), THRESHOLD_MAX])].sort((a, b) => a - b));
+    const at = (p: number) => Math.min(THRESHOLD_MAX, Math.max(THRESHOLD_MIN, round(p, 6)));
+    if (seen.length) candidatesOf.set(label, [...new Set([THRESHOLD_MIN, ...seen.map(at), ...(own > 0 && own < 1 ? [own] : []), THRESHOLD_MAX])].sort((a, b) => a - b));
   }
   // Up from the bottom: while the bar is not met, the one raise (a guard to a higher candidate) that buys the most accuracy
   // per input it hands back. Taking the steps in order instead traps the refit: the first step alone meets the bar only by

@@ -62,7 +62,7 @@ import { entriesOf } from "./loop.js";
 import type { Claim } from "./loop-contract.js";
 import { bookedSpend, cliModelWorked, cliRunMetrics, runEndCost } from "./metrics.js";
 import { journalEntries } from "./journal-reader.js";
-import { claimPromotion, promotionGate, replayLaid } from "./promotion.js";
+import { claimPromotion, promotionGate, replayClaimed, replayLaid } from "./promotion.js";
 import { laidFor, pastOf, pathMetrics, workflowFirstOf } from "./workflow-first.js";
 import { runPathOverStore } from "../store-reads/learning.js";
 import { type SpecHolds, specBuilt } from "./spec-holds.js";
@@ -473,6 +473,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   const firstChoice = learnsWorkflows(revision.kind, laidFlows) ? await workflowFirstOf(revision.kind, laidFlows, launch, log, pastOf(deps.store, runRow.agentId), promotionGate(claimPromotion({
     store: deps.store, agentId: runRow.agentId, runId: claim.runId, revisionId: runRow.revisionId, launch, context, log, folder: learningFolder, shown,
   }))) : {};
+  // A replay run runs only its revision, while it still replays: else its claim is refused (the run ends failed, no agent).
+  await replayClaimed(deps.store, runRow.agentId, launch, firstChoice);
   const { serve: workflowFirst, revise: workflowRevise } = firstChoice;
   const workflows = laidFor(laidFlows, firstChoice);
   const learns = learnsWorkflows(revision.kind, workflows);
