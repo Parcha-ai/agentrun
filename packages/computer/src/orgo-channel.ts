@@ -184,12 +184,13 @@ function frameText(data: unknown): { text: string; binary: boolean } | Promise<{
  */
 export function orgoTerminalChannel({
 	rest,
-	workspaceId,
+	workspace,
 	webSocket = defaultWebSocket,
 	echoMs = 3_000,
 }: {
 	rest: OrgoRest;
-	workspaceId: string;
+	/** The workspace the computers live in, which an upload names: the provider's, read when first needed. */
+	workspace: (signal?: AbortSignal) => Promise<Result<string>>;
 	webSocket?: OrgoWebSocketFactory;
 	/** How long a typed line waits for the shell's echo before it is typed again. */
 	echoMs?: number;
@@ -344,9 +345,11 @@ export function orgoTerminalChannel({
 			if (bytes.length > MAX_UPLOAD_BYTES) return fail("invalid", `Orgo's upload takes at most 10 MB, and ${path} is ${bytes.length} bytes`);
 			const at = path.lastIndexOf("/");
 			if (at < 0 || path.slice(at + 1) === "") return fail("invalid", `an upload goes to an absolute file path, not ${JSON.stringify(path)}`);
+			const workspaceId = await workspace(signal);
+			if (!workspaceId.ok) return workspaceId;
 			const form = new FormData();
 			form.set("file", new Blob([new Uint8Array(bytes)]), path.slice(at + 1));
-			form.set("workspaceId", workspaceId);
+			form.set("workspaceId", workspaceId.value);
 			form.set("desktopId", computer);
 			form.set("destPath", path.slice(0, at) || "/");
 			const put = await rest.request("POST", "/files/upload", { form, timeoutMs, ...(signal ? { signal } : {}) });

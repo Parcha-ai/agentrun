@@ -48,7 +48,7 @@ import { answerPage, byOwnerSession, ConsoleSessions, heldSessions, isJson, over
 import { hostFix, hostName, loopbackNames } from "./host-check.js";
 import { computerViewerLink, familyReaches, type LiveFamily, type LiveHandover, liveViewerById, liveViewerFor, liveViewerLink, OpenViewers, proxyLiveUpgrade, serveViewerFile, viewerAnswers } from "./browser-live.js";
 import { browserHandBack, handBackTarget } from "./browser-commands.js";
-import { type ComputerOf, computerView } from "./computer-view.js";
+import { type ComputerOf, computerView, type JournalEntry, sessionIn } from "./computer-view.js";
 import { liveReachOf } from "./live-reach.js";
 import { screenWaitEnded } from "./browser-wait-ended.js";
 import { durationMs, logLine } from "./print.js";
@@ -90,7 +90,8 @@ import { bootSealKey, withSealKey } from "./seal-key.js";
 import { ServerLockHeldError, takeServerLock } from "./server-lock.js";
 import { DRAIN_TIMEOUT } from "./runner/beside.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
-import { agentCostOverStore, agentLearningOverStore, learningCountsOverStore, learningSpendOverStore } from "./store-reads/learning.js";
+import { agentCostOverStore, agentLearningOverStore, costRunOf, learningCountsOverStore, learningSpendOverStore, runLearningEnd } from "./store-reads/learning.js";
+import { figuresOf, LearningBatches, type RunSnap } from "./learning-batch.js";
 import { costCsv, learningCostQuery } from "./learning-cost.js";
 import { evalOf, evalsOf, recordEval } from "./learning-evals.js";
 import { keyOf, SEAL_KEY_ENV, TOOL_FIELDS } from "./tool-keys.js";
@@ -123,7 +124,8 @@ import { permissionFrom } from "./tool-gate.js";
 import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, PAYLOAD_KEPT_BYTES, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
 import { applyBodyOf, COMPUTER_FIX, compiled, githubTriggerUnconnected, githubTriggerWords, madeTriggerIssues, type Package, packageModel, packageTiers, packageView, pickComputer, readPackages, type ShellHere, type TemplatesDeps } from "./templates.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, type DefinitionBody, definitionBodyIssues, EXTERNAL_NAME, ID, IDEMPOTENCY_TTL_S, inputIssues, isObject, type Json, stable, unknownFields } from "./validate.js";
-import { agentTools, BROWSER_VENDOR_IDS, browserKeyRow, isUnavailable, keptVendor, type Plane, recheckPlane, settingsIssues, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
+import { agentTools, BROWSER_VENDOR_IDS, browserKeyRow, isUnavailable, keptVendor, loadToolSettings, type Plane, recheckPlane, settingsIssues, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
+import { wakeAnsweredBySetting } from "./settings-wake.js";
 import { toolSettingsOverStore } from "./tool-settings-store.js";
 import { readApprovers, writeApprovers } from "./server-approvers.js";
 import type { DraftAsk } from "./learn/skills.js";
@@ -305,6 +307,8 @@ export type ServeOptions = {
    *  definition says `learning: true` starts from what its agent learned. `off`: no run this server starts does, whatever
    *  its agent's definition says, and its `learning` is null. */
   learning?: LearningMode;
+  /** A test's seam: how often a learning batch's loop looks at its run, in ms (learning-batch.ts; default 1000). */
+  batchPollMs?: number;
   /** How much of what a run learned its instructions hold under `# Learned`, in UTF-8 bytes (`--learning-budget`;
    *  default AGENTRUN_SERVE_LEARNING_BUDGET, else 8000): every note whole while they fit, else the notes that bear on
    *  the run's input whole and a line for each of the rest (learning.ts learnedParts, its note selector). */
@@ -454,6 +458,7 @@ export const ROUTES: readonly Route[] = [
   { method: "GET", pattern: /^\/computers$/, name: "listComputers" },
   { method: "PUT", pattern: /^\/computers\/([^/]+)\/keys$/, name: "saveComputerKeys" },
   { method: "POST", pattern: /^\/computers\/([^/]+)\/test$/, name: "testComputer" },
+  { method: "GET", pattern: /^\/computers\/([^/]+)\/choices$/, name: "listComputerChoices" },
   // A person's own computer paired with this server (computer-attach.ts): the owner's code, the driver's trade of it for
   // its token (no token of the server's: the code is the credential), the attach socket (a WebSocket: the server's
   // upgrade takes it; a plain GET is told so), and a computer's removal.
@@ -521,6 +526,10 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/mcp$/, name: "callMcp" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning$/, name: "getAgentLearning" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/cost$/, name: "getLearningCost" },
+  { method: "POST", pattern: /^\/agents\/([^/]+)\/learning\/batches$/, name: "createLearningBatch" },
+  { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/batches$/, name: "listLearningBatches" },
+  { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/batches\/([^/]+)$/, name: "getLearningBatch" },
+  { method: "POST", pattern: /^\/agents\/([^/]+)\/learning\/batches\/([^/]+)\/cancel$/, name: "cancelLearningBatch" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/evals$/, name: "listLearningEvals" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/learning\/evals$/, name: "recordLearningEval" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/notes$/, name: "listLearningNotes" },
@@ -1303,6 +1312,53 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     },
     shown: () => secretsShown(serverSecrets(), { local: true }),
   };
+  /** What a learning batch's loop reads of a run, from its view. */
+  const batchRunView = async (runId: string): Promise<RunSnap | undefined> => {
+    const v = (await viewOverStore(store, runId, viewDepsFor(ownOriginOf()))) as Record<string, any> | undefined;
+    if (!v) return undefined;
+    return { status: String(v.status), ended_at: v.ended_at ?? null, answer: typeof v.result?.final_answer === "string" ? v.result.final_answer : null, cost_usd: typeof v.cost?.usd === "number" ? v.cost.usd : null, learning_state: typeof v.learning?.state === "string" ? v.learning.state : null, error: typeof v.error?.message === "string" ? v.error.message : null };
+  };
+  // Learn from a CSV (learning-batch.ts): a batch's loop runs in this process over the run write half and the run view; its
+  // state is the store's settings, so a batch still running when the server stopped takes up again as it starts. Its reads
+  // (create's answer, read, list, cancel) cut its text as the learning routes do (learningShown, below).
+  const batches = new LearningBatches({
+    settings: store.settings,
+    learning: async (agentId) => {
+      const entry = await needAgent(agentId);
+      if (entry.agent.archivedAt) return { learns: false, why: "it is archived." };
+      if (learning === "off") return { learns: false, why: "this server's learning is off (--learning)." };
+      if (entry.revision?.kind !== "agentic" || !learnsOf((entry.revision.body as { learning?: unknown }).learning)) return { learns: false, why: "its current revision does not say learning: true. Turn learning on first." };
+      return { learns: true };
+    },
+    // A row's run starts under the row's key (the store's run origin, as an Idempotency-Key's run does), so a start the
+    // server stopped before its row kept the id is found again, never started twice.
+    find: async (key) => (await agents.request(() => agents.store.runOfOrigin(key)))?.runId,
+    start: async (agentId, body, key) => (await startRunOf(await needAgent(agentId), body as Json, { origin: { key } })).id,
+    view: (runId) => batchRunView(runId),
+    // Sent already: a steer the run's commands hold with these words, not refused (a follow-up to an ended run is one too,
+    // its reopen's).
+    sent: async (runId, content) => (await store.commands(runId, 0)).some((c) => c.kind === "steer" && c.refused === null && (c.body as { text?: unknown } | undefined)?.text === content),
+    message: async (runId, content) => void (await message(store, await needRun(runId), content)),
+    // A run that is not there has nothing to stop; any other failure is the loop's (the row stays live and owned).
+    cancel: async (runId) => {
+      const moment = ID.test(runId) ? await momentOverStore(store, runId, viewDepsFor(ownOriginOf())) : undefined;
+      if (moment) await cancel(store, moment);
+    },
+    figures: async (runId) => {
+      const stored = await store.runs.get(runId);
+      if (!stored) return undefined;
+      // A run still going has no stored cost yet (its column is written at its end): its live cost, from its view, stands in,
+      // so a batch's cost now and the cost it books are costRunOf both.
+      const run = FINAL_STATES.includes(stored.state) ? stored : { ...stored, costUsd: (await batchRunView(runId))?.cost_usd ?? null };
+      // Every round the run kept (a review follow-up opens a round of its own), in order: what each one learned and merged.
+      const newest = await store.learning.proposal(runId);
+      const ends = await Promise.all(Array.from({ length: newest?.round ?? 1 }, (_, i) => runLearningEnd(store, runId, i + 1)));
+      return figuresOf(await costRunOf(store, run, 0), ends);
+    },
+    // A batch's reads are the learning routes' reads: the same cut, the same 403 when a sign-in can't be read here.
+    shown: (agentId) => learningShown(agentId),
+    ...(options.batchPollMs ? { pollMs: options.batchPollMs } : {}),
+  });
   // A run's served view and its live moment, from the store (store-view): `origin` is where this request reaches the
   // console, the secrets are cut live, and the sign-ins give the handed-pointer cut. Trigger and background reads (no
   // request) use the server's public address, else its own.
@@ -1478,6 +1534,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   stops.push(async () => triggers.close());
   // The firing loop runs against the server's own opened store: due firings start their runs through the run write half,
   // times missed while it was down are recorded, and the timer is armed for the next. (A test may inject its own store.)
+  void batches.resume().catch((error: Error) => void process.stderr.write(`agentrun-serve: the learning batches' resume: ${error.message}\n`));
   void triggers.start().catch((error: Error) => void process.stderr.write(`agentrun-serve: the triggers' start: ${error.message}\n`));
   // The App's installations repaired from GitHub's own, once, as the server starts: events missed while it was down. It
   // never rejects, and close (or a start that fails) aborts it and waits for it before it closes.
@@ -2863,8 +2920,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const run = await needRun(id);
         const family: LiveFamily = found.name === "getRunBrowser" ? "browser" : "computer";
         // The run's open viewer, from the store's sealed viewer rows the runner publishes its hand-over into (browser-live.ts
-        // liveViewerLink/computerViewerLink, under the seal key); who drives, from the cut's computerHoldOf over the store.
-        const hold = await computerHoldOf(store, run.id);
+        // liveViewerLink/computerViewerLink, under the seal key); who drives, from the cut's computerHoldOf over the store,
+        // and where a computer with no viewer is (sessionIn), both over one read of the run's journal.
+        const entries = (await runEntries(store, run.id, ctx)) as unknown as readonly JournalEntry[];
+        const hold = await computerHoldOf(store, run.id, { entries: async () => entries });
         const kept = await keptBrowserOf(store, run.id);
         // A desktop or a phone (the run's revision's computer) whose screen is not open now is still the run's computer:
         // none with its kind, never off as if the agent had none (#2170).
@@ -2878,6 +2937,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
             return computerViewerLink(store, sealKey, run.id, answers);
           },
           computer: () => (viewed ? { kind: viewed } : computerOf(kept, env, family)),
+          session: (kind) => sessionIn(kind, entries),
           hold: () => hold,
           // A going run's browser let go while it waited for its person: the Screen tab says so, with when. One settings
           // row (browser-wait-ended.ts), never the run's journal: this is read on every Screen poll.
@@ -2932,7 +2992,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
       case "listComputers":
       case "saveComputerKeys":
-      case "testComputer": {
+      case "testComputer":
+      case "listComputerChoices": {
         // Settings → Computers (computers.ts): the rules are the handler's; this sends its answer.
         const provider = found.name === "listComputers" ? undefined : id;
         const body = found.name === "saveComputerKeys" ? await bodyOf(req) : undefined;
@@ -3184,9 +3245,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const body = await bodyOf(req);
         const issues = settingsIssues(body);
         if (issues.length) throw invalid(issues);
+        const before = settings.get();
         await settings.put(body as ToolSettingsMap);
         // A setting changes what the web tools resolve to, never env or what a harness offers: capabilities again.
         recompose();
+        // A run parked on a call whose tool reads allow now, on its pinned revision: woken, so its next claim's gate answers
+        // the ask by the setting (settings-wake.ts), before this answer. The settings as the runner's gate reads them.
+        const woken = await wakeAnsweredBySetting(store, await loadToolSettings(store), before);
+        if (woken.length) log?.(logLine("tool_settings", { condition: "runs_woken", runs: woken.join(",") }));
         return send(res, 200, withDefaults(settings.get()));
       }
       // A person's view and control of what an agent learned (learning-routes.ts). Every text cut of the host's secrets as
@@ -3214,6 +3280,20 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         }
         return send(res, 200, { agent: id, ...cost });
       }
+      case "createLearningBatch": {
+        await needAgent(id);
+        const made = await batches.create(id, await bodyOf(req));
+        return send(res, 202, await batches.read(id, made.id), { location: `/v2/agents/${encodeURIComponent(id)}/learning/batches/${made.id}` });
+      }
+      case "listLearningBatches":
+        await needAgent(id);
+        return send(res, 200, await batches.list(id));
+      case "getLearningBatch":
+        await needAgent(id);
+        return send(res, 200, await batches.read(id, second!));
+      case "cancelLearningBatch":
+        await needAgent(id);
+        return send(res, 200, await batches.cancel(id, second!));
       case "listLearningEvals": {
         await needAgent(id);
         // The agent's eval records (learning-evals.ts), newest first, the latest the one shown: only ever what was posted.
@@ -3786,6 +3866,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // The ends' follower stops before the webhooks it feeds and the store it reads.
     clearTimeout(endsTimer);
     await endsRead;
+    // A learning batch's loop ends where it stands, still running: it takes up when a server starts on this data again.
+    await batches.halt();
     await webhooks.close();
     // An upgraded socket is no connection closeAllConnections ends, and server.close waits for it.
     viewers.close();

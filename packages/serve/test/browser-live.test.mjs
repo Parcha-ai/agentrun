@@ -206,7 +206,7 @@ test("the viewer's token and its file are in no record, row, view, file list, ho
   const { item: ended } = await open.ws.until((m) => m.type === "close" || (m.type === "text" && JSON.parse(m.data).type === "ended"), 15_000);
   assert.ok(ended, "the open viewer was ended");
   assert.ok(await until(async () => (await w.viewers()).length === 0), "the hand-over went with the session");
-  assert.deepEqual((await computerOf(w, { cookie: w.cookie })).json, { state: "none", kind: "browser", hold: "agent" });
+  assert.deepEqual((await computerOf(w, { cookie: w.cookie })).json, { state: "none", kind: "browser", hold: "agent", session: "closed" });
   assert.equal((await liveWs(w, wsPath)).status, 404, "the old link opens nothing");
   assert.equal((await call(w.server.port, { path: `/v2/runs/${w.runId}/computer/live/v/${handed.id}`, headers: { cookie: w.cookie } })).status, 404);
   assert.ok(!existsSync(runDir) || !filesUnder(runDir).some(([, bytes]) => bytes.includes(handed.token)), "and nothing of the run's holds the token");
@@ -229,8 +229,10 @@ test("the route says whether a run has a browser at all: off with why when its a
   };
   const plain = await ran("plain", ["read"], "hi");
   const browsed = await ran("browse", ["browser"], "Browse the example page.");
+  const unbrowsed = await ran("browse-not", ["browser"], "hi");
   assert.deepEqual((await browserOfRun(first, cookieOf(made), plain)).json, { state: "off", hold: "agent", why: "this run's agent has no computer" });
-  assert.deepEqual((await browserOfRun(first, cookieOf(made), browsed)).json, { state: "none", kind: "browser", hold: "agent" }, "a browser, its session released with the run");
+  assert.deepEqual((await browserOfRun(first, cookieOf(made), browsed)).json, { state: "none", kind: "browser", hold: "agent", session: "closed" }, "a browser, its session released with the run");
+  assert.deepEqual((await browserOfRun(first, cookieOf(made), unbrowsed)).json, { state: "none", kind: "browser", hold: "agent", session: "unopened" }, "a browser its agent never opened: no browser step in its journal");
   const onBrowser = (server, cookie, runId) => call(server.port, { path: `/v2/runs/${runId}/browser`, headers: { cookie } });
   assert.deepEqual((await onBrowser(first, cookieOf(made), plain)).json, { state: "off", reason: "this run's agent has no browser tool" }, "the browser's own route, as on the base");
   assert.deepEqual((await onBrowser(first, cookieOf(made), browsed)).json, { state: "none" });

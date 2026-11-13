@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { problem, ProblemCard } from "@/components/learningProblem";
 import { CostPerRun } from "@/components/CostPerRun";
+import { LearnFromCsv } from "@/components/LearnFromCsv";
 import { HeldOutTest } from "@/components/HeldOutTest";
 import { WorkflowReplay } from "@/components/WorkflowReplay";
 import { LearningSwitch } from "@/components/LearningSwitch";
@@ -54,6 +55,8 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places, on
   const [olderLog, setOlderLog] = useState<{ items: LearningChange[]; cursor: string | null; pages: number }>({ items: [], cursor: null, pages: 0 });
   // Whether the runs read are all the agent's (false: the latest page of them only).
   const [adding, setAdding] = useState(false);
+  // Bumped when a batch from a CSV ends: the chart reads again, with the tab.
+  const [batchEnds, setBatchEnds] = useState(0);
   const asked = useRef(0);
   const reading = useRef(false);
   // Reads the tab again. The answer settles once the list is read, or once that read failed (it never rejects), so an
@@ -154,7 +157,8 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places, on
       {stale}
       <Empty on={on} lookedBack={lookedBack} switchRow={switchRow(true)} onAdd={readOnly ? undefined : () => setAdding(true)} />
       <HeldOutTest v2={v2} agentId={agent.agent_id} quiet />
-      <CostPerRun v2={v2} agentId={agent.agent_id} on={on} quiet />
+      {on && !readOnly && <LearnFromCsv v2={v2} agentId={agent.agent_id} onFinished={() => { setBatchEnds((n) => n + 1); void read(); }} />}
+      <CostPerRun key={batchEnds} v2={v2} agentId={agent.agent_id} on={on} quiet />
       <NotKept runs={runs} />
     </div>
   );
@@ -179,7 +183,8 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places, on
       )}
       <HeldOutTest v2={v2} agentId={agent.agent_id} />
       {shownImpact(view.impact) && <ImpactCard impact={view.impact} />}
-      <CostPerRun v2={v2} agentId={agent.agent_id} on={on} />
+      {on && !readOnly && <LearnFromCsv v2={v2} agentId={agent.agent_id} onFinished={() => { setBatchEnds((n) => n + 1); void read(); }} />}
+      <CostPerRun key={batchEnds} v2={v2} agentId={agent.agent_id} on={on} />
       <WorkflowReplay v2={v2} agentId={agent.agent_id} workflows={workflows} />
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
         <div className="min-w-0 space-y-6">

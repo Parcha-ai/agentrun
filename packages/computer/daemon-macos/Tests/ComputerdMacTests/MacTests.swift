@@ -82,6 +82,18 @@ final class MacTests: XCTestCase {
 		for role in Roles.bySubrole.values { XCTAssertTrue(uiRoles.contains(role), role) }
 	}
 
+	func testTitleBarButtonsAreNamedFromTheirSubrole() {
+		XCTAssertEqual(Roles.name(title: nil, description: nil, subrole: "AXCloseButton"), "Close")
+		XCTAssertEqual(Roles.name(title: nil, description: nil, subrole: "AXMinimizeButton"), "Minimize")
+		XCTAssertEqual(Roles.name(title: nil, description: nil, subrole: "AXZoomButton"), "Zoom")
+		XCTAssertEqual(Roles.name(title: nil, description: nil, subrole: "AXFullScreenButton"), "Full Screen")
+		// A title or a description the app gave wins; any other subrole gives no name.
+		XCTAssertEqual(Roles.name(title: "Done", description: "finish", subrole: "AXCloseButton"), "Done")
+		XCTAssertEqual(Roles.name(title: nil, description: "close tab", subrole: "AXCloseButton"), "close tab")
+		XCTAssertNil(Roles.name(title: nil, description: nil, subrole: "AXSearchField"))
+		XCTAssertNil(Roles.name(title: nil, description: nil, subrole: nil))
+	}
+
 	func testHelloSaysEveryFeatureWithAReason() throws {
 		let hello = MacPlatform.driver().hello()
 		XCTAssertEqual(hello.os, "macos")
