@@ -178,7 +178,7 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places, on
         </section>
       )}
       <HeldOutTest v2={v2} agentId={agent.agent_id} />
-      {shownImpact(view.impact) ? <ImpactCard impact={view.impact} /> : view.impact === null && on && <p className="font-mono text-small text-muted-foreground">{IMPACT_LATER}</p>}
+      {shownImpact(view.impact) && <ImpactCard impact={view.impact} />}
       <CostPerRun v2={v2} agentId={agent.agent_id} on={on} />
       <WorkflowReplay v2={v2} agentId={agent.agent_id} workflows={workflows} />
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
@@ -253,7 +253,6 @@ function RefreshFailed({ error, onRetry }: { error: unknown; onRetry: () => void
 
 /** Said where the before and after goes until the server has one (it needs two runs on each side of the first thing the
  *  agent learned: a note, a skill or a workflow). */
-const IMPACT_LATER = "After two runs on each side of the first thing it learned (a note, a skill or a workflow), this shows what learning changed.";
 
 /** A titled box at the side, as Mission Control's lists are: a bordered section under a caps header. */
 function Panel({ title, children, label }: { title: string; children: ReactNode; label?: string }) {

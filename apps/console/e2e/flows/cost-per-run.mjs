@@ -2,14 +2,14 @@
 // on, its GET /v2/agents/{id}/learning/cost answered with the console's invented sample (src/components/CostPerRun.sample.json:
 // 80 runs of an invoice-sorter agent whose learned workflow takes over at run 21). The chart lays out inside its card at
 // each width (no label past the plot's right edge), names the takeover and how many times cheaper, and a hover shows a
-// run's readout. The execution mix sits beside the chart at desktop width and under it below, fits the card, and a hover on a block names its runs and counts. A held-out result posted through the real API (POST /v2/agents/{id}/learning/evals) shows above it. E2E_SHOTS=<dir>
+// run's readout. The execution mix sits under the plot on its run axis at every width, fits the card, and a hover on a block names its runs and counts. A held-out result posted through the real API (POST /v2/agents/{id}/learning/evals) shows above it. E2E_SHOTS=<dir>
 // also saves each width and theme, before and during the hover.
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { check } from "../harness.mjs";
 
 const SAMPLE = JSON.parse(readFileSync(new URL("../../src/components/CostPerRun.sample.json", import.meta.url), "utf8"));
-export const WIDTHS = [1440, 820];
+export const WIDTHS = [1440, 820, 390];
 
 /** The chart's card, measured where it is laid out: its box, the plot's, and every label's right edge. */
 function measure() {
@@ -23,9 +23,10 @@ function measure() {
     return [...el.querySelectorAll("text")].map((t) => ({ text: t.textContent, rect: t.getBoundingClientRect() })).filter((t) => t.rect.right > Math.min(edge, box.right) + 0.5 || t.rect.left < box.left - 0.5).map((t) => t.text);
   };
   const plot = svg.getBoundingClientRect(), strip = mix.getBoundingClientRect();
-  // Beside: the mix starts right of the plot; under: it starts below it. Never over it.
+  // Under the plot, never over it, on its run axis: the same left edge and width, so a run's column is under its dot.
   const overlaps = strip.left < plot.right - 0.5 && strip.top < plot.bottom - 0.5;
-  return { cardWidth: card.getBoundingClientRect().width, plotWidth: plot.width, past: [...pastOf(svg), ...pastOf(mix)], overlaps, beside: strip.left >= plot.right - 0.5 };
+  const aligned = Math.abs(strip.left - plot.left) < 1 && Math.abs(strip.width - plot.width) < 1;
+  return { cardWidth: card.getBoundingClientRect().width, plotWidth: plot.width, past: [...pastOf(svg), ...pastOf(mix)], overlaps, under: strip.top >= plot.bottom - 0.5, aligned };
 }
 
 export default {
@@ -41,7 +42,7 @@ export default {
     // The held-out headline: none recorded reads nothing under the empty state; one posted through the real API shows.
     const none = await api("GET", `/agents/${encodeURIComponent(id)}/learning/evals`);
     check(none.status === 200 && none.body.evals.length === 0, `a fresh agent's evals: ${none.status} ${JSON.stringify(none.body)}`);
-    const posted = await api("POST", `/agents/${encodeURIComponent(id)}/learning/evals`, { source: "invoice bench, sealed test", n: 200, learned: { accuracy: 0.94, ci: [0.902, 0.968], usd_per_job: 0.12 }, by_hand: { accuracy: 0.81, ci: [0.75, 0.86], usd_per_job: 0.89 } });
+    const posted = await api("POST", `/agents/${encodeURIComponent(id)}/learning/evals`, { name: "invoice bench, sealed test", label_source: "invented labels", n: 200, correct: 188, cost_per_task_usd: 0.12, baseline_cost_per_task_usd: 0.89 });
     check(posted.status === 201, `POST /learning/evals answered ${posted.status}: ${JSON.stringify(posted.body)}`);
     await page.route(new RegExp(`/v2/agents/${encodeURIComponent(id)}/learning/cost(\\?.*)?$`), (route) => route.fulfill({ json: { ...SAMPLE, agent: id } }));
     const shots = process.env.E2E_SHOTS;
@@ -58,7 +59,7 @@ export default {
         await page.evaluate(() => document.fonts.ready);
         check(await page.evaluate((t) => document.documentElement.classList.contains(t), theme), `${theme} ${width}px: the page is not in the ${theme} theme`);
         const heldOut = await page.getByTestId("held-out-test").textContent();
-        check(/200 jobs it never learned from/.test(heldOut ?? "") && /94%81% by hand, \+13 points/.test(heldOut ?? "") && /7\.4x cheaper/.test(heldOut ?? ""), `${theme} ${width}px: the held-out card says ${heldOut}`);
+        check(/200 jobs it never learned from/.test(heldOut ?? "") && /94%95% interval 89\.8% to 96\.5%, n=200/.test(heldOut ?? "") && /7\.4x cheaper/.test(heldOut ?? ""), `${theme} ${width}px: the held-out card says ${heldOut}`);
         if (shots && width === WIDTHS[0]) await page.getByTestId("held-out-test").screenshot({ path: join(shots, `held-out-${theme}-${width}.png`) });
         const headline = await card.locator("h3 + p").textContent();
         check(/before learning, .* after takeover: 7x cheaper/.test(headline ?? ""), `${theme} ${width}px: the headline says ${headline}`);
@@ -67,8 +68,10 @@ export default {
         if (m.plotWidth > m.cardWidth + 0.5) wrong.push(`${theme} ${width}px: the plot is ${m.plotWidth}px in a ${m.cardWidth}px card`);
         for (const t of m.past) wrong.push(`${theme} ${width}px: "${t}" runs past the plot`);
         if (m.overlaps) wrong.push(`${theme} ${width}px: the mix overlaps the chart`);
-        if (m.beside !== (width >= 1440)) wrong.push(`${theme} ${width}px: the mix is ${m.beside ? "beside" : "under"} the chart`);
+        if (!m.under || !m.aligned) wrong.push(`${theme} ${width}px: the mix is not under the plot on its run axis (${JSON.stringify(m)})`);
         // A hover two thirds of the way along: a run after the takeover, by the learned workflow.
+        // The card whole in the page's one scroller before it is shot: a card past the scroller's bottom is cut there.
+        await card.scrollIntoViewIfNeeded();
         if (shots) await card.screenshot({ path: join(shots, `cost-per-run-${theme}-${width}.png`) });
         const plot = card.locator('[tabindex="0"] > svg');
         await plot.scrollIntoViewIfNeeded();
