@@ -104,16 +104,30 @@ test("a cancel reaches a request of its own connection, not another connection's
 		};
 		const a = client();
 		const b = client();
+		// Each reply is awaited by polling what arrived, up to a generous deadline; no fixed sleep decides the outcome.
+		const reply = async (who, id) => {
+			for (let i = 0; i < 1500 && !who.replies.some((r) => r.id === id); i++) await new Promise((resolve) => setTimeout(resolve, 10));
+			return who.replies.find((r) => r.id === id);
+		};
 		a.send({ id: 1, method: "process.start", params: { argv: ["sleep", "30"] } });
-		await new Promise((resolve) => setTimeout(resolve, 300));
-		const started = a.replies.find((reply) => reply.id === 1).result;
+		const started = (await reply(a, 1))?.result;
+		assert.ok(started, "the process started");
+		// A connection's messages are handled in order, so a probe's reply (id 9) means the wait before it is registered.
+		// A's wait is registered first and B's, with the same id, after it: a shared table would hold B's and cancel B's.
 		a.send({ id: 2, method: "process.wait", params: { id: started.id, timeoutMs: 20_000 } });
+		a.send({ id: 9, method: "process.list", params: {} });
+		assert.ok(await reply(a, 9), "A's wait is registered");
 		b.send({ id: 2, method: "process.wait", params: { id: started.id, timeoutMs: 20_000 } });
-		await new Promise((resolve) => setTimeout(resolve, 300));
+		b.send({ id: 9, method: "process.list", params: {} });
+		assert.ok(await reply(b, 9), "B's wait is registered");
 		a.send({ method: "$/cancelRequest", params: { id: 2 } });
-		await new Promise((resolve) => setTimeout(resolve, 500));
-		assert.equal(a.replies.find((reply) => reply.id === 2)?.error?.code, -32800, "A's own wait was cancelled");
-		assert.equal(b.replies.find((reply) => reply.id === 2), undefined, "B's wait, with the same id, is still waiting");
+		assert.equal((await reply(a, 2))?.error?.code, -32800, "A's own wait was cancelled");
+		// B's wait must have survived A's cancel: it is still pending until the process ends, then it answers with the end.
+		assert.equal(b.replies.find((r) => r.id === 2), undefined, "B's wait, with the same id, is still waiting");
+		a.send({ id: 3, method: "process.signal", params: { id: started.id, signal: "KILL" } });
+		assert.ok(await reply(a, 3), "the signal was answered");
+		const ended = (await reply(b, 2))?.result;
+		assert.equal(ended?.running, false, "B's wait ran on to the process's end");
 		a.connection.destroy();
 		b.connection.destroy();
 	} finally {
