@@ -59,7 +59,7 @@ import { type Claim, ClaimRefused, type Journal } from "./loop-contract.js";
 import { bookedSpend, cliRunMetrics, runEndCost, runMetrics } from "./metrics.js";
 import { journalEntries } from "./journal-reader.js";
 import { piShaped } from "../store-reads/journal.js";
-import { claimPromotion, promotionGate, replayLaid } from "./promotion.js";
+import { claimPromotion, promotionGate, replayClaimed, replayLaid } from "./promotion.js";
 import { laidFor, pastOf, pathMetrics, servedOf, workflowFirstOf } from "./workflow-first.js";
 import { runPathOverStore } from "../store-reads/learning.js";
 import { type SpecHolds, specBuilt } from "./spec-holds.js";
@@ -568,6 +568,8 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   const firstChoice = learnsWorkflows(revision.kind, laidFlows) ? await workflowFirstOf(revision.kind, laidFlows, launch, log, pastOf(deps.store, runRow.agentId), promotionGate(claimPromotion({
     store: deps.store, agentId: runRow.agentId, runId: claim.runId, revisionId: runRow.revisionId, launch, context, log, folder: learningFolder, shown,
   }))) : {};
+  // A replay run runs only its revision, while it still replays: else its claim is refused (the run ends failed, no agent).
+  await replayClaimed(deps.store, runRow.agentId, launch, firstChoice);
   const { serve: workflowFirst, revise: workflowRevise } = firstChoice;
   const workflows = laidFor(laidFlows, firstChoice);
   // A tier a learned workflow's node names and the host has a model of: none can't be reached is left as `why`, and its

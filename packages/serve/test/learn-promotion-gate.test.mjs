@@ -61,7 +61,7 @@ test("20 graded runs it served: its guard refit to the cheapest threshold within
   const records = await promotionsOf(settings, "a");
   const refit = records.at(-1);
   assert.deepEqual({ decided: refit.decided, source: refit.source, digest: refit.digest, from: refit.refit.from, guards: refit.refit.guards, commit: refit.commit }, { decided: "promote", source: "refit", digest: workflowDigest({ workflow: commits[0].files[0].text }), from: digest, guards: [{ node: "answer", was: 0.5, threshold: 0.7 }], commit: "commit-1" }, "the refit's record names the learning commit its text landed as");
-  assert.equal(records.filter((one) => one.digest === digest).at(-1).checked, REFIT_EVERY, "checked at 20");
+  assert.equal(records.filter((one) => one.digest === digest).at(-1).checked, 10 + REFIT_EVERY, "checked through its newest grade's seq: 10 by hand, then the 20 it served");
   // The same 20 again: not checked twice.
   assert.equal(await gate({ name: "answer", workflow: text }, digest), true);
   assert.equal(commits.length, 1);

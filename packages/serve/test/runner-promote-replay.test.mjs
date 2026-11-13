@@ -9,7 +9,11 @@
 //   - champion/challenger: a promoted digest (the champion) keeps serving while a newer revision of it replays, and after
 //     that revision's replay holds it; the revision serves only once its replay promotes it;
 //   - one challenger at a time: a newer revision supersedes the one replaying; that one's replay runs are cancelled (no
-//     new one starts), its record says superseded, and the champion serves throughout.
+//     new one starts), its record says superseded, and the champion serves throughout; "newer" is the learning folder's
+//     main, never a run's launch time: a run pinned to an older commit supersedes nothing;
+//   - a replay that failed on its inputs (a step failed) is no evidence: held, never promoted on the agent's answers;
+//   - a replay run runs only while its revision replays, and only on that revision: else it ends failed, no agent;
+//   - a revision whose input the run does not fit (a new required field) leaves its champion serving the run.
 // The graded runs are records the promotion reads (their grade, launch and row), on a pi run of the faux gateway.
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
