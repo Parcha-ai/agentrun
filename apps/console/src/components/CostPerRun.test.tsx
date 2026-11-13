@@ -97,9 +97,29 @@ describe("CostChart", () => {
     expect(text(host)).toContain("After $0.128 · 7x cheaper");
     expect(text(host)).not.toContain("After takeover $0.128");
   });
-  it("carries the takeover marker down through the mix, ringed in the card colour", () => {
-    const marker = draw(sample).querySelector('[data-testid="mix-takeover"]');
-    expect([...marker!.querySelectorAll("path")].map((p) => p.getAttribute("class"))).toEqual(["stroke-card", "stroke-chart-workflow"]);
+  it("carries the takeover marker down through the mix as one line on the left edge of the takeover's block, never a ring cutting a column", () => {
+    const mix = draw(sample).querySelector<HTMLElement>('[data-testid="execution-mix"]')!;
+    const marker = mix.querySelector('[data-testid="mix-takeover"]')!;
+    const paths = [...marker.querySelectorAll("path")];
+    expect(paths.map((p) => p.getAttribute("class"))).toEqual(["stroke-chart-workflow"]);
+    // Runs 21 to 25 are a whole block starting at the takeover: its hover target begins where the line is.
+    const targets = [...mix.querySelectorAll("svg g")].map((g) => g.querySelector("rect")!).filter((r) => r.getAttribute("fill-opacity") === "0");
+    const edge = Number(targets[4]!.getAttribute("x"));
+    expect(Number(/^M([\d.]+),/.exec(paths[0]!.getAttribute("d")!)![1])).toBeCloseTo(edge, 1);
+  });
+  it("tiles the mix in whole blocks on the run axis: every block as wide as the others, the last one alone shorter, no gap between", () => {
+    const mix = draw(sample).querySelector<HTMLElement>('[data-testid="execution-mix"]')!;
+    const targets = [...mix.querySelectorAll("svg g")].map((g) => g.querySelector("rect")).filter((r): r is SVGRectElement => !!r && r.getAttribute("fill-opacity") === "0");
+    const spans = targets.map((r) => [Number(r.getAttribute("x")), Number(r.getAttribute("width"))] as const);
+    expect(spans).toHaveLength(16);
+    for (let i = 1; i < spans.length; i++) expect(spans[i]![0]).toBeCloseTo(spans[i - 1]![0] + spans[i - 1]![1], 1);
+    for (const [, w] of spans) expect(w).toBeCloseTo(spans[0]![1], 1);
+  });
+  it("gives a run whose cost is unknown its own column even when the last runs are unknown", () => {
+    const host = draw(series([run(1, "agent", 0.5), run(2, "agent", 0.5), run(3, "agent", null), run(4, "handed_back", null), run(5, "workflow", null)]));
+    const mix = host.querySelector<HTMLElement>('[data-testid="execution-mix"]')!;
+    const xs = [...mix.querySelectorAll("svg g")].map((g) => g.querySelector("rect")).filter((r): r is SVGRectElement => !!r && r.getAttribute("fill-opacity") === "0").map((r) => Number(r.getAttribute("x")));
+    expect(new Set(xs.map((v) => Math.round(v))).size).toBe(5);
   });
   it("names each path in the legend with its runs, and colours its dots by a chart token", () => {
     const host = draw(sample);

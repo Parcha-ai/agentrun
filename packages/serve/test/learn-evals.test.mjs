@@ -4,7 +4,7 @@
 // is 422 by field and nothing is kept; a retry under one Idempotency-Key is kept once. Aggregates only.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { EVALS_KEPT, evalOf, wilsonOf } from "../dist/learning-evals.js";
+import { EVALS_KEPT, evalOf, evalsOf, recordEval, wilsonOf } from "../dist/learning-evals.js";
 import { agent, serve } from "./support.mjs";
 
 const RECORD = {
@@ -77,4 +77,27 @@ test("POST /agents/{id}/learning/evals appends a record, GET answers the latest 
 
   assert.equal((await api("GET", "/agents/nobody/learning/evals")).status, 404);
   assert.equal((await api("POST", "/agents/nobody/learning/evals", RECORD)).status, 404);
+});
+
+// Two first posts at once on a store whose putIfAbsent inserts and reads back in separate calls (Postgres): between post A's
+// insert and its read, post B replaced the row with [B, A]. A's read returns [B, A], which is not A's own list, yet A is kept.
+test("a first post that reads back a list holding its own record is kept once, not written again after a racing post", async () => {
+  const rows = new Map();
+  const a = { id: "eval_a", name: "a" };
+  const b = { id: "eval_b", name: "b" };
+  const settings = {
+    get: async (key) => rows.get(key),
+    putIfAbsent: async (key, value) => {
+      if (!rows.has(key)) rows.set(key, value);
+      rows.set(key, [b, ...rows.get(key)]);
+      return rows.get(key);
+    },
+    replaceIf: async (key, was, value) => {
+      if (JSON.stringify(rows.get(key)) !== JSON.stringify(was)) return false;
+      rows.set(key, value);
+      return true;
+    },
+  };
+  await recordEval({ settings }, "agent-1", a);
+  assert.deepEqual((await evalsOf({ settings }, "agent-1")).map((e) => e.id), ["eval_b", "eval_a"]);
 });
