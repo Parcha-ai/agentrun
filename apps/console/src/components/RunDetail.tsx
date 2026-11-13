@@ -4,7 +4,7 @@ import { Composer } from "@/components/Composer";
 import { BudgetPaused, capWords, leastCap, NeedsYou, RaiseCap, suggestedCap } from "@/components/NeedsYou";
 import { type RunActions, RunHeader } from "@/components/RunHeader";
 import { RunError } from "@/components/RunError";
-import { ArtifactViewer, RunFiles } from "@/components/RunFiles";
+import { ArtifactViewer, listedFiles, RunFiles } from "@/components/RunFiles";
 import { RunResult } from "@/components/RunResult";
 import { ScreenPanel, useRunScreen } from "@/components/RunScreen";
 import { ComputerAskCard } from "@/components/ComputerAskCard";
@@ -18,7 +18,7 @@ import { askedAt, askOf, computerRefusal } from "@/lib/computerAsk";
 import { BY_THE_MINUTE } from "@/lib/computers";
 import { type LearningDiff, learningSteps } from "@/lib/learning";
 import { isEscalated, type MessageFeatures, type RunView, runState } from "@/lib/runState";
-import { latest, pendingQuestion } from "@/lib/viewing";
+import { latest, NO_ANSWER, pendingQuestion } from "@/lib/viewing";
 import type { ComputerHoldAnswer, Computers, HandBackOutcome, Run, RunComputer, RunFile, RunLearningRead, TimelineRow } from "@/lib/v2";
 
 export type RunDetailProps = {
@@ -110,6 +110,8 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
   const [picked, setTab] = useState<Tab>(initial ?? defaultTab);
   // A Graph tab that went away (the graph's read was refused) leaves the run's default tab open, never a blank view.
   const tab = picked === "graph" && !graphView ? defaultTab : picked;
+  // Files in hidden folders (.git, __pycache__…) show on asking; the Files tab and its count in the tab bar share this.
+  const [showHidden, setShowHidden] = useState(false);
   const [open, setOpen] = useState<{ file: RunFile; text: string | null } | null>(openFile ? { file: openFile, text: null } : null);
   // A tool call waiting on the owner's approval takes the question's place: an earlier question, answered, may still be
   // the newest waiting row, and is no question now.
@@ -196,7 +198,7 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
   // A story or a deep link can open a file on first render.
   useEffect(() => { if (openFile && readFile) void show(openFile); }, [openFile]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const tabs: [Tab, string][] = [...(graphView ? [["graph", "Graph"] as [Tab, string]] : []), ["report", "Report"], ["timeline", "Timeline"], ["files", `Files ${files.length}`], ...(hasScreen ? [["screen", "Screen"] as [Tab, string]] : [])];
+  const tabs: [Tab, string][] = [...(graphView ? [["graph", "Graph"] as [Tab, string]] : []), ["report", "Report"], ["timeline", "Timeline"], ["files", `Files ${listedFiles(files, showHidden).length}`], ...(hasScreen ? [["screen", "Screen"] as [Tab, string]] : [])];
   return (
     <div className="flex h-full min-h-0 flex-col">
       <RunHeader run={run} agentName={agentName} actions={actions} costText={costText} />
@@ -223,13 +225,13 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
           {view.needsYou && budget && typeof budget.cap_usd === "number" && actions?.onRaiseCap && <RaiseCap key={`${run.run_id}:${budget.at}`} cap={budget.cap_usd} suggested={suggestedCap(budget)} least={leastCap(budget)} paused onRaise={actions.onRaiseCap} />}
           {tab === "report" && <RunResult run={run} rows={rows} files={files} onOpen={show} />}
           {tab === "report" && !run.result && !view.final && <Working {...beforeAnswer(run, view)} />}
-          {tab === "report" && view.final && !run.result?.final_answer && !run.result?.output && !rows.some((r) => r.kind === "final_answer") && run.status !== "failed" && run.status !== "cancelled" && !run.review && (
-            <p className="font-mono text-body text-muted-foreground">This run gave no answer.</p>
+          {tab === "report" && view.final && !run.result?.final_answer?.trim() && !run.result?.output && !rows.some((r) => r.kind === "final_answer" && r.text?.trim()) && run.status !== "failed" && run.status !== "cancelled" && !run.review && (
+            <p className="font-mono text-body text-muted-foreground">{NO_ANSWER}{view.canMessage ? " Send a follow-up below to ask for one." : ""}</p>
           )}
           {tab === "timeline" && <Timeline rows={learningSteps(rows, run.learning)} live={view.live} asking={approvalRow?.id ?? (view.needsYou && !budget ? waiting?.id : undefined)} waitingOn={run.status === "input_required" ? run.pending?.kind : undefined} />}
           {(tab === "report" || tab === "timeline") && <RunUsed used={used} agentId={run.agent_id} />}
           {(tab === "report" || tab === "timeline") && changes && <RunChanges got={changes.got} retry={changes.retry} />}
-          {tab === "files" && <RunFiles files={files} onOpen={show} />}
+          {tab === "files" && <RunFiles files={files} onOpen={show} showHidden={showHidden} onShowHidden={setShowHidden} />}
           {tab === "screen" && hasScreen && <ScreenPanel runId={run.run_id} screen={screen} machine={machine} opens={screenOpens} followUp={view.canMessage && view.messageMode === "follow_up"} metered={metered}
             onTake={onTakeOver ? take : undefined} onHand={onHandBack ? () => hand() : undefined} />}
         </div>
