@@ -196,7 +196,7 @@ test("a run spec's own log lines hold no key: a CLI run's computer release refus
     rmSync(dir, { recursive: true, force: true });
   });
   await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", harness: "opencode", tools: ["read"] } });
-  const launch = { input: { content: "Go." }, title: "t", place: { mode: "runner" }, harness: "opencode", model: { provider: "openai", modelId: "gpt-5" } };
+  const launch = { input: { content: "Go." }, title: "t", place: { mode: "runner" }, harness: "opencode", model: { provider: "openai", modelId: "gpt-6.1-sol" } };
   await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
   await server.flush?.();
   const [claim] = await store.runs.claimMany("runner-a", 1, { leaseMs: 60_000 });

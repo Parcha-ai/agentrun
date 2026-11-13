@@ -49,14 +49,14 @@ async function nativeRun(t) {
     rmSync(dir, { recursive: true, force: true });
   });
   await server.agents.create({ id: "agent-1", name: "A" }, { id: "rev-1", kind: "agentic", body: { instructions: "Go.", tools: [] } });
-  const launch = { input: { content: "Go." }, title: "t", place: { mode: "runner" }, model: { provider: "anthropic", modelId: "claude-sonnet-4-5" } };
+  const launch = { input: { content: "Go." }, title: "t", place: { mode: "runner" }, model: { provider: "anthropic", modelId: "claude-sonnet-5-5" } };
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
   await server.flush?.();
-  const price = (_model, usage) => ((usage.input ?? 0) * 3 + (usage.output ?? 0) * 15) / 1e6;
+  const price = (_model, usage) => ((usage.input ?? 0) * 2 + (usage.output ?? 0) * 10) / 1e6;
   const provider = { api: "anthropic-messages", origin: gw.url, credential: () => `not-a-secret-${"x"}` };
   const extension = defineExtension({ name: "native", tools: [browse] });
   runner = startRunner({ store, name: "runner-a", ...TIMING, createLoop: createAdapterLoop((claim, run) => ({
-    adapter: piAdapter({ run, model: "claude-sonnet-4-5", provider, price, fetch: globalThis.fetch, extensions: [extension] }),
+    adapter: piAdapter({ run, model: "claude-sonnet-5-5", provider, price, fetch: globalThis.fetch, extensions: [extension] }),
     session: { key: `run:${claim.runId}`, label: "root", system: ["Go."], tools: [], context: "fresh" },
     input: "Go.",
     hooks: { beforeIntent: async () => {}, beforeResult: async () => {} },

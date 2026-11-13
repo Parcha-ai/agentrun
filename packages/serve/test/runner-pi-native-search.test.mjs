@@ -38,8 +38,8 @@ const eight = (usd) => Math.round(usd * 1e8) / 1e8;
 /** Each wire: the run's model and its price per million tokens, the provider's search tool as the request offers it,
  *  and pi's own turns. Messages: a scripted origin. Responses: the loopback gateway, which calls web_search once. */
 const WIRES = {
-  "anthropic-messages": { provider: "anthropic", model: "claude-sonnet-4-5", price: { input: 3, output: 15 }, searchTool: "web_search_20250305", origin: "https://api.anthropic.com" },
-  "openai-responses": { provider: "openai", model: "gpt-5", price: { input: 1.25, output: 10 }, searchTool: "web_search", origin: "https://api.openai.com" },
+  "anthropic-messages": { provider: "anthropic", model: "claude-sonnet-5-5", price: { input: 2, output: 10 }, searchTool: "web_search_20250305", origin: "https://api.anthropic.com" },
+  "openai-responses": { provider: "openai", model: "gpt-6.1-sol", price: { input: 2, output: 10 }, searchTool: "web_search", origin: "https://api.openai.com" },
 };
 
 /** pi's own turns on `wire`: a web_search, then an answer that says `say`. */

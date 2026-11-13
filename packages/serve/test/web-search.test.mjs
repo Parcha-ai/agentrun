@@ -489,7 +489,7 @@ test("pi's hosted search: Anthropic's pause_turn answers the results it has and 
   withEnv(t, { AGENTRUN_TEST_FAUX_UPSTREAM: "pause", AGENTRUN_TEST_FAUX_UPSTREAM_CALLS: file });
   const env = { AGENTRUN_SERVE_FAUX: FAUX, AGENTRUN_SERVE_FAUX_UPSTREAM: new URL("./fixtures/faux-upstream.mjs", import.meta.url).pathname, ANTHROPIC_API_KEY: "not-a-secret" };
   const { models } = await runModels(env, undefined);
-  assert.deepEqual(await hostedSearch("widgets", 5, "anthropic/claude-sonnet-4-5", undefined, models), { provider: "native", query: "widgets", results: [{ url: "http://public.example/", title: "Public page", snippet: "", published: "October 1, 2026" }, { url: "https://result.example/2", title: "Result 2", snippet: "" }] });
+  assert.deepEqual(await hostedSearch("widgets", 5, "anthropic/claude-sonnet-5-5", undefined, models), { provider: "native", query: "widgets", results: [{ url: "http://public.example/", title: "Public page", snippet: "", published: "October 1, 2026" }, { url: "https://result.example/2", title: "Result 2", snippet: "" }] });
   assert.match((await hostedSearch("widgets", 5, "faux/faux-1", undefined, models)).error, /has no hosted web search here/);
   assert.match((await hostedSearch("widgets", 5, "anthropic/no-such-model", undefined, models)).error, /no model to search on/);
   assert.equal((await readFile(file, "utf8")).trim().split("\n").length, 1, "one request, the paused one, not resubmitted");

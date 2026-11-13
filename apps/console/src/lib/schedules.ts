@@ -195,7 +195,7 @@ export const hookUrlOf = (t: Pick<Trigger, "id">): string => `${location.origin}
 /** Said beside a URL hookUrlOf built: the server's own public address may differ from the one this page was opened at. */
 export const HOOK_URL_HINT = "This server's address as this page sees it: behind a proxy, use its public address.";
 /** What a webhook's signature check takes, in words. */
-export const SIGNATURE_WORDS: Record<"standard" | "github", string> = { standard: "Standard Webhooks (webhook-signature)", github: "GitHub's (X-Hub-Signature-256)" };
+export const SIGNATURE_WORDS: Record<"standard" | "github" | "composio", string> = { standard: "Standard Webhooks (webhook-signature)", github: "GitHub's (X-Hub-Signature-256)", composio: "Composio's (webhook-signature, keyed by its secret as given)" };
 /** A firing's cause, in words: its schedule, a Run now, or a signed request to a webhook. */
 type HookSource = Extract<TriggerSource, { kind: "webhook" }>;
 type Accept = NonNullable<HookSource["accept"]>[number];
@@ -220,6 +220,19 @@ export const FIRED_BY: Record<Firing["by"], string> = { schedule: "On schedule",
 
 /** When a github trigger fires, in one line: the GitHub events its filter takes, delivered to the server's GitHub App. */
 export const githubWhen = (source: Extract<TriggerSource, { kind: "github" }>): string => `On GitHub ${source.accept.map((a) => acceptWords(a, false)).join(" or ")}`;
+
+/** Why the server turned a trigger off itself (`disabled`): a failure streak, or a source it can't read; null for one that
+ *  is on, or that a person paused. The streak is named by the server's threshold (`failuresToPause`, capabilities'
+ *  features.triggers.failures_to_pause), the count that turned it off: the trigger's streak now keeps moving after (a
+ *  failed Run now raises it, a successful one resets it). */
+export function disabledWords(t: Pick<Trigger, "disabled">, failuresToPause?: number): string | null {
+  const off = t.disabled;
+  if (!off) return null;
+  if (off.reason === "source_unreadable") return `Turned off: its source can't be read (${off.detail}).`;
+  // The server's own words for the rest (its agent was archived, its connection was lost).
+  if (off.reason !== "auto_paused") return `Turned off: ${off.detail}`;
+  return failuresToPause ? `Turned off after ${failuresToPause} failures in a row.` : "Turned off after failures in a row.";
+}
 
 /** What came of a firing. A started one's run is linked beside it. */
 export function firingWords(f: Firing): string {
@@ -306,7 +319,7 @@ export function bodyOf(d: Draft, capOptional = false): { body?: ScheduleInput; i
 }
 
 /** A new webhook's fields as typed: how its requests are signed, then the run each one starts (as a schedule's). */
-export type WebhookDraft = { name: string; signature: "standard" | "github"; agentId: string; content: string; maxCost: string };
+export type WebhookDraft = { name: string; signature: "standard" | "github" | "composio"; agentId: string; content: string; maxCost: string };
 export const emptyWebhook = (): WebhookDraft => ({ name: "", signature: "standard", agentId: "", content: "", maxCost: "" });
 
 /** A new webhook's create body, or what is missing, by the field the server would name: bodyOf's rules for the run it

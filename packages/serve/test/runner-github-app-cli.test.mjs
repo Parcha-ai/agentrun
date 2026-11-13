@@ -18,8 +18,7 @@ const { openSqliteStore } = await import("../dist/store/index.js");
 const { startRunner } = await import("../dist/runner/runner.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { permissionOf } = await import("../dist/tool-gate.js");
-const { mcpForClaim } = await import("../dist/runner/mcp-run.js");
-const { githubAppAccess } = await import("../dist/runner/github-app.js");
+const { mcpForClaim } = await import("../dist/runner/mcp-run.js");const { githubAppAccess } = await import("../dist/runner/github-app.js");
 const { GITHUB_UNUSABLE } = await import("../dist/runner/mcp-github.js");
 
 const KEY = randomBytes(32);
@@ -113,7 +112,7 @@ test("a CLI harness's own MCP client meets the per-call App check too: an App di
   const work = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-github-app-cli-work-"));
   t.after(() => rmSync(work, { recursive: true, force: true }));
   const loop = createAdapterLoop(async (claim, run) => {
-    const mcp = await mcpForClaim({ claim, store, sealKey: KEY, grants: ["mcp:gh/add"], harness: run.harness, work: () => work, launchInput: { content: "Fix https://github.com/acme/widgets" }, githubAppAccess: (s, key, input) => githubAppAccess(s, key, input, { api: github.api }), githubMcpOrigin: new URL(fake.url).origin });
+    const mcp = await mcpForClaim({ loopback: true, claim, store, sealKey: KEY, grants: ["mcp:gh/add"], harness: run.harness, work: () => work, launchInput: { content: "Fix https://github.com/acme/widgets" }, githubAppAccess: (s, key, input) => githubAppAccess(s, key, input, { api: github.api }), githubMcpOrigin: new URL(fake.url).origin });
     return {
       adapter: mcpCli(seen, () => server.triggerSettings.removeScope("github", "server")),
       session: { key: "root", label: "root", system: [], tools: [], context: "fresh" },

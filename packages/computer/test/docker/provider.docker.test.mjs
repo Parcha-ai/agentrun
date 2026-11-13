@@ -14,6 +14,7 @@ import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { after, before, describe, it } from "node:test";
 import { DockerProvider } from "../../dist/docker.js";
+import { newRequest } from "./request.mjs";
 
 const LIVE = process.env.AGENTRUN_COMPUTER_LIVE_DOCKER === "1";
 const RUN_LABEL = "agentrun.test.run";
@@ -44,7 +45,7 @@ describe("attach to a Docker computer by Docker's names for it", { skip: LIVE ? 
 		daemonPath = fileURLToPath(new URL(`../../dist/computerd-linux-${arch}`, import.meta.url));
 		assert.ok(existsSync(daemonPath), `no daemon for Docker's arch at ${daemonPath}: run npm run build:daemon`);
 		provider = new DockerProvider({ daemonPath });
-		const created = await provider.create({ image: "alpine:3.20", lifetimeMs: 10 * 60_000, network: "none", labels: { [RUN_LABEL]: run } });
+		const created = await provider.create({ image: "alpine:3.20", lifetimeMs: 10 * 60_000, network: "none", labels: { [RUN_LABEL]: run } }, newRequest("provider"));
 		assert.equal(created.ok, true, JSON.stringify(created));
 		ref = created.value;
 		made.push(ref.name);
@@ -77,7 +78,7 @@ describe("attach to a Docker computer by Docker's names for it", { skip: LIVE ? 
 	});
 
 	it("attach to a computer that asked for root reports user 0:0, with its network, image and sizes", async () => {
-		const created = await provider.create({ image: "alpine:3.20", lifetimeMs: 10 * 60_000, network: "none", user: "0", memoryMb: 256, labels: { [RUN_LABEL]: run, role: "root" } });
+		const created = await provider.create({ image: "alpine:3.20", lifetimeMs: 10 * 60_000, network: "none", user: "0", memoryMb: 256, labels: { [RUN_LABEL]: run, role: "root" } }, newRequest("provider-root"));
 		assert.equal(created.ok, true, JSON.stringify(created));
 		made.push(created.value.name);
 		for (const target of [{ id: created.value.name }, { labels: { [RUN_LABEL]: run, role: "root" } }]) {
@@ -92,7 +93,7 @@ describe("attach to a Docker computer by Docker's names for it", { skip: LIVE ? 
 
 	it("a computer asked for its CPUs, memory and processes has them: attach reads them back, as Docker's own inspect does", async () => {
 		// What serve's claim asks for with AGENTRUN_BOX_CPUS=1.5, AGENTRUN_BOX_MEMORY=512m and AGENTRUN_BOX_PIDS=256.
-		const created = await provider.create({ image: "alpine:3.20", lifetimeMs: 10 * 60_000, network: "none", cpus: 1.5, memoryMb: 512, pids: 256, labels: { [RUN_LABEL]: run, role: "sized" } });
+		const created = await provider.create({ image: "alpine:3.20", lifetimeMs: 10 * 60_000, network: "none", cpus: 1.5, memoryMb: 512, pids: 256, labels: { [RUN_LABEL]: run, role: "sized" } }, newRequest("provider-sized"));
 		assert.equal(created.ok, true, JSON.stringify(created));
 		made.push(created.value.name);
 		const attached = await provider.attach({ id: created.value.name });
@@ -129,7 +130,7 @@ describe("attach to a Docker computer by Docker's names for it", { skip: LIVE ? 
 			lifetimeMs: 10 * 60_000,
 			network: "none",
 			labels: { [RUN_LABEL]: run, role: "other" },
-		});
+		}, newRequest("provider-other"));
 		assert.equal(created.ok, true, JSON.stringify(created));
 		const { name } = created.value;
 		made.push(name);
@@ -180,7 +181,7 @@ setInterval(() => (existsSync(${JSON.stringify(go)}) || Date.now() > bound) && r
 		const controller = new AbortController();
 		const pending = holding.create(
 			{ image: "alpine:3.20", network: "none", lifetimeMs: 10 * 60_000, labels: { [RUN_LABEL]: run, role: "abort" } },
-			{ signal: controller.signal },
+			{ ...newRequest("provider-abort"), signal: controller.signal },
 		);
 		const bound = Date.now() + 120_000;
 		while (!existsSync(held)) {
@@ -228,7 +229,7 @@ describe("a Docker computer's /work is bounded", { skip: LIVE ? false : "set AGE
 
 	it("a full /work is No space left on device, not an OOM kill: PID 1 lives on and the next exec runs", async () => {
 		const memoryMb = 256;
-		const created = await provider.create({ image: "debian:bookworm-slim", lifetimeMs: 10 * 60_000, network: "none", memoryMb, labels: { [RUN_LABEL]: run, role: "fill" } });
+		const created = await provider.create({ image: "debian:bookworm-slim", lifetimeMs: 10 * 60_000, network: "none", memoryMb, labels: { [RUN_LABEL]: run, role: "fill" } }, newRequest("provider-fill"));
 		assert.equal(created.ok, true, JSON.stringify(created));
 		const { name } = created.value;
 		made.push(name);

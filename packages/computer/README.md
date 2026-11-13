@@ -497,7 +497,7 @@ provider declares, either way.
 | `input.keys` | `input.actions`: `key` (one key pressed, or a combo released in reverse; `repeat`), `hold` (`ms`), `type` |
 | `input.touch` | `input.actions`: `tap`, `long_press`, `swipe`, `pinch` (`scale` above 1 apart, below together), `button` (back, home, app_switch) |
 | `apps`, `apps.install` | `apps.list` (`{ apps, foreground }`), `apps.launch({ id, url?, background? })`, `apps.terminate`; `apps.install({ path })` of a file already in the computer |
-| `ui` | `ui.observe({ target?, full?, image?, since? })`: `{ state, app, window, nodes, diff?, image?, truncated }`, at most 5000 flat nodes, each `{ ref, role, name?, value?, id?, bounds, parent?, flags?, actions? }` with an ARIA role and bounds in window points. `ui.act({ target?, state?, steps, expect?, foreground? })`: `{ steps, state, changed, expect? }`, each step's `route` and `verified`, or its refusal (`stale`, `denied`, ...) as the last. The rules are in [`wire.md`](../../spec/computer/wire.md#the-ui-group); `UiEngine` (`src/ui-engine.ts`) keeps them over a `UiSource`, `UiSession` (`src/client.ts`) is the typed caller, and `@parcha/agentrun-computer/fake-ui-driver` answers them from scripted apps for tests |
+| `ui` | `ui.observe({ target?, full?, image?, since? })`: `{ state, app, window, nodes, diff?, image?, truncated }`, at most 5000 flat nodes, each `{ ref, role, name?, value?, id?, bounds, parent?, flags?, actions? }` with an ARIA role and bounds in window points. `ui.act({ target?, state?, steps, expect?, foreground? })`: `{ steps, state?, window?, changed, expect? }`, each step's `route` and `verified`, or its refusal (`stale`, `denied`, ...) as the last; `window: "closed"` in place of `state` when the app has no window left. `expect` is `{ text?, ref?, gone?, timeoutMs? }`, or `{ window: { title?, role? } }` to wait for a window. The rules are in [`wire.md`](../../spec/computer/wire.md#the-ui-group); `UiEngine` (`src/ui-engine.ts`) keeps them over a `UiSource`, `UiSession` (`src/client.ts`) is the typed caller, and `@parcha/agentrun-computer/fake-ui-driver` answers them from scripted apps for tests |
 
 **The live view's seam** (`src/screen-watch.ts`). The runner's viewer reads a computer through
 `provider.watch?(ref, handlers, { signal?, maxWidth?, quality? })`:
@@ -673,6 +673,13 @@ if (connected.ok) {
 await docker.release(made.value, "delete");
 ```
 
+Every `create` takes a request id (`CreateContext.requestId`, required): the request, not the computer, so a retry of
+the same request passes the same id. The contract makes one computer per id, named `computer-<12 hex of sha256(id)>`
+(`computerNameFor`), answers it again while it starts or runs, and refuses `exists` once it has ended
+([`spec/computer/provider.md`](../../spec/computer/provider.md#idempotent-create)). Docker names the container for the
+request: a retry finds the name taken and answers that container, or `exists` when it is stopped, of another spec, or
+was deleted.
+
 - `capabilities()` declares kind `linux`, daemon `pid1`, groups `exec`, `files` and `processes`, `maxLifetimeMs`
   of 30 days, and `mount: ["bind"]` (below); there is no `extend()` or `stream()`, and init gets no `--max-deadline`.
 - `new DockerProvider({ daemonPath, desktop: {} })` makes desktops: kind `desktop`, with `screen`, `input.pointer` and
@@ -724,7 +731,7 @@ await docker.release(made.value, "delete");
   PID 1 included. What lasts is the run's folder, bound at `/workspace` when the spec asks (below).
 - `create` ends with the drift check (below): a computer that is not what was declared is deleted, and `create`
   refuses with every mismatch in words.
-- `create(spec, { signal })` passes the signal to every step: `docker info` before `docker run` (an abort there makes
+- `create(spec, { requestId, signal })` passes the signal to every step: `docker info` before `docker run` (an abort there makes
   nothing), `docker run`, and after it inspect and hello (hello also has its own 30 s limit). An abort at any step after `docker run` deletes the computer and returns
   `aborted`; `create` never returns ok once its signal has aborted.
 - `connect` runs `docker exec -i <name> /opt/agentrun/computerd stdio`, the bridge to init's socket, and says hello.
@@ -1346,8 +1353,8 @@ const daytona = new DaytonaProvider({ apiKey, daemonPath: "dist/computerd-linux-
 const made = await daytona.create({ image: "my-snapshot", lifetimeMs: 600_000, network: "none" }, { requestId: "r1#3" });
 ```
 
-A Daytona computer is a sandbox made through Daytona's v0 REST API with `fetch`, as pi-transport's Daytona box does:
-no SDK, and no package beyond this one. `fetch` and the WebSocket factory are options, so the tests run against a fake.
+A Daytona computer is a sandbox made through Daytona's v0 REST API with `fetch`: no SDK, and no package beyond this
+one. `fetch` and the WebSocket factory are options, so the tests run against a fake.
 The key is the caller's to pass: the provider never reads the environment, never sends the key over a redirect or to a
 toolbox URL that is not https, and never puts it in a computer. `image` is a Daytona snapshot, by id or name: the
 snapshot gives the sandbox its class and its size. `image: "default"` sends no snapshot field at all, and Daytona makes
@@ -1501,8 +1508,8 @@ the TTL.
   /sandbox/{id}/network-settings` and reads it back whatever the answer: as asked, it is returned; unchanged, the
   change is refused in Daytona's words; anything else is put back, or, if that fails, the network is blocked, and the
   change is refused. A network is never left wider than asked.
-- `release(ref, "delete")` deletes as pi-transport does: retried on a 5xx, checked against the sandbox, with a forced
-  stop before the last attempt. `release(ref, "stop")` stops. Both are idempotent, and both refuse a sandbox that is
+- `release(ref, "delete")` deletes: retried on a 5xx, checked against the sandbox, with a forced stop before the last
+  attempt. `release(ref, "stop")` stops. Both are idempotent, and both refuse a sandbox that is
   not this provider's.
 - Daytona is asynchronous: it answers a delete by setting the sandbox's desired state to `destroyed` and a stop by
   setting it to `stopped`, and the sandbox gets there later, through `destroying` or `stopping`. Its listing trails
@@ -1517,7 +1524,7 @@ the TTL.
   the sandbox it made (a failure, a mismatch, an abort) waits the same way before it returns.
 - `connect(ref)` refuses a computer that is not `started`, and a daemon whose hello is not the provider's.
 - Every call has its own timeout and takes the caller's signal; reads, the upload and deletes are retried (three tries,
-  backoff), as in pi-transport; creates, session commands, input and network changes are not.
+  backoff); creates, session commands, input and network changes are not.
 
 ### The drift check
 
@@ -1911,6 +1918,146 @@ A live run must show:
 `packages/envd/internal/services/process/start.go`, `.../process/handler/handler.go:395-420`), and E2B's docs
 (network/restrict-public-access and network/internet-access, read 2026-11-07). Each is cited where it is used above and in `src/e2b.ts`.
 
+## Agent37
+
+```ts
+import { providerFor } from "@parcha/agentrun-computer";
+
+// Both keys are the caller's to pass (serve's AGENT37_API_KEY and AGENT37_SSH_KEY), and ssh2 is the host's own (npm ssh2 1.17.0).
+const agent37 = await providerFor("agent37", { apiKey, sshKey });
+const made = await agent37.create({ image: "agent37-base", lifetimeMs: 600_000, network: "none" }, { requestId: "r1#3" });
+```
+
+Agent37 runs on the shared machine-host adapter ([PROVIDERS.md](PROVIDERS.md)): `src/agent37.ts` is Agent37's
+`MachineHost`, and `src/hosted/provider.ts` does everything that is not Agent37's own (the upload, the install, init's
+start, the stdio bridge, the probe, the janitor's extend, idempotent create by the request's name label). An Agent37
+computer is an instance made from a workspace template, by default `agent37-base`, Agent37's plain Debian 12. It is
+kind `linux`, on type `vm` (a VM with its own kernel, the default) or `default` (Agent37's gVisor sandbox). With
+`kind: "desktop"` it is a Linux desktop on `agentrun-box`, our box image as a template of the key's workspace
+([below](#the-desktop-agentrun-box)).
+
+### Two keys
+
+`create(options)` takes the workspace's API key as `options.apiKey` and the private half of an SSH key registered on
+the same workspace (`POST /v1/ssh-keys`, or `agent37 ssh-keys add`) as `options.sshKey`, its contents, never a path:
+the provider reads no file and no environment. A key pasted into Settings comes back on one line (a password field
+drops line breaks), so the provider wraps a one-line key's body again before ssh2 reads it. REST takes the API key as
+`Authorization: Bearer <key>`; the SSH tunnel's edge takes the same key in `X-Agent37-Key` (npm `agent37@0.4.1`
+`src/cli.js`, `wsHandshake` and `runTunnel`). Neither key appears in an error, a note or a label: the sweep's scope
+names the API key by its sha256 prefix alone.
+
+### The mapping
+
+| MachineHost | Agent37 |
+| --- | --- |
+| `create` | `POST /v1/instances` with the template, `type`, `region`, the size when the spec asks one, `name` (the adapter's name label), the labels as `metadata`, `network: "deny-all"` (`"allow-all"` for an Archil computer's root, whose own namespace is still loopback-only), `auto_sleep: false` and `public_ports: []`. It answers 201 once the instance runs |
+| `get` | `GET /v1/instances/{id}`; 404 is none |
+| `list` | `GET /v1/instances`, the whole workspace in one answer (`{ data }`, no paging keys, seen live), matched on the labels here. An answer that says it has more is refused, never read as all |
+| `delete` | `DELETE /v1/instances/{id}`, never signalled; a repeat's 404 is done |
+| `setLabels` | `GET`, then `PATCH` of the whole `metadata`, which a PATCH replaces |
+| `exec` | SSH as root over a binary WebSocket to `wss://{id}-22022.agent37.app/`, one connection per process (below) |
+| `errorCode` | the envelope's `error.code` (or a flat `error` string), then the HTTP status; ssh2's `client-authentication` is `denied` |
+| `check` | a template name with an optional `@version`; one of Agent37's four shapes; at most 4 CPUs; metadata within 4096 bytes with the provider's own labels |
+
+Agent37 has no request id and no unique name, so a retried POST makes a second instance: the adapter lists the name
+label and keeps the oldest by `created` (whole seconds; ties go to the lowest id), as it does for every vendor.
+
+### Exec over SSH
+
+Agent37 has no SSH port on the internet: the instance's sshd answers on 22022 inside it, and the edge carries the SSH
+stream as binary WebSocket frames. `exec` opens a WebSocket (Node's global one takes `headers`), wraps it as a Duplex
+for ssh2's `Client.connect({ sock })`, and runs argv as `sh -c` under a wrapper that writes the shell's pid to
+`/tmp/.agentrun-exec-<random>` and removes it when the command ends. stdout and stderr are the channel's, piped; with no
+stdin, end of file is sent at once. `wait()` answers at the channel's close with the exit-status, or -1 for an exit by
+signal or none; its listeners go on inside ssh2's callback, since one read off the tunnel can hold the open, the exit
+and the close together (seen live: a listener added after an `await` missed the exit). `kill()` runs a second command
+on the same connection that kills the pid's process group (the sshd starts each command as a session and group leader,
+seen live), then closes the channel and the connection. An SSH signal request is not used: ssh2 sends one only while
+stdin is open (`ssh2@1.17.0` `lib/Channel.js:237-246`), and it reaches one process, not its children.
+
+### Capabilities
+
+| Capability | Declared | Why |
+| --- | --- | --- |
+| `kind` | `linux` or `desktop` | `options.kind`: `linux` (default), or `desktop` with `screen`, `input.pointer` and `input.keys`, on the box template (below) |
+| `daemon` | `child` | the image's entrypoint is a template field, not a create field; init is a detached command over SSH |
+| `isolation` | `vm` or `gvisor` | `options.type`: `vm` (default) or `default` |
+| `lifetime` | `janitor` | Agent37 never ends an instance on its own; init's deadline and the deadline label do, and the run's sweep is the backstop |
+| `maxLifetimeMs` | 24 h | the janitor's cap; `options.maxLifetimeMs` sets less |
+| `network` | `none` | `deny-all`, read back, and the daemon's own network namespace |
+| `networkReadBack` | `true` | `GET` reports `network` and `public_ports`; any public port reads `other` |
+| `vendorAgentPorts` | `[22022, 7681]` | the platform's sshd (root for whoever holds the key) and its web terminal (ttyd), both seen listening on every VM |
+| `mount` | `archil` | the run's folder on an Archil disk; `/dev/fuse` is there on both types (live), and the mount needs the box template |
+| `release` | `delete` | `DELETE`; no release maps to Agent37's stop here |
+| `specFields` | `cpus`, `memoryMb` | 2/4, 4/8, 4/16 or 4/32 (CPUs/GB); more than 4 CPUs is refused, since Agent37 gives 4 without saying so |
+
+Every instance is made with `auto_sleep: false`: a VM that sleeps wakes cold, its daemon gone. A read-back with
+`auto_sleep` on, another type, region or template is drift, and the adapter refuses the computer.
+
+### Conformance on Agent37
+
+```sh
+AGENTRUN_COMPUTER_LIVE_AGENT37=1 COMPUTER_AGENT37_API_KEY=... COMPUTER_AGENT37_SSH_KEY="$(cat key)" \
+  npm run conformance -w @parcha/agentrun-computer -- --provider agent37
+```
+
+The conformance module, `dist/conformance/agent37.js`, checks `AGENTRUN_COMPUTER_LIVE_AGENT37=1` first, then reads
+`COMPUTER_AGENT37_API_KEY` (`apiKey`, required), `COMPUTER_AGENT37_SSH_KEY` (`sshKey`, required, the key's contents),
+`COMPUTER_AGENT37_KIND` (`linux`, the default, or `desktop`), `COMPUTER_AGENT37_TEMPLATE` (the run's image, default
+`agent37-base`, or `agentrun-box` for kind `desktop`), `COMPUTER_AGENT37_TYPE`, `COMPUTER_AGENT37_REGION`,
+`COMPUTER_AGENT37_API_URL`, `COMPUTER_AGENT37_DAEMON` (`daemonPath`), `COMPUTER_AGENT37_MAX_LIFETIME_MS` and
+`COMPUTER_AGENT37_USER` (`daemonUser`), never `AGENT37_API_KEY`. Every computer of a run lives at most 30 minutes.
+`createDriftedProvider()` uploads a daemon built as `<version>-drift`. The live sweep is the shared one,
+`dist/conformance/sweep.js --provider agent37 --before <file>` and `--after <file>`; its scope is the key's workspace.
+
+### Seen live (2026-11-13)
+
+Twelve instances, at most two at once, every one labelled for the sweep and deleted; the workspace listed no instance
+after. One fresh VM's tunnel failed to open for the daemon's upload, so a tunnel that fails before its SSH handshake is
+opened again (four tries in all, within the call's bound). On type `vm` with `agent37-base`: the POST answered `running` in about 1 s (the provider's whole create,
+daemon included, 4 to 8 s); the read-back held `deny-all`, no public port, `auto_sleep: false`, 2 CPUs and 4 GB,
+dotted metadata keys and odd values; metadata's cap is 4096 bytes serialized, exactly; commands run as uid 0 on
+Debian 12 under the platform's own init; 3 MiB of stdin took half a second over the tunnel; the daemon started, hello
+answered with fence `netns`, and its programs ran as 2510 with no capability and no DNS. On type `default` (gVisor,
+kernel `4.19.0-gvisor`): root has no `CAP_SYS_ADMIN`, and init made its namespace inside a user namespace of its own
+(fence `userns-netns`); the rest as on `vm`. The Archil mount itself is the conformance run's to show, on the box template.
+
+### The desktop: agentrun-box
+
+`create({ kind: "desktop", ... })` (serve builds the descriptor's desktop configuration so) makes a desktop: the
+adapter gives init `DISPLAY` and starts `Xvfb :0 -screen 0 1280x800x24 -nolisten tcp` through the daemon as the tool
+user (`src/desktop.ts`), as on E2B, so the X server is one process in init's table, in its own network namespace, and
+ends with the computer. Its default image is `agentrun-box` (`AGENT37_BOX_TEMPLATE`): `box/Dockerfile` (the archil
+client, the helper, the tool user, FUSE, no sudo) plus Xvfb, built as a template of the key's own workspace by
+`box/build-agent37.mjs`:
+
+```sh
+AGENT37_API_KEY=... node packages/computer/box/build-agent37.mjs   # prints template=agentrun-box
+```
+
+Agent37 keeps a template's revisions under one name, so the name is fixed and the recipe's hash (the Dockerfile, the
+helper and the desktop's lines in the script) is in the template's description: a workspace whose template names the
+hash already is built nothing, and a changed recipe publishes a new revision, which every instance made after it starts
+from. The script's calls: `GET /v1/templates/agentrun-box`, then `POST /v1/template-builds` (`name`, `size_bytes`,
+`description`), a `PUT` of the gzipped context (the Dockerfile and the helper at its root) to the presigned
+`upload_url` with no Agent37 key, `POST .../{id}/start`, and `GET .../{id}/logs?offset=N` until `succeeded` or `failed`.
+Builds are free, at most three at once per workspace and 45 minutes each (docs: templates, "Build an image in the
+cloud"). A workspace template is the workspace's own, so each workspace that runs desktops builds it once first.
+
+Why not Agent37's own `agent37-ubuntu`, which ships a desktop: its image (`ghcr.io/agent37-platform/ubuntu:2026.10.13c`,
+entrypoint `images/vm/ubuntu/entrypoint.sh` of agent37-platform/templates) runs `Xtigervnc :1 ... -ac` as root, with
+access control off, and an XFCE session as root on it. Any process in the machine can open that display, so a tool
+driving it, or merely connecting to `/tmp/.X11-unix/X1`, could type into root's terminal: the tool user would have a way
+to root. It has no Xvfb, no archil client and no helper either, and it is Ubuntu with `sudo` installed. The box image is
+also the one an Archil computer needs, so one template serves both.
+
+### Sources
+
+Agent37's docs under `https://www.agent37.com/docs/agents-api/` (instances create, get, list, edit, delete and object;
+errors; instance-sizing; vm-instances; instance-network; ssh; templates; custom-image), read 2026-11-13; npm
+`agent37@0.4.1` `src/cli.js` (the tunnel); `ssh2@1.17.0` (`lib/client.js`, `lib/Channel.js`, `lib/utils.js`); and
+the live runs above.
+
 ## Orgo: Windows and macOS desktops (parked)
 
 Orgo offers its Linux desktop alone, which runs computerd (`src/orgo.ts`). Its Windows and macOS desktops are parked:
@@ -2028,7 +2175,7 @@ and are never in a ref, a list, an error's words or a report. `client` stays a `
 | groups (`CAPABILITIES`) | `cdp`, `stream` | `cdp`, `stream` |
 | test connection | one `GET /v1/sessions?status=RUNNING` | one `GET /browsers?status=active` page |
 | release | `REQUEST_RELEASE`, then read back until it is no longer `RUNNING` or `PENDING` | `DELETE`, then read back until 404 or `deleted_at` |
-| options | `apiKey` (or `api`, a host's own calls), `projectId`, `apiUrl` | `apiKey` (or `request`, a host's own), `apiUrl` |
+| options | `apiKey`, `projectId`, `apiUrl`, `fetch` | `apiKey`, `apiUrl`, `fetch` |
 | conformance reads | `COMPUTER_BROWSERBASE_API_KEY`, `COMPUTER_BROWSERBASE_PROJECT_ID`, `COMPUTER_BROWSERBASE_API_URL` | `COMPUTER_KERNEL_API_KEY`, `COMPUTER_KERNEL_API_URL` |
 
 Both declare `lifetime: "vendor"`, `network: ["open"]`, `isolation: "vm"`, `release: ["delete"]`, and no `extend`
@@ -2063,10 +2210,9 @@ kind browser that declares them.
 A pointer is a capability: whoever holds it opens the profile, so no error's words carry one.
 
 A vendor call is one request, never retried where a retry could open a second paid browser, and a failure names the
-call and the HTTP status alone, never the vendor's words. A host that already talks to the vendor passes its own
-transport: `BrowserbaseApi` (its optional calls back the features of the same name: one without them declares none of
-those) or `KernelRequest`. Its thrown error rides the failure as a hidden
-cause (`causeOf(result)`), not enumerable, so it is in no JSON.
+call and the HTTP status alone, never the vendor's words. The calls are the provider's own, over `fetch` (a test passes
+its own `fetch`). A thrown error rides the failure as a hidden cause (`causeOf(result)`), not enumerable, so it is in no
+JSON.
 
 Each create writes one more label beside the spec's, `agentrun.create` (`CREATE_LABEL`), with a value of its own. A
 create whose outcome is unknown (its reply lost, cut short, answered 5xx or with no browser, or the caller's signal
@@ -2198,11 +2344,11 @@ the API's control URL) is a later change: `platform: "ios"` is refused in words.
   phoned answers on the phone itself (`daemon-android/README.md` has each method): `exec.run` as the shell user,
   `screen.shot`/`screen.read`/`screen.watch` scaled on the phone, `input.actions` through InputManager (taps, swipes,
   a pinch, key combos and holds, Unicode text through the clipboard), `apps.list`/`apps.launch`/`apps.terminate`, and
-  the UI tree from UiAutomation. files, processes and tar are refused in words, as are `apps.install` and
+  the `ui` group (`ui.observe`, `ui.act`) from UiAutomation. files, processes and tar are refused in words, as are `apps.install` and
   `deadline.extend`.
 - **Capabilities.** Kind and os `android`, daemon `none` (nothing is installed: phoned lives as long as the phone's
   connections), lifetime `vendor`, network `open`, release `delete` only.
-  Groups `exec`, `screen`, `input.touch`, `input.keys`, `apps` and `apps.ui_tree`. `maxLifetimeMs` is 30 min by default.
+  Groups `exec`, `screen`, `input.touch`, `input.keys`, `apps` and `ui`. `maxLifetimeMs` is 30 min by default.
   No mount, no extend.
 - **create** asks for `timeout_seconds` = the lifetime, and the phone harness ends the session then, whatever happens.
   The lifetime includes the boot, so a phone ready past its deadline fails `timeout`.
@@ -2266,6 +2412,8 @@ through `ui.observe` (`src/conformance/cases/settings.ts`):
 - `apps.launch-terminate`, which needs the apps group alone: the ui fixture where it is installed, else Settings, is
   listed; once launched it is in front, and shown, in `ui.observe` when the phone reads its elements, else in a
   screenshot (or `ui.observe`'s image) other than the one before; once terminated it is not in front;
+- `apps.launch-window`: once `apps.launch` answers, a `ui.observe` sent at once finds the app's window (launch waits
+  for it, at most 10 s), on the ui fixture where it is installed, else on Settings;
 - `ui.observe-shape`: the observation's shape, on the ui fixture where it is installed, else on Settings.
 
 `touch.pinch` skips in the provider's own refusal.
@@ -2284,7 +2432,8 @@ npm run conformance -w @parcha/agentrun-computer -- --provider ./my-provider.js 
 
 ```text
 computer conformance · docker · linux, daemon pid1 · computerd 0.1.0-beta.30 linux/amd64
-core health    hello ping unknown-method kind-consistent    ✓ 4
+core health    hello ping unknown-method kind-consistent    ✓ 5
+               kind-served
 core exec      argv streams exit-code cwd env timeout abort ✓ 11
                truncation setsid-escapee unprivileged user
 ...
@@ -2293,7 +2442,7 @@ full lifetime  extend                                       - 1
 optional screen screenshot-size                              - 1
   - screen.screenshot-size: the provider does not declare screen
 ...
-core PASS 54/54 · 10 optional cases skipped, not declared · full 10/13 · mount:archil screen input.pointer input.keys input.touch apps.install apps ui extend not declared
+core PASS 55/55 · 10 optional cases skipped, not declared · full 10/13 · mount:archil screen input.pointer input.keys input.touch apps.install apps ui extend not declared
 ```
 
 An id is resolved through the provider registry, and only there; the usage lists every id it holds. A module path is
@@ -2378,7 +2527,8 @@ Core and Full follow the Kubernetes agent-sandbox conformance levels (KEP-539.2)
   [The protocol extension](#the-protocol-extension-kind-daemon-modes-screen-input-apps-lifetime)): exec, files,
   processes and network `none` wherever computerd runs, screen and keyboard and pointer on a desktop, screen and touch
   on a phone. `health.kind-consistent` checks the kind, os and daemon pair, that hello's kind and groups are the
-  provider's, and that kind's Core groups are declared; `provider.check-refuses` also asks `check` for
+  provider's, and that kind's Core groups are declared; `health.kind-served` that hello declares every group its
+  setting kind needs to be given to an agent (`kindServed`); `provider.check-refuses` also asks `check` for
   `maxLifetimeMs + 1`. Where the kind makes them Core: `screen.screenshot-size` (every pixel of the PNG decodes, its
   IHDR size is `width` x `height`, `scale` is above 0, a region shot decodes and has the region's size, and on a
   desktop the fixture's four colors are where it paints them; the suite reads 8-bit, non-interlaced PNGs of at most
@@ -2447,8 +2597,8 @@ its case ended is deleted or closed as it arrives and named in `cleanup.late`; t
 create a case started, a refused one included, so a late computer is deleted before the report returns. A call still
 pending when that bound (a minute) runs out is named in `cleanup.errors`, since what it makes may be left, and Core
 fails, as it does for a computer left behind. A case calls
-`t.create(extra)` for a computer it needs, or `t.attempt(spec, by?)` for create's result as it is (a refusal it
-expects, or the drifted provider's computer). With `--provider docker` and no
+`t.create(extra)` for a computer it needs, or `t.attempt(spec, by?, requestId?)` for create's result as it is (a refusal it
+expects, or the drifted provider's computer; each attempt is a new request unless `requestId` retries one). With `--provider docker` and no
 `COMPUTER_DOCKER_DAEMON`, a `docker version` that does not answer within 30 s is killed and the run fails, naming the call. The CLI exits once the report
 is out. Cases do not assume root: the suite assumes only that the
 computer's `HOME`, which the provider sets, is a directory its user can write, and works under

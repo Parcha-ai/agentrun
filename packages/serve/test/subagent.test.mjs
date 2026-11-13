@@ -164,7 +164,7 @@ test("several calls in one turn run at once, at most four at a time, each answer
 
 test("the cap's refusal of a child's request fails its call in the cap's words and parks the run; nothing more is sent; a raise resumes the run, not the child", { timeout: 240_000 }, async (t) => {
   const { run, lines, api, ended } = await setup(t);
-  const cap = 0.03;
+  const cap = 0.05;
   const capped = await run("capped", { tools: ["read", "subagent"] }, delegate([{ prompt: "Read forever nothing.md", tools: ["read"], model: "strong" }]), { max_cost_usd: cap });
   assert.equal(capped.last.status, "input_required", `parked at its cap: ${JSON.stringify(capped.view)}`);
   assert.equal(capped.view.pending?.kind, "budget", JSON.stringify(capped.view.pending));

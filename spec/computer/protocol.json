@@ -64,11 +64,13 @@
     "maxActions": 100,
     "maxBatchWaitMs": 300000,
     "maxKeyRepeat": 100,
+    "launchWindowMs": 10000,
     "maxUiNodes": 5000,
     "maxSteps": 100,
     "maxExpectMs": 60000,
     "defaultExpectMs": 5000,
     "maxSettleMs": 3000,
+    "setHoldMs": 500,
     "minImageEdge": 256,
     "maxImageEdge": 2048,
     "defaultImageEdge": 1568

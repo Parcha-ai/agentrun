@@ -6,7 +6,7 @@
 export type CodingAgentContext =
   | { kind: "create" }
   | { kind: "edit"; agentId: string; revision: string }
-  | { kind: "run"; agentId: string; revision: string; input?: unknown; effort?: string };
+  | { kind: "run"; agentId: string; revision: string; input?: unknown; effort?: string; maxCostUsd?: number };
 
 /** The applications a prompt goes to, each with where to paste it. */
 export const CODING_AGENTS = [
@@ -64,7 +64,7 @@ export function codingAgentPrompt(context: CodingAgentContext, serverUrl: string
   const operation = context.kind === "create" ? `POST ${path}/agents`
     : context.kind === "edit" ? `PUT ${path}/agents/${agent}/definition` : `POST ${path}/agents/${agent}/runs`;
   const request = context.kind === "run"
-    ? { ...(context.input !== undefined ? { input: context.input } : {}), ...(context.effort ? { effort: context.effort } : {}), revision: context.revision }
+    ? { ...(context.input !== undefined ? { input: context.input } : {}), ...(context.effort ? { effort: context.effort } : {}), ...(context.maxCostUsd !== undefined ? { max_cost_usd: context.maxCostUsd } : {}), revision: context.revision }
     : undefined;
   const data = {
     server: api,
@@ -82,7 +82,7 @@ export function codingAgentPrompt(context: CodingAgentContext, serverUrl: string
        `Send the full definition with PUT ${path}/agents/${agent}/definition, a higher version and If-Match set to that ETag. Keep the agent's identity and every field you were not asked to change; skill files do not change through this route.`,
        "A 412 precondition_failed means another revision was saved first: report it, and do not overwrite that revision."]
     : [`Read the pinned revision's input contract. Start the run with POST ${path}/agents/${agent}/runs, the revision pinned, and one stable Idempotency-Key for this run and any unchanged retry.`,
-       "Do not add a spending cap unless the person asks for one.",
+       context.maxCostUsd !== undefined ? "Keep max_cost_usd exactly as the request has it: the person typed that spend cap for this run." : "Do not add a spending cap unless the person asks for one.",
        "Follow the run's actual status, its questions (input_required), its result and its files until it ends."];
   return [
     TASK[context.kind],
