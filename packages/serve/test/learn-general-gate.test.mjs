@@ -254,3 +254,111 @@ test("no Jev on this host (the check answers undefined): graded as before", asyn
   assert.equal(calls.ask.length, 1);
   assert.equal(calls.commit.length, 1);
 });
+
+// --- A restart in the middle of the check (#2650 review: "Restarts repeat paid checks") ---
+// Jev's requests are paid, and the decision id does not dedupe them (the adapter sends only the state, the model and the
+// questions), so the check is made durable as the grader's ask is (learning-ask.ts bookedAsk): its requests are marked
+// sent in the learning run's journal before they leave, and its answer and cost are kept there before the grader starts.
+
+/** A loop on `store` whose check and grader are `general` and `ask`, as one attempt of the runner's sees them. */
+function attemptOn(store, clock, { general: check, ask }) {
+  const calls = { ask: 0, log: [] };
+  const factory = createLearningLoop({
+    sourceOf: async () => ({ runId: "run-1", agentId: "agent-1", instructions: "Classify each merchant with its four-digit code." }),
+    proposal: (runId) => store.learning.proposal(runId),
+    folder: (agentId) => ({ workspace: { agentId }, end: async () => {} }),
+    readMain: async () => MAIN,
+    ask: async (request, signal) => (calls.ask++, ask(request, signal)),
+    commit: async () => MERGED,
+    mainTexts: async () => ({}),
+    merged: async () => undefined,
+    now: () => clock.now,
+    general: check,
+    log: (line) => calls.log.push(line),
+  });
+  return { loop: factory({ journal: (claim) => store.journal(claim), flush: async () => store.flush(), signal: new AbortController().signal }), calls };
+}
+
+/** The runner died: its claim's lease runs out, and another runner claims the learning run. */
+async function restart(store, clock) {
+  clock.now += 60_001;
+  return store.claim("learn-1", "runner-b", { leaseMs: 60_000 });
+}
+
+/** A promise that never settles: the process died there. */
+const died = () => new Promise(() => {});
+
+test("a restart after Jev answered, before the grade was kept: Jev is not asked again, and its cost is counted once", async (t) => {
+  const { store, clock, claim } = await setUp(t, { seed: "s1", notes: [METHOD, ONE_MERCHANT], asked: ["SQ *BLUEBIRD BAKERY"] });
+  let jev = 0;
+  const check = async (notes, source, signal, run, sending) => {
+    await sending?.();
+    jev++;
+    return { scores: { [METHOD.file]: 0.91, [ONE_MERCHANT.file]: 0.03 }, usd: 0.00002 };
+  };
+  let grading;
+  const asked = new Promise((resolve) => (grading = resolve));
+  const first = attemptOn(store, clock, { general: check, ask: () => (grading(), died()) });
+  void first.loop.start(claim);
+  await asked;
+  const again = await restart(store, clock);
+  const second = attemptOn(store, clock, { general: check, ask: async (request) => ({ text: KEEP_METHOD, usd: 0.01, prompt: request.prompt }) });
+  assert.deepEqual(await second.loop.start(again), { state: "ended" });
+  assert.equal(jev, 1, "Jev was asked once in all");
+  assert.equal(second.calls.ask, 1);
+  const graded = (await entriesOf(store, again)).find((entry) => entry.kind === KINDS.learningGraded).data;
+  assert.equal(graded.verdict.items.find((item) => item.file === ONE_MERCHANT.file).question, "General", "the first answer's drop stands");
+  assert.ok(Math.abs(graded.usd - 0.01002) < 1e-9, `the check's cost once, with the grade's: ${graded.usd}`);
+  assert.ok(Math.abs((await store.runs.get("learn-1")).costUsd - 0.01002) < 1e-9, "the run's cost counts the check once");
+});
+
+test("a restart while Jev's requests were out: what they spent is unknown (null, never 0), the check is asked again, and it is said", async (t) => {
+  const { store, clock, claim } = await setUp(t, { seed: "s1", notes: [METHOD, ONE_MERCHANT], asked: ["SQ *BLUEBIRD BAKERY"] });
+  let jev = 0;
+  let sent;
+  const out = new Promise((resolve) => (sent = resolve));
+  const first = attemptOn(store, clock, {
+    general: async (notes, source, signal, run, sending) => { await sending?.(); jev++; sent(); return died(); },
+    ask: died,
+  });
+  void first.loop.start(claim);
+  await out;
+  const again = await restart(store, clock);
+  const second = attemptOn(store, clock, {
+    general: async (notes, source, signal, run, sending) => { await sending?.(); jev++; return { scores: { [METHOD.file]: 0.91, [ONE_MERCHANT.file]: 0.03 }, usd: 0.00002 }; },
+    ask: async () => ({ text: KEEP_METHOD, usd: 0.01 }),
+  });
+  assert.deepEqual(await second.loop.start(again), { state: "ended" });
+  assert.equal(jev, 2, "the cut check is asked again, as a cut grade's request is");
+  const graded = (await entriesOf(store, again)).find((entry) => entry.kind === KINDS.learningGraded).data;
+  assert.equal(graded.usd, null, "the cut requests' cost is unknown, so the grade's is");
+  assert.equal(graded.verdict.items.find((item) => item.file === ONE_MERCHANT.file).question, "General", "the second answer screens");
+  assert.equal((await store.runs.get("learn-1")).costUsd, null, "the run's cost is unknown, never the second check's alone");
+  assert.ok(second.calls.log.some((line) => /generality check .*cut .*unknown/.test(line)), second.calls.log.join("\n"));
+});
+
+test("a restart after the check failed: it is not asked again, its skip and unknown cost stand", async (t) => {
+  const { store, clock, claim } = await setUp(t, { seed: "s1", notes: [METHOD], asked: ["x"] });
+  let jev = 0;
+  const check = async (notes, source, signal, run, sending) => { await sending?.(); jev++; throw new Error("Jev is down"); };
+  let grading;
+  const asked = new Promise((resolve) => (grading = resolve));
+  const first = attemptOn(store, clock, { general: check, ask: () => (grading(), died()) });
+  void first.loop.start(claim);
+  await asked;
+  const again = await restart(store, clock);
+  const second = attemptOn(store, clock, { general: check, ask: async () => ({ text: KEEP_METHOD, usd: 0.01 }) });
+  assert.deepEqual(await second.loop.start(again), { state: "ended" });
+  assert.equal(jev, 1, "a failed check is kept as failed, never asked again");
+  const graded = (await entriesOf(store, again)).find((entry) => entry.kind === KINDS.learningGraded).data;
+  assert.equal(graded.usd, null);
+  assert.equal(graded.unchecked, "Jev is down");
+});
+
+test("generalScores marks its requests sent, once, before any leaves", async () => {
+  const order = [];
+  const jev = { decide: async () => (order.push("decide"), { answers: { general: { type: "noul", noul: 0.9 } }, cost_usd: 0.00001 }) };
+  const notes = [METHOD, ONE_MERCHANT];
+  await general.generalScores(jev, notes, { job: "j", input: "i" }, new AbortController().signal, "run-1", async () => { order.push("sent"); });
+  assert.deepEqual(order, ["sent", "decide", "decide"]);
+});
