@@ -66,11 +66,18 @@ export type Problem = { readonly rule: string; readonly path?: string; readonly 
  *  launch's max_cost_usd): nothing of it was spent, and the grade is skipped, said so (said.noRoomToGrade), never run past
  *  the cap, never a failure. `forGood`: no room could ever send it (its spend or price unknown), not only none now. */
 export class GradeOverCap extends Error {
-  constructor(message: string, readonly forGood: boolean) {
+  /** `booked`: the grade's records when it was refused (GradeBooked), what it spent before it. */
+  constructor(message: string, readonly forGood: boolean, readonly booked?: GradeBooked) {
     super(message);
     this.name = "GradeOverCap";
   }
 }
+
+/** The grade's own records after an ask (learning-ask.ts bookedAsk: its session's booking): what every grade request of
+ *  the learning run spent, an earlier attempt's included (null: unknown, as a cut one's), and how many left. What the
+ *  grade ends with is read from these, never summed in memory alone: a runner that restarted before the grade was saved
+ *  holds no sum of what its earlier attempt spent. */
+export type GradeBooked = { readonly usd: number | null; readonly turns: number };
 
 /** The folder's one write (learn/commit.ts learningCommit), a merge. */
 export interface MergeChange {
@@ -115,7 +122,7 @@ export interface LearningLoopDeps {
   /** Main as the grader reads it, from the folder's snapshot; problems when the proposal can't be graded on it. */
   readMain(ws: unknown, proposal: KeptProposal): Promise<GradeMain | { readonly problems: readonly Problem[] }>;
   /** One grader call, through the kernel's model proxy and the cap, booked to the agent's learning meter. */
-  ask(request: { readonly prompt: string; readonly maxTokens: number }, signal: AbortSignal, run: GraderRun): Promise<{ readonly text: unknown; readonly usd: number | null; readonly tokens?: Tokens | null }>;
+  ask(request: { readonly prompt: string; readonly maxTokens: number }, signal: AbortSignal, run: GraderRun): Promise<{ readonly text: unknown; readonly usd: number | null; readonly tokens?: Tokens | null; readonly booked?: GradeBooked }>;
   /** The folder's one write. */
   commit(ws: unknown, change: MergeChange): Promise<LearningCommitResult>;
   /** The texts main holds at these note paths (learn/commit.ts mainTexts): a note the merge keeps whose name main
@@ -439,9 +446,19 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
               ...(proposal.files?.length ? { files: proposal.files } : {}), ...(proposal.dryRuns ? { dryRuns: proposal.dryRuns } : {}), ...(proposal.drafted?.length ? { drafted: proposal.drafted } : {}), ...(proposal.asked ? { asked: proposal.asked } : {}), ...(proposal.triggered ? { triggered: proposal.triggered } : {}), ...(proposal.held ? { held: proposal.held } : {}),
             });
             // What the grade spends, as the server's grade counted it (grade.ts counter): each ask's dollars and tokens
-            // added, either unknown (null) once any ask's is, and an ask that fails spent what nobody knows.
+            // added, either unknown (null) once any ask's is, and an ask that fails spent what nobody knows. Once an ask
+            // read the grade's records (`booked`), its dollars are theirs: an earlier attempt's requests counted too.
             let usd: number | null = 0;
             let tokens: Tokens | null = { input: 0, cache_read: 0, cache_write: 0, output: 0 };
+            /** The asks of this attempt that answered: the records holding more requests than these is an earlier attempt's. */
+            let answered = 0;
+            const fromRecords = (booked: GradeBooked | undefined) => {
+              if (!booked) return;
+              usd = booked.usd;
+              // A request an earlier attempt sent (a restart before the grade was saved): its dollars are in the records,
+              // its tokens in nothing this attempt read, so they are unknown, never none.
+              if (booked.turns > answered) tokens = null;
+            };
             // `again`: what the grade is told after its last answer, below the same prompt.
             const ask = async (again?: string) => {
               // Stopped before this ask: nothing is sent, so nothing of it is spent (what it spent stays as it was).
@@ -451,16 +468,20 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
               try {
                 answer = await learning.ask({ prompt: again ? `${prompt}\n\n${again}` : prompt, maxTokens: GRADE_MAX_TOKENS }, AbortSignal.any([deps.signal, timer, stopAsk.signal]), { journal: () => deps.journal(claim), flush: () => deps.flush() });
               } catch (error) {
-                // A call the cap refused was never sent: it spent nothing, and what the grade spent before it stands.
-                if (!(error instanceof GradeOverCap)) {
+                // A call the cap refused was never sent: it spent nothing, and what the grade spent before it stands, as its
+                // records hold it (an earlier attempt's included).
+                if (error instanceof GradeOverCap) fromRecords(error.booked);
+                else {
                   usd = null;
                   tokens = null;
                 }
                 throw error;
               }
+              answered += 1;
               usd = usd === null || answer.usd === null || !Number.isFinite(answer.usd) ? null : usd + answer.usd;
               const more = answer.tokens ?? null;
               tokens = tokens === null || more === null ? null : { input: tokens.input + more.input, cache_read: tokens.cache_read + more.cache_read, cache_write: tokens.cache_write + more.cache_write, output: tokens.output + more.output };
+              fromRecords(answer.booked);
               return answer.text;
             };
             let verdict: Verdict;
