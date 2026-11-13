@@ -20,7 +20,6 @@ import { answeredUnpriced, type AdapterSession, type AgentAdapter, type BeforeRe
 import type { KernelHooks, ToolCall } from "./conformance/subject.js";
 import { type AnswerData, type ApprovalPrice, ASK_PERSON_WAITING, type AskData, type BudgetData, type CallEndData, type CallStartData, type CallStatus, capNowOf, endedAnswer, type EndData, KINDS, MESSAGE_SENT_AGAIN, type MessageData, type RaiseData, withdrawnAnswers } from "./journal-kinds.js";
 import { endedOnTurnEndingTool, HOST_PHASE, MESSAGE_ORIGIN, type MessageOrigin, originOf, REQUEST_ENDED, REQUEST_STARTED, RUN_RESUMED } from "../timeline/index.js";
-import { DEFAULT_HARNESS } from "../harness.js";
 import { raiseFollowUpId } from "../run-view.js";
 
 /** The root entries a claim writes before its turn, whatever the run's turns are (its session's key, a phase row, a
@@ -1336,8 +1335,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
               // A pi run's answers are its own entries, so a request that leaves is marked on the root before it does: one
               // with no answer by the time the run settles (a stop or cancel cut it mid-answer) was cut, and a cut request's
               // cost is unknown, never the $0 an unmarked one reads (timeline REQUEST_STARTED). The other harnesses' requests
-              // are read from the booking.
-              if (spec.adapter.id === DEFAULT_HARNESS && event.label === spec.session.label && harness && gate && !gate.sealed) {
+              // are read from the booking (spec.record "loop"), and a host's own side request (event.host: a learned node's, a
+              // web search's) is marked and costed by its own path, never as one of the run's answers.
+              if (spec.record !== "loop" && event.host === undefined && event.label === spec.session.label && harness && gate && !gate.sealed) {
                 const on = harness;
                 const conversation = root ?? (await on.root(context));
                 await on.commit((tx) => tx.appendEntry(conversation.id, { kind: REQUEST_STARTED, data: {} as unknown as JsonValue }), context);
@@ -1346,7 +1346,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             }
             // Its end, when the request did not answer at a price: the stream ended with no answer or none priced (a stop cut
             // it), which reads cut and unknown once the run's answer entries are counted; or it never left (a stop landed as it was marked), which withdraws the mark (`unsent`), at no cost.
-            if (event.type === "request_end" && event.ended && (event.ended.end !== "answered" || event.ended.usd === null) &&spec.adapter.id === DEFAULT_HARNESS && event.label === spec.session.label && harness && gate && !gate.sealed) {
+            if (event.type === "request_end" && event.ended && (event.ended.end !== "answered" || event.ended.usd === null) && spec.record !== "loop" && event.host === undefined && event.label === spec.session.label && harness && gate && !gate.sealed) {
               const on = harness;
               const conversation = root ?? (await on.root(context));
               const unsent = event.ended.end === "nothing" && event.ended.label === "never_left";
