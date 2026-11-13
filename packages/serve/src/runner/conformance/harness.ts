@@ -284,8 +284,13 @@ async function world(subject: ConformanceSubject, t: { after(fn: () => unknown):
    *  made steady (STEADY), so nothing else would take it back: the runner said so (its poll's error), and that claim is run
    *  out (runOut) as a lost one is, once per such word; the runner then claims the run again. */
   let ranOut = 0;
-  const runOutUnknown = () => {
-    const unknown = events.filter((event) => /did not answer its commit/.test(String((event as { message?: unknown }).message ?? ""))).length;
+  const runOutUnknown = (more: readonly unknown[] = []) => {
+    // Only a claim's own word (the poll's error): an unanswered renew says the same words while its loop is still held, and
+    // running that claim out would take a healthy loop's lease. `more` is another source of events (a runner process's).
+    const unknown = [...events, ...more].filter((event) => {
+      const seen = event as { step?: unknown; message?: unknown };
+      return seen.step === "poll" && /did not answer its commit/.test(String(seen.message ?? ""));
+    }).length;
     if (unknown > ranOut) {
       ranOut = unknown;
       runOut();
@@ -341,7 +346,7 @@ async function world(subject: ConformanceSubject, t: { after(fn: () => unknown):
     assert.ok(ask, "the run wrote its ask");
     return String((ask.data as { callId?: unknown }).callId);
   };
-  return { dir, storeUrl: url, storeEnv, clockFile, runOut, claimsSettled, server, start, run, read, ended, began, commandRow, askedCall, events, handedOver: (id: number) => handed.has(id), liveRows };
+  return { dir, storeUrl: url, storeEnv, clockFile, runOut, runOutUnknown, claimsSettled, server, start, run, read, ended, began, commandRow, askedCall, events, handedOver: (id: number) => handed.has(id), liveRows };
 }
 
 interface Case {
@@ -446,7 +451,8 @@ async function crashThenResume(subject: ConformanceSubject, t: { after(fn: () =>
   const script: ScriptStep[] = [{ call: tool }, { say: "done" }];
   const holder: { runner?: Runner; crashed?: boolean } = {};
   await w.start("runner-a", { script, tools, hooks: crashAt(point, holder) }, holder);
-  await until(() => holder.crashed, `the crash at ${point}`, EVENT_WAIT_MS);
+  // An unanswered first claim is run out while it waits: it never reaches the crash point otherwise.
+  await until(() => (w.runOutUnknown(), holder.crashed), `the crash at ${point}`, EVENT_WAIT_MS);
   // The crashed runner's claim runs out (the stores' clock moves past its until), and runner-b takes the run over. First
   // the claim its poll had in flight when it died settles, on the clock it was sent at (claimsSettled).
   await w.claimsSettled("runner-a");
@@ -523,7 +529,7 @@ async function processCrashThenResume(subject: ConformanceSubject, t: { after(fn
   // box paused it, so no real lease has to run out.
   let continuedAt = 0;
   if (stall) {
-    await until(() => childEvents(eventsFile).some((event) => (event as { type?: string }).type === "stopping"), `the runner process stops at ${point}`, EVENT_WAIT_MS);
+    await until(() => (w.runOutUnknown(childEvents(eventsFile)), childEvents(eventsFile).some((event) => (event as { type?: string }).type === "stopping")), `the runner process stops at ${point}`, EVENT_WAIT_MS);
     // Its word is not the stop: a SIGCONT sent between the two is lost, and the process stays stopped for good. It goes
     // on only once the kernel says it is stopped.
     await until(() => processStopped(child.pid!), `the runner process is stopped (its state "T") at ${point}`, EVENT_WAIT_MS);
@@ -536,7 +542,14 @@ async function processCrashThenResume(subject: ConformanceSubject, t: { after(fn
     await until(() => child.exitCode !== null || child.signalCode !== null || childEvents(eventsFile).some((event) => outcome(event as Seen)), "the old loop writes once it goes on, or the process ends", 15_000);
     fenceHeld(childEvents(eventsFile) as Seen[], continuedAt);
   }
-  const exit = (await Promise.race([exited, sleep(EVENT_WAIT_MS).then(() => ["timeout", null])])) as [number | string | null, string | null];
+  // The process's unanswered first claim (its events file) is run out while the case waits for its death.
+  let waiting = true;
+  const recovering = (async () => {
+    for (const until = Date.now() + EVENT_WAIT_MS; waiting && Date.now() < until; await sleep(50)) w.runOutUnknown(childEvents(eventsFile));
+    return ["timeout", null];
+  })();
+  const exit = (await Promise.race([exited, recovering])) as [number | string | null, string | null];
+  waiting = false;
   // What the process did, when it did not die where it should: its claims, lost claims, commits (landed or refused, by
   // epoch), the tool's runs and the run's row.
   if (exit[1] !== "SIGKILL") {
@@ -745,7 +758,7 @@ const CASES: readonly Case[] = [
       await until(() => w.handedOver(row.id), "the message handed to the loop mid-turn");
       letSlowGo();
       // runner-a dies once the session holds the message, before the commit that records it and takes its row.
-      await until(() => holder.crashed, "the crash after the message was sent", EVENT_WAIT_MS);
+      await until(() => (w.runOutUnknown(), holder.crashed), "the crash after the message was sent", EVENT_WAIT_MS);
       assert.equal((await w.commandRow(row.id)).takenAt, null, "the row is untaken when runner-a is lost");
       await w.claimsSettled("runner-a");
       w.runOut();

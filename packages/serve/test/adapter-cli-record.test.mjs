@@ -150,10 +150,14 @@ test("a call's end whose commit the store could not answer, and that landed, is 
           get(target, property) {
             const value = Reflect.get(target, property, target);
             if (property !== "commit") return typeof value === "function" ? value.bind(target) : value;
-            return async (batches, ...rest) => {
-              const result = await value.call(target, batches, ...rest);
-              if (endsDone(batches) && lost++ === 0) throw new Unanswered("its commit", 10_000);
-              return result;
+            return async (batches, receive, ...rest) => {
+              if (endsDone(batches) && lost++ === 0) {
+                // The write lands but `receive` (the callback a returned commit calls for each batch) is never called: a
+                // real unanswered commit throws before it runs, so the loop gets no success signal.
+                await value.call(target, batches, () => {}, ...rest);
+                throw new Unanswered("its commit", 10_000);
+              }
+              return value.call(target, batches, receive, ...rest);
             };
           },
         }),
