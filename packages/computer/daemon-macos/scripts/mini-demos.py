@@ -1173,6 +1173,18 @@ def teardown(t):
     return failed
 
 
+def still_windows(app, still=2, most=15):
+    """Until the app's onscreen windows have not changed for `still` seconds (at most `most`): an app just started opens
+    its first windows a moment after it answers."""
+    start = time.monotonic()
+    seen, since = windows().get(app, set()), start
+    while time.monotonic() - since < still and time.monotonic() - start < most:
+        time.sleep(0.25)
+        now = windows().get(app, set())
+        if now != seen:
+            seen, since = now, time.monotonic()
+
+
 def quit_apps(apps, seconds=15):
     """Apps the run started, quit by the driver (an Apple event to quit would itself need the grant), on a connection of
     their own, and waited for: the ones still running after that, by name."""
@@ -1308,6 +1320,11 @@ def main():
                 time.sleep(0.5)
             error, left = None, []
             try:
+                if app in started:
+                    # Opening the app is the setup's, as Notes' and Calendar's are: what it opens on launch (TextEdit's
+                    # Open panel on CI) is in both snapshots, and goes with the app when it quits.
+                    t.launch()
+                    still_windows(app)
                 if prepare:
                     prepare(t)
                 before = snapshot(c)
