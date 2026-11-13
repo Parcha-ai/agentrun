@@ -170,6 +170,27 @@ final class InputTests: XCTestCase {
 		XCTAssertEqual(raw.last, "raw.up left 5,5 1")
 	}
 
+	/// A request cancelled mid-drag, with shift held around it: the cancelled batch still posts the key-up and the
+	/// button-up (the fake, as the Mac's input queue, posts nothing for a cancelled task), and nothing stays held.
+	func testACancelDuringAHeldDragLeavesNothingDown() async throws {
+		os.react = { entry, _ in
+			// The request is cancelled once the drag is under way: shift and the button are down.
+			if entry == "raw.move 20,0 left" { withUnsafeCurrentTask { $0?.cancel() } }
+		}
+		let input = InputBatch(platform: os.platform(), policy: Policy(), groups: desktop, held: held)
+		let actions = json(#"[{"type":"drag","path":[[0,0],[200,0]],"keys":["shift"]}]"#)
+		let outcome = await Task { try await input.run(actions) }.result
+		guard case .failure(let error as RPCError) = outcome else { return XCTFail("the cancelled batch answered: \(outcome)") }
+		XCTAssertEqual(error.kind, .aborted)
+		XCTAssertEqual(raw.prefix(4), ["raw.key shift down", "raw.move 0,0", "raw.down left 0,0 1", "raw.move 20,0 left"])
+		XCTAssertEqual(raw.dropFirst(4).first, "raw.key shift up")
+		XCTAssertTrue(raw.dropFirst(5).first?.hasPrefix("raw.up left") == true, "\(raw)")
+		XCTAssertEqual(raw.count, 6)
+		let (buttons, keys) = held.get()
+		XCTAssertEqual(buttons, [], "no button is still down")
+		XCTAssertEqual(keys, [], "no key is still down")
+	}
+
 	func testALongTypeIsSentInBurstsSoTheAppInFrontIsCheckedBetweenThem() async throws {
 		// The first burst switches to an app the owner does not allow, as a key chord could.
 		os.react = { entry, os in

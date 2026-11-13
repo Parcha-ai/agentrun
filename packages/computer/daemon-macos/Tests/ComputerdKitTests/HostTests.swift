@@ -152,10 +152,13 @@ final class HostTests: XCTestCase {
 		for round in 0..<8 {
 			let push = try await tar.pushBegin(TarPathParams(path: dir + "/junk\(round)"))
 			var refused = false
-			// Not a tar archive: tar quits after its first block, and a later write finds nobody reading.
+			// A block that is no header, then zero blocks: bsdtar quits at the first ("Unrecognized archive format"),
+			// GNU tar skips it and quits at the zeros, its archive's end. Either way a later write finds nobody reading,
+			// and fails with EPIPE rather than a SIGPIPE that would kill the test runner.
+			let chunk = Data(repeating: 0x41, count: 512) + Data(count: 65536 - 512)
 			for _ in 0..<400 where !refused {
 				do {
-					try await tar.pushWrite(TarPushWriteParams(id: push.id, data: Data(repeating: 0x41, count: 65536)))
+					try await tar.pushWrite(TarPushWriteParams(id: push.id, data: chunk))
 				} catch let e as RPCError {
 					XCTAssertEqual(e.kind, .invalid)
 					refused = true

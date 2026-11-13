@@ -1,6 +1,6 @@
 import Foundation
 
-/// A route could not do this step here, for a reason that lets the next route try: the element took no press, the
+/// A route sent nothing for this step here, so the next route may try: the element takes no press, the
 /// window would not become key. A refusal that ends the step (stale, denied) is an RPCError instead.
 public struct RouteUnavailable: Error, Sendable {
 	public let reason: String
@@ -20,8 +20,6 @@ public struct Timing: Sendable {
 	public var expectPollMs: Double = 100
 	/// How long a set value must hold after the settle to count as verified.
 	public var lastingMs: Double = 500
-	/// How long a route that showed nothing is given for a slow effect, before the next route repeats the step.
-	public var lateMs: Double = 600
 	/// Told one line per act: each step's route and ms with the looks its settle took, the expect's ms, and the time a
 	/// look takes. The Mac app writes it to its log.
 	public var trace: (@Sendable (String) -> Void)?
@@ -46,8 +44,6 @@ public actor UIEngine {
 	var looks = 0
 	var lookMs = 0.0
 	var frameMs = 0.0
-	/// The routes a step tried that showed nothing before the one it ended on, for timing.trace.
-	var climbed: [String] = []
 
 	public init(platform: Platform, policy: Policy, timing: Timing = Timing()) {
 		self.platform = platform
@@ -304,13 +300,11 @@ public actor UIEngine {
 			try Task.checkCancellation()
 			let (at, looked) = (clock.now(), looks)
 			do {
-				climbed = []
-				let (route, verified, after) = try await run(step, view: view, state: params.state, held: held, foreground: foreground, expect: params.expect)
+				let (route, verified, after) = try await run(step, view: view, state: params.state, held: held, foreground: foreground)
 				results.append(.ran(route: route, verified: verified))
 				view = after
 				window = after.target.asTarget
-				let tried = climbed.map { "\($0) showed nothing, " }.joined()
-				spent.append("\(step.verb) \(tried)\(route.rawValue)\(verified ? "" : " unverified") \(Int(clock.now() - at)) ms, \(looks - looked) looks")
+				spent.append("\(step.verb) \(route.rawValue)\(verified ? "" : " unverified") \(Int(clock.now() - at)) ms, \(looks - looked) looks")
 			} catch let error as RPCError where Self.stepKinds.contains(error.kind) {
 				results.append(.error(StepError(kind: error.kind, message: error.message)))
 				refused = true
@@ -380,7 +374,7 @@ public actor UIEngine {
 
 	/// Checks a step against the look it runs on, runs it by the first route that can, settles, and checks its effect.
 	/// Answers the route, whether the effect showed, and the settled look.
-	func run(_ step: Step, view: View, state: String?, held: View?, foreground: Bool, expect: Expect? = nil) async throws -> (Route, Bool, View) {
+	func run(_ step: Step, view: View, state: String?, held: View?, foreground: Bool) async throws -> (Route, Bool, View) {
 		let target = view.target
 		if case .nav(let nav) = step {
 			if case .off(let reason) = platform.navFeature { throw RPCError.unsupported("nav \(nav.rawValue): ui.nav is off here: \(reason)") }
@@ -536,7 +530,7 @@ public actor UIEngine {
 				return .change
 			}
 		}
-		return try await ladder(step, view: view, attempts, expect: expect)
+		return try await ladder(step, view: view, attempts)
 	}
 
 	func semantic(_ off: String?, _ run: @escaping () async throws -> Check) -> Attempt {
@@ -570,18 +564,16 @@ public actor UIEngine {
 		return inFront ? routes.reversed() : routes
 	}
 
-	/// Takes the first route that can do the step; settles; checks. A route that turns out unable lets the next try. When
-	/// the one route left is one the call does not allow, the step is refused denied (the call can allow it); when no
-	/// route reaches it here, unsupported.
-	///
-	/// A route that ran and changed nothing in the window hands the step to the next route the call allows when the
-	/// call's expect does not hold, rather than leave the expect to wait out its timeout for an effect that never came.
-	/// Only a step that changed nothing climbs, so a route that visibly did the step is not done again.
-	func ladder(_ step: Step, view: View, _ attempts: [Attempt], expect: Expect? = nil) async throws -> (Route, Bool, View) {
+	/// Takes the first route that can do the step; settles; checks. Only a route that reports it sent nothing
+	/// (RouteUnavailable: the element takes no such action, the window is covered) lets the next route try. A route
+	/// that sent the step owns it, whether or not its effect showed by the settle: an effect can come late (a Save that
+	/// writes 300 ms on), so the act's expect waits for it up to its timeout, and no other route sends the step again,
+	/// which would press a button or submit a form twice. When the one route left is one the call does not allow, the
+	/// step is refused denied (the call can allow it); when no route reaches it here, unsupported.
+	func ladder(_ step: Step, view: View, _ attempts: [Attempt]) async throws -> (Route, Bool, View) {
 		var reasons: [String] = []
 		var denied = false
-		var unseen: (Route, View)?
-		for (i, attempt) in attempts.enumerated() {
+		for attempt in attempts {
 			if let off = attempt.off {
 				reasons.append("\(attempt.route.rawValue): \(off)")
 				denied = denied || attempt.notAllowed
@@ -595,42 +587,20 @@ public actor UIEngine {
 				continue
 			}
 			let after = try await settleAfterStep(view.target)
-			let next = attempts[(i + 1)...].contains { $0.off == nil }
 			switch check {
 			case .readback(let holds):
-				if holds() { return (attempt.route, true, after) }
-				// Nothing showed (the keys reached no view): the next route tries. A route that changed something is
-				// never followed by another, which could do the step twice.
-				guard next, view.fingerprint == after.fingerprint else { return (attempt.route, false, after) }
-				// A slow effect is not a failed step: wait for it before the next route does the step again.
-				let later = try await lateLook(after)
-				if later.fingerprint != view.fingerprint { return (attempt.route, holds(), later) }
-				climbed.append(attempt.route.rawValue)
-				unseen = (attempt.route, after)
+				return (attempt.route, holds(), after)
 			case .lasting(let holds):
 				guard holds() else { return (attempt.route, false, after) }
 				try await sleep(timing.lastingMs)
 				guard holds() else { return (attempt.route, false, try await settle(after.target.asTarget)) }
 				return (attempt.route, true, after)
 			case .change:
-				if view.fingerprint != after.fingerprint { return (attempt.route, true, after) }
-				guard let expect, next, !holds(expect, after) else { return (attempt.route, false, after) }
-				// A slow effect is not a failed step: wait for it before the next route does the step again.
-				let later = try await lateLook(after)
-				if later.fingerprint != view.fingerprint { return (attempt.route, true, later) }
-				climbed.append(attempt.route.rawValue)
-				unseen = (attempt.route, after)
+				return (attempt.route, view.fingerprint != after.fingerprint, after)
 			}
 		}
-		if let (route, after) = unseen { return (route, false, after) }
 		let words = "no route could \(step.verb) here. " + reasons.joined(separator: "; ")
 		throw denied ? RPCError.denied(words) : RPCError.unsupported(words)
-	}
-
-	/// The window settled again after the slow-effect wait: a route that showed nothing may only be slow.
-	func lateLook(_ after: View) async throws -> View {
-		try await sleep(timing.lateMs)
-		return try await settleAfterStep(after.target)
 	}
 
 	// MARK: elements and points

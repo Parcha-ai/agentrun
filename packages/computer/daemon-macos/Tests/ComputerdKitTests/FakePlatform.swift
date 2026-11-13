@@ -240,7 +240,9 @@ struct FakeRaw: RawInput {
 
 	func fmt(_ p: Point) -> String { "\(num(p.x)),\(num(p.y))" }
 
+	/// As the Mac's input queue does, a cancelled task posts nothing.
 	func post(_ entry: String) throws {
+		if Task.isCancelled { throw CancellationError() }
 		if os.with({ $0.rawFails.contains(entry) }) { throw RPCError.invalid("the fake refused \(entry)") }
 		os.record(entry)
 	}

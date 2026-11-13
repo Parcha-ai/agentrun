@@ -90,13 +90,15 @@ enum AX {
 		return AXUIElementIsAttributeSettable(e, attribute as CFString, &settable) == .success && settable.boolValue
 	}
 
-	/// An AXError as the engine takes it: gone is stale, a refusal lets the next route try.
+	/// An AXError as the engine takes it: gone is stale, a refusal (nothing was sent) lets the next route try.
 	static func check(_ err: AXError, _ what: String) throws {
 		switch err {
 		case .success: return
 		case .invalidUIElement: throw RPCError.stale("\(what): the element is gone. Observe again for fresh refs")
 		case .apiDisabled: throw RPCError.denied("\(what): Accessibility is not granted to Computerd")
-		case .cannotComplete: throw RouteUnavailable("\(what): the app did not answer within \(Int(messagingTimeout)) s")
+		// The app has the request and did not answer in time (a press that opens a modal answers late): it was sent, so
+		// its effect tells whether it ran, and no other route sends it again.
+		case .cannotComplete: return
 		case .actionUnsupported, .attributeUnsupported: throw RouteUnavailable("\(what): the element does not support it")
 		default: throw RouteUnavailable("\(what) failed (AXError \(err.rawValue))")
 		}

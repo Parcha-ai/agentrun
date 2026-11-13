@@ -326,12 +326,21 @@ final class InputRun: @unchecked Sendable {
 		}
 	}
 
-	/// Lets go of every key and button the batch holds, keys last pressed first.
+	/// Lets go of every key and button the batch holds, keys last pressed first. A cancelled batch releases too: the
+	/// releases run in a task of their own, which the request's cancel never reaches, so every key-up and button-up
+	/// posts (the Mac's input queue posts nothing for a cancelled task). Each leaves the held state only once its
+	/// release posted, so one that failed is still held for the connection's close to let go.
 	func release() async {
-		for name in keys.reversed() { try? await raw.key(name, down: false) }
-		let at = cursor
-		for button in buttons.reversed() { try? await raw.button(button, down: false, at: at, clickState: 1) }
-		keys = []
-		buttons = []
+		await Task.detached { [self] in
+			for name in keys.reversed() {
+				guard (try? await raw.key(name, down: false)) != nil else { continue }
+				if let i = keys.lastIndex(of: name) { keys.remove(at: i) }
+			}
+			let at = cursor
+			for button in buttons.reversed() {
+				guard (try? await raw.button(button, down: false, at: at, clickState: 1)) != nil else { continue }
+				if let i = buttons.lastIndex(of: button) { buttons.remove(at: i) }
+			}
+		}.value
 	}
 }

@@ -42,7 +42,7 @@ public enum Exec {
 
 		var outPipe: [Int32] = [0, 0]
 		var errPipe: [Int32] = [0, 0]
-		guard pipe(&outPipe) == 0, pipe(&errPipe) == 0 else { throw RPCError.invalid("cannot make a pipe: \(String(cString: strerror(errno)))") }
+		guard sysPipe(&outPipe) == 0, sysPipe(&errPipe) == 0 else { throw RPCError.invalid("cannot make a pipe: \(String(cString: strerror(errno)))") }
 
 		var actions = blankActions()
 		posix_spawn_file_actions_init(&actions)

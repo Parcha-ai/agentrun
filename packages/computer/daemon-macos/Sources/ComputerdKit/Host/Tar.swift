@@ -175,9 +175,9 @@ final class Child: @unchecked Sendable {
 		var inPipe: [Int32] = [-1, -1]
 		var outPipe: [Int32] = [-1, -1]
 		var errPipe: [Int32] = [0, 0]
-		if stdin { guard pipe(&inPipe) == 0 else { throw RPCError.invalid("cannot make a pipe") } }
-		if stdout { guard pipe(&outPipe) == 0 else { throw RPCError.invalid("cannot make a pipe") } }
-		guard pipe(&errPipe) == 0 else { throw RPCError.invalid("cannot make a pipe") }
+		if stdin { guard sysPipe(&inPipe) == 0 else { throw RPCError.invalid("cannot make a pipe") } }
+		if stdout { guard sysPipe(&outPipe) == 0 else { throw RPCError.invalid("cannot make a pipe") } }
+		guard sysPipe(&errPipe) == 0 else { throw RPCError.invalid("cannot make a pipe") }
 		var actions = Exec.blankActions()
 		posix_spawn_file_actions_init(&actions)
 		defer { posix_spawn_file_actions_destroy(&actions) }

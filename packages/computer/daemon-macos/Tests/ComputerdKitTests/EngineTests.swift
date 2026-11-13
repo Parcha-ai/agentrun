@@ -276,7 +276,7 @@ final class EngineTests: XCTestCase {
 	}
 
 	/// A document's text area (TextEdit's) takes an edit as one only by typed keys: they go first, and an insert only
-	/// when the keys showed nothing.
+	/// when the keys' route sent nothing. Keys that were sent and showed nothing are never typed again by the insert.
 	func testADocumentsTextTakesTypedKeysFirst() async throws {
 		os.add(10, "textbox", name: "Body", value: "Pears: 41", frame: Rect(120, 450, 600, 100), parent: 2, settable: true, textInput: true)
 		os.with { $0.elements[10]?.keysFirst = true }
@@ -292,10 +292,18 @@ final class EngineTests: XCTestCase {
 
 		os.react = nil
 		let r2 = try await engine.observe(UiObserveParams())
-		let climbed = try await engine.act(UiActParams(steps: [.type(" more", into: ref(r2, "Body"))]))
-		XCTAssertEqual(ran(climbed, 0)?.0, .semantic, "the keys showed nothing, so the insert went")
-		XCTAssertEqual(ran(climbed, 0)?.1, true)
-		XCTAssertEqual(os.entries.filter { $0.contains("more") }, ["bg.type  more", "ax.insert 10  more"])
+		let unseen = try await engine.act(UiActParams(steps: [.type(" more", into: ref(r2, "Body"))]))
+		XCTAssertEqual(ran(unseen, 0)?.0, .background, "the keys were sent, so the step is theirs")
+		XCTAssertEqual(ran(unseen, 0)?.1, false)
+		XCTAssertEqual(os.entries.filter { $0.contains("more") }, ["bg.type  more"], "nothing typed the text a second time")
+
+		// The keys' route sends nothing (the app is hidden): the insert does the step.
+		let engine2 = os.engine(background: .off("hidden"))
+		let r3 = try await engine2.observe(UiObserveParams())
+		let inserted = try await engine2.act(UiActParams(steps: [.type(" again", into: ref(r3, "Body"))]))
+		XCTAssertEqual(ran(inserted, 0)?.0, .semantic)
+		XCTAssertEqual(ran(inserted, 0)?.1, true)
+		XCTAssertEqual(os.entries.filter { $0.contains("again") }, ["ax.insert 10  again"])
 	}
 
 	func testKeyChoosesTheMenuItemThenPosts() async throws {
@@ -555,17 +563,30 @@ final class EngineTests: XCTestCase {
 		}
 	}
 
-	func testAStepThatShowsNothingClimbsToTheNextRouteWhileTheExpectWaits() async throws {
+	/// A route that sent the step owns it: a press that showed nothing is not sent again by the keys, in the background
+	/// or in front, however long the expect waits. Only a route that sent nothing lets the next one try.
+	func testASentStepThatShowsNothingIsNeverSentAgain() async throws {
 		backMenuItemThatDoesNothing()
 		let engine = os.engine()
 		_ = try await engine.observe(UiObserveParams())
+		let alone = try await engine.act(UiActParams(steps: [.key("super+[")]))
+		XCTAssertEqual(ran(alone, 0)?.0, .semantic)
+		XCTAssertEqual(ran(alone, 0)?.1, false)
+
 		let start = os.now
-		let result = try await engine.act(UiActParams(steps: [.key("super+[")], expect: Expect(text: "Quarterly report", timeoutMs: 10_000)))
-		XCTAssertEqual(ran(result, 0)?.0, .background, "the menu item showed nothing, so the keys went")
-		XCTAssertEqual(ran(result, 0)?.1, true)
-		XCTAssertEqual(result.expect, .met)
-		XCTAssertLessThan(os.now - start, 2000, "no wait for the expect's timeout")
-		XCTAssertEqual(os.entries.filter { $0.contains("key") || $0.hasPrefix("ax.AXPress") }, ["ax.AXPress 9", "bg.key super+["])
+		let waited = try await engine.act(UiActParams(steps: [.key("super+[")], expect: Expect(text: "Quarterly report", timeoutMs: 1000), foreground: true))
+		XCTAssertEqual(ran(waited, 0)?.0, .semantic)
+		XCTAssertEqual(ran(waited, 0)?.1, false)
+		XCTAssertEqual(waited.expect, .unmet)
+		XCTAssertGreaterThanOrEqual(os.now - start, 1000, "the expect waited out its timeout for the press's effect")
+		XCTAssertEqual(os.entries.filter { $0.contains("key") || $0.hasPrefix("ax.AXPress") }, ["ax.AXPress 9", "ax.AXPress 9"], "one press per act, and no keys")
+
+		// The menu item is gone, so the semantic route sends nothing: the keys go.
+		os.remove(9)
+		let keys = try await engine.act(UiActParams(steps: [.key("super+[")], expect: Expect(text: "Quarterly report", timeoutMs: 1000)))
+		XCTAssertEqual(ran(keys, 0)?.0, .background)
+		XCTAssertEqual(ran(keys, 0)?.1, true)
+		XCTAssertEqual(keys.expect, .met)
 	}
 
 	func testKeysGoTheForegroundWayFirstWhenAllowedAndTheAppIsInFront() async throws {
@@ -589,45 +610,21 @@ final class EngineTests: XCTestCase {
 		XCTAssertEqual(ran(behind, 0)?.0, .background, "another app in front: the background way first")
 	}
 
-	func testAStepThatShowsNothingStaysPutWithNoExpectOrNoRouteAllowed() async throws {
-		backMenuItemThatDoesNothing()
+	/// The ui fixture's Save writes 300 ms after its press, past the quiet settle: the expect waits for it, and no other
+	/// route presses Save again. One press, one save.
+	func testADelayedSaveIsPressedOnceAndSavesOnce() async throws {
 		let engine = os.engine()
-		_ = try await engine.observe(UiObserveParams())
-		let alone = try await engine.act(UiActParams(steps: [.key("super+[")]))
-		XCTAssertEqual(ran(alone, 0)?.0, .semantic, "no expect: nothing says the step is still to do")
-		XCTAssertEqual(ran(alone, 0)?.1, false)
-		XCTAssertFalse(os.entries.contains("bg.key super+["))
-
-		// The background route shows nothing either; the foreground one is not allowed, so the step ends unverified.
-		os.react = nil
-		let result = try await engine.act(UiActParams(steps: [.key("super+[")], expect: Expect(text: "Quarterly report", timeoutMs: 1000)))
-		XCTAssertEqual(ran(result, 0)?.0, .background)
-		XCTAssertEqual(ran(result, 0)?.1, false)
-		XCTAssertEqual(result.expect, .unmet)
-		XCTAssertFalse(os.entries.contains("fg.key super+["), "foreground: true was not passed")
-
-		// With foreground allowed, it climbs there.
+		let r = try await engine.observe(UiObserveParams())
 		os.react = { entry, os in
-			if entry == "fg.key super+[" { os.with { $0.elements[5]?.name = "Quarterly report" } }
+			guard entry.hasSuffix("AXPress 3") || entry.contains(".click 160,85") else { return }
+			os.after(300) { $0.elements[5]?.value = ($0.elements[5]?.value ?? "") + "Saved." }
 		}
-		let front = try await engine.act(UiActParams(steps: [.key("super+[")], expect: Expect(text: "Quarterly report", timeoutMs: 10_000), foreground: true))
-		XCTAssertEqual(ran(front, 0)?.0, .foreground)
-		XCTAssertEqual(ran(front, 0)?.1, true)
-		XCTAssertEqual(front.expect, .met)
-	}
-
-	func testASlowEffectIsWaitedForNotRepeatedOnTheNextRoute() async throws {
-		backMenuItemThatDoesNothing()
-		let engine = os.engine()
-		_ = try await engine.observe(UiObserveParams())
-		// The background key lands, and its effect shows 300 ms after the quiet settle looked.
-		os.react = { entry, os in
-			if entry == "bg.key super+[" { os.after(300) { $0.elements[5]?.name = "Quarterly report" } }
-		}
-		let result = try await engine.act(UiActParams(steps: [.key("super+[")], expect: Expect(text: "Quarterly report", timeoutMs: 10_000), foreground: true))
-		XCTAssertEqual(ran(result, 0)?.0, .background)
-		XCTAssertEqual(ran(result, 0)?.1, true)
-		XCTAssertFalse(os.entries.contains("fg.key super+["), "the slow effect was waited for, so the step was not done a second time")
+		let result = try await engine.act(UiActParams(state: r.state, steps: [.press(ref(r, "Save"))], expect: Expect(text: "Saved.", timeoutMs: 10_000), foreground: true))
+		XCTAssertEqual(ran(result, 0)?.0, .semantic)
+		XCTAssertEqual(result.expect, .met)
+		try await FakeClock(os: os).sleep(ms: 2000)
+		XCTAssertEqual(os.entries.filter { $0.contains("AXPress") || $0.contains("click") }, ["ax.AXPress 3"], "one press")
+		XCTAssertEqual(os.with { $0.elements[5]?.value }, "Saved.", "one save")
 	}
 
 	func testARedrawAloneNeitherHoldsASettleNorVerifiesAStep() async throws {
