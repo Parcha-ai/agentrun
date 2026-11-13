@@ -214,7 +214,6 @@ test("a replay held with a guard set too low gets one refit: the cheapest thresh
     assert.deepEqual(row.metrics.guards.map(({ threshold, escalated }) => [threshold, escalated]), [[1e-9, false]]);
   }
   const second = await start("run-2", "What is seven times six");
-  assert.equal(second.metrics?.path, "agent", "the held digest does not serve");
   const records = await promotionsOf(server.settings, "agent-1");
   const held = records.find((one) => one.decided === "hold");
   assert.equal(held.digest, workflowDigest({ workflow: JSON.stringify(flow) }));
@@ -223,6 +222,9 @@ test("a replay held with a guard set too low gets one refit: the cheapest thresh
   assert.deepEqual({ decided: refit.decided, source: refit.source, from: refit.refit.from, guards: refit.refit.guards }, { decided: "promote", source: "refit", from: held.digest, guards: [{ node: "answer", was: 0.1, threshold: 0.9 }] });
   assert.deepEqual({ wf_acc: refit.replay.wf_acc, delta: refit.replay.delta, handed_back: refit.replay.handed_back }, { wf_acc: 1, delta: 0, handed_back: 3 });
   assert.ok(logs.some((line) => /refit answer's guards over its replay held it \(6 rows\): answer 0\.1 -> 0\.9/.test(line)), logs.join("\n"));
+  // The held digest never serves: its refit, promoted on its rows, is the champion and serves this same run from its commit.
+  assert.deepEqual([second.metrics?.path, second.metrics?.workflow_digest], ["workflow", refit.digest], JSON.stringify(second.metrics));
+  assert.equal(typeof refit.commit, "string", "the refit's record names its learning commit");
   // The new revision is on the learning folder's main, at the refit's digest: the next run is laid from it.
   const third = await start("run-3", "Question 4");
   assert.equal(third.metrics?.workflow_digest, refit.digest, JSON.stringify(third.metrics));
