@@ -13,7 +13,8 @@ What a provider declares, the refusal rules, and the conformance report. (Writte
 
 A vendor whose machines run Linux and can start a process as root writes a `MachineHost` (`src/host.ts`), and
 `hostedProvider(host, options)` (`src/hosted/provider.ts`) makes it a whole `ComputerProvider`. The doc comments in
-`src/host.ts` are the contract; this section is their summary. E2B is the first vendor on it (`src/e2b.ts`).
+`src/host.ts` are the contract; this section is their summary. E2B is the first vendor on it (`src/e2b.ts`), and
+Agent37 the second (`src/agent37.ts`: REST over fetch, every command over SSH, no file API).
 
 ### What the vendor writes
 
