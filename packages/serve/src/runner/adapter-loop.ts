@@ -61,6 +61,8 @@ import { McpClaimRefused } from "./mcp-claim.js";
 import { Fenced } from "../store/index.js";
 import { answerAsServed } from "../answer-json.js";
 import { type ClaimMcp, parkedFollowUp } from "./mcp-run.js";
+import { foldSession } from "@parcha/agentrun-kernel/kernel";
+import { transcriptOf } from "@parcha/agentrun-kernel/process";
 import { budgetOf, type RequestFigures, reserveFor, TOOL_BUDGET_TEXT, WRAP_UP_TEXT, wrappingUp } from "../tool-budget.js";
 import { LEARNED_CLIP, LEARNED_WORKFLOW_TOOL } from "../learned-workflow.js";
 import { type FeedbackData, feedbackAsk, feedbackOf, pendingFeedbackOf } from "./feedback-round.js";
@@ -371,6 +373,19 @@ const cliErrorAnswer = (harness: string, error: string, at: number) => ({
   usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
 });
 
+/** The answer of a session's last turn as its own records keep it (the kernel journal's transcript, run-adapters
+ *  process/records.ts, which the CLI harnesses write): its assistant messages' text, in order, when that turn ended
+ *  completed; else undefined (no such turn, or a session that keeps no transcript). */
+export function lastTurnAnswerOf(records: readonly SessionRecord[]): string | undefined {
+  const transcript = transcriptOf(foldSession("", records)).map((record) => record.data);
+  const end = transcript.findLastIndex((entry) => entry?.type === "turn");
+  const last = transcript[end];
+  if (!last || last.type !== "turn" || last.status !== "completed") return undefined;
+  const from = transcript.findLastIndex((entry, at) => at < end && entry?.type === "turn");
+  const said = transcript.slice(from + 1, end).flatMap((entry) => (entry?.type === "message" && entry.role === "assistant" && entry.text.trim() !== "" ? [entry.text] : []));
+  return said.length > 0 ? said.join("\n\n") : undefined;
+}
+
 /** The turns a session's records booked (its runner.turn records), in order. */
 export function turnsOf(records: readonly SessionRecord[]): number[] {
   return records.filter((record) => record.kind === RUNNER_RECORDS.turn).map((record) => (record.data as { turn?: unknown }).turn).filter((turn): turn is number => typeof turn === "number");
@@ -476,8 +491,10 @@ interface CliRecord {
   /** Whether the record holds the end-of-run turn `requestId`'s prompt (answering's, this claim's or an earlier one's). */
   asked(requestId: string): boolean;
   /** The end-of-run turn ended (`status`, its turn's): its prompt and answer as the submission `requestId` names, the same
-   *  record pi's adapter writes (done with its answer entry, or unanswered with why), written once. */
-  answered(requestId: string, prompt: string, status: string): Promise<void>;
+   *  record pi's adapter writes (done with its answer entry, or unanswered with why), written once. `kept`: the turn's
+   *  answer as the session's own records keep it (lastTurnAnswerOf), the answer when the turn said no text to this
+   *  claim (a cut turn its CLI found finished, whose answer it restored without saying it again). */
+  answered(requestId: string, prompt: string, status: string, kept?: string): Promise<void>;
 }
 
 /** The record on `root` of the run's Harness: what the journal holds already read once, and every call a crash or a
@@ -678,9 +695,9 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
       });
     },
     asked: (requestId) => askedAt.has(requestId),
-    answered: (requestId, prompt, status) =>
+    answered: (requestId, prompt, status, kept) =>
       inTurn(async () => {
-        const said = answer ?? "";
+        const said = answer || kept || "";
         answer = undefined;
         await harness.commit(async (tx) => {
           if (await tx.submissionByRequest(root.id, requestId)) return;
@@ -849,6 +866,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   };
   /** The claim's CLI record (record: "loop"), for the end-of-run turn's answer; undefined for an adapter keeping its own. */
   let cliRecord: CliRecord | undefined;
+  /** The claim's session records as its writer reads them (the end-of-run turn's answer a recovery restored, from them). */
+  let sessionRecordsNow: (() => Promise<readonly SessionRecord[]>) | undefined;
   /** The session's paid requests admitted and not yet booked (its model port's beforeRequest, then its afterRequest), and
    *  who waits for none: the run's end waits for them, since a booking written after the end (the run's release) is
    *  fenced and lost, and its request read back at its hold. */
@@ -1444,6 +1463,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         for (const settle of spec.lifecycle?.beforeResume ?? []) await settle(harness);
         const hooks = spec.hooks ?? quiet;
         const writer = await sessions.open(spec.session.key);
+        sessionRecordsNow = () => writer.read();
         // Every paid request of the run is asked of its one cap (theCap: one rule, one admission queue, the run's totals
         // over every session of it): its model requests here, its paid tool calls (ledger.paid, under each call below and
         // outside any) and its decisions (ledger.decisions). Its last refusal is kept: a turn it ended ends the run in its
@@ -2995,9 +3015,12 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           await theRecord?.answered(requestId, prompt, "timed out");
           return { timedOut: true };
         }
-        // The CLI's turn, as the submission pi's adapter writes: what the step reads next, one reader for both.
+        // The CLI's turn, as the submission pi's adapter writes: what the step reads next, one reader for both. A recovered
+        // turn's answer may never be said to this claim (Codex restores a turn it finds finished into its transcript, and
+        // says none of it): the session's records keep it (lastTurnAnswerOf).
         turnStatus = end.status;
-        await theRecord?.answered(requestId, prompt, end.status);
+        const kept = cut && end.status === "completed" && sessionRecordsNow ? lastTurnAnswerOf(await sessionRecordsNow().catch(() => [])) : undefined;
+        await theRecord?.answered(requestId, prompt, end.status, kept);
       }
       const record = await on.commit((tx) => tx.submissionByRequest(conversation.id, requestId), context);
       if (turnStatus !== "completed" || record?.status !== "done") return { failed: { code: "unanswered", message: "the end-of-run turn gave no answer" } };

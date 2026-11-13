@@ -79,13 +79,16 @@ export function feedbackAsk(feedback: FeedbackData, seen?: { readonly job: strin
 
 /** Opens run `grade.run` again on the feedback round its grade asks for (feedbackRoundOf), with the grade's words
  *  (`label`, else feedbackWords'), and says which: only a run that learns (its launch's learning start, never one that
- *  only uses what was learned, nor a notes-only run's revision ask), and one the store opens again (an agentic run that
- *  answered or that a person stopped). Null when the grade asks for nothing more, or the run can't be opened again (the
- *  grade is kept either way). */
-export async function openFeedbackRound(store: Pick<Store, "runs">, grade: Grade, label: string | undefined): Promise<FeedbackRound | null> {
+ *  only uses what was learned, nor a notes-only run's revision ask), neither archived nor of an archived agent (closed
+ *  history: a grade of it starts no paid work), and one the store opens again (an agentic run that answered or that a
+ *  person stopped). Null when the grade asks for nothing more, or the run can't be opened again (the grade is kept either
+ *  way). */
+export async function openFeedbackRound(store: Pick<Store, "runs" | "agents">, grade: Grade, label: string | undefined): Promise<FeedbackRound | null> {
   const words = label?.trim() ? label.trim() : undefined;
   const round = feedbackRoundOf(grade, words);
   if (!round) return null;
+  const run = await store.runs.get(grade.run);
+  if (!run || run.archivedAt !== null || (await store.agents.get(run.agentId))?.archivedAt !== null) return null;
   const launched = await store.runs.launch(grade.run).catch(() => undefined);
   const learning = launched ? readLaunchBody(launched.body)?.learning : undefined;
   if (!learning || learning.use || (round === "revise" && learning.notesOnly)) return null;
