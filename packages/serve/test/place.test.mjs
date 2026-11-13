@@ -15,7 +15,7 @@ import { storeOn } from "./store-helpers.mjs";
 const storedBodies = (data) => {
   const db = new DatabaseSync(join(data, "store.sqlite"), { readOnly: true });
   try {
-    return db.prepare("SELECT body_json FROM revisions").all().map((row) => JSON.parse(row.body_json));
+    return db.prepare("SELECT body FROM revisions ORDER BY created_at, rowid").all().map((row) => JSON.parse(row.body));
   } finally {
     db.close();
   }
@@ -27,8 +27,7 @@ const BOXED = [
   { mode: "sandbox", box: "daytona" },
 ];
 
-// SKIP (follow-up #2078): it reads the old store column body_json, which the store switch removed
-test.skip("a definition that names no place stores none, answers none, and runs as before", async (t) => {
+test("a definition that names no place stores none, answers none, and runs as before", async (t) => {
   const { api, data } = await serve(t);
   const made = await api("POST", "/agents", agent("plain"));
   assert.equal(made.status, 201, JSON.stringify(made.body));
@@ -42,8 +41,7 @@ test.skip("a definition that names no place stores none, answers none, and runs 
   await follow(api, run.body.run_id, ["completed"]);
 });
 
-// SKIP (follow-up #2078): it reads the old store column body_json, which the store switch removed
-test.skip("an explicit runner place is stored and echoed, is another revision than none, and runs", async (t) => {
+test("an explicit runner place is stored and echoed, is another revision than none, and runs", async (t) => {
   const { api, data } = await serve(t);
   const plain = await api("POST", "/agents", agent("plain"));
   const made = await api("POST", "/agents", agent("runner", { place: { mode: "runner" } }));
@@ -57,8 +55,7 @@ test.skip("an explicit runner place is stored and echoed, is another revision th
   await follow(api, run.body.run_id, ["completed"]);
 });
 
-// SKIP (follow-up #2078): it reads the old store column body_json, which the store switch removed
-test.skip("a sandbox place on each box is stored and echoed as given on an agentic revision; a workflow revision's is a 422, and nothing is saved", async (t) => {
+test("a sandbox place on each box is stored and echoed as given on an agentic revision; a workflow revision's is a 422, and nothing is saved", async (t) => {
   const { api, data } = await serve(t);
   for (const [index, place] of BOXED.entries()) {
     const made = await api("POST", "/agents", agent(`boxed-${index}`, { place }));

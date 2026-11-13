@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { startServe } from "../dist/index.js";
-import { agent, client, flowAgent, follow, jsonLines, runDir, scratch, serve, withEnv } from "./support.mjs";
+import { agent, client, flowAgent, follow, jsonLines, journalOf, scratch, serve, withEnv } from "./support.mjs";
 
 const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
 const FAKE = new URL("./fixtures/fake-docker.mjs", import.meta.url).pathname;
@@ -54,20 +54,15 @@ async function rowsOf(api, runId) {
   }
 }
 function answers(data, runId) {
-  const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true });
-  try {
-    return db.prepare("SELECT record FROM entries ORDER BY id").all()
-      .flatMap((row) => JSON.parse(row.record).model ?? [])
-      .filter((message) => message.role === "toolResult")
-      .map((message) => ({ tool: message.toolName, error: message.isError, text: (message.content ?? []).map((c) => c.text ?? "").join("") }));
-  } finally {
-    db.close();
-  }
+  return journalOf(data, runId)
+    .flatMap((entry) => entry.model ?? [])
+    .filter((message) => message.role === "toolResult")
+    .map((message) => ({ tool: message.toolName, error: message.isError, text: (message.content ?? []).map((c) => c.text ?? "").join("") }));
 }
 const storedBodies = (data) => {
   const db = new DatabaseSync(join(data, "store.sqlite"), { readOnly: true });
   try {
-    return db.prepare("SELECT body_json FROM revisions").all().map((row) => JSON.parse(row.body_json));
+    return db.prepare("SELECT body FROM revisions ORDER BY created_at, rowid").all().map((row) => JSON.parse(row.body));
   } finally {
     db.close();
   }
@@ -87,7 +82,9 @@ function refusedNotForPlace(answer) {
 /** A definition as a person writes one first: a name and instructions, no place and no tools. */
 const fresh = (id) => ({ definition: { id, name: id, instructions: "Probe." } });
 
-// SKIP (follow-up #2078): a run in a Docker box fails on the runner instead of completing
+// SKIP (follow-up #2080, same cause as docker-by-default's demo): the store reads here are ported (journalOf), but a run in the
+// Docker box now starts a computer, and the fake docker cannot stand in for it: the run fails with run_failed, "Docker could not
+// start a sandbox computer: no daemon for Docker's 27.0.0-fake ... run npm run build:daemon -w @parcha/agentrun-computer".
 test.skip("a new agent on a server with docker can start a command in the background and read its output, with no tools named", { timeout: 120_000 }, async (t) => {
   const [{ NEW_AGENT_TOOLS }, { SHELL_TOOLS }] = await Promise.all([import("../dist/place.js"), import("../dist/background.js")]);
   assert.deepEqual([...NEW_AGENT_TOOLS], [...SHELL_TOOLS], "a new agent's tools are the shell tools, bash and the background tools");
@@ -110,8 +107,7 @@ test.skip("a new agent on a server with docker can start a command in the backgr
   assert.equal(said[2].text, "Background process 1 exited with code 0. Output bytes 0 to 20 of 20, the end.\n\nfrom the background\n");
 });
 
-// SKIP (follow-up #2078): it reads the old run-row column body_json, which the store switch removed
-test.skip("a new agent that names its tools gets exactly those in the box; one that names the runner, or a tool the box refuses, keeps the runner; a workflow is never given a box", { timeout: 60_000 }, async (t) => {
+test("a new agent that names its tools gets exactly those in the box; one that names the runner, or a tool the box refuses, keeps the runner; a workflow is never given a box", { timeout: 60_000 }, async (t) => {
   await fakeDocker(t);
   const { api, data } = await serve(t, { faux: PROBE });
   const named = await api("POST", "/agents", agent("named", { tools: ["read"] }));
@@ -139,8 +135,7 @@ test.skip("a new agent that names its tools gets exactly those in the box; one t
   assert.deepEqual([edited.body.definition.place, edited.body.definition.tools], [DOCKER, ["read", "bash"]]);
 });
 
-// SKIP (follow-up #2078): it reads the old run-row column body_json, which the store switch removed
-test.skip("with no docker, a new agent is saved as before, with no place, and runs on the runner; capabilities say why: docker turned off (AGENTRUN_BOXES=none), or its image failed", { timeout: 60_000 }, async (t) => {
+test("with no docker, a new agent is saved as before, with no place, and runs on the runner; capabilities say why: docker turned off (AGENTRUN_BOXES=none), or its image failed", { timeout: 60_000 }, async (t) => {
   withEnv(t, { AGENTRUN_BOXES: "none" });
   const { api, data } = await serve(t, { faux: PROBE });
   const places = await placesOf(api);
@@ -157,7 +152,7 @@ test.skip("with no docker, a new agent is saved as before, with no place, and ru
   await follow(api, run.run_id, ["completed"]);
 });
 
-// SKIP (follow-up #2078): a run in a Docker box fails on the runner instead of completing
+// SKIP (follow-up #2080): its first run in the Docker box fails with the same run_failed, no computer daemon for the fake docker.
 test.skip("a revision that names no place runs where default_place says, as a new agent would be saved: in the Docker box on a server that now has docker; one with a tool the box refuses, and a workflow, on the runner", { timeout: 90_000 }, async (t) => {
   withEnv(t, { AGENTRUN_BOXES: "none" });
   const data = join(await scratch(t), "agents");
