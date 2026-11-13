@@ -12,7 +12,7 @@
 // (learn/commit.ts), and stay served: a run the workflow hands back is done by hand with them.
 import { createHash } from "node:crypto";
 import type { AuthorHostAddendum } from "@parcha/agentrun-dsl";
-import { LEARNED_MAX_TURNS, frontMatter, WORKFLOW_NAME, WORKFLOWS_DIR } from "./skills.js";
+import { childNodes, LEARNED_MAX_TURNS, frontMatter, WORKFLOW_NAME, WORKFLOWS_DIR } from "./skills.js";
 import { NOTE_BLOCK, parseReflection, SKILL_BLOCK, WORKFLOW_BLOCK } from "./reflect.js";
 import { NOTE_FILE } from "./notes.js";
 import { championOf, PROMOTE_BAR, type PromotionRecord, promotionOf } from "./promote.js";
@@ -419,15 +419,15 @@ const SELF_KINDS: ReadonlySet<string> = new Set(["decide", "agent", "judge", "pi
 const UNREPORTED_KINDS: ReadonlySet<string> = new Set(["extract", "call"]);
 const guardWords = (signal: "self" | "jev" | "both") => JSON.stringify(guardOf(signal)).replace(/,/g, ", ").replace(/:/g, ": ");
 
-/** Every node in a workflow document's root, depth first: each object with a string `node`, wherever it sits (a chain's
- *  steps, a map's or loop's body, a parallel's branches, a route's bodies). */
+/** Every step of a workflow document's root, depth first (skills.ts childNodes: a chain's steps, a parallel's branches,
+ *  a map's or loop's body, a route's bodies, a composed workflow's root), never a literal value (a step's `state`, a
+ *  call's `args`) that holds a `node` key. */
 function nodesOf(value: unknown, out: Record<string, unknown>[] = []): Record<string, unknown>[] {
-  if (Array.isArray(value)) for (const one of value) nodesOf(one, out);
-  else if (value !== null && typeof value === "object") {
-    const node = value as Record<string, unknown>;
-    if (typeof node.node === "string") out.push(node);
-    for (const [key, one] of Object.entries(node)) if (key !== "guard") nodesOf(one, out);
-  }
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return out;
+  const node = value as Record<string, unknown>;
+  if (typeof node.node !== "string") return out;
+  out.push(node);
+  for (const child of node.node === "workflow" ? [(node.workflow as { root?: unknown } | null | undefined)?.root] : childNodes(node)) nodesOf(child, out);
   return out;
 }
 

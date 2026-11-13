@@ -482,7 +482,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> => value !==
  *  parallel's branches, a map's or a loop's body, a route's branch bodies. A composed workflow node's child is a
  *  workflow, walked as one (eachWorkflow). Only these are node positions: an object anywhere else (a schema, a const, a
  *  step's literal value) is data, never a node, whatever keys it holds. */
-function childNodes(node: Record<string, unknown>): unknown[] {
+export function childNodes(node: Record<string, unknown>): unknown[] {
   switch (node.node) {
     case "chain": return Array.isArray(node.steps) ? node.steps : [];
     case "parallel": return Array.isArray(node.branches) ? node.branches : [];
