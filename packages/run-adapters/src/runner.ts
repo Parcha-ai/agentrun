@@ -232,6 +232,9 @@ export function sessionSpendOf(records: readonly SessionRecord[]): { turns: numb
   for (const r of records) {
     if (r.kind !== RUNNER_RECORDS.turn) continue;
     const data = r.data as { turn?: number; usd?: number | null; heldUsd?: unknown; bookedUsd?: unknown; cut?: unknown; rule?: unknown };
+    // A request is booked once: a second runner.turn of a turn already answered (two bookings of one session that each
+    // read it open, a cut written twice) counts no money and no request again.
+    if (typeof data.turn === "number" && answered.has(data.turn)) continue;
     const turn = data.turn ?? turns.find((t) => !answered.has(t)) ?? 0;
     answered.add(turn);
     // The figure it was booked at (bookRequest), as written. A record from before that has none: a request cut off with
@@ -264,9 +267,12 @@ export function sessionSpendOf(records: readonly SessionRecord[]): { turns: numb
   return { turns, held, bounds, hosts, answered, openHolds, spentUsd, figures, cost: { usd: unpriced > 0 ? null : soFarUsd, soFarUsd, unpriced } };
 }
 
-/** Whether a request answered with no price of its own (bookRequest's rule `answered`, or `answered:<label>`, its usd
- *  null): booked at its hold for the cap, its cost unknown. */
-export const answeredUnpriced = (data: { usd?: unknown; rule?: unknown }): boolean => data.usd === null && typeof data.rule === "string" && (data.rule === "answered" || data.rule.startsWith("answered:"));
+/** Whether a request ended with no price of its own (usd null) under a rule that books it at a figure of the host's: an
+ *  answer with no cost (bookRequest's rule `answered`, or `answered:<label>`: its hold), or one our side stopped
+ *  (`stopped`: what streamed, an estimate) or lost (`lost`, `lost:<label>`: its hold). Each counts for the cap at that
+ *  figure, but as a cost it is unknown, never an estimate stored as a known charge (the provider may bill otherwise). */
+export const answeredUnpriced = (data: { usd?: unknown; rule?: unknown }): boolean =>
+  data.usd === null && typeof data.rule === "string" && (data.rule === "answered" || data.rule.startsWith("answered:") || data.rule === "stopped" || data.rule === "lost" || data.rule.startsWith("lost:"));
 
 /** Whether a request was booked lost (bookRequest's rule `lost`, or `lost:<label>`): billed or not, no cost came in. */
 const bookedLost = (rule: unknown): boolean => typeof rule === "string" && (rule === "lost" || rule.startsWith("lost:"));
@@ -465,7 +471,11 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
     // A paid request a crash cut off kept its runner.request and has no runner.turn: the provider may have billed it.
     // Each is booked once, as cut, at an unknown price, and the host is told as for any answered request, so its ledger
     // shows the possible spend instead of nothing. Booked, it is answered: a later attempt never books it again.
-    // Only requests an earlier process admitted: one this process has in flight is not cut.
+    // Only requests an earlier process admitted: one this process has in flight is not cut. Read again here, just before
+    // the cut is written: another booking of this session (an earlier pass of this claim, or one racing it) may have
+    // booked it since this one opened, and a request is booked once.
+    const bookedSince = sessionSpendOf(await writer.read().catch(() => options.records)).answered;
+    for (const t of inherited) if (bookedSince.has(t)) answered.add(t);
     const left = inherited.filter((t) => !answered.has(t));
     if (left.length === 0) return;
     // A hold-only step an earlier process left open is given back: money reserved, not spent (its holder's charges book
