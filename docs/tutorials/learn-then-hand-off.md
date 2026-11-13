@@ -65,5 +65,11 @@ level after it. Once 20 runs stand behind that level, it says how many times che
 The chart above is an invented agent's runs. `agentrun learning cost <agent> --format csv` writes your agent's series as
 CSV, to plot or check yourself (`GET /v2/agents/{id}/learning/cost` answers it as JSON).
 
+If you already have the answers, teach it from them. On the Learning tab, **Learn from a CSV** takes a file of rows, the
+column or columns to give the agent and the column that holds the reference answer, and a cap on the whole batch. The
+server runs the agent on each row in order, and after each run tells it the reference answer beside its own, so it looks
+back again. The page shows rows done, right or wrong, what it learned and what it has cost, and keeps showing it after a
+reload: the batch is the server's (`POST /v2/agents/{id}/learning/batches`, read at `GET .../batches/{batch_id}`).
+
 To prove it, keep some inputs it never learns on and compare learning off and on. The
 [learning bench](../../packages/serve/learn-bench/README.md) does that for you.
