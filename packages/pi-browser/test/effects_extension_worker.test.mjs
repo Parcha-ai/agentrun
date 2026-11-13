@@ -4,7 +4,7 @@ import test from "node:test";
 import { EffectObserver, effectDecider } from "@parcha/pi-browser";
 import { openDial } from "../dist/core/dial.js";
 import { extensionDirectory, extensionOrigin } from "../dist/providers/chrome-args.js";
-import { cdpCall } from "../dist/providers/cdp-call.js";
+import { cdpCall } from "../dist/core/cdp-call.js";
 import { stagehandDriver } from "../dist/driver/stagehand.js";
 import { cdpProvider } from "../dist/providers/cdp.js";
 import { CHROME, NO_CHROME, skipIncapable } from "./fixtures/local-chrome.mjs";

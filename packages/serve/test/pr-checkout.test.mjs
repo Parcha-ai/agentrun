@@ -5,6 +5,7 @@
 // why in words. The definition and the template field it is declared by (validate.ts, templates.ts), and the payload tag
 // it reads (github.ts githubPullOf).
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { cpSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -78,6 +79,30 @@ test("the checkout lands in repo/ at the pull request's head, detached, with its
   assert.match(made.note, new RegExp(`merge base ${mergeBase} \\(ref pr/merge-base\\)`));
   await made.end();
   assert.deepEqual(await readdir(folder), [], "the end removed the checkout");
+  await made.end();
+});
+
+test("every fetch the checkout makes runs with Git's background maintenance and gc off, the deepening fetches included: a detached gc would write into .git/objects while the checkout's removal deletes it", { timeout: 120_000 }, async (t) => {
+  const dir = await scratch(t);
+  const gh = join(dir, "gh");
+  // 60 commits behind forces deepening fetches after the first.
+  const { head, base } = pullRepo(gh, "acme/widgets", { shared: 4, ahead: 2, behind: 60 });
+  const { workspace } = await runFolder(dir);
+  // The run's shell has a fixed PATH, so the spy goes in front of it: a `git` that records its arguments, then runs the real one.
+  const spy = join(dir, "spy");
+  const log = join(dir, "git-calls.log");
+  await mkdir(spy);
+  const real = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
+  writeFileSync(join(spy, "git"), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\nexec '${real}' "$@"\n`, { mode: 0o755 });
+  const spied = Object.create(workspace);
+  spied.exec = (argv, options) => workspace.exec(argv, { ...options, env: { ...options.env, PATH: `${spy}:${options.env.PATH}` } });
+  const made = await prCheckout({ workspace: spied, fromGitHub: true, input: firing("acme/widgets", { head, base }), web: `file://${gh}` });
+  const fetches = readFileSync(log, "utf8").split("\n").filter((line) => / fetch /.test(` ${line} `));
+  assert.ok(fetches.length >= 2, `the first fetch and at least one deepening: ${fetches.join(" | ")}`);
+  for (const line of fetches) {
+    assert.match(line, /maintenance\.auto=false/, `no background maintenance: ${line}`);
+    assert.match(line, /gc\.auto=0/, `no auto gc: ${line}`);
+  }
   await made.end();
 });
 
@@ -242,7 +267,8 @@ test("a template's manifest takes checkout pull_request, shows it, and sets it o
   const dir = join(await scratch(t), "code-review");
   cpSync(new URL("../templates/code-review/", import.meta.url).pathname, dir, { recursive: true });
   const manifest = join(dir, "agent.md");
-  const original = readFileSync(manifest, "utf8");
+  // The manifest with no checkout of its own (code-review ships one), so each case below sets it, or none.
+  const original = readFileSync(manifest, "utf8").replace(/^checkout: .*\n/m, "");
   writeFileSync(manifest, original.replace("\nlearning: false\n", "\nlearning: false\ncheckout: pull_request\n"));
   const p = readPackage(dir);
   assert.equal(packageView(p).checkout, "pull_request");

@@ -7,7 +7,8 @@
 import pg from "pg";
 import { type RunnableDeadline, runnableDeadline } from "../deadline.js";
 import { cleanText } from "../dialect.js";
-import { type ConstraintRule, Fenced, RunFinal, StoreBusy, StoreClosed, StoreConstraint, StoreDeadline, StoreOwned } from "../store.js";
+import { ONE_ANSWER_INDEX } from "../schema.js";
+import { AnswerTaken, type ConstraintRule, Fenced, RunFinal, StoreBusy, StoreClosed, StoreConstraint, StoreDeadline, StoreOwned } from "../store.js";
 import { DEFAULT_TRANSACTION_DEADLINE_MS, type SqliteValue, type Statement, type StatementResult, type StoreConnection, type TransactionOptions, type Tx } from "../sqlite/connection.js";
 import type { Dialect } from "../dialect.js";
 import { postgresDialect } from "./dialect.js";
@@ -257,13 +258,16 @@ const returnsRows = (sql: string): boolean => /^\s*(?:SELECT|WITH)\b/i.test(sql)
 /** Postgres's integrity SQLSTATEs, by the rule they name. */
 const RULES: Record<string, ConstraintRule> = { "23514": "check", "23505": "unique", "23503": "foreign_key", "23502": "not_null" };
 
-/** A unique violation's table and columns: the table Postgres names, and the columns of the index it names (a UNIQUE's or
- *  a primary key's is an index of the same name), read from the catalog by `columnsOf`. Any other error as it is. */
+/** A unique violation's table, columns and index: the table and the index (or constraint) Postgres names, and that
+ *  index's columns (a UNIQUE's or a primary key's is an index of the same name), read from the catalog by `columnsOf`.
+ *  A violation of the one-answer index (an answer to an approval answered already) is AnswerTaken. Any other error as it
+ *  is. */
 async function withUnique(error: Error, cause: unknown, columnsOf: (index: string) => Promise<string[]>): Promise<Error> {
   const e = cause as { table?: string; constraint?: string };
   if (!(error instanceof StoreConstraint) || error.rule !== "unique" || !e?.table || !e.constraint) return error;
+  if (e.constraint === ONE_ANSWER_INDEX) return new AnswerTaken(error.message, e.constraint);
   const columns = await columnsOf(e.constraint).catch(() => [] as string[]);
-  return columns.length ? new StoreConstraint(error.message, { rule: "unique", unique: { table: e.table, columns } }) : error;
+  return new StoreConstraint(error.message, { rule: "unique", index: e.constraint, ...(columns.length ? { unique: { table: e.table, columns } } : {}) });
 }
 
 /** A Postgres error as the store's own: a refused row StoreConstraint, a lock or a conflict StoreBusy. */

@@ -15,7 +15,7 @@ import type { Context, JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
-import { type Conversation, type ConversationId, createRegistry, defineDoc, type EntryId, Harness, LiveDoc, ROOT_CONVERSATION_ID, type Tx } from "@earendil-works/pi-durable";
+import { type Conversation, type ConversationId, type ConversationRetryPolicy, type ConversationStreamOptions, createRegistry, defineDoc, type EntryId, Harness, LiveDoc, ROOT_CONVERSATION_ID, type Tx } from "@earendil-works/pi-durable";
 import { answeredUnpriced, type AdapterSession, type AgentAdapter, type BeforeRequest, type HostTool, modelPortFor, type Refusal, RUNNER_RECORDS, type SessionRecord, type SessionSpec, sessionSpendOf } from "@parcha/agentrun-kernel";
 import type { KernelHooks, ToolCall } from "./conformance/subject.js";
 import { type AnswerData, type ApprovalPrice, ASK_PERSON_WAITING, type AskData, type BudgetData, type CallEndData, type CallStartData, type CallStatus, capNowOf, endedAnswer, type EndData, KINDS, MESSAGE_SENT_AGAIN, type MessageData, type RaiseData, withdrawnAnswers } from "./journal-kinds.js";
@@ -267,10 +267,24 @@ export interface RunLedger {
   flush(): Promise<void>;
 }
 
+/** pi's retry of a model request that failed in a way it retries (a provider's 429, overload or 5xx, a dropped connection,
+ *  a stream cut mid-answer): up to 8 more attempts, 2s doubling to at most 30s apart (about two and a half minutes in all),
+ *  so a provider's capacity outage of a minute or two is waited out, not the run's end. Each wait is the harness's own
+ *  durable sleep; a subagent's conversation runs on the same settings. */
+export const MODEL_RETRY: ConversationRetryPolicy = { enabled: true, maxRetries: 8, baseDelayMs: 2_000, maxAgentDelayMs: 30_000 };
+/** pi-ai's retries inside one attempt, of a request the provider refused before any output (a 429 or a 5xx, through the
+ *  session's proxy, which passes on its retry-after): after the wait the provider asked for, up to 30s, else its own short
+ *  backoff. Each is a new request through the proxy, judged by the cap and booked as any other: a refusal books nothing. */
+export const MODEL_STREAM: ConversationStreamOptions = { maxRetries: 2, maxRetryDelayMs: 30_000 };
+
 export interface AdapterLoopOptions {
   /** How many times pi restarts a call's task cut off without progress before it ends it (restart_limit); finite.
    *  Default DEFAULT_RESTART_LIMIT. */
   readonly restartLimit?: number;
+  /** pi's retry of a model request that failed retryably. Default MODEL_RETRY. */
+  readonly retry?: ConversationRetryPolicy;
+  /** pi-ai's retries inside one attempt. Default MODEL_STREAM. */
+  readonly stream?: ConversationStreamOptions;
   /** The gate's clock (epoch ms): when an ask was asked and answered, and when a wait in the claim on the person's answer
    *  started. Default Date.now. */
   readonly now?: () => number;
@@ -613,6 +627,8 @@ export function createAdapterLoop(spec: (claim: Claim, run: AdapterRun) => Adapt
 
 function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec | Promise<AdapterRunSpec>, options: AdapterLoopOptions, deps: LoopDeps): Loop {
   const restartLimit = options.restartLimit ?? DEFAULT_RESTART_LIMIT;
+  const retry = options.retry ?? MODEL_RETRY;
+  const stream = options.stream ?? MODEL_STREAM;
   const now = options.now ?? Date.now;
   /** The gate's clock as main's card says a time: ISO. */
   const isoNow = () => new Date(now()).toISOString();
@@ -685,6 +701,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
    *  person's message is placed as that first input. The claim waits on it, never sending the input they stopped, however
    *  late the runner hands the message over. */
   let firstInputPlaced: Promise<void> | undefined;
+  /** Resolved once a pass of this claim has sent what its session starts on (the run's input, a follow-up, a recovery),
+   *  or found nothing to send: a message handed over while the session is still new waits for it, so it lands after the
+   *  run's input, never as the session's first prompt (a message sent as soon as the run's 202 came back). */
+  let inputSent: () => void = () => {};
+  const startSent = new Promise<void>((resolve) => (inputSent = resolve));
   /** The tool hosts' holds while the run waits in its claim on the person's answer (HostLifecycle.personWait): dropped
    *  once the wait is over, whichever way it ends. */
   let waitHolds: PersonWait[] = [];
@@ -888,10 +909,19 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
 
   const steer = async (command: Command): Promise<CommandOutcome> => {
     // Handed over before the session is open: placed once it is, its outcome the real one (never taken and then dropped).
-    if (!gate || !session) await Promise.race([ready, (finished ?? new Promise<never>(() => {})).then(() => undefined, () => undefined)]);
+    // Awaited even with a session there: until the claim is ready it has not said whether this message reopens the run.
+    const over = () => (finished ?? new Promise<never>(() => {})).then(() => undefined, () => undefined);
+    await Promise.race([ready, over()]);
     // The session never opened, or the run is parking or stopping (its journal sealed, its session closed): left
     // untaken for the next claim, which hands it on again; never refused for good.
     if (!gate || !session || gate.sealed) return { later: "the run is parking: the steer waits for its resume" };
+    // The session is still new and this is no reopen's message: the claim has yet to send the run's input. Placed now,
+    // the message would be the session's first prompt and the input would follow it; it waits for the input instead, then
+    // goes into that turn as any message does.
+    if (!reopen && session.state === "new") {
+      await Promise.race([startSent, over()]);
+      if (!gate || !session || gate.sealed) return { later: "the run is parking: the steer waits for its resume" };
+    }
     // The run's job has answered and it is looking back before its end: a person's message is not the end-of-run turn's
     // to answer. Left untaken, the run's end opens a completed run again with it as a new turn (store run-patch.ts
     // refuseLeftovers).
@@ -1046,7 +1076,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         /** The root a phase is making, awaited before the owed writes are read. */
         let rootMaking: Promise<unknown> | undefined;
         harness = await Harness.open(gate.journal, {
-          models: () => models, registry, settings: { restartLimit }, onReport: () => {},
+          models: () => models, registry, settings: { restartLimit, retry, stream }, onReport: () => {},
           // A tool host's onConversation, in each agent conversation's creating commit (the spec's, once it is known: the
           // root is created when the session opens, after the spec).
           conversationCreated: async (tx, record) => {
@@ -1671,6 +1701,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           await session!.send(spec.input, spec.inputOrigin ? { origin: spec.inputOrigin } : undefined);
         }
         else if (session!.state === "open_turn") await session!.recover();
+        // A message handed over while the session was new is placed from here on, after what was just sent.
+        inputSent();
         // The turn this claim waits on: the first, then each the person's answer starts while the run waits in its claim on
         // its question (waitInClaim: ask_person with the browser open); "lapsed" when such a wait can no longer hold.
         let turn: Promise<TurnEnd | "lapsed"> = placed ? session!.turnEnd() : idleTurnOf(harness, root);

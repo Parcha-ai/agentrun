@@ -12,6 +12,13 @@
 //     its paid requests booked under the tool's call (paid-calls.ts), each node's under a call of its own; web_search
 //     where it resolves native on the provider's hosted search through the run's models (hosted-search.ts), on a harness
 //     whose own search it is too (harness-app.ts gives that harness no host tool of the name).
+//   - a decision node (judge, pick, sift, a route by question, an ask predicate, a verify: LS-07), on a run handed its
+//     decisions (`run.decisions`: its decision providers on its own keys, and the adapter loop's ledger.decisions on
+//     the run's one cap), asked of the provider it names, else the run's default, held to the run's gate under that
+//     provider's bare id (tool-plane.ts DECISION_PROVIDER_KEYS: allow or deny), refused only on deny; each admitted on the run's cap before it is sent, priced as a
+//     workflow agent's decision is (runner/workflow-spec.ts decisionJudge), settled at what it charged, and one the cap
+//     has no room for never sent, the run paused on the cap's refusal (ledger.pause). A run handed none runs no
+//     decision node: the check refuses it before any node runs.
 // Each model request is a request on the run's one route, so what the workflow spends is the run's cost, under its cap:
 // on pi the run's models, as a side request (request-start.ts, cap.ts: marked, and costed on the run's timeline as
 // `learned_workflow`); on another harness the session's model proxy, under a side key (port-models.ts): the harness's
@@ -24,6 +31,8 @@ import { registerLabel, registerOutcome } from "./timeline/index.js";
 import { sideRequests } from "./cap.js";
 import { LEARNED_NODES, LEARNED_NODES_MAX, type LearnedNode } from "./learned-nodes.js";
 import { draftProblems, LEARNED_MAX_TURNS } from "./learn/index.js";
+import { decisionsAsked, deniedDecisionWords } from "./learn/skills.js";
+import { DEFAULT_DECISION_PROVIDER } from "./decisions.js";
 import { type LearnedWorkflow, workflowLine } from "./learning.js";
 import type { ModelRef } from "./model.js";
 import { type Ledger, ledgerOf } from "./paid-calls.js";
@@ -35,6 +44,10 @@ import type { DenyFrom } from "./refusal-words.js";
 import { allows, CALL_TOOLS, learnedDraftTools, toolOf, workflowTools } from "./tools.js";
 import type { Complete } from "./llm.js";
 import type { SearchOn } from "./web-search.js";
+import type { Workspace } from "./workspace/workspace.js";
+import type { DecisionProvider } from "@parcha/agentrun-dsl";
+import type { Refusal } from "@parcha/agentrun-kernel";
+import type { RunDecisions } from "@parcha/agentrun-kernel/kernel/cap";
 import { hostCalls } from "./host-calls.js";
 import { workflowNodes } from "./model.js";
 
@@ -96,37 +109,42 @@ export const LEARNED_WORKFLOW_TOOL = "learned_workflow";
 const LINE_MAX = 120;
 const VALUE_MAX = 60;
 
-/** One line of a learned workflow's output for its row: an object's fields as `name value`, each value whole or, when
- *  longer than VALUE_MAX, only as its size, and whole fields only until LINE_MAX. Nothing is ever cut inside a value:
- *  the timeline redacts the line as it says it (its summary's words), and its redactor matches a held value only whole,
- *  so a cut value could leave a prefix it would not find. Newlines are flattened, so the one line it keeps holds every
- *  field. An output already cut for the model (learnedText) says so. */
+/** One line of a learned workflow's output for its row: an object's fields as `name value`, and a text output (learnedOutput
+ *  hands one back as it is, #2412) its lines, each value or line whole or, when longer than VALUE_MAX, only as its size,
+ *  and whole ones only until LINE_MAX. Nothing is ever cut inside a value or a line: the timeline redacts the line as it
+ *  says it (its summary's words), and its redactor matches a held value only whole, so a cut one could leave a prefix it
+ *  would not find. Newlines are flattened, so the one line it keeps holds every part. An output already cut for the
+ *  model (learnedText) says so. */
 export function outputLine(text: string): string | undefined {
   const clipped = /\n\[the workflow's output is cut at (\d+) of (\d+) characters\]$/.exec(text);
   if (clipped) return `its output is long, cut at ${clipped[1]} of ${clipped[2]} characters`;
-  let output: unknown;
-  try {
-    output = JSON.parse(text);
-  } catch {
-    return undefined;
-  }
   const said = (value: unknown): string => {
     const flat = (typeof value === "string" ? value : JSON.stringify(value) ?? String(value)).replace(/\s+/g, " ").trim();
     return flat.length > VALUE_MAX ? `(${flat.length} characters)` : flat;
   };
-  if (!output || typeof output !== "object" || Array.isArray(output)) return said(output);
-  const fields: string[] = [];
-  let length = 0;
-  for (const [key, value] of Object.entries(output as Record<string, unknown>)) {
-    const field = `${key} ${said(value)}`;
-    if (fields.length && length + 2 + field.length > LINE_MAX) {
-      fields.push("…");
-      break;
+  /** `parts` whole, joined by `by`, until LINE_MAX: then an ellipsis. */
+  const joined = (parts: readonly string[], by: string): string | undefined => {
+    const kept: string[] = [];
+    let length = 0;
+    for (const part of parts) {
+      if (kept.length && length + by.length + part.length > LINE_MAX) {
+        kept.push("…");
+        break;
+      }
+      kept.push(part);
+      length += (kept.length > 1 ? by.length : 0) + part.length;
     }
-    fields.push(field);
-    length += (fields.length > 1 ? 2 : 0) + field.length;
+    return kept.length ? kept.join(by) : undefined;
+  };
+  let output: unknown;
+  try {
+    output = JSON.parse(text);
+  } catch {
+    // Text, as it is: its lines that hold words.
+    return joined(text.split("\n").filter((line) => line.trim()).map(said), " / ");
   }
-  return fields.length ? fields.join(", ") : undefined;
+  if (!output || typeof output !== "object" || Array.isArray(output)) return said(output);
+  return joined(Object.entries(output as Record<string, unknown>).map(([key, value]) => `${key} ${said(value)}`), ", ");
 }
 
 // The timeline's words for a learned workflow's call: the workflow it ran (its name), and, once it returns, its output.
@@ -179,6 +197,19 @@ export type LearnedWorkflowRun = {
    *  each call node runs, before `policy` is asked: a tool set to deny since the call began is then refused. None: the
    *  gate reads its settings live (main's process). */
   refresh?: () => Promise<void>;
+  /** The run's own Workspace (on the runner: its local folder in Mode 1, its folder on the run's disk in Mode 2), which
+   *  a decision node's images are read through. Absent: the local folder at `work`. */
+  workspace?: Workspace;
+  /** The run's decisions (LS-07): its decision providers (decisions.ts decisionProvidersIn over the run's keys) and the
+   *  one a node that names none is asked of; `book`, the run's decisions on its one cap (the adapter loop's
+   *  ledger.decisions: DECISION_SESSION); `pause`, the run's pause on a refusal of that cap (ledger.pause), so its next
+   *  request is refused in the cap's words and the run parks there. None: a decision node is refused before any node
+   *  runs. */
+  decisions?: {
+    readonly providers: { readonly providers: Readonly<Record<string, DecisionProvider>>; readonly default: string };
+    readonly book: RunDecisions;
+    readonly pause?: (refusal: Refusal) => Promise<void>;
+  };
   /** The run's MCP tools by catalog name (`mcp:<server>/<tool>`): those the claim's pin holds, which its revision grants.
    *  A call node may name one of these; it runs through the run's own MCP, as the loop wrapped it (host-calls.ts). */
   mcpTools?: readonly string[];
@@ -191,7 +222,7 @@ export type LearnedWorkflowRun = {
  *  host's result bound, which each CLI is told to pass whole (host-bounds.test). */
 export const LEARNED_CLIP = 60_000;
 
-/** `text`, a learned workflow's output as JSON, cut at LEARNED_CLIP characters (never inside a surrogate pair), saying
+/** `text`, a learned workflow's output as its tool hands it back (learnedOutput), cut at LEARNED_CLIP characters (never inside a surrogate pair), saying
  *  so. */
 export function learnedText(text: string): string {
   if (text.length <= LEARNED_CLIP) return text;
@@ -205,13 +236,26 @@ export const NODE_TOOLS_REFUSED = "a learned workflow's model node runs without 
 
 /** The tool's description, sent with every model request of the run, so it holds what a model needs to call it right and
  *  no more: one line of what the tool does (one call, by name, a JSON input with the listed fields, `*` marking a required
- *  one; what it answers), then each workflow on a line of its own (workflowLine): its name, its input's fields and the
- *  line its README says what it does with. */
+ *  one; what it answers: a text output as it is, to reply with unchanged, since a model handed it otherwise writes its own
+ *  reply around it and a format the workflow's last node wrote is lost, #2412), then each workflow on a line of its own
+ *  (workflowLine): its name, its input's fields and the line its README says what it does with. */
 export const learnedWorkflowDescription = (workflows: readonly LearnedWorkflow[]): string =>
   [
-    "Runs one of this agent's learned workflows in one call, by name, on a JSON input with the fields below (* required). Answers its output as JSON, or why it did not run.",
+    "Runs a learned workflow in one call, by name, on a JSON input: fields below (* required). Text output: reply with it unchanged. Else JSON, or why it did not run.",
     ...workflows.map(workflowLine),
   ].join("\n");
+
+/** A learned workflow's output as its tool hands it back: its text when it is text, a string or an object of one string
+ *  field (a node's record of one field, as a last node that writes the answer gives it), so the lines its last node wrote
+ *  reach the model as lines; else JSON. */
+export function learnedOutput(output: unknown): string {
+  if (typeof output === "string") return output;
+  if (output && typeof output === "object" && !Array.isArray(output)) {
+    const values = Object.values(output);
+    if (values.length === 1 && typeof values[0] === "string") return values[0];
+  }
+  return JSON.stringify(output ?? null);
+}
 
 /** One model request as a pi-ai event stream, sent through `models.completeSimple` as the run's own request, under its
  *  cap: on pi marked and costed on the run's timeline under `learned_workflow` (sideRequests), on another harness booked
@@ -276,7 +320,7 @@ export function learnedWorkflowTool(run: LearnedWorkflowRun): ToolRegistration {
   });
 }
 
-/** `flow` run on `input` for `run`: its output as JSON, or why it did not run, and each of its nodes that ran (at most
+/** `flow` run on `input` for `run`: its output as its tool hands it back (learnedOutput), or why it did not run, and each of its nodes that ran (at most
  *  LEARNED_NODES_MAX), none for one refused before any node ran. Never throws, but on an abort. `ledger`: the tool call's,
  *  which each call node's paid requests are booked under, as a call of its own within it. `nodes`: where each node is
  *  added as it ends, the caller's to keep when the call is aborted (and so throws) part way. */
@@ -302,9 +346,10 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
       if (setting === "deny") deniedBy[name] = run.denyFrom(name) as DenyFrom;
     }
   }
-  const problems = draftProblems(dsl, flow.workflow, tools, gated, deniedBy);
+  const problems = draftProblems(dsl, flow.workflow, tools, gated, deniedBy, undefined, decisionsOf(run, dsl, flow.workflow));
   if (problems.length) return refuse(problems.map(({ detail }) => detail).join("; "));
   const doc = JSON.parse(flow.workflow);
+  const runJudge = run.decisions ? await learnedJudge(run, run.decisions) : undefined;
   // The host runner loads @earendil-works/pi-coding-agent and pi-agent-core, serve's own dependencies (package.json).
   const { createPiHostRunner } = await import("./workflow/host-session.js");
   const runners = new Map<string, NonNullable<Parameters<typeof dsl.runWorkflow>[2]["runNode"]>>();
@@ -378,11 +423,63 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
     nodes.push({ label: String(event.label), kind: String(detail.kind ?? ""), status: String(detail.status ?? ""), duration_ms: typeof detail.duration_ms === "number" ? detail.duration_ms : 0, ...ran });
   };
   try {
-    const result = await dsl.runWorkflow(doc, input as Record<string, unknown>, { runNode: runNode as never, runEffect: runEffect as never, onEvent, ...(signal ? { signal } : {}) } as never);
+    const judging = runJudge && run.decisions ? { runJudge, decisionProviders: run.decisions.providers } : {};
+    const result = await dsl.runWorkflow(doc, input as Record<string, unknown>, { runNode: runNode as never, runEffect: runEffect as never, onEvent, ...judging, ...(signal ? { signal } : {}) } as never);
     if (result.status !== "complete") return refuse(`it ended ${result.status}`);
-    return { text: learnedText(JSON.stringify(result.output ?? null)), isError: false, nodes };
+    return { text: learnedText(learnedOutput(result.output)), isError: false, nodes };
   } catch (error) {
     if (signal?.aborted) throw error;
     return { text: `The learned workflow ${flow.name} failed: ${String((error as Error)?.message ?? error).slice(0, 1000)}`, isError: true, nodes };
   }
+}
+
+/** The draft check's decisions for `run` (learn/skills.ts DraftDecisions): its providers, and the gate's setting of each
+ *  provider `text` asks (its bare id as the settings key) where it is not allow, with where a deny was set. A run handed
+ *  no decisions (its claim was handed no key: none named, or each denied) has no provider, so a decision node is refused
+ *  in the gate's words when its provider is denied, else as one the host does not have; never asked. */
+function decisionsOf(run: LearnedWorkflowRun, dsl: Parameters<typeof decisionsAsked>[0], text: string) {
+  const providers = run.decisions?.providers ?? { providers: {}, default: DEFAULT_DECISION_PROVIDER };
+  const gated: Record<string, string> = {};
+  // A deny comes from a layer or the default, never from approvals (learnedDraftTools' rule).
+  const deniedBy: Record<string, "agent" | "server" | "default"> = {};
+  let doc: unknown;
+  try {
+    doc = JSON.parse(text);
+  } catch {
+    return { providers: providers.providers, default: providers.default };
+  }
+  for (const { provider } of decisionsAsked(dsl, doc, providers.default)) {
+    const setting = run.policy(provider);
+    if (setting === "allow") continue;
+    gated[provider] = setting;
+    if (setting === "deny") deniedBy[provider] = run.denyFrom(provider) as "agent" | "server" | "default";
+  }
+  return { providers: providers.providers, default: providers.default, gated, deniedBy };
+}
+
+/** A learned workflow's judge (the DSL's runJudge) for `run`: its providers' judge (judgeFromProviders), each decision
+ *  first held to the run's gate as it is asked (a provider set to deny since the call began is refused, never sent, as
+ *  a call node's tool is at its effect; deny alone refuses, the rule the runner hands a claim its keys by), then admitted on the run's one cap and settled at what it charged
+ *  (decisionJudge, as a workflow agent's decision is). A refusal of the cap pauses the run (`decisions.pause`): the
+ *  decision node fails with the cap's words, and nothing is sent. */
+async function learnedJudge(run: LearnedWorkflowRun, decisions: NonNullable<LearnedWorkflowRun["decisions"]>) {
+  const [{ judgeFromProviders }, { decisionJudge }, { imageLoader }] = await Promise.all([import("@parcha/agentrun-dsl"), import("./runner/workflow-spec.js"), import("./pdf-pages.js")]);
+  type Judge = ReturnType<typeof judgeFromProviders>;
+  // A decision node's images (a page drawn by pdf_pages, a screenshot, an upload) are read through the run's own Workspace
+  // (Mode 2: its folder on the run's disk, never the runner's local path), as a workflow agent's are (pdf-pages.ts
+  // imageLoader).
+  const inner = judgeFromProviders({ providers: decisions.providers.providers, default: decisions.providers.default, loadImage: imageLoader(run.workspace ?? run.work) });
+  const capped = decisionJudge<Judge>(inner, {
+    getCap: () => decisions.book,
+    providers: decisions.providers as never,
+    park: (refusal) => {
+      void decisions.pause?.({ refuse: refusal.message, forGood: refusal.forGood, code: "spend_cap_reached", ...(refusal.figures ? { figures: refusal.figures as never } : {}) });
+    },
+  });
+  return (async (params: Parameters<Judge>[0]) => {
+    const provider = params.provider ?? decisions.providers.default;
+    await run.refresh?.();
+    if (run.policy(provider) === "deny") throw new Error(deniedDecisionWords(provider, run.denyFrom(provider) as "agent" | "server" | "default", "decision", params.label));
+    return capped(params);
+  }) as Judge;
 }

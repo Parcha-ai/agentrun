@@ -191,12 +191,16 @@ export function pageDriver(stagehand: Stagehand, deadlines: { batchMs: number; s
       } else if (target?.selector !== undefined) selector = target.selector;
       return await facade.run(locateCode(selector)) as Awaited<ReturnType<Locate>>;
     }) as Locate,
+    // Stagehand's page.screenshot scales to its device's pixels or to one per CSS pixel, and only a clip: a scale below 1
+    // is a clip (the viewport's, when none is asked) at one image pixel per CSS pixel, which is no smaller than that on a
+    // display of one device pixel per CSS pixel. A full page it does not scale (captureWithinBudget takes the viewport).
     screenshot: async ({ type = "png", quality, fullPage, scale, clip }: ScreenshotOptions) => {
+      const css = scale !== undefined && scale < 1;
       // A clip is read from the viewport's corner, and the browser's own is from the document's: the scroll offset is added.
-      const origin = clip ? await facade.run(`return await page.evaluate("({ x: scrollX, y: scrollY })");`) as { x: number; y: number } : null;
+      const view = clip || (css && !fullPage) ? await facade.run(`return await page.evaluate("({ x: scrollX, y: scrollY, width: innerWidth, height: innerHeight })");`) as { x: number; y: number; width: number; height: number } : null;
+      const region = view && (clip ? { ...clip, x: clip.x + view.x, y: clip.y + view.y } : view);
       const bytes: Uint8Array = await (await active()).screenshot({
-        type, ...(fullPage === undefined ? {} : { fullPage }), ...(scale === undefined ? {} : { scale }),
-        ...(clip && origin ? { clip: { ...clip, x: clip.x + origin.x, y: clip.y + origin.y } } : {}),
+        type, ...(region ? { clip: region } : fullPage === undefined ? {} : { fullPage }), ...(css ? { scale: "css" as const } : {}),
         // CDP takes a quality for jpeg only, and only as an integer.
         ...(type === "jpeg" && quality !== undefined ? { quality: Math.round(quality) } : {}),
       });

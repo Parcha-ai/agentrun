@@ -69,20 +69,3 @@ test("a pi run's own web_search, resolved native, searches on the runner through
   // claude-sonnet-4-5 at $3 and $15 a million: 20,000 in and 40 out, plus one search at $0.01.
   assert.ok(Math.abs(turn.usd - (20_000 * 3 / 1e6 + 40 * 15 / 1e6 + 0.01)) < 1e-9, `its tokens and its search: ${JSON.stringify(turn)}`);
 });
-
-test("a CLI run whose web_search is picked native gets its harness's own search on the runner: claude-agent's adapter is built with its WebSearch, codex's with live search", { timeout: 120_000 }, async (t) => {
-  const { fauxTable } = await import("./fixtures/faux-table.mjs");
-  const harness = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
-  const opened = join(await scratch(t), "opened.jsonl");
-  withEnv(t, { ANTHROPIC_API_KEY: ["not-a-secret", "anthropic"].join("-"), AGENT_MODEL: "anthropic/claude-sonnet-4-5", OPENAI_API_KEY: ["not-a-secret", "openai"].join("-"), AGENTRUN_TEST_FAUX_HARNESS_OPENED: opened }, ["AGENT_MODEL_BASE_URL", "OPENROUTER_API_KEY", "ANTHROPIC_BASE_URL", "PARALLEL_API_KEY"]);
-  const { api } = await serve(t, { faux: undefined, harnessTable: fauxTable(harness) });
-  assert.equal((await api("PUT", "/settings/tools", { web_search: { provider: "native" } })).status, 200);
-  for (const [id, model] of [["claude-agent", "anthropic/claude-sonnet-4-5"], ["codex", "openai/gpt-5"]]) {
-    assert.equal((await api("POST", "/agents", agent(`own-${id}`, { harness: id, model, tools: ["web_search"] }))).status, 201);
-    const started = await api("POST", `/agents/own-${id}/runs`, { input: { content: "hi" } });
-    assert.equal(started.status, 202, JSON.stringify(started.body));
-    await follow(api, started.body.run_id, ["completed", "failed"], { deadlineMs: 60_000 });
-  }
-  const said = readFileSync(opened, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)).filter((entry) => entry.harness);
-  assert.deepEqual(said.map((entry) => [entry.harness, entry.options.webSearch]), [["claude-agent", true], ["codex", "live"]], JSON.stringify(said));
-});

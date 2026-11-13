@@ -574,6 +574,9 @@ export interface RunMoment {
   readonly waitingApprovalId?: string;
   /** The tool calls this run has or had waiting for approval, by id (for the not-found refusal). */
   readonly approvalIds?: ReadonlySet<string>;
+  /** What is archived of it, when anything is: its agent, else the run itself. Archiving closes a run: it takes no message
+   *  (runs-over-store.ts message). Absent when neither is. */
+  readonly archived?: "run" | "agent";
   /** The approvals already answered, by call id, as the run view folds them (for the first-wins refusal and its words). */
   readonly answeredApprovals?: Readonly<Record<string, { readonly decision: ApprovalDecision; readonly ended?: true }>>;
 }
@@ -741,6 +744,12 @@ function callSays(answer: ApprovalAnswer | undefined): string {
   if (answer.decision === "withdrawn") return answer.ended ? ENDED_WHILE_WAITING : STOPPED_WHILE_WAITING;
   return "Allowed: it runs now";
 }
+/** A row without the `refused` mark: it says a call was refused before it ran, so only that call's own tool_result row has it;
+ *  the approval, message and outcome rows made from a result keep their own status. */
+const unrefused = (row: TimelineEvent): TimelineEvent => {
+  const { refused: _refused, ...rest } = row;
+  return rest;
+};
 /** A synthesized row's id: the approval's own, so a pass over rows this function gave drops and remakes it. */
 const approvalRowId = (callId: string) => `approval:${callId}`;
 
@@ -778,16 +787,16 @@ export function withApprovalRows(rows: readonly TimelineEvent[], asks: ReadonlyM
     // call's own rows, then its approval, then what came of it, as a person reads it.
     const at = result ? `${approvalRowId(approval.call_id)}:after` : approvalRowId(approval.call_id);
     const head = !answer ? "Waiting for your approval" : answer.decision === "canceled" ? "Withdrawn when the run was cancelled" : answer.decision === "withdrawn" ? (answer.ended ? "Withdrawn when the run ended" : "Withdrawn when the run was stopped") : answer.by === "message" ? "Declined by your message" : "Asked your approval";
-    const asked: TimelineEvent = { ...row, id: at, kind: APPROVAL_ROW as TimelineEvent["kind"], summary: `${head}: ${approval.tool} ${clip(args, 400)}`, text: args, tool_name: approval.tool, tool_status: null, tool_input_preview: clip(args, 500), tool_result_preview: null, tool_result_size_bytes: null };
+    const asked: TimelineEvent = { ...unrefused(row), id: at, kind: APPROVAL_ROW as TimelineEvent["kind"], summary: `${head}: ${approval.tool} ${clip(args, 400)}`, text: args, tool_name: approval.tool, tool_status: null, tool_input_preview: clip(args, 500), tool_result_preview: null, tool_result_size_bytes: null };
     if (!outcome) return [own, asked];
     const failed = answer!.decision === "allow" && result?.tool_status === "failed";
     // The result's words: a tool_result row keeps them as its preview (the renderer's, redacted and cut), its text empty.
-    const told: TimelineEvent = { ...(result ?? row), id: `${at}:outcome`, kind: "phase", origin: "server", summary: outcomeSays(approval.tool, answer!, failed, redact), text: outcomeShows(approval.tool, answer!, redact(result?.text || result?.tool_result_preview || ""), failed), tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null } as TimelineEvent;
+    const told: TimelineEvent = { ...unrefused(result ?? row), id: `${at}:outcome`, kind: "phase", origin: "server", summary: outcomeSays(approval.tool, answer!, failed, redact), text: outcomeShows(approval.tool, answer!, redact(result?.text || result?.tool_result_preview || ""), failed), tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null } as TimelineEvent;
     // A person's message that declined the call (runs-over-store.ts message: a deny carrying their words) is theirs as any
     // message is: its own row, between the approval and what came of it, as main's declineBy kept it.
     if (answer!.decision === "deny" && answer!.by === "message" && answer!.note) {
       const words = redact(answer!.note);
-      const { origin: _origin, ...base } = result ?? row;
+      const { origin: _origin, ...base } = unrefused(result ?? row);
       const theirs: TimelineEvent = { ...base, id: `${at}:message`, kind: "user_message", summary: clip(`You: ${words.split("\n", 1)[0]}`, 500), text: words, tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null };
       return [own, asked, theirs, told];
     }

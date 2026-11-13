@@ -216,9 +216,9 @@ export interface ClaudeCodeHarnessOptions {
    *  not: each call recorded as a built-in's (the session's model proxy decides what the provider may run). */
   providerTools?: readonly ProviderTool[];
   /**
-   * The model, a native Anthropic id (`claude-sonnet-4-5`) or a Gateway one
-   * (`anthropic/claude-sonnet-4.5`, passed as its native id: `nativeModelId`).
-   * Default `claude-sonnet-4-5`.
+   * The model, a native Anthropic id (`claude-sonnet-5-5`) or a Gateway one
+   * (`anthropic/claude-sonnet-5.5`, passed as its native id: `nativeModelId`).
+   * Default `claude-sonnet-5-5`.
    */
   model?: string;
   /** The model of the CLI's small background calls (`nativeModelId` too). Default `model`. */
@@ -286,7 +286,7 @@ const dayOf = (now: Date) => now.toISOString().slice(0, 10);
 const DATE_EFFECT = 'date';
 
 /** The default model. */
-export const DEFAULT_MODEL = 'claude-sonnet-4-5';
+export const DEFAULT_MODEL = 'claude-sonnet-5-5';
 
 /** What the harness appends to the system prompt about the tools, before `instructions`, with the built-ins off and the app's tools there. */
 export const TOOLS_NOTE = `Your only tools are this app's, the mcp__${MCP_SERVER}__ tools; you have no shell, file, search or web tools of your own.`;

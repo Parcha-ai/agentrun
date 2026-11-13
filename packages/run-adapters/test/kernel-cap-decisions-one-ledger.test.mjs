@@ -28,7 +28,7 @@ async function decisionsOf(store, capUsd) {
 }
 
 test("on the run's one cap a decision is held as main holds it: 256 output tokens a question (expected), its model's most (strict), its fees and images, none with no cap", async () => {
-  const MODEL = { id: "openai/gpt-6-sol", api: "openrouter", price: { input: 1.25, output: 10 }, outputCeiling: 4_096 };
+  const MODEL = { id: "openai/gpt-6.1-sol", api: "openrouter", price: { input: 1.25, output: 10 }, outputCeiling: 4_096 };
   const asked = { kind: "decision", inputTokens: 1_000, questions: 3, images: 2, requestUsd: 0.002, imageUsd: 0.0005 };
   for (const [mode, model] of [["expected", MODEL], ["expected", { ...MODEL, outputCeiling: null }], ["strict", MODEL]]) {
     // The decision cap's own figure (createCap, held to main's holdOf by serve's kernel-cap-decision-parity).

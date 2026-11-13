@@ -11,12 +11,14 @@ export interface LedgerEntry {
   labels: Record<string, string>;
 }
 
-/** One provider's ledger, in the shape a descriptor's `ledger` option takes: put, get, list and remove of its entries. */
+/** One provider's ledger, in the shape a descriptor's `ledger` option takes: put, get, list, remove and swap of its entries. */
 export interface ProviderLedger<E extends LedgerEntry = LedgerEntry> {
   put(entry: E): Promise<void>;
   get(id: string): Promise<E | undefined>;
   list(): Promise<E[]>;
   remove(id: string): Promise<void>;
+  /** entry put in place of `was` only while the kept entry is still `was` as read, in one statement: whether it was put. */
+  swap(was: E, entry: E): Promise<boolean>;
 }
 
 const entryOf = <E extends LedgerEntry>({ sessionId, labels, detail }: ComputerLedgerRow): E => ({ ...detail, id: sessionId, labels: { ...labels } }) as unknown as E;
@@ -34,5 +36,11 @@ export function storeLedger<E extends LedgerEntry = LedgerEntry>(ledger: Compute
     },
     list: async () => (await ledger.list(provider)).map((row) => entryOf<E>(row)),
     remove: (id) => ledger.remove(provider, id),
+    swap: async (was, entry) => {
+      const { id: _wasId, labels: wasLabels, ...wasDetail } = was;
+      const { id, labels, ...detail } = entry;
+      if (was.id !== id) return false;
+      return ledger.swap(provider, id, { labels: wasLabels, detail: wasDetail }, labels, detail);
+    },
   };
 }

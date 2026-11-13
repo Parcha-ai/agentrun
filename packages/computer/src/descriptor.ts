@@ -80,14 +80,20 @@ export interface ProviderDescriptor<Module extends ProviderModule = ProviderModu
 	readonly defaultImage?: Partial<Record<ComputerSettingKind, string>>;
 	/** Its built providers have prepareImage(): the image a computer starts from is made or pulled before the first create. */
 	readonly prepareImage?: boolean;
+	/**
+	 * The server's environment variable that, when its operator sets it, names the image every computer of this provider
+	 * starts from in place of defaultImage (Daytona's snapshot of box/Dockerfile, which an Archil mount needs). The
+	 * provider's own check() still judges the image. Absent: its images are its defaultImage alone.
+	 */
+	readonly imageEnv?: string;
 	/** Its computers run on this machine's container engine: a server passes it its local host options (volume, host addresses). */
 	readonly local?: boolean;
 	/** create() takes a ledger the server keeps for it, as `options[ledger.option]` (the phone harness's sessions). */
 	readonly ledger?: { readonly option: string };
 	/**
 	 * The server's own environment variables its provider reads on this machine, by name (Local Chrome's, where it finds
-	 * Chrome): a server passes their values, and no other variable of its own, as `options.env`. The provider itself reads
-	 * no environment.
+	 * Chrome; a cloud browser's, the gateway a server reaches its API through): a server passes their values, and no other
+	 * variable of its own, as `options.env`. The provider itself reads no environment.
 	 */
 	readonly hostEnv?: readonly string[];
 	/**
@@ -156,6 +162,7 @@ export function descriptorProblems(value: unknown): string[] {
 	named(d.settings, "settings");
 	if (Array.isArray(d.keys) && d.keys.some((key) => typeof key?.required !== "boolean")) problems.push("each key says whether it is required");
 	if (d.ledger !== undefined && (typeof d.ledger?.option !== "string" || d.ledger.option === "")) problems.push("ledger names the option it fills");
+	if (d.imageEnv !== undefined && (typeof d.imageEnv !== "string" || !/^[A-Z][A-Z0-9_]*$/.test(d.imageEnv))) problems.push("imageEnv is an environment variable name (capital letters, digits and underscores)");
 	if (d.hostEnv !== undefined && (!Array.isArray(d.hostEnv) || d.hostEnv.some((name) => typeof name !== "string" || name === ""))) problems.push("hostEnv is a list of environment variable names");
 	if (d.hostCommand !== undefined) {
 		const { command, from, builds } = (d.hostCommand ?? {}) as Partial<HostCommand>;
