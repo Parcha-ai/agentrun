@@ -18,7 +18,7 @@ const decision = (id, usd) => ({ kind: "decision", id, model: DECIDER, inputToke
 /** The run's model spend as its booking keeps it: a model request answered at `usd`. */
 async function modelSpent(store, usd) {
   const writer = await store.open(MODEL_SESSION);
-  await writer.append([{ kind: RUNNER_RECORDS.request, data: { turn: 1, model: "claude-sonnet-4-5", heldUsd: usd } }, { kind: RUNNER_RECORDS.turn, data: { turn: 1, usd, bookedUsd: usd } }]);
+  await writer.append([{ kind: RUNNER_RECORDS.request, data: { turn: 1, model: "claude-sonnet-5-5", heldUsd: usd } }, { kind: RUNNER_RECORDS.turn, data: { turn: 1, usd, bookedUsd: usd } }]);
 }
 
 /** The run's decisions under a cap of `capUsd`, on this claim, over the run's sessions `store`. */

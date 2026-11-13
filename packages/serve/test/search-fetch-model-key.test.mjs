@@ -31,7 +31,7 @@ async function setting(t, extra = {}) {
   const dir = await scratch(t);
   const files = { upstream: join(dir, "upstream.jsonl"), parallel: join(dir, "parallel.jsonl"), exa: join(dir, "exa.jsonl"), opened: join(dir, "opened.jsonl"), web: join(dir, "dialled.txt") };
   withEnv(t, {
-    ANTHROPIC_API_KEY: "not-a-secret", OPENAI_API_KEY: "not-a-secret", AGENT_MODEL: "anthropic/claude-sonnet-4-5",
+    ANTHROPIC_API_KEY: "not-a-secret", OPENAI_API_KEY: "not-a-secret", AGENT_MODEL: "anthropic/claude-sonnet-5-5",
     AGENTRUN_TEST_FAUX_UPSTREAM_CALLS: files.upstream, AGENTRUN_TEST_FAUX_PARALLEL_CALLS: files.parallel, AGENTRUN_TEST_FAUX_EXA_CALLS: files.exa,
     AGENTRUN_TEST_FAUX_HARNESS_OPENED: files.opened, FAUX_WEB_LOG: files.web, ...extra,
   }, ["PARALLEL_API_KEY", "AGENT_MODEL_BASE_URL", "AGENTRUN_TEST_FAUX_UPSTREAM", "AGENTRUN_TEST_FAUX_EXA", "AGENTRUN_TEST_FAUX_PARALLEL_SEARCH", "AGENTRUN_TEST_FAUX_PARALLEL_EXTRACT"]);
@@ -80,9 +80,9 @@ test.skip("with only model keys: native search on pi, claude-agent and codex, an
   assert.deepEqual([sent[0].body.messages.length, sent[0].body.messages[0].role], [1, "user"], "one user turn");
   assert.match(sent[0].body.messages[0].content[0].text, /^Search the web for: widgets\n\nAnswer briefly .* URL\.$/s);
   assert.equal(sent[0].key, "not-a-secret", "on the run's own model key");
-  // Its 20,000 input and 40 output tokens at Sonnet 4.5's $3 and $15 per million, and one search at $0.01; the faux
+  // Its 20,000 input and 40 output tokens at Sonnet 5.5's $2 and $10 per million, and one search at $0.01; the faux
   // model's turns cost nothing.
-  assert.deepEqual(pi.usage, { usd: 0.0706, requests: 5 }, "four turns and the search's request, its fee booked");
+  assert.deepEqual(pi.usage, { usd: 0.0504, requests: 5 }, "four turns and the search's request, its fee booked");
 
   // pi on OpenAI: the Responses hosted tool, its sources asked for.
   const openai = await research(api, "pi-openai", { model: "openai/gpt-5" });

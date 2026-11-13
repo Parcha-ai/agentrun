@@ -29,7 +29,7 @@ export {
 export type { HostCall, HostFacts, Machine, MachineHost, MachineProcess, MachineRequest } from "./host.js";
 export { HostedProvider, type HostedOptions, type HostedTimeouts, hostedProvider } from "./hosted/provider.js";
 // The provider classes and their option types are not here: each provider loads by its id through the registry
-// (providerFor), or from its own subpath (@parcha/agentrun-computer/docker, /daytona, /modal, /e2b, /orgo,
+// (providerFor), or from its own subpath (@parcha/agentrun-computer/docker, /daytona, /modal, /e2b, /agent37, /orgo,
 // /phone-harness, /browserbase, /kernel, /local: each the provider file's name).
 export { type DockerVolume, VOLUME_SUBPATH_ENGINE } from "./docker/volume.js";
 export {
@@ -118,6 +118,8 @@ export {
 } from "./providers.js";
 export { type DescriptorKey, type DescriptorSetting, defineProvider, descriptorProblems, type HostCommand, type ParkedConfiguration, type ProviderDescriptor } from "./descriptor.js";
 export {
+	AGENT37,
+	AGENT37_BASE_TEMPLATE,
 	BROWSER_IMAGE,
 	BROWSERBASE,
 	DAYTONA,

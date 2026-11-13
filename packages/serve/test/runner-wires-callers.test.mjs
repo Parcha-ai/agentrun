@@ -42,14 +42,14 @@ const GATEWAY_ENV = (url) => ({ AGENT_MODEL_BASE_URL: `${url}/v1`, AGENT_MODEL_A
 
 /** On each wire, a source whose route speaks it straight to the gateway (no translation), and where its requests land. */
 const SOURCES = {
-  "anthropic-messages": { model: "anthropic/claude-sonnet-4-5", env: (url) => ({ ANTHROPIC_API_KEY: KEY, ANTHROPIC_BASE_URL: url }), path: "/v1/messages" },
+  "anthropic-messages": { model: "anthropic/claude-sonnet-5-5", env: (url) => ({ ANTHROPIC_API_KEY: KEY, ANTHROPIC_BASE_URL: url }), path: "/v1/messages" },
   "openai-responses": { model: undefined, env: GATEWAY_ENV, path: "/v1/responses" },
 };
 
 /** A source pi-ai speaks neither wire to: OpenRouter's openai/* models are openai-completions in pi-ai, not a wire of
  *  WIRES, so their route stays the Messages translation (model-route.ts messagesFetch, the runner's redactor on it), and
  *  their requests land on Chat Completions. */
-const TRANSLATED = { model: "openrouter/openai/gpt-5", env: () => ({ OPENROUTER_API_KEY: KEY }), path: "/v1/chat/completions" };
+const TRANSLATED = { model: "openrouter/openai/gpt-6.1-sol", env: () => ({ OPENROUTER_API_KEY: KEY }), path: "/v1/chat/completions" };
 /** A fetch that sends each request to the gateway at `url`, on its own path: OpenRouter's origin stood in for. */
 const toGateway = (url) => (target, init) => fetch(`${url}${new URL(String(target)).pathname}`, init);
 

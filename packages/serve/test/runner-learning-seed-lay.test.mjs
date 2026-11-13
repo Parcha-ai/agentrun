@@ -157,7 +157,7 @@ async function cliSpec(t, harness, { seed = "landed", archil, more, held = false
     await landSeed(dir, { note: NOTE.replace("Wait a little longer", "Call again at once") });
     folderTestHooks.workspace = (place) => learningWorkspace({ mode: "local", data: place.mode === "archil" ? diskFolder : place.data, agentId: place.agentId });
   }
-  const model = harness === "claude-agent" ? { provider: "anthropic", modelId: "claude-haiku-4-5" } : { provider: "openai", modelId: "gpt-5" };
+  const model = harness === "claude-agent" ? { provider: "anthropic", modelId: "claude-haiku-5-5" } : { provider: "openai", modelId: "gpt-6.1-sol" };
   await server.agents.create({ id: AGENT, name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", harness, tools: ["read"], learning: true } });
   const launch = { input: { content: "Read your notes." }, title: "t", place: { mode: "runner" }, harness, model, ...(sha !== undefined ? { learning: startAt(sha) } : {}) };
   await server.runs.create({ id: RUN, agentId: AGENT, revisionId: "rev-1" }, { body: launch });

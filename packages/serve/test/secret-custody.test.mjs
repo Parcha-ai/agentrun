@@ -243,7 +243,7 @@ test("started by its launcher, no process of its user holds a secret in its envi
   const { root, api } = await launched(t, { ...secrets, AGENTRUN_STORE_URL: undefined, LC_ALL: "C.UTF-8" });
   // The launcher counts bytes in the C locale, for its own shell only: the server gets the caller's locale back.
   assert.ok(read(`/proc/${root}/environ`).toString().split("\0").includes("LC_ALL=C.UTF-8"), "the server keeps the caller's LC_ALL");
-  assert.equal((await api("POST", "/agents", { definition: { id: "custody", version: 1, name: "custody", instructions: "Answer.", skills: [], tools: [], model: "openai/gpt-4o" } })).status, 201);
+  assert.equal((await api("POST", "/agents", { definition: { id: "custody", version: 1, name: "custody", instructions: "Answer.", skills: [], tools: [], model: "openai/gpt-6.1-sol" } })).status, 201);
   // Read while the run's turn is held open (the faux model holds "Hold." until it is stopped): a process that held a
   // secret only during a turn is still there to read.
   const { body: run } = await api("POST", "/agents/custody/runs", { input: { content: "Hold." } });
@@ -287,7 +287,7 @@ test("started by its launcher with a store URL that holds a database password, n
   url.username = role;
   url.password = password;
   const { root, api } = await launched(t, { AGENTRUN_TOKEN: token, AGENTRUN_STORE_URL: url.toString(), AGENTRUN_STORE_SCHEMA: schema });
-  assert.equal((await api("POST", "/agents", { definition: { id: "store-url", version: 1, name: "store-url", instructions: "Answer.", skills: [], tools: [], model: "openai/gpt-4o" } })).status, 201, "its store opens");
+  assert.equal((await api("POST", "/agents", { definition: { id: "store-url", version: 1, name: "store-url", instructions: "Answer.", skills: [], tools: [], model: "openai/gpt-6.1-sol" } })).status, 201, "its store opens");
   assert.ok(!read(`/proc/${root}/environ`).toString().split("\0").some((entry) => entry.startsWith("AGENTRUN_STORE_URL=")), "no store URL in the server's environment");
   noSecretAnywhere(root, password);
 });
@@ -342,7 +342,7 @@ test("secretsFor: a tool key's fields only for a revision naming a tool its row 
   // so a run on OpenAI's model gets OpenAI's key, unless the same row is a tool key's that unlocks none of its tools.
   const { TOOL_KEYS: ROWS } = await import("../dist/tool-keys.js");
   assert.deepEqual(ROWS.map((row) => [row.id, row.kind]), [["parallel", "tool"], ["monid", "tool"], ["browserbase", "tool"], ["kernel", "tool"], ["typesafe", "tool"], ["anthropic", "model"], ["openai", "model"], ["openrouter", "model"]]);
-  const onOpenai = revision("agentic", { instructions: "Answer.", tools: [], model: "openai/gpt-4o" });
+  const onOpenai = revision("agentic", { instructions: "Answer.", tools: [], model: "openai/gpt-6.1-sol" });
   assert.deepEqual(await secretsOf(onOpenai, ROWS), [...without(...TOOL_KEYS), "OPENAI_API_KEY"].sort((a, b) => RUN_SECRETS.indexOf(a) - RUN_SECRETS.indexOf(b)), "OPENAI_API_KEY with them, the tool keys still not");
   assert.deepEqual(await secretsOf(onOpenai, ROWS.map((row) => (row.id === "openai" ? { ...row, kind: "tool" } : row))), without(...TOOL_KEYS), "the same row as a tool key is scoped");
 
@@ -374,18 +374,18 @@ test("secretsFor: a run is handed exactly the model keys its model needs: a pi r
   const GATEWAY = { AGENT_MODEL_BASE_URL: "http://127.0.0.1:1" };
   const ANTHROPIC = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_OAUTH_TOKEN"];
   assert.deepEqual(await held(agentic({ model: "google/gemini-2.5-flash" }), {}), ["GEMINI_API_KEY"], "its own model's provider's");
-  assert.deepEqual(await held(agentic({ model: "openrouter/anthropic/claude-sonnet-4.5" }), {}), ["OPENROUTER_API_KEY"], "OpenRouter's alone for a model through OpenRouter");
-  assert.deepEqual(await held(agentic({ model: "openai/gpt-4o" }), {}), ["OPENAI_API_KEY"]);
-  assert.deepEqual(await held(agentic({ model: "anthropic/claude-haiku-4-5" }), {}), ANTHROPIC, "each key Anthropic's provider reads");
+  assert.deepEqual(await held(agentic({ model: "openrouter/anthropic/claude-sonnet-5.5" }), {}), ["OPENROUTER_API_KEY"], "OpenRouter's alone for a model through OpenRouter");
+  assert.deepEqual(await held(agentic({ model: "openai/gpt-6.1-sol" }), {}), ["OPENAI_API_KEY"]);
+  assert.deepEqual(await held(agentic({ model: "anthropic/claude-haiku-5-5" }), {}), ANTHROPIC, "each key Anthropic's provider reads");
   assert.deepEqual(await held(agentic(), { AGENT_MODEL: "deepseek/deepseek-chat" }), ["DEEPSEEK_API_KEY"], "the host's default model's");
   assert.deepEqual(await held(agentic({ model: "google/gemini-2.5-flash" }), { AGENT_MODEL: "deepseek/deepseek-chat" }), ["GEMINI_API_KEY"], "its own wins over the host's");
   assert.deepEqual(await held(agentic({ model: "amazon-bedrock/amazon.nova-lite-v1:0" }), {}), [...BEDROCK].sort(), "Bedrock's AWS keys, together");
   assert.deepEqual(await held(agentic(), {}), [], "no model, no model key");
   assert.deepEqual(await held(agentic({ model: "google/gemini-2.5-flash" }), GATEWAY), ["AGENT_MODEL_API_KEY"], "through a gateway every model is the gateway's, on its key");
-  assert.deepEqual(await held(agentic({ harness: "codex", model: "openai/gpt-4o" }), {}), ["OPENAI_API_KEY"], "codex: OpenAI's");
+  assert.deepEqual(await held(agentic({ harness: "codex", model: "openai/gpt-6.1-sol" }), {}), ["OPENAI_API_KEY"], "codex: OpenAI's");
   assert.deepEqual(await held(agentic({ harness: "codex" }), { ...GATEWAY, AGENT_MODEL: "gpt-test" }), ["AGENT_MODEL_API_KEY"], "codex behind a gateway: the gateway's");
-  assert.deepEqual(await held(agentic({ harness: "claude-agent", model: "anthropic/claude-haiku-4-5" }), {}), ["ANTHROPIC_API_KEY"], "claude-agent: Anthropic's");
-  assert.deepEqual(await held(agentic({ harness: "claude-agent", model: "anthropic/claude-haiku-4-5" }), { ...GATEWAY, ANTHROPIC_BASE_URL: "http://127.0.0.1:2" }), ["ANTHROPIC_API_KEY"], "claude-agent's model is its own, never the gateway's");
+  assert.deepEqual(await held(agentic({ harness: "claude-agent", model: "anthropic/claude-haiku-5-5" }), {}), ["ANTHROPIC_API_KEY"], "claude-agent: Anthropic's");
+  assert.deepEqual(await held(agentic({ harness: "claude-agent", model: "anthropic/claude-haiku-5-5" }), { ...GATEWAY, ANTHROPIC_BASE_URL: "http://127.0.0.1:2" }), ["ANTHROPIC_API_KEY"], "claude-agent's model is its own, never the gateway's");
   // OpenRouter's route (#1537): the key a harness's requests carry there.
   const OPENROUTER = { OPENROUTER_API_KEY: "set" };
   assert.deepEqual(await held(agentic({ harness: "claude-agent" }), OPENROUTER), ["OPENROUTER_API_KEY"], "claude-agent on OpenRouter's key alone: OpenRouter's");
@@ -632,7 +632,7 @@ test("on claude-agent, with its turn held inside the Claude CLI, no process of t
   t.after(() => release());
   const fake = await fakeAnthropic({ reply: () => ({ hold: held, then: { text: "Claude answered." } }) });
   t.after(() => fake.close());
-  const { root, api } = await launched(t, { ...secrets, AGENTRUN_STORE_URL: undefined, ANTHROPIC_BASE_URL: fake.url, AGENT_MODEL: "anthropic/claude-haiku-4-5" }, []);
+  const { root, api } = await launched(t, { ...secrets, AGENTRUN_STORE_URL: undefined, ANTHROPIC_BASE_URL: fake.url, AGENT_MODEL: "anthropic/claude-haiku-5-5" }, []);
   assert.equal((await api("POST", "/agents", agent("claude", { harness: "claude-agent" }))).status, 201);
   assert.equal((await api("POST", "/agents/claude/runs", { input: { content: "Say what you did." } })).status, 202);
   for (let i = 0; fake.messages().length === 0; i++) {
