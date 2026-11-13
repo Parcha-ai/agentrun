@@ -70,6 +70,7 @@ final class HIDInput: RawInput, @unchecked Sendable {
 		let flags = held
 		try await InputQueue.run {
 			func wheel(_ x: Double, _ y: Double, _ units: CGScrollEventUnit) throws {
+				try InputQueue.checkCancelled()
 				guard let e = CGEvent(scrollWheelEvent2Source: nil, units: units, wheelCount: 2, wheel1: Int32(-y), wheel2: Int32(-x), wheel3: 0) else {
 					throw RPCError.unsupported("the system made no scroll event")
 				}
@@ -147,6 +148,7 @@ final class HIDInput: RawInput, @unchecked Sendable {
 		let flags = held
 		try await InputQueue.run {
 			for piece in pieces {
+				try InputQueue.checkCancelled()
 				if piece == "\n" || piece == "\t" {
 					let code = Keycodes.named[piece == "\n" ? "enter" : "tab"]!
 					try self.keyEvent(code, down: true, flags: flags)
@@ -155,6 +157,7 @@ final class HIDInput: RawInput, @unchecked Sendable {
 					continue
 				}
 				for (i, e) in try Keycodes.textEvents(piece, source: nil).enumerated() {
+					try InputQueue.checkCancelled()
 					e.flags = flags
 					e.post(tap: .cghidEventTap)
 					if i % 2 == 1 { InputQueue.pause(5) }

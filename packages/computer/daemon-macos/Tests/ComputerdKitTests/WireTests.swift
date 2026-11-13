@@ -44,6 +44,27 @@ final class WireTests: XCTestCase {
 		return (code, reply?["error"]?["data"]?["kind"]?.stringValue)
 	}
 
+	/// A reply being written when the input ends is still written before serve returns, so the caller cannot close the
+	/// socket under it.
+	func testServeReturnsOnlyAfterEveryReplyIsSent() async {
+		actor SlowOutput: LineOutput {
+			var sent = 0
+			func send(_ line: Data) async {
+				try? await Task.sleep(nanoseconds: 200_000_000)
+				sent += 1
+			}
+		}
+		let out = SlowOutput()
+		let connection = Connection(router: router(), output: out)
+		let (stream, input) = AsyncStream<Line>.makeStream()
+		input.yield(line(#"{"jsonrpc":"2.0","id":1,"method":"echo","params":{"text":"hi"}}"#))
+		input.yield(line(#"{"jsonrpc":"2.0","id":2,"method":"echo","params":{"text":"yo"}}"#))
+		input.finish()
+		await connection.serve(stream)
+		let sent = await out.sent
+		XCTAssertEqual(sent, 2, "serve returned with a reply still being written")
+	}
+
 	func testEchoesAResult() async {
 		let replies = await serve([line(#"{"jsonrpc":"2.0","id":1,"method":"echo","params":{"text":"hi","n":2}}"#)])
 		XCTAssertEqual(replies.first?["result"], .object(["text": .string("hi"), "n": .int(2)]))

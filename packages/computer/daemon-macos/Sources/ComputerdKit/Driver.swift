@@ -30,6 +30,8 @@ public final class Driver: Sendable {
 	let shots = ShotStore()
 	let tar = TarSessions()
 	let watch = Watch()
+	/// What this connection's input.actions batches left down.
+	let held = InputHeld()
 	public let ui: UIEngine
 
 	public init(platform: Platform, policy: Policy, machine: MachineInfo, timing: Timing = Timing()) {
@@ -84,7 +86,7 @@ public final class Driver: Sendable {
 		r.on("screen.watch", ScreenWatchParams.self) { try await self.watch.next($0, capture: self.platform.capture, shots: self.shots, clock: self.platform.clock) }
 
 		r.on("input.actions", InputActionsParams.self) { p in
-			try await InputBatch(platform: self.platform, policy: self.policy, groups: Self.groups).run(p.actions)
+			try await InputBatch(platform: self.platform, policy: self.policy, groups: Self.groups, held: self.held).run(p.actions)
 		}
 
 		r.on("apps.list", Empty.self) { _ in self.apps() }
@@ -129,9 +131,10 @@ public final class Driver: Sendable {
 		return ScreenShotResult(id: held.id, size: image.data.count, data: held.first, eof: held.eof, width: width, height: height, scale: image.scale, cursor: platform.capture.cursor())
 	}
 
-	/// Ends what the connection left open: its tar streams.
+	/// Ends what the connection left open: its tar streams, and the keys and buttons its input.actions left held.
 	public func close() async {
 		await tar.closeAll()
+		await InputBatch(platform: platform, policy: policy, groups: Self.groups, held: held).releaseHeld()
 	}
 }
 

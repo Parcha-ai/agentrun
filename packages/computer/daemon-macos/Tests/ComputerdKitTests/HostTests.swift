@@ -145,6 +145,28 @@ final class HostTests: XCTestCase {
 		XCTAssertEqual(String(decoding: try Files.readFile(FilesReadParams(path: dir + "/dst/sub/b.txt")).data, as: UTF8.self), "beta")
 	}
 
+	func testAPushTarStopsReadingLeaksNoDescriptor() async throws {
+		func open() -> Int { ((try? FileManager.default.contentsOfDirectory(atPath: "/dev/fd")) ?? []).count }
+		let tar = TarSessions(tar: FileManager.default.isExecutableFile(atPath: "/usr/bin/tar") ? "/usr/bin/tar" : "/bin/tar")
+		let before = open()
+		for round in 0..<8 {
+			let push = try await tar.pushBegin(TarPathParams(path: dir + "/junk\(round)"))
+			var refused = false
+			// Not a tar archive: tar quits after its first block, and a later write finds nobody reading.
+			for _ in 0..<400 where !refused {
+				do {
+					try await tar.pushWrite(TarPushWriteParams(id: push.id, data: Data(repeating: 0x41, count: 65536)))
+				} catch let e as RPCError {
+					XCTAssertEqual(e.kind, .invalid)
+					refused = true
+				}
+				if !refused { try await Task.sleep(nanoseconds: 5_000_000) }
+			}
+			XCTAssertTrue(refused, "round \(round): the write never found tar gone")
+		}
+		XCTAssertLessThanOrEqual(open(), before + 2, "each failed push gave back its pipes")
+	}
+
 	func testTarEmptyDirectoryAndUnknownIDs() async throws {
 		try Files.makeDir(FilesMkdirParams(path: dir + "/empty"))
 		let tar = TarSessions()

@@ -252,6 +252,29 @@ final class EngineTests: XCTestCase {
 		XCTAssertEqual(os.entries, ["ax.insert 4 milk", "ax.focus 7", "bg.type pw"])
 	}
 
+	/// A step on a disabled control, or a type into a ref that is no text field, is refused with nothing sent.
+	func testStepsOnADisabledControlOrANonFieldAreRefused() async throws {
+		os.add(11, "button", name: "Off", frame: Rect(120, 520, 50, 20), parent: 2, actions: ["AXPress"], flags: [.disabled])
+		let engine = os.engine()
+		let r = try await engine.observe(UiObserveParams())
+		let pressed = try await engine.act(UiActParams(steps: [.press(ref(r, "Off"))]))
+		XCTAssertEqual(stepError(pressed, 0)?.kind, .refused)
+		let typed = try await engine.act(UiActParams(steps: [.type("x", into: ref(r, "Save"))]))
+		XCTAssertEqual(stepError(typed, 0)?.kind, .refused)
+		XCTAssertTrue(os.entries.isEmpty, "nothing was sent: \(os.entries)")
+	}
+
+	/// A field that did not take the focus is not typed into: the text would go to whatever has it.
+	func testATypeIntoAFieldThatDidNotTakeTheFocusIsRefusedWithNothingTyped() async throws {
+		os.with { $0.ignoresFocus = true }
+		let engine = os.engine()
+		let r = try await engine.observe(UiObserveParams())
+		let result = try await engine.act(UiActParams(steps: [.type("pw", into: ref(r, "Password"))]))
+		guard case .error(let error)? = result.steps.first else { return XCTFail("the step ran: \(result.steps)") }
+		XCTAssertEqual(error.kind, .refused)
+		XCTAssertFalse(os.entries.contains { $0.hasSuffix("type pw") }, "nothing was typed")
+	}
+
 	/// A document's text area (TextEdit's) takes an edit as one only by typed keys: they go first, and an insert only
 	/// when the keys showed nothing.
 	func testADocumentsTextTakesTypedKeysFirst() async throws {
@@ -591,6 +614,20 @@ final class EngineTests: XCTestCase {
 		XCTAssertEqual(ran(front, 0)?.0, .foreground)
 		XCTAssertEqual(ran(front, 0)?.1, true)
 		XCTAssertEqual(front.expect, .met)
+	}
+
+	func testASlowEffectIsWaitedForNotRepeatedOnTheNextRoute() async throws {
+		backMenuItemThatDoesNothing()
+		let engine = os.engine()
+		_ = try await engine.observe(UiObserveParams())
+		// The background key lands, and its effect shows 300 ms after the quiet settle looked.
+		os.react = { entry, os in
+			if entry == "bg.key super+[" { os.after(300) { $0.elements[5]?.name = "Quarterly report" } }
+		}
+		let result = try await engine.act(UiActParams(steps: [.key("super+[")], expect: Expect(text: "Quarterly report", timeoutMs: 10_000), foreground: true))
+		XCTAssertEqual(ran(result, 0)?.0, .background)
+		XCTAssertEqual(ran(result, 0)?.1, true)
+		XCTAssertFalse(os.entries.contains("fg.key super+["), "the slow effect was waited for, so the step was not done a second time")
 	}
 
 	func testARedrawAloneNeitherHoldsASettleNorVerifiesAStep() async throws {

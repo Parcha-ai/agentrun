@@ -87,6 +87,8 @@ public actor TarSessions {
 		pushes[p.id] = push
 		guard push.child.write(p.data) else {
 			pushes[p.id] = nil
+			// tar stopped reading: its input pipe is ours to close, or each failed push leaks a descriptor.
+			push.child.closeInput()
 			let (_, errors) = push.child.wait()
 			throw RPCError.invalid("tar stopped reading: \(errors)")
 		}

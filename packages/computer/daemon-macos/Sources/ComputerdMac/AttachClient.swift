@@ -45,6 +45,9 @@ public final class AttachClient: NSObject, URLSessionWebSocketDelegate, @uncheck
 	}
 
 	func run() async {
+		// The session retains its delegate (this client): let it go when the client dials no more, or every re-pair
+		// leaves another client and session alive.
+		defer { session.finishTasksAndInvalidate() }
 		var attempt = 0
 		while !isStopped {
 			let started = Date()
@@ -78,7 +81,14 @@ public final class AttachClient: NSObject, URLSessionWebSocketDelegate, @uncheck
 		request.setValue(Attach.subprotocol, forHTTPHeaderField: "Sec-WebSocket-Protocol")
 		let task = session.webSocketTask(with: request)
 		task.maximumMessageSize = Limits.maxLineBytes
-		lock.withLock { current = task }
+		// Stored under the lock that stop() takes, and only while not stopped: an unpair between run()'s check and here
+		// must not leave a socket with the old token that stop() never saw.
+		let live = lock.withLock { () -> Bool in
+			if stopped { return false }
+			current = task
+			return true
+		}
+		guard live else { return Int(URLSessionWebSocketTask.CloseCode.goingAway.rawValue) }
 		task.resume()
 
 		let driver = makeDriver()

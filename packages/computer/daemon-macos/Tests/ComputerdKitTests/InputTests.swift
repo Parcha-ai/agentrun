@@ -10,7 +10,11 @@ final class InputTests: XCTestCase {
 
 	override func setUp() {
 		os = FakeOS()
+		held = InputHeld()
 	}
+
+	/// What this test's batches left down, as a connection's driver keeps it.
+	var held: InputHeld!
 
 	func json(_ text: String) -> JSON {
 		try! JSONDecoder().decode(JSON.self, from: Data(text.utf8))
@@ -30,7 +34,7 @@ final class InputTests: XCTestCase {
 	}
 
 	func batch(_ actions: String, policy: Policy = Policy(), foreground: Feature = .on) async throws -> InputActionsResult {
-		try await InputBatch(platform: os.platform(foreground: foreground), policy: policy, groups: desktop).run(json(actions))
+		try await InputBatch(platform: os.platform(foreground: foreground), policy: policy, groups: desktop, held: held).run(json(actions))
 	}
 
 	var raw: [String] { os.entries.filter { $0.hasPrefix("raw.") } }
@@ -143,6 +147,38 @@ final class InputTests: XCTestCase {
 		XCTAssertEqual(raw, ["raw.move 5,5", "raw.down left 5,5 1"])
 		_ = try await batch(#"[{"type":"up"}]"#)
 		XCTAssertEqual(raw.last, "raw.up left 5,5 1")
+	}
+
+	func testAMoveAfterADownInAnEarlierBatchIsADrag() async throws {
+		_ = try await batch(#"[{"type":"move","at":[10,10]},{"type":"down"}]"#)
+		_ = try await batch(#"[{"type":"move","at":[20,20]}]"#)
+		XCTAssertEqual(raw.last, "raw.move 10,10 left", "the button an earlier batch left down is held through the move")
+	}
+
+	func testAFailureReleasesAButtonAnEarlierBatchLeftDown() async throws {
+		_ = try await batch(#"[{"type":"move","at":[10,10]},{"type":"down"}]"#)
+		os.with { _ = $0.rawFails.insert("raw.key s down") }
+		let result = try await batch(#"[{"type":"key","keys":["s"]}]"#)
+		XCTAssertNotNil(result.failed)
+		XCTAssertEqual(raw.last, "raw.up left 5,5 1", "the earlier batch's button is let go")
+	}
+
+	func testClosingTheDriverReleasesWhatABatchLeftDown() async throws {
+		let driver = Driver(platform: os.platform(), policy: Policy(), machine: MachineInfo(os: "macos", osVersion: nil, device: nil))
+		_ = try await driver.router().handler("input.actions")!(json(#"{"actions":[{"type":"move","at":[10,10]},{"type":"down"}]}"#))
+		await driver.close()
+		XCTAssertEqual(raw.last, "raw.up left 5,5 1")
+	}
+
+	func testALongTypeIsSentInBurstsSoTheAppInFrontIsCheckedBetweenThem() async throws {
+		// The first burst switches to an app the owner does not allow, as a key chord could.
+		os.react = { entry, os in
+			if entry.hasPrefix("raw.type ") { os.with { $0.front = "com.apple.Notes" } }
+		}
+		let text = String(repeating: "a", count: InputRun.typeBurstCharacters * 3)
+		let result = try await batch(#"[{"type":"type","text":"\#(text)"}]"#, policy: Policy(apps: ["com.apple.Safari"]))
+		XCTAssertEqual(result.failed?.kind, .denied)
+		XCTAssertEqual(raw.count, 1, "only the first burst went out")
 	}
 
 	func testAPersonMovingThePointerStopsTheBatch() async throws {

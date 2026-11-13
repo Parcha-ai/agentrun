@@ -20,6 +20,8 @@ public struct Timing: Sendable {
 	public var expectPollMs: Double = 100
 	/// How long a set value must hold after the settle to count as verified.
 	public var lastingMs: Double = 500
+	/// How long a route that showed nothing is given for a slow effect, before the next route repeats the step.
+	public var lateMs: Double = 600
 	/// Told one line per act: each step's route and ms with the looks its settle took, the expect's ms, and the time a
 	/// look takes. The Mac app writes it to its log.
 	public var trace: (@Sendable (String) -> Void)?
@@ -600,6 +602,9 @@ public actor UIEngine {
 				// Nothing showed (the keys reached no view): the next route tries. A route that changed something is
 				// never followed by another, which could do the step twice.
 				guard next, view.fingerprint == after.fingerprint else { return (attempt.route, false, after) }
+				// A slow effect is not a failed step: wait for it before the next route does the step again.
+				let later = try await lateLook(after)
+				if later.fingerprint != view.fingerprint { return (attempt.route, holds(), later) }
 				climbed.append(attempt.route.rawValue)
 				unseen = (attempt.route, after)
 			case .lasting(let holds):
@@ -610,6 +615,9 @@ public actor UIEngine {
 			case .change:
 				if view.fingerprint != after.fingerprint { return (attempt.route, true, after) }
 				guard let expect, next, !holds(expect, after) else { return (attempt.route, false, after) }
+				// A slow effect is not a failed step: wait for it before the next route does the step again.
+				let later = try await lateLook(after)
+				if later.fingerprint != view.fingerprint { return (attempt.route, true, later) }
 				climbed.append(attempt.route.rawValue)
 				unseen = (attempt.route, after)
 			}
@@ -617,6 +625,12 @@ public actor UIEngine {
 		if let (route, after) = unseen { return (route, false, after) }
 		let words = "no route could \(step.verb) here. " + reasons.joined(separator: "; ")
 		throw denied ? RPCError.denied(words) : RPCError.unsupported(words)
+	}
+
+	/// The window settled again after the slow-effect wait: a route that showed nothing may only be slow.
+	func lateLook(_ after: View) async throws -> View {
+		try await sleep(timing.lateMs)
+		return try await settleAfterStep(after.target)
 	}
 
 	// MARK: elements and points
@@ -648,8 +662,20 @@ public actor UIEngine {
 
 	/// Gives an element keyboard focus before typing into it: through the tree, else by clicking it on the same route.
 	func focus(_ ref: String, _ element: ElementHandle, target: ResolvedTarget, route: any InputRoute) async throws {
-		if (try? ax.focus(element)) != nil { return }
+		if (try? ax.focus(element)) != nil, try await tookFocus(element, target) { return }
 		try await route.click(at: try center(ref, element, in: target), button: .left, count: 1, in: target)
+		guard try await tookFocus(element, target) else {
+			throw RPCError(.refused, "\(ref) did not take the keyboard focus, so nothing was typed: a field's text never goes to whatever has the focus")
+		}
+	}
+
+	/// The element has keyboard focus, as it may take a moment to: a request an app ignores or delays is not focus.
+	func tookFocus(_ element: ElementHandle, _ target: ResolvedTarget) async throws -> Bool {
+		for look in 0..<4 {
+			if ax.focused(target) == element { return true }
+			if look < 3 { try await sleep(40) }
+		}
+		return false
 	}
 
 	/// A point is good while it still means what it meant in its state: the same window at the same size, and the same

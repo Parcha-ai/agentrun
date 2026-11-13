@@ -9,11 +9,14 @@ public struct InputBatch: Sendable {
 	let platform: Platform
 	let policy: Policy
 	let groups: [Group]
+	let held: InputHeld
 
-	public init(platform: Platform, policy: Policy, groups: [Group]) {
+	/// `held` is what this connection's earlier batches left down; the Driver gives every batch of a connection its one.
+	public init(platform: Platform, policy: Policy, groups: [Group], held: InputHeld = InputHeld()) {
 		self.platform = platform
 		self.policy = policy
 		self.groups = groups
+		self.held = held
 	}
 
 	public func run(_ raw: JSON) async throws -> InputActionsResult {
@@ -24,8 +27,51 @@ public struct InputBatch: Sendable {
 			throw RPCError.denied("input.actions is this computer's own keyboard and mouse, and \(reason)")
 		}
 		guard let screen = platform.capture.screenInfo() else { throw RPCError.unsupported("input.actions: no display is attached") }
-		let run = InputRun(platform: platform, policy: policy, screen: screen)
-		return try await InputGate.shared.serial { try await run.run(actions) }
+		let (platform, policy, held) = (self.platform, self.policy, self.held)
+		return try await InputGate.shared.serial {
+			// What an earlier batch left down stays down for this one, so a move is a drag and a failure lets go of it.
+			let (buttons, keys) = held.get()
+			let run = InputRun(platform: platform, policy: policy, screen: screen, buttons: buttons, keys: keys)
+			do {
+				let result = try await run.run(actions)
+				held.set(buttons: run.buttons, keys: run.keys)
+				return result
+			} catch {
+				held.set(buttons: run.buttons, keys: run.keys)
+				throw error
+			}
+		}
+	}
+
+	/// Lets go of what earlier batches left held: the connection ended, and nobody is left to release it.
+	public func releaseHeld() async {
+		guard let screen = platform.capture.screenInfo() else { return }
+		let (platform, held) = (self.platform, self.held)
+		try? await InputGate.shared.serial {
+			let (buttons, keys) = held.get()
+			if buttons.isEmpty && keys.isEmpty { return }
+			let run = InputRun(platform: platform, policy: Policy(), screen: screen, buttons: buttons, keys: keys)
+			await run.release()
+			held.set(buttons: run.buttons, keys: run.keys)
+		}
+	}
+}
+
+/// The buttons and keys a connection's batches have pressed and not released.
+public final class InputHeld: @unchecked Sendable {
+	private let lock = NSLock()
+	private var buttons: [InputButton] = []
+	private var keys: [String] = []
+
+	public init() {}
+
+	func get() -> ([InputButton], [String]) { lock.withLock { (buttons, keys) } }
+
+	func set(buttons: [InputButton], keys: [String]) {
+		lock.withLock {
+			self.buttons = buttons
+			self.keys = keys
+		}
 	}
 }
 
@@ -65,6 +111,11 @@ final class InputRun: @unchecked Sendable {
 	static let takeOverPixels = 3.0
 	/// The longest leg one drag event moves, in points; a longer leg is cut into pieces about 8 ms apart.
 	static let dragStepPoints = 20.0
+	/// The most one raw scroll call sends, in points or in clicks, and one raw type call, in characters: the app in
+	/// front is checked, and a cancel looked for, between calls.
+	static let scrollBurstPoints = 400.0
+	static let scrollBurstClicks = 20.0
+	static let typeBurstCharacters = 32
 
 	let platform: Platform
 	let policy: Policy
@@ -73,12 +124,14 @@ final class InputRun: @unchecked Sendable {
 	let width: Int
 	let height: Int
 	let scale: Double
-	var buttons: [InputButton] = []
-	var keys: [String] = []
+	var buttons: [InputButton]
+	var keys: [String]
 	/// Where the batch's last pointer action left the pointer, in pixels.
 	var left: Pixel?
 
-	init(platform: Platform, policy: Policy, screen: ScreenInfo) {
+	init(platform: Platform, policy: Policy, screen: ScreenInfo, buttons: [InputButton] = [], keys: [String] = []) {
+		self.buttons = buttons
+		self.keys = keys
 		self.platform = platform
 		self.policy = policy
 		raw = platform.raw
@@ -194,6 +247,7 @@ final class InputRun: @unchecked Sendable {
 				}
 				for n in 1...a.count {
 					try Task.checkCancellation()
+					try guardFront()
 					try await press(a.button, down: true, clickState: n)
 					try await pause(1)
 					try await press(a.button, down: false, clickState: n)
@@ -212,6 +266,7 @@ final class InputRun: @unchecked Sendable {
 					let pieces = max(1, Int((hypot(to.x - from.x, to.y - from.y) / Self.dragStepPoints).rounded(.up)))
 					for k in 1...pieces {
 						try Task.checkCancellation()
+						try guardFront()
 						try await pause(8)
 						let t = Double(k) / Double(pieces)
 						try await raw.move(to: Point(from.x + (to.x - from.x) * t, from.y + (to.y - from.y) * t), held: Set(buttons))
@@ -231,18 +286,39 @@ final class InputRun: @unchecked Sendable {
 				}
 				// Pixels of the screenshot are points times scale; clicks are clicks.
 				let (dx, dy) = a.pixels ? (a.dx / scale, a.dy / scale) : (a.dx, a.dy)
-				try await raw.scroll(at: cursor, dx: dx, dy: dy, pixels: a.pixels)
+				// In bursts, so the app in front is checked between them and a cancel stops the scroll.
+				let burst = a.pixels ? Self.scrollBurstPoints : Self.scrollBurstClicks
+				var (left, down) = (dx, dy)
+				repeat {
+					try Task.checkCancellation()
+					try guardFront()
+					let sx = max(-burst, min(burst, left))
+					let sy = max(-burst, min(burst, down))
+					try await raw.scroll(at: cursor, dx: sx, dy: sy, pixels: a.pixels)
+					left -= sx
+					down -= sy
+				} while left != 0 || down != 0
 			}
 		case "key":
 			for _ in 0..<a.repeats {
 				try Task.checkCancellation()
+				try guardFront()
 				try await holding(a.keys) {}
 				try await pause(2)
 			}
 		case "hold":
 			try await holding(a.keys) { try await pause(Double(a.ms)) }
 		case "type":
-			try await raw.type(a.text)
+			// In bursts, so the app in front is checked between them and a cancel stops the text.
+			let characters = Array(a.text)
+			var start = 0
+			repeat {
+				try Task.checkCancellation()
+				try guardFront()
+				let end = min(start + Self.typeBurstCharacters, characters.count)
+				try await raw.type(String(characters[start..<end]))
+				start = end
+			} while start < characters.count
 		case "wait":
 			try await pause(Double(a.ms))
 		default:

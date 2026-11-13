@@ -33,12 +33,16 @@ final class FakeOS: @unchecked Sendable {
 	var trusted = true
 	var screenRecording = true
 	var focusedID: Int?
+	/// An app that ignores a request to focus an element: the request succeeds and the focus stays where it was.
+	var ignoresFocus = false
 	/// The pid of the app in front; the fake app is pid 42.
 	var frontPID: Int32?
 	/// Where the pointer is, in screen pixels.
 	var cursor = Point(10, 10)
 	/// Raw input events the fake refuses, as their entries.
 	var rawFails: Set<String> = []
+	/// The app in front, as apps.list says it.
+	var front = "com.apple.Safari"
 	var frameHash = 0
 	var maxNodes: Int?
 	/// Called on every perform, set and post, so a test makes the UI react.
@@ -163,7 +167,7 @@ struct FakeAX: Accessibility {
 	}
 
 	func focus(_ element: ElementHandle) throws {
-		os.with { $0.focusedID = id(element) }
+		os.with { if !$0.ignoresFocus { $0.focusedID = id(element) } }
 		os.record("ax.focus \(id(element))")
 	}
 
@@ -271,7 +275,7 @@ struct FakeWorkspace: Workspace {
 	var frontmost: Int32? { os.with { $0.frontPID } }
 
 	func list() -> AppsListResult {
-		AppsListResult(apps: [App(id: "com.apple.Notes", name: "Notes"), App(id: "com.apple.Safari", name: "Safari")], foreground: "com.apple.Safari")
+		AppsListResult(apps: [App(id: "com.apple.Notes", name: "Notes"), App(id: "com.apple.Safari", name: "Safari")], foreground: os.with { $0.front })
 	}
 
 	func launch(_ id: String, url: String?, background: Bool) async throws {

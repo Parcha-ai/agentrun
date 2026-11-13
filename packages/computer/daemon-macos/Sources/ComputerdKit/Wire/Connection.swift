@@ -77,7 +77,7 @@ public final class Connection: Sendable {
 		}
 		let params = fields["params"]
 		let key = Self.key(id)
-		await inflight.start(key) { [self] in
+		await inflight.start(key) { [self] token in
 			let outcome: Result<JSON, RPCError>
 			do {
 				let result = try await handler(params)
@@ -89,11 +89,12 @@ public final class Connection: Sendable {
 			} catch {
 				outcome = .failure(RPCError(.invalid, "\(method) failed: \(error)"))
 			}
-			await inflight.remove(key)
+			// The request stays tracked until its reply is sent, so the input ending cannot close the socket under it.
 			switch outcome {
 			case .success(let result): await reply(id: id, result: result)
 			case .failure(let error): await reply(id: id, error: error)
 			}
+			await inflight.remove(key, token)
 		}
 	}
 
@@ -144,23 +145,31 @@ public final class Connection: Sendable {
 
 /// The requests running on a connection, by id, so a cancel can reach them.
 actor Inflight {
-	var tasks: [String: Task<Void, Never>] = [:]
+	var tasks: [String: (token: Int, task: Task<Void, Never>)] = [:]
+	var counter = 0
+	/// Tasks that were replaced under their id (a caller reused it) and have not finished: cancelAll waits for them too.
+	var replaced: [Int: Task<Void, Never>] = [:]
 
 	/// Starts a request's task and holds it, in one step on the actor, so the task's own remove always comes after.
-	func start(_ key: String, _ body: @escaping @Sendable () async -> Void) {
-		tasks[key] = Task { await body() }
+	/// The body gets its token: only the task that holds an id removes it.
+	func start(_ key: String, _ body: @escaping @Sendable (Int) async -> Void) {
+		counter += 1
+		let token = counter
+		if let old = tasks[key] { replaced[old.token] = old.task }
+		tasks[key] = (token, Task { await body(token) })
 	}
 
-	func remove(_ key: String) {
-		tasks[key] = nil
+	func remove(_ key: String, _ token: Int) {
+		if tasks[key]?.token == token { tasks[key] = nil }
+		replaced[token] = nil
 	}
 
 	func cancel(_ key: String) {
-		tasks[key]?.cancel()
+		tasks[key]?.task.cancel()
 	}
 
 	func cancelAll() async {
-		let running = Array(tasks.values)
+		let running = tasks.values.map(\.task) + Array(replaced.values)
 		for task in running { task.cancel() }
 		for task in running { await task.value }
 	}

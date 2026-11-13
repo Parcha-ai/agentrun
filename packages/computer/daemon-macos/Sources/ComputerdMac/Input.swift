@@ -10,22 +10,56 @@ import Foundation
 enum InputQueue {
 	static let queue = DispatchQueue(label: "ai.parcha.computerd.input")
 
+	/// Runs a body on the input thread. A cancelled request stops it between events: a loop calls checkCancelled()
+	/// before each event, so a long scroll or text never keeps posting after its request is cancelled or its
+	/// connection is gone, and never holds up the requests queued behind it.
 	static func run(_ body: @escaping @Sendable () throws -> Void) async throws {
-		try await withCheckedThrowingContinuation { (done: CheckedContinuation<Void, Error>) in
-			queue.async {
-				do {
-					try body()
-					done.resume()
-				} catch {
-					done.resume(throwing: error)
+		let flag = InputCancel()
+		try await withTaskCancellationHandler {
+			try await withCheckedThrowingContinuation { (done: CheckedContinuation<Void, Error>) in
+				queue.async {
+					active.set(flag)
+					defer { active.set(nil) }
+					do {
+						try checkCancelled()
+						try body()
+						done.resume()
+					} catch {
+						done.resume(throwing: error)
+					}
 				}
 			}
+		} onCancel: {
+			flag.cancel()
 		}
+	}
+
+	private static let active = ActiveCancel()
+
+	/// Throws when the request whose body is running was cancelled.
+	static func checkCancelled() throws {
+		if active.get()?.isCancelled == true { throw CancellationError() }
 	}
 
 	static func pause(_ ms: Double) {
 		if ms > 0 { Thread.sleep(forTimeInterval: ms / 1000) }
 	}
+}
+
+/// Whether the request whose body runs on the input thread was cancelled.
+final class InputCancel: @unchecked Sendable {
+	private let lock = NSLock()
+	private var cancelled = false
+	func cancel() { lock.withLock { cancelled = true } }
+	var isCancelled: Bool { lock.withLock { cancelled } }
+}
+
+/// The InputCancel of the body running now: one at a time, as the queue runs them.
+final class ActiveCancel: @unchecked Sendable {
+	private let lock = NSLock()
+	private var flag: InputCancel?
+	func set(_ new: InputCancel?) { lock.withLock { flag = new } }
+	func get() -> InputCancel? { lock.withLock { flag } }
 }
 
 /// The points a drag passes through, one event about every 16 ms over ms, along each leg in proportion to its length.
@@ -199,6 +233,7 @@ struct BackgroundRoute: InputRoute {
 			// In pieces of at most 100 points, as a wheel sends them; dy > 0 shows what is below.
 			var (left, down) = (dx, dy)
 			while left != 0 || down != 0 {
+				try InputQueue.checkCancelled()
 				let sx = max(-100, min(100, left))
 				let sy = max(-100, min(100, down))
 				guard let e = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2, wheel1: Int32(-sy), wheel2: Int32(-sx), wheel3: 0) else {
@@ -238,6 +273,7 @@ struct BackgroundRoute: InputRoute {
 				// The release goes out even when a move fails, so the app is never left holding the button.
 				defer { try? post(.leftMouseUp, points[points.count - 1]) }
 				for p in points.dropFirst() {
+					try InputQueue.checkCancelled()
 					InputQueue.pause(pauseMs)
 					try post(.leftMouseDragged, p)
 				}
@@ -253,6 +289,7 @@ struct BackgroundRoute: InputRoute {
 			let events = try Keycodes.textEvents(text, source: nil)
 			try Self.withFocus(sky, pid, wid, key: true, settleMs: 10) {
 				for (i, e) in events.enumerated() {
+					try InputQueue.checkCancelled()
 					e.postToPid(pid)
 					if i % 2 == 1 { InputQueue.pause(5) }
 				}
@@ -332,6 +369,7 @@ struct ForegroundRoute: InputRoute {
 			try Self.post(.mouseMoved, at)
 			var (left, down) = (dx, dy)
 			while left != 0 || down != 0 {
+				try InputQueue.checkCancelled()
 				let sx = max(-100, min(100, left))
 				let sy = max(-100, min(100, down))
 				guard let e = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2, wheel1: Int32(-sy), wheel2: Int32(-sx), wheel3: 0) else {
@@ -355,6 +393,7 @@ struct ForegroundRoute: InputRoute {
 			try Self.post(.leftMouseDown, points[0])
 			defer { try? Self.post(.leftMouseUp, points[points.count - 1]) }
 			for p in points.dropFirst() {
+				try InputQueue.checkCancelled()
 				InputQueue.pause(pauseMs)
 				try Self.post(.leftMouseDragged, p)
 			}
@@ -365,6 +404,7 @@ struct ForegroundRoute: InputRoute {
 		try await InputQueue.run {
 			try self.front(t)
 			for (i, e) in try Keycodes.textEvents(text, source: nil).enumerated() {
+				try InputQueue.checkCancelled()
 				e.post(tap: .cghidEventTap)
 				if i % 2 == 1 { InputQueue.pause(5) }
 			}
