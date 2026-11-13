@@ -17,7 +17,7 @@ const T0 = Date.parse("2026-11-10T09:00:00Z");
 /** A run as the store lists it, ended at T0 + `n` minutes with `metrics`. */
 const runOf = (id, n, metrics, extra = {}) => ({ id, agentId: "sorter", state: "ended", startedAt: T0 + n * 60_000, metrics, importedFrom: null, archivedAt: null, ...extra });
 const guarded = (path, digest, rows) => ({ path, workflow: "sort-invoice", workflow_digest: digest, guards: rows });
-const row = (node, p, threshold = 0.7, signal = "jev") => ({ node, signal, p, threshold, escalated: p === null || p < threshold });
+const row = (node, p, threshold = 0.7, signal = "jev", workflow = "sort-invoice") => ({ node, signal, p, threshold, escalated: p === null || p < threshold, workflow });
 
 /** A store with just what the read reads: the agent's runs, its settings (grades, promotions) and each run's kept learning
  *  (a row, or a list of rounds' rows `{ at, row }` oldest first). proposal(id) is the newest round, as the store's. */
@@ -98,6 +98,41 @@ test("a replay's record-only rows never count as served: a revision only replaye
   const served = [...runs, runOf("s1", 4, guarded("workflow", D2, [row("classify", 0.8)]))];
   const [step] = (await agentLoopOverStore(storeOf({ runs: served }), "sorter")).guards;
   assert.deepEqual([step.threshold, step.runs, step.escalated, step.replays, step.points.map((p) => p.run_id)], [0.7, 1, 0, 3, ["s1"]], "the threshold is a served run's, never a replay's 1e-9");
+});
+
+// Review on #2654: a guarded step inside a map checks once per item, so one run keeps many rows of one step. The step's
+// counts are runs: each run once per step, handed back when any of its checks did, its p the least it read (null when a
+// signal was missing on any).
+test("a guarded step in a map counts its run once: handed back when any check did, its p the least one", async () => {
+  const items = Array.from({ length: 70 }, (_, i) => row("check", 0.9 - i / 1000));
+  const runs = [
+    runOf("r1", 1, guarded("workflow", D1, items)),
+    runOf("r2", 2, guarded("handed_back", D1, [...items.slice(0, 3), row("check", 0.2), row("check", 0.95)])),
+    runOf("r3", 3, guarded("handed_back", D1, [row("check", 0.8), row("check", null)])),
+    runOf("x1", 4, guarded("replay", D1, items)),
+  ];
+  const grades = [{ run: "r1", correct: true }];
+  const { guards } = await agentLoopOverStore(storeOf({ runs, grades }), "sorter");
+  assert.equal(guards.length, 1);
+  const [step] = guards;
+  assert.deepEqual([step.runs, step.escalated, step.right, step.wrong, step.replays], [3, 2, 1, 0, 1], "three served runs, two handed back; a replay of 70 checks is one");
+  assert.deepEqual(step.points, [
+    { run_id: "r1", p: 0.831, escalated: false, correct: true },
+    { run_id: "r2", p: 0.2, escalated: true, correct: null },
+    { run_id: "r3", p: null, escalated: true, correct: null },
+  ]);
+});
+
+// Review on #2654: a run's metrics.guards hold every learned_workflow call's checks, and the agent can call another
+// workflow after the one served first hands back. Each row names the workflow whose call made it; only the served
+// workflow's rows count toward its revision (the run's digest is that workflow's: another's revision is not known).
+test("checks of another workflow's call never show under the served workflow's revision", async () => {
+  const runs = [
+    runOf("r1", 1, guarded("handed_back", D1, [row("classify", 0.3), row("classify", 0.1, 0.7, "jev", "file-invoice"), row("route", 0.9, 0.7, "jev", "file-invoice")])),
+    runOf("r2", 2, guarded("workflow", D1, [row("classify", 0.9), row("classify", 0.95, 0.7, "jev", "file-invoice")])),
+  ];
+  const { guards } = await agentLoopOverStore(storeOf({ runs }), "sorter");
+  assert.deepEqual(guards.map((g) => [g.workflow, g.digest, g.node, g.runs, g.escalated, g.points.map((p) => p.p)]), [["sort-invoice", D1, "classify", 2, 1, [0.3, 0.9]]]);
 });
 
 test("each round of a run lists its own compile: a follow-up's round that only kept a note leaves the first round's compile in the feed", async () => {

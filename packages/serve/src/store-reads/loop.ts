@@ -28,11 +28,13 @@ export type LoopCompile = {
   promoted: boolean | null;
   draft_errors: string[];
 };
-/** One run's guard outcome on a step: its p (null when a signal was missing: it handed back), whether it handed back,
- *  and, when the run's answer was the workflow's own and it was graded, whether that was right. */
+/** One run's guard outcome on a step: its p (the least its checks read, a step in a map checking once per item; null
+ *  when a signal was missing on one: it handed back), whether one of its checks handed back, and, when the run's answer
+ *  was the workflow's own and it was graded, whether that was right. */
 export type LoopPoint = { run_id: string; p: number | null; escalated: boolean; correct: boolean | null };
-/** One guarded step of one revision of a learned workflow, over the runs it served first on: its threshold as those runs
- *  read it (null when only replays ran it), how many it guarded and handed back, how many of those the workflow answered
+/** One guarded step of one revision of a learned workflow, over the runs it served first on (each run once, however many
+ *  checks a map made of it): its threshold as those runs read it (null when only replays ran it), how many it guarded and
+ *  handed back, how many of those the workflow answered
  *  alone were graded right and wrong, each over every such run, and the newest runs' p. A replay run reads its guards at
  *  RECORD_ONLY_THRESHOLD (learn/promote.ts: it hands back on nothing it reads), so its row says nothing of a hand-back
  *  at the serving threshold: it is counted apart (`replays`) and in none of the others. */
@@ -53,14 +55,34 @@ export type LoopGuard = {
 const texts = (list: unknown): string[] => (Array.isArray(list) ? list.filter((one): one is string => typeof one === "string") : []);
 const round4 = (value: number) => Math.round(value * 1e4) / 1e4;
 
-/** A run's guard rows as its record keeps them (metrics.guards), read as untrusted: a row out of shape is left out. */
-function guardRowsOf(metrics: unknown): GuardRow[] {
+/** A run's guard rows of `workflow`'s calls as its record keeps them (metrics.guards), read as untrusted: a row out of
+ *  shape is left out, and so is one another workflow's call made (the agent can call one after the first hands back: the
+ *  run's digest is the first's, so the other's revision is not known here). */
+function guardRowsOf(metrics: unknown, workflow: string): GuardRow[] {
   const rows = (metrics as { guards?: unknown } | null | undefined)?.guards;
   if (!Array.isArray(rows)) return [];
   return rows.filter((row): row is GuardRow => {
     const r = row as Partial<GuardRow> | null;
-    return !!r && typeof r.node === "string" && (r.signal === "self" || r.signal === "jev" || r.signal === "both") && typeof r.threshold === "number" && typeof r.escalated === "boolean" && (r.p === null || typeof r.p === "number");
+    return !!r && r.workflow === workflow && typeof r.node === "string" && (r.signal === "self" || r.signal === "jev" || r.signal === "both") && typeof r.threshold === "number" && typeof r.escalated === "boolean" && (r.p === null || typeof r.p === "number");
   });
+}
+
+/** A run's checks of each step, one outcome per step (a step in a map checks once per item): handed back when any check
+ *  did, its p the least one read (null when one read none), its threshold the last check's; in the order each step first
+ *  checked. */
+function perStep(rows: readonly GuardRow[]): { node: string; signal: GuardRow["signal"]; threshold: number; p: number | null; escalated: boolean }[] {
+  const steps = new Map<string, { node: string; signal: GuardRow["signal"]; threshold: number; p: number | null; escalated: boolean }>();
+  for (const row of rows) {
+    const was = steps.get(row.node);
+    if (!was) {
+      steps.set(row.node, { node: row.node, signal: row.signal, threshold: row.threshold, p: row.p, escalated: row.escalated });
+      continue;
+    }
+    was.threshold = row.threshold;
+    was.escalated ||= row.escalated;
+    was.p = was.p === null || row.p === null ? null : Math.min(was.p, row.p);
+  }
+  return [...steps.values()];
 }
 
 /** The agent's compile turns (every round of each run, roundsOf: newest first, LOOP_COMPILES_MAX) and its learned
@@ -79,7 +101,7 @@ export async function agentLoopOverStore(store: Store, agentId: string): Promise
     const digest = typeof metrics?.workflow_digest === "string" ? metrics.workflow_digest : null;
     if (workflow && digest) {
       const alone = metrics?.path === "workflow";
-      for (const row of guardRowsOf(run.metrics)) {
+      for (const row of perStep(guardRowsOf(run.metrics, workflow))) {
         const key = `${workflow}\u0000${digest}\u0000${row.node}`;
         const step = steps.get(key) ?? { workflow, digest, node: row.node, signal: row.signal, threshold: null, runs: 0, escalated: 0, right: 0, wrong: 0, replays: 0, points: [] };
         steps.set(key, step);
