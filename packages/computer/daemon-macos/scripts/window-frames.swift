@@ -44,7 +44,6 @@ func locate(_ id: Int) -> [String: Any] {
 	else { return ["bounds": NSNull()] }
 	let owner = number(windows[index], kCGWindowOwnerPID)
 	var above: [[Double]] = []
-	var who: [String] = []
 	for info in windows[..<index] {
 		// A window drawn with nothing (alpha 0) hides nothing.
 		if let alpha = info[kCGWindowAlpha as String] as? NSNumber, alpha.doubleValue == 0 { continue }
@@ -57,11 +56,9 @@ func locate(_ id: Int) -> [String: Any] {
 		let overlap = r.intersection(bounds)
 		if !overlap.isNull && overlap.width > 0 && overlap.height > 0 {
 			above.append(list(overlap))
-			let alpha = (info[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? -1
-			who.append("\(info[kCGWindowOwnerName as String] as? String ?? "?") layer \(number(info, kCGWindowLayer) ?? 0) alpha \(alpha) \(list(r))")
 		}
 	}
-	return ["bounds": list(bounds), "above": above, "who": who]
+	return ["bounds": list(bounds), "above": above]
 }
 
 func crop(_ request: [String: Any]) throws -> [String: Any] {
@@ -98,18 +95,7 @@ func crop(_ request: [String: Any]) throws -> [String: Any] {
 	let quality = Double(request["quality"] as? Int ?? 70) / 100
 	CGImageDestinationAddImage(destination, image, [kCGImageDestinationLossyCompressionQuality: quality] as CFDictionary)
 	guard CGImageDestinationFinalize(destination) else { throw Failure("cannot write \(out)") }
-	return ["width": w, "height": h, "frameMean": mean(frame), "cutMean": mean(image)]
-}
-
-/// The image's mean brightness, 0 to 255, on a 32 by 32 copy.
-func mean(_ image: CGImage) -> Double {
-	var pixels = [UInt8](repeating: 0, count: 32 * 32)
-	guard let context = CGContext(
-		data: &pixels, width: 32, height: 32, bitsPerComponent: 8, bytesPerRow: 32, space: CGColorSpaceCreateDeviceGray(),
-		bitmapInfo: CGImageAlphaInfo.none.rawValue
-	) else { return -1 }
-	context.draw(image, in: CGRect(x: 0, y: 0, width: 32, height: 32))
-	return Double(pixels.reduce(0) { $0 + Int($1) }) / Double(pixels.count)
+	return ["width": w, "height": h]
 }
 
 struct Failure: Error {

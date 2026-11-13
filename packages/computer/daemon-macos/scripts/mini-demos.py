@@ -19,7 +19,9 @@ pinned, else the one it last observed) before it is written anywhere, and every 
 painted black (window-frames.swift). A frame is kept only when the window list read before it and the one read after it
 agree (the window did not move, and nothing came in front or left), and the list, read every 10 ms in between, never
 changed for the window, so a frame never shows a window the cut did not know of (one that lived under 10 ms could
-still slip through). Until the task has a window, no frame is kept.
+still slip through). Until the task has a window, no frame is kept. The Dock's own window, which covers the display at
+the Dock's level and is clear but for the Dock, is not painted: anything the Dock draws in it (Mission Control's
+thumbnails, say) would show in a frame.
 
 The Mac is a person's own, so a task works only in a sandbox it makes, named "AgentRun demo <run id>": its own
 Calendar calendar, its own Notes folder, its own folder under /private/tmp/agentrun-demos. A note goes in the task's
@@ -206,11 +208,8 @@ class Recorder(threading.Thread):
                 if why is None:
                     path = os.path.join(self.folder, f"{len(self.frames):05d}.jpg")
                     try:
-                        cut = self.cropper.crop(data, before, path)
+                        self.cropper.crop(data, before, path)
                         self.frames.append((at, path))
-                        if CI and len(self.frames) <= 2:  # what the cut saw, while frames came out black on CI
-                            print(f"    frame {len(self.frames)}: window {before['bounds']}, in front {before.get('who')}, "
-                                  f"brightness whole {cut.get('frameMean')}, cut {cut.get('cutMean')}", flush=True)
                     except RuntimeError as e:  # a window off the main display, say: that frame is not kept
                         why = "cut failed"
                         self.errors.append(str(e))

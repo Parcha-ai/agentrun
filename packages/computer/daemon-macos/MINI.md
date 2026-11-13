@@ -153,7 +153,7 @@ python3 -I packages/computer/daemon-macos/scripts/mini-demos.py \
 
 It writes these files under `/tmp/demos`:
 
-- `<task>.mp4`, only with `--movie`: the task recorded from `screen.watch`, with the current step written along the bottom. `frames-to-movie.swift` makes it, with AVFoundation, so Xcode is all it needs. Each frame is cut to the task's window before it is written (`window-frames.swift`), and every window in front of it is painted black; a frame taken while the window moved, or while a window came in front or left, is not kept. The cut keeps the task's window whole, so in Notes, Calendar and Safari it shows the app's own lists (a person's folders, events and tabs). Without `--movie` nothing is recorded.
+- `<task>.mp4`, only with `--movie`: the task recorded from `screen.watch`, with the current step written along the bottom. `frames-to-movie.swift` makes it, with AVFoundation, so Xcode is all it needs. Each frame is cut to the task's window before it is written (`window-frames.swift`), and every window in front of it is painted black, but for the Dock's own window, which covers the display at the Dock's level and is clear but for the Dock (anything the Dock draws in it, Mission Control's thumbnails say, would show); a frame taken while the window moved, or while a window came in front or left, is not kept. The cut keeps the task's window whole, so in Notes, Calendar and Safari it shows the app's own lists (a person's folders, events and tabs). Without `--movie` nothing is recorded.
 - `demos.json`: every call with its latency in ms, the routes its steps took, its expect, and what each task left.
 - `demos.md`: the table of tasks, calls, steps, ms and what each left, then the run's line.
 
