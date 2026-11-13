@@ -617,7 +617,10 @@ final class EngineTests: XCTestCase {
 		let r = try await engine.observe(UiObserveParams())
 		os.react = { entry, os in
 			guard entry.hasSuffix("AXPress 3") || entry.contains(".click 160,85") else { return }
-			os.after(300) { $0.elements[5]?.value = ($0.elements[5]?.value ?? "") + "Saved." }
+			os.after(300) { os in
+				let before = os.elements[5]?.value ?? ""
+				os.elements[5]?.value = before + "Saved."
+			}
 		}
 		let result = try await engine.act(UiActParams(state: r.state, steps: [.press(ref(r, "Save"))], expect: Expect(text: "Saved.", timeoutMs: 10_000), foreground: true))
 		XCTAssertEqual(ran(result, 0)?.0, .semantic)
