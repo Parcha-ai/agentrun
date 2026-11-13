@@ -1647,7 +1647,13 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           const wrapped = new Map(tools.map((tool) => [tool.name, tool]));
           const follow = await parkedFollowUp(mcp!, {
             entries: await entriesOf(gate.journal, root.id, context),
-            answer: (call, price) => answerOf(call, price),
+            // As the gate before an intent does: a call still waiting on its person whose tool now reads allow is answered by
+            // the setting (allowedBySetting); any other waits for the person's answer.
+            answer: async (call, price) => {
+              const now = await spec.gate?.({ callId: call.callId, tool: call.tool as never, args: call.args });
+              const bySetting = now === "allow" && (await askStands(call.callId));
+              return bySetting ? allowedBySetting(call, price, call.tool) : answerOf(call, price);
+            },
             deniedNow: async (call) => {
               // The gate is Promise-capable on purpose (run-cap's and the approvals' gates may look things up), so await it.
               const now = await spec.gate?.({ callId: call.callId, tool: call.tool as never, args: call.args });
@@ -2020,6 +2026,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
    *  runs, and the person is never asked again. A person's answer already in the inbox for the call stands over it when it
    *  is a deny; an allow of theirs is taken with the setting's answer, so no row is left untaken. */
   async function allowedBySetting(call: PreIntentCall, price: ApprovalPrice | null, asked: string): Promise<AnswerData | "park"> {
+    // Decided only once the claim's stored commands are with the loop (deps.delivered): pi's recovery starts tool tasks while
+    // the session opens, before command() can put a person's stored deny into the inbox, and the setting must not win over it.
+    await (deps.delivered ?? Promise.resolve());
     const row = inbox.find((command) => (command.kind === "approve" || command.kind === "deny") && approvalOf(command) === call.callId);
     if (row?.kind === "deny") return answerOf(call, price, asked);
     const conversation = await harness!.root(context);

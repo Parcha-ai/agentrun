@@ -100,6 +100,13 @@ for (const harness of ["pi", "claude-agent", "codex"]) {
   }
 }
 
+// A person's deny already sent wins over the setting: web_fetch's setting goes back to allow while the second call waits,
+// then the owner declines it. On a resume pi starts the call's task while the session opens, before the stored deny can
+// reach the loop; the setting must not answer for it then. The call is never run, and its rows say it was declined.
+for (const harness of ["pi", "claude-agent", "codex"]) {
+  test(`${harness}: a call the person declined after web_fetch's setting went back to allow is never run`, { timeout: 150_000 }, (t) => bothAllowed(t, harness, "declined"));
+}
+
 async function bothAllowed(t, harness, putBack) {
   const server = await serve(t, { faux: FAUX, harnessTable: fauxTable(fixture("faux-harness.mjs")), fauxWeb: fixture("faux-gate-web.mjs"), accounts: true, openSetup: true });
   const { api } = server;
@@ -124,11 +131,17 @@ async function bothAllowed(t, harness, putBack) {
   const second = await pendingOther(first.id, "the second call never parked on its own");
   assert.equal(JSON.parse(second.args_preview).url, "http://b.example/", "then on the second");
   if (putBack) assert.equal((await api("PUT", "/settings/tools", { web_fetch: {} })).status, 200);
-  assert.equal(await answer(runId, second.id, { decision: "allow" }), 204);
+  assert.equal(await answer(runId, second.id, putBack === "declined" ? { decision: "deny", note: NOTE } : { decision: "allow" }), 204);
 
   await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
   const done = await rowsNow(api, runId);
   const shown = JSON.stringify(done.map((r) => `${r.kind}: ${r.summary}`));
+  if (putBack === "declined") {
+    assert.ok(!done.some((r) => r.kind === "tool_result" && r.tool_use_id === second.call_id && r.summary !== "Held for your approval"), `the declined call never ran: ${shown}`);
+    assert.ok(!done.some((r) => /ENOTFOUND b\.example|as its setting allows it/.test(`${r.summary ?? ""} ${r.tool_result_preview ?? ""}`)), `no row says it ran: ${shown}`);
+    assert.ok(done.some((r) => r.kind === "phase" && new RegExp(`^AgentRun: You declined web_fetch: ${NOTE}$`).test(r.summary ?? "")), `its rows say it was declined: ${shown}`);
+    return;
+  }
   for (const [call, host] of [[first.call_id, "a.example"], [second.call_id, "b.example"]]) {
     const asked = done.filter((r) => r.kind === "tool_approval_requested" && r.tool_use_id === call);
     // The second call waited when the setting went back to allow: the setting answered its ask.
