@@ -650,7 +650,13 @@ async function lostAround(t, { at, price, costUsd }) {
   await server.agents.create({ id: "agent-1", name: "Flow" }, { id: "rev-1", kind: "workflow", body: { workflow: askFlow() } });
   await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { doc: "Certificate of incorporation of Example Widgets, Inc." }, title: "t", place: { mode: "runner" }, max_cost_usd: 1 } });
   runners.push(startRunner({ store, createLoop: createWorkflowLoop(workflowSpecOf({ store, providerOf: idleModelProvider(), decisionProvidersOf: () => providers })), name: "runner-a", ...TIMING }));
-  await Promise.race([dead, sleep(20_000).then(() => assert.fail(`runner A never reached the commit it dies at (${at})`))]);
+  // The bound's timer is cleared once `dead` wins, so a passing case leaves nothing keeping Node alive.
+  let bound;
+  try {
+    await Promise.race([dead, new Promise((_, reject) => (bound = setTimeout(() => reject(new Error(`runner A never reached the commit it dies at (${at})`)), 20_000)))]);
+  } finally {
+    clearTimeout(bound);
+  }
   skew += TIMING.leaseMs + 60_000;
   runners.push(startRunner({ store: second, createLoop: createWorkflowLoop(workflowSpecOf({ store: second, providerOf: idleModelProvider(), decisionProvidersOf: () => providers })), name: "runner-b", ...TIMING }));
   const row = await waitRow(server, (r) => r.state !== "running" && r.state !== "queued" && r.runner === null, 30_000);
