@@ -1,13 +1,107 @@
 # Writing a computer provider
 
 A provider makes, finds and ends computers on one vendor. The daemon inside each computer (computerd) does the work;
-the provider gets it there, proves it is the one asked for, and carries its wire. This file has two halves: what a
-provider declares and how it is judged (the protocol half), and what a vendor writes to run its machines on the shared
-adapter (the MachineHost half).
+the provider gets it there, proves it is the one asked for, and carries its wire. This file starts with how to
+contribute one, then has two halves: what a provider declares and how it is judged (the protocol half), and what a
+vendor writes to run its machines on the shared adapter (the MachineHost half).
+
+## How to contribute a provider
+
+One pull request, with no generator script. For a vendor whose machines run Linux and can start a process as root:
+
+1. Copy E2B, the simplest vendor on the adapter (one key, one SDK): `src/e2b.ts` (its `MachineHost` and provider), `src/descriptors/e2b.ts` (its
+   descriptor) and `src/conformance/e2b.ts` (its conformance module), renamed for your vendor. Add your descriptor to
+   `DESCRIPTORS` in `src/descriptors/index.ts`: that line puts it in the registry.
+2. Write the eight members in [What the vendor writes](#what-the-vendor-writes), and only the optional hooks your vendor
+   needs. Unit-test what needs no vendor, as `test/e2b-provider.test.mjs` does.
+3. Name your settings `COMPUTER_<VENDOR>_*` in the conformance module's `ENV`, the key as `COMPUTER_<VENDOR>_API_KEY`,
+   behind the live switch `AGENTRUN_COMPUTER_LIVE_<VENDOR>=1`.
+4. Build, then run the suite with your own key between two sweeps, from the repository root:
+
+   ```sh
+   npm ci --ignore-scripts && npm run build
+   npm run build:daemon -w @parcha/agentrun-computer   # needs Go on PATH
+   export AGENTRUN_COMPUTER_LIVE_<VENDOR>=1 COMPUTER_<VENDOR>_API_KEY=<your key>
+   node packages/computer/dist/conformance/sweep.js --provider <vendor> --before /tmp/<vendor>-before.json
+   npm run conformance -w @parcha/agentrun-computer -- --provider <vendor>
+   node packages/computer/dist/conformance/sweep.js --provider <vendor> --after /tmp/<vendor>-before.json
+   ```
+
+   A desktop also needs the fixture the input cases read, built for the vendor's machines (`GOARCH=amd64` or `arm64`);
+   without it those cases skip and Core fails. Build it, then add `--fixture /tmp/computerd-fixture` to the run:
+
+   ```sh
+   (cd packages/computer/daemon && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /tmp/computerd-fixture ./cmd/fixture)
+   ```
+
+   `--kind sandbox` (or `desktop`) runs one kind's cases and ends on its verdict. `-- --help` lists every flag.
+5. Paste the report and the sweep's last line into the pull request and fill in its checklist. The run passes when it
+   ends `core PASS` and exits 0, and the sweep prints `"stillThere":[]`.
 
 ## The protocol half
 
-What a provider declares, the refusal rules, and the conformance report. (Written with the protocol's spec.)
+The contract is `ComputerProvider` (`src/provider.ts`). [spec/computer/provider.md](../../spec/computer/provider.md)
+says what each member promises; this is the short version. A vendor on the MachineHost adapter gets all of it from
+`hostedProvider` and writes none of it by hand.
+
+### What a provider declares
+
+- A descriptor (`src/descriptors/<id>.ts`, built with `defineProvider`): its id, label, the keys Settings takes, whether
+  it is metered, its mount kinds, one entry per configuration (a machine kind and its groups) and its default image.
+  See [The descriptor](../../spec/computer/provider.md#the-descriptor).
+- `capabilities()`: what its computers are, before any is made: kind, os, daemon (`pid1`, `child` or `none`), groups,
+  who ends a computer at its deadline, the lifetime cap, networks, isolation, release (`delete`, `stop`), users, mounts
+  and the vendor agent's ports. See [capabilities()](../../spec/computer/provider.md#capabilities). On the MachineHost
+  adapter these come from `facts`.
+- The rest of the surface: `id`, `version`, `check(spec)`, `create(spec, { requestId })` (once per request id, see
+  [Idempotent create](../../spec/computer/provider.md#idempotent-create)), `attach`, `list`, `network`, `connect` and
+  `release`; optionally `extend`, `stream`, `watch`, `sweepLeftovers` and `testConnection`. See
+  [Members](../../spec/computer/provider.md#members).
+
+The case `health.declared` holds `capabilities()` to the descriptor, and each computer's `hello` to `capabilities()`.
+
+### Refusals
+
+Every call answers `{ ok: true, value }` or `{ ok: false, error: { code, message, vendor? } }`, never a throw. The
+message is words a person can act on, and never holds a key, a token or a bearer URL: `health.no-key-in-errors` checks
+it with planted keys. The codes are a closed set (`ComputerErrorCode`, `src/result.ts`); a provider never adds one. See
+[Every call answers a result](../../spec/computer/provider.md#every-call-answers-a-result).
+
+| Code | When |
+| --- | --- |
+| `invalid` | The request is malformed whatever the provider: its shape, a value out of range, an unknown field. |
+| `unsupported` | The provider has no such call or feature: `release(stop)` where stop is not declared. |
+| `refused` | The call exists, but not for this value or state: a network, kind, image or GPU it does not declare, a network change after create. |
+| `exists` | The request id was used before, and its computer differs from the spec or has ended. |
+| `gone` | The computer, or the run's hold on it, has ended. |
+| `not_found` | No such thing: a computer `attach` names, a file, a process. |
+| `timeout`, `aborted` | The call ran past its bound; the caller cancelled it. |
+| `denied`, `limit` | Not allowed; over a bound (a size, a rate, an extend past the cap). |
+| `not_dir`, `is_dir`, `stale` | A file call's path is the wrong kind; a `ui` ref or point no longer holds. |
+| `unauthorized`, `unreachable` | From `testConnection` alone: the vendor refused the key; the vendor was not reached. |
+| `vendor` | The vendor failed (its API, CLI or device); the error's `vendor` names the descriptor's id. |
+
+### How the conformance report judges a provider
+
+`npm run conformance` makes real computers, runs each case, deletes what it made, and prints one line per level and
+group, then the verdict. The package README's [Conformance](README.md#conformance) section has a sample report and the
+JSON shape (`--json`).
+
+- **Core and Full.** A Core case is what every computer of its kind must do: on a Linux computer with a daemon, exec,
+  files, processes and network `none` (and the vendor agent's ports for a `child` daemon); a desktop adds screen,
+  pointer and keys. A Full case tests an optional capability and runs only where the provider declares it.
+- **pass, fail, skip.** Each case ends in one of the three, and a skip always says why, under its line. A Core case
+  skipped because it needs something optional the provider does not declare, or because it is written for another
+  OS, is listed as `optional` and does not count against Core. Any other skip of a Core case (no fixture given) fails
+  Core.
+- **Nothing left over.** At the end the runner lists the run's label: `cleanup.left` and `cleanup.errors` must be
+  empty. On the MachineHost adapter it also runs [the live sweep](#the-live-sweep) over the run's label, and
+  `cleanup.sweep.stillThere` must be empty. A leftover prints as `cleanup ✗ left <ids>` and fails Core.
+- **The verdict.** The last line reads `core PASS n/m · ... · full p/q`. Core is `pass` when every Core case passed
+  and nothing was left over, `partial` when `--only` left Core cases out (never a pass), and `fail` otherwise. Full
+  results are reported and do not change it. The exit code is 0 for pass, 1 for fail, 2 for a usage error and 3 for
+  partial. With `--kind`, the run ends on `kind <kind> PASS` or `kind <kind> FAIL: <reasons>` and exits 0 or 1 on that
+  alone.
 
 ## The MachineHost half
 
@@ -19,7 +113,7 @@ Agent37 the second (`src/agent37.ts`: REST over fetch, every command over SSH, n
 
 ### What the vendor writes
 
-Seven members, each a call about the vendor's own machines:
+Eight members, each a call about the vendor's own machines:
 
 | Member | What it does |
 | --- | --- |
@@ -106,6 +200,7 @@ whose `stillThere` must be empty for Core to pass.
 
 1. `src/<vendor>.ts`: the SDK slice it calls, a class implementing `MachineHost`, and a provider class (or
    `create(options)`) that builds `hostedProvider(host, { label, ...options })`.
-2. `src/descriptors/<vendor>.ts`: the descriptor, its `load()` importing that file.
+2. `src/descriptors/<vendor>.ts`: the descriptor, its `load()` importing that file, listed in `DESCRIPTORS`
+   (`src/descriptors/index.ts`).
 3. `src/conformance/<vendor>.ts`: the live switch, `settingsFromEnv` with its `COMPUTER_<VENDOR>_*` names,
    `createProvider`, `createDriftedProvider`, `createHost`, `conformanceImage` and `conformanceNotes`.
