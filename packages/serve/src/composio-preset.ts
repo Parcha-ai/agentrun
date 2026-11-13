@@ -111,7 +111,7 @@ export function composioAddress(generated: string): string {
 
 /** PUT /settings/mcp-servers/{name}/composio: Composio makes the managed MCP server, `save` keeps it as a saved MCP server
  *  (`{url, auth}`: the key a sealed header), and a toolkit that needs the person's account says where to connect it. */
-export async function composioSave<T extends { tools?: readonly { name: string }[] }>(body: unknown, control: ComposioControl, save: (mcp: { url: string; auth: { type: "headers"; headers: Record<string, string> } }) => Promise<T>, name: string, signal?: AbortSignal): Promise<{ server: T; connect_url?: string; not_served?: string[] }> {
+export async function composioSave<T extends { tools?: readonly { name: string }[] }>(body: unknown, control: ComposioControl, save: (mcp: { url: string; auth: { type: "headers"; headers: Record<string, string> } }) => Promise<T>, name: string, signal?: AbortSignal, savedUrl?: () => Promise<string | undefined>): Promise<{ server: T; connect_url?: string; not_served?: string[] }> {
   const { key, toolkit, rest } = head(body);
   const tools = Array.isArray(rest.tools) ? rest.tools : [];
   const user = rest.user_id === undefined ? USER : typeof rest.user_id === "string" ? rest.user_id : "";
@@ -139,7 +139,9 @@ export async function composioSave<T extends { tools?: readonly { name: string }
   const id = text(made.id);
   if (!id) throw new ApiError("upstream_failed", "Composio made no MCP server: nothing was saved.");
   // From here a failure deletes the server Composio just made, so a failed save leaves nothing in the person's account
-  // (best effort: the save's own error is the one answered).
+  // (best effort: the save's own error is the one answered). Not when the local entry was written before the save failed
+  // (its flush, say): `savedUrl` reads the name's saved address, and one that is this server's keeps it.
+  let url: string | undefined;
   try {
     const generated = await ask("making the MCP server's address", "POST", "/api/v3.1/mcp/servers/generate", { mcp_server_id: id, user_ids: [user], managed_auth_by_composio: true });
     const address = Array.isArray(generated.user_ids_url) ? text(generated.user_ids_url[0]) : "";
@@ -152,13 +154,15 @@ export async function composioSave<T extends { tools?: readonly { name: string }
         connect = text(link.redirect_url) || undefined;
       }
     }
-    const server = await save({ url: composioAddress(address), auth: { type: "headers", headers: { "x-api-key": key } } });
+    url = composioAddress(address);
+    const server = await save({ url, auth: { type: "headers", headers: { "x-api-key": key } } });
     // Composio's server can leave out an action it was allowed (HACKERNEWS_GET_FRONTPAGE, live 11-13): say which, so a grant
     // doesn't vanish without a word. A toolkit with no account yet still lists its actions, so this holds before the connect.
     const listed = new Set((server.tools ?? []).map((tool) => tool.name));
     const missing = (tools as string[]).filter((slug) => !listed.has(slug));
     return { server, ...(connect ? { connect_url: connect } : {}), ...(missing.length ? { not_served: missing } : {}) };
   } catch (error) {
+    if (url && savedUrl && (await savedUrl().catch(() => undefined)) === url) throw error;
     await ask("deleting the MCP server it made", "DELETE", `/api/v3.1/mcp/${encodeURIComponent(id)}`).catch(() => undefined);
     throw error;
   }

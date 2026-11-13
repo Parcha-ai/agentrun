@@ -3049,7 +3049,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // The name is checked before Composio is called: a refused name leaves nothing made there.
         mcpNameOf(id);
         const body = await bodyOf(req);
-        const answer = await composioSave(body, options.composioControl ?? {}, (mcp) => mcpServers.save(id, mcp, stopping.signal), id, stopping.signal);
+        const answer = await composioSave(body, options.composioControl ?? {}, (mcp) => mcpServers.save(id, mcp, stopping.signal), id, stopping.signal, async () => (await mcpServers.get(id)).url);
         await refreshMcpMeta();
         return send(res, 200, answer, { "cache-control": "no-store" });
       }

@@ -139,3 +139,20 @@ test("a body that is missing its key, toolkit or tools is 422 on the field", asy
   assert.equal(noTools.body.error.fields[0].field, "tools");
   assert.equal(s.composio.calls.length, 0);
 });
+
+test("a save that wrote its entry and then failed keeps the Composio server its entry points to; one that wrote nothing deletes it", async (t) => {
+  const { composioSave } = await import("../dist/composio-preset.js");
+  const composio = await startFakeComposio({ toolkits: TOOLKITS });
+  t.after(() => composio.close());
+  const control = { baseUrl: composio.baseUrl };
+  const body = { api_key: composio.apiKey, toolkit: "hackernews", tools: ["add"] };
+  let local;
+  // The local write commits, then its flush fails: the entry points to the new server, which stays.
+  const committed = composioSave(body, control, async (mcp) => { local = mcp.url; throw new Error("flush failed"); }, "hn", undefined, async () => local);
+  await assert.rejects(committed, /flush failed/);
+  assert.equal(composio.to(`/api/v3.1/mcp/${composio.mcpId}`, "DELETE").length, 0, "the server a saved entry points to is kept");
+  // The save fails before writing (an older entry of the name keeps its old address): the new server is deleted.
+  const refused = composioSave(body, control, async () => { throw new Error("refused"); }, "hn", undefined, async () => "https://old.example/mcp");
+  await assert.rejects(refused, /refused/);
+  assert.equal(composio.to(`/api/v3.1/mcp/${composio.mcpId}`, "DELETE").length, 1, "a server no entry points to is deleted");
+});
