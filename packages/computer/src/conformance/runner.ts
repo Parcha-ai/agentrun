@@ -2,6 +2,7 @@
 import { randomBytes } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
+import type { MachineHost } from "../host.js";
 import { sweep } from "../janitor.js";
 import { PROVIDERS } from "../kinds.js";
 import type { MountKind } from "../mount.js";
@@ -206,7 +207,7 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 			// The run's signal ends the wait at once (Ctrl-C during setup) and reaches the create; a computer that arrives
 			// after it is deleted as it lands (lateCreate).
 			const stop = new AbortController();
-			const creating = provider.create(spec(), { signal: signal ? AbortSignal.any([signal, stop.signal]) : stop.signal });
+			const creating = provider.create(spec(), { signal: signal ? AbortSignal.any([signal, stop.signal]) : stop.signal, requestId: `${run}/shared` });
 			let created: Result<CreatedComputer>;
 			try {
 				created = await within(creating, caseTimeoutMs, "create", signal);
@@ -338,9 +339,11 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 			sawHello(ref.name, once.hello, c.id);
 			return once;
 		};
+		/** Each create of the case is its own request: the run, the case and the create's count. */
+		let creates = 0;
 		/** create through by, kept: what it gives is deleted when the case ends, or as it comes after that. */
 		const attempt = (whole: ComputerSpec, by: ComputerProvider = provider) => {
-			const creating = by.create(whole, { signal: caseSignal }).then((created) => {
+			const creating = by.create(whole, { signal: caseSignal, requestId: `${run}/${c.id}/${++creates}` }).then((created) => {
 				noteCreated(created, c.id);
 				if (created.ok) track(created.value, by);
 				return created;
@@ -588,6 +591,20 @@ async function cleanup(
 		const listed = await within(provider.list(labels), ms, `list ${JSON.stringify(labels)}`);
 		if (listed.ok) report.cleanup.left = listed.value.map((info) => info.ref.name).sort();
 		else report.cleanup.errors.push(`list ${JSON.stringify(labels)}: ${listed.error.code}: ${listed.error.message}`);
+		// Nothing left behind, read from the vendor itself: a provider on the shared machine-host adapter is swept by the
+		// run's label through its host, as the live sweep (sweep.ts) does, and every machine it finds must be gone.
+		const host = (provider as { host?: MachineHost }).host;
+		if (host !== undefined && typeof host.list === "function") {
+			const { sweepMachines } = await import("./sweep.js");
+			const said: string[] = [];
+			const swept = await within(sweepMachines(host, { labels, waitMs: ms, onWords: (words) => said.push(words) }), ms * 2, "the sweep of the run's machines");
+			report.cleanup.errors.push(...said.map((words) => `sweep: ${words}`));
+			if (!swept.ok) report.cleanup.errors.push(`sweep: ${swept.error.code}: ${swept.error.message}`);
+			else {
+				report.cleanup.sweep = swept.value;
+				if (swept.value.stillThere.length > 0) report.cleanup.errors.push(`sweep: nothing left behind fails: still there ${swept.value.stillThere.join(", ")}`);
+			}
+		}
 	} catch (error) {
 		report.cleanup.errors.push(words(error));
 	}
