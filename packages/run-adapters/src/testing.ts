@@ -85,13 +85,17 @@ export type FauxAction =
   | ({ cut: true } & FauxRequest)
   /** A paid request leaves and holds unanswered until the turn is stopped: the stop cuts it, and its cost (what had
    *  streamed) is still booked, as a provider bills a response cut short. */
-  | { cutBooked: true; usd?: number | null };
+  | { cutBooked: true; usd?: number | null }
+  /** The model answers with this text through a route that never reaches the session's port (a CLI sending past its
+   *  model proxy): its text shows, and nothing is admitted or booked. */
+  | { unbooked: string };
 
 /** `note`: a note its host had for the request (ModelPort.note, the spend cap's wrap-up), as a real adapter's model proxy
  *  would add it to the body: filed with its text, for a test to see. */
 /** `answered`: a request whose reply asks for calls came back (its `until` let go), so its calls are the model's to run.
- *  `said`: a call's own text (its `say`) was streamed, so a recovered turn never says it again. */
-export const FAUX_RECORDS = { request: "faux.request", answered: "faux.answered", said: "faux.said", user: "faux.user", turn: "faux.turn", turnEnd: "faux.turn_end", call: "faux.call", result: "faux.result", note: "faux.note" } as const;
+ *  `said`: a call's own text (its `say`) was streamed, so a recovered turn never says it again. `unbooked`: an answer
+ *  that booked no request (FauxAction `unbooked`), its script place kept. */
+export const FAUX_RECORDS = { request: "faux.request", unbooked: "faux.unbooked", answered: "faux.answered", said: "faux.said", user: "faux.user", turn: "faux.turn", turnEnd: "faux.turn_end", call: "faux.call", result: "faux.result", note: "faux.note" } as const;
 
 export interface FauxOptions {
   /** The session's model replies, in order, by its spec: one action per paid request. `cwd`: the session's working
@@ -146,10 +150,11 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
       const proxy: ModelProxy | undefined = options.proxy ? await startModelProxy({ ...options.proxy.options, hooks: io.models as never }, randomBytes(32).toString("base64url")) : undefined;
       io.signal.addEventListener("abort", () => void proxy?.close(), { once: true });
       const append = (kind: string, data: JsonValue) => io.writer.append([{ kind, data }]);
-      // The script's place: one past its last request's (each faux.request keeps its action's index), never the count of
-      // them, since an action refused with `onRefused: "next"` is skipped with no record.
+      // The script's place: one past its last request's (each faux.request keeps its action's index, as each faux.unbooked
+      // does for an answer that booked none), never the count of them, since an action refused with `onRefused: "next"` is
+      // skipped with no record.
       let cursor = records.reduce((next, r) => {
-        const index = r.kind === FAUX_RECORDS.request ? (r.data as { index?: unknown } | null)?.index : undefined;
+        const index = r.kind === FAUX_RECORDS.request || r.kind === FAUX_RECORDS.unbooked ? (r.data as { index?: unknown } | null)?.index : undefined;
         return typeof index === "number" && index + 1 > next ? index + 1 : next;
       }, 0);
       const turnsStarted = records.filter((r) => r.kind === FAUX_RECORDS.turn).length;
@@ -236,6 +241,13 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
             if (!action) return await end("completed");
             if ("hang" in action) return await hang(signal);
             if ("halt" in action) { turnSignal!.abort(new Error(action.halt)); return await hang(signal); }
+            if ("unbooked" in action) {
+              // Its place kept in a record of its own (no faux.request: no model request was booked), so a session opened
+              // again goes on past it, never answers it twice.
+              await append(FAUX_RECORDS.unbooked, { index: cursor++ });
+              io.onEvent({ type: "text", delta: action.unbooked });
+              continue;
+            }
             // Measured as a real adapter's proxy measures its body: the prompt's UTF-8 bytes, with nothing a provider adds.
             const measured = "inputTokensMax" in action && typeof action.inputTokensMax === "number" ? action.inputTokensMax : Buffer.byteLength(JSON.stringify({ system: spec.system, user: prompt }), "utf8");
             // On the session's model: the proxy's, when it has one (the host's own requests go there on that model too).

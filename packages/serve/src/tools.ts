@@ -34,6 +34,7 @@ import { browserNeeds, explainsView, isUnavailable, NO_PARALLEL_KEY, type Pickab
 import type { DenyFrom, SettingFrom } from "./tool-gate.js";
 import { fauxFetch, PARALLEL_KEY_ENV } from "./decisions.js";
 import { keyNeeded } from "./key-words.js";
+import { unattachable } from "./attach-images.js";
 import { handedSignIn } from "./secrets.js";
 import { redactedAnswer } from "./key-refusal.js";
 import { SIGN_IN_KEY, vendorsOver } from "./sign-ins.js";
@@ -277,12 +278,26 @@ export const uploadsFrom = (work: Workspace, maxBytes: number, mime: (name: stri
   },
 });
 
-/** Every string in `value` (a tool's answer: its content, its details) passed through `cut`; anything else as it is. */
-function cutStrings<T>(value: T, cut: (text: string) => string): T {
+/** An image block's `data` kept whole by the cut: its base64 is an image a model can be sent (attach-images.ts
+ *  unattachable: a PNG, JPEG, GIF or WebP whose bytes are the type it names and whose header says its size), and its
+ *  decoded bytes, read as text, hold nothing the cut takes out (a held value written after a valid header). */
+const wholeImage = (block: { readonly data?: unknown; readonly mimeType?: unknown }, cut: (text: string) => string): boolean => {
+  if (unattachable(block) !== undefined) return false;
+  const bytes = Buffer.from(block.data as string, "base64").toString("latin1");
+  return cut(bytes) === bytes;
+};
+
+/** Every string in `value` (a tool's answer: its content, its details) passed through `cut`; anything else as it is. An
+ *  image block's `data` that is an image (wholeImage) is its pixels' base64, not text, and is kept whole: the cut reads a
+ *  run of more than 8,192 characters with no whitespace as "[redacted]" (key-refusal.ts redactedAnswer), which no model
+ *  takes as an image. Any other `data`, on a block of any type, is cut like every other string. */
+export function cutAnswer<T>(value: T, cut: (text: string) => string): T {
   if (typeof value === "string") return cut(value) as T;
-  if (Array.isArray(value)) return value.map((item) => cutStrings(item, cut)) as T;
+  if (Array.isArray(value)) return value.map((item) => cutAnswer(item, cut)) as T;
   if (value && typeof value === "object" && Object.getPrototypeOf(value) === Object.prototype) {
-    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => [key, cutStrings(item, cut)])) as T;
+    const block = value as { type?: unknown; data?: unknown; mimeType?: unknown };
+    const keep = block.type === "image" && wholeImage(block, cut);
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => [key, keep && key === "data" ? item : cutAnswer(item, cut)])) as T;
   }
   return value;
 }
@@ -294,7 +309,7 @@ function answersCutInside(tool: ToolRegistration, cut: (text: string) => string)
     ...tool,
     execute: (async (...args: Parameters<ToolRegistration["execute"]>) => {
       try {
-        return cutStrings(await (tool.execute as (...a: unknown[]) => Promise<unknown>)(...args), cut);
+        return cutAnswer(await (tool.execute as (...a: unknown[]) => Promise<unknown>)(...args), cut);
       } catch (error) {
         if (error instanceof Error) {
           error.message = cut(error.message);
@@ -756,22 +771,6 @@ export async function toolingOf(revision: Revision): Promise<Tooling> {
 
 /** The variables `entry` needs that `env` does not set, by name. */
 export const missingEnv = (entry: ToolEntry, env: NodeJS.ProcessEnv): string[] => entry.needs.filter((name) => !env[name]);
-
-/** What keeps `names` from being bound here: names outside the table (or, for a workflow's model nodes, that a node may
- *  not name), and the variables each tool in it needs that `env` does not set. Undefined when nothing does. */
-export function toolRefusal(names: readonly string[], env: NodeJS.ProcessEnv, where: "agent" | "nodes" | "calls" = "agent"): { message: string; unbound: string[]; missing: Record<string, string[]> } | undefined {
-  const allowed = where === "nodes" ? NODE_TOOLS : where === "calls" ? CALL_TOOLS : BOUND_TOOLS;
-  const unbound = names.filter((name) => !allows(allowed, name));
-  if (unbound.length) {
-    const said = { agent: "agentrun-serve binds the tools", nodes: "A workflow's model nodes get the tools", calls: "A workflow's call nodes run the tools" }[where];
-    return { message: `${said} ${allowed.join(", ")}; this ${where === "agent" ? "revision" : "workflow"} also ${where === "calls" ? "calls" : "names"} ${unbound.join(", ")}.`, unbound, missing: {} };
-  }
-  const missing = Object.fromEntries(names.map((name) => [name, missingEnv(toolOf(name)!, env)] as const).filter(([, vars]) => vars.length));
-  const lacking = Object.entries(missing);
-  if (!lacking.length) return undefined;
-  const said = lacking.map(([name, vars]) => `The tool ${name} needs ${keyNeeded(vars)}.`).join(" ");
-  return { message: `This server holds no key for what the revision's tools need. ${said}`, unbound: [], missing };
-}
 
 /** Every tool as capabilities show it, the server's one tool catalog: available here, or the variables it is missing
  *  (names only), and the harnesses that run it (another harness than pi runs only the host tools, host-tools.ts). A tool

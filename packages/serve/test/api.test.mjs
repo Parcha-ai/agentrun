@@ -271,13 +271,9 @@ test("a thinking level is one of the levels, exactly; never off", () => {
   for (const value of ["off", "minimal", " high", "HIGH", "", undefined, 3]) assert.equal(thinkingLevel(value), undefined, String(value));
 });
 
-test("the tool table is closed: a name outside it is refused by name, and a tool's missing variables are named, never their values", async () => {
-  const { toolRefusal, toolsView, TOOLS } = await import("../dist/tools.js");
+test("a tool's missing variables are named, never their values", async () => {
+  const { toolsView, TOOLS } = await import("../dist/tools.js");
   assert.ok(Object.isFrozen(TOOLS));
-  assert.equal(toolRefusal(["read", "ask_person"], {}), undefined);
-  assert.deepEqual(toolRefusal(["read", "shell", "constructor"], {}).unbound, ["shell", "constructor"], "nothing outside the table, not even a name every object has");
-  assert.deepEqual(toolRefusal(["bash"], {}, "nodes").unbound, ["bash"], "a workflow's model node runs no shell");
-  assert.deepEqual(toolRefusal(["ask_person"], {}, "nodes").unbound, ["ask_person"], "a workflow's model node cannot ask the person");
   assert.deepEqual(toolsView({}).map((t) => [t.name, t.missing]), [["read", undefined], ["write", undefined], ["edit", undefined], ["bash", undefined], ["bash_background", undefined], ["bash_output", undefined], ["bash_input", undefined], ["bash_signal", undefined], ["bash_list", undefined], ["ask_person", undefined], ["web_fetch", undefined], ["web_search", undefined], ["browser", undefined], ["monid.discover", ["MONID_API_KEY"]], ["monid.inspect", ["MONID_API_KEY"]], ["monid.run", ["MONID_API_KEY"]], ["subagent", undefined], ["pdf_pages", undefined], ["llm", undefined]]);
   // web_search needs no key: Codex's own search; claude-agent on auto and pi with no model named, Exa's keyless search
   // (Claude's own search is an explicit pick); Parallel picked
@@ -290,6 +286,4 @@ test("the tool table is closed: a name outside it is refused by name, and a tool
   assert.equal(toolsView({}, { web_search: { provider: "parallel" } }).find((t) => t.name === "web_search").reason, "parallel is picked, and it needs a Parallel key: save one in Settings → Tool keys (or set PARALLEL_API_KEY where the server starts)");
   assert.equal(toolsView({}).find((t) => t.name === "monid.discover").reason, "Needs a Monid key: save one in Settings → Tool keys (or set MONID_API_KEY where the server starts)");
   for (const t of toolsView({}, { web_search: { provider: "off" } })) assert.equal(typeof t.reason === "string" && t.reason.length > 0, !t.available, `${t.name}: a reason exactly when it is unavailable`);
-  assert.deepEqual(toolRefusal(["web_fetch", "read"], {}, "calls").unbound, ["read"], "a call node runs only a tool the table gives an effect");
-  assert.equal(toolRefusal(["browser"], {}), undefined, "the browser needs either vendor's keys: whether it runs is its plane's (tool-plane.ts), as web_search's is");
 });

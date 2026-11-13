@@ -14,6 +14,8 @@ public enum ErrorKind: String, Sendable, Codable, CaseIterable {
 	case isDir = "is_dir"
 	/// The element behind a ref is gone, or the window moved or redrew under a point.
 	case stale
+	/// A call the computer has, on a value or state it does not serve: a step on a disabled control.
+	case refused
 }
 
 /// JSON-RPC's codes, as protocol.json lists them.

@@ -398,26 +398,35 @@ test("after the agent's sign-in stops opening, a run that was never handed it (i
   assert.equal(JSON.parse(await readFile(join(runDir(data, runId), "serve.json"), "utf8")).unshown, undefined);
 });
 
-test("a launch that can't save that it was handed the sign-in hands none: the run browses signed out", { skip: "follow-up: #2067", timeout: 180_000 }, async (t) => {
+test("a launch that can't save that it was handed the sign-in hands none: the run browses signed out", { timeout: 180_000 }, async (t) => {
   const dir = await scratch(t);
   const log = join(dir, "browser.jsonl");
   withEnv(t, { BROWSERBASE_API_KEY: BB_KEY, BROWSERBASE_PROJECT_ID: "proj-1", AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), FAUX_BROWSER_LOG: log, AGENTRUN_TEST_FAUX_BROWSERBASE_CONTEXTS_DOWN: "1" }, KEYS);
-  const { api, data } = await serve(t, { fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE });
+  // The store-write fault (support.mjs failRunsUpdate): once armed, the runner's write that records a hand-off (a runs.update
+  // carrying signInHanded) throws; each hit is kept, so the test proves the write was reached and failed.
+  let armed = false;
+  const faults = [];
+  const failRunsUpdate = (_claim, patch) => {
+    if (!armed || !Array.isArray(patch?.signInHanded)) return false;
+    faults.push(patch.signInHanded.length);
+    return true;
+  };
+  const { api } = await serve(t, { fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE, fauxVendorApi: FAUX_BROWSERBASE, failRunsUpdate });
   assert.equal((await api("POST", "/agents", agent("alpha", { instructions: "Browse.", tools: ["browser"] }))).status, 201);
   const lines = async () => (await readFile(log, "utf8").catch(() => "")).trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
   // Its first launch gets no sign-in (Browserbase makes no context), so it was never handed one.
   const runId = (await api("POST", "/agents/alpha/runs", { input: { content: "Browse the example page." } })).body.run_id;
   const { after } = await follow(api, runId, ["completed"]);
-  // Its serve.json can't be written now (a folder where its temporary file goes); Browserbase is back.
-  const blocked = join(runDir(data, runId), "serve.json.tmp");
-  await mkdir(blocked);
-  t.after(() => rm(blocked, { recursive: true, force: true }));
+  assert.deepEqual(faults, [], "the first launch recorded no hand-off");
+  // The store can't record a hand-off now; Browserbase is back, so the launch makes the sign-in and reaches that write.
+  armed = true;
   delete process.env.AGENTRUN_TEST_FAUX_BROWSERBASE_CONTEXTS_DOWN;
   const mark = (await lines()).length;
   assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "Browse the example page again." })).status, 202);
   const followUp = await until(async () => (await lines()).slice(mark), (ops) => ops.some((op) => op.op === "create"));
+  assert.ok(faults.length >= 1, "the launch reached the hand-off's write, and it failed");
   assert.deepEqual(followUp.filter((op) => op.op === "sign-in" || op.op === "profile"), [], "handed nothing, so it browses signed out");
-  await rm(blocked, { recursive: true, force: true });
+  armed = false;
   await follow(api, runId, ["completed"], { after, deadlineMs: 60_000 });
 });
 

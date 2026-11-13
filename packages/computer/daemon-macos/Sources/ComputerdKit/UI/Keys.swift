@@ -11,7 +11,15 @@ extension KeyChord {
 	/// Reads "super+s", "shift+tab", "enter" or "a", as the protocol writes them. Every name but the last is a modifier
 	/// (shift, ctrl, alt, super); a modifier alone is a press of that key.
 	public static func parse(_ text: String) throws -> KeyChord {
-		let names = text.split(separator: "+", omittingEmptySubsequences: false).map(String.init)
+		// The last key may be "+" itself: "shift++" is shift and "+", and "+" alone is the key.
+		let names: [String]
+		if text == "+" {
+			names = ["+"]
+		} else if text.hasSuffix("++") {
+			names = String(text.dropLast(2)).split(separator: "+", omittingEmptySubsequences: false).map(String.init) + ["+"]
+		} else {
+			names = text.split(separator: "+", omittingEmptySubsequences: false).map(String.init)
+		}
 		guard !text.isEmpty, let last = names.last else { throw wrong(text) }
 		for name in names where !keyNames.contains(name) && !printable(name) { throw wrong(text) }
 		var modifiers = Set<Modifier>()

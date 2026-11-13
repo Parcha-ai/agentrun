@@ -355,7 +355,7 @@ public actor UIEngine {
 	}
 
 	/// The kinds a step's refusal carries; any other failure fails the whole call.
-	static let stepKinds: Set<ErrorKind> = [.notFound, .invalid, .timeout, .denied, .limit, .unsupported, .stale]
+	static let stepKinds: Set<ErrorKind> = [.notFound, .invalid, .timeout, .denied, .limit, .unsupported, .stale, .refused]
 
 	/// How a step's effect is checked once it settled: a readback, or a change in the window.
 	enum Check {
@@ -385,6 +385,13 @@ public actor UIEngine {
 			throw RPCError.unsupported("nav \(nav.rawValue): no route takes it here")
 		}
 		let (node, element) = try self.element(step.ref, in: view)
+		// A step on a disabled control is refused, so its text never goes to whatever has the focus.
+		if let ref = step.ref, let node, node.flags.contains(.disabled) {
+			throw RPCError(.refused, "\(node.name ?? ref) is disabled: a step on it does nothing")
+		}
+		if case .type(_, let into?) = step, let node, !node.textInput {
+			throw RPCError(.refused, "\(into) is not a text field: nothing was typed")
+		}
 		if let point = step.point { try await bind(point, view: view, state: state, held: held) }
 
 		let attempts: [Attempt]
@@ -476,8 +483,6 @@ public actor UIEngine {
 				reason = "no element has keyboard focus"
 			} else if secure {
 				reason = "a secure field takes typed keys only"
-			} else if let node, !node.textInput {
-				reason = "\(into!) does not take text"
 			}
 			let insert = semantic(reason) {
 				try ax.insertText(text, on: typed!)
@@ -522,6 +527,8 @@ public actor UIEngine {
 			if let outside = path.first(where: { !window.contains($0) }) {
 				throw RPCError.invalid("(\(Int(outside.x)), \(Int(outside.y))) is outside the window, which is \(Int(window.w)) by \(Int(window.h)) points")
 			}
+			// Every point of the path is held to the state, as much as the first.
+			for point in path.dropFirst() { try await bind(point, view: view, state: state, held: held) }
 			attempts = pointer(foreground, target) { route in
 				try await route.drag(path.map(target.toScreen), ms: ms ?? 300, in: target)
 				return .change

@@ -30,8 +30,7 @@ export const withoutFaux = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => Object
 export const FAUX_UPSTREAM_ENV = "AGENTRUN_SERVE_FAUX_UPSTREAM";
 /** The model the server's keys give a run that names none (hostModel at the run's launch, from every key the server
  *  holds), passed to its child as its effort is: behind a gateway the run holds the gateway's key alone, never the key
- *  that names its default (runs.ts). A model id, never a secret, so its name has no secret's segment (pi-durable-disk's
- *  secret-name rule): a harness's log keeps it (adapters.ts harnessLog). */
+ *  that names its default (runs.ts). A model id, never a secret, so its name has no secret's segment: a harness's log keeps it (adapters.ts harnessLog). */
 export const DEFAULT_MODEL_ENV = "AGENTRUN_SERVE_DEFAULT_MODEL";
 export const MODEL_PROVIDER = "agent-model";
 export const EFFORTS = ["low", "medium", "high"] as const;
@@ -63,7 +62,7 @@ export const MODEL_KEYS: readonly { id: string; label: string; field: string; mo
   { id: "anthropic", label: "Anthropic", field: "ANTHROPIC_API_KEY", model: "anthropic/claude-sonnet-5-5", harnesses: onVendor("anthropic") },
   { id: "openai", label: "OpenAI", field: "OPENAI_API_KEY", model: "openai/gpt-6.1-sol", harnesses: onVendor("openai") },
   // OpenRouter serves both wires: every harness runs on its key, an adapter harness on its wire's vendor's model there.
-  { id: "openrouter", label: "OpenRouter", field: "OPENROUTER_API_KEY", model: "openrouter/openai/gpt-6-sol", harnesses: [DEFAULT_HARNESS, ...ADAPTER_FACTS.map((facts) => facts.id)], byVendor: { anthropic: "anthropic/claude-sonnet-5.5", openai: "openai/gpt-6-sol" } },
+  { id: "openrouter", label: "OpenRouter", field: "OPENROUTER_API_KEY", model: "openrouter/openai/gpt-6.1-sol", harnesses: [DEFAULT_HARNESS, ...ADAPTER_FACTS.map((facts) => facts.id)], byVendor: { anthropic: "anthropic/claude-sonnet-5.5", openai: "openai/gpt-6.1-sol" } },
 ]);
 
 /** pi, and the adapter harnesses whose wire (their facts') runs `vendor`'s models: those that talk to its own API. */
@@ -624,7 +623,9 @@ export function catalogPrice(catalog: ReadonlyMap<string, readonly Listed[]>, id
 const flippedForms = (id: string): string[] => [...new Set([id.replace(/(\d)-(\d)/g, "$1.$2"), id.replace(/(\d)\.(\d)/g, "$1-$2")])].filter((form) => form !== id);
 
 /** `id`'s price in `catalog` (listedPrice): its own entries' metered price when the catalog lists one; else its flipped
- *  forms' (flippedForms), only when every metered entry they hold has one price; else the metered price a gateway lists
+ *  forms' (flippedForms), only when every metered entry they hold has one base price (input, output, cacheRead,
+ *  cacheWrite; a long-context `tiers` table is not part of the comparison), the entry that carries `tiers` when one does
+ *  (a long prompt is priced at the higher tier, erring high; entries with different `tiers` tables stay unpriced), else the first; else the metered price a gateway lists
  *  under a vendor's id for it (`<vendor>/<id>`, the named vendor's first: pi-ai lists the bare id of some models only
  *  under subscription plans, at $0, and the gateways that meter them under the vendor's). A flip that finds different
  *  prices leaves the model unpriced, and so does an id with no metered entry anywhere (#2339: a plan's $0 never prices a
@@ -635,8 +636,12 @@ function catalogEntries(catalog: ReadonlyMap<string, readonly Listed[]>, id: str
   if (listed) return listed;
   const flipped = flippedForms(id).flatMap((form) => (catalog.get(form) ?? []).filter(({ cost }) => cost.input + cost.output > 0));
   if (flipped.length) {
-    const one = JSON.stringify(flipped[0]!.cost);
-    return flipped.every((entry) => JSON.stringify(entry.cost) === one) ? flipped[0]!.cost : undefined;
+    const base = ({ input, output, cacheRead, cacheWrite }: ModelCost) => JSON.stringify([input, output, cacheRead, cacheWrite]);
+    const one = base(flipped[0]!.cost);
+    if (!flipped.every((entry) => base(entry.cost) === one)) return undefined;
+    const tiered = flipped.filter((entry) => entry.cost.tiers?.length);
+    if (tiered.some((entry) => JSON.stringify(entry.cost.tiers) !== JSON.stringify(tiered[0]!.cost.tiers))) return undefined;
+    return (tiered[0] ?? flipped[0]!).cost;
   }
   return vendorPrice(catalog, id, named);
 }

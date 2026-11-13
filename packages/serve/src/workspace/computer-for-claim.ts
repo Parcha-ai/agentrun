@@ -22,7 +22,7 @@ import { getSealedKey } from "../server-keys.js";
 import type { Store } from "../store/index.js";
 import { type AgentComputerHold, agentComputerOf, forgetAgentComputer, holdAgentComputer, keepAgentComputer, liveHolderOf, reconcileAgentComputer, serverIdOf } from "./agent-computer.js";
 import type { MountCheck } from "./attach.js";
-import { computerHold, heldHands } from "./computer-hold.js";
+import { computerHold, type HeldComputer, heldHands } from "./computer-hold.js";
 import { type ProviderLedger, storeLedger } from "./computer-ledger.js";
 import { type ClaimBrowser, type ClaimSide, type ComputerSetting, type ComputerSettingKind, type KindRegistry, type LaunchedComputer, type ProviderEntry, providerKeys, resolveComputer } from "./resolve-computer.js";
 import type { RunComputer, RunHold } from "./run-tools.js";
@@ -134,12 +134,15 @@ export interface ComputerForClaimDeps {
   readonly signal?: AbortSignal;
 }
 
-/** The run's computer at its claim: what runTools takes, the person's hold on a desktop's or phone's ports, and its
- *  release (idempotent): the live view closed ("released" when the computer goes before the run's end, "ended" at the
- *  run's end), the owner's view let go, then the computer. */
+/** The run's computer at its claim: what runTools takes, the person's hold on a desktop's or phone's ports, the hold
+ *  itself with the computer's kind (`held`, what the adapter loop takes as AdapterRunSpec.computer: it commits the hold's
+ *  changes to the run's journal and applies the person's take-over and hand-back to it), and its release (idempotent):
+ *  the live view closed ("released" when the computer goes before the run's end, "ended" at the run's end), the
+ *  owner's view let go, then the computer. */
 export interface ClaimComputer {
   readonly computer?: RunComputer;
   readonly hold?: RunHold;
+  readonly held?: HeldComputer;
   release(why?: ViewEnd): Promise<void>;
 }
 
@@ -282,7 +285,7 @@ async function providerLaunch(
   claim: { readonly runId: string; readonly epoch: number },
   spec: ComputerSpec,
   signal: AbortSignal | undefined,
-): Promise<LaunchedComputer & { machine: string; hello: ComputerSaid["hello"]; watch?: (signal: AbortSignal) => unknown }> {
+): Promise<LaunchedComputer & { machine: string; hello: HelloResult; watch?: (signal: AbortSignal) => unknown }> {
   const older = await releaseOlder(provider, claim.runId, claim.epoch, signal ? { signal } : {});
   if (!older.ok) throw new Error(older.error.message);
   const created = await provider.create(spec, signal ? { signal } : {});
@@ -303,7 +306,7 @@ async function providerLaunch(
     groups: hello.groups,
     // What the machine says it is (a phone's android or ios): its live view's input platform.
     machine: hello.kind,
-    hello: { os: hello.os, ...(hello.osVersion ? { osVersion: hello.osVersion } : {}), arch: hello.arch },
+    hello,
     client,
     async readBack(): Promise<Result<MountReadBack>> {
       const attached = await provider.attach({ id: ref.id });
@@ -347,7 +350,7 @@ async function ownedLaunch(
   spec: ComputerSpec,
   context: OwnedContext,
   signal: AbortSignal | undefined,
-): Promise<LaunchedComputer & { machine: string; hello: ComputerSaid["hello"]; watch?: (signal: AbortSignal) => unknown }> {
+): Promise<LaunchedComputer & { machine: string; hello: HelloResult; watch?: (signal: AbortSignal) => unknown }> {
   const { store, agentId } = context;
   // One run at a time, taken in the store before anything is listed or made (agent-computer.ts holdAgentComputer): two
   // runs of the agent that claim at once never both make a computer. With no run rows to read, a holder is still going.
@@ -380,7 +383,7 @@ async function ownedStart(
   context: OwnedContext,
   hold: AgentComputerHold,
   signal: AbortSignal | undefined,
-): Promise<LaunchedComputer & { machine: string; hello: ComputerSaid["hello"]; watch?: (signal: AbortSignal) => unknown }> {
+): Promise<LaunchedComputer & { machine: string; hello: HelloResult; watch?: (signal: AbortSignal) => unknown }> {
   const call = signal ? { signal } : {};
   const { store, agentId, note } = context;
   const older = await releaseOlder(provider, claim.runId, claim.epoch, call);
@@ -461,7 +464,7 @@ async function ownedStart(
     id: ref.id,
     groups: hello.groups,
     machine: hello.kind,
-    hello: { os: hello.os, ...(hello.osVersion ? { osVersion: hello.osVersion } : {}), arch: hello.arch },
+    hello,
     client,
     // An agent's own computer mounts no run's folder (resolve-computer.ts refuses one that would).
     async readBack(): Promise<Result<MountReadBack>> {
@@ -553,7 +556,8 @@ export async function computerForClaim(
       }
       made = { id: launched.id, machine: launched.machine, ...(launched.watch ? { watch: launched.watch } : {}) };
       madeBy = entry;
-      deps.onConnected?.({ provider: entry.label, kind: kind as Exclude<ComputerSettingKind, "none">, hello: launched.hello });
+      const { os, osVersion, arch } = launched.hello;
+      deps.onConnected?.({ provider: entry.label, kind: kind as Exclude<ComputerSettingKind, "none">, hello: { os, ...(osVersion ? { osVersion } : {}), arch } });
       return launched;
     },
   };
@@ -583,6 +587,7 @@ export async function computerForClaim(
   // vendor's URL reaches a person), opened under this claim. A fenced open is a lost claim. The release ends the hold.
   let endHold: () => void = () => {};
   let hold: RunHold | undefined;
+  let held: HeldComputer | undefined;
   let view: { close(why: ViewEnd): unknown } | undefined;
   if (computer && (computer.kind === "desktop" || computer.kind === "phone")) {
     const theHold = computerHold();
@@ -602,11 +607,13 @@ export async function computerForClaim(
     // goes; the composer's `ended` ViewEnd maps onto it), the agent's open ask is let go at once, and nothing is taken after.
     endHold = () => theHold.close();
     hold = (ports) => heldHands(ports as never, theHold);
+    held = { kind: computer.kind, hold: theHold };
   }
   let released: Promise<void> | undefined;
   return {
     ...(computer ? { computer } : {}),
     ...(hold ? { hold } : {}),
+    ...(held ? { held } : {}),
     release: (why: ViewEnd = "released") =>
       (released ??= (async () => {
         await Promise.resolve(view?.close(why)).catch(() => undefined);

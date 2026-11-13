@@ -126,8 +126,8 @@ export function durableEnv(options: DurableEnvOptions): Record<string, string> {
 }
 
 /**
- * A Gateway model id (`anthropic/claude-sonnet-4.5`) as the native id the
- * CLI knows (`claude-sonnet-4-5`). The Gateway accepts both; with a Gateway
+ * A Gateway model id (`anthropic/claude-sonnet-5.5`) as the native id the
+ * CLI knows (`claude-sonnet-5-5`). The Gateway accepts both; with a Gateway
  * id the CLI logs `unrecognized_model` and does not know the model's limits.
  * Ids that are not Anthropic Gateway ids come back unchanged.
  */
