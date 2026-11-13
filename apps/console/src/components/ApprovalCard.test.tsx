@@ -13,11 +13,11 @@ afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 const PENDING: PendingApproval = { kind: "approval", id: "ap_0123456789abcdef", tool: "monid.run", call_id: "call_1", args_preview: "{\"actor\":\"web-search\",\"input\":{\"query\":\"Contoso Freight\"}}", requested_at: "2026-11-04T10:00:00.000Z", price: 0.02 };
 
 function mount(p: Partial<ApprovalCardProps> = {}) {
-  const answers: { decision: string; note?: string }[] = [];
+  const answers: { decision: string; note?: string; confirmed?: true }[] = [];
   let release: (v: string | null) => void = () => {};
   const held = { on: false };
-  const onAnswer: ApprovalCardProps["onAnswer"] = (decision, note) => {
-    answers.push({ decision, ...(note !== undefined ? { note } : {}) });
+  const onAnswer: ApprovalCardProps["onAnswer"] = (decision, note, confirmed) => {
+    answers.push({ decision, ...(note !== undefined ? { note } : {}), ...(confirmed ? { confirmed } : {}) });
     return held.on ? new Promise((r) => { release = r; }) : Promise.resolve(null);
   };
   const host = document.body.appendChild(document.createElement("div"));
@@ -101,5 +101,35 @@ describe("ApprovalCard", () => {
     expect(host.querySelector("pre")!.className).toMatch(/max-h-28/);
     expect(button("Allow once")).toBeTruthy();
     expect(button("Deny")).toBeTruthy();
+  });
+
+  it("a call its server marks destructive takes two clicks to allow: Allow once asks again, naming it, and only the second click sends the allow, confirmed; Back sends nothing", async () => {
+    const page = mount({ pending: { ...PENDING, tool: "mcp:fake/delete_thing", destructive: true } as PendingApproval });
+    expect(page.host.textContent).toContain("Destructive");
+    await act(async () => { page.button("Allow once").click(); });
+    await page.settle();
+    expect(page.answers).toEqual([]);
+    const confirm = page.host.querySelector("[role='alertdialog']")!;
+    expect(confirm.textContent).toContain("mcp:fake/delete_thing");
+    await act(async () => { page.button("Back").click(); });
+    expect(page.host.querySelector("[role='alertdialog']")).toBeNull();
+    expect(page.answers).toEqual([]);
+    await act(async () => { page.button("Allow once").click(); });
+    await act(async () => { page.button("Allow this destructive call").click(); });
+    await page.settle();
+    expect(page.answers).toEqual([{ decision: "allow", confirmed: true }]);
+    expect(page.host.textContent).toContain("Allowed. The run goes on.");
+  });
+
+  it("a destructive call's Deny is one click, and a call not marked destructive is allowed in one, unconfirmed", async () => {
+    const page = mount({ pending: { ...PENDING, destructive: true } as PendingApproval });
+    await act(async () => { page.button("Deny").click(); });
+    await page.settle();
+    expect(page.answers).toEqual([{ decision: "deny" }]);
+    const plain = mount();
+    expect(plain.host.textContent).not.toContain("Destructive");
+    await act(async () => { plain.button("Allow once").click(); });
+    await plain.settle();
+    expect(plain.answers).toEqual([{ decision: "allow" }]);
   });
 });

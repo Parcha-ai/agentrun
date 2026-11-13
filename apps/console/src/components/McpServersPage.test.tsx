@@ -6,6 +6,7 @@ import { route } from "@/App";
 import { createClient } from "@/lib/client";
 import { type McpServer, PREVIEW_SCOPE_NOTE } from "@/lib/mcp";
 import recorded from "@/fixtures/mcp.requests.json";
+import { pick, valueOf } from "@/test/picker";
 
 // Settings → MCP servers over /v2/settings/mcp-servers: add a server, preview its tools, save it; each refusal in plain
 // words; OAuth's sign-in and its way back; the saved list with each credential's state, refresh and delete. A credential
@@ -373,7 +374,7 @@ describe("Settings → MCP servers, the saved ones", () => {
     const s = server([[saved({ prices: { add: 0.05 }, not_metered: ["slow_write"] }), saved({ name: "paid", prices: { add: 0.05, slow_write: 0 } })]]);
     const p = await open(s.v2);
     expect(p.row("fake").textContent).toContain("not metered");
-    expect([...p.row("fake").querySelectorAll("details li")].map((li) => li.textContent)).toEqual(["add · $0.05 a call", "slow_write · not metered"]);
+    expect([...p.row("fake").querySelectorAll("details [data-tool-detail]")].map((x) => x.textContent)).toEqual(["$0.05 a call", "not metered"]);
     expect(p.row("paid").textContent).not.toContain("not metered");
   });
 
@@ -670,5 +671,73 @@ describe("Settings → MCP servers, the Composio preset", () => {
     const cancel = [...p.host.querySelectorAll("button")].find((b) => b.textContent === "Cancel");
     expect(cancel?.disabled).toBe(true);
     await act(async () => { finish(await json(200, { server: saved({ name: "gh" }) })); });
+  });
+});
+
+describe("Settings → MCP servers, a server's tool settings", () => {
+  const ALL = ["allow", "ask", "deny"] as const;
+  const gate = (permission: "allow" | "ask" | "deny" = "ask") => ({ permission, default_permission: "ask" as const, permissions: [...ALL] });
+  const MARKED = [
+    { name: "get_repo", input_schema: { type: "object" }, effect: "read", ...gate() },
+    { name: "open_issue", input_schema: { type: "object" }, effect: "write", ...gate() },
+    { name: "delete_repo", input_schema: { type: "object" }, effect: "destructive", ...gate() },
+  ] as unknown as McpServer["tools"];
+  /** A server whose tool settings are `settings`, kept as each PUT replaces them. */
+  function withSettings(settings: Record<string, unknown>) {
+    let now = settings;
+    const s = server([[saved({ name: "gh", tools: MARKED })]], (c) => {
+      if (c.path !== "/v2/settings/tools") return undefined;
+      if (c.method === "PUT") now = c.body as Record<string, unknown>;
+      return json(200, { web_search: { provider: "auto" }, web_fetch: { provider: "kernel" }, browser: { provider: "kernel" }, ...now });
+    });
+    return { ...s, settings: () => now };
+  }
+  // Capabilities' providers, each its default: a save sends none of them back as if picked.
+  const CHOICES = [{ name: "web_search", default_provider: "auto" }, { name: "web_fetch", default_provider: "kernel" }, { name: "browser", default_provider: "kernel" }];
+  const table = (p: Awaited<ReturnType<typeof open>>) => p.row("gh").querySelector("table")!;
+  const permission = (p: Awaited<ReturnType<typeof open>>, tool: string) => table(p).querySelector<HTMLButtonElement>(`button[aria-haspopup=listbox][aria-label="mcp:gh/${tool} permission"]`)!;
+
+  it("marks each tool read, write or destructive, as the server's read says", async () => {
+    const p = await open(withSettings({}).v2, { choices: CHOICES });
+    const marks = [...table(p).querySelectorAll("tr[data-tool]")].map((row) => [row.getAttribute("data-tool"), row.querySelector("[data-effect]")?.getAttribute("data-effect")]);
+    expect(marks).toEqual([["mcp:gh/get_repo", "read"], ["mcp:gh/open_issue", "write"], ["mcp:gh/delete_repo", "destructive"]]);
+  });
+
+  it("Allow reads is one click: it saves allow_reads on the server's wildcard, every other setting kept, and the read-only tools then read allow by default", async () => {
+    const s = withSettings({ "mcp:other/*": { permission: "deny" }, "mcp:gh/*": { permission: "ask" } });
+    const p = await open(s.v2, { choices: CHOICES });
+    const toggle = p.row("gh").querySelector<HTMLButtonElement>('button[role="switch"]')!;
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    await act(async () => { toggle.click(); });
+    await p.settle();
+    expect(s.writes()).toEqual([{ method: "PUT", path: "/v2/settings/tools", body: { "mcp:other/*": { permission: "deny" }, "mcp:gh/*": { permission: "ask", allow_reads: true } } }]);
+    expect(p.row("gh").querySelector('button[role="switch"]')!.getAttribute("aria-checked")).toBe("true");
+    expect(valueOf(permission(p, "get_repo"))).toBe("allow");
+    expect(valueOf(permission(p, "open_issue"))).toBe("ask");
+    // Off again: the field goes, the rest stays.
+    await act(async () => { p.row("gh").querySelector<HTMLButtonElement>('button[role="switch"]')!.click(); });
+    await p.settle();
+    expect(s.settings()).toEqual({ "mcp:other/*": { permission: "deny" }, "mcp:gh/*": { permission: "ask" } });
+  });
+
+  it("setting a destructive tool to allow takes a second click: nothing is saved until it is confirmed, and Keep asking saves nothing", async () => {
+    const s = withSettings({});
+    const p = await open(s.v2, { choices: CHOICES });
+    await pick(permission(p, "delete_repo"), "allow");
+    await p.settle();
+    expect(s.writes()).toEqual([]);
+    const confirm = p.row("gh").querySelector("[role='alertdialog']")!;
+    expect(confirm.textContent).toContain("mcp:gh/delete_repo");
+    await p.click(/^Keep asking$/, confirm);
+    expect(s.writes()).toEqual([]);
+    expect(p.row("gh").querySelector("[role='alertdialog']")).toBeNull();
+    await pick(permission(p, "delete_repo"), "allow");
+    await p.settle();
+    await p.click(/^Allow without asking$/, p.row("gh").querySelector("[role='alertdialog']")!);
+    expect(s.writes()).toEqual([{ method: "PUT", path: "/v2/settings/tools", body: { "mcp:gh/delete_repo": { permission: "allow" } } }]);
+    // A write is set in one click.
+    await pick(permission(p, "open_issue"), "allow");
+    await p.settle();
+    expect(s.writes()).toHaveLength(2);
   });
 });

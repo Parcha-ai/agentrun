@@ -1,7 +1,8 @@
 // Every MCP tool call passes the run's one tool gate on a harness with its own MCP client, claude-agent and codex,
 // through the API: with the server's mcp:fake/* set to deny the call is refused and the fake MCP server sees nothing;
 // with no setting it asks, parks, and the owner's allow runs it exactly once (or, set to allow while it waits, the
-// setting's allow, the flip waking the run); set to allow it runs once with no one asked. pi's rows are mcp-gate.test.mjs's (deny by key and by mcp:fake/*, the ask, allow by key and by mcp:fake/*).
+// setting's allow, the flip waking the run); set to allow it runs once with no one asked; with the server's allow_reads
+// its read-only add runs once with no one asked. pi's rows are mcp-gate.test.mjs's (deny by key and by mcp:fake/*, the ask, allow by key and by mcp:fake/*).
 // claude-agent runs the pinned Agent SDK and Claude CLI against a scripted Messages endpoint; codex the stand-in for
 // Codex's app-server, whose MCP client calls the session proxy as Codex does, its "model" the turn's text said through
 // serve's gateway. No key, no network.
@@ -145,6 +146,16 @@ for (const harness of HARNESSES) {
     assert.equal(calls(fake).length, 1, "run exactly once");
     const shown = JSON.stringify(rows.map((r) => `${r.kind}: ${r.summary}`));
     assert.deepEqual(rows.filter((r) => r.kind === "tool_approval_requested").map((r) => r.summary.split(":")[0]), ["Allowed by the tool's setting"], shown);
+  });
+
+  test(`${harness}: mcp:fake/* with allow_reads runs the read-only add (its pin's mark) once with no one asked`, { timeout: 240_000 }, async (t) => {
+    const { api, fake, run } = await setup(t, harness);
+    assert.equal((await api("PUT", "/settings/tools", { "mcp:fake/*": { allow_reads: true } })).status, 200);
+    const runId = await run(`reads-${harness}`);
+    const { last } = await follow(api, runId, ["completed", "failed", "input_required"], { deadlineMs: 180_000 });
+    assert.equal(last.status, "completed", "no one was asked");
+    assert.match(await answerOf(api, runId), harness === "codex" ? /^add returned: 5 / : /The tool said: 5/);
+    assert.equal(calls(fake).length, 1);
   });
 
   test(`${harness}: mcp:fake/* set to allow runs the call once with no one asked`,{ timeout: 240_000 }, async (t) => {
