@@ -124,10 +124,17 @@ task's calendar, its Notes folder and their notes (Recently Deleted too), and it
 event if it was still in the default calendar. Only one run goes at a time on a Mac (a lock in `/private/tmp`), so a
 sweep never removes a live run's sandbox.
 
+An app that wasn't running before the run is the run's own. The run starts it for the grant check and the sweep, then
+quits it. Its task starts it again and quits it at the end of the teardown, after the snapshot, so its window never
+sits in front of a later task's; an app that doesn't quit counts as left behind. An app that was already running, a
+person's own on the mini, is left as it is. The snapshot and the teardown ask Calendar and Notes only while they run,
+since asking would start them.
+
 Before each task the script takes a snapshot of what it can see. That's every calendar with its count of today's
 events, every Notes folder with its count of notes, the five apps' onscreen windows by id, and the sandbox root. It
-reads names, counts and ids, never what an event, note or file holds. After the teardown it takes the snapshot again,
-and any difference is the task's `left`. The run's last line is `5/5 pass, 0 left behind` only when every task passed
+reads names, counts and ids, never what an event, note or file holds, and the calendars and folders only while
+Calendar and Notes run. After the teardown it takes the snapshot again, and any difference is the task's `left`
+(Calendar or Notes started or quit during the task among them). The run's last line is `5/5 pass, 0 left behind` only when every task passed
 and left nothing; otherwise it exits 1. The observations it writes have every name and value redacted to its length,
 unless it holds the run id or is a word the script looks for.
 
