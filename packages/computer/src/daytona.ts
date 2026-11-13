@@ -100,6 +100,8 @@ interface Sandbox {
 	autoStopInterval?: number;
 	autoDeleteInterval?: number;
 	autoDestroyAt?: string;
+	/** When Daytona made the sandbox, by its clock: the adapter keeps the oldest of two machines one request made. */
+	createdAt?: string;
 	volumes?: unknown[];
 	linkedSandboxId?: string;
 	sandboxClass?: string;
@@ -506,12 +508,14 @@ class DaytonaHost implements MachineHost {
 		const gpu = this.#made.get(sb.id) ?? (isWhole(sb.gpu) && sb.gpu > 0);
 		const drift = sandboxDrift(sb, { sandboxClass: this.#class, autoStopInterval: this.#autoStop, autoDeleteInterval: this.#autoDeleteFor(gpu), gpu: gpu ? this.#gpu : undefined });
 		const ends = typeof sb.autoDestroyAt === "string" ? Date.parse(sb.autoDestroyAt) : Number.NaN;
+		const made = typeof sb.createdAt === "string" ? Date.parse(sb.createdAt) : Number.NaN;
 		return {
 			id: sb.id,
 			labels: { ...(sb.labels ?? {}) },
 			state: stateOf(sb),
 			network: networkOf(sb),
 			...(typeof sb.snapshot === "string" ? { image: { resolved: sb.snapshot } } : {}),
+			...(Number.isNaN(made) ? {} : { createdAt: new Date(made) }),
 			...(Number.isNaN(ends) ? {} : { endsAt: new Date(ends) }),
 			...(drift.length > 0 ? { drift } : {}),
 			...(isWhole(sb.cpu) || isWhole(sb.memory) ? { size: { ...(isWhole(sb.cpu) ? { cpus: sb.cpu } : {}), ...(isWhole(sb.memory) ? { memoryMb: sb.memory * 1024 } : {}) } } : {}),
