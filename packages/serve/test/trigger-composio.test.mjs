@@ -8,7 +8,7 @@ import { createHmac, randomBytes } from "node:crypto";
 import { createRequire } from "node:module";
 import { test } from "node:test";
 import { webhook } from "../dist/trigger-webhook.js";
-import { serve, withEnv } from "./support.mjs";
+import { call, cookieOf, serve, storeBytes, withEnv } from "./support.mjs";
 import { keyOf, made } from "./trigger-support.mjs";
 
 const { Webhook } = createRequire(import.meta.url)("standardwebhooks");
@@ -147,18 +147,44 @@ test("a composio trigger's secret is replaced by a body to POST /triggers/{id}/s
   assert.equal((await api("POST", `/triggers/${standard.id}/secret`)).status, 200, "a standard trigger is still minted for");
 });
 
-test("Composio's secret is in no view, is sealed and cut like every trigger secret, and is a secret write", { timeout: 60_000 }, async (t) => {
+test("a composio secret that starts with whsec_ is kept by its whole string: a short decoded suffix is no reason to refuse it, and a delivery signed by its UTF-8 bytes fires", { timeout: 60_000 }, async (t) => {
   withEnv(t, SEAL);
-  const { api, data, baseUrl } = await serve(t);
+  const { api, baseUrl } = await serve(t);
   await made(api, "triage");
-  const composio = await composioTrigger(api);
-  for (const read of [await api("GET", `/triggers/${composio.id}`), await api("GET", "/triggers"), await api("GET", `/triggers/${composio.id}/firings`)]) assert.ok(!JSON.stringify(read.body).includes(SECRET));
-  const { secretForms } = await import("../dist/standard-webhooks.js");
-  assert.ok(secretForms(SECRET).includes(SECRET));
+  // 30 UTF-8 bytes, but its suffix decodes as base64 to 18.
+  const odd = "whsec_abcdefghijklmnopqrstuvwx";
+  const composio = await composioTrigger(api, undefined, odd);
+  assert.equal((await post(baseUrl, composio.id, delivery(), { secret: odd })).status, 202);
+});
+
+test("Composio's secret is in no view and not in the store's bytes, only the owner's session may set it (the API token is 403 and the secret stays), and the API document marks it", { timeout: 60_000 }, async (t) => {
+  withEnv(t, SEAL);
+  const server = await serve(t, { accounts: true, openSetup: true });
+  const { api, data, baseUrl, port } = server;
+  const origin = `http://127.0.0.1:${port}`;
+  const setup = await call(port, { method: "POST", path: "/v2/setup", headers: { "content-type": "application/json", origin }, body: { password: "not-a-secret" } });
+  assert.equal(setup.status, 201, setup.text);
+  const cookie = cookieOf(setup);
+  const page = async (method, path, body) => {
+    const res = await call(port, { method, path: `/v2${path}`, headers: { cookie, origin, "content-type": "application/json" }, body });
+    return { status: res.status, body: res.json ?? res.text };
+  };
+  const token = (method, path, body) => api(method, path, body, { authorization: `Bearer ${server.token}` });
+  await made(api, "triage");
+  const created = await page("POST", "/triggers", hooked("triage"));
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const id = created.body.id;
+  assert.equal((await page("POST", `/triggers/${id}/secret`, { secret: SECRET })).status, 200);
+  for (const read of [await api("GET", `/triggers/${id}`), await api("GET", "/triggers"), await api("GET", `/triggers/${id}/firings`)]) assert.ok(!JSON.stringify(read.body).includes(SECRET));
+  assert.ok(!storeBytes(data).includes(SECRET), "the store holds it only sealed");
+  const refused = await token("POST", `/triggers/${id}/secret`, { secret: OTHER });
+  assert.equal(refused.status, 403, JSON.stringify(refused.body));
+  assert.ok(!JSON.stringify(refused.body).includes(OTHER));
+  assert.equal((await post(baseUrl, id, delivery(), { secret: SECRET })).status, 202, "the secret the token tried to replace still signs");
+  assert.equal((await post(baseUrl, id, delivery(), { secret: OTHER })).status, 401);
   const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
   const create = doc.paths["/triggers"].post.requestBody.content["application/json"].schema.properties;
   assert.equal(create.secret, undefined, "the create takes no secret: it would make the CLI's create a secret write");
   assert.ok(doc.paths["/triggers/{trigger_id}/secret"].post.requestBody.content["application/json"].schema.properties.secret["x-agentrun-secret"]);
-  assert.ok(doc.paths["/triggers"].post.requestBody.content["application/json"].schema.properties.source, "the source stays");
   assert.ok(JSON.stringify(doc).includes("composio"), "the scheme is documented");
 });
