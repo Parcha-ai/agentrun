@@ -310,8 +310,8 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     /** The Composio preset: a toolkit's actions, for the picker (the owner's session alone; the key goes to Composio). */
     composioTools: (api_key: string, toolkit: string) => call<ComposioTools>("POST", "/settings/mcp-servers/composio/tools", { body: { api_key, toolkit } }),
     /** Has Composio make a managed MCP server for the chosen actions and saves it as an MCP server; `connect_url` when the
-     *  toolkit needs the person's account connected. */
-    saveComposioServer: (name: string, api_key: string, toolkit: string, tools: string[]) => call<{ server: McpServer; connect_url?: string }>("PUT", `${mcpServer(name)}/composio`, { body: { api_key, toolkit, tools } }),
+     *  toolkit needs the person's account connected; `not_served` names chosen actions Composio's server left out. */
+    saveComposioServer: (name: string, api_key: string, toolkit: string, tools: string[]) => call<{ server: McpServer; connect_url?: string; not_served?: string[] }>("PUT", `${mcpServer(name)}/composio`, { body: { api_key, toolkit, tools } }),
     refreshMcpServer: (name: string) => call<McpRefresh>("POST", `${mcpServer(name)}/refresh`, { body: {} }),
     deleteMcpServer: (name: string) => call<unknown>("DELETE", mcpServer(name)),
     /** Starts an OAuth sign-in to the server at `url`: the page the person opens to approve it. */

@@ -613,7 +613,7 @@ describe("Settings → MCP servers, the Composio preset", () => {
   const TOOLS_PATH = "/v2/settings/mcp-servers/composio/tools";
   const answer = (c: Sent) => {
     if (c.path === TOOLS_PATH) return json(200, { toolkit: "github", no_auth: false, tools: ACTIONS });
-    if (c.method === "PUT" && c.path === "/v2/settings/mcp-servers/gh/composio") return json(200, { server: saved({ name: "gh", auth: { type: "headers", headers: ["x-api-key"] } }), connect_url: "https://connect.composio.test/link/ac_1" });
+    if (c.method === "PUT" && c.path === "/v2/settings/mcp-servers/gh/composio") return json(200, { server: saved({ name: "gh", auth: { type: "headers", headers: ["x-api-key"] } }), connect_url: "https://connect.composio.test/link/ac_1", not_served: ["GITHUB_STAR_REPO"] });
     return undefined;
   };
 
@@ -633,6 +633,7 @@ describe("Settings → MCP servers, the Composio preset", () => {
     expect(s.writes()[1]).toEqual({ method: "PUT", path: "/v2/settings/mcp-servers/gh/composio", body: { api_key: KEY, toolkit: "github", tools: ["GITHUB_LIST_ISSUES"] } });
     const link = [...p.host.querySelectorAll("a")].find((a) => /Connect your github account/.test(a.textContent ?? ""));
     expect(link?.getAttribute("href")).toBe("https://connect.composio.test/link/ac_1");
+    expect(p.text()).toContain("Composio's server doesn't list GITHUB_STAR_REPO");
     expect(document.body.innerHTML).not.toContain(KEY);
   });
 });

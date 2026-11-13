@@ -203,7 +203,7 @@ function ComposioForm({ v2, onClose, onSaved }: { v2: Client; onClose: () => voi
   const [name, setName] = useState("");
   const [listed, setListed] = useState<ComposioTools | null>(null);
   const [picked, setPicked] = useState<string[]>([]);
-  const [connect, setConnect] = useState<string | null>(null);
+  const [after, setAfter] = useState<{ connect?: string; notServed?: string[] } | null>(null);
   const [problem, setProblem] = useState<Problem | null>(null);
   const [busy, setBusy] = useState(false);
   const key = () => ((form.current?.elements.namedItem("composio-key") as HTMLInputElement | null)?.value ?? "").trim();
@@ -213,14 +213,15 @@ function ComposioForm({ v2, onClose, onSaved }: { v2: Client; onClose: () => voi
     const answer = await v2.saveComposioServer(name.trim(), key(), listed!.toolkit, picked);
     form.current?.reset();
     onSaved();
-    if (answer.connect_url) setConnect(answer.connect_url); else onClose();
+    if (answer.connect_url || answer.not_served?.length) setAfter({ connect: answer.connect_url, notServed: answer.not_served }); else onClose();
   });
   const toggle = (slug: string) => setPicked((now) => (now.includes(slug) ? now.filter((x) => x !== slug) : [...now, slug]));
-  if (connect) {
+  if (after) {
     return (
       <section aria-label="Composio server saved" className="space-y-3 border bg-card p-4">
-        <p className="text-body">Saved. Its tools need your {listed?.toolkit} account: connect it on Composio, then refresh the server.</p>
-        <p><a href={connect} target="_blank" rel="noopener noreferrer" className="font-mono text-body underline">Connect your {listed?.toolkit} account</a></p>
+        <p className="text-body">Saved.{after.connect ? ` Its tools need your ${listed?.toolkit} account: connect it on Composio, then refresh the server.` : ""}</p>
+        {after.connect && <p><a href={after.connect} target="_blank" rel="noopener noreferrer" className="font-mono text-body underline">Connect your {listed?.toolkit} account</a></p>}
+        {after.notServed?.length ? <p className="font-mono text-body text-muted-foreground">Composio's server doesn't list {after.notServed.join(", ")}: a run can't call {after.notServed.length === 1 ? "it" : "them"}.</p> : null}
         <Button size="sm" onClick={onClose}>Done</Button>
       </section>
     );

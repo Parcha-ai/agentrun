@@ -1467,7 +1467,9 @@ toolkit's list) and a server name, and the server has Composio make a managed MC
 ordinary MCP server with the key sealed as an `x-api-key` header. `POST /v2/settings/mcp-servers/composio/tools`
 `{api_key, toolkit}` lists the actions; `PUT /v2/settings/mcp-servers/{name}/composio` `{api_key, toolkit, tools,
 user_id?}` makes and saves the server. When the toolkit needs your account and `user_id` (default `agentrun`) has none
-active, the answer's `connect_url` is Composio's page to connect it; nothing here signs in. Both routes are the owner's
+active, the answer's `connect_url` is Composio's page to connect it; nothing here signs in. Composio's server can leave
+out an action it was allowed (it did for `HACKERNEWS_GET_FRONTPAGE`), so the answer's `not_served` names any chosen
+action the saved server doesn't list. Both routes are the owner's
 session alone, and a saved Composio server is gated, approved and shown on the Timeline as any MCP server's tools are,
 "not metered" until you price them. Composio's own meta tools stay refused, and the helper actions that connect an
 account are left off the server's address.

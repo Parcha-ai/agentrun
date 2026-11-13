@@ -1,7 +1,8 @@
 // A fake Composio on loopback: the REST calls the Composio preset makes (composio-preset.ts), each recorded, and the MCP
 // endpoint its generate call names, a fake MCP server (fake-mcp-server.mjs) at /v3/mcp/<id>/mcp. As the real one does, it
 // answers a request without the right x-api-key 401, and /v3/mcp/<id> without the /mcp suffix with a redirect.
-// `toolkits`: by slug, `{ no_auth, tools: [{ slug, name, description }] }`. `authConfigs`: by toolkit slug, the auth configs
+// `toolkits`: by slug, `{ no_auth, tools: [{ slug, name, description }] }`; as the real one, a toolkit's own answer says
+// no_auth only as `auth_config_details[].mode` "NO_AUTH" (only the toolkit list has a `no_auth` field). `authConfigs`: by toolkit slug, the auth configs
 // it already has. `active`: toolkit slugs the user already has an ACTIVE connected account for. `fail`: `{ path, status }`
 // makes the call whose path ends in `path` answer that status.
 import { createServer } from "node:http";
@@ -30,7 +31,7 @@ export async function startFakeComposio({ apiKey = "ck_test_key", toolkits, auth
       return known ? reply(200, { items: known.tools, next_cursor: null }) : reply(404, { error: { message: `Toolkit ${slug} not found` } });
     }
     const one = /^\/api\/v3\/toolkits\/([^/]+)$/.exec(url.pathname);
-    if (req.method === "GET" && one) return toolkits[one[1]] ? reply(200, { slug: one[1], no_auth: toolkits[one[1]].no_auth === true }) : reply(404, { error: { message: "Toolkit not found" } });
+    if (req.method === "GET" && one) return toolkits[one[1]] ? reply(200, { slug: one[1], auth_config_details: [{ mode: toolkits[one[1]].no_auth === true ? "NO_AUTH" : "OAUTH2" }] }) : reply(404, { error: { message: "Toolkit not found" } });
     if (req.method === "GET" && url.pathname === "/api/v3/auth_configs") return reply(200, { items: authConfigs[slug] ?? [] });
     if (req.method === "POST" && url.pathname === "/api/v3/auth_configs") return reply(201, { auth_config: { id: `ac_made_${++made}` } });
     if (req.method === "POST" && url.pathname === "/api/v3.1/mcp/servers/custom") return reply(201, { id });

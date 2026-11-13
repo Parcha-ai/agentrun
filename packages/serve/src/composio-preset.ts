@@ -73,6 +73,14 @@ function head(body: unknown): { key: string; toolkit: string; rest: Json } {
   return { key, toolkit, rest: body };
 }
 
+/** Whether a toolkit needs no sign-in. Composio's answer for one toolkit has no `no_auth` field (only its toolkit list
+ *  does): it says so as every auth mode in `auth_config_details` being NO_AUTH. */
+function needsNoAuth(kit: Json): boolean {
+  if (kit.no_auth === true) return true;
+  const modes = Array.isArray(kit.auth_config_details) ? kit.auth_config_details.map((d) => (isObject(d) ? text(d.mode) : "")) : [];
+  return modes.length > 0 && modes.every((mode) => mode === "NO_AUTH");
+}
+
 const notFound = (toolkit: string) => `Composio has no toolkit ${toolkit}: use its slug (github, slack, gmail...).`;
 
 /** POST /settings/mcp-servers/composio/tools: a toolkit's actions, for the console's picker, and whether it needs no sign-in. */
@@ -88,7 +96,7 @@ export async function composioTools(body: unknown, control: ComposioControl, sig
     cursor = text(listed.next_cursor) || undefined;
     if (!cursor) break;
   }
-  return { toolkit, no_auth: kit.no_auth === true, tools };
+  return { toolkit, no_auth: needsNoAuth(kit), tools };
 }
 
 /** The address Composio's generate answers, made one this server's client can use: the helper actions that connect an
@@ -103,7 +111,7 @@ export function composioAddress(generated: string): string {
 
 /** PUT /settings/mcp-servers/{name}/composio: Composio makes the managed MCP server, `save` keeps it as a saved MCP server
  *  (`{url, auth}`: the key a sealed header), and a toolkit that needs the person's account says where to connect it. */
-export async function composioSave<T>(body: unknown, control: ComposioControl, save: (mcp: { url: string; auth: { type: "headers"; headers: Record<string, string> } }) => Promise<T>, name: string, signal?: AbortSignal): Promise<{ server: T; connect_url?: string }> {
+export async function composioSave<T extends { tools?: readonly { name: string }[] }>(body: unknown, control: ComposioControl, save: (mcp: { url: string; auth: { type: "headers"; headers: Record<string, string> } }) => Promise<T>, name: string, signal?: AbortSignal): Promise<{ server: T; connect_url?: string; not_served?: string[] }> {
   const { key, toolkit, rest } = head(body);
   const tools = Array.isArray(rest.tools) ? rest.tools : [];
   const user = rest.user_id === undefined ? USER : typeof rest.user_id === "string" ? rest.user_id : "";
@@ -113,7 +121,7 @@ export async function composioSave<T>(body: unknown, control: ComposioControl, s
   if (issues.length) throw invalid(issues);
   const ask = asking(control, key, signal);
   const kit = await ask("reading the toolkit", "GET", `/api/v3/toolkits/${encodeURIComponent(toolkit)}`, undefined, notFound(toolkit));
-  const noAuth = kit.no_auth === true;
+  const noAuth = needsNoAuth(kit);
   let authConfig: string | undefined;
   if (!noAuth) {
     const configs = await ask("finding the toolkit's auth config", "GET", `/api/v3/auth_configs?toolkit_slug=${encodeURIComponent(toolkit)}`);
@@ -142,5 +150,9 @@ export async function composioSave<T>(body: unknown, control: ComposioControl, s
     }
   }
   const server = await save({ url: composioAddress(address), auth: { type: "headers", headers: { "x-api-key": key } } });
-  return { server, ...(connect ? { connect_url: connect } : {}) };
+  // Composio's server can leave out an action it was allowed (HACKERNEWS_GET_FRONTPAGE, live 11-13): say which, so a grant
+  // doesn't vanish without a word. A toolkit with no account yet still lists its actions, so this holds before the connect.
+  const listed = new Set((server.tools ?? []).map((tool) => tool.name));
+  const missing = (tools as string[]).filter((slug) => !listed.has(slug));
+  return { server, ...(connect ? { connect_url: connect } : {}), ...(missing.length ? { not_served: missing } : {}) };
 }

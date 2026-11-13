@@ -44,12 +44,14 @@ test("the tools route lists a toolkit's actions and says whether it needs no sig
 
 test("a no-auth toolkit saves as an MCP server: no auth config, the URL ends in /mcp with no helper tools, the key sealed, the tools listed", async (t) => {
   const s = await setup(t);
-  const res = await s.api("PUT", "/settings/mcp-servers/hn/composio", { api_key: s.composio.apiKey, toolkit: "hackernews", tools: ["GITHUB_STAR_REPO"] });
+  const res = await s.api("PUT", "/settings/mcp-servers/hn/composio", { api_key: s.composio.apiKey, toolkit: "hackernews", tools: ["add", "GITHUB_STAR_REPO"] });
   assert.equal(res.status, 200, JSON.stringify(res.body));
   assert.equal(res.body.connect_url, undefined, "a no-auth toolkit has nothing to connect");
+  // Composio's MCP server can leave out an action it was allowed (HACKERNEWS_GET_FRONTPAGE, live 11-13): the answer names it.
+  assert.deepEqual(res.body.not_served, ["GITHUB_STAR_REPO"], "a granted action the server doesn't list is named");
   assert.equal(s.composio.to("/api/v3/auth_configs").length, 0, "no auth config for a no-auth toolkit");
   const custom = s.composio.to("/api/v3.1/mcp/servers/custom", "POST")[0].body;
-  assert.deepEqual({ ...custom, auth_config_ids: custom.auth_config_ids ?? [] }, { name: custom.name, toolkits: ["hackernews"], auth_config_ids: [], allowed_tools: ["GITHUB_STAR_REPO"], managed_auth_via_composio: true });
+  assert.deepEqual({ ...custom, auth_config_ids: custom.auth_config_ids ?? [] }, { name: custom.name, toolkits: ["hackernews"], auth_config_ids: [], allowed_tools: ["add", "GITHUB_STAR_REPO"], managed_auth_via_composio: true });
   assert.deepEqual(s.composio.to("/api/v3.1/mcp/servers/generate", "POST")[0].body, { mcp_server_id: s.composio.mcpId, user_ids: ["agentrun"], managed_auth_by_composio: true });
   const saved = (await s.api("GET", "/settings/mcp-servers/hn")).body;
   const url = new URL(saved.url);
@@ -78,8 +80,9 @@ test("an auth toolkit with no active account answers connect_url, reusing an exi
 
 test("with no managed auth config one is made, and a user with an active account gets no connect link", async (t) => {
   const s = await setup(t, { active: ["slack"] });
-  const res = await s.api("PUT", "/settings/mcp-servers/chat/composio", { api_key: s.composio.apiKey, toolkit: "slack", tools: ["GITHUB_STAR_REPO"] });
+  const res = await s.api("PUT", "/settings/mcp-servers/chat/composio", { api_key: s.composio.apiKey, toolkit: "slack", tools: ["add"] });
   assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.equal(res.body.not_served, undefined, "every granted action is served");
   assert.deepEqual(s.composio.to("/api/v3/auth_configs", "POST")[0].body, { toolkit: { slug: "slack" }, auth_config: { type: "use_composio_managed_auth" } });
   assert.deepEqual(s.composio.to("/api/v3.1/mcp/servers/custom")[0].body.auth_config_ids, ["ac_made_1"]);
   assert.equal(s.composio.to("/api/v3/connected_accounts/link").length, 0, "an active account needs no link");
