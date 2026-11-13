@@ -33,6 +33,38 @@ describe("CodingAgentAction", () => {
     expect(error).not.toHaveBeenCalled();
   });
 
+  it("groups the main action and chooser without merging their keyboard behavior", async () => {
+    mount();
+    const group = document.querySelector('[role="group"][aria-label="Import agents options"]')!;
+    const action = button("Import agents");
+    const trigger = group.querySelector<HTMLButtonElement>('[aria-haspopup="menu"]')!;
+    expect(group.contains(action)).toBe(true);
+    expect(action.tabIndex).toBe(0);
+    expect(trigger.tabIndex).toBe(0);
+    expect(trigger.getAttribute("aria-label")).toBe("Choose coding agent for Import agents");
+    key(trigger, "ArrowDown");
+    expect(document.activeElement?.textContent).toBe("Codex app");
+    expect(group.contains(document.querySelector('[role="menu"]'))).toBe(false);
+    await click(button("Codex app"));
+    expect(document.activeElement).toBe(trigger);
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+    const link = group.querySelector<HTMLAnchorElement>('a[title="Open in Codex app"]')!;
+    expect(link.tabIndex).toBe(0);
+    expect(new URL(link.href).searchParams.get("prompt")).toBe(prompt);
+  });
+
+  it("disables both actions as one control without leaving an active app link", () => {
+    localStorage.setItem(CODING_AGENT_PREFERENCE, "codex");
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(CodingAgentAction, { label: "Import agents", prompt, disabled: true })));
+    const group = host.querySelector('[role="group"][aria-label="Import agents options"]')!;
+    expect(group.querySelector("a")).toBeNull();
+    const controls = [...group.querySelectorAll("button")];
+    expect(controls).toHaveLength(2);
+    expect(controls.every(control => control.disabled)).toBe(true);
+  });
+
   it("asks for a first preference, remembers it across actions and reloads, and only copies on explicit action", async () => {
     const write = clipboard();
     mount(true);

@@ -10,7 +10,7 @@ export default {
   darkMode: ["class"],
   content: ["./index.html", "./src/**/*.{ts,tsx}"],
   theme: {
-    borderRadius: { none: "0", DEFAULT: "var(--radius)" },
+    borderRadius: { none: "0", DEFAULT: "var(--radius)", composer: "var(--radius-composer)", action: "var(--radius-action)" },
     // The type scale. The six small steps carry no line height: text takes its parent's (1.5 from the page) or a
     // `leading-*` class. Sizes are px on purpose: the console is a dense tool and its text does not scale with a root size.
     fontSize: {

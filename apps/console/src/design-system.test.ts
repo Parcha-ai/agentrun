@@ -3,7 +3,7 @@ import config from "../tailwind.config";
 import stylesCss from "./styles.css?raw";
 import css from "./tokens.css?raw";
 import { blend, contrast, hslToRgb, readTokens } from "@/design/contrast";
-import { COLOR_TOKENS, CONTROL_SIZES, DURATIONS, LAYERS, NON_TEXT_PAIRS, TEXT_PAIRS, TYPE_SCALE } from "@/design/tokens";
+import { COLOR_TOKENS, CONTROL_SIZES, DURATIONS, LAYERS, NON_TEXT_PAIRS, SHAPES, TEXT_PAIRS, TYPE_SCALE } from "@/design/tokens";
 
 // The design system's own contract (docs/console-design-system.md): tokens.css gives every token a value in both
 // themes, Tailwind's names point at tokens, and the colours someone reads pass WCAG 2.2 AA.
@@ -77,8 +77,12 @@ describe("tailwind.config.ts", () => {
     const fonts = [...stylesCss.matchAll(/@fontsource\/[a-z-]+\/(\d+)\.css/g)].map((m) => m[1]);
     expect([...new Set(fonts)].sort()).toEqual(["400", "600"]);
   });
-  it("has square corners and one shadow", () => {
+  it("keeps square defaults, scoped composer/action shapes, and one shadow", () => {
     expect(tokens.light.radius).toBe("0px");
+    for (const shape of SHAPES) {
+      expect(theme.borderRadius[shape.name]).toBe(`var(--radius-${shape.name})`);
+      expect(tokens.light[`radius-${shape.name}`]).toMatch(/^[\d.]+rem$/);
+    }
     expect(Object.keys(theme.boxShadow)).toEqual(["none", "float"]);
   });
 });

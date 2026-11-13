@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { buildAgentPrompt, connectAgentPrompt, connectExistingAgentsPrompt, editAgentPrompt, importAgentsPrompt, playgroundPrompt, queryRunsPrompt, runAgentPrompt } from "./codingAgentPrompts";
+import { applyTemplatePrompt, buildAgentPrompt, connectAgentPrompt, connectExistingAgentsPrompt, editAgentPrompt, importAgentsPrompt, playgroundPrompt, queryRunsPrompt, runAgentPrompt } from "./codingAgentPrompts";
+import type { TemplateView } from "./v2";
+
+const template: TemplateView = {
+  name: "review/kit", display_name: "Review kit", version: "1.2.0", description: "Review changes using the package's skills.",
+  license: null, author: null, repository: null, output: null, harness: ["pi"], model: null, effort: null, tools: null, tool_policy: null,
+  computer: null, computer_here: null, checkout: null, mcp: [], secrets: [], budget: null, learning: true, approvals_default: "ask", triggers: [], skills: ["review"], evals: [],
+  parameters: { repo: { type: "string", required: true, description: "Repository to review" } },
+};
 
 describe("coding-agent handoffs", () => {
   it("gives a hosted native handoff a source-local command without promising remote pairing", () => {
@@ -104,6 +112,30 @@ describe("coding-agent handoffs", () => {
     expect(prompt).toContain("Preserve the template's instructions, tools and skills");
     expect(prompt).toContain("Ask only the missing questions");
     expect(prompt).toContain("Do not start a run");
+  });
+
+  it("copies the exact canonical package instead of reconstructing an agent from its catalog description", () => {
+    const prompt = applyTemplatePrompt("https://console.example.test", template);
+    expect(prompt).toContain('template "review/kit", version "1.2.0"');
+    expect(prompt).toContain("GET https://console.example.test/v2/templates");
+    expect(prompt).toContain("POST https://console.example.test/v2/templates/review%2Fkit/apply");
+    expect(prompt).toContain("if the version differs");
+    expect(prompt).toContain("instructions, rules, skills, schemas, learning and triggers");
+    expect(prompt).toContain("Do not rebuild it from the description");
+    expect(prompt).toContain("missing parameter values");
+    expect(prompt).toContain("parameters, grants and overrides");
+    expect(prompt).toContain("idempotency key");
+    expect(prompt).toContain("Do not start a run");
+    expect(prompt).toContain("Never print credentials");
+  });
+
+  it("clarifies additional requirements and reserves unsupported changes for an explicit revision", () => {
+    const prompt = applyTemplatePrompt("https://console.example.test", template, "  Report security findings only.  ");
+    expect(prompt).toContain("My additional requirements:\nReport security findings only.");
+    expect(prompt).toContain("do not add a brief or instructions field to the apply body");
+    expect(prompt).toContain("separately approved revision after applying");
+    expect(prompt).toContain("If-Match");
+    expect(applyTemplatePrompt("https://console.example.test", template, "  ")).not.toContain("My additional requirements");
   });
 
   it("edits the exact agent using a new revision and preserves unrelated configuration", () => {

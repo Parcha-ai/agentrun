@@ -57,8 +57,10 @@
   --wf-tool: 207 70% 41%;
   --wf-exit: 251 55% 53%;
 
-  /* Shape. The console is square: every corner is --radius. */
+  /* Square by default; softer edges are scoped to the build composer and coding-agent action. */
   --radius: 0px;
+  --radius-composer: 1rem;
+  --radius-action: 0.5rem;
   /* Lines are 1px. 2px marks where you are (the active nav item, the open tab) and the focus ring. */
   --border-width: 1px;
   --border-width-strong: 2px;

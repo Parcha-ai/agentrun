@@ -13,7 +13,7 @@ you add or restyle anything a person sees there.
 
 ## The look, in six rules
 
-1. **Square.** Every corner is 0. No class rounds anything.
+1. **Square by default.** Only the build composer and coding-agent action use scoped softer edges.
 2. **One line weight.** Borders are 1px. 2px marks where you are (the open tab, the active nav item) and where the
    keyboard is (the focus ring). Nothing else is thicker.
 3. **Mono for structure, sans for prose.** JetBrains Mono for labels, buttons, chips, ids, numbers and code. Schibsted
@@ -115,7 +115,9 @@ Controls in one row share one height. A target someone taps is at least 24px eac
 - `border` is the 1px line in `--border`. Use `border-border-strong` for the edge of a hovered or floating thing and
   `border-input` for a field.
 - `border-b-2` (or an inset 2px bar) marks the open tab and the active nav item. Nothing else.
-- No `rounded-*` class. The stylesheet squares every element.
+- The stylesheet squares every element by default. The integrated build composer uses `!rounded-composer`
+  (`--radius-composer: 1rem`), and the unified coding-agent action uses `!rounded-action`
+  (`--radius-action: 0.5rem`). Keep these exceptions scoped to their named components.
 - `shadow-float` goes under a menu, a picker's list, a tip, a toast and a dialog. Nothing in the page's flow has a
   shadow.
 

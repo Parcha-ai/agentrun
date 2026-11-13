@@ -43,6 +43,8 @@ const RULES: Rule[] = [
 
 /** An exception: the rule, the file, a string the line holds, and why the guide's sentence does not apply to it. */
 const ALLOWED: { rule: string; file: string; has: string; why: string }[] = [
+  { rule: "rounded", file: "components/BuildAgent.tsx", has: "!rounded-composer", why: "The build composer has a scoped softer edge to group the prompt and its coding-agent action." },
+  { rule: "rounded", file: "components/CodingAgentAction.tsx", has: "!rounded-action", why: "The coding-agent split action is one unified control with a scoped rounded edge." },
   { rule: "palette-colour", file: "components/NodeDrawer.tsx", has: "bg-white", why: "A page of a document is shown on paper white in both themes, as the document is." },
   { rule: "focus-removed", file: "components/ui/field.tsx", has: "bareFieldClass", why: "A bare control sits in a fieldBoxClass box, which draws the ring while the control has the focus." },
   { rule: "focus-removed", file: "components/ui/menu.tsx", has: "shadow-float outline-none", why: "An open menu holds the focus itself and shows it on the active item (data-[focus]:bg-accent)." },

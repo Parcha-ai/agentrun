@@ -16,10 +16,12 @@ import { type Problem, problem } from "@/lib/problem";
 import { choiceOptions, grantsOf, issuesAt, needsOf, paramHelp, paramIssueWords, paramLabel, parametersOf, paramValid, type ParameterText, startValues, templateHash, titleOf } from "@/lib/templatePackages";
 import { type Approvals, NEVER_ASK_LINE, type TemplateApplied, type TemplateView } from "@/lib/v2";
 
-type Props = { v2: Client; go: (hash: string) => void };
+type Props = { v2: Client; go: (hash: string) => void; playground?: boolean };
+const catalogHash = (playground: boolean) => playground ? "#/playground?operation=apply-template" : "#/templates";
+const applyHash = (name: string, playground: boolean) => playground ? `${catalogHash(true)}&template=${encodeURIComponent(name)}` : templateHash(name);
 
 /** The server's templates (GET /v2/templates): the list (no `name`), or one template's Apply screen. */
-export function TemplatesPage({ v2, name, go }: Props & { name?: string }) {
+export function TemplatesPage({ v2, name, go, playground = false }: Props & { name?: string }) {
   const [templates, setTemplates] = useState<TemplateView[] | null>(null);
   const [error, setError] = useState<Problem | null>(null);
   const [tries, setTries] = useState(0);
@@ -34,17 +36,19 @@ export function TemplatesPage({ v2, name, go }: Props & { name?: string }) {
     <div className="p-5 md:p-8">
       {error && !templates ? <ProblemCard problem={error} onRetry={() => setTries((n) => n + 1)} className="" />
         : !templates ? <ListSkeleton label="Loading the templates" rows={3} />
-        : name === undefined ? <TemplateList templates={templates} go={go} />
-        : shown ? <ApplyTemplate key={shown.name} v2={v2} template={shown} go={go} />
-        : <p className="border px-4 py-12 text-center font-mono text-body text-muted-foreground" role="alert">This server offers no template named {name}. <a href="#/templates" className="underline">See its templates</a>.</p>}
+        : name === undefined ? <TemplateList templates={templates} go={go} playground={playground} />
+        : shown ? <ApplyTemplate key={shown.name} v2={v2} template={shown} go={go} playground={playground} />
+        : <p className="border px-4 py-12 text-center font-mono text-body text-muted-foreground" role="alert">This server offers no template named {name}. <a href={catalogHash(playground)} className="underline">See its templates</a>.</p>}
     </div>
   );
 }
 
-function TemplateList({ templates, go }: { templates: TemplateView[]; go: (hash: string) => void }) {
+function TemplateList({ templates, go, playground }: { templates: TemplateView[]; go: (hash: string) => void; playground: boolean }) {
+  const Heading = playground ? "h2" : "h1";
+  const CardHeading = playground ? "h3" : "h2";
   return (
     <>
-      <h1 className="mb-5 font-mono text-2xl font-semibold">Templates</h1>
+      <Heading className="mb-5 font-mono text-2xl font-semibold">Templates</Heading>
       {!templates.length ? <p className="border px-4 py-12 text-center font-mono text-body text-muted-foreground">This server offers no templates yet.</p> : (
         <ul className="grid gap-3 md:grid-cols-2">
           {templates.map((t) => (
@@ -52,7 +56,7 @@ function TemplateList({ templates, go }: { templates: TemplateView[]; go: (hash:
               <article aria-label={titleOf(t)} className="flex h-full flex-col border bg-card px-5 py-4">
                 <div className="flex flex-wrap items-baseline gap-2">
                   <LayoutTemplate className="size-4 shrink-0 self-center text-muted-foreground" aria-hidden />
-                  <h2 className="min-w-0 break-words text-prose font-semibold">{titleOf(t)}</h2>
+                  <CardHeading className="min-w-0 break-words text-prose font-semibold">{titleOf(t)}</CardHeading>
                   <span className="font-mono text-small text-muted-foreground">{t.version}</span>
                 </div>
                 <p className="mt-2 text-lead leading-[1.6]">{t.description}</p>
@@ -60,7 +64,7 @@ function TemplateList({ templates, go }: { templates: TemplateView[]; go: (hash:
                   {needsOf(t).map(([what, words]) => <div key={what} className="flex gap-2"><dt className="shrink-0">{what}</dt><dd className="min-w-0 break-words text-foreground/80">{words}</dd></div>)}
                 </dl>
                 <div className="mt-auto pt-4">
-                  <Button size="sm" variant="solid" onClick={() => go(templateHash(t.name))}>Apply</Button>
+                  <Button size="sm" variant="solid" onClick={() => go(applyHash(t.name, playground))}>Apply</Button>
                 </div>
               </article>
             </li>
@@ -85,7 +89,8 @@ function bounded<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
   return Promise.race([promise, late]).finally(() => clearTimeout(timer));
 }
 
-function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView }) {
+function ApplyTemplate({ v2, template: t, go, playground = false }: Props & { template: TemplateView }) {
+  const Heading = playground ? "h2" : "h1";
   // The form starts at the template's served defaults for its checkboxes (a box shows what is sent); a text field
   // starts empty, its default as its hint, and is left out untouched for the server to apply that default.
   const [values, setValues] = useState<ParameterText>(() => startValues(t));
@@ -160,7 +165,7 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
   if (made) {
     return (
       <section aria-label="Applied" className="max-w-3xl">
-        <h1 className="mb-4 flex items-center gap-2 font-mono text-2xl font-semibold"><Check className="size-5 text-success-text" aria-hidden /> {titleOf(t, sentValues)} applied</h1>
+        <Heading className="mb-4 flex items-center gap-2 font-mono text-2xl font-semibold"><Check className="size-5 text-success-text" aria-hidden /> {titleOf(t, sentValues)} applied</Heading>
         {made.warnings.length > 0 && <>
           <p className="mb-3 text-lead">The agent is made. The server says:</p>
           <ul className="mb-5 space-y-2 border bg-card px-4 py-3 text-body" role="status" aria-label="Warnings">
@@ -213,8 +218,8 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
   }
   return (
     <div className="max-w-3xl">
-      <a href="#/templates" className="caps mb-4 inline-flex items-center gap-1.5 text-small text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" aria-hidden /> Templates</a>
-      <h1 className="font-mono text-2xl font-semibold">{titleOf(t, values)} <span className="text-lead font-normal text-muted-foreground">{t.version}</span></h1>
+      <a href={catalogHash(playground)} className="caps mb-4 inline-flex items-center gap-1.5 text-small text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" aria-hidden /> Templates</a>
+      <Heading className="font-mono text-2xl font-semibold">{titleOf(t, values)} <span className="text-lead font-normal text-muted-foreground">{t.version}</span></Heading>
       <p className="mt-2 text-lead leading-[1.6]">{t.description}</p>
 
       {params.length > 0 && (
