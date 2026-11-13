@@ -6,7 +6,7 @@ import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { BOX_IDS } from "../dist/place-offers.js";
-import { agent, client, FAUX, follow, printed, scratch, startServe, withEnv } from "./support.mjs";
+import { agent, client, FAUX, follow, printed, scratch, serve, startServe, withEnv } from "./support.mjs";
 
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 const DOCKER = new URL("../docker/", import.meta.url);
@@ -85,16 +85,19 @@ test("the stored token is printed on the boot that made it, and on no later one"
 const LINE = /^at=\S+ event=(boxes|harness_offers|request|auth_failed|run_started|run_ended)( [a-z_]+=("[^"]*"|\S+))*$/;
 const fields = (line) => Object.fromEntries([...line.matchAll(/([a-z_]+)=("[^"]*"|\S+)/g)].map(([, k, v]) => [k, v.replace(/^"|"$/g, "")]));
 
-// SKIP (follow-up #2078): the run never leaves queued or working on the runner
-test.skip("one log line per request (method, path without its query, status, ms), per run start and end, and per refused credential; never a token", async (t) => {
+/** Waits for a line of `event`: the runner says a run's end after the run is final, so a test that saw it complete reads the log after. */
+async function lineOf(lines, event) {
+  for (let i = 0; i < 200 && !lines.some((line) => line.includes(` event=${event} `) || line.endsWith(` event=${event}`)); i++) await sleep(50);
+}
+
+test("one log line per request (method, path without its query, status, ms), per run start and end, and per refused credential; never a token", async (t) => {
   const lines = [];
-  const data = join(await scratch(t), "agents");
-  const server = await startServe({ data, port: 0, faux: FAUX, log: (line) => lines.push(line) });
-  t.after(() => server.close());
+  const server = await serve(t, { port: 0, faux: FAUX, log: (line) => lines.push(line) });
   const api = client(server.baseUrl, server.token);
   assert.equal((await api("POST", "/agents", agent("calc"))).status, 201);
   const { body: run } = await api("POST", "/agents/calc/runs", { input: { content: "What is six times seven?" } });
   await follow(api, run.run_id, ["completed"]);
+  await lineOf(lines, "run_ended");
   assert.equal((await client(server.baseUrl, "wrong-token-value")("GET", "/agents")).status, 401);
   assert.equal((await client(server.baseUrl)("GET", "/runs")).status, 401);
   assert.equal((await fetch(`${server.url}/?launch=${server.token.slice(0, 20)}`)).status, 401);
@@ -115,16 +118,15 @@ test.skip("one log line per request (method, path without its query, status, ms)
   assert.deepEqual(of("boxes").map((b) => [b.available, b.unavailable]), [["none", BOX_IDS.join(",")]]);
 });
 
-// SKIP (follow-up #2078): the run never leaves queued or working on the runner
-test.skip("AGENTRUN_LOG=quiet turns the request lines off; the boxes, harness offers, run and refused-credential lines stay", async (t) => {
+test("AGENTRUN_LOG=quiet turns the request lines off; the boxes, harness offers, run and refused-credential lines stay", async (t) => {
   withEnv(t, { AGENTRUN_LOG: "quiet" });
   const lines = [];
-  const server = await startServe({ data: join(await scratch(t), "agents"), port: 0, faux: FAUX, log: (line) => lines.push(line) });
-  t.after(() => server.close());
+  const server = await serve(t, { port: 0, faux: FAUX, log: (line) => lines.push(line) });
   const api = client(server.baseUrl, server.token);
   await api("POST", "/agents", agent("calc"));
   const { body: run } = await api("POST", "/agents/calc/runs", { input: { content: "What is six times seven?" } });
   await follow(api, run.run_id, ["completed"]);
+  await lineOf(lines, "run_ended");
   await client(server.baseUrl)("GET", "/runs");
   assert.deepEqual(lines.map((line) => fields(line).event), ["boxes", "harness_offers", "run_started", "run_ended", "auth_failed"]);
 });
@@ -137,6 +139,22 @@ test("the bin writes the log lines to stdout", { timeout: 60_000 }, async (t) =>
     assert.ok(i < 100, server.seen.out);
     await sleep(50);
   }
+});
+
+test("the bin's runner prints one run_started and one run_ended on stdout for a run",{ timeout: 60_000 }, async (t) => {
+  const data = join(await scratch(t), "agents");
+  const server = await bin(t, data, [], { AGENTRUN_ACCOUNTS: "0" });
+  const api = client(server.base, (await readFile(join(data, ".token"), "utf8")).trim());
+  assert.equal((await api("POST", "/agents", agent("calc"))).status, 201);
+  const { body: run } = await api("POST", "/agents/calc/runs", { input: { content: "What is six times seven?" } });
+  await follow(api, run.run_id, ["completed"]);
+  for (let i = 0; !/ event=run_ended /.test(server.seen.out); i++) {
+    assert.ok(i < 100, server.seen.out);
+    await sleep(50);
+  }
+  const of = (event) => server.seen.out.split("\n").filter((line) => line.includes(` event=${event} `)).map(fields);
+  assert.deepEqual(of("run_started").map((r) => [r.run, r.agent, r.kind]), [[run.run_id, "calc", "agentic"]]);
+  assert.deepEqual(of("run_ended").map((r) => [r.run, r.status]), [[run.run_id, "completed"]]);
 });
 
 test("compose: every command the docs give works in a fresh shell (DOCKER_GID goes to .env once, before the first), and another port takes AGENTRUN_PUBLIC_URL with it", async () => {

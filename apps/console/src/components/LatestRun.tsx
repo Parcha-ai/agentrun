@@ -7,7 +7,7 @@ import { buttonVariants } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { Button } from "@/components/ui/button";
 import { type Client, follow, problemOf } from "@/lib/client";
-import { when, runTitle } from "@/lib/format";
+import { runEnded, runTitle, when } from "@/lib/format";
 import { learningSteps } from "@/lib/learning";
 import { NO_MESSAGES, runState } from "@/lib/runState";
 import { latest, pause, TRIES_MS } from "@/lib/viewing";
@@ -96,7 +96,7 @@ export function LatestRun({ v2, run, onRun }: { v2: Client; run: Run; onRun: (ru
       )}
       <div className="px-4 py-3">
         {error ? <p className="font-mono text-body text-destructive-text" role="alert">The timeline could not be read: {error}</p>
-          : rows ? <Timeline rows={learningSteps(rows, run.learning)} live={runState(now.status, now.state, run.kind, NO_MESSAGES, true).live} />
+          : rows ? <Timeline rows={learningSteps(rows, run.learning)} live={runState(now.status, now.state, run.kind, NO_MESSAGES, true).live} ended={runEnded(now.status)} />
           : <p className="py-6 text-center font-mono text-body text-muted-foreground">Reading the timeline...</p>}
       </div>
     </section>
