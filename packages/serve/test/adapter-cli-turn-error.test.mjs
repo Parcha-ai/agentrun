@@ -144,6 +144,34 @@ test("a cancel the runner has not handed on when a CLI turn fails ends the run c
   assert.equal(row.summary, "cancelled", JSON.stringify(row));
 });
 
+test("a cancel accepted as a CLI turn ends interrupted on its own, before the runner's next command poll, ends the run cancelled: no further message opens it", async (t) => {
+  const { RunFinal } = await import("../dist/store/index.js");
+  const opened = await stores({ runners: 1 });
+  await queue(opened.server, "run-1");
+  const cli = failingCli("interrupted", undefined);
+  const open = cli.open;
+  cli.open = async (spec, io) => {
+    const session = await open(spec, io);
+    const send = session.send.bind(session);
+    session.send = async (...args) => {
+      await send(...args);
+      await opened.server.command("run-1", { kind: "cancel" });
+    };
+    return session;
+  };
+  const createLoop = createAdapterLoop(() => ({ adapter: cli, session: { key: "root", label: "root", system: [], tools: [], context: "fresh" }, input: "Answer.", record: "loop", hooks: quiet }));
+  const runner = startRunner({ store: observed(opened.runners[0], recorder()), createLoop, name: "runner-a", ...{ ...TIMING, commandPollMs: 400, pollMs: 400 } });
+  t.after(() => runner.close());
+  const row = await until(async () => {
+    const now = await opened.server.runs.get("run-1");
+    return ["ended", "failed", "stopped"].includes(now.state) && now.runner === null && now;
+  }, "the run settled and released", 30_000);
+  assert.deepEqual([row.state, row.outcome, row.summary], ["stopped", "cancelled", "cancelled"], JSON.stringify(row));
+  const view = await viewOverStore(opened.server, "run-1", { origin: "https://run.test", serverSecrets: () => [] });
+  assert.equal(view.status, "cancelled", "the run reads cancelled, never input_required");
+  await assert.rejects(opened.server.runs.reopen("run-1", { kind: "steer", body: { text: "Go on." } }), (e) => e instanceof RunFinal, "a cancelled run takes no further message");
+});
+
 test("a CLI turn that fails with no words of its own still ends the run failed in the loop's words", async (t) => {
   const row = await runOnce(t, "failed", undefined);
   assert.equal(row.state, "failed", JSON.stringify(row));

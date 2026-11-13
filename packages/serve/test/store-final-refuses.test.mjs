@@ -9,7 +9,7 @@ import { commitWrites } from "@earendil-works/pi-durable/testing";
 import { queued, storeOn } from "./store-helpers.mjs";
 import { raw } from "./store-target.mjs";
 
-const { endedReason } = await import("../dist/store/index.js");
+const { endedReason, RunFinal } = await import("../dist/store/index.js");
 const commandRow = async (store, id) => (await store.commands("run-1", id - 1)).find((row) => row.id === id);
 
 test("runs.update to a final state refuses the run's other untaken rows with the end's reason, its own take taken", async (t) => {
@@ -41,6 +41,19 @@ test("a normal end that commits with an accepted cancel waiting reads cancelled,
   const cancelRow = await commandRow(store, cancel.id);
   assert.ok(cancelRow.takenAt !== null && cancelRow.refused === null, `the cancel taken, not refused: ${JSON.stringify(cancelRow)}`);
   assert.equal((await commandRow(store, steer.id)).refused, endedReason("stopped"), "a cancel refuses the message waiting behind it");
+});
+
+test("a stop's end (a CLI turn interrupted on its own, or a person's stop) that commits with an accepted cancel waiting reads cancelled, and no message opens it again", async (t) => {
+  const { store } = await storeOn(t);
+  await queued(store);
+  const claim = await store.claim("run-1", "runner-a", { leaseMs: 30_000 });
+  const cancel = await store.command("run-1", { kind: "cancel" });
+  await store.runs.update(claim, { state: "stopped", outcome: "stopped", summary: "the turn was interrupted" });
+  const run = await store.runs.get("run-1");
+  assert.deepEqual([run.state, run.outcome, run.summary], ["stopped", "cancelled", "cancelled"], "the 202 promised a cancelled run, so the stop that raced it is the cancel's");
+  const cancelRow = await commandRow(store, cancel.id);
+  assert.ok(cancelRow.takenAt !== null && cancelRow.refused === null, `the cancel taken, not refused: ${JSON.stringify(cancelRow)}`);
+  await assert.rejects(store.runs.reopen("run-1", { kind: "steer", body: { text: "Go on." } }), (e) => e instanceof RunFinal, "a cancelled run takes no further message");
 });
 
 test("a release never makes a run final: only the end commit does, so no final run is left holding an untaken row", async (t) => {
