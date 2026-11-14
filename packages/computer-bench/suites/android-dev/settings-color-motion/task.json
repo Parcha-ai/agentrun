@@ -1,0 +1,100 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "android.settings.color-motion",
+  "version": 1,
+  "title": "Turn on color inversion and set animations and dark theme in Settings",
+  "split": "dev",
+  "tags": ["settings", "toggle", "accessibility", "search", "multi"],
+  "needs": { "os": "android", "kind": "phone", "apps": ["com.android.settings"] },
+  "params": {
+    "c": {
+      "pick": [
+        { "say": "remove animations and turn dark theme off", "anim0": "1.0", "anim": "0(?:\\.0)?", "dark0": "yes", "dark": "off", "night": "no" },
+        { "say": "keep animations on (don't remove them) and turn dark theme off", "anim0": "0.0", "anim": "1(?:\\.0)?", "dark0": "yes", "dark": "off", "night": "no" },
+        { "say": "remove animations and keep dark theme on", "anim0": "1.0", "anim": "0(?:\\.0)?", "dark0": "no", "dark": "on", "night": "yes" },
+        { "say": "keep animations on (don't remove them) and turn dark theme on", "anim0": "0.0", "anim": "1(?:\\.0)?", "dark0": "no", "dark": "on", "night": "yes" }
+      ]
+    }
+  },
+  "exec": "deny",
+  "setup": [
+    {
+      "method": "exec.run",
+      "why": "Keep the phone's own color inversion, animation scales and night mode once, so teardown puts them back.",
+      "params": { "argv": ["sh", "-c", "{{file:save.sh}}", "sh", "secure accessibility_display_inversion_enabled", "global animator_duration_scale", "global transition_animation_scale", "global window_animation_scale", "uimode night"], "timeoutMs": 20000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "Start from the opposite of the goal: color inversion off, animations the other way ({{c.anim0}} is every animation scale; 0 is \"Remove animations\" on), dark theme the other way ({{c.dark0}}).",
+      "params": { "argv": ["sh", "-c", "settings put secure accessibility_display_inversion_enabled 0 && for k in animator_duration_scale transition_animation_scale window_animation_scale; do settings put global $k {{c.anim0}}; done && cmd uimode night {{c.dark0}}"], "timeoutMs": 20000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "Open Settings at its home page, whatever screen an earlier run left it on.",
+      "params": { "argv": ["am", "start", "-W", "--activity-clear-task", "-a", "android.settings.SETTINGS"], "timeoutMs": 20000 }
+    }
+  ],
+  "instruction": "Using the Settings app, turn on color inversion, {{c.say}}.",
+  "budget": { "steps": 35, "usd": 1.5, "wall_s": 420 },
+  "checks": [
+    {
+      "id": "inversion-animations-dark",
+      "kind": "exec",
+      "why": "Prints secure/accessibility_display_inversion_enabled (1 is on), global/animator_duration_scale (0 when \"Remove animations\" is on, 1 when off) and `cmd uimode night` (dark theme). Setup left inversion 0, animations {{c.anim0}} and night {{c.dark0}}, each the opposite of the goal, so an agent that does nothing fails.",
+      "argv": ["sh", "-c", "echo \"$(settings get secure accessibility_display_inversion_enabled) $(settings get global animator_duration_scale) $(cmd uimode night)\""],
+      "stdout": { "matches": "^1 {{c.anim}} Night mode: {{c.night}}\\s*$" }
+    }
+  ],
+  "teardown": [
+    {
+      "method": "exec.run",
+      "why": "Put the phone's own values back, and drop the saved copy.",
+      "params": { "argv": ["sh", "-c", "{{file:restore.sh}}"], "timeoutMs": 20000 }
+    }
+  ],
+  "oracle": [
+    {
+      "method": "ui.act",
+      "why": "Wait for Settings' window: on a fresh phone it shows a moment after am start -W returns.",
+      "params": { "target": { "app": "com.android.settings" }, "steps": [], "expect": { "window": { "role": "window" } } }
+    },
+    {
+      "method": "ui.act",
+      "params": { "target": { "app": "com.android.settings" }, "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "Search settings" } } } }], "expect": { "text": "Search…" } }
+    },
+    {
+      "method": "ui.act",
+      "params": { "foreground": true, "target": { "app": "com.android.settings.intelligence" }, "steps": [{ "type": "inversion", "into": { "find": { "role": "searchbox" } } }], "expect": { "text": "Color inversion" } }
+    },
+    {
+      "method": "ui.act",
+      "params": { "target": { "app": "com.android.settings.intelligence" }, "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "Color inversion" } } } }], "expect": { "text": "Color inversion" } }
+    },
+    {
+      "method": "ui.act",
+      "params": { "target": { "app": "com.android.settings" }, "steps": [], "expect": { "window": { "title": "Color and motion" } } }
+    },
+    {
+      "method": "ui.act",
+      "params": { "target": { "app": "com.android.settings" }, "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "Color inversion" } } } }], "expect": { "text": "Use color inversion" } }
+    },
+    {
+      "method": "ui.act",
+      "params": { "target": { "app": "com.android.settings" }, "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "Use color inversion" } } } }] }
+    },
+    {
+      "method": "ui.act",
+      "params": { "foreground": true, "steps": [{ "nav": "back" }], "expect": { "text": "Remove animations", "timeoutMs": 8000 } }
+    },
+    {
+      "method": "ui.act",
+      "why": "\"Remove animations\" starts the other way, so one press of its row flips it to the goal.",
+      "params": { "target": { "app": "com.android.settings" }, "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "Remove animations" } } } }] }
+    },
+    {
+      "method": "ui.act",
+      "why": "Dark theme last: a night-mode change recreates the page, so no readback sees the switch flip. The expect waits for the page to come back instead, and the check reads the night mode.",
+      "params": { "target": { "app": "com.android.settings" }, "steps": [{ "set": { "find": { "role": "switch", "name": { "equals": "Dark theme" } } }, "value": "{{c.dark}}" }], "expect": { "window": { "title": "Color and motion" }, "timeoutMs": 10000 } }
+    }
+  ]
+}

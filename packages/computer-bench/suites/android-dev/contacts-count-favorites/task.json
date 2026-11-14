@@ -1,0 +1,69 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "android.contacts.count-favorites",
+  "version": 1,
+  "title": "Count and name the favorite contacts in Contacts",
+  "split": "heldout",
+  "tags": ["contacts", "read", "answer", "count"],
+  "needs": { "os": "android", "kind": "phone", "apps": [["com.google.android.contacts", "com.android.contacts", "com.samsung.android.app.contacts"]] },
+  "params": {
+    "f": {
+      "pick": [
+        { "count": "2", "say": "two", "star": "'Adam Ford' 'Mina Ford'", "re": "(?=[\\s\\S]*\\bAdam\\b)(?=[\\s\\S]*\\bMina\\b)" },
+        { "count": "3", "say": "three", "star": "'Bea Young' 'Leo Park' 'Zoe Hart'", "re": "(?=[\\s\\S]*\\bBea\\b)(?=[\\s\\S]*\\bLeo\\b)(?=[\\s\\S]*\\bZoe\\b)" },
+        { "count": "4", "say": "four", "star": "'Adam Ford' 'Leo Park' 'Ruth Cole' 'Zoe Hart'", "re": "(?=[\\s\\S]*\\bAdam\\b)(?=[\\s\\S]*\\bLeo\\b)(?=[\\s\\S]*\\bRuth\\b)(?=[\\s\\S]*\\bZoe\\b)" },
+        { "count": "3", "say": "three", "star": "'Ivy Stone' 'Mina Ford' 'Ruth Cole'", "re": "(?=[\\s\\S]*\\bIvy\\b)(?=[\\s\\S]*\\bMina\\b)(?=[\\s\\S]*\\bRuth\\b)" }
+      ]
+    }
+  },
+  "exec": "deny",
+  "setup": [
+    {
+      "method": "exec.run",
+      "why": "No contact with this run's nonce is left from an earlier try.",
+      "params": { "argv": ["sh", "-c", "{{file:contacts.sh}}", "sh", "purge", "{{nonce}}"], "timeoutMs": 30000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "Eight contacts, then {{f.count}} of them starred. The rest are not favorites.",
+      "params": { "argv": ["sh", "-c", "i=0; for n in 'Adam Ford' 'Bea Young' 'Ivy Stone' 'Leo Park' 'Mina Ford' 'Omar Diaz' 'Ruth Cole' 'Zoe Hart'; do i=$((i+1)); sh -c \"$1\" sh add computer-bench-{{nonce}}-$i \"$n {{nonce}}\" 415555012$i || exit 1; done; for n in {{f.star}}; do sh -c \"$1\" sh star \"$n {{nonce}}\" || exit 1; done", "sh", "{{file:contacts.sh}}"], "timeoutMs": 60000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "Open the contacts app on its list, with its permissions granted.",
+      "params": { "argv": ["sh", "-c", "{{file:contacts.sh}}", "sh", "open"], "timeoutMs": 30000 }
+    }
+  ],
+  "instruction": "Using the Contacts app, how many of the contacts are favorites, and who are they? Give the count and their first names in your final answer. Don't change anything.",
+  "budget": { "steps": 15, "usd": 1, "wall_s": 180 },
+  "sufficient": false,
+  "checks": [
+    {
+      "id": "count",
+      "kind": "answer",
+      "why": "The final answer holds the count, {{f.count}} (as a digit or as \"{{f.say}}\"), and each favorite's first name. An agent that answers nothing fails.",
+      "text": { "matches": "^{{f.re}}[\\s\\S]*\\b(?:{{f.count}}|{{f.say}})\\b", "flags": "i" }
+    },
+    {
+      "id": "unchanged",
+      "kind": "exec",
+      "why": "Still eight contacts with {{f.count}} starred: the agent read the list and changed nothing.",
+      "argv": ["sh", "-c", "sh -c \"$1\" sh list {{nonce}} | grep -c 'starred=1'; sh -c \"$1\" sh list {{nonce}} | grep -c '^Row'", "sh", "{{file:contacts.sh}}"],
+      "stdout": { "matches": "^{{f.count}}\\s+8\\s*$" }
+    }
+  ],
+  "teardown": [
+    {
+      "method": "exec.run",
+      "why": "Delete every contact holding the nonce.",
+      "params": { "argv": ["sh", "-c", "{{file:contacts.sh}}", "sh", "purge", "{{nonce}}"], "timeoutMs": 30000 }
+    }
+  ],
+  "oracle": [
+    {
+      "method": "ui.act",
+      "why": "Wait for the contact list, whose Favorites group at the top lists the starred contacts. The answer itself is the agent's to give; verify leaves answer checks out of the oracle's run.",
+      "params": { "target": { "app": "com.android.contacts" }, "steps": [], "expect": { "window": { "title": "Contacts" } } }
+    }
+  ]
+}

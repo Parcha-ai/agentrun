@@ -1,0 +1,82 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "android.contacts.work-phone",
+  "version": 1,
+  "title": "Read a contact's work number among several in Contacts",
+  "split": "dev",
+  "tags": ["contacts", "read", "answer", "decoy"],
+  "needs": { "os": "android", "kind": "phone", "apps": [["com.google.android.contacts", "com.android.contacts", "com.samsung.android.app.contacts"]] },
+  "params": {
+    "c": {
+      "pick": [
+        { "decoy": "Iris Bell", "target": "Ivan Bell" },
+        { "decoy": "Sara Lopez", "target": "Sam Lopez" },
+        { "decoy": "Kira Wolfe", "target": "Kai Wolfe" },
+        { "decoy": "Paula Grant", "target": "Pete Grant" }
+      ]
+    },
+    "m": {
+      "pick": [
+        { "mobile": "415 555 0148", "work": "628 555 0193", "home": "510 555 0126", "decoywork": "628 555 0175", "re": "628\\D{0,3}555\\D{0,2}0193" },
+        { "mobile": "628 555 0112", "work": "510 555 0167", "home": "415 555 0139", "decoywork": "510 555 0181", "re": "510\\D{0,3}555\\D{0,2}0167" },
+        { "mobile": "510 555 0154", "work": "415 555 0108", "home": "628 555 0172", "decoywork": "415 555 0144", "re": "415\\D{0,3}555\\D{0,2}0108" },
+        { "mobile": "415 555 0186", "work": "510 555 0121", "home": "628 555 0160", "decoywork": "510 555 0119", "re": "510\\D{0,3}555\\D{0,2}0121" }
+      ]
+    }
+  },
+  "exec": "deny",
+  "setup": [
+    {
+      "method": "exec.run",
+      "why": "No contact with this run's nonce is left from an earlier try.",
+      "params": { "argv": ["sh", "-c", "{{file:contacts.sh}}", "sh", "purge", "{{nonce}}"], "timeoutMs": 30000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "A decoy with its own work number, then the target with a mobile, a work and a home number (ContactsContract's Phone.TYPE 2, 3 and 1).",
+      "params": { "argv": ["sh", "-c", "sh -c \"$1\" sh add computer-bench-{{nonce}}-1 \"$2 {{nonce}}\" '{{m.decoywork}}' 3 && sh -c \"$1\" sh add computer-bench-{{nonce}}-2 \"$3 {{nonce}}\" '{{m.mobile}}' 2 && sh -c \"$1\" sh add-phone \"$3 {{nonce}}\" '{{m.work}}' 3 && sh -c \"$1\" sh add-phone \"$3 {{nonce}}\" '{{m.home}}' 1", "sh", "{{file:contacts.sh}}", "{{c.decoy}}", "{{c.target}}"], "timeoutMs": 30000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "Open the contacts app on its list, with its permissions granted.",
+      "params": { "argv": ["sh", "-c", "{{file:contacts.sh}}", "sh", "open"], "timeoutMs": 30000 }
+    }
+  ],
+  "instruction": "Using the Contacts app, what is the work phone number of \"{{c.target}} {{nonce}}\"? Give the number in your final answer. Don't change anything.",
+  "budget": { "steps": 15, "usd": 1, "wall_s": 180 },
+  "sufficient": false,
+  "checks": [
+    {
+      "id": "number",
+      "kind": "answer",
+      "why": "The final answer holds the target's work number, {{m.work}}, in any common format. Its mobile ({{m.mobile}}), home ({{m.home}}) and the decoy's work number ({{m.decoywork}}) all differ, so the wrong one fails, and an agent that answers nothing fails.",
+      "text": { "matches": "\\(?{{m.re}}(?!\\d)" }
+    },
+    {
+      "id": "unchanged",
+      "kind": "exec",
+      "why": "The target still has its three numbers: the agent read them and changed nothing.",
+      "argv": ["sh", "-c", "{{file:contacts.sh}}", "sh", "phones", "{{c.target}} {{nonce}}"],
+      "stdout": { "matches": "^Row: 0 data1={{m.mobile}}, data2=2\\s*Row: 1 data1={{m.work}}, data2=3\\s*Row: 2 data1={{m.home}}, data2=1\\s*$" }
+    }
+  ],
+  "teardown": [
+    {
+      "method": "exec.run",
+      "why": "Delete every contact holding the nonce.",
+      "params": { "argv": ["sh", "-c", "{{file:contacts.sh}}", "sh", "purge", "{{nonce}}"], "timeoutMs": 30000 }
+    }
+  ],
+  "oracle": [
+    {
+      "method": "ui.act",
+      "why": "Wait for the contact list: on a fresh phone it shows a moment after am start -W returns.",
+      "params": { "target": { "app": "com.android.contacts" }, "steps": [], "expect": { "text": "{{c.target}} {{nonce}}", "timeoutMs": 10000 } }
+    },
+    {
+      "method": "ui.act",
+      "why": "Open the target's card, where its numbers are listed with their labels. The answer itself is the agent's to give; verify leaves answer checks out of the oracle's run.",
+      "params": { "target": { "app": "com.android.contacts" }, "foreground": true, "steps": [{ "press": { "find": { "name": { "equals": "{{c.target}} {{nonce}}" } } } }], "expect": { "text": "Work", "timeoutMs": 8000 } }
+    }
+  ]
+}

@@ -1,0 +1,71 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "android.contacts.favorite",
+  "version": 1,
+  "title": "Add one of two similar contacts to favorites in Contacts",
+  "split": "dev",
+  "tags": ["contacts", "edit", "decoy"],
+  "needs": { "os": "android", "kind": "phone", "apps": [["com.google.android.contacts", "com.android.contacts", "com.samsung.android.app.contacts"]] },
+  "params": {
+    "p": {
+      "pick": [
+        { "decoy": "Ravi Patel", "target": "Rita Patel" },
+        { "decoy": "Dana Cole", "target": "Diego Cole" },
+        { "decoy": "Maya Ortiz", "target": "Milo Ortiz" },
+        { "decoy": "Hana Sato", "target": "Hugo Sato" }
+      ]
+    }
+  },
+  "exec": "deny",
+  "setup": [
+    {
+      "method": "exec.run",
+      "why": "No contact with this run's nonce is left from an earlier try.",
+      "params": { "argv": ["sh", "-c", "{{file:contacts.sh}}", "sh", "purge", "{{nonce}}"], "timeoutMs": 30000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "Two contacts with the same surname and initial, neither a favorite: the decoy and the one to star.",
+      "params": { "argv": ["sh", "-c", "sh -c \"$1\" sh add computer-bench-{{nonce}}-1 \"$2 {{nonce}}\" '415 555 0142' && sh -c \"$1\" sh add computer-bench-{{nonce}}-2 \"$3 {{nonce}}\" '415 555 0199'", "sh", "{{file:contacts.sh}}", "{{p.decoy}}", "{{p.target}}"], "timeoutMs": 30000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "Open the contacts app on its list, with its permissions granted.",
+      "params": { "argv": ["sh", "-c", "{{file:contacts.sh}}", "sh", "open"], "timeoutMs": 30000 }
+    }
+  ],
+  "instruction": "In Contacts, add \"{{p.target}} {{nonce}}\" to your favorites. Leave the other contacts as they are.",
+  "budget": { "steps": 20, "usd": 1, "wall_s": 240 },
+  "checks": [
+    {
+      "id": "starred",
+      "kind": "exec",
+      "why": "Lists this run's contacts by name with their starred flag: {{p.target}} is starred and {{p.decoy}} is not, and both are still there. Setup starred neither, so an agent that does nothing fails, and so does one that starred the decoy.",
+      "argv": ["sh", "-c", "{{file:contacts.sh}}", "sh", "list", "{{nonce}}"],
+      "stdout": { "matches": "^Row: 0 display_name={{p.decoy}} {{nonce}}, starred=0\\s*Row: 1 display_name={{p.target}} {{nonce}}, starred=1\\s*$" }
+    }
+  ],
+  "teardown": [
+    {
+      "method": "exec.run",
+      "why": "Delete every contact holding the nonce.",
+      "params": { "argv": ["sh", "-c", "{{file:contacts.sh}}", "sh", "purge", "{{nonce}}"], "timeoutMs": 30000 }
+    }
+  ],
+  "oracle": [
+    {
+      "method": "ui.act",
+      "why": "Wait for the contact list: on a fresh phone it shows a moment after am start -W returns.",
+      "params": { "target": { "app": "com.android.contacts" }, "steps": [], "expect": { "text": "{{p.target}} {{nonce}}", "timeoutMs": 10000 } }
+    },
+    {
+      "method": "ui.act",
+      "why": "The second row under a letter is named by its contact (the first by the letter), which is why the target sorts after the decoy.",
+      "params": { "target": { "app": "com.android.contacts" }, "foreground": true, "steps": [{ "press": { "find": { "name": { "equals": "{{p.target}} {{nonce}}" } } } }], "expect": { "text": "Add to favorites", "timeoutMs": 8000 } }
+    },
+    {
+      "method": "ui.act",
+      "params": { "target": { "app": "com.android.contacts" }, "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "Add to favorites" } } } }] }
+    }
+  ]
+}

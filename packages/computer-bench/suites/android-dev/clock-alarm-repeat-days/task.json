@@ -1,0 +1,107 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "android.clock.alarm-repeat-days",
+  "version": 1,
+  "title": "Change the days a repeating alarm rings on in Clock",
+  "split": "heldout",
+  "tags": ["clock", "alarm", "edit", "days"],
+  "needs": { "os": "android", "kind": "phone", "apps": [["com.google.android.deskclock", "com.android.deskclock"]] },
+  "params": {
+    "v": {
+      "pick": [
+        { "say": "Sundays", "start": "2,3,4,5,6", "startsay": "Monday to Friday", "mon": "off", "wed": "off", "fri": "off", "sat": "off", "re": "Sun" },
+        { "say": "Saturdays and Sundays", "start": "2,3,4,5,6", "startsay": "Monday to Friday", "mon": "off", "wed": "off", "fri": "off", "sat": "on", "re": "(?:Sat|Sun)" },
+        { "say": "Sundays and Mondays", "start": "3,4,5", "startsay": "Tuesday to Thursday", "mon": "on", "wed": "off", "fri": "off", "sat": "off", "re": "(?:Sun|Mon)" },
+        { "say": "Sundays and Wednesdays", "start": "3,5,6", "startsay": "Tuesday, Thursday and Friday", "mon": "off", "wed": "on", "fri": "off", "sat": "off", "re": "(?:Sun|Wed)" }
+      ]
+    },
+    "x": {
+      "pick": [
+        { "h": "6", "m": "40", "hhmm": "06:40" },
+        { "h": "5", "m": "55", "hhmm": "05:55" },
+        { "h": "7", "m": "10", "hhmm": "07:10" }
+      ]
+    },
+    "o": { "pick": ["Gym", "Swim", "Run", "Yoga"] }
+  },
+  "exec": "deny",
+  "setup": [
+    {
+      "method": "exec.run",
+      "why": "No alarm with this run's label is left from an earlier try (DISMISS_ALARM by label; a no-op when there is none).",
+      "params": { "argv": ["am", "start", "-W", "-a", "android.intent.action.DISMISS_ALARM", "--es", "android.intent.extra.alarm.SEARCH_MODE", "android.label", "--es", "android.intent.extra.alarm.MESSAGE", "{{o}} {{nonce}}"], "timeoutMs": 20000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "The alarm to change, at {{x.hhmm}} (before the phone's own 8:30 and 9:00 alarms, so it is first in the list), repeating on {{v.startsay}}: none of the asked days.",
+      "params": { "argv": ["am", "start", "-W", "-a", "android.intent.action.SET_ALARM", "--ei", "android.intent.extra.alarm.HOUR", "{{x.h}}", "--ei", "android.intent.extra.alarm.MINUTES", "{{x.m}}", "--es", "android.intent.extra.alarm.MESSAGE", "{{o}} {{nonce}}", "--eial", "android.intent.extra.alarm.DAYS", "{{v.start}}", "--ez", "android.intent.extra.alarm.SKIP_UI", "true"], "timeoutMs": 20000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "Open the Clock app on its alarm list.",
+      "params": { "argv": ["am", "start", "-W", "--activity-clear-task", "-a", "android.intent.action.SHOW_ALARMS"], "timeoutMs": 20000 }
+    }
+  ],
+  "instruction": "In the Clock app, the alarm labelled \"{{o}} {{nonce}}\" repeats on {{v.startsay}}. Change it so it repeats only on {{v.say}}, at the same time.",
+  "budget": { "steps": 30, "usd": 1.5, "wall_s": 360 },
+  "sufficient": false,
+  "checks": [
+    {
+      "id": "next-ring",
+      "kind": "exec",
+      "why": "AlarmManager's next alarm clock (the Clock app's soonest enabled alarm), as weekday and time. It is the asked alarm's next ring: {{x.hhmm}} on one of {{v.say}}. Setup's days ({{v.startsay}}) share none with the asked ones, so an agent that does nothing fails. It can't show the other days: the grader reads the run for those (rubric).",
+      "argv": ["sh", "-c", "t=$(dumpsys alarm | grep -A3 'Next alarm clock information' | grep 'user:0 ' | sed 's/.* = \\([0-9-]* [0-9:]*\\)[.].*/\\1/'); [ -n \"$t\" ] && date -d \"$t\" +'%a %H:%M'; true"],
+      "stdout": { "matches": "^{{v.re}} {{x.hhmm}}\\s*$" }
+    }
+  ],
+  "teardown": [
+    {
+      "method": "exec.run",
+      "why": "Dismiss the alarm by its label: the Clock app switches off a repeating alarm, so it can't ring or be a later run's next alarm.",
+      "params": { "argv": ["am", "start", "-W", "-a", "android.intent.action.DISMISS_ALARM", "--es", "android.intent.extra.alarm.SEARCH_MODE", "android.label", "--es", "android.intent.extra.alarm.MESSAGE", "{{o}} {{nonce}}"], "timeoutMs": 20000 }
+    }
+  ],
+  "oracle": [
+    {
+      "method": "ui.act",
+      "why": "Wait for the Clock's window: on a fresh phone it shows a moment after am start -W returns.",
+      "params": { "target": { "app": "com.android.deskclock" }, "steps": [], "expect": { "window": { "title": "Clock" } } }
+    },
+    {
+      "method": "ui.act",
+      "why": "Expand the alarm: its row is named by its time and label (the time's space may be a hair space, so the name is matched by the label).",
+      "params": { "target": { "app": "com.android.deskclock" }, "steps": [{ "press": { "find": { "role": "button", "name": { "contains": "{{o}} {{nonce}}" } } } }], "expect": { "text": "Repeat" } }
+    },
+    {
+      "method": "ui.act",
+      "why": "Sunday is the first \"S\" box and is always asked: check it. A day's click rebinds the alarm's row, so the box a set clicked is gone when its hold is read back; each set's expect (the Clock window, back after the rebind) stands in, and the check reads the alarm.",
+      "params": { "target": { "app": "com.android.deskclock" }, "steps": [{ "set": { "find": { "role": "checkbox", "name": { "equals": "S" } } }, "value": "on" }], "expect": { "window": { "title": "Clock" } } }
+    },
+    {
+      "method": "ui.act",
+      "why": "Saturday is then the only unchecked \"S\" box.",
+      "params": { "target": { "app": "com.android.deskclock" }, "steps": [{ "set": { "find": { "role": "checkbox", "name": { "equals": "S" }, "value": { "equals": "not checked" } } }, "value": "{{v.sat}}" }], "expect": { "window": { "title": "Clock" } } }
+    },
+    {
+      "method": "ui.act",
+      "why": "Tuesday and Thursday are both checked at the start and never asked: uncheck the first checked \"T\" twice.",
+      "params": { "target": { "app": "com.android.deskclock" }, "steps": [{ "set": { "find": { "role": "checkbox", "name": { "equals": "T" }, "value": { "equals": "checked" } } }, "value": "off" }], "expect": { "window": { "title": "Clock" } } }
+    },
+    {
+      "method": "ui.act",
+      "params": { "target": { "app": "com.android.deskclock" }, "steps": [{ "set": { "find": { "role": "checkbox", "name": { "equals": "T" }, "value": { "equals": "checked" } } }, "value": "off" }], "expect": { "window": { "title": "Clock" } } }
+    },
+    {
+      "method": "ui.act",
+      "params": { "target": { "app": "com.android.deskclock" }, "steps": [{ "set": { "find": { "role": "checkbox", "name": { "equals": "M" } } }, "value": "{{v.mon}}" }], "expect": { "window": { "title": "Clock" } } }
+    },
+    {
+      "method": "ui.act",
+      "params": { "target": { "app": "com.android.deskclock" }, "steps": [{ "set": { "find": { "role": "checkbox", "name": { "equals": "W" } } }, "value": "{{v.wed}}" }], "expect": { "window": { "title": "Clock" } } }
+    },
+    {
+      "method": "ui.act",
+      "params": { "target": { "app": "com.android.deskclock" }, "steps": [{ "set": { "find": { "role": "checkbox", "name": { "equals": "F" } } }, "value": "{{v.fri}}" }], "expect": { "window": { "title": "Clock" } } }
+    }
+  ]
+}

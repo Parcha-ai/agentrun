@@ -48,7 +48,7 @@ test("every suite in the package loads; mac-dev, android-dev and linux-desktop a
 		}
 	}
 	assert.deepEqual(counts["mac-dev"], { all: 20, dev: 10 });
-	assert.deepEqual(counts["android-dev"], { all: 20, dev: 10 });
+	assert.deepEqual(counts["android-dev"], { all: 38, dev: 19 });
 	assert.deepEqual(counts["linux-desktop"], { all: 10, dev: 5 });
 	assert.equal(counts.macosworld.all + counts.mobileworld.all, 18);
 });

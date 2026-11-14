@@ -83,3 +83,72 @@ What it can't undo:
 - A run whose teardown never ran (a crash) leaves its saved `.orig` file, and the setting stays as the run left it.
   The next run has another nonce, so it saves the changed value as "original". Reset the phone's settings by hand after a
   crashed run.
+
+## Round 2 tasks
+
+Eighteen more tasks, nine dev and nine heldout, written to be harder than round 1 (where both arms passed 88-92%). Every
+one sets `exec: "deny"`, so the agent has only `ui`, `input`, `screen` and `apps`, and its oracle is built from the same
+methods: each oracle is a UI path a person could take, proven on a cloud phone. Each task starts from the opposite of its
+goal, its params give the three seeds three different targets, and everything it makes carries `{{nonce}}`. Three are
+answer tasks; their `unchanged` exec check fails the run if the agent edits what it was asked to read. An answer check
+can't reject every wrong answer (extra names, several numbers with none said to be the one), so the three are
+`sufficient: false` and the grader reads their rubric. Four are long (15+
+steps). `needs.apps` follows the rule above: each entry is required, a nested list is alternatives (Google, AOSP or
+Samsung build), and Settings is `com.android.settings` alone. The Settings oracles go through Settings' search
+(`com.android.settings.intelligence` on AOSP); an agent can take the menus instead.
+
+| id | app | split | steps expected | what the checks read |
+|---|---|---|---|---|
+| android.settings.time-format | Settings | dev | 6 | `settings get system time_12_24` |
+| android.settings.color-motion | Settings | dev | 12 | color inversion, `animator_duration_scale` and `cmd uimode night`, one read |
+| android.settings.three-changes | Settings | dev | 18 (long) | notification history, `time_12_24` and `animator_duration_scale`, one read |
+| android.clock.timer | Clock | dev | 8 | `dumpsys alarm`: the TIMER_EXPIRED alarm's original length |
+| android.clock.new-alarm | Clock | dev | 16 (long) | `dumpsys alarm` next alarm clock, as weekday and time |
+| android.contacts.favorite | Contacts | dev | 3 | `content query` of the nonce's contacts: target starred, decoy not |
+| android.contacts.work-phone | Contacts | dev | 3 | answer: the work number, not the mobile, home or the decoy's work number; phone rows unchanged |
+| android.files.delete-pdfs | Files | dev | 8 | `ls -1` of the run's folder: the PDFs gone, the text file and the folder kept |
+| android.cross.alarm-label-folder | Clock, Files | dev | 15 (long) | `ls -1` of the run's folder: one folder, named after the asked alarm's label (not the decoy alarm's) |
+| android.settings.text-size-bold | Settings | heldout | 8 | `font_scale` and `font_weight_adjustment`, one read |
+| android.settings.auto-rotate | Settings | heldout | 6 | `settings get system accelerometer_rotation` |
+| android.clock.alarm-repeat-days | Clock | heldout | 10 | `dumpsys alarm` next alarm clock, as weekday and time |
+| android.contacts.delete-contact | Contacts | heldout | 5 | `content query` of the nonce's contacts: only the kept one left |
+| android.contacts.work-email | Contacts | heldout | 10 | the target's email row (address and type Work/Home/Other), and no email on the decoy |
+| android.contacts.count-favorites | Contacts | heldout | 4 | answer: the count and the favourites' names; starred count and contact count unchanged |
+| android.files.new-folder | Files | heldout | 7 | `ls -1` of the parent, the sibling folder and the run's folder; the new entry is a folder |
+| android.files.largest-file | Files | heldout | 4 | answer: the largest file's name before any other; the folder unchanged |
+| android.cross.device-name-contact | Settings, Contacts | heldout | 15 (long) | `content query`: one contact named the device name setup put in, with the asked number |
+
+The Clock alarm tasks read the next alarm clock, so they rest on the same rule as set-alarm: setup leaves no other enabled
+alarm ringing sooner (the phone's own 8:30 and 9:00 alarms are off on a fresh phone, and the task's alarm is set before
+them). Settings tasks save and put back the phone's values as round 1's do; Contacts and Files tasks clean up by nonce;
+Clock tasks dismiss their alarms by label.
+
+## How wide the confidence interval is
+
+`compare` reports the difference between two arms' success rates with `pairedDifference` (src/stats.ts): runs are
+clustered by task, and the interval is the wider of a paired t-interval over the per-task differences and a Newcombe
+interval built from the two arms' Wilson intervals at T tasks.
+
+To see what a bench of this size can tell apart, the round 1 bench (24 tasks, seeds 1 and 2, gpt-6.1-terra against
+sonnet-5.5) gives the per-task agreement: 42 of 48 paired (task, seed) cells agree (0.875), 5 tasks have any
+disagreement, and success is 0.917 against 0.875. Round 1's own interval is 0.042 [-0.152, 0.236]. A simulation draws N
+tasks with replacement from round 1's, and for each task 3 seeds with replacement from its paired cells, then runs
+`pairedDifference` on them, 20,000 times per N:
+
+| tasks N | runs (3 seeds x 2 arms) | 95% half-width, mean | paired-t part alone | benches with half-width under 5 points |
+|---|---|---|---|---|
+| 20 | 120 | 0.212 | 0.137 | 0% |
+| 24 | 144 | 0.191 | 0.125 | 0% |
+| 30 | 180 | 0.169 | 0.112 | 0% |
+| 38 (this suite) | 228 | 0.148 | 0.099 | 0% |
+| 50 | 300 | 0.127 | 0.086 | 0% |
+| 80 | 480 | 0.098 | 0.068 | 0% |
+| 120 | 720 | 0.079 | 0.055 | 0% |
+| 200 | 1200 | 0.061 | 0.043 | 0.4% |
+| 300 | 1800 | 0.049 | 0.035 | 59% |
+| 400 | 2400 | 0.043 | 0.030 | 100% |
+
+With 38 tasks the interval is about ±15 points, so a 5-point difference between two models is not visible: the interval
+around it would run from about -10 to +20. Even the paired-t part alone is ±10 points. The Newcombe part sets the width,
+and it counts tasks, not runs, so more seeds don't narrow it; only more tasks do. A 5-point difference becomes visible at
+about 300 tasks at round 1's agreement. Below that, this suite tells apart differences of 15 points or more.
