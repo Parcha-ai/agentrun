@@ -24,7 +24,7 @@ const { startRunner } = await import("../dist/runner/runner.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-spec.js");
 const { readLaunchBody } = await import("../dist/run-launch.js");
-const { gradesOf } = await import("../dist/learn/promote.js");
+const { gradesOf, markGradeRound, putGrade } = await import("../dist/learn/promote.js");
 const { keepGrade, feedbackRoundOf } = await import("../dist/runner/feedback-round.js");
 const { runLearningOverStore } = await import("../dist/store-reads/learning.js");
 const { secretsShown } = await import("../dist/learning.js");
@@ -372,4 +372,34 @@ test("a grade names its round only once the round opened: a failed reopen leaves
   const [marked] = await gradesOf(server.settings, "agent-1");
   assert.deepEqual([marked.feedback, marked.seq, marked.at], ["look_back", kept.seq, kept.at], `marked in place: ${JSON.stringify(marked)}`);
   assert.equal(kept.seq, failed.seq + 1, "one new seq per grade, none for the round's mark");
+});
+
+// Two grades of one run can share their `at` (a millisecond): the second replaces the first, then the first's round
+// opens. The round marks the grade it was opened for (its run, `at` and `seq`), never its replacement.
+test("a round marks only the grade it was opened for: a replacement given in the same millisecond stays naming none", async () => {
+  const kept = new Map();
+  const settings = {
+    get: async (key) => kept.get(key),
+    putIfAbsent: async (key, value) => { if (!kept.has(key)) kept.set(key, value); return kept.get(key); },
+    replaceIf: async (key, was, value) => { if (JSON.stringify(kept.get(key)) !== JSON.stringify(was)) return false; kept.set(key, value); return true; },
+  };
+  const at = "2026-11-14T10:05:00.000Z";
+  const first = await putGrade(settings, "agent-1", { run: "run-same-ms", correct: false, source: "feedback", at, path: "agent", feedback: null });
+  const second = await putGrade(settings, "agent-1", { run: "run-same-ms", correct: true, source: "feedback", at, path: "agent", feedback: null });
+  await markGradeRound(settings, "agent-1", first, "look_back");
+  const [only] = await gradesOf(settings, "agent-1");
+  assert.deepEqual([only.seq, only.correct, only.feedback], [second.seq, true, null], `the replacement names no round: ${JSON.stringify(only)}`);
+});
+
+// The read's `graded.workflow` is a learned workflow's name, cut as every other learning name is (`shown.name`): a secret
+// registered after the run never shows in GET /runs/{id}/learning.
+test("a run's learning read hides a secret in its grade's workflow name", { timeout: 120_000 }, async (t) => {
+  const { server, start } = await world(t);
+  const done = await start("run-secret-name", 1, { byHand: true });
+  const secret = "sk-live-registered-after-the-run-7781";
+  await putGrade(server.settings, "agent-1", { run: done.id, correct: false, source: "feedback", at: new Date().toISOString(), path: "workflow", workflow: `answer-${secret}`, feedback: null });
+  const read = await runLearningOverStore(server, done.id, secretsShown([secret]), [secret]);
+  assert.ok(read?.graded, `the read says the grade: ${JSON.stringify(read)}`);
+  assert.ok(!JSON.stringify(read.graded).includes(secret), `the secret is hidden: ${JSON.stringify(read.graded)}`);
+  assert.equal(read.graded.workflow, "[redacted]");
 });

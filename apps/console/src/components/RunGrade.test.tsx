@@ -28,8 +28,12 @@ const answer = (body: GradeBody, feedback: GradeAnswer["feedback"]): GradeAnswer
 
 /** A grade as the learning read gives it back: the PUT's answer without `expected`. */
 const gradedOf = (over: Partial<RunGraded> = {}): RunGraded => ({ run_id: "run-g", correct: false, source: "feedback", graded_at: "2026-11-14T10:02:00.000Z", path: "agent", workflow: null, workflow_digest: null, feedback: null, ...over });
+/** The run's end after gradedOf's round: the round it opened ended the run again. */
+const ENDED_AGAIN = "2026-11-14T10:03:00Z";
 
-async function open(r: Run, { graded, grade }: { graded?: RunGraded; grade?: (body: GradeBody) => Promise<GradeAnswer> } = {}) {
+/** `readLearning`: the page's learning read in place of the server's (one still pending, one that failed, an older one).
+ *  `refreshed: false`: the run read after the PUT failed, so the page still holds the run as it was before the grade. */
+async function open(r: Run, { graded, grade, readLearning, refreshed = true }: { graded?: RunGraded; grade?: (body: GradeBody) => Promise<GradeAnswer>; readLearning?: () => Promise<RunLearningRead>; refreshed?: boolean } = {}) {
   const sent: GradeBody[] = [];
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
@@ -38,12 +42,12 @@ async function open(r: Run, { graded, grade }: { graded?: RunGraded; grade?: (bo
   let stored = graded;
   const show = (next: Run) => root!.render(createElement(RunDetail, { ...props, run: next }));
   const props = { run: r, agentName: "Invoice sorter", messages: messageFeatures, harnessSteers: true, rows: [], files: [], tab: "report" as const,
-    readLearning: async () => read(stored),
+    readLearning: readLearning ?? (async () => read(stored)),
     onGrade: async (body: GradeBody) => {
       sent.push(body);
       const { expected: _, ...a } = grade ? await grade(body) : answer(body, body.label ? "look_back" : null);
       stored = a;
-      if (a.feedback) show({ ...r, status: "working", state: "working", ended_at: null });
+      if (a.feedback && refreshed) show({ ...r, status: "working", state: "working", ended_at: null });
       return a;
     } };
   act(() => show(r));
@@ -154,7 +158,7 @@ describe("a run's page, the Grade control", () => {
   });
 
   it("says a finished round's outcome after a reload, from the grade read back", async () => {
-    const t = await open(run(), { graded: gradedOf({ feedback: "look_back" }) });
+    const t = await open(run({ ended_at: ENDED_AGAIN }), { graded: gradedOf({ feedback: "look_back" }) });
     const text = t.section()!.textContent ?? "";
     expect(text).toContain("Graded wrong");
     expect(text).not.toContain("Reviewing");
@@ -164,13 +168,13 @@ describe("a run's page, the Grade control", () => {
   });
 
   it("is still reviewing after a reload while the round's learning settles: no Grade again until it has", async () => {
-    const settling = run({ learning: { ...LEARNS!, state: "reflecting", reason: null } });
+    const settling = run({ ended_at: ENDED_AGAIN, learning: { ...LEARNS!, state: "reflecting", reason: null } });
     const t = await open(settling, { graded: gradedOf({ feedback: "look_back" }) });
     const text = t.section()!.textContent ?? "";
     expect(text).toContain("Reviewing");
     expect(text).toContain("The agent is looking back on your words.");
     expect(t.button("Grade again")).toBeUndefined();
-    await t.rerender(run());
+    await t.rerender(run({ ended_at: ENDED_AGAIN }));
     expect(t.section()!.textContent).not.toContain("Reviewing");
     expect(t.button("Grade again")).toBeTruthy();
   });
@@ -199,6 +203,47 @@ describe("a run's page, the Grade control", () => {
     expect(text).toContain("The agent is looking back on your words.");
     await t.tab("Report");
     expect(t.section()!.textContent).toContain("The agent is looking back on your words.");
+  });
+
+  it("keeps the grade it sent while the learning read is still pending, or failed", async () => {
+    for (const readLearning of [() => new Promise<RunLearningRead>(() => {}), async () => { throw new Error("read failed"); }]) {
+      const t = await open(run(), { readLearning });
+      await t.click("Right");
+      const text = t.section()!.textContent ?? "";
+      expect(text).toContain("Graded right");
+      expect(text).toContain("Kept for this agent.");
+      expect(t.button("Grade again")).toBeTruthy();
+      act(() => root?.unmount()); root = undefined; document.body.innerHTML = "";
+    }
+  });
+
+  it("never lets an older learning read replace a newer grade", async () => {
+    // The read started before the grade answers with the grade it replaced, after the PUT's answer.
+    let answerRead: (r: RunLearningRead) => void = () => {};
+    const t = await open(run(), { readLearning: () => new Promise((resolve) => { answerRead = resolve; }) });
+    await t.click("Right");
+    expect(t.section()!.textContent).toContain("Graded right");
+    await act(async () => { answerRead(read(gradedOf())); });
+    await t.rerender(run());
+    expect(t.section()!.textContent).toContain("Graded right");
+    expect(t.section()!.textContent).not.toContain("Graded wrong");
+  });
+
+  it("keeps the round it opened reviewing when the run read after the grade failed, until a run read says it ended again", async () => {
+    const t = await open(run(), { refreshed: false });
+    await t.click("Wrong");
+    await t.type(t.boxes()[0]!, "Wrong vendor.");
+    await t.click("Send grade");
+    // The page still holds the run as it ended before the grade.
+    let text = t.section()!.textContent ?? "";
+    expect(text).toContain("Reviewing");
+    expect(text).toContain("The agent is looking back on your words.");
+    expect(t.button("Grade again")).toBeUndefined();
+    await t.rerender(run({ ended_at: "2026-11-14T10:06:00Z" }));
+    text = t.section()!.textContent ?? "";
+    expect(text).not.toContain("Reviewing");
+    expect(text).toContain("The agent looked back on your words.");
+    expect(t.button("Grade again")).toBeTruthy();
   });
 
   it("shows a re-grade, not the grade it replaced, after a tab switch", async () => {
