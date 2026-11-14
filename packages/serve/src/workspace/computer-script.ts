@@ -23,10 +23,13 @@ type ScriptArgs = { readonly code?: unknown; readonly timeoutMs?: unknown };
 /** The run's tool gate's decision of one call, as a script's computer call is held to it (RunPermissions.decide). */
 export type ScriptDecide = (tool: string, args: unknown) => Promise<"allow" | "ask" | { deny: string }>;
 
-/** The settings key a script's computer call is held to, as the run's own tool of that name is: the shell is bash's, a
+/** The tool a script's computer call is held to, as the run's own tool of that name is: the shell is bash's, a program
+ *  started to run on (processes.start) bash_background's (bash's setting, and a read-only bash policy refuses it), a
  *  file's write is write's, a file's read, listing or stat is read's. The other ops (looking, acting) are the computer
  *  kind's, which the call of computer_script or codemode was already held to. */
-const HELD_AS: Readonly<Record<string, "bash" | "write" | "read">> = Object.freeze({ "shell.run": "bash", "files.write": "write", "files.read": "read", "files.list": "read", "files.stat": "read" });
+const HELD_AS: Readonly<Record<string, "bash" | "bash_background" | "write" | "read">> = Object.freeze({ "shell.run": "bash", "processes.start": "bash_background", "files.write": "write", "files.read": "read", "files.list": "read", "files.stat": "read" });
+/** The ops whose command runs in the computer's shell: each gets the bash policy's safeguards. */
+const SHELL_OPS: ReadonlySet<string> = new Set(["shell.run", "processes.start"]);
 
 /** What a script's `computer.shell` and `computer.files` are held to: the run's gate, which a person's settings (a denied
  *  bash, a read-only bash policy, a denied write) reach through the one decision the run's own tools get. A script can't
@@ -41,7 +44,7 @@ export class ScriptGuard {
   /** `op`'s arguments as the computer is sent them: a script's shell command with the policy's safeguards, as the bash
    *  tool's own command has them, which no option of the script's overrides. */
   shaped(op: string, args: unknown): unknown {
-    if (op !== "shell.run") return args;
+    if (!SHELL_OPS.has(op)) return args;
     const given = (args ?? {}) as Record<string, unknown>;
     const env = { ...((given.env ?? {}) as Record<string, string>), ...this.shell.env };
     return { ...given, ...(Object.keys(env).length > 0 ? { env } : {}), ...(this.shell.prelude !== "" && typeof given.command === "string" ? { command: `${this.shell.prelude}${given.command}` } : {}) };
@@ -57,7 +60,7 @@ export class ScriptGuard {
     if (tool === undefined) return undefined;
     if (!this.#decide) return `computer call ${op} was not run: this run's tool settings are not attached to its scripts yet`;
     const given = (args ?? {}) as Record<string, unknown>;
-    const decision = await this.#decide(tool, tool === "bash" ? { command: given.command, ...(given.cwd !== undefined ? { cwd: given.cwd } : {}) } : { path: given.path });
+    const decision = await this.#decide(tool, SHELL_OPS.has(op) ? { command: given.command, ...(given.cwd !== undefined ? { cwd: given.cwd } : {}) } : { path: given.path });
     if (decision === "allow") return undefined;
     if (decision === "ask") return `computer call ${op} was not run: this agent's ${tool} setting asks a person first, and a script can't wait for one. Call the ${tool} tool itself, or ask for the setting to be allow.`;
     return `computer call ${op} was not run: ${decision.deny}`;
