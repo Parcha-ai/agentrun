@@ -127,16 +127,18 @@ export default {
 
         // The workflow card: the newest revision serves; each guard on its step's card; where it is unsure.
         const card = page.getByRole("region", { name: "Learned workflow" });
-        check(/^Serving · refit on 40 rows · 37 aloneRefit on 40 graded inputs: workflow 95% vs agent 94% \(\+1 pts\), 3 handed back$/.test((await card.getByTestId("standing").textContent()) ?? ""), `${at}: the standing says ${await card.getByTestId("standing").textContent()}`);
+        // The chip's leading word only: its wording is asserted in learningLoop.test.ts and WorkflowReplay.test.tsx.
+        const word = async () => ((await card.getByTestId("standing").locator("span").first().textContent()) ?? "").split(" · ")[0];
+        check((await word()) === "Serving", `${at}: the standing says ${await word()}`);
         const verdicts = await card.locator("svg .verdict").allTextContents();
         check(verdicts.join() === "jev ≥0.78,self+jev ≥0.60", `${at}: the guards on the graph are ${verdicts.join()}`);
         check((await card.getByTestId("guard-row").count()) === 2 && (await card.getByTestId("guard-histogram").count()) === 2, `${at}: the unsure list is not two steps with their p`);
         await shoot(card, `loop-workflow-${theme}-${width}.png`);
         // Scrubbed back one: the refit's source, replaced in place.
         await card.getByRole("button", { name: "Previous revision" }).click();
-        check(/^RefitIts thresholds were refit: revision 1a48d30 serves in its place\.$/.test((await card.getByTestId("standing").textContent()) ?? ""), `${at}: revision 2 says ${await card.getByTestId("standing").textContent()}`);
+        check((await word()) === "Refit", `${at}: revision 2 says ${await word()}`);
         await card.getByRole("button", { name: "Previous revision" }).click();
-        check(/^Held · replayed 20 · 17 aloneReplay on 20 graded inputs: workflow 85% vs agent 94% \(-9 pts\), 3 handed back$/.test((await card.getByTestId("standing").textContent()) ?? ""), `${at}: revision 1 says ${await card.getByTestId("standing").textContent()}`);
+        check((await word()) === "Held", `${at}: revision 1 says ${await word()}`);
 
         // The feed: the refused draft in the checks' words; a note says what it went into.
         const feed = page.getByTestId("loop-feed");
