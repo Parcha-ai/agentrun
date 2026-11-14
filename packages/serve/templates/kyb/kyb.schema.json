@@ -235,7 +235,7 @@
         }
       }
     },
-    "report_markdown": { "type": "string", "minLength": 100, "maxLength": 3000, "description": "a short narrative: the verdict paragraph, the top red flags one line each, and the limitations. Never restates the identity, ownership, sanctions or media rows: the console renders those from the fields above" }
+    "report_markdown": { "type": "string", "contentMediaType": "text/markdown", "minLength": 100, "maxLength": 3000, "description": "a short narrative: the verdict paragraph, the top red flags one line each, and the limitations. Never restates the identity, ownership, sanctions or media rows: the console renders those from the fields above" }
   },
   "$defs": {
     "date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },

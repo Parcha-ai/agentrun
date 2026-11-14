@@ -1,0 +1,62 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "mac.reminders.complete-item",
+  "version": 1,
+  "title": "Tick off one reminder of a list",
+  "split": "heldout",
+  "tags": ["reminders", "edit"],
+  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "apps": ["com.apple.reminders"] },
+  "params": {
+    "item": { "pick": ["Buy stamps", "Return library books", "Email the landlord", "Charge the camera"] }
+  },
+  "setup": [
+    {
+      "method": "exec.run",
+      "why": "The list holds exactly four reminders, all open, the asked one among them.",
+      "params": { "argv": ["osascript", "-e", "{{file:reminders.applescript}}", "start"], "timeoutMs": 60000 }
+    },
+    { "method": "apps.launch", "params": { "id": "com.apple.reminders" } }
+  ],
+  "instruction": "In Reminders, mark \"{{item}}\" in the list \"computer-bench {{nonce}}\" as completed. Leave the other reminders open.",
+  "budget": { "steps": 15, "usd": 1, "wall_s": 180 },
+  "checks": [
+    {
+      "id": "target-done",
+      "kind": "exec",
+      "why": "The one reminder with the name is completed.",
+      "argv": ["osascript", "-e", "{{file:reminders.applescript}}", "target-done"],
+      "timeoutMs": 60000,
+      "stdout": { "equals": "1" }
+    },
+    {
+      "id": "others-open",
+      "kind": "exec",
+      "why": "No other reminder of the list is completed.",
+      "argv": ["osascript", "-e", "{{file:reminders.applescript}}", "others-done"],
+      "timeoutMs": 60000,
+      "stdout": { "equals": "0" }
+    },
+    {
+      "id": "none-deleted",
+      "kind": "exec",
+      "why": "The list still holds its four reminders, completed ones included: nothing was deleted instead of ticked off.",
+      "argv": ["osascript", "-e", "{{file:reminders.applescript}}", "total"],
+      "timeoutMs": 60000,
+      "stdout": { "equals": "4" }
+    }
+  ],
+  "teardown": [
+    {
+      "method": "exec.run",
+      "why": "Delete the list and its reminders.",
+      "params": { "argv": ["osascript", "-e", "{{file:reminders.applescript}}", "teardown"], "timeoutMs": 60000 }
+    }
+  ],
+  "oracle": [
+    {
+      "method": "exec.run",
+      "why": "Tick off the reminder.",
+      "params": { "argv": ["osascript", "-e", "{{file:reminders.applescript}}", "complete"], "timeoutMs": 60000 }
+    }
+  ]
+}

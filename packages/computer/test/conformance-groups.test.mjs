@@ -335,6 +335,19 @@ test("a desktop that declares screen, pointer and keys passes every desktop case
 	assert.match(formatReport(report), /^computer conformance · fake-device · desktop, daemon pid1 · computerd 1\.0\.0 linux\/amd64\n/);
 });
 
+test("a desktop whose screen.capture is off (an attached Mac without its owner's grant) passes the screen cases by refusing both with its reason; one that answers anyway fails them", async () => {
+	const why = "seeing the whole screen (screen.shot, screen.watch) is off for the server this Mac is paired with";
+	const hello = { features: { "screen.capture": { off: why } } };
+	const report = await run(fakeDevices({ hello }).provider, ["screen.screenshot-size", "screen.watch"]);
+	assert.deepEqual(reasons(report), {});
+	assert.ok(report.results.every((r) => r.status === "pass"));
+	const answers = await run(fakeDevices({ hello, broken: "capture-off-answers" }).provider, ["screen.screenshot-size", "screen.watch"]);
+	for (const id of ["screen.screenshot-size", "screen.watch"]) {
+		assert.equal(statuses(answers)[id], "fail", id);
+		assert.match(reasons(answers)[id], new RegExp(`${id === "screen.watch" ? "screen\\.watch" : "screen\\.shot"} with screen\\.capture off`), id);
+	}
+});
+
 test("an Android phone with daemon none passes every phone case through its in-process client, on an open network", async () => {
 	const { provider, made } = fakeDevices({ kind: "android" });
 	const report = await run(provider, ["health.hello", "health.ping", ...PHONE_CASES]);
@@ -358,6 +371,18 @@ test("apps.launch-terminate needs apps alone: a phone with no ui group and no fi
 	const hidden = await run(fakeDevices({ kind: "android", groups, broken: "launch-hidden" }).provider, ["apps.launch-terminate"]);
 	assert.deepEqual(statuses(hidden), { "apps.launch-terminate": "fail" });
 	assert.match(reasons(hidden)["apps.launch-terminate"], /^com\.android\.settings shown after apps\.launch: a screenshot other than the one before it/);
+});
+
+test("apps.launch-terminate on a Linux desktop drives a stock editor or terminal any vendor's desktop lists, and skips in words when it lists none", async () => {
+	const groups = ["exec", "files", "processes", "screen", "input.pointer", "input.keys", "apps"];
+	const seen = await run(fakeDevices({ groups, stockApps: ["firefox-esr", "org.xfce.mousepad"] }).provider, ["apps.launch-terminate"]);
+	assert.deepEqual(statuses(seen), { "apps.launch-terminate": "pass" }, reasons(seen)["apps.launch-terminate"]);
+	const kept = await run(fakeDevices({ groups, stockApps: ["org.xfce.mousepad"], broken: "terminate-stays" }).provider, ["apps.launch-terminate"]);
+	assert.deepEqual(statuses(kept), { "apps.launch-terminate": "fail" });
+	assert.match(reasons(kept)["apps.launch-terminate"], /org\.xfce\.mousepad no longer in front after apps\.terminate/);
+	const none = await run(fakeDevices({ groups, stockApps: ["firefox-esr"] }).provider, ["apps.launch-terminate"]);
+	assert.deepEqual(statuses(none), { "apps.launch-terminate": "skip" });
+	assert.match(reasons(none)["apps.launch-terminate"], /this desktop lists none of the stock apps the case knows \(org\.xfce\.mousepad, mousepad, xfce4-terminal, org\.xfce\.terminal, xterm\)/);
 });
 
 /** The lifetimes provider.deadline asked for, in order: the run's shared computer is not the case's. */

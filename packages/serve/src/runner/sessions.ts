@@ -10,7 +10,7 @@
 // append at once, whatever its key, as it does once the claim's signal (the loop's Context) is aborted: a fenced CLI
 // stops writing, never retrying into a Harness the claim no longer holds. Within a process, the newest `open` of a key,
 // checked inside the commit that appends.
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { type ConversationId, type Cursor, type Harness, ROOT_CONVERSATION_ID, type Tx } from "@earendil-works/pi-durable";
 import { SessionFenced, type SessionRecord, type SessionStore, type SessionWriter } from "@parcha/agentrun-kernel";
 import { Fenced, type Store } from "../store/store.js";

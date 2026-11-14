@@ -1,6 +1,7 @@
 package ai.agentrun.phoned.android;
 
 import ai.agentrun.phoned.RpcError;
+import ai.agentrun.phoned.device.AxRefusal;
 import ai.agentrun.phoned.device.Device;
 import ai.agentrun.phoned.device.Rect;
 import android.accessibilityservice.AccessibilityServiceInfo;
@@ -104,7 +105,7 @@ final class Ax implements Device.Accessibility {
 		} catch (Throwable t) {
 			Log.w("UiAutomation connect failed", t);
 			if (u != null) destroy(u);
-			throw RpcError.unsupported(connectWords(t));
+			throw AxRefusal.of(t);
 		}
 		try {
 			AccessibilityServiceInfo info = u.getServiceInfo();
@@ -145,17 +146,6 @@ final class Ax implements Device.Accessibility {
 		}
 		if (looperCtor == null) throw new IllegalStateException("no Looper constructor and no system context");
 		return (UiAutomation) looperCtor.newInstance(looper, connection);
-	}
-
-	private static String connectWords(Throwable t) {
-		String text = String.valueOf(t.getMessage());
-		for (Throwable c = t.getCause(); c != null; c = c.getCause()) text += " " + c.getMessage();
-		if (text.contains("already registered")) {
-			return "another UiAutomation client holds the phone's accessibility (a `uiautomator dump`, an instrumentation "
-					+ "test, Appium or another phoned): only one may connect at a time; stop it and try again";
-		}
-		return "could not connect to the phone's accessibility service (" + t + "); try again, and reboot the phone if it "
-				+ "keeps failing";
 	}
 
 	private static void destroy(UiAutomation u) {

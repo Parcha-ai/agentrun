@@ -26,7 +26,7 @@ import type { AnalyticsFilter } from "./analytics.js";
 import { journalEntries } from "../runner/journal-reader.js";
 import { KINDS } from "../runner/journal-kinds.js";
 import { keptOf, learnedOf, lostOf, type DroppedData, type GradedData, type KeptProposal, type MergedData } from "../runner/learning-loop.js";
-import { GENERAL_UNCHECKED } from "../learn/general.js";
+import { GENERAL_NO_BUDGET, GENERAL_NO_ROOM, GENERAL_UNCHECKED } from "../learn/general.js";
 import type { Store } from "../store/store.js";
 
 /** A run's learning end: the Learning fields its end sets. */
@@ -80,8 +80,10 @@ async function endOfKept(store: Store, kept: NonNullable<Awaited<ReturnType<Stor
   const cost = spent ? { cost_usd: { grade: spent.usd }, tokens: { grade: spent.tokens ?? null } } : {};
   // A generality check that could not run (learning-loop.ts `unchecked`) is said after the end's words: the grader read
   // every note. Its provider's error stays in the journal.
-  const skipped = (graded?.unchecked ?? dropped?.unchecked) !== undefined;
-  const withSkip = (detail: string | null) => (skipped ? [detail, GENERAL_UNCHECKED].filter(Boolean).join(" ") : detail);
+  // One skipped for no room under the cap (GENERAL_NO_BUDGET) says so.
+  const unchecked = graded?.unchecked ?? dropped?.unchecked;
+  const skip = unchecked === undefined ? undefined : unchecked === GENERAL_NO_BUDGET ? GENERAL_NO_ROOM : GENERAL_UNCHECKED;
+  const withSkip = (detail: string | null) => (skip ? [detail, skip].filter(Boolean).join(" ") : detail);
   if (merged && graded) {
     // Each item as the merge settled it: its record's verdict (a note it left out is no longer kept, and says why). A merge
     // recorded with none (before the record kept it) reads no item decisions.
@@ -202,12 +204,12 @@ export async function agentCostOverStore(store: Store, agentId: string, limit = 
   for (const run of ended) {
     if (!kinds.has(run.revisionId)) kinds.set(run.revisionId, (await store.agents.revision(run.revisionId))?.kind);
     if (kinds.get(run.revisionId) === "workflow") continue;
-    const cost = await costRunOf(store, run, runs.length + 1);
-    if (!cost) {
+    // A run that learns whose record names no path is left out and counted, never `agent` at $0.
+    if (!pathOfRow(run.metrics, await learningStartOfRun(store, run.id))) {
       unknownPath += 1;
       continue;
     }
-    runs.push(cost);
+    runs.push(await costRunOf(store, run, runs.length + 1));
   }
   // Each learned workflow that ran first, where it stands against the money rule (workflow-first.ts workflowCostsOf), over
   // the runs the run's launch reads (pastRunsOverStore) at the all-in cost this series shows: a workflow over the line
@@ -241,13 +243,11 @@ export async function allInOf(store: Store, run: RunRecord): Promise<ReturnType<
 }
 
 /** One run of the cost series, as number `n` of it: its figures (allInOf) and its path (agentCostOverStore's loop body,
- *  and a learning batch's row once the run's learning has settled). Undefined for a run that learns whose record names no
- *  path (pathOfRow): its path and cost are not known. */
-export async function costRunOf(store: Store, run: RunRecord, n: number): Promise<CostRun | undefined> {
+ *  and a learning batch's row once the run's learning has settled). */
+export async function costRunOf(store: Store, run: RunRecord, n: number): Promise<CostRun> {
   const started = await learningStartOfRun(store, run.id);
-  const placed = pathOfRow(run.metrics, started);
-  if (!placed) return undefined;
-  const { path, workflow } = placed;
+  // Its figures are what the batch reads: a run with no path named is placed as the agent's here, and left out by the series.
+  const { path, workflow } = pathOfRow(run.metrics, started) ?? { path: "agent" as const, workflow: null };
   return { n, run_id: run.id, started_at: new Date(run.startedAt).toISOString(), path, workflow, learned_revision: started?.seed ?? null, ...(await allInOf(store, run)) };
 }
 

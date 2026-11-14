@@ -1,4 +1,4 @@
-// The pi family in this repository is one version: pi 1.5.0, tracked at the latest (pi pins its own packages to exact
+// The pi family in this repository is one version: pi 1.5.2, tracked at the latest (pi pins its own packages to exact
 // versions, so an install is one whole family). Every package depends on the family at exactly that version and names
 // it so in its peer ranges; the packages Pi itself provides to the packages it loads (pi-ai, pi-agent-core,
 // pi-coding-agent, pi-tui, typebox) stay "*", as Pi's package guidance asks. One typebox serves the whole tree: the one
@@ -11,8 +11,8 @@ import { fileURLToPath } from 'node:url';
 
 const repo = dirname(dirname(fileURLToPath(import.meta.url)));
 /** The pi family's version: every @earendil-works package, pinned and peered at exactly this. */
-export const PI = '1.5.0';
-/** The one typebox of the tree: pi-coding-agent 1.5.0 pins it exactly. */
+export const PI = '1.5.2';
+/** The one typebox of the tree: pi-coding-agent 1.5.2 pins it exactly. */
 export const TYPEBOX = '1.3.27';
 const FAMILY = '@earendil-works/';
 const HOST_PROVIDED = ['@earendil-works/pi-ai', '@earendil-works/pi-agent-core', '@earendil-works/pi-coding-agent', '@earendil-works/pi-tui', 'typebox'];

@@ -34,14 +34,19 @@ disagree, the generated file is right, and the document is a bug.
 
 `hello` carries `protocol`, the version of this protocol, apart from the daemon's own `version`.
 
-- A **minor** step adds: a method, an optional field, a group, an error kind a caller may not have seen. A caller that
-  speaks 0.1 keeps working against 0.2: it never calls what it does not know, and it ignores result fields it does not
-  know.
-- A **major** step changes or removes.
-- A provider refuses a computer whose `hello` names another protocol version than its own, as it refuses a daemon of
-  another version.
+The rule is exact match. A provider hands out a computer only when its `hello` names the provider's protocol version
+and the provider's own daemon version, character for character: a 0.3 daemon is refused by a 0.2 provider, a 0.1
+daemon too, and so is a `hello` that names no protocol. There is no additive step a caller may skip over.
 
-Until 1.0, a minor step may still change something a draft got wrong. Each such change is named in the step's notes.
+Why: AgentRun ships the daemon with the provider. `@parcha/agentrun-computer` carries `computerd` for each
+architecture in its own package, stamped with the package's version, and the provider puts that binary in every
+computer it makes. A daemon of any other version is one the provider did not put there, so the rule never refuses a
+computer the provider made right, and it never has to guess which methods an older or newer daemon has.
+
+An attached driver, an app a person installs on their own device, is the one exception: the provider cannot replace
+it, so only the protocol version must match, and any build of that version is accepted ([`attach.md`](attach.md#versions)).
+
+Each protocol version's notes say what changed in it.
 
 **0.2** adds the `ui` group (`ui.observe`, `ui.act`), `hello.screen` and `hello.features`, the error kind `stale`,
 `apps.launch`'s `url` and `background`, and the limits the new methods need. Its one break: the `apps.ui_tree` group and

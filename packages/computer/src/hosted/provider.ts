@@ -21,8 +21,10 @@ import { checkMount, type MountReadBack, readBackOf } from "../mount.js";
 import {
 	ARCHIL_MOUNT_LABEL,
 	ARCHIL_TOOL_UID,
+	type ArchilEgress,
 	type ArchilMount,
 	type ArchilRoot,
+	archilEgressOf,
 	archilLabels,
 	archilMount,
 	archilRefusals,
@@ -62,7 +64,7 @@ import { daemonWatch, type ScreenWatch, type ScreenWatchHandlers, type WatchOpti
 import { countTested } from "../test-connection.js";
 import { waitUntil } from "../wait.js";
 import { bounded, CALL_SLACK_MS, failOf, hostCall, type Opened, openBridge, pause, race, rootOf, runToExit, seconds, uploadThroughExec, words } from "./process.js";
-import { ARCHIL_GATE, type DaemonExpected, daemonDrift, type HostedCommands, hostedCommands, installerOf } from "./scripts.js";
+import { ARCHIL_GATE, closedSocketsOf, type DaemonExpected, daemonDrift, type HostedCommands, hostedCommands, installerOf } from "./scripts.js";
 
 /** The longest each kind of call may take, and the pauses between polls. */
 export interface HostedTimeouts {
@@ -119,6 +121,12 @@ export interface HostedOptions {
 	probeTargets?: string[];
 	/** Told what is no failure of the call it came from: a release that did not let an Archil folder go cleanly. */
 	onNote?: ProviderNote;
+	/**
+	 * The egress gateway an Archil computer's archil client reaches Archil through, `<IPv4 gateway>:<mount lane>:<data
+	 * lane>` such as 192.0.2.40:18100:42050 (archilEgressOf): for a vendor whose machines reach Archil only through it.
+	 * Given to the helper's mount and revoke. Unset or empty, the client reaches Archil as the machine's network allows.
+	 */
+	archilEgress?: string;
 }
 
 const VERSION: string = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).version;
@@ -258,6 +266,7 @@ export class HostedProvider implements ComputerProvider {
 	readonly #timeouts: HostedTimeouts;
 	readonly #probeTargets: string[];
 	readonly #onNote: ProviderNote | undefined;
+	readonly #archilEgress: ArchilEgress | undefined;
 	/** Each create in flight, and the names of the computers this provider ended (create-requests.ts). In memory alone:
 	 *  past it, and past this process, the vendor's listing is what holds. */
 	readonly #requests = new CreateRequests();
@@ -275,12 +284,14 @@ export class HostedProvider implements ComputerProvider {
 			timeouts = {},
 			probeTargets = DEFAULT_PROBE_TARGETS,
 			onNote,
+			archilEgress,
 		} = options;
 		this.id = host.id;
 		this.host = host;
 		this.#label = label;
 		this.#fail = failOf(host);
 		this.#onNote = onNote;
+		this.#archilEgress = archilEgress === undefined || archilEgress === "" ? undefined : archilEgressOf(archilEgress);
 		if (kind !== "desktop" && kind !== "linux") throw new Error(`kind is desktop or linux, not ${String(kind)}`);
 		if (!isWhole(maxLifetimeMs) || maxLifetimeMs <= 0 || maxLifetimeMs > host.facts.maxLifetimeMs) {
 			throw new Error(`maxLifetimeMs must be a whole number of ms above 0 and at most ${host.facts.maxLifetimeMs} ms, the longest ${label} keeps a computer`);
@@ -341,9 +352,10 @@ export class HostedProvider implements ComputerProvider {
 		const { image, network, labels, mount } = given;
 		const capabilities = this.capabilities();
 		const label = this.#label;
-		refusals.push(...checkMount(mount, capabilities.mount ?? []), ...archilRefusals(given as unknown as ComputerSpec));
+		// An Archil mount's own rules hold only where the provider takes one; elsewhere checkMount's refusal says why alone.
+		const archil = (mount as { kind?: unknown } | undefined)?.kind === "archil" && (capabilities.mount ?? []).includes("archil");
+		refusals.push(...checkMount(mount, capabilities.mount ?? [], this.host.facts.unmounted), ...(archil ? archilRefusals(given as unknown as ComputerSpec) : []));
 		const daemonUser = `${this.#uid}:${this.#gid}`;
-		const archil = (mount as { kind?: unknown } | undefined)?.kind === "archil";
 		const asked = this.#takesUser() ? given.user : undefined;
 		if (asked !== undefined) {
 			const user = specUserOf(asked);
@@ -524,10 +536,12 @@ export class HostedProvider implements ComputerProvider {
 				const differ = this.#labelDiffer(spec, name, machine.labels, "read back");
 				if (differ.length > 0) return this.#fail("exists", otherSpecWords(name, "was made", differ));
 				const attached = await this.#attached(machine, signal);
-				// The image and an Archil mount are in the labels; the user, the network, and a size where the vendor takes
-				// one in a spec, are read back.
-				const sizes = (["cpus", "memoryMb"] as const).filter((field) => this.host.facts.specFields?.includes(field));
-				const drift = attached.ok ? readBackDiffer({ ...spec, user: this.#userOf(spec) }, attached.value.spec, ["user", "network", ...sizes]) : [];
+				// The image and an Archil mount are in the labels; the user, the network, the GPUs where the vendor reads them back,
+				// and a size where the vendor takes one in a spec and reads it back, are read back. A vendor that reads no size or
+				// GPU back (Modal) cannot show a drift in it.
+				const sizes = (["cpus", "memoryMb"] as const).filter((field) => this.host.facts.specFields?.includes(field) && attached.ok && attached.value.spec[field] !== undefined);
+				const gpu = this.host.facts.gpuReadBack ? (["gpu"] as const) : [];
+				const drift = attached.ok ? readBackDiffer({ ...spec, user: this.#userOf(spec) }, attached.value.spec, ["user", "network", ...gpu, ...sizes]) : [];
 				if (drift.length > 0) return this.#fail("exists", otherSpecWords(name, "was made", drift));
 				if (attached.ok) return ok({ id: attached.value.id, name: attached.value.name, ...(attached.value.notes ? { notes: attached.value.notes } : {}) });
 				if (attached.error.code === "aborted") return attached;
@@ -590,6 +604,7 @@ export class HostedProvider implements ComputerProvider {
 			nonce: randomBytes(16).toString("hex"),
 			waitS: Math.ceil((this.#timeouts.createMs + this.#timeouts.uploadMs + this.#timeouts.execMs + (archil ? this.#timeouts.mountMs * 3 : 0)) / 1000),
 			...(archil && this.host.facts.daemon === "pid1" ? { gate: ARCHIL_GATE } : {}),
+			...(this.host.facts.daemon === "child" && this.host.facts.vendorSockets !== undefined ? { vendorSockets: this.host.facts.vendorSockets } : {}),
 		});
 		const taken = new Set(this.host.facts.specFields ?? []);
 		const request: MachineRequest = {
@@ -787,7 +802,16 @@ export class HostedProvider implements ComputerProvider {
 
 	/** The rest of #prepare from the daemon's install on: init started, its first connection checked, the listing waited for. */
 	async #start(spec: ComputerSpec, ref: ComputerRef, commands: HostedCommands, want: Expected, signal?: AbortSignal): Promise<Result<string[]>> {
+		const closed: string[] = [];
 		if (this.host.facts.daemon === "child") {
+			// The vendor's own sockets outside /run, closed to the computer's user before any program of its runs.
+			if (commands.sockets !== undefined) {
+				const shut = await runToExit(this.host, ref.id, commands.sockets, { ms: this.#timeouts.execMs, ...(signal ? { signal } : {}), what: `closing ${this.#label}'s own sockets in ${ref.name}` });
+				if (!shut.ok) return shut;
+				if (shut.value.exitCode !== 0) return this.#fail("refused", `closing ${this.#label}'s own sockets to the computer's user failed (exit ${shut.value.exitCode}): ${`${shut.value.stdout} ${shut.value.stderr}`.trim().slice(0, 300)}`);
+				const found = closedSocketsOf(shut.value.stdout);
+				closed.push(`${this.#label}'s own sockets closed to the computer's user: ${found.join(", ") || `none found (${(this.host.facts.vendorSockets ?? []).join(", ")})`}`);
+			}
 			const init = await runToExit(this.host, ref.id, commands.start, { ms: this.#timeouts.execMs, ...(signal ? { signal } : {}), what: `starting the daemon in ${ref.name}` });
 			if (!init.ok) return init;
 			if (init.value.exitCode !== 0) return this.#fail("refused", `starting the daemon failed (exit ${init.value.exitCode}): ${`${init.value.stdout} ${init.value.stderr}`.trim().slice(0, 500)}`);
@@ -809,7 +833,7 @@ export class HostedProvider implements ComputerProvider {
 			await opened.value.close();
 		}
 		const listed = await this.#waitListed(ref, signal);
-		return listed.ok ? ok(notes) : listed;
+		return listed.ok ? ok([...closed, ...notes]) : listed;
 	}
 
 	/** What init wrote to its log (child) or the vendor's words of the machine (pid1): the end of it, or nothing. */
@@ -883,6 +907,7 @@ export class HostedProvider implements ComputerProvider {
 			self: computer,
 			releaseOlder: () => releaseOlder(this, run, epoch, signal ? { signal } : {}),
 			timeoutMs: this.#timeouts.mountMs,
+			...(this.#archilEgress ? { egress: this.#archilEgress } : {}),
 			...(signal ? { signal } : {}),
 		});
 	}
@@ -974,6 +999,8 @@ export class HostedProvider implements ComputerProvider {
 		if (problem) return this.#fail("invalid", problem);
 		const found = await this.#own(ref);
 		if (!found.ok) return found;
+		// A machine on its way out (past its deadline or released, the vendor still deleting it) is gone, not merely stopped.
+		if (found.value.state === "going") return this.#fail("gone", `${ref.name} passed its deadline or was released: it is going`);
 		if (found.value.state !== "running") return this.#fail("refused", `${ref.name} is ${found.value.state}, not running: its daemon does not run`);
 		const opened = await this.#open(ref);
 		if (!opened.ok) return opened;

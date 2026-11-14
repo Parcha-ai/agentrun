@@ -48,6 +48,36 @@ test("a sandbox's gpu is { type, count } in checkGpu's words: a GPU type name an
   for (const count of [0, 1.5, "1", undefined]) assert.deepEqual(issues({ type: "H100", count }), [["definition.computer.gpu.count", "wrong_type"]], JSON.stringify(count));
 });
 
+test("a desktop's or a phone's computer may say its surface (code or tools) and exec (false: no shell); no other kind takes either", () => {
+  const issues = (value) => computerIssues(value, "definition.computer").map((issue) => [issue.field, issue.reason]);
+  for (const kind of ["desktop", "phone"]) {
+    assert.deepEqual(issues({ kind, provider: "x", surface: "code" }), [], kind);
+    assert.deepEqual(issues({ kind, provider: "x", surface: "tools", exec: false }), [], kind);
+    assert.deepEqual(issues({ kind, provider: "x", exec: true }), [], kind);
+  }
+  for (const surface of ["both", "", 1, null]) assert.deepEqual(issues({ kind: "desktop", provider: "x", surface }), [["definition.computer.surface", "not_an_option"]], JSON.stringify(surface));
+  assert.equal(computerIssues({ kind: "desktop", provider: "x", surface: "both" }, "definition.computer")[0].message, 'definition.computer.surface is "code" (the agent drives the computer by scripts alone) or "tools" (by its step tools alone); absent, both');
+  for (const exec of ["no", 0, null]) assert.deepEqual(issues({ kind: "phone", provider: "x", exec }), [["definition.computer.exec", "wrong_type"]], JSON.stringify(exec));
+  assert.equal(computerIssues({ kind: "phone", provider: "x", exec: "no" }, "definition.computer")[0].message, "definition.computer.exec is false (the agent gets no shell and starts no program on its computer) or true (as absent)");
+  for (const kind of ["sandbox", "browser"]) {
+    assert.deepEqual(issues({ kind, provider: "x", surface: "code" }), [["definition.computer", "not_allowed"]], kind);
+    assert.deepEqual(issues({ kind, provider: "x", exec: false }), [["definition.computer", "not_allowed"]], kind);
+  }
+  assert.equal(computerIssues({ kind: "sandbox", provider: "x", exec: false }, "definition.computer")[0].message, "only a desktop or phone computer takes a exec, not a sandbox one");
+  assert.deepEqual(issues({ kind: "none", surface: "tools" }), [["definition.computer", "not_allowed"]]);
+});
+
+test("through the API: a desktop's surface and exec are saved and shown with its computer; on a sandbox they are 422", async (t) => {
+  const { api } = await serve(t);
+  const made = await api("POST", "/agents", agent("ui", { computer: { kind: "desktop", provider: "e2b", surface: "tools", exec: false } }));
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  assert.deepEqual(made.body.definition.computer, { kind: "desktop", provider: "e2b", surface: "tools", exec: false });
+  assert.deepEqual((await api("GET", "/agents/ui")).body.definition.computer, { kind: "desktop", provider: "e2b", surface: "tools", exec: false });
+  const box = await api("POST", "/agents", agent("box", { computer: { kind: "sandbox", provider: "docker", surface: "code" } }));
+  assert.equal(box.status, 422, JSON.stringify(box.body));
+  assert.deepEqual(box.body.error.fields.map((f) => [f.field, f.reason]), [["definition.computer", "not_allowed"]]);
+});
+
 test("through the API: a sandbox's gpu is saved and shown with its computer; on a desktop it is 422", async (t) => {
   const { api } = await serve(t);
   const gpu = await api("POST", "/agents", agent("gpu", { computer: { kind: "sandbox", provider: "daytona", gpu: { type: "H100", count: 2 } } }));

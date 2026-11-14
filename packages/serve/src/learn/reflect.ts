@@ -6,7 +6,8 @@
 import { createHash } from "node:crypto";
 import { CAPS } from "./check.js";
 import { INDEX_FILE, INDEX_LINES } from "./notes.js";
-import { type DraftDecisions, draftDecisionProviders, LEARNED_MCP_TOOL, SKILL_NAME } from "./skills.js";
+import { type DraftDecisions, draftDecisionProviders, learnedName, SKILL_NAME } from "./skills.js";
+import { mcpNameOf } from "../tool-names.js";
 
 /** Control and invisible characters: none may reach the prompt through a value the host puts in it. */
 const UNSEEN = /[\p{Cc}\p{Cf}]/u;
@@ -21,9 +22,9 @@ export const WORKFLOW_BLOCK = "workflow";
  *  draft (`draftFor`): a run proposes one only when it thinks to, and few do. */
 export const DRAFT_AFTER_RUNS = 3;
 /** A tool's name as the prompt may print it: a table tool's, or an MCP tool's a learned workflow may run (skills.ts
- *  LEARNED_MCP_TOOL). */
+ *  tool-names.ts mcpNameOf). */
 const TOOL_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
-const printable = (tool: string): boolean => TOOL_NAME.test(tool) || LEARNED_MCP_TOOL.test(tool);
+const printable = (tool: string): boolean => TOOL_NAME.test(tool) || mcpNameOf(tool) !== undefined;
 
 /** What a later round's end-of-run prompt says first (reflectPrompt's `later`): the run looked back before, at an end a
  *  follow-up opened it again from, so only what came since is new. */
@@ -45,8 +46,10 @@ export const LATER_LOOK = "You looked back on this run before. Since then the co
  *  opened the run again after it looked back): the prompt says so (LATER_LOOK) after its first line. */
 export function reflectPrompt(options: { dir: string; active: number; tools?: readonly string[]; draftFor?: readonly string[]; described?: readonly { readonly name: string; readonly does: string }[]; workflows?: boolean; decisions?: DraftDecisions; handedBack?: string; revise?: ReviseAsk; later?: boolean }): string {
   const { dir, active, tools = [], draftFor = [], described = [], workflows = true, decisions, handedBack, revise, later = false } = options;
-  if (handedBack !== undefined && !SKILL_NAME.test(handedBack)) throw new Error("the workflow that handed the run back must be a workflow's name");
-  if (revise !== undefined && !SKILL_NAME.test(revise.workflow)) throw new Error("the workflow asked to be revised must be a workflow's name");
+  // A learned workflow's name is the store's rule for one (skills.ts learnedName: WORKFLOW_NAME, `sort_invoice` too), never
+  // a skill's: a name the store keeps never stops the turn that asks for its revision.
+  if (handedBack !== undefined && !(typeof handedBack === "string" && learnedName("workflow", handedBack))) throw new Error("the workflow that handed the run back must be a workflow's name");
+  if (revise !== undefined && !(typeof revise.workflow === "string" && learnedName("workflow", revise.workflow))) throw new Error("the workflow asked to be revised must be a workflow's name");
   const judges = draftDecisionProviders(decisions).length > 0;
   if (typeof dir !== "string" || dir === "" || dir.startsWith("/") || UNSEEN.test(dir)) throw new Error("the directory must be a path relative to the run's workspace, with no control or unseen characters");
   if (!Number.isSafeInteger(active) || active < 0) throw new Error("the count of active notes must be a whole number, 0 or more");

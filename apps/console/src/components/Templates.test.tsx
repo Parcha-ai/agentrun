@@ -25,7 +25,7 @@ const REVIEWER: TemplateView = {
     repo: { type: "string", required: true, description: "The repository, as owner/name", pattern: "^[^/]+/[^/]+$" },
     max_files: { type: "integer", required: false, description: "How many files it reads at most" },
   },
-  secrets: ["PARALLEL_API_KEY"], budget: { per_run_usd: 0.5 }, learning: false, approvals_default: "ask", triggers: [{ kind: "github", events: ["pull_request"] }], skills: [], evals: [],
+  input_schema: null, secrets: ["PARALLEL_API_KEY"], budget: { per_run_usd: 0.5 }, learning: false, approvals_default: "ask", triggers: [{ kind: "github", events: ["pull_request"] }], skills: [], evals: [],
 };
 const NOTES: TemplateView = { ...REVIEWER, name: "meeting-notes", display_name: null, version: "0.2.0", description: "Turns a transcript into notes.", mcp: [], parameters: {}, secrets: [], budget: null, triggers: [] };
 
@@ -135,7 +135,7 @@ describe("applying a template", () => {
     const writes = t.host.querySelector('[data-tool="mcp:github/create_review"]')!.textContent ?? "";
     for (const row of [reads, writes]) expect(row).toContain("Allow: the agent may call this without asking you.");
     expect(reads).toContain("The template asks you to allow this.");
-    expect(writes).toContain("The template does not ask for this; unticked, it stays at your setting.");
+    expect(writes).toContain("The template does not ask for this; unticked, the agent doesn't get it.");
     expect(t.host.textContent).not.toContain("asks you before each call");
     // The MCP server, set up here or not, and the secrets by name only.
     expect(t.host.querySelector('[data-mcp="github"]')!.textContent).toContain("Set up here");
@@ -156,6 +156,34 @@ describe("applying a template", () => {
     expect(t.sent[0].body).toEqual({ parameters: { repo: "acme/web", max_files: 3 }, grants: ["mcp:github/create_review"], overrides: { approvals: "ask" } });
     expect(t.sent[0].key).toBeTruthy();
     expect(t.sent[1].key).toBe(t.sent[0].key);
+  });
+
+  it("asks a list parameter one item a line, as a run's list input, titles it with its items joined, and sends a list", async () => {
+    const WATCH: TemplateView = { ...REVIEWER, name: "watch", display_name: "Watch on ${parameters.companies}", mcp: [], parameters: {
+      companies: { type: "array", items: { type: "string", minLength: 1 }, required: true, description: "The companies to watch." },
+      limits: { type: "array", items: { type: "integer" }, required: false, description: "Item caps." },
+    } };
+    const t = await open("watch", { templates: [WATCH] });
+    const box = t.host.querySelector<HTMLTextAreaElement>('[data-field="parameters.companies"] textarea');
+    expect(box).toBeTruthy();
+    expect(t.host.querySelector('[data-field="parameters.companies"]')!.textContent).toContain("One a line.");
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(box, "Stripe\n\n Adyen \n");
+      box!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(t.host.querySelector("h1")!.textContent).toContain("Watch on Stripe, Adyen");
+    await t.click(t.button(/^Apply/));
+    expect(t.sent[0].body.parameters).toEqual({ companies: ["Stripe", "Adyen"] });
+  });
+
+  it("sends a required list left empty as [], for the server to take or refuse; an optional one left empty is not sent", async () => {
+    const WATCH: TemplateView = { ...REVIEWER, name: "watch", display_name: null, mcp: [], parameters: {
+      companies: { type: "array", items: { type: "string" }, required: true, description: "The companies to watch." },
+      limits: { type: "array", items: { type: "integer" }, required: false, description: "Item caps." },
+    } };
+    const t = await open("watch", { templates: [WATCH] });
+    await t.click(t.button(/^Apply/));
+    expect(t.sent[0].body.parameters).toEqual({ companies: [] });
   });
 
   it("sends a boolean parameter as its checkbox shows it: false untouched, true once ticked", async () => {

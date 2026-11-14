@@ -74,3 +74,19 @@ test("a session the run left in an earlier process still counts: its records' sp
   const second = await session(store, "s2", runBooking(store, capOf(1)), [{ say: "never sent", usd: 0.6, ...BIG }, { end: true }]);
   assert.match(second.tickets[0].refuse ?? "", /this run has spent \$0\.60 of its \$1 cap/);
 });
+
+test("what was spent beside the run's sessions on its behalf (sessions.beside) is the run's spend too; unknown, the run's spend is unknown", async () => {
+  const ask = { key: "s1", label: "s1", model: SONNET.id, turn: 1, maxTurns: null, spentUsd: 0, inFlight: [], ...BIG };
+  // $0.60 taken beside it (a grade of its learning): the $0.47 request no longer fits the $1 cap, and the refusal counts it.
+  const beside = Object.assign(memorySessionStore(), { beside: async () => 0.6 });
+  assert.match((await runBooking(beside, capOf(1))(ask))?.refuse ?? "", /this run has spent \$0\.60 of its \$1 cap/);
+  // $0.40 beside it: it fits.
+  const room = Object.assign(memorySessionStore(), { beside: async () => 0.4 });
+  assert.equal((await runBooking(room, capOf(1))(ask))?.refuse, undefined);
+  // What the sessions are asked with: their spend and what is beside them, summed; null when that is unknown.
+  const seen = [];
+  const judge = async (request) => void seen.push(request.spentUsd);
+  await runBooking(Object.assign(memorySessionStore(), { beside: async () => 0.25 }), judge)(ask);
+  await runBooking(Object.assign(memorySessionStore(), { beside: async () => null }), judge)(ask);
+  assert.deepEqual(seen, [0.25, null]);
+});

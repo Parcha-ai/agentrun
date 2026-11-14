@@ -1,6 +1,6 @@
 // A program the computer's user runs reaches none of the vendor's own agent, whose ports each provider declares
-// (capabilities().vendorAgentPorts), and no outside address, and sees its own loopback alone: computerd init
-// --own-network at work.
+// (capabilities().vendorAgentPorts), and no outside address, sees its own loopback alone, and finds nothing listening in
+// its own network but computerd: computerd init --own-network at work.
 import { DAEMON_IN_COMPUTER, SOCKET_DIR } from "../../drift.js";
 import { ARCHIL_SYNC_SOCKET } from "../../mount-archil.js";
 import type { ComputerClient } from "../../protocol.js";
@@ -23,6 +23,7 @@ interface ProbeLine {
 	quiet?: unknown;
 	raised?: unknown;
 	sockets?: unknown;
+	listeners?: unknown;
 	results?: Array<{ target?: unknown; outcome?: unknown; detail?: unknown }>;
 }
 
@@ -30,8 +31,9 @@ interface ProbeLine {
  * The isolation check, on the computer `client` reaches (the case's own by default): computerd's probe, run as the
  * computer's user, sees its own loopback alone, and is refused at the vendor's agent's declared ports on 127.0.0.1 and
  * ::1 and at OUTSIDE_TARGETS; and the path unix sockets it connects to (the probe's own listing, --sockets) are the
- * computer's own (OWN_SOCKETS, and a desktop's display) alone, each recorded with its type. A probe that reports no
- * socket list, or a search it could not finish, fails the check in words. The Archil case mount.archil-isolated-durable runs the same check on an Archil computer.
+ * computer's own (OWN_SOCKETS, and a desktop's display) alone, each recorded with its type; and every TCP and UDP
+ * listener in its own network is computerd's (assertOnlyComputerdListens: today, none listens). A probe that reports no
+ * socket list or no listener list, or a search it could not finish, fails the check in words. The Archil case mount.archil-isolated-durable runs the same check on an Archil computer.
  */
 export async function assertIsolated(t: CaseContext, client?: ComputerClient): Promise<void> {
 	const ports = t.provider.capabilities().vendorAgentPorts ?? [];
@@ -82,6 +84,33 @@ export async function assertIsolated(t: CaseContext, client?: ComputerClient): P
 	}
 	const other = found.filter(({ path }) => !own.includes(path)).map(({ path, type }) => `${path} (${type})`);
 	t.assert(other.length === 0, `a program of the computer's user connects to path unix sockets that are not the computer's own (${own.join(", ")}): ${other.join(", ")}`);
+	assertOnlyComputerdListens(t, probe.listeners);
+}
+
+/**
+ * The TCP and UDP listeners in the network of the computer's user (the probe's listing, --sockets, from /proc/net/tcp,
+ * tcp6, udp and udp6 of its own namespace) are computerd's alone: each held by a process that runs computerd's own
+ * program, as the probe ties a socket's inode to the descriptors of the processes /proc shows it. Computerd listens on
+ * nothing there today: init's one TCP listener, the egress relay (--egress), is a Docker computer's, which takes no
+ * --own-network, and the Archil relay and sync server run as root beside the fence, in the vendor's network. So the rule
+ * now is that nothing listens. Init's own descriptors are not the probe's to read (it drops to the programs' uid
+ * non-dumpable), so a listener init opened there would fail here, named, until the probe ties it. A listing the probe did
+ * not report, or a table it could not read, fails in words.
+ */
+function assertOnlyComputerdListens(t: CaseContext, reported: unknown): void {
+	const search = reported as { listeners?: unknown; incomplete?: unknown } | undefined;
+	if (search === null || typeof search !== "object" || !Array.isArray(search.listeners) || !Array.isArray(search.incomplete)) {
+		return t.assert(false, "the probe reported no list of the TCP and UDP listeners in the user's own network (a computerd too old for its listeners), so the listener fence could not run");
+	}
+	const listeners = search.listeners.map((one) => {
+		const { protocol, address, port, owner, computerd } = one as { protocol?: unknown; address?: unknown; port?: unknown; owner?: unknown; computerd?: unknown };
+		return { protocol: String(protocol), address: String(address), port: String(port), owner: typeof owner === "string" && owner !== "" ? owner : "its owner not shown", computerd: computerd === true };
+	});
+	t.observe(`TCP and UDP listeners in the user's own network: ${listeners.map((one) => `${one.protocol} ${one.address} port ${one.port} (${one.owner}${one.computerd ? ", computerd" : ""})`).join(", ") || "none"}`);
+	const incomplete = search.incomplete.map(String);
+	t.assert(incomplete.length === 0, `the probe could not read every table of listeners, so the listener fence is unproven: ${incomplete.join("; ")}`);
+	const stray = listeners.filter((one) => !one.computerd).map((one) => `${one.protocol} port ${one.port} listens in the user's own network (on ${one.address}, ${one.owner}), and it isn't computerd's`);
+	t.assert(stray.length === 0, stray.join("; "));
 }
 
 /**

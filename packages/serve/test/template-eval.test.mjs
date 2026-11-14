@@ -509,7 +509,7 @@ test("a fake search reads /.../ as literal text, so a pattern like /(a+)+$/ answ
   assert.equal(searched(search, "NOT path:docs load"), "2 matching lines in 2 files\nsrc/load.ts:1: load(1);\ntests/load.test.ts:1: load(2);", "the NOT is spent on the qualifier: load is still wanted");
 });
 
-test("the answer's schema keeps the agent's file limits when it lives under evals/: it ships beside each SKILL.md", async (t) => {
+test("the answer's schema keeps the agent's file limits when it lives under evals/: it is given to the agent", async (t) => {
   const dir = join(await scratch(t), "evalpkg");
   cpSync(PKG, dir, { recursive: true });
   mkdirSync(join(dir, "skills/answer"), { recursive: true });
@@ -518,10 +518,12 @@ test("the answer's schema keeps the agent's file limits when it lives under eval
   const manifest = readFileSync(join(dir, "agent.md"), "utf8").replace("output: { schema: answer.schema.json }", "output: { schema: evals/mcp-match/fixtures/answer.schema.json }");
   writeFileSync(join(dir, "agent.md"), manifest);
   writeFileSync(join(dir, "evals/mcp-match/fixtures/answer.schema.json"), schema);
-  assert.equal(readPackage(dir).skills["answer/answer.schema.json"], schema, "a small schema under evals/ ships beside the SKILL.md");
+  const small = readPackage(dir);
+  assert.deepEqual(small.outputSchema, JSON.parse(schema), "a small schema under evals/ is the agent's output schema");
+  assert.equal(small.skills["answer/answer.schema.json"], undefined, "never copied beside the SKILL.md: the runner gives the model the schema");
   const big = JSON.stringify({ ...JSON.parse(schema), description: "x".repeat(MAX_FILE_BYTES + 1024) });
   writeFileSync(join(dir, "evals/mcp-match/fixtures/answer.schema.json"), big);
-  assert.throws(() => readPackage(dir), (e) => e instanceof PackageError && /evals\/mcp-match\/fixtures\/answer\.schema\.json: is over \d+ bytes, a package file's limit: the answer's schema ships beside each SKILL\.md/.test(e.message), "past the agent's file limit, under evals/ too");
+  assert.throws(() => readPackage(dir), (e) => e instanceof PackageError && /evals\/mcp-match\/fixtures\/answer\.schema\.json: is over \d+ bytes, a package file's limit: the answer's schema is given to the agent/.test(e.message), "past the agent's file limit, under evals/ too");
   writeFileSync(join(dir, "evals/mcp-match/fixtures/answer.schema.json"), schema);
   // The agent's own files one byte short of the schema's room: each within its limit, and together within POST /v2/agents'.
   let room = MAX_PACKAGE_BYTES - Buffer.byteLength(schema) + 1 - ["agent.md", "answer.schema.json", "skills/answer/SKILL.md"].reduce((sum, path) => sum + statSync(join(dir, path)).size, 0);

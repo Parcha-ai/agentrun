@@ -1,7 +1,7 @@
 // A run's spend over the one store (design 2.1): the cap's reading from A's journal, where each run's own database was
 // read before. The same computation — cap.ts spentFrom, unchanged — over the same entries in log order; only where the
 // entries come from changes, so no money behaviour differs (the money-parity rule). A run with no journal spends 0.
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { type Meters, meterFiguresFrom, spentFrom } from "../cap.js";
 import type { Store } from "../store/store.js";
 import { bookedCapSpend, bookedSpend, cliModelWorked, costIsBooked } from "../runner/metrics.js";

@@ -60,8 +60,12 @@ public enum FeatureName {
 	public static let page = "ui.page"
 	/// The nav step: back, home and app_switch.
 	public static let nav = "ui.nav"
+	/// Why ui.nav is off: macOS has no system back, home or app switcher, so the nav step is always refused.
+	public static let navOff = "macOS has no system back, home or app switcher: use the app's own controls or a key chord such as super+["
+	/// screen.shot and screen.watch capture the whole screen.
+	public static let screenCapture = "screen.capture"
 
-	public static let all = [appsBackground, tree, image, background, foreground, page, nav]
+	public static let all = [screenCapture, appsBackground, tree, image, background, foreground, page, nav]
 }
 
 /// What the machine is, the same fields on every OS: "Apple", "MacBook Pro".
@@ -114,16 +118,6 @@ public struct HelloResult: Sendable, Codable, Equatable {
 		self.screen = screen
 		self.features = features
 		self.device = device
-	}
-}
-
-/// What a client sends with hello. The driver takes any params, so a newer client is never refused.
-public struct HelloParams: Sendable, Codable, Equatable {
-	/// Who is asking, for the log: a name and version.
-	public var client: String
-
-	public init(client: String) {
-		self.client = client
 	}
 }
 

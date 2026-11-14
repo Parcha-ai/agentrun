@@ -18,7 +18,7 @@
 // is dropped, so the model is offered exactly the host's tools. With `webSearch`, one hosted tool passes: Anthropic's web
 // search, exactly as the pinned CLI asks for it in the request its WebSearch tool makes. Usage is read from the stream's
 // `message_start` (input and cache tokens) and its last `message_delta` (output, and the searches the provider ran).
-import { messagesImagesIn, providerInputOverhead, ProxyRefusal, type InputCounter, type InputShape, type ProviderPolicy, type ProxyRequestContext, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-kernel/host";
+import { messagesImagesIn, providerInputOverhead, NATIVE_SEARCH_USD, ProxyRefusal, type InputCounter, type InputShape, type ProviderPolicy, type ProxyRequestContext, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-kernel/host";
 
 /** The prefix of the session's own tools, as the CLI names them (its in-process MCP server, `hands`). */
 export const OWN_TOOL_PREFIX = "mcp__hands__";
@@ -64,9 +64,6 @@ export const CLAUDE_WEB_SEARCH_TOOL = "web_search_20250305";
 const WEB_SEARCH_KEYS: ReadonlySet<string> = new Set(["type", "name", "max_uses", "allowed_domains", "blocked_domains"]);
 /** The most searches one request may ask the provider for: the pinned CLI's `max_uses`. */
 const WEB_SEARCH_MAX_USES = 8;
-/** What one web search costs on Anthropic's API, in USD, beside the tokens: $10 per 1,000 searches, "Web search tool" in
- *  https://platform.claude.com/docs/en/about-claude/pricing (a search that errs is not billed). */
-export const CLAUDE_WEB_SEARCH_USD = 0.01;
 
 export interface AnthropicPolicyOptions {
   /** The session's model, and the one the CLI's small background calls use (default: the session's). */
@@ -76,8 +73,6 @@ export interface AnthropicPolicyOptions {
   tools: readonly string[];
   /** The CLI's own tools the session has, offered by their own names beside its tools (`Skill`, when it has skills). */
   builtins?: readonly string[];
-  /** The granted tools of the session's remote MCP servers, as the CLI names them (`mcp__<server>__<tool>`). */
-  mcpTools?: readonly string[];
   /** The most output tokens one request may ask for. Default 128 000, what the pinned CLI asks for on current models. */
   maxOutputTokens?: number;
   /** Admit Anthropic's web search server tool (`CLAUDE_WEB_SEARCH_TOOL`), exactly as the pinned CLI asks for it; every
@@ -277,7 +272,7 @@ export function applyAnthropic(body: unknown, route: ProxyRoute, options: Anthro
     blocks((message as Record<string, unknown>).content, "a message's content");
   }
   blocks(body.system, "system");
-  const allowed = context.host !== undefined ? new Set(clientToolNames(body.tools)) : new Set([...options.tools.map((name) => `${OWN_TOOL_PREFIX}${name}`), ...(options.builtins ?? []), ...(options.mcpTools ?? [])]);
+  const allowed = context.host !== undefined ? new Set(clientToolNames(body.tools)) : new Set([...options.tools.map((name) => `${OWN_TOOL_PREFIX}${name}`), ...(options.builtins ?? [])]);
   const tools = ownTools(body.tools, allowed, options.webSearch);
   const choice = body.tool_choice;
   const chosen = isPlain(choice) && typeof choice.name === "string" && (allowed.has(choice.name) || (options.webSearch === true && choice.name === "web_search"));
@@ -319,13 +314,13 @@ function bookedUsage(usage: unknown): AnthropicUsage | undefined {
   return { input, output, cacheRead: tokenCount(usage.cache_read_input_tokens) ?? 0, cacheWrite: tokenCount(usage.cache_creation_input_tokens) ?? 0, ...(webSearches ? { webSearches } : {}) };
 }
 
-/** `price` with each web search a response reports added at `CLAUDE_WEB_SEARCH_USD`: the host prices the tokens, the
+/** `price` with each web search a response reports added at `NATIVE_SEARCH_USD`: the host prices the tokens, the
  *  searches are Anthropic's flat rate. An unknown price stays unknown. */
 export function withWebSearches(price: (model: string, usage: ProxyUsage) => number | null): (model: string, usage: ProxyUsage) => number | null {
   return (model, usage) => {
     const usd = price(model, usage);
     const count = (usage as AnthropicUsage).webSearches ?? 0;
-    return usd === null || count === 0 ? usd : usd + count * CLAUDE_WEB_SEARCH_USD;
+    return usd === null || count === 0 ? usd : usd + count * NATIVE_SEARCH_USD;
   };
 }
 
@@ -378,10 +373,10 @@ export function anthropicFiltered(text: string): boolean {
 }
 
 /** Whether a Messages body (as `apply` kept it) is the turn's answer request: it offers the model one of the session's
- *  tools, its own, built-in or remote (a remote MCP server's). The CLI's side calls (a title, a summary, a web search's
+ *  tools, its own (a run's remote MCP tools among them) or built-in. The CLI's side calls (a title, a summary, a web search's
  *  own request) offer none of them; in a session with no tools no request can be told from one, so each is the turn's. */
-export function anthropicAnswers(body: Record<string, unknown>, options: Pick<AnthropicPolicyOptions, "tools" | "builtins" | "mcpTools">): boolean {
-  const allowed = new Set([...options.tools.map((name) => `${OWN_TOOL_PREFIX}${name}`), ...(options.builtins ?? []), ...(options.mcpTools ?? [])]);
+export function anthropicAnswers(body: Record<string, unknown>, options: Pick<AnthropicPolicyOptions, "tools" | "builtins">): boolean {
+  const allowed = new Set([...options.tools.map((name) => `${OWN_TOOL_PREFIX}${name}`), ...(options.builtins ?? [])]);
   if (allowed.size === 0) return true;
   return Array.isArray(body.tools) && body.tools.some((tool) => isPlain(tool) && typeof tool.name === "string" && allowed.has(tool.name));
 }

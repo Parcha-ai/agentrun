@@ -24,6 +24,17 @@ public struct Router: Sendable {
 		handlers[method] = { _ in try Coders.json(try await body()) }
 	}
 
+	/// Runs `check` with the method's name before each method served so far, before its params are read: what it
+	/// refuses is refused the same whatever was sent.
+	public mutating func guarding(_ check: @escaping @Sendable (String) throws -> Void) {
+		for (method, handler) in handlers {
+			handlers[method] = { raw in
+				try check(method)
+				return try await handler(raw)
+			}
+		}
+	}
+
 	public var methods: [String] { handlers.keys.sorted() }
 
 	public func handler(_ method: String) -> Handler? { handlers[method] }

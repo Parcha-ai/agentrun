@@ -279,7 +279,7 @@ test('a workspace package that is neither private nor in the release map fails t
   await assert.rejects(preflight(root), /pi-newcomer is neither private nor named in releasePackageNames/);
   await putJson(join(extra, 'package.json'), { name: '@parcha/pi-newcomer', version, license: 'MIT', private: true });
   assert.deepEqual((await preflight(root)).packages.map(pkg => pkg.directory), releasePackages, 'a private package needs no entry and is not published');
-  assert.deepEqual(repoPackages(), [...listedPackages].sort(), 'the repository lists every package it has');
+  assert.deepEqual(repoPackages().filter(name => repoManifest(name).private !== true || listedPackages.includes(name)), [...listedPackages].sort(), 'the repository lists every package it may publish; a private one outside the map (computer-bench) is never published');
 }));
 
 // The workflow's publish step, up to its loop: run in a directory whose scripts/release-preflight.mjs is the one given.

@@ -95,12 +95,6 @@ describe("CostChart", () => {
     expect(text(host)).toContain("1 run costs more than");
     expect(text(host)).toContain("1 run's cost is not known: left out.");
   });
-  it("says how many runs' path and cost are not known, left out, never drawn as the agent's at $0", () => {
-    const host = draw({ ...sample, unknown_path_runs: 2 });
-    expect(text(host)).toContain("2 runs' path and cost are not known: left out.");
-    expect(text(draw({ ...sample, unknown_path_runs: 1 }))).toContain("1 run's path and cost are not known: left out.");
-    expect(text(draw(sample))).not.toContain("path and cost are not known");
-  });
   it("before any workflow has finished a run, the mix's last words say who did, not 0% by the workflow", () => {
     const host = draw(series([run(1, "agent", 0.002), run(2, "agent", 0.003), run(3, "handed_back", 0.002)]));
     const mix = host.querySelector('[data-testid="execution-mix"]')!;
@@ -135,6 +129,12 @@ describe("CostChart", () => {
     const mix = host.querySelector<HTMLElement>('[data-testid="execution-mix"]')!;
     const xs = [...mix.querySelectorAll("svg g")].map((g) => g.querySelector("rect")).filter((r): r is SVGRectElement => !!r && r.getAttribute("fill-opacity") === "0").map((r) => Number(r.getAttribute("x")));
     expect(new Set(xs.map((v) => Math.round(v))).size).toBe(5);
+  });
+  it("says how many runs' path and cost are not known, left out, never drawn as the agent's at $0", () => {
+    const host = draw({ ...sample, unknown_path_runs: 2 });
+    expect(text(host)).toContain("2 runs' path and cost are not known: left out.");
+    expect(text(draw({ ...sample, unknown_path_runs: 1 }))).toContain("1 run's path and cost are not known: left out.");
+    expect(text(draw(sample))).not.toContain("path and cost are not known");
   });
   it("names each path in the legend with its runs, and colours its dots by a chart token", () => {
     const host = draw(sample);
@@ -196,17 +196,17 @@ describe("CostChart", () => {
     expect(text(host)).toContain("No run with a known cost yet.");
     expect(text(host)).toContain("run the same job about 20 times");
   });
+  it("draws the mix even when no run has a known cost: the chart says what is needed, the strip still shows who finished each run", () => {
+    const host = draw(series([run(1, "agent", null), run(2, "workflow", null), run(3, "workflow", null)]));
+    expect(text(host)).toContain("No run with a known cost yet.");
+    expect(host.querySelector('[data-testid="execution-mix"]')).not.toBeNull();
+  });
   it("says how many runs were left out in the empty card too, when none has a known cost", () => {
     const host = draw({ ...series([]), total_runs: 3, unknown_cost_runs: 1, unknown_path_runs: 2 });
     expect(host.querySelector("svg[aria-hidden] path")).toBeNull();
     expect(text(host)).toContain("No run with a known cost yet.");
     expect(text(host)).toContain("2 runs' path and cost are not known: left out.");
     expect(text(host)).toContain("1 run's cost is not known: left out.");
-  });
-  it("draws the mix even when no run has a known cost: the chart says what is needed, the strip still shows who finished each run", () => {
-    const host = draw(series([run(1, "agent", null), run(2, "workflow", null), run(3, "workflow", null)]));
-    expect(text(host)).toContain("No run with a known cost yet.");
-    expect(host.querySelector('[data-testid="execution-mix"]')).not.toBeNull();
   });
   it("keeps the level after the takeover when the takeover is older than the runs read, without its marker", () => {
     const host = draw({ ...sample, runs: sample.runs.slice(40), total_runs: 80 });

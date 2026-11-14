@@ -8,7 +8,8 @@
 // `replay: "safe"`: a call cut after its commit runs again and is decided against what it wrote. A delivered record
 // is found, and the call answers `already`. A bounce finds its round spent, and the same record is delivered. A
 // rejection is decided and counted again: a crash there costs the node one attempt.
-import type { Context, JsonValue } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
+import type { JsonValue } from "@earendil-works/chord/json";
 import {
   defineDoc, defineTool, GenerationTask, hook, type ConversationId, type DocumentReader, type HookApi, type HookRegistration,
   type ToolExecutionApi, type ToolExecutionResult, type ToolRegistration,
