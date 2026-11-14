@@ -61,7 +61,9 @@ function callLog(t) {
     if (before === undefined) delete process.env[CALLS_ENV]; else process.env[CALLS_ENV] = before;
     rmSync(file, { force: true });
   });
-  return () => readFileSync(file, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)).filter((call) => call.path === "/v1/run");
+  const all = () => readFileSync(file, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line));
+  // Its runs; `all()`, every request of any kind (an inspect, a listing read).
+  return Object.assign(() => all().filter((call) => call.path === "/v1/run"), { all });
 }
 
 const until = async (done, what, ms = 60_000) => {
@@ -217,26 +219,41 @@ test("a pinned endpoint's ask card names it and shows its pinned price", async (
   assert.deepEqual(one.asks.map((ask) => [ask.tool, ask.price]), [[MATCH, 0.026]], JSON.stringify(one.asks));
 });
 
-test("a call priced by usage asks with monid's estimate for its own input on its card, the call itself unsent", async (t) => {
-  const sent = callLog(t);
-  const one = await monidRun(t, { tools: [SEARCH], pin: USAGE_PIN, script: [{ call: "monid__faux__person__search", args: SEARCH_ARGS }, { say: "done" }] });
-  assert.equal(one.row.state, "parked", JSON.stringify(one.row));
-  assert.deepEqual(one.asks.map((ask) => [ask.tool, ask.price]), [[SEARCH, { estimate_usd: 0.003 }]], JSON.stringify(one.asks));
-  assert.deepEqual(sent().map((call) => call.maxCost), [0], "only the estimate read, which runs nothing");
-});
-
-test("a card already asked is answered without reading monid's estimate again: a deny after the run parked sends nothing more", async (t) => {
-  const sent = callLog(t);
-  const one = await monidRun(t, { tools: [SEARCH], pin: USAGE_PIN, script: [{ call: "monid__faux__person__search", args: SEARCH_ARGS }, { say: "done" }] });
-  assert.equal(one.row.state, "parked", JSON.stringify(one.row));
+/** `one`'s run, once its process has acted on the person's answer to its one ask (`kind`: approve or deny) and rests. */
+async function answered(one, kind) {
   const [ask] = one.asks;
-  await one.server.command(RUN, { kind: "deny", body: { approval: ask.callId, note: "not this one" } });
-  const row = await until(async () => {
+  await one.server.command(RUN, { kind, body: { approval: ask.callId, ...(kind === "deny" ? { note: "not this one" } : {}) } });
+  return until(async () => {
     const now = await one.server.runs.get(RUN);
     return ["ended", "failed", "stopped"].includes(now.state) && now.runner === null && now;
-  }, "the run ends after the deny");
+  }, `the run ends after the ${kind}`);
+}
+
+test("a call priced by usage under ask parks on a card that says how it is priced, and monid is sent nothing while it waits: not even the estimate's read, which can run it", async (t) => {
+  const sent = callLog(t);
+  const one = await monidRun(t, { tools: [SEARCH], pin: USAGE_PIN, script: [{ call: "monid__faux__person__search", args: SEARCH_ARGS }, { say: "done" }] });
+  assert.equal(one.row.state, "parked", JSON.stringify(one.row));
+  assert.deepEqual(one.asks.map((ask) => [ask.tool, ask.price]), [[SEARCH, "priced by usage"]], JSON.stringify(one.asks));
+  assert.deepEqual(sent.all(), [], "no request of any kind before the person answers");
+});
+
+test("a call priced by usage under ask that the person denies sends nothing to monid at all", async (t) => {
+  const sent = callLog(t);
+  const one = await monidRun(t, { tools: [SEARCH], pin: USAGE_PIN, script: [{ call: "monid__faux__person__search", args: SEARCH_ARGS }, { say: "done" }] });
+  assert.equal(one.row.state, "parked", JSON.stringify(one.row));
+  const row = await answered(one, "deny");
   assert.equal(row.state, "ended", JSON.stringify(row));
-  assert.deepEqual(sent().map((call) => call.maxCost), [0], "the card's one estimate read, and nothing on the answer");
+  assert.deepEqual(sent.all(), [], "nothing sent, before the answer or after it");
+});
+
+test("a call priced by usage under ask that the person allows reads monid's estimate once, after the allow, then sends the call once, held at it", async (t) => {
+  const sent = callLog(t);
+  const one = await monidRun(t, { tools: [SEARCH], pin: USAGE_PIN, launch: { max_cost_usd: 1 }, script: [{ call: "monid__faux__person__search", args: SEARCH_ARGS }, { say: "done" }] });
+  assert.equal(one.row.state, "parked", JSON.stringify(one.row));
+  assert.deepEqual(sent.all(), [], "nothing before the allow");
+  const row = await answered(one, "approve");
+  assert.equal(row.state, "ended", JSON.stringify(row));
+  assert.deepEqual(sent.all().map((call) => [call.path, call.maxCost]), [["/v1/run", 0], ["/v1/run", 0.003]], "one estimate read, then the call at that estimate");
 });
 
 /** The fake monid holds each call it is sent until releaseHeld(), from here on in this test. */
@@ -392,16 +409,16 @@ test("a call priced by usage that monid charges above its estimate is booked at 
   assert.deepEqual([run.row.state, run.row.summary], ["failed", "monid charged $1.42, more than the $0.003 held; the run stopped"], JSON.stringify(run.row));
 });
 
-test("a call priced by usage that monid estimates at $0 runs at its card's estimate read: that run's charge is booked under the call there, and a charge above $0 stops the run", async (t) => {
+test("an allowed call priced by usage that monid estimates at $0 runs at its estimate's read: that run's charge is booked under the call, and a charge above $0 stops the run", async (t) => {
   const sent = callLog(t);
   t.mock.method(console, "error", () => {});
   const requests = [];
   // No results asked for: monid estimates $0, so maxCost 0 lets it run; monid charges $1.42.
-  const run = await monidRun(t, { tools: [SEARCH], pin: USAGE_PIN, requests, script: [{ call: "monid__faux__person__search", args: { body: { name: "Ada", limit: 0 } } }, { say: "done" }] });
+  const run = await monidRun(t, { tools: [SEARCH], pin: USAGE_PIN, toolSettings: { [SEARCH]: { permission: "allow" } }, requests, script: [{ call: "monid__faux__person__search", args: { body: { name: "Ada", limit: 0 } } }, { say: "done" }] });
   const booked = paidBookings(run.records.entries).filter((row) => row.tool === SEARCH);
   // Held at $0 (a mark with no held figure), settled at the charge.
   assert.deepEqual(booked.map((row) => [row.kind, row.heldUsd ?? row.usd]), [["agentrun.tool_started", undefined], ["agentrun.tool_cost", 1.42]], JSON.stringify(booked));
-  assert.deepEqual(sent().map((call) => call.maxCost), [0], "run once, by its card's read");
+  assert.deepEqual(sent().map((call) => call.maxCost), [0], "run once, by its estimate's read");
   assert.deepEqual([run.row.state, run.row.summary], ["failed", "monid charged $1.42, more than the $0 held; the run stopped"], JSON.stringify(run.row));
 });
 
