@@ -200,7 +200,7 @@ describe("applying a template", () => {
     const writes = t.host.querySelector('[data-tool="mcp:github/create_review"]')!.textContent ?? "";
     for (const row of [reads, writes]) expect(row).toContain("Allow: the agent may call this without asking you.");
     expect(reads).toContain("The template asks you to allow this.");
-    expect(writes).toContain("The template does not ask for this; unticked, it stays at your setting.");
+    expect(writes).toContain("The template does not ask for this; unticked, the agent doesn't get it.");
     expect(t.host.textContent).not.toContain("asks you before each call");
     // The MCP need, by its source and the saved server it uses, with its reason; and the secrets by name only.
     const need = t.host.querySelector('[data-mcp="github"]')!.textContent ?? "";

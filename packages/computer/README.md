@@ -176,11 +176,17 @@ extension](#the-protocol-extension-kind-daemon-modes-screen-input-apps-lifetime)
   as root in a container by hand: `internal/isolate`'s and the isolated `TestBecome...` need CAP_SYS_ADMIN and
   CAP_NET_ADMIN (`docker run --cap-add SYS_ADMIN --cap-add NET_ADMIN`), and the refusal without them a container
   with Docker's defaults.
-- `computerd probe [--connect <host:port>[/udp]]...` prints one JSON line: the uid and gid it runs as, the kernel's
-  release, `interfaces` (the network interfaces its network namespace holds: `["lo"]` alone under `--own-network`),
-  `reached` (the targets that answered), `accepted` (the targets that accepted a TCP connection and sent nothing back)
-  and `results`, each target's `protocol`, `outcome` (`refused`, `accepted` or `answered`), `bytes` and `detail` in
-  words. A provider whose vendor reads nothing back runs it through `exec.run` (below, Modal), under the rule in
+- `computerd probe [--sockets] [--connect <host:port>[/udp]]...` prints one JSON line: the uid and gid it runs as, the
+  kernel's release, `interfaces` (the network interfaces its network namespace holds: `["lo"]` alone under
+  `--own-network`), `reached` (the targets that answered), `accepted` (the targets that accepted a TCP connection and
+  sent nothing back) and `results`, each target's `protocol`, `outcome` (`refused`, `accepted` or `answered`), `bytes`
+  and `detail` in words. With `--sockets` it adds the isolation case's two listings: `sockets`, the unix sockets with a
+  path it can connect to, and `listeners`, the TCP and UDP sockets that listen in its own network namespace (TCP in
+  LISTEN and UDP bound with no peer, read from `/proc/net/tcp`, `tcp6`, `udp` and `udp6`), each with its `protocol`,
+  `address`, `port`, `uid`, the `owner` that holds it (`pid N (command)`, where `/proc` shows that process's
+  descriptors) and `computerd` (that owner runs computerd's own program); each listing names in `incomplete` what it
+  could not search or read. `isolation.vendor-agent` fails on a listener that is not computerd's; under `--own-network`
+  computerd listens on nothing there, so on any listener. A provider whose vendor reads nothing back runs it through `exec.run` (below, Modal), under the rule in
   [Network none, read from inside](#network-none-read-from-inside-nothing-answers). `computerd probe --diagnose` asks
   more: for 1.1.1.1, 8.8.8.8, 9.9.9.9 and 151.101.1.57 (Fastly's anycast edge, which is no resolver) on 443/tcp,
   80/tcp and 53/udp it reports `refused` (no TCP accept, no UDP answer), `accepted` (an accept, no answer) or
@@ -2733,8 +2739,14 @@ npm run conformance -w @parcha/agentrun-computer -- --provider fly
 
 ```sh
 npm run build -w @parcha/agentrun-computer          # the TypeScript, into dist/
-npm run build:daemon -w @parcha/agentrun-computer   # dist/computerd-linux-amd64 and -arm64; needs Go 1.24 or newer on PATH
+npm run build:daemon -w @parcha/agentrun-computer   # dist/computerd-linux-amd64 and -arm64, and dist/computerd.json
 ```
+
+`build:daemon` builds the daemon with Go 1.24 or newer when Go is on PATH, and records the daemon source it came from in
+`dist/computerd.json`. Without Go, it takes both binaries from this version's package on npm, but only when that
+package's `computerd.json` names the same daemon source as the checkout (`scripts/daemon-source.mjs`); otherwise it
+stops and says to install Go. Each release carries the record, so a checkout of a released version needs no Go until
+its daemon changes.
 
 ## Tests
 

@@ -47,7 +47,8 @@ test("computerProviderMakers builds each provider through the computer package's
   assert.deepEqual(loaded, [["daytona", { apiKey: DAYTONA_KEY }]], "providerFor('daytona', its options), and nothing else");
   await makers["phone-harness"]({ apiKey: "pk" }, { ledger });
   assert.deepEqual(loaded[1], ["phone-harness", { apiKey: "pk", ledger }], "the phone provider takes the store's ledger");
-  for (const id of ["docker", "daytona", "modal", "e2b", "orgo", "phone-harness", "browserbase", "kernel"]) assert.equal(typeof makers[id], "function", id);
+  assert.deepEqual(Object.keys(makers), PROVIDERS.map(({ id }) => id), "one maker per registry provider");
+  for (const { id } of PROVIDERS) assert.equal(typeof makers[id], "function", id);
 });
 
 /** A Mode 2 claim of a sandbox on `provider` on the fakes, on the real registry: its saved keys and the Archil account key
