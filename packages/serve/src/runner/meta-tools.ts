@@ -127,10 +127,13 @@ export function metaTools(options: MetaToolsOptions): HostTool[] {
       return answered(await context.nested.call(toolNamed(name, tools)!.name, (given ?? {}) as Record<string, unknown>, "call"));
     },
   };
+  // A few of the run's tools as the script writes them (`tools.<name>`): names that resolve, as the model's own tool list
+  // may show them under a harness's prefix, which a script's `tools` has no property for.
+  const examples = own().slice(0, 3).map((tool) => `\`tools.${toCodemodeIdentifier(tool.name)}\``);
   const codemode: HostTool = {
     name: CODEMODE,
     description: [
-      `Run a JavaScript script (the body of an async function: top-level await and return work) that calls this run's tools as \`await tools.<name>(args)\`; ${options.discovery.search ? `find them with ${TOOLS_SEARCH}, and ` : ""}\`ALL_TOOLS\` lists them. A call answers its value, and a call that fails throws.`,
+      `Run a JavaScript script (the body of an async function: top-level await and return work) that calls this run's tools as \`await tools.<name>(args)\`; ${options.discovery.search ? `find them with ${TOOLS_SEARCH}, and ` : ""}\`ALL_TOOLS\` lists them. A call answers its value, and a call that fails throws. A tool is called by its own name, exactly as \`ALL_TOOLS\`${options.discovery.search ? ` and ${TOOLS_SEARCH}` : ""} give it${examples.length ? ` (here: ${examples.join(", ")})` : ""}, never by the name your own tool list may show for it with a harness's prefix (\`hands_\`, \`mcp__hands__\`): leave the prefix off.`,
       "The script's text(...) and console output, and its returned value, are the answer. It has no timers, network or files of its own: only the tools.",
       "Each call is asked about and recorded as that tool's own. A call that needs a person's approval stops the script: once they answer, that call runs (or is refused), its outcome is the answer, and the rest of the script does not run. A refused call ends the script with the refusal.",
     ].join(" "),

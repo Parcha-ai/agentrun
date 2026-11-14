@@ -49,12 +49,13 @@ export function endedIn(entries: readonly { readonly kind: string; readonly data
 }
 
 /** The write that stopped a replay run's workflow, from its root entries (a LEARNED_NODES entry's `replay_skipped`: a
- *  write the graded run's recording does not have, learn/replay-calls.ts), or undefined when none did. */
-export function replaySkippedIn(entries: readonly { readonly kind: string; readonly data?: unknown }[]): { tool: string; step: string } | undefined {
+ *  write the graded run's recording does not have, learn/replay-calls.ts; `unmarked`, an MCP tool listed with no
+ *  readOnlyHint), or undefined when none did. */
+export function replaySkippedIn(entries: readonly { readonly kind: string; readonly data?: unknown }[]): { tool: string; step: string; unmarked?: true } | undefined {
   for (const entry of entries) {
     if (entry.kind !== LEARNED_NODES) continue;
-    const skipped = (entry.data as { replay_skipped?: { tool?: unknown; step?: unknown } } | undefined)?.replay_skipped;
-    if (skipped && typeof skipped.tool === "string" && typeof skipped.step === "string") return { tool: skipped.tool, step: skipped.step };
+    const skipped = (entry.data as { replay_skipped?: { tool?: unknown; step?: unknown; unmarked?: unknown } } | undefined)?.replay_skipped;
+    if (skipped && typeof skipped.tool === "string" && typeof skipped.step === "string") return { tool: skipped.tool, step: skipped.step, ...(skipped.unmarked === true ? { unmarked: true as const } : {}) };
   }
   return undefined;
 }

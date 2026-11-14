@@ -147,6 +147,10 @@ export interface SessionSpec {
   /** Exactly these tools (a run's remote MCP tools among them, as host tools); the harness's own stay off. */
   tools: HostTool[];
   context: "fresh" | "fork";
+  /** The host's one verdict on whether the run's catalog tools are deferred (tool-deferral.ts defersCatalog, and both
+   *  tools_search and tools_call allowed). A harness with a tool search of its own (`ownToolSearch`) turns it on exactly
+   *  when this is true; absent, it decides by the names alone. */
+  deferCatalog?: boolean;
   tier?: NodeRequest["tier"];
   effort?: NodeRequest["effort"];
   thinking?: NodeRequest["thinking"];
@@ -182,7 +186,7 @@ export interface ModelRequest {
    *  host's own request beside the harness's (`host`). */
   side?: true;
   /** On the session's model but no answer of the turn (a title, a summary, a child's request): booked as any request, but
-   *  never the session's previous request for the cap's expected pricing, read or replaced. */
+   *  never one of the session's recent requests for the cap's expected pricing, read or kept. */
   unanswered?: true;
   /** It carries the host's note (ModelPort.note) in its body: the note is delivered once this request is admitted.
    *  `inputTokensMaxWithoutNote`: its input measured as its client sent it, before the note was placed. */
