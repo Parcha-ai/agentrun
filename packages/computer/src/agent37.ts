@@ -8,69 +8,21 @@
 // and the instance's sshd then takes the workspace's registered SSH key. Agent37's REST exec is one-shot (no stdin,
 // output only at its end), so it is not used. The rest of the computer is the shared machine-host adapter's
 // (./hosted/provider.ts). Every vendor fact here is cited in the README's Agent37 section.
-import { createHash, randomBytes } from "node:crypto";
-import { Duplex, PassThrough } from "node:stream";
+import { createHash } from "node:crypto";
+import { Duplex } from "node:stream";
 import { AGENT37, AGENT37_BASE_TEMPLATE } from "./descriptors/agent37.js";
-import { WINDOW_MANAGER } from "./desktop.js";
-import { DEADLINE_LABEL } from "./drift.js";
 import type { HostCall, HostFacts, Machine, MachineHost, MachineProcess, MachineRequest } from "./host.js";
-import { bounded } from "./hosted/process.js";
-import { HostedProvider, type HostedOptions, type HostedTimeouts, IMAGE_LABEL, MAX_LABEL, NAME_LABEL } from "./hosted/provider.js";
-import { shellLine } from "./hosted/scripts.js";
+import { jsonOf, type Rest, rest } from "./hosted/rest.js";
+import { HostedProvider, type HostedOptions, type HostedTimeouts, IMAGE_LABEL } from "./hosted/provider.js";
+import { pemOf, type Ssh2Module, SshExec, SshTunnelError, type SshTunnel } from "./hosted/ssh.js";
+import { dateOf, driftOf, isWhole, show, sizeOf } from "./hosted/values.js";
 import type { KindCapabilities } from "./kinds.js";
 import type { MountKind } from "./mount.js";
-import { type ArchilMount, archilLabels } from "./mount-archil.js";
 import type { ComputerSpec, NetworkPolicy, Refusal } from "./provider.js";
 import { type ComputerErrorCode, ok, type Result } from "./result.js";
 
-/** A readable side of an ssh2 channel, as this provider uses it: piped, or drained. */
-export interface Ssh2Readable {
-	pipe(destination: NodeJS.WritableStream): unknown;
-	resume(): unknown;
-}
-
-/**
- * The slice of an ssh2 channel this provider uses (ssh2@1.17.0 lib/Channel.js): the channel is stdout. No signal
- * request: ssh2 sends one only while stdin is open (Channel.js:237-246), so a kill goes by the process group instead.
- */
-export interface Ssh2Channel extends Ssh2Readable {
-	readonly stderr: Ssh2Readable;
-	write(data: Uint8Array, callback?: (error?: Error | null) => void): boolean;
-	/** Sends end of file on stdin and keeps the channel open (Channel.js:200-205). */
-	eof(): void;
-	close(): void;
-	/** exit-status, or exit-signal with a null code (client.js:666-678). */
-	on(event: "exit", listener: (code: number | null, signal?: string) => void): unknown;
-	on(event: "close", listener: () => void): unknown;
-	on(event: "error", listener: (error: Error) => void): unknown;
-}
-
-/** The options of ssh2's Client.connect this provider gives (ssh2@1.17.0 lib/client.js). */
-export interface Ssh2ConnectConfig {
-	sock: Duplex;
-	username: "root";
-	privateKey: string;
-	readyTimeout: number;
-	keepaliveInterval: number;
-}
-
-/** The slice of an ssh2 Client this provider uses. */
-export interface Ssh2Client {
-	connect(config: Ssh2ConnectConfig): unknown;
-	exec(command: string, callback: (error: Error | undefined, channel: Ssh2Channel) => void): unknown;
-	end(): unknown;
-	destroy(): unknown;
-	once(event: "ready", listener: () => void): unknown;
-	once(event: "error", listener: (error: Error) => void): unknown;
-	on(event: "error", listener: (error: Error) => void): unknown;
-	on(event: "close" | "end", listener: () => void): unknown;
-	removeListener(event: "error", listener: (error: Error) => void): unknown;
-}
-
-/** The ssh2 package as this provider uses it: its Client class. The host's own, or anything with the same slice. */
-export interface Ssh2Module {
-	Client: new () => Ssh2Client;
-}
+/** The ssh2 slice types, as this entry has always exported them (they live in hosted/ssh.ts). */
+export type { Ssh2Channel, Ssh2Client, Ssh2ConnectConfig, Ssh2Module, Ssh2Readable } from "./hosted/ssh.js";
 
 /** A WebSocket as this provider uses one: Node's global WebSocket (undici), which takes headers, or the same slice. */
 export interface WebSocketLike {
@@ -176,73 +128,23 @@ const DEFAULT_REQUEST_MS = 30_000;
 /** How much a tunnel may hold unsent before a write waits for it (the WebSocket's bufferedAmount). */
 const TUNNEL_HIGH_WATER = 1024 * 1024;
 const TUNNEL_POLL_MS = 10;
-/** How many times a tunnel that fails before its SSH handshake is opened, and the first pause between (it doubles). */
-const TUNNEL_TRIES = 4;
-const TUNNEL_RETRY_MS = 500;
-/** ssh2's keepalive: the CLI's ServerAliveInterval is 60 s (cli.js:32); the edge never sees an idle tunnel. */
-const KEEPALIVE_MS = 30_000;
-/**
- * How long a kill waits for its own kill command, then for its channel to close before wait() answers -1 anyway; and
- * how long an ended SSH connection has to close before its tunnel is dropped.
- */
-const KILL_GRACE_MS = 2_000;
-/**
- * How many channels (execs and kills) one SSH connection carries at once; the next opens a second connection. OpenSSH's
- * sshd takes MaxSessions (default 10) sessions on one connection and refuses the next. Agent37 does not say which sshd
- * it runs, so OpenSSH's default is held to; an sshd that takes fewer refuses a channel, which is opened once more on a
- * fresh connection.
- */
-const CHANNELS_PER_CONNECTION = 10;
-/**
- * How long a connection with no channel stays open for the next exec. The adapter's steps (the upload, the install,
- * init's start, the bridge, connect after create) come one after another, each an exec, and the live view's watch
- * opens beside the bridge. An open connection keeps the process alive (ssh2's keepalive timer and the WebSocket's
- * socket are both referenced), so the wait is short: a process that is done with its computers exits at most this late.
- */
-const IDLE_MS = 2_000;
-/**
- * Every command runs under this sh, which writes its pid to $0 first and removes the file when the command ends. The
- * instance's sshd starts each command as a session and group leader (seen live: sh's PID, PGID and SID are one), so
- * the pid names the group a kill ends; ssh2 sends no signal once stdin has ended, and a signal ends one process only.
- */
-const WRAPPER = '{ echo $$ > "$0"; } 2>/dev/null; "$@"; c=$?; rm -f "$0"; exit $c';
-/**
- * The kill: waits up to a second for the pid file, then kills the group when the pid leads one (the process alone
- * otherwise, so a kill never reaches past what it started) and removes the file.
- */
-const KILL_SCRIPT = [
-	"i=0",
-	'while [ ! -s "$0" ] && [ $i -lt 10 ]; do sleep 0.1; i=$((i+1)); done',
-	'p=$(cat "$0" 2>/dev/null); rm -f "$0"',
-	'[ -n "$p" ] || exit 0',
-	'g=$(cut -d" " -f5 "/proc/$p/stat" 2>/dev/null)',
-	// No "--": dash's kill reads it as a pid (seen live: "Illegal number: -").
-	'if [ "$g" = "$p" ]; then kill -KILL "-$p"; else kill -KILL "$p"; fi 2>/dev/null',
-	"exit 0",
-].join("\n");
-
 /** The mount kinds an Agent37 computer takes, as capabilities().mount declares them: the run's folder on an Archil disk. */
 export const MOUNT: readonly MountKind[] = AGENT37.mounts;
 /** The machine kind and groups of each configuration: kind linux (the default), and kind desktop on the box template. */
 export const CAPABILITIES: readonly KindCapabilities[] = AGENT37.capabilities;
 
-const show = (value: unknown) => (value === undefined ? "nothing" : JSON.stringify(value));
-const isWhole = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value);
-
-/** An answer of Agent37's REST API that is not a success: its HTTP status and the envelope's stable code (docs: errors). */
+/** An answer of Agent37's REST API that is not a success, as the code its status and the envelope's stable code (docs: errors) make. */
 export class Agent37Error extends Error {
 	override name = "Agent37Error";
-	readonly status: number;
-	readonly code: string | undefined;
-	constructor(status: number, code: string | undefined, message: string) {
+	readonly code: ComputerErrorCode;
+	constructor(code: ComputerErrorCode, message: string) {
 		super(message);
-		this.status = status;
 		this.code = code;
 	}
 }
 
 /** The SSH tunnel's WebSocket closed or failed before it opened, or while it carried the stream. */
-export class Agent37TunnelError extends Error {
+export class Agent37TunnelError extends SshTunnelError {
 	override name = "Agent37TunnelError";
 }
 
@@ -274,18 +176,8 @@ const CODES: Record<string, ComputerErrorCode> = {
 };
 
 function codeOf(error: unknown): ComputerErrorCode {
-	const { name, code, status, level } = (error ?? {}) as { name?: unknown; code?: unknown; status?: unknown; level?: unknown };
-	if (name === "AbortError") return "aborted";
-	if (name === "TimeoutError") return "timeout";
-	if (error instanceof Agent37Error) {
-		const known = typeof code === "string" ? CODES[code] : undefined;
-		if (known !== undefined) return known;
-		if (status === 401 || status === 403) return "denied";
-		if (status === 404) return "not_found";
-		if (status === 400) return "invalid";
-		if (status === 402 || status === 429) return "limit";
-		return "vendor";
-	}
+	const { level } = (error ?? {}) as { level?: unknown };
+	if (error instanceof Agent37Error) return error.code;
 	// ssh2 names the stage that failed (lib/client.js): the instance's sshd refused the key, or the handshake timed out.
 	if (level === "client-authentication") return "denied";
 	if (level === "client-timeout") return "timeout";
@@ -326,8 +218,7 @@ interface Declared {
 /** An instance as the adapter reads a machine: its state, labels, network, template, size, and its create's drift. */
 function machineOf(instance: Agent37Instance, declared: Declared): Machine {
 	const labels = { ...(instance.metadata ?? {}) };
-	const drift: string[] = [];
-	const mismatch = (field: string, want: unknown, got: unknown) => drift.push(`${field}: declared ${show(want)}, read back ${show(got)}`);
+	const { found: drift, mismatch } = driftOf();
 	const asked = labels[IMAGE_LABEL];
 	if (asked !== undefined && instance.template !== asked) mismatch("template", asked, instance.template);
 	if (instance.type !== declared.type) mismatch("type", declared.type, instance.type);
@@ -336,15 +227,16 @@ function machineOf(instance: Agent37Instance, declared: Declared): Machine {
 	if (instance.auto_sleep !== false) mismatch("auto_sleep", false, instance.auto_sleep);
 	const state = stateOf(instance.status);
 	const why = instance.status_reason?.message ?? (state === undefined ? `Agent37 reads the status ${show(instance.status)}, which this provider does not know` : undefined);
-	const { cpu, memory } = instance.resources ?? {};
+	const created = dateOf(instance.created, "s");
+	const size = sizeOf(instance.resources?.cpu, instance.resources?.memory);
 	return {
 		id: instance.id,
 		labels,
 		state: state ?? "failed",
 		network: networkOf(instance),
 		image: { resolved: instance.image_digest ?? instance.template },
-		...(isWhole(instance.created) ? { createdAt: new Date(instance.created * 1000) } : {}),
-		...(isWhole(cpu) || isWhole(memory) ? { size: { ...(isWhole(cpu) ? { cpus: cpu } : {}), ...(isWhole(memory) ? { memoryMb: memory * 1024 } : {}) } } : {}),
+		...(created ? { createdAt: created } : {}),
+		...(size ? { size } : {}),
 		...(drift.length > 0 ? { drift } : {}),
 		...(why === undefined ? {} : { why }),
 	};
@@ -420,74 +312,33 @@ function tunnelOf(ws: WebSocketLike, host: string): { duplex: Duplex; opened: Pr
 	return { duplex, opened };
 }
 
-/** A promise that rejects with the abort's or the bound's error once ms pass or signal aborts. */
-function deadline(ms: number, signal: AbortSignal | undefined, what: string): { promise: Promise<never>; clear: () => void } {
-	const bound = bounded(ms, signal);
-	let onAbort: () => void = () => {};
-	const promise = new Promise<never>((_, reject) => {
-		onAbort = () => {
-			const timedOut = !signal?.aborted;
-			const error = new Error(timedOut ? `${what} did not answer within ${ms / 1000} s` : `${what} was aborted`);
-			error.name = timedOut ? "TimeoutError" : "AbortError";
-			reject(error);
-		};
-		if (bound.aborted) onAbort();
-		else bound.addEventListener("abort", onAbort, { once: true });
-	});
-	promise.catch(() => {});
-	return { promise, clear: () => bound.removeEventListener("abort", onAbort) };
-}
-
-/** A bound's own error (deadline's): the call ran out of time or was aborted, so nothing is tried again. */
-const isBound = (error: unknown) => {
-	const name = (error as { name?: unknown } | null)?.name;
-	return name === "TimeoutError" || name === "AbortError";
-};
-
-/**
- * One SSH connection to an instance, shared by its execs: each exec, and each kill, is a channel on it. It counts its
- * holders (an exec waiting for the handshake, an open exec channel, a kill's channel), and is done once it closes,
- * fails, ends or takes no more: a done link is never handed to another exec, and it ends once its last holder lets go.
- */
-interface Link {
-	readonly id: string;
-	/** The handshake (TUNNEL_TRIES tries), then the client. */
-	readonly ready: Promise<Ssh2Client>;
-	/** Gives up the handshake once nobody waits for it. */
-	readonly stop: AbortController;
-	client?: Ssh2Client;
-	holders: number;
-	done: boolean;
-	/** Its client has been ended. */
-	ended: boolean;
-	idle?: ReturnType<typeof setTimeout>;
-}
-
 /** Agent37's instances as a MachineHost (../host.ts). */
 class Agent37Host implements MachineHost {
 	readonly id = "agent37";
 	readonly facts: HostFacts;
 	readonly #apiKey: string;
-	readonly #sshKey: string;
-	readonly #ssh2: Ssh2Module;
-	readonly #fetch: typeof fetch;
+	readonly #ssh: SshExec;
+	readonly #client: Rest;
 	readonly #WebSocket: WebSocketClass;
-	readonly #apiUrl: string;
 	readonly #proxyDomain: string;
 	readonly #declared: Declared;
-	/**
-	 * The SSH connections to each instance, opening, open, or done and still held, until each ends: one, and a second
-	 * past CHANNELS_PER_CONNECTION channels. A done one takes no new channel; delete ends them all.
-	 */
-	readonly #links = new Map<string, Link[]>();
 
 	constructor(options: { apiKey: string; sshKey: string; ssh2: Ssh2Module; fetch: typeof fetch; WebSocket: WebSocketClass; apiUrl: string; proxyDomain: string; type: Agent37Type; region: Agent37Region }) {
 		this.#apiKey = options.apiKey;
-		this.#sshKey = options.sshKey;
-		this.#ssh2 = options.ssh2;
-		this.#fetch = options.fetch;
+		this.#ssh = new SshExec({ ssh2: options.ssh2, privateKey: options.sshKey, tunnelOf: (id) => this.#tunnel(id) });
+		this.#client = rest({
+			base: options.apiUrl,
+			headers: () => ({ Authorization: `Bearer ${options.apiKey}`, Accept: "application/json" }),
+			vendor: "agent37",
+			fetch: options.fetch,
+			timeoutMs: 30_000, // every call gives its own: ctx.timeoutMs
+			explain: ({ status, bytes, what }) => {
+				const { code, message } = envelopeOf(jsonOf(bytes));
+				const known = code === undefined ? undefined : CODES[code];
+				return { ...(known === undefined ? {} : { code: known }), message: `${what} answered ${status}${code ? ` ${code}` : ""}${message ? `: ${message}` : ""}` };
+			},
+		});
 		this.#WebSocket = options.WebSocket;
-		this.#apiUrl = options.apiUrl;
 		this.#proxyDomain = options.proxyDomain;
 		this.#declared = { type: options.type, region: options.region };
 		const runtime = options.type === "vm" ? "vm" : "gvisor";
@@ -498,11 +349,14 @@ class Agent37Host implements MachineHost {
 			maxLifetimeMs: DAY_MS,
 			arch: "amd64",
 			vendorAgentPorts: [AGENT37_SSH_PORT, AGENT37_TTYD_PORT],
+			// The box template has xfwm4 (box/build-agent37.mjs): the apps an agent opens are framed and focused.
+			windowManager: true,
 			networkReadBack: true,
 			network: [...AGENT37.network],
 			mounts: [...MOUNT],
 			release: ["delete"],
 			specFields: ["cpus", "memoryMb"],
+			labelRules: { maxBytes: METADATA_MAX_BYTES, measure: "json" },
 			runtime: () => runtime,
 		};
 	}
@@ -511,39 +365,38 @@ class Agent37Host implements MachineHost {
 		return codeOf(error);
 	}
 
-	/** One REST call: the key as a Bearer token, JSON both ways, bounded by ctx; a failure throws Agent37Error in Agent37's words. */
+	/** The SSH stream to an instance's sshd: a binary WebSocket the edge opens for the workspace key (cli.js wsHandshake), as a Duplex. */
+	#tunnel(id: string): SshTunnel {
+		if (!INSTANCE_ID.test(id)) throw new Agent37Error("not_found", `${JSON.stringify(id)} is not an Agent37 instance id (ten lowercase letters and digits)`);
+		const host = `${id}-${AGENT37_SSH_PORT}.${this.#proxyDomain}`;
+		const ws = new this.#WebSocket(`wss://${host}/`, { headers: { "X-Agent37-Key": this.#apiKey } });
+		ws.binaryType = "arraybuffer";
+		return { ...tunnelOf(ws, host), host };
+	}
+
+	/** argv as root over SSH (hosted/ssh.ts): one connection per instance through its tunnel, shared by its execs. */
+	exec(id: string, argv: readonly string[], opts: { stdin: boolean }, ctx: HostCall): Promise<Result<MachineProcess>> {
+		return this.#ssh.exec(id, argv, opts, ctx);
+	}
+
+	/** One REST call, bounded by ctx; a failure throws Agent37Error in Agent37's words. */
 	async #rest<T>(method: "GET" | "POST" | "PATCH" | "DELETE", path: string, body: object | undefined, ctx: HostCall): Promise<T> {
-		const response = await this.#fetch(`${this.#apiUrl}${path}`, {
-			method,
-			headers: { Authorization: `Bearer ${this.#apiKey}`, Accept: "application/json", ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
-			...(body === undefined ? {} : { body: JSON.stringify(body) }),
-			signal: bounded(ctx.timeoutMs, ctx.signal),
-		});
-		const text = await response.text();
-		let parsed: unknown;
-		try {
-			parsed = text === "" ? null : JSON.parse(text);
-		} catch {
-			parsed = undefined;
-		}
-		if (!response.ok) {
-			const { code, message } = envelopeOf(parsed);
-			throw new Agent37Error(response.status, code, `${method} ${path} answered ${response.status}${code ? ` ${code}` : ""}${message ? `: ${message}` : ""}`);
-		}
-		if (parsed === undefined || parsed === null) throw new Agent37Error(response.status, undefined, `${method} ${path} answered ${response.status} with no JSON body`);
+		const answer = await this.#client.call(method, this.#client.url(path), { ...(body === undefined ? {} : { json: body }), timeoutMs: ctx.timeoutMs }, ctx.signal);
+		if (!answer.ok) throw new Agent37Error(answer.error.code, answer.error.message);
+		const parsed = jsonOf(answer.value.bytes);
+		if (parsed === null) throw new Agent37Error("vendor", `${method} ${path} answered ${answer.value.status} with no JSON body`);
 		return parsed as T;
 	}
 
 	/** An instance's REST path, its id held to Agent37's form first: an id is also a DNS label here. */
 	#path(id: string): string {
-		if (!INSTANCE_ID.test(id)) throw new Agent37Error(404, "not_found", `${JSON.stringify(id)} is not an Agent37 instance id (ten lowercase letters and digits)`);
+		if (!INSTANCE_ID.test(id)) throw new Agent37Error("not_found", `${JSON.stringify(id)} is not an Agent37 instance id (ten lowercase letters and digits)`);
 		return `/v1/instances/${id}`;
 	}
 
-	/** An Agent37 template is a name, with an optional @<version>; a size is one of Agent37's four shapes; metadata fits 4 KB. */
-	check(spec: ComputerSpec): Refusal[] {
+	/** An Agent37 template is a name, with an optional @<version>; a size is one of Agent37's four shapes. The adapter holds metadata to 4 KB (labelRules). */
+	check(given: Partial<ComputerSpec>): Refusal[] {
 		const refusals: Refusal[] = [];
-		const given = (typeof spec === "object" && spec !== null ? spec : {}) as Partial<ComputerSpec>;
 		const { image, cpus, memoryMb } = given;
 		if (typeof image === "string" && image !== "" && !TEMPLATE.test(image)) {
 			refusals.push({ field: "image", message: `an image is the name of an Agent37 template, optionally pinned as name@version, such as "${AGENT37_BASE_TEMPLATE}"` });
@@ -552,11 +405,6 @@ class Agent37Host implements MachineHost {
 			refusals.push({ field: "cpus", message: `an Agent37 instance has at most ${MAX_CPUS} CPUs, and Agent37 gives 4 for a larger ask without saying so: ask for 2 or 4` });
 		} else if ((cpus !== undefined || memoryMb !== undefined) && shapeOf(cpus, memoryMb) === undefined) {
 			refusals.push({ field: cpus !== undefined && !SHAPES.some((shape) => shape.cpu === cpus) ? "cpus" : "memoryMb", message: `an Agent37 instance is one of its shapes: ${SHAPE_WORDS}` });
-		}
-		const labels = given.labels;
-		if (typeof labels === "object" && labels !== null && !Array.isArray(labels)) {
-			const bytes = Buffer.byteLength(JSON.stringify({ ...labels, ...ownLabels(given) }), "utf8");
-			if (bytes > METADATA_MAX_BYTES) refusals.push({ field: "labels", message: `an Agent37 instance's metadata holds ${METADATA_MAX_BYTES} bytes, the provider's own labels with them; these come to ${bytes}` });
 		}
 		return refusals;
 	}
@@ -584,51 +432,42 @@ class Agent37Host implements MachineHost {
 			},
 			ctx,
 		);
-		if (typeof made?.id !== "string" || !INSTANCE_ID.test(made.id)) throw new Agent37Error(201, undefined, `POST /v1/instances answered no instance id: ${show(made?.id)}`);
+		if (typeof made?.id !== "string" || !INSTANCE_ID.test(made.id)) throw new Agent37Error("vendor", `POST /v1/instances answered no instance id: ${show(made?.id)}`);
 		return ok({ id: made.id });
 	}
 
-	/** GET /v1/instances/{id}; 404 is none (docs: instances/get). */
+	/** GET /v1/instances/{id}; 404 is not_found, which the adapter reads as none (docs: instances/get). */
 	async get(id: string, ctx: HostCall): Promise<Result<Machine | undefined>> {
-		try {
-			return ok(machineOf(await this.#rest<Agent37Instance>("GET", this.#path(id), undefined, ctx), this.#declared));
-		} catch (error) {
-			if (codeOf(error) === "not_found") return ok(undefined);
-			throw error;
-		}
+		return ok(machineOf(await this.#rest<Agent37Instance>("GET", this.#path(id), undefined, ctx), this.#declared));
 	}
 
 	/**
 	 * GET /v1/instances: the whole workspace in one answer, newest first, each the full instance object (docs:
-	 * instances/list). Agent37 filters nothing, so the labels are matched here; an answer that says it has more is refused.
+	 * instances/list). Agent37 filters nothing: the adapter matches the labels. An answer that says it has more is refused.
 	 */
 	async list(labels: Record<string, string>, ctx: HostCall): Promise<Result<Machine[]>> {
+		void labels;
 		const listed = await this.#rest<{ data?: unknown; has_more?: unknown; next_cursor?: unknown }>("GET", "/v1/instances", undefined, ctx);
-		if (!Array.isArray(listed.data)) throw new Agent37Error(200, undefined, "GET /v1/instances answered no data list");
+		if (!Array.isArray(listed.data)) throw new Agent37Error("vendor", "GET /v1/instances answered no data list");
 		if (listed.has_more === true || (listed.next_cursor !== undefined && listed.next_cursor !== null)) {
-			throw new Agent37Error(200, undefined, "GET /v1/instances answered a page with more after it, which Agent37 documents none of: this provider would miss machines");
+			throw new Agent37Error("vendor", "GET /v1/instances answered a page with more after it, which Agent37 documents none of: this provider would miss machines");
 		}
-		const wanted = Object.entries(labels);
-		const machines: Machine[] = [];
-		for (const instance of listed.data as Agent37Instance[]) {
-			if (typeof instance?.id !== "string") continue;
-			const metadata = instance.metadata ?? {};
-			if (wanted.every(([key, value]) => metadata[key] === value)) machines.push(machineOf(instance, this.#declared));
-		}
-		return ok(machines);
+		return ok((listed.data as Agent37Instance[]).filter((instance) => typeof instance?.id === "string").map((instance) => machineOf(instance, this.#declared)));
 	}
 
 	/**
-	 * DELETE /v1/instances/{id}, never signalled; a repeat answers 404, read as done (docs: instances/delete). Once taken,
-	 * this host's SSH connections to the instance are ended, channels and all.
+	 * DELETE /v1/instances/{id}, never signalled; a repeat answers 404, which the adapter reads as done (docs:
+	 * instances/delete). Once taken, this host's SSH connections to the instance are ended, channels and all.
 	 */
 	async delete(id: string, ctx: HostCall): Promise<Result<void>> {
 		try {
 			await this.#rest("DELETE", this.#path(id), undefined, { timeoutMs: ctx.timeoutMs });
 		} catch (error) {
-			if (codeOf(error) !== "not_found") throw error;
+			// A 404 means the instance is gone already: its connections end too, then the adapter reads not_found as done.
+			if (codeOf(error) === "not_found") this.#ssh.closeAll(id);
+			throw error;
 		}
-		for (const link of [...(this.#links.get(id) ?? [])]) this.#end(link);
+		this.#ssh.closeAll(id);
 		return ok(undefined);
 	}
 
@@ -639,361 +478,6 @@ class Agent37Host implements MachineHost {
 		await this.#rest("PATCH", path, { metadata: { ...(instance.metadata ?? {}), ...labels } }, ctx);
 		return ok(undefined);
 	}
-
-	/**
-	 * An SSH session as root over the instance's tunnel, its handshake within ctx. A tunnel that fails to open, or closes
-	 * before the SSH handshake, is opened again after a pause, TUNNEL_TRIES times in all within ctx: an instance fresh
-	 * from its create can refuse the first (seen live once in eight creates, the daemon's upload refused). Nothing has
-	 * run before a handshake, so a retry repeats nothing. A refused key or a handshake past its bound is not retried.
-	 */
-	async #ssh(id: string, ctx: HostCall): Promise<Ssh2Client> {
-		if (!INSTANCE_ID.test(id)) throw new Agent37Error(404, "not_found", `${JSON.stringify(id)} is not an Agent37 instance id (ten lowercase letters and digits)`);
-		const host = `${id}-${AGENT37_SSH_PORT}.${this.#proxyDomain}`;
-		const bound = deadline(ctx.timeoutMs, ctx.signal, `the SSH connection to ${id}`);
-		// Ends the handshake in flight when this call gives up on it (its bound passed, or the caller aborted).
-		const givenUp = new AbortController();
-		try {
-			for (let attempt = 1; ; attempt++) {
-				try {
-					return await Promise.race([this.#handshake(host, ctx.timeoutMs, givenUp.signal), bound.promise]);
-				} catch (error) {
-					const early = error instanceof Agent37TunnelError || (error as { level?: unknown }).level === "client-socket";
-					if (!early || attempt >= TUNNEL_TRIES) throw error;
-				}
-				await Promise.race([new Promise((resolve) => setTimeout(resolve, TUNNEL_RETRY_MS * 2 ** (attempt - 1))), bound.promise]);
-			}
-		} catch (error) {
-			givenUp.abort();
-			throw error;
-		} finally {
-			bound.clear();
-		}
-	}
-
-	/**
-	 * One tunnel and one SSH handshake over it. On a failure, or once stop aborts before the handshake is done, the
-	 * WebSocket (opening or open), the stream and the client are dropped.
-	 */
-	async #handshake(host: string, timeoutMs: number, stop: AbortSignal): Promise<Ssh2Client> {
-		const ws = new this.#WebSocket(`wss://${host}/`, { headers: { "X-Agent37-Key": this.#apiKey } });
-		ws.binaryType = "arraybuffer";
-		const { duplex, opened } = tunnelOf(ws, host);
-		const client = new this.#ssh2.Client();
-		const givenUp = () => new Agent37TunnelError(`the SSH tunnel to ${host} was given up on`);
-		let quit: (error: Error) => void = () => {};
-		const quitted = new Promise<never>((_resolve, reject) => {
-			quit = reject;
-		});
-		quitted.catch(() => {});
-		const drop = () => {
-			client.destroy();
-			duplex.destroy();
-			quit(givenUp());
-		};
-		stop.addEventListener("abort", drop, { once: true });
-		try {
-			await Promise.race([opened, quitted]);
-			await Promise.race([
-				new Promise<void>((resolve, reject) => {
-					client.once("ready", resolve);
-					client.once("error", reject);
-					client.connect({ sock: duplex, username: "root", privateKey: this.#sshKey, readyTimeout: timeoutMs, keepaliveInterval: KEEPALIVE_MS });
-				}),
-				quitted,
-			]);
-		} catch (error) {
-			drop();
-			throw error;
-		} finally {
-			stop.removeEventListener("abort", drop);
-		}
-		if (stop.aborted) {
-			drop();
-			throw givenUp();
-		}
-		// A later error ends the session; its channel's close reports it.
-		client.on("error", () => {});
-		return client;
-	}
-
-	/**
-	 * A connection to id with one more holder, its handshake within ctx: a link of the instance's that is not done and
-	 * has room, or a new one. Execs that come together share one handshake, each waiting within its own bound; the
-	 * handshake is given up once none waits. A link that closed as its handshake ended is let go, and another taken.
-	 */
-	async #lease(id: string, ctx: HostCall): Promise<{ link: Link; client: Ssh2Client }> {
-		const bound = deadline(ctx.timeoutMs, ctx.signal, `the SSH connection to ${id}`);
-		const end = Date.now() + ctx.timeoutMs;
-		try {
-			for (;;) {
-				const link = this.#links.get(id)?.find((one) => !one.done && one.holders < CHANNELS_PER_CONNECTION) ?? this.#open(id, end - Date.now());
-				this.#hold(link);
-				let got: { client: Ssh2Client } | { error: unknown };
-				try {
-					got = await Promise.race([link.ready.then((client) => ({ client }), (error: unknown) => ({ error })), bound.promise]);
-				} catch (error) {
-					this.#letGo(link);
-					throw error;
-				}
-				if (!("error" in got) && !link.done) return { link, client: got.client };
-				this.#letGo(link);
-				if ("error" in got) {
-					// A shared handshake is bound by the call that opened it: a call with time of its own left opens another.
-					if ((got.error as { name?: unknown } | null)?.name === "TimeoutError" && end - Date.now() > TUNNEL_RETRY_MS) continue;
-					throw got.error;
-				}
-			}
-		} finally {
-			bound.clear();
-		}
-	}
-
-	/** A new link to id, its handshake started within timeoutMs, listed for the instance's next execs until it is done. */
-	#open(id: string, timeoutMs: number): Link {
-		const stop = new AbortController();
-		const link: Link = {
-			id,
-			stop,
-			holders: 0,
-			done: false,
-			ended: false,
-			ready: this.#ssh(id, { timeoutMs, signal: stop.signal }).then(
-				(client) => {
-					link.client = client;
-					const gone = () => this.#retire(link);
-					client.on("close", gone);
-					client.on("end", gone);
-					client.on("error", gone);
-					// Deleted as it opened.
-					if (link.done) this.#end(link);
-					return client;
-				},
-				(error: unknown) => {
-					this.#retire(link);
-					throw error;
-				},
-			),
-		};
-		link.ready.catch(() => {});
-		this.#links.set(id, [...(this.#links.get(id) ?? []), link]);
-		return link;
-	}
-
-	#hold(link: Link): void {
-		link.holders++;
-		clearTimeout(link.idle);
-		link.idle = undefined;
-	}
-
-	/**
-	 * One holder lets go of link. Once none holds it, a done link ends, a handshake no one waits for is given up, and an
-	 * open connection waits IDLE_MS for the next exec, then ends.
-	 */
-	#letGo(link: Link): void {
-		link.holders--;
-		if (link.holders > 0) return;
-		if (link.done || link.client === undefined) return this.#retire(link);
-		link.idle = setTimeout(() => this.#retire(link), IDLE_MS);
-		link.idle.unref();
-	}
-
-	/** link takes no new channel; it ends at once if none holds it, else when the last lets go (or delete ends it). */
-	#retire(link: Link): void {
-		link.done = true;
-		clearTimeout(link.idle);
-		if (link.holders <= 0) this.#end(link);
-	}
-
-	/**
-	 * Ends link, whoever holds it, and drops it from the instance's list: its handshake given up, its client ended (ssh2
-	 * closes every channel on it), and the tunnel dropped if the connection has not closed within KILL_GRACE_MS. Neither
-	 * timer keeps the process alive.
-	 */
-	#end(link: Link): void {
-		link.done = true;
-		clearTimeout(link.idle);
-		const left = (this.#links.get(link.id) ?? []).filter((one) => one !== link);
-		if (left.length > 0) this.#links.set(link.id, left);
-		else this.#links.delete(link.id);
-		link.stop.abort();
-		const { client } = link;
-		if (client === undefined || link.ended) return;
-		link.ended = true;
-		client.end();
-		const dropped = setTimeout(() => client.destroy(), KILL_GRACE_MS);
-		dropped.unref();
-		client.on("close", () => clearTimeout(dropped));
-	}
-
-	/**
-	 * One exec channel on client, opened within ms and signal, and its close: the exit-status, or -1 for an exit by
-	 * signal or none. Its listeners go on inside ssh2's callback, as it opens: one read off the tunnel can hold the open,
-	 * the exit and the close together (seen live), and they are emitted before an await after it would resume. A channel
-	 * that opens after its bound passed is closed: the connection is shared, so nothing else would close it.
-	 */
-	async #channel(client: Ssh2Client, command: string, ms: number, signal: AbortSignal | undefined, what: string): Promise<{ channel: Ssh2Channel; closed: Promise<number> }> {
-		const bound = deadline(ms, signal, what);
-		let late = false;
-		try {
-			return await Promise.race([
-				new Promise<{ channel: Ssh2Channel; closed: Promise<number> }>((resolve, reject) => {
-					client.exec(command, (error, channel) => {
-						if (error) return reject(error);
-						if (late) {
-							channel.on("error", () => {});
-							return channel.close();
-						}
-						let code = -1;
-						channel.on("exit", (status) => {
-							code = typeof status === "number" ? status : -1;
-						});
-						channel.on("error", () => {});
-						resolve({ channel, closed: new Promise<number>((done) => channel.on("close", () => done(code))) });
-					});
-				}),
-				bound.promise,
-			]);
-		} catch (error) {
-			late = true;
-			throw error;
-		} finally {
-			bound.clear();
-		}
-	}
-
-	/**
-	 * command as one channel on a connection to id with room (#lease), within ctx; the channel holds its connection until
-	 * the caller lets go. A channel that fails to open (the connection died under it, or its sshd took no more sessions)
-	 * retires that connection and is opened once more on a fresh one.
-	 */
-	async #start(id: string, command: string, ctx: HostCall, what: string): Promise<{ link: Link; channel: Ssh2Channel; closed: Promise<number> }> {
-		for (let attempt = 1; ; attempt++) {
-			const { link, client } = await this.#lease(id, ctx);
-			try {
-				return { link, ...(await this.#channel(client, command, ctx.timeoutMs, ctx.signal, what)) };
-			} catch (error) {
-				// A channel open that timed out leaves a connection that may be stuck: the next channel takes another.
-				if ((error as { name?: unknown } | null)?.name !== "AbortError") this.#retire(link);
-				this.#letGo(link);
-				if (isBound(error) || attempt >= 2) throw error;
-			}
-		}
-	}
-
-	/**
-	 * argv as root over SSH, under WRAPPER, as one channel on the instance's shared connection (#start). stdout and
-	 * stderr are the channel's, piped; with no stdin, end of file is sent at once, and end sends it later. wait answers
-	 * once the channel closes, with the exit-status, or -1 for an exit by signal or none. kill ends the process group
-	 * over a channel of its own (on a connection with room), then closes the exec's channel, never a connection; if the
-	 * close does not come, wait answers -1 and the connection takes no new channel.
-	 */
-	async exec(id: string, argv: readonly string[], { stdin }: { stdin: boolean }, ctx: HostCall): Promise<Result<MachineProcess>> {
-		const pidFile = `/tmp/.agentrun-exec-${randomBytes(8).toString("hex")}`;
-		const opened = await this.#start(id, shellLine(["sh", "-c", WRAPPER, pidFile, ...argv]), ctx, `the exec in ${id}`);
-		const { link: held, channel } = opened;
-		const stdout = new PassThrough();
-		const stderr = new PassThrough();
-		channel.pipe(stdout);
-		channel.stderr.pipe(stderr);
-		let ended = !stdin;
-		if (!stdin) channel.eof();
-		let closed = false;
-		let done: (code: number) => void = () => {};
-		// ssh2 closes every channel when the connection goes (utils.js, ChannelManager.cleanup), so the close is enough.
-		const exited = new Promise<number>((resolve) => {
-			done = (code) => {
-				if (closed) return;
-				closed = true;
-				this.#letGo(held);
-				resolve(code);
-			};
-		});
-		void opened.closed.then(done);
-		return ok({
-			stdout,
-			stderr,
-			write: (bytes) =>
-				new Promise<void>((resolve, reject) => {
-					if (ended || closed) return reject(new Error(ended ? "stdin was ended" : "the process has ended"));
-					channel.write(bytes, (error) => (error ? reject(error) : resolve()));
-				}),
-			end: async () => {
-				if (ended || closed) return;
-				ended = true;
-				channel.eof();
-			},
-			wait: () => exited,
-			kill: async () => {
-				if (closed) return;
-				// The pid file is the instance's, so the kill's channel goes on any connection with room, counted like an exec's.
-				try {
-					const killer = await this.#start(id, shellLine(["sh", "-c", KILL_SCRIPT, pidFile]), { timeoutMs: KILL_GRACE_MS }, `the kill in ${id}`);
-					killer.channel.resume();
-					killer.channel.stderr.resume();
-					killer.channel.eof();
-					const grace = deadline(KILL_GRACE_MS, undefined, `the kill in ${id}`);
-					try {
-						await Promise.race([killer.closed, grace.promise]);
-					} catch {
-						try {
-							killer.channel.close();
-						} catch {
-							// Closed already.
-						}
-					} finally {
-						grace.clear();
-						this.#letGo(killer.link);
-					}
-				} catch {
-					// No connection took the kill in time: closing the channel below is what is left.
-				}
-				try {
-					channel.close();
-				} catch {
-					// Closed already.
-				}
-				// A close that never comes is a connection that is stuck: it takes no more execs, and wait answers.
-				const dropped = setTimeout(() => {
-					if (closed) return;
-					this.#retire(held);
-					done(-1);
-				}, KILL_GRACE_MS);
-				dropped.unref();
-				void exited.then(() => clearTimeout(dropped));
-			},
-		});
-	}
-}
-
-/** The provider's own labels at create, as check() counts them toward metadata's cap: the longest each can be. */
-function ownLabels(spec: Partial<ComputerSpec>): Record<string, string> {
-	const time = new Date(0).toISOString();
-	let archil: Record<string, string> = {};
-	if ((spec.mount as { kind?: unknown } | undefined)?.kind === "archil") {
-		try {
-			archil = archilLabels(spec.mount as ArchilMount);
-		} catch {
-			// The adapter refuses a mount it cannot read, in its own words.
-		}
-	}
-	return { "agentrun.computer": "1", [NAME_LABEL]: "computer-000000000000", [DEADLINE_LABEL]: time, [IMAGE_LABEL]: typeof spec.image === "string" ? spec.image : "", [MAX_LABEL]: time, ...archil };
-}
-
-/**
- * A private key in the PEM armor ssh2 reads (its parser wants the BEGIN and END lines on lines of their own), or
- * undefined when text is not one. A key pasted into Settings → Computers comes back on one line, since a password
- * field drops line breaks: its body is wrapped again at 70 characters, as ssh-keygen writes it.
- */
-function pemOf(text: string): string | undefined {
-	const armor = /^-----BEGIN ([A-Z0-9 ]*PRIVATE KEY)-----([\s\S]*?)-----END \1-----$/.exec(text.replace(/\r/g, "").trim());
-	if (!armor) return undefined;
-	const [, label, inside] = armor;
-	const lines = inside.split("\n").map((line) => line.trim()).filter(Boolean);
-	// PEM headers (Proc-Type, DEK-Info) keep their own lines; a key with them was never pasted onto one line.
-	if (lines.some((line) => line.includes(":"))) return `-----BEGIN ${label}-----\n${lines.join("\n")}\n-----END ${label}-----\n`;
-	const body = lines.join("").replace(/\s+/g, "");
-	if (body === "" || !/^[A-Za-z0-9+/=]+$/.test(body)) return undefined;
-	return `-----BEGIN ${label}-----\n${body.match(/.{1,70}/g)?.join("\n")}\n-----END ${label}-----\n`;
 }
 
 /** The ssh2 module's slice, or why it is not one. */
@@ -1058,9 +542,7 @@ export class Agent37Provider extends HostedProvider {
 		if (region !== "us" && region !== "eu" && region !== "ap-south") throw new Error(`region is us, eu or ap-south, not ${JSON.stringify(region)}`);
 		if (region !== "us" && type !== "vm") throw new Error(`Agent37 runs type default in us alone: ${region} takes type vm`);
 		const host = new Agent37Host({ apiKey, sshKey: privateKey, ssh2, fetch: fetcher, WebSocket, apiUrl: api.href.replace(/\/+$/, ""), proxyDomain, type, region });
-		// The box template has xfwm4 (box/build-agent37.mjs): the apps an agent opens are framed and focused.
-		const desktop = { windowManager: WINDOW_MANAGER, ...rest.desktop };
-		super(host, { ...rest, desktop, label: "Agent37", maxLifetimeMs, timeouts: { createMs: DEFAULT_CREATE_MS, requestMs: DEFAULT_REQUEST_MS, ...timeouts } });
+		super(host, { ...rest, label: "Agent37", maxLifetimeMs, timeouts: { createMs: DEFAULT_CREATE_MS, requestMs: DEFAULT_REQUEST_MS, ...timeouts } });
 	}
 }
 

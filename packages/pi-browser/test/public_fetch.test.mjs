@@ -206,6 +206,25 @@ test("a public host's redirect to a private address is refused at that hop, and 
   assert.deepEqual(await publicFetch("http://public.example/missing", { lookup, fetchImpl }), { url: "http://public.example/missing", status: 404, contentType: "text/plain", body: null });
 });
 
+test("a feed is text: an atom, rss or ld+json reply is read as it came, and a binary type is still refused", async () => {
+  const ATOM = '<?xml version="1.0" encoding="UTF-8"?>\n<feed xmlns="http://www.w3.org/2005/Atom"><entry><title>v1.2.0</title></entry></feed>';
+  const RSS = '<?xml version="1.0"?>\n<rss version="2.0"><channel><item><title>Release 3</title></item></channel></rss>';
+  const LD = '{"@context":"https://schema.org","@type":"SoftwareApplication","name":"agentrun"}';
+  const answers = {
+    "https://feeds.example/releases.atom": () => new Response(ATOM, { status: 200, headers: { "content-type": "application/atom+xml; charset=utf-8" } }),
+    "https://feeds.example/rss": () => new Response(RSS, { status: 200, headers: { "content-type": "application/rss+xml" } }),
+    "https://feeds.example/ld": () => new Response(LD, { status: 200, headers: { "content-type": "application/ld+json" } }),
+    "https://feeds.example/blob": () => new Response("xx", { status: 200, headers: { "content-type": "application/octet-stream" } }),
+    "https://feeds.example/zip": () => new Response("PK", { status: 200, headers: { "content-type": "application/zip" } }),
+  };
+  const options = { lookup: async () => ["93.184.216.34"], fetchImpl: async (url) => answers[String(url)]() };
+  for (const [path, body, contentType] of [["releases.atom", ATOM, "application/atom+xml; charset=utf-8"], ["rss", RSS, "application/rss+xml"], ["ld", LD, "application/ld+json"]]) {
+    assert.deepEqual(await publicFetch(`https://feeds.example/${path}`, options), { url: `https://feeds.example/${path}`, status: 200, contentType, body }, path);
+  }
+  await assert.rejects(publicFetch("https://feeds.example/blob", options), /refused: application\/octet-stream is not text/);
+  await assert.rejects(publicFetch("https://feeds.example/zip", options), /refused: application\/zip is not text/);
+});
+
 test("a hostname that resolves to the owner's loopback is never dialled, and a pinned lookup answers the checked address whatever it is asked", async (t) => {
   const { port, marker, counted, control } = await markedServer(t, "secret", "text/plain");
   const resolved = [];

@@ -5,7 +5,8 @@
 // saved under its name with no credential and recording every call; the package applied with the case's parameters and
 // grants, a fresh agent per run, its learning seeded from the case's notes; one run per `runs` with the prompt's body as
 // its input and the case's cap, waited for; then its answer, its tool calls (its timeline, and the fakes' own logs with
-// the full arguments) and its files, graded. Every grader is deterministic but `llm`, which is itself a run on the same
+// the full arguments) and its files, graded, and held to the package's output schema when it declares one (outputVerdict,
+// the server's own verdict). Every grader is deterministic but `llm`, which is itself a run on the same
 // server: a grader agent with no tools that sees the rubric, the run's input, its answer and its calls, never another
 // grader or an expected answer, and answers {pass, reason}. readCases checks a package's cases without running one.
 import { createServer, type IncomingMessage, type Server } from "node:http";
@@ -14,7 +15,7 @@ import { chmodSync, cpSync, lstatSync, mkdtempSync, readdirSync, readFileSync, r
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseDocument } from "yaml";
-import { answerJson, lastJsonBlock, schemaCheck } from "./answer-json.js";
+import { answerJson, lastJsonBlock } from "./answer-json.js";
 import { checkNote } from "./learn/index.js";
 import { NOTE_FILE } from "./learn/notes.js";
 import { inputMessage } from "./run-manifest.js";
@@ -22,7 +23,7 @@ import { shownUrl } from "./mcp-probe.js";
 import { MCP_SERVER_NAME, MCP_TOOL_NAME, mcpNameOf, mcpToolName } from "./tool-names.js";
 import { settingsKeyOf, shellToolOf } from "./tool-gate.js";
 import { ASK_TOOL, BOUND_TOOLS } from "./tools.js";
-import { applyBodyOf, compiled, filledPins, type Package, packageView, readPackage } from "./templates.js";
+import { applyBodyOf, compiled, filledPins, onServerName, onServers, type Package, packageView, readPackage } from "./templates.js";
 import { inputIssues, inputSchemaOf, isObject, type Json, MODEL_REF } from "./validate.js";
 
 /** What a grader run is told, whatever the rubric: blind, strict, and its verdict as one JSON block. */
@@ -51,7 +52,6 @@ const GRADER_FIELDS: Record<string, string[]> = {
   regex: ["type", "pattern", "flags", "expect", "target"],
   tool_used: ["type", "tool", "tools", "expect", "count", "args"],
   file_exists: ["type", "path"],
-  schema: ["type", "schema"],
 };
 /** A target: a field of the answer's JSON, dotted for a nested one. */
 const TARGET = /^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$/;
@@ -64,13 +64,11 @@ const LOOPBACK_HOST = /^(?:127\.\d+\.\d+\.\d+|localhost|\[::1\])$/; // key-gate:
 /** A case's run input: its prompt's body as content (none when empty), then its typed fields. */
 export const runInput = (content: string, fields?: Json): Json => ({ ...(content ? { content } : {}), ...fields });
 
-type Validate = (value: unknown) => string[];
 export type Grader =
   | { file: string; type: "llm"; rubric: string; target?: string }
   | { file: string; type: "regex"; pattern: string; flags: string; expect: "match" | "no_match"; target?: string }
   | { file: string; type: "tool_used"; tools: string[]; expect: "called" | "not_called"; count?: number; args?: Json }
-  | { file: string; type: "file_exists"; path: string }
-  | { file: string; type: "schema"; schema: string; validate: Validate };
+  | { file: string; type: "file_exists"; path: string };
 /** One answer of a fake tool: taken when every argument `when` lists equals the call's; `when` a list, when any one of
  *  its entries does (one answer for each spelling of a call: a file by `sha` or by `ref`, say). */
 type Answer = { when: Json | Json[]; result: Json };
@@ -164,7 +162,7 @@ function fixtureOf(text: string, name: string, at: string, bad: (message: string
 }
 
 /** A grader file checked, by its type's fields. */
-function graderOf(dir: string, p: Package, file: string, text: string, mcp: Record<string, unknown>, bad: (message: string) => void): Grader | undefined {
+function graderOf(p: Package, file: string, text: string, mcp: Record<string, unknown>, bad: (message: string) => void): Grader | undefined {
   const front = frontOf(text);
   if (typeof front === "string") return bad(`${file}: ${front}`), undefined;
   const { data, body } = front;
@@ -194,9 +192,9 @@ function graderOf(dir: string, p: Package, file: string, text: string, mcp: Reco
     case "tool_used": {
       const tools = data.tool !== undefined && data.tools === undefined ? [data.tool] : data.tools;
       if (!Array.isArray(tools) || !tools.length || !tools.every((t) => typeof t === "string") || (data.tool !== undefined && data.tools !== undefined)) return bad(`${file}: a tool_used grader names tool (one gate name) or tools (a list), not both`), undefined;
-      const listed = p.mcp.flatMap(({ server, tools: names }) => names.map((name) => mcpToolName(server, name)));
+      const listed = p.mcp.flatMap(({ toolkit, tools: names }) => names.map((name) => mcpToolName(toolkit, name)));
       for (const tool of tools as string[]) {
-        if (mcpNameOf(tool) ? !listed.includes(tool) : !(BOUND_TOOLS.includes(tool) || tool === ASK_TOOL)) bad(`${file}: ${tool} is neither a tool this server binds nor an MCP tool the package lists (mcp:<server>/<tool>)`);
+        if (mcpNameOf(tool) ? !listed.includes(tool) : !(BOUND_TOOLS.includes(tool) || tool === ASK_TOOL)) bad(`${file}: ${tool} is neither a tool this server binds nor an MCP tool the package lists (mcp:<toolkit>/<tool>)`);
       }
       const expect = data.expect ?? "called";
       if (expect !== "called" && expect !== "not_called") return bad(`${file}: expect is called or not_called`), undefined;
@@ -213,19 +211,6 @@ function graderOf(dir: string, p: Package, file: string, text: string, mcp: Reco
     case "file_exists":
       if (typeof data.path !== "string" || !data.path.trim() || data.path.startsWith("/") || data.path.split("/").includes("..")) return bad(`${file}: a file_exists grader names a path in the run's work folder`), undefined;
       return { file, type, path: data.path.replace(/^\.\//, "") };
-    case "schema": {
-      const path = inside(dir, data.schema, "file");
-      if (!path) return bad(`${file}: a schema grader names its schema, a JSON Schema file in the package`), undefined;
-      let schema: unknown;
-      try {
-        schema = JSON.parse(readFileSync(join(dir, path), "utf8"));
-      } catch {
-        return bad(`${file}: ${path} is not JSON`), undefined;
-      }
-      const compiled = schemaCheck(schema);
-      if ("why" in compiled) return bad(`${file}: ${path} ${compiled.why}`), undefined;
-      return { file, type, schema: path, validate: compiled.check };
-    }
   }
   return undefined;
 }
@@ -273,11 +258,13 @@ export function readCases(dir: string, names?: readonly string[]): { pkg: Packag
       for (const issue of fields) bad(`${at}/case.yaml: ${issue.field}: ${issue.message}`);
     }
     const mcp: Record<string, McpFixture> = {};
-    const servers = c.mcp === undefined ? {} : isObject(c.mcp) ? c.mcp : (bad(`${at}/case.yaml: mcp is a mapping of a server's name to its fixture file in the case`), {});
+    // Each fake by the toolkit it stands in for (the package's own name for its tools), saved under that name as that
+    // source and toolkit, so the apply maps the need to it.
+    const servers = c.mcp === undefined ? {} : isObject(c.mcp) ? c.mcp : (bad(`${at}/case.yaml: mcp is a mapping of a toolkit the package uses to its fake's fixture file in the case`), {});
     for (const [server, file] of Object.entries(servers)) {
       const path = inside(root, file, "file");
-      if (!MCP_SERVER_NAME.test(server)) bad(`${at}/case.yaml: mcp.${server} is not an MCP server's name (${MCP_SERVER_NAME.source})`);
-      else if (!pkg.mcp.some((need) => need.server === server)) bad(`${at}/case.yaml: mcp.${server} is a server the package does not use (it uses ${pkg.mcp.map((need) => need.server).join(", ") || "none"})`);
+      if (!MCP_SERVER_NAME.test(server)) bad(`${at}/case.yaml: mcp.${server} is not a toolkit's name (${MCP_SERVER_NAME.source})`);
+      else if (!pkg.mcp.some((need) => need.toolkit === server)) bad(`${at}/case.yaml: mcp.${server} is a toolkit the package does not use (it uses ${pkg.mcp.map((need) => need.toolkit).join(", ") || "none"})`);
       else if (!path) bad(`${at}/case.yaml: mcp.${server} names ${JSON.stringify(file)}, not a file in the case`);
       else {
         const fixture = fixtureOf(readFileSync(join(root, path), "utf8"), server, `${at}/${path}`, bad);
@@ -312,7 +299,7 @@ export function readCases(dir: string, names?: readonly string[]): { pkg: Packag
     const graders: Grader[] = [];
     for (const entry of readdirSync(join(root, "graders"), { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1))) {
       if (!entry.isFile() || !entry.name.endsWith(".md")) continue;
-      const grader = graderOf(dir, pkg, `${at}/graders/${entry.name}`, readFileSync(join(root, "graders", entry.name), "utf8"), mcp, bad);
+      const grader = graderOf(pkg, `${at}/graders/${entry.name}`, readFileSync(join(root, "graders", entry.name), "utf8"), mcp, bad);
       if (grader) graders.push({ ...grader, file: entry.name });
     }
     if (problems.length > before) continue;
@@ -436,12 +423,6 @@ export function searched(search: FakeSearch, query: string): string {
 /** A deterministic grader's verdict on one run: every type but llm. */
 export function gradeDeterministic(grader: Exclude<Grader, { type: "llm" }>, run: RunRecord, faked: readonly string[]): Verdict {
   switch (grader.type) {
-    case "schema": {
-      const json = answerJson(run.answer);
-      if ("why" in json) return { pass: false, reason: json.why };
-      const problems = grader.validate(json.value);
-      return problems.length ? { pass: false, reason: `the answer's json does not meet ${grader.schema}: ${problems.slice(0, 5).join("; ")}${problems.length > 5 ? `; and ${problems.length - 5} more` : ""}` } : { pass: true, reason: `the answer's json meets ${grader.schema}` };
-    }
     case "regex": {
       const subject = grader.target ? targetOf(run.answer, grader.target) : { text: run.answer };
       if ("why" in subject) return { pass: false, reason: subject.why };
@@ -468,6 +449,15 @@ export function gradeDeterministic(grader: Exclude<Grader, { type: "llm" }>, run
       return { pass, reason: `${said}; the grader expects ${grader.expect === "called" ? "at least one" : "none"}` };
     }
   }
+}
+
+/** The output check of a completed run of a package that declares `output`, beside its case's graders: the server's own
+ *  verdict (`result.output_error`, why the answer still missed the schema after the runner's one retry), so no case
+ *  carries a grader for it. Undefined for a package with no output schema. */
+export function outputVerdict(pkg: Package, result: unknown): GraderResult | undefined {
+  if (!pkg.output) return undefined;
+  const why = isObject(result) && typeof result.output_error === "string" ? result.output_error : undefined;
+  return { grader: "output", type: "output", cost_usd: null, pass: why === undefined, reason: why === undefined ? `the answer's json meets ${pkg.output.schema}` : `the answer misses ${pkg.output.schema}: ${why}` };
 }
 
 /** The input a grader run gets for an llm grader: the rubric, the run's input, its answer (its target field marked when
@@ -634,13 +624,16 @@ async function waitRun(api: Api, runId: string, deadline: number, signal?: Abort
 
 /** The calls in a run's rows: each tool_use row by its gate name, with its result's status and preview. */
 /** A run's tool calls, each named as a grader names it: the gate's own rule (RunGate.enter), its settings key, but a
- *  shell tool held to bash's setting (bash_background, bash_output, ...) keeps its own name, so its grader sees it. */
-export function callsOf(rows: readonly Json[], harness: string, servers: readonly string[]): ToolCall[] {
+ *  shell tool held to bash's setting (bash_background, bash_output, ...) keeps its own name, so its grader sees it. A
+ *  call on a saved server `toolkits` names ({<saved server>: <the package's toolkit>}, a need an owner's server filled
+ *  under another name) is named on the package's toolkit, as the package's graders name it. */
+export function callsOf(rows: readonly Json[], harness: string, servers: readonly string[], toolkits: Readonly<Record<string, string>> = {}): ToolCall[] {
   const results = new Map(rows.filter((row) => row.kind === "tool_result" && row.tool_use_id).map((row) => [String(row.tool_use_id), row]));
   return rows.filter((row) => row.kind === "tool_use" && typeof row.tool_name === "string").map((row) => {
     const name = row.tool_name as string;
     const result = results.get(String(row.tool_use_id));
-    return { tool: shellToolOf(name) ?? settingsKeyOf(harness, name, servers) ?? name, name, preview: (row.tool_input_preview as string | null) ?? null, status: (result?.tool_status as string | undefined) ?? null, result: (result?.tool_result_preview as string | undefined) ?? null };
+    const key = settingsKeyOf(harness, name, servers);
+    return { tool: shellToolOf(name) ?? (key === undefined ? undefined : onServerName(key, toolkits)) ?? name, name, preview: (row.tool_input_preview as string | null) ?? null, status: (result?.tool_status as string | undefined) ?? null, result: (result?.tool_result_preview as string | undefined) ?? null };
   });
 }
 
@@ -763,7 +756,8 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
     cpSync(options.dir, join(scratch!, "templates", pkg.name), { recursive: true });
     const { startServe } = await import("./server.js");
     // A local install by construction: its own scratch server, reached on loopback, its fake MCP servers there too.
-    const serve = await startServe({ mcpLoopback: true, data: join(scratch!, "data"), port: 0,token: randomBytes(24).toString("base64url"), templates: join(scratch!, "templates"), drainTimeout: "5s", ...(options.serve ?? {}) }).catch((error: unknown) => {
+    // Its fakes stand in for the package's MCP needs (mcpStandIns): each is saved as the source and toolkit it fakes.
+    const serve = await startServe({ mcpLoopback: true, mcpStandIns: true, data: join(scratch!, "data"), port: 0,token: randomBytes(24).toString("base64url"), templates: join(scratch!, "templates"), drainTimeout: "5s", ...(options.serve ?? {}) }).catch((error: unknown) => {
       removeTree(scratch!);
       throw error;
     });
@@ -845,9 +839,13 @@ async function runCase(ctx: Ctx, one: EvalCase): Promise<CaseResult> {
       if (options.server && !LOOPBACK_HOST.test(new URL(options.server.baseUrl).hostname)) throw new ApiFailure(`the case fakes the MCP server ${name} on this machine's loopback, which the server at ${new URL(options.server.baseUrl).host} cannot reach: run it on a server on this machine`);
       // An owner's server keeps its own MCP servers: a case never replaces one, it fails instead.
       if (options.server &&(await api("GET", `/settings/mcp-servers/${name}`)).status !== 404) throw new ApiFailure(`the server already has an MCP server named ${name}, and the case would replace it with its fake: run the eval on its own server (no --server), or on one without ${name}`);
+      const need = ctx.pkg.mcp.find((one) => one.toolkit === name);
+      // An owner's server records what made each server, so there a fake is only ever a url one with its toolkit: one
+      // standing in for a Composio or GitHub need is the eval's own server's alone.
+      if (options.server && need && need.source !== "url") throw new ApiFailure(`the case fakes the ${need.source} toolkit ${name}, and only the eval's own server saves a fake as ${need.source}: run it without --server`);
       const fake = await startFake(name, fixture);
       fakes.push(fake);
-      expectOk(`saving the fake MCP server ${name}`, await api("PUT", `/settings/mcp-servers/${name}`, { url: fake.url, auth: { type: "none" } }));
+      expectOk(`saving the fake MCP server ${name}`, await api("PUT", `/settings/mcp-servers/${name}`, { url: fake.url, auth: { type: "none" }, ...(need ? { toolkit: need.toolkit, ...(options.server ? {} : { source: need.source }) } : {}) }));
       saved.push({ name, url: fake.url });
       // Another eval on the same server may have saved its own fake under the name meanwhile: then neither case's calls
       // can be told apart, and this one fails rather than run on a fake it does not own.
@@ -881,7 +879,9 @@ async function runOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
   const { api, pkg, options, made } = ctx;
   const stopped = () => options.signal?.throwIfAborted();
   await serverPins(ctx, one);
-  const applied = expectOk(`applying ${pkg.name}`, await api("POST", `/templates/${pkg.name}/apply`, { parameters: one.parameters, grants: one.grants }));
+  // Each faked toolkit on its fake, by name: never on a server of the same toolkit the owner saved.
+  const servers = Object.fromEntries(fakes.map((fake) => [fake.name, fake.name]));
+  const applied = expectOk(`applying ${pkg.name}`, await api("POST", `/templates/${pkg.name}/apply`, { parameters: one.parameters, grants: one.grants, ...(fakes.length ? { servers } : {}) }));
   const agentId = String(applied.agent_id);
   made.agents.push(agentId);
   // An eval's agent runs only the eval's runs: the package's triggers (a weekly schedule, say) would start paid runs of
@@ -889,7 +889,9 @@ async function runOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
   for (const id of Array.isArray(applied.trigger_ids) ? (applied.trigger_ids as unknown[]).map(String) : []) made.triggers.add(id);
   await deleteTriggers(api, made, true);
   const agent = expectOk(`reading the agent ${agentId}`, await api("GET", `/agents/${encodeURIComponent(agentId)}`));
-  await sameAsLocal(ctx, one, agent);
+  // The saved server the apply gave each need ({toolkit: server}; null for a need it left unset).
+  const used = Object.fromEntries(Object.entries(isObject(applied.servers) ? applied.servers : {}).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+  await sameAsLocal(ctx, one, agent, used);
   stopped();
   for (const note of one.learning) {
     expectOk(`seeding the note ${note.file}`, await api("PUT", `/agents/${encodeURIComponent(agentId)}/learning/files/${encodeURIComponent(note.file)}`, note.text, { "if-none-match": "*" }));
@@ -899,7 +901,7 @@ async function runOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
   // A run started is paid for: whatever fails after this (a read, a grade) still gives it a result, with its cost where
   // the server says it, so the case's total never drops it.
   try {
-    return await ranOnce(ctx, one, n, fakes, agent, agentId, runId);
+    return await ranOnce(ctx, one, n, fakes, agent, agentId, runId, used);
   } catch (error) {
     if (!(error instanceof ApiFailure)) throw error;
     const cost = await api("GET", `/runs/${runId}`).then((read) => (read.status === 200 && isObject(read.body) ? costOf(read.body) : null), () => null);
@@ -907,8 +909,9 @@ async function runOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
   }
 }
 
-/** The started run `runId` of `agentId` waited on, read and graded. */
-async function ranOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[], agent: Json, agentId: string, runId: string): Promise<RunResult> {
+/** The started run `runId` of `agentId` waited on, read and graded; its calls on the saved servers `used` gave its needs
+ *  ({toolkit: server}) named on the package's toolkits. */
+async function ranOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[], agent: Json, agentId: string, runId: string, used: Readonly<Record<string, string>>): Promise<RunResult> {
   const { api, options } = ctx;
   const stopped = () => options.signal?.throwIfAborted();
   const ended = await waitRun(api, runId, Date.now() + (options.runTimeoutMs ?? RUN_TIMEOUT_MS), options.signal, options.queueTimeoutMs);
@@ -922,7 +925,7 @@ async function ranOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
   const harness = isObject(agent.definition) && typeof agent.definition.harness === "string" ? agent.definition.harness : "pi";
   const record: RunRecord = {
     answer: typeof result.final_answer === "string" ? result.final_answer : "",
-    calls: callsOf(ended.rows, harness, Object.keys(one.mcp)),
+    calls: callsOf(ended.rows, harness, [...new Set([...Object.keys(one.mcp), ...Object.values(used)])], Object.fromEntries(Object.entries(used).map(([toolkit, server]) => [server, toolkit]))),
     mcpCalls: fakes.flatMap((fake) => fake.calls.map((call) => ({ ...call }))),
     files: await (async () => {
       const listed = await filesOf(api, runId);
@@ -942,7 +945,8 @@ async function ranOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
     : asked ? `the run waited on a person (${ended.waiting}); graded as it stood`
     : !graded ? `the run ended ${ended.status}${pending ? ` (${pending})` : ""}${isObject(view.error) && typeof view.error.message === "string" ? `: ${view.error.message}` : ""}`
     : undefined;
-  const graders: GraderResult[] = [];
+  const output = ended.status === "completed" ? outputVerdict(ctx.pkg, view.result) : undefined;
+  const graders: GraderResult[] = output ? [output] : [];
   for (const grader of one.graders) {
     stopped();
     if (grader.type !== "llm") {
@@ -984,9 +988,13 @@ async function gradeLlm(ctx: Ctx, agentId: string, input: string): Promise<{ pas
 /** The package the server applied is this folder's: its view (GET /v2/templates: the model, effort, tools, MCP tools
  *  and what they allow, budget, learning, parameters, triggers, version, ...) equals this folder's, and the agent the
  *  apply made holds this folder's instructions and skill files. On another server a package of the same name may be
- *  another version, and its eval would measure that one: the case fails, naming each field that differs. */
-async function sameAsLocal(ctx: Ctx, one: EvalCase, agent: Json): Promise<void> {
+ *  another version, and its eval would measure that one: the case fails, naming each field that differs. The folder's
+ *  text is compared as the apply wrote it, on the saved servers its answer's `servers` names (onServers): a need the
+ *  owner's server fills under another name is the same package. */
+async function sameAsLocal(ctx: Ctx, one: EvalCase, agent: Json, used: Readonly<Record<string, string>>): Promise<void> {
   const { pkg } = ctx;
+  // The view (GET /v2/templates) is the package as shipped; the agent's text is the package on the servers used.
+  const applied = onServers(pkg, used);
   // Kept once read: a listing that fails fails this case alone, and the next case asks again.
   if (!ctx.served) {
     const listed = expectOk("listing the server's templates", await ctx.api("GET", "/templates"));
@@ -997,10 +1005,10 @@ async function sameAsLocal(ctx: Ctx, one: EvalCase, agent: Json): Promise<void> 
   // computer_here is the server's answer to the package's computer list, never the package: not compared.
   const differs = [...new Set([...Object.keys(view), ...Object.keys(served)])].filter((key) => key !== "computer_here" && !same(view[key], served[key]));
   const { parameters } = applyBodyOf(pkg, { parameters: one.parameters, grants: one.grants });
-  const local = compiled(pkg, parameters, { mcp: [], defaultTools: [], grants: [] }).agent;
+  const local = compiled(applied, parameters, { mcp: [], defaultTools: [], grants: [] }).agent;
   const sha = (text: string) => createHash("sha256").update(text).digest("hex");
   const theirs = Object.fromEntries(((agent.skills as Json[] | undefined) ?? []).map((s) => [String(s.path), String(s.sha256)]));
-  const ours = Object.fromEntries(Object.entries(pkg.skills).map(([path, text]) => [path, sha(text)]));
+  const ours = Object.fromEntries(Object.entries(applied.skills).map(([path, text]) => [path, sha(text)]));
   if (!isObject(agent.definition) || agent.definition.instructions !== (local.definition as Json).instructions) differs.push("instructions");
   if (!same(theirs, ours)) differs.push("skill files");
   if (differs.length) throw new ApiFailure(`the server's ${pkg.name} package is not this folder's: it differs in ${[...new Set(differs)].sort().join(", ")}. The eval would measure the server's copy: run it without --server, or on a server that ships this version`);
@@ -1014,7 +1022,8 @@ async function serverPins(ctx: Ctx, one: EvalCase): Promise<void> {
   const { api, pkg, options } = ctx;
   if (options.server) return;
   const { parameters } = applyBodyOf(pkg, { parameters: one.parameters, grants: one.grants });
-  const pins = filledPins(pkg.mcp, parameters).filter(({ empty }) => !empty.length);
+  // Each fake is saved under its toolkit's name, so the package's own tool names are the server's.
+  const pins = filledPins(pkg.mcp.map((need) => ({ ...need, server: need.toolkit })), parameters).filter(({ empty }) => !empty.length);
   if (!pins.length) return;
   const settings = expectOk("reading the server's tool settings", await api("GET", "/settings/tools"));
   for (const { tool, pin } of pins) settings[tool] = { ...(isObject(settings[tool]) ? settings[tool] : {}), pin };

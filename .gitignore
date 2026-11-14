@@ -12,6 +12,7 @@ pi.config.mjs
 .openai/
 
 # Local review evidence
+.evidence/
 .desloppify/
 .cascade/
 .review/

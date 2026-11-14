@@ -363,7 +363,7 @@ export async function approve(store: RunsStore, moment: RunMoment, id: string, d
 // ---- start -----------------------------------------------------------------------------------------------------------
 
 /** A UUIDv7 run id: time-ordered, so a listing by start time is stable, and unique per run. */
-function uuidv7(now = Date.now()): string {
+export function uuidv7(now = Date.now()): string {
   const bytes = randomBytes(16);
   bytes.writeUIntBE(now, 0, 6);
   bytes[6] = (bytes[6]! & 0x0f) | 0x70;
@@ -496,7 +496,7 @@ async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Re
     const notesLeftOut = left.map((note) => options.shown.name(note.file));
     // The learned skills the seed offers the run, by name: each with its files (one over a run's skill budget at all is held
     // by its size and never laid) and no host secret in it, as chooseSkills leaves them out. The claim lays them; the
-    // end-of-run turn counts the runs each served (runner/learning-end.ts draftForOf).
+    // agent's impact counts the runs each served.
     const skills = (seeded.seed.skills ?? []).flatMap(({ name, files }) => (files && !options.shown.holds(name) && !Object.entries(files).some(([path, text]) => options.shown.holds(path) || options.shown.holds(text)) ? [name] : []));
     // The learned workflows its learned_workflow tool runs, by name, as the claim chooses them (chooseWorkflows): what the
     // agent's impact counts a run as started from, beside its notes and skills.

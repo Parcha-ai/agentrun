@@ -1,6 +1,7 @@
 package x11
 
 import (
+	"errors"
 	"fmt"
 	"image"
 )
@@ -19,14 +20,17 @@ const (
 	DamageReportRawRectangles = 0
 )
 
-// InitDamage finds the DAMAGE extension and asks for version 1.1 of it. A server without it answers an error in words.
+// ErrNoDamage is InitDamage's error on an X server without the DAMAGE extension.
+var ErrNoDamage = errors.New("this X server has no DAMAGE extension")
+
+// InitDamage finds the DAMAGE extension and asks for version 1.1 of it. A server without it answers ErrNoDamage.
 func (c *Conn) InitDamage() error {
 	ext, err := c.QueryExtension("DAMAGE")
 	if err != nil {
 		return err
 	}
 	if !ext.Present {
-		return fmt.Errorf("the X server has no DAMAGE extension")
+		return ErrNoDamage
 	}
 	body := le.AppendUint32(nil, 1)
 	body = le.AppendUint32(body, 1)

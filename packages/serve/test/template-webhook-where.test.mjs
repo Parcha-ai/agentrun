@@ -19,7 +19,7 @@ name: issues
 version: 0.1.0
 description: Triages each new issue in one repository.
 parameters:
-  owner: { type: string, required: true, description: The repository's owner. }
+  owner: { type: string, description: The repository's owner. }
   repo: ${repo}
 budget: { per_run_usd: 0.5 }
 triggers:
@@ -36,7 +36,7 @@ triggers:
 Triage the issue in \${parameters.owner}/\${parameters.repo}.
 `;
 
-async function templates(t, repo = "{ type: string, required: true, description: The repository's name. }") {
+async function templates(t, repo = "{ type: string, description: The repository's name. }") {
   const root = join(await scratch(t), "templates");
   mkdirSync(join(root, "issues"), { recursive: true });
   writeFileSync(join(root, "issues", "agent.md"), MANIFEST(repo));
@@ -46,12 +46,12 @@ async function templates(t, repo = "{ type: string, required: true, description:
 test("a webhook trigger's where in values may hold a placeholder whose parameter is required or has a default", async (t) => {
   const root = await templates(t);
   assert.equal(readPackage(join(root, "issues")).triggers.length, 1);
-  const defaulted = await templates(t, "{ type: string, default: widgets, description: The repository's name. }");
+  const defaulted = await templates(t, "{ type: string, required: false, default: widgets, description: The repository's name. }");
   assert.equal(readPackage(join(defaulted, "issues")).triggers.length, 1);
 });
 
 test("an optional parameter with no default in a webhook trigger's where is refused: the filter would fill empty and take nothing", async (t) => {
-  const root = await templates(t, "{ type: string, description: The repository's name. }");
+  const root = await templates(t, "{ type: string, required: false, description: The repository's name. }");
   assert.throws(() => readPackage(join(root, "issues")), (error) => error instanceof PackageError && error.problems.some((one) => /parameters\.repo is used in triggers\[0\]\.source\.accept, so it is required or has a default/.test(one)));
 });
 

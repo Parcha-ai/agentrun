@@ -69,7 +69,7 @@ Each class below was declined here, most more than once:
 
 - `server.ts`, `openapi.ts`, `workflow.ts`, `cap.ts`, `runner/adapter-loop.ts` are over 100 KB: fetch one only to
   settle a fact, once, then `read` its filed copy at an offset.
-- Who calls it: `search_code` (default branch) with the symbol and `repo:Parcha-ai/agentrun`, then read that caller.
+- Who calls it: `git grep` the symbol in a checkout, else read the files that import its module, then read that caller.
 - Deliberate or not: the test beside it (`packages/<pkg>/test/`), `changes/*.md`, the comment above the line.
 - A claim about which value a caller passes, where a value comes from or which scope a name is in needs that line
   read: 7 of our reviewer's 13 declined findings skipped that hop.

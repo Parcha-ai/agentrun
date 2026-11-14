@@ -96,7 +96,7 @@ async function setup(t, harness, templates) {
   const server = await serve(t, { ...options, templates, accounts: true, openSetup: true });
   const fake = await startFakeMcp();
   t.after(() => fake.close());
-  assert.equal((await server.api("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "none" } })).status, 200);
+  assert.equal((await server.api("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "none" }, toolkit: "fake" })).status, 200);
   return { api: server.api, fake, prompt, offered, wire };
 }
 

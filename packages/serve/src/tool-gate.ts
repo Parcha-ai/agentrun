@@ -121,7 +121,8 @@ export function nameMapOf(harness: string, mcpServers: readonly string[] = []): 
   const names = new Map<string, string>();
   const name = (own: string, key: string): void => void (names.has(own) || names.set(own, key));
   for (const [own, key] of Object.entries(SHELL_FAMILY)) name(own, key);
-  for (const own of [...tableTools(), ...SERVE_OWN_TOOLS, ...DECISION_PROVIDER_KEYS]) name(own, own);
+  // pi's code mode (`codemode`) is the computer kind's (KIND_TOOLS); the host's own is read by its own key (RunGate.hostMeta).
+  for (const own of [...tableTools(), ...SERVE_OWN_TOOLS.filter((one) => one !== CODEMODE_TOOL_NAME), ...DECISION_PROVIDER_KEYS]) name(own, own);
   const alias = facts?.toolAlias?.exec(READ_SKILL_FILE) ?? null;
   name(READ_SKILL_FILE, alias && mcpServers.includes(alias[1]!) ? mcpToolName(alias[1]!, alias[2]!) : "read");
   for (const [own, keys] of KIND_TOOLS) name(own, keys[0]!);
@@ -387,7 +388,12 @@ export class RunGate {
     // as its own tool, by its own name. pi's code mode on a run with a desktop or a phone is not the host's: its scripts
     // reach the computer themselves, so it is held to the kind's setting (KIND_TOOLS).
     const own = name.replace(/^mcp__hands__/, "");
-    if (META_TOOLS.has(own) && !(own === CODEMODE_TOOL_NAME && this.where.computerCodemode)) return "allow";
+    // Each has a settings key of its own (allow unless an owner sets deny: a denied one is not offered, and a call to it is
+    // refused here).
+    if (this.hostMeta(own)) {
+      const setting = this.setting(name);
+      return setting.permission === "deny" ? { deny: deniedText(own, own, setting.from, options.replayed ? "unknown" : "no") } : "allow";
+    }
     const key = this.keyOf(name) ?? name;
     const tool = this.askedAs(name);
     const ran = options.replayed ? "unknown" : "no";
@@ -414,7 +420,14 @@ export class RunGate {
   /** Where the permission `policy` gives `tool` was set: the agent's own tool settings, the server's, or the default; or
    *  "unattended", an ask the agent's approvals allowed. */
   readonly denyFrom = (tool: string): SettingFrom => this.setting(tool).from;
+  /** Whether `bare` (a name without claude-agent's `mcp__hands__`) is one of the host's three, not pi's own code mode on a
+   *  desktop or a phone (which is held to the kind's keys). */
+  private hostMeta(bare: string): boolean {
+    return META_TOOLS.has(bare) && !(bare === CODEMODE_TOOL_NAME && this.where.computerCodemode);
+  }
   private setting(tool: string): { permission: Permission; from: SettingFrom } {
+    const bare = tool.replace(/^mcp__hands__/, "");
+    if (this.hostMeta(bare)) return this.settingOf(tool, bare);
     // A tool the desktop and the phone both have (every computer tool): the gate knows not the run's kind, so it is held to the
     // stricter of both keys' settings, never more permissive than the run's own kind's.
     const shared = KIND_TOOLS.get(tool.replace(/^mcp__hands__/, ""));

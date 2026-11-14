@@ -36,6 +36,7 @@ export interface CapModel {
 /** The previous request of the conversation, as its usage reported it: what of its input was read from or written to
  *  the cache, the rest, its input bound (the unit this request's is in) and when it ended (ms), on which model. */
 export interface Previous {
+  /** Its model as the cap prices it (CapModel.id), whatever id its client named it by. */
   readonly model: string;
   readonly cachedTokens: number;
   readonly inputTokens: number;

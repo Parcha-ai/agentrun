@@ -9,7 +9,6 @@ import { settingsIssues } from "./tool-plane.js";
 import { CAP_MODES } from "./cap.js";
 import { APPROVALS } from "./approvals.js";
 import { schemaCheck } from "./answer-json.js";
-import { Compile } from "typebox/schema";
 
 export const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 /** An inline agent's source or kind in its external reference (POST /runs): no colon, which the reference's key splits on. */
@@ -25,13 +24,11 @@ export const IDEMPOTENCY_TTL_S = 86_400;
 export const stable = (value: unknown): string =>
   Array.isArray(value) ? `[${value.map(stable).join(",")}]` : isObject(value) ? `{${Object.keys(value).sort().map((k) => `${JSON.stringify(k)}:${stable(value[k])}`).join(",")}}` : JSON.stringify(value);
 
-export const DEFINITION_FIELDS = ["id", "version", "name", "description", "instructions", "workflow", "model", "model_tiers", "thinking", "harness", "place", "computer", "learning", "skills", "tools", "tool_settings", "approvals", "max_cost_usd", "cap_mode", "input_schema", "output_schema", "max_tool_calls", "checkout"];
+export const DEFINITION_FIELDS = ["id", "version", "name", "description", "instructions", "workflow", "model", "model_tiers", "thinking", "harness", "place", "computer", "learning", "skills", "tools", "tool_settings", "approvals", "max_cost_usd", "cap_mode", "input_schema", "output_schema", "checkout"];
 /** What an agentic definition may ask the server to check out in each run's folder before its first turn
  *  (runner/pr-checkout.ts): `pull_request`, the pull request the run's GitHub event names, at its head, read-only, in
  *  `repo/`; `none` clears it on an edit. */
 export const CHECKOUTS = ["pull_request", "none"] as const;
-/** The most tool calls an agent's budget (max_tool_calls, tool-budget.ts) may name. */
-export const MAX_TOOL_CALLS = 1_000;
 /** The most bytes an agent's output_schema takes, as JSON. */
 export const MAX_OUTPUT_SCHEMA_BYTES = 64 * 1024;
 /** The most bytes an agent's input_schema takes, as JSON. */
@@ -150,12 +147,6 @@ export function definitionIssues(definition: unknown, { at = "definition", creat
     if (d.workflow !== undefined) out.push(issue(`${at}.checkout`, "not_allowed", "A workflow revision keeps no checkout: only an agentic run starts in a checkout.", `Remove ${at}.checkout.`));
     else if (!(CHECKOUTS as readonly unknown[]).includes(d.checkout)) out.push(issue(`${at}.checkout`, "not_an_option", `${at}.checkout is one of ${CHECKOUTS.join(", ")}: pull_request checks out the pull request the run's GitHub event names, at its head, in repo/ before the first turn; none clears it`));
   }
-  // The tool calls each conversation of an agentic run may make (tool-budget.ts): above 0 sets the budget, 0 clears it, and
-  // an edit that leaves it out keeps the agent's, as the default cap is kept.
-  if (d.max_tool_calls !== undefined) {
-    if (d.workflow !== undefined) out.push(issue(`${at}.max_tool_calls`, "not_allowed", "A workflow revision keeps no tool-call budget: its nodes are its steps.", `Remove ${at}.max_tool_calls.`));
-    else if (!(Number.isSafeInteger(d.max_tool_calls) && (d.max_tool_calls as number) >= 0 && (d.max_tool_calls as number) <= MAX_TOOL_CALLS)) out.push(issue(`${at}.max_tool_calls`, "wrong_type", `${at}.max_tool_calls is a whole number from 0 to ${MAX_TOOL_CALLS}: above 0, the tool calls each conversation of a run may make before every further call is refused with words that say to answer now; 0 clears it`));
-  }
   // How a run's cap prices its requests (cap.ts CapMode): kept, as the default cap is, by an edit that leaves it out.
   if (d.cap_mode !== undefined) {
     if (!(CAP_MODES as readonly unknown[]).includes(d.cap_mode)) out.push(issue(`${at}.cap_mode`, "not_an_option", `${at}.cap_mode is one of ${CAP_MODES.join(", ")}: expected prices a request's input from the previous request's cache, strict prices all of it uncached`));
@@ -238,18 +229,6 @@ export function inputSchemaOf(schema: unknown): Json {
   };
 }
 
-/** A compiled schema's checker, by the schema's JSON: an agent's runs check against the same few schemas over and over. */
-const compiledInputs = new Map<string, ReturnType<typeof Compile>>();
-const compiledInput = (schema: Json) => {
-  const key = stable(schema);
-  let validator = compiledInputs.get(key);
-  if (!validator) {
-    validator = Compile(schema as Parameters<typeof Compile>[0]);
-    if (compiledInputs.size >= 256) compiledInputs.delete(compiledInputs.keys().next().value!);
-    compiledInputs.set(key, validator);
-  }
-  return validator;
-};
 /** Each JSON Schema keyword's issue reason (InputIssue.reason): a keyword not named here is `invalid`. */
 const KEYWORD_REASON: Record<string, string> = {
   type: "wrong_type", enum: "not_an_option", const: "not_an_option", pattern: "bad_format", format: "bad_format",
@@ -269,7 +248,10 @@ export function inputIssues(input: Json, schema: Json, at = "input"): InputIssue
     seen.add(`${path}\n${reason}`);
     out.push(issue(path, reason, message, fix));
   };
-  for (const error of compiledInput(schema).Errors(input)[1]) {
+  // The schema in force compiles: a save checks it (inputSchemaIssues).
+  const compiled = schemaCheck(schema);
+  if ("why" in compiled) throw new Error(`the input schema ${compiled.why}`);
+  for (const error of compiled.validator.Errors(input)[1]) {
     const where = [at, ...error.instancePath.split("/").slice(1).map((part) => part.replace(/~1/g, "/").replace(/~0/g, "~"))].join(".");
     const params = error.params as Record<string, unknown>;
     if (error.keyword === "required") for (const key of (params.requiredProperties as string[] | undefined) ?? []) add(`${where}.${key}`, "missing", `${where}.${key} is required`);

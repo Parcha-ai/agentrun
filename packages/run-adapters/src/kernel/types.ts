@@ -119,6 +119,8 @@ export interface HostTool<Input = any> {
   /** It only calls the session's other tools, each a call of its own (HostToolIO `nested`): the bridge writes no effect
    *  of its own for it, so a crash leaves it to run again, its nested calls answered from their records. */
   nests?: true;
+  /** Callable by name (a nested call) but never listed to the model (the bridge leaves it out of `tools`). */
+  deferred?: true;
   /** Its answer: the text, or the text with the images it shows. Recorded as the call's outcome, so a call answered
    *  from the record answers with the same images. */
   execute(input: Input, io: HostToolIO): Promise<string | ToolOutput>;
