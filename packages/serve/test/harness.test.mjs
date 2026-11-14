@@ -61,7 +61,7 @@ test("a harness this server does not run saves with a warning on the field, and 
 test("capabilities lists each harness: pi runs here; claude-agent, codex and opencode say why not", async (t) => {
   const { api } = await serve(t);
   const { body } = await api("GET", "/capabilities");
-  assert.deepEqual(body.harnesses.map((h) => [h.id, h.available, h.steer]), [["pi", true, true], ["claude-agent", false, false], ["codex", false, false], ["opencode", false, false]], "only pi takes a message mid-turn");
+  assert.deepEqual(body.harnesses.map((h) => [h.id, h.available, h.steer]), [["pi", true, true], ["claude-agent", false, true], ["codex", false, false], ["opencode", false, false]], "pi and claude-agent take a message mid-turn");
   for (const h of body.harnesses.filter((h) => !h.available)) assert.match(h.reason, new RegExp(h.id));
 });
 

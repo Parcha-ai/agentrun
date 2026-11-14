@@ -454,10 +454,14 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
       });
 
       const live = (event: unknown) => {
-        const e = event as { type?: string; delta?: unknown; callId?: unknown; name?: unknown; isError?: unknown; result?: unknown; truncated?: unknown; args?: unknown; reason?: unknown };
+        const e = event as { type?: string; delta?: unknown; callId?: unknown; name?: unknown; isError?: unknown; result?: unknown; truncated?: unknown; args?: unknown; reason?: unknown; ids?: unknown };
         if (e?.type === "text" && typeof e.delta === "string") io.onEvent({ type: "text", delta: e.delta });
         // The model's message ended inside the turn (the CLI resumes a cut answer itself): what it said so far is one message.
         if (e?.type === "text_end") io.onEvent({ type: "text_end" });
+        // The CLI took these submissions (its transcript holds the message that carried them): a steer reached the model.
+        if (e?.type === "message_taken" && Array.isArray(e.ids)) io.onEvent({ type: "message_taken", ids: e.ids.filter((id): id is string => typeof id === "string") });
+        // The harness handed these submissions to the CLI: a steer() waiting on one returns. Not the host's to hear.
+        if (e?.type === "message_sent" && Array.isArray(e.ids)) for (const id of e.ids) if (typeof id === "string") sentWaiters.get(id)?.();
         // The tool bridge's `tool_end` comes once the call's outcome is in the session's records: only then does the host
         // hear the call ended, with the text recorded.
         if (e?.type === "tool_end" && typeof e.callId === "string" && typeof e.name === "string") {
@@ -486,9 +490,19 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
 
       let running: Promise<{ status: TurnStatus; error?: string }> | undefined;
       let closed = false;
+      // A turn is in flight: set as run() starts it, cleared only right after the drive's last look at the inbox (below),
+      // with nothing awaited between, so a submission written meanwhile is either sent by this turn or starts the next.
+      let turning = false;
+      /** steer() calls waiting for the harness to hand their message to the CLI, by submission id. */
+      const sentWaiters = new Map<string, () => void>();
+      /** A submission written while no turn was in flight, still unsent: it starts one. */
+      const kick = () => {
+        if (!turning && !closed && pendingSubmissions(drive.state()).length > 0) void run();
+      };
       const run = () => {
         const before = turnsIn(drive).length;
         state = "idle";
+        turning = true;
         running = (async () => {
           let outcome: { status: TurnStatus; error?: string } | undefined;
           // A turn whose final answer the model cut at its output limit, the CLI's recovery of it spent, says so on its
@@ -498,6 +512,9 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
             const current = drive;
             try {
               await harness.drive(current);
+              // A steer written as the drive's inbox closed (the turn was ending) is pending, and no turn of the drive
+              // sends it: the turn goes on with it, as the harness's own steer placed while a turn ends does.
+              while (!current.signal.aborted && pendingSubmissions(current.state()).length > 0) await harness.drive(current);
               const ended = turnsIn(current).slice(before).at(-1)?.data as { status?: TurnStatus; error?: string; stopReason?: string; outputTokens?: unknown } | undefined;
               if (ended?.stopReason === "length") stop = { stopReason: "length", ...(typeof ended.outputTokens === "number" ? { outputTokens: ended.outputTokens } : {}) };
               outcome = ended?.status ? { status: ended.status, ...(ended.error ? { error: ended.error } : {}) } : { status: "failed", error: "the turn ended with no outcome in the session's records" };
@@ -515,16 +532,21 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
               else outcome = { status: "failed", error: String((error as Error)?.message ?? error).slice(0, 500) };
             }
           }
+          turning = false;
           io.onEvent({ type: "turn_end", status: outcome.status, ...stop });
           return outcome;
-        })();
+        })().catch((error: unknown) => {
+          turning = false;
+          throw error;
+        });
         return running;
       };
       // A drive that was halted (an interrupt) holds the session no more: the next turn opens a fresh one, on the same
       // writer (the adapter never opens the session itself).
       const ready = async () => {
         if (closed) throw new Error("agentrun-harness-claude: the session is closed");
-        if (running) await running;
+        // A turn a steer started meanwhile is waited for too.
+        while (turning && running) await running;
         if (drive.signal.aborted && !io.signal.aborted) drive = await open();
       };
 
@@ -567,7 +589,42 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
           if (calls.draining) throw new Error("agentrun-harness-claude: the session is pausing; no new turn");
           await ready();
           await drive.submit({ id: randomUUID(), kind: "prompt", text });
-          void run();
+          // Sent by the turn a steer started meanwhile, if one did; else a turn of its own.
+          kick();
+        },
+        // A person's message: mid-turn, sent by the harness's steering loop at priority `next`, so the CLI hands it to the
+        // model at its next step (after the tool calls in flight finish), in the same turn; with no turn in flight, a turn of
+        // its own. Placed under the host's id once: the same id again (a runner lost after the placement hands the row on
+        // again) places nothing, and says the model has it when the transcript already does.
+        async steer(text, id, mode = "steer", _options) {
+          if (closed) throw new Error("agentrun-harness-claude: the session is closed");
+          if (calls.draining) throw new Error("agentrun-harness-claude: the session is pausing; no new message");
+          const submissionId = id ?? randomUUID();
+          if (drive.state().submissions.some((s) => s.id === submissionId)) {
+            const folded = drive.state();
+            const placed = folded.effectOrder.some((e) => e.name === "place" && e.placed.includes(submissionId));
+            if (placed) {
+              const transcript = new JournalSessionStore(new NativeJournal(drive), { records: await new NativeJournal(drive).read() });
+              if (lostPrompts(folded, [submissionId], transcript).length === 0) io.onEvent({ type: "message_taken", ids: [submissionId] });
+            }
+            kick();
+            return;
+          }
+          // A drive an interrupt halted is opened again before anything is written through it.
+          if (!turning) await ready();
+          // steer() returns once the CLI has the message (the turn in flight then takes it at its next step), or once the
+          // turn that would have sent it is over: a host that lets the work go on after steer() returns has not raced it.
+          let wake!: () => void;
+          const sent = new Promise<void>((resolve) => (wake = resolve));
+          sentWaiters.set(submissionId, wake);
+          try {
+            await drive.submit({ id: submissionId, kind: mode === "followUp" ? "followUp" : "steer", text });
+            kick();
+            const turn = running;
+            await Promise.race([sent, ...(turn ? [turn.then(() => undefined, () => undefined)] : [])]);
+          } finally {
+            sentWaiters.delete(submissionId);
+          }
         },
         async recover() {
           if (state !== "open_turn") throw new Error("agentrun-harness-claude: there is no turn to recover");
@@ -590,8 +647,12 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
           state = "idle";
         },
         async turnEnd() {
-          if (!running) throw new Error("agentrun-harness-claude: no turn is in flight");
-          return running;
+          if (running) return running;
+          // No turn ran in this session: the last turn the session's records hold, ended before it opened (a lost runner's
+          // steer the model already answered, placed again here, starts no turn). None at all: there is no turn to wait for.
+          const last = turnsIn(drive).at(-1)?.data as { status?: TurnStatus; error?: string } | undefined;
+          if (last?.status && !holdsTurn(drive.state())) return { status: last.status, ...(last.error ? { error: last.error } : {}) };
+          throw new Error("agentrun-harness-claude: no turn is in flight");
         },
         async interrupt(interruptOptions = {}) {
           const drainMs = interruptOptions.drainMs ?? 0;

@@ -518,6 +518,11 @@ interface CliRecord {
    *  once the turn in flight ended): the person's message, or, with `origin`, the host's input entry naming who wrote it.
    *  Written every time, never once for the run as the first input is. */
   message(text: string, origin?: MessageOrigin): Promise<void>;
+  /** A message steered into the turn in flight, once the model took it (its adapter's message_taken): the person's steer
+   *  entry, or, with `origin`, the host's input entry naming who wrote it, carrying the request id, once per request id. Its
+   *  commit is the one the steer's command row is taken in. It opens a turn on the record only when none is open (a steer
+   *  placed as the turn ended, which its adapter sent as the next turn). */
+  steered(text: string, requestId: string, origin?: MessageOrigin): Promise<void>;
   /** A message taken mid-turn is about to be sent as a turn of its own (sendAfterTurn): its intent mark (KINDS
    *  messageSending, by its command row's id), in its own commit, for the flush before the send. A row that already has
    *  one was sent by a runner lost before its row was taken, so this send is a second turn the model may read twice: a
@@ -684,6 +689,17 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
         else await startsTurn({ kind: KINDS.message, data: { role: "person", text: input, requestId } as MessageData });
         followUps.add(requestId);
         personWritten = true;
+      }),
+    steered: (input, requestId, origin) =>
+      inTurn(async () => {
+        if (followUps.has(requestId)) return;
+        const entry = origin
+          ? { entry: { kind: KINDS.input, data: { origin, requestId, at: now() } as unknown as JsonValue, model: [{ role: "user", content: input, timestamp: now() }] } }
+          : { kind: KINDS.message, data: { role: "steer", text: input, requestId } as MessageData };
+        if (turnsOpen === 0) await startsTurn(entry);
+        else if ("entry" in entry) await harness.commit((tx) => tx.appendEntry(root.id, entry.entry as never), context);
+        else await append(entry.kind, entry.data);
+        followUps.add(requestId);
       }),
     message: (input, origin) =>
       inTurn(async () => {
@@ -928,6 +944,22 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
    *  end waits on each one's submission (turnOfRequest) before the run may end, so the run never reads completed with a
    *  message it took still unanswered, and its session is never closed under that answer. */
   const steeredIn: string[] = [];
+  /** A CLI's steers (a harness whose record the loop keeps, and whose session steers: claude-agent), by request id: the
+   *  model took it (its adapter's message_taken, `takenIds`), then its record entry, the commit its row is taken in
+   *  (`recorded`). The record says where the model read it, after the tool calls in flight, never where it was queued. */
+  const cliSteers = new Map<string, { text: string; origin?: MessageOrigin; recorded: Promise<void> }>();
+  /** The submissions a CLI's adapter said its model took (message_taken), and who waits on one of them. */
+  const takenIds = new Set<string>();
+  const takenWaiters = new Map<string, (() => void)[]>();
+  const modelTook = (id: string): Promise<void> =>
+    takenIds.has(id) ? Promise.resolve() : new Promise<void>((resolve) => takenWaiters.set(id, [...(takenWaiters.get(id) ?? []), resolve]));
+  const tookNow = (ids: readonly string[]): void => {
+    for (const id of ids) {
+      takenIds.add(id);
+      for (const resolve of takenWaiters.get(id) ?? []) resolve();
+      takenWaiters.delete(id);
+    }
+  };
   /** Set once the claim's last turn has ended and nothing more is sent: a message after it waits for the run's end, as one
    *  during the end-of-run turn does. */
   let turnsOver = false;
@@ -1315,14 +1347,17 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     }
     // Who wrote it, when the person did not (a trigger's message): carried on its input, as the Timeline shows it.
     const origin = originOf((command.body as { origin?: unknown } | null)?.origin);
-    if (!session.steer) {
-      // A harness that takes no message mid-turn: the API answered it `follow_up` (it waits for the turn's end), so it is
-      // the run's next turn, after any taken before it (afterTurn). Taken now as the dispatch takes a row it buffers: the
-      // store's take is the commit of its submission, once sent.
+    // A harness that takes no message mid-turn, or a CLI's message that is no steer of the turn in flight (a trigger's that
+    // answers nothing, or the person's answer to the question its last turn ended on, whose session is idle): the API
+    // answered it `follow_up` (it waits for the turn's end), so it is the run's next turn, after any taken before it
+    // (afterTurn). Taken now as the dispatch takes a row it buffers: the store's take is the commit of its submission, once
+    // sent.
+    if (!session.steer || (cliRecord && (followUp || askedLast))) {
       if (turnsOver) return { later: "the run has answered and is ending: the message waits for the run's end" };
       afterTurn.push({ commandId: command.id, text, requestId, ...(origin ? { origin } : {}) });
       return { taken: true };
     }
+    if (cliRecord) return steerCli(session, cliRecord, gate, command.id, text, requestId, origin);
     // The claim's last turn has ended and nothing more is sent (turnsOver): a steer placed now would start a turn the run's
     // end then cuts, so it waits for the run's end, as a CLI's message does.
     if (turnsOver && !askedLast) return { later: "the run has answered and is ending: the message waits for the run's end" };
@@ -1349,6 +1384,46 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     if (!askedLast) steeredIn.push(requestId);
     await taken.catch(() => {});
     return { taken: true };
+  };
+
+  /** A person's message steered into a CLI's turn in flight (claude-agent): its session places it (its harness sends it to the
+   *  CLI at once, which hands it to the model at its next step); once the model took it, the record's steer entry is written
+   *  and the row is taken in that commit (cliSteers). A runner lost before that leaves the row untaken, and the session holds
+   *  the steer under the row's request id: the next claim's steer() of the same row places nothing again, its resumed turn
+   *  carries the steer if the CLI never had it, and the record is written once. Neither lost nor sent twice. */
+  const steerCli = async (theSession: AdapterSession, theRecord: CliRecord, theGate: Gate, commandId: number, text: string, requestId: string, origin?: MessageOrigin): Promise<CommandOutcome> => {
+    if (turnsOver) return { later: "the run has answered and is ending: the message waits for the run's end" };
+    const taken = theGate.expect(writesEntry(origin ? KINDS.input : KINDS.message, (data) => data.requestId === requestId), { take: [commandId] });
+    taken.catch(() => undefined);
+    // Waited on before it is placed: the model may take it before steer() resolves.
+    const took = modelTook(requestId);
+    try {
+      await theSession.steer!(text, requestId, "steer", origin ? { origin } : undefined);
+    } catch (error) {
+      if (theGate.sealed) return { later: "the run is parking: the steer waits for its resume" };
+      return { refused: `the steer was not placed: ${(error as Error).message}` };
+    }
+    await specNow?.hooks?.afterSteerPlaced?.();
+    const recorded = took.then(() => theRecord.steered(text, requestId, origin));
+    recorded.catch(() => undefined);
+    cliSteers.set(requestId, { text, ...(origin ? { origin } : {}), recorded });
+    // Placed in the turn in flight: the turn's end waits for it to be answered (steeredIn), never ending the run first.
+    steeredIn.push(requestId);
+    return { taken: true };
+  };
+
+  /** The end of the turn that answers a CLI's steer (steerCli): the turn in flight, or the next one its session started for
+   *  it. One the turn that ended never took (it ended as the steer was placed) is placed again, which writes nothing twice
+   *  and starts the session's next turn. A turn that ends without the model taking it is that end: its row stays untaken. */
+  const cliSteerAnswered = async (theSession: AdapterSession, requestId: string): Promise<TurnEnd> => {
+    const steer = cliSteers.get(requestId);
+    if (!steer) return theSession.turnEnd();
+    if (!takenIds.has(requestId)) await theSession.steer!(steer.text, requestId, "steer", steer.origin ? { origin: steer.origin } : undefined);
+    const end = await Promise.race([steer.recorded.then(() => undefined), theSession.turnEnd()]);
+    if (end !== undefined && !takenIds.has(requestId)) return end;
+    await steer.recorded;
+    cliSteers.delete(requestId);
+    return theSession.turnEnd();
   };
 
   /** A message the turn in flight could not take (afterTurn), sent as a turn of its own. Its row is taken only once the
@@ -2143,6 +2218,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // After a CLI's question to the person (TurnCut armed): what its model says is not on the record, as pi's turn says
         // nothing after the question; a call of another tool lets the turn go on.
         const onEvent = (theRecord: CliRecord) => (event: Parameters<PiSessionIO["onEvent"]>[0]) => {
+          // The model took a steer: its record entry, and its row, follow (steerCli).
+          if (event.type === "message_taken") return tookNow(event.ids);
           if (askCut.armed && event.type === "text") return;
           if (askCut.armed && event.type === "tool_start") askCut.disarm();
           theRecord.onEvent(event);
@@ -2234,11 +2311,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             firstInputPlaced = new Promise<void>((resolve) => (mine.placed = resolve));
             reopen = mine;
           }
-          // A CLI run parked on its question (its turn cut there, TurnCut): its session takes no steer, so the person's
-          // answer is this claim's turn, sent as a reopened run's follow-up is (steer, through `reopen`), the row's waiting
-          // summary going in its take. A turn the session still reads open is the one the cut stopped: settled first,
-          // never recovered (recovered, the CLI would go on past its question).
-          if (!endsRoot && !inFlight && spec.record === "loop" && !session!.steer && turnEndedOnAsk(foundEntries as never) !== undefined) {
+          // A CLI run parked on its question (its turn cut there, TurnCut): no turn is in flight for a steer to reach (a CLI
+          // steers only the turn in flight), so the person's answer is this claim's turn, sent as a reopened run's follow-up
+          // is (steer, through `reopen`), the row's waiting summary going in its take. A turn the session still reads open is
+          // the one the cut stopped: settled first, never recovered (recovered, the CLI would go on past its question).
+          if (!endsRoot && !inFlight && spec.record === "loop" && turnEndedOnAsk(foundEntries as never) !== undefined) {
             if (session!.state === "open_turn") await session!.settleOpenTurn();
             if (session!.state === "idle") reopen = askReopen = {};
           }
@@ -2631,7 +2708,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             // the run's end. One already answered settles at once.
             const steered = cut ? undefined : steeredIn.shift();
             if (steered !== undefined) {
-              turn = turnOfRequest(harness, root, steered);
+              turn = record ? cliSteerAnswered(session!, steered) : turnOfRequest(harness, root, steered);
               continue;
             }
             // The output contract: an answer whose last json block misses the agent's output schema is asked again, once,

@@ -198,7 +198,9 @@ for (const harness of ADAPTERS) {
     await watch(api, runId, (view) => view.status === "working" && view.state === "working", "the first turn works");
     await until("the first turn has the person's message", async () => (await rowsOf(api, runId)).some((r) => r.kind === "user_message"));
     const sent = await api("POST", `/runs/${runId}/messages`, { content: "and then?" });
-    assert.deepEqual([sent.status, sent.body.mode], [202, "follow_up"], JSON.stringify(sent.body));
+    // claude-agent steers mid-turn (its facts), so the API answers steer; this faux session takes no steer, so the runner
+    // still sends it as the turn behind the failed one. The other harnesses take no message mid-turn: follow_up.
+    assert.deepEqual([sent.status, sent.body.mode], [202, harness === "claude-agent" ? "steer" : "follow_up"], JSON.stringify(sent.body));
     await writeFile(go, "");
     const { seen } = await watch(api, runId, terminal, "the queued turn ends the run");
     const view = await endsAs(api, runId, seen, "completed");

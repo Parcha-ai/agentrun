@@ -838,6 +838,11 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
             if (day !== recordedDay) text = `${dateLine(at)}\n\n${text}`;
             await ctx.effect(`${DATE_EFFECT}:${uuid}`, { name: DATE_EFFECT, replay: 'safe', input: { day } }, async () => day);
           }
+          // Once the transcript holds the message (its own user entry, or the `queued_command` attachment a steer becomes
+          // when the CLI takes it at its next step), the host hears which submissions reached the model: a steer's record is
+          // written there, after the tool call it was sent during, never when it was only queued.
+          const carried = [...placed.map((p) => p.id), ...(how.covers ?? [])];
+          if (carried.length) void store.whenUser(uuid).then(() => ctx.live({ type: 'message_taken', ids: carried }));
           outstanding.add(uuid);
           input.push({
             type: 'user',
@@ -846,6 +851,8 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
             uuid: uuid as UserMessage['uuid'],
             ...(how.priority ? { priority: how.priority } : {}),
           });
+          // The CLI has the message now: a steer() waiting on it returns (the session keeps this to itself).
+          if (placed.length) ctx.live({ type: 'message_sent', ids: placed.map((p) => p.id) });
         };
 
         /**

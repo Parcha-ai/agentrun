@@ -334,7 +334,11 @@ export type AdapterEvent =
   | { type: "tool_end"; callId: string; name: string; isError: boolean; result?: string; truncated?: true }
   /** `stopReason: "length"` only when the turn's final answer was cut at the model's output limit (unfinished), with that
    *  answer's output tokens when the adapter knows them: a host reads the answer as cut, never as the run's end. */
-  | { type: "turn_end"; status: TurnStatus; stopReason?: "length"; outputTokens?: number };
+  | { type: "turn_end"; status: TurnStatus; stopReason?: "length"; outputTokens?: number }
+  /** The model was given these submissions (the ids `send` or `steer` placed them under): a steer placed mid-turn reaches
+   *  it at the turn's next step, after the tool calls in flight. An adapter that records nothing of its own says it, so
+   *  its host records the message where the model read it. */
+  | { type: "message_taken"; ids: readonly string[] };
 
 /** An event as a host receives it: the adapter's, the runner's own, and the node each belongs to. */
 export type HarnessEvent = (AdapterEvent
@@ -375,7 +379,9 @@ export interface AdapterSession {
    *  `mode`: "steer" (the default) steers the turn in flight; "followUp" waits for the turn's end and runs as a turn of
    *  its own (a message that answers nothing, such as a trigger's). `origin`: who wrote it when the person did not (a
    *  trigger's message), kept on the message the harness records, as the Timeline shows it. Absent when the harness takes
-   *  no message mid-turn: the host refuses the steer in words. */
+   *  no message mid-turn: the host refuses the steer in words. A host that lost its runner after the placement hands the
+   *  same message on again under the same `id`: an adapter that can tell (claude-agent's) places nothing again. An adapter
+   *  whose host keeps the record (a CLI's) says when the model took it (`message_taken`). */
   steer?(text: string, id?: string, mode?: "steer" | "followUp", options?: { readonly origin?: { readonly [key: string]: unknown } }): Promise<void>;
   /** The session's own model route, for a request the host sends beside the harness's own (a learned workflow's model
    *  node): its model proxy's address with a side key minted for `label` (ModelProxy.sideKey), the model its policy

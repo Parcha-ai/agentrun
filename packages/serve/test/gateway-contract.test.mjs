@@ -115,7 +115,7 @@ test("claude-agent through ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY: POST /v1/me
   withEnv(t, { ANTHROPIC_BASE_URL: gw.url, ANTHROPIC_API_KEY: KEY("anthropic"), AGENT_MODEL: "anthropic/claude-haiku-5-5" }, NAMES);
   const { api } = await serve(t, { faux: undefined });
   const { max_concurrent_runs, models: _models, ...claude } = (await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "claude-agent");
-  assert.deepEqual(claude, { id: "claude-agent", available: true, steer: false, default_model: "anthropic/claude-haiku-5-5", run_memory_mib: 288 });
+  assert.deepEqual(claude, { id: "claude-agent", available: true, steer: true, default_model: "anthropic/claude-haiku-5-5", run_memory_mib: 288 });
   assert.equal((await api("POST", "/agents", agent("claude-gw", { harness: "claude-agent", model: "anthropic/claude-haiku-5.5" }))).status, 201);
   const { run, usage } = await runOf(api, "claude-gw", 150_000);
   const { count, shapes } = sent(gw);
@@ -177,7 +177,7 @@ test("custody, guard on main: with the OpenRouter key and an explicit Anthropic 
   withEnv(t, { OPENROUTER_API_KEY: OR_KEY, ANTHROPIC_BASE_URL: `${gw.url}/api` }, NAMES);
   const { api } = await serve(t, { faux: undefined });
   const { max_concurrent_runs, models: _models, ...claude } = (await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "claude-agent");
-  assert.deepEqual(claude, { id: "claude-agent", available: false, steer: false, reason: "claude-agent needs ANTHROPIC_API_KEY.", default_model: null, run_memory_mib: 288 });
+  assert.deepEqual(claude, { id: "claude-agent", available: false, steer: true, reason: "claude-agent needs ANTHROPIC_API_KEY.", default_model: null, run_memory_mib: 288 });
   assert.equal((await api("POST", "/agents", agent("claude-custody", { harness: "claude-agent", model: CLAUDE_OR_MODEL }))).status, 201);
   const started = await api("POST", "/agents/claude-custody/runs", { input: { content: "Say hi." } });
   assert.equal(started.status, 409, `the run is refused: ${JSON.stringify(started.body)}`);
@@ -203,7 +203,7 @@ for (const [harness, model] of [["claude-agent", CLAUDE_OR_MODEL], ["codex", COD
     const { api } = await serve(t, { faux: undefined });
     // How many fit at once is this host's memory (admission.test.mjs); the memory a run takes is the harness's own.
     const { max_concurrent_runs, models: _models, ...offer } = (await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === harness);
-    assert.deepEqual(offer, { id: harness, available: true, steer: false, default_model: model, run_memory_mib: { "claude-agent": 288, codex: 192 }[harness] });
+    assert.deepEqual(offer, { id: harness, available: true, steer: harness === "claude-agent", default_model: model, run_memory_mib: { "claude-agent": 288, codex: 192 }[harness] });
     assert.deepEqual(gw.requests, [], "no request reached the loopback gateway");
   });
 }
