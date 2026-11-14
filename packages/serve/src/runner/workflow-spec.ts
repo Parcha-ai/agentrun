@@ -397,6 +397,10 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string;
           beforeRequest: parkOnRefusal(run.before, hooks, flight, steps),
           onEvent: async (event) => { if (event.type === "request_start") await deps.store.flush(); },
         });
+        // An earlier claim's requests, before the workflow sends anything: one this runner's lost claim saw answer, its
+        // record refused, is booked at what it reported (waiting, bounded, for one still in flight); one a dead runner left
+        // is booked cut (the kernel's bookCut). Read as before for the cap: cut or open, a request counts at its hold and bound.
+        await booking.bookCut();
         // The run's decisions book on the same cap, under their own session (DECISION_SESSION); created now the Harness is
         // open, so a decision node (which runs after this) reaches it through the deferred reference. The flush makes each
         // decision's hold durable before it is sent, as a model request's is.

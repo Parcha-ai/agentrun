@@ -1164,7 +1164,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     /** An admitted request that is not sent after all: refused to its client, and released, booked at nothing, so the
      *  runner's count agrees. */
     const release = async (status: number, message: string) => {
-      refuse(res, status, message, req);
+      if (!res.destroyed) refuse(res, status, message, req);
       if (!route.free) {
         try {
           await hooks.afterRequest({ input: 0, output: 0, cacheRead: 0, usd: 0 }, ticket, { end: "nothing", label: "never_left" });
@@ -1175,6 +1175,11 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     };
     // Admitted while the proxy was closing, and never sent.
     if (closing) return release(503, "the model proxy is closing");
+    // Admitted after its client left (a stop or a cancel while its hold was made durable): never sent, booked at nothing.
+    // Sent anyway it would be a paid answer for no one, and one never stopped (its client's close came before the proxy
+    // listened for it, below), booked only once the provider ended it: past the run's end, which then read the request as
+    // cut at an unknown cost. Nothing from here to that listener waits, so a client that leaves later is heard there.
+    if (res.destroyed || req.socket.destroyed) return release(499, "the client left before its request was sent");
     // Admitted only without the note (its bytes did not fit what is left of the cap): the body as the client sent it.
     if (typeof ticket === "object" && ticket !== null && (ticket as { noteDropped?: unknown }).noteDropped === true) {
       if (!plain || plainSent === undefined) return release(500, "the request was admitted without its note, which this proxy cannot take back out");
