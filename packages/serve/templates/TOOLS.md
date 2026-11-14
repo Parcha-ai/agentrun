@@ -127,9 +127,11 @@ the same way: Gmail's `user_id` also picks the sender, so pin it to `[null, "me"
 
 ## Ask
 
-- Ticking grants a tool; it doesn't allow it. Under `approvals: ask` (the default) a ticked write asks the owner before
-  it runs. A ticked read runs unasked where the owner turned on Allow reads for that server, and asks otherwise. The
-  owner answers on the run's page or with `POST /v2/runs/{id}/approvals/{approval_id}`.
+- Ticking grants a tool; it doesn't allow it. Apply writes no permission, so a ticked tool follows the server's own
+  tool settings. Under `approvals: ask` (the default) a ticked write asks the owner before it runs, unless the owner
+  has already allowed that tool in Settings. A ticked read runs unasked where the owner turned on Allow reads for that
+  server, and asks otherwise. The owner answers on the run's page or with
+  `POST /v2/runs/{id}/approvals/{approval_id}`.
 - A tool's effect comes from its server's annotations, as the agent's save pinned them: `readOnlyHint: true` is a read,
   `destructiveHint: true` a destructive write, anything else a write (no annotations included). Allow reads is one
   switch per saved MCP server, the owner's in Settings → MCP servers (`allow_reads: true` on `mcp:<server>/*` in
