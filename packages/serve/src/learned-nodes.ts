@@ -4,8 +4,14 @@
 
 /** The journal entry a learned_workflow call keeps beside itself: `{ call, workflow, nodes, guards? }`, its call's id, the
  *  workflow's name, each of its nodes that ran (LearnedNode, at most LEARNED_NODES_MAX) and every guard check it made
- *  (GuardRow, never capped: a map over more items than the trace holds keeps each). */
+ *  (GuardRow, never capped: a map over more items than the trace holds keeps each); on a replay run's call that a write
+ *  stopped (learn/replay-calls.ts: one the graded run's recording does not have), `replay_skipped: { tool, step }` too; and
+ *  `ended`, how the workflow ended (LearnedEnded), on a call that ended (a replay run's call always keeps its entry). */
 export const LEARNED_NODES = "agentrun.learned_nodes";
+/** How a learned workflow's call ended: `complete` (it answered), `escalated` (it handed back: an escalate node or a guard,
+ *  however many nodes failed on the way and were recovered, a map's collected item say), or `failed` (it threw, or was
+ *  refused before any node ran). */
+export type LearnedEnded = "complete" | "escalated" | "failed";
 /** The most nodes a call keeps: a map over a long list runs its body once per item. */
 export const LEARNED_NODES_MAX = 64;
 /** One node of a learned workflow's run, as the DSL ended it (its `node.end` event): its label, its kind, how it ended
@@ -17,18 +23,38 @@ export type LearnedNode = { readonly label: string; readonly kind: string; reado
 /** One step guard's check (runner/step-guard.ts), on the node it guards: the step (its label, a child's prefixed), the
  *  guard's signal and threshold, the signals it read (raw probabilities: its own confidence `self`, Jev's yes `jev`),
  *  `p` (through the guard's fit when it has one; null when a signal it reads was missing, so it handed back) and whether
- *  it handed the job back. A run's rows are its metrics' `guards` (runner/workflow-first.ts pathMetrics). */
-export type GuardRow = { readonly node: string; readonly signal: "self" | "jev" | "both"; readonly self?: number; readonly jev?: number; readonly p: number | null; readonly threshold: number; readonly escalated: boolean };
+ *  it handed the job back. A run's rows are its metrics' `guards` (runner/workflow-first.ts pathMetrics), each naming
+ *  the workflow whose call made it (`workflow`: a run can call more than one, the next after the first hands back). */
+export type GuardRow = { readonly node: string; readonly signal: "self" | "jev" | "both"; readonly self?: number; readonly jev?: number; readonly p: number | null; readonly threshold: number; readonly escalated: boolean; readonly workflow?: string };
 
 /** A run's guard rows, from its root entries: every guard check of every learned_workflow call (LEARNED_NODES `guards`,
- *  never the capped trace's), in order. What its metrics keep as `guards`. */
+ *  never the capped trace's), in order, each with its call's workflow. What its metrics keep as `guards`. */
 export function guardsOf(entries: readonly { readonly kind: string; readonly data?: unknown }[]): GuardRow[] {
   const rows: GuardRow[] = [];
   for (const entry of entries) {
     if (entry.kind !== LEARNED_NODES) continue;
-    const guards = (entry.data as { guards?: unknown } | undefined)?.guards;
-    if (!Array.isArray(guards)) continue;
-    for (const row of guards) if (row && typeof row === "object") rows.push(row as GuardRow);
+    const data = entry.data as { guards?: unknown; workflow?: unknown } | undefined;
+    if (!Array.isArray(data?.guards)) continue;
+    const workflow = typeof data.workflow === "string" ? data.workflow : undefined;
+    for (const row of data.guards) if (row && typeof row === "object") rows.push(workflow ? { ...(row as GuardRow), workflow } : (row as GuardRow));
   }
   return rows;
+}
+
+/** How the newest learned_workflow call of `workflow` in `entries` (its root's) ended (LEARNED_NODES `ended`), or undefined
+ *  when no entry says. */
+export function endedIn(entries: readonly { readonly kind: string; readonly data?: unknown }[], workflow: string): LearnedEnded | undefined {
+  const data = entries.findLast((entry) => entry.kind === LEARNED_NODES && (entry.data as { workflow?: unknown } | undefined)?.workflow === workflow)?.data as { ended?: unknown } | undefined;
+  return data?.ended === "complete" || data?.ended === "escalated" || data?.ended === "failed" ? data.ended : undefined;
+}
+
+/** The write that stopped a replay run's workflow, from its root entries (a LEARNED_NODES entry's `replay_skipped`: a
+ *  write the graded run's recording does not have, learn/replay-calls.ts), or undefined when none did. */
+export function replaySkippedIn(entries: readonly { readonly kind: string; readonly data?: unknown }[]): { tool: string; step: string } | undefined {
+  for (const entry of entries) {
+    if (entry.kind !== LEARNED_NODES) continue;
+    const skipped = (entry.data as { replay_skipped?: { tool?: unknown; step?: unknown } } | undefined)?.replay_skipped;
+    if (skipped && typeof skipped.tool === "string" && typeof skipped.step === "string") return { tool: skipped.tool, step: skipped.step };
+  }
+  return undefined;
 }

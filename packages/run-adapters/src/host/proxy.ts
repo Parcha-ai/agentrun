@@ -115,7 +115,7 @@ export interface ProviderPolicy {
   /** The output tokens the body `apply` returned asks for at most (its own limit, as `apply` shaped it). Absent or
    *  undefined: the body does not say. */
   outputAsked?(body: Record<string, unknown>): number | undefined;
-  /** The provider's own count of a request's input tokens (Anthropic's free count_tokens), which the proxy asks before
+  /** The provider's own count of a request's input tokens (Anthropic's free count_tokens, OpenAI's input_tokens), which the proxy asks before
    *  each of the session's answer requests (`countedInputOf`) when its upstream is exactly `origin`, the provider's own: never
    *  through a gateway or any other base, so the key and the request go nowhere the request itself would not. Its count,
    *  plus `margin`, is that request's input bound when it is below the byte bound. Absent: never counted. */

@@ -37,8 +37,9 @@ export type { ComputerSettingKind, KindCapabilities, ProviderEntry, ShellPlace }
  *  also mounts no folder in it and gives the run no shell. */
 export type ComputerSetting = { readonly kind: string; readonly provider?: string | null; readonly image?: string; readonly gpu?: GpuSpec; readonly persistent?: boolean; readonly surface?: "code" | "tools"; readonly exec?: boolean };
 
-/** Whether a setting takes its agent's programs away: a desktop or a phone with `exec: false`. */
-const noExec = (setting: ComputerSetting): boolean => setting.exec === false && (setting.kind === "desktop" || setting.kind === "phone");
+/** Whether a computer (or its setting) takes its agent's programs away: `exec: false`. Only a desktop or a phone takes
+ *  `exec` (computer-setting.ts refuses it on any other kind at save), so a computer without programs is one of those. */
+export const noPrograms = <C extends { readonly kind: string; readonly exec?: boolean }>(computer: C | undefined): computer is Extract<C, { readonly kind: "desktop" | "phone" }> => computer?.exec === false;
 
 /** The computer module's kind registry (src/kinds.ts), by its own names: the setting kinds, why a machine does not serve
  *  one (servingRefusals, whose words a refusal here carries), and the providers. */
@@ -246,7 +247,7 @@ export function runShellOf(setting: ComputerSetting, mode: 1 | 2, registry: Pick
   const serving = selectedOf(servingOf(registry, entry, kind), setting, entry, kind);
   if (serving.length === 0) return "none";
   // An agent whose computer runs no programs of its own has no shell anywhere: not its computer's, not Archil's exec.
-  if (noExec(setting)) return "none";
+  if (noPrograms(setting)) return "none";
   const mounts = mountsFolder(kind, entry, serving, mode);
   if (kind === "sandbox" && !mounts) return "none";
   return shellPlaceOf(mounts, mode);
@@ -320,7 +321,7 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
 
   // The run's folder: mounted where the selected configuration has files and exec and the provider mounts the mode's
   // folder, and the agent may run programs there (a folder is mounted for its shell).
-  const mounts = !noExec(setting) && mountsFolder(kind, entry, [configuration], mode);
+  const mounts = !noPrograms(setting) && mountsFolder(kind, entry, [configuration], mode);
   if (kind === "sandbox" && !mounts) {
     if (mode === 1) return { refused: `Mode 1 runs a sandbox only on Docker: a ${entry.label} sandbox can't reach the run's folder on this machine. Pick Docker for this agent's computer in ${SETTINGS}, or another kind of computer.` };
     if (entry.mounts.includes("bind")) return { refused: `Mode 2 keeps workspaces on Archil; a local Docker computer can't mount them. Pick a remote sandbox for this agent's computer in ${SETTINGS}, or no computer.` };
@@ -373,7 +374,7 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
         if (said && !said.up && said.absent) throw unavailable(noDockerWords(kind, registry.PROVIDERS, mode));
         throw unavailable(`${entry.label} could not start a ${kind} computer: ${error instanceof Error ? error.message : String(error)}`);
       }
-      const computer = runComputerOf(kind, launched, mounts ? check : undefined, { ...(setting.surface ? { surface: setting.surface } : {}), ...(noExec(setting) ? { exec: false as const } : {}) });
+      const computer = runComputerOf(kind, launched, mounts ? check : undefined, { ...(setting.surface ? { surface: setting.surface } : {}), ...(noPrograms(setting) ? { exec: false as const } : {}) });
       if (typeof computer === "string") {
         await launched.release();
         throw unavailable(`${entry.label} could not start a ${kind} computer: ${computer}`);

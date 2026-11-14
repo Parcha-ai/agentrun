@@ -62,6 +62,18 @@ export function grown(k, { miss = false } = {}) {
   return { call: "read", args: { path: "a.txt" }, inputTokensMax: prompt(k) * 4, tokens, usd };
 }
 
+/** Request `k` of a conversation shaped as Codex sends it: its input bound the body's bytes (4 a token, no provider count),
+ *  a 10,000-token prompt that grows 1,100 tokens a request, each request reading the previous one's whole prompt from the
+ *  cache; each asks 32,000 output tokens and needs 3,072 at least (1,024 for the answer and low effort's 2,048 for its
+ *  reasoning), and costs under a cent at Sonnet 5.5's prices (faux-sonnet55.mjs). */
+export function codexGrown(k) {
+  const prompt = (n) => 10_000 + 1_100 * n;
+  const cacheRead = k === 0 ? 0 : prompt(k - 1);
+  const tokens = { input: 3, output: 300, cacheRead, cacheWrite: prompt(k) - cacheRead - 3 };
+  const usd = (tokens.input * 2 + tokens.output * 10 + tokens.cacheRead * 0.1 + tokens.cacheWrite * 2.5) / 1e6;
+  return { call: "read", args: { path: "a.txt" }, inputTokensMax: prompt(k) * 4, outputTokensAsked: 32_000, outputTokensLeast: 3_072, tokens, usd };
+}
+
 export function script(spec, session = {}) {
   const text = spec.system.join("\n");
   // The learned_workflow tool as the harness is given it (its description and input schema), when it is.
@@ -341,6 +353,13 @@ export function script(spec, session = {}) {
     const answer = grown(4);
     const least = { outputTokensLeast: 10_240 };
     return [{ ...grown(0), outputTokensAsked: 1_024 }, ...[1, 2, 3].map((k) => ({ ...grown(k), ...least })), { say: "Done growing.", inputTokensMax: answer.inputTokensMax, tokens: answer.tokens, usd: answer.usd, ...least }];
+  }
+  // "Grow a Codex-shaped context for <n> requests.": n requests of codexGrown, each calling read, then its answer.
+  const codexShaped = /Grow a Codex-shaped context for (\d+) requests\./.exec(text)?.[1];
+  if (codexShaped) {
+    const n = Number(codexShaped);
+    const { inputTokensMax, outputTokensAsked, outputTokensLeast, tokens, usd } = codexGrown(n);
+    return [...Array.from({ length: n }, (_, k) => codexGrown(k)), { say: "Grown, Codex-shaped.", inputTokensMax, outputTokensAsked, outputTokensLeast, tokens, usd }];
   }
   // Two requests that each need and ask 10,240 output tokens ($1.024 on OUTPUT_PRICED), a cent each: a cap under that
   // pauses the run at its first, and a raise lets it go on in the process the raise opens.

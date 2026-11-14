@@ -38,7 +38,7 @@ const KEYS: ToolKeys = {
 };
 // Each server holds ONE secret, `secret` ("mcp:<server>"): its bearer token, its headers' values, or a sign-in.
 const MCP: McpServer = {
-  name: "linear", url: "https://mcp.example.test/mcp", auth: { type: "headers", headers: ["X-Api-Key"] }, credential: "sealed", tools: [], protocol: "2025-06-18",
+  name: "linear", url: "https://mcp.example.test/mcp", auth: { type: "headers", headers: ["X-Api-Key"] }, source: "url", toolkit: null, credential: "sealed", tools: [], protocol: "2025-06-18",
   listed_at: "2026-11-09T09:00:00Z", updated_at: "2026-11-09T09:00:00Z",
   secret: { name: "mcp:linear", set: true, source: "console", changed_at: "2026-11-09T09:00:00Z" },
 };

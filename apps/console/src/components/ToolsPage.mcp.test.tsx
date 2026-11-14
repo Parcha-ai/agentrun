@@ -23,7 +23,7 @@ const USER = "mcp:hn/HACKERNEWS_GET_USER";
 /** The hn server as GET /v2/settings/mcp-servers reads it under `settings`: each tool's permission in force (its key, else
  *  the server's wildcard, else ask), its default ask; and one meta tool the read gives no permissions. */
 const hn = (settings: ToolSettings): McpServer => ({
-  name: "hn", url: "https://mcp.example.test/mcp", auth: { type: "none" }, credential: null,
+  name: "hn", url: "https://mcp.example.test/mcp", source: "url", toolkit: null, auth: { type: "none" }, credential: null,
   tools: [
     ...["HACKERNEWS_GET_ITEM_WITH_ID", "HACKERNEWS_GET_USER"].map((name) => ({ name, permission: settings[`mcp:hn/${name}`]?.permission ?? settings["mcp:hn/*"]?.permission ?? ("ask" as const), default_permission: "ask" as const, permissions: ALL })),
     { name: "COMPOSIO_MULTI_EXECUTE_TOOL", grantable: false as const, reason: "a meta tool" },

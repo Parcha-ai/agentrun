@@ -4,7 +4,7 @@ import type { AgentLearning, LearningChange, LearningDiff, LearningNote, NotePro
 import type { ComposioTools, McpAuth, McpClientFeature, McpPreview, McpRefresh, McpServer } from "./mcp";
 import type { RunGraph } from "./runGraph";
 import { applyPage } from "./timeline";
-import type { ApiError, Firing, GitHubConnectStart, GitHubDisconnected, GitHubStatus, InputIssue, McpPrivateHosts, TemplateApplied, TemplateApply, TemplateImported, TemplateView, RaiseAnswer, Run, RunComputer, RunLearningRead, LearningCost, LearningEvals, WorkflowRevisions, LearningBatch, LearningBatchHead, LearningBatchStart, ComputerHoldAnswer, HandBackOutcome, RunFiles, RunStatus, TimelinePage, TimelineRow, SessionSecrets, SignInForgotten, ToolKeys, ToolKeysFeature, ToolSettings, Trigger, TriggerCreate, TriggerInput, TriggerMade, TriggerSecret, Webhook, WebhookAttempt, WebhookSaved, WebhooksFeature, Archil, ArchilBody, ArchilTest, Computers, ComputerChoices, ComputerKeysBody, ComputerProvider, ComputerTest, Pairing } from "./v2";
+import type { ApiError, Firing, GitHubConnectStart, GitHubDisconnected, GitHubStatus, InputIssue, McpPrivateHosts, TemplateApplied, TemplateApply, TemplateImported, TemplateView, RaiseAnswer, Run, RunComputer, RunLearningRead, LearningCost, LearningEvals, LearningLoop, Promotions, WorkflowRevisions, LearningBatch, LearningBatchHead, LearningBatchStart, ComputerHoldAnswer, HandBackOutcome, RunFiles, RunStatus, TimelinePage, TimelineRow, SessionSecrets, SignInForgotten, ToolKeys, ToolKeysFeature, ToolSettings, Trigger, TriggerCreate, TriggerInput, TriggerMade, TriggerSecret, Webhook, WebhookAttempt, WebhookSaved, WebhooksFeature, Archil, ArchilBody, ArchilTest, Computers, ComputerChoices, ComputerKeysBody, ComputerProvider, ComputerTest, Pairing } from "./v2";
 
 /** A request AgentRun Server refused: its HTTP status and its typed error (`code`, `message`, `retryable`). */
 /** A refusal's issue at one field, as the server names it (with its `fix`, when it says one). Its `reason` is any string, as
@@ -173,6 +173,8 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     startLearningBatch: (id: string, body: LearningBatchStart) => call<LearningBatch>("POST", `${agent(id)}/learning/batches`, { body }),
     cancelLearningBatch: (id: string, batch: string) => call<LearningBatch>("POST", `${agent(id)}/learning/batches/${encodeURIComponent(batch)}/cancel`, { body: {} }),
     learningEvals: (id: string) => call<LearningEvals>("GET", `${agent(id)}/learning/evals`),
+    learningPromotions: (id: string) => call<Promotions>("GET", `${agent(id)}/learning/promotions`),
+    learningLoop: (id: string) => call<LearningLoop>("GET", `${agent(id)}/learning/loop`),
     learnedWorkflowRevisions: (id: string, name: string, limit?: number) => call<WorkflowRevisions>("GET", `${agent(id)}/learning/workflows/${encodeURIComponent(name)}/revisions${limit ? `?limit=${limit}` : ""}`),
     learningNotes: (id: string, cursor: string) => call<Page<LearningNote>>("GET", `${agent(id)}/learning/notes?cursor=${encodeURIComponent(cursor)}`),
     learningLog: (id: string, cursor: string) => call<Page<LearningChange>>("GET", `${agent(id)}/learning/log?cursor=${encodeURIComponent(cursor)}`),
@@ -328,8 +330,9 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     listMcpServers: () => call<{ servers: McpServer[] }>("GET", "/settings/mcp-servers"),
     /** `name`: the saved server an edit form previews, so its address as shown (origin and `/…`) is previewed at the saved endpoint. */
     previewMcpServer: (url: string, auth: McpAuth, name?: string) => call<McpPreview>("POST", "/settings/mcp-servers/preview", { body: { url, auth, ...(name ? { name } : {}) } }),
-    /** Sends no prices: the server keeps the saved ones for the tools still listed at the same address. */
-    saveMcpServer: (name: string, url: string, auth: McpAuth) => call<McpServer>("PUT", mcpServer(name), { body: { url, auth } }),
+    /** Sends no prices: the server keeps the saved ones for the tools still listed at the same address. `toolkit` only
+     *  when given (null clears it); left out, the server keeps what it has. The source is never sent: what made it. */
+    saveMcpServer: (name: string, url: string, auth: McpAuth, kind: { toolkit?: string | null } = {}) => call<McpServer>("PUT", mcpServer(name), { body: { url, auth, ...kind } }),
     /** The Composio preset: a toolkit's actions, for the picker (the owner's session alone; the key goes to Composio). */
     composioTools: (api_key: string, toolkit: string) => call<ComposioTools>("POST", "/settings/mcp-servers/composio/tools", { body: { api_key, toolkit } }),
     /** Has Composio make a managed MCP server for the chosen actions and saves it as an MCP server; `connect_url` when the
@@ -338,7 +341,7 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     refreshMcpServer: (name: string) => call<McpRefresh>("POST", `${mcpServer(name)}/refresh`, { body: {} }),
     deleteMcpServer: (name: string) => call<unknown>("DELETE", mcpServer(name)),
     /** Starts an OAuth sign-in to the server at `url`: the page the person opens to approve it. */
-    startMcpSignIn: (name: string, body: { url: string; scopes?: string[]; client_id?: string; client_secret?: string }) => call<{ authorization_url: string }>("POST", `${mcpServer(name)}/oauth/start`, { body }),
+    startMcpSignIn: (name: string, body: { url: string; scopes?: string[]; client_id?: string; client_secret?: string; toolkit?: string | null }) => call<{ authorization_url: string }>("POST", `${mcpServer(name)}/oauth/start`, { body }),
     /** The private-network hosts an MCP server's authorization server may be on; none by default. */
     mcpPrivateHosts: () => call<McpPrivateHosts>("GET", "/settings/mcp-servers/oauth/private-hosts"),
     /** Replaces them (the owner's password session alone): the list as the server keeps it. */

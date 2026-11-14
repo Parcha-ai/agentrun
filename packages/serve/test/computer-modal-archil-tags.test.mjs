@@ -10,7 +10,8 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { labelsOf, ModalProvider } from "../../computer/dist/modal.js";
+import { recordedMount } from "../../computer/dist/index.js";
+import { ModalProvider } from "../../computer/dist/modal.js";
 import { putSealedKey } from "../dist/server-keys.js";
 import { archilWorkspace, computerForClaim } from "../dist/workspace/index.js";
 import { computerSpecOf } from "../dist/workspace/computer-deps.js";
@@ -72,6 +73,6 @@ test("a Modal sandbox with the run's Archil folder, for the longest agent id, is
   const bytes = Object.entries(tags).reduce((sum, [key, value]) => sum + Buffer.byteLength(key) + Buffer.byteLength(value), 0);
   assert.ok(bytes <= 512, `${bytes} bytes of tags`);
   assert.equal(tags["agentrun.run"], RUN);
-  assert.equal(JSON.parse(labelsOf(tags)["agentrun.mount"]).folder, `agents/${AGENT}/runs/${RUN}/work`, "the run's folder, as the tags record it");
+  assert.equal(recordedMount(tags).folder, `agents/${AGENT}/runs/${RUN}/work`, "the run's folder, as the tags record it");
   assert.ok(!JSON.stringify(tags).includes(TOKEN), "no tag holds the token");
 });

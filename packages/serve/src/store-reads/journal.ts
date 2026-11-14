@@ -69,8 +69,9 @@ export function piShaped(entries: readonly EntryLike[]): EntryLike[] {
       const text = typeof data.text === "string" ? data.text : "";
       return { ...entry, kind: "pi.assistant", model: [{ role: "assistant", stopReason: "stop", content: [{ type: "text", text }] }] };
     }
+    // A call: shown as a model's call, never counted as a model request (the booking counts those: bookedUsage).
     if (entry.kind === KINDS.callStart) {
-      return { ...entry, kind: "pi.assistant", model: [{ role: "assistant", stopReason: "tool_use", content: [{ type: "toolCall", id: String(data.callId ?? ""), name: String(data.tool ?? "tool"), arguments: data.input ?? {} }], ...timestamp }] };
+      return { ...entry, kind: "pi.assistant", recordedCall: true, model: [{ role: "assistant", stopReason: "tool_use", content: [{ type: "toolCall", id: String(data.callId ?? ""), name: String(data.tool ?? "tool"), arguments: data.input ?? {} }], ...timestamp }] };
     }
     if (entry.kind === KINDS.callEnd) {
       // A call that did not finish done is an error result, as a failed pi tool call is; its output is the result's text. One
@@ -149,8 +150,11 @@ export function withPaidCosts(entries: readonly EntryLike[]): EntryLike[] {
   return out;
 }
 
-/** Whether `entries` are a CLI harness's record (its loop's calls and messages). */
-export const isCliRecord = (entries: readonly EntryLike[]): boolean => entries.some((entry) => entry.kind === KINDS.message || entry.kind === KINDS.callStart || entry.kind === KINDS.callEnd);
+/** Whether `entries` are a CLI harness's record (its loop's calls and messages). A nested call's (`<callId>/<key>`, a
+ *  script's or tools_call's) is the record of whichever harness made the call it nests in: on pi, the loop keeps it
+ *  beside pi's own record (adapter-loop.ts nestedGate), so it makes no run a CLI's. */
+export const isCliRecord = (entries: readonly EntryLike[]): boolean =>
+  entries.some((entry) => entry.kind === KINDS.message || ((entry.kind === KINDS.callStart || entry.kind === KINDS.callEnd) && !String((entry.data as { callId?: unknown } | undefined)?.callId ?? "").includes("/")));
 
 /** The call a run's turn ended on waiting for a person (timeline endedOnTurnEndingTool), over its root's entries as the
  *  run keeps them: a CLI harness's record read as pi's (piShaped), as its Timeline and its view read it, so the runner's
@@ -184,7 +188,9 @@ export async function runTimeline(store: Store, runId: string, context: Context,
   // session's proxy sees its upstream end). Its cost reads that turn the same way, the request it cut a charge with no
   // price, never one in flight: never the known sum as its cost while the run reads stopped.
   const read = { ...options, ...(cwd ? { path: inWorkspace(cwd.cwd) } : {}), ...(!options.settled && turnCutOf(records, reflect) ? { turnCut: true } : {}) };
-  const rendered = timelineOf(withPaidCosts(cli ? piShaped(entries) : entries), read);
+  // Shaped on pi too: its own entries pass through as they are, and the calls its tools nested (on the loop's record) read
+  // as a CLI's calls do.
+  const rendered = timelineOf(withPaidCosts(piShaped(entries)), read);
   const rows = costIsBooked(entries, cli) ? bookedUsage(rendered, entries, options) : withSideUsage(rendered, entries);
   return labelled(reflect, withComputerCalls(withLearnedNodes(await datedRows(store, runId, rows), entries, options.redact), entries, options.redact));
 }

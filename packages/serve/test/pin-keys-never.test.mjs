@@ -27,7 +27,7 @@ const IDLE = Object.keys(IDLE_TOOLS);
 function scorePackage(dir, name, harness, idle = []) {
   mkdirSync(join(dir, name), { recursive: true });
   const tools = ["update_record", ...idle].join(", ");
-  writeFileSync(join(dir, name, "agent.md"), `---\nname: ${name}\nversion: 1.0.0\ndescription: Writes one field of a record and runs unattended.\nharness: [${harness}]\nparameters:\n  field: { type: string, required: true, description: the one field it may write }\nmcp:\n  - server: fake\n    tools: [${tools}]\n    required: true\n    allow: [${tools}]\n    pin: { update_record: { fields: { keys: ["\${parameters.field}"] } } }\napprovals: never\n---\nCall the tool you are asked to call.\n`);
+  writeFileSync(join(dir, name, "agent.md"), `---\nname: ${name}\nversion: 1.0.0\ndescription: Writes one field of a record and runs unattended.\nharness: [${harness}]\nparameters:\n  field: { type: string, required: true, description: the one field it may write }\nmcp:\n  - source: url\n    toolkit: fake\n    tools: [${tools}]\n    required: true\n    allow: [${tools}]\n    pin: { update_record: { fields: { keys: ["\${parameters.field}"] } } }\napprovals: never\n---\nCall the tool you are asked to call.\n`);
 }
 
 for (const harness of HARNESSES) {

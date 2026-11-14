@@ -81,6 +81,25 @@ test("a codemode script sees the run's tools and nothing else of the run: no pro
   assert.deepEqual(answer.structured, ["undefined", "undefined", "undefined", "undefined", "undefined", "function", false], answer.text);
 });
 
+test("a script reads a nested call's value: its structured value, else its one text part parsed when that is a JSON object or array, else its text", async () => {
+  // As Composio answers through MCP: one text part holding a JSON object.
+  const answers = {
+    write_file: { text: JSON.stringify({ default_branch: "main", stars: 0 }) },
+    web_search: { text: '[{"url":"https://example.test"}]' },
+    send_email: { text: "sent", structured: { id: "m-1" } },
+    read_file: { text: '"just a string"' },
+  };
+  const nested = { call: async (name) => ({ ...answers[name], fresh: true }), memo: async (_key, value) => value };
+  const [, , codemode] = metaTools({ tools: () => TOOLS, granted: async () => true, codemode: true, discovery: { search: true, call: true } });
+  const script = "const r = await tools.write_file({});\nconst s = await tools.web_search({});\nconst m = await tools.send_email({});\nconst f = await tools.read_file({});\nreturn [`${r.default_branch} branch, ${r.stars} stars`, s[0].url, m.id, f, typeof (await tools.write_file({}))];";
+  const answer = await codemode.call({ script }, { signal: new AbortController().signal, nested });
+  assert.equal(answer.isError, undefined, answer.text);
+  assert.deepEqual(answer.structured, ["main branch, 0 stars", "https://example.test", "m-1", '"just a string"', "object"], answer.text);
+  const [, call] = metaTools({ tools: () => TOOLS, granted: async () => true, codemode: true, discovery: { search: true, call: true } });
+  const direct = await call.call({ name: "write_file", args: {} }, { signal: new AbortController().signal, nested });
+  assert.equal(direct.text, answers.write_file.text, "the text the model reads is the call's text, unchanged");
+});
+
 /** A pi run of `script` over the suite's tools, its gate `gate(call)`: what each suite tool ran, and the last tool result. */
 async function gatedRun(t, script, gate) {
   const { server, runners: [store] } = await stores({ runners: 1 });

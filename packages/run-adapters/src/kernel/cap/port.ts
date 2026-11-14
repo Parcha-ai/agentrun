@@ -20,7 +20,8 @@ export interface BeforeRequestOptions {
   /** A model as the cap prices it, by its id and the route its request came by (ModelRequest.route; absent, the
    *  session's own): one id two routes price apart is priced as its route books it. Undefined: a model with no price here. */
   modelOf(id: string, route?: string): CapModel | undefined;
-  /** The session's previous request on a model, as its usage reported it: none prices the input uncached. */
+  /** The session's previous request on a model, by the id the cap prices it under (CapModel.id, which a CLI's request
+   *  may name otherwise), as its usage reported it: none prices the input uncached. */
   previousOf?(model: string): Previous | undefined;
   /** What the run spent beside the session's model requests, which the runner's booking does not hold: its priced tools'
    *  charges (null: unknown). The run's spend is the runner's plus this. A figure that is not finite and 0 or more is
@@ -36,6 +37,36 @@ export interface BeforeRequestOptions {
 /** A model the host has no price for: refused under a cap, by the rule. */
 const unpriced = (id: string): CapModel => ({ id, api: "unknown", price: null, outputCeiling: null });
 
+/** What prices a model request: its model and route, how its input was measured, the output it asks and needs at least,
+ *  its fee, and whether it is the session's own answer (no side call, no host's request, no unanswered one). */
+export type PricedRequest = Pick<Parameters<BeforeRequest>[0], "model" | "route" | "inputTokensMax" | "inputTokensCounted" | "outputTokensAsked" | "outputTokensLeast" | "feeUsd" | "side" | "host" | "unanswered">;
+
+/** `request` as the rule prices it: the one place a request's model and the session's previous request are chosen for it,
+ *  so its admission, the wrap-up's note and what the run keeps back to answer (requestFigures) price it alike: its input
+ *  read from the cache the previous request left warm, else uncached. */
+export function capRequestOf(id: string, request: PricedRequest, options: Pick<BeforeRequestOptions, "modelOf" | "previousOf">): ModelCapRequest {
+  const model = options.modelOf(request.model, request.route) ?? unpriced(request.model);
+  // A request the host sends beside the harness's own (its host label: a learned workflow's node), a side call, or one
+  // that is no answer of the turn (a title, a summary, a child's) is another conversation's prompt: nothing of the
+  // session's cache is read for it, so it is priced as a cache miss.
+  // Its bound must be measured as the next request's is (a provider's count, or bytes): their difference is no growth.
+  // Asked by the model the cap prices it as: a CLI's request names its model as its provider does (openai/gpt-6.1-sol
+  // for gpt-6.1-sol), and its previous request is the same model's whatever the name.
+  const before = request.host === undefined && !request.side && !request.unanswered ? options.previousOf?.(model.id) : undefined;
+  const previous = before && (before.counted === true) === (request.inputTokensCounted === true) ? before : undefined;
+  return {
+    kind: "model",
+    id,
+    model,
+    inputTokens: request.inputTokensMax,
+    ...(request.outputTokensAsked === undefined ? {} : { outputAsked: request.outputTokensAsked }),
+    ...(request.outputTokensLeast === undefined ? {} : { outputTokensLeast: request.outputTokensLeast }),
+    ...(previous ? { previous } : {}),
+    ...(isFigure(request.feeUsd) && request.feeUsd > 0 ? { feeUsd: request.feeUsd } : {}),
+    ...(request.side ? { side: true } : {}),
+  };
+}
+
 /** The host's beforeRequest for a CLI harness's session: the runner's spend and holds, judged by the one rule. */
 export function beforeRequestOf(options: BeforeRequestOptions): BeforeRequest {
   const mode = options.mode ?? "expected";
@@ -47,24 +78,7 @@ export function beforeRequestOf(options: BeforeRequestOptions): BeforeRequest {
     // outside a call (a browser session's release, the time a person used). It counts in the run's spend and holds like
     // any paid step, so every refusable step after it sees it. Only a figure is money: one that is not goes to the rule.
     if (request.paid?.owed && isFigure(request.feeUsd ?? 0)) return { holdUsd: request.feeUsd ?? 0 };
-    const model = options.modelOf(request.model, request.route) ?? unpriced(request.model);
-    // A request the host sends beside the harness's own (its host label: a learned workflow's node), a side call, or one
-    // that is no answer of the turn (a title, a summary, a child's) is another conversation's prompt: nothing of the
-    // session's cache is read for it, so it is priced as a cache miss.
-    // Its bound must be measured as the next request's is (a provider's count, or bytes): their difference is no growth.
-    const before = request.host === undefined && !request.side && !request.unanswered ? options.previousOf?.(request.model) : undefined;
-    const previous = before && (before.counted === true) === (request.inputTokensCounted === true) ? before : undefined;
-    const asked: ModelCapRequest = {
-      kind: "model",
-      id: `turn-${request.turn}`,
-      model,
-      inputTokens: request.inputTokensMax,
-      ...(request.outputTokensAsked === undefined ? {} : { outputAsked: request.outputTokensAsked }),
-      ...(request.outputTokensLeast === undefined ? {} : { outputTokensLeast: request.outputTokensLeast }),
-      ...(previous ? { previous } : {}),
-      ...(isFigure(request.feeUsd) && request.feeUsd > 0 ? { feeUsd: request.feeUsd } : {}),
-      ...(request.side ? { side: true } : {}),
-    };
+    const asked = capRequestOf(`turn-${request.turn}`, request, options);
     // Each request in flight at what the host held for it, else its worst case at the limit it was admitted with; one with
     // neither (no hold, no price or no measure) cannot be kept within the cap: refused for good, as an unmeasured input.
     let inFlight = 0;

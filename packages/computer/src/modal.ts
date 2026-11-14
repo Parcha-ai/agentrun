@@ -1,92 +1,36 @@
 // The Modal host: Modal sandboxes on the VM runtime, and on gVisor for a GPU computer (Modal's one GPU runtime), every
-// call through the host's own Modal JS SDK client, of which this package names only the slice it uses (ModalSdk) and
-// imports nothing. A Modal sandbox's command is its main process, so computerd is pid1: the sandbox's command is the
+// call through the host's own Modal JS SDK client, whose types it imports as types only (erased at build: nothing loads at
+// import). A Modal sandbox's command is its main process, so computerd is pid1: the sandbox's command is the
 // shared entrypoint, which waits for the daemon and becomes init, and Modal finishes the sandbox when init exits. Modal
 // has no file API, so the daemon goes in through exec's stdin; it has no kill for an exec (closing stdin ends one), and
 // reads no network back, so the probe from inside stands for network none. The rest of the computer is the shared
 // machine-host adapter's (./hosted/provider.ts). Every SDK fact below is cited in the README's Modal section, from
 // modal-client@64880502 (js/src) and Modal's docs.
+import type { App, Image, ModalClient, Sandbox, SandboxCreateParams } from "modal";
 import { MODAL, MODAL_DEFAULT_IMAGE, MODAL_GPU } from "./descriptors/modal.js";
-import { COMPUTER_LABEL, DEADLINE_LABEL, DEFAULT_CPUS, DEFAULT_MEMORY_MB, WORK } from "./drift.js";
+import { DEFAULT_CPUS, DEFAULT_MEMORY_MB, WORK } from "./drift.js";
 import type { HostCall, HostFacts, Machine, MachineHost, MachineProcess, MachineRequest } from "./host.js";
-import { HostedProvider, type HostedOptions, type HostedTimeouts, IMAGE_LABEL, MAX_LABEL, NAME_LABEL } from "./hosted/provider.js";
-import { words } from "./hosted/process.js";
+import { HostedProvider, type HostedOptions, type HostedTimeouts } from "./hosted/provider.js";
+import { codeOfError, words } from "./hosted/process.js";
+import { isWhole } from "./hosted/values.js";
 import type { KindCapabilities } from "./kinds.js";
-import { RUN_LABEL } from "./labels.js";
 import type { MountKind } from "./mount.js";
-import { ARCHIL_MOUNT_LABEL, type ArchilMount, archilLabels } from "./mount-archil.js";
 import type { ComputerSpec, GpuCapability, GpuSpec, Refusal } from "./provider.js";
 import { type ComputerErrorCode, failFor, ok, type Result } from "./result.js";
 
 /** This module's failures: one with code vendor names Modal. */
 const fail = failFor("modal");
 
-/** The App sandboxes are made in (modal-client@64880502:js/src/app.ts:32-61). */
-export interface ModalApp {
-	readonly appId: string;
-}
-
-/** An Image, built on Modal's side when a sandbox is created from it (js/src/image.ts:311-401). */
-export interface ModalImage {
-	dockerfileCommands(commands: string[]): ModalImage;
-}
-
-/** What sandboxes.create is given: every field is one of the SDK's SandboxCreateParams (js/src/sandbox.ts:356-474). */
-export interface ModalCreateParams {
-	/** vm, or gvisor for a GPU computer: Modal offers GPUs on gVisor only. */
-	runtime: ModalRuntime;
-	/** The GPUs, as the SDK takes them ("T4", "A100-80GB:4"): a GPU computer only. */
-	gpu?: string;
-	command: string[];
-	timeoutMs: number;
-	workdir: string;
-	cpu: number;
-	cpuLimit: number;
-	memoryMiB: number;
-	memoryLimitMiB: number;
-	blockNetwork?: true;
-	tags: Record<string, string>;
-}
-
-/** A program's stdin in binary mode: the SDK's ModalWriteStream (js/src/streams.ts:33-39) and WritableStream's close. */
-export interface ModalByteSink {
-	writeBytes(bytes: Uint8Array): Promise<void>;
-	close(): Promise<void>;
-}
-
-/** One program started by exec in binary mode: the part of the SDK's ContainerProcess read here (sandbox.ts:2774-2914). */
-export interface ModalProcess {
-	readonly stdin: ModalByteSink;
-	readonly stdout: AsyncIterable<Uint8Array>;
-	readonly stderr: AsyncIterable<Uint8Array>;
-	wait(): Promise<number>;
-}
-
-/** The part of the SDK's Sandbox called here (sandbox.ts:1624-2772). */
-export interface ModalSandbox {
-	readonly sandboxId: string;
-	exec(command: string[], params: { mode: "binary" }): Promise<ModalProcess>;
-	/** null while the sandbox runs, its exit code once it has finished. */
-	poll(): Promise<number | null>;
-	getTags(): Promise<Record<string, string>>;
-	terminate(): Promise<void>;
-}
-
-/** The part of the SDK's ModalClient this provider calls. The host passes its own client. */
-export interface ModalSdk {
-	readonly apps: { fromName(name: string, params: { createIfMissing: boolean }): Promise<ModalApp> };
-	/** fromId opens an image Modal already holds (im-..., as box/build-modal.py prints it); a spec naming one needs it. */
-	readonly images: { fromRegistry(tag: string): ModalImage; fromId?(id: string): Promise<ModalImage> };
-	readonly sandboxes: {
-		create(app: ModalApp, image: ModalImage, params: ModalCreateParams): Promise<ModalSandbox>;
-		fromId(id: string): Promise<ModalSandbox>;
-		list(params: { appId: string; tags: Record<string, string> }): AsyncIterable<ModalSandbox>;
-	};
-}
+/**
+ * The SDK's own types, imported as types only: erased at build, so nothing loads the SDK from here. The host passes its
+ * own client (or the constructor), which these name.
+ */
+export type ModalSdk = object;
+type SdkClient = ModalClient;
 
 /** The Modal provider's options: the client and the app, then the shared adapter's (HostedOptions). */
 export interface ModalProviderOptions extends Omit<HostedOptions, "label" | "kind" | "desktop" | "maxLifetimeMs"> {
-	/** The host's Modal client, or anything with the same slice. */
+	/** The host's Modal client. */
 	sdk: ModalSdk;
 	/** The Modal App the sandboxes live in; made when missing. */
 	app: string;
@@ -216,13 +160,8 @@ const CPUS_PER_CORE = 2;
  * terminate is asynchronous, and the daemon is streamed in through exec.
  */
 const MODAL_TIMEOUTS: Partial<HostedTimeouts> = { requestMs: 60_000, createMs: 600_000, uploadMs: 300_000, listMs: 120_000, goneMs: 120_000, pollMs: 500, mountMs: 120_000 };
-/** An Archil folder agents/<agent>/runs/<run>/work, the shape the shared check holds it to. */
-const FOLDER = /^agents\/([^/]+)\/runs\/([^/]+)\/work$/;
 
 const isNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
-const isWhole = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value);
-const isLabels = (value: unknown): value is Record<string, string> =>
-	typeof value === "object" && value !== null && !Array.isArray(value) && Object.values(value).every((one) => typeof one === "string");
 
 /** The SDK names its errors (js/src/errors.ts); a call that failed on the wire carries a gRPC status code. */
 function codeOf(error: unknown): ComputerErrorCode {
@@ -237,75 +176,17 @@ function codeOf(error: unknown): ComputerErrorCode {
 	return "vendor";
 }
 
-
-/**
- * The tags a sandbox carries for a machine's labels. Every label is its own tag, with one exception that keeps an
- * Archil computer within Modal's 512 bytes: the mount label's folder, agents/<agent>/runs/<run>/work, names the run its
- * agentrun.run label holds, so the tag records the agent alone, and labelsOf puts the folder back.
- */
-export function tagsOf(labels: Record<string, string>): Record<string, string> {
-	const tags = { ...labels };
-	const text = labels[ARCHIL_MOUNT_LABEL];
-	if (text === undefined) return tags;
-	let mount: Record<string, unknown> | null;
-	try {
-		mount = JSON.parse(text) as Record<string, unknown> | null;
-	} catch {
-		return tags;
-	}
-	const { kind, disk, region, folder } = mount ?? {};
-	const found = typeof folder === "string" ? FOLDER.exec(folder) : null;
-	// Only a label exactly as the adapter writes it (archilLabels) is shortened, so labelsOf gives back the same text.
-	if (found === null || found[2] !== labels[RUN_LABEL] || text !== archilLabels({ kind: "archil", disk, region, folder } as ArchilMount)[ARCHIL_MOUNT_LABEL]) return tags;
-	tags[ARCHIL_MOUNT_LABEL] = JSON.stringify({ kind, disk, region, agent: found[1] });
-	return tags;
-}
-
-/** A sandbox's labels from its tags: tagsOf undone. */
-export function labelsOf(tags: Record<string, string>): Record<string, string> {
-	const labels = { ...tags };
-	const text = tags[ARCHIL_MOUNT_LABEL];
-	const run = tags[RUN_LABEL];
-	if (text === undefined || run === undefined) return labels;
-	try {
-		const { kind, disk, region, agent, ...rest } = (JSON.parse(text) ?? {}) as Record<string, unknown>;
-		if (kind !== "archil" || typeof disk !== "string" || typeof region !== "string" || typeof agent !== "string" || Object.keys(rest).length > 0) return labels;
-		Object.assign(labels, archilLabels({ kind: "archil", disk, region, folder: `agents/${agent}/runs/${run}/work` } as ArchilMount));
-	} catch {
-		// Not the shortened mount: the tag as it is.
-	}
-	return labels;
-}
-
-/** The bytes Modal counts of `tags`: every name and value, in UTF-8. */
-const tagBytes = (tags: Record<string, string>): number => Object.entries(tags).reduce((sum, [key, value]) => sum + Buffer.byteLength(key) + Buffer.byteLength(value), 0);
-
-/** A sandbox's tags as the adapter would make them of spec: its labels, the adapter's own, its name and deadline as long as create's. */
-function tagsForSpec(spec: ComputerSpec): Record<string, string> {
-	const at = new Date(0).toISOString();
-	const own = { [COMPUTER_LABEL]: "1", [NAME_LABEL]: "computer-000000000000", [DEADLINE_LABEL]: at, [IMAGE_LABEL]: spec.image, [MAX_LABEL]: at };
-	return tagsOf({ ...spec.labels, ...own, ...(spec.mount?.kind === "archil" ? archilLabels(spec.mount) : {}) });
-}
-
-/** Why tags are past Modal's bound, or undefined. */
-function tagProblem(tags: Record<string, string>): string | undefined {
-	const bytes = tagBytes(tags);
-	if (bytes <= MAX_TAG_BYTES) return undefined;
-	const sizes = Object.entries(tags).map(([key, value]) => `${key} ${Buffer.byteLength(key) + Buffer.byteLength(value)}`).join(", ");
-	return `a Modal sandbox's tags come to at most ${MAX_TAG_BYTES} bytes, names and values together, and this computer's would come to ${bytes} (${sizes}): give a shorter image, mount folder or labels`;
-}
-
 /** Modal's sandboxes as a MachineHost (../host.ts). */
 class ModalHost implements MachineHost {
 	readonly id = "modal";
 	readonly facts: HostFacts;
-	readonly #sdk: ModalSdk;
+	readonly #sdk: SdkClient;
 	readonly #appName: string;
 	/** Each sandbox create or a read gave, by id: let go of at its delete. */
-	readonly #sandboxes = new Map<string, ModalSandbox>();
-	#app: ModalApp | undefined;
+	readonly #sandboxes = new Map<string, Sandbox>();
+	#app: App | undefined;
 
-	constructor(sdk: ModalSdk, app: string) {
+	constructor(sdk: SdkClient, app: string) {
 		this.#sdk = sdk;
 		this.#appName = app;
 		this.facts = {
@@ -328,7 +209,7 @@ class ModalHost implements MachineHost {
 			// Never root: each connection is Modal's exec of the stdio bridge, as Modal's root, outside the daemon.
 			user: ["uid"],
 			specFields: ["cpus", "memoryMb", "user"],
-			labelRules: { max: MAX_TAGS },
+			labelRules: { max: MAX_TAGS, maxBytes: MAX_TAG_BYTES, measure: "pairs" },
 			runtime: (req) => (req.gpu === undefined ? "vm" : "gvisor"),
 		};
 	}
@@ -338,31 +219,24 @@ class ModalHost implements MachineHost {
 	}
 
 	/** The app, looked up (and made when missing) once per provider; a failed lookup is tried again next time. */
-	async #theApp(): Promise<ModalApp> {
+	async #theApp(): Promise<App> {
 		this.#app ??= await this.#sdk.apps.fromName(this.#appName, { createIfMissing: true });
 		return this.#app;
 	}
 
-	/** The sandbox with an id: the one create gave, or sandboxes.fromId; undefined when Modal does not know it. */
-	async #sandbox(id: string): Promise<ModalSandbox | undefined> {
-		const known = this.#sandboxes.get(id);
-		if (known !== undefined) return known;
-		try {
-			return await this.#sdk.sandboxes.fromId(id);
-		} catch (error) {
-			if (codeOf(error) === "not_found") return undefined;
-			throw error;
-		}
+	/** The sandbox with an id: the one create gave, or sandboxes.fromId, which throws NotFoundError for one Modal does not know. */
+	async #sandbox(id: string): Promise<Sandbox> {
+		return this.#sandboxes.get(id) ?? this.#sdk.sandboxes.fromId(id);
 	}
 
 	/**
 	 * Modal's own rules of a spec, over the adapter's: an image Modal can pull or holds (no option, no space), sizes in
-	 * the units Modal takes, and the sandbox's tags within Modal's 512 bytes. No call.
+	 * the units Modal takes. No call; the adapter holds the tags to Modal's 512 bytes (labelRules).
 	 */
-	check(spec: ComputerSpec): Refusal[] {
+	check(spec: Partial<ComputerSpec>): Refusal[] {
 		const refusals: Refusal[] = [];
 		const refuse = (field: string, message: string) => refusals.push({ field, message });
-		const { image, cpus, memoryMb, labels, mount } = (typeof spec === "object" && spec !== null ? spec : {}) as Partial<ComputerSpec>;
+		const { image, cpus, memoryMb } = spec;
 		if (typeof image === "string" && (image.startsWith("-") || /\s/.test(image))) {
 			refuse("image", `an image is a registry tag for linux/amd64 that Modal can pull, such as ${MODAL_DEFAULT_IMAGE}, or an image Modal holds by its id (im-...)`);
 		}
@@ -370,11 +244,6 @@ class ModalHost implements MachineHost {
 			refuse("cpus", `cpus must be a number of CPUs of at least ${CPU_REQUEST * CPUS_PER_CORE}: Modal counts physical cores, 2 CPUs each, and requests ${CPU_REQUEST} of one by default`);
 		}
 		if (memoryMb !== undefined && !(isWhole(memoryMb) && memoryMb > 0)) refuse("memoryMb", "memoryMb must be a whole number of MiB above 0");
-		const archil = mount === undefined || (mount?.kind === "archil" && ["disk", "region", "folder"].every((key) => typeof (mount as unknown as Record<string, unknown>)[key] === "string"));
-		if (refusals.length === 0 && typeof image === "string" && (labels === undefined || isLabels(labels)) && archil) {
-			const problem = tagProblem(tagsForSpec(spec));
-			if (problem) refuse(mount === undefined ? "labels" : "mount", problem);
-		}
 		return refusals;
 	}
 
@@ -387,10 +256,7 @@ class ModalHost implements MachineHost {
 	async create(req: MachineRequest, ctx: HostCall): Promise<Result<{ id: string }>> {
 		void ctx;
 		if (req.command === undefined) return fail("invalid", "a Modal sandbox's command is the entrypoint the adapter gives a pid1 host, and the request has none");
-		const tags = tagsOf(req.labels);
-		const problem = tagProblem(tags);
-		if (problem) return fail("refused", problem);
-		let base: ModalImage;
+		let base: Image;
 		if (MODAL_IMAGE_ID.test(req.image)) {
 			const fromId = this.#sdk.images.fromId;
 			if (typeof fromId !== "function") return fail("invalid", `the image ${req.image} is a Modal image id, and options.sdk has no images.fromId to open it: pass the SDK's own ModalClient`);
@@ -399,7 +265,7 @@ class ModalHost implements MachineHost {
 		const cpus = req.cpus ?? DEFAULT_CPUS;
 		const memoryMb = req.memoryMb ?? DEFAULT_MEMORY_MB;
 		const cpuLimit = cpus / CPUS_PER_CORE;
-		const params: ModalCreateParams = {
+		const params: SandboxCreateParams = {
 			runtime: this.facts.runtime?.(req) ?? "vm",
 			...(req.gpu === undefined ? {} : { gpu: modalGpu(req.gpu) }),
 			command: [...req.command],
@@ -410,7 +276,7 @@ class ModalHost implements MachineHost {
 			memoryMiB: Math.min(MEMORY_REQUEST_MIB, memoryMb),
 			memoryLimitMiB: memoryMb,
 			...(req.network === "none" ? { blockNetwork: true as const } : {}),
-			tags,
+			tags: req.labels,
 		};
 		const image = base.dockerfileCommands([`ENV HOME=${WORK}`, `WORKDIR ${WORK}`]);
 		const sandbox = await this.#sdk.sandboxes.create(await this.#theApp(), image, params);
@@ -425,16 +291,14 @@ class ModalHost implements MachineHost {
 	 */
 	async get(id: string, ctx: HostCall): Promise<Result<Machine | undefined>> {
 		void ctx;
-		const sandbox = await this.#sandbox(id);
-		if (sandbox === undefined) return ok(undefined);
-		return ok(await this.#machine(sandbox));
+		return ok(await this.#machine(await this.#sandbox(id)));
 	}
 
 	/** One sandbox read: none once it has finished or Modal no longer knows it. */
-	async #machine(sandbox: ModalSandbox): Promise<Machine | undefined> {
+	async #machine(sandbox: Sandbox): Promise<Machine | undefined> {
 		try {
 			if ((await sandbox.poll()) !== null) return undefined;
-			return { id: sandbox.sandboxId, labels: labelsOf(await sandbox.getTags()), state: "running" };
+			return { id: sandbox.sandboxId, labels: await sandbox.getTags(), state: "running" };
 		} catch (error) {
 			if (codeOf(error) === "not_found") return undefined;
 			throw error;
@@ -449,9 +313,7 @@ class ModalHost implements MachineHost {
 	async list(labels: Record<string, string>, ctx: HostCall): Promise<Result<Machine[]>> {
 		const until = Date.now() + ctx.timeoutMs;
 		const app = await this.#theApp();
-		// The mount label is a tag of another text (tagsOf): the listing filters by the rest, and each read by all.
-		const { [ARCHIL_MOUNT_LABEL]: _mount, ...filter } = labels;
-		const iterator = this.#sdk.sandboxes.list({ appId: app.appId, tags: filter })[Symbol.asyncIterator]();
+		const iterator = this.#sdk.sandboxes.list({ appId: app.appId, tags: labels })[Symbol.asyncIterator]();
 		const machines: Machine[] = [];
 		try {
 			for (;;) {
@@ -459,7 +321,7 @@ class ModalHost implements MachineHost {
 				const next = await iterator.next();
 				if (next.done) break;
 				const machine = await this.#machine(next.value);
-				if (machine !== undefined && Object.entries(labels).every(([key, value]) => machine.labels[key] === value)) machines.push(machine);
+				if (machine !== undefined) machines.push(machine);
 			}
 		} finally {
 			Promise.resolve(iterator.return?.()).catch(() => {});
@@ -469,17 +331,15 @@ class ModalHost implements MachineHost {
 
 	/**
 	 * terminate, which returns before Modal has ended the sandbox (sandbox.ts:1292-1296): the adapter waits for it to be
-	 * gone. One Modal no longer knows, or one that had finished when terminate failed, is done.
+	 * gone. One Modal no longer knows (not_found, done to the adapter), or one that had finished when terminate failed, is done.
 	 */
 	async delete(id: string, ctx: HostCall): Promise<Result<void>> {
 		void ctx;
-		const sandbox = await this.#sandbox(id);
-		this.#sandboxes.delete(id);
-		if (sandbox === undefined) return ok(undefined);
+		const sandbox = await this.#sandbox(id).finally(() => this.#sandboxes.delete(id));
 		try {
 			await sandbox.terminate();
 		} catch (error) {
-			if (codeOf(error) === "not_found") return ok(undefined);
+			if (codeOf(error) === "not_found") throw error;
 			const finished = await sandbox.poll().then(
 				(code) => code !== null,
 				(polled: unknown) => codeOf(polled) === "not_found",
@@ -497,7 +357,6 @@ class ModalHost implements MachineHost {
 	async exec(id: string, argv: readonly string[], { stdin }: { stdin: boolean }, ctx: HostCall): Promise<Result<MachineProcess>> {
 		void ctx;
 		const sandbox = await this.#sandbox(id);
-		if (sandbox === undefined) return fail("not_found", `no Modal sandbox has the id ${id}`);
 		const program = await sandbox.exec([...argv], { mode: "binary" });
 		const close = () => program.stdin.close().catch(() => {});
 		if (!stdin) await close();
@@ -522,7 +381,7 @@ class ModalHost implements MachineHost {
 			return ok({ detail: `Modal answered: the app ${this.#appName} is there` });
 		} catch (error) {
 			if (codeOf(error) === "not_found") return ok({ detail: `Modal answered: no app ${this.#appName} yet; the first computer makes it` });
-			return fail(codeOf(error), `apps.fromName ${this.#appName} failed: ${words(error)}`);
+			return fail(codeOfError(this, error), `apps.fromName ${this.#appName} failed: ${words(error)}`);
 		}
 	}
 }
@@ -536,7 +395,8 @@ class ModalHost implements MachineHost {
  */
 export class ModalProvider extends HostedProvider {
 	constructor(options: ModalProviderOptions) {
-		const { sdk, app, maxLifetimeMs = MAX_LIFETIME_MS, timeouts = {}, ...rest } = options ?? ({} as ModalProviderOptions);
+		const { app, maxLifetimeMs = MAX_LIFETIME_MS, timeouts = {}, ...rest } = options ?? ({} as ModalProviderOptions);
+		const sdk = options?.sdk as SdkClient | undefined;
 		const lacks = [
 			["apps.fromName", sdk?.apps?.fromName],
 			["images.fromRegistry", sdk?.images?.fromRegistry],
@@ -549,6 +409,6 @@ export class ModalProvider extends HostedProvider {
 		if (!isWhole(maxLifetimeMs) || maxLifetimeMs <= 0 || maxLifetimeMs > MAX_LIFETIME_MS) {
 			throw new Error(`maxLifetimeMs must be a whole number of ms above 0 and at most 24 hours (${MAX_LIFETIME_MS} ms), Modal's longest timeout`);
 		}
-		super(new ModalHost(sdk, app), { ...rest, label: "Modal", kind: "linux", maxLifetimeMs, timeouts: { ...MODAL_TIMEOUTS, ...timeouts } });
+		super(new ModalHost(sdk as SdkClient, app), { ...rest, label: "Modal", kind: "linux", maxLifetimeMs, timeouts: { ...MODAL_TIMEOUTS, ...timeouts } });
 	}
 }

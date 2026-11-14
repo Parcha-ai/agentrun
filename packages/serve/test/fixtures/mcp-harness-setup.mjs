@@ -110,6 +110,6 @@ export async function harnessSetup(t, harness, templates, { tools = {} } = {}) {
   const fake = await startFakeMcp();
   t.after(() => fake.close());
   Object.assign(fake.tools, tools);
-  assert.equal((await server.api("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "none" } })).status, 200);
+  assert.equal((await server.api("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "none" }, toolkit: "fake" })).status, 200);
   return { api: server.api, fake, prompt, host, offered, wire };
 }

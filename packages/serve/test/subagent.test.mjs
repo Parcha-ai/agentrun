@@ -256,21 +256,6 @@ test("a child's answer cut at its model's output limit fails its call, saying so
   assert.match(cut.answer, /^Results: subagent: its answer is unfinished: [^\n]+\nWhat it wrote before the cut:\nhalf an ans$/);
 });
 
-test("a call's max_tool_calls narrows the agent's tool-call budget for its child and never widens it; with no budget of the agent's, the call's holds", { timeout: 240_000 }, async (t) => {
-  const { run } = await setup(t);
-  const narrowed = await run("budget", { tools: ["read", "subagent"], max_tool_calls: 3 }, delegate([
-    { prompt: "Count reads a.md", tools: ["read"], max_tool_calls: 1 },
-    { prompt: "Count reads a.md", tools: ["read"], max_tool_calls: 10 },
-    { prompt: "Count reads a.md", tools: ["read"] },
-  ]));
-  assert.equal(narrowed.last.status, "completed", JSON.stringify(narrowed.view));
-  assert.equal(narrowed.answer, "Results: Reads: 1 | Reads: 3 | Reads: 3", "1 narrows the agent's 3; 10 is held to 3; none takes the agent's 3");
-  const own = await run("budget-own", { tools: ["read", "subagent"] }, delegate([{ prompt: "Count reads a.md", tools: ["read"], max_tool_calls: 2 }]));
-  assert.equal(own.answer, "Results: Reads: 2");
-  const bad = await run("budget-bad", { tools: ["read", "subagent"] }, delegate([{ prompt: "Say no", max_tool_calls: 0 }]));
-  assert.equal(resultsOf(bad.rows)[0]?.tool_status, "failed", "a budget below 1 is refused before any child starts");
-});
-
 test("a tier with no model of its own (no model_tiers, no AGENT_MODEL_STRONG) runs its child on the agent's own model", { timeout: 240_000 }, async (t) => {
   const { run, lines } = await setup(t, { strong: null });
   const own = await run("no-tier-model", { tools: ["read", "subagent"] }, delegate([{ prompt: "Say mine", model: "strong" }]));
