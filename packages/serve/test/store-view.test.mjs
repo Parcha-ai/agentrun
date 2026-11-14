@@ -638,15 +638,20 @@ test("a run's view reads its whole answer once per held value set: a second view
   assert.equal(fourth, answer, "a key deleted since: the answer as the smaller set serves it");
 });
 
-test("a run's view serves its input whole, a long message and its typed fields, with a held value cut from it, and its files", async (t) => {
+test("a run's view serves its input whole and exactly as given, a long message and its typed fields, and its files; none when the cut of a run's words would change it", async (t) => {
   const KEY = ["not-a-secret", "input-key", "0123456789abcdef"].join("-");
   const { store } = await storeOn(t);
   await agent(store);
-  const content = `${"Read every line. ".repeat(200)}Use ${KEY} to sign in.`;
-  await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content, company: "Acme", limit: 5 }, files: ["file-b", "file-a"], title: "Long", place: { mode: "runner" } } });
-  const view = await viewOverStore(store, "run-1", { ...deps, serverSecrets: () => [KEY] });
-  assert.deepEqual(view.input, { content: `${"Read every line. ".repeat(200)}Use [redacted] to sign in.`, company: "Acme", limit: 5 });
-  assert.deepEqual(view.file_ids, ["file-b", "file-a"]);
+  const held = { ...deps, serverSecrets: () => [KEY] };
+  const input = { content: `${"Read every line. ".repeat(200)}End.`, company: "Acme", limit: 5, tags: ["a ``` b"] };
+  await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input, files: ["file-b", "file-a"], title: "Long", place: { mode: "runner" } } });
+  const view = await viewOverStore(store, "run-1", held);
+  assert.deepEqual([view.input, view.file_ids], [input, ["file-b", "file-a"]]);
+  // Starting again with "[redacted]" in place of a value would be another task: such an input is not served.
+  await store.runs.create({ id: "run-2", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: `Use ${KEY} to sign in.` }, title: "Key", place: { mode: "runner" } } });
+  assert.equal((await viewOverStore(store, "run-2", held)).input, null, "a held value in it");
+  await store.runs.create({ id: "run-3", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "Decode this.", blob: "A".repeat(9000) }, title: "Blob", place: { mode: "runner" } } });
+  assert.equal((await viewOverStore(store, "run-3", held)).input, null, "a run of 9,000 characters with no whitespace");
 });
 
 test("a value handed to the run (its agent's saved sign-in), straddling the old 2000-character cut of its answer, is served with no piece of it, the answer whole around it", async (t) => {

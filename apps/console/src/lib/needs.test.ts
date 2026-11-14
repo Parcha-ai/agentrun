@@ -74,10 +74,11 @@ describe("rerunBody", () => {
     const input = { content, company: "Acme", limit: 5, tags: ["a ``` b"] };
     expect(rerunBody({ ...base, input })).toEqual({ body: { input, effort: "high", max_cost_usd: 0.5 } });
   });
-  it("refuses a workflow run, and a run whose input its read withholds", () => {
+  it("refuses a workflow run, and a run whose read serves no input, never sending an altered one", () => {
     expect(rerunBody({ ...base, kind: "workflow" })).toEqual({ refusal: `"x" is a workflow run: start it again from its agent's page` });
-    expect(rerunBody({ ...base, input: null })).toEqual({ refusal: `"x": its input could not be read` });
-    expect(rerunBody({ ...base, input: undefined })).toEqual({ refusal: `"x": its input could not be read` });
+    const refusal = `"x": its input can't be read back exactly as it was given; start it again from its agent's page`;
+    expect(rerunBody({ ...base, input: null })).toEqual({ refusal });
+    expect(rerunBody({ ...base, input: undefined })).toEqual({ refusal });
   });
 });
 
