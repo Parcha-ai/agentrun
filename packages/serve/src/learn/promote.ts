@@ -10,6 +10,7 @@ import type { GuardRow } from "../learned-nodes.js";
 import type { RunPath } from "../learning-cost.js";
 import type { Settings } from "../store/store.js";
 import { answerJson } from "../answer-json.js";
+import { workflowNodes } from "./workflow-nodes.js";
 
 /** How many of the agent's newest graded inputs a replay runs on. */
 export const REPLAY_INPUTS = 20;
@@ -309,8 +310,8 @@ export function answerCorrect(answer: string | null, recorded: ReplayRow["record
   return sameAnswer(answer, recorded.answer) ? recorded.correct : false;
 }
 
-/** The thresholds a workflow's guards serve at, by step label (the guard rows' `node`): every node of the workflow's JSON
- *  with a `guard` and a `label`. */
+/** The thresholds a workflow's guards serve at, by step label (the guard rows' `node`): every step of the workflow
+ *  with a `guard` and a `label` (walkGuards). */
 export function thresholdsOf(workflowText: string): Map<string, number> {
   const out = new Map<string, number>();
   try {
@@ -325,19 +326,13 @@ export function thresholdsOf(workflowText: string): Map<string, number> {
 
 /** Each node of a workflow document with a guard, by its label as the DSL names its step when it runs, in document order:
  *  a step of a child workflow (a `workflow` node's `workflow`) as `parent/child`, as the DSL prefixes its events and its
- *  guard rows (scopeDepsToChild), so a nested guard's serving threshold and its refit read the rows it made. */
-export function walkGuards(node: unknown, visit: (label: string, guard: Record<string, unknown>) => void, prefix = ""): void {
-  if (Array.isArray(node)) {
-    for (const one of node) walkGuards(one, visit, prefix);
-    return;
-  }
-  if (!node || typeof node !== "object") return;
-  const object = node as Record<string, unknown>;
-  if (typeof object.label === "string" && object.guard && typeof object.guard === "object" && !Array.isArray(object.guard)) visit(`${prefix}${object.label}`, object.guard as Record<string, unknown>);
-  for (const [key, value] of Object.entries(object)) {
-    if (key === "guard") continue;
-    const child = key === "workflow" && object.node === "workflow" && typeof object.label === "string";
-    walkGuards(value, visit, child ? `${prefix}${object.label}/` : prefix);
+ *  guard rows (scopeDepsToChild), so a nested guard's serving threshold and its refit read the rows it made. Only the
+ *  workflow's node positions (workflow-nodes.ts): a call's args or a schema shaped like `{label, guard}` is data, never
+ *  a guard, so a replay or a refit never changes it. */
+export function walkGuards(doc: unknown, visit: (label: string, guard: Record<string, unknown>) => void): void {
+  for (const { node, prefix } of workflowNodes(doc)) {
+    const guard = node.guard;
+    if (typeof node.label === "string" && guard && typeof guard === "object" && !Array.isArray(guard)) visit(`${prefix}${node.label}`, guard as Record<string, unknown>);
   }
 }
 

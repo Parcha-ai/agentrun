@@ -2,6 +2,7 @@
 // `workflows/<name>/workflow.json` with its `README.md`. Their places in the learning folder and the shape each file must
 // have. check.ts checks them; nothing here reads a file, runs a draft or calls a model.
 import { mcpNameOf } from "../tool-names.js";
+import { workflowNodes } from "./workflow-nodes.js";
 import type { assertWorkflowCapabilities, desugarWorkflow, dryRunWorkflow, inspectWorkflow, resolveSchemaForWorkflow, validateWorkflow, Workflow } from "@parcha/agentrun-dsl";
 
 /** Where a skill and a workflow draft live in the folder. */
@@ -762,29 +763,9 @@ export function draftMcpTools(doc: unknown): string[] {
   return [...found];
 }
 
-/** Every call node of `doc` (a parsed workflow.json), in document order: only the workflow's node positions, as the
- *  DSL's inspection visits them (its root, a chain's steps, a parallel's branches, a map's and a loop's body, a route's
- *  branches' bodies, a nested workflow's root), never an object in a call's args, a schema or any other data, however
- *  it is shaped. Walked with a stack of its own, never the call stack, so no draft's nesting can throw here. */
-function callNodes(doc: unknown): Record<string, unknown>[] {
-  const out: Record<string, unknown>[] = [];
-  const asNode = (value: unknown): Record<string, unknown> | undefined => (value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined);
-  const stack: unknown[] = [asNode(doc)?.root];
-  while (stack.length) {
-    const node = asNode(stack.pop());
-    if (!node) continue;
-    if (node.node === "call") out.push(node);
-    const children: unknown[] =
-      node.node === "chain" && Array.isArray(node.steps) ? node.steps
-        : node.node === "parallel" && Array.isArray(node.branches) ? node.branches
-          : (node.node === "map" || node.node === "loop") ? [node.body]
-            : node.node === "route" && asNode(node.branches) ? Object.values(node.branches as Record<string, unknown>).map((branch) => asNode(branch)?.body)
-              : node.node === "workflow" ? [asNode(node.workflow)?.root]
-                : [];
-    for (let i = children.length - 1; i >= 0; i--) stack.push(children[i]);
-  }
-  return out;
-}
+/** Every call node of `doc` (a parsed workflow.json), in document order: only the workflow's node positions
+ *  (workflow-nodes.ts), never an object in a call's args, a schema or any other data, however it is shaped. */
+const callNodes = (doc: unknown): Record<string, unknown>[] => workflowNodes(doc).flatMap(({ node }) => (node.node === "call" ? [node] : []));
 
 /** One step of a learned workflow that runs an MCP tool with no declared per-call price: its label, the tool and its
  *  server. */

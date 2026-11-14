@@ -55,7 +55,7 @@ test("a hand-back in replay is the agent's recorded answer, never a failure: esc
   assert.equal(escalates(row("r6", { answer: "a", guards: [guard("pick", null)] }), new Map([["pick", 0]])), true);
 });
 
-const FLOW = { v: 2, name: "pick", schemas: {}, input: { schemaId: "In" }, output: { schemaId: "Out", path: "r" }, root: { node: "seq", label: "all", steps: [
+const FLOW = { v: 2, name: "pick", schemas: {}, input: { schemaId: "In" }, output: { schemaId: "Out", path: "r" }, root: { node: "chain", steps: [
   { node: "extract", label: "read", guard: { signal: "self", threshold: 0.7 } },
   { node: "agent", label: "pick", guard: { signal: "both", threshold: 0.6 } },
 ] } };
@@ -259,6 +259,31 @@ test("the promotion history trim never changes the champion: an older revision's
     assert.ok(kept.length <= PROMOTIONS_KEPT, `round ${round}: ${kept.length} kept`);
     for (const workflow of ["answer", "other"]) assert.equal(championOf(kept, workflow)?.digest, championOf(items, workflow)?.digest, `round ${round} ${workflow}`);
   }
+});
+
+// Review on #2644 (r6, tool data shaped like a guard): only the workflow's node positions hold guards. A call's args, a
+// schema or a node's metadata shaped `{label, guard: {threshold}}` is data: the record-only replay and the refit leave it
+// byte-identical, or a write's changed args miss the recording (the input skipped) and a refit saves them promoted.
+test("a call's args shaped like a guard are data: record-only and the refit leave them as they are", () => {
+  const args = { label: "check", guard: { threshold: 0.8 } };
+  const flow = { v: 2, name: "answer", schemas: { Args: { type: "object", properties: { label: { const: "check" }, guard: { type: "object", properties: { threshold: { const: 0.8 } } } } } }, output: { schemaId: "Args" }, root: { node: "chain", steps: [
+    { node: "call", label: "send", via: "tool", tool: "mcp:crm/update", args, as: "sent", metadata: { label: "check", guard: { threshold: 0.8 } } },
+    { node: "agent", label: "check", guard: { signal: "self", threshold: 0.7 } },
+  ] } };
+  const text = JSON.stringify(flow);
+  assert.deepEqual([...thresholdsOf(text)], [["check", 0.7]], "only the step's guard");
+  const replayed = JSON.parse(recordOnly(text));
+  assert.equal(replayed.root.steps[1].guard.threshold, 1e-9, "the step's guard reads record-only");
+  assert.equal(JSON.stringify(replayed.root.steps[0]), JSON.stringify(flow.root.steps[0]), "the call node (args, metadata) byte-identical");
+  assert.deepEqual(replayed.schemas, flow.schemas, "the schemas unchanged");
+  // The refit moves the step `check` (wrong exactly under 0.5); the arg labelled "check" keeps its 0.8.
+  const rows = Array.from({ length: 20 }, (_, i) => { const p = i / 20; return { guards: [{ node: "check", signal: "self", self: p, p, threshold: 0, escalated: false }], answered: true, wfCorrect: p >= 0.5, agentCorrect: 1 }; });
+  const refit = refitGuards(text, rows, "2026-11-14T00:00:00.000Z");
+  assert.deepEqual(refit.guards.map(({ node, was, threshold }) => [node, was, threshold]), [["check", 0.7, 0.5]]);
+  const saved = JSON.parse(refit.text);
+  assert.equal(saved.root.steps[1].guard.threshold, 0.5);
+  assert.equal(JSON.stringify(saved.root.steps[0]), JSON.stringify(flow.root.steps[0]), "the call node byte-identical in the promoted workflow");
+  assert.deepEqual(saved.schemas, flow.schemas);
 });
 
 // Review on #2644 (child guard names): the DSL names a step of a child workflow `parent/child` (its guard row's `node`
