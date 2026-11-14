@@ -8,7 +8,7 @@ import { BOXD, kindRefusals } from "../dist/index.js";
 import { providerFor } from "../dist/providers.js";
 
 const { BoxdProvider, create, CAPABILITIES, MOUNT } = await import("../dist/boxd.js");
-const { BOXD_ENV, settingsFromEnv, conformanceImage, createProvider, createHost } = await import("../dist/conformance/boxd.js");
+const { BOXD_ENV, settingsFromEnv, conformanceImage, createProvider, createHost, sweepScope } = await import("../dist/conformance/boxd.js");
 
 const KEY = "bxd_fake_computer_key_0123456789";
 const NAME = "agentrun.computer.name";
@@ -265,4 +265,17 @@ test("the conformance module reads only its COMPUTER_BOXD_* names, after the liv
 	const provider = await createProvider({ env: { [BOXD_ENV.live]: "1", [BOXD_ENV.key]: KEY }, Boxd: recorder().Boxd });
 	assert.equal(provider.capabilities().maxLifetimeMs, 30 * 60_000);
 	assert.equal((await createHost({ env: { [BOXD_ENV.key]: KEY }, Boxd: recorder().Boxd })).id, "boxd");
+});
+
+test("the sweep's scope names the org, the region and the key by its sha256 prefix, so a before file of another is refused", () => {
+	const env = { [BOXD_ENV.key]: KEY, [BOXD_ENV.org]: "acme", [BOXD_ENV.region]: "fra" };
+	const scope = sweepScope({ env });
+	assert.match(scope, /acme/);
+	assert.match(scope, /fra/);
+	assert.doesNotMatch(scope, new RegExp(KEY), "the key itself is never written");
+	assert.notEqual(sweepScope({ env: { ...env, [BOXD_ENV.key]: `${KEY}x` } }), scope, "another key is another place");
+	assert.notEqual(sweepScope({ env: { ...env, [BOXD_ENV.org]: "other" } }), scope, "another org is another place");
+	assert.notEqual(sweepScope({ env: { ...env, [BOXD_ENV.region]: "nyc" } }), scope, "another region is another place");
+	assert.notEqual(sweepScope({ env: { [BOXD_ENV.key]: KEY } }), scope, "the key's own org and home region are another place");
+	assert.throws(() => sweepScope({ env: {} }), /COMPUTER_BOXD_API_KEY/);
 });

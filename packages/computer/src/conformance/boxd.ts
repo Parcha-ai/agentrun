@@ -3,11 +3,13 @@
 // COMPUTER_BOXD_API_KEY. The provider reads no environment: this module reads its own COMPUTER_BOXD_* names (never
 // BOXD_API_KEY, which may hold another account's key) and passes each to create() as its option. The live switch is
 // checked first, before any other setting is read. The live sweep (sweep.ts, --provider boxd) reads the same names
-// through createHost, which needs no live switch: it makes nothing.
+// through createHost, which needs no live switch: it makes nothing; sweepScope names the key, org and region a before
+// file must have been listed from.
 //
 // The daemon is uploaded into each machine (dist/computerd-linux-amd64, `npm run build:daemon`), so a run publishes
 // nothing. The drifted provider uploads a daemon built with Go as version <version>-drift. Every computer of a run has
 // a deadline of at most 30 minutes, and the runner sweeps the run's computers by its label when it ends.
+import { createHash } from "node:crypto";
 import { BOXD_DEFAULT_IMAGE } from "../descriptors/boxd.js";
 import { type BoxdOptions, type BoxdProvider, create } from "../boxd.js";
 import type { MachineHost } from "../host.js";
@@ -97,6 +99,17 @@ export async function createProvider({ env = process.env, Boxd, daemonPath, time
  */
 export async function createHost({ env = process.env, Boxd }: Pick<BoxdModuleOptions, "env" | "Boxd"> = {}): Promise<MachineHost> {
 	return (await create({ ...settingsFromEnv(env), ...(Boxd ? { Boxd } : {}) })).host;
+}
+
+/**
+ * Where the sweep lists, in words: the org and region the settings name, under the key named by its sha256 prefix alone.
+ * A before file listed with another key, org or region would make every computer there read as new, so the sweep
+ * refuses it.
+ */
+export function sweepScope({ env = process.env }: Pick<BoxdModuleOptions, "env"> = {}): string {
+	const { apiKey, org, region } = settingsFromEnv(env);
+	const key = createHash("sha256").update(apiKey, "utf8").digest("hex").slice(0, 12);
+	return `the boxd org ${org ?? "of the key"} in the region ${region ?? "home"}, with the key sha256:${key}`;
 }
 
 /** The same provider uploading a daemon that reports version <version>-drift, for the drift.version case. */

@@ -2529,14 +2529,16 @@ else, then reads `COMPUTER_BOXD_API_KEY` (`apiKey`, required), `COMPUTER_BOXD_OR
 (`region`), `COMPUTER_BOXD_DAEMON` (`daemonPath`), `COMPUTER_BOXD_KIND` (`kind`) and `COMPUTER_BOXD_USER`
 (`daemonUser`), never `BOXD_API_KEY`, and caps every computer of a run at 30 minutes. `conformanceImage()` is
 `COMPUTER_BOXD_IMAGE`, else `"default"`, and `createDriftedProvider()` uploads a daemon built with Go as
-`<version>-drift`. `createHost()` is the generic sweep's host. `test/boxd/conformance.boxd.test.mjs` runs the suite
+`<version>-drift`. `createHost()` is the generic sweep's host, and `sweepScope()` names where it lists (the org, the
+region and the key by its sha256 prefix), so `--after` refuses a before file listed with another. `test/boxd/conformance.boxd.test.mjs` runs the suite
 with `computerd-fixture` built for linux/amd64, and skips unless the switch and `COMPUTER_BOXD_API_KEY` are both set.
 
 ### Live runs
 
 On 2026-11-12, against boxd with an org key, the provider as first written (before it moved onto the shared adapter)
 passed Core on both kinds: `kind linux` 62/62, `kind desktop` 68/68, and the CLI's run of `--provider boxd` 63/63.
-Every run left no computer behind. The adapter-based host has not run live yet.
+Every run left no computer behind. On 2026-11-14, the host on the shared adapter passed Core on `kind linux`, 63/63
+(Full 5/36, the rest not declared), in 179 s, and the sweep after it read `{"swept":0,"gone":0,"stillThere":[],"leftAlone":0}`.
 
 ## Conformance
 
