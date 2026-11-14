@@ -39,14 +39,16 @@ export function generalThresholdOf(env: NodeJS.ProcessEnv): number {
  *  (the first message it was sent, else the first trigger's input). */
 export type GeneralSource = { readonly job?: string; readonly input?: string };
 
-const cut = (text: string | undefined, max: number) => (text === undefined ? "" : text.length > max ? `${text.slice(0, max)} [cut]` : text);
+/** Text as a Jev request's state holds it: whole up to `max` UTF-16 units, else its first `max` and " [cut]". Every Jev
+ *  request learning sends cuts its state this way (this check's, a step guard's: runner/step-guard.ts). */
+export const cutForJev = (text: string | undefined, max: number): string => (text === undefined ? "" : text.length > max ? `${text.slice(0, max)} [cut]` : text);
 
 /** The one Jev request for `note`: its state (the job, the input, the note without its run's risky mark) and one Noul. */
 export function generalRequest(note: NoteText, source: GeneralSource): { label: string; kind: "judge"; state: Record<string, string>; questions: { general: { type: "noul"; instructions: string; criteria: { true: string; false: string } } } } {
   return {
     label: `learning: general ${note.file}`,
     kind: "judge",
-    state: { job: cut(source.job, GENERAL_STATE_CAPS.job), input: cut(source.input, GENERAL_STATE_CAPS.input), note: cut(withoutRiskyMark(note.text), GENERAL_STATE_CAPS.note) },
+    state: { job: cutForJev(source.job, GENERAL_STATE_CAPS.job), input: cutForJev(source.input, GENERAL_STATE_CAPS.input), note: cutForJev(withoutRiskyMark(note.text), GENERAL_STATE_CAPS.note) },
     questions: { general: { type: "noul", instructions: GENERAL_QUESTION, criteria: { ...GENERAL_CRITERIA } } },
   };
 }

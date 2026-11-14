@@ -3,8 +3,8 @@
 // the job back to its agent, in the same run, with the workflow's trace and the guard's row (#2603's hand-back).
 //   - self: the step's own confidence (an agent or decide node submits one beside its record; a judge, pick or sift's is
 //     its weakest answer's), read by the DSL.
-//   - jev: one Jev call (TypeSafe's System One, JEV_GUARD_MODEL pinned) over the step's input and output, a yes/no
-//     question (the guard's `question`, else DEFAULT_GUARD_QUESTION); its yes-probability is the signal. Asked as a
+//   - jev: one Jev call (TypeSafe's System One, JEV_GUARD_MODEL pinned) over what the step was asked to do (its task),
+//     its input and its output (guardRequestOf, one request for every node kind), a yes/no question (the guard's `question`, else DEFAULT_GUARD_QUESTION); its yes-probability is the signal. Asked as a
 //     decision of the call (guardJevOn, over the learned workflow's own judge: learned-workflow.ts learnedJudge, the
 //     run's decision providers, its gate on the provider jev, its one cap), so it is booked and capped as a decision
 //     node's is: the workflow's cost.
@@ -17,18 +17,20 @@
 // read them.
 import type { DecisionProvider, GuardStepParams, GuardVerdict, StepGuard, WorkflowDeps } from "@parcha/agentrun-dsl";
 import { JEV_OPENROUTER_KEY_ENV } from "../decisions.js";
+import { cutForJev } from "../learn/general.js";
 import type { GuardRow } from "../learned-nodes.js";
 
 /** The Jev model a guard asks, pinned (https://docs.typesafe.ai/models, read 2026-11-13: jev-1.14.0 is current, and
  *  jev-latest points to it), by route: TypeSafe's own name, or OpenRouter's. A new Jev is a new pin and a new fit. */
 export const JEV_GUARD_MODEL = { typesafe: "jev-1.14.0", openrouter: "typesafe/jev-1.14" } as const;
 /** The question a jev guard asks when its guard names none. */
-export const DEFAULT_GUARD_QUESTION = "Is this output correct for this input?";
-/** The most bytes of a step's input and of its output a guard sends Jev, each: a longer one goes as its first part, said
- *  to be cut. */
-export const GUARD_PART_BYTES = 24_000;
+export const DEFAULT_GUARD_QUESTION = "Is this output correct for this input, as the step's task asks?";
+/** The most of a step's task, its input and its output a guard's request holds, each in UTF-16 units of its JSON: a
+ *  longer one goes as its first part, cut as the generality pre-check cuts its state (learn/general.ts cutForJev,
+ *  GENERAL_STATE_CAPS), well within one Jev request's 32k tokens a question. */
+export const GUARD_STATE_CAPS = Object.freeze({ task: 8_000, input: 8_000, output: 8_000 });
 /** What the guard's yes and no mean to Jev. */
-const GUARD_CRITERIA = { true: "the output is right for this input", false: "the output is wrong, incomplete, or not supported by the input" };
+const GUARD_CRITERIA = { true: "the output does what the task asks and is right for this input", false: "the output is wrong, incomplete, not what the task asks, or not supported by the input" };
 /** The question id a guard's request asks under. */
 const GUARD_QUESTION_ID = "right";
 
@@ -52,11 +54,20 @@ export function guardP(guard: Pick<StepGuard, "signal" | "fit">, signals: { self
   return Math.min(...read);
 }
 
-/** A part of what a guard sends, whole up to GUARD_PART_BYTES, else its first part and how long it was. */
-function part(value: unknown): unknown {
+/** A part of what a guard sends: whole while its JSON fits `max`, else that JSON cut (cutForJev). */
+function part(value: unknown, max: number): unknown {
   const text = JSON.stringify(value ?? null);
-  if (Buffer.byteLength(text, "utf8") <= GUARD_PART_BYTES) return value ?? null;
-  return { cut: `${Buffer.from(text, "utf8").subarray(0, GUARD_PART_BYTES).toString("utf8")}…`, bytes: Buffer.byteLength(text, "utf8") };
+  return text.length <= max ? value ?? null : cutForJev(text, max);
+}
+
+/** The one Jev request a guard sends, for every node kind: the step's label, what it was asked to do (its task: its
+ *  instructions, its questions or schema; GuardStepParams.task), what it saw and what it wrote, each bounded
+ *  (GUARD_STATE_CAPS); one yes/no question, the guard's own or DEFAULT_GUARD_QUESTION. */
+export function guardRequestOf(params: Pick<GuardStepParams, "label" | "guard" | "task" | "input" | "output">): { state: Record<string, unknown>; questions: Record<string, unknown> } {
+  return {
+    state: { step: params.label, task: part(params.task, GUARD_STATE_CAPS.task), input: part(params.input, GUARD_STATE_CAPS.input), output: part(params.output, GUARD_STATE_CAPS.output) },
+    questions: { [GUARD_QUESTION_ID]: { type: "noul", instructions: params.guard.question?.trim() || DEFAULT_GUARD_QUESTION, criteria: GUARD_CRITERIA } },
+  };
 }
 
 /** A guard's Jev as a decision of the run: `judge` (the learned workflow's own, learned-workflow.ts learnedJudge: held to
@@ -76,7 +87,7 @@ export function stepGuard(jev: GuardJev | undefined): (params: GuardStepParams) 
     let read: number | null = null;
     if (guard.signal !== "self" && jev) {
       try {
-        const answered = await jev({ label: params.label, executionPath: params.executionPath, ...(params.item ? { item: params.item } : {}), state: { step: params.label, input: part(params.input), output: part(params.output) }, questions: { [GUARD_QUESTION_ID]: { type: "noul", instructions: guard.question?.trim() || DEFAULT_GUARD_QUESTION, criteria: GUARD_CRITERIA } }, ...(params.signal ? { signal: params.signal } : {}) });
+        const answered = await jev({ label: params.label, executionPath: params.executionPath, ...(params.item ? { item: params.item } : {}), ...guardRequestOf(params), ...(params.signal ? { signal: params.signal } : {}) });
         const noul = answered.answers?.[GUARD_QUESTION_ID]?.noul;
         read = typeof noul === "number" && Number.isFinite(noul) ? noul : null;
       } catch (error) {

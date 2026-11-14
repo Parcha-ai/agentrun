@@ -133,6 +133,33 @@ test('a jev guard on a call node is asked with the call\'s resolved args and its
   assert.deepEqual(seen[0].input, { q: 'q' });
 });
 
+test('a guard is asked with the step\'s task: two extract steps over the same input differ by their instructions; a judge\'s carries its question', async () => {
+  const Facts = { type: 'object', properties: { name: { type: 'string' }, amount: { type: 'number' } } };
+  const extracting = (label, instructions) => ({ node: 'extract', label, instructions, state: { text: '{question}' }, out: 'Facts', as: label, guard: { signal: 'jev', threshold: 0.5 } });
+  const doc = { v: 2, name: 'x', schemas: { In: schemas.In, Facts }, input: { schemaId: 'In' }, output: { schemaId: 'Facts', path: 'amount' },
+    root: { node: 'chain', steps: [extracting('name', 'Extract the payee name.'), extracting('amount', 'Extract the amount paid.')] } };
+  const seen = [];
+  const result = await runWorkflow(doc, { question: 'Paid Acme 40 dollars.' }, {
+    runNode: async () => ({ name: 'Acme', amount: 40 }),
+    guardStep: async (params) => { seen.push(params); return { p: 0.9, jev: 0.9 }; },
+  });
+  assert.equal(result.status, 'complete', JSON.stringify(result.escalation ?? result.error ?? null));
+  assert.equal(seen.length, 2);
+  assert.deepEqual(seen[0].input, seen[1].input, 'the same input');
+  assert.deepEqual(seen[0].output, seen[1].output, 'the same output');
+  assert.deepEqual(seen.map((params) => params.task?.instructions), ['Extract the payee name.', 'Extract the amount paid.'], 'each step\'s own instructions');
+  assert.deepEqual(seen[0].task.schema, Facts, 'the schema its value meets');
+  assert.notDeepEqual({ input: seen[0].input, output: seen[0].output, task: seen[0].task }, { input: seen[1].input, output: seen[1].output, task: seen[1].task });
+
+  const judgeFlow = { v: 2, name: 'j', schemas: { In: schemas.In, Sure: schemas.Sure }, input: { schemaId: 'In' }, output: { schemaId: 'Sure', path: 'verdict' },
+    root: { node: 'judge', label: 'check', state: { q: '{question}' }, out: 'Sure', as: 'verdict', guard: { signal: 'jev', threshold: 0.5 } } };
+  const judged = [];
+  const asked = [];
+  await runWorkflow(judgeFlow, { question: 'q' }, { runJudge: async (params) => { asked.push(params); return { answers: { right: { type: 'noul', noul: 0.9 } } }; }, guardStep: async (params) => { judged.push(params); return { p: 0.9, jev: 0.9 }; } });
+  assert.deepEqual(judged[0].task.questions, asked[0].questions, 'the questions its judge was asked');
+  assert.match(JSON.stringify(judged[0].task), /Is the answer right\?/);
+});
+
 test('a dry run of a guarded workflow passes: a guard never hands back on synthetic values', async () => {
   const dry = await dryRunWorkflow(flow({ signal: 'both', threshold: 0.99 }), { question: 'q' });
   assert.equal(dry.status, 'passed', JSON.stringify(dry));
@@ -179,8 +206,7 @@ test('a pick\'s guard is asked with what its judge chose among: the candidates a
   assert.deepEqual(seen[0].input.candidates, { item_0: 'a', item_1: 'b' }, 'the candidates the judge chose among');
   assert.deepEqual(seen[0].input.candidates, judged[0].state.candidates);
   assert.equal(seen[0].input.q, 'q');
-  assert.equal(seen[0].input.instructions, judged[0].questions.pick.instructions, 'the selection instructions');
-  assert.equal(seen[0].input.allow_none, true);
+  assert.deepEqual(seen[0].task, { instructions: judged[0].questions.pick.instructions, allow_none: true }, 'the selection instructions, its task');
 });
 
 test('a sift over more items than a call takes arguments still reads its weakest answer (no spread into Math.min)', async () => {
