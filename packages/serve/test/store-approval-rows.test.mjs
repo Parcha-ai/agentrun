@@ -154,6 +154,24 @@ test("two approvals in one run each read in order, and reading the rows twice gi
   assert.deepEqual(await timelineOverStore(store, "run-1", deps), rows, "the same rows read again");
 });
 
+test("the approval row reads when the call was asked and sits above the call's result: the call, your approval, its result, the outcome", async (t) => {
+  // runWith's journal for one call: the model's call at T0+1.1s, the gate's ask at T0+1.2s, the call's result at T0+1.3s.
+  const asked = iso(T0 + 1_200);
+  for (const answer of [{ approved: true }, { approved: false, note: "not that page" }]) {
+    const store = await runWith(t, [fetchCall("c1", answer, { text: answer.approved ? "fetched" : "refused", isError: !answer.approved })]);
+    const rows = await timelineOverStore(store, "run-1", deps);
+    const shown = JSON.stringify(rows.map((r) => [r.kind, r.timestamp, r.summary]));
+    const ask = rows.find((row) => row.kind === "tool_approval_requested");
+    const result = rows.find((row) => row.kind === "tool_result" && row.tool_use_id === "c1");
+    assert.equal(result?.timestamp, iso(T0 + 1_300), shown);
+    assert.deepEqual([ask?.timestamp, ask?.created_at], [asked, asked], `the ask's time, never the result's: ${shown}`);
+    const at = (row) => rows.indexOf(row);
+    const call = rows.find((row) => row.kind === "tool_use" && row.tool_use_id === "c1");
+    const outcome = rows.find((row) => row.kind === "phase" && /^AgentRun: /.test(row.summary ?? ""));
+    assert.ok(at(call) < at(ask) && at(ask) < at(result) && at(result) < at(outcome), `the call, your approval, its result, the outcome: ${shown}`);
+  }
+});
+
 test("a parked write that was allowed shows no Saved row: the outcome row says it ran, never the call's own Saved row", async (t) => {
   const write = { id: "w1", tool: "write", args: { path: "hello.txt", content: "hello" }, answer: { approved: true }, result: { text: "Successfully wrote 5 bytes to hello.txt", isError: false } };
   const store = await runWith(t, [write]);
