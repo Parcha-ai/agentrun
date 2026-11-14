@@ -797,7 +797,9 @@ export function withApprovalRows(rows: readonly TimelineEvent[], asks: ReadonlyM
     const outcome = answer?.decision === "deny" || ran;
     // An allowed call that ran reads as any call (its summary, its status), its result row saying too how it came to run;
     // one a deny set since refused says so; any other only that it was held, or what came of its approval so far.
-    const own: TimelineEvent = ran ? (row.kind === "tool_result" ? { ...row, summary: `${row.summary} (${ranAs(answer!)})` } : row)
+    // Said once: a pass over its own output keeps the words it added.
+    const said = ran ? `(${ranAs(answer!)})` : "";
+    const own: TimelineEvent = ran ? (row.kind === "tool_result" && !row.summary?.endsWith(said) ? { ...row, summary: row.summary ? `${row.summary} ${said}` : said } : row)
       : answer?.decision === "deny" && answer.by === "setting" ? { ...row, summary: DENIED_SINCE }
       : { ...row, summary: outcome ? HELD : callSays(answer), tool_status: null };
     if (lastOf.get(approval.call_id) !== row.id) return [own];

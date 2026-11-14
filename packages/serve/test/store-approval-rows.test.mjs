@@ -192,7 +192,10 @@ test("served across reads, a call's approval row moves below the call's result o
     log.sync(withApprovalRows([use], asks, {}, same));
     // A deny's outcome shows at once, before the refusal is the call's result.
     if (decision === "deny") log.sync(withApprovalRows([use], asks, { c1: { decision, answered_at: "" } }, same));
-    log.sync(withApprovalRows([use, result, answer], asks, { c1: { decision, answered_at: "" } }, same));
+    const rows = withApprovalRows([use, result, answer], asks, { c1: { decision, answered_at: "" } }, same);
+    // A pass over its own output gives the same rows: an allowed call's "(ran once you allowed it)" is said once.
+    assert.deepEqual(withApprovalRows(rows, asks, { c1: { decision, answered_at: "" } }, same), rows, `${decision}: a second pass`);
+    log.sync(rows);
     const read = log.rows().map((row) => `${row.kind}: ${row.summary.split(":")[0]}`);
     // An allowed call that ran reads as any call (what it did, its result); a declined one stays held.
     const own = decision === "allow" ? ["tool_use: Fetching", "tool_result: Fetched"] : ["tool_use: Held for your approval", "tool_result: Held for your approval"];
