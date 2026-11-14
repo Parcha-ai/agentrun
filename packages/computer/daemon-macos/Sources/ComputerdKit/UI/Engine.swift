@@ -884,12 +884,17 @@ public actor UIEngine {
 		}
 	}
 
-	/// Looks until two looks quietMs apart are the same, or settleMaxMs passed: the settled look.
+	/// Looks until two looks quietMs apart are the same, or settleMaxMs passed: the settled look. Apart is from the start
+	/// of one look to the start of the next, as far apart as each node's two reads are: a look that itself took quietMs
+	/// (System Settings on CI: 250 to 700 ms) needs no sleep after it.
 	func settle(_ target: Target?) async throws -> View {
 		let until = clock.now() + timing.settleMaxMs
+		var lastAt = clock.now()
 		var last = try await look(target)
 		while timing.quietMs > 0 && clock.now() < until {
-			try await sleep(min(timing.quietMs, max(0, until - clock.now())))
+			let wait = min(timing.quietMs - (clock.now() - lastAt), until - clock.now())
+			if wait > 0 { try await sleep(wait) }
+			lastAt = clock.now()
 			let next = try await look(target)
 			let quiet = next.fingerprint == last.fingerprint
 			last = next
