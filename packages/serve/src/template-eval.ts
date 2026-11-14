@@ -17,12 +17,13 @@ import { parseDocument } from "yaml";
 import { answerJson, lastJsonBlock, schemaCheck } from "./answer-json.js";
 import { checkNote } from "./learn/index.js";
 import { NOTE_FILE } from "./learn/notes.js";
+import { inputMessage } from "./run-manifest.js";
 import { shownUrl } from "./mcp-probe.js";
 import { MCP_SERVER_NAME, MCP_TOOL_NAME, mcpNameOf, mcpToolName } from "./tool-names.js";
 import { settingsKeyOf, shellToolOf } from "./tool-gate.js";
 import { ASK_TOOL, BOUND_TOOLS } from "./tools.js";
 import { applyBodyOf, compiled, filledPins, type Package, packageView, readPackage } from "./templates.js";
-import { isObject, type Json, MODEL_REF } from "./validate.js";
+import { inputIssues, inputSchemaOf, isObject, type Json, MODEL_REF } from "./validate.js";
 
 /** What a grader run is told, whatever the rubric: blind, strict, and its verdict as one JSON block. */
 export const GRADER_INSTRUCTIONS = `You grade one run of an AI agent against one rubric. You see the rubric, the task the agent was given, its answer, and the tool calls it made; nothing else, and nothing else matters.
@@ -43,7 +44,7 @@ export const QUEUE_TIMEOUT_MS = 2 * 60_000;
 export const GRADER_NAME = "Template eval grader";
 
 const FRONT = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/;
-const PROMPT_FIELDS = ["description", "runs", "max_cost_usd"];
+const PROMPT_FIELDS = ["description", "runs", "max_cost_usd", "input"];
 const CASE_FIELDS = ["parameters", "grants", "mcp", "learning"];
 const GRADER_FIELDS: Record<string, string[]> = {
   llm: ["type", "target"],
@@ -59,6 +60,9 @@ const ENDED = ["completed", "failed", "cancelled"];
 const LOOPBACK = "127.0.0.1"; // key-gate: loopback-rule each fake MCP server listens on loopback only, for a server on this machine
 /** A host name on this machine: a case with fake MCP servers needs a server here, which reaches them on loopback. */
 const LOOPBACK_HOST = /^(?:127\.\d+\.\d+\.\d+|localhost|\[::1\])$/; // key-gate: loopback-rule a server on this machine reaches the fakes
+
+/** A case's run input: its prompt's body as content (none when empty), then its typed fields. */
+export const runInput = (content: string, fields?: Json): Json => ({ ...(content ? { content } : {}), ...fields });
 
 type Validate = (value: unknown) => string[];
 export type Grader =
@@ -82,8 +86,10 @@ export type EvalCase = {
   description: string;
   runs: number;
   maxCostUsd?: number;
-  /** The prompt's body: each run's input.content. */
+  /** The prompt's body: each run's input.content (none when empty). */
   input: string;
+  /** The prompt's `input:` front matter: each run's typed input beside its content (the package's `inputs`). */
+  fields?: Json;
   parameters: Json;
   grants: string[];
   /** Each fake MCP server, by the name it is saved under. */
@@ -244,6 +250,11 @@ export function readCases(dir: string, names?: readonly string[]): { pkg: Packag
     for (const field of unknown(f, PROMPT_FIELDS)) bad(`${at}/prompt.md: no field ${field}: its fields are ${PROMPT_FIELDS.join(", ")}`);
     if (f.runs !== undefined && !(Number.isSafeInteger(f.runs) && (f.runs as number) >= 1)) bad(`${at}/prompt.md: runs is a whole number, 1 or more`);
     if (f.max_cost_usd !== undefined && !(typeof f.max_cost_usd === "number" && f.max_cost_usd > 0 && Number.isFinite(f.max_cost_usd))) bad(`${at}/prompt.md: max_cost_usd is a number above 0`);
+    // The case's typed input (`input:`, the package's `inputs`) beside its body as content: each run's input, checked
+    // as the server checks a run's, so a case the agent's schema refuses fails here, before any run.
+    const body = typeof prompt === "string" ? "" : prompt.body.trim();
+    const fields = f.input === undefined ? undefined : isObject(f.input) && !Object.hasOwn(f.input, "content") ? f.input : (bad(`${at}/prompt.md: input is a mapping of the run's typed input, by field (the body is its content)`), undefined);
+    for (const issue of inputIssues(runInput(body, fields), inputSchemaOf(pkg.inputSchema))) bad(`${at}/prompt.md: ${issue.message}`);
     const spec = lstatSync(join(root, "case.yaml"), { throwIfNoEntry: false })?.isFile() ? yamlOf(readFileSync(join(root, "case.yaml"), "utf8")) : {};
     const c = typeof spec === "string" ? (bad(`${at}/case.yaml: ${spec}`), {}) : isObject(spec) ? spec : (bad(`${at}/case.yaml: is not a mapping`), {});
     for (const field of unknown(c, CASE_FIELDS)) bad(`${at}/case.yaml: no field ${field}: its fields are ${CASE_FIELDS.join(", ")}`);
@@ -305,7 +316,7 @@ export function readCases(dir: string, names?: readonly string[]): { pkg: Packag
     if (problems.length > before) continue;
     cases.push({
       name, description: typeof f.description === "string" ? f.description : "", runs: typeof f.runs === "number" ? f.runs : 1,
-      ...(typeof f.max_cost_usd === "number" ? { maxCostUsd: f.max_cost_usd } : {}), input: typeof prompt === "string" ? "" : prompt.body.trim(),
+      ...(typeof f.max_cost_usd === "number" ? { maxCostUsd: f.max_cost_usd } : {}), input: body, ...(fields ? { fields } : {}),
       parameters, grants, mcp, learning, graders,
     });
   }
@@ -882,7 +893,7 @@ async function runOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
     expectOk(`seeding the note ${note.file}`, await api("PUT", `/agents/${encodeURIComponent(agentId)}/learning/files/${encodeURIComponent(note.file)}`, note.text, { "if-none-match": "*" }));
   }
   stopped();
-  const runId = await startRun(ctx, agentId, { input: { content: one.input }, ...(one.maxCostUsd !== undefined ? { max_cost_usd: one.maxCostUsd } : {}) }, "starting the run");
+  const runId = await startRun(ctx, agentId, { input: runInput(one.input, one.fields), ...(one.maxCostUsd !== undefined ? { max_cost_usd: one.maxCostUsd } : {}) }, "starting the run");
   // A run started is paid for: whatever fails after this (a read, a grade) still gives it a result, with its cost where
   // the server says it, so the case's total never drops it.
   try {
@@ -943,7 +954,7 @@ async function ranOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
     }
     // A grade that fails to read fails that grader alone: the run's own result and cost stay.
     try {
-      graders.push({ grader: grader.file, type: grader.type, ...(await gradeLlm(ctx, await ctx.graderAgent(), graderInput(grader, one.input, record))) });
+      graders.push({ grader: grader.file, type: grader.type, ...(await gradeLlm(ctx, await ctx.graderAgent(), graderInput(grader, inputMessage(runInput(one.input, one.fields)), record))) });
     } catch (error) {
       if (!(error instanceof ApiFailure)) throw error;
       graders.push({ grader: grader.file, type: grader.type, pass: false, reason: `not graded: ${error.message}`, cost_usd: null });

@@ -1,6 +1,8 @@
 // An answer's structured part: the last fenced `json` block of a final answer, parsed, and checked against an agent's
 // output schema (definition.output_schema). The one reader of it: a completed agentic run's result.output (store-view.ts)
-// and a template eval's schema and target graders (template-eval.ts) read an answer's JSON alike.
+// and a template eval's schema and target graders (template-eval.ts) read an answer's JSON alike. The runner tells the
+// model the schema (outputContract, in every harness's system prompt) and asks once more on a miss (outputRetryWords,
+// runner/adapter-loop.ts).
 import { Compile } from "typebox/schema";
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -44,6 +46,30 @@ export function schemaCheck(schema: unknown): { check: SchemaCheck } | { why: st
   } catch (error) {
     return { why: `it does not compile as a JSON Schema: ${(error as Error).message}` };
   }
+}
+
+/** The section every harness's system prompt ends its instructions with when the agent has an output schema
+ *  (definition.output_schema): the schema itself, so the model is told the shape it answers in, never left to find a file.
+ *  Undefined for an agent with none (or a schema that is not an object, which a save refuses). */
+export function outputContract(schema: unknown): string | undefined {
+  if (!isObject(schema)) return undefined;
+  return `End your final answer with exactly one \`\`\`json block that matches this JSON Schema:\n\n\`\`\`json\n${JSON.stringify(schema, null, 2)}\n\`\`\``;
+}
+
+/** The one retry turn's message (the server's, never the person's): sent once, in the same session, when a run would end
+ *  with an answer whose last json block misses its output schema. `why` is outputMiss's. */
+export const outputRetryWords = (why: string): string => `Your final JSON did not match the output schema: ${why}. Reply again, ending with the corrected json block.`;
+
+/** Why `answer` misses `schema`, in the retry's words (no block, not JSON, or the first problems against the schema, which
+ *  the retry's own sentence already says are the schema's), or undefined when it meets it. Undefined too when the schema
+ *  does not compile (a save refuses one): asking the model again cannot mend a schema. */
+export function outputMiss(answer: string, schema: unknown): string | undefined {
+  const compiled = schemaCheck(schema);
+  if ("why" in compiled) return undefined;
+  const json = answerJson(answer);
+  if ("why" in json) return json.why;
+  const problems = compiled.check(json.value);
+  return problems.length ? problems.slice(0, 3).join("; ") : undefined;
 }
 
 /** A final answer's structured part against an agent's output schema: the value of its last fenced json block when it

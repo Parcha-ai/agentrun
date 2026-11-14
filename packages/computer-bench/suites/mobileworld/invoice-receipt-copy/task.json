@@ -1,0 +1,70 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "mobileworld.invoice-receipt-copy",
+  "version": 1,
+  "title": "Copy November's invoice and receipt PDFs into Finance/invoice",
+  "split": "heldout",
+  "source": {
+    "suite": "MobileWorld",
+    "id": "native/invoice_receipt_copy_task.py:InvoiceReceiptCopyTask",
+    "revision": "a026188705f4a494a12d14ddab3786a23fd2c537",
+    "licence": "Apache-2.0",
+    "changes": "The source's goal is Chinese; the instruction is our English translation. The nine file names, dates (November 15, October 20 and December 5, 2025 at noon) and text layout are the source's; the source drew one to three line items at random for each invoice, ours are a fixed draw from the same ten items. The source emptied Download first; here setup moves aside only the files in the way (these nine names, any other invoice or receipt file in Download, an existing Finance/invoice) and teardown puts them back. Setup asks the media scanner to re-read each file so file managers show the set dates. The source's check (Finance/invoice holds exactly the November file; the file of that name in Download, if still there, is dated November) passed a move as well as a copy; ours asks for a copy: the original must still be in Download with its November date, and the copy must have the same bytes."
+  },
+  "tags": ["files", "copy", "translated"],
+  "needs": { "os": "android", "kind": "phone", "apps": ["com.google.android.documentsui", "com.android.documentsui", "com.google.android.apps.nbu.files", "com.sec.android.app.myfiles"] },
+  "setup": [
+    {
+      "method": "exec.run",
+      "why": "Move aside what is in the way, then write three invoice or receipt files (dated November, October and December 2025) and six other files into Download, and make /sdcard/Finance with no invoice folder in it.",
+      "params": { "argv": ["sh", "-c", "{{file:seed.sh}}"], "timeoutMs": 90000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "Open the system file manager (DocumentsUI) on Download.",
+      "params": { "argv": ["am", "start", "-W", "-a", "android.intent.action.VIEW", "-t", "vnd.android.document/directory", "-d", "content://com.android.externalstorage.documents/document/primary%3ADownload"], "timeoutMs": 20000 }
+    }
+  ],
+  "instruction": "In Download, find the PDFs from November whose file names contain invoice or receipt, and copy them into the Finance/invoice folder.",
+  "budget": { "steps": 40, "usd": 2, "wall_s": 600 },
+  "checks": [
+    {
+      "id": "folder-holds-the-file",
+      "kind": "exec",
+      "why": "/sdcard/Finance/invoice holds exactly invoice_2025_001.pdf, the only November file: not the October invoice, the December receipt or the six other files. The folder doesn't exist after setup, so an agent that does nothing fails.",
+      "argv": ["sh", "-c", "ls -1 /sdcard/Finance/invoice 2>/dev/null; true"],
+      "timeoutMs": 30000,
+      "stdout": { "equals": "invoice_2025_001.pdf" }
+    },
+    {
+      "id": "original-kept",
+      "kind": "exec",
+      "why": "The original is still in Download and still dated in November 2025 (1 November to 1 December, UTC; it was set to the 15th at noon), so it was copied, not moved.",
+      "argv": ["sh", "-c", "t=$(stat -c %Y /sdcard/Download/invoice_2025_001.pdf 2>/dev/null) || { echo missing; exit 0; }; if [ \"$t\" -ge 1761955200 ] && [ \"$t\" -lt 1764547200 ]; then echo november; else echo \"dated $t\"; fi"],
+      "timeoutMs": 30000,
+      "stdout": { "equals": "november" }
+    },
+    {
+      "id": "copy-matches",
+      "kind": "exec",
+      "why": "The copy in Finance/invoice has the same bytes as the original.",
+      "argv": ["sh", "-c", "cmp -s /sdcard/Download/invoice_2025_001.pdf /sdcard/Finance/invoice/invoice_2025_001.pdf && echo same || echo differs"],
+      "timeoutMs": 30000,
+      "stdout": { "equals": "same" }
+    }
+  ],
+  "teardown": [
+    {
+      "method": "exec.run",
+      "why": "Delete the run's files and Finance/invoice (and /sdcard/Finance if setup made it), then put back what setup moved aside.",
+      "params": { "argv": ["sh", "-c", "{{file:restore.sh}}"], "timeoutMs": 60000 }
+    }
+  ],
+  "oracle": [
+    {
+      "method": "exec.run",
+      "why": "Copy the November invoice into Finance/invoice.",
+      "params": { "argv": ["sh", "-c", "mkdir -p /sdcard/Finance/invoice && cp /sdcard/Download/invoice_2025_001.pdf /sdcard/Finance/invoice/"], "timeoutMs": 30000 }
+    }
+  ]
+}

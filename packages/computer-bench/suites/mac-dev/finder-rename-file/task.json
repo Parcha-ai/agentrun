@@ -1,0 +1,71 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "mac.finder.rename-file",
+  "version": 1,
+  "title": "Rename a file in a Documents folder",
+  "split": "dev",
+  "tags": ["finder", "files", "rename"],
+  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "apps": ["com.apple.finder"] },
+  "params": {
+    "doc": {
+      "pick": [
+        { "old": "draft", "body": "First draft of the plan" },
+        { "old": "scan-0412", "body": "Scanned receipt, April" },
+        { "old": "untitled", "body": "Packing: charger, socks" },
+        { "old": "notes-old", "body": "Kickoff notes, week one" }
+      ]
+    },
+    "new": { "pick": ["plan-final", "invoice-march", "trip-checklist", "meeting-summary"] }
+  },
+  "setup": [
+    {
+      "method": "exec.run",
+      "why": "A fresh folder with the file under its old name and readme.txt, shown in a Finder window.",
+      "params": { "argv": ["sh", "-c", "{{file:setup.sh}}"], "timeoutMs": 30000 }
+    }
+  ],
+  "instruction": "In Finder, rename the file \"{{doc.old}}.txt\" in the folder computer-bench-{{nonce}} (in Documents) to \"{{new}}.txt\".",
+  "budget": { "steps": 15, "usd": 1, "wall_s": 180 },
+  "checks": [
+    {
+      "id": "renamed",
+      "kind": "exec",
+      "why": "A file of the new name is in the folder and holds the old file's text: the file was renamed, not replaced by an empty one.",
+      "argv": ["sh", "-c", "cat \"$HOME/Documents/computer-bench-{{nonce}}/{{new}}.txt\""],
+      "stdout": { "equals": "{{doc.body}}" }
+    },
+    {
+      "id": "old-gone",
+      "kind": "exec",
+      "why": "No file of the old name is left: it was renamed, not copied.",
+      "argv": ["sh", "-c", "test -e \"$HOME/Documents/computer-bench-{{nonce}}/{{doc.old}}.txt\" && echo present || echo gone"],
+      "stdout": { "equals": "gone" }
+    },
+    {
+      "id": "readme-kept",
+      "kind": "exec",
+      "why": "The other file is still there with its text.",
+      "argv": ["sh", "-c", "cat \"$HOME/Documents/computer-bench-{{nonce}}/readme.txt\""],
+      "stdout": { "equals": "Leave this file as it is." }
+    }
+  ],
+  "teardown": [
+    {
+      "method": "exec.run",
+      "why": "Close the Finder window on the folder.",
+      "params": { "argv": ["osascript", "-e", "try", "-e", "tell application \"Finder\" to close (every Finder window whose name is \"computer-bench-{{nonce}}\")", "-e", "end try"], "timeoutMs": 30000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "Remove the folder.",
+      "params": { "argv": ["sh", "-c", "rm -rf \"$HOME/Documents/computer-bench-{{nonce}}\""], "timeoutMs": 30000 }
+    }
+  ],
+  "oracle": [
+    {
+      "method": "exec.run",
+      "why": "Rename the file.",
+      "params": { "argv": ["sh", "-c", "cd \"$HOME/Documents/computer-bench-{{nonce}}\" && mv \"{{doc.old}}.txt\" \"{{new}}.txt\""], "timeoutMs": 30000 }
+    }
+  ]
+}
