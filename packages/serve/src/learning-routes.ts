@@ -16,6 +16,7 @@
 // main now. A text that leaves holding one of the host's secrets as they are now (a value made secret after it was
 // written) is cut of it, a file's name holding one reads "[redacted]" whole, and a diff's file holding one is withheld.
 import type { DraftAsk } from "./learn/skills.js";
+import { noteBytes } from "./learn/check.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { approve, buildIndex, CAPS, checkNote, draftProblems, frontKeys, INDEX_FILE, INDEX_LINES, isHeld, LEARNED_KEYS, type LearnedNote, learnedName, learnedPlace, learnedStatus, NOTE_FILE, NOTE_STATUSES, parseNoteFile, type Problem, printable, released, retire, retiredLearned, skillProblems, SKILLS_DIR, supersede, UNCLEAR_FRONT, unstorable, WORKFLOWS_DIR, unclearFront, restorable, restore, restoredLearned } from "./learn/index.js";
 import type { DraftDecisions } from "./learn/skills.js";
@@ -523,8 +524,8 @@ export async function writeNote(data: string, agentId: string, raw: string, inpu
           text = retire(current!.text, note.status === "pending" ? "pending" : "active");
           const retired = parseNoteFile(file, text);
           if (Array.isArray(retired)) throw refused(retired.map((detail) => printable({ rule: "note", path: file, detail }, input.refuse)));
-          const size = Buffer.byteLength(text);
-          if (size > CAPS.note + RETIRED_LINE) throw refused([printable({ rule: "too_large", path: file, detail: `${size} bytes as retired; the cap is ${CAPS.note}, and the status lines a retire adds` }, input.refuse)]);
+          const size = noteBytes(text);
+          if (size > CAPS.note + RETIRED_LINE) throw refused([printable({ rule: "too_large", path: file, detail: `${size} bytes as retired; the cap is ${CAPS.note}, and the status lines a retire adds (a compiled_into line on top)` }, input.refuse)]);
         }
         if (current && text === current.text) return { result: { status: 200, file, text, etag: etagOf(current.oid) } };
         const after = learned ? [...notes.values()] : [...[...notes.values()].filter((note) => note.file !== file && !also.has(note.file)), parseNoteFile(file, text!) as LearnedNote, ...[...also].map(([old, marked]) => parseNoteFile(old, marked) as LearnedNote)];
@@ -615,6 +616,12 @@ export function runLearningBody(input: { readonly id: string; readonly learning:
     verdict: verdict ? { merge: verdict.merge, reason: shown.text(verdict.reason), items: (verdict.items ?? []).map(({ file, keep, pending: waits, origin, question, why }) => ({ file: shown.name(file), keep, ...(waits ? { pending: true } : {}), ...(origin ? { origin: shown.text(origin) as typeof origin } : {}), ...(question ? { question: shown.text(question) } : {}), why: shown.text(why) })) } : null,
     // Each cut of the host's secrets (printable), then as every served text is (`shown`: no loopback address).
     problems: (problems ?? []).map((problem) => printable(problem, secrets)).map(({ rule, path, detail }) => ({ rule: shown.text(rule) as typeof rule, ...(path === undefined ? {} : { path: shown.text(path) }), detail: shown.text(detail) })),
+    // The compile turn's record (learn/compile.ts): the workflow it wrote, the notes it absorbed and each attempt with
+    // what the checks refused, its kept draft's digest and whether that serves (its promotion: true, held false, null
+    // while undecided); null when the run compiled nothing. A draft that never passed is never silent: its
+    // errors are `draft_errors`. Each text cut of the host's secrets.
+    compiled: learning.compiled ? { workflow: shown.name(learning.compiled.workflow), from_notes: learning.compiled.from_notes.map(shown.name), attempts: learning.compiled.attempts.map(({ ok, errors }) => ({ ok, errors: errors.map((error) => shown.text(printable({ rule: "workflow", detail: error }, secrets).detail)) })), digest: learning.compiled.digest ?? null, promoted: learning.compiled.promoted ?? null } : null,
+    draft_errors: (learning.draft_errors ?? []).map((error) => shown.text(printable({ rule: "workflow", detail: error }, secrets).detail)),
     // The grade's alone: the end-of-run turn's cost is in the run's own totals.
     cost_usd: { grade: cost_usd?.grade ?? null },
     tokens: { grade: tokens?.grade ?? null },

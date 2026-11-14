@@ -45,8 +45,13 @@ const { agentCostOverStore } = await import("../dist/store-reads/learning.js");
 const { LEARNED_CLIP } = await import("../dist/learned-workflow.js");
 const { COST_WINDOW, costLineOf, workflowCostsOf, fits, workflowDigest, workflowFirstOf, pathMetrics, reviseOf, servedOf, WORKFLOW_FIRST } = await import("../dist/runner/workflow-first.js");
 const { resolveSchemaForWorkflow } = await import("@parcha/agentrun-dsl");
+const { recordPromotion } = await import("../dist/learn/promote.js");
+const { putSealedKey } = await import("../dist/server-keys.js");
+const { learningCommit } = await import("../dist/learn/commit.js");
+const { mergedNote } = await import("../dist/learn/notes.js");
+const { seedOf } = await import("../dist/learning.js");
+const { learningWorkspace } = await import("../dist/workspace/index.js");
 const { answerAsServed, answerJson, structuredAnswer } = await import("../dist/answer-json.js");
-const { reflectPrompt } = await import("../dist/learn/reflect.js");
 
 const SEAL_KEY = Buffer.alloc(32, 7);
 const RUN = "run-1";
@@ -92,11 +97,24 @@ const until = async (done, what, ms = 40_000) => {
   }
 };
 
+/** Merges `notes` (`{ file, text }` each, a note's own text) into agent `agentId`'s learning folder under `data`, as a
+ *  run's graded merge lands them. */
+async function landNotes(data, agentId, notes) {
+  await seedOf(data, agentId);
+  const folder = learningWorkspace({ mode: "local", data, agentId });
+  try {
+    const merged = await learningCommit(folder.workspace, { kind: "merge", runId: "run-noted", reason: "noted", graded: {}, files: notes.map(({ file, text }) => ({ path: file, text: mergedNote(text, { origin: "run" }) })) });
+    assert.equal(merged.ok, true, JSON.stringify(merged));
+  } finally {
+    await folder.end();
+  }
+}
+
 /** A pi run of an agent that learned `answer`, on `input`; the node submits `{answer, sure}` (`sure` false hands back);
  *  the agent, when asked, answers AGENT_SAYS. `toolSettings` on the revision; `approve`: answer the run's first ask ("stop":
  *  stop the run while it waits instead). `followUp`: once the run ends, a person's follow-up (a teacher's label on its
  *  answer) reopens it, and the run read is the follow-up's end; `first` is the row of the end before it. */
-async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION }, sure = true, learned = true, workflowFirst, toolSettings, approve = false, past = [], followUp, flows = FLOWS, answer, outputSchema, crashOnHandback = false, pastFromSecondClaim = false, pastGrades = {}, agentCall, holdNode } = {}) {
+async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION }, sure = true, learned = true, workflowFirst, toolSettings, approve = false, past = [], promotions = [], keptBefore: earlier = [], followUp, flows = FLOWS, notes = [], saved = {}, answer, outputSchema, crashOnHandback = false, pastFromSecondClaim = false, pastGrades = {}, agentCall, holdNode } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-workflow-first-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -116,7 +134,13 @@ async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION 
     rmSync(dir, { recursive: true, force: true });
   });
   await server.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read"], ...(learned ? { learning: true } : {}), ...(toolSettings ? { toolSettings } : {}), ...(outputSchema ? { outputSchema } : {}) } });
+  // `notes`: active notes merged before the workflows land, `{ file, text }` each.
+  if (learned && notes.length) await landNotes(dir, "agent-1", notes);
   const seed = learned ? await landWorkflows(dir, "agent-1", flows) : undefined;
+  // `promotions`: the agent's promotion records before the run (learn/promote.ts), as its replays left them.
+  for (const record of promotions) await recordPromotion(server.settings, "agent-1", record, () => true);
+  // `saved`: keys saved on the server after the learning landed (a value in a workflow or a note that became a secret).
+  for (const [name, value] of Object.entries(saved)) await putSealedKey(server, SEAL_KEY, name, value);
   const launch = { input, title: "t", place: { mode: "runner" }, model: { provider: "anthropic", modelId: MODEL }, ...(learned ? { learning: startAt(seed) } : {}), ...(workflowFirst === false ? { workflowFirst: false } : {}) };
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
   await server.flush?.();
@@ -164,8 +188,12 @@ async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION 
   for (const key of Object.getOwnPropertyNames(Object.getPrototypeOf(store.runs) ?? {})) if (typeof store.runs[key] === "function" && key !== "list" && key !== "constructor") runsOf[key] = store.runs[key].bind(store.runs);
   const gradeRuns = new Map(Object.entries(pastGrades).map(([id, usd]) => [`grade-${id}`, { id: `grade-${id}`, agentId: "agent-1", revisionId: "rev-1", state: "ended", costUsd: usd, metrics: {}, importedFrom: null, archivedAt: null, epoch: 1, runner: null, startedAt: 0, endedAt: 1 }]));
   runsOf.get = async (id, ...rest) => gradeRuns.get(id) ?? store.runs.get(id, ...rest);
-  const learningOf = { proposal: async (runId, round) => (runId in pastGrades ? { runId, agentId: "agent-1", round: 1, turn: {}, proposal: {}, learningRunId: `grade-${runId}` } : store.learning.proposal(runId, round)) };
-  const depStore = past.length ? new Proxy(store, { get: (target, key) => (key === "runs" ? runsOf : key === "learning" ? new Proxy(target.learning, { get: (l, k) => (k === "proposal" ? learningOf.proposal : typeof l[k] === "function" ? l[k].bind(l) : l[k]) }) : typeof target[key] === "function" ? target[key].bind(target) : target[key]) }) : store;
+  // `keptBefore`: earlier runs' kept learning, newest first (learning_proposals), laid before the store's own the same way.
+  const learningOf = {
+    proposal: async (runId, round) => earlier.find((one) => one.runId === runId) ?? (runId in pastGrades ? { runId, agentId: "agent-1", round: 1, turn: {}, proposal: {}, learningRunId: `grade-${runId}` } : await store.learning.proposal(runId, round)),
+    proposals: async (agentId, options) => [...earlier.filter((one) => one.agentId === agentId), ...(await store.learning.proposals(agentId, options))],
+  };
+  const depStore = past.length || earlier.length ? new Proxy(store, { get: (target, key) => (key === "runs" ? runsOf : key === "learning" ? new Proxy(target.learning, { get: (l, k) => (k in learningOf ? learningOf[k] : typeof l[k] === "function" ? l[k].bind(l) : l[k]) }) : typeof target[key] === "function" ? target[key].bind(target) : target[key]) }) : store;
   const deps = { env: {}, data: dir, journal: (claim) => store.journal(claim), store: depStore, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim: async () => ({ release: async () => {} }), log: (line) => logs.push(line) };
   // `approve: "stop-at-gate"`: the person's stop lands while the first claim is at the step's gate (the run's own gate,
   // asked before the ask is), so the claim that parks on the ask holds the stop. `claims`: the specs built, one per claim.
@@ -281,18 +309,15 @@ test("handed back: the guard holds, the same run goes on to the agent with the w
   assert.ok((row.costUsd ?? 0) > 0, `the run's cost: ${row.costUsd}`);
 });
 
-test("handed back: the end-of-run turn asks for the workflow's next revision by its name", async (t) => {
+test("handed back: the compile turn asks for the workflow's next revision by its name, with the workflow as it is", async (t) => {
   const { gateway } = await piRun(t, { sure: false });
-  const ask = gateway.requests.find((request) => !isNode(request) && /handed it back to you\. If a change to it would have let it finish this case/.test(textOf(request.body)));
-  assert.ok(ask, `the reflect turn asked about \`answer\`: ${gateway.requests.map((request) => textOf(request.body).slice(-300)).join("\n---\n")}`);
-  assert.match(textOf(ask.body), /give `answer` again whole under its name/);
+  const ask = gateway.requests.find((request) => !isNode(request) && /One more turn: revise your learned workflow `answer`\.\nYour learned workflow `answer` ran first on this run and handed it back to you\./.test(textOf(request.body)));
+  assert.ok(ask, `the compile turn asked about \`answer\`: ${gateway.requests.map((request) => textOf(request.body).slice(0, 300)).join("\n---\n")}`);
+  assert.match(textOf(ask.body), /Give `answer` again whole under its name/);
+  assert.match(textOf(ask.body), /`answer` as it is now:/);
 });
 
 test("a learned workflow named as only a workflow may be (sort_invoice): handed back or stopped, the end-of-run turn still asks for its revision", async (t) => {
-  // The prompt takes every learned workflow's name, as the store does (skills.ts learnedName), never only a skill's.
-  assert.match(reflectPrompt({ dir: ".learning", active: 0, handedBack: "sort_invoice" }), /give `sort_invoice` again whole under its name/);
-  assert.match(reflectPrompt({ dir: ".learning", active: 0, revise: { workflow: "sort_invoice", served_usd: 0.2, by_hand_usd: 0.1, runs: 10 } }), /`sort_invoice` no longer runs first/);
-  assert.throws(() => reflectPrompt({ dir: ".learning", active: 0, handedBack: "Sort Invoice" }), /a workflow's name/);
   // And through a run: handed back, its end-of-run turn is placed and asks for it by that name.
   const { gateway, kept } = await piRun(t, { sure: false, flows: [{ ...FLOWS[0], name: "sort_invoice" }] });
   const ask = gateway.requests.find((request) => !isNode(request) && /Your learned workflow `sort_invoice` ran first on this run and handed it back to you/.test(textOf(request.body)));
@@ -488,9 +513,79 @@ test("money rule: a workflow whose last 10 served runs cost more than the agent 
   const revise = entries.findLast((entry) => entry.kind === WORKFLOW_FIRST)?.data;
   assert.deepEqual(revise, { workflow: "answer", digest: DIGEST, revision: revise?.revision, outcome: "needs_revision", served_usd: 0.5, by_hand_usd: 0.2, runs: COST_WINDOW }, "the run's journal keeps why, with the two numbers");
   assert.ok(logs.some((line) => /answer cost \$0\.5 a run over its last 10 served runs, at or over \$0\.2 by hand/.test(line)), JSON.stringify(logs));
-  const ask = gateway.requests.find((request) => /no longer runs first: over its last 10 runs it served it cost \$0\.5 a run, against \$0\.2 a run by hand/.test(textOf(request.body)));
-  assert.ok(ask, `the end-of-run turn asked for a revision: ${gateway.requests.map((request) => textOf(request.body).slice(-400)).join("\n---\n")}`);
-  assert.match(textOf(ask.body), /give `answer` again whole under its name/);
+  const ask = gateway.requests.find((request) => /no longer runs first: over its last 10 served runs it cost \$0\.5 a run, against \$0\.2 a run by hand/.test(textOf(request.body)));
+  assert.ok(ask, `the compile turn asked for a revision: ${gateway.requests.map((request) => textOf(request.body).slice(0, 400)).join("\n---\n")}`);
+  assert.match(textOf(ask.body), /Give `answer` again whole under its name/);
+});
+
+// A workflow its replay held (runner/promotion.ts): the agent takes the run, and its end-of-run compile turn asks for the
+// workflow's revision with the replay's numbers; a hold of another digest (an older revision) asks for none.
+test("held by its replay: the agent takes the run, and the compile turn asks for a revision with the replay's numbers; an older revision's hold asks nothing", async (t) => {
+  const at = new Date().toISOString();
+  const replay = { of: [], n: 20, agree: 13, agent_acc: 0.9, wf_acc: 0.7, delta: -0.2, handed_back: 4, cost_usd: 0.4 };
+  const held = { workflow: "answer", digest: DIGEST, at, decided: "hold", source: "replay", reason: "replayed on 20 graded inputs: more than 2 pts under the agent", replay };
+  const { row, gateway, logs } = await piRun(t, { promotions: [held] });
+  assert.equal(row.state, "ended", JSON.stringify(row));
+  assert.equal(row.metrics?.path, "agent", `the agent took the run: ${JSON.stringify(row.metrics)}`);
+  assert.equal(gateway.requests.filter(isNode).length, 0, "the held workflow never ran");
+  assert.ok(logs.some((line) => /answer at [0-9a-f]{16} is held/.test(line)), JSON.stringify(logs));
+  const ask = gateway.requests.find((request) => /One more turn: revise your learned workflow `answer`\.\nYour learned workflow `answer` does not run first: replayed on 20 of the agent's graded inputs, it was right 70\.0% of the time \(4 handed back, each scored on the agent's answer\), against the agent's 90\.0%: -20\.0 pts, more than 2 pts under\./.test(textOf(request.body)));
+  assert.ok(ask, `the compile turn asked for a revision with the replay's numbers: ${gateway.requests.map((request) => textOf(request.body)).filter((text) => text.includes("One more turn")).map((text) => text.slice(text.lastIndexOf("One more turn"), text.lastIndexOf("One more turn") + 600)).join("\n---\n")}`);
+  assert.match(textOf(ask.body), /`answer` as it is now:/);
+  assert.doesNotMatch(textOf(ask.body), /answer `No change\.`/);
+  // A hold of an older revision: main's is a new digest, decided on its own (here on its dry run: no graded input), and
+  // nothing asks for a revision.
+  const older = await piRun(t, { promotions: [{ ...held, digest: "fedcba9876543210" }] });
+  assert.equal(older.row.metrics?.path, "workflow", JSON.stringify(older.row.metrics));
+  assert.ok(!older.gateway.requests.some((request) => /One more turn: revise your learned workflow/.test(textOf(request.body))), "an older revision's hold asks nothing");
+});
+
+// #2641 review (class C): once per hold. A run since the hold that compiled the held workflow asked already, whatever
+// came of it (its draft failed its checks, or the grader dropped it), however many runs ago; one before the hold did not.
+test("held: a compile of it since the hold, past the last 4 runs, asks no revision again; one from before the hold does", async (t) => {
+  const at = new Date().toISOString();
+  const replay = { of: [], n: 20, agree: 13, agent_acc: 0.9, wf_acc: 0.7, delta: -0.2, handed_back: 4, cost_usd: 0.4 };
+  const held = { workflow: "answer", digest: DIGEST, at, decided: "hold", source: "replay", reason: "replayed on 20 graded inputs: more than 2 pts under the agent", replay };
+  const past = pastRuns({ served: 0, byHand: 6 });
+  const compiledAt = (createdAt) => [{ runId: "past-5", agentId: "agent-1", turn: null, createdAt, proposal: { state: "dropped", reason: "checker", detail: "d", compiled: { workflow: "answer", from_notes: [], attempts: [{ ok: false, errors: ["workflow: no root"] }] }, draft_errors: ["workflow: no root"] } }];
+  const asksRevision = (gateway) => gateway.requests.some((request) => /One more turn: revise your learned workflow `answer`/.test(textOf(request.body)));
+  const since = await piRun(t, { promotions: [held], past, keptBefore: compiledAt(Date.parse(at) + 1) });
+  assert.equal(since.row.metrics?.path, "agent", JSON.stringify(since.row.metrics));
+  assert.ok(!asksRevision(since.gateway), "asked once already, 6 runs ago: never again for this hold");
+  const before = await piRun(t, { promotions: [held], past, keptBefore: compiledAt(Date.parse(at) - 60_000) });
+  assert.ok(asksRevision(before.gateway), "a compile before the hold was not this hold's ask");
+});
+
+// #2641 review (P1 security): every text the compile turn's facts gather passes the check the run's start makes
+// (learning.ts holdsSecret, as chooseWorkflows reads a workflow). A held workflow whose text holds a value saved as a
+// secret after it landed is never sent to the model: the start left it out, and so does its compile turn. A note holding
+// one is left out whole, never sent cut. Each is logged by name and count only.
+test("held: a workflow or a note holding a secret saved after it landed is left out of the compile turn, by name in the log, never its value", async (t) => {
+  const secret = `planted${"q8".repeat(12)}`;
+  const at = new Date().toISOString();
+  const holdOf = (flow) => ({ workflow: "answer", digest: workflowDigest({ workflow: JSON.stringify(flow) }), at, decided: "hold", source: "graded", reason: "20 graded runs it served were right 70.0% of the time" });
+  const sent = (gateway) => gateway.requests.filter((request) => JSON.stringify(request.body).includes(secret));
+  const revising = (gateway) => gateway.requests.find((request) => /One more turn: revise your learned workflow `answer`/.test(textOf(request.body)));
+  // The held workflow holds the value: the run is the agent's (its start left the workflow out), and no compile is asked.
+  const holding = { ...answerFlow, root: { ...answerFlow.root, steps: [{ ...answerFlow.root.steps[0], instructions: `Answer the question; send ${secret} with it.` }, answerFlow.root.steps[1]] } };
+  const flow = await piRun(t, { flows: [{ ...FLOWS[0], workflow: holding }], promotions: [holdOf(holding)], saved: { MONID_API_KEY: secret } });
+  assert.equal(flow.row.metrics?.path, "agent", JSON.stringify(flow.row.metrics));
+  assert.deepEqual(sent(flow.gateway).map((request) => textOf(request.body).slice(-400)), [], "the saved value reached no model request");
+  assert.equal(revising(flow.gateway), undefined, "no revision asked of a workflow holding a secret");
+  assert.ok(flow.logs.some((line) => /compile turn left out what holds a secret: workflow `answer`/.test(line)), JSON.stringify(flow.logs));
+  assert.ok(!flow.logs.some((line) => line.includes(secret)), "never the value in a log");
+  // A clean held workflow, a note holding the value: the revision is asked, the note left out whole (not sent cut).
+  const notes = [
+    { file: "key-rule.md", text: `---\nname: Key rule\ndescription: Which key a call sends\ntype: reference\n---\nSend ${secret} with each call.\n` },
+    { file: "retry-slowly.md", text: "---\nname: Retry slowly\ndescription: Back off between retries\ntype: reference\n---\nWait a little longer after each failed call.\n" },
+  ];
+  const noted = await piRun(t, { notes, promotions: [holdOf(answerFlow)], saved: { MONID_API_KEY: secret } });
+  const ask = revising(noted.gateway);
+  assert.ok(ask, "the clean held workflow's revision is asked");
+  assert.equal(sent(noted.gateway).length, 0, "the saved value reached no model request");
+  assert.match(textOf(ask.body), /retry-slowly\.md/);
+  assert.doesNotMatch(textOf(ask.body), /key-rule\.md/, "the note holding the secret is left out whole");
+  assert.ok(noted.logs.some((line) => /compile turn left out what holds a secret: 1 note/.test(line)), JSON.stringify(noted.logs));
 });
 
 test("money rule, all-in: a workflow whose runs are cheap but whose grades push its all-in over the agent's by hand stops running first", async (t) => {

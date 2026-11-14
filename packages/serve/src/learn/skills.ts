@@ -484,7 +484,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> => value !==
  *  parallel's branches, a map's or a loop's body, a route's branch bodies. A composed workflow node's child is a
  *  workflow, walked as one (eachWorkflow). Only these are node positions: an object anywhere else (a schema, a const, a
  *  step's literal value) is data, never a node, whatever keys it holds. */
-function childNodes(node: Record<string, unknown>): unknown[] {
+export function childNodes(node: Record<string, unknown>): unknown[] {
   switch (node.node) {
     case "chain": return Array.isArray(node.steps) ? node.steps : [];
     case "parallel": return Array.isArray(node.branches) ? node.branches : [];
@@ -598,12 +598,84 @@ export function synthesisProblems(doc: unknown, dsl: SchemaResolver): string[] {
   return problems;
 }
 
+/** The JSON Schema keywords that constrain a value, never its shape: what a dry run's placeholder answer cannot decide. */
+const VALUE_KEYWORDS: ReadonlySet<string> = new Set(["pattern", "format", "enum", "const", "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf", "minLength", "maxLength", "minItems", "maxItems", "uniqueItems", "minProperties", "maxProperties", "contains", "minContains", "maxContains", "not", "if", "then", "else", "propertyNames", "contentEncoding", "contentMediaType"]);
+/** The schema keywords by shape (SCHEMA_MAPS: names to schemas, its keys never keywords; the rest a schema or a list). */
+const MAP_KEYWORDS: ReadonlySet<string> = new Set(SCHEMA_MAPS);
+const SUB_KEYWORDS: ReadonlySet<string> = new Set([...SCHEMA_LISTS, ...SCHEMA_ONES]);
+/** How deep shapeOf reads a schema: past it, anything goes. */
+const SHAPE_DEPTH = 64;
+/** A JSON value's schema type as a shape reads it: an integer is a number (a real number may be whole). */
+const jsonType = (value: unknown): string => (value === null ? "null" : Array.isArray(value) ? "array" : typeof value === "object" ? "object" : typeof value);
+
+/** `schema` with every value constraint taken out (VALUE_KEYWORDS): the answer's shape alone, what a dry run's
+ *  placeholder answer can decide. Its fields, their types, which are required and whether others may be added stay; an
+ *  `integer` reads as a number; an enum or const with no type of its own keeps the type its values share, so a type
+ *  that can't line up still fails. A `oneOf` reads as `anyOf`: with the values taken out its branches can read alike
+ *  (two consts, both a string), and a placeholder matching two of them says nothing a real answer would; one branch its
+ *  shape can meet is enough. Beside an `anyOf` of the schema's own, both hold (an allOf of the two). */
+function shapeOf(schema: unknown, depth = 0): unknown {
+  if (depth > SHAPE_DEPTH) return {};
+  if (Array.isArray(schema)) return schema.map((one) => shapeOf(one, depth + 1));
+  if (schema === null || typeof schema !== "object") return schema;
+  const spec = schema as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  let oneOf: unknown;
+  for (const [key, value] of Object.entries(spec)) {
+    if (VALUE_KEYWORDS.has(key)) continue;
+    if (key === "oneOf") oneOf = shapeOf(value, depth + 1);
+    else if (key === "type") out.type = Array.isArray(value) ? [...new Set(value.map((one) => (one === "integer" ? "number" : one)))] : value === "integer" ? "number" : value;
+    else if (MAP_KEYWORDS.has(key) && isRecord(value)) out[key] = Object.fromEntries(Object.entries(value).map(([name, sub]) => [name, shapeOf(sub, depth + 1)]));
+    else if (SUB_KEYWORDS.has(key)) out[key] = shapeOf(value, depth + 1);
+    else out[key] = value;
+  }
+  if (oneOf !== undefined) {
+    if (out.anyOf === undefined) out.anyOf = oneOf;
+    else out.allOf = [...(Array.isArray(out.allOf) ? out.allOf : []), { anyOf: oneOf }];
+  }
+  if (spec.type === undefined) {
+    const literals = spec.const !== undefined ? [spec.const] : Array.isArray(spec.enum) ? spec.enum : [];
+    const types = [...new Set(literals.map(jsonType))];
+    if (types.length === 1) out.type = types[0];
+    else if (types.length > 1) out.type = types;
+  }
+  return out;
+}
+
+/** The most values of an example realValuesOf reads. */
+const REAL_VALUES = 10_000;
+/** Every value an example input holds (each object, array and leaf, as JSON), but the ones a placeholder could be too
+ *  (null, false, 0, a string of x's or none, an empty array or object): what a dry run's answer holds for real when it
+ *  holds one of them. */
+function realValuesOf(input: unknown): Set<string> {
+  const real = new Set<string>();
+  const stack: unknown[] = [input];
+  for (let seen = 0; stack.length && seen < REAL_VALUES; seen++) {
+    const value = stack.pop();
+    const trivial = value === null || value === false || value === 0 || (typeof value === "string" && /^x*$/.test(value)) || (typeof value === "object" && value !== null && !Object.keys(value).length);
+    if (!trivial) real.add(JSON.stringify(value));
+    if (value !== null && typeof value === "object") stack.push(...Object.values(value));
+  }
+  return real;
+}
+
+/** The value at JSON Pointer `path` in `value` ("" is the whole). */
+const valueAt = (value: unknown, path: string): unknown =>
+  path === "" ? value : path.split("/").slice(1).reduce<unknown>((at, key) => (at !== null && typeof at === "object" ? (at as Record<string, unknown>)[key.replace(/~1/g, "/").replace(/~0/g, "~")] : undefined), value);
+
 /** A draft's workflow.json `json` dry-run by the workflow DSL (dryRunWorkflow) on `example` (its block's `example:`
  *  line, one JSON object), else on an input synthesized from its input schema. Every model, Jev and tool-call answer is
  *  synthesized from the node's output schema: no request is sent, nothing is paid, no tool runs, and no code it holds
  *  runs in this process (refuseCode). Only a draft the static checks pass is dry-run (propose.ts). It checks the wiring
- *  at run time (the state each step reads, its output's path and schema), never the answers. */
-export async function draftDryRun(dsl: { readonly dryRunWorkflow: typeof dryRunWorkflow } & SchemaResolver, json: string, example?: string): Promise<DraftDryRun> {
+ *  at run time (the state each step reads, its output's path and schema), never the answers. With `outputSchema` (the
+ *  agent's), the output of a run that passed is held to it as a run serving the draft serves it (answer-json.ts
+ *  answerAsServed over the tool's text, learned-workflow.ts learnedOutput) as far as its placeholders can decide: its
+ *  shape (shapeOf: the fields, their types, the required ones). One whose shape can't meet it fails, in the schema's
+ *  words, since every run it served would go back to the agent; a value constraint (a pattern, an enum, a bound) stays
+ *  undecided on a placeholder, and holds a value only where the dry run has a real one (its example's own, handed
+ *  through). A text answer is synthetic here, and serving takes text whose json block meets the schema, so text fails
+ *  only against a schema that does not compile, as every answer does. */
+export async function draftDryRun(dsl: { readonly dryRunWorkflow: typeof dryRunWorkflow } & SchemaResolver, json: string, example?: string, outputSchema?: unknown): Promise<DraftDryRun> {
   let doc: unknown;
   let input: Record<string, unknown> | undefined;
   try {
@@ -627,10 +699,34 @@ export async function draftDryRun(dsl: { readonly dryRunWorkflow: typeof dryRunW
   const tooLarge = [...synthesisProblems(doc, dsl), ...loopProblems(doc)];
   if (tooLarge.length) return { status: "not_run", detail: tooLarge.join("; ").slice(0, 300) };
   let result: Awaited<ReturnType<typeof dryRunWorkflow>>;
+  let output: { value: unknown } | undefined;
   try {
-    result = await dsl.dryRunWorkflow(doc as Workflow, { ...(input ? { input } : {}), maxSteps: DRY_RUN_STEPS, runCode: refuseCode, signal: AbortSignal.timeout(DRY_RUN_MS) });
+    result = await dsl.dryRunWorkflow(doc as Workflow, { ...(input ? { input } : {}), maxSteps: DRY_RUN_STEPS, runCode: refuseCode, signal: AbortSignal.timeout(DRY_RUN_MS), onOutput: (value) => { output = { value }; } });
   } catch (error) {
     return { status: "failed", detail: `${DRY_RUN_FAILED}: ${String((error as Error)?.message ?? error).slice(0, 300)}` };
+  }
+  if (result.ok && result.status === "passed" && outputSchema !== undefined && output) {
+    // The serving path's own two functions, loaded only for an agent with an output schema (learned-workflow.ts reads
+    // this module).
+    const [{ answerAsServed, schemaCheck }, { learnedOutput }] = await Promise.all([import("../answer-json.js"), import("../learned-workflow.js")]);
+    // A schema that does not compile refuses every answer serving gives, real or not.
+    const whole = schemaCheck(outputSchema);
+    if ("why" in whole) return { status: "failed", detail: `${DRY_RUN_FAILED}: the agent's output schema ${whole.why}`.slice(0, 600) };
+    const text = learnedOutput(output.value);
+    // A text answer (learnedOutput hands one back as it is, any other as its JSON) is the model's own words, here a
+    // synthetic placeholder: serving reads a real one's fenced json block first, so text may carry the whole answer, and
+    // nothing more is decided here.
+    const isText = text !== JSON.stringify(output.value ?? null);
+    if (!isText) {
+      // Its values are placeholders ("x" for a string): they decide the answer's shape alone (shapeOf), never a value
+      // constraint a real answer would meet ("5251" for a 4-digit pattern).
+      const served = answerAsServed(text, shapeOf(outputSchema));
+      if ("why" in served) return { status: "failed", detail: `${DRY_RUN_FAILED}: ${served.why}`.slice(0, 600) };
+      // A value the dry run holds for real (its example's own, handed through) is held to the whole schema.
+      const real = input ? realValuesOf(input) : undefined;
+      const misses = real ? whole.misses(served.value).filter(({ path }) => real.has(JSON.stringify(valueAt(served.value, path)))) : [];
+      if (misses.length) return { status: "failed", detail: `${DRY_RUN_FAILED}: its answer does not meet the agent's output schema: ${misses.slice(0, 3).map((miss) => miss.words).join("; ")}`.slice(0, 600) };
+    }
   }
   if (result.ok) return result.status === "passed" ? { status: "passed" } : { status: "not_run", detail: (result.skipped ?? []).join("; ").slice(0, 300) || "a check could not run" };
   return { status: "failed", detail: `${DRY_RUN_FAILED}${result.stage ? ` at "${result.stage.slice(0, 64)}"` : ""}: ${result.problems.join("; ").slice(0, 300)}` };

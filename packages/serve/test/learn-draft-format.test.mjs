@@ -1,4 +1,4 @@
-// #2412: a workflow draft kept for a skill's job keeps the output format the skill gives. The ask says so; the run's
+// #2412: a workflow draft kept for a skill's job keeps the output format the skill gives. The compile ask says so; the run's
 // proposal carries the skill of the draft's name as the folder holds it (proposeRun `drafted`); the grader is shown it
 // beside the draft, and its rubric drops a draft whose output cannot give that format (Format).
 import assert from "node:assert/strict";
@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { GRADE_RUBRIC, gradePrompt } from "../dist/learn/grade.js";
-import { reflectPrompt } from "../dist/learn/reflect.js";
+import { compilePrompt, OUTPUT_FORMAT } from "../dist/learn/compile.js";
 import { agentFolderOf } from "../dist/files.js";
 import { PROPOSAL, seedOf } from "../dist/learning.js";
 import { proposeRun } from "../dist/propose.js";
@@ -56,12 +56,13 @@ async function folderWith(data, id, files) {
   await resnap(data, id);
 }
 
-test("the draft ask says the draft's output is the job's answer in the skill's own output format, written by its last node (#2412)", () => {
-  const asked = reflectPrompt({ dir: ".learning", active: 0, tools: ["read"], draftFor: ["card-report"] });
-  const line = asked.split("\n").find((one) => one.includes("has now served"));
-  assert.match(line, /Its output is the job's answer in the output format the skill gives: its last node writes it, and `output` names that node's text\./, line);
-  const two = reflectPrompt({ dir: ".learning", active: 0, tools: ["read"], draftFor: ["card-report", "weekly-report"] });
-  assert.match(two.split("\n").find((one) => one.includes("have each served")), /in the output format its skill gives: its last node writes it/);
+test("the compile ask says the draft's output is the job's answer in the runs' and the skill's own output format, written by its last node (#2412)", () => {
+  const base = { reference: "(the DSL reference)", notes: [], traces: [], tools: ["read"], judges: false };
+  for (const ask of [{ mode: "new", ...base }, { mode: "revise", workflow: "card-report", current: "{}", handedBack: true, ...base }]) {
+    const prompt = compilePrompt(ask);
+    assert.ok(prompt.includes(OUTPUT_FORMAT), ask.mode);
+  }
+  assert.match(OUTPUT_FORMAT, /output format your runs gave it, and your skill's when one gives a format: its last node writes it, and `output` names that node's state\./);
 });
 
 test("a run's proposal carries the skill of its draft's name as the folder holds it at the seed, for the grader (#2412)", async (t) => {

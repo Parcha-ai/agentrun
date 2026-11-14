@@ -1,6 +1,6 @@
 // An agent may learn notes and skills alone: `learning: "notes"` beside true (everything) and false (off). Under it a run
 // is given its learned notes and skills but never a learned workflow (no learned_workflow tool, none named in its
-// launch), its end-of-run turn asks for no workflow draft, and a draft it gives anyway is left out by the checks while
+// launch), its end-of-run turn asks for no workflow and it runs no compile turn, and a draft it gives anyway is left out by the checks while
 // its notes and skill go on.
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -28,16 +28,13 @@ test("a definition's learning is true, false or \"notes\"; anything else is refu
   }
 });
 
-test("a notes run's end-of-run turn asks for no workflow draft: no workflow block, no draft ask, and it says to keep none", () => {
-  const both = reflectPrompt({ dir: ".learning", active: 0, draftFor: ["find-policies"] });
-  assert.match(both, /````workflow/, "learning: true still describes a workflow draft");
-  const notes = reflectPrompt({ dir: ".learning", active: 0, draftFor: ["find-policies"], workflows: false });
-  assert.doesNotMatch(notes, /````workflow|workflow DSL|as a workflow draft named/, notes);
-  assert.match(notes, /Keep no workflow draft/);
-  assert.match(notes, /````skill find-policies/, "a skill is still asked for");
-  assert.match(reflectAgain("bad", false), /every note and skill block/);
-  assert.doesNotMatch(reflectAgain("bad", false), /workflow/);
-  assert.match(reflectAgain("bad"), /note, skill and workflow block/);
+test("the end-of-run turn asks for no workflow draft, on any run: no workflow block, it says to keep none, and its retry names notes and skills", () => {
+  const prompt = reflectPrompt({ dir: ".learning", active: 0 });
+  assert.doesNotMatch(prompt, /````workflow|workflow DSL|as a workflow draft named/, prompt);
+  assert.match(prompt, /Keep no workflow here/);
+  assert.match(prompt, /````skill find-policies/, "a skill is still asked for");
+  assert.match(reflectAgain("bad"), /every note and skill block/);
+  assert.doesNotMatch(reflectAgain("bad"), /workflow/);
 });
 
 test("pi: a notes run on the runner is given no learned_workflow, though its agent learned an active workflow", async (t) => {
