@@ -68,7 +68,10 @@ export type PiSessionIO = SessionIO & {
   keepCalls?: (call: string, calls: readonly ComputerCallRecord[], dropped: number) => Promise<void>;
 };
 
-/** `extension` with each of its tools run inside recordingCalls, its calls kept by `keep` under the call's id. */
+/** `extension` with each of its tools run inside recordingCalls, its calls kept by `keep` under the call's id. A call pi
+ *  runs again after a restart keeps what that attempt makes: a code mode script's replay hands back the results of the
+ *  calls its earlier attempt made, never making them again, so none is kept twice. The earlier attempt's own record goes
+ *  with it, as a host tool's cut attempt's does: the shutdown seals the journal before its call ends. */
 function recordingExtension(extension: Extension, keep: NonNullable<PiSessionIO["keepCalls"]>): Extension {
   if (!extension.tools?.length) return extension;
   return {
