@@ -26,7 +26,6 @@ after(closeOpenSessions);
 function askingCli(tool) {
   return {
     id: "codex",
-    capabilities: () => ({}),
     check: () => [],
     async open(_spec, io) {
       let turn;

@@ -18,7 +18,7 @@ const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { piAdapter } = await import("../dist/runner/adapters/pi.js");
 const { computerCodemode, PI_CODEMODE_TOOL } = await import("../dist/runner/adapters/pi-computer.js");
 const { suiteTools } = await import("../dist/runner/conformance/harness.js");
-const { portOf, ScriptGuard } = await import("../dist/workspace/index.js");
+const { portOf, ScriptGuard, scriptPreludeOf } = await import("../dist/workspace/index.js");
 /** A script guard whose gate allows every call: these tests are about code mode, not the run's tool settings. */
 const allowAll = () => {
   const guard = new ScriptGuard();
@@ -45,7 +45,7 @@ async function desktop() {
   computer.overrides["screen.shot"] = () => ({ id: "s1", size, data: PNG, eof: true, width: 1280, height: 800, scale: 1 });
   computer.overrides["input.actions"] = ({ actions }) => ({ done: actions.length });
   const surface = createSurface(computer.client, { protocol: "0.2", version: "0", os: "linux", kind: "desktop", arch: "amd64", groups: GROUPS });
-  return { computer, script: { card: surface.card, port: portOf(surface), guard: allowAll() } };
+  return { computer, script: { card: surface.card, port: portOf(surface), guard: allowAll(), prelude: scriptPreludeOf(surface.card), declare: false } };
 }
 
 /** A pi run of `script` with code mode on `computer`, its gate `gate(call)`; the request bodies the provider got. */
@@ -105,4 +105,13 @@ test("code mode is held to the computer kind's setting: a deny on desktop refuse
   assert.equal(result.isError, true);
   assert.equal(result.text, deniedText(PI_CODEMODE_TOOL), "refused in the gate's words, before the script ran");
   assert.equal(computer.calls.length, before, "nothing reached the computer");
+});
+
+test("a code-only computer (no computer_script listed to declare `computer`): the codemode tool's own description declares it, as computer_script's would; with computer_script listed it declares nothing twice", async () => {
+  const { computerDeclarations } = await import("@parcha/agentrun-kernel/kernel");
+  const { script } = await desktop();
+  const description = (given) => computerCodemode(given).tools.find((tool) => tool.name === PI_CODEMODE_TOOL).description;
+  const declared = description({ ...script, declare: true });
+  assert.ok(declared.includes(computerDeclarations(GROUPS)), `the computer's declarations for its groups: ${declared.slice(-400)}`);
+  assert.ok(!description(script).includes(computerDeclarations(GROUPS)), "beside computer_script, which declares it once");
 });

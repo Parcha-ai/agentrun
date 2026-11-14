@@ -32,7 +32,7 @@ function scratch() {
   return root;
 }
 
-const SAVED = { daytona: { DAYTONA_API_KEY: "dk", UNRELATED: "x" }, e2b: { E2B_API_KEY: "ek" }, orgo: { ORGO_API_KEY: "ok", ORGO_WORKSPACE_ID: "ws-1" }, "phone-harness": { PHONE_HARNESS_API_KEY: "pk" }, browserbase: { BROWSERBASE_API_KEY: "bk", BROWSERBASE_PROJECT_ID: "bp" } };
+const SAVED = { daytona: { DAYTONA_API_KEY: "dk" }, modal: { MODAL_TOKEN_ID: "mi", MODAL_TOKEN_SECRET: "ms", UNRELATED: "x" }, e2b: { E2B_API_KEY: "ek" }, orgo: { ORGO_API_KEY: "ok", ORGO_WORKSPACE_ID: "ws-1" }, "phone-harness": { PHONE_HARNESS_API_KEY: "pk" }, browserbase: { BROWSERBASE_API_KEY: "bk", BROWSERBASE_PROJECT_ID: "bp" } };
 /** The claim's side: the saved keys by provider, and a launch that makes a loopback fake of the kind asked. */
 function claim(root, saved = SAVED) {
   const launched = [];
@@ -53,7 +53,9 @@ function claim(root, saved = SAVED) {
 /** Resolved against the registry, whose remote sandboxes mount from Archil (each descriptor's own mounts). */
 const resolve = (setting, mode, root = scratch(), saved, kinds = KINDS) => resolveComputer(setting, mode, kinds, claim(root, saved));
 const KIND_REGISTRY = KINDS;
-const shape = (resolved) => ("refused" in resolved ? resolved : { kind: resolved.kind, provider: resolved.provider, mounts: resolved.mounts, ports: resolved.ports });
+/** Mode 2's refusal of a Daytona sandbox, with GPUs or without: it takes no Archil mount, and says why. */
+const DAYTONA_NO_FOLDER = "A Daytona sandbox can't mount the run's folder from Archil (Archil mounts don't work on Daytona yet: Archil's client hangs on its sandboxes): pick another sandbox for this agent's computer in Settings → Computers.";
+const shape = (resolved) =>("refused" in resolved ? resolved : { kind: resolved.kind, provider: resolved.provider, mounts: resolved.mounts, ports: resolved.ports });
 
 test("no setting is the server's default: in Mode 1 Docker's sandbox where Docker answers here, else no computer; in Mode 2 no computer", async () => {
   const answering = (ids) => ({ ...claim(scratch()), answers: async (id) => ids.includes(id) });
@@ -86,14 +88,16 @@ test("Mode 2: Docker's sandbox is refused; a remote sandbox mounts from Archil; 
   assert.deepEqual(shape(await resolve({ kind: "sandbox", provider: "docker" }, 2)), {
     refused: "Mode 2 keeps workspaces on Archil; a local Docker computer can't mount them. Pick a remote sandbox for this agent's computer in Settings → Computers, or no computer.",
   });
-  assert.deepEqual(shape(await resolve({ kind: "sandbox", provider: "daytona" }, 2)), { kind: "sandbox", provider: "daytona", mounts: true, ports: ["files", "exec", "processes"] });
+  assert.deepEqual(shape(await resolve({ kind: "sandbox", provider: "modal" }, 2)), { kind: "sandbox", provider: "modal", mounts: true, ports: ["files", "exec", "processes"] });
+  assert.deepEqual(await resolve({ kind: "sandbox", provider: "daytona" }, 2), { refused: DAYTONA_NO_FOLDER }, "Daytona takes no Archil mount");
   assert.equal((await resolve({ kind: "desktop", provider: "docker" }, 2)).mounts, false, "Docker binds a folder of this machine, and Mode 2's is on Archil");
   assert.equal((await resolve({ kind: "desktop", provider: "e2b" }, 2)).mounts, true);
   assert.deepEqual(shape(await resolve({ kind: "desktop", provider: "orgo" }, 2)), { kind: "desktop", provider: "orgo", mounts: false, ports: ["screen", "input"] });
 });
 
-test("the module's own table takes archil mounts on Daytona, Modal and E2B (module D6): Mode 2 mounts a Daytona sandbox and an E2B desktop", async () => {
-  assert.deepEqual(shape(await resolve({ kind: "sandbox", provider: "daytona" }, 2, scratch(), SAVED, KINDS)), { kind: "sandbox", provider: "daytona", mounts: true, ports: ["files", "exec", "processes"] });
+test("the module's own table takes archil mounts on Modal and E2B, not Daytona: Mode 2 mounts a Modal or E2B sandbox and an E2B desktop", async () => {
+  for (const provider of ["modal", "e2b"]) assert.deepEqual(shape(await resolve({ kind: "sandbox", provider }, 2, scratch(), SAVED, KINDS)), { kind: "sandbox", provider, mounts: true, ports: ["files", "exec", "processes"] });
+  assert.deepEqual(await resolve({ kind: "sandbox", provider: "daytona" }, 2, scratch(), SAVED, KINDS), { refused: DAYTONA_NO_FOLDER });
   assert.equal((await resolve({ kind: "desktop", provider: "e2b" }, 2, scratch(), SAVED, KINDS)).mounts, true);
 });
 
@@ -107,10 +111,11 @@ test("a setting the registry does not give is refused in words that name the set
 });
 
 test("a provider whose required keys are not saved is refused at the claim, naming the keys and Settings → Computers; an optional key may be absent", async () => {
-  assert.deepEqual(await resolve({ kind: "sandbox", provider: "daytona" }, 2, scratch(), {}), { refused: "Daytona needs its key DAYTONA_API_KEY saved: add it in Settings → Computers." });
+  assert.deepEqual(await resolve({ kind: "sandbox", provider: "modal" }, 2, scratch(), {}), { refused: "Modal needs its keys MODAL_TOKEN_ID, MODAL_TOKEN_SECRET saved: add them in Settings → Computers." });
+  assert.deepEqual(await resolve({ kind: "desktop", provider: "e2b" }, 2, scratch(), {}), { refused: "E2B needs its key E2B_API_KEY saved: add it in Settings → Computers." });
   assert.deepEqual(await resolve({ kind: "browser", provider: "browserbase" }, 2, scratch(), { browserbase: { BROWSERBASE_API_KEY: "bk", BROWSERBASE_PROJECT_ID: "" } }), { refused: "Browserbase needs its key BROWSERBASE_PROJECT_ID saved: add it in Settings → Computers." });
   assert.deepEqual(await resolve({ kind: "browser", provider: "browserbase" }, 2, scratch(), {}), { refused: "Browserbase needs its keys BROWSERBASE_API_KEY, BROWSERBASE_PROJECT_ID saved: add them in Settings → Computers." });
-  assert.equal("refused" in (await resolve({ kind: "sandbox", provider: "daytona" }, 2, scratch(), { daytona: { DAYTONA_API_KEY: "dk" } })), false, "DAYTONA_API_URL is optional");
+  assert.equal("refused" in (await resolve({ kind: "desktop", provider: "orgo" }, 2, scratch(), { orgo: { ORGO_API_KEY: "ok" } })), false, "ORGO_WORKSPACE_ID is optional");
 });
 
 test("start: a mounted desktop launches with the run's folder as its mount and only its declared keys, and runTools gives the shell, the background tools and the desktop's", async () => {
@@ -125,35 +130,32 @@ test("start: a mounted desktop launches with the run's folder as its mount and o
   await started.release();
   assert.deepEqual(side.launched.at(-1), ["released", "fake-1"]);
   // A remote sandbox gets its declared keys and nothing else saved beside them.
-  const daytona = claim(root);
-  await (await resolveComputer({ kind: "sandbox", provider: "daytona" }, 2, KIND_REGISTRY, daytona)).start({ workspace: localWorkspace(root), check: { readBackOf } });
-  assert.deepEqual(daytona.launched[0][1].keys, { DAYTONA_API_KEY: "dk" });
+  const modal = claim(root);
+  await (await resolveComputer({ kind: "sandbox", provider: "modal" }, 2, KIND_REGISTRY, modal)).start({ workspace: localWorkspace(root), check: { readBackOf } });
+  assert.deepEqual(modal.launched[0][1].keys, { MODAL_TOKEN_ID: "mi", MODAL_TOKEN_SECRET: "ms" });
 });
 
 test("a sandbox's GPUs: held to its provider's declared GPUs with the mode's folder as their mount, in checkGpu's words, and handed to the launch", async () => {
   const pick = "Change the GPUs or the provider for this agent's computer in Settings → Computers.";
-  assert.deepEqual(await resolve({ kind: "sandbox", provider: "daytona", gpu: { type: "V100", count: 1 } }, 2, scratch(), SAVED, KINDS), {
-    refused: `A Daytona sandbox can't have this agent's GPUs: gpu.type "V100" is not one this provider offers: H100. ${pick}`,
+  assert.deepEqual(await resolve({ kind: "sandbox", provider: "modal", gpu: { type: "V100", count: 1 } }, 2, scratch(), SAVED, GPU_ARCHIL_KINDS), {
+    refused: `A Modal sandbox can't have this agent's GPUs: gpu.type "V100" is not one this provider offers: T4, L4, A10, L40S, A100, A100-40GB, A100-80GB, RTX-PRO-6000, H100, H200, B200, B300. ${pick}`,
   });
-  // No GPU computer mounts Mode 2's Archil folder yet (no FUSE): refused in words that say why and what to use instead.
-  // Each provider's own reason, from its descriptor.
-  const noFolder = (label) =>
-    ({
-      Daytona: "A Daytona GPU computer can't mount this run's folder: Daytona's GPU runtime gives it no /dev/fuse. Use a GPU computer from the library, or this sandbox without a GPU.",
-      Modal: "A Modal GPU computer can't mount this run's folder yet: Archil's FUSE mount isn't proven on Modal's gVisor runtime (#2279). Use a GPU computer from the library, or this sandbox without a GPU.",
-    })[label];
-  assert.deepEqual(await resolve({ kind: "sandbox", provider: "daytona", gpu: { type: "H100", count: 1 } }, 2, scratch(), SAVED, KINDS), { refused: noFolder("Daytona") });
-  assert.deepEqual(await resolve({ kind: "sandbox", provider: "modal", gpu: { type: "T4", count: 1 } }, 2, scratch(), SAVED, KINDS), { refused: noFolder("Modal") });
+  // No GPU computer mounts Mode 2's Archil folder yet (no FUSE): refused in words that say why and what to use instead,
+  // the provider's own reason from its descriptor. Daytona takes no Archil mount at all, so its refusal is the mount's.
+  assert.deepEqual(await resolve({ kind: "sandbox", provider: "modal", gpu: { type: "T4", count: 1 } }, 2, scratch(), SAVED, KINDS), {
+    refused: "A Modal GPU computer can't mount this run's folder yet: Archil's FUSE mount isn't proven on Modal's gVisor runtime (#2279). Use a GPU computer from the library, or this sandbox without a GPU.",
+  });
+  assert.deepEqual(await resolve({ kind: "sandbox", provider: "daytona", gpu: { type: "H100", count: 1 } }, 2, scratch(), SAVED, KINDS), { refused: DAYTONA_NO_FOLDER });
   assert.match((await resolve({ kind: "sandbox", provider: "docker", gpu: { type: "T4", count: 1 } }, 1, scratch(), SAVED, KINDS)).refused, /^A Docker sandbox can't have this agent's GPUs: this provider offers no GPU/);
   const root = scratch();
   const side = claim(root);
-  // A GPU computer that takes the Archil mount (a GPU snapshot with root and the Archil client) is handed its GPU.
-  const resolved = await resolveComputer({ kind: "sandbox", provider: "daytona", gpu: { type: "H100", count: 1 } }, 2, GPU_ARCHIL_KINDS, side);
-  assert.deepEqual(shape(resolved), { kind: "sandbox", provider: "daytona", mounts: true, ports: ["files", "exec", "processes"] });
+  // A GPU computer that takes the Archil mount is handed its GPU.
+  const resolved = await resolveComputer({ kind: "sandbox", provider: "modal", gpu: { type: "H100", count: 1 } }, 2, GPU_ARCHIL_KINDS, side);
+  assert.deepEqual(shape(resolved), { kind: "sandbox", provider: "modal", mounts: true, ports: ["files", "exec", "processes"] });
   await resolved.start({ workspace: localWorkspace(root), check: { readBackOf } });
   assert.deepEqual(side.launched[0][1].gpu, { type: "H100", count: 1 });
   const plain = claim(root);
-  await (await resolveComputer({ kind: "sandbox", provider: "daytona" }, 2, KINDS, plain)).start({ workspace: localWorkspace(root), check: { readBackOf } });
+  await (await resolveComputer({ kind: "sandbox", provider: "modal" }, 2, KINDS, plain)).start({ workspace: localWorkspace(root), check: { readBackOf } });
   assert.equal("gpu" in plain.launched[0][1], false, "no GPUs asked, none handed");
 });
 
@@ -195,7 +197,7 @@ test("start: a desktop launched with no hello is refused and released: its ports
 });
 
 test("start: a Docker launch that fails where no daemon answers is refused in the one wording (as Settings → Computers and the run's start say); with a daemon, in the launch's own words", async () => {
-  const NO_DOCKER = "No Docker on this server: Render and most hosted services run none. A vendor sandbox (Daytona, Modal, E2B or Agent37) needs Archil turned on in Settings → Workspace.";
+  const NO_DOCKER = "No Docker on this server: Render and most hosted services run none. A vendor sandbox (Modal, E2B or Agent37) needs Archil turned on in Settings → Workspace.";
   const failing = (daemon) => ({ keysOf: async () => ({}), answers: async () => false, daemon, launch: async () => { throw new Error("cannot ask Docker its architecture (docker version): Cannot connect to the Docker daemon"); } });
   const start = async (side) => (await resolveComputer({ kind: "sandbox", provider: "docker" }, 1, KINDS, side)).start({ workspace: localWorkspace(scratch()), check: { readBackOf } });
   await assert.rejects(start(failing(async () => ({ up: false, absent: true, reason: "exit 1" }))), (error) => error.code === "computer_unavailable" && error.message === NO_DOCKER);
@@ -210,7 +212,7 @@ test("runShellOf, read off the setting, is the shell runHands gives the run over
     [{ kind: "none" }, 1, "none"],
     [{ kind: "none" }, 2, "local"],
     [{ kind: "sandbox", provider: "docker" }, 1, "computer"],
-    [{ kind: "sandbox", provider: "daytona" }, 2, "computer"],
+    [{ kind: "sandbox", provider: "modal" }, 2, "computer"],
     [{ kind: "desktop", provider: "docker" }, 1, "computer"],
     [{ kind: "desktop", provider: "e2b" }, 1, "none"],
     [{ kind: "desktop", provider: "e2b" }, 2, "computer"],
@@ -219,6 +221,11 @@ test("runShellOf, read off the setting, is the shell runHands gives the run over
     [{ kind: "phone", provider: "phone-harness" }, 2, "local"],
     [{ kind: "browser", provider: "browserbase" }, 1, "none"],
     [{ kind: "browser", provider: "browserbase" }, 2, "local"],
+    // exec false: the agent gets no shell and starts no program, whether or not its desktop could mount the folder.
+    [{ kind: "desktop", provider: "docker", exec: false }, 1, "none"],
+    [{ kind: "desktop", provider: "e2b", exec: false }, 2, "none"],
+    [{ kind: "desktop", provider: "orgo", exec: false }, 2, "none"],
+    [{ kind: "phone", provider: "phone-harness", exec: false }, 2, "none"],
   ];
   for (const [setting, mode, shell] of table) {
     const label = `${setting.kind} ${setting.provider ?? ""} in Mode ${mode}`;
@@ -231,7 +238,8 @@ test("runShellOf, read off the setting, is the shell runHands gives the run over
     await started.release();
   }
   assert.deepEqual(new Set(table.map(([setting]) => setting.kind)), new Set(Object.keys(KIND_REGISTRY.SETTING_KINDS)), "every setting kind is in the table");
-  for (const [setting, mode] of [[{ kind: "sandbox", provider: "daytona" }, 1], [{ kind: "sandbox", provider: "docker" }, 2], [{ kind: "laptop", provider: "docker" }, 1], [{ kind: "desktop" }, 2], [{ kind: "phone", provider: "nokia" }, 2]]) {
+  assert.equal((await resolve({ kind: "desktop", provider: "docker", exec: false }, 1)).mounts, false, "a desktop whose agent has no exec is never given the run's folder");
+  for (const [setting, mode] of [[{ kind: "sandbox", provider: "daytona" }, 1], [{ kind: "sandbox", provider: "daytona" }, 2], [{ kind: "sandbox", provider: "docker" }, 2], [{ kind: "laptop", provider: "docker" }, 1], [{ kind: "desktop" }, 2], [{ kind: "phone", provider: "nokia" }, 2]]) {
     assert.ok("refused" in (await resolve(setting, mode)), `${setting.kind} in Mode ${mode} is refused`);
     assert.equal(runShellOf(setting, mode, KIND_REGISTRY), "none", `a refused setting runs nothing: ${setting.kind} ${setting.provider ?? ""} in Mode ${mode}`);
   }
