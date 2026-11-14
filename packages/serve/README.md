@@ -2471,12 +2471,16 @@ Open the link the server prints, once, in a browser. `/` is the console (`apps/c
 server's own origin, under a CSP that allows that origin only, but for the provider icons on the Keys page (below):
 
 - **Mission Control**: the store's counts, imported history, analytics and the latest runs, available before the first
-  server-run agent and without a model-provider key. Its introduction is dismissible. Import agents and Query use
+  server-run agent and without a model-provider key. Its introduction is dismissible. Connect agent and Query use
   the coding-agent selector; the page refreshes when you return from your coding agent.
 - **Agents**: **Build** opens a description composer and local starter templates; **Connected agents** lists definitions,
   with archived ones behind **Archived**. Build, edit and run actions share the remembered coding-agent dropdown,
   including **API playground**. Choosing a template prepares its full definition without creating or running it.
   Each agent opens an overview beside its runs, versions and supported workflow, learning and analytics tabs.
+- **Learning Dojo** (`#/dojo`): learning across connected agents, read from this server. It shows retained notes,
+  learned skills and workflow drafts, pending reviews, and recent changes with their source runs. Open an agent's
+  Learning tab to inspect its knowledge, enable learning, or review a pending change. Counts say when a read is
+  incomplete; missing results are not shown as zero.
 - **API playground**: create an agent with `POST /v2/agents`, edit its definition with
   `PUT /v2/agents/{id}/definition`, query runs with `GET /v2/runs` (or one agent's runs), or start a run on the revision
   you pick and follow it live. Query links retain the agent, state and archive filters. Build descriptions and
@@ -2491,6 +2495,11 @@ server's own origin, under a CSP that allows that origin only, but for the provi
   or **Sign in** with OAuth), **Preview** its tools and protocol, then **Save**; each saved one with its tool count and
   its credential's state, **Refresh**, **Change** (a credential left empty keeps the saved one) and **Delete**. An
   agent's Tools step lists each saved server's tools; a box ticked grants `mcp:<server>/<tool>`.
+
+A run that reports learning also has a **Learning result** panel: the outcome, the grader's reasons for keeping or
+rejecting each proposed item, validation problems, seed and merge revisions, and reported grading usage. Its changed
+files remain available beside the result. The agent's Learning tab refreshes after returning to the console and
+while visible, without replacing an open edit or review.
 
 Its files (`index.html`, and Vite's hashed files under `/assets/`) are public and hold no data: everything it shows
 comes through `/v2`. With accounts on (the default) the console asks for the owner's password
@@ -2551,6 +2560,20 @@ token still works for scripts meanwhile). Serve it over https where you can: on 
 cookie to every server on the same host name, whatever its port, so another app on that host could read it.
 
 ## Importing your sessions
+
+For completed history on another machine, use **Connect agent → Another machine** with **History only** scope.
+The matching source connector previews the selected project and runtime, then uploads only with the source
+operator's approval and a destination owner grant that permits history. It starts no execution worker or paid task.
+See [the remote history guide](../../docs/native-agents.md#import-selected-history). Imports remain history, not live
+connections or automatic learning.
+
+The separate local-store CLI importer below requires an approved maintenance window. Verify the source machine,
+this server's actual data directory, store configuration, seal key and supervisor without exposing credentials.
+Preview the scope with a dry run and inspect active work before stopping the existing server and runners through
+their supervisor. Import into the same store, then restart and verify that service, including after an import failure.
+Never bypass the store lock. This local-store operation has no server endpoint that reads sessions from the browser's
+machine; importing into a different local store does not populate a remote console. Build, edit, run, query and
+connection handoffs use the shared coding-agent selector and target this server's matching skill, MCP endpoint and API.
 
 `agentrun-serve import --data DIR` reads the Claude Code, Codex and pi sessions in your own home (`~/.claude/projects`,
 `~/.codex/sessions`, `~/.pi/agent/sessions`) into the data directory, once. Each project folder becomes an agent, with its
@@ -2637,6 +2660,17 @@ Learning is off unless an agent's definition says `learning: true` (an agentic o
 definition that sets it keeps it on its revision, `false` included, and an edit that leaves it out keeps the agent's; one
 that never sets it stores nothing, so its revision id is the one it had before the switch. The server's `--learning off`
 turns learning off for every run it starts, whatever the agent says.
+
+The console uses this existing loop: run, reflect, validate and grade the proposal, retain accepted knowledge, then
+seed later runs from that knowledge. It reads `GET /v2/agents/{id}/learning` for the agent's retained knowledge and
+history, and `GET /v2/runs/{id}/learning` and its `/diff` for an individual result. Observation requires no model key;
+producing new learning requires an agentic run through this server with learning enabled and a configured model.
+
+Importing Claude Code, Codex or pi session history does not replay learning or connect a live learning stream. A
+run made directly in an external harness needs that harness to persist compatible learning results through a host
+integration before the console can display them. Learning Dojo shows this server's actual reflection results, not inferred
+training scores from imported conversations. Before/after cost and duration are observations, not an accuracy
+evaluation.
 
 An agent that learns has a learning folder, `learning/` in its folder on the disk (`DATA/disk/agents/<key>/learning/`), in Claude Code's
 auto-memory format:

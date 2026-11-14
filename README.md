@@ -134,7 +134,7 @@ reviewed checkout. The published observation-only CLI does not include this remo
 3. **See the result.** For **History only**, open Runs and check the imported conversations and counts; no worker
    or model job is started. For a **live connection** or **Both**, open the connected agent, verify its setup, and
    start a job. Keep a remote source worker online. Optionally turn **Self-improving** On to let completed jobs
-   propose notes and skills. Inspect what passes checking and grading in the agent's Learning tab, then start a fresh run to
+   propose notes and skills. Inspect what passes checking and grading in Learning Dojo, then start a fresh run to
    use it. Reflection and grading add model usage.
 
 History import brings selected completed conversations into Runs without executing them or automatically training

@@ -13,7 +13,10 @@ import { pick } from "@/test/picker";
 
 // Mission Control is the first page: the bare address and the old start page's both open it, so no link dead-ends.
 describe("route", () => {
-
+  it("opens Learning Dojo without changing per-agent learning links", () => {
+    expect(route("#/dojo")).toEqual({ section: "dojo" });
+    expect(route("#/agents/researcher/learning")).toEqual({ section: "agents", agent: "researcher", tab: "learning" });
+  });
   it("opens Mission Control for the bare address and the old start page", () => {
     for (const h of ["", "#", "#/", "#/start"]) expect(route(h).section, h).toBe("mission");
   });
