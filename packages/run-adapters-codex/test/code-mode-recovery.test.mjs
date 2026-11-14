@@ -171,6 +171,13 @@ async function gateParkedExec(gate, repair = 'note') {
     const recovered = mode.repairUnnoted([line]);
     return { ran, asked, recovered, items: injected, state: () => next.state() };
   }
+  if (repair === 'yielded') {
+    // The exec had yielded (its "Script running" output is in the rollout): what dangles is the model's `wait` on its cell.
+    const wait = { callId: 'call_wait_1', name: 'wait', type: 'function_call', arguments: JSON.stringify({ cell_id: '1' }) };
+    const items = [{ type: 'function_call_output', call_id: wait.callId, output: '' }];
+    const recovered = mode.recoverItems(items, [wait], [], since, true);
+    return { ran, asked, recovered, items, state: () => next.state() };
+  }
   const items = [{ type: 'custom_tool_call_output', call_id: EXEC, output: '' }];
   const recovered = mode.recoverItems(items, [{ callId: EXEC, name: 'exec', type: 'custom_tool_call' }], [], since, true);
   return { ran, asked, recovered, items, state: () => next.state() };
@@ -189,6 +196,23 @@ test("a nested call the gate parked and the person denied is never run: the exec
   const { ran, recovered, items } = await gateParkedExec(async () => ({ deny: 'Denied: not now.' }));
   await recovered;
   assert.deepEqual(ran, [], 'never run');
+  assert.match(items[0].output, /\n1\. mcp_fake__add waited for a person's approval, then: "Denied: not now\."\. It did not run\./);
+});
+
+test("a nested call the gate parked after its exec yielded runs once on the person's allow, and the model's pending wait on the cell carries its result", async () => {
+  const { ran, asked, recovered, items } = await gateParkedExec(async () => 'allow', 'yielded');
+  await recovered;
+  assert.deepEqual(asked, ['exec-1'], 'asked about under its own id');
+  assert.deepEqual(ran, [{ a: 2, b: 3 }], 'it ran once');
+  assert.equal(items[0].type, 'function_call_output');
+  assert.match(items[0].output, /^The session stopped while waiting on cell 1; that cell's script was cut off\./);
+  assert.match(items[0].output, /\n1\. mcp_fake__add waited for a person's approval, then ran: "5"\. Its effect is done; it was not run again\./);
+});
+
+test("a nested call the gate parked after its exec yielded and the person denied is never run: the wait's output carries the refusal", async () => {
+  const { ran, items, recovered } = await gateParkedExec(async () => ({ deny: 'Denied: not now.' }), 'yielded');
+  await recovered;
+  assert.deepEqual(ran, []);
   assert.match(items[0].output, /\n1\. mcp_fake__add waited for a person's approval, then: "Denied: not now\."\. It did not run\./);
 });
 
