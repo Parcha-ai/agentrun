@@ -12,7 +12,7 @@
     "changes": "Instruction is the source's goal, word for word. The source's invoice is an 82,787-byte LaTeX-made PDF (tasks/definitions/native/assets/invoice.pdf); ours is a one-page text PDF in Courier with the same text and figures, typed out again so it can travel inline in an exec argument (setup adds the cross-reference table). The source's printed subtotal (85,100.00) is not the sum of its line items (84,100.00); we kept the figures as printed. The source's key, 104417.7, is the printed total due (102,120.00) plus 1.5% a month for 45 days (2.25%); the same rule applied to the line items' sum with 20% VAT gives 103,190.70, and the check takes either. The source parsed the answer as a number after dropping commas; ours takes the number with or without thousands commas and a leading $, and trailing zeros. The source reset Chrome first; this port doesn't, and the source's own check reads only the answer. The answer is the agent's final answer, so there is no oracle."
   },
   "tags": ["files", "pdf", "answer", "math"],
-  "needs": { "os": "android", "kind": "phone", "apps": ["com.google.android.documentsui", "com.android.documentsui", "com.google.android.apps.nbu.files", "com.sec.android.app.myfiles", "com.google.android.apps.docs"] },
+  "needs": { "os": "android", "kind": "phone", "apps": [["com.google.android.documentsui", "com.android.documentsui", "com.google.android.apps.nbu.files", "com.sec.android.app.myfiles", "com.google.android.apps.docs"]] },
   "setup": [
     {
       "method": "exec.run",
