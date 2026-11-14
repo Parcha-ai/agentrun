@@ -1,4 +1,3 @@
-import { agentInputOf, requiresFields, typedInputFrom } from "./inputForm";
 import type { Run } from "./v2";
 
 // What Mission Control's "Needs you" strip reads from the runs lists: the choices a question offers, the failures
@@ -59,26 +58,15 @@ export function ago(iso: string, now: number): string {
   return `${Math.floor(s / 86_400)} days`;
 }
 
-/** The longest text a timeline row keeps: a longer one keeps its start and ends in "..." (the run timeline's text cap). */
-const TIMELINE_TEXT_CAP = 2000;
-
-/** The start of "Run again": the run's whole first message, with its effort and its spend cap, or why it can't be
- *  started again from here. A workflow run takes typed input, and a first message the timeline cut would start a
- *  shortened task: both are refused. `inputSchema`: the agent's input_schema, when it has one: its run's first message
- *  carries its typed fields in an `Input:` block, read back here (typedInputFrom); one with no block is its message
- *  alone, unless the schema requires another field, when it is refused rather than started without it. */
-export function rerunBody(run: Run, firstMessage: string | null | undefined, inputSchema?: unknown): { body: { input: Record<string, unknown>; effort?: string; max_cost_usd?: number } } | { refusal: string } {
+/** The start of "Run again", from the run's read (a list's run carries no input): its input as the read serves it, whole,
+ *  and its files, with its effort and its spend cap; or why it can't be started again from here: a workflow run starts
+ *  from its agent's page, and a run whose read serves no input (withheld, or one the server can't serve exactly as it was
+ *  given) has none to send: never an altered one. */
+export function rerunBody(run: Run): { body: { input: Record<string, unknown>; file_ids?: string[]; effort?: string; max_cost_usd?: number } } | { refusal: string } {
   if (run.kind === "workflow") return { refusal: `"${run.title}" is a workflow run: start it again from its agent's page` };
-  if (!firstMessage) return { refusal: `"${run.title}": its first message could not be read` };
-  if (firstMessage.length >= TIMELINE_TEXT_CAP && firstMessage.endsWith("...")) return { refusal: `"${run.title}": its first message is longer than the timeline keeps; start it again from its agent's page` };
-  // A run given files has a line after its first message naming them (serve's run manifest). A run started again takes
-  // only a message, and the run's read doesn't carry its files' ids, so it would start without them: refused instead.
-  if (/\n\nFiles for this run: [^\n]*$/.test(firstMessage)) return { refusal: `"${run.title}" was given files, which a run started again can't take along: start it again from its agent's page with them` };
-  // Only a schema with fields besides the message has a block to read: another agent's message is its own, whole.
-  const typed = agentInputOf(inputSchema).kind === "message" ? null : typedInputFrom(firstMessage);
-  if (!typed && requiresFields(inputSchema)) return { refusal: `"${run.title}": its typed input could not be read back from its first message; start it again from its agent's page` };
+  if (!run.input) return { refusal: `"${run.title}": its input can't be read back exactly as it was given; start it again from its agent's page` };
   const cap = run.cost?.cap_usd;
-  return { body: { input: typed ?? { content: firstMessage }, ...(run.effort ? { effort: run.effort } : {}), ...(typeof cap === "number" ? { max_cost_usd: cap } : {}) } };
+  return { body: { input: run.input, ...(run.file_ids?.length ? { file_ids: run.file_ids } : {}), ...(run.effort ? { effort: run.effort } : {}), ...(typeof cap === "number" ? { max_cost_usd: cap } : {}) } };
 }
 
 /** Calls `read` now, and again `every` ms after each read has settled (landed or failed), never two at once: an older

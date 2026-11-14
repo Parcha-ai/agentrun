@@ -102,7 +102,7 @@ test("the raise a refusal names is above the cap by more than a float's tail, a 
 test("least_cap_usd under each mode admits the refused request at it, and a cent under refuses it", async () => {
   const previous = { model: SONNET.id, cachedTokens: 90_000, inputTokens: 10_000, boundTokens: 100_000, endedAt: Date.parse("2026-11-08T06:00:00Z") - 1_000 };
   for (const mode of ["expected", "strict"]) {
-    const ask = () => modelRequest(SONNET, 100_000, 4_096, { previous });
+    const ask = () => modelRequest(SONNET, 100_000, 4_096, { recent: [previous] });
     const refusal = await refusalOf(capOn(0.01, { mode }).cap.admit(ask()));
     await capOn(refusal.figures.leastCapUsd, { mode }).cap.admit(ask());
     await assert.rejects(capOn(refusal.figures.leastCapUsd - 0.01, { mode }).cap.admit(ask()), CapRefused, mode);

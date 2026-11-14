@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { seal } from "../dist/sealing.js";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
+import { registryPin } from "./store-helpers.mjs";
 
 const { openSqliteStore } = await import("../dist/store/index.js");
 const { startRunner } = await import("../dist/runner/runner.js");
@@ -100,7 +101,7 @@ test("a CLI harness's MCP call meets the per-call App check too: an App disconne
     await server.triggerSettings.put({ adapter: "github", scope: "server", field, sealed: seal(KEY, Buffer.from(value, "utf8"), `trigger_settings|github|server|${field}`).toString("base64") });
   }
   await server.mcp.put({ name: "gh", url: fake.url, auth: "github_app", tools: [ADD], sealed: null });
-  await server.agents.create({ id: "agent-1", name: "Cli" }, { id: "rev-1", kind: "agentic", body: {} });
+  await server.agents.create({ id: "agent-1", name: "Cli" }, { id: "rev-1", kind: "agentic", body: {}, mcpPin: await registryPin(server) });
   await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
   const seen = {};
   const work = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-github-app-cli-work-"));

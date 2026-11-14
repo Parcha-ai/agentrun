@@ -22,6 +22,7 @@ import { storeOn as newStore } from "./store-helpers.mjs";
 import { withToolSearch } from "./fixtures/claude-tool-search.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { startFakeOAuth } from "./fixtures/fake-oauth-server.mjs";
+import { stranger } from "./fixtures/stranger.mjs";
 
 const TOOLS = ["add", "slow_write", "delete_thing", "paid"];
 /** The owner's sign-in phrase, made up for these tests. */
@@ -543,7 +544,7 @@ async function storeOn(t, key, net) {
 async function target(t) {
   const hits = [];
   const path = `/internal/admin-${randomBytes(8).toString("hex")}`;
-  const http = createServer((req, res) => (req.url?.startsWith(path) && hits.push(req.url), res.writeHead(200, { "content-type": "application/json" }).end("{}")));
+  const http = createServer((req, res) => stranger(req, res, { own: (at) => at.startsWith(path) }) || (hits.push(req.url), res.writeHead(200, { "content-type": "application/json" }).end("{}")));
   await new Promise((resolve) => http.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve) => (http.close(resolve), http.closeAllConnections())));
   return { url: `http://127.0.0.1:${http.address().port}${path}?op=x`, hits };
@@ -634,7 +635,7 @@ test("a sign-in starts on the address the authorization server sends the browser
 
 test("the default network dials the address it is given, whatever the name: a name no resolver knows reaches the checked address", async (t) => {
   const heard = [];
-  const http = createServer((req, res) => (heard.push(req.headers.host), res.writeHead(200, { "content-type": "application/json" }).end('{"ok":true}')));
+  const http = createServer((req, res) => stranger(req, res) || (heard.push(req.headers.host), res.writeHead(200, { "content-type": "application/json" }).end('{"ok":true}')));
   await new Promise((resolve) => http.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve) => (http.close(resolve), http.closeAllConnections())));
   const { port } = http.address();
@@ -659,7 +660,7 @@ async function harnessServe(t, harness) {
   const standIn = join(await scratch(t), "codex-stand-in.mjs");
   await copyStandIn(standIn);
   const gateway = createServer(async (req, res) => {
-    if (!req.url?.startsWith("/v1/")) return void res.writeHead(404).end();
+    if (stranger(req, res, { own: (path) => path.startsWith("/v1/") })) return;
     let body = "";
     for await (const chunk of req) body += chunk;
     const text = JSON.parse(body || "{}").input?.[0]?.content?.[0]?.text ?? "";
@@ -867,7 +868,7 @@ test("a sign-in whose endpoint's name lookup outlives the request's time says th
 /** A loopback service on `host` that counts what reaches it; undefined where this machine can't listen there. */
 async function targetOn(t, host) {
   const hits = [];
-  const http = createServer((req, res) => (hits.push(req.url), res.writeHead(200, { "content-type": "application/json" }).end("{}")));
+  const http = createServer((req, res) => stranger(req, res) || (hits.push(req.url), res.writeHead(200, { "content-type": "application/json" }).end("{}")));
   const listening = await new Promise((resolve) => http.once("error", () => resolve(false)).listen(0, host, () => resolve(true)));
   if (!listening) return undefined;
   t.after(() => new Promise((resolve) => (http.close(resolve), http.closeAllConnections())));

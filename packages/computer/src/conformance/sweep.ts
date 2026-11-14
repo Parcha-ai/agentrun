@@ -6,8 +6,8 @@
 //
 // --before records into <file> the id of every machine the vendor lists with the adapter's label agentrun.computer=1.
 // --after lists them again, deletes every one whose id is not in <file> and that carries a conformance run's label
-// (agentrun.conformance, RUN_LABEL), then reads each of those back until the vendor no longer has it and no longer lists
-// it, up to 60 s each, and prints one JSON line, {"swept":n,"gone":m,"stillThere":[ids],"leftAlone":k}: swept is every
+// (agentrun.conformance, RUN_LABEL), then reads each of those back by get until the vendor no longer has it, up to 60 s
+// each, and prints one JSON line, {"swept":n,"gone":m,"stillThere":[ids],"leftAlone":k}: swept is every
 // conformance machine it found that was not there before, gone + stillThere.length = swept, and leftAlone counts the new
 // labelled machines with no conformance label, which another user of the account made during the run: never touched. A
 // machine in <file> is never touched either: no call names it, and a before file of another provider is refused, as is
@@ -23,7 +23,7 @@ import { COMPUTER_LABEL } from "../drift.js";
 import { isCommand } from "../entry.js";
 import type { MachineHost } from "../host.js";
 import { hostCall } from "../hosted/process.js";
-import { NAME_LABEL, settleGone } from "../hosted/provider.js";
+import { foundBy, listedBy, NAME_LABEL, settle } from "../hosted/provider.js";
 import { providerModule } from "../providers.js";
 import { ok, type Result } from "../result.js";
 import { RUN_LABEL } from "./runner.js";
@@ -59,7 +59,7 @@ export interface SweepMachinesOptions {
  * vendor refused is the error, with nothing deleted.
  */
 export async function sweepMachines(host: MachineHost, { labels = {}, before = new Set(), waitMs = 60_000, pollMs = 2_000, requestMs = 30_000, listMs = 60_000, onWords = () => {} }: SweepMachinesOptions = {}): Promise<Result<SweepCounts>> {
-	const listed = await hostCall(host, "the listing", (ctx) => host.list({ ...labels, [COMPUTER_LABEL]: "1" }, ctx), listMs);
+	const listed = await foundBy(host, "the listing", { ...labels, [COMPUTER_LABEL]: "1" }, { listMs, requestMs });
 	if (!listed.ok) return listed;
 	const added = listed.value.filter((machine) => !before.has(machine.id));
 	// Only a conformance run's machines: one another user of the account made during the run is not this sweep's.
@@ -69,11 +69,11 @@ export async function sweepMachines(host: MachineHost, { labels = {}, before = n
 		const deleted = await hostCall(host, `the delete of ${machine.id}`, (ctx) => host.delete(machine.id, ctx), requestMs);
 		if (!deleted.ok && deleted.error.code !== "not_found") onWords(`${machine.id} was not deleted: ${deleted.error.message}`);
 	}
-	// Each read back on its own, at once: gone once the vendor no longer has it and its listing no longer shows it.
+	// Each read back on its own, at once: gone once get reads it gone (settle).
 	const gone = await Promise.all(
 		fresh.map(async (machine) => {
 			const name = machine.labels[NAME_LABEL] ?? machine.id;
-			const settled = await settleGone(host, { id: machine.id, name }, { requestMs, listMs, pollMs, goneMs: waitMs });
+			const settled = await settle(host, { id: machine.id, name }, { requestMs, pollMs, goneMs: waitMs });
 			if (!settled.ok) onWords(`${machine.id} is still there after ${waitMs / 1000} s: ${settled.error.message}`);
 			return settled.ok;
 		}),
@@ -212,7 +212,7 @@ export async function main(argv: string[], io: SweepIo = {}): Promise<number> {
 		return 2;
 	}
 	if (before === undefined) {
-		const listed = await hostCall(host, "the listing", (ctx) => host.list({ [COMPUTER_LABEL]: "1" }, ctx), 60_000);
+		const listed = await listedBy(host, "the listing", { [COMPUTER_LABEL]: "1" }, 60_000);
 		if (!listed.ok) {
 			await write(stderr, `listing the machines carrying ${COMPUTER_LABEL}=1 failed, so nothing was recorded: ${listed.error.message}\n`);
 			return 2;

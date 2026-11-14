@@ -1,7 +1,7 @@
 {
   "$schema": "../../../schema/task.schema.json",
   "id": "linux.editor.new-note",
-  "version": 1,
+  "version": 2,
   "title": "Write a three-line note in Mousepad and save it under a given name",
   "split": "dev",
   "tags": ["editor", "mousepad", "save-dialog"],
@@ -40,7 +40,7 @@
     }
   ],
   "exec": "deny",
-  "instruction": "In Mousepad, write a note with these three lines, in this order, one per line: \"{{note.l1}}\", \"{{note.l2}}\", \"{{note.l3}}\". Save it as {{note.name}}-{{nonce}}.txt in the folder /tmp/computer-bench-{{nonce}}.",
+  "instruction": "In Mousepad, write a note with these three lines, in this order, one per line: \"{{note.l1}}\", \"{{note.l2}}\", \"{{note.l3}}\". Save it as {{note.name}}-{{nonce}}.txt in the folder /tmp/computer-bench-{{nonce}}, and leave Mousepad open.",
   "budget": { "steps": 25, "usd": 1, "wall_s": 300 },
   "checks": [
     {
@@ -49,6 +49,13 @@
       "why": "The saved file holds exactly the three lines in order (leading and trailing blank space aside). After setup the folder is empty, so an agent that does nothing fails.",
       "path": "/tmp/computer-bench-{{nonce}}/{{note.name}}-{{nonce}}.txt",
       "text": { "equals": "{{note.l1}}\n{{note.l2}}\n{{note.l3}}" }
+    },
+    {
+      "id": "saved-in-mousepad",
+      "kind": "exec",
+      "why": "Mousepad saved it: one of Mousepad's windows is titled with the file's name. The agent keeps the files group, so it could write the file with files.write and never touch Mousepad; that leaves Mousepad's window titled Untitled, and this fails.",
+      "argv": ["sh", "-c", "export DISPLAY=:$(ls /tmp/.X11-unix | sed -n s/^X//p | head -n1); m=$(xdotool search --onlyvisible --class mousepad); for w in $(xdotool search --onlyvisible --name '{{note.name}}-{{nonce}}\\.txt'); do printf '%s\\n' \"$m\" | grep -qx \"$w\" && exit 0; done; exit 1"],
+      "timeoutMs": 20000
     }
   ],
   "teardown": [

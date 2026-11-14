@@ -10,7 +10,7 @@
 // file within CAPS.file, a README within CAPS.readme), and the standing instructions cut to GRADE_CAPS.instructions.
 // Whatever the folder holds, it stays under GRADE_CAPS.prompt, well below what a completion takes.
 import { createHash } from "node:crypto";
-import { CAPS, checkNote } from "./check.js";
+import { CAPS, checkNote, noteBytes } from "./check.js";
 import { hiddenCharacter } from "./invisible.js";
 import { INDEX_FILE, INDEX_LINES, indexLine, type LearnedNote, NOTE_FILE, parseNoteFile, runMarkedRisky, withoutRiskyMark } from "./notes.js";
 import { draftMcpTools, learnedFront, learnedName, learnedPlace } from "./skills.js";
@@ -141,7 +141,7 @@ export type GradeInput = {
 /** What bounds the grader's prompt, in UTF-16 units, as a completion counts them. `prompt` is the most it ever is:
  *  the fixed text, the instructions cut to `instructions`, INDEX_LINES + CAPS.supersedes index lines cut to
  *  `indexLine`, the user's messages (each cut to `askedMessage`, `askedTotal` in all), and CAPS.supersedes superseded and
- *  CAPS.newNotes new notes of at most CAPS.note bytes each, fenced, come to less. `askedTotal` is forty messages at the
+ *  CAPS.newNotes new notes of at most CAPS.note bytes each (and the host's compiled_into line), fenced, come to less. `askedTotal` is forty messages at the
  *  cap: a run's messages are its input and each follow-up, a handful in a real run, so all of them are shown. */
 export const GRADE_CAPS = Object.freeze({ prompt: 200_000, instructions: 16_000, indexLine: 300, askedMessage: 1_000, askedTail: 300, askedTotal: 40_000 });
 
@@ -234,10 +234,10 @@ function checkText(value: unknown, what: string): string {
   return value;
 }
 
-/** A note's text, checked and within the note cap. */
+/** A note's text, checked and within the note cap (the host's compiled_into line on top, check.ts noteBytes). */
 function noteText(note: NoteText, what: string): string {
   const text = checkText(note.text, `${note.file}'s text`);
-  if (Buffer.byteLength(text) > CAPS.note) throw new Error(`${note.file}, ${what}, is over ${CAPS.note} bytes`);
+  if (noteBytes(text) > CAPS.note) throw new Error(`${note.file}, ${what}, is over ${CAPS.note} bytes`);
   return text;
 }
 

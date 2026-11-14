@@ -175,6 +175,9 @@ export interface ClaudeCodeHarnessOptions {
    * none.
    */
   tools?: HostTool[];
+  /** The host's verdict on whether the catalog tools are deferred (SessionSpec.deferCatalog), which turns the CLI's own
+   *  tool search on or off; absent, the tools' names decide (claudeToolSearch). */
+  deferCatalog?: boolean;
   /**
    * Claude Code's own tools, in the VM, on `/workspace`. Default false
    * (tool-less: `tools` are the CLI's only tools). `true`: the pinned
@@ -353,7 +356,7 @@ export const CLAUDE_SAFE_BUILTINS = ['Read', 'Glob', 'Grep', 'LS', 'NotebookRead
  * practice); set either way, so a CLI that changes that default changes nothing here. The session's proxy admits what the
  * CLI sends with it on (anthropicPolicy `toolSearch`).
  */
-export const claudeToolSearch = (toolNames: readonly string[]): 'true' | 'false' => (defersCatalog(toolNames) ? 'true' : 'false');
+export const claudeToolSearch = (toolNames: readonly string[], deferCatalog?: boolean): 'true' | 'false' => ((deferCatalog ?? defersCatalog(toolNames)) ? 'true' : 'false');
 /** The CLI's own tool that finds a deferred tool: it only reads the CLI's list of the session's tools. */
 export const CLAUDE_TOOL_SEARCH = 'ToolSearch';
 
@@ -441,7 +444,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
   const providerTools = options.providerTools ?? [];
   const webSearch = providerTools.includes('web_search');
   /** The CLI's own tool search is on: a run's MCP servers' tools deferred behind its ToolSearch (claudeToolSearch). */
-  const toolSearch = claudeToolSearch(tools.map((tool) => tool.name)) === 'true';
+  const toolSearch = claudeToolSearch(tools.map((tool) => tool.name), options.deferCatalog) === 'true';
   const log = options.log ?? (() => {});
   let sdk: Promise<ClaudeAgentSdk> | undefined;
   const loadSdk = (): Promise<ClaudeAgentSdk> => {

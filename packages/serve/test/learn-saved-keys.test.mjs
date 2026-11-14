@@ -5,13 +5,15 @@
 // learning (learning_proposals) names the problem. (learn-merge's two cases, on the runner path.)
 import assert from "node:assert/strict";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { test } from "node:test";
 import { note } from "./fixtures/faux-learn.mjs";
+import { KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
 import { keptProposal, LEARN, learner, made, objects, repoOf, sleep, started } from "./learn-support.mjs";
 import { follow, scratch, serve, withEnv } from "./support.mjs";
 
+const FAUX_MONID = new URL("./fixtures/faux-monid.mjs", import.meta.url).pathname;
 const SECRET_VALUE = [{ rule: "secret_value", path: "call-monid.md", detail: "it holds a value the host named as secret" }];
 
 /** Run `runId`, completed, and its kept learning once its end-of-run turn is kept. */
@@ -46,14 +48,16 @@ test("a note that holds a key the server saved through its settings API is refus
 
 test("a saved key a run was handed is refused in its notes though the person replaced it while the run lived: the check knows what the claim handed, the grader is never asked", { timeout: 150_000 }, async (t) => {
   const handed = ["not-a-secret", "monid", randomBytes(6).toString("hex")].join("-");
-  const replaced = ["not-a-secret", "monid", randomBytes(6).toString("hex")].join("-");
+  // The replacement is faux monid's own key, which it takes at the PUT's check as it takes the handed one by its digest.
+  const replaced = MONID_KEY;
   const gate = join(await scratch(t), "answer");
   const calls = join(await scratch(t), "calls.jsonl");
-  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), AGENTRUN_TEST_FAUX_CALLS: calls }, ["MONID_API_KEY"]);
-  const server = await serve(t, { learning: "on", faux: LEARN });
+  // The grant is pinned at the save against faux monid's listing, on the saved key (its digest is the one faux accepts).
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), AGENTRUN_TEST_FAUX_CALLS: calls, AGENTRUN_TEST_FAUX_MONID_ACCEPTS: createHash("sha256").update(handed).digest("hex") }, ["MONID_API_KEY"]);
+  const server = await serve(t, { learning: "on", faux: LEARN, fauxMonid: FAUX_MONID });
   const { api, data } = server;
   assert.equal((await api("PUT", "/settings/tool-keys/monid", { values: { MONID_API_KEY: handed } })).status, 204);
-  await made(api, learner("keeper", { tools: ["write", "monid.discover", "monid.inspect", "monid.run"], instructions: `Answer once ${gate} exists.`, plan: [["call-monid.md", note("Call monid", "Call monid on its key", `Call monid with ${handed}.\n`)]] }));
+  await made(api, learner("keeper", { tools: ["write", "monid:faux/person/enrich"], instructions: `Answer once ${gate} exists.`, plan: [["call-monid.md", note("Call monid", "Call monid on its key", `Call monid with ${handed}.\n`)]] }));
   const runId = await started(api, "keeper");
   for (let i = 0; (await api("GET", `/runs/${runId}`)).body.status !== "working"; i++) {
     assert.ok(i < 1200, "the run works");

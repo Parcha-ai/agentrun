@@ -1,4 +1,4 @@
-import { callWords, keptChord, type ComputerStepRow } from "./computer.js";
+import { callsWords, callWords, stepOf, type ComputerStepRow } from "./computer.js";
 import { cut, firstLine, json, list, obj, scrubUrls, str, where, type Obj } from "./util.js";
 
 /** A tool result as a label sees it: its text blocks joined, its `details`, its error flag. */
@@ -15,14 +15,20 @@ export type FoldSpec = {
 const labels = new Map<string, LabelFn>();
 const folds = new Map<string, FoldSpec>();
 const names = new Map<string, string>();
+const saying = new Set<string>();
 
 /** Registers the label of one tool, in the past tense, and with `name` what the tool is called where calls are counted
- *  (a run's analytics). A host adds its own tools here. */
-export function registerLabel(tool: string, label: LabelFn, fold?: FoldSpec, { name }: { name?: string } = {}): void {
+ *  (a run's analytics). `saysFailure`: the label of a call that errored says so itself ("Could not take a screenshot"),
+ *  so its row adds only why. A host adds its own tools here. */
+export function registerLabel(tool: string, label: LabelFn, fold?: FoldSpec, { name, saysFailure }: { name?: string; saysFailure?: true } = {}): void {
   labels.set(tool, label);
   if (fold) folds.set(tool, fold);
   if (name) names.set(tool, name);
+  if (saysFailure) saying.add(tool);
 }
+
+/** Whether `tool`'s label says a call that errored failed (registerLabel's saysFailure). */
+export const saysFailure = (tool: string): boolean => saying.has(tool);
 
 /** A remote MCP server's tool as the harnesses name it, `mcp__<server>__<tool>` (a server's name has no `_`; `hands` is a
  *  harness's own tools'), read `<server> · <tool>`. */
@@ -225,17 +231,10 @@ function actLines(text: string | undefined): Map<number, ActLine> {
   return lines;
 }
 
-/** The step kinds a computer_act step may name (the protocol's UiStep keys). */
-const STEP_KINDS = ["press", "set", "perform", "click", "type", "key", "nav", "scroll", "drag"] as const;
-
-/** A step the model asked for as serve's record keeps it (computer-calls.ts): its kind, the element its answer's line
- *  names, a key step's chord as kept (keptChord: never a lone character), a nav step's place, and whether it was refused.
- *  Its words are then the record's own (stepWords), so the row reads as the step's expanded call and a movie's caption. */
+/** A step the model asked for as serve's record keeps it (stepOf, the element its answer's line names), and whether it
+ *  was refused. Its words are then the record's own, so the row reads as the step's expanded call and a movie's caption. */
 function stepRow(step: Obj, line: ActLine | undefined): ComputerStepRow {
-  const kind = STEP_KINDS.find((name) => name in step) ?? "step";
-  const keys = kind === "key" ? keptChord(step.key) : undefined;
-  const nav = kind === "nav" ? str(step.nav) : undefined;
-  return { do: kind, ...(line?.on ? { on: line.on } : {}), ...(keys ? { keys } : {}), ...(nav ? { nav } : {}), ...(line?.refused !== undefined ? { error: "refused" } : {}) };
+  return { ...stepOf(step, () => line?.on), ...(line?.refused !== undefined ? { error: "refused" } : {}) };
 }
 
 registerLabel(
@@ -255,7 +254,7 @@ registerLabel(
     return callWords({ ...call, ok: true, steps: ran.map((step, index) => stepRow(step, lines?.get(index + 1))), ...(expect === "met" || expect === "unmet" ? { expect } : {}) });
   },
   { many: (n) => `Acted on the computer ${n} times` },
-  { name: "Act on the computer" },
+  { name: "Act on the computer", saysFailure: true },
 );
 // A step the computer refused ends the act there, the answer still a result: the act did not do what it was asked.
 registerOutcome("computer_act", (result) => {
@@ -265,24 +264,34 @@ registerOutcome("computer_act", (result) => {
 
 /** An observation's head, naming the app's id: `state s8 · com.android.settings "Settings" · window "Display" 360×640 pt`. */
 const OBSERVED = /^state \S+ · (\S+)/;
+/** A screen's head on a computer with no ui group, when its apps were listed: `screen 1280×800 px · org.xfce.mousepad in
+ *  front · …`, or `… · no app in front; …` (the surface's screenState). */
+const LISTED = /^screen \S+ px · (?:\S+ in front|no app in front)/;
 registerLabel(
   "computer_observe",
   (a, result) => {
-    // A computer with no ui group answers a screenshot, which its record keeps as one.
-    if (result && !result.isError && !OBSERVED.test(result.text)) return callWords({ method: "screen.shot", started_at: "", ms: 0, ok: true });
+    // A computer with no ui group opens the app named (apps.launch), takes a screenshot and lists the apps to name what is
+    // in front (the surface's screenState): the row names each call, as its call list does.
+    if (result && !result.isError && !OBSERVED.test(result.text)) {
+      const listed = LISTED.test(result.text);
+      const call = (method: string, app?: string) => ({ method, started_at: "", ms: 0, ok: true, ...(app ? { app } : {}) });
+      const app = listed ? str(a.app) : undefined;
+      return callsWords([...(app ? [call("apps.launch", app)] : []), call("screen.shot"), ...(listed ? [call("apps.list")] : [])]);
+    }
     const app = str(a.app) ?? (result && OBSERVED.exec(result.text)?.[1]);
     return callWords({ method: "ui.observe", started_at: "", ms: 0, ok: result?.isError !== true, ...(app ? { app } : {}) });
   },
   { many: (n) => `Looked at the screen ${n} times` },
-  { name: "Look at the computer" },
+  { name: "Look at the computer", saysFailure: true },
 );
-registerLabel("computer_screenshot", () => "Took a screenshot", { many: (n) => `Took ${n} screenshots` }, { name: "Take screenshots of the computer" });
+registerLabel("computer_screenshot", (_a, result) => callWords({ method: "screen.shot", started_at: "", ms: 0, ok: result?.isError !== true }), { many: (n) => `Took ${n} screenshots` }, { name: "Take screenshots of the computer", saysFailure: true });
 registerLabel(
   "computer_script",
-  (a) => {
+  (a, result) => {
     const title = str(a.title)?.replace(/\s+/g, " ").trim();
+    if (result?.isError) return title ? `Could not run the script “${cut(title, 120)}”` : "Could not run a script on the computer";
     return title ? cut(title, 120) : "Ran a script on the computer";
   },
   { many: (n) => `Ran ${n} scripts on the computer` },
-  { name: "Run scripts on the computer" },
+  { name: "Run scripts on the computer", saysFailure: true },
 );

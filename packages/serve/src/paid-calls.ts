@@ -1,5 +1,5 @@
-// A web tool's request to Parallel (its search, web-search.ts; its extract, web-fetch.ts), booked as monid.run's call
-// is (monid.ts): on the run's one ledger (the kernel cap's paid tool calls, RunTools), admitted at the request's price
+// A web tool's request to Parallel (its search, web-search.ts; its extract, web-fetch.ts), booked as a monid endpoint's
+// call is (monid.ts): on the run's one ledger (the kernel cap's paid tool calls, RunTools), admitted at the request's price
 // before it is sent (refused unsent in the cap's words when the cap does not hold it) and settled after at what it
 // charged. A charge is the run's cost, a line of its own on its timeline and /usage's `tools` meter. Every request goes
 // through the run's one Parallel client's `post` (web-fetch.ts), which books it here by the endpoint it asks.
@@ -64,7 +64,8 @@ export type Ledger = {
   paid?: PaidBooking;
   /** The run's pause on the runner (the adapter loop's RunLedger.pause): a paid step of the agent's own that `paid`
    *  refused for room is handed to it, so the run pauses at its next request in the cap's words, as main's paidCall
-   *  pauses by default. A person's take-over books through no paid step (browser-cost.ts personTime) and never pauses. */
+   *  pauses by default. A person's take-over books through no paid step (browser-cost.ts personTime) and never pauses.
+   *  A refusal for good (stopRun) ends the run there instead. */
   pause?: (refusal: LedgerRefusal) => Promise<void>;
 };
 /** A cap refusal as the run's pause reads it: its words, and for room its figures. */
@@ -137,6 +138,14 @@ let paidSeq = 0;
 
 /** The run's one ledger the current call books on (Ledger.paid), when it has one: the runner's. */
 export const paidLedger = (): PaidBooking | undefined => ledgers.getStore()?.paid;
+
+/** Stops the run the current call books in, in `words`: handed to its pause (Ledger.pause) as a cap refusal no raise
+ *  could fix, so the run's next request and every tool call after this one (a script's too) are refused in them, and the
+ *  run ends failed in them, past its cap too, as a cap refusal for good ends it. Its code is the cap's, so the refused
+ *  request reads as the cap's refusal (no model error row of its own). */
+export const stopRun = async (words: string): Promise<void> => {
+  await ledgers.getStore()?.pause?.({ refuse: words, code: SPEND_CAP_REACHED, forGood: true });
+};
 
 /** One paid step on the run's one ledger `paid`, under call `call`: admitted at `holdUsd` (refused unsent: the cap's words,
  *  or why its hold could not be kept), then `run`, then settled at `chargeOf` its outcome (null: at its hold). One refused

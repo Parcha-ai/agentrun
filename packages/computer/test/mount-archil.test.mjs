@@ -5,6 +5,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { PassThrough } from "node:stream";
 import test from "node:test";
 import * as computer from "../dist/index.js";
 
@@ -414,6 +415,55 @@ test("syncingClient: a sync that fails fails the call in words; a call that fail
 	assert.deepEqual(client.methods(), ["files.write", "mount.sync"]);
 });
 
+test("syncingClient: a call the client gave up on at its own timeoutMs (no answer came) answers at once; the sync it starts goes on, and is not waited for", async (t) => {
+	// Review (#2800, PRRT_kwDOUmdVMs63hNMJ): an exec.run the client bounded at its timeoutMs on a hung transport then
+	// waited for a mount.sync over that same transport, which never answers: the caller never got its timeout. A real
+	// DaemonClient over streams no daemon answers, on mock timers: no wall clock.
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const toDaemon = new PassThrough();
+	const fromDaemon = new PassThrough();
+	const written = [];
+	toDaemon.on("data", (chunk) => written.push(...chunk.toString("utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line).method)));
+	const client = new computer.DaemonClient({ readable: fromDaemon, writable: toDaemon });
+	let answered;
+	syncingClient(client)
+		.call("exec.run", { argv: ["sleep", "120"], timeoutMs: 2_000 })
+		.then((result) => (answered = result));
+	t.mock.timers.tick(7_000);
+	for (let i = 0; i < 20; i++) await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(answered?.ok, false, "the timeout reaches its caller while the sync still hangs");
+	assert.equal(answered.error.code, "timeout");
+	assert.match(answered.error.message, /exec\.run had no answer within 7 s/);
+	assert.ok(written.includes("mount.sync"), `the sync was still asked for: ${written.join(", ")}`);
+	client.close();
+});
+
+test("syncingClient: a timeout the daemon answered (the call ran, in part) still waits for the sync, then answers its own error", async () => {
+	// Review (#2800, PRRT_kwDOUmdVMs63hWAq): process.write can answer timeout after part of its input reached a process
+	// that writes into the folder; that answer came over a live transport, so the sync is waited for. Held, no clock.
+	let finish;
+	const held = new Promise((resolve) => {
+		finish = resolve;
+	});
+	const timedOut = fail("timeout", "process.write wrote 3 of 10 bytes before its timeout");
+	const client = {
+		async call(method) {
+			if (method === "mount.sync") return held;
+			return method === "process.write" ? timedOut : ok({});
+		},
+		close() {},
+	};
+	let answered;
+	syncingClient(client)
+		.call("process.write", { id: "p", data: "0123456789" })
+		.then((result) => (answered = result));
+	for (let i = 0; i < 20; i++) await Promise.resolve();
+	assert.equal(answered, undefined, "it waits for the sync");
+	finish(ok({ exitCode: 0 }));
+	for (let i = 0; i < 20; i++) await Promise.resolve();
+	assert.deepEqual(answered, timedOut);
+});
+
 test("syncingClient: coalesced: calls during a sync in flight wait for it, then share one more", async () => {
 	const client = fakeClient({ syncDelay: 30 });
 	const syncing = syncingClient(client);
@@ -513,7 +563,7 @@ test("syncingClient: a caller whose signal fires stops waiting for the sync, in 
 test("archilReadBack: fuse.archil at /workspace with the asked source, under the epoch, exclusive once serve answers; anything else is in words", () => {
 	const line = `${MOUNT.disk}:/${MOUNT.folder}[${MOUNT.region}] /workspace fuse.archil rw,nosuid,nodev 0 0`;
 	const proc = "proc /proc proc rw,hidepid=invisible 0 0";
-	const read = (mounts, { epoch = 3, served = true, recorded = recordedMount(archilLabels(MOUNT)) } = {}) => archilReadBack({ mounts: `${proc}\n${mounts}\n`, epoch, served, recorded });
+	const read = (mounts, { epoch = 3, served = true, recorded = recordedMount({ ...LABELS, ...archilLabels(MOUNT) }) } = {}) => archilReadBack({ mounts: `${proc}\n${mounts}\n`, epoch, served, recorded });
 	assert.deepEqual(read(line), computer.readBackOf(MOUNT, 3));
 	assert.deepEqual(read(line, { served: false }), { ...computer.readBackOf(MOUNT, 3), exclusive: false });
 	assert.deepEqual(read(`${MOUNT.disk}:/${MOUNT.folder} /workspace fuse.archil rw 0 0`), computer.readBackOf(MOUNT, 3), "no region in the source: the recorded one");
@@ -523,13 +573,17 @@ test("archilReadBack: fuse.archil at /workspace with the asked source, under the
 	noToken(read(line), "the read-back");
 });
 
-test("archilLabels and recordedMount: the mount's kind and source as one label, never the token, read back as written", () => {
+test("archilLabels and recordedMount: the mount's kind, disk, region and the folder's agent as one label, never the token; read back whole with the run's label", () => {
 	const labels = archilLabels(MOUNT);
 	assert.deepEqual(Object.keys(labels), [ARCHIL_MOUNT_LABEL]);
+	assert.equal(labels[ARCHIL_MOUNT_LABEL], JSON.stringify({ kind: "archil", disk: MOUNT.disk, region: MOUNT.region, agent: "a1" }));
 	noToken(labels, "the label");
-	assert.deepEqual(recordedMount(labels), { kind: "archil", disk: MOUNT.disk, region: MOUNT.region, folder: MOUNT.folder });
+	assert.deepEqual(recordedMount({ ...LABELS, ...labels }), { kind: "archil", disk: MOUNT.disk, region: MOUNT.region, folder: MOUNT.folder });
+	assert.equal(recordedMount(labels), undefined, "no run label: no folder");
+	assert.equal(recordedMount({ ...LABELS, [ARCHIL_MOUNT_LABEL]: JSON.stringify({ kind: "archil", disk: MOUNT.disk, region: MOUNT.region, folder: MOUNT.folder }) }), undefined, "the folder whole is not a label this provider writes");
+	assert.equal(recordedMount({ ...LABELS, [ARCHIL_MOUNT_LABEL]: JSON.stringify({ kind: "archil", disk: MOUNT.disk, region: MOUNT.region, agent: "a/1" }) }), undefined, "an agent of no folder's shape");
 	assert.equal(recordedMount({}), undefined);
-	assert.equal(recordedMount({ [ARCHIL_MOUNT_LABEL]: "{not json" }), undefined);
+	assert.equal(recordedMount({ ...LABELS, [ARCHIL_MOUNT_LABEL]: "{not json" }), undefined);
 });
 
 test("archilRelease: a final sync through computerd, then checkin as root; nothing mounted is let go already; a failed sync is said, and checkin still runs", async () => {

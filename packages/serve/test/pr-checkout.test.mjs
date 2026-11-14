@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { git, gitHttp, pullRepo } from "./fixtures/git-http.mjs";
+import { stranger } from "./fixtures/stranger.mjs";
 
 const { prCheckout, CHECKOUT_DIR } = await import("../dist/runner/pr-checkout.js");
 const { githubPullOf } = await import("../dist/github.js");
@@ -233,7 +234,7 @@ test("a fetch cut short by the claim's signal (a person's stop) ends at once and
   const dir = await scratch(t);
   // GitHub that never answers: the fetch waits until the signal ends it.
   const asked = [];
-  const silent = createServer((req) => asked.push(req));
+  const silent = createServer((req, res) => stranger(req, res) || asked.push(req));
   await new Promise((resolve) => silent.listen(0, "127.0.0.1", resolve));
   t.after(() => { for (const req of asked) req.socket.destroy(); return new Promise((resolve) => silent.close(resolve)); });
   const { folder, workspace } = await runFolder(dir);

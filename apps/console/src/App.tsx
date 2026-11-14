@@ -526,17 +526,15 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   const answer = async (runId: string, text: string) => {
     try { await sendOnce(answerKeys(runId), runId, text, v2.sendMessage); later(); return null; } catch (e) { return problemOf(e); }
   };
-  // A run is started again with its own whole first message (read from its timeline: a run's read carries no input),
-  // its effort and its spend cap. Each start keeps its key until it lands, so a retry after a lost answer is the same
-  // start; the runs that started are said, so they're never offered again.
+  // A run is started again with the input and files its read serves (a list's run carries none), its effort and its
+  // spend cap. Each start keeps its key until it lands, so a retry after a lost answer is the same start; the runs that
+  // started are said, so they're never offered again.
   const againKeys = useRef(new Map<string, string>()).current;
   const runAgain = async (rs: readonly Run[]) => {
     const started: string[] = [];
     try {
       for (const r of rs) {
-        const first = r.kind === "workflow" ? undefined : (await v2.getTimeline(r.run_id)).rows.find((row) => row.kind === "user_message");
-        // A typed agent's run reads its typed fields back from that message (its agent's input_schema says it has some).
-        const start = rerunBody(r, first?.text, agents?.find((a) => a.agent_id === r.agent_id)?.definition.input_schema);
+        const start = rerunBody(r.kind === "workflow" ? r : await v2.getRun(r.run_id));
         if ("refusal" in start) throw new Error(start.refusal);
         const key = againKeys.get(r.run_id) ?? uuid();
         againKeys.set(r.run_id, key);
@@ -551,9 +549,9 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   };
   // An approval's answer is in the run's state at once (the server keeps it before its 204): the strip reads again now,
   // after a refusal too, which may mean the run moved on.
-  const approve = async (runId: string, approvalId: string, decision: "allow" | "deny", note?: string) => {
+  const approve = async (runId: string, approvalId: string, decision: "allow" | "deny", note?: string, confirmed?: true) => {
     let refused: string | null = null;
-    try { await v2.answerApproval(runId, approvalId, decision, note); } catch (e) { refused = approvalRefusal(e); }
+    try { await v2.answerApproval(runId, approvalId, decision, note, confirmed); } catch (e) { refused = approvalRefusal(e); }
     setNeedsTry((n) => n + 1);
     return refused;
   };
@@ -628,7 +626,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
         : where.section === "settings"
         ? <Settings active={where.settings ?? "keys"} offered={settingsOffered}>
             {where.settings === "tools" ? <ToolsPage v2={v2} choices={choices} gates={gates} harnesses={editorCaps.harnesses} mcp={!!caps?.features?.mcp_client} onSaved={readCaps} onOpen={readCaps} />
-              : where.settings === "mcp" ? <McpServersPage v2={v2} signIn={where.signIn} add={where.add} writable={secretsWritable} whyNot={secretsWhyNot} />
+              : where.settings === "mcp" ? <McpServersPage v2={v2} signIn={where.signIn} add={where.add} writable={secretsWritable} whyNot={secretsWhyNot} choices={choices} />
               : where.settings === "github" ? <GitHubPage v2={v2} returned={where.github} />
               : where.settings === "computers" ? <ComputersPage v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} />
               : where.settings === "workspace" ? <WorkspacePage v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} />

@@ -96,6 +96,35 @@ test("an abort sends $/cancelRequest for that id and returns aborted", async () 
 	client.close();
 });
 
+test("a call whose params carry timeoutMs ends at that bound and the answer's slack when no answer comes: timeout, a cancel sent; a call with none waits", async (t) => {
+	const { client, next, send } = pair();
+	const ANSWER_SLACK_MS = 5_000;
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	let answered;
+	client.call("exec.run", { argv: ["sleep", "60"], timeoutMs: 2_000 }).then((result) => (answered = result));
+	let pinged;
+	client.call("ping", {}).then((result) => (pinged = result));
+	const request = await next();
+	const ping = await next();
+	t.mock.timers.tick(2_000 + ANSWER_SLACK_MS - 1);
+	await tick();
+	assert.equal(answered, undefined, "not yet: the daemon may still answer its own timeout");
+	t.mock.timers.tick(1);
+	await tick();
+	assert.deepEqual(answered, { ok: false, error: { code: "timeout", message: "exec.run had no answer within 7 s (its own timeout of 2 s, and 5 s for the answer to come)" } });
+	assert.deepEqual(await next(), { jsonrpc: "2.0", method: CANCEL_METHOD, params: { id: request.id } });
+	// A late answer to it is dropped; the call with no timeoutMs still waits, and its answer still reaches it.
+	send({ jsonrpc: "2.0", id: request.id, result: { exitCode: 0, stdout: "", stderr: "", timedOut: true, truncated: false } });
+	t.mock.timers.tick(600_000);
+	await tick();
+	assert.equal(pinged, undefined);
+	send({ jsonrpc: "2.0", id: ping.id, result: {} });
+	await tick();
+	assert.deepEqual(pinged, { ok: true, value: {} });
+	client.close();
+	assert.equal((await import("../dist/client.js")).ANSWER_SLACK_MS, ANSWER_SLACK_MS, "the slack a daemon has to answer a call's own timeout");
+});
+
 test("a signal aborted before the call sends nothing", async () => {
 	const { client, written } = pair();
 	const result = await client.call("ping", {}, { signal: AbortSignal.abort() });

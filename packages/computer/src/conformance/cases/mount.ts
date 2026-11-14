@@ -216,7 +216,7 @@ const archilIsolatedDurable = mount(
 		const { ref } = await mounted(t, folder, EPOCH, "mount-archil-isolated-durable");
 		const connected = await t.connect(ref);
 		// isolation.vendor-agent's own check, on this Archil computer: lo alone, refused at the vendor's agent and outside,
-		// and no path unix socket a tool connects to but the computer's own (computerd's, the sync socket).
+		// and no unix socket a tool connects to but the computer's own (computerd's, the sync socket).
 		await assertIsolated(t, connected.client);
 		const nonce = randomBytes(6).toString("hex");
 		const ran = await t.exec(["sh", "-c", `printf '%s\\n' ${nonce} > exec-${nonce}.txt`], { cwd: WORKSPACE }, connected.client);

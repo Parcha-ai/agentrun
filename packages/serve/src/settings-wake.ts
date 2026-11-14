@@ -8,19 +8,22 @@ import { approvalsOf } from "./approvals.js";
 import { answersOf, asksOf } from "./run-view.js";
 import { journalEntries } from "./runner/journal-reader.js";
 import type { Store } from "./store/index.js";
-import { type PermissionSettings, permissionFrom, SHELL_FAMILY } from "./tool-gate.js";
+import { type PermissionSettings, permissionFrom, pinnedEffect, SHELL_FAMILY, type ToolEffect } from "./tool-gate.js";
+import { isMcpName } from "./tool-names.js";
 import type { ToolSettingsMap, ToolSettingsRead } from "./tool-plane.js";
 
-/** The store slice a wake reads and writes: the parked runs, their pinned revisions and journals, and the wake itself. */
-export type WakeStore = Pick<Store, "runs" | "agents" | "readJournal">;
+/** The store slice a wake reads and writes: the parked runs, their pinned revisions, MCP pins and journals, and the wake
+ *  itself. */
+export type WakeStore = Pick<Store, "runs" | "agents" | "readJournal" | "mcp">;
 
-/** Whether a save changed any tool key's permission (added, removed or changed). It does not predict which edit flips a
- *  call's answer (an exact `ask` under a wildcard `deny` flips when only the wildcard moves): it only skips a save that
- *  touches no permission at all (a provider alone, a pin). The per-run decision is permissionFrom's. Approvals live on the
- *  run's revision, not in the server's settings, so a save cannot change them. */
+/** Whether a save changed any tool key's permission (added, removed or changed), or an MCP server's Allow reads
+ *  (`allow_reads` on its wildcard, which lifts a read-only tool's ask). It does not predict which edit flips a call's
+ *  answer (an exact `ask` under a wildcard `deny` flips when only the wildcard moves): it only skips a save that touches
+ *  neither (a provider alone, a pin). The per-run decision is permissionFrom's. Approvals live on the run's revision, not
+ *  in the server's settings, so a save cannot change them. */
 export function permissionsChanged(before: ToolSettingsMap, after: ToolSettingsMap): boolean {
   for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
-    if (before[key]?.permission !== after[key]?.permission) return true;
+    if (before[key]?.permission !== after[key]?.permission || before[key]?.allow_reads !== after[key]?.allow_reads) return true;
   }
   return false;
 }
@@ -51,8 +54,12 @@ export async function wakeAnsweredBySetting(store: WakeStore, read: ToolSettings
     const revision = await store.agents.revision(run.revisionId);
     const body = (revision?.body ?? {}) as { toolSettings?: unknown; approvals?: unknown };
     const agent = (body.toolSettings ?? {}) as PermissionSettings;
+    // An MCP call's effect as the run's pin holds it (the gate's ClaimMcp.effectOf reads the same), so Allow reads lifts a
+    // read here as the claim's gate will: read once, only for a run with an MCP call waiting.
+    const pin = waiting.some(isMcpName) ? ((await store.mcp.pin(run.id))?.body as Parameters<typeof pinnedEffect>[0] | undefined) : undefined;
+    const effectOf = (tool: string): ToolEffect | undefined => (pin ? pinnedEffect(pin, tool) : undefined);
     const allowed = waiting.some((tool) => {
-      const { permission, from } = permissionFrom(tool, server, agent, approvalsOf(body.approvals));
+      const { permission, from } = permissionFrom(tool, server, agent, approvalsOf(body.approvals), {}, effectOf(tool));
       return permission === "allow" && !(from === "default" && Object.hasOwn(SHELL_FAMILY, tool));
     });
     if (allowed && (await store.runs.wake(run.id))) woken.push(run.id);

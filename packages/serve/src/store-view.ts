@@ -3,11 +3,13 @@
 // (store-reads/learning.ts), fed through the run view's pure functions (run-view.ts) so the figures and words a person or a
 // model sees do not change. runs.ts still answers the API from files; this is the store-backed path the server cut switches
 // onto. viewOverStore answers the run read, summaryOverStore the run list, momentOverStore the one acceptance each act reads.
+import { isDeepStrictEqual } from "node:util";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { CAPS, isMessageRow, type TimelineEvent } from "./timeline/index.js";
 import { runLink } from "./console-links.js";
 import { redacted, redactedAnswer, redactedOutput, withoutLoopback } from "./key-refusal.js";
 import { structuredAnswer } from "./answer-json.js";
+import { isObject } from "./validate.js";
 import { currentLearning, holdsForOk, type ItemStatus, type Learning, learningView, LEARNING_LABEL, secretsShown, shortOf, type Shown } from "./learning.js";
 import { said } from "./learning-words.js";
 import { CONTENT_FILTER_WORDS, contentFiltered, MODERATED } from "./content-filter.js";
@@ -49,7 +51,7 @@ import { type BookedSpend, bookedSpend } from "./runner/metrics.js";
 import { journalRecords, recordOf } from "./runner/journal-reader.js";
 import { capNowOf, type EndData, KINDS } from "./runner/journal-kinds.js";
 import { notesReadOf, runLearningEnd, type RunLearning, usedOnly, withNotes } from "./store-reads/learning.js";
-import { runReflect, runTimeline, wholeAnswerFor, wholeAnswers } from "./store-reads/journal.js";
+import { runReflect, runTimeline, wholeAnswerFor, wholeAnswers, withoutFeedbackRounds } from "./store-reads/journal.js";
 import { type RunReadState, readRun } from "./store-reads/runs.js";
 import { runCutValues, runErrorWordsOf, underCut } from "./run-cut.js";
 import { Turns } from "./turns.js";
@@ -88,33 +90,42 @@ const TERMINAL = new Set<Status>(["completed", "failed", "cancelled"]);
 
 const iso = (ms: number): string => new Date(ms).toISOString();
 
-/** What a view last served of each run's answer, by store and run: the answer it read (`input`), the digest of the values
- *  it was redacted of (`key`) and what that gave (`out`), so a second view of the same answer and values reads nothing
- *  again (main's runs.ts servedOnce: a console polls a run's view, and an answer can be large). Newest SERVED_KEPT runs of
- *  each store. */
-const servedByStore = new WeakMap<Store, Map<string, { input: string; key: string; out: string }>>();
-const SERVED_KEPT = 32;
-function servedOnce(store: Store, runId: string, input: string, values: readonly string[]): string {
+/** What a view last made of a run's text, by store and slot (a run's answer, or its input): the text it read (`input`),
+ *  the digest of the values it was redacted of (`key`) and what that gave (`out`), so a second view of the same text and
+ *  values reads nothing again (main's runs.ts servedOnce: a console polls a run's view, and an answer or an input can be
+ *  large). Newest SERVED_KEPT slots of each store. */
+const servedByStore = new WeakMap<Store, Map<string, { input: string; key: string; out: unknown }>>();
+const SERVED_KEPT = 64;
+function keptOnce<T>(store: Store, slot: string, input: string, values: readonly string[], make: () => T): T {
   let served = servedByStore.get(store.origin);
   if (!served) servedByStore.set(store.origin, (served = new Map()));
   const key = wholeAnswerFor(values).key;
-  const last = served.get(runId);
-  if (last && last.key === key && last.input === input) return last.out;
-  const out = redactedAnswer(input, values);
-  served.delete(runId);
-  served.set(runId, { input, key, out });
+  const last = served.get(slot);
+  if (last && last.key === key && last.input === input) return last.out as T;
+  const out = make();
+  served.delete(slot);
+  served.set(slot, { input, key, out });
   for (const oldest of served.keys()) {
     if (served.size <= SERVED_KEPT) break;
     served.delete(oldest);
   }
   return out;
 }
+/** A run's answer as served: redactedAnswer's, once per answer and held value set. */
+const servedOnce = (store: Store, runId: string, input: string, values: readonly string[]): string =>
+  keptOnce(store, `answer ${runId}`, input, values, () => redactedAnswer(input, values));
+/** Whether a run's input is served (store-view's `input`): only when the cut a run's words get (redactedOutput) leaves it
+ *  exactly as given, so "Run again" never sends an altered task. Read once per input and held value set. */
+const inputWhole = (store: Store, runId: string, input: Record<string, unknown>, values: readonly string[]): boolean =>
+  keptOnce(store, `input ${runId}`, JSON.stringify(input), values, () => isDeepStrictEqual(redactedOutput(input, values), input));
 
 /** A run's whole answer as answerOfRun read it from the rows: its newest final-answer row, never the learning turn's, and
  *  never an earlier turn's: a final answer row before the person's last message belongs to the turn that message
  *  followed, so a follow-up whose own stop said nothing (no text block: a thinking-only stop) has no answer, null, not
- *  the answer before it. */
-export const answerOf = (rows: readonly TimelineEvent[]): string | null => {
+ *  the answer before it. Read on the job's turns (withoutFeedbackRounds): a grade's feedback round asks no turn of the
+ *  job's, so its words never cut the answer off. */
+export const answerOf = (timeline: readonly TimelineEvent[]): string | null => {
+  const rows = withoutFeedbackRounds(timeline);
   const asked = rows.findLastIndex((r) => isMessageRow(r) && r.agent_label === null && r.text !== null);
   const row = rows.findLast((r) => r.kind === "final_answer" && r.agent_label !== LEARNING_LABEL);
   return row && rows.lastIndexOf(row) > asked ? row.text ?? null : null;
@@ -483,6 +494,11 @@ export async function viewOverStore(store: Store, runId: string, deps: ViewDeps)
     // A withheld run's title is a short fixed line (WITHHELD_TITLE), never its stored title: the title can repeat the
     // sign-in this server can't read back to cut, so it is not served. The full withheld sentence is in error and review.
     title: unshown ? WITHHELD_TITLE : shownWords(launch?.title ?? ""),
+    // The input the run was started with, as its launch keeps it, whole (never the first message the timeline caps): what
+    // "Run again" sends again. Null when the cut a run's words get would change it (inputWhole: a held value, a long run
+    // with no whitespace), for a withheld run, and for one whose launch holds no input object.
+    input: !unshown && isObject(launch?.input) && inputWhole(store, runId, launch?.input, values) ? launch?.input : null,
+    file_ids: [...(launch?.files ?? [])],
     place: launch?.place ?? { mode: "runner" },
     // The runner holding the run now, when one does (a running run with a live claim): its id, the claim's count (up one each
     // claim, carried on every write the runner makes), and when the claim runs out. Null when no runner holds the run, so a

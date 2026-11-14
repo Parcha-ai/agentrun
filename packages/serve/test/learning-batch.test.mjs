@@ -85,18 +85,24 @@ test("POST /agents/{id}/learning/batches: each row's run, in order, with learnin
   assert.deepEqual(end.lessons.notes, ["Check units", "What the reviewer said"], "the first run's note, then the note its review taught, each once");
   assert.ok(end.rows[0].merged, "the merge of the first run's learning");
   assert.deepEqual(end.rows[0].learned.notes, ["Check units", "What the reviewer said"], "every round's");
-  // What a row's learning cost is every round's: each round's look-back and each round's grade (the review opens round 2).
+  // What a row's learning cost is every round's (the review opens round 2): all its run spent after its job answered (the
+  // review's turn, feedback the run was given, and each round's look-back: store-reads/learning.ts roundsLooked) and each
+  // round's grade. The job is round 1's alone.
   let graded = 0;
   for (const row of end.rows) {
-    let look = 0, grade = 0;
+    let look = 0, grade = 0, job;
     for (const round of [1, 2]) {
       const kept = await store.learning.proposal(row.run_id, round);
       assert.ok(kept, `row ${row.n} kept round ${round}`);
       look += kept.proposal?.look_back_usd ?? 0;
+      job ??= kept.proposal?.job_cost_usd;
       grade += kept.learningRunId ? ((await store.runs.get(kept.learningRunId))?.costUsd ?? 0) : 0;
     }
     graded += grade;
-    assert.equal(row.learning_usd, money(look + grade), `row ${row.n}: every round's look-back and grade`);
+    const rowUsd = (await store.runs.get(row.run_id)).costUsd;
+    assert.equal(typeof job, "number", `row ${row.n}: round 1 kept its job's cost`);
+    assert.ok(Math.abs(row.learning_usd - (rowUsd - job + grade)) < 2e-6, `row ${row.n}: all its run spent after the job, and every round's grade: ${row.learning_usd} vs ${rowUsd - job + grade}`);
+    assert.ok(row.learning_usd >= money(look + grade), `row ${row.n}: every round's look-back and grade are in it, the review's turn beside them`);
   }
   assert.ok(graded > 0, "the rows' grades cost something");
 
@@ -148,7 +154,10 @@ test("a batch refused: a body that is not whole is 422 by field; an agent that d
 });
 
 test("a reload reads the batch from the server: the same figures mid-run and after, and a server that stops mid-batch and starts again takes it up at its first unfinished row, never running a row twice", { timeout: 300_000 }, async (t) => {
-  const first = await serve(t, { learning: "on", faux: LEARN, batchPollMs: 50 });
+  // Its runner drains at the stop as the CLI's runner beside the server does (beside.ts DRAIN_TIMEOUT): a turn in flight
+  // finishes and is booked. A stop that cut a model request instead would leave that request's cost unknown for good
+  // (metrics.ts bookedSpend: the provider may bill what it streamed), and the batch stops `cost_unknown` on that row.
+  const first = await serve(t, { learning: "on", faux: LEARN, batchPollMs: 50, runnerTiming: { drainMs: 30_000 } });
   const id = "csv-reload";
   await made(first.api, learner(id));
   const refs = ["Job answer.", "Job answer.", "x", "Job answer.", "y"];
@@ -162,7 +171,8 @@ test("a reload reads the batch from the server: the same figures mid-run and aft
   assert.ok(reread.finished >= mid.finished && reread.total === 5);
   assert.deepEqual(reread.rows.slice(0, mid.finished).map((r) => r.run_id), mid.rows.slice(0, mid.finished).map((r) => r.run_id));
   const done = mid.rows.filter((r) => r.state === "done").map((r) => r.run_id);
-  // The whole start stopped, then a new one on the same data: the batch is still running there.
+  // The whole start stopped (the runner drained, then the server), then a new one on the same data: the batch is still
+  // running there.
   await first.stop();
   const second = await serve(t, { learning: "on", faux: LEARN, batchPollMs: 50, data: first.data });
   const end = await until(second.api, id, created.body.id, finished);
