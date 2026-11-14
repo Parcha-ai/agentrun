@@ -1008,11 +1008,12 @@ async function sameAsLocal(ctx: Ctx, one: EvalCase, agent: Json): Promise<void> 
 
 /** The in-process server's settings for a case, set before it applies, as an owner sets them (deploy/walk.md): the pins
  *  the case's apply fills (from its parameters), so the server's pin holds the call to the case's own target beside the
- *  agent's own, as it does in production; and an allow for each of the case's grants. An apply writes no permission for
- *  a grant (the gate's default decides), and this server has no person to answer an ask, so the eval stands in for an
- *  owner who approves each granted call: the grants run, and nothing else is widened. Another server's (--server)
- *  settings are its owner's, left as they are: there the agent's own pin alone holds the write, and a grant runs as that
- *  owner's settings and the package's approvals say. */
+ *  agent's own, as it does in production; and an allow for each of the case's grants. On its own in-process server the
+ *  eval acts as an owner who approves every granted call: it writes allow for the case's grants and nothing else. That
+ *  is the eval's stand-in for a person, not the template's behaviour: an apply writes no permission for a grant (the
+ *  gate's default decides), and this server has no one to answer an ask. On --server it writes nothing: that server's
+ *  settings are its owner's, so the agent's own pin alone holds the write, and a grant runs as that owner's settings
+ *  and the package's approvals say. */
 async function serverPins(ctx: Ctx, one: EvalCase): Promise<void> {
   const { api, pkg, options } = ctx;
   if (options.server) return;
