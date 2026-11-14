@@ -2996,11 +2996,19 @@ const writesItsKey = (node: Doc, at: WritesAt) => at.wrote(typeof node.as === "s
 function askHeads(ask: Doc): string[] {
   if (ask.state === undefined) return [];
   const heads: string[] = [];
-  for (const m of JSON.stringify([ask.state, ask.images ?? null]).matchAll(/\{([a-zA-Z0-9_.$]+)\}/g)) {
-    const [head, next] = m[1]!.split(".");
-    heads.push(head!);
-    if (head === "state" && next) heads.push(next);
-  }
+  // String values only, at any depth: interpolateValue replaces values, so an object key that looks like a reference is a literal.
+  const read = (value: unknown): void => {
+    if (typeof value === "string") {
+      for (const m of value.matchAll(/\{([a-zA-Z0-9_.$]+)\}/g)) {
+        const [head, next] = m[1]!.split(".");
+        heads.push(head!);
+        if (head === "state" && next) heads.push(next);
+      }
+    } else if (Array.isArray(value)) value.forEach(read);
+    else if (value && typeof value === "object") Object.values(value).forEach(read);
+  };
+  read(ask.state);
+  read(ask.images);
   return heads;
 }
 
@@ -3009,7 +3017,7 @@ function askHeads(ask: Doc): string[] {
  *  one branch, any of them, after its `as` (its choice); a parallel its branches each from the same state, a key one wrote
  *  taking that branch's writer; a loop its body once or more, each pass from the last's; a map its body per item on its
  *  own copy (with `item`, `item_index`), only its `as` (and `failedAs`) left after; a child workflow on its own state, only
- *  its `as` left after. A judge writes its `as`; a code node with no `as` may write any key. */
+ *  its `as` left after. A judge writes its `as` and `<as>$answers`; a code node with no `as` may write any key. */
 const NODE_WRITES: { readonly [K in WorkflowNodeKind]: (node: Doc, at: WritesAt) => StateWriters } = {
   chain: (node, at) => (Array.isArray(node.steps) ? node.steps : []).reduce<StateWriters>((state, step) => at.walk(step, state), at.state),
   route: (node, at) => {
@@ -3044,7 +3052,8 @@ const NODE_WRITES: { readonly [K in WorkflowNodeKind]: (node: Doc, at: WritesAt)
     at.walk(docOf(node.workflow)?.root, new Map(), typeof node.label === "string" ? `${at.prefix}${node.label}/` : at.prefix);
     return at.wrote(node.as, OTHER_WROTE);
   },
-  judge: (node, at) => at.wrote(node.as, JUDGE_WROTE),
+  // A judge writes its `as` and the question's answers at `<as>$answers` (runJudgeNode): both are the judge's.
+  judge: (node, at) => at.wrote(node.as, JUDGE_WROTE, typeof node.as === "string" ? at.wrote(`${node.as}$answers`, JUDGE_WROTE) : at.state),
   escalate: (node, at) => {
     if (typeof node.label !== "string") return at.state;
     let when = docOf(node.when);
