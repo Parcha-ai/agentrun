@@ -55,7 +55,7 @@ import { isCliRecord, piShaped, runEntries, runTimeline } from "../store-reads/j
 import type { McpPin } from "../mcp-gateway.js";
 import { recordedCalls, type ReplayCalls, replayCalls, SKIPPED_WRITE, toolClassOf, toolWord, unmarkedWords } from "../learn/replay-calls.js";
 import { isObject, type Json } from "../validate.js";
-import { answersAlone, championOf, clears, type Grade, gradesOf, PROMOTE_BAR, type PromotionRecord, promotionOf, promotionsOf, recordPromotion, REFIT_EVERY, REPLAY_INPUTS, REPLAY_MIN, type ReplayRow, type ReplayScore, replayingOf, skippedToolsOf, thresholdsOf } from "../learn/promote.js";
+import { answersAlone, championOf, clears, type Grade, gradesOf, PROMOTE_BAR, type PromotionRecord, promotionOf, promotionsOf, recordPromotion, REFIT_EVERY, REPLAY_INPUTS, REPLAY_MIN, type ReplayOutcomes, type ReplayRow, type ReplayScore, replayingOf, skippedToolsOf, thresholdsOf } from "../learn/promote.js";
 import { sendCommand } from "./commands.js";
 import { ClaimRefused } from "./loop-contract.js";
 import { readSnapshot } from "../learn/folder.js";
@@ -463,6 +463,14 @@ const outcomeOf = (run: RunRow): ReplayRow["outcome"] => {
   return run.state === "ended" && (m.replay?.outcome === "answered" || m.replay?.outcome === "handed_back" || m.replay?.outcome === "skipped_write") ? m.replay.outcome : "failed";
 };
 
+/** How many of a replay's runs ended each way so far (ReplayOutcomes): one not ended counts only past the deadline
+ *  (`late`), as failed; one never created, nothing. */
+function outcomesOf(runs: readonly (RunRow | undefined)[], late: boolean): ReplayOutcomes {
+  const counts = { answered: 0, handed_back: 0, failed: 0, skipped_write: 0 };
+  for (const run of runs) if (run && (late || FINAL_STATES.includes(run.state))) counts[outcomeOf(run)] += 1;
+  return counts;
+}
+
 /** What `record`'s replay runs cost together, at `now`: null while one's is unknown (one not created yet before the
  *  deadline, one not ended, one ended with no cost), whatever its grade; a run never created by the deadline spent nothing. */
 function replayCost(runs: readonly (RunRow | undefined)[], late: boolean): number | null {
@@ -481,11 +489,11 @@ function replayCost(runs: readonly (RunRow | undefined)[], late: boolean): numbe
 /** The replay's rows, once every replay run ended (or REPLAY_DEADLINE_MS passed: one not ended is failed, no evidence);
  *  undefined while one is at work or not created yet (its record is reserved before its runs are created: a run missing
  *  is a launch still under way, or one a later claim relaunches). With the rows it scores (`scored`, refitRowsOf: the ones
- *  its workflow answered or handed back), what the replay runs cost (replayCost), and how many reserved runs were never
- *  created by the deadline (`unstarted`). `partial`: the rows of the runs ended so far, at any time (a replay's read while
- *  it runs). A row needs its graded run's grade (what it is scored against): a run whose grade the agent's newer grades
- *  rolled out of those kept has none, and is counted (replayView) but not scored. */
-async function replayRows(deps: Pick<PromotionDeps, "store" | "agentId" | "context" | "now">, record: PromotionRecord, partial = false): Promise<{ rows: ReplayRow[]; scored: RefitRow[]; cost: number | null; unstarted: number } | undefined> {
+ *  its workflow answered or handed back), what the replay runs cost (replayCost), its runs' outcomes (outcomesOf), and how
+ *  many reserved runs were never created by the deadline (`unstarted`). `partial`: the rows of the runs ended so far, at
+ *  any time (a replay's read while it runs). A row needs its graded run's grade (what it is scored against): a run whose
+ *  grade the agent's newer grades rolled out of those kept has none, and is counted (`outcomes`) but not scored. */
+async function replayRows(deps: Pick<PromotionDeps, "store" | "agentId" | "context" | "now">, record: PromotionRecord, partial = false): Promise<{ rows: ReplayRow[]; scored: RefitRow[]; cost: number | null; outcomes: ReplayOutcomes; unstarted: number } | undefined> {
   const { store, context } = deps;
   const now = (deps.now ?? Date.now)();
   const grades = new Map((await gradesOf(store.settings, deps.agentId)).map((grade) => [grade.run, grade]));
@@ -511,7 +519,7 @@ async function replayRows(deps: Pick<PromotionDeps, "store" | "agentId" | "conte
       guards: Array.isArray(m.guards) ? (m.guards as GuardRow[]) : [],
     });
   }
-  return { rows, scored: refitRowsOf(rows), cost: replayCost(runs, late), unstarted: runs.filter((row) => !row).length };
+  return { rows, scored: refitRowsOf(rows), cost: replayCost(runs, late), outcomes: outcomesOf(runs, late), unstarted: runs.filter((row) => !row).length };
 }
 
 /** A replaying digest's decision, once its replay runs ended: promote within the bar when it answered alone at least once,
@@ -556,7 +564,7 @@ async function settle(deps: PromotionDeps, workflow: LearnedWorkflow, digest: st
   const servedSeqs = ok ? (await gradesOf(store.settings, agentId)).filter((grade) => grade.workflow === workflow.name && grade.digest === digest && (grade.path === "workflow" || grade.path === "handed_back")).map((grade) => grade.seq ?? 0) : [];
   const decided = await recordPromotion(store.settings, agentId, {
     workflow: workflow.name, digest, at: iso(now()), decided: ok ? "promote" : "hold", source: "replay", reason,
-    replay: { ...score, of: read.rows.map((row) => row.of), cost_usd: read.cost, skipped_write: skipped, skipped_tools: tools }, ...(record.runs ? { runs: record.runs } : {}),
+    replay: { ...score, of: read.rows.map((row) => row.of), cost_usd: read.cost, skipped_write: skipped, skipped_tools: tools, outcomes: read.outcomes }, ...(record.runs ? { runs: record.runs } : {}),
     ...(record.commit ? { commit: record.commit } : seedOf(deps)), ...(record.replay_id ? { replay_id: record.replay_id } : {}),
     ...(servedSeqs.length ? { checked: Math.max(...servedSeqs) } : {}),
   }, (was) => sameReplay(was, record));
@@ -716,10 +724,11 @@ export async function askReplay(ask: ReplayAsk, name: string, digest: string, in
 
 /** A replay as its read answers it (GET .../replays/{replay_id}). `status`: `running` while its record says replaying,
  *  `done` once promoted or held, `failed` when superseded (its runs cancelled) or when none of its runs started by its
- *  deadline (nothing was replayed; held, its `reason` says so). The counts: once decided, the decided record's (scored and
- *  skipped as it was decided); else its own runs' outcomes so far (outcomeOf), whatever the agent's grades kept now.
- *  `score` and `cost_usd` the decided record's, else the runs ended so far at the revision's serving thresholds, and null
- *  while a run's cost is unknown (replayCost). */
+ *  deadline (nothing was replayed; held, its `reason` says so). The counts: what its own runs did (outcomesOf), so far
+ *  while it runs, and once decided as its record kept them, whatever the agent's grades kept now; never the thresholds'
+ *  reading (a run answered under its guard's threshold stays answered: `alone` and `score` hand it back). `score` and
+ *  `cost_usd` the decided record's, else the runs ended so far at the revision's serving thresholds, and null while a
+ *  run's cost is unknown (replayCost). */
 export type ReplayView = {
   readonly replay: string; readonly workflow: string; readonly digest: string;
   readonly status: "running" | "done" | "failed"; readonly inputs: number;
@@ -761,21 +770,16 @@ export async function replayView(ask: ReplayAsk, name: string, digest: string, i
   const read = await replayRows(ask, record, true);
   const runs = await Promise.all((record.runs ?? []).map((one) => ask.store.runs.get(one)));
   const late = (ask.now ?? Date.now)() - Date.parse(record.at) > REPLAY_DEADLINE_MS;
-  const outcomes = runs.flatMap((run) => (run && (late || FINAL_STATES.includes(run.state)) ? [outcomeOf(run)] : []));
   const kept = record.replay && decided && decided !== "superseded" ? record.replay : undefined;
   // Decided with not one of its reserved runs ever created: nothing was replayed (settle's reason says so).
   const neverStarted = kept !== undefined && runs.length > 0 && runs.every((run) => !run);
-  const count = (outcome: ReplayRow["outcome"]): number => {
-    if (!kept) return outcomes.filter((one) => one === outcome).length;
-    const skipped = kept.skipped_write ?? 0;
-    return outcome === "answered" ? kept.n - kept.handed_back : outcome === "handed_back" ? kept.handed_back : outcome === "skipped_write" ? skipped : kept.of.length - kept.n - skipped;
-  };
+  const counts = kept?.outcomes ?? outcomesOf(runs, late);
   const score: ReplayScore = kept
     ? { n: kept.n, agree: kept.agree, agent_acc: kept.agent_acc, wf_acc: kept.wf_acc, delta: kept.delta, handed_back: kept.handed_back }
     : scoreRows(read?.scored ?? [], text ? thresholdsOf(text.workflow) : new Map());
   return {
     replay: id, workflow: name, digest, status: decided === undefined ? "running" : decided === "superseded" || neverStarted ? "failed" : "done", inputs: runs.length,
-    answered: count("answered"), handed_back: count("handed_back"), failed: count("failed"), skipped_write: count("skipped_write"), alone: score.n - score.handed_back, score,
+    ...counts, alone: score.n - score.handed_back, score,
     cost_usd: kept ? (kept.cost_usd ?? null) : (read?.cost ?? null),
     ...(decided ? { decided, reason: record.reason } : {}),
   };

@@ -3013,6 +3013,12 @@ export interface operations {
             inputs: number;
             no_read_only_hint: boolean;
           }[];
+          outcomes?: {
+            answered: number;
+            handed_back: number;
+            failed: number;
+            skipped_write: number;
+          };
         };
         runs?: string[];
         inputs?: string[];

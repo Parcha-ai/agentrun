@@ -70,7 +70,8 @@ export const answersAlone = (score: Pick<ReplayScore, "n" | "handed_back">): boo
  *  serving revision's graded runs fell below the bar: held). `replay`: the numbers it was decided on, with the graded runs
  *  replayed (`of`), what its replay runs cost (`cost_usd`, null when one's is unknown) and how many of its inputs were
  *  skipped (`skipped_write`: each needed a write the graded run's recording does not have, learn/replay-calls.ts; never
- *  run, never scored) and at which tools (`skipped_tools`, SkippedTool). `refit`: the guards a refit
+ *  run, never scored) and at which tools (`skipped_tools`, SkippedTool), and its runs' outcomes (`outcomes`,
+ *  ReplayOutcomes). `refit`: the guards a refit
  *  changed. `checked`: the newest grade (its seq) the last refit check read (refits run once per REFIT_EVERY more graded runs
  *  it served, counted by seq: a count of the grades kept stalls once the GRADES_KEPT trim holds it). */
 export interface PromotionRecord {
@@ -80,7 +81,7 @@ export interface PromotionRecord {
   readonly decided: "promote" | "hold" | "replaying" | "superseded";
   readonly source: "replay" | "dry_run" | "refit" | "graded";
   readonly reason: string;
-  readonly replay?: ReplayScore & { readonly of: readonly string[]; readonly cost_usd?: number | null; readonly skipped_write?: number; readonly skipped_tools?: readonly SkippedTool[] };
+  readonly replay?: ReplayScore & { readonly of: readonly string[]; readonly cost_usd?: number | null; readonly skipped_write?: number; readonly skipped_tools?: readonly SkippedTool[]; readonly outcomes?: ReplayOutcomes };
   readonly runs?: readonly string[];
   /** A replaying record's graded runs, one per `runs` entry in order: the input each reserved replay run replays, so a
    *  launch interrupted after the reservation is finished by a later claim (runner/promotion.ts relaunch). */
@@ -312,6 +313,11 @@ export interface ReplayRow {
   readonly answer: string | null;
   readonly guards: readonly GuardRow[];
 }
+
+/** How many of a replay's own runs ended each way (a run not ended past its deadline is failed): what each run did,
+ *  never the serving thresholds' reading of it (a run that answered below its guard's threshold is answered here, handed
+ *  back in its score). A replay record keeps them as it was decided on. */
+export type ReplayOutcomes = Readonly<Record<ReplayRow["outcome"], number>>;
 
 /** An answer's value: its text as JSON when it is JSON, else its last fenced json block, else its trimmed text. */
 function valueOf(answer: string): unknown {

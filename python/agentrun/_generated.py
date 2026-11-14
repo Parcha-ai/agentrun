@@ -422,6 +422,7 @@ __all__ = [
     "ListLearningPromotionsResponsePromotionsItemRefit",
     "ListLearningPromotionsResponsePromotionsItemRefitGuardsItem",
     "ListLearningPromotionsResponsePromotionsItemReplay",
+    "ListLearningPromotionsResponsePromotionsItemReplayOutcomes",
     "ListLearningPromotionsResponsePromotionsItemReplaySkippedToolsItem",
     "ListLearningPromotionsResponseServingItem",
     "ListMcpServersResponse",
@@ -1425,12 +1426,20 @@ class ListLearningPromotionsResponsePromotionsItemReplay(_ListLearningPromotions
     cost_usd: float | None
     skipped_write: int
     skipped_tools: list[ListLearningPromotionsResponsePromotionsItemReplaySkippedToolsItem]
+    outcomes: ListLearningPromotionsResponsePromotionsItemReplayOutcomes
 
 
 class ListLearningPromotionsResponsePromotionsItemReplaySkippedToolsItem(TypedDict):
     tool: str
     inputs: int
     no_read_only_hint: bool
+
+
+class ListLearningPromotionsResponsePromotionsItemReplayOutcomes(TypedDict):
+    answered: int
+    handed_back: int
+    failed: int
+    skipped_write: int
 
 
 ListLearningPromotionsResponsePromotionsItemRefit = TypedDict("ListLearningPromotionsResponsePromotionsItemRefit", {"from": "str", "guards": "list[ListLearningPromotionsResponsePromotionsItemRefitGuardsItem]"})
