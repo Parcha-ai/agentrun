@@ -139,3 +139,101 @@ test("an unparsed answer is asked again once: the runner's reflect hook on a CLI
   assert.equal(kept.turn.answer, skill("````"), "the turn kept is the second answer");
   assert.ok(await opened.server.runs.get("run-1-learning"), "one learning run queued");
 });
+
+/** A CLI stand-in whose session survives its runner: what it was sent and what it finished are in the session's own
+ *  records, so a process opened after a crash finds the turn it was in (open_turn); recover() resumes that turn and
+ *  settleOpenTurn() closes it unanswered. A turn `hold` says yes to never ends (its runner is killed under it). */
+function durableCli(log, hold) {
+  return {
+    id: "stand-in-cli",
+    capabilities: () => ({}),
+    check: () => [],
+    async open(_spec, io) {
+      const records = await io.writer.read();
+      const sent = records.filter((record) => record.kind === "stand-in.sent");
+      const done = records.filter((record) => record.kind === "stand-in.done").length;
+      let state = sent.length === 0 ? "new" : sent.length > done ? "open_turn" : "idle";
+      const cut = sent.at(-1)?.data?.text;
+      let turn;
+      const answer = (text) => {
+        const say = text === INPUT ? "the job's answer" : /graded/.test(text) ? "the round's note" : "a note";
+        turn = (async () => {
+          await io.writer.append([{ kind: "stand-in.done", data: null }]);
+          io.onEvent({ type: "text", delta: say });
+          io.onEvent({ type: "turn_end", status: "completed" });
+          return { status: "completed" };
+        })();
+      };
+      return {
+        get state() { return state; },
+        async send(text) {
+          await io.writer.append([{ kind: "stand-in.sent", data: { text } }]);
+          log.sent.push(text);
+          state = "idle";
+          if (hold(text)) turn = new Promise(() => {});
+          else answer(text);
+        },
+        async recover() {
+          log.recovered.push(cut);
+          state = "idle";
+          answer(cut);
+        },
+        async settleOpenTurn() {
+          log.settled.push(cut);
+          state = "idle";
+        },
+        turnEnd: () => turn,
+        async interrupt() {},
+        async close() {},
+      };
+    },
+  };
+}
+
+test("a CLI feedback round whose runner died mid look-back: the next claim settles that turn, never recovers it as the job's, and asks it again once (#2668)", async (t) => {
+  const opened = await stores({ runners: 2 });
+  await queue(opened.server, "run-1");
+  const log = { sent: [], recovered: [], settled: [] };
+  let held = 0;
+  const hold = (text) => /graded/.test(text) && held++ === 0;
+  let round = 1;
+  const answers = [];
+  const endOfRun = async (input) => {
+    answers.push(await input.ask("What did you learn?", { origin: "reflect", deadlineMs: 5_000, round }));
+    return undefined;
+  };
+  const loop = createAdapterLoop((claim) => ({
+    adapter: claim.runId === "run-1" ? durableCli(log, hold) : standInCli([]),
+    session: { key: "root", label: "root", system: [], tools: [], context: "fresh" },
+    input: INPUT,
+    runCap: { capUsd: () => undefined, modelOf: () => undefined },
+    record: "loop",
+    agentId: "agent-1",
+    hooks: quiet,
+  }));
+  const createLoop = (deps) => loop({ ...deps, endOfRun });
+  const first = startRunner({ store: opened.runners[0], createLoop, name: "runner-a", ...TIMING });
+  let second;
+  t.after(async () => {
+    first.kill();
+    await second?.close();
+  });
+  const once = await ended(opened.server);
+  // A grade's look-back round: the run opens again on its words, and the claim goes to its end-of-run turn alone.
+  round = 2;
+  await opened.server.runs.reopen("run-1", { kind: "steer", body: { text: "Wrong: the answer is 41.", feedback: { round: "look_back", correct: false } } });
+  await until(async () => log.sent.some((text) => /graded/.test(text)), "the round's look-back was sent", 10_000);
+  first.kill();
+  // The first claim's lease runs out for the next runner at once.
+  opened.clock.skewMs += 60_000;
+  second = startRunner({ store: opened.runners[1], createLoop, name: "runner-b", ...TIMING });
+  await until(async () => {
+    const now = await opened.server.runs.get("run-1");
+    return now.state === "ended" && now.runner === null && now.endedAt > once.endedAt && now;
+  }, "the round ended and released", 10_000);
+  const looks = log.sent.filter((text) => /graded/.test(text));
+  assert.equal(looks.length, 2, `the look-back was sent once on each claim, never twice on one: ${JSON.stringify(log.sent)}`);
+  assert.deepEqual(log.recovered, [], "the cut look-back is never recovered as the job's turn");
+  assert.deepEqual(log.settled, looks.slice(0, 1), "the next claim settled the cut look-back");
+  assert.deepEqual(answers.at(-1), { ended: true, answer: "the round's note" }, "the step read the second ask's answer");
+});

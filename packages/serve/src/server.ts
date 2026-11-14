@@ -72,6 +72,7 @@ import { analytics as analyticsOverStore } from "./store-reads/analytics.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { type AgenticBody, type McpCredentialMark, type NewRevision, openStore, type RevisionPlace, type RunMcpAuth, type RunRow, sealRunMcpAuth, type Store, StoreOwned, storeTarget, type TemplatePackage, type WorkflowBody } from "./store/index.js";
 import { answerOf, logged } from "./agents.js";
+import { LABEL_MAX, openFeedbackRound } from "./runner/feedback-round.js";
 import { FINAL_STATES, RUN_CHANGES_PAGE, type RunChange, type RunChangeCursor } from "./store/store.js";
 import { type Grade, GRADE_SOURCES, type GradeSource, gradeView, promotionsOf, promotionsShown, putGrade } from "./learn/promote.js";
 import { runModelRef } from "./model.js";
@@ -2968,11 +2969,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const row = ID.test(id) ? await store.runs.get(id) : undefined;
         if (!row) throw new ApiError("not_found", `no run ${id}`);
         const body = await bodyOf(req);
-        const extra = unknownFields(body, ["correct", "expected", "source"]);
+        const extra = unknownFields(body, ["correct", "expected", "source", "label"]);
         if (extra.length) throw invalid(extra);
         if (typeof body.correct !== "boolean") throw invalid([{ field: "correct", reason: body.correct === undefined ? "missing" : "wrong_type", message: "correct is true or false: whether the run's answer was right" }]);
         if (body.expected !== undefined && !isObject(body.expected)) throw invalid([{ field: "expected", reason: "wrong_type", message: "expected is an object: the fields a right answer's JSON holds" }]);
         if (body.source !== undefined && !GRADE_SOURCES.includes(body.source as never)) throw invalid([{ field: "source", reason: "not_an_option", message: `source is one of ${GRADE_SOURCES.join(", ")}` }]);
+        if (body.label !== undefined && (typeof body.label !== "string" || body.label.length > LABEL_MAX)) throw invalid([{ field: "label", reason: "wrong_type", message: `label is a string of at most ${LABEL_MAX} characters: the grade's words` }]);
         if (!FINAL_STATES.includes(row.state)) throw invalid([{ field: "run_id", reason: "not_allowed", message: "A run is graded once it has ended." }]);
         const m = (isObject(row.metrics as Json) ? row.metrics : {}) as { path?: unknown; workflow?: unknown; workflow_digest?: unknown };
         if (m.path === "replay") throw invalid([{ field: "run_id", reason: "not_allowed", message: "A replay run is never graded: its answer is scored against the run it replays." }]);
@@ -2982,7 +2984,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           ...(typeof m.workflow === "string" ? { workflow: m.workflow } : {}), ...(typeof m.workflow_digest === "string" ? { digest: m.workflow_digest } : {}),
         };
         await putGrade(store.settings, row.agentId, grade);
-        return send(res, 200, gradeView(grade));
+        // What the grade asks of the run's learning (runner/feedback-round.ts): nothing, a revision ask, or a look-back.
+        const feedback = await openFeedbackRound(store, grade, typeof body.label === "string" ? body.label : undefined);
+        return send(res, 200, { ...gradeView(grade), feedback });
       }
       case "archiveRun":
       case "unarchiveRun": {

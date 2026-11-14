@@ -168,6 +168,16 @@ const inWorkspace = (cwd: string) => (path: string): string => {
   return path.startsWith(`${root}/`) && path.length > root.length + 1 ? path.slice(root.length + 1) : path;
 };
 
+/** A grade's feedback round's words (runner/feedback-round.ts, KINDS.feedback) as the reviewer's message: a host's
+ *  user entry, which the Timeline shows and pi never reads (the entry on the journal carries no model message). */
+export function withFeedback(entries: readonly EntryLike[]): EntryLike[] {
+  return entries.map((entry) => {
+    if (entry.kind !== KINDS.feedback) return entry;
+    const data = (entry.data ?? {}) as { text?: unknown; at?: unknown };
+    return { ...entry, model: [{ role: "user", content: typeof data.text === "string" ? data.text : "", ...(typeof data.at === "number" ? { timestamp: data.at } : {}) }] } as EntryLike;
+  });
+}
+
 /** A run's timeline rows, the renderer (timelineOf) unchanged, over the one store's entries, with a CLI harness's record
  *  rendered as its pi-shaped entries (piShaped) and its paid tool charges read back from the paid-tools session
  *  (withPaidCosts). A run whose record carries no per-request cost (a CLI harness's, a workflow's: metrics.ts
@@ -189,8 +199,8 @@ export async function runTimeline(store: Store, runId: string, context: Context,
   // price, never one in flight: never the known sum as its cost while the run reads stopped.
   const read = { ...options, ...(cwd ? { path: inWorkspace(cwd.cwd) } : {}), ...(!options.settled && turnCutOf(records, reflect) ? { turnCut: true } : {}) };
   // Shaped on pi too: its own entries pass through as they are, and the calls its tools nested (on the loop's record) read
-  // as a CLI's calls do.
-  const rendered = timelineOf(withPaidCosts(piShaped(entries)), read);
+  // as a CLI's calls do. A grade's feedback round's words read as the reviewer's message (withFeedback).
+  const rendered = timelineOf(withPaidCosts(withFeedback(piShaped(entries))), read);
   const rows = costIsBooked(entries, cli) ? bookedUsage(rendered, entries, options) : withSideUsage(rendered, entries);
   return labelled(reflect, withComputerCalls(withLearnedNodes(await datedRows(store, runId, rows), entries, options.redact), entries, options.redact));
 }

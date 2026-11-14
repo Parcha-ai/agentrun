@@ -23,7 +23,7 @@
 // (adapter-run-spec.ts, cli-run-spec.ts) choose here, once per claim; the adapter loop serves it (adapter-loop.ts, before
 // the first input), through the run's own learned_workflow tool, gate, record and ledger.
 import { createHash } from "node:crypto";
-import type { LearnedWorkflow } from "../learning.js";
+import { type LearnedWorkflow, LEARNING_LABEL } from "../learning.js";
 import type { RunLaunch } from "../run-launch.js";
 import { COST_WINDOW, type RunPath } from "../learning-cost.js";
 
@@ -314,6 +314,35 @@ export function servedAnswerOf(entries: readonly { readonly kind: string; readon
   const said = entries.slice(0, at).findLast((entry) => entry.kind === KINDS.message && (entry.data as { role?: unknown } | undefined)?.role === "model")?.data as { text?: unknown } | undefined;
   return { workflow, answer: typeof said?.text === "string" ? said.text : "" };
 }
+
+/** Whether a run its learned workflow answered alone still ends on that answer (the run's path is who wrote its final
+ *  answer): its newest answer row outside the end-of-run turns (`rows`, runTimeline's, LEARNING_LABEL's left out) is
+ *  none, or says what the workflow `answer`ed, as it produced it or as the agent was shown it (`shown`) (trimmed; two
+ *  JSON answers holding the same value read the same). A
+ *  follow-up the agent answered with a new or changed answer did not end on the workflow: `handed_back`. A feedback
+ *  round (a grade's label, adapter-loop.ts) asks the agent no turn of the job's, so its run stays the workflow's. */
+export function servedAnswerStands(answer: string, rows: readonly { readonly kind: string; readonly agent_label?: string | null; readonly text?: string | null }[], shown?: string): boolean {
+  const last = rows.findLast((row) => row.kind === "final_answer" && row.agent_label !== LEARNING_LABEL);
+  // `shown`: the answer as the agent was shown it (a follow-up's first turn, cut of the runner's secrets): an agent that
+  // says it again says the workflow's answer, though a held value in it now reads as redacted.
+  return !last || sameAnswer(last.text ?? "", answer) || (shown !== undefined && sameAnswer(last.text ?? "", shown));
+}
+
+/** Two answers that say the same: equal once trimmed, or both JSON of the same value (keys in any order). */
+export function sameAnswer(a: string, b: string): boolean {
+  if (a.trim() === b.trim()) return true;
+  const parsed = (text: string): unknown => {
+    try {
+      return JSON.parse(text.trim().replace(/^```(?:json)?\s*([\s\S]*?)\s*```$/, "$1"));
+    } catch {
+      return undefined;
+    }
+  };
+  const [x, y] = [parsed(a), parsed(b)];
+  return x !== undefined && y !== undefined && canonical(x) === canonical(y);
+}
+const canonical = (value: unknown): string =>
+  Array.isArray(value) ? `[${value.map(canonical).join(",")}]` : value && typeof value === "object" ? `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`).join(",")}}` : JSON.stringify(value);
 
 /** Said to the agent between the job and a follow-up's message, on a run its learned workflow answered alone: which
  *  workflow answered and what, so the follow-up (a reviewer's word on that answer) reads against it. */

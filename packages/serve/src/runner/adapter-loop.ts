@@ -84,6 +84,7 @@ import { answerAsServed } from "../answer-json.js";
 import type { ClaimMcp } from "./mcp-run.js";
 import { type RequestFigures, reserveFor, WRAP_UP_TEXT, wrappingUp } from "../wrap-up.js";
 import { LEARNED_CLIP, LEARNED_WORKFLOW_TOOL } from "../learned-workflow.js";
+import { type FeedbackData, feedbackAsk, feedbackOf, pendingFeedbackOf } from "./feedback-round.js";
 import { handbackText, servedAnswerOf, servedAnswerText, WORKFLOW_FIRST, WORKFLOW_FIRST_CALL, type WorkflowFirst, type WorkflowFirstData, type WorkflowRevise } from "./workflow-first.js";
 
 /** The end of a harness's own call (Claude Code's WebSearch) the gate held and then let run: the host ran nothing of it,
@@ -896,7 +897,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
    *  for it, so the run's next end comes after that turn's answer. Undefined once the claim has read its delivered rows.
    *  Also set while the run waits in its claim on the person's answer to its question (waitInClaim): their message is sent
    *  the same way, as the claim's next turn, and `placed` wakes the wait once it is sent. */
-  let reopen: { sent?: Promise<void>; placed?: () => void } | undefined;
+  let reopen: { sent?: Promise<void>; placed?: () => void; feedback?: FeedbackData } | undefined;
+  /** A grade's feedback round this claim closes (runner/feedback-round.ts): the run opened again on a grade's words (its
+   *  steer, taken with a FEEDBACK entry and never sent as a turn), or a claim that finds such an entry with no end after it.
+   *  The agent is asked no turn of the job's: the run goes to its end-of-run turn, told the grade first (feedbackAsk). */
+  let feedbackNow: FeedbackData | undefined;
   /** A reopen of a run whose session is still new (a person stopped it before its first input was sent): resolved once the
    *  person's message is placed as that first input. The claim waits on it, never sending the input they stopped, however
    *  late the runner hands the message over. */
@@ -1267,6 +1272,25 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     // door took the row), so it is never refused either: left untaken, it runs as a turn of its own after the person's
     // answer, as a parked run's does (the store's park takes no wake from it; the run's end opens the run again with it).
     if (followUp && (askedLast || (reopen !== undefined && (reopen === waitTurn || reopen === askReopen)))) return { later: "the run is waiting on a person: the message runs as a turn of its own after the answer" };
+    // A grade's feedback round (feedback-round.ts): the run opened again on the grade's words, which are never a turn of
+    // the job's. Kept on the root as a FEEDBACK entry, whose commit takes the row; the claim goes to its end-of-run turn.
+    const fed = reopen && !reopen.sent && (session.state === "idle" || session.state === "new") ? feedbackOf(command.body) : undefined;
+    if (fed && reopen && harness && root) {
+      const [on, theRoot, mine] = [harness, root, reopen];
+      const taken = gate.expect(writesEntry(KINDS.feedback, (data) => data.requestId === requestId), { take: [command.id] });
+      taken.catch(() => undefined);
+      mine.feedback = fed;
+      mine.sent = on.commit((tx) => tx.appendEntry(theRoot.id, { kind: KINDS.feedback, data: { ...fed, requestId, at: now() } as unknown as JsonValue }), context).then(() => undefined);
+      mine.placed?.();
+      try {
+        await mine.sent;
+      } catch (error) {
+        if (gate.sealed) return { later: "the run is parking: the feedback waits for its resume" };
+        return { refused: `the feedback was not kept: ${(error as Error).message}` };
+      }
+      await taken.catch(() => {});
+      return { taken: true };
+    }
     // A reopened run's follow-up, its session idle: sent as a turn of its own, tracked to its end (as the input and a raise's
     // follow-up are), its row taken in its submission's commit; the claim waits on it before the run's next end.
     if (reopen && !reopen.sent && (session.state === "idle" || session.state === "new")) {
@@ -2228,6 +2252,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           // A session still new (a person stopped the run before its first input was sent): the follow-up is its first
           // input, and the input the person stopped is never sent.
           firstInputPlaced = undefined;
+          // A feedback round an earlier claim took and never ended (its runner lost): this claim closes it, asking no turn.
+          feedbackNow = endsRoot ? undefined : pendingFeedbackOf(foundEntries);
           if (endsRoot && !inFlight && session!.state === "idle") reopen = {};
           else if (endsRoot && !inFlight && session!.state === "new") {
             const mine: { sent?: Promise<void>; placed?: () => void } = {};
@@ -2265,7 +2291,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             return await writeEnd(harness, root, gate, { state: "stopped", outcome: "cancelled", summary: why }, []);
           }
         }
-        let followedUp = false;
+        // A feedback round an earlier claim took (feedbackNow): its words are this claim's turn, never the job's input.
+        let followedUp = feedbackNow !== undefined;
         if (raising.resuming) {
           // Every row that woke it has reached its command() first (deps.delivered), so raises sent together are taken
           // together: one raise entry, and the run resumes once, at the latest cap, with one follow-up in the server's
@@ -2321,10 +2348,12 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             await Promise.race([firstInputPlaced, stopping, parking, harness.closed.then(() => undefined, () => undefined), lost]);
           }
           const sent = reopen.sent;
+          const fed = reopen.feedback;
           reopen = undefined;
           if (sent) {
             await sent.catch(() => undefined);
             followedUp = true;
+            if (fed) feedbackNow = fed;
           }
         }
         // A claim that starts a turn (the input, a recovery, a follow-up) waits for that turn's end: state is the session as
@@ -2337,8 +2366,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // stopped with a follow-up after it is not: the open turn is the follow-up's, recovered as the job's. It is settled, never recovered:
         // recovered, it ran as the job's turn, its answer lost, and the end-of-run step then asked the CLI again, a paid
         // look-back twice on one claim. The step asks it again once, under the run's cap (an earlier request of it booked
-        // at its hold, bookCut), or skips it, reading what the first ask kept (EndOfRunTurn ask's `kept`).
-        if (!followedUp && !firstUnplaced && session!.state === "open_turn" && (await record?.lookingBack())) await session!.settleOpenTurn();
+        // at its hold, bookCut), or skips it, reading what the first ask kept (EndOfRunTurn ask's `kept`). A feedback round
+        // (feedbackNow) sends no turn of its own before its look-back, so its open look-back is settled the same way.
+        if ((!followedUp || feedbackNow !== undefined) && !firstUnplaced && session!.state === "open_turn" && (await record?.lookingBack())) await session!.settleOpenTurn();
         /** The run's learned workflow, run first (AdapterRunSpec.workflowFirst), once for the run: the person's input on the
          *  record, then the workflow's call through the session's own learned_workflow tool as the loop wrapped it (its gate
          *  with its ask, its record, its flush and booking, the stop's abort), under one call id (replay never: a call a
@@ -2476,7 +2506,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // The turn this claim waits on: the first, then each the person's answer starts while the run waits in its claim on
         // its question (waitInClaim: ask_person with the browser open); "lapsed" when such a wait can no longer hold. None
         // when the workflow answered: the run ends on its answer.
-        const alone = served?.outcome === "answered" || (served?.outcome === "handed_back" && spec.workflowFirst?.replay === true);
+        // A feedback round (feedbackNow) asks no turn either: the run goes to its end-of-run turn.
+        const alone = served?.outcome === "answered" || (served?.outcome === "handed_back" && spec.workflowFirst?.replay === true) || feedbackNow !== undefined;
         let turn: Promise<TurnEnd | "lapsed"> = alone ? new Promise<never>(() => {}) : placed ? session!.turnEnd() : idleTurnOf(harness, root);
         // Set on every way out of the loop below but parkOn's, which returns before it is read.
         let data!: EndData;
@@ -3195,6 +3226,15 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     const theSession = session;
     const requestId = reflectRequestId(claim.runId, again, round, step);
     const theRecord = cliRecord;
+    // A grade's feedback round (feedbackNow): its first ask is told the grade first (feedback-round.ts feedbackAsk), and,
+    // when the agent never took the job (its learned workflow answered alone: its session is new), the job and the
+    // workflow's answer before it, cut of every secret the runner holds, as a follow-up's are.
+    if (feedbackNow && !again && step === undefined) {
+      const cut = (text: string) => (deps.redact ? deps.redact(text) : text);
+      const servedNow = theSession.state === "new" ? servedAnswerOf(await entriesOf(gate.journal, conversation.id, context)) : undefined;
+      const seen = servedNow && specNow ? { job: specNow.input, served: { workflow: servedNow.workflow, answer: cut(servedNow.answer) } } : undefined;
+      prompt = `${feedbackAsk({ ...feedbackNow, text: cut(feedbackNow.text) }, seen)}\n\n${prompt}`;
+    }
     reflecting = true;
     let timer: NodeJS.Timeout | undefined;
     try {

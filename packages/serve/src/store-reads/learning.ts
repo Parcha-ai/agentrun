@@ -14,7 +14,7 @@ import { said, STOPPED } from "../learning-words.js";
 import { type Impact, type ImpactLearning, learningImpact, noteRuns, notesRead } from "../learning-run.js";
 import { costSummary, type CostRun, type CostSummary, RUN_PATHS, type RunPath, runCostOf } from "../learning-cost.js";
 import { runPathOf, workflowNameOf } from "../runner/learning-end.js";
-import { PAST_RUNS, type PastRun, servedOf, workflowCostsOf } from "../runner/workflow-first.js";
+import { PAST_RUNS, type PastRun, servedAnswerOf, servedAnswerStands, servedOf, workflowCostsOf } from "../runner/workflow-first.js";
 import { type Reflect, reflects } from "../reflect-range.js";
 import type { NoteRuns } from "../learning.js";
 import { type NoteFiles, notesOf } from "../usage.js";
@@ -201,7 +201,7 @@ export async function agentLearningOverStore(store: Store, agentId: string): Pro
     } as unknown as RunRow);
     // What its claims laid of the skills and workflows it was offered (every learningLaid entry, laidOf): the run started
     // from those alone.
-    learnings.set(run.id, end ? impactLearningOf(end, started, laid, await roundsSpendOf(store, run.id)) : null);
+    learnings.set(run.id, end ? impactLearningOf(end, started, laid, await roundsSpendOf(store, run.id), run.costUsd) : null);
   }
   return { counts, impact: learningImpact(rows, (row) => learnings.get(row.id) ?? null), notes: noteRuns(files) };
 }
@@ -240,10 +240,15 @@ export async function agentCostOverStore(store: Store, agentId: string, limit = 
 /** What run `runId`'s learning spent, as its cost per run counts it: what it kept as it answered (`looked`: answeredOf),
  *  and its grade's spend (`grade`): its learning run's cost once that run ended, stopped or failed (runner/learning-loop.ts
  *  keeps the grade's spend there, a paid grade a person stopped included; null when unknown), 0 while it runs or when the
- *  run queued none. */
-async function learningSpendOf(store: Store, runId: string): Promise<{ looked: ReturnType<typeof answeredOf> | null; grade: number | null }> {
+ *  run queued none. A run a follow-up opened again (roundsSpendOf): its job is what it had cost when its first round
+ *  answered, and everything after (each later round's follow-up turn and every round's look-back: feedback the run was
+ *  given is learning, never the job) is its look-back here, `rowUsd` (the run's row cost) less that job; every round's
+ *  grade is its grade. */
+async function learningSpendOf(store: Store, runId: string, rowUsd: number | null): Promise<{ looked: ReturnType<typeof answeredOf> | null; grade: number | null }> {
   const kept = await store.learning.proposal(runId);
   if (!kept) return { looked: null, grade: 0 };
+  const rounds = kept.round > 1 ? await roundsSpendOf(store, runId) : undefined;
+  if (rounds) return { looked: roundsLooked(rounds, rowUsd), grade: rounds.grade_usd };
   const looked = answeredOf((kept.proposal ?? {}) as KeptRow);
   const learningRun = kept.learningRunId ? await store.runs.get(kept.learningRunId) : undefined;
   return { looked, grade: learningRun && FINAL_STATES.includes(learningRun.state) ? (learningRun.costUsd ?? null) : 0 };
@@ -256,8 +261,8 @@ type RunRecord = NonNullable<Awaited<ReturnType<Store["runs"]["get"]>>>;
  *  never the newest round's alone), else its one round's (learningSpendOf). `total_usd` is the run's all-in cost, the one
  *  the cost page shows and the money rule reads (pastRunsOverStore); null when any part is unknown. */
 export async function allInOf(store: Store, run: RunRecord): Promise<ReturnType<typeof runCostOf>> {
-  const rounds = await roundsSpendOf(store, run.id);
-  const { looked, grade } = rounds ? { looked: rounds, grade: rounds.grade_usd } : await learningSpendOf(store, run.id);
+  // Every round's (learningSpendOf over the rounds: what its row spent after its job answered is learning, roundsLooked).
+  const { looked, grade } = await learningSpendOf(store, run.id, run.costUsd);
   return runCostOf(run.costUsd, looked, grade);
 }
 
@@ -293,16 +298,21 @@ export async function pastRunsOverStore(store: Store, agentId: string, known?: R
 /** The path run `runId` took and the learned workflow it ran, the one classifier its run record keeps (metrics.path,
  *  metrics.workflow, metrics.workflow_digest: workflow-first.ts pathMetrics, written at the run's end) and its cost per run
  *  reads (pathOfRow). A run its learned workflow served first (its WORKFLOW_FIRST entry, servedOf): `workflow` when it
- *  answered and nothing came after, `handed_back` when it handed back or a follow-up had the agent work on, with its digest. Else, for a run its launch offered a learned workflow, its timeline
+ *  answered and its answer is still the run's last (servedAnswerStands), `handed_back` when it handed back or a follow-up's
+ *  new answer is the agent's, with its digest. Else, for a run its launch offered a learned workflow, its timeline
  *  (runner/learning-end.ts runPathOf, the agent calling the tool itself): `workflow` when its job did only that,
  *  `handed_back` when the agent went on, with the workflow its job called last. Any other run's path is `agent`. */
-export async function runPathOverStore(store: Store, runId: string, started: RunLaunch["learning"]): Promise<{ path: RunPath; workflow: string | null; digest?: string }> {
+export async function runPathOverStore(store: Store, runId: string, started: RunLaunch["learning"], redact?: (text: string) => string): Promise<{ path: RunPath; workflow: string | null; digest?: string }> {
   const entries = await runEntries(store, runId, BACKGROUND_CONTEXT);
   const served = servedOf(entries);
-  // One that answered stays `workflow` only while its job is that answer alone: a follow-up the agent then answered (the
-  // run opened again) is agent work after it, as the timeline classifier reads it (runPathOf): `handed_back`.
+  // The path is who wrote the run's final answer. One the workflow answered stays `workflow` while that answer is the
+  // run's last (servedAnswerStands): a follow-up that ended with no new answer of the agent's (a grade's feedback round,
+  // which asks the agent no turn of the job's) keeps it; one the agent answered anew is `handed_back`.
   if (served) {
-    const alone = served.outcome === "answered" && runPathOf(await runTimeline(store, runId, BACKGROUND_CONTEXT, { settled: false })) === "workflow";
+    // The workflow's answer as it produced it (its journal's), and as a follow-up showed it to the agent (cut by the
+    // runner's `redact`, adapter-loop.ts servedAnswerText): an agent that says it again leaves the path the workflow's.
+    const answer = servedAnswerOf(entries)?.answer ?? "";
+    const alone = served.outcome === "answered" && servedAnswerStands(answer, await runTimeline(store, runId, BACKGROUND_CONTEXT, { settled: false, caps: { text: Number.POSITIVE_INFINITY } }), redact ? redact(answer) : undefined);
     return { path: alone ? "workflow" : "handed_back", workflow: served.workflow, ...(served.digest ? { digest: served.digest } : {}) };
   }
   if (!started?.workflows?.length) return { path: "agent", workflow: null };
@@ -382,7 +392,17 @@ export function laidOf(entries: readonly EntryLike[]): Laid {
 /** What every round of a run that a follow-up opened again spent (undefined for a run with one round): when its first
  *  round's job answered and what the job cost to then, the look-backs of every round added up, and every round's grade. A
  *  figure that is unknown in any round is unknown (null). */
-type RoundsSpend = { answered_at: string; job_cost_usd: number | null; look_back_usd: number | null; grade_usd: number | null };
+export type RoundsSpend = { answered_at: string; job_cost_usd: number | null; look_back_usd: number | null; grade_usd: number | null };
+/** What a run with rounds (`rounds`) kept as it answered, as its cost per run and its impact both read it: its job is
+ *  what it had cost when its first round answered; everything its row (`rowUsd`) spent after that (each later round's
+ *  follow-up turn and every round's look-back: feedback the run was given is learning, never the job) is its look-back;
+ *  unknown when the row's cost is and the job's is known (the request no one priced came after the job answered: a later
+ *  round stopped mid-request keeps no figures, so the rounds' sum would read short as if settled); the rounds'
+ *  look-backs added up when the job's cost is unknown. */
+export function roundsLooked(rounds: RoundsSpend, rowUsd: number | null): { answered_at: string; job_cost_usd: number | null; look_back_usd: number | null } {
+  const after = rounds.job_cost_usd === null ? rounds.look_back_usd : rowUsd === null ? null : Math.max(0, Math.round((rowUsd - rounds.job_cost_usd) * 1e9) / 1e9);
+  return { answered_at: rounds.answered_at, job_cost_usd: rounds.job_cost_usd, look_back_usd: after };
+}
 export async function roundsSpendOf(store: Store, runId: string): Promise<RoundsSpend | undefined> {
   const newest = await store.learning.proposal(runId);
   if (!newest || newest.round < 2) return undefined;
@@ -407,11 +427,12 @@ export async function roundsSpendOf(store: Store, runId: string): Promise<Rounds
 /** What a run's learning end tells its impact, as ofAgent's learningOf read a held run: how it ended and when, the notes
  *  it started from; when its job answered and its costs once it looked back (a look-back of 0 for an ended one that did
  *  not); its grade's cost once it ended (0 when nothing was graded). */
-function impactLearningOf(end: RunLearningEnd, started: RunLaunch["learning"], laid: Laid | undefined, rounds?: RoundsSpend): ImpactLearning {
+export function impactLearningOf(end: RunLearningEnd, started: RunLaunch["learning"], laid: Laid | undefined, rounds?: RoundsSpend, rowUsd: number | null = null): ImpactLearning {
   const over = end.state === "merged" || end.state === "dropped";
-  // A run a follow-up opened again: its job answered at its first round's end, and every round's look-back and grade are
-  // its learning (the newest round's `job_cost_usd` also holds the earlier rounds' look-backs, never the job's own).
-  const looked = rounds ? { answered_at: rounds.answered_at, job_cost_usd: rounds.job_cost_usd, look_back_usd: rounds.look_back_usd } : end.answered_at !== undefined ? { answered_at: end.answered_at, job_cost_usd: end.job_cost_usd ?? null, look_back_usd: end.look_back_usd ?? null } : over ? { look_back_usd: 0 } : {};
+  // A run a follow-up opened again: its job answered at its first round's end, and all its row spent after (every later
+  // round's follow-up turn and look-back) and every round's grade are its learning, as its cost per run reads them
+  // (roundsLooked; the newest round's `job_cost_usd` also holds the earlier rounds' look-backs, never the job's own).
+  const looked = rounds ? roundsLooked(rounds, rowUsd) : end.answered_at !== undefined ? { answered_at: end.answered_at, job_cost_usd: end.job_cost_usd ?? null, look_back_usd: end.look_back_usd ?? null } : over ? { look_back_usd: 0 } : {};
   return {
     state: end.state, reason: end.reason, at: end.at, ...(started?.seedNotes !== undefined ? { seed_notes: started.seedNotes } : {}),
     ...(laid?.skills.length ? { seed_skills: laid.skills.length } : {}), ...(laid?.workflows.length ? { seed_workflows: laid.workflows.length } : {}), ...looked,

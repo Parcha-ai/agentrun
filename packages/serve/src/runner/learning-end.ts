@@ -29,7 +29,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { isMessageRow, type TimelineEvent } from "../timeline/index.js";
 import { Hearing } from "../heard.js";
 import { type LearningFolder, readLearning, readSnapshot } from "../learn/folder.js";
-import { type CompileAsk, type CompileTrace, compileDue, compilePrompt, compileReference,COMPILE_AFTER_RUNS, COMPILE_QUIET_RUNS, COMPILE_TRACES, type HeldAsk, heldNamesOf } from "../learn/compile.js";
+import { type CompileAsk, type CompileTrace, compileDue, compilePrompt, compileReference, COMPILE_AFTER_RUNS, COMPILE_QUIET_RUNS, COMPILE_TRACES, type GradedAsk, type HeldAsk, heldNamesOf } from "../learn/compile.js";
 import { type PromotionRecord, promotionOf, promotionsOf } from "../learn/promote.js";
 import { type DraftDecisions, draftDecisionProviders } from "../learn/skills.js";
 import { DECISION_PROVIDER_KEYS } from "../tool-plane.js";
@@ -46,9 +46,10 @@ import { costOf, type SignInReader } from "../run-view.js";
 import type { LearningProposal, McpServerRow, Store } from "../store/store.js";
 import { getMcpServer, listMcpServers } from "../mcp-store.js";
 import { readApprovers } from "../server-approvers.js";
-import { runEntries, runReflect, runTimeline } from "../store-reads/journal.js";
+import { runEntries, runReflect, runTimeline, withFeedback } from "../store-reads/journal.js";
 import { capNowOf } from "./journal-kinds.js";
-import { fits, reviseOf, servedOf, workflowDigest } from "./workflow-first.js";
+import { fits, reviseOf, servedAnswerOf, servedOf, workflowDigest } from "./workflow-first.js";
+import { pendingFeedbackOf } from "./feedback-round.js";
 import type { EndOfRunTurn } from "./loop-contract.js";
 import { type Checked, createReflectHook, type ReflectDeps, type ReflectTurn } from "./reflect-hook.js";
 import { runnerSecrets } from "./redact.js";
@@ -113,7 +114,8 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
     asked: async (runId) => {
       const [entries, reflect] = await Promise.all([runEntries(deps.store, runId, BACKGROUND_CONTEXT), runReflect(deps.store, runId, BACKGROUND_CONTEXT)]);
       const hearing = new Hearing();
-      for (const entry of entries) hearing.note(entry);
+      // A grade's feedback round's words (feedback-round.ts) are heard as the reviewer's, as its Timeline shows them.
+      for (const entry of withFeedback(entries)) hearing.note(entry);
       const heard = [...hearing.heard].filter(([id]) => !reflects(reflect as Reflect | undefined, id)).sort(([a], [b]) => a - b).map(([, one]) => one);
       const triggered = heard.flatMap(({ text, source }) => (source === undefined ? [] : [{ source, text }]));
       return { asked: heard.filter((one) => one.source === undefined).map(({ text }) => text), ...(triggered.length ? { triggered } : {}) };
@@ -350,7 +352,10 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
   const entries = await runEntries(deps.store, input.runId, BACKGROUND_CONTEXT).catch(() => []);
   const served = servedOf(entries);
   const stopped = reviseOf(entries);
-  let revising = served?.outcome === "handed_back" ? served.workflow : stopped?.workflow;
+  // A wrong grade of the answer its workflow gave alone (a `revise` feedback round this end closes): that workflow.
+  const fed = pendingFeedbackOf(entries);
+  const gradedOf = fed?.round === "revise" && fed.workflow ? fed.workflow : undefined;
+  let revising = served?.outcome === "handed_back" ? served.workflow : (stopped?.workflow ?? gradedOf);
   // The workflows whose newest revision other than their champion (learn/promote.ts championOf: it serves while that one
   // is held) is held: the run's own may be one (its champion served it, or it went by hand).
   const records: PromotionRecord[] = revising ? [] : await promotionsOf(deps.store.settings, input.agentId).catch(() => []);
@@ -461,7 +466,10 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
   leftOut.input = object && holds(input.input);
   const fields = object && !leftOut.input ? { input: input.input as Record<string, unknown> } : {};
   const base = { reference: compileReference(dsl, { tools, judges, jev }), notes: read.notes, traces, tools, described, judges, jev, ...fields, ...(outputSchema !== undefined ? { outputSchema } : {}) };
-  const ask: CompileAsk = !revising ? { mode: "new", ...base } : { mode: "revise", workflow: revising, current: read.current!, ...(served?.outcome === "handed_back" ? { handedBack: true as const } : stopped ? { revise: { workflow: stopped.workflow, served_usd: stopped.served_usd, by_hand_usd: stopped.by_hand_usd, runs: stopped.runs } } : held ? { held } : {}), ...base };
+  // A wrong grade of the answer its workflow gave alone: that answer and the grade's words, cut of the runner's secrets.
+  const cut = (text: string) => redactSecrets(text, input.refuse, Number.POSITIVE_INFINITY);
+  const graded: GradedAsk | undefined = revising && gradedOf && fed ? { answer: cut(servedAnswerOf(entries)?.answer ?? ""), words: cut(fed.text) } : undefined;
+  const ask: CompileAsk = !revising ? { mode: "new", ...base } : { mode: "revise", workflow: revising, current: read.current!, ...(served?.outcome === "handed_back" ? { handedBack: true as const } : stopped ? { revise: { workflow: stopped.workflow, served_usd: stopped.served_usd, by_hand_usd: stopped.by_hand_usd, runs: stopped.runs } } : graded ? { graded } : held ? { held } : {}), ...base };
   sayLeftOut();
   // Last, the prompt itself, whatever it is told now or later (a tool's description, the agent's output schema): one that
   // still holds a secret asks nothing.
