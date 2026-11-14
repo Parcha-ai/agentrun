@@ -81,6 +81,18 @@ test("an endpoint's input keeps its local references: each part's $ref rebased t
   }
 });
 
+test("an endpoint's input values are data, not schema: a $ref inside const, enum, default or examples is left as monid gave it", async () => {
+  const literal = { $ref: "#/x" };
+  const body = { type: "object", properties: { kind: { const: literal }, pick: { enum: [literal, "plain"] }, filter: { type: "object", default: literal, examples: [literal] }, who: { $ref: "#/$defs/P" } }, $defs: { P: { type: "string" } } };
+  const withValues = async (url, init) => {
+    const res = await fakeMonid(url, init);
+    if (new URL(url).pathname !== "/v1/inspect") return res;
+    return new Response(JSON.stringify({ ...(await res.json()), input: { body } }), { status: 200 });
+  };
+  const pinned = await pinMonid([ENRICH], { key: KEY, fetch: withValues });
+  assert.deepEqual(pinned.pin[ENRICH].input.properties.body, { ...body, properties: { ...body.properties, who: { $ref: "#/properties/body/$defs/P" } } }, "only the schema's own reference is rebased");
+});
+
 test("a run: a sync provider's output with its cost in dollars; an async one read until COMPLETED; each sent once", async () => {
   const now = await monid().run({ provider: "faux", endpoint: "/person/enrich", input: { body: { name: "Ada" } } });
   assert.deepEqual([now.status, now.output, now.cost], ["COMPLETED", { full_name: "Ada" }, { value: 0.003, currency: "USD" }]);
