@@ -70,6 +70,7 @@ import { githubAppAccess } from "./github-app.js";
 import { type Checkout, prCheckoutForClaim } from "./pr-checkout.js";
 import { holdStored, storeSecrets } from "./store-secrets.js";
 import { bashPolicyOf } from "../bash-read-only.js";
+import { monidApprovalPrice } from "../monid.js";
 
 /** The shared claim-time computer types live on the base spec (adapter-run-spec.ts), re-exported for this module's API. */
 export type { ClaimComputer, ClaimDeps, ClaimLaunch, ComputerForClaim } from "./adapter-run-spec.js";
@@ -512,6 +513,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   const webNames = webToolNames(granted);
   let learnedTool: Awaited<ReturnType<typeof learnedWorkflowHostTool>>;
   let webTools: HostTool[] = [];
+  // The environment the web host tools run on (monid's quotes are kept per environment): the card's price reads the same one.
+  let hostEnv: NodeJS.ProcessEnv | undefined;
   let life: ReturnType<typeof hostLifecycle> | undefined;
   // The keys the claim hands the run (its web tools and its learned workflow's call nodes run on them): never learned
   // (learningEndOfRun).
@@ -530,6 +533,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
       Object.assign(toolEnv, learnedKeys);
     }
     handedKeys = runnerSecrets(toolEnv);
+    hostEnv = toolEnv;
     // The run's resolved tool plane (its web tools' providers), as the pi spec hands it its web tools.
     delete toolEnv[TOOL_PLANE_ENV];
     if (launch.plane && Object.keys(launch.plane).length) toolEnv[TOOL_PLANE_ENV] = JSON.stringify(launch.plane);
@@ -602,6 +606,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     ...(launch.inputOrigin ? { inputOrigin: launch.inputOrigin } : {}),
     ...(runner.record ? { record: runner.record } : {}),
     gate,
+    // monid.run's card shows what the call is held at (monid.ts monidApprovalPrice), as an MCP tool's shows its price.
+    ...(hostEnv ? { approvalPrice: monidApprovalPrice(hostEnv) } : {}),
     runCap,
     ...(cap ? { cap } : {}),
     // The run's MCP for a harness with its own client (mcp-run.ts), the session the adapter mounts; absent when none.

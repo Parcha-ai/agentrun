@@ -46,7 +46,8 @@
 // it), waited on only when it has run out. Concurrent calls to one server share one such open.
 import { randomUUID } from "node:crypto";
 import { EndpointRefused, REFRESH_REQUEST_MS, refreshed, refused, RequestUnsent, type Seen, systemNetwork, type OAuthNetwork, type TokenSet } from "../mcp-oauth.js";
-import { type McpCredentials, type McpPin, mcpNameOf } from "../mcp-gateway.js";
+import { type McpCredentials, type McpPin } from "../mcp-gateway.js";
+import { mcpNameOf } from "../tool-names.js";
 import { META_REASON, metaToolOf } from "../mcp-meta.js";
 import { credentialInQuery, credentialInQueryWords, shownUrl } from "../mcp-probe.js";
 import { privateOAuthHosts } from "../mcp-private-hosts.js";
