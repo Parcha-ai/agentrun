@@ -104,7 +104,9 @@ test("a workflow's model request that answers after its claim lapsed is booked a
   const model = lost.spec.models.getModels().find((m) => m.id === PRICED.id);
   assert.ok(model, "the claim's models carry the priced model at its proxy");
   const answer = lost.spec.models.completeSimple(model, { messages: [{ role: "user", content: "CALL-ONE: say ok.", timestamp: T0 }] }, {}).catch((error) => ({ stopReason: "error", errorMessage: String(error) }));
-  await origin.reached;
+  // A request that ends before it reaches the origin fails here with its result, instead of waiting on `reached` forever.
+  const early = await Promise.race([origin.reached.then(() => undefined), answer]);
+  assert.equal(early, undefined, `the request reaches the origin before it ends: ${JSON.stringify(early)}`);
 
   // The first claim lapses on the store's clock while its request is out; the same runner takes the run at the next epoch.
   clock.now = T0 + LEASE_MS + 1;
