@@ -4,7 +4,7 @@
 // its toolkit, a server on the GitHub App is github/github, any other is url with the toolkit the owner gives it. Apply
 // maps each need to the saved server whose record matches (the owner picks when several do) and renames each catalog
 // name mcp:<toolkit>/<tool> to mcp:<server>/<tool> in the agent it makes. Also here: a template eval's fakes standing in
-// for a need, the display-only category and tags, and the examples/ folder, checked and never applied.
+// for a need, and the display-only category and tags.
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -39,7 +39,7 @@ mcp:
     allow: [list_notes]
     pin: { send_note: { to: "\${parameters.to}" } }
 parameters:
-  to: { type: string, description: "where the digest goes" }
+  to: { type: string, required: false, description: "where the digest goes" }
 ---
 Call mcp:notes/list_notes, then mcp:notes/send_note once. The text xmcp:notes/list_notes is not a tool name. You hold mcp:notes/*.
 `;
@@ -49,7 +49,7 @@ const SKILL = "---\nname: digest\ndescription: How to digest notes.\n---\nRead w
 async function notesPackage(t, change = () => {}) {
   const root = join(await scratch(t), "templates");
   const dir = join(root, "notes-digest");
-  const files = { "agent.md": MANIFEST, "skills/digest/SKILL.md": SKILL, "report.schema.json": JSON.stringify({ type: "object", required: ["summary"], properties: { summary: { type: "string", contentMediaType: "text/markdown" } } }), "examples/monday/input.json": JSON.stringify({ content: "Digest this week's notes." }), "examples/monday/output.json": JSON.stringify({ summary: "Three notes." }), "examples/monday/output.md": "Three notes.\n" };
+  const files = { "agent.md": MANIFEST, "skills/digest/SKILL.md": SKILL, "report.schema.json": JSON.stringify({ type: "object", required: ["summary"], properties: { summary: { type: "string", contentMediaType: "text/markdown" } } }) };
   files["agent.md"] = files["agent.md"].replace("parameters:", "output: { schema: report.schema.json }\nparameters:");
   change(files);
   for (const [path, text] of Object.entries(files)) {
@@ -80,17 +80,17 @@ async function notesServer(t) {
   return fake;
 }
 
-test("a package names an MCP need by its source and toolkit, with a reason, and its category and tags; examples/ is read and listed", async (t) => {
+test("a package names an MCP need by its source and toolkit, with a reason, and its category and tags", async (t) => {
   const { dir } = await notesPackage(t);
   const p = readPackage(dir);
   assert.deepEqual(p.mcp, [{ source: "url", toolkit: "notes", tools: ["list_notes", "send_note"], required: false, reason: "Reads your notes and sends the digest on.", allow: ["list_notes"], pin: { send_note: { to: "${parameters.to}" } } }]);
   const view = packageView(p);
-  assert.deepEqual([view.category, view.tags, view.examples], ["research", ["notes", "digest"], ["monday"]]);
+  assert.deepEqual([view.category, view.tags], ["research", ["notes", "digest"]]);
+  assert.ok(!Object.hasOwn(view, "examples"), "a package keeps no examples");
   assert.deepEqual(view.mcp, [{ source: "url", toolkit: "notes", required: false, reason: "Reads your notes and sends the digest on.", tools: [{ name: "list_notes", tool: "mcp:notes/list_notes", asks: "allow" }, { name: "send_note", tool: "mcp:notes/send_note", asks: "ask", pin: { to: "${parameters.to}" } }] }]);
-  assert.ok(!Object.keys(p.skills).some((path) => path.includes("examples")), "an example never reaches the agent");
 });
 
-test("the validator refuses an MCP need in the old shape or a bad one, a category or tag outside the rule, and an example that does not check", async (t) => {
+test("the validator refuses an MCP need in the old shape or a bad one, a category or tag outside the rule, an examples/ folder and a checks field", async (t) => {
   const edit = (from, to) => (files) => void (files["agent.md"] = files["agent.md"].replace(from, to));
   const has = async (change, pattern) => {
     const found = await problems(t, change);
@@ -107,11 +107,9 @@ test("the validator refuses an MCP need in the old shape or a bad one, a categor
   await has(edit("category: research", "category: games"), /category is one of engineering, security, sales, marketing, research, finance, operations, compliance, personal/);
   await has(edit("tags: [notes, digest]", "tags: [Notes]"), /tags is a list of at most 8 tags/);
   await has(edit("tags: [notes, digest]", `tags: [${Array.from({ length: 9 }, (_, i) => `t${i}`).join(", ")}]`), /tags is a list of at most 8 tags/);
-  await has((files) => void (files["examples/monday/input.json"] = "[1]"), /examples\/monday\/input\.json: .*input/);
-  await has((files) => void (files["examples/monday/output.json"] = JSON.stringify({ summary: 3 })), /examples\/monday\/output\.json: does not match the output schema/);
-  await has((files) => void (files["examples/monday/output.json"] = undefined), /examples\/monday: has no output\.json/);
-  await has((files) => void (files["examples/monday/run.sh"] = "echo hi\n"), /examples\/monday\/run\.sh: an example holds input\.json, output\.json and output\.md only/);
-  await has((files) => void (files["docs/notes.md"] = "x\n"), /a package's folders are skills\/, rules\/, evals\/ and examples\//);
+  await has((files) => void (files["examples/monday/input.json"] = JSON.stringify({ content: "Digest this week's notes." })), /^examples\/: a package's folders are skills\/, rules\/ and evals\/$/);
+  await has((files) => void (files["docs/notes.md"] = "x\n"), /^docs\/: a package's folders are skills\/, rules\/ and evals\/$/);
+  await has(edit("parameters:", "checks: [has-summary]\nparameters:"), /^agent\.md: no field checks: the fields are /);
 });
 
 test("a saved MCP server records its source and toolkit: url with none by default, the owner's toolkit when given, composio from the preset; removed with the server", async (t) => {

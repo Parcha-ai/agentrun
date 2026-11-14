@@ -12,21 +12,15 @@ code-review/
   skills/<name>/SKILL.md   Agent Skills: front matter names the skill (= its folder) and describes it
   rules/*.md               rules each skill reads: apply puts a copy beside each SKILL.md
   evals/<case>/prompt.md   a case's run input (front matter: description, runs, max_cost_usd, ...)
-  evals/<case>/graders/*.md   front matter `type`: llm, regex, tool_used, file_exists or schema (with `schema: <file>`)
+  evals/<case>/graders/*.md   front matter `type`: llm, regex, tool_used or file_exists
   evals/<case>/case.yaml, evals/<case>/fixtures/   optional
-  examples/<name>/input.json, output.json, output.md?   a sample run, shown and never applied
   skills/review/findings.schema.json   any other file the manifest names (here the answer's schema, which the
                            reviewers' guides beside it read too)
 ```
 
-Links and other special files are refused anywhere in the folder, and its only folders are `skills/`, `rules/`,
-`evals/` and `examples/`. The server checks evals for their layout only and runs none; `agentrun template eval DIR`
-runs them ([Running the evals](#running-the-evals)).
-
-Each `examples/<name>/` shows what one run takes and gives, for a listing to show: `input.json`, the run's input (a
-JSON object, checked as a run's input is), `output.json`, its answer (checked against `output`'s schema when the
-package has one), and `output.md`, optional, the answer as a person reads it. Nothing else goes in it. Apply never
-reads it, and its files are not the agent's (they don't count toward the agent's 1 MiB).
+Links and other special files are refused anywhere in the folder, and its only folders are `skills/`, `rules/` and
+`evals/`. The server checks evals for their layout only and runs none; `agentrun template eval DIR` runs them
+([Running the evals](#running-the-evals)).
 
 ## The packages this server ships
 
@@ -119,7 +113,8 @@ Each `evals/<case>/` is one test of the package's agent. No eval runs on the ser
   - `tool_used`: `tool` (or `tools`, a list), `expect: called` (the default) or `not_called`, and optionally `count` and
     `args` (the arguments a call must carry).
   - `file_exists`: `path` in the run's work folder.
-  - `schema`: `schema`, a JSON Schema file in the package, which the answer's last fenced `json` block meets.
+
+  The answer's shape needs no grader: every completed run of a package with `output` is held to its schema.
 
 ## Running the evals
 
@@ -141,8 +136,8 @@ A Ctrl-C cancels the run in progress and cleans up as the end does (a second one
 report.
 Before anything runs, every case named is read and checked whole: the prompt's front matter, `case.yaml` against the
 package (its parameters and grants as an apply checks them), each fake MCP server's fixture, each learned note as the
-learning API checks one, and each grader's fields (an unknown field, a pattern that does not compile, a schema that
-does not compile, a tool the package does not have).
+learning API checks one, and each grader's fields (an unknown field, a pattern that does not compile, a tool the
+package does not have).
 
 **Where it runs.** By default on a server of its own, started in the command's process over a temp data directory that
 holds a copy of the package alone and is removed at the end: the eval never touches your server, and needs the model
@@ -173,10 +168,12 @@ and runs on the eval's own server.
 
 A case passes when every grader passes on every run.
 
+**The output check.** A package with `output` holds every completed run to its schema with no grader file: the run
+fails when the server's own read of its answer sets `result.output_error` (its last fenced `json` block missing, not
+JSON, or refused by the schema, after the runner's one retry). The report lists it as the grader `output`.
+
 **The graders**, as the runner reads them:
 
-- `schema`: the answer's last fenced `json` block (```` ```json ```` or a longer fence), parsed and checked against the
-  schema, draft 2020-12 with `format` checked.
 - `regex`: `pattern` with `flags` (some of `i`, `m`, `s`, `u`, `v`) over the whole answer, or over `target`, a field of
   the last `json` block (`a.b` for a nested one; a string as it is, anything else as its JSON). An answer with no such
   field fails the grader, whatever `expect` says.
@@ -213,7 +210,7 @@ The report gives each run's cost and each `llm` grade's, as their run records sa
 | `tool_policy` | `{bash: read-only}`: a policy on the agent's bash, the one tool that takes one. Apply writes it as `policy` on bash in the agent's `tool_settings` (`definition.tool_settings.bash.policy`), whatever bash's permission, and the tool gate reads each shell call's command before it runs or anyone is asked. Under `read-only` it refuses, in words the model reads, any command that could write, run code or read outside the run's folder: a program outside the read list (git's read subcommands `diff`, `show`, `log`, `blame`, `grep`, `ls-files`, `ls-tree`, `rev-parse`, `cat-file`, `merge-base`, `status`, `shortlog`, `rev-list`, `diff-tree`, `name-rev`, `describe`; `grep`, `egrep`, `fgrep`, `rg`, `sed -n 'N,Mp'`, `cat`, `head`, `tail`, `wc`, `nl`, `ls`, `find` without `-exec` or `-delete`, `sort`, `uniq`, `cut`, `tr`, `diff`, `basename`, `dirname`, `echo`, `true`), a redirection other than `2>/dev/null` and `2>&1`, `$` and backticks, a subshell, `\|\|` or a lone `&`, a pipe into anything but a filter (`head`, `tail`, `sed -n`, `grep`, `wc`, `sort`, `uniq`, `cut`, `tr`, `nl`), an unquoted glob (a glob is quoted, and only in a grep pattern, an `--include=` value or a `find -name` value), a path outside the run's folder, or one on the never-open list (`.env*`, `.ssh/`, `id_rsa*`, `*.pem`, `*.key`, `.npmrc`, `.netrc`, `.git-credentials`, `credentials`), which refuses a command that names such a file but is no fence around the folder: a recursive search reads all it holds, the run's own files and never a key of the server's. `git -C <dir>` is allowed to a directory inside the folder. A line with a `cd` joins its commands with `&&` only. `bash_background` and `bash_input` are refused under it. The check reads the command, never the folder, so a symbolic link in the folder reaches what the computer lets it; and it holds bash alone, so a read-only agent's tools are `read` and `bash` (one that may write can change what git obeys). Approvals `never` lifts none of it. A package with `tools` grants `bash` among them. |
 | `computer` | `default` (or absent): the agent runs where this server puts a new one. Or a preference list, `[shell, none]`, read like `harness`: apply takes the first entry this server meets now and saves it as the agent's `computer`. `shell` is a computer that gives the agent a shell here: Archil's serverless exec on the runner when Archil is on (Settings → Workspace; `bash` alone, so `bash_background` and the other background tools are not granted), else the Docker sandbox where Docker answers. `none` is no shell, and is always met: the shell tools in `tools` (`bash` and the background tools) are not granted, and neither is `tool_policy`'s bash. A package with no `tools` is given the chosen shell's tools, as a new agent in a box is given the box's. A fallback, or a tool not granted, is said in a `computer` warning on the apply. A list with `shell` alone, where there is none, refuses the apply (`409`, nothing made). A list without `shell` grants no shell tool, so one in `tools` is refused, and so is an entry after `none`, which would never be picked. The choice is made at apply: a server that gains a shell later gives it to an agent applied again. `GET /v2/templates` shows the list as `computer`, and as `computer_here` what an apply here would pick now: the entry, the agent's `computer`, the shell in words, the tools it would not grant, and the warning or refusal. |
 | `checkout` | `pull_request` only: apply sets the agent definition's `checkout`, and the server checks out the pull request each run's GitHub event names before its first turn, in `repo/` of the run's folder, detached at the head, with its base and their merge base (refs `pr/head`, `pr/base`, `pr/merge-base`: `git diff pr/merge-base pr/head` reads the change). The server fetches it with its GitHub App's token, narrowed to that one repository and `contents: read` and revoked after the fetch, or anonymously with no App; the agent never holds a token, and nothing of it is left in the folder or the checkout's git config. The run's system prompt says what was checked out, or why nothing was, so the package's instructions can fall back to the GitHub MCP. It is removed when the run's claim ends. With `tool_policy: {bash: read-only}` the agent reads it with git's read subcommands and never fetches itself. |
-| `parameters` | By name: `{type: string \| number \| integer \| boolean, required?, pattern? (strings), enum?, default?, description}`, or a list of a scalar: `{type: array, items, required?, default?, description}`, its `items` a scalar in the `inputs` vocabulary (`{type: string, minLength: 1}`), which a form asks one item a line. `enum` lists a closed set of values, which a form shows as a choice; give it instead of a pattern. A placeholder fills text as text (a list as its items joined by `, `, an empty one as `""`). A `target.input` value that is one placeholder alone takes the parameter's value with its type (a list stays a list, an integer an integer), and is dropped from `target.input` when the parameter was given no value and has no default, so the input schema sees the field absent: a watch declares `parameters: {companies: {type: array, items: {type: string}}}`, `inputs` the same, and `target.input: {companies: "${parameters.companies}"}`. A pin value that is a list parameter's placeholder alone pins the list as a one-of. The `description` is what a person reads beside the field, never the pattern, so say the format in it ("a Slack channel ID like C0123ABCD"). Apply takes them in `parameters`, and one left out takes its `default`. `display_name`, the body, a trigger's `target.input`, a schedule's `cron` and `timezone`, the `in` values of a github or webhook trigger's `accept` where conditions, and an `mcp` entry's `pin` values name them as `${parameters.<name>}`, nowhere else. A webhook trigger's where filters a provider that sends every trigger of a project to one URL (Composio) to the owner's own repository: `{pointer: /data/repository_name, in: ["${parameters.repo}"]}`. A parameter a where takes is required or has a default, so the filter never fills empty. A parameter a schedule uses has a default, and the package's own schedule is checked with it; apply checks every trigger with the parameters given before it makes anything, so a bad cron or zone is a `422` under `triggers.<i>`. |
+| `parameters` | The setup an owner fills once, at apply. Written exactly as `inputs` are (the same keys, the same rule: required unless `required: false`, a `default` only on one that is not) and compiled by the same code; `GET /v2/templates` shows them as a JSON Schema like `input_schema`, and the console's Apply form is the run form. The one difference is where they are filled: apply takes them in `parameters` (a blank one takes its `default`; they are checked as a run's input is, with the same `422` words under `parameters.<name>`), and puts them where the package writes `${parameters.<name>}`: `display_name`, the body, a trigger's `target.input`, a schedule's `cron` and `timezone`, the `in` values of a github or webhook trigger's `accept` where conditions, and an `mcp` entry's `pin` values, nowhere else. Text takes the value as text (a list as its items joined by `, `). A `target.input` value or a pin value that is one placeholder alone takes the value with its type (a list pinned is a one-of); in `target.input` one given no value is dropped, so the input schema sees the field absent. A parameter a where takes is required or has a default, so the filter never fills empty; one a schedule uses has a default, which the package's own schedule is checked with, and apply checks every trigger with the values given before it makes anything (`422` under `triggers.<i>`). |
 | `inputs` | By name: each run's typed input, which apply compiles into the agent's `input_schema` (a closed JSON Schema object). Each is `{type: string \| number \| integer \| boolean \| array, required?, title?, description?, examples?, default?, enum?, pattern? and format? (strings), minLength?/maxLength? (strings), minimum?/maximum? (numbers), items? (an array's scalar, with that scalar's keys)}`, nothing else; an input is required unless it says `required: false`, and a `default` is for one that is not. `format` is `uri`, `email`, `hostname`, `date`, `date-time` or `uuid`, which the server checks, or `cron` or `timezone`, which a form reads. A default and each example are checked against their own input. `content` is the run's message: named, it is a string. Every path that starts a run (the API, the CLI, a trigger, the console) checks the input against it and refuses one that does not meet it with `422 input_invalid`, a path per field (`input.country`). The model is sent the input's `content`, then the other fields as one fenced `json` block under the line `Input:`, so the instructions read each field by its name. `GET /v2/templates` shows it as `input_schema`, and the console's run form is drawn from it. A trigger's `target.input` and an eval case's `input` are checked against it too. Absent: a run takes `{content}`, as before. |
 | `secrets` | Variable names (never values) the server must hold: a model or tool key Settings saves (`OPENROUTER_API_KEY`, `PARALLEL_API_KEY`, ...), set where it starts or saved there. Any other name is refused: the server could neither save it nor hand it to a run. Apply refuses with `409 agent_not_runnable`, making nothing, when one is missing. |
 | `budget` | `{per_run_usd}`: each run's cap (the agent's `max_cost_usd`), required when the package has triggers. A call count belongs in the instructions ("about 30 calls"); the cap is the hard stop. |
@@ -221,7 +218,6 @@ The report gives each run's cost and each `llm` grade's, as their run records sa
 | `approvals` | `ask` (the default: the agent asks its person before a tool runs) or `never` (it runs unattended). The package's recommendation, shown as `approvals_default` for the apply screen; a template whose job runs on triggers says `never`. `never` only skips asking for the tools the agent was granted: an MCP tool the owner left unticked at apply is not one. Deny settings and pins hold either way. |
 | `triggers` | `POST /v2/triggers` bodies with no `agent_id` (the target is a `start_run`), each with a `name`, unique in the package: the key an upgrade will match triggers by. |
 | `output` | `{schema: <file>}`: the JSON Schema of the agent's answer, a file in the package. It becomes the agent's `output_schema`: the runner puts it in the instructions on every harness and asks once more when an answer misses it. A string property with `contentMediaType: "text/markdown"` is a report the console renders as Markdown. A skill that reads the schema itself keeps the file in its own folder. |
-| `checks` | Names of structural checks of a run's answer; none runs yet. |
 
 The check is whole: the package is compiled with a sample of each parameter, and the agent body and each trigger body are
 checked as `POST /v2/agents` and `POST /v2/triggers` check theirs (all but the agent a trigger names, which apply makes).

@@ -25,7 +25,7 @@ const release = (repo, action = "published") => ({ action, release: { tag_name: 
 
 /** A template package in a directory of its own: code-review with the github trigger proposed for it, its repository a
  *  parameter. `accept` and `parameter` vary it for the manifest's checks. */
-function manifest({ name = "code-review", accept = ACCEPT, parameter = 'repo: { type: string, required: true, pattern: "^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+$", description: "the repository, as owner/name" }' } = {}) {
+function manifest({ name = "code-review", accept = ACCEPT, parameter = 'repo: { type: string, pattern: "^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+$", description: "the repository, as owner/name" }' } = {}) {
   return `---\nname: ${name}\nversion: 1.0.0\ndescription: Reviews each pull request to one repository.\ndisplay_name: "Code review: \${parameters.repo}"\nparameters:\n  ${parameter}\nbudget: { per_run_usd: 1.00 }\napprovals: never\ntriggers:\n  - name: pull-requests\n    source: { kind: github, accept: ${accept} }\n    target: { kind: start_run, input: { content: "Review the pull request." } }\n---\nReview the pull requests to \${parameters.repo}.\n`;
 }
 
@@ -53,7 +53,7 @@ test("a github trigger's accept may take a parameter in a where condition's in v
   assert.ok(elsewhere.some((p) => /triggers\[0\]\.source holds \$\{parameters\.repo\}/.test(p)), JSON.stringify(elsewhere));
   const pointer = await problems(t, manifest({ accept: '[{ event: pull_request, where: [{ pointer: "/${parameters.repo}", exists: true }] }]' }));
   assert.ok(pointer.some((p) => /triggers\[0\]\.source holds \$\{parameters\.repo\}/.test(p)), JSON.stringify(pointer));
-  const optional = await problems(t, manifest({ parameter: 'repo: { type: string, description: "the repository, as owner/name" }' }));
+  const optional = await problems(t, manifest({ parameter: 'repo: { type: string, required: false, description: "the repository, as owner/name" }' }));
   assert.ok(optional.includes("agent.md: parameters.repo is used in triggers[0].source.accept, so it is required or has a default: a github trigger filled empty takes no event"), JSON.stringify(optional));
 });
 
