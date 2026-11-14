@@ -762,11 +762,11 @@ test("market-monitor's sends are pinned to its channel: the consent screen shows
 
   const listed = (await api("GET", "/templates")).body.templates.find((x) => x.name === "market-monitor");
   assert.deepEqual(listed.mcp.map((need) => need.tools), [
-    [{ name: "SLACK_SEND_MESSAGE", tool: SEND, asks: "ask", pin: { channel: "${parameters.channel}", channel_id: null } }],
-    [{ name: "GMAIL_SEND_EMAIL", tool: "mcp:gmail/GMAIL_SEND_EMAIL", asks: "ask", pin: { recipient_email: "${parameters.channel}", to: null, cc: null, bcc: null, extra_recipients: null, from_email: null } }],
+    [{ name: "SLACK_SEND_MESSAGE", tool: SEND, asks: "ask", pin: { channel: "${parameters.channel}" } }],
+    [{ name: "GMAIL_SEND_EMAIL", tool: "mcp:gmail/GMAIL_SEND_EMAIL", asks: "ask", pin: { recipient_email: "${parameters.channel}", cc: null, bcc: null, extra_recipients: null, from_email: null } }],
   ]);
   const inbound = (await api("GET", "/templates")).body.templates.find((x) => x.name === "inbound-lead");
-  assert.deepEqual(inbound.mcp.find((need) => need.toolkit === "slack").tools, [{ name: "SLACK_SEND_MESSAGE", tool: SEND, asks: "ask", pin: { channel: "${parameters.slack_channel}", channel_id: null } }]);
+  assert.deepEqual(inbound.mcp.find((need) => need.toolkit === "slack").tools, [{ name: "SLACK_SEND_MESSAGE", tool: SEND, asks: "ask", pin: { channel: "${parameters.slack_channel}" } }]);
   const hubspot = inbound.mcp.find((need) => need.toolkit === "hubspot").tools;
   assert.deepEqual(hubspot.map((x) => [x.name, x.asks, x.pin]), [["HUBSPOT_CREATE_NOTE", "ask", undefined]], "its one call, the note, stays unpinned: the contact comes only from a HubSpot CRM event's own payload");
 
@@ -780,9 +780,9 @@ test("market-monitor's sends are pinned to its channel: the consent screen shows
   assert.equal((await api("GET", `/agents/${given.body.agent_id}`)).body.tools.find((x) => x.name === SEND), undefined, "unticked: not granted");
   const granted = await api("POST", "/templates/market-monitor/apply", { parameters: { competitors: "Acme (acme.example)", channel: "C0MKTINTEL" }, grants: [SEND] });
   assert.equal(granted.status, 201, JSON.stringify(granted.body));
-  assert.deepEqual(await settingsOf(given), { [SEND]: { pin: { channel: "C0MKTINTEL", channel_id: null } } });
+  assert.deepEqual(await settingsOf(given), { [SEND]: { pin: { channel: "C0MKTINTEL" } } });
   assert.deepEqual(pinWarnings(given), []);
-  assert.deepEqual(await settingsOf(granted), { [SEND]: { permission: "allow", pin: { channel: "C0MKTINTEL", channel_id: null } } });
+  assert.deepEqual(await settingsOf(granted), { [SEND]: { permission: "allow", pin: { channel: "C0MKTINTEL" } } });
   assert.equal((await api("GET", `/agents/${granted.body.agent_id}`)).body.tools.find((x) => x.name === SEND)?.permission, "allow");
 
   // No channel: the send has no destination, so it can't run at all, granted or not, and the answer says so.
