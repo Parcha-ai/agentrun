@@ -13,7 +13,7 @@ const NO_DOCKER_SANDBOX = "No Docker on this server: Render and most hosted serv
 /** Mode 2 (run folders on Archil): a vendor sandbox mounts them. */
 const NO_DOCKER_SANDBOX_ARCHIL = "No Docker on this server: Render and most hosted services run none. Use a vendor computer, e.g. Modal, E2B or Agent37 for a sandbox.";
 /** Either mode: a desktop holds no run folder, so any vendor's works. */
-const NO_DOCKER_DESKTOP = "No Docker on this server: Render and most hosted services run none. Use a vendor computer, e.g. E2B, Agent37 or Orgo for a desktop.";
+const NO_DOCKER_DESKTOP = "No Docker on this server: Render and most hosted services run none. Use a vendor computer, e.g. E2B, Agent37, Orgo or boxd for a desktop.";
 
 /** A stand-in ask that answers each call with the next of `answers`, counting calls. */
 function asks(...answers) {

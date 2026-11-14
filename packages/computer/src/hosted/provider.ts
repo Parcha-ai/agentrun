@@ -753,12 +753,15 @@ export class HostedProvider implements ComputerProvider {
 	 */
 	async #prepare(spec: ComputerSpec, ref: ComputerRef, { labels, daemon, sha256, commands, user, runtime }: Made, signal?: AbortSignal): Promise<Result<string[]>> {
 		const { uploadMs, execMs, requestMs } = this.#timeouts;
-		const running = await this.#running(ref, signal);
+		let running = await this.#running(ref, signal);
 		if (!running.ok) return running;
 		if (this.host.prepare) {
 			const prepare = this.host.prepare.bind(this.host);
 			const prepared = await this.#call(`${this.#label}'s settings of ${ref.name}`, (ctx) => prepare(ref.id, ctx), requestMs, signal);
 			if (!prepared.ok) return prepared;
+			// The read-back holds the machine as prepare left it (its network closed, a timer off), not as it first ran.
+			running = await this.#running(ref, signal);
+			if (!running.ok) return running;
 		}
 		const drift = this.#machineDrift(spec, running.value, labels);
 		if (drift.length > 0) return this.#fail("refused", `it did not match its spec: ${drift.join("; ")}`);

@@ -35,6 +35,7 @@
     "test:support": "node --test examples/support-answer.test.mjs examples/support-answer-runner.test.mjs"
   },
   "devDependencies": {
+    "@boxd-sh/sdk": "0.3.1",
     "@types/node": "^22.0.0",
     "ajv": "^8.18.0",
     "e2b": "2.63.0",

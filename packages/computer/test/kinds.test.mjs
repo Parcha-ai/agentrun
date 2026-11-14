@@ -27,6 +27,7 @@ import {
 	servingRefusals,
 } from "../dist/index.js";
 import { Agent37Provider } from "../dist/agent37.js";
+import { BoxdProvider } from "../dist/boxd.js";
 import { keyPair } from "./fake-agent37.mjs";
 import { BrowserbaseProvider } from "../dist/browserbase.js";
 import { E2BProvider } from "../dist/e2b.js";
@@ -131,7 +132,7 @@ test("PROVIDERS is one entry per descriptor, in the registry's order, with the d
 	assert.deepEqual(PROVIDERS.find((entry) => entry.id === "docker").kinds, ["sandbox", "desktop"]);
 	const mounts = Object.fromEntries(PROVIDERS.map((entry) => [entry.id, entry.mounts]));
 	assert.deepEqual(mounts.docker, ["bind"]);
-	for (const id of ["orgo", "phone-harness", "browserbase", "kernel", "local-chrome"]) assert.deepEqual(mounts[id], [], id);
+	for (const id of ["orgo", "phone-harness", "browserbase", "kernel", "local-chrome", "boxd"]) assert.deepEqual(mounts[id], [], id);
 });
 
 test("PROVIDERS' default images: each kind is one of the entry's own, and each value is its descriptor's constant", async () => {
@@ -158,6 +159,7 @@ test("PROVIDERS' default images: each kind is one of the entry's own, and each v
 		browserbase: { browser: browser.BROWSER_IMAGE },
 		kernel: { browser: browser.BROWSER_IMAGE },
 		"local-chrome": { browser: browser.BROWSER_IMAGE },
+		boxd: { sandbox: all.BOXD_DEFAULT_IMAGE, desktop: all.BOXD_DEFAULT_IMAGE },
 	};
 	for (const [id, images] of Object.entries(expected)) {
 		assert.deepEqual(PROVIDERS.find((entry) => entry.id === id)?.defaultImage, images, `${id}: its default images are its modules' constants`);
@@ -167,6 +169,7 @@ test("PROVIDERS' default images: each kind is one of the entry's own, and each v
 		[daytona.DAYTONA_DEFAULT_SNAPSHOT, modal.MODAL_DEFAULT_IMAGE, e2b.E2B_BASE_TEMPLATE, e2b.E2B_DESKTOP_TEMPLATE, all.AGENT37_BASE_TEMPLATE, all.AGENT37_BOX_TEMPLATE, orgo.ORGO_BASE_IMAGE, phone.PHONE_IMAGE, browser.BROWSER_IMAGE],
 		["default", "debian:bookworm-slim", "base", "desktop", "agent37-base", "agentrun-box", "linux", "android", "chromium"],
 	);
+	assert.equal(all.BOXD_DEFAULT_IMAGE, "default");
 	// Docker's sandbox has none: serve builds its own image (DOCKER_RECIPE).
 	assert.equal(PROVIDERS.find((entry) => entry.id === "docker").defaultImage, undefined);
 });
@@ -249,6 +252,10 @@ test("a kind's images, and the configuration a setting selects: by its image; no
 
 /** The E2B SDK's Sandbox slice, never called: these build a provider only to read what it declares. */
 const E2B_SANDBOX = Object.fromEntries(["create", "connect", "getInfo", "setTimeout", "kill", "list"].map((name) => [name, () => assert.fail(`Sandbox.${name} was called`)]));
+/** boxd's SDK slice: a client whose every machines call fails the test. */
+const BOXD_SDK = class {
+	machines = { ...Object.fromEntries(["create", "get", "list", "delete", "streamExec", "waitUntilReady", "setEgressAllow", "setAutoHibernateTimeout", "updateLabels"].map((name) => [name, () => assert.fail(`machines.${name} was called`)])), files: { upload: () => assert.fail("machines.files.upload was called") } };
+};
 /** ssh2's Client slice for Agent37, never constructed here; and a fresh key, never used. */
 const AGENT37_SSH2 = {
 	Client: class {
@@ -284,6 +291,7 @@ const BUILT = {
 		},
 	],
 	// Each configuration built by its own create() options, as serve builds the one a setting's image selects.
+	boxd: PROVIDERS.find((one) => one.id === "boxd").capabilities.map(({ options }) => () => new BoxdProvider({ ...options, apiKey: "fake-test-key", Boxd: BOXD_SDK })),
 	orgo: PROVIDERS.find((one) => one.id === "orgo").capabilities.map(({ options }) => () => createOrgo({ ...options, apiKey: "fake-test-key", workspaceId: "ws-test", fetch: async () => new Response(null, { status: 500 }) })),
 };
 

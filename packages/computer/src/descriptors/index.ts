@@ -1,6 +1,7 @@
 // Every built-in provider's descriptor, in the order Settings shows them. Importing this loads descriptors (data) alone:
 // each provider module loads only when its descriptor's load() is called.
 import { AGENT37 } from "./agent37.js";
+import { BOXD } from "./boxd.js";
 import { BROWSERBASE } from "./browserbase.js";
 import { DAYTONA } from "./daytona.js";
 import { DOCKER } from "./docker.js";
@@ -11,10 +12,11 @@ import { MODAL } from "./modal.js";
 import { ORGO } from "./orgo.js";
 import { PHONE_HARNESS } from "./phone-harness.js";
 
-export const DESCRIPTORS = [DOCKER, DAYTONA, MODAL, E2B, AGENT37, ORGO, PHONE_HARNESS, BROWSERBASE, KERNEL, LOCAL] as const;
+export const DESCRIPTORS = [DOCKER, DAYTONA, MODAL, E2B, AGENT37, ORGO, PHONE_HARNESS, BROWSERBASE, KERNEL, LOCAL, BOXD] as const;
 
-export { AGENT37, BROWSERBASE, DAYTONA, DOCKER, E2B, KERNEL, LOCAL, MODAL, ORGO, PHONE_HARNESS };
+export { AGENT37, BOXD, BROWSERBASE, DAYTONA, DOCKER, E2B, KERNEL, LOCAL, MODAL, ORGO, PHONE_HARNESS };
 export { AGENT37_BASE_TEMPLATE, AGENT37_BOX_TEMPLATE } from "./agent37.js";
+export { BOXD_DEFAULT_IMAGE } from "./boxd.js";
 export { DAYTONA_DEFAULT_SNAPSHOT, DAYTONA_GPU_SNAPSHOT, type DaytonaGpuSnapshot, daytonaGpu, daytonaGpuSnapshot } from "./daytona.js";
 export { E2B_BASE_TEMPLATE, E2B_DESKTOP_TEMPLATE } from "./e2b.js";
 export { MODAL_DEFAULT_IMAGE } from "./modal.js";
