@@ -14,7 +14,7 @@ const flowOf = (guard) => JSON.stringify({ v: 2, name: "answer", schemas: { In: 
 
 /** A store of `served` graded runs at the workflow's digest (each `[correct, p]`, path workflow, or handed_back when p
  *  is under the guard's threshold) and `byHand` graded agent runs, all right; the workflow promoted at its digest. */
-async function storeOf({ text, served, byHand = 10, threshold = 0.5 }) {
+async function storeOf({ text, served, byHand = 10, byHandWrong = 0, threshold = 0.5, other = [] }) {
   const kv = new Map();
   const settings = {
     get: async (key) => (kv.has(key) ? structuredClone(kv.get(key)) : undefined),
@@ -24,10 +24,11 @@ async function storeOf({ text, served, byHand = 10, threshold = 0.5 }) {
   const digest = workflowDigest({ workflow: text });
   const rows = new Map();
   let at = 0;
-  for (let i = 0; i < byHand; i++) await putGrade(settings, "a", { run: `hand-${i}`, correct: true, source: "eval", at: `t${at++}`, path: "agent" });
+  for (let i = 0; i < byHand; i++) await putGrade(settings, "a", { run: `hand-${i}`, correct: i >= byHandWrong, source: "eval", at: `t${at++}`, path: "agent" });
   for (const [i, [correct, p]] of served.entries()) {
     const path = p < threshold ? "handed_back" : "workflow";
-    rows.set(`served-${i}`, { id: `served-${i}`, state: "ended", metrics: { path, workflow: "answer", workflow_digest: digest, guards: [{ node: "answer", signal: "self", self: p, p, threshold, escalated: p < threshold }] } });
+    // `other[i]`: guards of another workflow recorded on the same run (the agent called it after a hand-back).
+    rows.set(`served-${i}`, { id: `served-${i}`, state: "ended", metrics: { path, workflow: "answer", workflow_digest: digest, guards: [{ node: "answer", signal: "self", self: p, p, threshold, escalated: p < threshold }, ...(other[i] ?? [])] } });
     await putGrade(settings, "a", { run: `served-${i}`, correct, source: "eval", at: `t${at++}`, path, workflow: "answer", digest });
   }
   await recordPromotion(settings, "a", { workflow: "answer", digest, at: new Date(0).toISOString(), decided: "promote", source: "dry_run", reason: "no graded input it fits: promoted on its passing dry run" }, (was) => was === undefined);
@@ -83,6 +84,20 @@ test("graded runs it served more than 2 points under the agent by hand, nothing 
   // Nor do they bring its guard down: what it would have answered past 0.2 nobody read, so no refit lands.
   assert.deepEqual(handed.commits, [], `no refit over hand-backs with no answer: ${handed.logs.join("\n")}`);
   assert.equal((await promotionsOf(handed.settings, "a")).at(-1).digest, handed.digest);
+});
+
+// Review on #2833 (Greptile P1): the graded check reads the outcomes recorded on the served runs, never a rescore of every
+// guard on the run: guards on a run can belong to other workflows, and they would turn a right answer into a hand-back
+// counted at the agent's lower accuracy.
+test("another workflow's escalated guard on a served run never holds it: the graded check reads the recorded outcomes", async () => {
+  const text = flowOf(undefined);
+  const b = { node: "other", signal: "self", self: 0.1, p: 0.1, threshold: 0.5, escalated: true };
+  // 19 right workflow answers, each run also carrying the other workflow's escalated guard; 1 wrong. By hand 9 of 10 right.
+  const served = Array.from({ length: REFIT_EVERY }, (_, i) => [i !== 0, 0.9]);
+  const other = served.map((_, i) => (i === 0 ? [] : [b]));
+  const { gate, settings, digest } = await storeOf({ text, served, byHand: 10, byHandWrong: 1, other });
+  assert.equal(await gate({ name: "answer", workflow: text }, digest), true);
+  assert.equal((await promotionsOf(settings, "a")).at(-1).decided, "promote");
 });
 
 test("the graded check keeps coming past the grades kept: new wrong grades that push old right ones out still hold it", async () => {

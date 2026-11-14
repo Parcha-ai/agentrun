@@ -91,10 +91,9 @@ const TOOL = new Map<string, string>(Object.entries({
   ask_person: "Question", submit: "Answer", codemode: "Script", todowrite: "To-dos", task: "Subagent", skill: "Skill",
 }));
 function toolWords(id: string): string {
-  const bare = id.replace(/^mcp__.+?__/, "");
-  const known = TOOL.get(bare.toLowerCase());
+  const known = TOOL.get(id.toLowerCase());
   if (known) return known;
-  const words = bare.replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/[_-]+/g, " ").trim().toLowerCase();
+  const words = id.replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/[_-]+/g, " ").trim().toLowerCase();
   return words ? words[0]!.toUpperCase() + words.slice(1) : id;
 }
 /** A tool's name as the label says it: an MCP server's tool as `<server> · <tool>`, a browser tool by its name, any

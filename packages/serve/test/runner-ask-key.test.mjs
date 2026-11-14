@@ -47,17 +47,17 @@ function askingCli(tool) {
   };
 }
 
-/** A monid endpoint's wire name, read back to its catalog name by the claim's catalog seam (runner/monid-run.ts
- *  catalogOf), as the spec builder joins it to the run's MCP. */
+/** A monid endpoint's and an MCP tool's wire names, read back to their catalog names by the claim's catalog seam (the
+ *  claim's catalogOf), as the spec builder joins it to the run's MCP: the gate is asked the catalog name. */
 const MONID_WIRE = "monid__faux__person__enrich";
-const MONID_NAME = "monid:faux/person/enrich";
-const catalogSeam = { tools: [], catalogOf: (name) => (name === MONID_WIRE ? MONID_NAME : undefined), priceOf: () => undefined, effectOf: () => undefined, fresh: async () => {}, release: () => {} };
+const CATALOG = { [MONID_WIRE]: "monid:faux/person/enrich", mcp__door__lookup: "mcp:door/lookup" };
+const catalogSeam = { tools: [], catalogOf: (name) => CATALOG[name], priceOf: () => undefined, effectOf: () => undefined, fresh: async () => {}, release: () => {} };
 
 /** One run whose call of `tool` (its wire name) is set to ask by its settings key; parked on it: the ask entry and what
  *  the run's view serves as its pending approval. `harness`: the revision's harness ("pi", or "codex" for the CLI). */
 async function askedRun(t, tool, harness) {
-  const key = tool === MONID_WIRE ? MONID_NAME : settingsKeyOf(harness, tool);
-  const mcp = tool === MONID_WIRE ? { mcp: catalogSeam } : {};
+  const key = CATALOG[tool] ?? settingsKeyOf(harness, tool);
+  const mcp = CATALOG[tool] ? { mcp: catalogSeam } : {};
   const opened = await stores({ runners: 1 });
   await opened.server.settings.put("tool-settings", { [key]: { permission: "ask" } });
   await queue(opened.server, "run-1");

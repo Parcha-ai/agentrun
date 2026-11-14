@@ -127,6 +127,12 @@ export interface SessionStore {
 /** The one holder that may write a session. */
 export interface SessionWriter {
   readonly key: string;
+  /** The session's identity across the claims of one holder (a runner's name and a run's id beside the key), for a store
+   *  whose claims a holder can lose and take again. A booking of the session whose cost write is refused (its claim lost
+   *  as its request answered) hands that booking to the next booking of the same scope in this process, which writes it
+   *  before it books any request cut (ModelBooking.bookCut). Absent: nothing is handed on, and such a request is booked
+   *  cut. Never shared by two holders: another runner, as one that died, takes nothing of it. */
+  readonly scope?: string;
   read(): Promise<SessionRecord[]>;
   /** Resolves once the records are durable, in order. Rejects with `SessionFenced`, writing none of them, once a newer
    *  `open` of the key has resolved. */
@@ -438,8 +444,10 @@ export interface AdapterFacts {
    *  shapes it drops or retypes, measured on its pinned build, so a grant of an MCP tool would offer the model another
    *  tool than the one granted. None: it takes any schema the kernel's check does. */
   schemaProblems?(tool: string, schema: Record<string, unknown>): string[];
-  /** A name its client calls a session's MCP tool by beside `mcp__<server>__<tool>` (OpenCode's `<server>_<tool>`). */
-  readonly toolAlias?: RegExp;
+  /** The host's name for a host tool the model names its own way on this harness's tool channel (Claude's
+   *  `mcp__hands__<name>`, OpenCode's `hands_<name>`, Codex's `mcp_<server>__<tool>`). Absent: the model's name is the
+   *  host's (pi's). A name already the host's comes back as it is. */
+  readonly hostName?: (given: string) => string;
   /** Its CLI's own tools, by the name a call reaches the host by, each with the host's table tool it is (Claude's
    *  `Bash` is `bash`): a host holds such a call to that tool's setting. None: its CLI calls only the host's tools. */
   readonly nativeTools?: Readonly<Record<string, string>>;

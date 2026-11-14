@@ -6,7 +6,7 @@ import { LINUX_DESKTOP, SANDBOX } from "./shared.js";
 /** Agent37's plain Linux template: a sandbox when its setting names no image. */
 export const AGENT37_BASE_TEMPLATE = "agent37-base";
 /**
- * Our box image (box/Dockerfile and Xvfb) as a template of the key's own workspace, which box/build-agent37.mjs builds
+ * Our box image (box/Dockerfile, its desktop included) as a template of the key's own workspace, which box/build-agent37.mjs builds
  * and publishes under this one name: a desktop when its setting names no image.
  */
 export const AGENT37_BOX_TEMPLATE = "agentrun-box";

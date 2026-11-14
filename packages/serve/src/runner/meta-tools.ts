@@ -59,21 +59,18 @@ export async function searchTools(query: string, tools: readonly HostTool[], gra
 }
 
 /** The run's tool a model's name for it names: its own name, or one a harness gives it on its tool channel (claude-agent's
- *  `mcp__hands__<name>`, OpenCode's `hands_<name>`, Codex's `mcp_<server>__<tool>` for an MCP tool). */
-export function toolNamed(name: string, tools: readonly HostTool[]): HostTool | undefined {
-  const candidates = [name, name.replace(/^mcp__hands__/, ""), name.replace(/^hands_/, ""), name.replace(/^mcp_(?!_)/, "mcp__")];
-  for (const candidate of candidates) {
-    const tool = tools.find((one) => one.name === candidate);
-    if (tool) return tool;
-  }
-  return undefined;
+ *  `mcp__hands__<name>`, OpenCode's `hands_<name>`, Codex's `mcp_<server>__<tool>` for an MCP tool): `hostName` is the
+ *  harness's own map from that name to the host's (AdapterFacts.hostName). */
+export function toolNamed(name: string, tools: readonly HostTool[], hostName: (given: string) => string = (given) => given): HostTool | undefined {
+  const host = hostName(name);
+  return tools.find((one) => one.name === name) ?? tools.find((one) => one.name === host);
 }
 
 /** Why `name` can't be called through tools_call or a script, or undefined: one of the three, or no tool of this run. */
-export function refusedName(caller: string, name: string, tools: readonly HostTool[]): string | undefined {
-  const own = name.replace(/^mcp__hands__/, "").replace(/^hands_/, "");
+export function refusedName(caller: string, name: string, tools: readonly HostTool[], hostName: (given: string) => string = (given) => given): string | undefined {
+  const own = hostName(name);
   if (META_TOOLS.has(own)) return `${caller} can't call ${own}: ${TOOLS_SEARCH}, ${TOOLS_CALL} and ${CODEMODE} are called by the model itself, never through each other. Nothing was run.`;
-  if (!toolNamed(name, tools)) return `${caller} can't call ${JSON.stringify(name).slice(0, 120)}: this run has no tool by that name. Find the run's tools with ${TOOLS_SEARCH}. Nothing was run.`;
+  if (!toolNamed(name, tools, hostName)) return `${caller} can't call ${JSON.stringify(name).slice(0, 120)}: this run has no tool by that name. Find the run's tools with ${TOOLS_SEARCH}. Nothing was run.`;
   return undefined;
 }
 
@@ -92,6 +89,8 @@ export interface MetaToolsOptions {
   /** Whether to offer tools_search and tools_call: the run's catalog tools are deferred (not listed), so the model finds
    *  and calls them through these (tool-deferral.ts; never where the harness defers them itself, or a setting is deny). */
   discovery: { search: boolean; call: boolean };
+  /** The harness's map from the model's name for a host tool to the host's (AdapterFacts.hostName); absent: the same. */
+  hostName?: (given: string) => string;
 }
 
 /** The three tools for a session: each `nests` (but the search, which calls nothing). */
@@ -121,10 +120,10 @@ export function metaTools(options: MetaToolsOptions): HostTool[] {
       if (typeof name !== "string" || name === "") return { text: `${TOOLS_CALL} needs the name of the tool to call.`, isError: true };
       if (given !== undefined && (given === null || typeof given !== "object" || Array.isArray(given))) return { text: `${TOOLS_CALL}'s args must be an object of the tool's arguments.`, isError: true };
       const tools = own();
-      const refused = refusedName(TOOLS_CALL, name, tools);
+      const refused = refusedName(TOOLS_CALL, name, tools, options.hostName);
       if (refused) return { text: refused, isError: true };
       if (!context.nested) return { text: NO_NESTED(TOOLS_CALL), isError: true };
-      return answered(await context.nested.call(toolNamed(name, tools)!.name, (given ?? {}) as Record<string, unknown>, "call"));
+      return answered(await context.nested.call(toolNamed(name, tools, options.hostName)!.name, (given ?? {}) as Record<string, unknown>, "call"));
     },
   };
   // A few of the run's tools as the script writes them (`tools.<name>`): names that resolve, as the model's own tool list
@@ -144,7 +143,7 @@ export function metaTools(options: MetaToolsOptions): HostTool[] {
       const { script } = (args ?? {}) as { script?: unknown };
       if (typeof script !== "string" || script.trim() === "") return { text: `${CODEMODE} needs a script: the body of an async function.`, isError: true };
       if (!context.nested) return { text: NO_NESTED(CODEMODE), isError: true };
-      return runScript(script, own(), context.nested, context.signal);
+      return runScript(script, own(), context.nested, context.signal, options.hostName);
     },
   };
   return [...(options.discovery.search ? [search] : []), ...(options.discovery.call ? [call] : []), ...(options.codemode ? [codemode] : [])];
@@ -178,7 +177,7 @@ function shownOf(output: readonly CodemodeOutputItem[], value: unknown): { text:
  * of the call (after a park or a crash) makes the same calls: the recorded ones are answered from their records, and the
  * first one that runs now ends the script with its outcome (Codex's rule), as does any refusal or interrupted call.
  */
-async function runScript(script: string, tools: readonly HostTool[], nested: NestedCalls, signal: AbortSignal): Promise<{ text: string; isError?: boolean; images?: readonly ToolImage[]; structured?: JsonValue }> {
+async function runScript(script: string, tools: readonly HostTool[], nested: NestedCalls, signal: AbortSignal, hostName?: (given: string) => string): Promise<{ text: string; isError?: boolean; images?: readonly ToolImage[]; structured?: JsonValue }> {
   const nonce = randomBytes(8).toString("hex");
   const first = await nested.memo("start", { startedAt: Date.now(), seed: randomBytes(4).readUInt32BE(0), nonce, tools: tools.map((tool) => [tool.name, toCodemodeIdentifier(tool.name)]) } as unknown as JsonValue);
   const start = first as unknown as { startedAt: number; seed: number; nonce: string; tools: [string, string][] };
@@ -216,8 +215,8 @@ async function runScript(script: string, tools: readonly HostTool[], nested: Nes
           });
           continue;
         }
-        const tool = toolNamed(call.name, tools);
-        const refused = call.target !== "tool" ? `${call.name} is no tool of this run.` : refusedName(CODEMODE, call.name, tools);
+        const tool = toolNamed(call.name, tools, hostName);
+        const refused = call.target !== "tool" ? `${call.name} is no tool of this run.` : refusedName(CODEMODE, call.name, tools, hostName);
         const args = call.args && typeof call.args === "object" && !Array.isArray(call.args) ? (call.args as Record<string, unknown>) : {};
         const result: NestedResult = refused || !tool ? { text: refused ?? `${call.name} is no tool of this run.`, isError: true, refused: true, fresh: true } : await nested.call(tool.name, args, `s${call.id}`);
         told.push({ name: tool?.name ?? call.name, result });

@@ -295,7 +295,7 @@ for (const harness of ["claude-agent", "codex"]) {
 }
 
 for (const harness of ["claude-agent", "codex"]) {
-  test(`a granted monid endpoint runs on ${harness} as monid__faux__person__enrich: it saves with no warning, reaches monid on the run's key, and is journaled and shown under its wire name`, { timeout: 60_000 }, async (t) => {
+  test(`a granted monid endpoint runs on ${harness} as monid__faux__person__enrich: it saves with no warning, reaches monid on the run's key, and is journaled under its wire name and shown by its catalog name`, { timeout: 60_000 }, async (t) => {
     const log = join(await scratch(t), "monid-calls.jsonl");
     withEnv(t, { MONID_API_KEY: MONID_KEY, AGENTRUN_TEST_FAUX_MONID_CALLS: log });
     const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), fauxMonid: FAUX_MONID });
@@ -307,7 +307,7 @@ for (const harness of ["claude-agent", "codex"]) {
     const seen = (await readFile(log, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
     assert.deepEqual(seen.filter((call) => call.path === "/v1/run").map((call) => [call.method, call.path, call.authorized]), [["POST", "/v1/run", true]], "sent once, on the key");
     assert.deepEqual(storeRecords(data, run.body.run_id, "faux.call").map((record) => record.data?.name), ["monid__faux__person__enrich"], "the harness's journal names the wire name");
-    assert.deepEqual(rows.filter((r) => r.kind === "tool_use").map((r) => r.tool_name), ["monid__faux__person__enrich"]);
+    assert.deepEqual(rows.filter((r) => r.kind === "tool_use").map((r) => r.tool_name), ["monid:faux/person/enrich"], "the timeline shows the catalog name");
     const results = toolResults(rows);
     assert.equal(results.length, 1, JSON.stringify(results));
     assert.match(results[0][0], /"full_name":"Ada"/, "the run's output reaches the timeline");

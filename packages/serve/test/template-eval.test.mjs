@@ -189,17 +189,16 @@ test("a background shell call keeps its own name in the grading record, as the g
   const rows = [
     { kind: "tool_use", tool_use_id: "1", tool_name: "bash_background", tool_input_preview: "sleep 1" },
     { kind: "tool_use", tool_use_id: "2", tool_name: "bash", tool_input_preview: "ls" },
-    { kind: "tool_use", tool_use_id: "3", tool_name: "mcp__hands__bash_output", tool_input_preview: "1" },
-    { kind: "tool_use", tool_use_id: "4", tool_name: "mcp__crm__get_contact", tool_input_preview: "{}" },
+    { kind: "tool_use", tool_use_id: "3", tool_name: "bash_output", tool_input_preview: "1" },
+    { kind: "tool_use", tool_use_id: "4", tool_name: "mcp:crm/get_contact", tool_input_preview: "{}" },
   ];
-  assert.deepEqual(callsOf(rows, "pi", ["crm"]).map((c) => c.tool).slice(0, 2), ["bash_background", "bash"]);
-  assert.deepEqual(callsOf(rows, "claude-agent", ["crm"]).map((c) => c.tool), ["bash_background", "bash", "bash_output", "mcp:crm/get_contact"]);
-  const record = { answer: "", calls: callsOf(rows, "pi", ["crm"]), mcpCalls: [], files: [] };
+  assert.deepEqual(callsOf(rows, "claude-agent").map((c) => c.tool), ["bash_background", "bash", "bash_output", "mcp:crm/get_contact"]);
+  const record = { answer: "", calls: callsOf(rows, "pi"), mcpCalls: [], files: [] };
   assert.equal(gradeDeterministic({ file: "bg.md", type: "tool_used", tools: ["bash_background"], expect: "called" }, record, []).pass, true);
   assert.equal(gradeDeterministic({ file: "sh.md", type: "tool_used", tools: ["bash"], count: 1 }, record, []).pass, true, "bash counts its own call alone");
   // A need an owner's saved server filled under another name (my-crm for crm): its calls are graded by the package's name.
-  const owned = [{ kind: "tool_use", tool_use_id: "5", tool_name: "mcp__my-crm__get_contact", tool_input_preview: "{}" }];
-  const renamed = { answer: "", calls: callsOf(owned, "claude-agent", ["my-crm"], { "my-crm": "crm" }), mcpCalls: [], files: [] };
+  const owned = [{ kind: "tool_use", tool_use_id: "5", tool_name: "mcp:my-crm/get_contact", tool_input_preview: "{}" }];
+  const renamed = { answer: "", calls: callsOf(owned, "claude-agent", { "my-crm": "crm" }), mcpCalls: [], files: [] };
   assert.deepEqual(renamed.calls.map((c) => c.tool), ["mcp:crm/get_contact"]);
   assert.equal(gradeDeterministic({ file: "got.md", type: "tool_used", tools: ["mcp:crm/get_contact"], expect: "called" }, renamed, []).pass, true);
 });
@@ -236,11 +235,36 @@ test("a case passes only when every run passes: one failing run of two fails it"
   assert.equal(report.cost_usd.unknown, 0);
 });
 
+test("an eval runs under approvals never, which grants nothing: a tool of the package the case did not grant is still refused, never sent", { timeout: 300_000 }, async (t) => {
+  // evalpkg asks (approvals ask), and the eval applies it with approvals never; its two crm tools are the package's, and
+  // the case grants get_contact alone. The eval writes no permission for either.
+  const dir = join(await scratch(t), "evalpkg");
+  cpSync(PKG, dir, { recursive: true });
+  const at = join(dir, "evals", "widens-nothing");
+  mkdirSync(join(at, "graders"), { recursive: true });
+  mkdirSync(join(at, "fixtures"), { recursive: true });
+  cpSync(join(PKG, "evals", "mcp-match", "fixtures", "crm.json"), join(at, "fixtures", "crm.json"));
+  writeFileSync(join(at, "case.yaml"), "parameters:\n  team: blue\nmcp:\n  crm: fixtures/crm.json\ngrants: [mcp:crm/get_contact]\n");
+  writeFileSync(join(at, "prompt.md"), '---\ndescription: Reads contact 7, then tries the update the case did not grant.\n---\nCall mcp__crm__get_contact with {"id": "7"}\nCall mcp__crm__update_contact with {"id": "7", "fields": {"score": 80}}\nAnswer:\nThe CRM said: {{last-result}}\n');
+  writeFileSync(join(at, "graders", "ran.md"), "---\ntype: regex\npattern: \"The CRM said\"\n---\n");
+  const report = await evalTemplate({ dir, cases: ["widens-nothing"], serve: { faux: FAUX } });
+  const [run] = report.cases[0].runs;
+  assert.equal(run.status, "completed", JSON.stringify(run, null, 1));
+  // The grant ran unasked: approvals never lifts the ask of a tool the agent was granted.
+  assert.deepEqual(run.mcp_calls.map((call) => call.tool), ["mcp:crm/get_contact"], "only the granted tool reached the fake");
+  assert.equal(run.calls.find((call) => call.tool === "mcp:crm/get_contact")?.status, "success", JSON.stringify(run.calls));
+  // The tool the case did not grant is not the agent's: never has nothing to lift, so it is refused and never sent.
+  const update = run.calls.find((call) => call.name === "mcp__crm__update_contact");
+  assert.ok(!update || update.status !== "success", JSON.stringify(run.calls));
+  assert.match(run.answer ?? "", /^The CRM said: /, run.answer);
+  assert.doesNotMatch(run.answer, /updated 7/, "the ungranted write never ran");
+});
+
 test("on an owner's server it applies that server's package only when it is this folder's, never replaces an MCP server, and archives what it made", { timeout: 300_000 }, async (t) => {
   const { api, baseUrl, token } = await serve(t, { faux: FAUX, templates: FIXTURES });
   const server = { baseUrl, token };
-  // The owner's settings are theirs, and the runner writes none of them. Unpinned there, the pinned write is held by the
-  // agent's own pin, and the case passes.
+  // The owner's settings are theirs, and the runner writes none of them. The eval applies with approvals never here too,
+  // so the case's grants run unasked. Unpinned there, the pinned write is held by the agent's own pin, and the case passes.
   const before = (await api("GET", "/settings/tools")).body;
   const unpinned = await evalTemplate({ dir: PKG, cases: ["mcp-match"], server });
   assert.equal(unpinned.pass, true, JSON.stringify(unpinned.cases[0].runs.map((r) => r.error ?? r.status)));

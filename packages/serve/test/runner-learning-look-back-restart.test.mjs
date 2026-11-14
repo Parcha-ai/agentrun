@@ -144,12 +144,16 @@ test("a CLI look-back answered and then cut by a lost runner: asked again once o
   assert.equal(proposal.look_back_usd, 0.013, `both attempts' look-back spend ($0.004, then $0.008 + $0.001): ${JSON.stringify(proposal)}`);
 });
 
-test("a CLI look-back a lost runner cut under a cap: the next claim skips it (the run's spend unknown), and still keeps the job's cost and answer time from the first ask, its look-back unknown, never $0", { timeout: 120_000 }, async (t) => {
+// Under a cap, the cut request counts at what the cap held for it and its cache-miss bound (its spend under the cap is
+// known, as the run's own cap gates read it: learning-end.ts capSpendOf), so the next claim asks the look-back again
+// within the room left, as an uncapped run does. Its cost stays unknown.
+test("a CLI look-back a lost runner cut under a cap: the next claim asks it again once within the cap (the cut counted at its hold and bound), and keeps the job's cost and answer time from the first ask, its look-back unknown, never $0", { timeout: 120_000 }, async (t) => {
   const { row, turns, sent, kept, restartedAt } = await restarted(t, "cut", { max_cost_usd: 1 });
   assert.equal(row.state, "ended", JSON.stringify(row));
-  assert.deepEqual(asks(sent, turns), { prompts: 1, twice: 0 }, `sent once, on runner-a; runner-b asks nothing: ${JSON.stringify(turns)}`);
+  assert.deepEqual(asks(sent, turns), { prompts: 2, twice: 0 }, `sent once on each claim: ${JSON.stringify(turns)}`);
+  assert.equal(turns.filter((turn) => turn.usd === null && turn.cut === true).length, 1, `the cut request is booked once, at an unknown price: ${JSON.stringify(turns)}`);
   const proposal = kept?.proposal;
-  assert.deepEqual([proposal?.state, proposal?.reason], ["dropped", "unknown_cost"], JSON.stringify(proposal));
+  assert.deepEqual([proposal?.state, proposal?.reason], ["dropped", "empty"], `the re-ask's answer is the one read: ${JSON.stringify(proposal)}`);
   assert.equal(proposal.job_cost_usd, 0.002, `the job's own cost, as it stood when the turn was first asked: ${JSON.stringify(proposal)}`);
   assert.ok(Date.parse(proposal.answered_at) < restartedAt, `when the job answered is runner-a's, before the restart: ${JSON.stringify(proposal)}`);
   assert.equal(proposal.look_back_usd, null, `the look-back spent what no one knows (its cut request), never nothing: ${JSON.stringify(proposal)}`);
