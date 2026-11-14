@@ -93,7 +93,13 @@ export type CompileAsk = {
   readonly described?: readonly { readonly name: string; readonly does: string }[];
   readonly judges: boolean;
   readonly jev?: boolean;
-} & ({ readonly mode: "new" } | { readonly mode: "revise"; readonly workflow: string; readonly current?: string; readonly handedBack?: true; readonly revise?: ReviseAsk; readonly graded?: GradedAsk; readonly held?: HeldAsk });
+} & ({ readonly mode: "new" } | {
+  readonly mode: "revise"; readonly workflow: string; readonly current?: string;
+  /** The commit of main `current` was read at: the revision's conflict base (its merge refuses a change to the workflow
+   *  on main after this read, never one before it, which the revision was written over). Never told the model. */
+  readonly base?: string;
+  readonly handedBack?: true; readonly revise?: ReviseAsk; readonly graded?: GradedAsk; readonly held?: HeldAsk;
+});
 
 /** One attempt of the compile turn: whether its draft passed the checks, and else why not, in the checks' words. */
 export type CompileAttempt = { readonly ok: boolean; readonly errors: readonly string[] };

@@ -92,7 +92,11 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
   const env = deps.env ?? process.env;
   // The grade model the server named at the run's start (its learning start's), none: the agent's own grades it.
   const gradeModel = start.gradeModel;
-  const hookFor = (runId: string, round: number, before: ReflectDeps["before"]) => createReflectHook({
+  const hookFor = (runId: string, round: number, before: ReflectDeps["before"]) => {
+  // The workflow this end's compile turn revises and the commit of main it read it at (compileAskOf's `base`): the
+  // conflict base of that workflow's files in every check after the ask (the compile turn's), whatever the run started from.
+  let revised: { workflow: string; base: string } | undefined;
+  return createReflectHook({
     round,
     ...(before ? { before } : {}),
     // reflectSkip's facts: a run its cap stopped has no room left, and one whose spend is unknown under a cap cannot be
@@ -110,7 +114,11 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
     nothingNew: async (runId) => onlyLearnedWorkflows(await runTimeline(deps.store, runId, BACKGROUND_CONTEXT, { settled: false })),
     promptFacts: async () => ({ active: start.seedNotes ?? start.given.length }),
     // A notes run (`learning: "notes"`) compiles nothing.
-    ...(start.notesOnly ? {} : { compileFacts: (input: { runId: string; agentId: string; outcome: "completed" | "failed"; refuse: readonly string[] }) => compileAskOf(deps, { ...input, input: launch.input, ...(start.seedNotes !== undefined ? { seedNotes: start.seedNotes } : {}), seedWorkflows: start.workflows?.length ?? 0 }) }),
+    ...(start.notesOnly ? {} : { compileFacts: async (input: { runId: string; agentId: string; outcome: "completed" | "failed"; refuse: readonly string[] }) => {
+      const ask = await compileAskOf(deps, { ...input, input: launch.input, ...(start.seedNotes !== undefined ? { seedNotes: start.seedNotes } : {}), seedWorkflows: start.workflows?.length ?? 0 });
+      revised = ask?.mode === "revise" && ask.base ? { workflow: ask.workflow, base: ask.base } : undefined;
+      return ask;
+    } }),
     asked: async (runId) => {
       const [entries, reflect] = await Promise.all([runEntries(deps.store, runId, BACKGROUND_CONTEXT), runReflect(deps.store, runId, BACKGROUND_CONTEXT)]);
       const hearing = new Hearing();
@@ -139,9 +147,11 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
       // A later round checks against the main the earlier rounds merged into, not the seed the run started from: a note
       // round 1 added and a reviewer corrected is a supersedes target round 2 may name.
       // The skills and workflows keep the seed the run was laid from as their conflict base (the merge refuses a file main
-      // changed since), so only the notes are checked against that main.
+      // changed since), so only the notes are checked against that main; but a workflow the compile turn revised from
+      // main's text (`revised`) has the commit it read it at as its base, so a change to it before that read is what the
+      // revision was written over, and only one after it is a conflict.
       const notesSeed = round > 1 ? await mainOf(deps, agentId) : undefined;
-      return checkedOf(deps, { runId, agentId, seed: start.seed, ...(notesSeed ? { notesSeed } : {}), turn, outcome, refuse, ...(start.notesOnly ? { workflows: false as const } : {}) });
+      return checkedOf(deps, { runId, agentId, seed: start.seed, ...(notesSeed ? { notesSeed } : {}), ...(revised ? { revised } : {}), turn, outcome, refuse, ...(start.notesOnly ? { workflows: false as const } : {}) });
     },
     // The learning run's id, one per round of the run: a replayed end queues the same one (the store adds it once).
     newRunId: () => learningRunIdOf(runId, round),
@@ -149,6 +159,7 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
     ...(launch.maxCostUsd !== undefined ? { gradeCap: (runId: string) => gradeCapOf(deps.store, runId, round, launch.maxCostUsd!) } : {}),
     ...(gradeModel ? { gradeModel } : {}),
   });
+  };
   return async (input) => {
     // No seed, no end-of-run turn (seedFailed): a run that started from no commit of main has nothing to propose against,
     // so it is never asked to look back (no model request). Why, as its start recorded it: a folder that could not be
@@ -391,7 +402,8 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
   const holds = (value: unknown) => holdsSecret(typeof value === "string" ? value : (JSON.stringify(value) ?? ""), shown);
   const leftOut = { workflows: new Set<string>(), notes: 0, traces: 0, input: false };
   const folder = deps.learningFolder(input.agentId);
-  let read: { notes: { file: string; text: string }[]; workflows: number; current?: string; held?: PromotionRecord };
+  // `main`: the commit the snapshot read is main's at, which `current` was read from.
+  let read: { notes: { file: string; text: string }[]; workflows: number; current?: string; held?: PromotionRecord; main?: string };
   try {
     read = await readLearning(folder.workspace, async ({ snapshot, body }) => {
       const workflows = (snapshot?.workflows ?? []).filter(({ status }) => status === "active" || status === "pending");
@@ -421,7 +433,7 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
         if (holds(note.file) || holds(text)) leftOut.notes += 1;
         else notes.push({ file: note.file, text });
       }
-      return { notes, workflows: workflows.length, ...(current !== undefined ? { current } : {}), ...(held ? { held } : {}) };
+      return { notes, workflows: workflows.length, ...(current !== undefined ? { current } : {}), ...(held ? { held } : {}), ...(snapshot?.main ? { main: snapshot.main } : {}) };
     });
   } catch {
     return undefined;
@@ -469,7 +481,8 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
   // A wrong grade of the answer its workflow gave alone: that answer and the grade's words, cut of the runner's secrets.
   const cut = (text: string) => redactSecrets(text, input.refuse, Number.POSITIVE_INFINITY);
   const graded: GradedAsk | undefined = revising && gradedOf && fed ? { answer: cut(servedAnswerOf(entries)?.answer ?? ""), words: cut(fed.text) } : undefined;
-  const ask: CompileAsk = !revising ? { mode: "new", ...base } : { mode: "revise", workflow: revising, current: read.current!, ...(served?.outcome === "handed_back" ? { handedBack: true as const } : stopped ? { revise: { workflow: stopped.workflow, served_usd: stopped.served_usd, by_hand_usd: stopped.by_hand_usd, runs: stopped.runs } } : graded ? { graded } : held ? { held } : {}), ...base };
+  // A revision is of main's text as read here, whatever the run started from: that commit is its conflict base (`base`).
+  const ask: CompileAsk = !revising ? { mode: "new", ...base } : { mode: "revise", workflow: revising, current: read.current!, ...(read.main ? { base: read.main } : {}), ...(served?.outcome === "handed_back" ? { handedBack: true as const } : stopped ? { revise: { workflow: stopped.workflow, served_usd: stopped.served_usd, by_hand_usd: stopped.by_hand_usd, runs: stopped.runs } } : graded ? { graded } : held ? { held } : {}), ...base };
   sayLeftOut();
   // Last, the prompt itself, whatever it is told now or later (a tool's description, the agent's output schema): one that
   // still holds a secret asks nothing.
@@ -526,9 +539,10 @@ async function mainOf(deps: LearningEndDeps, agentId: string): Promise<string | 
   }
 }
 
-/** proposeRun's checks over the turn, against seed `seed`, in a directory of the step's own: the proposal it keeps there
- *  is read back for the hook to store with the run's end, and the directory is removed. */
-async function checkedOf(deps: LearningEndDeps, input: { runId: string; agentId: string; seed: string; notesSeed?: string; turn: ReflectTurn; outcome: "completed" | "failed"; refuse: readonly string[]; workflows?: false }): Promise<Checked> {
+/** proposeRun's checks over the turn, against seed `seed` (a revised workflow's files against the commit its compile ask
+ *  read it at: `revised`), in a directory of the step's own: the proposal it keeps there is read back for the hook to
+ *  store with the run's end, and the directory is removed. */
+async function checkedOf(deps: LearningEndDeps, input: { runId: string; agentId: string; seed: string; notesSeed?: string; revised?: { workflow: string; base: string }; turn: ReflectTurn; outcome: "completed" | "failed"; refuse: readonly string[]; workflows?: false }): Promise<Checked> {
   const runDir = await mkdtemp(join(tmpdir(), "agentrun-learning-end-"));
   try {
     const { tools, gated, deniedBy, asked, decisions, outputSchema } = await draftTools(deps, input.runId);
@@ -538,7 +552,7 @@ async function checkedOf(deps: LearningEndDeps, input: { runId: string; agentId:
     const folder = deps.learningFolder(input.agentId);
     let proposed;
     try {
-      proposed = await proposeRun({ folder: folder.workspace, runDir, seed: input.seed, ...(input.notesSeed ? { notesSeed: input.notesSeed } : {}), turn, refuse: input.refuse, outcome: input.outcome, tools, ...(Object.keys(gated).length ? { gated } : {}), ...(Object.keys(deniedBy).length ? { deniedBy } : {}), ask: { asked, fits: learnedAskFits }, ...(decisions ? { decisions } : {}), ...(input.workflows === false ? { workflows: false as const } : {}), ...(outputSchema !== undefined ? { outputSchema } : {}) });
+      proposed = await proposeRun({ folder: folder.workspace, runDir, seed: input.seed, ...(input.notesSeed ? { notesSeed: input.notesSeed } : {}), ...(input.revised ? { revised: input.revised } : {}), turn, refuse: input.refuse, outcome: input.outcome, tools, ...(Object.keys(gated).length ? { gated } : {}), ...(Object.keys(deniedBy).length ? { deniedBy } : {}), ask: { asked, fits: learnedAskFits }, ...(decisions ? { decisions } : {}), ...(input.workflows === false ? { workflows: false as const } : {}), ...(outputSchema !== undefined ? { outputSchema } : {}) });
     } finally {
       await folder.end();
     }
