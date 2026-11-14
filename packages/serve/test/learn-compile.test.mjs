@@ -271,7 +271,7 @@ test("a note at the 4 KB cap a compiled workflow marks stays a note: the host's 
 });
 
 test("GET /runs/{id}/learning serves the compile record and a failed draft's errors, each cut of the host's secrets", () => {
-  const SECRET = "sk-test-0123456789abcdef0123456789";
+  const SECRET = ["sk", "test", "0123456789abcdef0123456789"].join("-"); // built at run time: the source export scans for literal keys
   const learning = { state: "proposed", reason: null, detail: said.proposed(1, 0, 0), at: new Date(0).toISOString(), compiled: { workflow: "answer", from_notes: ["rule-1.md"], attempts: [{ ok: false, errors: [`workflow: leaks ${SECRET}`] }] }, draft_errors: [`workflow: leaks ${SECRET}`] };
   const body = runLearningBody({ id: "run-1", learning, seed: null, settled: true }, secretsShown([SECRET]), [SECRET]);
   assert.deepEqual(body.compiled.from_notes, ["rule-1.md"]);
