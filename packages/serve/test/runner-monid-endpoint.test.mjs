@@ -136,7 +136,8 @@ test("a call priced by usage is held at monid's estimate for its own input, sent
   assert.equal(answer.isError, undefined, answer.text);
   assert.deepEqual(sent().map((call) => call.maxCost), [0, 0.003], "the estimate read (maxCost 0: monid runs and charges nothing), then the call at that estimate");
   const booked = paidBookings(await paid.records()).filter((row) => row.call === "c1");
-  assert.deepEqual(booked.map((row) => [row.kind, row.tool, row.heldUsd ?? row.usd]), [["agentrun.tool_started", SEARCH, 0.003], ["agentrun.tool_cost", SEARCH, 0.002]], JSON.stringify(booked));
+  // The estimate's read marked at $0 and given back (monid refused it unrun: no charge row), then the call at its estimate.
+  assert.deepEqual(booked.map((row) => [row.kind, row.tool, row.heldUsd ?? row.usd]), [["agentrun.tool_started", SEARCH, 0], ["agentrun.tool_started", SEARCH, 0.003], ["agentrun.tool_cost", SEARCH, 0.002]], JSON.stringify(booked));
 });
 
 test("a call priced by usage whose estimate does not fit the cap is refused unsent, in the cap's words naming its estimate", async (t) => {
@@ -385,7 +386,7 @@ test("a call priced by usage that monid charges above its estimate is booked at 
   // Estimated (and held) at $0.003 for three results; monid charges $1.42.
   const run = await monidRun(t, { tools: [SEARCH], pin: USAGE_PIN, toolSettings: { [SEARCH]: { permission: "allow" } }, launch: { max_cost_usd: 1 }, requests, script: [{ call: "monid__faux__person__search", args: SEARCH_ARGS }, { call: "monid__faux__person__search", args: SEARCH_ARGS }, { say: "done" }] });
   const booked = paidBookings(run.records.entries).filter((row) => row.tool === SEARCH);
-  assert.deepEqual(booked.map((row) => [row.kind, row.heldUsd ?? row.usd]), [["agentrun.tool_started", 0.003], ["agentrun.tool_cost", 1.42]], JSON.stringify(booked));
+  assert.deepEqual(booked.map((row) => [row.kind, row.heldUsd ?? row.usd]), [["agentrun.tool_started", 0], ["agentrun.tool_started", 0.003], ["agentrun.tool_cost", 1.42]], JSON.stringify(booked));
   assert.deepEqual(sent().map((call) => call.maxCost), [0, 0.003], "no further call after its result");
   assert.equal(requests.length, 1, "no further model turn after its result");
   assert.deepEqual([run.row.state, run.row.summary], ["failed", "monid charged $1.42, more than the $0.003 held; the run stopped"], JSON.stringify(run.row));

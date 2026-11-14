@@ -133,6 +133,9 @@ export async function paidRequest(fee: Fee, send: () => Promise<Response>): Prom
   return stepped.result;
 }
 
+/** paidStep's chargeOf for a step that charged nothing and is given back: its mark settled with no charge row. */
+export const GIVEN_BACK = "given back";
+
 /** Each paid request of this process on the run's one ledger, numbered within its call (one call may make several). */
 let paidSeq = 0;
 
@@ -148,10 +151,11 @@ export const stopRun = async (words: string): Promise<void> => {
 };
 
 /** One paid step on the run's one ledger `paid`, under call `call`: admitted at `holdUsd` (refused unsent: the cap's words,
- *  or why its hold could not be kept), then `run`, then settled at `chargeOf` its outcome (null: at its hold). One refused
+ *  or why its hold could not be kept), then `run`, then settled at `chargeOf` its outcome (null: at its hold; GIVEN_BACK:
+ *  given back, nothing charged, as a hold-only step's: a request its provider refused unrun leaves no charge row). One refused
  *  for room pauses the run through `pause`, else through the ledger of the call it runs in (bookedIn's), as main's
  *  paidCall pauses: a step outside any host tool call (a pi-native tool's, the browser's) passes the run's own. */
-export async function paidStep<T>(paid: PaidBooking, call: string | undefined, fee: { name: string; holdUsd: number; basis: string; by: string; tool?: string; tag?: string; owed?: true; hold?: true; ref?: string }, run: () => Promise<T>, chargeOf: (outcome: { result: T } | { thrown: unknown }) => number | null, pause?: Ledger["pause"]): Promise<{ refused: string } | { result: T }> {
+export async function paidStep<T>(paid: PaidBooking, call: string | undefined, fee: { name: string; holdUsd: number; basis: string; by: string; tool?: string; tag?: string; owed?: true; hold?: true; ref?: string }, run: () => Promise<T>, chargeOf: (outcome: { result: T } | { thrown: unknown }) => number | null | typeof GIVEN_BACK, pause?: Ledger["pause"]): Promise<{ refused: string } | { result: T }> {
   const id = `${call ?? fee.ref ?? fee.name}#${(paidSeq += 1)}`;
   let admitted: unknown;
   try {
@@ -169,7 +173,8 @@ export async function paidStep<T>(paid: PaidBooking, call: string | undefined, f
     outcome = { thrown };
   }
   // A hold-only step (`hold`) is given back, never a charge: its money is booked by its own charges' steps.
-  await (fee.hold ? paid.settle(id, 0, { givenBack: true }) : paid.settle(id, chargeOf(outcome))).catch(() => undefined);
+  const charge = fee.hold ? GIVEN_BACK : chargeOf(outcome);
+  await (charge === GIVEN_BACK ? paid.settle(id, 0, { givenBack: true }) : paid.settle(id, charge)).catch(() => undefined);
   if ("thrown" in outcome) throw outcome.thrown;
   return outcome;
 }
