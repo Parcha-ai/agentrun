@@ -781,12 +781,26 @@ test("a computer the vendor reads as going once its stream ended (Agent37 reads 
 	const ref = made(await create(provider));
 	const connected = made(await provider.connect(ref));
 	const m = only(fake);
-	m.state = "going";
+	m.state = "gone";
 	for (const bridge of m.bridges) bridge.exit(255);
 	await turns();
 	const after = await connected.client.call("exec.run", { argv: ["true"], timeoutMs: 1_000 });
 	assert.equal(after.error?.code, "not_found", JSON.stringify(after));
 	assert.match(after.error.message, DELETED);
+	await connected.close();
+});
+
+test("a computer the vendor reads failed once its stream ended (gone with a why) was not deleted: the stream's words", async () => {
+	const { provider, fake } = setup();
+	const ref = made(await create(provider));
+	const connected = made(await provider.connect(ref));
+	const m = only(fake);
+	m.why = "out of memory";
+	for (const bridge of m.bridges) bridge.exit(255);
+	await turns();
+	const after = await connected.client.call("exec.run", { argv: ["true"], timeoutMs: 1_000 });
+	assert.equal(after.error?.code, "gone", JSON.stringify(after));
+	assert.match(after.error.message, /the daemon's stream (ended|closed)/);
 	await connected.close();
 });
 

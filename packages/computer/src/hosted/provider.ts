@@ -1334,11 +1334,11 @@ function untilAborted<T>(reading: Promise<T>, signals: readonly (AbortSignal | u
 /**
  * A connection that says its computer was deleted (the vendor's own API can delete it mid-run). Once its client answers
  * gone (the stream ended or failed), the machine is read once, and that one read answers every call in flight at that
- * moment and every later call. A machine the vendor no longer has, or reads going, makes each of them not_found in these
- * words; one still there, or a read that failed, leaves the client's own answer, as does a caller's abort or a close
- * during the read. A call with no answer by its own timeout answers timeout at once, as the client says; the machine is
- * read beside it, and a deleted one ends the connection, so every call still waiting on the hung transport and every
- * later call answers not_found. A connection its caller closed is never read back.
+ * moment and every later call. A machine the vendor no longer has, or reads gone with no why (going), makes each of them
+ * not_found in these words; one still there, a failed one, or a read that failed, leaves the client's own answer, as does
+ * a caller's abort or a close during the read. A call with no answer by its own timeout answers timeout at once, as the
+ * client says; the machine is read beside it, and a deleted one ends the connection, so every call still waiting on the
+ * hung transport and every later call answers not_found. A connection its caller closed is never read back.
  */
 function deletedSaid(host: MachineHost, ref: ComputerRef, label: string, requestMs: number, connection: ComputerConnection): ComputerConnection {
 	const { client } = connection;
@@ -1348,7 +1348,8 @@ function deletedSaid(host: MachineHost, ref: ComputerRef, label: string, request
 	let checking: Promise<ComputerError | undefined> | undefined;
 	const read = async (): Promise<ComputerError | undefined> => {
 		const got = await readMachine(host, ref.id, requestMs, closing.signal);
-		if (got.ok && (got.value === undefined || got.value.state === "going") && deleted === undefined && !closing.signal.aborted) {
+		// Gone with no why is being deleted; a failed machine (gone with its why) keeps the client's own answer.
+		if (got.ok && (got.value === undefined || (got.value.state === "gone" && got.value.why === undefined)) && deleted === undefined && !closing.signal.aborted) {
 			const how = got.value === undefined ? `${label} no longer has it` : `${label} reads it going`;
 			deleted = { code: "not_found", message: `the computer ${ref.name} (${ref.id}) was deleted: ${how}` };
 			// Every call still waiting on the transport settles now, with these words, as later ones do.
