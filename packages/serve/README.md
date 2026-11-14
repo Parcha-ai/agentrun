@@ -1446,7 +1446,8 @@ more" (`pending.price` `{estimate_usd}`), read once, when the card is first made
 parked reads nothing again, and a stop or a lost claim cuts the read off. Its charge can pass the estimate: then it is booked as charged, and the run
 stops at once, failed, in the words "monid charged $X, more than the $Y held; the run stopped". A run's spend cap is a
 hard stop for everything but that one charge. A call monid estimates at $0 is a free run, which `maxCost` 0 lets
-through: the estimate's read runs it (on its card, before the person answers), and it is held at $0. A mark a crash left unsettled leaves the run's cost unknown, as a
+through: the estimate's read runs it (on its card, before the person answers), held at $0, and its charge is booked
+there; a charge above $0 stops the run as above, and the call is refused in those words, never asked. A mark a crash left unsettled leaves the run's cost unknown, as a
 model request a crash cut does, and its cap counts it at its held figure, never $0. A run that may have charged and says
 no cost (`FAILED`, `TIMED_OUT`, one stopped by the run or the wait, one whose sending failed) books an unknown charge,
 never $0: the run's cost reads `null`, and under a cap it counts at its held figure, the bound the cap let it go at, as
