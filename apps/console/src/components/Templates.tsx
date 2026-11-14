@@ -118,7 +118,9 @@ function InstallTemplate({ v2, source, go }: { v2: Client; source: string; go: (
   const install = async () => {
     setInstalling(true); setSaid(null);
     try {
-      const done = await v2.importTemplate(source, { trustPublisher: trusted });
+      // The commit the preview showed, never the ref again: a branch moved since is not what the owner read.
+      if (!read) return;
+      const done = await v2.importTemplate(`${read.template.id}@${read.template.sha}`, { trustPublisher: trusted });
       go(templateHash(done.template.id));
     } catch (e) { setSaid(refusalText(e)); } finally { setInstalling(false); }
   };

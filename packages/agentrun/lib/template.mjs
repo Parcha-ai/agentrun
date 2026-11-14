@@ -56,7 +56,8 @@ export const TEMPLATE_INSTALL = {
     const summary = { id: template.id, source: template.source, sha: template.sha, publisher: template.publisher, publisher_trusted, stored, replaced, console_url };
     client.print(values["dry-run"] ? { ...summary, instructions: answer.instructions, skill_files: answer.skill_files, template } : summary);
     if (!io.stdout.isTTY) return 0;
-    io.stderr.write(stored ? `Apply it: ${console_url}\n` : `Nothing stored. Install it: agentrun template install ${args[0]}${publisher_trusted ? "" : " --trust"}\n`);
+    // The install it suggests is pinned to the commit just shown: a branch that moves since is not what was read.
+    io.stderr.write(stored ? `Apply it: ${console_url}\n` : `Nothing stored. Install what you read: agentrun template install ${template.id}@${template.sha}${publisher_trusted ? "" : " --trust"}\n`);
     return 0;
   },
 };

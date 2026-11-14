@@ -149,7 +149,8 @@ describe("installing a template from GitHub", () => {
     await t.click(trust);
     expect(install.disabled).toBe(false);
     await t.click(install);
-    expect(t.imports.at(-1)).toEqual({ source: `${ID}@main`, options: { trustPublisher: true } });
+    // Installed at the commit the preview showed, never at the branch again: one moved since is not what was read.
+    expect(t.imports.at(-1)).toEqual({ source: `${ID}@${SHA}`, options: { trustPublisher: true } });
     expect(t.went).toEqual([`#/templates/${encodeURIComponent(ID)}`]);
   });
 
@@ -157,7 +158,7 @@ describe("installing a template from GitHub", () => {
     const t = await open(undefined, { install: `${ID}@main`, imported: async (_, o) => answer(!o.dryRun, true) });
     expect(t.host.textContent).not.toContain("I trust acme");
     await t.click(t.button(/^Install$/));
-    expect(t.imports.at(-1)).toEqual({ source: `${ID}@main`, options: { trustPublisher: false } });
+    expect(t.imports.at(-1)).toEqual({ source: `${ID}@${SHA}`, options: { trustPublisher: false } });
   });
 
   it("a refused source or package says so in the server's words, and installs nothing", async () => {

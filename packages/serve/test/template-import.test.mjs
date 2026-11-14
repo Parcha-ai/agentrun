@@ -156,6 +156,10 @@ test("an import from GitHub: a dry run shows the package whole and stores nothin
   assert.equal(again.status, 201, JSON.stringify(again.body));
   assert.deepEqual([again.body.template.sha, again.body.replaced], [SHA_B, SHA_A]);
   assert.deepEqual((await api("GET", "/templates")).body.templates.filter((one) => !one.bundled).map((one) => [one.id, one.sha]), [[ID, SHA_B]], "one package per id");
+  // A source pinned to a commit (what the console's install page sends, the SHA its preview showed) reads that commit,
+  // wherever its branch has moved since.
+  const pinned = await api("POST", "/templates/import", { source: `${ID}@${SHA_A}`, dry_run: true });
+  assert.deepEqual([pinned.status, pinned.body.template.sha, pinned.body.skill_files["kyb/SKILL.md"] !== undefined], [200, SHA_A, true], JSON.stringify(pinned.body.error ?? {}));
 
   // A restart loads it again from the store, beside the bundled packages.
   await server.stop();
@@ -205,6 +209,42 @@ test("an import is refused, storing nothing: a source off GitHub, a ref GitHub d
   assert.equal(answer.status, 502, JSON.stringify(answer.body));
   assert.equal(answer.body.error.code, "github_failed");
   assert.match(answer.body.error.message, /example\.invalid, which is not one of GitHub's own hosts/);
+});
+
+test("each read limit refuses the import when passed, and an aborted read ends at once: the download, the unpacked tarball, the package's bytes and its files", { timeout: 60_000 }, async (t) => {
+  const { fetchPackageFiles, ImportRefused, parseSource } = await import("../dist/template-source.js");
+  const github = await fauxGitHub(t);
+  const reach = (limits) => ({ api: github.url, hosts: [new URL(github.url).host], limits });
+  const source = parseSource(`${ID}@main`);
+  const read = (limits, signal = new AbortController().signal) => fetchPackageFiles(source, SHA_A, reach(limits), signal);
+  assert.ok((await read({})).has("agent.md"), "within every limit, the package is read");
+  const refused = async (limits, pattern) => {
+    const began = Date.now();
+    await assert.rejects(read(limits), (error) => error instanceof ImportRefused && pattern.test(error.message), JSON.stringify(limits));
+    assert.ok(Date.now() - began < 10_000, `refused at once: ${JSON.stringify(limits)}`);
+  };
+  await refused({ downloadBytes: 1000 }, /tarball is (\d+ bytes, )?over the 1000/);
+  await refused({ unpackedBytes: 20_000 }, /unpacks to over the 20000 bytes/);
+  await refused({ packageBytes: 1000 }, /package's files are over the 1000 bytes/);
+  await refused({ files: 3 }, /holds over 3 files/);
+
+  // A download that stalls: the request's signal (its close, or the time limit) ends the read, which answers at once.
+  const stalled = createServer((req, res) => {
+    if (req.url.includes("/tarball/")) {
+      res.writeHead(200, { "content-type": "application/x-gzip" });
+      res.write(tarball().subarray(0, 4096));
+      return;
+    }
+    res.writeHead(404).end();
+  });
+  await new Promise((done) => stalled.listen(0, "127.0.0.1", done));
+  t.after(() => { stalled.closeAllConnections(); stalled.close(); });
+  const url = `http://127.0.0.1:${stalled.address().port}`;
+  const stop = new AbortController();
+  setTimeout(() => stop.abort(), 300);
+  const began = Date.now();
+  await assert.rejects(fetchPackageFiles(source, SHA_A, { api: url, hosts: [new URL(url).host] }, stop.signal), ImportRefused);
+  assert.ok(Date.now() - began < 5_000, `an aborted read ends at once, in ${Date.now() - began} ms`);
 });
 
 test("the store keeps each imported package by id, its files as read: a put replaces the one under its id, and a remove says whether one was there", async (t) => {

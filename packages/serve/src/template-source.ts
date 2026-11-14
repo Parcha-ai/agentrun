@@ -15,8 +15,8 @@ const SEGMENT = /^[A-Za-z0-9._@+-]{1,255}$/;
 const REF = /^[A-Za-z0-9._/+-]{1,255}$/;
 const SHA = /^[0-9a-f]{40}$/;
 /** What one import may take: the tarball as sent, the tarball unpacked (the whole repository streams through, counted), the
- *  package's own files together, and the time the whole read may take. The package's own limits (templates.ts) hold too. */
-export const IMPORT_LIMITS = { downloadBytes: 128 << 20, unpackedBytes: 1 << 30, packageBytes: 8 << 20, ms: 120_000 } as const;
+ *  package's own files together and how many there are, and the time the whole read may take. The package's own limits (templates.ts) hold too. */
+export const IMPORT_LIMITS = { downloadBytes: 128 << 20, unpackedBytes: 1 << 30, packageBytes: 8 << 20, files: MAX_PACKAGE_FILES, ms: 120_000 } as const;
 /** How many redirects an import follows, each to GitHub's own hosts. */
 const MAX_REDIRECTS = 3;
 
@@ -259,7 +259,7 @@ async function untarPackage(body: ReadableStream<Uint8Array>, source: GithubSour
       found = true;
       kept += entry.size;
       if (kept > limits.packageBytes) throw new ImportRefused("package", `The package's files are over the ${limits.packageBytes} bytes an import keeps.`);
-      if (files.size >= MAX_PACKAGE_FILES) throw new ImportRefused("package", `The package holds over ${MAX_PACKAGE_FILES} files.`);
+      if (files.size >= limits.files) throw new ImportRefused("package", `The package holds over ${limits.files} files.`);
       if (!(await fill(padded))) throw ended();
       files.set(own, Buffer.from(read(padded).subarray(0, entry.size)));
     }
