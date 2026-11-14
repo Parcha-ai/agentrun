@@ -8,7 +8,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { observed, queue, recorder, STEADY_LEASE, stores, until } from "./runner-support.mjs";
+import { observed, queue, recorder, release, STEADY_LEASE, stores, until } from "./runner-support.mjs";
 
 const { startRunner } = await import("../dist/runner/runner.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
@@ -470,7 +470,11 @@ test("an output retry written on the record but never sent is sent by the next c
   }, "the retry on the record, its send never done", 10_000);
   first.kill();
   const next = startRunner({ store: observed(opened.runners[1], recorder()), createLoop, name: "runner-b", ...STEADY });
-  t.after(() => next.close());
+  // Its three stores' connections go when the case ends, never held to the file's end beside the other files' on Postgres.
+  t.after(async () => {
+    await next.close();
+    await release(opened);
+  });
   const row = await until(async () => {
     const now = await opened.server.runs.get("run-1");
     return ["ended", "failed"].includes(now.state) && now.runner === null && now;
