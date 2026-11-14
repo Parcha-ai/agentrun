@@ -75,7 +75,7 @@ export type TimelineEvent = {
 };
 
 /** A pi conversation entry as stored: `pi.assistant`, `pi.tool-result`, a host's own kind. */
-export type EntryLike = { kind: string; id?: number; conversationId?: number; model?: readonly Obj[]; data?: unknown };
+export type EntryLike = { kind: string; id?: number; conversationId?: number; model?: readonly Obj[]; data?: unknown; /** A call the loop's record kept, shaped as a model's answer (store-reads/journal.ts piShaped): shown as one, never a model request. */ recordedCall?: true };
 /** A pi `AgentEvent`, as `watchEvents` yields it and `GET /events` serves it. */
 export type AgentEventLike = { type: string; [key: string]: unknown };
 
@@ -339,10 +339,13 @@ function createMeter() {
   };
   const models = new Map<string, number>();
 
-  function push(entry: EntryLike): "answer" | "continued" | "refusal" | "mark" | "charge" | "unmetered" | undefined {
+  function push(entry: EntryLike): "answer" | "call" | "continued" | "refusal" | "mark" | "charge" | "unmetered" | undefined {
     const message = entry.model?.[0];
     const data = obj(entry.data);
-    if (entry.kind === REQUEST_REFUSED) {
+    if (entry.kind === "pi.assistant" && entry.recordedCall && message) {
+      // A call the loop's record kept (a CLI's, or one a tool of pi's nested): shown as an answer's call, never a request.
+      return "call";
+    } else if (entry.kind === REQUEST_REFUSED) {
       refused += 1;
     } else if (entry.kind === "pi.assistant" && refused > 0 && message?.stopReason === "error") {
       // pi's answer to a request that never left: nothing to count or show.
@@ -758,9 +761,9 @@ function createProjector(options: TimelineOptions) {
       const data = obj(entry.data);
       const tool = str(data?.tool) ?? "a tool";
       add(make("phase", conv, base, { summary: `Not metered: ${tool} has no price set, so it is outside the run's cost`, tool_name: tool, tool_use_id: str(data?.call) ?? null }));
-    } else if ((metered === "answer" || metered === "continued") && message) {
+    } else if ((metered === "answer" || metered === "call" || metered === "continued") && message) {
       const round = metered === "continued" && answers.has(conv) ? answers.get(conv) : entry.id;
-      if (metered === "answer") answers.set(conv, entry.id);
+      if (metered !== "continued") answers.set(conv, entry.id);
       if (message.stopReason === "error") {
         const why = redactedWhy(str(message.errorMessage) ?? "unknown error");
         // One with no price of its own (a provider's refusal sends none) is a cost unknown, never $0: the provider may
@@ -1091,7 +1094,7 @@ export function runMetricsWithDecisions(records: readonly EntryLike[], decisions
     }
     const message = entry.model?.[0];
     const metered = meter.push(entry);
-    if ((metered === "answer" || metered === "continued") && message && message.stopReason !== "error" && message.stopReason !== "aborted") {
+    if ((metered === "answer" || metered === "call" || metered === "continued") && message && message.stopReason !== "error" && message.stopReason !== "aborted") {
       for (const block of blocksOf(message)) {
         const [id, name] = [str(block.id), str(block.name)];
         if (block.type !== "toolCall" || !id || !name) continue;

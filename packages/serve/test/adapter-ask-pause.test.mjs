@@ -71,7 +71,7 @@ test("an agent's ask refused at the cap parks the run at its next request with t
 test("an answer that passed the cap, then an ask refused at it: the run ends spend_cap_reached in the cap's words, never parked for a raise", async (t) => {
   // Each answer is booked at $0.02 (its model's hold was $0: free to the cap before it left), past the $0.01 cap; its ask
   // is then refused, which would pause the run at its next request. Passing the cap ends it first. The answer took the
-  // run past its share of the cap (tool-budget.ts wrappingUp), so the ask's call is refused in the wrap-up's words before
+  // run past its share of the cap (wrap-up.ts wrappingUp), so the ask's call is refused in the wrap-up's words before
   // it runs, and never reaches the cap's check of the ask itself.
   const { row, answered } = await askRun(t, true, { price: () => 0.02 });
   assert.deepEqual(answered, [], `the ask never ran: the wrap-up refused its call first: ${JSON.stringify(answered)}`);
