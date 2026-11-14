@@ -4,7 +4,7 @@ import type { AgentLearning, LearningChange, LearningDiff, LearningNote, NotePro
 import type { ComposioTools, McpAuth, McpClientFeature, McpPreview, McpRefresh, McpServer } from "./mcp";
 import type { RunGraph } from "./runGraph";
 import { applyPage } from "./timeline";
-import type { ApiError, Firing, GitHubConnectStart, GitHubDisconnected, GitHubStatus, InputIssue, McpPrivateHosts, TemplateApplied, TemplateApply, TemplateImported, TemplateView, RaiseAnswer, Run, RunComputer, RunLearningRead, LearningCost, LearningEvals, LearningLoop, Promotions, WorkflowRevisions, LearningBatch, LearningBatchHead, LearningBatchStart, ComputerHoldAnswer, HandBackOutcome, RunFiles, RunStatus, TimelinePage, TimelineRow, SessionSecrets, SignInForgotten, ToolKeys, ToolKeysFeature, ToolSettings, Trigger, TriggerCreate, TriggerInput, TriggerMade, TriggerSecret, Webhook, WebhookAttempt, WebhookSaved, WebhooksFeature, Archil, ArchilBody, ArchilTest, Computers, ComputerChoices, ComputerKeysBody, ComputerProvider, ComputerTest, Pairing } from "./v2";
+import type { ApiError, Firing, GitHubConnectStart, GitHubDisconnected, GitHubStatus, InputIssue, McpPrivateHosts, TemplateApplied, TemplateApply, TemplateImported, TemplateView, RaiseAnswer, GradeAnswer, GradeBody, Run, RunComputer, RunLearningRead, LearningCost, LearningEvals, LearningLoop, Promotions, WorkflowRevisions, LearningBatch, LearningBatchHead, LearningBatchStart, ComputerHoldAnswer, HandBackOutcome, RunFiles, RunStatus, TimelinePage, TimelineRow, SessionSecrets, SignInForgotten, ToolKeys, ToolKeysFeature, ToolSettings, Trigger, TriggerCreate, TriggerInput, TriggerMade, TriggerSecret, Webhook, WebhookAttempt, WebhookSaved, WebhooksFeature, Archil, ArchilBody, ArchilTest, Computers, ComputerChoices, ComputerKeysBody, ComputerProvider, ComputerTest, Pairing } from "./v2";
 
 /** A request AgentRun Server refused: its HTTP status and its typed error (`code`, `message`, `retryable`). */
 /** A refusal's issue at one field, as the server names it (with its `fix`, when it says one). Its `reason` is any string, as
@@ -223,6 +223,9 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     /** Raises an agentic run's spend cap (only a raise: above its current cap, else 422). A run paused at its cap goes on
      *  (`resumed`); an ended run is 409 not_continuable. */
     raiseCap: (id: string, maxCostUsd: number) => call<RaiseAnswer>("PATCH", run(id), { body: { max_cost_usd: maxCostUsd } }),
+    /** Grades an ended run's answer right or wrong (PUT /v2/runs/{id}/grade): a later grade replaces it. The answer says
+     *  the feedback round it opened the run again on (`feedback`), if any. */
+    gradeRun: (id: string, body: GradeBody) => call<GradeAnswer>("PUT", `${run(id)}/grade`, { body }),
     /** Starts a run. The server answers 202 with the run; the same key with the same body answers with that same run. */
     startRun: async (agentId: string, body: { input: unknown; revision?: string; effort?: string; max_cost_usd?: number; file_ids?: string[] }, idempotencyKey: string) => {
       const r = await callTagged<Run>("POST", `${agent(agentId)}/runs`, { body, headers: { "idempotency-key": idempotencyKey } });

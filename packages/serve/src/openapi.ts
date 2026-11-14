@@ -1093,7 +1093,10 @@ const RUN_LEARNING = {
         skills: { type: "array", items: closed({ name: { type: "string" }, read: { type: "boolean" } }), description: "Each learned skill the run was offered, and whether its job read the skill's SKILL.md (a read of `.agents/skills/<name>/SKILL.md`, read_skill_file on it, or a harness's own Skill tool on it; the end-of-run turn's reads not counted). A name holding one of the host's secrets reads `[redacted]`." },
         workflows: { type: "array", items: closed({ name: { type: "string" }, calls: COUNT, failed: COUNT }), description: "Each learned workflow the run's job called (`learned_workflow`), by the name its calls gave: how many calls, and how many of them failed. A name holding one of the host's secrets reads `[redacted]`." },
       }, "What the run's job did with the learned skills and workflows it was offered, apart from `skills` and `workflows`, the ones it learned."),
-    }, LEARNING_NOTES),
+    }, {
+      ...LEARNING_NOTES,
+      graded: { ...closed({ correct: { type: "boolean", description: "Whether the grade said its answer was right." }, source: { enum: [...GRADE_SOURCES], description: "Who graded it: `feedback`, a person; `eval`, an eval's label." }, graded_at: DATE_TIME }), description: "The run's grade (PUT /runs/{run_id}/grade), as its agent keeps it: the newest, since a later grade replaces it. Absent when it has none kept." },
+    }),
     { type: "null" },
   ],
   description: "The run's learning whole. Null for a run that does not learn.",

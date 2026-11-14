@@ -2227,6 +2227,11 @@ export interface operations {
         name: string;
         pending?: true;
       }[];
+      graded?: {
+        correct: boolean;
+        source: "feedback" | "eval";
+        graded_at: string;
+      };
     } | null;
   };
   getRunLearningDiff: {

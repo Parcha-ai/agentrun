@@ -2643,6 +2643,11 @@ export type GetRunLearningResponse = {
     name: string;
     pending?: true;
   }>;
+  graded?: {
+    correct: boolean;
+    source: "feedback" | "eval";
+    graded_at: string;
+  };
 } | null;
 
 /** What the run proposed, file by file (GET /runs/{run_id}/learning/diff). */

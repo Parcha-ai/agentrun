@@ -4,20 +4,21 @@ import { Chip } from "@/components/ui/chip";
 import { learningHash } from "@/lib/learning";
 import type { LearnedUse, Run, RunLearningRead } from "@/lib/v2";
 
-/** What the run's job did with the learned skills and workflows its agent gave it (GET /v2/runs/{id}/learning `used`),
- *  read for a run that learns, once and again when it ends (a skill read late counts). Null while unread, when the read
- *  failed, or for a run with nothing to read it from. */
-export function useRunUsed(run: Pick<Run, "run_id" | "learning">, ended: boolean, read?: () => Promise<RunLearningRead>): LearnedUse | null {
+/** The run's learning (GET /v2/runs/{id}/learning), read for a run that learns, once and again when it ends (a skill read
+ *  late counts; a grade's feedback round ends it again): what its job did with the learned skills and workflows its
+ *  agent gave it (`used`) and its grade (`graded`). Null while unread, when the read failed, or for a run with nothing to
+ *  read it from. */
+export function useRunLearning(run: Pick<Run, "run_id" | "learning">, ended: boolean, read?: () => Promise<RunLearningRead>): RunLearningRead | null {
   const learns = !!read && !!run.learning;
-  const [used, setUsed] = useState<LearnedUse | null>(null);
+  const [got, setGot] = useState<RunLearningRead | null>(null);
   useEffect(() => {
     if (!learns) return;
     let live = true;
-    // A reader that throws at once shows nothing, as one that rejects: this panel is never the page's error.
-    Promise.resolve().then(() => read!()).then((r) => { if (live) setUsed(r?.used ?? null); }, () => { if (live) setUsed(null); });
+    // A reader that throws at once shows nothing, as one that rejects: these panels are never the page's error.
+    Promise.resolve().then(() => read!()).then((r) => { if (live) setGot(r ?? null); }, () => { if (live) setGot(null); });
     return () => { live = false; };
   }, [run.run_id, learns, ended]); // eslint-disable-line react-hooks/exhaustive-deps
-  return learns ? used : null;
+  return learns ? got : null;
 }
 
 const times = (n: number) => (n === 1 ? "once" : n === 2 ? "twice" : `${n} times`);
