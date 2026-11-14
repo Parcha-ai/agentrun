@@ -9,6 +9,7 @@ import { DAYTONA, DAYTONA_DEFAULT_SNAPSHOT, DAYTONA_GPU_REGION, DAYTONA_GPU_SNAP
 import { COMPUTER_LABEL, DEADLINE_LABEL } from "./drift.js";
 import type { HostCall, HostFacts, Machine, MachineHost, MachineProcess, MachineRequest } from "./host.js";
 import { HostedProvider, type HostedOptions, type HostedTimeouts, IMAGE_LABEL, ours } from "./hosted/provider.js";
+import { allPages, jsonOf, type Rest, rest } from "./hosted/rest.js";
 import { shellLine } from "./hosted/scripts.js";
 import type { KindCapabilities } from "./kinds.js";
 import type { MountKind } from "./mount.js";
@@ -101,28 +102,6 @@ interface Sandbox {
 	linkedSandboxId?: string;
 	sandboxClass?: string;
 	toolboxProxyUrl?: string;
-}
-
-interface Answer {
-	status: number;
-	bytes: Uint8Array;
-}
-
-interface CallInit {
-	json?: unknown;
-	form?: FormData;
-	timeoutMs?: number;
-	/** Retry no answer, 429 and 5xx: only for a call that may run twice. */
-	retry?: boolean;
-	/**
-	 * Retry Daytona's own 500 alone (internalRefusal): for a call that must not run twice, which that answer says did
-	 * not run. Never no answer, a timeout, 502, 503 or 504: the request may have reached the toolbox. Not with retry.
-	 */
-	retryInternal?: boolean;
-	/** Any answer below 500 but 429 is a value, with its status, not a failure. */
-	anyStatus?: boolean;
-	/** This one status is a value, with its status, not a failure (and not retried). */
-	answerStatus?: number;
 }
 
 /**
@@ -243,15 +222,8 @@ function stateWords(sb: Sandbox | undefined): string {
 	return sb.desiredState !== undefined && sb.desiredState !== sb.state ? `${state} (desired ${sb.desiredState})` : state;
 }
 
-function codeOf(status: number, text: string): ComputerErrorCode {
-	if ((status === 400 || status === 403 || status === 429 || status === 507) && QUOTA.test(text)) return "limit";
-	if (status === 401 || status === 403) return "denied";
-	if (status === 404 || status === 410) return "not_found";
-	if (status === 408) return "timeout";
-	if (status === 429) return "limit";
-	if (status === 400 || status === 409 || status === 422) return "invalid";
-	return "vendor";
-}
+/** Daytona's own words for a refusal about quota or capacity; every other status is the shared table's. */
+const explain = ({ status, text }: { status: number; text: string }): { code?: ComputerErrorCode } => ((status === 400 || status === 403 || status === 429 || status === 507) && QUOTA.test(text) ? { code: "limit" } : {});
 
 /**
  * Whether an answer is Daytona's own 500: its error body ({"statusCode":500,...}), which its proxy, its runner and the
@@ -261,41 +233,22 @@ function codeOf(status: number, text: string): ComputerErrorCode {
  * more); a request passed on that then fails is 502 with no body (libs/common-go/pkg/proxy/proxy.go, ErrorHandler).
  */
 function internalRefusal(status: number, bytes: Uint8Array): boolean {
-	return status === 500 && (parseJson(bytes) as { statusCode?: unknown } | null)?.statusCode === 500;
-}
-
-/** Whether fetch failed on a redirect it was told not to follow. */
-function redirected(cause: unknown): boolean {
-	const inner = (cause as { cause?: unknown } | null)?.cause;
-	return /redirect/i.test(`${(cause as Error | null)?.message ?? ""} ${(inner as Error | null)?.message ?? ""}`);
-}
-
-function parseJson(bytes: Uint8Array): unknown {
-	const text = decoder.decode(bytes);
-	if (text === "") return null;
-	try {
-		return JSON.parse(text);
-	} catch {
-		return null;
-	}
+	return status === 500 && (jsonOf(bytes) as { statusCode?: unknown } | null)?.statusCode === 500;
 }
 
 /** Daytona's REST API: the control plane, and the toolbox of one sandbox. */
-class Rest {
+class DaytonaRest {
 	readonly #base: string;
 	readonly #key: string;
-	readonly #fetch: typeof fetch;
-	readonly #requestMs: number;
-	readonly #retryMs: number;
-	readonly #pause: (ms: number, signal?: AbortSignal) => Promise<void>;
+	readonly call: Rest["call"];
+	readonly json: Rest["json"];
 
-	constructor(base: string, key: string, fetcher: typeof fetch, requestMs: number, retryMs: number, pause: (ms: number, signal?: AbortSignal) => Promise<void> = sleep) {
+	constructor(base: string, key: string, fetcher: typeof fetch, requestMs: number, retryMs: number, pause: ((ms: number, signal?: AbortSignal) => Promise<void>) | undefined) {
 		this.#base = base.replace(/\/+$/, "");
 		this.#key = key;
-		this.#fetch = fetcher;
-		this.#requestMs = requestMs;
-		this.#retryMs = retryMs;
-		this.#pause = pause;
+		const client = rest({ base, headers: () => this.headers(), vendor: "daytona", fetch: fetcher, timeoutMs: requestMs, retry: { attempts: RETRY_ATTEMPTS, baseMs: retryMs, ...(pause ? { pause } : {}) }, explain });
+		this.call = client.call;
+		this.json = client.json;
 	}
 
 	/** The headers of every call and log stream; split output keeps a session's stdout and stderr apart. */
@@ -303,52 +256,8 @@ class Rest {
 		return { Authorization: `Bearer ${this.#key}`, "X-Daytona-Source": "agentrun-computer", "X-Daytona-Split-Output": "true" };
 	}
 
-	sandbox(idOrName = "", rest = ""): string {
-		return `${this.#base}/sandbox${idOrName === "" ? "" : `/${encodeURIComponent(idOrName)}`}${rest}`;
-	}
-
-	/** One call, bounded by its timeout and the caller's signal. A failure names the method, path and status, never a header. */
-	async call(method: string, url: string, init: CallInit, signal?: AbortSignal): Promise<Result<Answer>> {
-		const what = `${method} ${new URL(url).pathname}`;
-		const internalOnly = init.retryInternal === true && init.retry !== true;
-		const attempts = init.retry === true || internalOnly ? RETRY_ATTEMPTS : 1;
-		const timeoutMs = init.timeoutMs ?? this.#requestMs;
-		for (let attempt = 1; ; attempt++) {
-			if (signal?.aborted) return fail("aborted", `${what} was aborted`);
-			const timeout = AbortSignal.timeout(timeoutMs);
-			let failure: ComputerError;
-			let retryable = true;
-			try {
-				// Never a redirect: a followed one keeps the key, and could carry a toolbox call to another sandbox.
-				const headers = init.json === undefined ? this.headers() : { ...this.headers(), "Content-Type": "application/json" };
-				const response = await this.#fetch(url, {
-					method,
-					headers,
-					body: init.json === undefined ? init.form : JSON.stringify(init.json),
-					redirect: "error",
-					signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
-				});
-				const bytes = new Uint8Array(await response.arrayBuffer());
-				if (response.ok || response.status === init.answerStatus || (init.anyStatus === true && response.status < 500 && response.status !== 429)) return ok({ status: response.status, bytes });
-				const text = decoder.decode(bytes).replace(/\s+/g, " ").slice(0, 300);
-				retryable = internalOnly ? internalRefusal(response.status, bytes) : response.status === 429 || response.status >= 500;
-				failure = errorOf(codeOf(response.status, text), `${what}: ${response.status} ${text}`, "daytona");
-			} catch (cause) {
-				if (signal?.aborted) return fail("aborted", `${what} was aborted`);
-				// No answer: the request may have reached Daytona, so a call that must not run twice is not sent again.
-				retryable = !internalOnly;
-				if (timeout.aborted) failure = { code: "timeout", message: `${what} did not answer within ${timeoutMs / 1000} s` };
-				else if (redirected(cause)) return vendorFail("daytona", `${what}: Daytona answered with a redirect, which is never followed: it would carry the key`);
-				else failure = { code: "vendor", vendor: "daytona", message: `${what}: ${(cause as Error).message}` };
-			}
-			if (!retryable || attempt >= attempts) return { ok: false, error: failure };
-			await this.#pause(this.#retryMs * 2 ** (attempt - 1), signal);
-		}
-	}
-
-	async json(method: string, url: string, init: CallInit, signal?: AbortSignal): Promise<Result<unknown>> {
-		const answer = await this.call(method, url, init, signal);
-		return answer.ok ? ok(parseJson(answer.value.bytes)) : answer;
+	sandbox(idOrName = "", tail = ""): string {
+		return `${this.#base}/sandbox${idOrName === "" ? "" : `/${encodeURIComponent(idOrName)}`}${tail}`;
 	}
 
 	/** A sandbox by id or name; undefined when Daytona has none. */
@@ -444,7 +353,7 @@ function feed(): { push(bytes: Uint8Array): void; end(error?: Error): void; iter
 class DaytonaHost implements MachineHost {
 	readonly id = "daytona";
 	readonly facts: HostFacts;
-	readonly #rest: Rest;
+	readonly #rest: DaytonaRest;
 	readonly #webSocket: WebSocketFactory;
 	readonly #class: "container" | "linux-vm";
 	readonly #target: string | undefined;
@@ -458,7 +367,7 @@ class DaytonaHost implements MachineHost {
 	/** Whether each sandbox this host made was asked for a GPU, by id: what its read-back is held to. */
 	readonly #made = new Map<string, boolean>();
 
-	constructor(options: { rest: Rest; webSocket: WebSocketFactory; arch: "amd64" | "arm64"; sandboxClass: "container" | "linux-vm"; target?: string; gpu: DaytonaGpuSnapshot; autoStop: number; autoDelete: number; pollMs: number }) {
+	constructor(options: { rest: DaytonaRest; webSocket: WebSocketFactory; arch: "amd64" | "arm64"; sandboxClass: "container" | "linux-vm"; target?: string; gpu: DaytonaGpuSnapshot; autoStop: number; autoDelete: number; pollMs: number }) {
 		this.#rest = options.rest;
 		this.#webSocket = options.webSocket;
 		this.#class = options.sandboxClass;
@@ -595,25 +504,22 @@ class DaytonaHost implements MachineHost {
 
 	/** Every sandbox with the adapter's label, all pages: one label query, filtered here by the rest of the labels. */
 	async #listOwn(signal?: AbortSignal): Promise<Result<Sandbox[]>> {
-		const found: Sandbox[] = [];
-		const seen = new Set<string>();
-		let cursor: string | undefined;
-		for (let page = 0; page < MAX_PAGES; page++) {
-			const query = new URLSearchParams({ labels: JSON.stringify({ [COMPUTER_LABEL]: "1" }), limit: "100" });
-			if (cursor !== undefined) query.set("cursor", cursor);
-			const answer = await this.#rest.json("GET", `${this.#rest.sandbox()}?${query}`, { retry: true }, signal);
-			if (!answer.ok) return answer;
-			const value = answer.value as { items?: unknown; nextCursor?: unknown } | Sandbox[] | null;
-			const items = Array.isArray(value) ? value : Array.isArray(value?.items) ? (value.items as Sandbox[]) : undefined;
-			if (items === undefined) return vendorFail("daytona", "GET /sandbox: the listing is not a page of sandboxes");
-			found.push(...items.filter((sb) => typeof sb?.id === "string"));
-			const next = Array.isArray(value) ? undefined : value?.nextCursor;
-			if (typeof next !== "string" || next === "") return ok(found);
-			if (seen.has(next)) return vendorFail("daytona", `GET /sandbox: the listing's cursor ${next} came back twice`);
-			seen.add(next);
-			cursor = next;
-		}
-		return vendorFail("daytona", `GET /sandbox: the listing ran past ${MAX_PAGES} pages`);
+		const found = await allPages<Sandbox>(
+			async (cursor) => {
+				const query = new URLSearchParams({ labels: JSON.stringify({ [COMPUTER_LABEL]: "1" }), limit: "100" });
+				if (cursor !== undefined) query.set("cursor", cursor);
+				const answer = await this.#rest.json("GET", `${this.#rest.sandbox()}?${query}`, { retry: true }, signal);
+				if (!answer.ok) return answer;
+				const value = answer.value as { items?: unknown; nextCursor?: unknown } | Sandbox[] | null;
+				const items = Array.isArray(value) ? value : Array.isArray(value?.items) ? (value.items as Sandbox[]) : undefined;
+				if (items === undefined) return vendorFail("daytona", "GET /sandbox: the listing is not a page of sandboxes");
+				const next = Array.isArray(value) ? undefined : value?.nextCursor;
+				return ok({ items, ...(typeof next === "string" ? { next } : {}) });
+			},
+			MAX_PAGES,
+			{ vendor: "daytona", what: "GET /sandbox: the listing" },
+		);
+		return found.ok ? ok(found.value.filter((sb) => typeof sb?.id === "string")) : found;
 	}
 
 	/**
@@ -697,7 +603,7 @@ class DaytonaHost implements MachineHost {
 		const send = (route: string, answerStatus?: number) => {
 			const form = new FormData();
 			form.append("file", new Blob([new Uint8Array(bytes)]), "computerd");
-			return this.#rest.call("POST", `${toolbox.value}/${route}?${query}`, { form, retry: true, timeoutMs: ctx.timeoutMs, ...(answerStatus === undefined ? {} : { answerStatus }) }, ctx.signal);
+			return this.#rest.call("POST", `${toolbox.value}/${route}?${query}`, { form, retry: true, timeoutMs: ctx.timeoutMs, ...(answerStatus === undefined ? {} : { accept: (status: number) => status === answerStatus || (status >= 200 && status < 300) }) }, ctx.signal);
 		};
 		const current = await send("files/upload-v2", 404);
 		if (!current.ok) return current;
@@ -815,7 +721,7 @@ class DaytonaHost implements MachineHost {
 			sending = sending.then(async () => {
 				// Daytona's own 500 alone is sent again: the line reached no reader (internalRefusal), so it is never read
 				// twice; a line read twice would be a JSON-RPC request run twice.
-				const sent = await this.#rest.call("POST", `${command}/input`, { json: { data }, retryInternal: true });
+				const sent = await this.#rest.call("POST", `${command}/input`, { json: { data }, retry: internalRefusal });
 				// Its words never hold what was written: it may be a disk's token.
 				if (!sent.ok) throw new Error(`writing to the command failed (${sent.error.code}): ${sent.error.message}`);
 			});
@@ -980,7 +886,7 @@ export class DaytonaProvider extends HostedProvider {
 		if (!isWhole(retryMs) || retryMs <= 0) throw new Error(`timeouts.retryMs must be a whole number of ms above 0, not ${retryMs}`);
 		const requestMs = hostedTimeouts.requestMs ?? DEFAULT_REQUEST_MS;
 		const host = new DaytonaHost({
-			rest: new Rest(apiUrl, apiKey, fetcher ?? fetch, requestMs, retryMs, pause),
+			rest: new DaytonaRest(apiUrl, apiKey, fetcher ?? fetch, requestMs, retryMs, pause),
 			webSocket: webSocket ?? ((url, init) => new WebSocket(url, init as never) as unknown as WebSocketLike),
 			arch,
 			sandboxClass,

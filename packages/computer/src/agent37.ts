@@ -15,6 +15,7 @@ import { WINDOW_MANAGER } from "./desktop.js";
 import { DEADLINE_LABEL } from "./drift.js";
 import type { HostCall, HostFacts, Machine, MachineHost, MachineProcess, MachineRequest } from "./host.js";
 import { bounded } from "./hosted/process.js";
+import { jsonOf, type Rest, rest } from "./hosted/rest.js";
 import { HostedProvider, type HostedOptions, type HostedTimeouts, IMAGE_LABEL, MAX_LABEL, NAME_LABEL } from "./hosted/provider.js";
 import { pemOf, type Ssh2Module, SshExec, SshTunnelError, type SshTunnel } from "./hosted/ssh.js";
 import type { KindCapabilities } from "./kinds.js";
@@ -138,14 +139,12 @@ export const CAPABILITIES: readonly KindCapabilities[] = AGENT37.capabilities;
 const show = (value: unknown) => (value === undefined ? "nothing" : JSON.stringify(value));
 const isWhole = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value);
 
-/** An answer of Agent37's REST API that is not a success: its HTTP status and the envelope's stable code (docs: errors). */
+/** An answer of Agent37's REST API that is not a success, as the code its status and the envelope's stable code (docs: errors) make. */
 export class Agent37Error extends Error {
 	override name = "Agent37Error";
-	readonly status: number;
-	readonly code: string | undefined;
-	constructor(status: number, code: string | undefined, message: string) {
+	readonly code: ComputerErrorCode;
+	constructor(code: ComputerErrorCode, message: string) {
 		super(message);
-		this.status = status;
 		this.code = code;
 	}
 }
@@ -183,18 +182,10 @@ const CODES: Record<string, ComputerErrorCode> = {
 };
 
 function codeOf(error: unknown): ComputerErrorCode {
-	const { name, code, status, level } = (error ?? {}) as { name?: unknown; code?: unknown; status?: unknown; level?: unknown };
+	const { name, level } = (error ?? {}) as { name?: unknown; level?: unknown };
 	if (name === "AbortError") return "aborted";
 	if (name === "TimeoutError") return "timeout";
-	if (error instanceof Agent37Error) {
-		const known = typeof code === "string" ? CODES[code] : undefined;
-		if (known !== undefined) return known;
-		if (status === 401 || status === 403) return "denied";
-		if (status === 404) return "not_found";
-		if (status === 400) return "invalid";
-		if (status === 402 || status === 429) return "limit";
-		return "vendor";
-	}
+	if (error instanceof Agent37Error) return error.code;
 	// ssh2 names the stage that failed (lib/client.js): the instance's sshd refused the key, or the handshake timed out.
 	if (level === "client-authentication") return "denied";
 	if (level === "client-timeout") return "timeout";
@@ -335,18 +326,27 @@ class Agent37Host implements MachineHost {
 	readonly facts: HostFacts;
 	readonly #apiKey: string;
 	readonly #ssh: SshExec;
-	readonly #fetch: typeof fetch;
+	readonly #client: Rest;
 	readonly #WebSocket: WebSocketClass;
-	readonly #apiUrl: string;
 	readonly #proxyDomain: string;
 	readonly #declared: Declared;
 
 	constructor(options: { apiKey: string; sshKey: string; ssh2: Ssh2Module; fetch: typeof fetch; WebSocket: WebSocketClass; apiUrl: string; proxyDomain: string; type: Agent37Type; region: Agent37Region }) {
 		this.#apiKey = options.apiKey;
 		this.#ssh = new SshExec({ ssh2: options.ssh2, privateKey: options.sshKey, tunnelOf: (id) => this.#tunnel(id) });
-		this.#fetch = options.fetch;
+		this.#client = rest({
+			base: options.apiUrl,
+			headers: () => ({ Authorization: `Bearer ${options.apiKey}`, Accept: "application/json" }),
+			vendor: "agent37",
+			fetch: options.fetch,
+			timeoutMs: 30_000, // every call gives its own: ctx.timeoutMs
+			explain: ({ status, bytes, what }) => {
+				const { code, message } = envelopeOf(jsonOf(bytes));
+				const known = code === undefined ? undefined : CODES[code];
+				return { ...(known === undefined ? {} : { code: known }), message: `${what} answered ${status}${code ? ` ${code}` : ""}${message ? `: ${message}` : ""}` };
+			},
+		});
 		this.#WebSocket = options.WebSocket;
-		this.#apiUrl = options.apiUrl;
 		this.#proxyDomain = options.proxyDomain;
 		this.#declared = { type: options.type, region: options.region };
 		const runtime = options.type === "vm" ? "vm" : "gvisor";
@@ -372,7 +372,7 @@ class Agent37Host implements MachineHost {
 
 	/** The SSH stream to an instance's sshd: a binary WebSocket the edge opens for the workspace key (cli.js wsHandshake), as a Duplex. */
 	#tunnel(id: string): SshTunnel {
-		if (!INSTANCE_ID.test(id)) throw new Agent37Error(404, "not_found", `${JSON.stringify(id)} is not an Agent37 instance id (ten lowercase letters and digits)`);
+		if (!INSTANCE_ID.test(id)) throw new Agent37Error("not_found", `${JSON.stringify(id)} is not an Agent37 instance id (ten lowercase letters and digits)`);
 		const host = `${id}-${AGENT37_SSH_PORT}.${this.#proxyDomain}`;
 		const ws = new this.#WebSocket(`wss://${host}/`, { headers: { "X-Agent37-Key": this.#apiKey } });
 		ws.binaryType = "arraybuffer";
@@ -384,32 +384,18 @@ class Agent37Host implements MachineHost {
 		return this.#ssh.exec(id, argv, opts, ctx);
 	}
 
-	/** One REST call: the key as a Bearer token, JSON both ways, bounded by ctx; a failure throws Agent37Error in Agent37's words. */
+	/** One REST call, bounded by ctx; a failure throws Agent37Error in Agent37's words. */
 	async #rest<T>(method: "GET" | "POST" | "PATCH" | "DELETE", path: string, body: object | undefined, ctx: HostCall): Promise<T> {
-		const response = await this.#fetch(`${this.#apiUrl}${path}`, {
-			method,
-			headers: { Authorization: `Bearer ${this.#apiKey}`, Accept: "application/json", ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
-			...(body === undefined ? {} : { body: JSON.stringify(body) }),
-			signal: bounded(ctx.timeoutMs, ctx.signal),
-		});
-		const text = await response.text();
-		let parsed: unknown;
-		try {
-			parsed = text === "" ? null : JSON.parse(text);
-		} catch {
-			parsed = undefined;
-		}
-		if (!response.ok) {
-			const { code, message } = envelopeOf(parsed);
-			throw new Agent37Error(response.status, code, `${method} ${path} answered ${response.status}${code ? ` ${code}` : ""}${message ? `: ${message}` : ""}`);
-		}
-		if (parsed === undefined || parsed === null) throw new Agent37Error(response.status, undefined, `${method} ${path} answered ${response.status} with no JSON body`);
+		const answer = await this.#client.call(method, this.#client.url(path), { ...(body === undefined ? {} : { json: body }), timeoutMs: ctx.timeoutMs }, ctx.signal);
+		if (!answer.ok) throw new Agent37Error(answer.error.code, answer.error.message);
+		const parsed = jsonOf(answer.value.bytes);
+		if (parsed === null) throw new Agent37Error("vendor", `${method} ${path} answered ${answer.value.status} with no JSON body`);
 		return parsed as T;
 	}
 
 	/** An instance's REST path, its id held to Agent37's form first: an id is also a DNS label here. */
 	#path(id: string): string {
-		if (!INSTANCE_ID.test(id)) throw new Agent37Error(404, "not_found", `${JSON.stringify(id)} is not an Agent37 instance id (ten lowercase letters and digits)`);
+		if (!INSTANCE_ID.test(id)) throw new Agent37Error("not_found", `${JSON.stringify(id)} is not an Agent37 instance id (ten lowercase letters and digits)`);
 		return `/v1/instances/${id}`;
 	}
 
@@ -457,7 +443,7 @@ class Agent37Host implements MachineHost {
 			},
 			ctx,
 		);
-		if (typeof made?.id !== "string" || !INSTANCE_ID.test(made.id)) throw new Agent37Error(201, undefined, `POST /v1/instances answered no instance id: ${show(made?.id)}`);
+		if (typeof made?.id !== "string" || !INSTANCE_ID.test(made.id)) throw new Agent37Error("vendor", `POST /v1/instances answered no instance id: ${show(made?.id)}`);
 		return ok({ id: made.id });
 	}
 
@@ -477,9 +463,9 @@ class Agent37Host implements MachineHost {
 	 */
 	async list(labels: Record<string, string>, ctx: HostCall): Promise<Result<Machine[]>> {
 		const listed = await this.#rest<{ data?: unknown; has_more?: unknown; next_cursor?: unknown }>("GET", "/v1/instances", undefined, ctx);
-		if (!Array.isArray(listed.data)) throw new Agent37Error(200, undefined, "GET /v1/instances answered no data list");
+		if (!Array.isArray(listed.data)) throw new Agent37Error("vendor", "GET /v1/instances answered no data list");
 		if (listed.has_more === true || (listed.next_cursor !== undefined && listed.next_cursor !== null)) {
-			throw new Agent37Error(200, undefined, "GET /v1/instances answered a page with more after it, which Agent37 documents none of: this provider would miss machines");
+			throw new Agent37Error("vendor", "GET /v1/instances answered a page with more after it, which Agent37 documents none of: this provider would miss machines");
 		}
 		const wanted = Object.entries(labels);
 		const machines: Machine[] = [];

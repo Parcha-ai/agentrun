@@ -21,11 +21,11 @@ final class FakeOS: @unchecked Sendable {
 	}
 
 	let lock = NSRecursiveLock()
-	var elements: [Int: Element] = [:]
-	var order: [Int] = []
-	var window = UiWindow(id: "7", title: "Notes", bounds: Rect(100, 50, 800, 600))
+	var elements: [Int: Element] = [:] { didSet { told() } }
+	var order: [Int] = [] { didSet { told() } }
+	var window = UiWindow(id: "7", title: "Notes", bounds: Rect(100, 50, 800, 600)) { didSet { told() } }
 	/// False once the app's last window closed: then no target resolves.
-	var hasWindow = true
+	var hasWindow = true { didSet { told() } }
 	/// False once the app quit: then it has no window either.
 	var running = true
 	/// Once set, the next resolve answers the window it had and then swaps in this one, as an app does when its
@@ -34,7 +34,7 @@ final class FakeOS: @unchecked Sendable {
 	var app = UiApp(id: "com.apple.Notes", name: "Notes", pid: 42)
 	var trusted = true
 	var screenRecording = true
-	var focusedID: Int?
+	var focusedID: Int? { didSet { told() } }
 	/// An app that ignores a request to focus an element: the request succeeds and the focus stays where it was.
 	var ignoresFocus = false
 	/// The pid of the app in front; the fake app is pid 42.
@@ -66,6 +66,17 @@ final class FakeOS: @unchecked Sendable {
 	var now: Double = 0
 	/// Delayed changes: at a time, run this.
 	var timers: [(at: Double, run: (FakeOS) -> Void)] = []
+	/// The app tells its tree's changes (an AXObserver on a Mac): the platform has Changes, and each change to the tree,
+	/// the focus or the window is told at the clock time it is made.
+	var tells = false
+	/// When the app last told a change.
+	var toldAt: Double?
+	/// Watches begun, as the platform's Changes counts them.
+	var watched: Set<Int32> = []
+
+	func told() {
+		if tells { toldAt = now }
+	}
 
 	func with<T>(_ body: (FakeOS) throws -> T) rethrows -> T {
 		lock.lock()
@@ -93,6 +104,19 @@ final class FakeOS: @unchecked Sendable {
 		with { os in os.timers.append((os.now + ms, run)) }
 	}
 
+	/// Runs the delayed changes due by `end` in time order, each at its own time, and leaves the clock at `end`.
+	func pass(to end: Double) {
+		while let run: (FakeOS) -> Void = with({ os in
+			guard let next = os.timers.indices.filter({ os.timers[$0].at <= end }).min(by: { os.timers[$0].at < os.timers[$1].at }) else { return nil }
+			let timer = os.timers.remove(at: next)
+			os.now = max(os.now, timer.at)
+			return timer.run
+		}) {
+			with { run($0) }
+		}
+		with { $0.now = end }
+	}
+
 	func record(_ entry: String) {
 		with { os in os.log.append(entry) }
 		react?(entry, self)
@@ -101,7 +125,7 @@ final class FakeOS: @unchecked Sendable {
 	var entries: [String] { with { $0.log } }
 
 	func platform(background: Feature = .on, foreground: Feature = .on) -> Platform {
-		Platform(accessibility: FakeAX(os: self), capture: FakeCapture(os: self), workspace: FakeWorkspace(os: self), background: FakeRoute(os: self, name: "bg"), backgroundFeature: background, foreground: FakeRoute(os: self, name: "fg"), foregroundFeature: foreground, raw: FakeRaw(os: self), person: FakePerson(os: self), clock: FakeClock(os: self))
+		Platform(accessibility: FakeAX(os: self), capture: FakeCapture(os: self), workspace: FakeWorkspace(os: self), background: FakeRoute(os: self, name: "bg"), backgroundFeature: background, foreground: FakeRoute(os: self, name: "fg"), foregroundFeature: foreground, raw: FakeRaw(os: self), person: FakePerson(os: self), clock: FakeClock(os: self), changes: with { $0.tells } ? FakeChanges(os: self) : nil)
 	}
 
 	func engine(policy: Policy = Policy(), background: Feature = .on, foreground: Feature = .on) -> UIEngine {
@@ -136,8 +160,15 @@ struct FakeAX: Accessibility {
 		try os.with { os in
 			if target.window.id != os.window.id { throw RPCError.notFound("\(os.app.id) has no window \(target.window.id) any more: observe again") }
 			os.snapshots += 1
-			os.now += os.walkMs
+			// What the app remakes as it is read (onSnapshot) is in the walk, and told as it ends; a delayed change due
+			// while the walk runs is made then, missing from it.
+			let (start, end) = (os.now, os.now + os.walkMs)
+			os.now = end
 			os.onSnapshot?(os)
+			defer {
+				os.now = start
+				os.pass(to: end)
+			}
 			let cap = min(maxNodes, os.maxNodes ?? maxNodes)
 			var index: [Int: Int] = [:]
 			var nodes: [RawNode] = []
@@ -356,7 +387,7 @@ struct FakeRoute: InputRoute {
 	}
 }
 
-/// Time moves only when the engine sleeps, and delayed changes run as it passes them.
+/// Time moves only when the engine sleeps, and delayed changes run as it passes them, each at its own time.
 struct FakeClock: Clock {
 	let os: FakeOS
 
@@ -364,15 +395,21 @@ struct FakeClock: Clock {
 
 	func sleep(ms: Double) async throws {
 		try Task.checkCancellation()
-		let due: [(FakeOS) -> Void] = os.with { os in
-			os.now += ms
-			let ready = os.timers.filter { $0.at <= os.now }
-			os.timers.removeAll { $0.at <= os.now }
-			return ready.map(\.run)
-		}
-		for run in due { os.with { run($0) } }
+		os.pass(to: os.with { $0.now + ms })
 		await Task.yield()
 	}
+}
+
+/// The app's changes as it tells them: FakeOS.toldAt.
+struct FakeChanges: Changes {
+	let os: FakeOS
+
+	func watch(_ pid: Int32) -> Bool {
+		os.with { _ = $0.watched.insert(pid) }
+		return true
+	}
+
+	func lastChange(_ pid: Int32) -> Double? { os.with { $0.toldAt } }
 }
 
 /// Collects a connection's reply lines.
