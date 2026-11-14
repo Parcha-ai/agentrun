@@ -514,14 +514,59 @@ test("the compile prompt shows the agent's output schema next to the language, w
   assert.doesNotMatch(compile.compilePrompt(ASK()), /final output must be this object/);
 });
 
-test("a draft's dry run holds its answer to the agent's output schema with answerAsServed: one field fails in the schema's words, the whole object passes, no schema holds it to none", async () => {
+test("a draft's dry run holds its answer to the agent's output schema with answerAsServed: a shape missing a field fails in the schema's words, the whole object passes, no schema holds it to none", async () => {
+  const two = shapeDraft({ type: "object", properties: { mcc: { type: "string" }, confidence: { type: "number" } }, required: ["mcc", "confidence"] });
   const one = shapeDraft({ type: "object", properties: { mcc: { type: "string" } }, required: ["mcc"] });
   const input = JSON.stringify({ content: "Acme Hardware" });
-  const failed = await draftDryRun(dsl, one, input, SHAPE);
+  const failed = await draftDryRun(dsl, two, input, SHAPE);
   assert.equal(failed.status, "failed", JSON.stringify(failed));
   assert.match(failed.detail, /^its dry run failed: its answer does not meet the agent's output schema: /);
   assert.deepEqual(await draftDryRun(dsl, shapeDraft(SHAPE), input, SHAPE), { status: "passed" });
-  assert.deepEqual(await draftDryRun(dsl, one, input), { status: "passed" });
+  assert.deepEqual(await draftDryRun(dsl, two, input), { status: "passed" });
   // One field the schema takes alone: the bare value fills it, as a run serving it shapes it.
   assert.deepEqual(await draftDryRun(dsl, one, input, { type: "object", properties: { mcc: { type: "string" } }, required: ["mcc"], additionalProperties: false }), { status: "passed" });
+});
+
+// #2641 review (P1): a text answer is the model's own words, on the dry run a synthetic placeholder. Serving reads a real
+// one's fenced json block (answerAsServed), so text may carry the whole answer: the dry run refuses it only where serving
+// would refuse every text, an output schema that does not compile.
+test("a draft whose answer is text passes the dry run against a many-field output schema, as serving takes text holding a json block; a schema that can't compile still fails", async () => {
+  const input = JSON.stringify({ content: "Acme Hardware" });
+  const text = shapeDraft({ type: "string" });
+  const field = shapeDraft({ type: "object", properties: { answer: { type: "string" } }, required: ["answer"] });
+  // Serving's own reading of such a text: the whole answer, from its block.
+  const { answerAsServed } = await import("../dist/answer-json.js");
+  const real = answerAsServed("Here it is.\n```json\n{\"mcc\":\"5251\",\"description\":\"Hardware\",\"confidence\":0.9}\n```", SHAPE);
+  assert.deepEqual(real.value, { mcc: "5251", description: "Hardware", confidence: 0.9 });
+  assert.deepEqual(await draftDryRun(dsl, text, input, SHAPE), { status: "passed" });
+  assert.deepEqual(await draftDryRun(dsl, field, input, SHAPE), { status: "passed" });
+  const broken = await draftDryRun(dsl, text, input, { type: "object", properties: { mcc: { type: "string", pattern: "([" } } });
+  assert.equal(broken.status, "failed", JSON.stringify(broken));
+  assert.match(broken.detail, /^its dry run failed: the agent's output schema /);
+});
+
+// #2641 review (P2): the cooldown reads every learning round of the agent's last runs. A run whose first round compiled a
+// draft (failed or dropped) and whose follow-up's round kept none still compiled lately: the next run asks no compile.
+test("compileAskOf: a compile in an earlier run's first round holds the cooldown though its newest round (a follow-up's) kept none", async () => {
+  const rounds = { "run-1": [{ round: 1, proposal: { compiled: { workflow: "answer", attempts: [{ ok: false }] } } }, { round: 2, proposal: { state: "proposed" } }] };
+  const opened = [];
+  const deps = (byRun) => ({
+    store: {
+      runs: { list: async () => [{ id: "run-2", agentId: "agent-1", state: "ended", outcome: "completed" }, { id: "run-1", agentId: "agent-1", state: "ended", outcome: "completed" }] },
+      learning: {
+        proposal: async (runId, round) => {
+          const kept = byRun[runId] ?? [];
+          return round === undefined ? kept.at(-1) : kept.find((one) => one.round === round);
+        },
+        proposals: async () => Object.values(byRun).flat(),
+      },
+    },
+    learningFolder: (agentId) => { opened.push(agentId); throw new Error("the folder is not read in this test"); },
+  });
+  const ask = { runId: "run-2", agentId: "agent-1", outcome: "completed", refuse: [], seedNotes: 3, seedWorkflows: 0 };
+  assert.equal(await learningEnd.compileAskOf(deps(rounds), ask).catch(() => undefined), undefined);
+  assert.deepEqual(opened, [], "compiled lately: the folder is never opened for a compile turn");
+  // No compile in any round: due, and the folder is read.
+  await learningEnd.compileAskOf(deps({ "run-1": [rounds["run-1"][1]] }), ask).catch(() => undefined);
+  assert.deepEqual(opened, ["agent-1"], "not compiled lately: the compile turn reads the folder");
 });
