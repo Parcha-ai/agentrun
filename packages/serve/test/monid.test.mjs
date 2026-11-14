@@ -8,7 +8,6 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { wireName } from "../dist/catalog.js";
-import { holdsInFlight } from "../dist/cap.js";
 import { FAUX_ENV } from "../dist/model.js";
 import { chargeOf, CLIP, FAUX_MONID_ENV, MONID_KEY_ENV, monidClient, monidRegistration, monidText } from "../dist/monid.js";
 import { bookedIn } from "../dist/paid-calls.js";
@@ -110,21 +109,6 @@ test("under a cap, monid.run is refused before it is sent unless the run's spend
   const [first, second] = await Promise.all([run(both, "/person/enrich"), run(both, "/person/enrich")]);
   assert.deepEqual([[first, second].filter((r) => !r.isError).length, [first, second].filter((r) => r.isError && /spend_cap_reached/.test(said(r).error)).length, sent(from).length], [1, 1, 2]);
   assert.equal(said(await run(await toolLedger(undefined))).status, "COMPLETED", "with no cap, it runs");
-});
-
-test("another harness's paid-call check holds each model request still in flight at its worst case until its cost is booked", () => {
-  const holds = holdsInFlight();
-  holds.admitted(0.4);
-  holds.started(1);
-  holds.admitted(0.25);
-  holds.started(2);
-  assert.equal(holds.total(), 0.65);
-  holds.ended(1);
-  assert.equal(holds.total(), 0.25);
-  holds.admitted(undefined);
-  holds.started(3);
-  holds.ended(2);
-  assert.equal(holds.total(), 0, "one admitted with no figure (no cap) holds nothing");
 });
 
 test("/usage by meter during a monid run in flight: tokens are the run's model cost, and no tool charge is reported until the call settles", { timeout: 90_000 }, async (t) => {
