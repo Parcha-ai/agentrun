@@ -27,10 +27,11 @@ describe("coding-agent handoffs", () => {
   it("uses one skill-directed Connect agent handoff to clarify live connection or history and the source machine", () => {
     const prompt = connectExistingAgentsPrompt("https://console.example.test");
     expect(prompt).toContain("https://console.example.test/skills/agentrun-serve/SKILL.md");
-
+    expect(prompt).toContain("observe an already running agent");
     expect(prompt).toContain("connect for AgentRun-triggered jobs");
     expect(prompt).toContain("import history, or both");
-
+    expect(prompt).toContain("preserving SDK configuration and job triggers");
+    expect(prompt).toContain("Observation alone does not enable self-improvement");
     expect(prompt).toMatch(/source machine, project, runtime/);
     expect(prompt).toContain("https://console.example.test/v2");
     expect(prompt).toMatch(/approval.*history scope/);

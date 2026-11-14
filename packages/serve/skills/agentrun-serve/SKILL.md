@@ -1,6 +1,6 @@
 ---
 name: agentrun-serve
-description: Onboard to AgentRun by starting a new agent or connecting an existing Claude Code or Codex setup for future jobs. Import selected history and inspect results with optional checked learning. Use the intended instance and its matching CLI.
+description: Onboard to AgentRun by starting a new agent, observing agents already running in a backend or terminal, or connecting an existing Claude Code or Codex setup for future jobs. Import selected history and inspect results with optional checked learning. Use the intended instance and its matching CLI.
 ---
 
 # AgentRun Server
@@ -27,10 +27,11 @@ self-improvement separately, and verify accepted notes or skills in a fresh late
 
 ## Connect agent
 
-Use one entry point for future jobs and history. Ask only what the conversation has not established:
+Use one entry point for observation, future jobs and history. Ask only what the conversation has not established:
 
-1. Should AgentRun start future jobs with the selected setup? Ask about **live connection**, **history**,
-   or **both**.
+1. Should the existing application or terminal keep starting work (**observe existing agents**), or should
+   AgentRun start future jobs with the selected setup? For future jobs, ask about **live connection**, **history**,
+   or **both**. Do not substitute a new CLI job for an application agent already running.
 2. Which machine holds the existing setup and native sign-in, and which AgentRun instance should receive it?
 3. Which project, runtime and specific named agent/profile should be selected? Discover only the chosen source.
 
@@ -38,6 +39,64 @@ Explain the difference before a choice: a live connection retains the original n
 and supports new jobs with optional self-improvement. A history import creates historical records; it does not
 attach a running conversation, resume it or turn it into learning. Do not infer consent for history from consent
 to connect, or enable learning solely because an agent was connected.
+
+### Observe an existing backend, deployment or terminal session
+
+The OSS server supports the same metadata observer protocol as hosted AgentRun. Probe
+`/api/v2/control/connectors/capabilities`; compatible servers advertise polling and metadata-only OTLP logs.
+Use the existing Python CLI's ordinary `connect`, not `remote connect`. Observation does not need a Node bridge,
+imported definition or model key. Confirm the exact destination and selected sources. Never switch to a hosted
+destination because an older OSS server lacks the receiver; explain that the selected server needs upgrading.
+
+For a deployment, run `agentrun setup --target deployment` in the actual agent execution environment, then:
+
+```sh
+agentrun connect --origin https://console.example.com --workspace-id local \
+  --telemetry --subscribe-harness claude --name "Backend agent" \
+  --state-dir /private/agent-observer
+```
+
+Use the intended server origin. OSS advertises the workspace `local`; hosted destinations advertise their own
+authorized workspaces. Use `codex` for Codex. Enroll with the OSS owner's API credential through the CLI's secure
+prompt or a private origin-bound credential file. For authorized automation, `--credential-env NAME` reads a
+securely injected environment variable; never place a credential value in prompts, command arguments or logs.
+The CLI exchanges enrollment credentials for a restricted connector credential and retains only that credential.
+OSS API-key enrollment does not depend on the hosted device-auth provider.
+
+Review and deploy the generated Collector and selected harness fragments through the source's supervisor.
+The default receiver is loopback; a sidecar or shared Collector needs an explicitly reachable receiver. Configure
+the log-specific OTEL environment before a fresh Claude/Codex process starts. For SDK applications, preserve
+programmatic prompts, tools, permissions and model choices; apply the environment to the actual SDK child and
+merge lifecycle hooks with existing hooks. Preserve any existing trace exporter. Keep connector state and the
+Collector queue across container replacement. Installing the CLI in an API container that never executes the
+agent does not connect its sandbox automatically.
+
+For sessions already running locally, use `agentrun discover` and interactive `agentrun connect` to select sessions
+or future project/harness subscriptions. Polling uses the CLI daemon; OTLP uses the external Collector. Stop the
+Collector via its supervisor to pause OTLP; `daemon stop` only stops polling. `agentrun disconnect` stops local
+observation and requires a fresh OSS owner credential for remote revocation; the retained connector credential
+cannot revoke itself. For authorized unattended use:
+
+```sh
+agentrun disconnect --state-dir /private/agent-observer \
+  --credential-file /private/disconnect-owner.json --yes
+```
+
+Use a source-user-owned mode-0600 file with `origin` bound to this destination and `api_key` holding the owner's
+credential, or `--credential-env NAME` for a securely injected variable. Never put the credential value in chat,
+arguments or logs. Require `status: disconnected`; `revocation_pending` only confirms local observation stopped,
+so correct authentication or connectivity and retry. Remove temporary owner credential material afterward.
+Confirmed revocation preserves received history while refusing ingestion with the old connector credential.
+
+Verify an actual destination receipt in Connected agents, Runs or Mission Control and report the selected source,
+reported model/harness and activity/usage. CLI `configured` or `delivery_state: unverified` alone is not proof of
+delivery. Observed sessions are read-only: idle is not proof of completion, and missing telemetry is not proof of
+an agent failure. No prompts, transcripts or tool contents are uploaded through this metadata path.
+
+If the user also wants self-improvement for application-owned jobs, follow the supported backend SDK learning
+integration and verify accepted-revision delivery in a fresh run. Observation alone cannot enable it. The current
+Claude Agent SDK and Codex SDK wrappers are TypeScript integrations; do not claim a Python SDK backend is wrapped
+by setting OTEL variables. Do not fabricate a runnable native agent or use a copied prompt as proof.
 
 ### Live connection on this server
 

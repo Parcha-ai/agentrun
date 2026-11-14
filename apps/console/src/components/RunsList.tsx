@@ -1,3 +1,5 @@
+import { ObservedSessions } from "@/components/ObservedSessions";
+import type { ObservationRead } from "@/lib/observations";
 import { queryPlaygroundHref } from "@/lib/playgroundRoutes";
 import { Archive, ArrowUpRight, History, Play } from "lucide-react";
 import { Picker } from "@/components/ui/picker";
@@ -20,7 +22,7 @@ const STATUS_LABEL: Record<RunStatus, string> = { queued: "Queued", working: "Wo
 /** Every run on the server, newest first, as the hosted console's history table, with the status column it leaves out
  *  at desktop width. A row opens its run. With `onFilter`, a state filter and the archived runs, as the address keeps them.
  *  A read that failed says so in words, with Try again (`onRetry`); a failed Load more keeps the rows above it. */
-export function RunsList({ runs, agentName, onOpen, error, onRetry, onMore, loadingMore, filter = {}, onFilter, agentId }: { runs: Run[] | null; agentName: (id: string) => string; onOpen: (id: string) => void; error?: Problem | null; onRetry?: () => void; onMore?: () => void; loadingMore?: boolean; filter?: RunsFilter; onFilter?: (filter: RunsFilter) => void; agentId?: string }) {
+export function RunsList({ runs, agentName, onOpen, error, onRetry, onMore, loadingMore, filter = {}, onFilter, agentId, observations }: { runs: Run[] | null; agentName: (id: string) => string; onOpen: (id: string) => void; error?: Problem | null; onRetry?: () => void; onMore?: () => void; loadingMore?: boolean; filter?: RunsFilter; onFilter?: (filter: RunsFilter) => void; agentId?: string; observations?: ObservationRead }) {
   const archived = !!filter.archived;
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -38,9 +40,10 @@ export function RunsList({ runs, agentName, onOpen, error, onRetry, onMore, load
       <div className="min-h-0 flex-1 overflow-auto">
       {error && !runs ? <ProblemCard problem={error} onRetry={onRetry} className="" />
         : !runs ? <ListSkeleton label="Loading the runs" />
-        : !runs.length && !filter.status && !archived ? <div className="p-5 md:p-8"><FirstRun /></div>
-        : !runs.length ? <p className="px-4 py-16 text-center text-body text-muted-foreground">{filter.status ? "No run matches." : archived ? "No archived runs." : "No runs yet."}</p>
+        : !runs.length && !observations?.data?.sessions.length && !filter.status && !archived ? <div className="p-5 md:p-8"><FirstRun /></div>
+        : !runs.length && observations?.data?.sessions.length ? null : !runs.length ? <p className="px-4 py-16 text-center text-body text-muted-foreground">{filter.status ? "No run matches." : archived ? "No archived runs." : "No runs yet."}</p>
         : <RunsTable runs={runs} agentName={agentName} onOpen={onOpen} />}
+      {observations && <div className="p-5 md:p-8"><ObservedSessions read={observations} /></div>}
       {runs && error && <ProblemCard problem={error} className="mt-4" />}
       {runs && onMore && <div className="flex justify-center p-4"><Button type="button" size="sm" onClick={onMore} disabled={loadingMore}>{loadingMore ? "Loading" : "Load more"}</Button></div>}
       </div>

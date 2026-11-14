@@ -1,3 +1,4 @@
+import type { Observations } from "./observations";
 import type { NativeBinding, NativeRuntime, NativeSelector, NativeTarget } from "./native";
 import type { ConnectorEnrollment, ConnectorEnrollmentCapabilities, RemoteConnector } from "./connectors";
 import type { Stats } from "./mission";
@@ -141,6 +142,11 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     getNative: (id: string) => call<{ native: NativeBinding | null }>("GET", `${agent(id)}/native`),
     verifyNative: (id: string) => call<{ native: NativeBinding }>("POST", `${agent(id)}/native/verify`, { body: {} }),
     disconnectNative: (id: string) => call<{ native: NativeBinding }>("POST", `${agent(id)}/native/disconnect`, { body: {} }),
+    observations: ({ days = 30, sessionId }: { days?: 7 | 30; sessionId?: string } = {}, signal?: AbortSignal) => {
+      const query = new URLSearchParams({ days: String(days) });
+      if (sessionId) query.set("session_id", sessionId);
+      return call<Observations>("GET", `/observations?${query}`, { signal });
+    },
     listConnectors: () => call<{ connectors: RemoteConnector[] }>("GET", "/connectors"),
     enrollConnector: (label?: string, capabilities?: ConnectorEnrollmentCapabilities) => call<ConnectorEnrollment>("POST", "/connectors/enrollment", { body: { ...(label?.trim() ? { label: label.trim() } : {}), ...(capabilities ? { capabilities } : {}) } }),
     revokeConnector: (id: string) => call<{ connector: RemoteConnector }>("DELETE", `/connectors/${encodeURIComponent(id)}`),
