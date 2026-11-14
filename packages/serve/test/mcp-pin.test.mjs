@@ -61,7 +61,7 @@ test("an allowed send pinned to one channel sends there, and a call to another i
   assert.match(await answerOf(api, elsewhere), REFUSAL);
   assert.equal(sends().length, 1, "the refused call never reached the server");
   // Its Timeline row reads refused, as any refusal's (#2266): never a call that ran and failed.
-  const result = rows.find((row) => row.tool_name === "mcp__fake__send_message" && row.kind === "tool_result");
+  const result = rows.find((row) => row.tool_name === "mcp:fake/send_message" && row.kind === "tool_result");
   assert.ok(result, JSON.stringify(rows.filter((row) => row.kind.startsWith("tool"))));
   assert.match(result.summary, /^Refused: fake · send_message: /);
   assert.doesNotMatch(result.summary, /failed/);

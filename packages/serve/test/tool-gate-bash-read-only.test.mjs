@@ -439,7 +439,7 @@ test("the gate: the policy holds under approvals never, before an ask, and after
 
 test("the gate: the background tools that start or feed a process are refused under read-only; the watchers pass", async () => {
   const gate = gateWith();
-  for (const name of ["bash_background", "bash_input", "mcp__hands__bash_background"]) {
+  for (const name of ["bash_background", "bash_input"]) {
     assert.match((await gate.decide(name, { command: "ls" })).deny, /is not offered: a read-only shell runs one command at a time, in the foreground, with bash/, name);
   }
   for (const name of ["bash_output", "bash_list", "bash_signal"]) assert.equal(await gate.decide(name, { id: "1" }), "allow", name);
@@ -447,8 +447,8 @@ test("the gate: the background tools that start or feed a process are refused un
 
 test("the gate: every harness's name for the shell is held to the policy, and an argv is read as the command it runs", async () => {
   const claude = gateWith({ harness: "claude-agent" });
-  assert.equal(await claude.decide("mcp__hands__bash", { command: "ls" }), "allow");
-  assert.match((await claude.decide("mcp__hands__bash", { command: "npm test" })).deny, /"npm" is not a read command/);
+  assert.equal(await claude.decide("bash", { command: "ls" }), "allow");
+  assert.match((await claude.decide("bash", { command: "npm test" })).deny, /"npm" is not a read command/);
   assert.match((await claude.decide("Bash", { command: "node -e 1" })).deny, /"node" is not a read command/);
   assert.match((await claude.decide("Bash", { command: "ls", run_in_background: true })).deny, /in the background is not allowed/);
   const codex = gateWith({ harness: "codex" });

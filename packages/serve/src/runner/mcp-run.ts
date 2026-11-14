@@ -21,6 +21,7 @@ import { mcpGateway, type McpGatewayOptions } from "../mcp-gateway.js";
 import { dialAt, mcpServerAt, type OAuthNetwork, systemNetwork } from "../mcp-oauth.js";
 import { privateOAuthHosts } from "../mcp-private-hosts.js";
 import type { Store, TriggerSettings } from "../store/index.js";
+import { mcpNameOf } from "../tool-names.js";
 import { type ApprovalPrice, mcpToolName, pinnedEffect, type ToolEffect } from "../tool-gate.js";
 import type { Claim } from "./loop-contract.js";
 import { mcpClaim, type McpClaimStep } from "./mcp-claim.js";
@@ -176,10 +177,10 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
     catalogOf: (tool) => catalog.get(tool),
     argumentsOf: (name) => declared.get(name),
     priceOf(name) {
-      const parsed = /^mcp:([^/]+)\/(.+)$/.exec(name);
-      const pinned = parsed && Object.hasOwn(pin, parsed[1]!) ? pin[parsed[1]!] : undefined;
-      if (!pinned?.tools.some((tool) => tool.name === parsed![2])) return undefined;
-      return pinned.prices && Object.hasOwn(pinned.prices, parsed![2]!) ? pinned.prices[parsed![2]!]! : "not metered";
+      const parsed = mcpNameOf(name);
+      const pinned = parsed && Object.hasOwn(pin, parsed.server) ? pin[parsed.server] : undefined;
+      if (!pinned?.tools.some((tool) => tool.name === parsed!.tool)) return undefined;
+      return pinned.prices && Object.hasOwn(pinned.prices, parsed!.tool) ? pinned.prices[parsed!.tool]! : "not metered";
     },
     effectOf: (name) => pinnedEffect(pin, name),
     fresh: () => step.fresh(),
