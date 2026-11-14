@@ -7,7 +7,7 @@ client pinned by version and sha256, the root helper `agentrun-archil`, the tool
 ## The recipe
 
 The image is made of two files, `Dockerfile` and `agentrun-archil`, the one file it copies. `recipe.mjs` names them and
-prints their hash, the first 12 hex of their sha256 (`node packages/computer/box/recipe.mjs`). Every build names what it
+gives their hash, the first 12 hex of their sha256 (`recipeHash()`). Every build names what it
 makes by that hash, so a changed recipe is a new image and the same recipe is the one built before.
 
 A build's context is this folder, which the npm package ships whole, and the image copies `agentrun-archil` alone from

@@ -234,7 +234,8 @@ jobs:
             ${{ env.IMAGE }}:beta
 
   # The box image (packages/computer/box): what a remote computer with an Archil mount starts from, published once per
-  # recipe as ghcr.io/parcha-ai/agentrun-box:<recipe hash> (box/recipe.mjs) and tagged with the release, for linux/amd64.
+  # recipe as ghcr.io/parcha-ai/agentrun-box:<recipe hash> (box/recipe.mjs recipeHash) and tagged with the release, for
+  # linux/amd64.
   # Like `image`, it runs after the approved publish job with this run's GITHUB_TOKEN alone, every action pinned by commit
   # and BuildKit by digest. Its context is box/, which the npm package ships whole; the image copies the helper alone
   # from it, and the build takes no secret.
@@ -264,7 +265,7 @@ jobs:
       - name: The recipe's hash
         id: recipe
         run: |
-          hash="$(node packages/computer/box/recipe.mjs)"
+          hash="$(node --input-type=module -e "import { recipeHash } from './packages/computer/box/recipe.mjs'; console.log(recipeHash())")"
           [[ "$hash" =~ ^[0-9a-f]{12}$ ]] || { echo "box/recipe.mjs printed '$hash', not a recipe hash" >&2; exit 1; }
           echo "hash=$hash" >> "$GITHUB_OUTPUT"
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3

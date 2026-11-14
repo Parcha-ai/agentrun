@@ -118,6 +118,9 @@ test("the E2B build makes a template from the same Dockerfile, with the workspac
   assert.ok(!/process\.env\.\w*KEY/.test(e2b.replace(/process\.env\.E2B_API_KEY/g, "")), "the key comes from E2B_API_KEY, the SDK's own, set by the caller for this one command");
 });
 
+/** How release.yml's box job reads the recipe's hash, at the repository's root. */
+const RELEASE_RECIPE = "import { recipeHash } from './packages/computer/box/recipe.mjs'; console.log(recipeHash())";
+
 test("the recipe is the Dockerfile and every file it copies, and its hash is the one the Daytona snapshot is named by", async () => {
   const { RECIPE, recipeHash } = await import("../box/recipe.mjs");
   const copied = INSTRUCTIONS.filter((line) => line.startsWith("COPY ")).map((line) => line.split(/\s+/)[1]);
@@ -128,13 +131,13 @@ test("the recipe is the Dockerfile and every file it copies, and its hash is the
   assert.ok(daytona.includes("hashlib.sha256(recipe).hexdigest()[:12]"));
   const hash = recipeHash();
   assert.equal(hash, createHash("sha256").update(Buffer.concat(RECIPE.map((name) => readFileSync(box(name))))).digest("hex").slice(0, 12));
-  const printed = execFileSync(process.execPath, [fileURLToPath(box("recipe.mjs"))], { encoding: "utf8" });
-  assert.equal(printed, `${hash}\n`, "run as a script, it prints the hash alone: release.yml's box job reads it");
+  // What release.yml's box job runs, at the repository's root: the hash alone.
+  const printed = execFileSync(process.execPath, ["--input-type=module", "-e", RELEASE_RECIPE], { encoding: "utf8", cwd: fileURLToPath(new URL("../../../", import.meta.url)) });
+  assert.equal(printed, `${hash}\n`);
 });
 
 test("on the published image, the E2B template runs the Dockerfile's sudo guard again, as root, and keeps its USER and CMD; a tag that is not the recipe's is refused", async () => {
-  const { onImage } = await import("../box/build-e2b.mjs");
-  const { recipeHash } = await import("../box/recipe.mjs");
+  const { onImage, recipeHash } = await import("../box/recipe.mjs");
   const image = `ghcr.io/parcha-ai/agentrun-box:${recipeHash()}`;
   const dockerfile = onImage(image);
   const lines = dockerfile.replace(/\\\n/g, " ").split("\n").filter(Boolean);
@@ -218,7 +221,7 @@ test("the release publishes the box image beside agentrun-server, amd64, by the 
   assert.deepEqual(buildx, image.steps.find((step) => /^docker\/setup-buildx-action@/.test(step.uses ?? "")), "BuildKit by digest, as the image job runs it");
   assert.match(buildx.with["driver-opts"], /@sha256:[0-9a-f]{64}$/);
   const recipe = job.steps.find((step) => step.id === "recipe");
-  assert.match(recipe.run, /node packages\/computer\/box\/recipe\.mjs/, "the hash recipe.mjs prints, not one of the workflow's own");
+  assert.ok(recipe.run.includes(`hash="$(node --input-type=module -e "${RELEASE_RECIPE}")"`), "the hash recipe.mjs gives, not one of the workflow's own");
   assert.equal(job.outputs.recipe, "${{ steps.recipe.outputs.hash }}");
   const build = job.steps.find((step) => /^docker\/build-push-action@/.test(step.uses ?? ""));
   assert.equal(build.uses, image.steps.find((step) => /^docker\/build-push-action@/.test(step.uses ?? "")).uses);
