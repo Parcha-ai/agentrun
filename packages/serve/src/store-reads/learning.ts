@@ -12,8 +12,9 @@ import { runLearningBody } from "../learning-routes.js";
 import { learningStartOf, readLaunchBody, type RunLaunch, seedFailed } from "../run-launch.js";
 import { said, STOPPED } from "../learning-words.js";
 import { type Impact, type ImpactLearning, learningImpact, noteRuns, notesRead } from "../learning-run.js";
-import { costSummary, type CostRun, type CostSummary, type RunPath, runCostOf } from "../learning-cost.js";
+import { costSummary, type CostRun, type CostSummary, RUN_PATHS, type RunPath, runCostOf } from "../learning-cost.js";
 import { runPathOf, workflowNameOf } from "../runner/learning-end.js";
+import { PAST_RUNS, type PastRun, servedOf, workflowCostsOf } from "../runner/workflow-first.js";
 import { type Reflect, reflects } from "../reflect-range.js";
 import type { NoteRuns } from "../learning.js";
 import { type NoteFiles, notesOf } from "../usage.js";
@@ -188,21 +189,33 @@ export async function agentLearningOverStore(store: Store, agentId: string): Pro
 
 /** Agent `agentId`'s cost per run from the one store (GET /agents/{id}/learning/cost, learning-cost.ts): each of its
  *  agentic runs that ended (ended, stopped or failed), oldest first, numbered from 1, with its own cost and what learning
- *  added for it (runCostOf over its row's cost and its learning's spend, learningSpendOf), the path it took and the learned workflow it called
- *  (journalReadsOf), and the learned revision it started from (its launch's seed); and what the series shows
+ *  added for it (runCostOf over its row's cost and its learning's spend, learningSpendOf), the path it took and the learned workflow it ran
+ *  (its run record's, pathOfRow), and the learned revision it started from (its launch's seed); and what the series shows
  *  (costSummary). A run still at work, an imported or archived one and a workflow revision's run are left out; a learning
- *  run (a run's grade and merge) is no run of the list, and its cost is its run's learning. `limit`: the latest runs
- *  shown, each keeping its number; the summary is over every run. */
-export async function agentCostOverStore(store: Store, agentId: string, limit = Infinity): Promise<{ runs: CostRun[]; summary: CostSummary; total_runs: number; unknown_cost_runs: number }> {
+ *  run (a run's grade and merge) is no run of the list (the store lists none: NOT_A_LEARNING_RUN), and its cost is its
+ *  run's learning. A run that learns whose record names no path (its end's patch was late or failed, or no runner wrote
+ *  its end) is left out too and counted (`unknown_path_runs`): its path and cost are not known, never `agent` at $0.
+ *  `limit`: the latest runs shown, each keeping its number; the summary is over every run. */
+export async function agentCostOverStore(store: Store, agentId: string, limit = Infinity): Promise<{ runs: CostRun[]; summary: CostSummary; total_runs: number; unknown_cost_runs: number; unknown_path_runs: number; workflows: ReturnType<typeof workflowCostsOf> }> {
   const kinds = new Map<string, string | undefined>();
   const ended = (await store.runs.list({ agentId })).filter((run) => run.agentId === agentId && FINAL_STATES.includes(run.state) && !run.importedFrom && run.archivedAt === null).sort((a, b) => a.startedAt - b.startedAt || (a.id < b.id ? -1 : 1));
   const runs: CostRun[] = [];
+  let unknownPath = 0;
   for (const run of ended) {
     if (!kinds.has(run.revisionId)) kinds.set(run.revisionId, (await store.agents.revision(run.revisionId))?.kind);
     if (kinds.get(run.revisionId) === "workflow") continue;
+    // A run that learns whose record names no path is left out and counted, never `agent` at $0.
+    if (!pathOfRow(run.metrics, await learningStartOfRun(store, run.id))) {
+      unknownPath += 1;
+      continue;
+    }
     runs.push(await costRunOf(store, run, runs.length + 1));
   }
-  return { runs: runs.slice(Math.max(0, runs.length - limit)), summary: costSummary(runs), total_runs: runs.length, unknown_cost_runs: runs.filter((run) => run.total_usd === null).length };
+  // Each learned workflow that ran first, where it stands against the money rule (workflow-first.ts workflowCostsOf), over
+  // the runs the run's launch reads (pastRunsOverStore) at the all-in cost this series shows: a workflow over the line
+  // shows `needs_revision` with its two numbers, so the page and the launch's decision agree.
+  const workflows = workflowCostsOf(await pastRunsOverStore(store, agentId, new Map(runs.map((run) => [run.run_id, run.total_usd]))));
+  return { runs: runs.slice(Math.max(0, runs.length - limit)), summary: costSummary(runs), total_runs: runs.length, unknown_cost_runs: runs.filter((run) => run.total_usd === null).length, unknown_path_runs: unknownPath, workflows };
 }
 
 /** What run `runId`'s learning spent, as its cost per run counts it: what it kept as it answered (`looked`: answeredOf),
@@ -217,37 +230,92 @@ async function learningSpendOf(store: Store, runId: string): Promise<{ looked: R
   return { looked, grade: learningRun && FINAL_STATES.includes(learningRun.state) ? (learningRun.costUsd ?? null) : 0 };
 }
 
-/** One run of the cost series, as number `n` of it: its figures and its path (agentCostOverStore's loop body, and a learning
- *  batch's row once the run's learning has settled). */
-export async function costRunOf(store: Store, run: NonNullable<Awaited<ReturnType<Store["runs"]["get"]>>>, n: number): Promise<CostRun> {
-  const started = await learningStartOfRun(store, run.id);
-  // A run a follow-up opened again (a review's, a person's) learned in rounds: every round's look-back and grade are its
-  // learning (roundsSpendOf), never the newest round's alone.
+type RunRecord = NonNullable<Awaited<ReturnType<Store["runs"]["get"]>>>;
+
+/** A run's own cost and what learning added for it (runCostOf): its row's cost, every round of its learning (a run a
+ *  follow-up opened again, a review's or a person's, learned in rounds: every round's look-back and grade, roundsSpendOf,
+ *  never the newest round's alone), else its one round's (learningSpendOf). `total_usd` is the run's all-in cost, the one
+ *  the cost page shows and the money rule reads (pastRunsOverStore); null when any part is unknown. */
+export async function allInOf(store: Store, run: RunRecord): Promise<ReturnType<typeof runCostOf>> {
   const rounds = await roundsSpendOf(store, run.id);
   const { looked, grade } = rounds ? { looked: rounds, grade: rounds.grade_usd } : await learningSpendOf(store, run.id);
-  const { path, workflow } = await journalReadsOf(store, run, started);
-  return { n, run_id: run.id, started_at: new Date(run.startedAt).toISOString(), path, workflow, learned_revision: started?.seed ?? null, ...runCostOf(run.costUsd, looked, grade) };
+  return runCostOf(run.costUsd, looked, grade);
 }
 
-/** What a run's journal tells the agent's learning view and its cost per run: the notes its job opened (`read`, once
- *  final), what its claims laid of the skills and workflows it was offered (`laid`), and, for a run offered a learned
- *  workflow, the path it took and the workflow it called last (`path`, `workflow`: runner/learning-end.ts
- *  runPathOf, workflowNameOf; any other run's path is `agent`). Read once for a settled run and kept by its epoch
+/** One run of the cost series, as number `n` of it: its figures (allInOf) and its path (agentCostOverStore's loop body,
+ *  and a learning batch's row once the run's learning has settled). */
+export async function costRunOf(store: Store, run: RunRecord, n: number): Promise<CostRun> {
+  const started = await learningStartOfRun(store, run.id);
+  // Its figures are what the batch reads: a run with no path named is placed as the agent's here, and left out by the series.
+  const { path, workflow } = pathOfRow(run.metrics, started) ?? { path: "agent" as const, workflow: null };
+  return { n, run_id: run.id, started_at: new Date(run.startedAt).toISOString(), path, workflow, learned_revision: started?.seed ?? null, ...(await allInOf(store, run)) };
+}
+
+/** The runs the money rule reads for agent `agentId` (runner/workflow-first.ts costLineOf), one set for the run's launch
+ *  and the cost page: of its newest PAST_RUNS runs, each that ended (ended, stopped or failed), is neither imported nor
+ *  archived nor a workflow revision's run, with its all-in cost (allInOf). `known`: all-in costs already read, by run id
+ *  (the cost page's series), read again for no run. */
+export async function pastRunsOverStore(store: Store, agentId: string, known?: ReadonlyMap<string, number | null>): Promise<PastRun[]> {
+  const kinds = new Map<string, string | undefined>();
+  const kept: RunRecord[] = [];
+  for (const run of await store.runs.list({ agentId, limit: PAST_RUNS })) {
+    if (run.agentId !== agentId || !FINAL_STATES.includes(run.state) || run.importedFrom || run.archivedAt !== null) continue;
+    if (!kinds.has(run.revisionId)) kinds.set(run.revisionId, (await store.agents.revision(run.revisionId))?.kind);
+    if (kinds.get(run.revisionId) !== "workflow") kept.push(run);
+  }
+  // A few reads a run, a batch at a time: a launch reads up to PAST_RUNS of them.
+  const past: PastRun[] = [];
+  for (let at = 0; at < kept.length; at += 16) {
+    past.push(...(await Promise.all(kept.slice(at, at + 16).map(async (run) => ({ metrics: run.metrics, startedAt: run.startedAt, allInUsd: known?.has(run.id) ? known.get(run.id)! : (await allInOf(store, run)).total_usd })))));
+  }
+  return past;
+}
+
+/** The path run `runId` took and the learned workflow it ran, the one classifier its run record keeps (metrics.path,
+ *  metrics.workflow, metrics.workflow_digest: workflow-first.ts pathMetrics, written at the run's end) and its cost per run
+ *  reads (pathOfRow). A run its learned workflow served first (its WORKFLOW_FIRST entry, servedOf): `workflow` when it
+ *  answered and nothing came after, `handed_back` when it handed back or a follow-up had the agent work on, with its digest. Else, for a run its launch offered a learned workflow, its timeline
+ *  (runner/learning-end.ts runPathOf, the agent calling the tool itself): `workflow` when its job did only that,
+ *  `handed_back` when the agent went on, with the workflow its job called last. Any other run's path is `agent`. */
+export async function runPathOverStore(store: Store, runId: string, started: RunLaunch["learning"]): Promise<{ path: RunPath; workflow: string | null; digest?: string }> {
+  const entries = await runEntries(store, runId, BACKGROUND_CONTEXT);
+  const served = servedOf(entries);
+  // One that answered stays `workflow` only while its job is that answer alone: a follow-up the agent then answered (the
+  // run opened again) is agent work after it, as the timeline classifier reads it (runPathOf): `handed_back`.
+  if (served) {
+    const alone = served.outcome === "answered" && runPathOf(await runTimeline(store, runId, BACKGROUND_CONTEXT, { settled: false })) === "workflow";
+    return { path: alone ? "workflow" : "handed_back", workflow: served.workflow, ...(served.digest ? { digest: served.digest } : {}) };
+  }
+  if (!started?.workflows?.length) return { path: "agent", workflow: null };
+  const path = runPathOf(await runTimeline(store, runId, BACKGROUND_CONTEXT, { settled: false }));
+  // Only a name the launch offered: a call's raw `name` (a failed call's included) is the model's text, never shown.
+  return { path, workflow: path === "agent" ? null : offeredName(workflowNameOf([...callArgsOf(entries).values()]), started.workflows) };
+}
+
+/** A run's path and learned workflow as its record keeps them (`metrics`: runPathOverStore at its end); `agent` for a run
+ *  that does not learn (its launch has no learning start: its record names none). Undefined for a run that learns whose
+ *  record names none: its end wrote no path (its patch was late or failed, or no runner wrote its end), and what it took
+ *  is not known. Only a workflow its launch offered is named. */
+function pathOfRow(metrics: unknown, started: RunLaunch["learning"]): { path: RunPath; workflow: string | null } | undefined {
+  const m = (metrics ?? {}) as { path?: unknown; workflow?: unknown };
+  const named = RUN_PATHS.includes(m.path as RunPath);
+  if (!named && started) return undefined;
+  const path = named ? (m.path as RunPath) : "agent";
+  return { path, workflow: path === "agent" || typeof m.workflow !== "string" ? null : offeredName(m.workflow, started?.workflows) };
+}
+
+/** What a run's journal tells the agent's learning view: the notes its job opened (`read`, once final) and what its
+ *  claims laid of the skills and workflows it was offered (`laid`). Read once for a settled run and kept by its epoch
  *  (settledJournalReads), else read now. */
 async function journalReadsOf(store: Store, run: { readonly id: string; readonly state: string; readonly epoch: number }, started: RunLaunch["learning"]): Promise<SettledReads> {
   const final = FINAL_STATES.includes(run.state as never);
   const offered = !!(started?.skills?.length || started?.workflows?.length);
-  const flows = !!started?.workflows?.length;
   const journal = async (): Promise<SettledReads> => {
-    const rows = (final && started?.given.length) || flows ? await runTimeline(store, run.id, BACKGROUND_CONTEXT, { settled: final }) : [];
+    const rows = final && started?.given.length ? await runTimeline(store, run.id, BACKGROUND_CONTEXT, { settled: final }) : [];
     const entries = offered ? await runEntries(store, run.id, BACKGROUND_CONTEXT) : [];
-    const path = flows ? runPathOf(rows) : "agent";
     return {
       read: final && started?.given.length ? notesReadOf(started.given, await runReflect(store, run.id, BACKGROUND_CONTEXT), rows) : [],
       laid: offered ? laidOf(entries) : undefined,
-      path,
-      // Only a name the launch offered: a call's raw `name` (a failed call's included) is the model's text, never shown.
-      workflow: path === "agent" ? null : offeredName(workflowNameOf([...callArgsOf(entries).values()]), started?.workflows),
     };
   };
   return final ? settledJournalReads(store, run.id, run.epoch, journal) : journal();
@@ -260,7 +328,7 @@ const offeredName = (name: string | null, offered: readonly string[] | undefined
  *  and a run's end each move the epoch, and only a claim writes to its journal, so a settled run's reads hold until the
  *  next claim of it. At most SETTLED_READS_MAX runs a store, the oldest read dropped first. */
 const settledReads = new WeakMap<Store, Map<string, { readonly epoch: number; readonly value: SettledReads }>>();
-type SettledReads = { readonly read: readonly NoteUsed[]; readonly laid: Laid | undefined; readonly path: RunPath; readonly workflow: string | null };
+type SettledReads = { readonly read: readonly NoteUsed[]; readonly laid: Laid | undefined };
 const SETTLED_READS_MAX = 4096;
 async function settledJournalReads(store: Store, runId: string, epoch: number, read: () => Promise<SettledReads>): Promise<SettledReads> {
   let runs = settledReads.get(store);

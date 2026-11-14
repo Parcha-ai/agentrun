@@ -13,7 +13,7 @@ const REG = { name: "x", description: "x", parameters: {} };
 const PINNED = {
   read: [["allow", "ask", "deny"], ["allow", "allow"], "read", "safe"],
   bash: [["allow", "ask", "deny"], ["allow", "ask"], "bash", "never"],
-  ask_person: [["allow", "deny"], ["allow", "allow"], "ask_person", undefined],
+  ask_person: [["allow", "deny"], ["allow", "allow"], "ask_person", "safe"],
   browser: [["allow", "deny"], ["allow", "allow"], "browser", undefined],
   bash_background: [["allow", "ask", "deny"], ["allow", "deny"], "bash", "never"],
   bash_output: [["allow", "ask", "deny"], ["allow", "deny"], "bash", "safe"],

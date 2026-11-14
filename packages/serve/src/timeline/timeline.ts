@@ -1,6 +1,7 @@
 import { BROWSER_OPENERS, BROWSER_STEPS, callFailed, endsTurn, failedWith, inputPreview, labelOf, outcomeOf, refusedLabel, savedPaths, type LabelFn, type ToolResultView } from "./labels.js";
 import { cut, firstLine, firstSentence, json, obj, saidSummary, scrubUrls, str, utf8Bytes, type Obj } from "./util.js";
 import { BESIDE_SUFFIX, NOTE_SUFFIX, originMatcher, TRIGGER_LABELS, type TriggerSource } from "./origin.js";
+import type { ComputerCallRow } from "./computer.js";
 
 export type TimelineKind =
   | "thinking" | "text_block" | "tool_use" | "tool_result" | "phase"
@@ -65,10 +66,11 @@ export type TimelineEvent = {
    *  workflow DSL ended it, in order (store-reads/journal.ts withLearnedNodes). This projector writes none. */
   learned_nodes?: { label: string; kind: string; status: string; duration_ms: number; model?: string; tier?: string }[];
   /** On a tool call's `tool_result` row: each computer protocol call the tool made, in order (serve's computer-calls.ts):
-   *  its method, whether it answered, its ms, its error's code, and for ui.act each step's kind, route and readback.
-   *  Never a param's value or an answer's bytes. `computer_calls_dropped` counts the calls past the record's bound. This
-   *  projector writes none (store-reads/journal.ts withComputerCalls). */
-  computer_calls?: readonly { readonly method: string; readonly ok: boolean; readonly ms: number; readonly code?: string; readonly steps?: readonly { readonly do: string; readonly route?: string; readonly verified?: boolean; readonly error?: string }[]; readonly expect?: "met" | "unmet" }[];
+   *  its method, when it started, the app it named, whether it answered, its ms, its error's code, and for ui.act each
+   *  step's kind, the element it acted on (role and name, as the run's observes showed it), a key step's chord, a nav
+   *  step's place, its route and readback. Never a typed or set value or an answer's bytes. `computer_calls_dropped`
+   *  counts the calls past the record's bound. This projector writes none (store-reads/journal.ts withComputerCalls). */
+  computer_calls?: readonly ComputerCallRow[];
   computer_calls_dropped?: number;
 };
 
@@ -761,7 +763,12 @@ function createProjector(options: TimelineOptions) {
       if (metered === "answer") answers.set(conv, entry.id);
       if (message.stopReason === "error") {
         const why = redactedWhy(str(message.errorMessage) ?? "unknown error");
-        add(make("error", conv, base, { summary: `Model request failed: ${firstLine(why)}`, text: why }));
+        // One with no price of its own (a provider's refusal sends none) is a cost unknown, never $0: the provider may
+        // still bill it (run-adapters answeredUnpriced). Its row says so, as the usage row counts it "not priced".
+        const priced = Number.isFinite(obj(obj(message.usage)?.cost)?.total);
+        // The note is ours, so it stays whole: only the provider's words give way when the summary's cap (make) would cut it.
+        const [head, note] = ["Model request failed: ", priced ? "" : UNPRICED_FAILURE];
+        add(make("error", conv, base, { summary: `${head}${cut(firstLine(why), Math.max(0, caps.summary - head.length - note.length))}${note}`, text: why }));
       } else if (message.stopReason !== "aborted") {
         const blocks = blocksOf(message);
         const settled = provisional.get(conv);
@@ -981,7 +988,7 @@ function createProjector(options: TimelineOptions) {
     const counted = meter.usage(options.settled === true || nothingInFlight);
     if (!counted || root === undefined) return undefined;
     const { usd, requests, charges, so_far_usd, unpriced, not_metered } = counted;
-    const paid = `${charges ? ` and ${charges} paid tool call${charges === 1 ? "" : "s"}` : ""}${not_metered ? `; ${not_metered} tool call${not_metered === 1 ? "" : "s"} not metered` : ""}`;
+    const paid = toolCallWords(charges, not_metered);
     const spent = usd !== null ? dollars(usd) : so_far_usd !== undefined && unpriced !== undefined ? `${dollars(so_far_usd)} known, ${unpriced} not priced,` : "unknown";
     return make("usage", root, `${root}:usage`, {
       // A run whose only request its cap refused sent none, and says so; otherwise what is known so far (costsofar/1).
@@ -1008,6 +1015,12 @@ function createProjector(options: TimelineOptions) {
 export const COST_SO_FAR = "Cost so far";
 export const COST_ENDED = "Cost";
 export const costLabel = (ended: boolean): string => (ended ? COST_ENDED : COST_SO_FAR);
+/** What a failed model request's row adds when no price came back for it. */
+const UNPRICED_FAILURE = " (its cost is unknown: the provider sent no price and may still bill it)";
+/** The usage row's words after its model requests: its paid tool calls (`charges`) and its tool calls with no price
+ *  (`notMetered`), each said only when there is one, the same on every harness (store-reads/journal.ts bookedUsage). */
+export const toolCallWords = (charges: number, notMetered = 0): string =>
+  `${charges ? ` and ${charges} paid tool call${charges === 1 ? "" : "s"}` : ""}${notMetered ? `; ${notMetered} tool call${notMetered === 1 ? "" : "s"} not metered` : ""}`;
 /** `row` as an ended run's: a usage row made while it ran ("Cost so far: …") says its cost ("Cost: …"); any other row as
  *  it is. For a host that keeps rows read before the run ended. */
 export function endedUsage<T extends { kind: string; summary?: string | null }>(row: T): T {

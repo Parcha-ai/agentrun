@@ -1,3 +1,4 @@
+import { grantOf } from "./mcp";
 import type { AgentTool, Permission, ToolPin, ToolSetting, ToolSettings } from "./v2";
 
 /** The harnesses a capability resolves for, in the order the console shows them. */
@@ -53,7 +54,7 @@ export const SERVER_DENY = "Refused on this server for every agent, whatever the
 /** Said beside a tool whose permission is deny: what deny does not do (its words are tl-tools'). */
 export const DENY_ONLY = "Deny stops this tool only. The agent can still reach the web with other tools it has, such as browser, bash or web_search: deny those too to keep it offline.";
 
-/** An MCP tool as its server's read lists it (GET /v2/mcp/servers/{name}): this server's permission in force for it. */
+/** An MCP tool as its server's read lists it (GET /v2/settings/mcp-servers/{name}): this server's permission in force for it. */
 type McpListed = { name: string; tools: readonly { name: string; permission?: Permission }[] };
 
 /** Whether this server denies `name` for every agent, from the newest word there is on it: the agent's read when it lists
@@ -62,8 +63,8 @@ type McpListed = { name: string; tools: readonly { name: string; permission?: Pe
 export const serverDenies = (name: string, gates: readonly ToolGate[], read?: readonly AgentTool[], mcpServers?: readonly McpListed[]): boolean => {
   const own = read?.find((t) => t.name === name);
   if (own) return own.permission === "deny" && own.permission_from === "server";
-  const grant = /^mcp:([^/]+)\/(.+)$/.exec(name);
-  const listed = grant ? mcpServers?.find((s) => s.name === grant[1])?.tools.find((t) => t.name === grant[2]) : undefined;
+  const grant = grantOf(name);
+  const listed = grant ? mcpServers?.find((s) => s.name === grant.server)?.tools.find((t) => t.name === grant.tool) : undefined;
   if (listed) return listed.permission === "deny";
   return gates.some((g) => g.name === name && g.permission === "deny");
 };

@@ -23,7 +23,8 @@ public enum MacPlatform {
 			foregroundFeature: post,
 			raw: HIDInput.shared,
 			person: PersonWatch.shared,
-			marks: .shared
+			marks: .shared,
+			changes: AXChanges.shared
 		)
 	}
 
@@ -68,8 +69,8 @@ public enum MacPlatform {
 
 	/// A driver for one connection, the socket's (.local) or the paired server's (.attached).
 	public static func driver(_ caller: Caller) -> Driver {
-		// One line per ui.act in Computerd.log: where its time went.
-		Driver(platform: make(), policy: policy(), caller: caller, machine: machine, timing: Timing(trace: { log($0) }))
+		// One line per ui.act in Computerd.log: where its time went, and what the apps told meanwhile.
+		Driver(platform: make(), policy: policy(), caller: caller, machine: machine, timing: Timing(trace: { log("\($0); \(AXChanges.shared.told())") }))
 	}
 }
 #endif

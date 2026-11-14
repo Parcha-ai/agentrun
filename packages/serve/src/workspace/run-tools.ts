@@ -29,19 +29,21 @@
 // with no computer's shell (above), and a desktop or a phone adds the computer's tools (computer_observe, computer_act,
 // computer_screenshot, computer_script, the hand-over) as its groups offer them, over its one surface
 // (computer-ports.ts; the script in serve's isolate, computer-script.ts). A browser adds none here: the run's browser
-// tool (tools.ts) drives it.
+// tool (tools.ts) drives it. The agent's setting may narrow a desktop or a phone (AgentComputer): its surface keeps the
+// script tool or the per-step tools, and exec off takes every program away from the agent: no exec or processes group
+// in its card, no folder mounted, no shell.
 //
 // runTools is the one call: runHands binds the run's hands and executors, the kernel's createRegistry makes the run's
 // registry over them, and bindTools gives its tools as the kernel's HostTool, through the run's gate. The run's end
 // (end) ends its background processes through the computer (the kernel's endBackground), then sweeps.
 import type { Context } from "@earendil-works/chord/context";
 import type { HostTool } from "@parcha/agentrun-kernel";
-import { type CapabilityKind, COMPUTER_TOOLS, type ComputerPort, createRegistry, endBackground, type Executor, type Registry } from "@parcha/agentrun-kernel/kernel";
+import { type CapabilityKind, COMPUTER_TOOLS, type ComputerPort, createRegistry, endBackground, type Executor, HANDOFF_TOOL, type Registry, SCRIPT_TOOL } from "@parcha/agentrun-kernel/kernel";
 import type { ComputerClient, HelloResult } from "@parcha/agentrun-computer";
 import { type Card, createSurface } from "@parcha/agentrun-computer/surface";
 import type { AttachableComputer, MountCheck } from "./attach.js";
 import { portOf } from "./computer-ports.js";
-import { computerScriptExecutor, ScriptGuard } from "./computer-script.js";
+import { computerScriptExecutor, ScriptGuard, scriptPreludeOf } from "./computer-script.js";
 import { answerText, type PiAnswer, piExecutor, type PiExecutor } from "./executors.js";
 import { ARCHIL_MAX_EXEC_S, type Hands, handsOf, MAX_EXEC_S, shellEnv } from "./hands.js";
 import { policyEnv, policyPrelude } from "../bash-read-only.js";
@@ -64,9 +66,35 @@ import type { Workspace } from "./workspace.js";
  */
 export type RunComputer =
   | { readonly kind: "sandbox"; readonly computer: AttachableComputer; readonly check: MountCheck }
-  | { readonly kind: "desktop"; readonly computer: AttachableComputer; readonly hello: HelloResult; readonly check?: MountCheck }
-  | { readonly kind: "phone"; readonly computer: { readonly client: ComputerClient }; readonly hello: HelloResult }
+  | ({ readonly kind: "desktop"; readonly computer: AttachableComputer; readonly hello: HelloResult; readonly check?: MountCheck } & AgentComputer)
+  | ({ readonly kind: "phone"; readonly computer: { readonly client: ComputerClient }; readonly hello: HelloResult } & AgentComputer)
   | { readonly kind: "browser"; readonly browser: ClaimBrowser };
+
+/** What a desktop's or a phone's agent may do with it, as its computer setting says (computer-setting.ts): `surface`,
+ *  how it drives it ("code": a script tool and the hand-over; "tools": the per-step tools and the hand-over; absent,
+ *  both: surfaceKeeps); `exec: false`, no program of its own on it: its card and surface are made from its hello with
+ *  the exec and processes groups taken out, so no tool and no script has a shell, and the run has no bash family
+ *  anywhere (shell "none"). Only the agent's: the run's own computer channel (computer-channel.ts loopComputerOf, the
+ *  owner's POST /runs/{id}/computer/call) keeps the computer's whole hello. */
+export type AgentComputer = { readonly surface?: "code" | "tools"; readonly exec?: false };
+
+/** The groups that run a program on a computer: what `exec: false` takes out of the agent's card. */
+const PROGRAM_GROUPS: ReadonlySet<string> = new Set(["exec", "processes"]);
+
+/** `computer` as its agent may use it: with `exec: false`, its hello without the groups that run programs. */
+function agentsOwn(computer: RunComputer | undefined): RunComputer | undefined {
+  if ((computer?.kind !== "desktop" && computer?.kind !== "phone") || computer.exec !== false) return computer;
+  return { ...computer, hello: { ...computer.hello, groups: computer.hello.groups.filter((group) => !PROGRAM_GROUPS.has(group)) } };
+}
+
+/** Whether a computer's tool is listed for `surface`: the hand-over always; "tools", never a script tool; "code", only
+ *  the script tool, and computer_script not even that where the harness has its own code mode (`codeMode`: pi's
+ *  codemode binds `computer` and is its script tool); absent, every one. */
+function surfaceKeeps(name: string, surface: AgentComputer["surface"], codeMode: boolean): boolean {
+  if (name === HANDOFF_TOOL || surface === undefined) return true;
+  if (surface === "tools") return name !== SCRIPT_TOOL;
+  return name === SCRIPT_TOOL && !codeMode;
+}
 
 /** A desktop's or a phone's port as a person's hold on the computer gives it back: each look or act made while the
  *  person holds it waits for hand-back; a look then runs, an act then is refused (the take-over's own words). With it,
@@ -83,15 +111,18 @@ function mountedIn(computer: RunComputer | undefined): { readonly computer: Atta
 
 /** A desktop's or a phone's port, over its surface, the kind whose tools the run gets, its groups, and the script's
  *  executor for its card; none for any other computer. */
-async function portsOf(computer: RunComputer | undefined, guard: ScriptGuard): Promise<{ readonly ports: Pick<Hands, "computer">; readonly kinds: readonly CapabilityKind[]; readonly groups: readonly string[]; readonly script?: Executor; readonly card?: Card }> {
+async function portsOf(computer: RunComputer | undefined, guard: ScriptGuard): Promise<{ readonly ports: Pick<Hands, "computer">; readonly kinds: readonly CapabilityKind[]; readonly groups: readonly string[]; readonly script?: Executor; readonly card?: Card; readonly prelude?: string }> {
   if (computer?.kind !== "desktop" && computer?.kind !== "phone") return { ports: {}, kinds: [], groups: [] };
   const surface = createSurface(computer.computer.client, computer.hello);
-  return { ports: { computer: portOf(surface) }, kinds: [computer.kind], groups: surface.card.groups, script: computerScriptExecutor(surface.card, guard), card: surface.card };
+  const prelude = scriptPreludeOf(surface.card, computer.exec === false ? { exec: false } : {});
+  return { ports: { computer: portOf(surface) }, kinds: [computer.kind], groups: surface.card.groups, script: computerScriptExecutor(prelude, guard), card: surface.card, prelude };
 }
 
-/** A desktop's or a phone's surface as a harness's own script runtime binds it (pi's code mode): its card, which the
- *  script prelude builds `computer` from, and the run's port, held by the person's take-over as the tools' is. */
-export type ScriptComputer = { readonly card: Card; readonly port: ComputerPort; /** What the script's shell and files are held to (computer-script.ts ScriptGuard). */ readonly guard: ScriptGuard };
+/** A desktop's or a phone's surface as a harness's own script runtime binds it (pi's code mode): its card, the script
+ *  prelude that builds `computer` from it (computer-script.ts scriptPreludeOf), and the run's port, held by the person's
+ *  take-over as the tools' is. `declare`: no computer_script is listed to declare `computer` (a code-only computer on a
+ *  code-mode harness), so the harness's script tool declares it itself. */
+export type ScriptComputer = { readonly card: Card; readonly port: ComputerPort; /** What the script's shell and files are held to (computer-script.ts ScriptGuard). */ readonly guard: ScriptGuard; readonly prelude: string; readonly declare: boolean };
 
 /** The run's scratch in its own folder: bash's TMPDIR. */
 export const TMP_DIR = ".agentrun/tmp";
@@ -116,7 +147,9 @@ export type RunHands = {
    *  (none where it is "none", so nothing can run a command on this server). */
   readonly executors: { readonly read: PiExecutor; readonly write: PiExecutor; readonly edit: PiExecutor; readonly bash?: PiExecutor; /** computer_script's run in serve's isolate, with a desktop or a phone. */ readonly computer_script?: Executor };
   /** A desktop's or a phone's surface for a harness's own script runtime; none for any other computer. */
-  readonly computer?: ScriptComputer;
+  readonly computer?: Omit<ScriptComputer, "declare">;
+  /** A desktop's or a phone's surface, as its agent's setting says it (AgentComputer); absent, both. */
+  readonly surface?: AgentComputer["surface"];
   /** The run's end, after its background processes are ended and before the computer is let go: bash's full outputs
    *  and its TMPDIR swept. */
   sweep(): Promise<void>;
@@ -127,13 +160,17 @@ export type RunHands = {
  *  scratch folder), taken as the folder. `hold`: a person's hold on the computer (its take-over), given a desktop's or a
  *  phone's ports and answering them wrapped, so a call made while the person holds it waits, and an action then is
  *  refused; never the shell's, the files' or a browser's (its take-over is pi-browser's own). */
-export async function runHands(workspace: Workspace, computer: RunComputer | undefined, options: { readonly mode: 1 | 2; readonly context: Context; readonly aliases?: readonly string[]; readonly hold?: RunHold; readonly bashPolicy?: string }): Promise<RunHands> {
+export async function runHands(workspace: Workspace, claimed: RunComputer | undefined, options: { readonly mode: 1 | 2; readonly context: Context; readonly aliases?: readonly string[]; readonly hold?: RunHold; readonly bashPolicy?: string }): Promise<RunHands> {
   // The folder's own path on this machine, Mode 1's bind. A Mode 2 folder (Archil) has none, and asking its mount would
   // mint the run's mount credential: only a computer that mounts the folder asks it (attach, below).
   const spec = options.mode === 1 ? await workspace.mountSpec() : undefined;
   const here = spec?.kind === "bind" ? spec.path : undefined;
+  // The computer as its agent may use it: one with exec off has no group that runs a program, so nothing mounts the
+  // folder in it, and the run has no shell at all (no bash family, not even Archil's exec).
+  const computer = agentsOwn(claimed);
+  const noPrograms = (computer?.kind === "desktop" || computer?.kind === "phone") && computer.exec === false;
   const mounted = mountedIn(computer);
-  const shell = shellPlaceOf(mounted !== undefined, options.mode);
+  const shell = noPrograms ? "none" : shellPlaceOf(mounted !== undefined, options.mode);
   const attached = mounted === undefined ? workspace : await workspace.attach(mounted.computer, mounted.check);
   // The folder's name: /workspace in a computer (and on Archil's exec, which has no path of this machine), its own path here.
   const cwd = mounted === undefined && here !== undefined ? here : COMPUTER_ROOT;
@@ -150,9 +187,9 @@ export async function runHands(workspace: Workspace, computer: RunComputer | und
   const tools = Object.fromEntries([...fileTools(), bashTool()].map((tool) => [tool.name, tool]));
   const read = mounted === undefined ? tools.read! : readAnywhereInComputer(tools.read!, attached, names, env);
   const executor = (tool: typeof read) => piExecutor(tool, fileEnv, options.context);
-  const guard = new ScriptGuard({ env: policyEnv(options.bashPolicy), prelude });
+  const guard = new ScriptGuard({ env: policyEnv(options.bashPolicy), prelude }, computer?.kind);
   const own = await portsOf(computer, guard);
-  const { ports, kinds, groups, script, card } = options.hold !== undefined && own.ports.computer ? { ...own, ports: options.hold(own.ports) } : own;
+  const { ports, kinds, groups, script, card, prelude: scriptPrelude } = options.hold !== undefined && own.ports.computer ? { ...own, ports: options.hold(own.ports) } : own;
   return {
     workspace: attached,
     // The computer's processes, for the five background tools: the attached Workspace's own; none when the folder is not
@@ -165,7 +202,8 @@ export async function runHands(workspace: Workspace, computer: RunComputer | und
     cwd,
     names,
     executors: { read: executor(read), write: executor(tools.write!), edit: executor(tools.edit!), ...(shell === "none" ? {} : { bash: executor(tools.bash!) }), ...(script ? { computer_script: script } : {}) },
-    ...(card && ports.computer ? { computer: { card, port: ports.computer, guard } } : {}),
+    ...(card && scriptPrelude && ports.computer ? { computer: { card, port: ports.computer, guard, prelude: scriptPrelude } } : {}),
+    ...((computer?.kind === "desktop" || computer?.kind === "phone") && computer.surface ? { surface: computer.surface } : {}),
     async sweep() {
       // Through the run's own Workspace, not the computer's: the sweep holds whether or not the computer still answers.
       for (const dir of [OUTPUT_DIR, TMP_DIR]) await workspace.remove(dir, { recursive: true, force: true });
@@ -239,13 +277,14 @@ export type RunTools = {
    *  (computer_observe, computer_act, computer_screenshot, computer_script, computer_request_handoff), by the kernel
    *  registry's own list. None with no computer, for
    *  a sandbox, or for a browser (its own binding lists its tools). An agent names its computer, never these tools
-   *  (definition.tools refuses them), so a run binds them beside what it was granted (withKindTools). */
+   *  (definition.tools refuses them), so a run binds them beside what it was granted (withKindTools). Its setting's
+   *  surface keeps some of them (surfaceKeeps). */
   readonly kindTools: readonly string[];
   /** The registry's tools `names` names, as the kernel's HostTool an adapter's session takes, each call through the
    *  run's gate decided before its intent, each answer kept in `results` (bindTools). */
   hostTools(names: readonly string[], results?: ToolResults): HostTool[];
   /** A desktop's or a phone's surface for a harness's own script runtime (pi's code mode binds `computer` over it); none
-   *  for any other computer. */
+   *  for any other computer, and none where the run has no script tool (a tools-only computer). */
   readonly computer?: ScriptComputer;
   /** The run's end, before the computer is let go: its background processes ended (TERM, then KILL 3 s later; none with
    *  no computer), then bash's full outputs and TMPDIR swept. */
@@ -261,18 +300,23 @@ export type RunTools = {
  * their executors to the run. A browser computer brings none of the registry's: the run's browser tool (tools.ts,
  * pi-browser's durable extension) drives it.
  */
-export async function runTools(workspace: Workspace, computer: RunComputer | undefined, options: { readonly mode: 1 | 2; readonly context: Context; readonly aliases?: readonly string[]; readonly hold?: RunHold; readonly bashPolicy?: string }): Promise<RunTools> {
+export async function runTools(workspace: Workspace, computer: RunComputer | undefined, options: { readonly mode: 1 | 2; readonly context: Context; readonly aliases?: readonly string[]; readonly hold?: RunHold; readonly bashPolicy?: string; /** The harness has its own code mode that binds `computer` (pi). */ readonly codeMode?: boolean }): Promise<RunTools> {
   const run = await runHands(workspace, computer, options);
   const registry = createRegistry({ maxExecS: run.maxExecS, shell: run.shell, kinds: run.kinds, groups: run.groups, executors: run.executors });
   const brought: ReadonlySet<string> = new Set(COMPUTER_TOOLS);
+  const codeMode = options.codeMode === true;
+  const kindTools = registry.list().map((def) => def.name).filter((name) => brought.has(name) && surfaceKeeps(name, run.surface, codeMode));
+  // The script runtime, where the run has a script tool: computer_script listed, or the harness's own code mode on a
+  // surface that has scripts. A tools-only computer has none, so a code-mode harness binds no `computer`.
+  const scripts = kindTools.includes(SCRIPT_TOOL) || (codeMode && run.surface !== "tools");
   return {
     workspace: run.workspace,
     registry,
     hands: run.hands,
     shell: run.shell,
-    kindTools: registry.list().map((def) => def.name).filter((name) => brought.has(name)),
+    kindTools,
     hostTools: (names, results) => bindTools(run, registry, names, results ? { results } : {}),
-    ...(run.computer ? { computer: run.computer } : {}),
+    ...(run.computer && scripts ? { computer: { ...run.computer, declare: !kindTools.includes(SCRIPT_TOOL) } } : {}),
     async end() {
       await endBackground(run.hands);
       await run.sweep();

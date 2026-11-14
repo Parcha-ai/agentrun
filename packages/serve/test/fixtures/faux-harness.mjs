@@ -82,6 +82,10 @@ export function script(spec, session = {}) {
   // "Use the learned workflow <name> on <question>.": the run's learned_workflow, then a closing answer.
   const learned = /Use the learned workflow (\S+) on (.+?)\./.exec(text);
   if (learned) return [{ call: "learned_workflow", args: { name: learned[1], input: { question: learned[2] } }, usd: 0.001 }, { say: "Ran the learned workflow.", usd: 0.001 }];
+  // "Ask the person: <question>": ask_person with the question, then, on the turn the person's answer starts, a closing
+  // answer. A CLI goes on to its next request after the call: that request is the one the run's loop cuts the turn at.
+  const ask = /Ask the person: (.+\?)/.exec(text);
+  if (ask) return [{ call: "ask_person", args: { question: ask[1] }, usd: 0.001 }, { say: "Going with your answer.", usd: 0.001 }];
   // A research turn: the session's web_search when it has one as a tool (its harness's own search is not one), then the
   // page with web_fetch, then report.md citing it.
   const research = /Research (.+?) on the web, read (\S+) and write report\.md\./.exec(text);

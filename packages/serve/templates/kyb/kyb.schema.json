@@ -16,14 +16,15 @@
       "properties": {
         "input": {
           "type": "object",
+          "description": "the run's typed input as it received it: the same names and values, and a field it did not get left out",
           "additionalProperties": false,
-          "required": ["name"],
+          "required": ["company"],
           "properties": {
-            "name": { "type": ["string", "null"] },
-            "domain": { "type": ["string", "null"] },
-            "country": { "type": ["string", "null"] },
-            "registration_number": { "type": ["string", "null"] },
-            "reason": { "enum": ["vendor", "customer", "investment", "unspecified"] }
+            "company": { "type": "string", "minLength": 1 },
+            "website": { "type": "string" },
+            "country": { "type": "string" },
+            "registration_number": { "type": "string" },
+            "reason": { "enum": ["vendor", "customer", "investment"] }
           }
         },
         "resolved": { "type": "boolean", "description": "true when one registry record (or, outside the covered registries, one clearly identified company) was established as the subject" },

@@ -61,8 +61,11 @@ export async function servedTimelineRows(deps: ServedTimelineDeps, store: Store,
       // never an earlier wait's words.
       // Its final answer whole, as the run's view serves it (store-reads/journal.ts wholeAnswers): a row's cut is no answer's.
       // A run that ended is read settled, as its view reads it: nothing of it is in flight, so a request it left unanswered
-      // is a cost unknown, never one still running.
-      const options = { redact, settled: ended };
+      // is a cost unknown, never one still running; its usage row says its cost, never what it has cost so far.
+      // Over is not final: an agentic run a person stopped is final in the store but reads running in its view (readRun: its
+      // turn is over, the run can go on), and its usage row says what it has cost so far there, so here too.
+      const view = await readRun(snapshot, runId, context);
+      const options = { redact, settled: ended, ended: view ? view.state !== "running" : false };
       const timeline = await wholeAnswers(snapshot, runId, context, await runTimeline(snapshot, runId, context, options), options, wholeAnswerFor(values));
       // A run whose booked spend passed its cap says so, by how much, after its usage row (run-view.ts withOverCap, as main's
       // served Timeline did): at the cap as it stands (a raise taken counts, capNowOf), a cache miss within the bound of the
