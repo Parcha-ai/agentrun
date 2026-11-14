@@ -99,7 +99,7 @@ export function queryRunsPrompt(origin: string, agentId?: string): string {
   const path = agentId === undefined ? "/runs" : `/agents/${encodeURIComponent(agentId)}/runs`;
   return `${setup(origin)}
 
-Help me investigate ${agentId === undefined ? "runs across all agents" : `runs of agent ${JSON.stringify(agentId)}`}. Ask what I want to know and the time range if unclear, then make read-only requests to ${root}/v2${path}, following pagination, and inspect relevant run timelines/files. Include server-run sessions and imported history. Identify the source and data freshness. Summarize findings with links to the runs, distinguish unknown metrics from zero, and do not create, edit, rerun or cancel anything.`;
+Help me investigate ${agentId === undefined ? "runs across all agents" : `runs of agent ${JSON.stringify(agentId)}`}. Ask what I want to know and the time range if unclear, then make read-only requests to ${root}/v2${path}, following pagination, and inspect relevant run timelines/files. Include server-run sessions and imported history; for an unfiltered cross-agent query, also read /v2/observations for independently running sessions. Identify the source and data freshness; observed idle sessions are not proof of completed tasks. Summarize findings with links to the runs, distinguish unknown metrics from zero, and do not create, edit, rerun or cancel anything.`;
 }
 
 export function runAgentPrompt(origin: string, agentId: string, sdk?: BackendSdkRuntime): string {
@@ -126,7 +126,7 @@ export function connectExistingAgentsPrompt(origin: string): string {
   const root = server(origin).origin;
   return `Read ${root}/skills/agentrun-serve/SKILL.md and follow Connect agent for ${root}/v2 with the matching reviewed CLI. Use this instance; do not start a replacement server.
 
-Clarify only missing choices: connect for AgentRun-triggered jobs, import history, or both; source machine, project, runtime and container/profile if relevant. Remote jobs use the remote worker flow. Preserve original files, tools, permissions and sign-in.
+Clarify only missing choices: observe an already running agent, connect for AgentRun-triggered jobs, import history, or both; source machine, project, runtime and container/profile if relevant. Existing backend/Docker agents use native telemetry and Collector setup, preserving SDK configuration and job triggers. Other remote jobs use the remote worker flow. Observation alone does not enable self-improvement. Preserve original files, tools, permissions and sign-in.
 
 Never print credentials; I enter codes in the secure terminal prompt. Keep secrets out of prompts, URLs and logs. Get approval for the previewed history scope. Do not import history, enable self-improvement or start a paid run unless requested. Verify the result and return its console link.`;
 }

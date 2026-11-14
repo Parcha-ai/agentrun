@@ -41,7 +41,16 @@ describe("MissionControl", () => {
     const html = renderToStaticMarkup(createElement(MissionControl, { view }));
     for (const s of ["Mission Control", ">2<", ">7<", "Active", "Needs input", "Failed"]) expect(html).toContain(s);
   });
-
+  it("names the registered-work counts when externally observed sessions are shown separately", () => {
+    const html = renderToStaticMarkup(createElement(MissionControl, { view, hasObservedSessions: true, observations: createElement("div", null, "Observed sessions") }));
+    const host = document.createElement("div"); host.innerHTML = html;
+    const registered = host.querySelector('section[aria-label="Registered agents and runs"]')!;
+    expect(registered.querySelector("h2")?.textContent).toBe("Registered agents & runs");
+    expect(registered.textContent).toContain("Agents2");
+    expect(registered.textContent).toContain("Runs7");
+    expect(registered.textContent).not.toContain("Observed sessions");
+    expect(renderToStaticMarkup(createElement(MissionControl, { view }))).not.toContain("Registered agents &amp; runs");
+  });
   it("links each recent run to its page, and each agent to its page's Runs tab", () => {
     const html = renderToStaticMarkup(createElement(MissionControl, { view }));
     expect(html).toContain('href="#/runs/run-1"');

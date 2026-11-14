@@ -1,6 +1,6 @@
 # AgentRun source connector
 
-This is the existing AgentRun Python CLI with an opt-in OSS remote execution mode. The default `connect`, `discover`, `daemon` and telemetry commands retain their metadata-only hosted observer behavior. `remote` is separate: it imports the selected native setup as an AgentRun agent and allows the destination to run it on its source machine.
+This is the existing AgentRun Python CLI with an opt-in OSS remote execution mode. The default `connect`, `discover`, `daemon` and telemetry commands observe existing sessions on either a compatible OSS server or hosted AgentRun. `remote` imports the selected native setup as an AgentRun agent and allows the destination to run it on its source machine.
 
 This development CLI is not the currently published npm release. Install it from the same reviewed source checkout as the OSS server. Python 3.12+ and Node 24.22.3+ are required; live execution also needs the source machine’s existing signed-in Claude Code or Codex CLI. History-only import reads the selected project’s local logs without requiring native sign-in.
 
@@ -10,6 +10,74 @@ npm run build
 ```
 
 The installed `agentrun-serve remote-bridge` command supplies native discovery, launch and learning through the existing AgentRun runtime. When working from a checkout instead of an installed runtime, pass `--bridge /absolute/path/to/packages/serve/dist/native/remote-worker-bridge.js` to discovery, connection or worker commands. This is a local executable path chosen by the source-machine operator; it is never supplied by the remote server.
+
+## Observe agents that already run elsewhere
+
+Use ordinary `connect` when a terminal, backend, Docker deployment or job queue already starts the agent. The OSS
+server accepts the same metadata and OpenTelemetry protocol as hosted AgentRun. It records reported activity,
+harness, model and token usage without taking over execution or importing the agent definition. No model key or
+Node remote bridge is needed for observation. Choose `remote connect` below when AgentRun should start new jobs.
+
+For native telemetry in a deployment, install this Python connector in the source environment and configure a
+Collector using the existing command:
+
+```sh
+agentrun setup --target deployment
+agentrun connect --origin https://your-console.example --workspace-id local \
+  --telemetry --subscribe-harness claude --name "Backend agent" \
+  --state-dir /private/agent-observer
+```
+
+The OSS workspace is `local`; hosted destinations use the workspace returned by their authenticated identity.
+The CLI securely prompts for the destination's API key, exchanges it for a connector-scoped credential, and
+retains only that scoped credential. OSS uses API-key enrollment, not hosted device sign-in. An unattended
+installation may use `--credential-file` with a mode-0600, source-user-owned JSON file containing `origin` and
+`api_key`, or `--credential-env` naming a securely injected environment variable. Never put the credential in a
+prompt, URL or command argument. Remove temporary enrollment material after successful connection.
+
+Review the generated private Collector configuration, harness environment and hook fragments. Deploy the
+Collector through the source environment's supervisor, then apply the log-specific environment to a **new**
+harness process. For a backend SDK, configure the actual child execution environment and merge lifecycle hooks
+with existing hooks; preserve the application's tools, prompts, permissions and tracing destination. A separate
+Collector needs an explicitly reachable receiver; generated fragments default to loopback. `--subscribe-harness
+codex` selects Codex instead. Keep the connector state and Collector queue across container replacement.
+
+For existing local sessions, use `agentrun discover`, then ordinary `agentrun connect` to select only the sessions,
+projects or harness subscriptions you want. This polling mode runs the existing observer daemon. OTLP mode uses
+the externally supervised Collector instead; `daemon stop` does not stop that Collector.
+
+Open **Connected agents**, **Runs** or **Mission Control** to inspect observed sessions. Verify a real activity or
+usage receipt at the destination; local CLI status alone does not prove Collector delivery. Sessions remain
+read-only: idle does not prove a job completed, and a missing heartbeat is not a model failure. Stop the Collector
+through its supervisor to pause telemetry. `agentrun disconnect --state-dir /private/agent-observer` stops local
+observation and prompts for a fresh OSS owner credential to revoke the connection. The restricted connector
+credential cannot authorize its own remote revocation. For authorized unattended disconnection, provide a fresh
+private origin-bound owner credential file (the same `origin`/`api_key` format and ownership rules as enrollment):
+
+```sh
+agentrun disconnect --state-dir /private/agent-observer \
+  --credential-file /private/disconnect-owner.json --yes
+```
+
+Alternatively, use `--credential-env NAME` with a securely injected owner credential. Require the result's
+`status` to be `disconnected` before treating remote revocation as complete. `revocation_pending` means local
+observation stopped but the destination has not confirmed revocation; correct authentication or connectivity and
+retry. Remove temporary owner credential material afterward. Successful revocation preserves received history
+and refuses further ingestion with the old connector credential.
+
+The OSS receiver accepts Collector HTTP/JSON logs, including bounded gzip, and advertises its formats at
+`/api/v2/control/connectors/capabilities`. It retains deduplication receipts for seven days, shows session activity
+for 90 days and keeps usage buckets for 90 days after their received UTC day ends. A stale session's internal
+record remains only while its accepted usage still needs it; cleanup runs at startup and every minute, including
+for revoked connections. Older event timestamps cannot recreate expired receipts or count tokens twice. Each
+connector accepts up to 2,000 new events per minute, 100,000 receipts in the rolling window and 1,000 retained
+sessions; the server allows 100 connectors. Capacity refusal is visible and supplies retry guidance instead of
+silently dropping deduplication records. The console reads observations through authenticated `/v2/observations`.
+
+Observation does not inject lessons into subsequent backend jobs. For checked self-improvement while your
+application keeps starting jobs, use the [Claude Agent SDK](../docs/tutorials/claude-sdk-learning.md) or
+[Codex SDK](../docs/tutorials/codex-sdk-learning.md) integration and verify accepted learning on a fresh run.
+The current SDK wrappers are TypeScript integrations; observing a Python SDK process does not install one.
 
 ## Connect an existing setup
 
