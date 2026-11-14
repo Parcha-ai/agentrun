@@ -1,71 +1,299 @@
-# Writing a computer provider
+# Contributing a computer provider
 
-A provider makes, finds and ends computers on one vendor. The daemon inside each computer (computerd) does the work;
-the provider gets it there, proves it is the one asked for, and carries its wire. This file starts with how to
-contribute one, then has two halves: what a provider declares and how it is judged (the protocol half), and what a
-vendor writes to run its machines on the shared adapter (the MachineHost half).
+AgentRun is an open-source platform for running AI agents. It gives each agent a computer, a sandbox or a desktop, on
+a vendor's machines. This page shows how to add your machines in one pull request.
 
 ## How to contribute a provider
 
-One pull request, with no generator script. For a vendor whose machines run Linux and can start a process as root:
+### What you write
 
-1. Copy E2B, the simplest vendor on the adapter (one key, one SDK): `src/e2b.ts` (its `MachineHost` and provider), `src/descriptors/e2b.ts` (its
-   descriptor) and `src/conformance/e2b.ts` (its conformance module), renamed for your vendor. Add your descriptor to
-   `DESCRIPTORS` in `src/descriptors/index.ts`: that line puts it in the registry.
-2. Write the eight members in [What the vendor writes](#what-the-vendor-writes), and only the optional hooks your vendor
-   needs. Unit-test what needs no vendor, as `test/e2b-provider.test.mjs` does.
-3. Name your settings `COMPUTER_<VENDOR>_*` in the conformance module's `ENV`, the key as `COMPUTER_<VENDOR>_API_KEY`,
-   behind the live switch `AGENTRUN_COMPUTER_LIVE_<VENDOR>=1`.
-4. Build, then run the suite with your own key between two sweeps, from the repository root:
+You write one small TypeScript object, a `MachineHost`. It creates, reads, lists and deletes your machines, and runs a
+command in one. AgentRun does the rest. It installs its daemon (computerd) in each machine, enforces deadlines, makes
+create safe to retry, sweeps up leftovers and checks from inside that the agent's programs have no network. This works
+for any vendor whose machines run Linux and can start a process as root.
 
-   ```sh
-   npm ci --ignore-scripts && npm run build
-   npm run build:daemon -w @parcha/agentrun-computer   # needs Go on PATH
-   export AGENTRUN_COMPUTER_LIVE_<VENDOR>=1 COMPUTER_<VENDOR>_API_KEY=<your key>
-   node packages/computer/dist/conformance/sweep.js --provider <vendor> --before /tmp/<vendor>-before.json
-   npm run conformance -w @parcha/agentrun-computer -- --provider <vendor>
-   node packages/computer/dist/conformance/sweep.js --provider <vendor> --after /tmp/<vendor>-before.json
-   ```
+You add four things under `packages/computer/src/`, each copied from E2B's:
 
-   A desktop also needs the fixture the input cases read, built for the vendor's machines (`GOARCH=amd64` or `arm64`);
-   without it those cases skip and Core fails. Build it, then add `--fixture /tmp/computerd-fixture` to the run:
+- `<vendor>.ts`, your host and the provider class that wraps it. Start from [`e2b.ts`](src/e2b.ts).
+- `descriptors/<vendor>.ts`, your descriptor: id, label, key and the kinds of computer you offer.
+- `conformance/<vendor>.ts`, which reads your key and builds your provider for the test suite.
+- One line in `descriptors/index.ts` that adds your descriptor to `DESCRIPTORS`.
 
-   ```sh
-   (cd packages/computer/daemon && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /tmp/computerd-fixture ./cmd/fixture)
-   ```
+### The eight members
 
-   `--kind sandbox` (or `desktop`) runs one kind's cases and ends on its verdict. `-- --help` lists every flag.
-5. Paste the report and the sweep's last line into the pull request and fill in its checklist. The run passes when it
-   ends `core PASS` and exits 0, and the sweep prints `"stillThere":[]`.
+Every snippet below is cut from E2B's host in `src/e2b.ts`, and `// …` marks a cut. A member answers a `Result`, either
+`ok(value)` or a failure with a code. If a member throws, AgentRun reads the error through `errorCode`. Each call gets
+`ctx` with a `timeoutMs` and sometimes a `signal`. Pass both to your client where you can.
 
-## The protocol half
+**`id`** is your descriptor's id. Errors with code `vendor` name it.
 
-The contract is `ComputerProvider` (`src/provider.ts`). [spec/computer/provider.md](../../spec/computer/provider.md)
-says what each member promises; this is the short version. A vendor on the MachineHost adapter gets all of it from
-`hostedProvider` and writes none of it by hand.
+```ts
+class E2BHost implements MachineHost {
+	readonly id = "e2b";
+```
+
+**`facts`** says what your machines are. It never changes, and AgentRun builds the provider's capabilities from it.
+`daemon: "child"` means your own agent runs first and starts processes; with `"pid1"`, the machine's main process is
+the command AgentRun passes to create. `lifetime: "vendor"` means your timer ends a machine at its deadline; with
+`"janitor"`, AgentRun ends it by label. `vendorAgentPorts` are the ports your agent listens on inside the machine.
+`HostFacts` in [`src/host.ts`](src/host.ts) lists the optional fields, such as `gpu`, `user` and `specFields`.
+
+```ts
+	readonly facts: HostFacts = {
+		daemon: "child",
+		isolation: "microvm",
+		lifetime: "vendor",
+		maxLifetimeMs: PRO_MAX_MS,
+		arch: "amd64",
+		vendorAgentPorts: [ENVD_PORT],
+		networkReadBack: true,
+		network: [...E2B.network],
+		mounts: [...MOUNT],
+		release: ["delete"],
+	};
+```
+
+**`create(req, ctx)`** makes one machine and answers as soon as you have its id. Don't wait for it to boot, because
+AgentRun polls `get`. Store `req.labels` on the machine, since `list` finds machines by them. Give it no network unless
+`req.network` is `"open"`.
+
+```ts
+	async create(req: MachineRequest, ctx: HostCall): Promise<Result<{ id: string }>> {
+		const timeoutMs = Math.ceil((req.lifetimeMs ?? 0) / 1000) * 1000;
+		const options: E2BCreateOptions = {
+			...this.#api(ctx.timeoutMs),
+			timeoutMs,
+			metadata: { ...req.labels, [TIMEOUT_LABEL]: String(timeoutMs) },
+			allowInternetAccess: req.network === "open",
+			// …
+		};
+		const sandbox = await this.#Sandbox.create(req.image, options);
+		// …
+		return ok({ id: sandbox.sandboxId });
+	}
+```
+
+**`get(id, ctx)`** reads one machine as your API sees it now. It returns a `Machine` with its labels, its `state`
+(`starting`, `running`, `stopping`, `stopped`, `going` or `failed`), and the network and image you read back. A machine
+that no longer exists is `undefined`, not an error.
+
+```ts
+	async get(id: string, ctx: HostCall): Promise<Result<Machine | undefined>> {
+		try {
+			return ok(machineOf(await this.#Sandbox.getInfo(id, this.#api(ctx.timeoutMs, ctx.signal))));
+		} catch (error) {
+			if (codeOf(error) === "not_found") return ok(undefined);
+			throw error;
+		}
+	}
+```
+
+**`list(labels, ctx)`** returns the machines your listing shows for these labels, every page, within `ctx.timeoutMs`,
+each as the listing reads it. Leave out what the listing doesn't carry, such as the network: AgentRun calls `get` where
+it needs it. You may return machines that don't carry every label (your API filters by some, or none): AgentRun keeps
+the ones that do.
+
+```ts
+	async list(labels: Record<string, string>, ctx: HostCall): Promise<Result<Machine[]>> {
+		// …
+		const paginator = this.#Sandbox.list({ ...this.#connection, requestTimeoutMs: this.#requestMs, query: { metadata: labels }, limit: PAGE });
+		// … every page into found
+		return ok([...found.values()].map(listedOf));
+	}
+```
+
+**`delete(id, ctx)`** deletes a machine and answers once your API accepts the delete. A machine that is already gone is
+fine. AgentRun then waits until `get` and `list` stop showing it.
+
+```ts
+	async delete(id: string, ctx: HostCall): Promise<Result<void>> {
+		// …
+		try {
+			await this.#Sandbox.kill(id, this.#api(ctx.timeoutMs));
+		} catch (error) {
+			if (codeOf(error) !== "not_found") throw error;
+		}
+		return ok(undefined);
+	}
+```
+
+**`exec(id, argv, { stdin }, ctx)`** starts `argv` in the machine as root, or as a user with passwordless sudo. It sets
+no timeout and answers once the process has started. It returns a `MachineProcess` with the output streams, `write` and
+`end` for stdin, `wait` for the exit code, and `kill`. AgentRun installs and starts its daemon this way, then talks to
+the daemon over its stdio.
+
+```ts
+	async exec(id: string, argv: readonly string[], { stdin }: { stdin: boolean }, ctx: HostCall): Promise<Result<MachineProcess>> {
+		const sandbox = await this.#sandbox(id, ctx);
+		// …
+		const handle = await sandbox.commands.run(shellLine(argv), {
+			background: true,
+			stdin,
+			user: "root",
+			timeoutMs: 0,
+			// …
+		});
+		// …
+		return ok({
+			stdout: out.iterable,
+			stderr: err.iterable,
+			write: (bytes) => sandbox.commands.sendStdin(handle.pid, bytes, { requestTimeoutMs }),
+			end: () => sandbox.commands.closeStdin(handle.pid, { requestTimeoutMs }),
+			wait: () => exited,
+			// … and kill
+		});
+	}
+```
+
+**`errorCode(error)`** maps an error your client threw to one of AgentRun's [codes](#refusals). Anything you don't
+recognise is `"vendor"`. E2B's `errorCode` returns `codeOf(error)`:
+
+```ts
+function codeOf(error: unknown): ComputerErrorCode {
+	const name = (error as { name?: unknown } | null)?.name;
+	if (name === "AbortError") return "aborted";
+	if (name === "SandboxNotFoundError" || name === "NotFoundError" || name === "FileNotFoundError") return "not_found";
+	// …
+	return "vendor";
+}
+```
+
+**Optional hooks.** `upload(id, path, bytes, ctx)` puts a file in the machine. E2B has one because it has a file API;
+without it, AgentRun streams its daemon through `exec`'s stdin. Six more hooks each cover one vendor need. `prepare`
+applies settings once a machine runs. `stop` goes with `release: ["stop"]`; it only asks, and AgentRun waits until the
+machine reads stopped. `setTimer` moves your timer when an agent extends its deadline, and `setLabels` does the same for
+`lifetime: "janitor"`. `check` adds your own rules for a spec, such as image names; the spec it gets is an object whose
+fields aren't checked yet. `testConnection` replaces the default, one listing by AgentRun's label with its computers
+counted, if listing would create something. Leave out what you don't need.
+
+### Wire it up
+
+Your provider class hands the host to `HostedProvider`, which turns it into a whole `ComputerProvider`, the interface
+the rest of AgentRun calls. The function `hostedProvider(host, options)` does the same.
+
+```ts
+export class E2BProvider extends HostedProvider {
+	constructor(options: E2BProviderOptions) {
+		// … check the options
+		super(new E2BHost(Sandbox, connectionOptions({ apiKey, domain }), requestMs), { ...rest, label: "E2B", kind, maxLifetimeMs });
+	}
+}
+```
+
+The same file exports `create(options)`, `MOUNT`, `CAPABILITIES` and `conformance`, as `e2b.ts` does. Load your SDK
+lazily through a constant like `E2B_PACKAGE`, pin it exactly as a root devDependency, and add it to
+`test/vendor-sdks.test.mjs`.
+
+The descriptor is data. AgentRun's Settings page shows it, and the registry loads your file through `load`.
+
+```ts
+export const E2B = defineProvider({
+	id: "e2b",
+	label: "E2B",
+	keys: [{ name: "E2B_API_KEY", option: "apiKey", required: true }],
+	metered: true,
+	mounts: ["archil"],
+	network: ["none"],
+	capabilities: [SANDBOX, LINUX_DESKTOP],
+	defaultImage: { sandbox: E2B_BASE_TEMPLATE, desktop: E2B_DESKTOP_TEMPLATE },
+	load: () => import("../e2b.js"),
+});
+```
+
+`test/kinds.test.mjs` and a few tests under `packages/serve/test/` list every provider, so add yours there too.
+
+The conformance module reads your settings as `COMPUTER_<VENDOR>_*` and the key as `COMPUTER_<VENDOR>_API_KEY`. It
+creates nothing unless `AGENTRUN_COMPUTER_LIVE_<VENDOR>=1`. Rename E2B's and keep its exports: `createProvider`,
+`createDriftedProvider` (its daemon reports another version, and the suite checks AgentRun refuses it), `createHost`
+for the sweep, `conformanceImage` and `conformanceNotes`.
+
+Unit-test what needs no network, as `test/e2b-provider.test.mjs` does: your capabilities, your `check`, how the key and
+endpoint reach your SDK, and the settings your conformance module reads. Don't write a fake of your vendor. AgentRun
+tests its own lifecycle against one fake host, and your live run is the proof.
+
+### Prove it
+
+Build, then run the suite with your own key between two sweeps, from the repository root:
+
+```sh
+npm ci --ignore-scripts && npm run build
+npm run build:daemon -w @parcha/agentrun-computer   # needs Go on PATH
+export AGENTRUN_COMPUTER_LIVE_<VENDOR>=1 COMPUTER_<VENDOR>_API_KEY=<your key>
+node packages/computer/dist/conformance/sweep.js --provider <vendor> --before /tmp/<vendor>-before.json
+npm run conformance -w @parcha/agentrun-computer -- --provider <vendor>
+node packages/computer/dist/conformance/sweep.js --provider <vendor> --after /tmp/<vendor>-before.json
+```
+
+The first sweep records what your account already holds. The second deletes anything the run left behind and prints
+what is still there. `--kind sandbox` or `--kind desktop` runs one kind's cases, and `-- --help` lists every flag.
+
+A desktop also needs the fixture its input cases check against, built for your machines' arch (`GOARCH=amd64` or
+`arm64`). Without it those cases skip and the run fails. Build it, then add `--fixture /tmp/computerd-fixture`:
+
+```sh
+(cd packages/computer/daemon && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /tmp/computerd-fixture ./cmd/fixture)
+```
+
+### What passing looks like
+
+A real Daytona run, trimmed. It had 68 passes, 0 failures and 45 skips, and left nothing behind.
+
+```text
+computer conformance · daytona · linux, daemon child · computerd 0.1.0-beta.36 linux/amd64
+core health    hello ping unknown-method kind-consistent    ✓ 7
+               kind-served declared no-key-in-errors
+core exec      argv streams exit-code cwd env timeout abort ✓ 11
+               truncation setsid-escapee unprivileged user
+core files     home write-read stat list mkdir move remove  ✓ 18
+               …
+core process   outlives-connection read-by-offset stdin     ✓ 14
+               …
+core provider  check-refuses create-release attach list     ✓ 9
+               stop owner detach network-change deadline
+core drift     hello-matches arch network version           ✓ 4
+core isolation vendor-agent                                 ✓ 1
+full provider  create-retried create-after-release          ✓ 3 - 6
+               …
+  - provider.network-open: the provider does not declare network:open
+  …
+optional screen    screenshot-size watch                        - 2
+  - screen.screenshot-size: the provider does not declare screen
+  …
+daemon computer-… (shared): computerd 0.1.0-beta.36 linux/amd64 · fence netns
+core PASS 64/64 · 13 optional cases skipped, not declared · full 4/36 · user:root user:uid persistence … not declared
+```
+
+The second sweep:
+
+```text
+{"swept":0,"gone":0,"stillThere":[],"leftAlone":0}
+```
+
+`✓` counts passes, `✗` failures and `-` skips, and every skip says why. Core is the set of cases every computer of your
+kind must pass. The run passes when the last line reads `core PASS` and the command exits 0. `"stillThere":[]` means
+the run left nothing on your account.
+
+### Send it
+
+Open a pull request with the report and the sweep's last line pasted in, and fill in the four-line provider checklist
+in the pull request template.
+
+## Reference
 
 ### What a provider declares
 
-- A descriptor (`src/descriptors/<id>.ts`, built with `defineProvider`): its id, label, the keys Settings takes, whether
-  it is metered, its mount kinds, one entry per configuration (a machine kind and its groups) and its default image.
-  See [The descriptor](../../spec/computer/provider.md#the-descriptor).
-- `capabilities()`: what its computers are, before any is made: kind, os, daemon (`pid1`, `child` or `none`), groups,
-  who ends a computer at its deadline, the lifetime cap, networks, isolation, release (`delete`, `stop`), users, mounts
-  and the vendor agent's ports. See [capabilities()](../../spec/computer/provider.md#capabilities). On the MachineHost
-  adapter these come from `facts`.
-- The rest of the surface: `id`, `version`, `check(spec)`, `create(spec, { requestId })` (once per request id, see
-  [Idempotent create](../../spec/computer/provider.md#idempotent-create)), `attach`, `list`, `network`, `connect` and
-  `release`; optionally `extend`, `stream`, `watch`, `sweepLeftovers` and `testConnection`. See
-  [Members](../../spec/computer/provider.md#members).
-
-The case `health.declared` holds `capabilities()` to the descriptor, and each computer's `hello` to `capabilities()`.
+Every provider has a descriptor and answers `capabilities()` with its kind, OS, daemon, groups (exec, files, screen
+and so on), lifetime, networks, isolation, release, users and mounts. On a `MachineHost` these come from `facts` and the
+provider's options, so you write none of them by hand. The case `health.declared` checks `capabilities()` against the
+descriptor, and each computer's `hello` against `capabilities()`. A vendor whose machines can't run Linux as root
+implements `ComputerProvider` (`src/provider.ts`) directly. [spec/computer/provider.md](../../spec/computer/provider.md)
+says what each member promises.
 
 ### Refusals
 
-Every call answers `{ ok: true, value }` or `{ ok: false, error: { code, message, vendor? } }`, never a throw. The
-message is words a person can act on, and never holds a key, a token or a bearer URL: `health.no-key-in-errors` checks
-it with planted keys. The codes are a closed set (`ComputerErrorCode`, `src/result.ts`); a provider never adds one. See
-[Every call answers a result](../../spec/computer/provider.md#every-call-answers-a-result).
+Every call answers `{ ok: true, value }` or `{ ok: false, error: { code, message, vendor? } }` and never throws. The
+message is words a person can act on. It never holds a key, a token or a bearer URL, and `health.no-key-in-errors`
+plants keys to check. The codes are a closed set (`ComputerErrorCode` in `src/result.ts`). A provider never adds one.
 
 | Code | When |
 | --- | --- |
@@ -81,127 +309,44 @@ it with planted keys. The codes are a closed set (`ComputerErrorCode`, `src/resu
 | `unauthorized`, `unreachable` | From `testConnection` alone: the vendor refused the key; the vendor was not reached. |
 | `vendor` | The vendor failed (its API, CLI or device); the error's `vendor` names the descriptor's id. |
 
-### How the conformance report judges a provider
+### How the report judges a run
 
-`npm run conformance` makes real computers, runs each case, deletes what it made, and prints one line per level and
-group, then the verdict. The package README's [Conformance](README.md#conformance) section has a sample report and the
-JSON shape (`--json`).
+- **Core and Full.** A Core case is what every computer of its kind must do. On Linux with a daemon, that means exec,
+  files, processes and network `none`, plus your agent's ports for a `child` daemon. A desktop adds screen, pointer and
+  keys. A Full case tests an optional capability and runs only where you declare it.
+- **Skips.** A Core case that needs something you don't declare, or another OS, is listed as `optional` and doesn't
+  count. Any other Core skip, such as a desktop run with no fixture, fails Core.
+- **Leftovers.** At the end the runner lists the run's label and sweeps it. `cleanup.left`, `cleanup.errors` and
+  `cleanup.sweep.stillThere` must all be empty. A leftover prints `cleanup ✗ left <ids>` and fails Core.
+- **The verdict.** Core is `pass` when every Core case passed and nothing was left, `partial` when `--only` left Core
+  cases out, and `fail` otherwise. Full results never change it. The exit code is 0 for pass, 1 for fail, 2 for a usage
+  error and 3 for partial. With `--kind`, the run ends on `kind <kind> PASS` or `kind <kind> FAIL: <reasons>` and exits
+  0 or 1.
 
-- **Core and Full.** A Core case is what every computer of its kind must do: on a Linux computer with a daemon, exec,
-  files, processes and network `none` (and the vendor agent's ports for a `child` daemon); a desktop adds screen,
-  pointer and keys. A Full case tests an optional capability and runs only where the provider declares it.
-- **pass, fail, skip.** Each case ends in one of the three, and a skip always says why, under its line. A Core case
-  skipped because it needs something optional the provider does not declare, or because it is written for another
-  OS, is listed as `optional` and does not count against Core. Any other skip of a Core case (no fixture given) fails
-  Core.
-- **Nothing left over.** At the end the runner lists the run's label: `cleanup.left` and `cleanup.errors` must be
-  empty. On the MachineHost adapter it also runs [the live sweep](#the-live-sweep) over the run's label, and
-  `cleanup.sweep.stillThere` must be empty. A leftover prints as `cleanup ✗ left <ids>` and fails Core.
-- **The verdict.** The last line reads `core PASS n/m · ... · full p/q`. Core is `pass` when every Core case passed
-  and nothing was left over, `partial` when `--only` left Core cases out (never a pass), and `fail` otherwise. Full
-  results are reported and do not change it. The exit code is 0 for pass, 1 for fail, 2 for a usage error and 3 for
-  partial. With `--kind`, the run ends on `kind <kind> PASS` or `kind <kind> FAIL: <reasons>` and exits 0 or 1 on that
-  alone.
+The package README's [Conformance](README.md#conformance) section has the JSON shape that `--json` prints.
 
-## The MachineHost half
+### What AgentRun does for your host
 
-A vendor whose machines run Linux and can start a process as root writes a `MachineHost` (`src/host.ts`), and
-`hostedProvider(host, options)` (`src/hosted/provider.ts`) makes it a whole `ComputerProvider`. The doc comments in
-`src/host.ts` are the contract; this section is their summary. E2B is the first vendor on it (`src/e2b.ts`),
-Agent37 the second (`src/agent37.ts`: REST over fetch, every command over SSH, no file API), and Daytona the third
-(`src/daytona.ts`).
-
-### What the vendor writes
-
-Eight members, each a call about the vendor's own machines:
-
-| Member | What it does |
-| --- | --- |
-| `id` | The descriptor's id: the vendor named by every error of code `vendor`. |
-| `facts` | Static: `daemon` (`child` or `pid1`), `isolation`, `lifetime` (`vendor` timer or `janitor`), `maxLifetimeMs`, `arch`, `vendorAgentPorts`, `networkReadBack`, `network`, `mounts`, `release`; optional `vendorSockets` (the vendor's own path sockets outside `/run`, as shell patterns, which a child host's create closes to the computer's user before init starts), `gpu`, `user`, `specFields`, `labelRules`, `runtime`. `capabilities()` is built from these and the adapter's options alone. |
-| `create(req, ctx)` | Makes one machine from a `MachineRequest` (its name, image, labels, lifetime, network, and on a pid1 host its command) and answers once the vendor has its id. No wait for running or listed: the adapter waits. |
-| `get(id, ctx)` | One `Machine` as the vendor reads it now (labels, state, network, resolved image, the timer's end, the vendor's own drift in words), or `undefined` once the vendor no longer has it. |
-| `list(labels, ctx)` | The machines the vendor's listing shows for these labels, every page, within `ctx.timeoutMs`, each as the listing reads it: a field it leaves out (the network, drift) is absent, and the adapter reads `get` where it needs one. It may answer more machines than carry all the labels: the adapter keeps those that do. |
-| `delete(id, ctx)` | Deletes; not found is ok; answers once the vendor took it. |
-| `exec(id, argv, { stdin }, ctx)` | Starts argv as root (or a user with passwordless sudo), outside the computer's tools, with no command timeout; a `MachineProcess` (stdout, stderr, write, end, wait, kill). |
-| `errorCode(error)` | The code of an error the vendor's client threw: one of `ComputerErrorCode`, `vendor` for anything else. |
-
-`upload` is optional: a vendor with no file API leaves it out, and the adapter streams the daemon through `exec`'s
-stdin. Six optional hooks exist, each for one vendor's need: `prepare` (settings once a machine runs), `stop` (with
-`release: ["stop"]`; it only asks, and the adapter waits), `setTimer` (a vendor timer that extend moves), `setLabels`
-(a janitor deadline that extend moves), `check` (the vendor's own spec rules, such as an image name, over a spec the
-adapter has read as an object) and `testConnection` (where a list would make something; else the adapter's one list,
-counted).
-
-A method answers a `Result`; one that throws is read through `errorCode`. The adapter bounds every call by
-`ctx.timeoutMs` and the caller's `ctx.signal`, and never cancels a create: one that answers after the caller gave up is
-deleted as it lands, and one whose answer never comes is found by its name and deleted.
-
-### What the adapter does for every vendor
-
-- `check(spec)`: the shared rules (lifetime and cap, network none only, the provider's own label namespace, sizes and
-  users not in `specFields`, GPUs, the Archil mount and its tool user), then the host's `check`. A host whose
-  `specFields` holds `user` makes each computer's daemon run as the uid (or uid:gid) its spec names, never root unless
-  `facts.user` holds `root`; `attach` reads that user back from inside. A host with `facts.runtime` has the probe's
-  kernel held to it at create (gVisor or not).
-- `create(spec, { requestId })`: the name is `computer-` and the first 12 hex digits of the request id's sha256. It
-  lists by that name first: a machine still starting is waited for (within `createMs`) and returned once up; one up is
-  returned when its labels and daemon read back as `attach` reads them (a daemon not yet as declared, such as a
-  desktop whose display is still starting, is waited for within `createMs`), else refused as `exists`; one stopped,
-  ended or past its deadline is refused as `exists`. A second create of a request still in flight on the same
-  instance shares the first's answer only when it asks the same (labels, user, and every other field the host is
-  given); otherwise it is refused as `exists`. A request this instance gave up on or deleted is refused as `exists`
-  from memory (the last 4096) while the vendor no longer lists it; past that, the caller's request id is what keeps a
-  request from running twice, so a caller never reuses one. Two provider instances can both find no machine and both make
-  one, so after the vendor answers, and again once the machine is listed, the name's listing is read: where more than
-  one machine holds the name, the oldest (`Machine.createdAt`, or the lowest id where any has none) is kept, every
-  other is deleted and read back gone, and both creates answer the one kept. Then: the machine made, read while it
-  starts, the vendor's read-back held to the request (labels, network, state, a timer that reads moved, the host's
-  drift), the daemon uploaded and installed with its sha256 read back, an Archil folder mounted (through
-  `archilEgress` when given), init started from
-  its home with the display (detached on a child host; on a pid1 host, the entrypoint, which starts the daemon only
-  once the marker install writes beside it holds this create's nonce, never one the image had there), the bridge opened, the display
-  started on a desktop, the daemon's credentials, network and binary read back, the network-none probe run, and the
-  listing waited for (two consecutive polls that show it, `listedStableMs` apart). A failure or an abort at any step
-  after the machine exists deletes it and waits until the vendor reads it gone.
-- `connect`, `attach` (the host's drift held as at create, the size read back reported), `list`, `network` (fixed at
-  create: any change is refused), `extend` (where `setTimer` or `setLabels` lets the deadline follow), `release`
-  (delete, then wait until `get` reads it gone and the name's listing no longer shows it, twice running; a stop waits
-  the same way until both read it stopped, or gone where a stop deletes it, and asks again while it reads running; a
-  stop or a delete of a running Archil computer lets go of its folder first), `watch` and `testConnection`.
-- Refusals use `ComputerErrorCode` alone: `invalid` for a malformed request, `unsupported` for a call or feature the
-  provider does not have, `refused` for a value or state it does not serve, `exists` for a request already made;
-  `vendor` carries the vendor's own words.
-
-### Testing a host
-
-The adapter's lifecycle is tested once, against its one fake host (`test/fake-host.mjs`,
-`test/hosted-provider.test.mjs`). A vendor's host is not tested against a fake of the vendor: its unit tests cover
-only what needs no vendor (its capabilities, its check, how the key and the endpoint reach the SDK, the environment its
-conformance module reads). Its proof is the live conformance kit, run before and after a change from a frozen folder.
+- **`check(spec)`** applies the shared rules (lifetime and its cap, network none, the label namespace, sizes, users,
+  GPUs, the Archil mount), then your `check`.
+- **`create(spec, { requestId })`** names the machine `computer-` plus the first 12 hex digits of the request id's
+  sha256, so a retried create finds the machine it already made. It deletes a machine whose create landed after the
+  caller gave up. When two creates race, it keeps the oldest machine and deletes the rest. Then it waits for the machine
+  to run, holds your read-back to the request, uploads the daemon and checks its sha256, starts it, and probes from
+  inside that the network is none. If any step fails after the machine exists, it deletes the machine and waits until
+  it reads gone.
+- **The rest** covers `attach`, `list`, `connect`, `network` (fixed at create), `extend` (where `setTimer` or
+  `setLabels` exists), `release` (delete, then wait until `get` and `list` read it gone; a stop waits until both read it
+  stopped, or gone where a stop deletes it, and asks again while it reads running), `watch` and `testConnection`.
+  Every refusal uses the codes above, and `vendor` carries your API's own words.
 
 ### The live sweep
 
-```sh
-node packages/computer/dist/conformance/sweep.js --provider <id> --before <file>
-node packages/computer/dist/conformance/sweep.js --provider <id> --after <file>
-```
-
-`--before` records every machine listed with `agentrun.computer=1`. `--after` deletes each new one that carries a
-conformance run's label (`agentrun.conformance`), reads each back gone, leaves alone a new one without it (another user
-of the account) and every one recorded before, and prints `{"swept":n,"gone":m,"stillThere":[ids],"leftAlone":k}`.
-Exit 0 when every swept machine is gone, 1 when one is still there, 2 on a usage error. It reaches the vendor through
-the conformance module's `createHost({ env })`, which reads the same settings as the run and needs no live switch. A
-module whose account holds more than one place to list (an app and a server) also exports `sweepScope({ env })`:
-`--before` records it, and `--after` refuses a file of another place, or one that names none, before it lists. A
-conformance run of a hosted provider runs the same sweep over its own label at its end: the report's `cleanup.sweep`,
-whose `stillThere` must be empty for Core to pass.
-
-### A new vendor
-
-1. `src/<vendor>.ts`: the SDK slice it calls, a class implementing `MachineHost`, and a provider class (or
-   `create(options)`) that builds `hostedProvider(host, { label, ...options })`.
-2. `src/descriptors/<vendor>.ts`: the descriptor, its `load()` importing that file, listed in `DESCRIPTORS`
-   (`src/descriptors/index.ts`).
-3. `src/conformance/<vendor>.ts`: the live switch, `settingsFromEnv` with its `COMPUTER_<VENDOR>_*` names,
-   `createProvider`, `createDriftedProvider`, `createHost`, `conformanceImage` and `conformanceNotes`.
+`--before <file>` records every machine listed with `agentrun.computer=1`. `--after <file>` deletes each new machine
+that carries a conformance run's label (`agentrun.conformance`) and reads it back gone. It leaves alone everything
+recorded before, and any new machine without that label, which belongs to someone else on the account. It prints
+`{"swept":n,"gone":m,"stillThere":[ids],"leftAlone":k}` and exits 0 when every swept machine is gone, 1 when one is
+still there, and 2 on a usage error. It reaches your API through the conformance module's `createHost({ env })`, which
+reads the same settings as the run and needs no live switch. If one account holds more than one place to list, such as
+an app and a server, the module also exports `sweepScope({ env })`, and `--after` refuses a file recorded for another
+place.

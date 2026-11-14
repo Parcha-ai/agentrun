@@ -6,7 +6,8 @@
 import { createHash } from "node:crypto";
 import { CAPS } from "./check.js";
 import { INDEX_FILE, INDEX_LINES } from "./notes.js";
-import { type DraftDecisions, draftDecisionProviders, LEARNED_MCP_TOOL, SKILL_NAME } from "./skills.js";
+import { type DraftDecisions, draftDecisionProviders, SKILL_NAME } from "./skills.js";
+import { mcpNameOf } from "../tool-names.js";
 
 /** Control and invisible characters: none may reach the prompt through a value the host puts in it. */
 const UNSEEN = /[\p{Cc}\p{Cf}]/u;
@@ -21,9 +22,9 @@ export const WORKFLOW_BLOCK = "workflow";
  *  draft (`draftFor`): a run proposes one only when it thinks to, and few do. */
 export const DRAFT_AFTER_RUNS = 3;
 /** A tool's name as the prompt may print it: a table tool's, or an MCP tool's a learned workflow may run (skills.ts
- *  LEARNED_MCP_TOOL). */
+ *  tool-names.ts mcpNameOf). */
 const TOOL_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
-const printable = (tool: string): boolean => TOOL_NAME.test(tool) || LEARNED_MCP_TOOL.test(tool);
+const printable = (tool: string): boolean => TOOL_NAME.test(tool) || mcpNameOf(tool) !== undefined;
 
 /** What a later round's end-of-run prompt says first (reflectPrompt's `later`): the run looked back before, at an end a
  *  follow-up opened it again from, so only what came since is new. */
