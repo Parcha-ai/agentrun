@@ -1,10 +1,29 @@
 import { Globe, Maximize2, Minimize2, Monitor, Smartphone, Terminal } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ClientError } from "@/lib/client";
 import { METERED } from "@/lib/computers";
 import { httpHref } from "@/lib/safeUrl";
+import { cn } from "@/lib/utils";
 import type { ComputerHold, RunComputer, RunMachine } from "@/lib/v2";
+
+/** The run page's tab body keeps this much padding below its content (its py-8). */
+const PANE_BELOW = 32;
+/** A phone's frame is never shorter than this (a short page scrolls instead) nor taller than 70% of the window. */
+const PHONE_MIN = 360;
+const PHONE_MOST = 0.7;
+
+/** The height a page's scroll pane shows below `el`, as if scrolled to its top: the pane's visible height less where
+ *  `el` starts in it and the padding under it. Without a pane, the window's. */
+export function roomBelow(el: HTMLElement, pane: HTMLElement | null): number {
+  const top = el.getBoundingClientRect().top;
+  if (!pane) return window.innerHeight - (top + window.scrollY) - PANE_BELOW;
+  const at = top - pane.getBoundingClientRect().top + pane.scrollTop;
+  return pane.clientHeight - at - PANE_BELOW;
+}
+
+/** A phone frame's height for `room` px of page below it, in a window `viewport` px tall. */
+export const phoneHeight = (room: number, viewport: number): number => Math.round(Math.max(PHONE_MIN, Math.min(room, viewport * PHONE_MOST)));
 
 /** The run's screen as the page shows it: the server's answer (never `off`: that is no screen), or signed out (a read
  *  refused 401), said in the tab. */
@@ -21,8 +40,11 @@ export type ScreenView = Exclude<RunComputer, { state: "off" }> | { state: "sign
  *  and a screen it showed reads as closed (none), whatever the last read said. A page opened on an ended run reads
  *  once, to know whether it had one. Any other failed read keeps the last answer, so a screen being watched isn't torn
  *  down by one bad poll. Nothing about the answer is logged. `held` puts a take-over's or hand-back's answer (who drives)
- *  in place until the next read. */
-export function useRunScreen(read: (() => Promise<RunComputer>) | undefined, going: boolean, every = 3000): { view: ScreenView | null; held: (hold: ComputerHold) => void } {
+ *  in place until the next read. While a change is on its way the next read comes `soon` instead: the screen being
+ *  opened (none, opening), a take-over waiting for the agent's step (pending), and for HURRY_MS after the page's own
+ *  take-over or hand-back, whose answer is read right after its row is written, before the run applies it. So the first
+ *  frame and who drives show when they happen, not up to a whole `every` later. */
+export function useRunScreen(read: (() => Promise<RunComputer>) | undefined, going: boolean, every = 3000, soon = Math.min(every, SOON_MS)): { view: ScreenView | null; held: (hold: ComputerHold) => void } {
   const [now, setNow] = useState<ScreenView | null>(null);
   // A caller the route refuses (401, 403) is read no more, whatever the run does.
   const [refused, setRefused] = useState(false);
@@ -35,18 +57,26 @@ export function useRunScreen(read: (() => Promise<RunComputer>) | undefined, goi
   // Whether the last answer was a computer the run hadn't opened: one may have opened since, so the end reads once more
   // before it says the run didn't open one.
   const unopened = useRef(false);
+  // Until when the reads come soon after the page's own take-over or hand-back, and the running reads' way to bring the
+  // next one forward (none while no read is waiting).
+  const hurryUntil = useRef(0);
+  const hurry = useRef<(() => void) | null>(null);
   const has = !!read;
   useEffect(() => {
     if (!has || refused) return;
     if (!going && answered.current && !unopened.current) { setNow((prev) => (prev ? closed(prev) : prev)); return; }
     let alive = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    const later = (ms: number) => { clearTimeout(timer); timer = setTimeout(() => { hurry.current = null; void once(); }, ms); hurry.current = () => later(soon); };
+    // Whether the last answer said a change is on its way: a failed read keeps it, as it keeps the last answer.
+    let onItsWay = false;
     const once = async () => {
       try {
         const next = await reader.current!();
         if (!alive) return;
         answered.current = true;
         unopened.current = next.state === "none" && next.session === "unopened";
+        onItsWay = (next.state === "none" && next.session === "opening") || (next.state === "live" && next.hold === "pending");
         if (next.state === "off") setNow(null);
         // An ended run's screen is closed, whatever it last said.
         else if (!going) setNow(closed(next));
@@ -57,14 +87,23 @@ export function useRunScreen(read: (() => Promise<RunComputer>) | undefined, goi
         if (e instanceof ClientError && e.status === 401) { setRefused(true); setNow((prev) => (prev ? { state: "signed_out" } : null)); return; }
         if (e instanceof ClientError && e.status === 403) { setRefused(true); setNow(null); return; }
       }
-      if (alive && going) timer = setTimeout(() => void once(), every);
+      if (alive && going) later(onItsWay || Date.now() < hurryUntil.current ? soon : every);
     };
     void once();
-    return () => { alive = false; clearTimeout(timer); };
-  }, [has, going, every, refused]);
-  const held = useCallback((hold: ComputerHold) => setNow((prev) => (prev && prev.state === "live" && prev.hold !== hold ? { ...prev, hold } : prev)), []);
+    return () => { alive = false; clearTimeout(timer); hurry.current = null; };
+  }, [has, going, every, soon, refused]);
+  const held = useCallback((hold: ComputerHold) => {
+    setNow((prev) => (prev && prev.state === "live" && prev.hold !== hold ? { ...prev, hold } : prev));
+    hurryUntil.current = Date.now() + HURRY_MS;
+    hurry.current?.();
+  }, []);
   return { view: now, held };
 }
+
+/** The read's pace while a change is on its way, in ms; and how long it keeps that pace after the page's own take-over
+ *  or hand-back. */
+const SOON_MS = 400;
+const HURRY_MS = 4000;
 
 const same = (prev: ScreenView | null, next: Exclude<RunComputer, { state: "off" }>): boolean =>
   !!prev && prev.state !== "signed_out" && prev.state === next.state && prev.kind === next.kind && prev.hold === next.hold && (prev.state !== "live" || (next.state === "live" && prev.viewer === next.viewer))
@@ -131,6 +170,21 @@ export function ScreenPanel({ runId, screen, machine, opens, followUp, metered, 
   const wasFull = useRef(false);
   const showing = Boolean(live && src);
   useEffect(() => { if (!showing) setFull(false); }, [showing]);
+  // A phone is tall: its frame takes the height the run page shows below it (phoneHeight), so the whole phone is on
+  // screen at once, its bottom (the keyboard, the nav bar) never under the composer.
+  const [phoneH, setPhoneH] = useState<number | undefined>(undefined);
+  useLayoutEffect(() => {
+    const el = frame.current;
+    if (kind !== "phone" || full || !showing || !el) return;
+    const pane = el.closest<HTMLElement>("[data-scroll-pane]");
+    const fit = () => setPhoneH(phoneHeight(roomBelow(el, pane), window.innerHeight));
+    fit();
+    // The pane's size, and its content's: a card that comes or goes above the frame moves it, the pane staying as it was.
+    const watch = typeof ResizeObserver === "function" && pane ? new ResizeObserver(fit) : undefined;
+    if (pane) for (const box of [pane, ...pane.children]) watch?.observe(box);
+    window.addEventListener("resize", fit);
+    return () => { watch?.disconnect(); window.removeEventListener("resize", fit); };
+  }, [kind, full, showing, said, metered, session.current.n]);
   // While it fills the window it is a modal dialog: focus moves into its bar, Tab stays among its bar and the viewer, and
   // closing puts the focus back on the button that opened it (when the screen is still up).
   useEffect(() => {
@@ -204,7 +258,7 @@ export function ScreenPanel({ runId, screen, machine, opens, followUp, metered, 
             )}
             {/* A refused Take over or Hand back, said where the person is looking. */}
             {full && said && <p className="border-b px-4 py-2 text-small text-warning-text" role="alert">{said}</p>}
-            <iframe ref={frame} key={session.current.n} src={src} title="The run's screen" referrerPolicy="no-referrer" sandbox="allow-forms allow-scripts allow-same-origin" className={full ? "block min-h-0 w-full flex-1 bg-background" : kind === "phone" ? "mx-auto block aspect-[9/19] h-[70vh] max-w-full bg-background" : "block aspect-[16/10] w-full bg-background"} />
+            <iframe ref={frame} key={session.current.n} src={src} title="The run's screen" referrerPolicy="no-referrer" sandbox="allow-forms allow-scripts allow-same-origin" className={full ? "block min-h-0 w-full flex-1 bg-background" : kind === "phone" ? cn("mx-auto block aspect-[9/19] max-w-full bg-background", phoneH === undefined && "h-[70vh]") : "block aspect-[16/10] w-full bg-background"} style={!full && kind === "phone" && phoneH !== undefined ? { height: `${phoneH}px` } : undefined} />
           </div>
         : <p className="px-4 py-12 text-center font-mono text-body text-muted-foreground">{words(kind, screen, machine, opens, followUp)}</p>}
     </section>

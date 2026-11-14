@@ -20,15 +20,13 @@
 //     has no room for never sent, the run paused on the cap's refusal (ledger.pause). A run handed none runs no
 //     decision node: the check refuses it before any node runs.
 // Each model request is a request on the run's one route, so what the workflow spends is the run's cost, under its cap:
-// on pi the run's models, as a side request (request-start.ts, cap.ts: marked, and costed on the run's timeline as
-// `learned_workflow`); on another harness the session's model proxy, under a side key (port-models.ts): the harness's
+// the session's model proxy, under a side key (port-models.ts): the harness's
 // own policy, provider, key and price, booked on the session's records labelled `learned_workflow`. A call a crash cut
 // off is never run again (`replay: "never"`): it is answered interrupted.
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import type { TSchema } from "typebox";
 import { defineTool, ROOT_CONVERSATION_ID, type ToolRegistration } from "@earendil-works/pi-durable";
 import { registerLabel, registerOutcome } from "./timeline/index.js";
-import { sideRequests } from "./cap.js";
 import { LEARNED_NODES, LEARNED_NODES_MAX, type LearnedNode } from "./learned-nodes.js";
 import { draftProblems, LEARNED_MAX_TURNS } from "./learn/index.js";
 import { decisionsAsked, deniedDecisionWords } from "./learn/skills.js";
@@ -256,12 +254,10 @@ export function learnedOutput(output: unknown): string {
 }
 
 /** One model request as a pi-ai event stream, sent through `models.completeSimple` as the run's own request, under its
- *  cap: on pi marked and costed on the run's timeline under `learned_workflow` (sideRequests), on another harness booked
- *  by the session's proxy, labelled by the side key it goes under. */
+ *  cap: booked by the session's proxy, labelled by the side key it goes under. */
 async function sideStream(models: RunModels, model: unknown, context: object, options: object | undefined) {
   const { createAssistantMessageEventStream } = await import("@earendil-works/pi-ai");
   const stream = createAssistantMessageEventStream();
-  sideRequests.set(context, { label: LEARNED_WORKFLOW_TOOL, extraInputTokens: 0, maxFeeUsd: 0, feeUsd: () => 0 });
   void (async () => {
     try {
       const message = (await models.completeSimple(model as never, context as never, options as never)) as { stopReason?: string; errorMessage?: string };
@@ -283,7 +279,7 @@ export function learnedWorkflowTool(run: LearnedWorkflowRun): ToolRegistration {
   return defineTool({
     name: LEARNED_WORKFLOW_TOOL,
     description: learnedWorkflowDescription(run.workflows),
-    // Never run again after a crash (pi-durable's "unsafe"; a HostTool's "never": host-tools.ts REPLAY).
+    // Never run again after a crash (pi-durable's "unsafe"; a HostTool's "never": tool-list.ts `replay`).
     replay: "unsafe",
     parameters: {
       type: "object",
@@ -299,7 +295,7 @@ export function learnedWorkflowTool(run: LearnedWorkflowRun): ToolRegistration {
       const { name, input } = (args ?? {}) as { name?: unknown; input?: unknown };
       const flow = run.workflows.find((workflow) => workflow.name === name);
       if (!flow) return forModel(`No learned workflow of this agent is named ${JSON.stringify(name)}. Its workflows: ${names.join(", ")}.`, { isError: true });
-      const ledger = ledgerOf(api, context);
+      const ledger = ledgerOf(api.callId);
       // Which of its nodes ran, kept beside the call in the run's journal (LEARNED_NODES), for its timeline row; a trace
       // that can't be kept never fails the call. A call stopped part way keeps the nodes that ended before it stopped,
       // written outside the stopped call's context, and still ends as a stop.
@@ -410,7 +406,7 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
     if (permission === "deny") throw new Error(deniedText(tool!, undefined, run.denyFrom(tool!)));
     if (permission === "ask") throw new Error(`This ${tool} call needs a person's approval, which a workflow's call node cannot wait for; it was not run.`);
     // Its paid requests booked under the tool's call, as a call of its own: the node, its execution path, its item in a map.
-    const booked = ledger ? { ledger: { call: callId, record: ledger.record } } : {};
+    const booked = ledger ? { ledger: { ...ledger, call: callId } } : {};
     return effect(given, { signal: own, env: run.env, work: run.work, ...(run.complete ? { complete: run.complete } : {}), ...(run.search ? { search: run.search } : {}), ...booked });
   };
   // Each node as it ends, by the DSL's own event: what the call's timeline row shows of it.

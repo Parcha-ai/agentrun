@@ -317,7 +317,8 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
   if (kind === "sandbox" && !mounts) {
     if (mode === 1) return { refused: `Mode 1 runs a sandbox only on Docker: a ${entry.label} sandbox can't reach the run's folder on this machine. Pick Docker for this agent's computer in ${SETTINGS}, or another kind of computer.` };
     if (entry.mounts.includes("bind")) return { refused: `Mode 2 keeps workspaces on Archil; a local Docker computer can't mount them. Pick a remote sandbox for this agent's computer in ${SETTINGS}, or no computer.` };
-    return { refused: `A ${entry.label} sandbox can't mount the run's folder from Archil: pick another sandbox for this agent's computer in ${SETTINGS}.` };
+    const why = entry.unmounted?.archil;
+    return { refused: `A ${entry.label} sandbox can't mount the run's folder from Archil${why ? ` (${why})` : ""}: pick another sandbox for this agent's computer in ${SETTINGS}.` };
   }
 
   // Its GPUs, a sandbox's alone: in gpuRefused's words, against what the configuration the setting selected declares,

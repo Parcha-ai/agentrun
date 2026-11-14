@@ -19,7 +19,6 @@ const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
 function idleOnSend(tool) {
   return {
     id: "idle-on-send",
-    capabilities: () => ({}),
     check: () => [],
     async open(spec, io) {
       let state = "new";

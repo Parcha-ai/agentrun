@@ -71,7 +71,7 @@ function viewer(input) {
     if (before && !before.defaultPrevented) sink.dispatch("input", { isComposing: false });
     return { down, before };
   };
-  return { sent, sink, press, socket, notice: el("notice") };
+  return { sent, sink, press, socket, notice: el("notice"), drive: el("drive") };
 }
 
 test("a soft keyboard's typing (keydown 229, then beforeinput) reaches the phone once, and its deletes and Enter as keys", () => {
@@ -171,6 +171,17 @@ test("a paste goes once, through the paste handler, not as a beforeinput", () =>
   assert.equal(pasted.defaultPrevented, false);
   sink.dispatch("paste", { clipboardData: { getData: () => "pasted" } });
   assert.deepEqual(sent, [{ type: "text", text: "pasted" }]);
+});
+
+test("a hand-back is said once, in the server's words for its kind; who drives names the phone", () => {
+  const { socket, notice, drive } = viewer("android");
+  assert.equal(drive.textContent, "you have the phone");
+  socket.onmessage({ data: JSON.stringify({ type: "hold", held: false, reason: "given", message: "You handed the phone back" }) });
+  assert.equal(notice.textContent, "You handed the phone back.");
+  assert.equal(drive.textContent, "the agent has the phone");
+  socket.onmessage({ data: JSON.stringify({ type: "hold", held: true }) });
+  socket.onmessage({ data: JSON.stringify({ type: "hold", held: false, reason: "away" }) });
+  assert.equal(notice.textContent, "The phone went back to the agent: the live view was closed.", "with no words of the server's, the viewer's own, for its kind");
 });
 
 test("a soft keyboard's typing while the agent has the computer sends nothing and says Take over", () => {

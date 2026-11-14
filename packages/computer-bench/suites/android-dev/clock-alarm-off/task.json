@@ -1,0 +1,61 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "android.clock.alarm-off",
+  "version": 1,
+  "title": "Stop a labelled alarm from ringing in Clock",
+  "split": "heldout",
+  "tags": ["clock", "toggle"],
+  "needs": { "os": "android", "kind": "phone", "apps": [["com.google.android.deskclock", "com.android.deskclock", "com.sec.android.app.clockpackage"]] },
+  "params": {
+    "t": {
+      "pick": [
+        { "h": "6", "m": "15", "hh": "06", "mm": "15" },
+        { "h": "7", "m": "40", "hh": "07", "mm": "40" },
+        { "h": "19", "m": "25", "hh": "19", "mm": "25" },
+        { "h": "22", "m": "50", "hh": "22", "mm": "50" }
+      ]
+    },
+    "label": { "pick": ["Swim", "Bus", "Meds", "Piano"] }
+  },
+  "setup": [
+    {
+      "method": "exec.run",
+      "why": "No enabled alarm with this run's label is left from an earlier try.",
+      "params": { "argv": ["am", "start", "-W", "-a", "android.intent.action.DISMISS_ALARM", "--es", "android.intent.extra.alarm.SEARCH_MODE", "android.label", "--es", "android.intent.extra.alarm.MESSAGE", "{{label}} {{nonce}}"], "timeoutMs": 20000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "The alarm the agent must stop, enabled, made without UI at the picked time.",
+      "params": { "argv": ["am", "start", "-W", "-a", "android.intent.action.SET_ALARM", "--ei", "android.intent.extra.alarm.HOUR", "{{t.h}}", "--ei", "android.intent.extra.alarm.MINUTES", "{{t.m}}", "--es", "android.intent.extra.alarm.MESSAGE", "{{label}} {{nonce}}", "--ez", "android.intent.extra.alarm.SKIP_UI", "true"], "timeoutMs": 20000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "Open the Clock app on its alarm list.",
+      "params": { "argv": ["am", "start", "-W", "--activity-clear-task", "-a", "android.intent.action.SHOW_ALARMS"], "timeoutMs": 20000 }
+    }
+  ],
+  "instruction": "In the Clock app, make sure the alarm labelled \"{{label}} {{nonce}}\" won't ring: switch it off or delete it. Leave every other alarm as it is.",
+  "budget": { "steps": 20, "usd": 1, "wall_s": 240 },
+  "checks": [
+    {
+      "id": "not-next",
+      "kind": "exec",
+      "why": "AlarmManager's next alarm clock no longer rings at {{t.hh}}:{{t.mm}}. After setup it does (the alarm setup made is the phone's soonest when no other enabled alarm rings sooner, README), so an agent that does nothing fails.",
+      "argv": ["sh", "-c", "dumpsys alarm | grep -A3 'Next alarm clock information' | grep 'user:0 '; true"],
+      "stdout": { "matches": "time:[1-9]\\d* = \\d{4}-\\d\\d-\\d\\d {{t.hh}}:{{t.mm}}:00", "not": true }
+    }
+  ],
+  "teardown": [
+    {
+      "method": "exec.run",
+      "why": "Dismiss the alarm if it is still on: a one-time alarm made with SKIP_UI is deleted. One the agent switched off stays in the list switched off, which can't ring or be a later run's next alarm.",
+      "params": { "argv": ["am", "start", "-W", "-a", "android.intent.action.DISMISS_ALARM", "--es", "android.intent.extra.alarm.SEARCH_MODE", "android.label", "--es", "android.intent.extra.alarm.MESSAGE", "{{label}} {{nonce}}"], "timeoutMs": 20000 }
+    }
+  ],
+  "oracle": [
+    {
+      "method": "exec.run",
+      "params": { "argv": ["am", "start", "-W", "-a", "android.intent.action.DISMISS_ALARM", "--es", "android.intent.extra.alarm.SEARCH_MODE", "android.label", "--es", "android.intent.extra.alarm.MESSAGE", "{{label}} {{nonce}}"], "timeoutMs": 20000 }
+    }
+  ]
+}
