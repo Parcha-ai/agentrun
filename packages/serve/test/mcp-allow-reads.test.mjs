@@ -18,11 +18,17 @@ const serve = (t) => (withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("
 const calls = (fake, tool) => fake.log.filter((entry) => entry.method === "tools/call" && (tool === undefined || entry.tool === tool));
 const READS = { "mcp:fake/*": { allow_reads: true } };
 
+/** Read-only tools past DEFER_CATALOG_OVER (21), granted beside the one a test calls: a run lists every catalog tool until
+ *  it has more than 20, and only then is it offered tools_search and tools_call (#2759). */
+const IDLE = Array.from({ length: 21 }, (_, index) => `idle_${index}`);
+const IDLE_GRANTS = IDLE.map((name) => `mcp:fake/${name}`);
+
 /** The fake MCP server saved as `fake`, with a plain write the server marks so (`note`: readOnlyHint and destructiveHint
- *  both false) beside its own tools: `add` read-only, `delete_thing` destructive. */
-async function addFake(t, api) {
+ *  both false) beside its own tools: `add` read-only, `delete_thing` destructive; `many`, the IDLE tools too. */
+async function addFake(t, api, { many = false } = {}) {
   const fake = await startFakeMcp({ token: TOKEN });
   t.after(() => fake.close());
+  if (many) for (const name of IDLE) fake.tools[name] = { description: `Idle tool ${name}.`, input: { type: "object", properties: {}, additionalProperties: false }, annotations: { readOnlyHint: true }, run: () => ({ content: [{ type: "text", text: "idle" }] }) };
   fake.tools.note = { description: "Write a note.", input: { type: "object", properties: { text: { type: "string" } }, required: ["text"], additionalProperties: false }, annotations: { readOnlyHint: false, destructiveHint: false }, run: ({ text }) => ({ content: [{ type: "text", text: `noted ${text}` }] }) };
   const saved = await api("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "bearer", token: TOKEN } });
   assert.equal(saved.status, 200, JSON.stringify(saved.body));
@@ -202,10 +208,11 @@ test("pi: through tools_call and a codemode script, as called directly: under al
   const server = await serve(t);
   const { api } = server;
   const answer = await owner(server);
-  const fake = await addFake(t, api);
+  // Past 20 catalog tools, so the run is offered tools_call (#2759).
+  const fake = await addFake(t, api, { many: true });
   assert.equal((await api("PUT", "/settings/tools", READS)).status, 200);
 
-  const viaCall = await started(api, "read-call", ["mcp:fake/add"], 'Call tools_call with {"name":"mcp__fake__add","args":{"a":2,"b":3}}');
+  const viaCall = await started(api, "read-call", ["mcp:fake/add", ...IDLE_GRANTS], 'Call tools_call with {"name":"mcp__fake__add","args":{"a":2,"b":3}}');
   const called = await follow(api, viaCall, ["completed", "failed", "input_required"], { deadlineMs: 60_000 });
   assert.equal(called.last.status, "completed", "no one was asked");
   assert.match(await answerOf(api, viaCall), /5/);
@@ -218,14 +225,14 @@ test("pi: through tools_call and a codemode script, as called directly: under al
   assert.equal(calls(fake, "add").length, 2);
   for (const { rows } of [called, scripted]) assert.equal(rows.filter((row) => row.kind === "tool_approval_requested").length, 0, `no approval row: ${JSON.stringify(rows.map((row) => [row.kind, row.tool_name]))}`);
 
-  const write = await started(api, "write-call", ["mcp:fake/note"], 'Call tools_call with {"name":"mcp__fake__note","args":{"text":"hi"}}');
+  const write = await started(api, "write-call", ["mcp:fake/note", ...IDLE_GRANTS], 'Call tools_call with {"name":"mcp__fake__note","args":{"text":"hi"}}');
   const asked = await parked(api, write);
   assert.deepEqual([asked.tool, asked.destructive], ["mcp:fake/note", undefined], JSON.stringify(asked));
   assert.equal((await answer(write, asked.id, { decision: "deny" })).status, 204);
   await follow(api, write, ["completed", "failed"], { deadlineMs: 60_000 });
   assert.equal(calls(fake, "note").length, 0, "denied: never sent");
 
-  const wipe = await started(api, "wipe-call", ["mcp:fake/delete_thing"], 'Call tools_call with {"name":"mcp__fake__delete_thing","args":{"id":"t1"}}');
+  const wipe = await started(api, "wipe-call", ["mcp:fake/delete_thing", ...IDLE_GRANTS], 'Call tools_call with {"name":"mcp__fake__delete_thing","args":{"id":"t1"}}');
   const destructive = await parked(api, wipe);
   assert.deepEqual([destructive.tool, destructive.destructive], ["mcp:fake/delete_thing", true], JSON.stringify(destructive));
   const unconfirmed = await answer(wipe, destructive.id, { decision: "allow" });
