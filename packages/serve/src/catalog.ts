@@ -1,5 +1,5 @@
 // The tool catalog's names, and the one mapping between a catalog name and the wire name a harness calls. A catalog name
-// is what a revision writes (`read`, later `monid.discover`, `mcp:<server>/<tool>`); the wire name is what a CLI adapter
+// is what a revision writes (`read`, `mcp:<server>/<tool>`, `monid:<provider>/<endpoint>`); the wire name is what a CLI adapter
 // registers and the model API sees, and both adapters refuse anything outside /^[A-Za-z0-9_-]{1,64}$/. The map is one
 // deterministic function here, never in an adapter, so every harness gets the same wire name; the journal records the
 // wire name (recovery matches a call by it), and a reader maps it back to the catalog name by a lookup, never a parse.

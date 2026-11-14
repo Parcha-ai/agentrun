@@ -17,6 +17,7 @@ import { HARNESSES } from "./harness.js";
 import { LEARNING_LABEL, LEARNING_MODES, LEARNING_REASONS, LEARNING_STATES, RUN_LEARNING_USE } from "./learning.js";
 import { BATCH_CELL_MAX, BATCH_ROWS_MAX } from "./learning-batch.js";
 import { CHEAPER_AFTER_RUNS, COST_CSV_COLUMNS, COST_WINDOW, COST_RUNS_DEFAULT, COST_RUNS_MAX, RUN_PATHS } from "./learning-cost.js";
+import { FEEDBACK_ROUNDS, LABEL_MAX } from "./runner/feedback-round.js";
 import { EVAL_JOBS_MAX, EVAL_TEXT_MAX, EVALS_KEPT } from "./learning-evals.js";
 import { LOOP_COMPILES_MAX, LOOP_POINTS_MAX } from "./store-reads/loop.js";
 import { GRADE_SOURCES, GRADES_KEPT, PROMOTE_BAR, REFIT_EVERY, REPLAY_INPUTS, REPLAY_MIN } from "./learn/promote.js";
@@ -318,7 +319,7 @@ const MCP_AUTH = {
   description: "Absent: none. A PUT that sends no `token` (no `headers`) keeps the sealed credential, when the type and the URL's origin are unchanged.",
 };
 const MCP_URL = { type: "string", format: "uri", maxLength: 2048, description: "The server's Streamable HTTP endpoint: https, or http on a loopback address of this machine; no user or password." };
-const MCP_NAME = { name: "name", in: "path", required: true, description: "The server's name: lowercase letters, digits and dashes, starting with a letter, at most 32 (no underscores, so `mcp__<server>__<tool>` splits one way). `hands` and `monid` are reserved for AgentRun's own tools: a PUT under either is 422 input_invalid, field `name`, reason `reserved`.", schema: { type: "string", pattern: MCP_SERVER_NAME.source } };
+const MCP_NAME = { name: "name", in: "path", required: true, description: "The server's name: lowercase letters, digits and dashes, starting with a letter, at most 32 (no underscores, so `mcp__<server>__<tool>` splits one way). `hands` is reserved for AgentRun's own tools: a PUT under it is 422 input_invalid, field `name`, reason `reserved`.", schema: { type: "string", pattern: MCP_SERVER_NAME.source } };
 const COMPOSIO_KEY = { type: "string", minLength: 1, maxLength: 8192, "x-agentrun-secret": true, description: "The Composio API key, sent only to Composio." };
 const COMPOSIO_TOOLKIT = { type: "string", pattern: "^[a-z0-9][a-z0-9_-]{0,63}$", description: "The toolkit's slug as Composio names it (`github`, `slack`, `gmail`...)." };
 const COMPOSIO_NOTE = "The Composio preset: Composio is an MCP server like any other, and this makes one for the owner's key, toolkit and chosen actions. The key goes to Composio (backend.composio.dev) and into the sealed header, and is never logged or answered.";
@@ -331,7 +332,7 @@ const MCP_CONNECTS = "Connects with the official MCP SDK client: `server/discove
 /** A tool's permission (tool-gate.ts). */
 const PERMISSION = {
   enum: [...PERMISSIONS],
-  description: "What the tool gate does with each call a model makes: allow runs it; ask parks the run until the owner answers (POST /runs/{run_id}/approvals/{approval_id}); deny refuses it at once, and the model reads why. The owner's defaults: allow for this server's tools, ask for a catalog tool (monid.<tool>, mcp:<server>/<tool>). ask is offered for the tools whose approved call the kernel runs itself (read, write, edit, bash, web_fetch, web_search, learned_workflow) and for catalog tools; any other is allow or deny.",
+  description: "What the tool gate does with each call a model makes: allow runs it; ask parks the run until the owner answers (POST /runs/{run_id}/approvals/{approval_id}); deny refuses it at once, and the model reads why. The owner's defaults: allow for this server's tools, ask for a catalog tool (mcp:<server>/<tool>, monid:<provider>/<endpoint>). ask is offered for the tools whose approved call the kernel runs itself (read, write, edit, bash, web_fetch, web_search, learned_workflow) and for catalog tools; any other is allow or deny.",
 };
 /** The table's tools a setting may name, a computer kind's keys (desktop, phone), each holding its kind's tools, and a
  *  decision provider's key (jev, parallel, openrouter: what a learned workflow's decision nodes may ask; allow or deny). */
@@ -1189,6 +1190,7 @@ const GRADE = closedWith({
   path: { enum: [...RUN_PATHS], description: "The path the run took, read from its record when it was graded." },
   workflow: { ...NULL_STRING, description: "The learned workflow that served it, when one did." },
   workflow_digest: { ...NULL_STRING, description: "That workflow's digest (the first 16 hex of its workflow.json's sha256), when it was served first." },
+  feedback: { enum: [...FEEDBACK_ROUNDS, null], description: "What the grade asked of the run's learning, a round the run opened again on (no turn of the job's: its end-of-run turn alone, learning spend): `revise`, a wrong grade of a run its learned workflow answered alone, a revision ask for that workflow with the job, its answer and the grade's words; `look_back`, a run the agent finished graded with a `label`, a look-back on it. null: nothing more (a right grade of a run its workflow answered alone costs $0), or a run that does not learn or that can't be opened again." },
 }, { expected: { type: "object", description: "The fields a right answer's JSON holds, when the grade gave them." } });
 const REPLAY_SCORE = {
   n: { ...COUNT, description: "The graded inputs it was decided on." },
@@ -1261,9 +1263,9 @@ const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
   "/runs/{run_id}/grade": {
     put: {
       operationId: "gradeRun", tags: ["runs"], summary: "Grade an ended run's answer: right or wrong, and the fields a right answer holds",
-      description: `A person's feedback or an eval's label on a run that ended, kept for its agent (one grade a run: a later one replaces it; the newest ${GRADES_KEPT} are kept). Promotion by replay reads them: a learned workflow's new revision serves first only after a replay on the agent's last ${REPLAY_INPUTS} graded inputs it fits is within ${PROMOTE_BAR * 100} points of the agent's own answers on them; with fewer than ${REPLAY_MIN}, on its passing dry run. With \`expected\`, a replay's answer is right when its JSON holds each of those fields; else when it says what the graded answer said. A replay run is never graded.`,
+      description: `A person's feedback or an eval's label on a run that ended, kept for its agent (one grade a run: a later one replaces it; the newest ${GRADES_KEPT} are kept). Promotion by replay reads them: a learned workflow's new revision serves first only after a replay on the agent's last ${REPLAY_INPUTS} graded inputs it fits is within ${PROMOTE_BAR * 100} points of the agent's own answers on them; with fewer than ${REPLAY_MIN}, on its passing dry run. With \`expected\`, a replay's answer is right when its JSON holds each of those fields; else when it says what the graded answer said. A replay run is never graded. The run's path never changes on a grade: a right grade of a run its learned workflow answered alone is kept and nothing more ($0); a wrong one opens the run again on a revision ask for that workflow; a run the agent finished, graded with a \`label\`, opens again on a look-back on it. Either round asks the agent no turn of the job's, only its end-of-run turn, and its spend is the run's learning (\`feedback\`).`,
       parameters: [ref("parameters/RunId")],
-      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["correct"], properties: { correct: { type: "boolean" }, expected: { type: "object", description: "The fields a right answer's JSON holds." }, source: { enum: [...GRADE_SOURCES], default: "feedback" } } } } } },
+      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["correct"], properties: { correct: { type: "boolean" }, expected: { type: "object", description: "The fields a right answer's JSON holds." }, source: { enum: [...GRADE_SOURCES], default: "feedback" }, label: { type: "string", maxLength: LABEL_MAX, description: "The grade's words (a teacher's label, a reviewer's note): what the run's look-back or its workflow's revision ask reads." } } } } } },
       responses: { "200": json(GRADE, "The run's grade."), ...errors(400, 401, 404, 429, 500) },
       "x-agentrun-serve": "promotion/1",
     },
@@ -2018,9 +2020,13 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     delete: {
       operationId: "deleteMcpServer", tags: ["local"], summary: "Forget a saved MCP server and its credential",
-      description: "403 forbidden to the API token when the server holds a credential: removing it drops a secret, the owner's signed-in session's alone. A server saved with none is the token's to remove. 412 precondition_failed when the server's credential changed between that check and the removal (a save or a sign-in landed): nothing is removed.",
+      description: "A server the Composio preset made also has its MCP server deleted in the owner's Composio account, with the saved key, after the row is removed: the row is already gone while that delete waits on Composio. Composio's 404 means it is already gone; when Composio refuses or does not answer, or the saved key does not open, the answer is 200 with `composio.removed: false` and a note to remove it there. 403 forbidden to the API token when the server holds a credential: removing it drops a secret, the owner's signed-in session's alone. A server saved with none is the token's to remove. 412 precondition_failed when the server's credential changed between that check and the removal (a save or a sign-in landed): nothing is removed, and nothing is sent to Composio.",
       parameters: [MCP_NAME],
-      responses: { "204": { description: "Forgotten." }, ...errors(401, 403, 404, 409, 412, 429, 500) },
+      responses: {
+        "204": { description: "Forgotten (and, for a Composio preset server, its Composio MCP server deleted, or already gone there)." },
+        "200": json(closed({ deleted: { type: "boolean", enum: [true] }, composio: closed({ removed: { type: "boolean", enum: [false] }, note: { type: "string", description: "What to do by hand: remove the server in Composio yourself, with the dashboard's address." } }) }), "Forgotten here, but the Composio MCP server a preset made could not be deleted (Composio refused or did not answer): it stays in the owner's Composio account until removed there. The row is gone either way."),
+        ...errors(401, 403, 404, 409, 412, 429, 500),
+      },
       "x-agentrun-serve": "mcpservers/1",
     },
   },
@@ -3232,7 +3238,7 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   definitionRead.required = definitionRead.required.filter((field) => !DEFINITION_OPTIONAL.includes(field));
   // A row's usage: the contract's shape, on more rows here than the usage row (timeline/, BROWSER_CHARGE).
   const timelineRow = schemas.TimelineRow as Json & { properties: Record<string, Json> };
-  timelineRow.properties.usage = { ...timelineRow.properties.usage, "x-agentrun-serve-note": "On the `usage` row, the run's cost so far. On a paid tool's charge row (a `phase` row, \"Tool cost: monid charged $0.0030 for monid.run\", `tool_name` the tool, `tool_use_id` the call), that charge alone. On a browser call's `tool_use` row (`tool_name` one of the browser's tools: snapshot, run, browser_read, ...), the browser session time booked under that call: what the session ran since its last charge, and, on the session's last call, its release's charge topped up to the provider's minimum. A browser charge has no row of its own. A charge booked after the row was served (a release after the answer) is served as a change of that row, with the same `id` and its new `usage`. `requests` is 0 on every row but the usage row; `usd` is null once a charge on the row has no price, with `so_far_usd` and `unpriced` saying what is known. The run's cost counts each charge once, wherever it shows: summing every row's `usage` but the usage row's gives what its paid tools charged." };
+  timelineRow.properties.usage = { ...timelineRow.properties.usage, "x-agentrun-serve-note": "On the `usage` row, the run's cost so far. On a paid tool's charge row (a `phase` row, \"Tool cost: monid charged $0.0260 for monid:apollo/people/match\", `tool_name` the tool, `tool_use_id` the call), that charge alone. On a browser call's `tool_use` row (`tool_name` one of the browser's tools: snapshot, run, browser_read, ...), the browser session time booked under that call: what the session ran since its last charge, and, on the session's last call, its release's charge topped up to the provider's minimum. A browser charge has no row of its own. A charge booked after the row was served (a release after the answer) is served as a change of that row, with the same `id` and its new `usage`. `requests` is 0 on every row but the usage row; `usd` is null once a charge on the row has no price, with `so_far_usd` and `unpriced` saying what is known. The run's cost counts each charge once, wherever it shows: summing every row's `usage` but the usage row's gives what its paid tools charged." };
   // ErrorBody.fields beyond `input_invalid`: a 409 agent_not_runnable names each thing that keeps the run from starting.
   const errorBody = schemas.ErrorBody as Json & { properties: Record<string, Json> };
   errorBody.properties.fields = { ...errorBody.properties.fields, "x-agentrun-serve-note": "Also on `agent_not_runnable` (409) here: each thing that keeps the run from starting, by the field it is about, its reason, its message and the fix when there is one (such as AGENT_MODEL_PRICE for a capped run on a model with no price), as a 422 names each field." };

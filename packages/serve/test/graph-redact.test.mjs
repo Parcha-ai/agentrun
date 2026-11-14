@@ -126,9 +126,10 @@ async function judgedRun(t, item = CUT_KEY) {
 
 /** The one store held by another connection, as a runner mid-commit holds it: the write lock taken (BEGIN IMMEDIATE) and a
  *  read open on the run's journal inside it. The graph reads the store in its own connection (WAL), so a held writer never
- *  makes it wait or serve a stale view. */
+ *  makes it wait or serve a stale view. The hold itself waits its turn for the write lock (busy timeout): a run's last
+ *  bookkeeping writes can still be committing just after it reads as ended, on a loaded machine (CI's any-3 shard). */
 function hold(t, data, runId) {
-  const store = new DatabaseSync(join(data, "store.sqlite"), { timeout: 0 });
+  const store = new DatabaseSync(join(data, "store.sqlite"), { timeout: 15_000 });
   store.exec("BEGIN IMMEDIATE");
   store.prepare("SELECT count(*) FROM pi_entries WHERE run_id = ?").get(runId);
   const release = () => store.isOpen && (store.isTransaction && store.exec("ROLLBACK"), store.close());
