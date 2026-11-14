@@ -86,8 +86,8 @@ type Result struct {
 	Interfaces []string `json:"interfaces"`
 	Quiet      []string `json:"quiet"`
 	Raised     []string `json:"raised"`
-	// Sockets, when asked for (probe --sockets): the unix sockets with a path the probe could connect to
-	// (ConnectableSockets), each by its real path and type, and the roots it could not search whole; absent when not asked.
+	// Sockets, when asked for (probe --sockets): the unix sockets the probe could connect to (ConnectableSockets), each by
+	// its real path or abstract name and its type, and the roots it could not search whole; absent when not asked.
 	Sockets *SocketSearch `json:"sockets,omitempty"`
 	// Listeners, when asked for (probe --sockets): the TCP and UDP sockets that listen in the probe's own network
 	// namespace (Listeners), each with its owner where /proc shows it, and the tables it could not read; absent when not

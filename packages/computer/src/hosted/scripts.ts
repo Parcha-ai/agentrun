@@ -281,7 +281,7 @@ export async function daemonDrift(connection: ComputerConnection, expected: Daem
 		const value = fields.get(set);
 		if (value === undefined || !/^0+$/.test(value)) found.push(`daemon ${set}: declared no capabilities, read back ${show(value)}`);
 	}
-	if (fields.get("Seccomp") !== "2") found.push(`daemon seccomp: declared 2 (the filter that refuses vsock and io_uring), read back ${show(fields.get("Seccomp"))}`);
+	if (fields.get("Seccomp") !== "2") found.push(`daemon seccomp: declared 2 (the filter that refuses vsock, io_uring and setns), read back ${show(fields.get("Seccomp"))}`);
 	// Its own network, as its user sees it: the live interfaces lo alone, and none it could bring up (computerd probe).
 	const net = await readOwnNetwork(connection.client, timeoutMs, bounded());
 	if (!net.ok) return fail(net.error.code === "aborted" && !signal?.aborted ? "timeout" : net.error.code, net.error.message);
