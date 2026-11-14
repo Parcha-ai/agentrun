@@ -141,7 +141,7 @@ test("a Mode 1 sandbox on Docker is made under the run's labels with the run's f
 
 test("an Agent37 desktop starts from the template its prepareImage() answers, where the spec names no image for it", async () => {
   const spec = () => ({ lifetimeMs: 60_000, network: "none" });
-  const { record, run } = await claim({ kind: "desktop", provider: "agent37" }, { keys: { AGENT37_API_KEY: "a37-test", AGENT37_SSH_KEY: "a37-ssh-test" }, groups: ["screen", "input.pointer", "input.keys"], spec });
+  const { record, run } = await claim({ kind: "desktop", provider: "agent37" }, { keys: { AGENT37_API_KEY: "fake-test-key", AGENT37_SSH_KEY: "not-a-secret" }, groups: ["screen", "input.pointer", "input.keys"], spec });
   const answer = await run();
   assert.equal(record.created[0].image, "agentrun/computer:prepared");
   await answer.release();
