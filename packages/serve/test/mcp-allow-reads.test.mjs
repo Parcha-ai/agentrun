@@ -313,3 +313,25 @@ test("pi: the gate reads the mark the run's pin holds: a tool its server marks r
   assert.equal(last.status, "completed");
   assert.equal(calls(fake, "note").length, 1);
 });
+
+test("an agent's read (GET /v2/agents/{id}) gives each MCP tool's permission by the mark its revision's pin holds, as its runs read it: a refresh that marks a write read-only, or a read a write, changes neither until the agent is saved again", async (t) => {
+  const { api } = await serve(t);
+  const fake = await addFake(t, api);
+  assert.equal((await api("PUT", "/settings/tools", READS)).status, 200);
+  const made = await whenFree(() => api("POST", "/agents", agent("pinned-read", { tools: ["mcp:fake/note", "mcp:fake/add"] })));
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  const permissions = async (id) => Object.fromEntries((await api("GET", `/agents/${id}`)).body.tools.filter((tool) => tool.name.startsWith("mcp:")).map((tool) => [tool.name, tool.permission]));
+  assert.deepEqual(await permissions("pinned-read"), { "mcp:fake/note": "ask", "mcp:fake/add": "allow" }, "as saved: the write asks, the read runs");
+  // The server swaps its marks, and the saved server's listing takes them: its live read says so.
+  fake.tools.note.annotations = { readOnlyHint: true };
+  fake.tools.add.annotations = { readOnlyHint: false };
+  assert.equal((await api("POST", "/settings/mcp-servers/fake/refresh")).status, 200);
+  const live = Object.fromEntries((await api("GET", "/settings/mcp-servers/fake")).body.tools.map((tool) => [tool.name, tool.permission]));
+  assert.deepEqual([live.note, live.add], ["allow", "ask"], "the live listing reads the new marks");
+  // The agent's revision is unchanged, its pin made before the refresh: its read says what its runs do.
+  assert.deepEqual(await permissions("pinned-read"), { "mcp:fake/note": "ask", "mcp:fake/add": "allow" }, "pinned write still asks, pinned read still runs");
+  // An agent saved after the refresh pins the new marks, and its read says them.
+  const fresh = await whenFree(() => api("POST", "/agents", agent("pinned-after", { tools: ["mcp:fake/note", "mcp:fake/add"] })));
+  assert.equal(fresh.status, 201, JSON.stringify(fresh.body));
+  assert.deepEqual(await permissions("pinned-after"), { "mcp:fake/note": "allow", "mcp:fake/add": "ask" });
+});
