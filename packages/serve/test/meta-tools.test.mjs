@@ -363,8 +363,11 @@ test("codemode, tools_search and tools_call each have a setting: allow unless an
   const tools = { read: { name: "read", replaySafe: true, run: async () => "r" }, ...catalog(25) };
   const without = (denied) => Object.assign(() => "allow", { permission: async (name) => (name === denied ? "deny" : "allow") });
   assert.deepEqual((await listedRun(t, [{ say: "done" }], tools, without(CODEMODE))).offered, ["read", TOOLS_CALL, TOOLS_SEARCH].sort());
-  assert.deepEqual((await listedRun(t, [{ say: "done" }], tools, without(TOOLS_SEARCH))).offered, [CODEMODE, "read", TOOLS_CALL].sort());
-  assert.deepEqual((await listedRun(t, [{ say: "done" }], tools, without(TOOLS_CALL))).offered, [CODEMODE, "read", TOOLS_SEARCH].sort());
+  // With either helper denied the model could not both find and run what was hidden, so nothing is hidden: every catalog
+  // tool is listed and neither helper is offered (denying a helper never takes an allowed tool out of reach).
+  const all = [CODEMODE, ...Object.keys(tools)].sort();
+  assert.deepEqual((await listedRun(t, [{ say: "done" }], tools, without(TOOLS_SEARCH))).offered, all);
+  assert.deepEqual((await listedRun(t, [{ say: "done" }], tools, without(TOOLS_CALL))).offered, all);
 });
 
 test("the gate: each of the three allows unless its own setting is deny, then a call to it is refused in the gate's words; pi's computer codemode stays the kind's", async () => {

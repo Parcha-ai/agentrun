@@ -1992,14 +1992,16 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // Code defers them itself (its ToolSearch, on under the same test), so it is offered neither. Under the threshold
         // every tool is listed and there is no search or call. codemode is offered as it always was.
         const facts = builtinHarness(spec.adapter.id)?.facts;
-        const deferred = !facts?.ownToolSearch && defersCatalog(own.map((one) => one.name));
         // A meta tool whose setting is deny is not offered at all, rather than offered and refused.
         const allowed = async (name: string) => !settingOf || (await settingOf(name).catch(() => "deny" as const)) !== "deny";
+        // Deferred only when the model can both find and run what it hid: with either helper denied every tool stays listed,
+        // so denying a helper never takes an otherwise allowed tool out of reach.
+        const deferred = !facts?.ownToolSearch && defersCatalog(own.map((one) => one.name)) && (await allowed(TOOLS_SEARCH)) && (await allowed(TOOLS_CALL));
         const metas = metaTools({
           tools: () => [...own, ...native],
           granted: async (name) => !settingOf || (await settingOf(mcp?.catalogOf(name) ?? name).catch(() => "deny" as const)) !== "deny",
           codemode: facts?.ownCodemode !== true && (await allowed(CODEMODE)),
-          discovery: { search: deferred && (await allowed(TOOLS_SEARCH)), call: deferred && (await allowed(TOOLS_CALL)) },
+          discovery: { search: deferred, call: deferred },
         }).filter((meta) => ![...own, ...native].some((one) => one.name === meta.name));
         const tools: HostTool[] = [...own.map((one): HostTool => (deferred && isCatalogName(one.name) ? { ...one, deferred: true } : one)), ...metas.map(hosted)];
         // An MCP tool of the run by its catalog name, as wrapped above: what a learned workflow's MCP node calls.
