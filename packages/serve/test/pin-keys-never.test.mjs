@@ -41,7 +41,8 @@ for (const harness of HARNESSES) {
     const id = applied.body.agent_id;
     const agent = (await api("GET", `/agents/${id}`)).body;
     assert.deepEqual([agent.definition.harness, agent.definition.approvals], [harness, "never"]);
-    assert.deepEqual(agent.definition.tool_settings[UPDATE], { permission: "allow", pin: { fields: { keys: ["score"] } } });
+    // The tick writes no permission (approvals never runs it unasked); the pin is written filled.
+    assert.deepEqual(agent.definition.tool_settings[UPDATE], { pin: { fields: { keys: ["score"] } } });
 
     // An extra key beside the pinned one: refused, never parked on anyone, never sent.
     const extra = await whenFree(() => api("POST", `/agents/${id}/runs`, { input: { content: prompt("update_record", { id: "r1", fields: { score: 5, owner: "mallory" } }) } }));

@@ -180,6 +180,12 @@ export type GitHubDisconnected = Answer<"disconnectGitHub">;
 
 /** PATCH /v2/runs/{id} {max_cost_usd}'s answer: the cap now. */
 export type RaiseAnswer = Answer<"raiseRunCap">;
+/** PUT /v2/runs/{id}/grade: right or wrong, the reviewer's words (`label`), and the fields a right answer holds
+ *  (`expected`). Its answer says the feedback round the run opened again on (`feedback`), if any. */
+export type GradeBody = Body<"gradeRun">;
+export type GradeAnswer = Answer<"gradeRun">;
+/** A run's grade as GET /v2/runs/{id}/learning reads it back (`graded`): the newest. */
+export type RunGraded = NonNullable<NonNullable<RunLearningRead>["graded"]>;
 
 /** A recorded response (src/fixtures): what the server answered, exactly. The console's own, not a wire type. */
 export type Recorded<T> = { request: { method: string; path: string }; status: number; headers?: Record<string, string>; body: T };

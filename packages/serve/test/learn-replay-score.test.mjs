@@ -4,13 +4,16 @@
 // `both` guard only on 30 rows with 5 wrong.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { answerCorrect, championOf, clears, escalates, GRADES_KEPT, putGrade, PROMOTIONS_KEPT, servingOf, gradesOf, promotionOf, recordOnly, recordPromotion, promotionsOf, replayScore, sameAnswer, thresholdsOf, trimPromotions } from "../dist/learn/promote.js";
-import { FIT_MIN_ROWS, fitLogistic, refitGuards } from "../dist/learn/refit.js";
+import { answerCorrect, championOf, clears, GRADES_KEPT, putGrade, PROMOTIONS_KEPT, servingOf, gradesOf, promotionOf, recordOnly, recordPromotion, promotionsOf, sameAnswer, thresholdsOf, trimPromotions } from "../dist/learn/promote.js";
+import { FIT_MIN_ROWS, fitLogistic, refitGuards, refitRowsOf, scoreRows } from "../dist/learn/refit.js";
 import * as dsl from "@parcha/agentrun-dsl";
 import { draftProblems } from "../dist/learn/skills.js";
 
 const guard = (node, p, threshold = 0) => ({ node, signal: "self", self: p ?? undefined, p, threshold, escalated: false });
 const row = (of, { answer, recorded = answer, correct = true, outcome = "answered", guards = [], expected } = {}) => ({ of, recorded: { answer: recorded, correct, ...(expected ? { expected } : {}) }, outcome, answer: outcome === "answered" ? answer : null, guards });
+/** A replay's score at `thresholds` (the one scorer over its rows), and whether one row hands back there. */
+const scoreOf = (rows, thresholds) => scoreRows(refitRowsOf(rows), thresholds);
+const handsBack = (one, thresholds) => scoreOf([one], thresholds).handed_back === 1;
 
 test("answers are the same as JSON values; a replay's answer takes the agent's grade when it says the same, its expected fields when given", () => {
   assert.equal(sameAnswer('{"a":1,"b":2}', ' {"b":2,"a":1} '), true);
@@ -42,19 +45,19 @@ test("a hand-back in replay is the agent's recorded answer, never a failure: esc
     row("r5", { answer: "x", recorded: "e", correct: true, guards: [guard("pick", 0.1)] }),
   ];
   const at = new Map([["pick", 0.5]]);
-  assert.equal(escalates(rows[1], at), true);
-  assert.equal(escalates(rows[0], at), false);
-  const score = replayScore(rows, at);
+  assert.equal(handsBack(rows[1], at), true);
+  assert.equal(handsBack(rows[0], at), false);
+  const score = scoreOf(rows, at);
   assert.deepEqual(score, { n: 5, agree: 2, agent_acc: 0.8, wf_acc: 0.8, delta: 0, handed_back: 3 });
   assert.equal(clears(score), true);
   // At threshold 0 the low-confidence wrong answer (r5) serves: 2 points under is the bar, 20 is not.
-  const loose = replayScore(rows, new Map([["pick", 0]]));
+  const loose = scoreOf(rows, new Map([["pick", 0]]));
   assert.equal(loose.wf_acc, 0.6);
   assert.equal(clears(loose), false);
   assert.equal(clears({ delta: -0.02, n: 5, handed_back: 3 }), true, "exactly 2 points under clears");
   assert.equal(clears({ delta: -0.0201, n: 5, handed_back: 3 }), false);
   // A guard that read no p hands back whatever its threshold.
-  assert.equal(escalates(row("r6", { answer: "a", guards: [guard("pick", null)] }), new Map([["pick", 0]])), true);
+  assert.equal(handsBack(row("r6",{ answer: "a", guards: [guard("pick", null)] }), new Map([["pick", 0]])), true);
 });
 
 const FLOW = { v: 2, name: "pick", schemas: {}, input: { schemaId: "In" }, output: { schemaId: "Out", path: "r" }, root: { node: "chain", steps: [
@@ -185,7 +188,7 @@ test("a replay row its workflow failed on (a step failed: a credential or tool t
     row("r2", { answer: "b", outcome: "handed_back" }),
     ...Array.from({ length: 8 }, (_, i) => row(`f${i}`, { answer: "z", outcome: "failed" })),
   ];
-  const score = replayScore(rows, new Map([["pick", 0.5]]));
+  const score = scoreOf(rows, new Map([["pick", 0.5]]));
   assert.deepEqual(score, { n: 2, agree: 1, agent_acc: 1, wf_acc: 1, delta: 0, handed_back: 1 }, "the eight failed rows are left out");
 });
 
@@ -301,7 +304,7 @@ test("a guard in a child workflow is read by its prefixed name: served at its ow
   assert.deepEqual([...thresholdsOf(text)], [["sub", 0.5], ["sub/pick", 0.8], ["sub/deeper/leaf", 0.3]]);
   // A row at p 0.6 on sub/pick, record-only: served at 0.8, it hands back (never the replay's 1e-9).
   const row = { of: "g", recorded: { answer: "a", correct: true }, outcome: "answered", answer: "b", guards: [{ node: "sub/pick", signal: "self", self: 0.6, p: 0.6, threshold: 1e-9, escalated: false }] };
-  assert.equal(escalates(row, thresholdsOf(text)), true);
+  assert.equal(handsBack(row, thresholdsOf(text)), true);
   // The refit moves the nested guard it has rows for: wrong exactly under 0.5.
   const rows = Array.from({ length: 20 }, (_, i) => { const p = i / 20; return { guards: [{ node: "sub/pick", signal: "self", self: p, p, threshold: 0, escalated: false }], answered: true, wfCorrect: p >= 0.5, agentCorrect: 1 }; });
   const refit = refitGuards(text, rows, "2026-11-13T00:00:00.000Z");

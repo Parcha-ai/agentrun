@@ -283,6 +283,7 @@ __all__ = [
     "GetRunLearningResponseObjectCompiledAttemptsItem",
     "GetRunLearningResponseObjectCostUsd",
     "GetRunLearningResponseObjectGivenItem",
+    "GetRunLearningResponseObjectGraded",
     "GetRunLearningResponseObjectLearnedItem",
     "GetRunLearningResponseObjectPendingItem",
     "GetRunLearningResponseObjectProblemsItem",
@@ -3789,6 +3790,7 @@ class GetRunLearningResponseObject(_GetRunLearningResponseObjectRequired, total=
     learned: list[GetRunLearningResponseObjectLearnedItem]
     skills: list[GetRunLearningResponseObjectSkillsItem]
     workflows: list[GetRunLearningResponseObjectWorkflowsItem]
+    graded: GetRunLearningResponseObjectGraded
 
 
 class GetRunLearningResponseObjectPendingItem(TypedDict):
@@ -3899,6 +3901,12 @@ class _GetRunLearningResponseObjectWorkflowsItemRequired(TypedDict):
 
 class GetRunLearningResponseObjectWorkflowsItem(_GetRunLearningResponseObjectWorkflowsItemRequired, total=False):
     pending: Literal[True]
+
+
+class GetRunLearningResponseObjectGraded(TypedDict):
+    correct: bool
+    source: Literal["feedback", "eval"]
+    graded_at: str
 
 
 class GetRunLearningDiffResponse(TypedDict):

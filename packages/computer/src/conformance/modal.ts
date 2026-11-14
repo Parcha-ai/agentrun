@@ -1,5 +1,5 @@
 // Modal for the conformance CLI: `npm run conformance -w @parcha/agentrun-computer -- --provider modal`. It builds a real
-// Modal client, so it runs only with AGENTRUN_COMPUTER_LIVE_MODAL=1 and a key the lead has OKed, under
+// Modal client, so it runs only with AGENTRUN_COMPUTER_LIVE_MODAL=1 and a key for an account you can bill, under
 // COMPUTER_MODAL_TOKEN_ID and COMPUTER_MODAL_TOKEN_SECRET. The provider reads no environment: this module reads its own
 // COMPUTER_MODAL_* names (never MODAL_TOKEN_ID or MODAL_TOKEN_SECRET, which may hold a production token) and passes each
 // to create() as its option; the provider gives the token to the client explicitly, pins the server it goes to and
@@ -84,7 +84,7 @@ export interface ModalModuleOptions {
 
 function live(env: Record<string, string | undefined>): void {
 	if (env[MODAL_ENV.live] !== "1") {
-		throw new Error(`the Modal conformance module makes real sandboxes: set ${MODAL_ENV.live}=1, with a key the lead has OKed, to run it`);
+		throw new Error(`the Modal conformance module makes real sandboxes: set ${MODAL_ENV.live}=1, with a key for an account you can bill, to run it`);
 	}
 }
 
