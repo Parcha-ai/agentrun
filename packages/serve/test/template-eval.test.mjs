@@ -347,6 +347,16 @@ test("a listing of the server's templates that fails once fails that case alone:
   assert.equal(refused, 2, "asked once more after the refusal, then kept");
 });
 
+test("an eval runs its agents with approvals never, whatever the package's default, and its report says so", { timeout: 300_000 }, async (t) => {
+  const { api, baseUrl, token } = await serve(t, { faux: FAUX, templates: FIXTURES });
+  const report = await evalTemplate({ dir: PKG, cases: ["mcp-match"], runs: 1, server: { baseUrl, token } });
+  assert.deepEqual(report.approvals, { measured: "never", package: "ask" });
+  const agent = (await api("GET", `/agents/${encodeURIComponent(report.cases[0].runs[0].agent_id)}`)).body;
+  assert.equal(agent.definition?.approvals, "never", JSON.stringify(agent.definition));
+  assert.equal((await api("GET", "/templates")).body.templates.find((x) => x.name === "evalpkg").approvals_default, "ask", "the package's own setting is unchanged");
+  assert.match(markdownReport(report), /Measured with approvals never \(the package's own default is ask\)\./);
+});
+
 test("an eval's agent has none of the package's triggers: market-monitor's weekly schedule is deleted at its apply", { timeout: 300_000 }, async (t) => {
   const { api, baseUrl, token } = await serve(t, { faux: FAUX });
   const report = await evalTemplate({ dir: join(TEMPLATES_DIR, "market-monitor"), cases: ["nothing-changed"], runs: 1, server: { baseUrl, token } });
