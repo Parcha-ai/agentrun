@@ -277,17 +277,21 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       # A recipe is built once: a release whose recipe is published already tags that image, and the recipe's tag keeps
-      # its digest. A read that fails for any other reason builds it again, which is the same recipe.
+      # its digest (a rebuild could differ: apt's packages are not pinned). Only the registry's "not found" builds it; any
+      # other failed read stops the job.
       - name: Is this recipe published already?
         id: published
         env:
           RECIPE: ${{ steps.recipe.outputs.hash }}
         run: |
-          if docker buildx imagetools inspect "$IMAGE:$RECIPE" >/dev/null 2>&1; then
+          if read_error="$(docker buildx imagetools inspect "$IMAGE:$RECIPE" 2>&1 >/dev/null)"; then
             echo "published=true" >> "$GITHUB_OUTPUT"
             echo "$IMAGE:$RECIPE is published already: tagging it $RELEASE_TAG"
-          else
+          elif [[ "$read_error" == *": not found"* ]]; then
             echo "published=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::reading $IMAGE:$RECIPE failed, so whether it is published is unknown: $read_error" >&2
+            exit 1
           fi
       - if: steps.published.outputs.published != 'true'
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6

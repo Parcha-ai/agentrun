@@ -156,6 +156,84 @@ test("on the published image, the E2B template runs the Dockerfile's sudo guard 
   assert.match(keyless.stderr, /set E2B_API_KEY/);
 });
 
+/** A fake e2b package: records the template, the build and the PATCH in FAKE_E2B_LOG; FAKE_E2B_PATCH=fail refuses the PATCH. */
+const FAKE_E2B = `import { appendFileSync } from "node:fs";
+const log = (entry) => appendFileSync(process.env.FAKE_E2B_LOG, JSON.stringify(entry) + "\\n");
+export function Template(options) {
+  return { fromDockerfile(dockerfile) { log({ template: options, dockerfile }); return this; } };
+}
+Template.build = async (template, name, options) => { log({ build: name, cpuCount: options.cpuCount, memoryMB: options.memoryMB }); return { templateId: "tpl_0123", buildId: "b_1", name }; };
+export class ConnectionConfig { constructor(options) { this.apiKey = options.apiKey; } }
+export class ApiClient {
+  constructor(config) {
+    this.api = { PATCH: async (path, init) => {
+      log({ patch: path, init, apiKey: config.apiKey });
+      if (process.env.FAKE_E2B_PATCH === "fail") return { error: { message: "template not found" }, response: { status: 404 } };
+      return { data: { names: ["parcha/" + "agentrun-archil-x", "agentrun-archil-x"] }, response: { status: 200 } };
+    } };
+  }
+}
+`;
+
+test("build-e2b.mjs --image --public builds from the image, makes the template public by its id, prints the names E2B gives, and fails in E2B's words when the PATCH is refused", async (t) => {
+  const { mkdtempSync, mkdirSync, writeFileSync, copyFileSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { recipeHash, onImage } = await import("../box/recipe.mjs");
+  // A copy of box/ beside a fake e2b package, which the script finds by its name, as it finds the root's.
+  const dir = mkdtempSync(join(tmpdir(), "box-e2b-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  for (const name of ["Dockerfile", "agentrun-archil", "build-e2b.mjs", "recipe.mjs"]) copyFileSync(box(name), join(dir, name));
+  mkdirSync(join(dir, "node_modules", "e2b"), { recursive: true });
+  writeFileSync(join(dir, "node_modules", "e2b", "package.json"), JSON.stringify({ name: "e2b", type: "module", exports: "./index.js" }));
+  writeFileSync(join(dir, "node_modules", "e2b", "index.js"), FAKE_E2B);
+  const image = `ghcr.io/parcha-ai/agentrun-box:${recipeHash()}`;
+  const run = (log, env = {}) => spawnSync(process.execPath, [join(dir, "build-e2b.mjs"), "--image", image, "--public"], { encoding: "utf8", env: { PATH: process.env.PATH, E2B_API_KEY: "fake-test-key", FAKE_E2B_LOG: join(dir, log), ...env } });
+  const entries = (log) => readFileSync(join(dir, log), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+
+  const ok = run("ok.log");
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.equal(ok.stdout, `public=parcha/agentrun-archil-x,agentrun-archil-x\ntemplate=agentrun-archil-${recipeHash()}\n`);
+  const [template, build, patch] = entries("ok.log");
+  assert.equal(template.dockerfile, onImage(image), "the template is the image with the Dockerfile's guard, USER and CMD");
+  assert.deepEqual(build, { build: `agentrun-archil-${recipeHash()}`, cpuCount: 2, memoryMB: 4096 });
+  assert.deepEqual(patch, { patch: "/v2/templates/{templateID}", init: { params: { path: { templateID: "tpl_0123" } }, body: { public: true } }, apiKey: "fake-test-key" });
+  assert.ok(!ok.stderr.includes("fake-test-key") && !ok.stdout.includes("fake-test-key"), "the key is never printed");
+
+  const refused = run("refused.log", { FAKE_E2B_PATCH: "fail" });
+  assert.equal(refused.status, 1);
+  assert.match(refused.stderr, new RegExp(`making agentrun-archil-${recipeHash()} public failed: 404 template not found`));
+  assert.doesNotMatch(refused.stdout, /public=|template=/, "a template that is not public is not reported as made");
+});
+
+test("the box job builds only on the registry's not found: a published recipe is tagged, and any other failed read stops the job", async (t) => {
+  const { mkdtempSync, writeFileSync, rmSync, chmodSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { parse } = await import("yaml");
+  const workflow = parse(readFileSync(new URL("../../../.github/workflows/release.yml", import.meta.url), "utf8"));
+  const step = workflow.jobs.box.steps.find((step) => step.id === "published");
+  const dir = mkdtempSync(join(tmpdir(), "box-published-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  // A fake docker whose imagetools inspect prints what FAKE_DOCKER says, as buildx does, and exits with its code.
+  writeFileSync(join(dir, "docker"), '#!/bin/sh\nprintf "%s\\n" "$FAKE_DOCKER_OUT" >&2\nexit "$FAKE_DOCKER_EXIT"\n');
+  chmodSync(join(dir, "docker"), 0o755);
+  const run = (exit, out) => {
+    const output = join(dir, `output-${exit}-${out.length}`);
+    writeFileSync(output, "");
+    const result = spawnSync("bash", ["-e", "-c", step.run], { encoding: "utf8", env: { PATH: `${dir}:${process.env.PATH}`, GITHUB_OUTPUT: output, IMAGE: "ghcr.io/parcha-ai/agentrun-box", RECIPE: "0123456789ab", RELEASE_TAG: "v0.1.0-beta.1", FAKE_DOCKER_EXIT: String(exit), FAKE_DOCKER_OUT: out } });
+    return { ...result, output: readFileSync(output, "utf8") };
+  };
+  const published = run(0, "");
+  assert.equal(published.status, 0);
+  assert.equal(published.output, "published=true\n");
+  const absent = run(1, "ERROR: ghcr.io/parcha-ai/agentrun-box:0123456789ab: not found");
+  assert.equal(absent.status, 0);
+  assert.equal(absent.output, "published=false\n");
+  const flaky = run(1, "ERROR: failed to do request: Head \"https://ghcr.io/v2/parcha-ai/agentrun-box/manifests/0123456789ab\": dial tcp: i/o timeout");
+  assert.equal(flaky.status, 1, "a read that fails otherwise stops the job: no rebuild under a tag that may exist");
+  assert.equal(flaky.output, "");
+  assert.match(flaky.stderr, /::error::reading ghcr\.io\/parcha-ai\/agentrun-box:0123456789ab failed, so whether it is published is unknown: ERROR: failed to do request/);
+});
+
 // --- what a build of box/ can take in: no key, credential or build secret ---
 
 /** Every file under box/, by its path there. */
