@@ -89,6 +89,17 @@ accepted learning. Errors in persistence or grading surface there without replac
 The first integration supports fresh, single-task sessions/threads only. See the cookbooks for cancellation,
 policy snapshots and multimodal limits, or run the [opt-in live examples](../../examples/sdk-learning/README.md).
 
+For executable workflow learning, explicitly configure `createWorkflowMcpBridge` from
+`@parcha/agentrun-client/workflows` with your existing backend tool callbacks, live permission policy and an explicit `engine` object containing
+`inspectWorkflow`, `runWorkflow` and `resolveSchemaForWorkflow`. Your backend imports and supplies its interpreter
+(for example, `import * as engine from "@parcha/agentrun-dsl"`); the client imports no workflow engine.
+The optional MCP entry point requires `@modelcontextprotocol/sdk`.
+Set the bridge's optional `nativeMcpServerName` to the exact name you configure for its endpoint in the native SDK.
+Only a native envelope matching one actual bridge completion's capability, arguments, status and result is correlated;
+without that binding, native tool evidence is retained and the cost path can read `handed_back`.
+The [workflow cookbook](../../docs/tutorials/sdk-workflow-learning.md) covers native MCP setup, checked promotion,
+run-scoped access, cancellation, and tests proving the next task reuses a workflow with fresh inputs.
+
 ## Errors
 
 Every error is an `AgentRunError`, and its `kind` says which one:

@@ -87,23 +87,26 @@ export function withCodexAgentLearning<T extends CodexLike>(codex: T, config: Co
     if (thread.id !== null && thread.id !== undefined) throw new Error('Codex learning requires a fresh thread.');
     let used = false;
     const model = text(object(options).model);
-    const begin = async (input: Input) => {
+    const begin = async (input: Input, turnOptions?: unknown) => {
       if (used) throw new Error('A learning-wrapped Codex thread supports one task. Start a fresh thread for the next task.');
       used = true;
       const session = await client.begin({ runtime: 'codex-sdk', input: originalText(input), instructions: config.instructions, ...(model ? { model } : {}) });
+      const signal = object(turnOptions).signal;
+      if (signal instanceof AbortSignal) session.followAbort(signal);
       if (session.learningEnabled && Array.isArray(input) && input.some(part => part.type === 'local_image')) {
         session.markEvidenceIncomplete('Image inputs remain in the native Codex SDK and are not available to the learning grader. This run will not produce new learning.');
       }
       return session;
     };
-    const record = async (session: BackendLearningSession, event: SdkLearningEvent) => {
+    const record = async (session: BackendLearningSession, event: SdkLearningEvent, detail?: { input?: unknown; output?: unknown }) => {
       // The shared client marks incomplete evidence and reports persistence errors from flushLearning(). It must
       // not replace the caller's result or original SDK failure with an observability transport error.
-      await session.event(event).catch(() => undefined);
+      await session.nativeEvent(event, detail).catch(() => undefined);
     };
-    const finish = (session: BackendLearningSession, outcome: SdkLearningOutcome, evidence: SdkLearningEvent[] = []) => {
+    const finish = (session: BackendLearningSession, outcome: SdkLearningOutcome, evidence: { event: SdkLearningEvent; detail?: { input?: unknown; output?: unknown } }[] = []) => {
+      session.closeWorkflows();
       client.track((async () => {
-        for (const event of evidence) await record(session, event);
+        for (const { event, detail } of evidence) await record(session, event, detail);
         await session.complete(outcome);
       })());
     };
@@ -117,14 +120,16 @@ export function withCodexAgentLearning<T extends CodexLike>(codex: T, config: Co
     return new Proxy(thread, {
       get(target, key) {
         if (key === 'run') return async (input: Input, turnOptions?: unknown) => {
-          const session = await begin(input);
+          const session = await begin(input, turnOptions);
           try {
             const result = await target.run(withContext(input, renderLearningContext(session)), turnOptions);
             const value = object(result);
             const started = new Set<string>();
-            const evidence = Array.isArray(value.items) ? value.items.map(evidenceOf)
-              .filter((entry): entry is SdkLearningEvent => Boolean(entry)).flatMap(entry => pairedEvidence(entry, started)) : [];
-            if (target.id) evidence.unshift({ type: 'session', session_id: target.id });
+            const evidence: { event: SdkLearningEvent; detail?: { input?: unknown; output?: unknown } }[] = Array.isArray(value.items) ? value.items.flatMap(item => {
+              const entry = evidenceOf(item), detail = { input: object(item).arguments, output: object(object(item).result).content };
+              return entry ? pairedEvidence(entry, started).map(event => ({ event, detail })) : [];
+            }) : [];
+            if (target.id) evidence.unshift({ event: { type: 'session', session_id: target.id } });
             finish(session, { status: 'completed', answer: text(value.finalResponse) ?? '', ...(target.id ? { session_id: target.id } : {}),
               ...(model ? { model } : {}), ...(usageOf(value.usage) ? { usage: usageOf(value.usage) } : {}) }, evidence);
             return result;
@@ -134,7 +139,7 @@ export function withCodexAgentLearning<T extends CodexLike>(codex: T, config: Co
           // Native Codex does no work before its iterator is consumed. Defer registration too, so an unused stream
           // creates neither an orphan AgentRun job nor a model request.
           const events = (async function* () {
-            const session = await begin(input);
+            const session = await begin(input, turnOptions);
             let completed = false, failed = false, answer = '', usage: SdkLearningUsage | undefined;
             const started = new Set<string>();
             try {
@@ -152,7 +157,7 @@ export function withCodexAgentLearning<T extends CodexLike>(codex: T, config: Co
                   const entry = evidenceOf(item);
                   if (entry && (value.type === 'item.completed' || entry.type === 'tool')) {
                     const observed = value.type === 'item.started' && entry.type === 'tool' ? { ...entry, status: 'started' as const } : entry;
-                    for (const event of pairedEvidence(observed, started)) void record(session, event);
+                    for (const event of pairedEvidence(observed, started)) void record(session, event, { input: item.arguments, output: object(item.result).content });
                   }
                 }
                 if (value.type === 'turn.completed') { completed = true; usage = usageOf(value.usage); }

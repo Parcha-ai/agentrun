@@ -15,6 +15,7 @@ import type { AuthorHostAddendum } from "@parcha/agentrun-dsl";
 import { childNodes, LEARNED_MAX_TURNS, frontMatter, WORKFLOW_NAME, WORKFLOWS_DIR } from "./skills.js";
 import { NOTE_BLOCK, parseReflection, SKILL_BLOCK, WORKFLOW_BLOCK } from "./reflect.js";
 import { NOTE_FILE } from "./notes.js";
+import { redactSecrets } from "./secrets.js";
 import { championOf, PROMOTE_BAR, type PromotionRecord, promotionOf } from "./promote.js";
 
 /** How many active notes an agent keeps before its look-back compiles its job. */
@@ -78,6 +79,8 @@ export interface CompileTrace {
  *  run back (answer-json.ts answerAsServed), so the workflow's final output must be that object. */
 export type CompileAsk = {
   readonly reference: string;
+  /** Present for a backend-owned SDK bridge, even when it declares no model or judge callback. */
+  readonly workflowAdapters?: readonly ("runNode" | "runJudge")[];
   readonly outputSchema?: unknown;
   readonly notes: readonly { readonly file: string; readonly text: string }[];
   readonly traces: readonly CompileTrace[];
@@ -140,8 +143,24 @@ const guardText = (signal: "self" | "jev" | "both") => `\`"guard": {"signal": "$
 /** This host's addendum to the DSL's author contract: the node kinds it runs, and its rules, each one the checks hold a
  *  draft to (learn/skills.ts draftProblems; propose.ts). `jev`: the run can call Jev (one of its decision providers,
  *  not denied), so every step is asked for a guard Jev reads. */
-export function learnedHost(options: { readonly tools: readonly string[]; readonly judges: boolean; readonly jev?: boolean }): AuthorHostAddendum {
+export function learnedHost(options: { readonly tools: readonly string[]; readonly judges: boolean; readonly jev?: boolean; readonly workflowAdapters?: readonly ("runNode" | "runJudge")[] }): AuthorHostAddendum {
   const { tools, judges } = options;
+  if (options.workflowAdapters !== undefined) {
+    const model = options.workflowAdapters.includes("runNode"), judge = options.workflowAdapters.includes("runJudge");
+    return {
+      name: "AgentRun backend SDK workflow bridge",
+      nodeKinds: ["chain", "call", "escalate", "map", "parallel", "loop", "route", ...(model ? ["extract", "decide", "agent"] as const : []), ...(judge ? ["judge", "pick", "sift"] as const : [])],
+      rules: [
+        "The backend explicitly invokes a saved workflow through its registered MCP bridge. Saving it never automatically runs it on later tasks.",
+        tools.length ? `A call node runs via tool alone and names only this allowed callback catalog: ${tools.join(", ")}. Its arguments and output schema must match that callback. Never shell or executor.` : "There is no allowed tool callback: author no call node.",
+        model ? "runNode is explicitly registered for tool-free model nodes. It owns model selection; name no model or tier and grant its model nodes no tools." : "This backend provides NO runNode: author no extract, decide or agent node. Never invent a model adapter.",
+        judge ? "runJudge is explicitly registered for decision nodes; the backend owns its implementation." : "This backend provides NO runJudge: author no judge, pick, sift, verification or model-based predicate.",
+        "There is no guardStep callback: author no step guard, including self, jev or both. Do not assume hosted decision or confidence machinery.",
+        `At most 128 static nodes. Never automatically retry a delegated tool call. An agent node uses at most ${LEARNED_MAX_TURNS} max_turns and never context fork.`,
+        "The workflow's declared input takes the caller's fields. output.path selects the job's actual answer in its required format; use a declared formatter callback when necessary.",
+      ],
+    };
+  }
   const jev = options.jev === true;
   const judgment = judges ? "decide, agent, judge, pick and sift" : "decide and agent";
   return {
@@ -166,7 +185,7 @@ export function learnedHost(options: { readonly tools: readonly string[]; readon
 
 /** The workflow language for the compile turn, generated: the DSL's own author contract (rendered from its vocabulary, so
  *  it names exactly the kinds, fields and predicates its validator admits) with this host's addendum. */
-export const compileReference = (dsl: { readonly authorContract: (options: { host?: AuthorHostAddendum }) => string }, options: { readonly tools: readonly string[]; readonly judges: boolean; readonly jev?: boolean }): string =>
+export const compileReference = (dsl: { readonly authorContract: (options: { host?: AuthorHostAddendum }) => string }, options: { readonly tools: readonly string[]; readonly judges: boolean; readonly jev?: boolean; readonly workflowAdapters?: readonly ("runNode" | "runJudge")[] }): string =>
   dsl.authorContract({ host: learnedHost(options) });
 
 /** The worked example's input, as a run gives it. */
@@ -203,6 +222,14 @@ const exampleBlock = (judges: boolean, jev: boolean): string => [
   "from_notes: [refund-window.md, damaged-items.md]",
   "---",
   JSON.stringify(compileExample(judges, jev)),
+  "````",
+].join("\n");
+
+/** SDK syntax example: a delegated effect, with no implicit model or guard callback. Catalog schemas remain authoritative. */
+const sdkExampleBlock = (tool: string): string => [
+  `\`\`\`\`${WORKFLOW_BLOCK} read-value`, "---", "description: Read a value through the declared backend callback when requested.",
+  'example: {"key":"example"}', "---",
+  JSON.stringify({ v: 2, name: "read-value", schemas: { Input: { type: "object", properties: { key: { type: "string" } }, required: ["key"] }, Value: { type: "object", properties: { value: { type: "string" } }, required: ["value"] } }, input: { schemaId: "Input" }, output: { schemaId: "Value", path: "result" }, root: { node: "call", label: "read", via: "tool", tool, args: { key: "{key}" }, out: "Value", as: "result", deadline_s: 30 } }),
   "````",
 ].join("\n");
 
@@ -258,11 +285,12 @@ export function compilePrompt(ask: CompileAsk): string {
   if (ask.mode === "revise" && !WORKFLOW_NAME.test(ask.workflow)) throw new Error("the workflow asked to be revised must be a workflow's name");
   const fields = fieldsOf(ask.input);
   const notes = ask.notes.map(({ file, text }) => `${file}:\n${text.trim()}`).join("\n\n");
+  const sdk = ask.workflowAdapters !== undefined;
   const why = ask.mode === "new"
     ? [
         COMPILE_OPENS.new,
         "This agent has done this job enough times to write it down. Compile the whole job, from the run's input to its answer, into one workflow:",
-        "on later runs it runs first, before you, and answers alone, or ends on an escalate node and hands the case back to you with what it found.",
+        sdk ? "The backend explicitly invokes it through its registered MCP bridge when appropriate. It is never automatically run before later tasks." : "on later runs it runs first, before you, and answers alone, or ends on an escalate node and hands the case back to you with what it found.",
         "Do the steps the runs below took, the way they took them, keeping every rule your notes give. Name it for the job.",
         OUTPUT_FORMAT,
       ]
@@ -294,13 +322,13 @@ export function compilePrompt(ask: CompileAsk): string {
     ...(ask.outputSchema !== undefined ? [SHAPE_LINE, "", "```json", JSON.stringify(ask.outputSchema, null, 2), "```", ""] : []),
     "## A worked example",
     "",
-    "A whole job: the facts read, " + (ask.judges ? "a typed question asked of them, " : "") + `the answer decided, ${ask.jev ? "each step under a guard Jev reads" : "each judgment under a guard"} that hands back an unsure step, and a case the policy does not cover handed back.`,
+    sdk ? "Syntax only: a delegated tool call, without an implicit model or confidence guard. Replace its arguments and schemas with the actual catalog's and the job's output format; this example grants no capability." : "A whole job: the facts read, " + (ask.judges ? "a typed question asked of them, " : "") + `the answer decided, ${ask.jev ? "each step under a guard Jev reads" : "each judgment under a guard"} that hands back an unsure step, and a case the policy does not cover handed back.`,
     "",
-    exampleBlock(ask.judges, ask.jev === true),
+    sdk ? (ask.tools.length ? sdkExampleBlock(ask.tools[0]!) : "There is no tool callback to illustrate. Use only the callbacks the backend explicitly registered; if they cannot express this job, keep notes and skills and no workflow.") : exampleBlock(ask.judges, ask.jev === true),
     "",
     "## This job",
     "",
-    fields ? `This run's input has these fields: ${fields}. The workflow's input schema requires them, by these names.` : "This run's input is the message it was given.",
+    fields ? (sdk ? `This task was given these fields: ${fields}. Declare the input the backend must explicitly supply to the bridge; it is never automatically mapped from later tasks.` : `This run's input has these fields: ${fields}. The workflow's input schema requires them, by these names.`) : "This run's input is the message it was given.",
     ask.tools.length ? `A call node may run only these tools: ${ask.tools.join(", ")}.` : "There is no tool for a call node to run.",
     ...describedLines(ask.described ?? [], ask.tools),
     ...(ask.mode === "revise" && ask.current ? ["", `\`${ask.workflow}\` as it is now:`, ...fenced("its workflow.json", clean(ask.current, 32_000))] : []),
@@ -446,7 +474,8 @@ function nodesOf(value: unknown, out: Record<string, unknown>[] = []): Record<st
 /** What a draft's guards leave out of the ones the compile turn asked for (learnedHost's rules), one line each: a
  *  judgment step with no guard; with Jev, an extract or call step with none, or one reading its own confidence (it
  *  reports none); without Jev, a guard that reads it (it would hand every case back). None when every one is there. */
-export function guardProblems(doc: unknown, options: { readonly jev: boolean }): string[] {
+export function guardProblems(doc: unknown, options: { readonly jev: boolean; readonly workflowAdapters?: readonly ("runNode" | "runJudge")[] }): string[] {
+  if (options.workflowAdapters !== undefined) return nodesOf((doc as { root?: unknown } | null)?.root).filter(node => node.guard !== undefined).map(() => "the SDK bridge has no guardStep callback: omit step guards");
   const own = options.jev ? "both" : "self";
   const problems: string[] = [];
   for (const node of nodesOf((doc as { root?: unknown } | null)?.root)) {
@@ -477,7 +506,7 @@ function draftGuardErrorsOf(checked: CheckedLike, name: string, ask: CompileAsk)
   } catch {
     return ["guard: its workflow.json as the checks kept it could not be read for its guards"];
   }
-  return guardProblems(doc, { jev: ask.jev === true }).slice(0, ERRORS_MAX).map((problem) => `guard: ${problem}`.slice(0, ERROR_MAX));
+  return guardProblems(doc, { jev: ask.jev === true, ...(ask.workflowAdapters !== undefined ? { workflowAdapters: ask.workflowAdapters } : {}) }).slice(0, ERRORS_MAX).map((problem) => `guard: ${problem}`.slice(0, ERROR_MAX));
 }
 
 /** The record's workflow when no attempt named one. */
@@ -495,6 +524,8 @@ export async function compileTurn<C extends CheckedLike>(input: {
   readonly check: (answer: string) => Promise<C | undefined>;
   readonly deadlineMs?: number;
   readonly now?: () => number;
+  /** Already-opened secret values, used only when a stateless SDK retry repeats its own failed answer as data. */
+  readonly refuse?: readonly string[];
 }): Promise<{ record?: CompiledRecord; kept?: { answer: string; checked: C }; draftErrors: string[] }> {
   const now = input.now ?? Date.now;
   const deadline = now() + (input.deadlineMs ?? COMPILE_TIMEOUT_MS);
@@ -507,7 +538,8 @@ export async function compileTurn<C extends CheckedLike>(input: {
     return { record: { workflow: name || UNNAMED, from_notes: [], attempts: [{ ok: false, errors }] }, draftErrors: errors };
   }
   let fromNotes: readonly string[] = [];
-  let prompt = compilePrompt(input.compile);
+  const firstPrompt = compilePrompt(input.compile);
+  let prompt = firstPrompt;
   for (let attempt = 1; attempt <= 1 + COMPILE_RETRIES; attempt++) {
     const left = deadline - now();
     const said = left > 0 ? await input.ask(prompt, attempt, left).catch(() => undefined) : undefined;
@@ -536,7 +568,12 @@ export async function compileTurn<C extends CheckedLike>(input: {
       }
     }
     attempts.push({ ok: false, errors });
-    prompt = compileAgain(errors, attempt + 1);
+    const again = compileAgain(errors, attempt + 1);
+    // Native/managed sessions retain the earlier turn. SDK booked requests are independent: every retry must carry
+    // the same bounded contract/catalog/notes and only its immediately preceding, redacted failed answer as data.
+    prompt = input.compile.workflowAdapters !== undefined
+      ? [again, firstPrompt, ...fenced("the previous compile answer", clean(redactSecrets(said.answer, input.refuse ?? [], Number.POSITIVE_INFINITY), 32_000))].join("\n\n")
+      : again;
   }
   if (!attempts.length) return { draftErrors: [] };
   const last = attempts.findLast((one) => one.errors.length)?.errors ?? [];

@@ -93,7 +93,7 @@ async function seedAt(lw: Workspace, seed: string, wanted: (snapshot: Snapshot) 
  *  description its block gives. `outcome`, how the run's job ended (only a completed run adds or changes a skill);
  *  `tools`, those a draft may name (tools.ts learnedWorkflowTools); `refuse`: this host's secrets; `outputSchema`: the
  *  agent's, which a draft's dry run holds its answer to (learn/skills.ts draftDryRun). */
-export const proposeRun = async (input: { folder: Workspace; runDir: string; seed: string; notesSeed?: string; turn: Turn; refuse: readonly string[]; outcome?: string; tools?: readonly string[]; gated?: Readonly<Record<string, string>>; deniedBy?: Readonly<Record<string, "agent" | "server" | "default">>; ask?: DraftAsk; decisions?: DraftDecisions; workflows?: false; outputSchema?: unknown }): Promise<Proposed> => {
+export const proposeRun = async (input: { folder: Workspace; runDir: string; seed: string; notesSeed?: string; turn: Turn; refuse: readonly string[]; outcome?: string; tools?: readonly string[]; gated?: Readonly<Record<string, string>>; deniedBy?: Readonly<Record<string, "agent" | "server" | "default">>; ask?: DraftAsk; decisions?: DraftDecisions; workflowAdapters?: readonly ("runNode" | "runJudge")[]; workflows?: false; outputSchema?: unknown }): Promise<Proposed> => {
   const parsed = parseReflection(input.turn.answer);
   // Each skill and draft as the folder would hold it, keyed by its block (kind and name) so the changes keep the
   // answer's order; a draft is its two files, given together or not at all. A draft's `example:` line, by its
@@ -154,7 +154,7 @@ export const proposeRun = async (input: { folder: Workspace; runDir: string; see
   if (leaky.length) return { state: "dropped", reason: "checker", problems: leaky };
   // A skill or a draft whose seed text has a status is a person's call (retired, or waiting for their OK): never changed.
   const dryRuns: Record<string, DraftDryRun> = {};
-  const check = (some: Change[]) => checkProposal({ base, changes: some, refuseValues: input.refuse, ...(input.workflows === false ? { workflows: false as const } : {}), ...(kept.length ? { kept } : {}), ...(input.outcome === undefined ? {} : { outcome: input.outcome }), ...(input.tools ? { tools: input.tools } : {}), ...(input.gated ? { gated: input.gated } : {}), ...(input.deniedBy ? { deniedBy: input.deniedBy } : {}), ...(input.ask ? { ask: input.ask } : {}), ...(input.decisions ? { decisions: input.decisions } : {}), ...(dsl ? { dsl, dryRuns } : {}) });
+  const check = (some: Change[]) => checkProposal({ workflowAdapters: input.workflowAdapters, base, changes: some, refuseValues: input.refuse, ...(input.workflows === false ? { workflows: false as const } : {}), ...(kept.length ? { kept } : {}), ...(input.outcome === undefined ? {} : { outcome: input.outcome }), ...(input.tools ? { tools: input.tools } : {}), ...(input.gated ? { gated: input.gated } : {}), ...(input.deniedBy ? { deniedBy: input.deniedBy } : {}), ...(input.ask ? { ask: input.ask } : {}), ...(input.decisions ? { decisions: input.decisions } : {}), ...(dsl ? { dsl, dryRuns } : {}) });
   // The static checks first, every one (validateWorkflow with executeCode: false, draftProblems' refusal of code nodes,
   // caps, secrets): a draft they refuse is never dry-run, nor is any when they refuse the answer whole. Then each draft
   // left is dry-run on its example, else on a synthesized input (learn/skills.ts draftDryRun): every model and tool

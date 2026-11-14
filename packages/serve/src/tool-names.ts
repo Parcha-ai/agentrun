@@ -21,6 +21,8 @@ export const MCP_SERVER_NAME = new RegExp(`^${SERVER}$`);
 export const MCP_TOOL_NAME = new RegExp(`^${TOOL}$`);
 /** A catalog tool's name, as a JSON Schema pattern (openapi.ts): `monid.<tool>`, `mcp:<server>/<tool>` or `mcp:<server>/*`. */
 export const CATALOG_KEY_PATTERN = `^(?:monid\\.${TOOL}|mcp:${SERVER}/(?:\\*|${TOOL}))$`;
+/** One MCP tool's catalog key, without a server wildcard: the same server/tool grammar as mcpNameOf. */
+export const MCP_TOOL_KEY_PATTERN = `^mcp:${SERVER}/${TOOL}$`;
 const MCP_NAME = new RegExp(`^mcp:(${SERVER})/(\\*|${TOOL})$`);
 const PLAIN_NAME = new RegExp(`^${PLAIN}$`);
 

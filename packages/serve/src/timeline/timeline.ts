@@ -811,7 +811,7 @@ function createProjector(options: TimelineOptions) {
             browsers.add(conv);
             add(make("phase", conv, `${base}:${index}:session`, { summary: "A live browser session started" }));
           }
-          const use = useRow(conv, `${base}:${index}`, id, name, args, { round });
+          const use = useRow(conv, `${base}:${index}`, id, name, args, { round, parent_tool_use_id: str(obj(entry.data)?.parentCallId) });
           const before = early.get(`${conv}:${id}`);
           const opened: OpenCall = { conv, name, args, round, use, done: before !== undefined };
           calls.set(`${conv}:${id}`, opened);
@@ -849,7 +849,7 @@ function createProjector(options: TimelineOptions) {
         call.use.summary = clean(named, caps.summary);
         touch(call.use);
       }
-      const row = resultRow(conv, base, { name, callId: id || null, round: call?.round }, named, view, shown);
+      const row = resultRow(conv, base, { name, callId: id || null, round: call?.round }, named, view, shown, call?.use.parent_tool_use_id);
       if (!call && id) early.set(`${conv}:${id}`, { row, view, shown });
       add(row);
       if (!view.isError) {

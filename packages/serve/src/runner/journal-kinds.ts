@@ -182,6 +182,8 @@ export interface BudgetData {
 
 export interface CallStartData {
   readonly callId: string;
+  /** A checked SDK workflow callback's owning learned_workflow invocation. */
+  readonly parentCallId?: string;
   readonly tool: string;
   readonly input: unknown;
   /** May run again after a crash (it changes nothing outside the run): the tool registry's own flag. */
