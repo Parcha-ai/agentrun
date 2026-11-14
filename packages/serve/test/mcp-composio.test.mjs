@@ -3,6 +3,7 @@
 // toolkit's actions; PUT .../{name}/composio makes the managed MCP server and saves its URL. The key never appears in an
 // answer, a log line or the store's bytes, and only the owner's session writes it.
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { startFakeComposio } from "./fixtures/fake-composio.mjs";
 import { secretWritePath, serve, serverLog, storeBytes } from "./support.mjs";
@@ -55,12 +56,14 @@ test("a request on the fakes' ports that the server never sent is not one of its
   const s = await setup(t);
   const stray = async (url) => (await fetch(url)).arrayBuffer();
   const origin = new URL(s.composio.baseUrl).origin;
-  await stray(`${origin}/`);
-  await stray(`${origin}/api/v3/tools?toolkit_slug=github`);
+  // Unique paths: a prober's GET / can land here too, so the test checks that these two are kept apart, not how many strays came.
+  const mine = [`/stray-${randomBytes(4).toString("hex")}`, `/api/v3/tools/stray-${randomBytes(4).toString("hex")}`];
+  for (const path of mine) await stray(`${origin}${path}?toolkit_slug=github`);
   const res = await s.api("POST", "/settings/mcp-servers/composio/tools", { api_key: s.composio.apiKey, toolkit: "github" });
   assert.equal(res.status, 200, JSON.stringify(res.body));
   assert.ok(s.composio.calls.length > 0 && s.composio.calls.every((call) => call.keyOk), "every Composio call sent the key as x-api-key");
-  assert.equal(s.composio.strays.length, 2, "the two requests it never sent are kept apart");
+  const strayPaths = s.composio.strays.map((stray) => stray.path);
+  for (const path of mine) assert.ok(strayPaths.includes(path), `the request to ${path} it never sent is kept apart`);
 
   const saved = await s.api("PUT", "/settings/mcp-servers/hn/composio", { api_key: s.composio.apiKey, toolkit: "hackernews", tools: ["add"] });
   assert.equal(saved.status, 200, JSON.stringify(saved.body));
