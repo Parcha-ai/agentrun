@@ -43,18 +43,29 @@ test("a server's wildcard is a settings key of a well-formed server only", () =>
 });
 
 test("parseToolName reads each shape of a catalog name, and formatToolName writes it back", async () => {
-  const { formatToolName, isMcpName, mcpNameOf, parseToolName } = await import("../dist/tool-names.js");
+  const { formatToolName, isMcpName, isMonidName, mcpNameOf, parseToolName } = await import("../dist/tool-names.js");
   const shapes = [
     ["read", { kind: "plain", name: "read" }],
-    ["monid.discover", { kind: "plain", name: "monid.discover" }],
     ["mcp:github/GITHUB_CREATE_AN_ISSUE", { kind: "mcp", server: "github", tool: "GITHUB_CREATE_AN_ISSUE" }],
     ["mcp:linear-app/*", { kind: "mcp-server", server: "linear-app" }],
+    // A monid endpoint by its provider and path (any of monid's path characters, a template's braces among them), and a
+    // provider's every endpoint.
+    ["monid:apollo/people/match", { kind: "monid", provider: "apollo", endpoint: "people/match" }],
+    ["monid:tiktok/api/v1/{id}/x", { kind: "monid", provider: "tiktok", endpoint: "api/v1/{id}/x" }],
+    ["monid:apollo/*", { kind: "monid-provider", provider: "apollo" }],
   ];
   for (const [name, parsed] of shapes) {
     assert.deepEqual(parseToolName(name), parsed, name);
     assert.equal(formatToolName(parsed), name);
   }
-  for (const name of ["mcp:srv", "mcp:srv/a/b", "mcp:srv/a.b", "mcp:-srv/x", "Read", "mcp:srv/", ""]) assert.equal(parseToolName(name), undefined, name);
+  for (const name of ["mcp:srv", "mcp:srv/a/b", "mcp:srv/a.b", "mcp:-srv/x", "Read", "mcp:srv/", "", "monid:Apollo/x", "monid:apollo/", "monid:apollo", "monid:apollo//x"]) assert.equal(parseToolName(name), undefined, name);
   assert.equal(mcpNameOf("mcp:linear-app/*"), undefined, "a wildcard is no one tool");
-  assert.ok(isMcpName("mcp:srv/a.b") && !isMcpName("monid.run"), "the namespace holds a malformed MCP name too");
+  assert.ok(isMcpName("mcp:srv/a.b") && !isMcpName("monid:apollo/x"), "the namespace holds a malformed MCP name too");
+  assert.ok(isMonidName("monid:Apollo/x") && !isMonidName("monid.run"), "monid's namespace holds a malformed name too; monid's old tools are none of it");
+});
+
+test("a monid endpoint and a provider's wildcard are settings keys of a well-formed provider only", () => {
+  assert.equal(set("monid:apollo/people/match"), true);
+  assert.equal(set("monid:apollo/*"), true);
+  for (const name of ["monid:Apollo/*", "monid.run", "monid:apollo"]) assert.equal(set(name), false, name);
 });

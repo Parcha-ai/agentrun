@@ -1,44 +1,76 @@
 // A tool's catalog name, read and written in one place: the grammar every place that takes one holds it to (an agent's
 // grant, the tool settings, a learned workflow, a template's manifest and evals, the API's schemas). A catalog name is
-//   <tool>               a tool of this server (`read`, `web_fetch`) or of a catalog (`monid.discover`)
-//   mcp:<server>/<tool>  one tool of a saved MCP server
-//   mcp:<server>/*       every tool of a saved MCP server (a settings key, and a grant read against its listing)
+//   <tool>                       a tool of this server (`read`, `web_fetch`, `decisions.jev`)
+//   <source>:<group>/<action>    one tool of a source: `mcp:<server>/<tool>`, `monid:<provider>/<endpoint>`
+//   <source>:<group>/*           every tool of a group (a settings key, and a grant read against its listing)
 // An MCP server's name is lowercase letters, digits and `-`, starting with a letter, at most 32 (no `_`, so
 // `mcp__<server>__<tool>` splits one way). An MCP tool's own name is letters, digits, `_` and `-`, at most 64: the
 // characters the model APIs take in a tool's name, so there is one charset, and a name one place takes no other refuses.
+// A monid provider's slug and an endpoint's path are monid's own (its listing, GET /v1/endpoints): a slug is lowercase
+// letters, digits, `.` and `-` (`apollo`, `api.strale.io`); an endpoint is its path less the leading `/`, in letters,
+// digits and `-._:{}/` (`people/match`, `people/{id}`). Its wire name is catalog.ts wireName's, hashed when long.
 
 import { WIRE_NAME } from "./catalog.js";
 
 const SERVER = "[a-z][a-z0-9-]{0,31}";
 const TOOL = "[A-Za-z0-9_-]{1,64}";
+const PROVIDER = "[a-z0-9][a-z0-9.-]{0,63}";
+const ENDPOINT = "[A-Za-z0-9_.:{}-][A-Za-z0-9_.:{}/-]{0,199}";
 const PLAIN = `[a-z][a-z0-9_-]{0,63}(?:\\.${TOOL})?`;
 const MCP_PREFIX = "mcp:";
-const MCP_ALL = "*";
+const MONID_PREFIX = "monid:";
+const ALL = "*";
 
 /** An MCP server's name. */
 export const MCP_SERVER_NAME = new RegExp(`^${SERVER}$`);
 /** An MCP tool's own name, as its server lists it. */
 export const MCP_TOOL_NAME = new RegExp(`^${TOOL}$`);
-/** A catalog tool's name, as a JSON Schema pattern (openapi.ts): `monid.<tool>`, `mcp:<server>/<tool>` or `mcp:<server>/*`. */
-export const CATALOG_KEY_PATTERN = `^(?:monid\\.${TOOL}|mcp:${SERVER}/(?:\\*|${TOOL}))$`;
+/** A catalog tool's name, as a JSON Schema pattern (openapi.ts): `mcp:<server>/<tool>`, `monid:<provider>/<endpoint>`,
+ *  or either's wildcard. */
+export const CATALOG_KEY_PATTERN = `^(?:mcp:${SERVER}/(?:\\*|${TOOL})|monid:${PROVIDER}/(?:\\*|${ENDPOINT}))$`;
 const MCP_NAME = new RegExp(`^mcp:(${SERVER})/(\\*|${TOOL})$`);
+const MONID_NAME = new RegExp(`^monid:(${PROVIDER})/(\\*|${ENDPOINT})$`);
 const PLAIN_NAME = new RegExp(`^${PLAIN}$`);
 
-/** A catalog name, read: a plain tool's, one MCP tool's, or an MCP server's wildcard (all its tools). */
-export type ToolName = { kind: "plain"; name: string } | { kind: "mcp"; server: string; tool: string } | { kind: "mcp-server"; server: string };
+/** A catalog name, read: a plain tool's, one MCP tool's or one monid endpoint's, or a group's wildcard (an MCP server's
+ *  tools, a monid provider's endpoints). */
+export type ToolName =
+  | { kind: "plain"; name: string }
+  | { kind: "mcp"; server: string; tool: string }
+  | { kind: "mcp-server"; server: string }
+  | { kind: "monid"; provider: string; endpoint: string }
+  | { kind: "monid-provider"; provider: string };
 
 /** Catalog name `name` read, or undefined for one outside the grammar. */
 export function parseToolName(name: string): ToolName | undefined {
+  if (isMonidName(name)) {
+    const match = MONID_NAME.exec(name);
+    if (!match) return undefined;
+    return match[2] === ALL ? { kind: "monid-provider", provider: match[1]! } : { kind: "monid", provider: match[1]!, endpoint: match[2]! };
+  }
   if (!isMcpName(name)) return PLAIN_NAME.test(name) ? { kind: "plain", name } : undefined;
   const match = MCP_NAME.exec(name);
   if (!match) return undefined;
-  return match[2] === MCP_ALL ? { kind: "mcp-server", server: match[1]! } : { kind: "mcp", server: match[1]!, tool: match[2]! };
+  return match[2] === ALL ? { kind: "mcp-server", server: match[1]! } : { kind: "mcp", server: match[1]!, tool: match[2]! };
 }
 
 /** The catalog name of `name`: parseToolName's inverse. */
 export function formatToolName(name: ToolName): string {
   if (name.kind === "plain") return name.name;
-  return `${MCP_PREFIX}${name.server}/${name.kind === "mcp" ? name.tool : MCP_ALL}`;
+  if (name.kind === "monid" || name.kind === "monid-provider") return `${MONID_PREFIX}${name.provider}/${name.kind === "monid" ? name.endpoint : ALL}`;
+  return `${MCP_PREFIX}${name.server}/${name.kind === "mcp" ? name.tool : ALL}`;
+}
+
+/** Whether `name` is in monid's namespace (`monid:`), well formed or not, as isMcpName is for MCP's. */
+export const isMonidName = (name: string): boolean => name.startsWith(MONID_PREFIX);
+/** Whether `name` is a third-party catalog's (MCP's or monid's), well formed or not: its default is ask. */
+export const isCatalogName = (name: string): boolean => isMcpName(name) || isMonidName(name);
+/** Why `name`, in monid's namespace, is refused as a grant by its name alone. */
+export const MONID_NAME_WORDS = (name: string): string => `${name} is not a monid endpoint's name: monid:<provider>/<endpoint> or monid:<provider>/*, the provider's slug (lowercase letters, digits, . and -) and the endpoint's path without its first / (letters, digits and -._:{}/), as monid lists them.`;
+/** One monid endpoint's catalog name read (`monid:<provider>/<endpoint>`), or undefined for any other name. */
+export function monidNameOf(name: string): { provider: string; endpoint: string } | undefined {
+  const parsed = parseToolName(name);
+  return parsed?.kind === "monid" ? { provider: parsed.provider, endpoint: parsed.endpoint } : undefined;
 }
 
 /** One MCP tool's catalog name, `mcp:<server>/<tool>`: what the gate, the pin and the timeline key its calls by. */
@@ -57,7 +89,7 @@ export function mcpNameOf(name: string): { server: string; tool: string } | unde
 /** The MCP server `name` names, one of its tools or its wildcard; undefined for any other name. */
 export function mcpServerOf(name: string): string | undefined {
   const parsed = parseToolName(name);
-  return parsed && parsed.kind !== "plain" ? parsed.server : undefined;
+  return parsed?.kind === "mcp" || parsed?.kind === "mcp-server" ? parsed.server : undefined;
 }
 
 /** Whether `name` is an MCP server's wildcard, `mcp:<server>/*`. */
@@ -78,3 +110,6 @@ export const mcpGrantNameProblem = (server: string, tool: string): string | unde
 /** Why a harness's own MCP client drops or retypes `tool` of `server` (its facts' schemaProblems, `dropped` the first):
  *  the words a save's blocker and a saved server's read both say. */
 export const mcpDroppedWords = (server: string, tool: string, harness: string, dropped: string): string => `The MCP server ${server}'s tool ${tool} cannot be offered on ${harness}: ${dropped.replace(/^mcp__\S+: /, "")}.`;
+/** Why the harness drops or retypes the pinned monid endpoint `tool`'s input (its facts' schemaProblems, `dropped` the
+ *  first, under the endpoint's wire name): the words a save refuses its grant with. */
+export const monidDroppedWords = (tool: string, harness: string, dropped: string): string => `The monid endpoint ${tool} cannot be offered on ${harness}: ${dropped.replace(/^monid__\S+: /, "")}. Grant its provider's other endpoints by name, or pick another harness.`;

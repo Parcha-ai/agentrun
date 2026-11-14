@@ -51,17 +51,17 @@ test("2. a pin refuses through the runner: a server-pinned MCP tool called outsi
 });
 
 test("3. approvals never lifts only a clean ask through the runner: a default ask runs unparked; a stand-in for a value that does not read stays an ask", async (t) => {
-  const clean = await specFor(t, { body: { tools: ["monid.run"], approvals: "never" } });
-  assert.equal((await answer(clean.spec, "monid.run")).decision, "allow", "a default ask nothing stands behind is an allow under never");
-  const standIn = await specFor(t, { body: { tools: ["monid.run"], approvals: "never" }, settings: { "monid.run": { permission: "maybe" } } });
-  assert.equal((await answer(standIn.spec, "monid.run")).decision, "ask", "a permission that does not read stands in as an ask, never lifted");
-  const asked = await specFor(t, { body: { tools: ["monid.run"], approvals: "ask" } });
-  assert.equal((await answer(asked.spec, "monid.run")).decision, "ask", "under ask, the default ask parks");
+  const clean = await specFor(t, { body: { tools: ["monid:faux/person/enrich"], approvals: "never" } });
+  assert.equal((await answer(clean.spec, "monid:faux/person/enrich")).decision, "allow", "a default ask nothing stands behind is an allow under never");
+  const standIn = await specFor(t, { body: { tools: ["monid:faux/person/enrich"], approvals: "never" }, settings: { "monid:faux/person/enrich": { permission: "maybe" } } });
+  assert.equal((await answer(standIn.spec, "monid:faux/person/enrich")).decision, "ask", "a permission that does not read stands in as an ask, never lifted");
+  const asked = await specFor(t, { body: { tools: ["monid:faux/person/enrich"], approvals: "ask" } });
+  assert.equal((await answer(asked.spec, "monid:faux/person/enrich")).decision, "ask", "under ask, the default ask parks");
 });
 
 test("4. tool settings that do not read fail closed through the runner: under never the ask is kept, and the plane over the store's read leaves native search off", async (t) => {
-  const { spec, store } = await specFor(t, { body: { tools: ["monid.run"], approvals: "never" }, settings: ["not", "an", "object"] });
-  assert.equal((await answer(spec, "monid.run")).decision, "ask", "an unread store keeps every ask under never: a deny may be behind it");
+  const { spec, store } = await specFor(t, { body: { tools: ["monid:faux/person/enrich"], approvals: "never" }, settings: ["not", "an", "object"] });
+  assert.equal((await answer(spec, "monid:faux/person/enrich")).decision, "ask", "an unread store keeps every ask under never: a deny may be behind it");
   const read = await loadToolSettings(store);
   assert.equal(read.unreadable, true, "the store's settings do not read");
   // The agent's own native pick on an ask (web_search's default is allow): under "never", a clean read lifts that ask and

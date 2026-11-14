@@ -121,6 +121,17 @@ test("a child gets exactly the tools the call names, an MCP tool among them, on 
   assert.equal(lines().filter((line) => line.child).length, before, "no child started");
 });
 
+test("past the deferral threshold, a child is offered the catalog tools it was given: the parent's deferral does not hide them from a child with no tools_search", { timeout: 240_000 }, async (t) => {
+  const { run, fake } = await setup(t, { mcp: true });
+  // 21 catalog tools: past DEFER_CATALOG_OVER (20), so the parent's are deferred and found with tools_search.
+  const extra = Array.from({ length: 20 }, (_, i) => `t${i + 1}`);
+  for (const name of extra) fake().tools[name] = { description: `Tool ${name}.`, input: { type: "object", properties: {} }, run: () => ({ content: [{ type: "text", text: name }] }) };
+  const tools = ["read", "mcp:fake/add", ...extra.map((name) => `mcp:fake/${name}`), "subagent"];
+  const offered = await run("subset-deferred", { tools }, delegate([{ prompt: "Tools?", tools: ["mcp:fake/add"], model: "strong" }]));
+  assert.equal(offered.last.status, "completed", JSON.stringify(offered.view));
+  assert.equal(offered.answer, "Results: Offered: mcp__fake__add", "the child is offered the tool it was given");
+});
+
 test("a session name gives the child that one tool alone; its catalog name gives every tool of it", () => {
   const BROWSER = ["browser_read", "browser_click", "browser_upload", "run"];
   const options = { granted: ["read", "browser", "mcp:fake/add"], sessionNames: (catalog) => (catalog === "browser" ? BROWSER : [catalog === "mcp:fake/add" ? "mcp__fake__add" : catalog]) };
