@@ -1017,9 +1017,32 @@ test("Archil: the mount's label records the folder's agent alone, since agentrun
 const ownLongest = (image, more = {}) => ({ [COMPUTER]: "1", [NAME]: "computer-000000000000", [DEADLINE]: new Date(0).toISOString(), "agentrun.computer.image": image, [MAX]: new Date(0).toISOString(), ...more });
 const pairBytes = (labels) => Object.entries(labels).reduce((sum, [key, value]) => sum + Buffer.byteLength(key) + Buffer.byteLength(value), 0);
 
-test("facts.labelBytes: the adapter prices the caller's labels with its own at their longest, names and values, at check() and at create, before any host call", async () => {
+test("facts.labels.count: the adapter counts the caller's labels with its own as create gives them, at check() with no host call, and create refuses the same words before any host call", async () => {
+	const own = Object.keys(ownLongest(SPEC.image)).length;
+	const { provider, fake } = setup({}, { facts: { labels: { count: own + 2 } } });
+	assert.deepEqual(provider.check({ ...SPEC, labels: { a: "1", b: "2" } }), [], "at the bound");
+	const spec = { ...SPEC, labels: { a: "1", b: "2", c: "3" } };
+	const over = provider.check(spec);
+	assert.deepEqual(over, [{ field: "labels", message: `a Fakehost computer carries at most ${own + 2} labels, the adapter's own among them, and this one's would carry ${own + 3}, ${own} of them the adapter's: give at most 2 labels` }]);
+	assert.deepEqual(fake.calls, [], "check made no host call");
+	const refused = await create(provider, spec);
+	assert.equal(refused.error?.code, "refused");
+	assert.equal(refused.error.message, `labels: ${over[0].message}`);
+	assert.deepEqual(fake.calls, [], "create made no host call");
+	// An Archil mount's label and a GPU's count as create gives them; a count past the bound is the labels' to fix, even on an Archil computer.
+	const archil = setup({}, { facts: { labels: { count: own + 1 + Object.keys(ARCHIL_SPEC.labels).length } } });
+	assert.deepEqual(archil.provider.check(ARCHIL_SPEC), []);
+	const more = archil.provider.check({ ...ARCHIL_SPEC, labels: { ...ARCHIL_SPEC.labels, a: "1" } });
+	assert.deepEqual(more.map(({ field }) => field), ["labels"]);
+	assert.match(more[0].message, new RegExp(`, ${own + 1} of them the adapter's`));
+	const gpu = setup({ ...WITH_GPU }, { facts: { labels: { count: own + 1 } } });
+	assert.deepEqual(gpu.provider.check({ ...SPEC, gpu: H100 }), []);
+	assert.match(gpu.provider.check({ ...SPEC, gpu: H100, labels: { a: "1" } })[0]?.message ?? "", new RegExp(`, ${own + 1} of them the adapter's: give at most 0 labels`));
+});
+
+test("facts.labels.bytes: the adapter prices the caller's labels with its own at their longest, names and values, at check() and at create, before any host call", async () => {
 	const own = pairBytes(ownLongest(SPEC.image));
-	const pairs = setup({}, { facts: { labelBytes: own + 10 } });
+	const pairs = setup({}, { facts: { labels: { bytes: own + 10 } } });
 	assert.deepEqual(pairs.provider.check({ ...SPEC, labels: { a: "123456789" } }), [], "10 bytes fit");
 	const over = pairs.provider.check({ ...SPEC, labels: { a: "1234567890" } });
 	assert.deepEqual(over.map(({ field }) => field), ["labels"]);
@@ -1031,7 +1054,7 @@ test("facts.labelBytes: the adapter prices the caller's labels with its own at t
 	assert.deepEqual(pairs.fake.calls, [], "no host call");
 	// Archil: the mount's own label is priced too, and the mount is the field.
 	const archilOwn = pairBytes(ownLongest(ARCHIL_SPEC.image, { "agentrun.mount": JSON.stringify({ kind: "archil", disk: MOUNT.disk, region: MOUNT.region, agent: "a1" }) })) + pairBytes(ARCHIL_SPEC.labels);
-	const archil = setup({}, { facts: { labelBytes: archilOwn } });
+	const archil = setup({}, { facts: { labels: { bytes: archilOwn } } });
 	assert.deepEqual(archil.provider.check(ARCHIL_SPEC), [], "an Archil computer's labels at the bound fit");
 	const long = archil.provider.check({ ...ARCHIL_SPEC, mount: { ...MOUNT, folder: "agents/a12/runs/r1/work" } });
 	assert.deepEqual(long.map(({ field }) => field), ["mount"]);
@@ -1039,7 +1062,7 @@ test("facts.labelBytes: the adapter prices the caller's labels with its own at t
 	noToken(long, "the refusal of the labels' size");
 	// A GPU computer's label is priced too.
 	const gpuOwn = pairBytes(ownLongest(SPEC.image, { [GPU_LABEL]: "H100:1" }));
-	const gpu = setup({ ...WITH_GPU }, { facts: { labelBytes: gpuOwn } });
+	const gpu = setup({ ...WITH_GPU }, { facts: { labels: { bytes: gpuOwn } } });
 	assert.deepEqual(gpu.provider.check({ ...SPEC, gpu: H100 }), [], "at the bound");
 	assert.match(gpu.provider.check({ ...SPEC, gpu: H100, labels: { a: "" } })[0].message, new RegExp(`${GPU_LABEL} 27`));
 });

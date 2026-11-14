@@ -1263,9 +1263,9 @@ runs on the VM runtime, or on gVisor for a GPU computer (below). Its unit tests 
   `memoryMb` becomes `memoryLimitMiB`, each with Modal's default request (0.125 cores, 128 MiB) or less. `pids` and
   `workdir` are refused: Modal has no pids limit, and a computer works in `/work`, its home.
 - **Tags.** A sandbox's tags are the adapter's labels (`agentrun.computer`, its name, deadline, image and the most its
-  deadline may reach, and a GPU computer's GPUs) and the caller's. Modal takes 10 tags: its create refuses more, in
-  words, before `sandboxes.create`. Modal holds a sandbox's tags to 512 bytes, names and values together (the host's
-  `labelBytes`): the adapter's `check()` counts them, its own at their longest, and refuses past it in words. An Archil computer's mount label records the
+  deadline may reach, and a GPU computer's GPUs) and the caller's. Modal takes 10 tags, 512 bytes of them, names and
+  values together (the host's `labels`): the adapter's `check()` counts them as create gives them, its own at their
+  longest, and refuses past either in words with no call; create refuses the same words first. An Archil computer's mount label records the
   folder's agent alone, as on every host: the folder's run is the `agentrun.run` label's. `list` is `sandboxes.list({ appId, tags })` over the provider's app: running sandboxes only, and one Modal still
   lists after its terminate is polled and left out once `poll()` reads it finished.
 - **release** `delete` is `terminate()`, and the adapter waits until get answers none (`poll()` reads it finished).
@@ -1985,7 +1985,7 @@ names the API key by its sha256 prefix alone.
 | `extend` | `GET`, then `PATCH` of the whole `metadata` with the new deadline label, since a PATCH replaces it |
 | `exec` | SSH as root over a binary WebSocket to `wss://{id}-22022.agent37.app/`, one channel per process on the instance's shared connection (below) |
 | `errorCode` | the envelope's `error.code` (or a flat `error` string), then the HTTP status; ssh2's `client-authentication` is `denied` |
-| `check` | a template name with an optional `@version`; one of Agent37's four shapes; at most 4 CPUs; metadata within 4096 bytes with the provider's own labels (the host's `labelBytes`; create holds the JSON, quotes and commas too, to it) |
+| `check` | a template name with an optional `@version`; one of Agent37's four shapes; at most 4 CPUs; metadata within 4096 bytes with the provider's own labels (the host's `labels.bytes`; create holds the JSON, quotes and commas too, to it) |
 
 Agent37 has no request id and no unique name, so a retried POST makes a second instance: the adapter lists the name
 label and keeps the oldest by `created` (whole seconds; ties go to the lowest id), as it does for every vendor.

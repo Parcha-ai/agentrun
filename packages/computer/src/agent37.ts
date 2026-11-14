@@ -304,7 +304,7 @@ class Agent37Host implements MachineHost {
 			vendorAgentPorts: [AGENT37_SSH_PORT, AGENT37_TTYD_PORT],
 			// The box template has xfwm4 (box/build-agent37.mjs): the apps an agent opens are framed and focused.
 			windowManager: true,
-			labelBytes: METADATA_MAX_BYTES,
+			labels: { bytes: METADATA_MAX_BYTES },
 		};
 	}
 
@@ -333,7 +333,7 @@ class Agent37Host implements MachineHost {
 		return parsed as T;
 	}
 
-	/** An Agent37 template is a name, with an optional @<version>; a size is one of Agent37's four shapes. The adapter holds metadata to 4 KB (labelBytes). */
+	/** An Agent37 template is a name, with an optional @<version>; a size is one of Agent37's four shapes. The adapter holds metadata to 4 KB (facts.labels.bytes). */
 	check(given: Partial<ComputerSpec>): Refusal[] {
 		const refusals: Refusal[] = [];
 		const { image, cpus, memoryMb } = given;

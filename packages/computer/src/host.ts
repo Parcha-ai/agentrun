@@ -202,8 +202,9 @@ export interface HostFacts {
 	/** What spec.user may ask for, beside the daemon user: with it, the spec's user goes in MachineRequest.user. */
 	user?: Array<"root" | "uid">;
 	/**
-	 * The most bytes a machine's labels come to, every name and value together, the adapter's own at their longest with
-	 * the caller's: past it check() refuses. Absent: no bound.
+	 * The most a machine's labels may be, the adapter's own with the caller's: count, how many; bytes, every name and
+	 * value together, the adapter's at their longest. Past either, check() refuses, and so create, before any host call.
+	 * Absent: no bound.
 	 */
-	labelBytes?: number;
+	labels?: { count?: number; bytes?: number };
 }

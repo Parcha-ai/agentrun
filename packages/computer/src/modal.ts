@@ -187,7 +187,7 @@ class ModalHost implements MachineHost {
 			vendorAgentPorts: [],
 			// Never root: each connection is Modal's exec of the stdio bridge, as Modal's root, outside the daemon.
 			user: ["uid"],
-			labelBytes: MAX_TAG_BYTES,
+			labels: { count: MAX_TAGS, bytes: MAX_TAG_BYTES },
 		};
 	}
 
@@ -215,7 +215,7 @@ class ModalHost implements MachineHost {
 
 	/**
 	 * Modal's own rules of a spec, over the adapter's: an image Modal can pull or holds (no option, no space), sizes in
-	 * the units Modal takes. No call; the adapter holds the tags to Modal's 512 bytes (labelBytes).
+	 * the units Modal takes. No call; the adapter holds the tags to Modal's 10 and 512 bytes (facts.labels).
 	 */
 	check(spec: Partial<ComputerSpec>): Refusal[] {
 		const refusals: Refusal[] = [];
@@ -240,8 +240,6 @@ class ModalHost implements MachineHost {
 	async create(req: MachineRequest, ctx: HostCall): Promise<{ id: string }> {
 		void ctx;
 		if (req.command === undefined) throw new HostError("invalid", "a Modal sandbox's command is the entrypoint the adapter gives a pid1 host, and the request has none");
-		const tags = Object.keys(req.labels).length;
-		if (tags > MAX_TAGS) throw new HostError("invalid", `Modal takes at most ${MAX_TAGS} tags on a sandbox, and this one's would be ${tags}: give fewer labels`);
 		let base: Image;
 		if (MODAL_IMAGE_ID.test(req.image)) {
 			const fromId = this.#sdk.images.fromId;

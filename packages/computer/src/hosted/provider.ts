@@ -390,8 +390,8 @@ export class HostedProvider implements ComputerProvider {
 		const bad = entries === undefined ? "labels must map names to strings" : entries.map(([key, value]) => labelProblem(key, value)).find(Boolean);
 		if (bad) refuse("labels", bad);
 		else if (typeof image === "string" && (!archil || ["disk", "region", "folder"].every((key) => typeof (mount as Record<string, unknown>)[key] === "string"))) {
-			const over = this.#labelBytes(given as unknown as ComputerSpec);
-			if (over) refuse(archil ? "mount" : "labels", over);
+			const over = this.#labelsOver(given as unknown as ComputerSpec);
+			if (over) refuse(archil && over.bytes ? "mount" : "labels", over.why);
 		}
 		refusals.push(...checkGpu(given.gpu, capabilities, mount));
 		for (const [field, value] of Object.entries(given)) {
@@ -415,16 +415,25 @@ export class HostedProvider implements ComputerProvider {
 		return (this.#takesUser ? specUserOf(spec.user) : undefined) ?? `${this.#uid}:${this.#gid}`;
 	}
 
-	/** Why a spec's labels, with the adapter's own at their longest (an ISO time each deadline), come to more bytes than the vendor takes; undefined when they fit. */
-	#labelBytes(spec: ComputerSpec): string | undefined {
-		const max = this.host.facts.labelBytes;
-		if (max === undefined) return undefined;
+	/**
+	 * Why a spec's labels, with the adapter's own (#labelsOf, as create gives them, each deadline an ISO time at its
+	 * longest), are more, or come to more bytes, than the vendor takes (facts.labels); undefined when they fit.
+	 */
+	#labelsOver(spec: ComputerSpec): { bytes: boolean; why: string } | undefined {
+		const { count, bytes: max } = this.host.facts.labels ?? {};
 		const at = new Date(0).toISOString();
 		const labels = this.#labelsOf(spec, "computer-000000000000", at, at);
+		const keys = Object.keys(labels);
+		if (count !== undefined && keys.length > count) {
+			// labelProblem refuses a caller's label of the adapter's names, so the two never overlap.
+			const own = keys.length - Object.keys(spec.labels ?? {}).length;
+			return { bytes: false, why: `${a(this.#label)} computer carries at most ${count} labels, the adapter's own among them, and this one's would carry ${keys.length}, ${own} of them the adapter's: give at most ${count - own} labels` };
+		}
+		if (max === undefined) return undefined;
 		const sizes = Object.entries(labels).map(([key, value]) => [key, Buffer.byteLength(key) + Buffer.byteLength(value)] as const);
 		const bytes = sizes.reduce((sum, [, size]) => sum + size, 0);
 		if (bytes <= max) return undefined;
-		return `${a(this.#label)} computer's labels come to at most ${max} bytes, names and values together, and this computer's would come to ${bytes} (${sizes.map(([key, size]) => `${key} ${size}`).join(", ")}): give a shorter image, mount folder or labels`;
+		return { bytes: true, why: `${a(this.#label)} computer's labels come to at most ${max} bytes, names and values together, and this computer's would come to ${bytes} (${sizes.map(([key, size]) => `${key} ${size}`).join(", ")}): give a shorter image, mount folder or labels` };
 	}
 
 	/** A host call bounded by ms, the caller's signal when given. */
