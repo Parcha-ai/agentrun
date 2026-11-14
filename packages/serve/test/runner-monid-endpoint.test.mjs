@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import { KEY } from "./fixtures/faux-monid.mjs";
+import { KEY, release as releaseHeld, stalled } from "./fixtures/faux-monid.mjs";
 import { closeOpenSessions, scriptedOrigin } from "./conformance-pi-adapter.mjs";
 import { specFor } from "./runner-spec-support.mjs";
 
@@ -195,7 +195,7 @@ async function monidRun(t, { script, tools, pin, toolSettings, launch = {}, requ
     return ["ended", "failed", "stopped", "parked"].includes(now.state) && now.runner === null && now;
   }, "the run rests");
   const records = await journalRecords(server.journal({ runId: RUN, runner: "reader", epoch: row.epoch, until: 0, from: row.state }), ctx);
-  return { row, records, asks: records.entries.filter((entry) => entry.kind === "agentrun.ask").map((entry) => entry.data) };
+  return { row, records, server, asks: records.entries.filter((entry) => entry.kind === "agentrun.ask").map((entry) => entry.data) };
 }
 
 test("a pinned endpoint's ask card names it and shows its pinned price", async (t) => {
@@ -210,6 +210,58 @@ test("a call priced by usage asks with monid's estimate for its own input on its
   assert.equal(one.row.state, "parked", JSON.stringify(one.row));
   assert.deepEqual(one.asks.map((ask) => [ask.tool, ask.price]), [[SEARCH, { estimate_usd: 0.003 }]], JSON.stringify(one.asks));
   assert.deepEqual(sent().map((call) => call.maxCost), [0], "only the estimate read, which runs nothing");
+});
+
+test("a pinned endpoint monid has re-priced by usage since the save asks with monid's estimate on its card, never its old pinned price", async (t) => {
+  const sent = callLog(t);
+  // Pinned at $0.01 a call when the agent was saved; monid now prices it per result and estimates three results ($0.003).
+  const stale = { ...USAGE_PIN[SEARCH], usd: 0.01 };
+  const one = await monidRun(t, { tools: [SEARCH], pin: { [SEARCH]: stale }, script: [{ call: "monid__faux__person__search", args: SEARCH_ARGS }, { say: "done" }] });
+  assert.equal(one.row.state, "parked", JSON.stringify(one.row));
+  assert.deepEqual(one.asks.map((ask) => [ask.tool, ask.price]), [[SEARCH, { estimate_usd: 0.003 }]], JSON.stringify(one.asks));
+  assert.deepEqual(sent().map((call) => call.maxCost), [0], "only the estimate read, which runs nothing");
+});
+
+test("a card already asked is answered without reading monid's estimate again: a deny after the run parked sends nothing more", async (t) => {
+  const sent = callLog(t);
+  const one = await monidRun(t, { tools: [SEARCH], pin: USAGE_PIN, script: [{ call: "monid__faux__person__search", args: SEARCH_ARGS }, { say: "done" }] });
+  assert.equal(one.row.state, "parked", JSON.stringify(one.row));
+  const [ask] = one.asks;
+  await one.server.command(RUN, { kind: "deny", body: { approval: ask.callId, note: "not this one" } });
+  const row = await until(async () => {
+    const now = await one.server.runs.get(RUN);
+    return ["ended", "failed", "stopped"].includes(now.state) && now.runner === null && now;
+  }, "the run ends after the deny");
+  assert.equal(row.state, "ended", JSON.stringify(row));
+  assert.deepEqual(sent().map((call) => call.maxCost), [0], "the card's one estimate read, and nothing on the answer");
+});
+
+test("a card's estimate read is cut off by the run's stop and by the claim's release, never left running at monid", async (t) => {
+  callLog(t);
+  const before = process.env.AGENTRUN_TEST_FAUX_MONID_STALL;
+  process.env.AGENTRUN_TEST_FAUX_MONID_STALL = "1";
+  t.after(() => {
+    if (before === undefined) delete process.env.AGENTRUN_TEST_FAUX_MONID_STALL; else process.env.AGENTRUN_TEST_FAUX_MONID_STALL = before;
+    releaseHeld();
+  });
+  const { spec } = await specFor(t, { body: { tools: [SEARCH], monidPin: USAGE_PIN }, keys: { MONID_API_KEY: KEY }, env: env() });
+  // Stopped: the run's stop signal reaches the read.
+  const stop = new AbortController();
+  const stoppedRead = spec.mcp.priceOf(SEARCH, { callId: "c1", args: SEARCH_ARGS, signal: stop.signal });
+  const first = await stalled();
+  assert.equal(first.aborted, false, "held while the run goes on");
+  stop.abort(new Error("the run was stopped"));
+  assert.equal(first.aborted, true, "the stop cuts the read off");
+  releaseHeld();
+  await stoppedRead;
+  // Released: the claim letting its tools go cuts off a read still out.
+  const releasedRead = spec.mcp.priceOf(SEARCH, { callId: "c2", args: SEARCH_ARGS });
+  const second = await stalled();
+  assert.equal(second.aborted, false, "held while the claim holds it");
+  spec.mcp.release();
+  assert.equal(second.aborted, true, "the claim's release cuts the read off");
+  releaseHeld();
+  await releasedRead;
 });
 
 test("past the deferral threshold, tools_search finds a pinned endpoint by what it does, with its pinned input", async (t) => {
