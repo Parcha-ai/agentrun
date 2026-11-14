@@ -647,8 +647,12 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
           state = "idle";
         },
         async turnEnd() {
-          if (!running) throw new Error("agentrun-harness-claude: no turn is in flight");
-          return running;
+          if (running) return running;
+          // No turn ran in this session: the last turn the session's records hold, ended before it opened (a lost runner's
+          // steer the model already answered, placed again here, starts no turn). None at all: there is no turn to wait for.
+          const last = turnsIn(drive).at(-1)?.data as { status?: TurnStatus; error?: string } | undefined;
+          if (last?.status && !holdsTurn(drive.state())) return { status: last.status, ...(last.error ? { error: last.error } : {}) };
+          throw new Error("agentrun-harness-claude: no turn is in flight");
         },
         async interrupt(interruptOptions = {}) {
           const drainMs = interruptOptions.drainMs ?? 0;

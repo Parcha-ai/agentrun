@@ -133,3 +133,28 @@ test('a steer placed as the turn ends, at every point of its ending: the model i
     await s.close();
   }
 });
+
+test('a session opened after the steer\'s turn ended (a runner lost before it recorded the steer): the steer placed again starts no turn, the session says the model has it, and turnEnd() gives the turn that answered it', async (t) => {
+  const first = await session(t, 'step:steer-reopen');
+  await first.s.send('go');
+  await first.started;
+  await first.s.steer('check the totals', 'req-1');
+  first.release();
+  assert.equal((await first.s.turnEnd()).status, 'completed');
+  // The CLI's transcript lines reach the session's log once their coalesce window has passed.
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  await first.s.close();
+
+  // The next runner's session, over the same records.
+  const sdk = fakeSdk({ mirrorLagMs: 10, script: () => undefined, onMessage: (m) => first.seen.push(m) });
+  const adapter = claudeAgentAdapter({ model: 'claude-test', provider: { origin: 'https://faux.invalid', credential: () => 'not-a-secret' }, price: () => 0, sessionsDir: join(ROOT, `s${n++}`), standIn: { command: process.execPath }, sdk });
+  const events = [];
+  const s = await adapter.open({ key: first.key, label: 'steer', system: [], tools: [], context: 'fresh' }, { store: first.store, writer: await first.store.open(first.key), models, signal: new AbortController().signal, onEvent: (e) => events.push(e) });
+  t.after(() => s.close());
+  assert.equal(s.state, 'idle', 'the turn ended before this session opened');
+  await s.steer('check the totals', 'req-1');
+  assert.ok(events.some((e) => e.type === 'message_taken' && e.ids.includes('req-1')), 'the session says the model has it');
+  assert.equal((await s.turnEnd()).status, 'completed', 'the turn that answered it');
+  assert.equal(events.filter((e) => e.type === 'turn_end').length, 0, 'no turn started');
+  assert.equal(first.seen.filter((m) => m.text === 'check the totals').length, 1, 'the CLI was handed it once');
+});
