@@ -5,6 +5,8 @@
 // fake MCP server. No key, no network.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { agent, follow, retried, serve, withEnv } from "./support.mjs";
@@ -115,4 +117,32 @@ test("a save while a granted server is down keeps its previous pin when the edit
   const fresh = await retried(api)("POST", "/agents", agent("fresh", { tools: [ADD] }));
   assert.equal(fresh.status, 422, JSON.stringify(fresh.body));
   assert.match(JSON.stringify(fresh.body), /The MCP server fake could not be listed to pin its tools/);
+});
+
+test("a revision saved before this release has no pin: its run is refused (409) saying to save the agent again, and saving the unchanged definition pins it and runs", { timeout: 240_000 }, async (t) => {
+  const { api, data } = await setup(t);
+  assert.equal((await retried(api)("POST", "/agents", agent("older", { tools: [ADD], tool_settings: ALLOW }))).status, 201);
+  const first = (await api("GET", "/agents/older")).body;
+  // What a server open leaves on a revision an earlier build saved: the column, null (store/sqlite/store.ts open).
+  const raw = new DatabaseSync(join(data, "store.sqlite"), { timeout: 10_000 });
+  try {
+    raw.prepare("UPDATE revisions SET mcp_pin = NULL WHERE id = ?").run(first.revision);
+  } finally {
+    raw.close();
+  }
+  assert.equal((await api("GET", "/agents/older")).body.mcp_pin, null);
+  const refused = await api("POST", "/agents/older/runs", { input: { content: 'Call mcp__fake__add with {"a":2,"b":3}' } });
+  assert.equal(refused.status, 409, JSON.stringify(refused.body));
+  assert.equal(refused.body.error.code, "agent_not_runnable", JSON.stringify(refused.body));
+  assert.match(JSON.stringify(refused.body), /The MCP tool mcp:fake\/add was not pinned when this revision was saved: save the agent again to pin it\./);
+  const definition = { ...first.definition };
+  delete definition.version;
+  assert.equal((await api("PUT", "/agents/older/definition", { definition })).status, 200);
+  const saved = (await api("GET", "/agents/older")).body;
+  assert.equal(saved.revisions, 2, "the unchanged definition saved again is a new revision: it holds a pin the old one did not");
+  assert.deepEqual(saved.mcp_pin, { fake: { tools: [PINNED_ADD] } });
+  const started = await api("POST", "/agents/older/runs", { input: { content: 'Call mcp__fake__add with {"a":2,"b":3}' } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  assert.equal((await follow(api, started.body.run_id, ["completed", "failed"], { deadlineMs: 180_000 })).last.status, "completed");
+  assert.match(await answerOf(api, started.body.run_id), /The tool said: 5/);
 });

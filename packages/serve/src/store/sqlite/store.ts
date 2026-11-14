@@ -10,7 +10,7 @@ import { DatabaseSync } from "node:sqlite";
 import { watchCommandsAt, wakeCommands } from "../command-wake.js";
 import { claimFence, storeNow, type StoreNow } from "../fence.js";
 import { RunStorage } from "../journal/storage.js";
-import { COMMANDS_ONE_ANSWER, DDL, SCHEMA_VERSION } from "../schema.js";
+import { COMMANDS_ONE_ANSWER, DDL, REVISIONS_MCP_PIN, SCHEMA_VERSION } from "../schema.js";
 import {
   AgentArchived, CommandTaken, ExternalBodyConflict, Fenced, RunFinal, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreConstraint, StoreFromEarlierVersion, TriggerFull, type AgentRow, type Agents,
   type Claim, type Command, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunRow, type Runs,
@@ -292,8 +292,14 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
     // counted refused answers: the server rebuilds it, so a second answer to one approval is refused on every store. A
     // store such a build left may hold two unrefused answers to one approval: the earliest stands (the one the runner
     // acted on) and each later one is refused in the same write, before the index, so the store opens. None is deleted.
+    // An earlier build of this version pinned each run's MCP tools at its first claim (mcp_pins) and kept no pin on a
+    // revision: the server adds revisions.mcp_pin (schema.ts REVISIONS_MCP_PIN) and drops mcp_pins. A revision saved
+    // before has no pin, so its run is refused (409) until the agent is saved again; no run's pin moves to a revision.
     if (role === "server") {
+      const pinned = await connection.get<{ name: string }>("SELECT name FROM pragma_table_info('revisions') WHERE name = 'mcp_pin'");
       await connection.write([
+        ...(pinned ? [] : [{ sql: REVISIONS_MCP_PIN }]),
+        { sql: "DROP TABLE IF EXISTS mcp_pins" },
         { sql: "DROP TABLE IF EXISTS browser_viewers" },
         { sql: SECOND_ANSWERS_REFUSED, params: [(options.now ?? Date.now)()] },
         { sql: "DROP INDEX IF EXISTS commands_one_answer" },

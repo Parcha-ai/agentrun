@@ -1,4 +1,4 @@
-// The store's one schema, version 12 (design 2.1). Nothing migrates into it: the rewrite replaces the old stores, and a store
+// The store's one schema, version 11 (design 2.1). Nothing migrates into it: the rewrite replaces the old stores, and a store
 // an older build made is refused as a version this build does not know. The server sets it up once at its start (a
 // store_meta row holds the version); a runner refuses a version it does not know. Version 2 adds the computer ledger;
 // version 3 numbers each save of a sign-in (sign_ins.save); version 4 stamps an MCP token's end (mcp_servers.token_until);
@@ -8,8 +8,9 @@
 // run-change feed (run_changes), each channel post's tries (channel_attempts) and the claim a post's try settles under
 // (channel_posts.claim); version 9 adds where a live viewer answers (computer_viewers.host, a runner's live host,
 // live-reach.ts); version 10 pairs a person's own computer (paired_computers, pairing_codes); version 11 keeps a command's answer
-// (commands.answer); version 12 pins an agent's MCP tools on its revision when it is saved (revisions.mcp_pin), in place of
-// each run's pin at its first claim (the mcp_pins table, gone).
+// (commands.answer). An agent's MCP tools are pinned on its revision when it is saved (revisions.mcp_pin, REVISIONS_MCP_PIN),
+// in place of each run's pin at its first claim (the mcp_pins table): a server open adds the column to a store an earlier
+// build of this version made and drops the table, so a revision saved before has no pin until the agent is saved again.
 // Conventions: every time is INTEGER epoch milliseconds; JSON is TEXT checked by json_valid; money is REAL US dollars;
 // sealed columns hold ciphertext only (sealed with the server's key outside the store), so the store never sees a secret
 // in the clear. Foreign keys are on (the connection's pragma).
@@ -21,7 +22,7 @@
 // journal tables, keyed by run_id (store/journal): one schema for every run's journal, so a query joins runs and their
 // journals.
 
-export const SCHEMA_VERSION = 12;
+export const SCHEMA_VERSION = 11;
 
 /** One answer per approval of a run: a second approve or deny command naming the same approval is refused
  *  (StoreConstraint), so the first answer a person gives wins from the moment it is written, before the runner takes it
@@ -32,6 +33,10 @@ export const ONE_ANSWER_INDEX = "commands_one_answer";
 export const COMMANDS_ONE_ANSWER = `CREATE UNIQUE INDEX IF NOT EXISTS ${ONE_ANSWER_INDEX} ON commands (run_id, json_extract(body, '$.approval')) WHERE kind IN ('approve', 'deny') AND refused IS NULL`;
 
 const json = (column: string, nullable = false) => `${column} TEXT${nullable ? "" : " NOT NULL"} CHECK (${column} IS NULL OR json_valid(${column}))`;
+
+/** A revision's MCP pin, as its save listed the tools (JSON, null when it grants no MCP tool). In STORE_DDL, and added at a
+ *  server open to a store an earlier build of this version made (one that pinned each run in mcp_pins, dropped at that open). */
+export const REVISIONS_MCP_PIN = `ALTER TABLE revisions ADD COLUMN ${json("mcp_pin", true)}`;
 
 export const STORE_DDL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS store_meta (
