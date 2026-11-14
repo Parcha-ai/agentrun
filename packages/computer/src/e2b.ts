@@ -6,7 +6,6 @@
 // used here is cited in the README's E2B section, from e2b@2.63.0 (dist/index.mjs) and e2b-dev/infra@ff3922213 (envd).
 import type { Sandbox, SandboxInfo, SandboxOpts } from "e2b";
 import { E2B, E2B_BASE_TEMPLATE, E2B_DESKTOP_TEMPLATE } from "./descriptors/e2b.js";
-import { WINDOW_MANAGER } from "./desktop.js";
 import type { HostCall, HostFacts, Machine, MachineHost, MachineProcess, MachineRequest } from "./host.js";
 import { deadlineOf, HostedProvider, type HostedOptions, type HostedTimeouts, IMAGE_LABEL } from "./hosted/provider.js";
 import { shellLine } from "./hosted/scripts.js";
@@ -251,6 +250,8 @@ class E2BHost implements MachineHost {
 		maxLifetimeMs: PRO_MAX_MS,
 		arch: "amd64",
 		vendorAgentPorts: [ENVD_PORT],
+		// E2B Desktop's template has xfwm4, which its own desktop runs: the apps an agent opens are framed and focused.
+		windowManager: true,
 		networkReadBack: true,
 		network: [...E2B.network],
 		mounts: [...MOUNT],
@@ -485,8 +486,6 @@ export class E2BProvider extends HostedProvider {
 			throw new Error(`maxLifetimeMs must be a whole number of ms above 0 and at most 24 h (${PRO_MAX_MS} ms), E2B Pro's longest sandbox; Hobby's is 1 h`);
 		}
 		const requestMs = rest.timeouts?.requestMs ?? DEFAULT_REQUEST_MS;
-		// E2B Desktop's template has xfwm4, which its own desktop runs: the apps an agent opens are framed and focused.
-		const desktop = { windowManager: WINDOW_MANAGER, ...rest.desktop };
-		super(new E2BHost(Sandbox, connectionOptions({ apiKey, domain }), requestMs), { ...rest, desktop, label: "E2B", kind, maxLifetimeMs });
+		super(new E2BHost(Sandbox, connectionOptions({ apiKey, domain }), requestMs), { ...rest, label: "E2B", kind, maxLifetimeMs });
 	}
 }

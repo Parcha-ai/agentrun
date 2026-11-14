@@ -4,3 +4,7 @@ description: With AGENTRUN_TEST_EVAL_HOLD set, the run holds in its turn until s
 Hold until stopped.
 Answer:
 Released.
+
+```json
+{"verdict": "good", "score": 50, "summary": "held"}
+```
