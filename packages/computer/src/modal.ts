@@ -11,7 +11,8 @@ import { MODAL, MODAL_DEFAULT_IMAGE, MODAL_GPU } from "./descriptors/modal.js";
 import { COMPUTER_LABEL, DEADLINE_LABEL, DEFAULT_CPUS, DEFAULT_MEMORY_MB, WORK } from "./drift.js";
 import type { HostCall, HostFacts, Machine, MachineHost, MachineProcess, MachineRequest } from "./host.js";
 import { HostedProvider, type HostedOptions, type HostedTimeouts, IMAGE_LABEL, MAX_LABEL, NAME_LABEL } from "./hosted/provider.js";
-import { words } from "./hosted/process.js";
+import { codeOfError, words } from "./hosted/process.js";
+import { isWhole } from "./hosted/values.js";
 import type { KindCapabilities } from "./kinds.js";
 import { RUN_LABEL } from "./labels.js";
 import type { MountKind } from "./mount.js";
@@ -165,7 +166,6 @@ const MODAL_TIMEOUTS: Partial<HostedTimeouts> = { requestMs: 60_000, createMs: 6
 const FOLDER = /^agents\/([^/]+)\/runs\/([^/]+)\/work$/;
 
 const isNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
-const isWhole = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value);
 const isLabels = (value: unknown): value is Record<string, string> =>
 	typeof value === "object" && value !== null && !Array.isArray(value) && Object.values(value).every((one) => typeof one === "string");
 
@@ -288,16 +288,9 @@ class ModalHost implements MachineHost {
 		return this.#app;
 	}
 
-	/** The sandbox with an id: the one create gave, or sandboxes.fromId; undefined when Modal does not know it. */
-	async #sandbox(id: string): Promise<Sandbox | undefined> {
-		const known = this.#sandboxes.get(id);
-		if (known !== undefined) return known;
-		try {
-			return await this.#sdk.sandboxes.fromId(id);
-		} catch (error) {
-			if (codeOf(error) === "not_found") return undefined;
-			throw error;
-		}
+	/** The sandbox with an id: the one create gave, or sandboxes.fromId, which throws NotFoundError for one Modal does not know. */
+	async #sandbox(id: string): Promise<Sandbox> {
+		return this.#sandboxes.get(id) ?? this.#sdk.sandboxes.fromId(id);
 	}
 
 	/**
@@ -370,9 +363,7 @@ class ModalHost implements MachineHost {
 	 */
 	async get(id: string, ctx: HostCall): Promise<Result<Machine | undefined>> {
 		void ctx;
-		const sandbox = await this.#sandbox(id);
-		if (sandbox === undefined) return ok(undefined);
-		return ok(await this.#machine(sandbox));
+		return ok(await this.#machine(await this.#sandbox(id)));
 	}
 
 	/** One sandbox read: none once it has finished or Modal no longer knows it. */
@@ -414,17 +405,15 @@ class ModalHost implements MachineHost {
 
 	/**
 	 * terminate, which returns before Modal has ended the sandbox (sandbox.ts:1292-1296): the adapter waits for it to be
-	 * gone. One Modal no longer knows, or one that had finished when terminate failed, is done.
+	 * gone. One Modal no longer knows (not_found, done to the adapter), or one that had finished when terminate failed, is done.
 	 */
 	async delete(id: string, ctx: HostCall): Promise<Result<void>> {
 		void ctx;
-		const sandbox = await this.#sandbox(id);
-		this.#sandboxes.delete(id);
-		if (sandbox === undefined) return ok(undefined);
+		const sandbox = await this.#sandbox(id).finally(() => this.#sandboxes.delete(id));
 		try {
 			await sandbox.terminate();
 		} catch (error) {
-			if (codeOf(error) === "not_found") return ok(undefined);
+			if (codeOf(error) === "not_found") throw error;
 			const finished = await sandbox.poll().then(
 				(code) => code !== null,
 				(polled: unknown) => codeOf(polled) === "not_found",
@@ -442,7 +431,6 @@ class ModalHost implements MachineHost {
 	async exec(id: string, argv: readonly string[], { stdin }: { stdin: boolean }, ctx: HostCall): Promise<Result<MachineProcess>> {
 		void ctx;
 		const sandbox = await this.#sandbox(id);
-		if (sandbox === undefined) return fail("not_found", `no Modal sandbox has the id ${id}`);
 		const program = await sandbox.exec([...argv], { mode: "binary" });
 		const close = () => program.stdin.close().catch(() => {});
 		if (!stdin) await close();
@@ -467,7 +455,7 @@ class ModalHost implements MachineHost {
 			return ok({ detail: `Modal answered: the app ${this.#appName} is there` });
 		} catch (error) {
 			if (codeOf(error) === "not_found") return ok({ detail: `Modal answered: no app ${this.#appName} yet; the first computer makes it` });
-			return fail(codeOf(error), `apps.fromName ${this.#appName} failed: ${words(error)}`);
+			return fail(codeOfError(this, error), `apps.fromName ${this.#appName} failed: ${words(error)}`);
 		}
 	}
 }
