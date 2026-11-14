@@ -31,7 +31,8 @@ test("a template's keys pin fills from a parameter: apply writes it filled, the 
   const { p } = await scorer(t, '{ HUBSPOT_UPDATE_CONTACT: { properties: { keys: ["${parameters.crm_score_property}"] } } }');
   assert.deepEqual(p.mcp[0].pin, { HUBSPOT_UPDATE_CONTACT: { properties: { keys: ["${parameters.crm_score_property}"] } } });
   const made = compiled(p, { crm_score_property: "hs_lead_score" }, { mcp: served(p), defaultTools: [], grants: [UPDATE] });
-  assert.deepEqual(made.agent.definition.tool_settings, { [UPDATE]: { permission: "allow", pin: { properties: { keys: ["hs_lead_score"] } } } });
+  // The grant writes no permission; the pin is written filled.
+  assert.deepEqual(made.agent.definition.tool_settings, { [UPDATE]: { pin: { properties: { keys: ["hs_lead_score"] } } } });
   assert.deepEqual(made.unpinned, []);
   assert.deepEqual(filledPins(served(p), { crm_score_property: "hs_lead_score" }), [{ tool: UPDATE, pin: { properties: { keys: ["hs_lead_score"] } }, empty: [] }]);
   // The agent's settings as written hold the one key and refuse any other.

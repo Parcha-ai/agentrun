@@ -201,6 +201,14 @@ export function AgentPage({ v2, agentId, routePrefix, harnesses, efforts = [], g
           </p>
         )}
         {offText && <p className="mt-3 font-mono text-small text-warning-text" role="status" aria-label="Harness not available">{offText}</p>}
+        {/* What a create's answer said (its `warnings`, kept by the client for this page: a read carries none), in the
+            server's words: a wildcard grant's endpoints left out, or what this host lacks to run it. Edit shows each at its step. */}
+        {agent.warnings?.length ? (
+          <div className="mt-3 font-mono text-small" role="status" aria-label="Save warnings">
+            <p className="text-warning-text">Created. What the server said of this revision (Edit shows each at its step):</p>
+            <ul className="mt-1 space-y-0.5">{agent.warnings.map((w, i) => <li key={`${w.field}:${i}`}><span className="text-muted-foreground">{w.field}</span> {w.message}</li>)}</ul>
+          </div>
+        ) : null}
         <SignIns agent={agent} v2={v2} onAgent={setAgent} poll={poll} refresh={afterForget} />
       </header>
       {!agent.archived_at && <RunBar agent={agent} efforts={efforts} v2={v2} go={go} blocked={offText} limits={limits} />}

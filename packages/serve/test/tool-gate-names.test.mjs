@@ -15,7 +15,7 @@ import { runnerGate } from "./gate-support.mjs";
 
 const { deniedText, noApproverText } = gate;
 /** The mapping, where the module has one; none (the red), every name maps to nothing. */
-const keyOf = (harness, name, servers) => (typeof gate.settingsKeyOf === "function" ? gate.settingsKeyOf(harness, name, servers) : undefined);
+const keyOf = (harness, name) => (typeof gate.settingsKeyOf === "function" ? gate.settingsKeyOf(harness, name) : undefined);
 const isKey = (key) => typeof key === "string" && (isTableTool(key) || SERVE_OWN_TOOLS.includes(key) || /^monid:[a-z0-9][a-z0-9.-]*\/.+$/.test(key) || /^mcp:[a-z][a-z0-9-]*\/.+$/.test(key));
 /** A monid endpoint as the gate is asked about it: by its catalog name, on every harness. */
 const MONID = "monid:faux/person/enrich";
@@ -30,12 +30,12 @@ const NAMES = {
     ...BACKGROUND_TOOLS.map((name) => [name, "bash"]),
     [MONID, MONID],
     ...BROWSER_TOOL_NAMES.map((name) => [name, "browser"]),
-    ["mcp__srv__echo", "mcp:srv/echo"],
+    ["mcp:srv/echo", "mcp:srv/echo"],
   ],
   "claude-agent": [
-    ...hostToolNames().flatMap((name) => [[name, folded(name)], [wireName(name), folded(name)], [`mcp__hands__${wireName(name)}`, folded(name)]]),
+    ...hostToolNames().flatMap((name) => [[name, folded(name)], [wireName(name), folded(name)]]),
     ["WebSearch", "web_search"], ["WebFetch", "web_fetch"], ["Bash", "bash"],
-    ["mcp__srv__echo", "mcp:srv/echo"],
+    ["mcp:srv/echo", "mcp:srv/echo"],
     [MONID, MONID],
   ],
   codex: [
@@ -43,9 +43,9 @@ const NAMES = {
     ["web_search", "web_search"], ["shell", "bash"],
     // The adapter's own read of a skill's file, from the session's copy of the run's skills: read's key.
     ["read_skill_file", "read"],
-    ["mcp__srv__echo", "mcp:srv/echo"],
+    ["mcp:srv/echo", "mcp:srv/echo"],
   ],
-  opencode: [["read_skill_file", "read"], ["mcp__srv__echo", "mcp:srv/echo"]],
+  opencode: [["read_skill_file", "read"], ["mcp:srv/echo", "mcp:srv/echo"]],
 };
 
 test("every name a call reaches the gate by, on every harness, maps to its settings key", () => {
@@ -67,8 +67,8 @@ test("a name nothing maps fails closed: it asks, and where no one can approve it
 /** A run's gate on `harness`, its server settings `settings` (none: the default), and its answer for one call as the
  *  runner's loops ask it (RunGate.decide, the adapter loop's spec.gate): "allow" (it runs), "ask" (it waits for a person,
  *  under the name askedAs gives) or { deny } (refused, in those words). */
-async function decideOn(t, harness, settings, name, args, mcpServers) {
-  const runGate = runnerGate({ harness, settings, ...(mcpServers ? { mcpServers } : {}) });
+async function decideOn(t, harness, settings, name, args) {
+  const runGate = runnerGate({ harness, settings });
   return { decided: await runGate.decide(name, args), askedAs: runGate.askedAs(name), policy: runGate.policy(name) };
 }
 const SKILL_READ = { skill: "status-report-format", path: "SKILL.md" };
@@ -89,13 +89,11 @@ test("read_skill_file is refused when the server denies read, in the deny words 
   }
 });
 
-test("on OpenCode, an agent's MCP tool whose wire name is read_skill_file (server read, tool skill_file) keeps its own key and setting: never read's", async (t) => {
-  assert.equal(keyOf("opencode", "read_skill_file", ["read"]), "mcp:read/skill_file", "the run's MCP server named read owns the name");
-  assert.equal(keyOf("opencode", "read_skill_file", ["other"]), "read", "another server's: the adapter's own read of a skill's file");
-  assert.equal(keyOf("codex", "read_skill_file", ["read"]), "read", "codex names no MCP tool <server>_<tool>");
-  assert.equal(keyOf("codex", "mcp__hands__read_skill_file", ["read"]), "read", "hands is the host's own server, never an agent's");
+test("an agent's MCP tool whose wire name is read_skill_file (server read, tool skill_file) is asked by its catalog name, with its own key and setting: never read's", async (t) => {
+  assert.equal(keyOf("opencode", "mcp:read/skill_file"), "mcp:read/skill_file");
+  assert.equal(keyOf("opencode", "read_skill_file"), "read", "the adapter's own read of a skill's file");
   // Set to ask, as an MCP tool's default is: it waits for a person's approval, asked under its own key, never run as read.
-  const { decided, askedAs, policy } = await decideOn(t, "opencode", { "mcp:read/skill_file": { permission: "ask" } }, "read_skill_file", { q: 1 }, ["read"]);
+  const { decided, askedAs, policy } = await decideOn(t, "opencode", { "mcp:read/skill_file": { permission: "ask" } }, "mcp:read/skill_file", { q: 1 });
   assert.equal(policy, "ask");
   assert.equal(decided, "ask", "it does not run: it waits for a person");
   assert.equal(askedAs, "mcp:read/skill_file", "asked under its own key");
@@ -144,10 +142,8 @@ test("on pi, the agent's ask for the person in its browser (browser_request_hand
   assert.deepEqual(permissionsOf("browser"), ["allow", "deny"], "the browser setting is allow or deny");
 });
 
-test("OpenCode's <server>_<tool> is an MCP tool only for a server the run has configured, never by its shape alone; a table tool's name stays the table tool's", () => {
-  assert.equal(keyOf("opencode", "srv_echo", ["srv"]), "mcp:srv/echo");
-  assert.equal(keyOf("opencode", "srv_echo"), undefined, "no server configured: unmapped, so it asks");
-  assert.equal(keyOf("opencode", "srv_echo", ["other"]), undefined, "another server's name");
-  assert.equal(keyOf("opencode", "web_fetch", ["web"]), "web_fetch", "a table tool, though `web` is a server");
-  assert.equal(keyOf("opencode", "ask_person", ["ask"]), "ask_person");
+test("a name of a harness's own shape is no MCP tool by its shape: `<server>_<tool>` is unmapped, so it asks; a table tool's name stays the table tool's", () => {
+  assert.equal(keyOf("opencode", "srv_echo"), undefined, "unmapped, so it asks");
+  assert.equal(keyOf("opencode", "web_fetch"), "web_fetch");
+  assert.equal(keyOf("opencode", "ask_person"), "ask_person");
 });

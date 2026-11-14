@@ -264,7 +264,8 @@ test("apply maps each need to the saved server whose source and toolkit match an
   const { definition } = agent;
   assert.ok(definition.tools.includes("mcp:my-notes/list_notes"), JSON.stringify(definition.tools));
   assert.ok(!definition.tools.some((tool) => tool.startsWith("mcp:notes/")), JSON.stringify(definition.tools));
-  assert.deepEqual(definition.tool_settings, { "mcp:my-notes/list_notes": { permission: "allow" }, "mcp:my-notes/send_note": { pin: { to: "me" } } });
+  // The tick grants list_notes and writes no permission for it (the gate's default decides); the pin is written under the saved name.
+  assert.deepEqual(definition.tool_settings, { "mcp:my-notes/send_note": { pin: { to: "me" } } });
   assert.equal(definition.instructions, "Call mcp:my-notes/list_notes, then mcp:my-notes/send_note once. The text xmcp:notes/list_notes is not a tool name. You hold mcp:my-notes/*.");
   assert.equal(Object.fromEntries(agent.skills.map((s) => [s.path, s.sha256]))["digest/SKILL.md"], sha256(SKILL.replace("mcp:notes/", "mcp:my-notes/")));
 

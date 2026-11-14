@@ -353,18 +353,20 @@ describe("applying a template", () => {
     expect(t.sent[0].body.servers).toEqual({ slack: "slack-work", hubspot: "crm" });
   });
 
-  it("asks consent one tool at a time, none ticked until the owner ticks it, and says what an allow means", async () => {
+  it("asks consent one tool at a time, none ticked until the owner ticks it, and says a tick grants: writes ask unless Never, reads follow Allow reads", async () => {
     const t = await open("pr-reviewer");
     for (const tool of ["mcp:github/get_pull_request", "mcp:github/create_review"]) {
       expect(t.tick(tool), tool).toBeTruthy();
       expect(t.tick(tool)!.checked, tool).toBe(false);
     }
-    // A tick is always an allow: the server stores every granted tool as permission allow. Each row says so, and says
-    // apart what the template asks for; nothing promises an approval before each call.
+    // A tick grants the tool and sets no permission: the section says what a granted tool then does, once, and no row
+    // promises a call without asking. Each row says apart what the template asks for.
+    const section = t.host.querySelector('section[aria-label="Tools you grant"]')!.textContent ?? "";
+    expect(section).toContain("A tool you tick is granted and follows this server's tool settings: a write asks you first unless you allowed it in Settings or choose Never ask, and a read runs without asking where you turned on Allow reads for its server.");
     const reads = t.host.querySelector('[data-tool="mcp:github/get_pull_request"]')!.textContent ?? "";
     const writes = t.host.querySelector('[data-tool="mcp:github/create_review"]')!.textContent ?? "";
-    for (const row of [reads, writes]) expect(row).toContain("Allow: the agent may call this without asking you.");
-    expect(reads).toContain("The template asks you to allow this.");
+    for (const row of [reads, writes]) expect(row).not.toContain("without asking you");
+    expect(reads).toContain("The template asks you to grant this.");
     expect(writes).toContain("The template does not ask for this; unticked, the agent doesn't get it.");
     expect(t.host.textContent).not.toContain("asks you before each call");
     // The MCP need, by its source and the saved server it uses, with its reason; and the secrets by name only.
@@ -522,6 +524,10 @@ describe("applying a template", () => {
     const t = await open("pr-reviewer");
     const radio = (label: RegExp) => [...t.host.querySelectorAll<HTMLInputElement>('fieldset[aria-label="Approvals"] input[type="radio"]')].find((r) => label.test(r.closest("label")?.textContent ?? ""));
     expect(radio(/^Ask me/)!.checked).toBe(true);
+    // The Ask note keeps the promise as this server's settings make it: a ticked write asks unless allowed in Settings.
+    expect(radio(/^Ask me/)!.closest("label")!.textContent).toContain("A call that asks waits for your answer: a ticked tool's write unless you allowed it in Settings, and its read unless you turned on Allow reads for its server.");
+    // One plain line beside the Never choice: what a triggered template needs.
+    expect(radio(/^Never ask/)!.closest("label")!.textContent).toContain("Runs without asking you, even for writes. Pick this if a trigger starts the agent while you're away.");
     await t.click(radio(/^Never ask/));
     expect(t.host.querySelector('fieldset[aria-label="Approvals"]')!.textContent).toContain("Never ask: every tool this agent has runs without waiting for you. A tool set to deny, and a template's pins, still hold.");
     await t.type(t.host.querySelector('[data-field="parameters.repo"] input'), "acme/web");
