@@ -915,12 +915,13 @@ def sandbox_folder(t, short):
     return folder
 
 
-# TextEdit's plain text font and the size of a window it opens, in characters and lines of that font. Its defaults (Menlo
-# 11, a window 75 characters by 30 lines) put the totals file's three short lines, 6 px tall, in the corner of a 673 by
-# 439 point window: a movie cut to that window, played at 1080p, could not be read. At 28 points in a window that fits
-# the lines, it reads.
-TEXTEDIT_LOOK = [("NSFixedPitchFont", "-string", "Menlo-Regular"), ("NSFixedPitchFontSize", "-float", "28"),
-                 ("WidthInChars", "-int", "22"), ("HeightInChars", "-int", "6")]
+# TextEdit's plain text font and the size of a window it opens. Its defaults (Menlo 11, a window 75 characters by 30
+# lines) put the totals file's three short lines, 6 px tall, in the corner of a 673 by 439 point window: a movie cut to
+# that window, played at 1080p, could not be read. At 30 points in a window that fits the lines, it reads. TextEdit counts
+# the window's characters and lines in its own default metrics, not the font's: 22 by 6 made a 183 by 127 point window
+# on CI, which the movie draws at most 2x, so small on its 1080p frame.
+TEXTEDIT_LOOK = [("NSFixedPitchFont", "-string", "Menlo-Regular"), ("NSFixedPitchFontSize", "-float", "30"),
+                 ("WidthInChars", "-int", "34"), ("HeightInChars", "-int", "9")]
 
 
 def textedit_look(t):
