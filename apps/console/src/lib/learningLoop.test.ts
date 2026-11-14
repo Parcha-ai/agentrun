@@ -159,4 +159,9 @@ describe("notes and the story", () => {
     ]);
     expect(stages[4]!.detail).toBe('most at "classify": 1 of 3 under 0.70');
   });
+  // A workflow that costs as much as the agent, or more, is not a cheaper run: never "0.5x cheaper", never Done.
+  it.each([[0.5, "Not cheaper yet: 2.0x the cost", "now"], [1, "Same cost", "now"]])("a times_cheaper of %s does not read as cheaper", (ratio, value, state) => {
+    const stage = storyOf({ ...base, notes: 3, runs: 4, cost: cost({ takeover: { n: 2, run_id: "r2" }, before: { runs: 1, mean_usd: 0.1 }, after: { runs: 25, mean_usd: 0.1 / ratio }, times_cheaper: ratio }) }).find((s) => s.key === "cheaper")!;
+    expect([stage.value, stage.state]).toEqual([value, state]);
+  });
 });
