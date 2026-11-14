@@ -888,10 +888,34 @@ public actor UIEngine {
 			try await sleep(min(timing.quietMs, max(0, until - clock.now())))
 			let next = try await look(target)
 			let quiet = next.fingerprint == last.fingerprint
+			if !quiet, let trace = timing.trace { trace("DIAG unquiet \(next.target.app.id): \(Self.whyNot(last, next))") }
 			last = next
 			if quiet { break }
 		}
 		return last
+	}
+
+	/// DIAG: what differs between two looks.
+	static func whyNot(_ a: View, _ b: View) -> String {
+		let ha = Set(a.nodes.map(\.handle))
+		let hb = Set(b.nodes.map(\.handle))
+		var out = "nodes \(a.nodes.count)->\(b.nodes.count), \(hb.subtracting(ha).count) new handles, \(ha.subtracting(hb).count) gone; window \(a.target.window.id) \(a.target.window.bounds) -> \(b.target.window.id) \(b.target.window.bounds)"
+		var shown = 0
+		for node in b.nodes where shown < 4 {
+			guard let old = a.node(node.handle) else {
+				if hb.subtracting(ha).contains(node.handle) && shown < 4 {
+					out += "; new [\(b.looks(node).replacingOccurrences(of: "\u{1f}", with: "|").prefix(140))]"
+					shown += 1
+				}
+				continue
+			}
+			let (was, now) = (a.looks(old), b.looks(node))
+			if was != now {
+				out += "; [\(was.replacingOccurrences(of: "\u{1f}", with: "|").prefix(140))] -> [\(now.replacingOccurrences(of: "\u{1f}", with: "|").prefix(140))]"
+				shown += 1
+			}
+		}
+		return out
 	}
 
 	/// The expect holds in this look. text: some node's name, value or desc holds it (never a secure field's value). ref:
