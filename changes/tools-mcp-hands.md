@@ -1,0 +1,7 @@
+---
+packages: @parcha/agentrun-serve, @parcha/agentrun-kernel, @parcha/agentrun-harness-claude, @parcha/agentrun-harness-codex
+kind: breaking
+---
+A run's MCP tools are host tools on every harness: each call passes the run's one tool gate before anything is sent, and the runner calls the server with the credential, books the call and records it, as it does any host tool. opencode now runs MCP tools (`features.mcp_client.harnesses` lists it, and an opencode agent granted `mcp:<server>/<tool>` saves and runs). claude-agent offers a granted tool as `mcp__hands__mcp__<server>__<tool>` and codex as `mcp_<server>__<tool>` (Codex refuses a dynamic tool named `mcp__*`); the Timeline, tool settings and approvals still name it `mcp:<server>/<tool>`. A call set to ask on claude-agent, codex or opencode holds the CLI's call while the run waits (no "waits for a person's approval" result row while it is parked); on the person's allow the resumed session gets the call's own result, no `[tool approval]` message. A codex run no longer fails at its start when a granted server can't be reached: the server's error shows at the first call, as on pi.
+
+Who breaks: code built on the kernel's MCP door. Removed: `SessionSpec.mcp`, `SessionMcp`, `McpClient`, `AdapterCapabilities` and `AgentAdapter.capabilities()`, `AdapterFacts.mcp`, `ModelProxyOptions.mcp`, `mcpRoute`, `McpHandler` and `McpRouteOptions` (`@parcha/agentrun-kernel/host`), and `McpCallResult.parked`. Hand a session its MCP tools as host tools in `SessionSpec.tools` instead.
