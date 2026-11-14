@@ -3,8 +3,10 @@
 // The pin. A run's pin (the granted MCP tools as their servers listed them, each server's URL then, its prices) is its
 // revision's, made when the revision was saved (the server's save lists each granted server once, mcp-gateway.ts
 // mcpPinOf) and read here (store.mcp.pin): a claim never lists a server, and every claim of the run reads the same pin.
-// A granted MCP tool its revision's pin does not hold (a revision written without a save's pin) refuses the claim in
-// words, nothing sent: saving the agent again pins it.
+// A run that existed when the store was upgraded may be of a revision saved with no pin: its claim pins that revision
+// once, as its first run's start would have (mcp-pin-first.ts pinFirst, the one path), and every later claim reads it.
+// A granted MCP tool the revision's pin does not hold then (a server that can't be listed now, a tool it no longer lists)
+// refuses the claim in words, nothing sent.
 // At every claim the pin is checked again: a pinned tool that is a meta tool now refuses the claim in words, nothing sent.
 //
 // The credentials. The pinned servers' credentials are unsealed (store/seal.ts openMcpCredential) into this step's
@@ -47,6 +49,7 @@
 import { randomUUID } from "node:crypto";
 import { EndpointRefused, REFRESH_REQUEST_MS, refreshed, refused, RequestUnsent, type Seen, systemNetwork, type OAuthNetwork, type TokenSet } from "../mcp-oauth.js";
 import { type McpCredentials, type McpPin } from "../mcp-gateway.js";
+import { type PinListing, pinFirst } from "../mcp-pin-first.js";
 import { mcpNameOf } from "../tool-names.js";
 import { META_REASON, metaToolOf } from "../mcp-meta.js";
 import { credentialInQuery, credentialInQueryWords, shownUrl } from "../mcp-probe.js";
@@ -75,10 +78,13 @@ export class McpClaimRefused extends ClaimRefused {
 export interface McpClaimOptions {
   /** `settings`: the private-network OAuth hosts the owner allows (privateOAuthHosts), read at each refresh. `where`:
    *  the store's identity, which a wait on another claim's refresh lease is keyed by. */
-  store: Pick<Store, "mcp" | "runs" | "settings" | "where">;
+  store: Pick<Store, "mcp" | "runs" | "settings" | "where" | "agents">;
   claim: Pick<Claim, "runId" | "epoch">;
   /** The run's granted tools, by catalog name (`mcp:<server>/<tool>` among them). */
   grants: readonly string[];
+  /** A server's listing as a save lists it (mcp-pin-first.ts registryListing): how a claim of a run whose revision has no
+   *  pin pins it. None: such a claim is refused in words. */
+  pinListing?: (server: string, stop?: AbortSignal) => Promise<PinListing>;
   /** The runner's seal key (the server's): a runner never starts without one (seal-key.ts bootSealKey). */
   sealKey: Buffer;
   /** The claim's signal: aborted when the claim is lost or the runner stops. */
@@ -446,7 +452,7 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
 
 /** The run's pin: its revision's, as its save made it, held to the run's grants and checked against the meta tools known
  *  now; undefined when it grants no MCP tool. A granted tool the pin does not hold refuses the claim in words. */
-async function pinOf({ store, claim, grants, githubMcpOrigin = GITHUB_MCP_ORIGIN }: McpClaimOptions): Promise<McpPin | undefined> {
+async function pinOf({ store, claim, grants, githubMcpOrigin = GITHUB_MCP_ORIGIN, pinListing, signal }: McpClaimOptions): Promise<McpPin | undefined> {
   // A github_app server anywhere but GitHub's hosted MCP ends the run here, before any token is minted or anything sent:
   // the App's tokens go to GitHub alone (github.ts githubMcpUrl, the one check).
   const offGithub = (server: string, url: string, auth: string | undefined) => {
@@ -461,7 +467,14 @@ async function pinOf({ store, claim, grants, githubMcpOrigin = GITHUB_MCP_ORIGIN
     return parsed ? [{ name, ...parsed }] : [];
   });
   if (!granted.length) return undefined;
-  const saved = ((await store.mcp.pin(claim.runId))?.body ?? {}) as McpPin;
+  let found = (await store.mcp.pin(claim.runId))?.body as McpPin | undefined;
+  // A run of a revision saved with no pin (one that existed at the upgrade): pinned now, once (pinFirst).
+  if (found === undefined && pinListing) {
+    const run = await store.runs.get(claim.runId);
+    const revision = run ? await store.agents.revision(run.revisionId) : undefined;
+    if (revision) found = await pinFirst(revision, { saved: async (server) => (await store.mcp.server(server)) !== undefined, pinListing: (server) => pinListing(server, signal), pinOnce: (id, pin) => store.agents.pinOnce(id, pin) });
+  }
+  const saved = (found ?? {}) as McpPin;
   // Every tool the revision pinned, granted or not, against the meta tools known now (the list grows after a save).
   for (const [server, { url, tools }] of Object.entries(saved)) {
     for (const tool of tools) if (metaToolOf(url, tool.name)) throw new McpClaimRefused(`mcp:${server}/${tool.name} can't be granted: ${META_REASON}`);

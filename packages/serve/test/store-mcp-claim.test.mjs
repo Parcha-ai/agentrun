@@ -486,12 +486,14 @@ test("M21: a claim of a run whose revision has no pin (one that existed at the u
   const fake = await startFakeMcp({ token: TOKEN });
   t.after(() => fake.close());
   await store.mcp.put({ name: "fake", url: fake.url, auth: "bearer", tools: [listed(ADD)], sealed: headersCredential(fake.url) });
-  // A revision saved before pins were made at save: no pin.
-  await queued(store, "run-1");
+  // A revision saved before pins were made at save, granting the tool: no pin.
+  await store.agents.create({ id: "agent-1", name: "agent-1" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["mcp:fake/add"] } });
+  await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
   const claim = await store.claim("run-1", "runner-a", { leaseMs: LEASE });
   const pinListing = registryListing(store, KEY, { loopback: true });
   const step = await claimOf(store, claim, ["mcp:fake/add"], { pinListing });
-  const expected = { fake: { url: fake.url, tools: [{ name: "add", title: "Add", description: "Add two numbers.", inputSchema: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } }, required: ["a", "b"] }, annotations: { readOnlyHint: true } }] } };
+  // As the server lists it now (the live listing, as a save's: its schema closed), not the registry's row.
+  const expected = { fake: { url: fake.url, tools: [{ name: "add", title: "Add", description: "Add two numbers.", inputSchema: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } }, required: ["a", "b"], additionalProperties: false }, annotations: { readOnlyHint: true } }] } };
   assert.deepEqual(JSON.parse(JSON.stringify(step.pin)), expected, "the claim's pin, as a save would make it");
   assert.deepEqual((await store.agents.revision("rev-1"))?.mcpPin, expected, "kept on the revision");
   assert.equal(fake.log.filter((entry) => entry.method === "tools/list").length, 1, "listed once");
@@ -504,7 +506,7 @@ test("M21: a claim of a run whose revision has no pin (one that existed at the u
   assert.equal(fake.log.filter((entry) => entry.method === "tools/list").length, 1, "not listed again");
   again.release();
   // Another revision with no pin, its server down: refused in the claim's words, nothing pinned.
-  await store.agents.create({ id: "agent-2", name: "agent-2" }, { id: "rev-2", kind: "agentic", body: { instructions: "Answer." } });
+  await store.agents.create({ id: "agent-2", name: "agent-2" }, { id: "rev-2", kind: "agentic", body: { instructions: "Answer.", tools: ["mcp:fake/add"] } });
   await store.runs.create({ id: "run-2", agentId: "agent-2", revisionId: "rev-2" });
   const other = await store.claim("run-2", "runner-c", { leaseMs: LEASE });
   await fake.close();

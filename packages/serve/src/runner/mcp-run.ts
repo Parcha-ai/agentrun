@@ -31,6 +31,7 @@ import { STOPPED_WHILE_WAITING } from "../refusal-words.js";
 import { type AnswerData, type AskData, type CallEndData, endedAnswer, KINDS } from "./journal-kinds.js";
 import type { Claim } from "./loop-contract.js";
 import { mcpClaim, type McpClaimStep } from "./mcp-claim.js";
+import { registryListing } from "../mcp-pin-first.js";
 import type { GithubAppAccess, GithubTimer } from "./mcp-github.js";
 
 /** The GitHub App access for a claim (runner/github-app.ts githubAppAccess, tl-triggers'): the server's App, read from
@@ -41,8 +42,9 @@ export interface McpForClaimOptions {
   /** The claim this pass holds: the pin is written under its fence, and a refresh is confirmed against its epoch. */
   readonly claim: Claim;
   /** The one store: the registry's rows, the run's pin row and its run row (the epoch), the GitHub App's settings, and
-   *  where it is (Store.where: the claims waiting on a server's refresh lease meet by it). */
-  readonly store: Pick<Store, "mcp" | "runs" | "settings" | "triggerSettings" | "where">;
+   *  where it is (Store.where: the claims waiting on a server's refresh lease meet by it); for a run whose revision has
+   *  no pin, its revision and the registry a listing reads (its sign-in state, flush). */
+  readonly store: Pick<Store, "mcp" | "mcpOauth" | "runs" | "settings" | "triggerSettings" | "where" | "agents" | "flush">;
   /** The runner's seal key (the server's): always present (seal-key.ts boots one before any claim), so the claim's sealed
    *  credentials always open; there is no no-seal-key path here (E6). */
   readonly sealKey: Buffer;
@@ -119,6 +121,8 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
       grants: options.grants,
       sealKey: options.sealKey,
       signal: held.signal,
+      // A run whose revision has no pin (one made before the upgrade) pins it here, listing as a save does.
+      pinListing: registryListing(options.store, options.sealKey, { loopback: options.loopback === true, ...(options.network ? { network: options.network } : {}) }),
       ...(options.bounds ? { bounds: options.bounds } : {}),
       ...(options.network ? { network: options.network } : {}),
       ...(options.loopback ? { loopback: true } : {}),

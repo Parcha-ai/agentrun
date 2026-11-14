@@ -15,6 +15,7 @@ import { existsSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import type { Revision, RunOrigin } from "./agent-rows.js";
+import { pinFirst as pinFirstOf } from "./mcp-pin-first.js";
 import { type AgentEntry, agentRevision, agentRevisions, agentView, commitAgent, createAgent, etagOf, externalKey, getAgent, listAgents, makeRevision, refuseExternal, revisionView, type SaveCheck, type SaveStamp, setAgentArchived, setCurrentRevision } from "./agents-store.js";
 import { WORKFLOW_ADAPTERS } from "./runner/workflow-adapters.js";
 import { DECISION_ADAPTER, decisionsOf, FAUX_JEV_ENV, FAUX_OPENROUTER_ENV, FAUX_PARALLEL_ENV, fauxFetch } from "./decisions.js";
@@ -1883,25 +1884,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     };
   }
 
-  /** The revision a run starts on, its MCP tools pinned. One saved with no pin that grants a tool of a server saved here (a
-   *  revision saved before pins were made at save, or an inline agent's version stored then) is pinned at this, its first
-   *  run, as a save pins it (mcpListingOf, those servers listed once): written only while it still has none
-   *  (Agents.pinOnce), and the pin that stood read back, so two first runs at once run on one pin. A server that cannot be
-   *  listed, or no longer lists a granted tool, leaves it unpinned, and runnable refuses it (409) as before. */
+  /** The revision a run starts on, its MCP tools pinned: one saved with no pin that grants a tool of a server saved here is
+   *  pinned at this, its first run (mcp-pin-first.ts pinFirst, the claim's path too). One that can't be (a server that
+   *  can't be listed, or no longer lists a granted tool) is left unpinned, and runnable refuses it (409) as before. */
   async function pinFirst(revision: Revision): Promise<Revision> {
-    if (revision.kind !== "agentic" || ((revision as { mcpPin?: unknown }).mcpPin ?? null) !== null) return revision;
-    const tools = ((revision.body as { tools?: readonly string[] }).tools ?? []).filter((tool) => { const named = mcpGrantOf(tool); return named !== undefined && mcpMeta.has(named.server); });
-    if (!tools.length) return revision;
-    let pin: McpPin | undefined;
-    try {
-      pin = (await mcpListingOf({ kind: "agentic", body: { ...revision.body, tools } } as unknown as NewRevision)).pin();
-    } catch (error) {
-      if (error instanceof ApiError) return revision;
-      throw error;
-    }
-    if (!pin) return revision;
-    return { ...revision, mcpPin: await store.agents.pinOnce(revision.id, pin) } as Revision;
+    if (((revision as { mcpPin?: unknown }).mcpPin ?? null) !== null) return revision;
+    const pin = await pinFirstOf(revision, { saved: (server) => mcpMeta.has(server), pinListing: (server) => mcpServers.pinListing(server, stopping.signal), pinOnce: (id, made) => store.agents.pinOnce(id, made) });
+    return pin ? ({ ...revision, mcpPin: pin } as unknown as Revision) : revision;
   }
+
 
   /** A definition being saved: refused (422 by field) when it can never run here; else what this host still lacks, and
    *  what the save stamps on it (its MCP pin, mcpListingOf). A revision that names no place is checked where it would run
