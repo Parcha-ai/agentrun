@@ -10,7 +10,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { isCommand } from "../entry.js";
 import type { ComputerProvider } from "../provider.js";
-import { type ConformanceModule, isProviderId, type ProviderEnv, providerIds, providerModule } from "../providers.js";
+import { type ConformanceModule, descriptorOf, isProviderId, type ProviderEnv, providerIds, providerModule } from "../providers.js";
 import { type ComputerSettingKind, type KindCapabilities, SETTING_KIND_NAMES } from "../kinds.js";
 import type { MachineHost } from "../host.js";
 import { browserCases, casesFor, conformanceCases } from "./cases/index.js";
@@ -180,10 +180,9 @@ const BARE = /^[A-Za-z][A-Za-z0-9-]*$/;
  */
 async function conformanceModule(name: string, cwd: string): Promise<{ label: string; module: Partial<ConformanceModule>; declared?: readonly KindCapabilities[] }> {
 	const found = await moduleFor(name, cwd);
-	// What the provider file declares of itself (its CAPABILITIES; its descriptor once that lands), kept across the switch
-	// to its conformance module, for health.declared.
-	const declared = found.file.CAPABILITIES;
-	return { label: found.label, module: found.module, ...(Array.isArray(declared) ? { declared: declared as readonly KindCapabilities[] } : {}) };
+	// What a registry provider declares of itself, its descriptor's configurations, for health.declared.
+	const declared = isProviderId(name) ? descriptorOf(name)?.capabilities : undefined;
+	return { label: found.label, module: found.module, ...(declared === undefined ? {} : { declared }) };
 }
 
 async function moduleFor(name: string, cwd: string): Promise<{ label: string; module: Partial<ConformanceModule>; file: Record<string, unknown> }> {

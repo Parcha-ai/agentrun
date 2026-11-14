@@ -303,9 +303,9 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     }
   }
 
-  // The run's MCP for this claim (mcp-run.ts mcpForClaim): its pin made at the first claim or read as written, its
+  // The run's MCP for this claim (mcp-run.ts mcpForClaim): its pin, the one its revision's save made, read, its
   // credentials opened under the runner's seal key (deps.sealKey) into this claim's memory, one gateway for the claim.
-  // Before the session opens: a refusal (a pin that cannot be made, a pinned meta tool) ends the run in its words.
+  // Before the session opens: a refusal (a granted tool its pin does not hold, a pinned meta tool) ends the run in its words.
   // A credential the claim opens mid-run (a GitHub App token, a saved or per_run server's) joins the run's redactors.
   const hold = (values: string[]) => { for (const redact of [...(run.redact ? [heldRedactor(run.redact)] : []), cut]) redact.hold(values); };
   const mcp = await mcpForClaim({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, work: () => runFolder(deps.data, runRow.agentId, claim.runId), launchInput: launch.input, hold, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.mcpLoopback ? { loopback: true } : {}) });
@@ -500,7 +500,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // store at each decide — adapterRunGate (RunGate.decide: deny with its words, a pin, allow, ask). The end-of-run turn's
   // refusal of writes under .learning/ is the adapter loop's own (it knows the turn), never a file's. The run's MCP servers
   // (mcpServersOf its grants) hold a harness's own name for an MCP tool to that tool's settings.
-  const gate = await adapterRunGate(deps.store, claim, revision, ws.workspace, tools.shell, mcpServersOf(granted));
+  // A pinned MCP tool is held to the arguments its listing in the run's pin declares (mcp.argumentsOf).
+  const gate = await adapterRunGate(deps.store, claim, revision, ws.workspace, tools.shell, mcpServersOf(granted), mcp ? { argumentsOf: (name: string) => mcp.argumentsOf(name) } : {});
   // What a script's shell and files are held to: this gate's settings, decided as on the run's computer (gate.script), so a
   // denied bash or write holds inside computer_script too.
   tools.computer?.guard.install(gate.script);

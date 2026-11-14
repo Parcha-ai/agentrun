@@ -12,7 +12,7 @@ import {
   type Auth, authOf, canonical, credentialInQuery, credentialInQueryWords, credentialMissing, type HeaderMap, savedOrGiven, shownUrl, type Listed, listServer, marked, MAX_OAUTH_VALUE_BYTES, type McpPrices,
   type McpTool, nameOf, notFound, oauthValueValid, pricesListed, pricesOf, scopesValid, urlOf,
 } from "./mcp-probe.js";
-import { listMcpServers, openServerCredential, putPendingSignIn, removeMcpServer, removeMcpServerIfCredential, rewriteMcpServer, saveMcpServerIfCredential, takePendingSignIn } from "./mcp-store.js";
+import { listMcpServers, openMcpRow, putPendingSignIn, removeMcpServer, removeMcpServerIfCredential, rewriteMcpServer, saveMcpServerIfCredential, takePendingSignIn } from "./mcp-store.js";
 import { checkPrivateHosts, privateOAuthHosts, savePrivateOAuthHosts } from "./mcp-private-hosts.js";
 // MCP's secret writes, registered with the one gate as the registry loads (the server's dispatch reads them).
 import { credentialMark } from "./mcp-secret-writes.js";
@@ -193,6 +193,29 @@ export class McpServersOverStore {
     return marked(url.href, await this.signInNoted(url, this.listServer(url, await this.withAppToken(auth.type, url, auth.headers ?? {}, stop), send, stop), stop));
   }
 
+  /** What an agent's save pins of the saved server `name` (mcp-gateway.ts mcpPinOf): its URL, its tools as it lists them
+   *  now (listed once, with its saved credential, as a preview by name lists them; nothing stored), each marked grantable
+   *  or not (mcp-meta.ts), and its owner's prices for those still listed. Undefined when no server of that name is saved.
+   *  A server whose credential is not this server's to send (per_run, each run hands its own) or whose access token only a
+   *  run refreshes (oauth) and that refuses the listing for its credential is pinned as its owner's last save or refresh
+   *  listed it, with the credential it had then. Any other failure is the ApiError the listing threw, in its words. */
+  async pinListing(name: string, stop?: AbortSignal): Promise<{ url: string; tools: (McpTool & { grantable?: false; reason?: string })[]; prices: McpPrices } | undefined> {
+    const row = await this.store.mcp.server(name);
+    if (!row) return undefined;
+    const url = new URL(row.url);
+    const pinned = (tools: McpTool[]) => {
+      const listed = marked(row.url, { tools });
+      return { url: row.url, tools: listed.tools, prices: pricesListed((row.prices ?? undefined) as McpPrices | undefined, listed.tools) };
+    };
+    const send = await this.reached(row.auth, url, stop);
+    try {
+      return pinned((await this.listServer(url, await this.withAppToken(row.auth, url, (await this.opened(name, row, "name")).headers, stop), send, stop)).tools);
+    } catch (error) {
+      if ((row.auth === "per_run" || row.auth === "oauth") && error instanceof ApiError && error.code === "auth_required") return pinned((row.tools as McpTool[]) ?? []);
+      throw error;
+    }
+  }
+
   /** `listing`, and when it is refused as a server that signs in with OAuth (auth_required, `auth: oauth`), whether that
    *  sign-in can start with no Client ID entered (`details.oauth.registration`, McpSignIns.registration), so the console
    *  asks for one up front. `stop`: the preview's, which cuts that discovery too. */
@@ -359,7 +382,7 @@ export class McpServersOverStore {
     await this.reached("oauth", url!);
     const was = await this.store.mcp.server(name);
     // A body with no client_id signs in again with the client kept in the sealed token set, for the same origin only.
-    const kept = typeof client_id !== "string" && was?.auth === "oauth" && new URL(was.url).origin === url!.origin ? await this.openedSet(name, was) : undefined;
+    const kept = typeof client_id !== "string" && was?.auth === "oauth" && new URL(was.url).origin === url!.origin ? this.openedSet(was) : undefined;
     // The kept client goes with the authorization server it was registered at (keptFor): another one gets a new client.
     const keptFor = kept ? issuerOf(kept.discovery) : undefined;
     const client = typeof client_id === "string" ? { client: { client_id, ...(typeof client_secret === "string" ? { client_secret } : {}) }, kind: "pre-registered" as const } : kept && keptFor ? { client: kept.client, kind: kept.kind, keptFor } : {};
@@ -451,13 +474,15 @@ export class McpServersOverStore {
     return row;
   }
 
-  /** The saved credential opened, or the refusal that asks for it again. */
+  /** The saved credential of `row` opened, or the refusal that asks for it again. The credential of the row the caller
+   *  read and checked, never the one saved now: a save at another address with a new credential while the caller waited
+   *  (its address check, a listing) must never have that credential sent to the old address. */
   private async opened(name: string, row: McpServerRow, field: string): Promise<Opened> {
     // No credential kept: none for a server that takes none, nor for a github_app server with no static headers, nor for a
     // per_run server (each run hands its own).
     if (row.auth === "none" || row.sealed === null) return { headers: {}, credential: { type: "headers", headers: {}, origin: new URL(row.url).origin } };
-    const open = await openServerCredential(this.store, this.sealKey, name);
-    if (!open || !("credential" in open)) throw invalid([{ field, reason: "missing", message: `The saved credential of ${name} does not open here (sealed under another seal key, or damaged): send it again.` }]);
+    const open = openMcpRow(this.sealKey, row);
+    if (!("credential" in open)) throw invalid([{ field, reason: "missing", message: `The saved credential of ${name} does not open here (sealed under another seal key, or damaged): send it again.` }]);
     const credential = open.credential;
     if (credential.type === "oauth") {
       if ((credential as { expired?: true }).expired) throw invalid([{ field, reason: "expired", message: `The sign-in to ${name} expired or was revoked: ${SIGN_IN_AGAIN}.` }]);
@@ -466,11 +491,12 @@ export class McpServersOverStore {
     return { headers: credential.headers as HeaderMap, credential };
   }
 
-  /** The saved OAuth token set, for a sign-in again that reuses the kept client. */
-  private async openedSet(name: string, row: McpServerRow): Promise<TokenSet | undefined> {
+  /** The saved OAuth token set of `row` (the row read and checked, as opened), for a sign-in again that reuses the kept
+   *  client. */
+  private openedSet(row: McpServerRow): TokenSet | undefined {
     if (row.auth !== "oauth") return undefined;
-    const open = await openServerCredential(this.store, this.sealKey, name);
-    return open && "credential" in open && open.credential.type === "oauth" ? (open.credential.set as TokenSet) : undefined;
+    const open = openMcpRow(this.sealKey, row);
+    return "credential" in open && open.credential.type === "oauth" ? (open.credential.set as TokenSet) : undefined;
   }
 
   /** What the saved server `row` is, for a template's apply to match (mcp-sources.ts sourceOf): github on the GitHub App's
@@ -487,7 +513,7 @@ export class McpServersOverStore {
     const prices = (row.prices ?? undefined) as McpPrices | undefined;
     const listed = marked(row.url, { protocol: row.protocol ?? "unknown", server_info: row.serverInfo ?? null, ...(typeof row.instructions === "string" ? { instructions: row.instructions } : {}), tools });
     const unmetered = tools.filter((tool) => !(prices && Object.hasOwn(prices, tool.name))).map((tool) => tool.name);
-    const opened = row.auth === "none" || row.auth === "per_run" || (row.auth === "github_app" && row.sealed === null) ? null : await openServerCredential(this.store, this.sealKey, name);
+    const opened = row.auth === "none" || row.auth === "per_run" || (row.auth === "github_app" && row.sealed === null) ? null : openMcpRow(this.sealKey, row);
     const cred = opened && "credential" in opened ? opened.credential : undefined;
     const set = cred?.type === "oauth" ? (cred.set as TokenSet) : undefined;
     const expired = cred?.type === "oauth" && (cred as { expired?: true }).expired === true;

@@ -340,11 +340,17 @@ const SETTINGS_TOOLS = [...tableTools(), ...KIND_KEYS, ...DECISION_PROVIDER_KEYS
 const CATALOG_KEY = { type: "string", pattern: CATALOG_KEY_PATTERN };
 /** A pinned scalar. */
 const PIN_SCALAR = [{ type: "string", maxLength: MAX_PIN_TEXT }, { type: "number" }, { type: "boolean" }, { type: "null" }];
+/** pins/1: a keys pin, the keys an MCP tool's object argument may hold (tool-gate.ts PinKeys). */
+const PIN_KEYS = {
+  type: "object", required: ["keys"], additionalProperties: false,
+  properties: { keys: { type: "array", minItems: 1, maxItems: MAX_PIN_CHOICES, items: { type: "string", minLength: 1, maxLength: MAX_PIN_TEXT } } },
+  description: `The argument, when given (not left out, nor null), is an object whose keys are among these, any values: {"keys": ["hs_lead_score"]} lets a write set that one field and no other. Kept in one form, each key once, sorted.`,
+};
 /** pins/1: an MCP tool's pin (tool-gate.ts pinRefusal), the top-level arguments its calls must carry. */
 const PIN = {
   type: "object", minProperties: 1, maxProperties: MAX_PIN_ARGS, propertyNames: { pattern: "^[A-Za-z_][A-Za-z0-9_.-]{0,127}$" },
-  additionalProperties: { anyOf: [...PIN_SCALAR, { type: "array", minItems: 1, maxItems: MAX_PIN_CHOICES, items: { anyOf: PIN_SCALAR } }] },
-  description: `On an MCP tool's own key (mcp:<server>/<tool>) only, never a server's wildcard: 1 to ${MAX_PIN_ARGS} of the tool's top-level arguments, each to the one JSON scalar its calls must carry (null: the argument left out, or null), or a list of 1 to ${MAX_PIN_CHOICES} of them, the argument one of the list (strict equality; kept and said in one form: each value once, null first, then by its JSON text). The tool gate refuses a call whose arguments are not as pinned before it runs or asks anyone, whatever the tool's permission, and the model reads the values it may use. A pin adds to a setting and is never a permission: the agent's pin and the server's both hold, an argument both pin takes what holds both, and one where nothing does refuses every call. Until the agent store's cutover an agent's own pin (definition.tool_settings) is 422 not_set_up_here: set it on the server.`,
+  additionalProperties: { anyOf: [...PIN_SCALAR, { type: "array", minItems: 1, maxItems: MAX_PIN_CHOICES, items: { anyOf: PIN_SCALAR } }, PIN_KEYS] },
+  description: `On an MCP tool's own key (mcp:<server>/<tool>) only, never a server's wildcard: 1 to ${MAX_PIN_ARGS} of the tool's top-level arguments, each to the one JSON scalar its calls must carry (null: the argument left out, or null), a list of 1 to ${MAX_PIN_CHOICES} of them, the argument one of the list (strict equality; kept and said in one form: each value once, null first, then by its JSON text), or {"keys": [...]}, 1 to ${MAX_PIN_CHOICES} keys an object argument may hold, its values free (left out or null holds too). The tool gate refuses a call whose arguments are not as pinned before it runs or asks anyone, whatever the tool's permission, and the model reads the values it may use. A pin adds to a setting and is never a permission: the agent's pin and the server's both hold, an argument both pin takes what holds both (two keys pins, the keys in both), and one where nothing does refuses every call. A pinned tool takes only its listed arguments: a call of a tool with a pin in either layer may carry only the top-level arguments its listing in the run's pin declares under its inputSchema's properties, beside the pinned ones, so an alias the server takes for a pinned argument (Gmail's "to" for "recipient_email") is refused unsent, with no pin of its own; a listing with no properties object closes nothing. Until the agent store's cutover an agent's own pin (definition.tool_settings) is 422 not_set_up_here: set it on the server.`,
   "x-agentrun-serve": "pins/1",
 };
 /** pins/1: the server's mark of a pin in its tool settings file that does not read. */
@@ -395,6 +401,29 @@ const TOOL_SETTINGS_ANSWER = {
   type: "object", required: [...PICKABLE], propertyNames: TOOL_SETTINGS.propertyNames,
   properties: Object.fromEntries(PICKABLE.map((name) => [name, { type: "object", additionalProperties: false, required: ["provider"], properties: { provider: { enum: [...PROVIDERS[name]] }, permission: PERMISSION } }])),
   additionalProperties: { type: "object", additionalProperties: false, properties: { permission: PERMISSION, pin: PIN, pin_broken: PIN_BROKEN } },
+};
+/** A revision's MCP pin as the API shows it (agents-store.ts pinView): per server, the granted tools as its save listed
+ *  them and their prices; never the server's URL. */
+const MCP_PIN = {
+  type: ["object", "null"],
+  additionalProperties: {
+    type: "object", additionalProperties: false, required: ["tools"],
+    properties: {
+      tools: {
+        type: "array",
+        items: {
+          type: "object", additionalProperties: false, required: ["name", "input_schema"],
+          properties: {
+            name: { type: "string" }, title: { type: "string" }, description: { type: "string" },
+            input_schema: { type: "object", description: "The tool's input schema as the server listed it at the save." },
+            annotations: { type: "object", description: "The tool's annotations as the server listed them at the save (readOnlyHint, destructiveHint and the rest)." },
+          },
+        },
+      },
+      prices: { type: "object", additionalProperties: { type: "number", minimum: 0 }, description: "The price in USD its owner set for each pinned tool that has one." },
+    },
+  },
+  "x-agentrun-serve": "mcppin/1",
 };
 /** GET /agents/{agent_id}'s `tools`: each tool the agent's current revision grants, in capabilities.tools' order; one
  *  with a provider choice with the provider in force, where it came from, the server's (its default), and what it
@@ -980,7 +1009,7 @@ const TEMPLATE = closed({
       toolkit: { type: "string", description: "The toolkit its tools are: the package names them `mcp:<toolkit>/<tool>`, and apply maps it to a saved MCP server whose `source` and `toolkit` match, rewriting the name to `mcp:<server>/<tool>` in the agent it makes." },
       required: { type: "boolean" },
       reason: { type: ["string", "null"], description: "Why the agent needs these tools, one line, for the apply screen." },
-      tools: { type: "array", items: closedWith({ name: { type: "string" }, tool: { type: "string", description: "Its name in the package, `mcp:<toolkit>/<tool>`: what apply's `grants` name." }, asks: { enum: ["allow", "ask"], description: "Whether the package asks the owner to allow it (a consent screen shows it): only the owner's `grants` at apply grant it, set to allow; one left out is not granted." } }, { pin: { type: "object", additionalProperties: { anyOf: [{ type: ["string", "number", "boolean", "null"] }, { type: "array", items: { type: ["string", "number", "boolean", "null"] } }] }, description: "The arguments (each a value, or a list one of which) each call of the tool must carry, `${parameters.<name>}` unfilled: apply writes them, filled, as the tool's pin in the agent's tool_settings, so the tool gate refuses a call with any other (a send goes only to the destination the owner sets). A pin whose parameter apply is not given sets the tool to deny instead, with a `pins.<tool>` warning.", "x-agentrun-serve": "pins/1" } }) },
+      tools: { type: "array", items: closedWith({ name: { type: "string" }, tool: { type: "string", description: "Its name in the package, `mcp:<toolkit>/<tool>`: what apply's `grants` name." }, asks: { enum: ["allow", "ask"], description: "Whether the package asks the owner to allow it (a consent screen shows it): only the owner's `grants` at apply grant it, set to allow; one left out is not granted." } }, { pin: { type: "object", additionalProperties: { anyOf: [{ type: ["string", "number", "boolean", "null"] }, { type: "array", items: { type: ["string", "number", "boolean", "null"] } }, PIN_KEYS] }, description: "The arguments (each a value, a list one of which, or {keys: [...]}, the keys an object argument may hold) each call of the tool must carry, `${parameters.<name>}` unfilled: apply writes them, filled, as the tool's pin in the agent's tool_settings, so the tool gate refuses a call with any other (a send goes only to the destination the owner sets), and a call carrying an argument the tool's listing does not declare (an alias of a pinned one). A pin whose parameter apply is not given sets the tool to deny instead, with a `pins.<tool>` warning.", "x-agentrun-serve": "pins/1" } }) },
     }),
     description: "The MCP servers it uses, by source and toolkit, and the tools of each it may be granted: apply maps each to a saved server whose `source` and `toolkit` match (`servers` picks when several do) and grants there only those the apply's `grants` name, each set to allow; a tool left out of `grants` is not the agent's at all, whatever its approvals, and the owner can grant it later in the agent's tools. One no saved server matches is skipped with an `mcp.<toolkit>` warning saying how to set it up, or, `required`, refuses the apply (409, nothing made).",
   },
@@ -1177,7 +1206,7 @@ const PROMOTION = closedWith({
   source: { enum: ["replay", "dry_run", "refit", "graded"], description: `\`replay\`: decided on a replay of it on the agent's last ${REPLAY_INPUTS} graded inputs it fits. \`dry_run\`: fewer than ${REPLAY_MIN} graded inputs, promoted on its passing dry run. \`refit\`: a threshold refit wrote this revision, decided on the rows it was fit on. \`graded\`: the graded runs it served fell more than ${PROMOTE_BAR * 100} points under the agent's accuracy by hand.` },
   reason: { type: "string", description: "Why, in words, with the numbers." },
 }, {
-  replay: { ...closedWith(REPLAY_SCORE, { of: { type: "array", items: { type: "string" }, description: "The graded runs replayed." }, cost_usd: { type: ["number", "null"], minimum: 0, description: "What its replay runs cost together; null when one's cost is unknown." }, skipped_write: { ...COUNT, description: "How many of its graded inputs were skipped: the workflow needed a write (an MCP tool its server does not mark read-only, or any tool not known to read) that the graded run's recording does not have with the same arguments. A replay never runs a write, so these are neither scored nor wrong; a replay whose every input was skipped holds the revision." } }), description: "The numbers it was decided on. A replay runs each read live (through a cache seeded from the graded run's recorded calls) and answers each write from that recording, never sending one." },
+  replay: { ...closedWith(REPLAY_SCORE, { of: { type: "array", items: { type: "string" }, description: "The graded runs replayed." }, cost_usd: { type: ["number", "null"], minimum: 0, description: "What its replay runs cost together; null when one's cost is unknown." }, skipped_write: { ...COUNT, description: "How many of its graded inputs were skipped: the workflow needed a write (an MCP tool its server does not mark read-only, or any tool not known to read) that the graded run's recording does not have with the same arguments. A replay never runs a write, so these are neither scored nor wrong; a replay whose every input was skipped holds the revision." }, skipped_tools: { type: "array", items: closed({ tool: { type: "string", description: "The tool's catalog name." }, inputs: { ...COUNT, description: "How many skipped inputs it stopped." }, no_read_only_hint: { type: "boolean", description: "An MCP tool its server lists with no `readOnlyHint` (and not `destructiveHint`): replay treats it as a write only because nothing says it reads. The hold's `reason` names these: if they only read, mark them read-only in the MCP server and the next replay runs them." } }), description: "The tools that stopped its skipped inputs, most inputs first." } }), description: "The numbers it was decided on. A replay runs each read live (through a cache seeded from the graded run's recorded calls) and answers each write from that recording, never sending one." },
   runs: { type: "array", items: { type: "string" }, description: "Its replay runs (path `replay`)." },
   inputs: { type: "array", items: { type: "string" }, description: "On a replaying record: the graded run each of `runs` replays, in the same order. Its runs are reserved before they are created; one not created a few minutes on is created by the next claim." },
   refit: { ...closed({ from: { type: "string", description: "The digest it was refit from." }, guards: { type: "array", items: closedWith({ node: { type: "string" }, was: { type: "number" }, threshold: { type: "number" } }, { fit: { type: "object" } }) } }), description: "The guards a refit moved: each step's threshold before and after, and its new fit (`both` guards)." },
@@ -1601,6 +1630,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
                   revision: { type: "string" }, version: { type: "integer", minimum: 1 }, parent: { type: ["string", "null"] },
                   kind: { type: "string", enum: ["agentic", "workflow"] }, current: { type: "boolean" }, note: { type: ["string", "null"] },
                   created_at: ref("schemas/Timestamp"), definition: ref("schemas/Definition"),
+                  mcp_pin: { ...MCP_PIN, description: "The MCP tools this revision grants, as its save pinned them: every run of it calls these. Null when it grants none." },
                 },
               },
             },
@@ -2121,7 +2151,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     put: {
       operationId: "putToolSettings", tags: ["capabilities"], summary: "Set the providers of web_search, web_fetch and browser, and each tool's permission",
-      description: "Replaces the settings: a tool the body leaves out takes its defaults. Kept in the data directory, and capabilities say so at once. A provider is read by every run launched from then on; a permission by the tool gate at each call, live runs' included, and a run waiting on a person's approval of a call whose tool now reads allow for that run (its agent's own settings over these) goes on at once, the setting answering it (a claude-agent or codex run's own web search takes a change of web_search's at its next launch). An MCP server's wildcard, mcp:<server>/*, sets each of its tools, under a tool's own key. A pick of parallel without PARALLEL_API_KEY resolves unavailable, never to another provider, and so does a browser vendor picked without its key. An MCP tool's own key (never a wildcard) may carry `pin`, 1 to 8 of its top-level arguments to the JSON scalar each call must carry: the gate refuses any other call before it runs or asks anyone, whatever the permission, and a pin here and an agent's both hold. An unknown tool, a provider not offered for it, a permission not offered for it and a pin that is not one are refused.",
+      description: "Replaces the settings: a tool the body leaves out takes its defaults. Kept in the data directory, and capabilities say so at once. A provider is read by every run launched from then on; a permission by the tool gate at each call, live runs' included, and a run waiting on a person's approval of a call whose tool now reads allow for that run (its agent's own settings over these) goes on at once, the setting answering it (a claude-agent or codex run's own web search takes a change of web_search's at its next launch). An MCP server's wildcard, mcp:<server>/*, sets each of its tools, under a tool's own key. A pick of parallel without PARALLEL_API_KEY resolves unavailable, never to another provider, and so does a browser vendor picked without its key. An MCP tool's own key (never a wildcard) may carry `pin`, 1 to 8 of its top-level arguments to the JSON scalar each call must carry (or a list one of which, or {keys: [...]}, the keys an object argument may hold): the gate refuses any other call before it runs or asks anyone, whatever the permission, and a pin here and an agent's both hold. An unknown tool, a provider not offered for it, a permission not offered for it and a pin that is not one are refused.",
       requestBody: { required: true, content: { "application/json": { schema: TOOL_SETTINGS } } },
       responses: { "200": json(TOOL_SETTINGS_ANSWER, "Each capability's provider now."), ...errors(400, 401, 415, 422, 429, 500) },
       "x-agentrun-serve": "providers/1",
@@ -2785,6 +2815,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       },
       "x-agentrun-serve": "serve/1",
     },
+    mcp_pin: { ...MCP_PIN, description: "The MCP tools the current revision grants, pinned when it was saved: per server, each granted tool as the server listed it then (name, title, description, input schema, annotations) and the prices its owner set. Every run of the revision calls these, whatever the server lists by then; a call the server no longer takes as pinned is the server's to refuse. Saving the agent again lists the servers and pins them anew (a new revision when they changed). Null when the revision grants no MCP tool, or the agent has none." },
     own_computer: {
       oneOf: [
         {

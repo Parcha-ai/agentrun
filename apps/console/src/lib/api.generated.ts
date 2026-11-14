@@ -42,6 +42,16 @@ export interface components {
     learning?: {
       pending: number;
     };
+    mcp_pin?: Record<string, {
+      tools: {
+        name: string;
+        title?: string;
+        description?: string;
+        input_schema: Record<string, unknown>;
+        annotations?: Record<string, unknown>;
+      }[];
+      prices?: Record<string, number>;
+    }> | null;
     own_computer?: {
       provider: string;
       id: string;
@@ -300,7 +310,9 @@ export interface components {
       };
       [key: string]: {
         permission?: "allow" | "ask" | "deny";
-        pin?: Record<string, string | number | boolean | null | (string | number | boolean | null)[]>;
+        pin?: Record<string, string | number | boolean | null | (string | number | boolean | null)[] | {
+          keys: string[];
+        }>;
         pin_broken?: true;
       } | {
         permission?: "allow" | "ask" | "deny";
@@ -2348,7 +2360,9 @@ export interface operations {
       };
       [key: string]: {
         permission?: "allow" | "ask" | "deny";
-        pin?: Record<string, string | number | boolean | null | (string | number | boolean | null)[]>;
+        pin?: Record<string, string | number | boolean | null | (string | number | boolean | null)[] | {
+          keys: string[];
+        }>;
         pin_broken?: true;
       } | {
         provider: "auto" | "native" | "exa-keyless" | "parallel" | "off";
@@ -2611,7 +2625,9 @@ export interface operations {
             name: string;
             tool: string;
             asks: "allow" | "ask";
-            pin?: Record<string, string | number | boolean | null | (string | number | boolean | null)[]>;
+            pin?: Record<string, string | number | boolean | null | (string | number | boolean | null)[] | {
+              keys: string[];
+            }>;
           }[];
         }[];
         parameters: Record<string, unknown>;
@@ -2951,6 +2967,11 @@ export interface operations {
           of?: string[];
           cost_usd?: number | null;
           skipped_write?: number;
+          skipped_tools?: {
+            tool: string;
+            inputs: number;
+            no_read_only_hint: boolean;
+          }[];
         };
         runs?: string[];
         inputs?: string[];
@@ -3030,6 +3051,16 @@ export interface operations {
         note: string | null;
         created_at: components["Timestamp"];
         definition: components["Definition"];
+        mcp_pin?: Record<string, {
+          tools: {
+            name: string;
+            title?: string;
+            description?: string;
+            input_schema: Record<string, unknown>;
+            annotations?: Record<string, unknown>;
+          }[];
+          prices?: Record<string, number>;
+        }> | null;
       }[];
       next_cursor: string | null;
     };
@@ -3099,7 +3130,9 @@ export interface operations {
             name: string;
             tool: string;
             asks: "allow" | "ask";
-            pin?: Record<string, string | number | boolean | null | (string | number | boolean | null)[]>;
+            pin?: Record<string, string | number | boolean | null | (string | number | boolean | null)[] | {
+              keys: string[];
+            }>;
           }[];
         }[];
         parameters: Record<string, unknown>;
@@ -3434,7 +3467,9 @@ export interface operations {
       };
       [key: string]: {
         permission?: "allow" | "ask" | "deny";
-        pin?: Record<string, string | number | boolean | null | (string | number | boolean | null)[]>;
+        pin?: Record<string, string | number | boolean | null | (string | number | boolean | null)[] | {
+          keys: string[];
+        }>;
         pin_broken?: true;
       } | {
         permission?: "allow" | "ask" | "deny";
@@ -3466,7 +3501,9 @@ export interface operations {
       };
       [key: string]: {
         permission?: "allow" | "ask" | "deny";
-        pin?: Record<string, string | number | boolean | null | (string | number | boolean | null)[]>;
+        pin?: Record<string, string | number | boolean | null | (string | number | boolean | null)[] | {
+          keys: string[];
+        }>;
         pin_broken?: true;
       } | {
         provider: "auto" | "native" | "exa-keyless" | "parallel" | "off";

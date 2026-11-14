@@ -151,6 +151,16 @@ export type Agent = {
   learning?: {
     pending: number;
   };
+  mcp_pin?: Record<string, {
+    tools: Array<{
+      name: string;
+      title?: string;
+      description?: string;
+      input_schema: Record<string, unknown>;
+      annotations?: Record<string, unknown>;
+    }>;
+    prices?: Record<string, number>;
+  }> | null;
   own_computer?: {
     provider: string;
     id: string;
@@ -1126,6 +1136,11 @@ export type ListLearningPromotionsResponse = {
       of?: Array<string>;
       cost_usd?: number | null;
       skipped_write?: number;
+      skipped_tools?: Array<{
+        tool: string;
+        inputs: number;
+        no_read_only_hint: boolean;
+      }>;
     };
     runs?: Array<string>;
     inputs?: Array<string>;
@@ -2368,6 +2383,16 @@ export type ListRevisionsResponse = {
     note: string | null;
     created_at: Timestamp;
     definition: Definition;
+    mcp_pin?: Record<string, {
+      tools: Array<{
+        name: string;
+        title?: string;
+        description?: string;
+        input_schema: Record<string, unknown>;
+        annotations?: Record<string, unknown>;
+      }>;
+      prices?: Record<string, number>;
+    }> | null;
   }>;
   next_cursor: string | null;
 };
@@ -2943,7 +2968,9 @@ export type ImportTemplateResponse = {
         name: string;
         tool: string;
         asks: "allow" | "ask";
-        pin?: Record<string, string | number | boolean | null | Array<string | number | boolean | null>>;
+        pin?: Record<string, string | number | boolean | null | Array<string | number | boolean | null> | {
+          keys: Array<string>;
+        }>;
       }>;
     }>;
     parameters: Record<string, unknown>;
@@ -3022,7 +3049,9 @@ export type ListTemplatesResponse = {
         name: string;
         tool: string;
         asks: "allow" | "ask";
-        pin?: Record<string, string | number | boolean | null | Array<string | number | boolean | null>>;
+        pin?: Record<string, string | number | boolean | null | Array<string | number | boolean | null> | {
+          keys: Array<string>;
+        }>;
       }>;
     }>;
     parameters: Record<string, unknown>;

@@ -20,8 +20,7 @@ import { ORGO, ORGO_BASE_IMAGE } from "./descriptors/orgo.js";
 import { DESKTOP_GROUPS } from "./desktop.js";
 import { DAEMON_IN_COMPUTER, helloDrift, type ProbeReport, probeNetworkDrift, probeNotes, probeReportOf, SOCKET_DIR, WORK } from "./drift.js";
 import { EPOCH_LABEL, OWNER_LABEL, OWNER_SERVER_LABEL, ownerLabels, RUN_HASH_LABEL, RUN_LABEL, runHash } from "./labels.js";
-import type { KindCapabilities } from "./kinds.js";
-import { checkMount, type MountKind } from "./mount.js";
+import { checkMount } from "./mount.js";
 import { type OrgoChannel, type OrgoRest, type OrgoStart, type OrgoWebSocketFactory, ORGO_API_URL, orgoRest, orgoTerminalChannel, START_LOG } from "./orgo-channel.js";
 import { OrgoDesktopProvider, type OrgoDesktopOptions } from "./orgo-desktop.js";
 import { type WorkspaceHolder, workspaceChoices, workspaceHolder } from "./orgo-workspaces.js";
@@ -85,17 +84,9 @@ import { listTested } from "./test-connection.js";
 /** This module's failures: one with code vendor names Orgo. */
 const fail = failFor("orgo");
 
-/** The mount kinds an Orgo computer takes: none yet (an Archil mount needs an Orgo template that bakes the helper). */
-export const MOUNT: readonly MountKind[] = ORGO.mounts;
-
 /** The groups every Orgo computer offers: a Linux shell, files and processes, and the desktop's screen and input. */
 const GROUPS: Group[] = ["exec", "files", "processes", ...DESKTOP_GROUPS];
 
-/**
- * What a built provider declares, known without building one, per configuration (its descriptor's): the Linux desktop
- * with computerd (the default), then the Windows and the macOS desktops Orgo's own API answers (options.os).
- */
-export const CAPABILITIES: readonly KindCapabilities[] = ORGO.capabilities;
 
 /** The conformance CLI's module for Orgo: its live switch, the run's 1 h cap and the drifted twin. */
 export const conformance = () => import("./conformance/orgo.js");
@@ -377,7 +368,7 @@ export class OrgoProvider implements ComputerProvider {
 			groups: [...GROUPS],
 			maxLifetimeMs: this.#maxLifetimeMs,
 			release: ["delete"],
-			mount: [...MOUNT],
+			mount: [...ORGO.mounts],
 			// Init starts with --own-network (childCommands): no tool reaches these, nor any port root listens on.
 			vendorAgentPorts: [...ORGO_AGENT_PORTS],
 			persistence: { keepsState: true, resume: true },
@@ -399,7 +390,7 @@ export class OrgoProvider implements ComputerProvider {
 			const bad = entries === undefined ? "labels must map names to strings" : entries.map(([key, value]) => labelProblem(key, value)).find(Boolean);
 			if (bad) refuse("labels", bad);
 		}
-		refusals.push(...checkMount(mount, MOUNT));
+		refusals.push(...checkMount(mount, ORGO.mounts));
 		refusals.push(...checkGpu(given.gpu, this.capabilities()));
 		for (const [field, value] of Object.entries(given)) {
 			if (SPEC_FIELDS.has(field) || field === "mount" || field === "owner" || value === undefined) continue;
