@@ -1,7 +1,7 @@
 {
   "$schema": "../../../schema/task.schema.json",
   "id": "mobileworld.adjust-brightness-max",
-  "version": 1,
+  "version": 2,
   "title": "Set the screen brightness to the maximum",
   "split": "dev",
   "source": {
@@ -31,6 +31,7 @@
     }
   ],
   "instruction": "Set the brightness to the maximum level.",
+  "exec": "deny",
   "budget": { "steps": 20, "usd": 1, "wall_s": 240 },
   "checks": [
     {
@@ -50,10 +51,10 @@
     }
   ],
   "oracle": [
-    {
-      "method": "exec.run",
-      "why": "Write the maximum, as dragging the slider to the end does.",
-      "params": { "argv": ["settings", "put", "system", "screen_brightness", "255"], "timeoutMs": 20000 }
-    }
+    { "method": "apps.launch", "why": "Settings at its home page, scrolled to the top.", "params": { "id": "com.android.settings" } },
+    { "method": "ui.act", "why": "Scroll the home list until Display shows.", "params": { "foreground": true, "steps": [{ "scroll": { "find": { "role": "scrollarea" } }, "dy": 400 }], "expect": { "text": "Display", "timeoutMs": 5000 } } },
+    { "method": "ui.act", "params": { "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "Display" } } } }], "expect": { "text": "Brightness level", "timeoutMs": 8000 } } },
+    { "method": "ui.act", "why": "Brightness level opens the system brightness slider over the page.", "params": { "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "Brightness level" } } } }], "expect": { "text": "Display brightness", "timeoutMs": 8000 } } },
+    { "method": "input.actions", "why": "Drag the slider (80 points down the screen) to its right end. The slider has no set: phoned sets only fields and switches, and the slider refuses a scroll at its end. No expect follows: the slider's own value doesn't reach the tree in time, and the check reads the setting.", "params": { "actions": [{ "type": "swipe", "path": [[360, 160], [600, 160], [719, 160]], "ms": 700 }, { "type": "wait", "ms": 800 }] } }
   ]
 }

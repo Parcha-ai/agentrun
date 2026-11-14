@@ -1,8 +1,9 @@
 # android-dev
 
 Twenty tasks on an unrooted Android 14-16 phone, driven by phoned as adb's shell user (uid 2000). The agent gets `ui` and
-`screen`; setup, checks, teardown and the oracle use the bench's own channel (`exec.run` and `am start` intents). Five
-apps, ten dev and ten heldout, every app in both splits. Four tasks are information tasks: the agent answers in words and
+`screen`; setup, checks and teardown use the bench's own channel (`exec.run` and `am start` intents). Five
+apps, ten dev and ten heldout, every app in both splits. Every task done in Settings, Clock, Contacts or Files is
+`"exec": "deny"`, and its oracle does the task through the UI, as an agent has to (below). Four tasks are information tasks: the agent answers in words and
 an `answer` check reads the final answer. Two are sharing tasks (tagged `share` and `demo`), one per split: they go
 through Chrome's share sheet, one into another app (Contacts) and one into the print service's Save as PDF.
 
@@ -34,9 +35,10 @@ through Chrome's share sheet, one into another app (Contacts) and one into the p
 - Every check fails after setup alone. No check is a guard that passes on the untouched state: a guard is folded into
   the check it guards (add-email and link-to-contact read the new row and the phone row together).
 - After setup and the oracle every check passes, with three limits:
-  - The four answer tasks (device-name, battery-level, alarm-time, read-page) have no oracle: an oracle is calls, and an
-    answer isn't one. `verify` has to skip their answer checks or feed the answer the rubric's "Done means" names.
-    Their nonce or pinned value makes the answer unknowable without reading the phone.
+  - An answer isn't a call, so the answer tasks' answer checks fail under any oracle; `verify` counts a task right
+    when only answer checks fail. device-name, battery-level and alarm-time have an oracle that brings the answer on
+    screen and ends with an `expect` on its text, so the oracle passing shows the answer can be read from the screen.
+    read-page has none. Their nonce or pinned value makes the answer unknowable without reading the phone.
   - page-to-pdf's oracle writes a PDF header to the file the check looks for. No shell command makes Chrome print, so
     it proves the check reads a solved state, not that Chrome can print.
   - The Clock checks read AlarmManager's next alarm clock, which is the phone's soonest enabled alarm. They hold only on
@@ -48,6 +50,32 @@ through Chrome's share sheet, one into another app (Contacts) and one into the p
 - The phone-harness probes of 2026-11-08 (`kinds/phone-probe-out`) ran a redroid 15 image with AOSP DeskClock,
   Contacts and DocumentsUI and no Chrome. The Chrome tasks need `com.android.chrome` installed; the rest name the AOSP
   packages too.
+
+## Oracles through the UI
+
+The sixteen Settings, Clock, Contacts and Files tasks deny the agent `exec`, and their oracles use only `ui.act`
+(`find` by role and name), `apps.launch` and `input.actions`. The bench's test holds every exec-deny oracle to those
+methods. They were written against the phone-harness cloud phone (redroid 15, AOSP Settings, DeskClock, Contacts and
+DocumentsUI, 360x640 points at 2x) and verified there on seeds 1 to 3. They lean on that image:
+
+- Swipes are in screen pixels (a slow 300-point swipe to bring Dark theme, Do Not Disturb or a contact's Email field on
+  screen; a 200-point swipe back to Location from the end of the Settings list). A find sees only what is on screen,
+  and the Settings pages' first scroll area is the home container, so a `scroll` step can't aim at the inner list.
+- DocumentsUI's selection-bar More options is tapped at (336,48) points: the folder toolbar's More options, hidden under
+  the selection bar, comes first in the tree. Move and Copy go through the picker's Show roots and the phone's storage
+  root, which is named after the model (`redroid15_arm64`); the Downloads root lists shell-made folders but not their
+  subfolders.
+- AOSP Clock writes a hair space (U+200A) before AM and PM; the oracles match it with `\s` in a regex name, and
+  write it as ` ` in an `expect`. A press on the time picker's hour or minute already shown changes nothing and
+  can't be confirmed, so the oracles press another one first.
+- A find sees the screen as it is when the act starts, so an oracle whose first find is a list row waits for the row
+  with an `expect` first.
+- Contacts on Android 13 and later opens behind a notifications prompt unless `POST_NOTIFICATIONS` is granted, so
+  `contacts.sh open` grants it with the contacts permissions.
+
+On another phone these oracles may fail where an agent would not; the checks don't depend on them. The four Chrome
+tasks (open-article, read-page, link-to-contact, page-to-pdf) keep `exec` and their old oracles: the cloud phone has
+no Chrome, and bench2-runner skips them.
 
 ## Reset between tasks on an unrooted phone
 

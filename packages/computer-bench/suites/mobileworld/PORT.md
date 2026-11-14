@@ -105,6 +105,13 @@ These apply to every task. Each task's `source.changes` lists its own changes.
   - Every state-checked task has an oracle. setup alone fails its checks, and setup plus oracle passes them. This
     was checked against a fake phone (Linux shell, faked `settings`, `cmd`, `am`, `input`, `screencap`). On that
     fake, teardown also left the user's files exactly as they were.
+  - The six tasks done in Settings or Files (brightness max and min, flight mode on and off, bid-file-rename,
+    invoice-receipt-copy) are `"exec": "deny"`, and their oracles do the task through the UI with `ui.act`,
+    `apps.launch` and `input.actions`. They were verified on the phone-harness cloud phone (redroid 15) on seeds 1
+    to 3 and lean on that image as android-dev's README says: the brightness slider is dragged at its place on that
+    screen, DocumentsUI's selection-bar More options is tapped at (336,48) points, and Copy to goes through the
+    storage root named `redroid15_arm64`. The file oracles search Download by name, since a find sees only what is
+    on screen.
 - **Translation:** Chinese goals are translated, and the translation is marked.
 
 ## Reporting
@@ -143,7 +150,8 @@ split, and the two invoice tasks in heldout.
 ### Unsure
 
 - **check-invoice-1:**
-  - It has no oracle: it's answer-only, like android-dev/settings-battery-level.
+  - It has no oracle and keeps `exec`: it's answer-only, and the cloud phone has no PDF viewer to bring the amount
+    on screen.
   - Its invoice is our re-typeset text PDF, not the source's 82 KB LaTeX PDF.
   - The source's printed subtotal (85,100) isn't the sum of its line items (84,100). The check takes both 104,417.70
     (the source's key) and 103,190.70.
@@ -153,7 +161,7 @@ split, and the two invoice tasks in heldout.
   agent that did the task.
 - **open-flight-mode and close-flight-mode:** these need USB adb (see above).
 - **take-selfie:** the oracle is a screen capture saved into DCIM/Camera. It shows the check reads a new camera-folder
-  image, not that a camera app works.
+  image, not that a camera app works. It keeps `exec`: the cloud phone has no camera, and bench2-runner skips it.
 - **bid-file-rename:** the agent sees the dates only through the file manager. Most of them list Download through
   MediaStore, so a stale index would show the wrong dates; setup asks for a rescan of each file to prevent that.
 

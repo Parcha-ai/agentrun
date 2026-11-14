@@ -1,7 +1,7 @@
 {
   "$schema": "../../../schema/task.schema.json",
   "id": "android.settings.dark-theme",
-  "version": 1,
+  "version": 2,
   "title": "Turn the dark theme on or off in Settings",
   "split": "dev",
   "tags": ["settings", "toggle"],
@@ -9,8 +9,8 @@
   "params": {
     "mode": {
       "pick": [
-        { "say": "on", "want": "yes", "start": "no" },
-        { "say": "off", "want": "no", "start": "yes" }
+        { "say": "on", "want": "yes", "start": "no", "shown": "ON" },
+        { "say": "off", "want": "no", "start": "yes", "shown": "OFF" }
       ]
     }
   },
@@ -32,6 +32,7 @@
     }
   ],
   "instruction": "Using the Settings app, turn the dark theme {{mode.say}}.",
+  "exec": "deny",
   "budget": { "steps": 25, "usd": 1, "wall_s": 300 },
   "checks": [
     {
@@ -50,6 +51,11 @@
     }
   ],
   "oracle": [
-    { "method": "exec.run", "params": { "argv": ["cmd", "uimode", "night", "{{mode.want}}"], "timeoutMs": 20000 } }
+    { "method": "apps.launch", "why": "Settings at its home page, scrolled to the top.", "params": { "id": "com.android.settings" } },
+    { "method": "ui.act", "why": "Scroll the home list until Display shows.", "params": { "foreground": true, "steps": [{ "scroll": { "find": { "role": "scrollarea" } }, "dy": 400 }], "expect": { "text": "Display", "timeoutMs": 5000 } } },
+    { "method": "ui.act", "params": { "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "Display" } } } }], "expect": { "text": "Brightness level", "timeoutMs": 8000 } } },
+    { "method": "input.actions", "why": "Swipe the Display page up 300 points (600 screen pixels), slowly (no fling), so the Dark theme row is whole on screen.", "params": { "actions": [{ "type": "swipe", "path": [[360, 1000], [360, 700], [360, 400]], "ms": 900 }] } },
+    { "method": "ui.act", "params": { "steps": [], "expect": { "text": "Dark theme", "timeoutMs": 5000 } } },
+    { "method": "ui.act", "why": "The switch recreates the page, so the set is read back by the expect, not by its ref.", "params": { "steps": [{ "set": { "find": { "role": "switch", "name": { "equals": "Dark theme" } } }, "value": "{{mode.say}}" }], "expect": { "text": "{{mode.shown}}", "timeoutMs": 8000 } } }
   ]
 }

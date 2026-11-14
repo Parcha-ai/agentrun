@@ -1,7 +1,7 @@
 {
   "$schema": "../../../schema/task.schema.json",
   "id": "mobileworld.close-flight-mode",
-  "version": 1,
+  "version": 2,
   "title": "Turn off flight mode",
   "split": "heldout",
   "source": {
@@ -31,6 +31,7 @@
     }
   ],
   "instruction": "Turn off device flight mode",
+  "exec": "deny",
   "budget": { "steps": 20, "usd": 1, "wall_s": 240 },
   "checks": [
     {
@@ -50,10 +51,8 @@
     }
   ],
   "oracle": [
-    {
-      "method": "exec.run",
-      "why": "Turn flight mode off, as the switch does.",
-      "params": { "argv": ["cmd", "connectivity", "airplane-mode", "disable"], "timeoutMs": 20000 }
-    }
+    { "method": "apps.launch", "why": "Settings at its home page, scrolled to the top.", "params": { "id": "com.android.settings" } },
+    { "method": "ui.act", "params": { "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "Network & internet" } } } }], "expect": { "text": "Airplane mode", "timeoutMs": 8000 } } },
+    { "method": "ui.act", "why": "The Airplane mode row toggles its switch, which then reads OFF (the page's other rows say On and Off, not in capitals).", "params": { "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "Airplane mode" } } } }], "expect": { "text": "OFF", "timeoutMs": 8000 } } }
   ]
 }
