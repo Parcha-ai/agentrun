@@ -10,7 +10,7 @@ import { Input, Textarea } from "@/components/ui/field";
 import { capWords } from "@/components/NeedsYou";
 import type { Agent } from "@/lib/agentForm";
 import { type Client, ClientError, type FieldIssue } from "@/lib/client";
-import { agentInputOf, type FieldSpec, fieldIssueWords, fieldLabel, fieldOfIssue, fieldValid, fieldValues, startText } from "@/lib/inputForm";
+import { agentInputOf, type FieldSpec, fieldIssueWords, fieldLabel, fieldOfIssue, fieldStartText, fieldValid, fieldValues } from "@/lib/inputForm";
 import { exampleHint, exampleInput, keeper, startBody, submitStart } from "@/lib/runStart";
 import { type ParameterText, paramHelp } from "@/lib/templatePackages";
 import { sendUpload, type Upload } from "@/lib/uploads";
@@ -40,7 +40,7 @@ export function RunBar({ agent, efforts, v2, go, blocked, limits, upload = sendU
   const json = workflow || shape?.kind === "json";
   const example = useMemo(() => (workflow ? exampleInput(agent.definition.workflow) : shape?.kind === "json" ? shape.example : null), [workflow, agent.definition.workflow, shape]);
   const [text, setText] = useState(example?.text ?? "");
-  const [values, setValues] = useState<ParameterText>(() => (form ? startText(Object.fromEntries(form.fields)) : {}));
+  const [values, setValues] = useState<ParameterText>(() => (form ? fieldStartText(form) : {}));
   const [effort, setEffort] = useState("");
   const [cap, setCap] = useState("");
   const [problem, setProblem] = useState<Problem | null>(null);
@@ -126,7 +126,7 @@ export function RunBar({ agent, efforts, v2, go, blocked, limits, upload = sendU
           <div role="group" aria-label="The run's input" className="mt-3 grid gap-3 max-sm:mt-0 max-sm:basis-full md:grid-cols-2">
             {form.fields.map(([key, f]) => (
               <div key={key} data-field={`input.${key}`}>
-                <FieldInput field={f} label={fieldLabel(key, f)} help={paramHelp(f)} value={values[key] ?? ""} onChange={(v) => setField(key, f, v)} />
+                <FieldInput field={f} label={fieldLabel(key, f)} help={paramHelp(f)} value={values[key] ?? ""} typedInput onChange={(v) => setField(key, f, v)} />
                 <FieldIssues issues={(problem?.fields ?? []).filter((i) => atField(i) === key)} words={(i) => fieldIssueWords(i, key, f)} />
               </div>
             ))}

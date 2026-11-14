@@ -76,7 +76,10 @@ export function inputMessage(input: unknown): string {
   const text = typeof content === "string" ? content : "";
   if (!Object.keys(fields).length) return text;
   const json = JSON.stringify(fields, null, 2);
-  const fence = "`".repeat(Math.max(3, ...[...json.matchAll(/`+/g)].map((run) => run[0].length + 1)));
+  // A loop, never a spread into Math.max: a value may hold more runs of backticks than a call takes arguments.
+  let longest = 3;
+  for (const run of json.matchAll(/`+/g)) longest = Math.max(longest, run[0].length + 1);
+  const fence = "`".repeat(longest);
   const block = `Input:\n${fence}json\n${json}\n${fence}`;
   return text ? `${text}\n\n${block}` : block;
 }

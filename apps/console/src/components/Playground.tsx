@@ -9,7 +9,7 @@ import { Input, Textarea } from "@/components/ui/field";
 import type { Agent } from "@/lib/agentForm";
 import { agentsByName } from "@/lib/agents";
 import { ClientError, type FieldIssue } from "@/lib/client";
-import { agentInputOf, type FieldSpec, fieldIssueWords, fieldLabel, fieldOfIssue, fieldValid, fieldValues, inputOf, startText } from "@/lib/inputForm";
+import { agentInputOf, type FieldSpec, fieldIssueWords, fieldLabel, fieldOfIssue, fieldStartText, fieldValid, fieldValues, inputOf } from "@/lib/inputForm";
 import { curlFor, exampleHint, exampleInput, keeper, type StartBody, startBody, submitStart } from "@/lib/runStart";
 import { type ParameterText, paramHelp } from "@/lib/templatePackages";
 import { SpendCapMinimum } from "@/lib/spendCap";
@@ -54,14 +54,18 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
   const agent = agents.find((a) => a.agent_id === agentId);
   const kind = agent?.kind ?? "agentic";
   const [text, setText] = useState("");
+  const [revision, setRevision] = useState("");
   // An agentic agent's input_schema: its typed fields under the message, or, for one the fields can't show, the whole
-  // input as JSON in the box, as a workflow's is. The fields start again for another agent, or a changed schema.
-  const schemaKey = kind === "agentic" ? JSON.stringify(agent?.definition.input_schema ?? null) : "null";
+  // input as JSON in the box, as a workflow's is. The schema is the picked revision's (the server checks the input
+  // against the revision it runs), else the current one's. The fields start again for another agent, or a changed
+  // schema.
+  const picked = revision ? revisions.find((r) => r.revision === revision)?.definition : undefined;
+  const schemaKey = kind === "agentic" ? JSON.stringify((picked ?? agent?.definition)?.input_schema ?? null) : "null";
   const shape = useMemo(() => (kind === "agentic" ? agentInputOf(JSON.parse(schemaKey)) : null), [kind, schemaKey]);
   const form = shape?.kind === "fields" ? shape.form : null;
   const json = kind === "workflow" || shape?.kind === "json";
   const [values, setValues] = useState<ParameterText>({});
-  useEffect(() => { setValues(form ? startText(Object.fromEntries(form.fields)) : {}); }, [agentId, schemaKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { setValues(form ? fieldStartText(form) : {}); }, [agentId, schemaKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const example = kind === "workflow" ? exampleInput(agent?.definition.workflow) : shape?.kind === "json" ? shape.example : null;
   // A workflow agent opens with its example input (its schema's, else its fields empty), replaced on a switch of agent
   // unless it was edited.
@@ -72,7 +76,6 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
     prefilled.current = next;
     setText(next);
   }, [agentId, example?.text]); // eslint-disable-line react-hooks/exhaustive-deps
-  const [revision, setRevision] = useState("");
   const [effort, setEffort] = useState("");
   const [cap, setCap] = useState("");
   const [repo, setRepo] = useState("");
@@ -197,7 +200,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
                   {/* The agent's typed input fields, drawn as a template's parameters are. */}
                   {form?.fields.map(([key, f]) => (
                     <div key={key} data-field={`input.${key}`}>
-                      <FieldInput field={f} label={fieldLabel(key, f)} help={paramHelp(f)} value={values[key] ?? ""} onChange={(v) => setField(key, f, v)} />
+                      <FieldInput field={f} label={fieldLabel(key, f)} help={paramHelp(f)} value={values[key] ?? ""} typedInput onChange={(v) => setField(key, f, v)} />
                       <FieldIssues issues={issuesAt(key)} words={(i) => fieldIssueWords(i, key, f)} />
                     </div>
                   ))}

@@ -110,11 +110,14 @@ export function paramHelp(p: Parameter): string | undefined {
 /** A parameter's choices as the Apply form's picker lists them, each value once. Its empty option is left out of the
  *  apply, so the server applies the default: an optional parameter's default is that option, marked on its own entry in
  *  the list's order ("none (default)"), never a second "none". A required parameter opens with "Choose one"; an optional
- *  one whose default is not among its choices (or that has none) opens with its default's words or "None chosen". */
-export function choiceOptions(p: Parameter): { value: string; label: string }[] | null {
+ *  one whose default is not among its choices (or that has none) opens with its default's words or "None chosen".
+ *  `sent`: a run's typed input field, whose empty option sends nothing at all: each choice keeps its own value. */
+export function choiceOptions(p: Parameter, { sent = false }: { sent?: boolean } = {}): { value: string; label: string }[] | null {
   const choices = choicesOf(p);
   if (!choices) return null;
   const fallback = p.default === undefined ? undefined : String(p.default);
+  // A run's typed input: nothing fills in a field left out, so its default is offered by its own value, named as such.
+  if (sent) return [{ value: "", label: p.required ? "Choose one" : "None chosen" }, ...choices.map((c) => ({ value: c, label: c === fallback ? `${c} (default)` : c }))];
   const own = !p.required && fallback !== undefined && choices.includes(fallback);
   const head = own ? [] : [{ value: "", label: p.required ? "Choose one" : fallback !== undefined ? `${fallback} (default)` : "None chosen" }];
   return [...head, ...choices.map((c) => (own && c === fallback ? { value: "", label: `${c} (default)` } : { value: c, label: c }))];

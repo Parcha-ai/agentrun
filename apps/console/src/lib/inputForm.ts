@@ -1,6 +1,6 @@
 import type { FieldIssue } from "./client";
 import { type ExampleInput, exampleOf, type Schema } from "./runStart";
-import { linesOf, paramIssueWords, type ParameterText, paramValid, startText } from "./templatePackages";
+import { choicesOf, linesOf, paramIssueWords, type ParameterText, paramValid, startText } from "./templatePackages";
 
 // An agentic agent's input_schema (its definition's, JSON Schema 2020-12 with a top-level object), as the run forms read
 // it: the run's message (`content`, reserved by the server) and one field for each other top-level property, drawn by the
@@ -84,17 +84,30 @@ export function placeholderOf(f: FieldSpec): string | undefined {
 }
 
 /** One field's text as the input types it: a number or an integer as a number (text that is no number as typed, for the
- *  server to refuse in its own words), a box as true or false, a list one item a line. An empty field is not sent, but
- *  for a required box, sent as it shows (false). */
+ *  server to refuse in its own words), a box as true or false, a list one item a line. An empty optional field is not
+ *  sent. An empty required one is sent as it shows (a box false, text "", a list []), for the schema to take or refuse:
+ *  a schema may allow an empty value. A number has no empty value, so an empty required number is not sent. */
 function typedOf(f: FieldSpec, text: string | undefined): unknown {
   const one = (v: string): unknown => {
     if (f.type === "number" || f.type === "integer") return v.trim() !== "" && Number.isFinite(Number(v)) ? Number(v) : v;
     if (f.type === "boolean") return v === "true" ? true : v === "false" ? false : v;
     return v;
   };
-  if (f.array) { const items = linesOf(text); return items.length ? items.map(one) : undefined; }
+  if (f.array) { const items = linesOf(text); return items.length ? items.map(one) : f.required ? [] : undefined; }
   if (f.type === "boolean") return text === "true" || text === "false" ? text === "true" : f.required ? false : undefined;
-  return text === undefined || text === "" ? undefined : one(text);
+  if (text === undefined || text === "") return f.required && f.type === "string" ? "" : undefined;
+  return one(text);
+}
+
+/** The run form's fields as they start (startText's), and a choice with a default at it: nothing fills in a run input
+ *  left out, so the default is chosen in the form, and sent as chosen. */
+export function fieldStartText(form: InputForm): ParameterText {
+  const start = startText(Object.fromEntries(form.fields));
+  for (const [key, f] of form.fields) {
+    const choices = f.array ? null : choicesOf(f);
+    if (choices && f.default !== undefined && choices.includes(String(f.default))) start[key] = String(f.default);
+  }
+  return start;
 }
 
 /** The typed fields the form sends beside the message, in the schema's order. */
