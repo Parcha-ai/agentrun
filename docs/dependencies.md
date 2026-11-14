@@ -74,11 +74,11 @@ Optional peer/dependency names absent from this lockfile: `encoding`, `react`, `
 | @earendil-works/pi-telemetry | 1.5.2 | MIT | agentrun, pi-browser, serve | no | 1 |
 | @earendil-works/pi-tui | 1.5.2 | MIT | agentrun, serve | no | 1 |
 | @google/genai | 2.21.0 | Apache-2.0 | agentrun, pi-browser, serve | no | 1 |
-| @hono/node-server | 2.1.5 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| @hono/node-server | 2.1.5 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
 | @isaacs/nonrecursive-glob-match | 1.1.0 | BlueOak-1.0.0 | agentrun, serve | no | 1 |
 | @modelcontextprotocol/client | 2.4.0 | Apache-2.0 | agentrun, serve | no | 1 |
 | @modelcontextprotocol/core | 2.4.0 | Apache-2.0 | agentrun, serve | no | 1 |
-| @modelcontextprotocol/sdk | 1.32.2 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| @modelcontextprotocol/sdk | 1.32.2 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
 | @modelcontextprotocol/server | 2.4.0 | Apache-2.0 | agentrun, serve | no | 1 |
 | @openai/codex | 0.164.0 | Apache-2.0 | agentrun, run-adapters-codex, serve | no | 1 |
 | @openai/codex | 0.164.0-darwin-arm64 | Apache-2.0 | agentrun, run-adapters-codex, serve | yes | 1 |
@@ -118,111 +118,111 @@ Optional peer/dependency names absent from this lockfile: `encoding`, `react`, `
 | @types/retry | 0.12.0 | MIT | agentrun, pi-browser, serve | no | 1 |
 | @typesafe-ai/sdk | 0.7.0 | MIT | agentrun, jev, serve | no | 1 |
 | abort-controller | 3.0.0 | MIT | agentrun, pi-browser, serve | no | 1 |
-| accepts | 2.0.0 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| accepts | 2.0.0 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
 | agent-base | 7.1.4 | MIT | agentrun, pi-browser, serve | no | 1 |
 | agent-base | 9.0.0 | MIT | agentrun, pi-browser, serve | no | 1 |
 | agentkeepalive | 4.6.0 | MIT | agentrun, pi-browser, serve | no | 1 |
-| ajv-formats | 3.0.1 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
-| ajv | 8.18.0 | MIT | agentrun, run-adapters, run-adapters-claude-agent, run-adapters-codex, serve | no | 1 |
+| ajv-formats | 3.0.1 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
+| ajv | 8.18.0 | MIT | agentrun, client, run-adapters, run-adapters-claude-agent, run-adapters-codex, serve | no | 1 |
 | asynckit | 0.4.0 | MIT | agentrun, pi-browser, serve | no | 1 |
 | balanced-match | 4.0.4 | MIT | agentrun, serve | no | 1 |
 | base64-js | 1.5.1 | MIT | agentrun, pi-browser, serve | no | 1 |
 | bignumber.js | 9.3.1 | MIT | agentrun, pi-browser, serve | no | 1 |
-| body-parser | 2.4.0 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| body-parser | 2.4.0 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
 | boolbase | 1.0.0 | ISC | agentrun, pi-browser, serve | no | 1 |
 | boundary | 2.0.0 | BSD-2-Clause | agentrun, serve | no | 1 |
 | bowser | 2.14.1 | MIT | agentrun, pi-browser, serve | no | 1 |
 | brace-expansion | 5.0.12 | MIT | agentrun, serve | no | 1 |
 | buffer-equal-constant-time | 1.0.1 | BSD-3-Clause | agentrun, pi-browser, serve | no | 1 |
-| bytes | 3.1.2 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
-| call-bind-apply-helpers | 1.0.2 | MIT | agentrun, pi-browser, run-adapters-claude-agent, serve | no | 1 |
-| call-bound | 1.0.4 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| bytes | 3.1.2 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
+| call-bind-apply-helpers | 1.0.2 | MIT | agentrun, client, pi-browser, run-adapters-claude-agent, serve | no | 1 |
+| call-bound | 1.0.4 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
 | chalk | 6.0.0 | MIT | agentrun, serve | no | 1 |
 | combined-stream | 1.0.8 | MIT | agentrun, pi-browser, serve | no | 1 |
-| content-disposition | 2.0.1 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
-| content-type | 1.0.5 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
-| content-type | 2.1.0 | MIT | agentrun, run-adapters-claude-agent, serve | no | 4 |
-| cookie-signature | 1.2.2 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
-| cookie | 0.7.2 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
-| cors | 2.8.6 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| content-disposition | 2.0.1 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
+| content-type | 1.0.5 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
+| content-type | 2.1.0 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 4 |
+| cookie-signature | 1.2.2 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
+| cookie | 0.7.2 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
+| cors | 2.8.6 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
 | croner | 11.0.0 | MIT | agentrun, serve | no | 1 |
-| cross-spawn | 7.0.6 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| cross-spawn | 7.0.6 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
 | css-select | 5.2.2 | BSD-2-Clause | agentrun, pi-browser, serve | no | 1 |
 | css-what | 6.2.2 | BSD-2-Clause | agentrun, pi-browser, serve | no | 1 |
 | data-uri-to-buffer | 4.0.1 | MIT | agentrun, pi-browser, serve | no | 1 |
-| debug | 4.4.3 | MIT | agentrun, pi-browser, run-adapters-claude-agent, serve | no | 1 |
+| debug | 4.4.3 | MIT | agentrun, client, pi-browser, run-adapters-claude-agent, serve | no | 1 |
 | delayed-stream | 1.0.0 | MIT | agentrun, pi-browser, serve | no | 1 |
-| depd | 2.0.0 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| depd | 2.0.0 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
 | diff | 8.0.4 | BSD-3-Clause | agentrun, pi-browser, serve | no | 2 |
 | disk | 1.12.0 | MIT | agentrun, serve | no | 1 |
 | dom-serializer | 2.0.0 | MIT | agentrun, pi-browser, serve | no | 1 |
 | domelementtype | 2.3.0 | BSD-2-Clause | agentrun, pi-browser, serve | no | 1 |
 | domhandler | 5.0.3 | BSD-2-Clause | agentrun, pi-browser, serve | no | 1 |
 | domutils | 3.2.2 | BSD-2-Clause | agentrun, pi-browser, serve | no | 1 |
-| dunder-proto | 1.0.1 | MIT | agentrun, pi-browser, run-adapters-claude-agent, serve | no | 1 |
+| dunder-proto | 1.0.1 | MIT | agentrun, client, pi-browser, run-adapters-claude-agent, serve | no | 1 |
 | ecdsa-sig-formatter | 1.0.11 | Apache-2.0 | agentrun, pi-browser, serve | no | 1 |
-| ee-first | 1.1.1 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
-| encodeurl | 2.0.0 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| ee-first | 1.1.1 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
+| encodeurl | 2.0.0 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
 | entities | 4.5.0 | BSD-2-Clause | agentrun, pi-browser, serve | no | 1 |
-| es-define-property | 1.0.1 | MIT | agentrun, pi-browser, run-adapters-claude-agent, serve | no | 1 |
-| es-errors | 1.3.0 | MIT | agentrun, pi-browser, run-adapters-claude-agent, serve | no | 1 |
-| es-object-atoms | 1.1.2 | MIT | agentrun, pi-browser, run-adapters-claude-agent, serve | no | 1 |
+| es-define-property | 1.0.1 | MIT | agentrun, client, pi-browser, run-adapters-claude-agent, serve | no | 1 |
+| es-errors | 1.3.0 | MIT | agentrun, client, pi-browser, run-adapters-claude-agent, serve | no | 1 |
+| es-object-atoms | 1.1.2 | MIT | agentrun, client, pi-browser, run-adapters-claude-agent, serve | no | 1 |
 | es-set-tostringtag | 2.1.0 | MIT | agentrun, pi-browser, serve | no | 1 |
-| escape-html | 1.0.3 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
-| etag | 1.8.1 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| escape-html | 1.0.3 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
+| etag | 1.8.1 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
 | event-target-shim | 5.0.1 | MIT | agentrun, pi-browser, serve | no | 1 |
-| eventsource-parser | 3.1.1 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
-| eventsource | 3.0.7 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
-| express-rate-limit | 8.7.1 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
-| express | 5.3.0 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| eventsource-parser | 3.1.1 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
+| eventsource | 3.0.7 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
+| express-rate-limit | 8.7.1 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
+| express | 5.3.0 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
 | extend | 3.0.2 | MIT | agentrun, pi-browser, serve | no | 1 |
-| fast-deep-equal | 3.1.3 | MIT | agentrun, run-adapters, run-adapters-claude-agent, run-adapters-codex, serve | no | 1 |
+| fast-deep-equal | 3.1.3 | MIT | agentrun, client, run-adapters, run-adapters-claude-agent, run-adapters-codex, serve | no | 1 |
 | fast-sha256 | 1.3.0 | Unlicense | agentrun, pi-browser, run-adapters-claude-agent, serve | no | 1 |
-| fast-uri | 3.1.8 | BSD-3-Clause | agentrun, run-adapters, run-adapters-claude-agent, run-adapters-codex, serve | no | 1 |
+| fast-uri | 3.1.8 | BSD-3-Clause | agentrun, client, run-adapters, run-adapters-claude-agent, run-adapters-codex, serve | no | 1 |
 | fetch-blob | 3.2.0 | MIT | agentrun, pi-browser, serve | no | 1 |
-| finalhandler | 2.1.1 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| finalhandler | 2.1.1 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
 | form-data-encoder | 1.7.2 | MIT | agentrun, pi-browser, serve | no | 1 |
 | form-data | 4.0.6 | MIT | agentrun, pi-browser, serve | no | 1 |
 | formdata-node | 4.4.1 | MIT | agentrun, pi-browser, serve | no | 1 |
 | formdata-polyfill | 4.0.10 | MIT | agentrun, pi-browser, serve | no | 1 |
-| forwarded | 0.2.0 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
-| fresh | 2.0.0 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
-| function-bind | 1.1.2 | MIT | agentrun, pi-browser, run-adapters-claude-agent, serve | no | 1 |
+| forwarded | 0.2.0 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
+| fresh | 2.0.0 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
+| function-bind | 1.1.2 | MIT | agentrun, client, pi-browser, run-adapters-claude-agent, serve | no | 1 |
 | gaxios | 7.3.1 | Apache-2.0 | agentrun, pi-browser, serve | no | 1 |
 | gcp-metadata | 8.1.2 | Apache-2.0 | agentrun, pi-browser, serve | no | 1 |
 | get-east-asian-width | 1.6.0 | MIT | agentrun, serve | no | 1 |
-| get-intrinsic | 1.3.0 | MIT | agentrun, pi-browser, run-adapters-claude-agent, serve | no | 1 |
-| get-proto | 1.0.1 | MIT | agentrun, pi-browser, run-adapters-claude-agent, serve | no | 1 |
+| get-intrinsic | 1.3.0 | MIT | agentrun, client, pi-browser, run-adapters-claude-agent, serve | no | 1 |
+| get-proto | 1.0.1 | MIT | agentrun, client, pi-browser, run-adapters-claude-agent, serve | no | 1 |
 | google-auth-library | 10.9.1 | Apache-2.0 | agentrun, pi-browser, serve | no | 1 |
 | google-logging-utils | 1.1.3 | Apache-2.0 | agentrun, pi-browser, serve | no | 1 |
-| gopd | 1.2.0 | MIT | agentrun, pi-browser, run-adapters-claude-agent, serve | no | 1 |
+| gopd | 1.2.0 | MIT | agentrun, client, pi-browser, run-adapters-claude-agent, serve | no | 1 |
 | graceful-fs | 4.2.11 | ISC | agentrun, serve | no | 1 |
-| has-symbols | 1.1.0 | MIT | agentrun, pi-browser, run-adapters-claude-agent, serve | no | 1 |
+| has-symbols | 1.1.0 | MIT | agentrun, client, pi-browser, run-adapters-claude-agent, serve | no | 1 |
 | has-tostringtag | 1.0.2 | MIT | agentrun, pi-browser, serve | no | 1 |
-| hasown | 2.0.4 | MIT | agentrun, pi-browser, run-adapters-claude-agent, serve | no | 1 |
+| hasown | 2.0.4 | MIT | agentrun, client, pi-browser, run-adapters-claude-agent, serve | no | 1 |
 | he | 1.2.0 | MIT | agentrun, pi-browser, serve | no | 1 |
 | highlight.js | 10.7.3 | BSD-3-Clause | agentrun, serve | no | 1 |
-| hono | 4.13.14 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| hono | 4.13.14 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
 | hosted-git-info | 9.0.3 | ISC | agentrun, serve | no | 1 |
-| http-errors | 2.0.1 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| http-errors | 2.0.1 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
 | http-proxy-agent | 9.1.0 | MIT | agentrun, pi-browser, serve | no | 1 |
 | https-proxy-agent | 7.0.6 | MIT | agentrun, pi-browser, serve | no | 1 |
 | https-proxy-agent | 9.1.0 | MIT | agentrun, pi-browser, serve | no | 1 |
 | humanize-ms | 1.2.1 | MIT | agentrun, pi-browser, serve | no | 1 |
-| iconv-lite | 0.7.3 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| iconv-lite | 0.7.3 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
 | ignore | 7.0.8 | MIT | agentrun, serve | no | 1 |
-| inherits | 2.0.4 | ISC | agentrun, run-adapters-claude-agent, serve | no | 1 |
-| ip-address | 10.7.5 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
-| ipaddr.js | 1.9.1 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| inherits | 2.0.4 | ISC | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
+| ip-address | 10.7.5 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
+| ipaddr.js | 1.9.1 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
 | ipaddr.js | 2.5.0 | MIT | agentrun, serve | no | 1 |
-| is-promise | 4.0.0 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
-| isexe | 2.0.0 | ISC | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| is-promise | 4.0.0 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
+| isexe | 2.0.0 | ISC | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
 | jiti | 2.7.0 | MIT | agentrun, serve | no | 1 |
-| jose | 6.2.13 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| jose | 6.2.13 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
 | json-bigint | 1.0.0 | MIT | agentrun, pi-browser, serve | no | 1 |
 | json-schema-to-ts | 3.1.1 | MIT | agentrun, pi-browser, run-adapters-claude-agent, serve | no | 1 |
-| json-schema-traverse | 1.0.0 | MIT | agentrun, run-adapters, run-adapters-claude-agent, run-adapters-codex, serve | no | 1 |
-| json-schema-typed | 8.0.2 | BSD-2-Clause | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| json-schema-traverse | 1.0.0 | MIT | agentrun, client, run-adapters, run-adapters-claude-agent, run-adapters-codex, serve | no | 1 |
+| json-schema-typed | 8.0.2 | BSD-2-Clause | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
 | jwa | 2.0.1 | MIT | agentrun, pi-browser, serve | no | 1 |
 | jws | 4.0.1 | MIT | agentrun, pi-browser, serve | no | 1 |
 | long | 5.3.2 | Apache-2.0 | agentrun, pi-browser, serve | no | 1 |
@@ -230,26 +230,26 @@ Optional peer/dependency names absent from this lockfile: `encoding`, `react`, `
 | lru-cache | 11.5.3 | BlueOak-1.0.0 | agentrun, serve | no | 1 |
 | marked-cjk-friendly | 0.1.2 | MIT | agentrun, serve | no | 1 |
 | marked | 18.0.11 | MIT | agentrun, serve | no | 1 |
-| math-intrinsics | 1.1.0 | MIT | agentrun, pi-browser, run-adapters-claude-agent, serve | no | 1 |
-| media-typer | 1.1.1 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
-| merge-descriptors | 2.0.0 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| math-intrinsics | 1.1.0 | MIT | agentrun, client, pi-browser, run-adapters-claude-agent, serve | no | 1 |
+| media-typer | 1.1.1 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
+| merge-descriptors | 2.0.0 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
 | mime-db | 1.52.0 | MIT | agentrun, pi-browser, serve | no | 1 |
-| mime-db | 1.54.0 | MIT | agentrun, run-adapters-claude-agent, serve | no | 4 |
+| mime-db | 1.54.0 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 4 |
 | mime-types | 2.1.35 | MIT | agentrun, pi-browser, serve | no | 1 |
-| mime-types | 3.0.2 | MIT | agentrun, run-adapters-claude-agent, serve | no | 4 |
+| mime-types | 3.0.2 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 4 |
 | minimatch | 11.0.3 | BlueOak-1.0.0 | agentrun, serve | no | 1 |
-| ms | 2.1.3 | MIT | agentrun, pi-browser, run-adapters-claude-agent, serve | no | 1 |
-| negotiator | 1.1.0 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| ms | 2.1.3 | MIT | agentrun, client, pi-browser, run-adapters-claude-agent, serve | no | 1 |
+| negotiator | 1.1.0 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
 | node-domexception | 1.0.0 | MIT | agentrun, pi-browser, serve | no | 1 |
 | node-fetch | 2.7.0 | MIT | agentrun, pi-browser, serve | no | 1 |
 | node-fetch | 3.3.2 | MIT | agentrun, pi-browser, serve | no | 1 |
 | node-html-markdown | 2.0.0 | MIT | agentrun, pi-browser, serve | no | 1 |
 | node-html-parser | 6.1.13 | MIT | agentrun, pi-browser, serve | no | 1 |
 | nth-check | 2.1.1 | BSD-2-Clause | agentrun, pi-browser, serve | no | 1 |
-| object-assign | 4.1.1 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
-| object-inspect | 1.13.4 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
-| on-finished | 2.4.2 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
-| once | 1.4.0 | ISC | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| object-assign | 4.1.1 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
+| object-inspect | 1.13.4 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
+| on-finished | 2.4.2 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
+| once | 1.4.0 | ISC | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
 | openai | 7.19.0 | Apache-2.0 | agentrun, pi-browser, serve | no | 1 |
 | opencode-ai | 1.19.5 | MIT | agentrun, serve | no | 1 |
 | opencode-darwin-arm64 | 1.19.5 | MIT | agentrun, serve | yes | 1 |
@@ -265,10 +265,10 @@ Optional peer/dependency names absent from this lockfile: `encoding`, `react`, `
 | opencode-windows-x64-baseline | 1.19.5 | MIT | agentrun, serve | yes | 1 |
 | opencode-windows-x64 | 1.19.5 | MIT | agentrun, serve | yes | 1 |
 | p-retry | 4.6.2 | MIT | agentrun, pi-browser, serve | no | 1 |
-| parseurl | 1.3.3 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| parseurl | 1.3.3 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
 | partial-json | 0.1.7 | MIT | agentrun, pi-browser, serve | no | 1 |
-| path-key | 3.1.1 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
-| path-to-regexp | 8.4.2 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| path-key | 3.1.1 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
+| path-to-regexp | 8.4.2 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
 | pg-cloudflare | 1.4.1 | MIT | agentrun, serve | yes | 1 |
 | pg-connection-string | 2.14.1 | MIT | agentrun, serve | no | 1 |
 | pg-int8 | 1.0.1 | ISC | agentrun, serve | no | 1 |
@@ -277,61 +277,61 @@ Optional peer/dependency names absent from this lockfile: `encoding`, `react`, `
 | pg-types | 2.2.0 | MIT | agentrun, serve | no | 1 |
 | pg | 8.23.1 | MIT | agentrun, serve | no | 1 |
 | pgpass | 1.0.5 | MIT | agentrun, serve | no | 1 |
-| pkce-challenge | 5.0.1 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| pkce-challenge | 5.0.1 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
 | postgres-array | 2.0.0 | MIT | agentrun, serve | no | 1 |
 | postgres-bytea | 1.0.1 | MIT | agentrun, serve | no | 1 |
 | postgres-date | 1.0.7 | MIT | agentrun, serve | no | 1 |
 | postgres-interval | 1.2.0 | MIT | agentrun, serve | no | 1 |
 | proper-lockfile | 4.1.2 | MIT | agentrun, serve | no | 1 |
 | protobufjs | 7.6.6 | BSD-3-Clause | agentrun, pi-browser, serve | no | 1 |
-| proxy-addr | 2.0.8 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| proxy-addr | 2.0.8 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
 | proxy-agent-negotiate | 1.1.0 | MIT | agentrun, pi-browser, serve | no | 1 |
-| qs | 6.17.0 | BSD-3-Clause | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| qs | 6.17.0 | BSD-3-Clause | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
 | quickjs-wasi | 3.6.2 | MIT | agentrun, pi-browser, serve | no | 1 |
-| range-parser | 1.3.0 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
-| raw-body | 3.0.2 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
-| require-from-string | 2.0.2 | MIT | agentrun, run-adapters, run-adapters-claude-agent, run-adapters-codex, serve | no | 1 |
+| range-parser | 1.3.0 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
+| raw-body | 3.0.2 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
+| require-from-string | 2.0.2 | MIT | agentrun, client, run-adapters, run-adapters-claude-agent, run-adapters-codex, serve | no | 1 |
 | retry | 0.12.0 | MIT | agentrun, serve | no | 1 |
 | retry | 0.13.1 | MIT | agentrun, pi-browser, serve | no | 1 |
-| router | 2.2.0 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| router | 2.2.0 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
 | safe-buffer | 5.2.1 | MIT | agentrun, pi-browser, serve | no | 1 |
-| safer-buffer | 2.1.2 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| safer-buffer | 2.1.2 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
 | semver | 7.8.5 | ISC | agentrun, serve | no | 1 |
-| send | 1.2.1 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
-| serve-static | 2.2.1 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
-| setprototypeof | 1.2.0 | ISC | agentrun, run-adapters-claude-agent, serve | no | 1 |
-| shebang-command | 2.0.0 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
-| shebang-regex | 3.0.0 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
-| side-channel-list | 1.0.1 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
-| side-channel-map | 1.0.1 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
-| side-channel-weakmap | 1.0.2 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
-| side-channel | 1.1.1 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| send | 1.2.1 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
+| serve-static | 2.2.1 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
+| setprototypeof | 1.2.0 | ISC | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
+| shebang-command | 2.0.0 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
+| shebang-regex | 3.0.0 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
+| side-channel-list | 1.0.1 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
+| side-channel-map | 1.0.1 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
+| side-channel-weakmap | 1.0.2 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
+| side-channel | 1.1.1 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
 | signal-exit | 3.0.7 | ISC | agentrun, serve | no | 1 |
 | split2 | 4.2.0 | ISC | agentrun, serve | no | 1 |
 | standardwebhooks | 1.1.1 | MIT | agentrun, pi-browser, run-adapters-claude-agent, serve | no | 1 |
-| statuses | 2.0.2 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| statuses | 2.0.2 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
 | structured-source | 4.0.0 | BSD-2-Clause | agentrun, serve | no | 1 |
-| toidentifier | 1.0.1 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| toidentifier | 1.0.1 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
 | tr46 | 0.0.3 | MIT | agentrun, pi-browser, serve | no | 1 |
 | ts-algebra | 2.0.0 | MIT | agentrun, pi-browser, run-adapters-claude-agent, serve | no | 1 |
 | tslib | 2.8.1 | 0BSD | agentrun, pi-browser, serve | no | 1 |
-| type-is | 2.1.0 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| type-is | 2.1.0 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
 | typebox | 1.3.27 | MIT | agentrun, decisions, dsl, jev, pi-browser, run-adapters, run-adapters-claude-agent, run-adapters-codex, serve | no | 1 |
 | undici-types | 5.26.5 | MIT | agentrun, pi-browser, serve | no | 1 |
 | undici-types | 6.21.0 | MIT | agentrun, pi-browser, serve | no | 1 |
 | undici | 6.29.1 | MIT | agentrun, pi-browser, serve | no | 1 |
 | undici | 8.12.3 | MIT | agentrun, serve | no | 1 |
 | undici | 8.12.4 | MIT | agentrun, serve | no | 1 |
-| unpipe | 1.0.0 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
-| vary | 1.1.2 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| unpipe | 1.0.0 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
+| vary | 1.1.2 | MIT | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
 | web-streams-polyfill | 3.3.3 | MIT | agentrun, pi-browser, serve | no | 1 |
 | web-streams-polyfill | 4.0.0-beta.3 | MIT | agentrun, pi-browser, serve | no | 1 |
 | webidl-conversions | 3.0.1 | BSD-2-Clause | agentrun, pi-browser, serve | no | 1 |
 | whatwg-url | 5.0.0 | MIT | agentrun, pi-browser, serve | no | 1 |
-| which | 2.0.2 | ISC | agentrun, run-adapters-claude-agent, serve | no | 1 |
-| wrappy | 1.0.2 | ISC | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| which | 2.0.2 | ISC | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
+| wrappy | 1.0.2 | ISC | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
 | ws | 8.21.0 | MIT | agentrun, pi-browser, serve | no | 1 |
 | xtend | 4.0.2 | MIT | agentrun, serve | no | 1 |
 | yaml | 2.9.0 | ISC | agentrun, serve | no | 1 |
-| zod-to-json-schema | 3.25.2 | ISC | agentrun, run-adapters-claude-agent, serve | no | 1 |
-| zod | 4.6.6 | MIT | agentrun, pi-browser, run-adapters-claude-agent, serve | no | 1 |
+| zod-to-json-schema | 3.25.2 | ISC | agentrun, client, run-adapters-claude-agent, serve | no | 1 |
+| zod | 4.6.6 | MIT | agentrun, client, pi-browser, run-adapters-claude-agent, serve | no | 1 |

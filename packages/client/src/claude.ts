@@ -86,6 +86,7 @@ export function withClaudeAgentLearning<Q extends QueryFunction>(query: Q, confi
     };
     const ready = client.begin({ runtime: 'claude-agent-sdk', input: params.prompt, instructions, ...(model ? { model } : {}) }).then(value => {
       session = value;
+      session.followAbort(nativeAbort?.signal);
       if (closed || nativeAbort?.signal.aborted) {
         closed = true; finish('cancelled');
         throw nativeAbort?.signal.reason ?? new DOMException('The Claude SDK query was closed before dispatch.', 'AbortError');
@@ -99,8 +100,8 @@ export function withClaudeAgentLearning<Q extends QueryFunction>(query: Q, confi
     // Registration is asynchronous, while query() keeps its native synchronous shape. Observe the rejection even
     // when the caller closes without iterating; next/control methods still receive the original error.
     ready.catch(() => undefined);
-    const event = (value: Parameters<BackendLearningSession['event']>[0]) => {
-      if (session) client.track(session.event(value));
+    const event = (value: Parameters<BackendLearningSession['event']>[0], detail?: { input?: unknown; output?: unknown }) => {
+      if (session) client.track(session.nativeEvent(value, detail));
     };
     const capture = (value: unknown) => {
       const message = object(value);
@@ -115,14 +116,14 @@ export function withClaudeAgentLearning<Q extends QueryFunction>(query: Q, confi
           if (block.type === 'text' && typeof block.text === 'string') event({ type: 'text', text: block.text });
           if (block.type === 'tool_use' && typeof block.id === 'string' && typeof block.name === 'string') {
             tools.set(block.id, toolName(block.name));
-            event({ type: 'tool', id: block.id, name: toolName(block.name), status: 'started' });
+            event({ type: 'tool', id: block.id, name: toolName(block.name), status: 'started' }, { input: block.input });
           }
         }
       }
       if (message.type === 'user') {
         for (const block of Array.isArray(object(message.message).content) ? (object(message.message).content as unknown[]).map(object) : []) {
           if (block.type === 'tool_result' && typeof block.tool_use_id === 'string') {
-            event({ type: 'tool', id: block.tool_use_id, name: tools.get(block.tool_use_id) ?? 'tool', status: block.is_error === true ? 'failed' : 'completed' });
+            event({ type: 'tool', id: block.tool_use_id, name: tools.get(block.tool_use_id) ?? 'tool', status: block.is_error === true ? 'failed' : 'completed' }, { output: object(message.tool_use_result).content ?? block.content });
           }
         }
       }

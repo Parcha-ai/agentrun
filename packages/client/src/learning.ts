@@ -5,6 +5,29 @@ import { AgentRunRefused, AgentRunTimeout, AgentRunUsage } from './errors.js';
 
 export type BackendSdkRuntime = 'claude-agent-sdk' | 'codex-sdk';
 
+export interface BackendWorkflowToolManifest {
+  name: string;
+  description: string;
+  input_schema: Record<string, unknown>;
+  output_schema?: Record<string, unknown>;
+  permission: 'allow' | 'ask' | 'deny';
+  price_usd?: number;
+}
+export interface BackendWorkflowBinding {
+  context: string;
+  close(): void;
+  /** Optional explicit host binding: only this native MCP envelope can be a duplicate of bridge evidence. */
+  matchesNativeEnvelope?(name: string, input: unknown): boolean;
+  /** Consume one actual bridge completion with identical arguments, status and result. No match keeps native evidence. */
+  claimNativeEnvelope?(name: string, input: unknown, status: 'completed' | 'failed', output: unknown): boolean;
+}
+/** Structural seam: importing the base client does not load the optional workflow interpreter or MCP server. */
+export interface BackendWorkflowBridge {
+  readonly catalog: readonly BackendWorkflowToolManifest[];
+  readonly adapters: readonly ('runNode' | 'runJudge')[];
+  bind(session: BackendLearningSession): BackendWorkflowBinding;
+}
+
 export interface BackendLearningConfig extends ClientOptions {
   /** A stable agent id, shared by fresh runs of the same backend agent. */
   agentId: string;
@@ -13,6 +36,8 @@ export interface BackendLearningConfig extends ClientOptions {
   instructions?: string;
   /** Opt in when this wrapper first registers a missing agent (default false). Never changes an existing agent. */
   learning?: boolean;
+  /** Explicit local MCP bridge over the backend's existing approved tool callbacks. */
+  workflows?: BackendWorkflowBridge;
   /** Poll interval while waiting for checked learning (default 250 ms). */
   pollIntervalMs?: number;
   /** Maximum wait after completion for checked learning (default 120000 ms). The server continues after a timeout. */
@@ -29,7 +54,7 @@ export interface BackendLearningStart {
 export type SdkLearningEvent =
   | { type: 'text'; text: string }
   | { type: 'session'; session_id: string }
-  | { type: 'tool'; id: string; name: string; status: 'started' | 'completed' | 'failed'; input?: unknown; output?: unknown };
+  | { type: 'tool'; id: string; name: string; status: 'started' | 'completed' | 'failed'; input?: unknown; output?: unknown; parent_tool_use_id?: string };
 
 export interface SdkLearningUsage {
   /** Uncached input only. Cache reads and writes have their own counters; unknown splits remain null. */
@@ -54,6 +79,8 @@ export interface BackendLearningSnapshot {
   revision: string | null;
   context: string;
   skills: ReadonlyArray<{ name: string; files: Readonly<Record<string, string>> }>;
+  workflows?: ReadonlyArray<{ name: string; workflow: string; description: string }>;
+  workflowContext?: string;
 }
 
 export interface BackendLearningStatus {
@@ -116,7 +143,7 @@ export class BackendLearningClient {
     if (source.runtime !== 'claude-agent-sdk' && source.runtime !== 'codex-sdk') throw new AgentRunUsage('Unsupported backend SDK runtime.');
     if (typeof source.input !== 'string' || typeof source.instructions !== 'string') throw new AgentRunUsage('SDK input and source instructions must be strings.');
     // Freeze the source before the registration request: caller mutation cannot change the policy after validation.
-    const start = clone(source);
+    const start = clone({ ...source, ...(this.#config.workflows ? { workflow_tools: [...this.#config.workflows.catalog], workflow_adapters: [...this.#config.workflows.adapters] } : {}) });
     if (this.#runtime !== undefined && this.#runtime !== start.runtime) throw new AgentRunUsage('A backend learning client belongs to one SDK runtime.');
     this.#runtime = start.runtime;
     this.#registration ??= this.#register(start).catch(error => { this.#registration = undefined; throw error; });
@@ -129,11 +156,19 @@ export class BackendLearningClient {
       baseUrl: this.#owner.baseUrl, apiKey: receipt.token,
       fetch: this.#config.fetch, timeoutMs: this.#config.timeoutMs, maxRetries: this.#config.maxRetries,
     });
-    return new BackendLearningSession(scoped, {
-      runId: receipt.run_id, consoleUrl: receipt.console_url,
-      learningEnabled: receipt.learning.enabled, revision: receipt.learning.revision,
-      context: receipt.learning.context, skills: receipt.learning.skills,
-    }, this.#config);
+    try {
+      return new BackendLearningSession(scoped, {
+        runId: receipt.run_id, consoleUrl: receipt.console_url,
+        learningEnabled: receipt.learning.enabled, revision: receipt.learning.revision,
+        context: receipt.learning.context, skills: receipt.learning.skills,
+        workflows: receipt.learning.workflows ?? [],
+      }, this.#config);
+    } catch (error) {
+      // Registration happened, but no native task was dispatched. Close its receipt rather than leaving it live.
+      await scoped.sdkRuns.complete(receipt.run_id, { status: 'failed', answer: '', evidence_complete: false,
+        error: 'The backend workflow bridge could not bind this task.' }, { 'Idempotency-Key': `${receipt.run_id}:bind-failed` }).catch(() => undefined);
+      throw error;
+    }
   }
 
   async #register(source: BackendLearningStart): Promise<void> {
@@ -145,7 +180,7 @@ export class BackendLearningClient {
       if (!(error instanceof AgentRunRefused) || error.status !== 404) throw error;
       const definition = {
         id: agentId, name: this.#config.name ?? agentId, instructions: source.instructions,
-        sdk: { runtime: source.runtime }, learning: this.#config.learning === true ? 'notes' as const : false as const,
+        sdk: { runtime: source.runtime }, learning: this.#config.learning === true ? (this.#config.workflows ? true as const : 'notes' as const) : false as const,
       };
       try { await this.#owner.agents.create({ definition }, { 'Idempotency-Key': uuid() }); }
       catch (conflict) {
@@ -180,6 +215,13 @@ export class BackendLearningSession implements BackendLearningSnapshot {
   readonly revision: string | null;
   readonly context: string;
   readonly skills: BackendLearningSnapshot['skills'];
+  readonly workflows: NonNullable<BackendLearningSnapshot['workflows']>;
+  readonly workflowContext: string;
+  #workflowBinding?: BackendWorkflowBinding;
+  readonly #workflowEvidenceBinding?: BackendWorkflowBinding;
+  readonly #nativeEnvelopes = new Map<string, { event: SdkLearningEvent; input: unknown; serialized: string }>();
+  readonly #protected = new Set<string>();
+  readonly #abortCleanups: (() => void)[] = [];
   readonly #scoped: AgentRun;
   readonly #pollIntervalMs: number;
   readonly #learningTimeoutMs: number;
@@ -192,7 +234,7 @@ export class BackendLearningSession implements BackendLearningSnapshot {
   #outcome?: string;
   #status?: BackendLearningStatus;
 
-  constructor(scoped: AgentRun, snapshot: BackendLearningSnapshot & { runId: string; consoleUrl: string }, config: Pick<BackendLearningConfig, 'pollIntervalMs' | 'learningTimeoutMs'>) {
+  constructor(scoped: AgentRun, snapshot: BackendLearningSnapshot & { runId: string; consoleUrl: string }, config: Pick<BackendLearningConfig, 'pollIntervalMs' | 'learningTimeoutMs' | 'workflows'>) {
     this.#scoped = scoped;
     this.runId = snapshot.runId;
     this.consoleUrl = snapshot.consoleUrl;
@@ -200,8 +242,38 @@ export class BackendLearningSession implements BackendLearningSnapshot {
     this.revision = snapshot.revision;
     this.context = snapshot.context;
     this.skills = clone(snapshot.skills);
+    this.workflows = clone(snapshot.workflows ?? []);
     this.#pollIntervalMs = duration(config.pollIntervalMs, 250, 'pollIntervalMs');
     this.#learningTimeoutMs = duration(config.learningTimeoutMs, 120_000, 'learningTimeoutMs');
+    if (this.learningEnabled && config.workflows) this.#workflowBinding = config.workflows.bind(this);
+    this.#workflowEvidenceBinding = this.#workflowBinding;
+    this.workflowContext = this.#workflowBinding?.context ?? '';
+  }
+
+  /** Keep ephemeral bridge capabilities out of stored evidence without changing native SDK results. */
+  protect(values: readonly string[]): void { for (const value of values) if (value) this.#protected.add(value); }
+  #safe<T>(value: T): T {
+    const visit = (item: unknown): unknown => typeof item === 'string' ? [...this.#protected].reduce((text, secret) => text.split(secret).join('[withheld]'), item)
+      : Array.isArray(item) ? item.map(visit) : item && typeof item === 'object' ? Object.fromEntries(Object.entries(item).map(([key, v]) => [key, visit(v)])) : item;
+    return visit(clone(value)) as T;
+  }
+
+  /** Stop admitting work immediately; evidence can still drain before durable completion. */
+  closeWorkflows(): void {
+    const binding = this.#workflowBinding;
+    this.#workflowBinding = undefined;
+    binding?.close();
+  }
+
+  /** Revoke workflow capabilities as soon as the native SDK cancels, including an idle stream. */
+  followAbort(signal?: AbortSignal): void {
+    if (!signal || !this.#workflowBinding) return;
+    const stop = () => this.closeWorkflows();
+    if (signal.aborted) stop();
+    else {
+      signal.addEventListener('abort', stop, { once: true });
+      this.#abortCleanups.push(() => signal.removeEventListener('abort', stop));
+    }
   }
 
   get status(): BackendLearningStatus | undefined { return this.#status; }
@@ -212,6 +284,35 @@ export class BackendLearningSession implements BackendLearningSnapshot {
     this.#evidenceError ??= new AgentRunUsage(reason);
   }
 
+  /** Observe native SDK tools without counting a positively correlated bridge envelope twice. Candidate starts wait
+   *  for their result; every unmatched or unfinished candidate is still ordinary top-level evidence. Raw arguments
+   *  and results stay local, and at most sixteen bounded candidates (the bridge's invocation bound) are retained. */
+  nativeEvent(event: SdkLearningEvent, detail: { input?: unknown; output?: unknown } = {}): Promise<void> {
+    if (this.#completion) return reject(new AgentRunUsage('Cannot add SDK evidence after completion.'));
+    if (event.type !== 'tool') return this.event(event);
+    const pending = this.#nativeEnvelopes.get(event.id), binding = this.#workflowEvidenceBinding;
+    if (event.status === 'started' && !pending && this.#nativeEnvelopes.size < 16) {
+      try {
+        if (binding?.matchesNativeEnvelope?.(event.name, detail.input)) {
+          const serialized = JSON.stringify(detail.input);
+          if (size(serialized) <= 131_072) {
+            this.#nativeEnvelopes.set(event.id, { event: clone(event), input: clone(detail.input), serialized });
+            return Promise.resolve();
+          }
+        }
+      } catch { /* Unavailable correlation never removes evidence. */ }
+    }
+    if (!pending) return this.event(event);
+    this.#nativeEnvelopes.delete(event.id);
+    try {
+      if (event.status !== 'started' && pending.event.type === 'tool' && event.name === pending.event.name &&
+        (detail.input === undefined || JSON.stringify(detail.input) === pending.serialized) &&
+        binding?.claimNativeEnvelope?.(event.name, pending.input, event.status, detail.output)) return Promise.resolve();
+    } catch { /* A malformed result or binding remains real native tool evidence. */ }
+    // Queue both before yielding, so an immediately following completion cannot overtake the retained result.
+    return Promise.all([this.event(pending.event), this.event(event)]).then(() => undefined);
+  }
+
   /** Await to apply backpressure. A failed/oversized batch prevents learning from an incomplete transcript. */
   event(event: SdkLearningEvent): Promise<void> {
     if (this.#completion) return reject(new AgentRunUsage('Cannot add SDK evidence after completion.'));
@@ -219,7 +320,7 @@ export class BackendLearningSession implements BackendLearningSnapshot {
     let body: { sequence: number; events: SdkLearningEvent[] };
     let bytes: number;
     try {
-      const frozen = clone(event);
+      const frozen = this.#safe(event);
       body = { sequence: this.#sequence + 1, events: [frozen] };
       bytes = size(JSON.stringify(body));
       // Count the complete persisted batch, reserving room for the final answer and inbox metadata.
@@ -241,7 +342,15 @@ export class BackendLearningSession implements BackendLearningSnapshot {
   /** Persist the caller's outcome, then wait for the server's independent checked-learning verdict. */
   complete(outcome: SdkLearningOutcome): Promise<void> {
     let frozen: SdkLearningOutcome;
-    try { frozen = clone(outcome); }
+    try {
+      if (!this.#completion) {
+        for (const cleanup of this.#abortCleanups.splice(0)) cleanup();
+        this.closeWorkflows();
+        for (const pending of this.#nativeEnvelopes.values()) void this.event(pending.event).catch(() => undefined);
+        this.#nativeEnvelopes.clear();
+      }
+      frozen = this.#safe(outcome);
+    }
     catch (error) { return reject(error); }
     const serialized = JSON.stringify(frozen);
     if (this.#completion) return serialized === this.#outcome ? this.#completion : reject(new AgentRunUsage('SDK completion is immutable.'));
@@ -301,7 +410,7 @@ export class BackendLearningSession implements BackendLearningSnapshot {
 /** Skills are supplied as quoted reference text, never installed/executed on the application's filesystem. */
 export function renderLearningContext(snapshot: BackendLearningSnapshot): string {
   if (!snapshot.learningEnabled) return '';
-  const sections = [snapshot.context.trim()];
+  const sections = [snapshot.context.trim(), snapshot.workflowContext ?? ''];
   for (const skill of snapshot.skills) {
     for (const [path, content] of Object.entries(skill.files)) {
       sections.push(`Accepted skill ${JSON.stringify(skill.name)}, file ${JSON.stringify(path)}:\n${JSON.stringify(content)}`);

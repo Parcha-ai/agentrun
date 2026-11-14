@@ -240,6 +240,7 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
           return "ended" in said_ ? { answer: said_.answer } : undefined;
         },
         compile,
+        refuse,
         // The look-back's own answer, when the checks kept it: its notes and skills go on with the draft.
         answer: checked.state === "proposed" && turn ? turn.answer : "",
         check: (answer) => checkOf(turnOf(answer)),

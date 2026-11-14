@@ -931,20 +931,36 @@ const longNodes = (dsl: DraftReader, doc: unknown): DraftProblem[] =>
     return out;
   });
 
+/** The SDK bridge statically admits at most 128 nodes, separately from its dynamic step and tool-call budgets.
+ *  Use the same DSL inspection as the bridge, including nested structural and composed workflow nodes. */
+const sdkNodeLimit = (dsl: DraftReader, doc: unknown, adapters?: readonly ("runNode" | "runJudge")[]): DraftProblem[] =>
+  adapters !== undefined && dsl.inspectWorkflow(doc).nodes.length > 128
+    ? [{ rule: "workflow", detail: "the SDK workflow bridge supports at most 128 static workflow nodes" }]
+    : [];
+
+/** The SDK bridge never retries a delegated effect; check proposals and already approved selections against the
+ *  same host restriction before delivery. Managed hosts retain their normal retry contract. */
+const sdkRetries = (doc: unknown, adapters?: readonly ("runNode" | "runJudge")[]): DraftProblem[] =>
+  adapters === undefined ? [] : callNodes(doc).flatMap((node) =>
+    typeof node.retry === "object" && node.retry !== null && Number((node.retry as { attempts?: unknown }).attempts) > 1
+      ? [{ rule: "workflow" as const, detail: "the SDK workflow bridge does not support automatic retries of delegated tool calls" }]
+      : []);
+
 /** The node the learned runner cannot run, as the DSL's own check says it (assertWorkflowCapabilities, which runWorkflow
  *  makes before any node runs) with the runner's deps: none when it can run every one. */
-const unrunnableNodes = (dsl: DraftReader, doc: unknown, decisions?: DraftDecisions): DraftProblem[] => {
+const unrunnableNodes = (dsl: DraftReader, doc: unknown, decisions?: DraftDecisions, adapters?: readonly ("runNode" | "runJudge")[]): DraftProblem[] => {
   const workflow = dsl.desugarWorkflow(doc as Workflow);
-  // With the run's decision providers, a decision node is runnable when its provider is one of them and answers what it
-  // asks (the DSL's checkDecisionProviders): the same registry the call's judge is built on.
-  const judging = decisions ? { runJudge: async () => ({}), decisionProviders: { providers: decisions.providers, default: decisions.default } } : {};
-  // A step guard is asked by the learned runner's own guardStep (runner/step-guard.ts) on every run.
-  const runner = { runNode: async () => ({}), runEffect: async () => ({}), guardStep: async () => ({ p: 1 }), ...judging };
+  // Managed runs name the providers their host can ask; SDK runs supply their own explicit adapter capabilities.
+  const judging = decisions ? { ...(adapters === undefined || adapters.includes("runJudge") ? { runJudge: async () => ({}) } : {}), decisionProviders: { providers: decisions.providers, default: decisions.default } } : {};
+  const callbacks = Object.fromEntries((adapters ?? ["runNode"]).map((name) => [name, async () => ({})]));
+  // Managed learned runs supply step guards; the SDK bridge advertises only the callbacks its backend implements.
+  const guards = adapters === undefined ? { guardStep: async () => ({ p: 1 }) } : {};
+  const runner = { runEffect: async () => ({}), ...callbacks, ...judging, ...guards };
   try {
     dsl.assertWorkflowCapabilities(workflow.root, runner as never, workflow);
     return [];
   } catch (error) {
-    return [{ rule: "workflow", detail: `${(error as Error).message.slice(0, 200)}: ${LEARNED_NODES}` }];
+    return [{ rule: "workflow", detail: `${(error as Error).message.slice(0, 200)}: ${adapters === undefined ? LEARNED_NODES : "this host has no adapter for that node"}` }];
   }
 };
 
@@ -964,7 +980,8 @@ const issuesOf = (dsl: DraftReader, doc: unknown, tools?: readonly string[]) => 
  *  names them all (`fits`: learned-workflow.ts learnedAskFits, the gate's own rule, handed in so it is never copied). */
 export type DraftAsk = { readonly asked: readonly string[]; readonly fits: (asks: readonly string[]) => boolean };
 
-export function draftProblems(dsl: DraftReader, text: string, tools?: readonly string[], gated: Readonly<Record<string, string>> = {}, deniedBy: Readonly<Record<string, SettingFrom>> = {}, ask?: DraftAsk, decisions?: DraftDecisions): DraftProblem[] {
+/** `decisions` is the managed host's registry; `adapters` is an explicit backend callback contract, when supplied. */
+export function draftProblems(dsl: DraftReader, text: string, tools?: readonly string[], gated: Readonly<Record<string, string>> = {}, deniedBy: Readonly<Record<string, SettingFrom>> = {}, ask?: DraftAsk, decisions?: DraftDecisions, adapters?: readonly ("runNode" | "runJudge")[]): DraftProblem[] {
   let doc: unknown;
   try {
     doc = JSON.parse(text);
@@ -979,7 +996,7 @@ export function draftProblems(dsl: DraftReader, text: string, tools?: readonly s
   let out: DraftProblem[];
   try {
     // A label names one step (workflow-nodes.ts repeatedLabels): its guard's threshold, replay score and refit included.
-    out = [...repeatedLabels(doc).map((label) => ({ rule: "workflow" as const, detail: `the label "${label}" names two steps: give each step its own label` })), ...toolingNodes(dsl, doc), ...executableNodes(dsl, doc), ...unrunnableNodes(dsl, doc, decisions), ...longNodes(dsl, doc), ...gatedNodes(dsl, doc, gated, deniedBy), ...gatedDecisions(dsl, doc, decisions), ...[...synthesisProblems(doc, dsl), ...loopProblems(doc)].map((detail) => ({ rule: "workflow" as const, detail }))];
+    out = [...repeatedLabels(doc).map((label) => ({ rule: "workflow" as const, detail: `the label "${label}" names two steps: give each step its own label` })), ...toolingNodes(dsl, doc), ...executableNodes(dsl, doc), ...unrunnableNodes(dsl, doc, decisions, adapters), ...longNodes(dsl, doc), ...sdkNodeLimit(dsl, doc, adapters), ...sdkRetries(doc, adapters), ...gatedNodes(dsl, doc, gated, deniedBy), ...gatedDecisions(dsl, doc, decisions), ...[...synthesisProblems(doc, dsl), ...loopProblems(doc)].map((detail) => ({ rule: "workflow" as const, detail }))];
     // A learned workflow answers the value at its output's path: one that names none would answer its whole state, which
     // fails its output schema when the call ends, after every node spent.
     const path = (doc as { output?: { path?: unknown } } | null)?.output?.path;
