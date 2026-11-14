@@ -43,6 +43,11 @@ test("behind serve's gateway, pi's route of a Claude model is Anthropic's Messag
     assert.deepEqual([route.provider.api, route.provider.origin, route.provider.auth, route.model, route.fetch], [each.wire, `${gw}${each.base}`, "bearer", each.id, undefined], each.name);
     assert.equal(await route.provider.credential(), KEY, `${each.name}: the gateway's key`);
     if (each.cost) assert.deepEqual({ ...route.cost }, each.cost, `${each.name}: the catalog's price, cache reads and writes at their own rates`);
+    // The model's registered settings travel on either wire: pi's session reads the same reasoning, window and output
+    // limit whether it speaks Messages or Responses to the gateway.
+    const { reasoning, contextWindow, maxTokens } = route.like ?? {};
+    assert.ok(typeof reasoning === "boolean" && contextWindow > 0 && maxTokens > 0, `${each.name}: the registered settings: ${JSON.stringify(route.like)}`);
+    assert.equal(maxTokens, route.outputCeiling, `${each.name}: one output limit`);
   }
 });
 
