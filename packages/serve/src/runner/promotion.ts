@@ -55,7 +55,7 @@ import { isCliRecord, piShaped, runEntries, runTimeline } from "../store-reads/j
 import type { McpPin } from "../mcp-gateway.js";
 import { recordedCalls, type ReplayCalls, replayCalls, SKIPPED_WRITE, toolClassOf, toolWord, unmarkedWords } from "../learn/replay-calls.js";
 import { isObject, type Json } from "../validate.js";
-import { championOf, clears, type Grade, gradesOf, PROMOTE_BAR, type PromotionRecord, promotionOf, promotionsOf, recordPromotion, REFIT_EVERY, REPLAY_INPUTS, REPLAY_MIN, type ReplayRow, type ReplayScore, replayingOf, replayScore, answerCorrect, scoredRows, skippedToolsOf, thresholdsOf } from "../learn/promote.js";
+import { answersAlone, championOf, clears, type Grade, gradesOf, PROMOTE_BAR, type PromotionRecord, promotionOf, promotionsOf, recordPromotion, REFIT_EVERY, REPLAY_INPUTS, REPLAY_MIN, type ReplayRow, type ReplayScore, replayingOf, replayScore, answerCorrect, scoredRows, skippedToolsOf, thresholdsOf } from "../learn/promote.js";
 import { sendCommand } from "./commands.js";
 import { ClaimRefused } from "./loop-contract.js";
 import { readSnapshot } from "../learn/folder.js";
@@ -520,7 +520,7 @@ async function settle(deps: PromotionDeps, workflow: LearnedWorkflow, digest: st
     : scored.length < REPLAY_MIN
       ? `only ${plural(scored.length, "replay")} answered or handed back${aside ? ` (${aside})` : ""}, fewer than ${REPLAY_MIN}`
       : ok ? `replayed ${said}: within ${PROMOTE_BAR * 100} pts`
-        : score.alone === 0 ? `it handed back every one of its ${plural(score.n, "replayed input")}: it would never answer alone (${said})`
+        : !answersAlone(score) ? `it handed back every one of its ${plural(score.n, "replayed input")}: it would never answer alone (${said})`
           : `replayed ${said}: more than ${PROMOTE_BAR * 100} pts under the agent`;
   const decided = await recordPromotion(store.settings, agentId, {
     workflow: workflow.name, digest, at: iso(now()), decided: ok ? "promote" : "hold", source: "replay", reason,
@@ -609,7 +609,7 @@ async function refitAndWrite(deps: PromotionDeps, workflow: LearnedWorkflow, dig
   await recordPromotion(deps.store.settings, deps.agentId, {
     workflow: workflow.name, digest: next, at: iso(now()), decided: "promote", source: "refit",
     reason: `${reason}: the workflow ${(refit.wf_acc * 100).toFixed(1)}%, the agent ${(refit.agent_acc * 100).toFixed(1)}% on those rows`,
-    replay: { n: refit.n, agree, agent_acc: refit.agent_acc, wf_acc: refit.wf_acc, delta: refit.delta, handed_back: refit.handed_back, alone: refit.n - refit.handed_back, of: replayed.map((row) => row.of) },
+    replay: { n: refit.n, agree, agent_acc: refit.agent_acc, wf_acc: refit.wf_acc, delta: refit.delta, handed_back: refit.handed_back, of: replayed.map((row) => row.of) },
     refit: { from: digest, guards: refit.guards }, commit: landed,
   }, (was) => was === undefined);
   deps.log(`workflow-first: ${reason}; the new revision (${next}) serves from the next run`);
@@ -716,11 +716,11 @@ export async function replayView(ask: Omit<ReplayAsk, "launchOf">, name: string,
   const count = (outcome: ReplayRow["outcome"]) => rows.filter((row) => row.outcome === outcome).length;
   const decided = record.decided === "replaying" ? undefined : record.decided;
   const score: ReplayScore = record.replay && decided !== "superseded"
-    ? { n: record.replay.n, agree: record.replay.agree, agent_acc: record.replay.agent_acc, wf_acc: record.replay.wf_acc, delta: record.replay.delta, handed_back: record.replay.handed_back, alone: record.replay.alone }
+    ? { n: record.replay.n, agree: record.replay.agree, agent_acc: record.replay.agent_acc, wf_acc: record.replay.wf_acc, delta: record.replay.delta, handed_back: record.replay.handed_back }
     : replayScore(rows, text ? thresholdsOf(text.workflow) : new Map());
   return {
     replay: id, workflow: name, digest, status: decided === undefined ? "running" : decided === "superseded" ? "failed" : "done", inputs: record.runs?.length ?? 0,
-    answered: count("answered"), handed_back: count("handed_back"), failed: count("failed"), skipped_write: count("skipped_write"), alone: score.alone, score,
+    answered: count("answered"), handed_back: count("handed_back"), failed: count("failed"), skipped_write: count("skipped_write"), alone: score.n - score.handed_back, score,
     cost_usd: record.replay && decided !== "superseded" ? (record.replay.cost_usd ?? null) : (read?.cost ?? null),
     ...(decided ? { decided, reason: record.reason } : {}),
   };

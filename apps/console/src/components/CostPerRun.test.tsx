@@ -280,7 +280,7 @@ describe("the loop on the cost chart", () => {
   const record = (over: Partial<Promotion>): Promotion => ({ workflow: "sort-invoice", digest: "a12596c0a12596c0", at: at(18), decided: "replaying", source: "replay", reason: "replaying on graded inputs", ...over } as Promotion);
   const promotions = [
     record({}),
-    record({ decided: "promote", at: at(21), replay: { of: [], n: 20, agree: 19, agent_acc: 0.9, wf_acc: 0.95, delta: 0.05, handed_back: 2, alone: 18 } }),
+    record({ decided: "promote", at: at(21), replay: { of: [], n: 20, agree: 19, agent_acc: 0.9, wf_acc: 0.95, delta: 0.05, handed_back: 2 } }),
     record({ decided: "promote", source: "refit", digest: "1a48d30c1a48d30c", at: at(51), refit: { from: "a12596c0a12596c0", guards: [{ node: "classify", was: 0.7, threshold: 0.8 }] } }),
   ];
   it("flags each promotion record on its run, lettered, with a key and a table", () => {

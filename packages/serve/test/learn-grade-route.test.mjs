@@ -53,23 +53,27 @@ test("the promotions list cuts a known secret from every text of a record: its w
 });
 
 // A refit that switched an escalate and a guard off, and a hold for never answering alone, as the route answers them: the
-// closed schema takes `alone` (required on a replay) and a refit guard with no threshold, and an escalate's.
-test("the promotions list answers a record's `alone` and a refit's switched-off escalate and guard in its closed schema", async (t) => {
+// closed schema takes a refit guard with no threshold, and an escalate's. A replay keeps no `alone` (a reader counts it,
+// n - handed_back), so a record stored before any replay said one reads through the route as it was kept, in the schema.
+test("the promotions list answers a refit's switched-off escalate and guard, and a record kept before `alone`, in its closed schema", async (t) => {
   const { api, store, baseUrl } = await serve(t);
   const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
   const schema = doc.paths["/agents/{agent_id}/learning/promotions"].get.responses["200"].content["application/json"].schema;
   assert.equal((await api("POST", "/agents", agent("switched"))).status, 201);
-  const replay = { n: 6, agree: 0, agent_acc: 1, wf_acc: 1, delta: 0, handed_back: 6, alone: 0, of: ["g-0"] };
+  const replay = { n: 6, agree: 0, agent_acc: 1, wf_acc: 1, delta: 0, handed_back: 6, of: ["g-0"] };
   const held = { workflow: "answer", digest: "d1", at: "2026-11-14T00:00:00.000Z", decided: "hold", source: "replay", reason: "it handed back every one of its 6 replayed inputs: it would never answer alone", replay };
-  const refit = { workflow: "answer", digest: "d2", at: "2026-11-14T00:00:01.000Z", decided: "promote", source: "refit", reason: "refit answer's guards: unsupported escalate off, read guard off", replay: { ...replay, handed_back: 0, alone: 6 }, refit: { from: "d1", guards: [{ node: "read", was: 0.7, threshold: null }, { node: "unsupported", was: null, threshold: null, escalate: true }] } };
-  await store.settings.put("learning.promotions.switched", { v: 1, items: [held, refit] });
+  const refit = { workflow: "answer", digest: "d2", at: "2026-11-14T00:00:01.000Z", decided: "promote", source: "refit", reason: "refit answer's guards: unsupported escalate off, read guard off", replay: { ...replay, handed_back: 0 }, refit: { from: "d1", guards: [{ node: "read", was: 0.7, threshold: null }, { node: "unsupported", was: null, threshold: null, escalate: true }] } };
+  // Kept before #2815, as `learning.promotions.<agent>` holds it today: a replay of {n, agree, accuracies, delta, handed_back, of}.
+  const old = { workflow: "answer", digest: "d0", at: "2026-11-13T00:00:00.000Z", decided: "promote", source: "replay", reason: "replayed on 18 graded inputs: within 2 pts", replay: { n: 18, agree: 14, agent_acc: 0.9, wf_acc: 0.9, delta: 0, handed_back: 3, of: Array.from({ length: 20 }, (_, i) => `g-${i}`) } };
+  await store.settings.put("learning.promotions.switched", { v: 1, items: [old, held, refit] });
   const read = await api("GET", "/agents/switched/learning/promotions");
   assert.equal(read.status, 200, JSON.stringify(read.body));
   assert.deepEqual(schemaProblems(doc, schema, read.body), [], JSON.stringify(read.body));
-  assert.deepEqual(read.body.promotions.map((one) => one.replay.alone), [0, 6]);
-  assert.deepEqual(read.body.promotions[1].refit.guards, refit.refit.guards);
-  // `alone` is required: a replay without it is no record the route answers.
-  const missing = structuredClone(read.body);
-  delete missing.promotions[0].replay.alone;
-  assert.notDeepEqual(schemaProblems(doc, schema, missing), []);
+  assert.deepEqual(read.body.promotions[0].replay, old.replay, "the old record reads as it was kept");
+  assert.ok(read.body.promotions.every((one) => !("alone" in one.replay)), JSON.stringify(read.body.promotions));
+  assert.deepEqual(read.body.promotions[2].refit.guards, refit.refit.guards);
+  // The schema still closes a replay: a field it does not name is refused.
+  const extra = structuredClone(read.body);
+  extra.promotions[0].replay.alone = 15;
+  assert.notDeepEqual(schemaProblems(doc, schema, extra), []);
 });

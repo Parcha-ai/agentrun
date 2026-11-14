@@ -14,7 +14,7 @@ import { CANARY } from "./fixtures/faux-jev.mjs";
 import { scratch, withEnv } from "./support.mjs";
 import { learnedWorkflowTool } from "../dist/learned-workflow.js";
 import { guardsOf } from "../dist/learned-nodes.js";
-import { clears, escalates, replayScore, SOFT_ESCALATE_THRESHOLD, softEscalatesOf } from "../dist/learn/promote.js";
+import { answersAlone, clears, escalates, replayScore, SOFT_ESCALATE_THRESHOLD, softEscalatesOf } from "../dist/learn/promote.js";
 import { refitGuards } from "../dist/learn/refit.js";
 import { replayCalls } from "../dist/learn/replay-calls.js";
 import { decisionProvidersIn } from "../dist/decisions.js";
@@ -233,7 +233,9 @@ test("refit: a guard whose p says nothing of right and wrong is switched off; a 
 test("a replay that hands back every input never clears the bar, however close its accuracy: it would never answer alone", () => {
   const rows = Array.from({ length: 6 }, (_, i) => ({ of: `g${i}`, recorded: { answer: "42", correct: true }, outcome: "answered", answer: "42", guards: [esc(true)] }));
   const score = replayScore(rows, new Map());
-  assert.deepEqual(score, { n: 6, agree: 0, agent_acc: 1, wf_acc: 1, delta: 0, handed_back: 6, alone: 0 });
+  assert.deepEqual(score, { n: 6, agree: 0, agent_acc: 1, wf_acc: 1, delta: 0, handed_back: 6 });
   assert.equal(clears(score), false);
   assert.equal(clears({ ...score, handed_back: 5 }), true, "one answered alone");
+  // One predicate, read from the record's n and handed_back (no stored count): none answered alone, or none replayed, is false.
+  assert.deepEqual([answersAlone(score), answersAlone({ n: 6, handed_back: 5 }), answersAlone({ n: 0, handed_back: 0 })], [false, true, false]);
 });

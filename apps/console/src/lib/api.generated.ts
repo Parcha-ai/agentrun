@@ -1839,7 +1839,6 @@ export interface operations {
         wf_acc: number;
         delta: number;
         handed_back: number;
-        alone: number;
       };
       cost_usd: number | null;
       decided?: "promote" | "hold" | "superseded";
@@ -2997,7 +2996,6 @@ export interface operations {
           wf_acc: number;
           delta: number;
           handed_back: number;
-          alone: number;
           of?: string[];
           cost_usd?: number | null;
           skipped_write?: number;

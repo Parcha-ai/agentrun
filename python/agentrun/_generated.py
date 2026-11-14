@@ -1418,7 +1418,6 @@ class _ListLearningPromotionsResponsePromotionsItemReplayRequired(TypedDict):
     wf_acc: float
     delta: float
     handed_back: int
-    alone: int
 
 
 class ListLearningPromotionsResponsePromotionsItemReplay(_ListLearningPromotionsResponsePromotionsItemReplayRequired, total=False):
@@ -2459,7 +2458,6 @@ class GetLearnedWorkflowReplayResponseScore(TypedDict):
     wf_acc: float
     delta: float
     handed_back: int
-    alone: int
 
 
 class ListLearnedWorkflowRevisionsResponse(TypedDict):

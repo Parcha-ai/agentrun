@@ -1133,7 +1133,6 @@ export type ListLearningPromotionsResponse = {
       wf_acc: number;
       delta: number;
       handed_back: number;
-      alone: number;
       of?: Array<string>;
       cost_usd?: number | null;
       skipped_write?: number;
@@ -1789,7 +1788,6 @@ export type GetLearnedWorkflowReplayResponse = {
     wf_acc: number;
     delta: number;
     handed_back: number;
-    alone: number;
   };
   cost_usd: number | null;
   decided?: "promote" | "hold" | "superseded";

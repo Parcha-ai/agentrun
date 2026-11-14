@@ -8,7 +8,9 @@ import type { CostRun, LearningCost, LearningLoop, Promotion } from "./v2";
 const at = (h: number) => new Date(Date.UTC(2026, 10, 1) + h * 3_600_000).toISOString();
 const run = (n: number, path: CostRun["path"]): CostRun => ({ n, run_id: `r${n}`, started_at: at(n), path, workflow: path === "agent" ? null : "sort-invoice", learned_revision: null, cost_usd: 0.1, learning_usd: 0, total_usd: 0.1 });
 const record = (over: Partial<Promotion>): Promotion => ({ workflow: "sort-invoice", digest: "a".repeat(16), at: at(3), decided: "promote", source: "replay", reason: "as good as the agent", ...over } as Promotion);
-const REPLAY = { of: [], n: 20, agree: 19, agent_acc: 0.9, wf_acc: 0.95, delta: 0.05, handed_back: 2, alone: 18 };
+// A record keeps no `alone`: proofOf counts it from the record (n - handed_back), so one stored before any replay said it
+// reads the same.
+const REPLAY = { of: [], n: 20, agree: 19, agent_acc: 0.9, wf_acc: 0.95, delta: 0.05, handed_back: 2 };
 
 describe("markers on the run axis", () => {
   const runs = [1, 2, 3, 4, 5, 6].map((n) => run(n, n < 4 ? "agent" : "workflow"));
@@ -72,15 +74,15 @@ describe("a revision's standing and numbers", () => {
   });
   it("says what a promotion was decided on: replayed n/of and how many alone, 0 replays answered, not replayed, refit rows; only a scored one is proven", () => {
     const of = Array.from({ length: 20 }, (_, i) => `g${i}`);
-    const replayed = record({ replay: { ...REPLAY, of, n: 18, handed_back: 9, alone: 9 } });
+    const replayed = record({ replay: { ...REPLAY, of, n: 18, handed_back: 9 } });
     const dry = record({ source: "dry_run", reason: "no graded input it fits: promoted on its passing dry run" });
-    const none = record({ decided: "hold", replay: { ...REPLAY, of, n: 0, agree: 0, handed_back: 0, alone: 0, skipped_write: 20 } });
-    const refit = record({ source: "refit", replay: { ...REPLAY, n: 25, handed_back: 3, alone: 22 } });
+    const none = record({ decided: "hold", replay: { ...REPLAY, of, n: 0, agree: 0, handed_back: 0, skipped_write: 20 } });
+    const refit = record({ source: "refit", replay: { ...REPLAY, n: 25, handed_back: 3 } });
     expect([replayed, none, dry, refit, record({ decided: "replaying" }), record({ decided: "hold", source: "graded" })].map(proofOf)).toEqual(["replayed 18/20 · 9 alone", "0 replays answered", "not replayed", "refit on 25 rows · 22 alone", null, null]);
     // A record that names no replayed runs says the count alone, never "/0".
     expect(proofOf(record({ replay: { ...REPLAY, of: [], n: 20 } }))).toBe("replayed 20 · 18 alone");
     // One that handed back every input it replayed (held: it would never answer alone) says so beside its count.
-    expect(standingOf(record({ decided: "hold", replay: { ...REPLAY, of, handed_back: 20, alone: 0 } }))).toEqual({ word: "Held", tone: "warning", proof: "replayed 20/20 · 0 alone" });
+    expect(standingOf(record({ decided: "hold", replay: { ...REPLAY, of, handed_back: 20 } }))).toEqual({ word: "Held", tone: "warning", proof: "replayed 20/20 · 0 alone" });
     expect([replayed, dry, none, refit].map(proven)).toEqual([true, false, false, true]);
     expect(standingOf(replayed, { serving: "a".repeat(16) })).toEqual({ word: "Serving", tone: "success", proof: "replayed 18/20 · 9 alone" });
     expect(standingOf(dry, { serving: "a".repeat(16) })).toEqual({ word: "Serving", tone: "plain", proof: "not replayed" });

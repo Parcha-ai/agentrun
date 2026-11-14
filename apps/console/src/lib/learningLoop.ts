@@ -90,7 +90,8 @@ export const refitOf = (records: readonly Promotion[], workflow: string, digest:
  *  (its reason says). Owner approval of the file is never proof. */
 export function proofOf(record: Promotion): string | null {
   const r = record.replay;
-  const alone = r ? ` · ${r.alone} alone` : "";
+  // Answered alone: what it did not hand back. Counted here, never kept on the record.
+  const alone = r ? ` · ${r.n - r.handed_back} alone` : "";
   if (record.source === "dry_run") return "not replayed";
   if (record.source === "refit") return r ? `refit on ${r.n} ${r.n === 1 ? "row" : "rows"}${alone}` : null;
   if (record.source !== "replay" || !r || record.decided === "replaying" || record.decided === "superseded") return null;
