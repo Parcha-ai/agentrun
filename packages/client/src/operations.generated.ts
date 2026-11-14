@@ -792,6 +792,7 @@ export type Capabilities = {
     nodes: boolean;
     calls: boolean;
     call_only?: boolean;
+    meta?: boolean;
     sandbox_only?: boolean;
     available: boolean;
     reason?: string;

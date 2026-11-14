@@ -4336,6 +4336,7 @@ class _CapabilitiesToolsItemRequired(TypedDict):
 class CapabilitiesToolsItem(_CapabilitiesToolsItemRequired, total=False):
     blurb: str
     call_only: bool
+    meta: bool
     sandbox_only: bool
     reason: str
     missing: list[str]
