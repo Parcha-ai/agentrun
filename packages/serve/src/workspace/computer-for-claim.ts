@@ -231,11 +231,12 @@ async function readyImage(entry: ProviderEntry, provider: ComputerProvider, sign
 const watchOf = (provider: ComputerProvider, ref: { readonly id: string; readonly name: string }): WatchOf | undefined =>
   typeof provider.watch === "function" ? (handlers, options) => provider.watch!(ref, handlers, options) : undefined;
 
-/** Whether the computer `id` is gone now: its provider's attach by id answers not_found or gone (deleted under the run,
- *  by the vendor's own API, say). A computer it still has, or a read that failed any other way, is not. */
-const goneOf = (provider: ComputerProvider, id: string) => async (): Promise<boolean> => {
-  const found = await provider.attach({ id });
-  return !found.ok && (found.error.code === "not_found" || found.error.code === "gone");
+/** Whether the computer `id` is gone now: its provider's listing under `labels` (the run's, or its owner's for the
+ *  agent's own) no longer shows it, deleted under the run (by the vendor's own API, say) or going. The listing is the
+ *  janitor's read: it starts nothing and leaves out a machine on its way out. A listing that failed is not gone. */
+const goneOf = (provider: ComputerProvider, id: string, labels: Record<string, string>) => async (): Promise<boolean> => {
+  const listed = await provider.list(labels);
+  return listed.ok && !listed.value.some((info) => info.ref.id === id);
 };
 
 /** The browser computer `ref`'s CDP URL now: the provider's connect (its signed URL), its words and code when the session
@@ -593,9 +594,12 @@ export async function computerForClaim(
         return { id: entry.id, groups: ["cdp"], browser: opened.browser, release: opened.release };
       }
       let launched: Awaited<ReturnType<typeof providerLaunch>>;
+      /** The labels the provider lists this computer under: its owner's for the agent's own, else the run's. */
+      let listedUnder = spec.labels ?? {};
       if (persistent) {
         // The agent's own: its owner (this server and the agent), and no run deadline (it outlives the run).
         const owner: ComputerOwner = { agent: launch.agentId!, server: await serverIdOf({ settings: store.settings! }) };
+        listedUnder = ownerFilter(owner);
         const { lifetimeMs: _, ...owned } = spec;
         launched = await ownedLaunch(provider, launch, { ...owned, owner }, {
           store: { settings: store.settings!, agents: store.agents, ...(store.runs ? { runs: store.runs } : {}) },
@@ -609,7 +613,7 @@ export async function computerForClaim(
         deps.onStarting?.({ provider: entry.label, kind: kind as Exclude<ComputerSettingKind, "none"> });
         launched = await providerLaunch(provider, launch, spec, signal);
       }
-      made = { id: launched.id, machine: launched.machine, ...(launched.watch ? { watch: launched.watch, gone: goneOf(provider, launched.id) } : {}) };
+      made = { id: launched.id, machine: launched.machine, ...(launched.watch ? { watch: launched.watch, gone: goneOf(provider, launched.id, listedUnder) } : {}) };
       madeBy = entry;
       const { os, osVersion, arch } = launched.hello;
       deps.onConnected?.({ provider: entry.label, kind: kind as Exclude<ComputerSettingKind, "none">, hello: { os, ...(osVersion ? { osVersion } : {}), arch } });
