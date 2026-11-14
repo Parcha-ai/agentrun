@@ -166,7 +166,7 @@ function codeOf(error: unknown): ComputerErrorCode {
 	return "vendor";
 }
 
-/** Agent37's statuses (docs: instances/object, Statuses) as the adapter's states; failed, deleting and deleted are gone. */
+/** Agent37's statuses (docs: instances/object, Statuses) as the adapter's states; failed, deleting and deleted are gone (get answers none for deleted). */
 function stateOf(status: string): Machine["state"] | undefined {
 	if (status === "running") return "running";
 	if (["provisioning", "starting", "waking", "restarting", "updating"].includes(status)) return "starting";
@@ -374,9 +374,11 @@ class Agent37Host implements MachineHost {
 		return { id: made.id };
 	}
 
-	/** GET /v1/instances/{id}; 404 is not_found, which the adapter reads as none (docs: instances/get). */
+	/** GET /v1/instances/{id}; 404 is not_found, which the adapter reads as none, as is status deleted (docs: instances/get). */
 	async get(id: string, ctx: HostCall): Promise<Machine | undefined> {
-		return machineOf(await this.#rest<Agent37Instance>("GET", `/v1/instances/${instanceId(id)}`, undefined, ctx));
+		const instance = await this.#rest<Agent37Instance>("GET", `/v1/instances/${instanceId(id)}`, undefined, ctx);
+		// A deleted instance is one Agent37 no longer has, as a 404 is: the wait after a delete ends on it.
+		return instance.status === "deleted" ? undefined : machineOf(instance);
 	}
 
 	/**
