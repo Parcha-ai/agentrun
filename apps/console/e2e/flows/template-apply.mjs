@@ -1,5 +1,5 @@
 // Apply a template on the Templates page and see its agent open. The template is kyb, which the server ships: it needs no
-// MCP server and no key, and its one required parameter fills its display name, so the agent's name shows the parameter
+// MCP server and no key, and its risk_appetite parameter fills its display name, so the agent's name shows the parameter
 // reached the server. Whether the Apply screen shows warnings first is the server's answer, which the flow reads and follows.
 import { check } from "../harness.mjs";
 
@@ -21,11 +21,12 @@ export default {
     await card.getByRole("button", { name: "Apply", exact: true }).click();
     await page.waitForURL((url) => url.hash === `#/templates/${TEMPLATE}`);
 
-    // The Apply screen: no raw placeholder; the title fills as the required parameter is typed, then Apply.
+    // The Apply screen: no raw placeholder; the title reads the parameter's default, then the value picked, then Apply.
     const title = page.getByRole("heading", { level: 1 });
     await title.waitFor();
     check(!(await page.locator("main").innerText()).includes("${"), "the Apply screen shows a raw ${…} placeholder");
-    // risk_appetite is one of low, medium or high (its pattern): a choice, never a box to type in.
+    await title.getByText("KYB due diligence (medium risk appetite)", { exact: false }).waitFor();
+    // risk_appetite is one of low, medium or high (its enum): a choice, never a box to type in.
     await page.locator('[data-field="parameters.risk_appetite"] button[aria-haspopup="listbox"]').click();
     await page.locator(`[role="option"][data-value="${RISK}"]`).click();
     await title.getByText(`KYB due diligence (${RISK} risk appetite)`, { exact: false }).waitFor();
