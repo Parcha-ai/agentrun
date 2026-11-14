@@ -116,7 +116,7 @@ async function landNotes(data, agentId, notes) {
  *  the agent, when asked, answers AGENT_SAYS. `toolSettings` on the revision; `approve`: answer the run's first ask ("stop":
  *  stop the run while it waits instead). `followUp`: once the run ends, a person's follow-up (a teacher's label on its
  *  answer) reopens it, and the run read is the follow-up's end; `first` is the row of the end before it. */
-async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION }, sure = true, learned = true, workflowFirst, toolSettings, approve = false, past = [], promotions = [], keptBefore: earlier = [], followUp, flows = FLOWS, notes = [], saved = {}, answer, outputSchema, crashOnHandback = false, pastFromSecondClaim = false, pastGrades = {}, agentCall, holdNode, agentText, beforeRun } = {}) {
+async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION }, sure = true, learned = true, workflowFirst, toolSettings, approve = false, past = [], promotions = [], keptBefore: earlier = [], followUp, flows = FLOWS, notes = [], saved = {}, answer, outputSchema, crashOnHandback = false, pastFromSecondClaim = false, pastGrades = {}, agentCall, holdNode, agentText, beforeRun, crashBeforeEnd } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-workflow-first-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -179,8 +179,17 @@ async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION 
   const route = { model: MODEL, provider: { api: "anthropic-messages", origin: gw.url, credential: () => `not-a-secret-${"pi"}` }, cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, outputCeiling: 8_192, price, fetch: upstream };
   const logs = [];
   const crashingJournal = (journal) => new Proxy(journal, { get: (target, key) => (key === "commit" ? async (...args) => {
+    // `crashBeforeEnd`: the first runner is closed as its run's end is about to land, and that end never does (its commit
+    // fails once the close has cut the claim, so the claim returns interrupted); `crashBeforeEnd(dir)` runs first, then a
+    // second runner takes the run.
+    if (!crashed && crashBeforeEnd && JSON.stringify(args[0]).includes('"agentrun.end"')) {
+      await crashBeforeEnd(dir);
+      crash();
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      throw new Error("the runner died before its run's end landed");
+    }
     const result = await target.commit(...args);
-    if (!crashed && JSON.stringify(args[0]).includes("agentrun.workflow_first")) crash();
+    if (!crashed && crashOnHandback && JSON.stringify(args[0]).includes("agentrun.workflow_first")) crash();
     return result;
   } : typeof target[key] === "function" ? target[key].bind(target) : target[key]) });
   // `past`: earlier runs of the agent, newest first, as its store lists them (the money rule's read): laid before the
@@ -220,7 +229,7 @@ async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION 
   // run, and the money rule (past runs, `pastFromSecondClaim`) now stops the workflow.
   let crashed = false;
   // The store the runners hold: its journals tell the crash when the workflow's end is committed.
-  const runnerStore = crashOnHandback ? new Proxy(store, { get: (target, key) => (key === "journal" ? (claim) => crashingJournal(target.journal(claim)) : typeof target[key] === "function" ? target[key].bind(target) : target[key]) }) : store;
+  const runnerStore = crashOnHandback || crashBeforeEnd ? new Proxy(store, { get: (target, key) => (key === "journal" ? (claim) => crashingJournal(target.journal(claim)) : typeof target[key] === "function" ? target[key].bind(target) : target[key]) }) : store;
   const crash = () => {
     crashed = true;
     void runner.close();
@@ -377,6 +386,41 @@ test("a handed-back run's compile revises main's text of its workflow, changed s
     } finally {
       await folder.end();
     }
+  }
+});
+
+// #2648 review (Restart overwrites newer workflow changes): the commit of main the compile turn read its workflow at is
+// kept with its ask, so a restart that replays the saved answer reads that commit, never main again. A run handed back
+// revises `answer` at main A and dies after its compile answer is saved, before its end; another run's revision of
+// `answer` lands (main B); the next claim replays the saved answer: written over A, its merge conflicts on `answer`.
+test("a restart after the compile answer is saved replays it against the main it was asked at: a change to the workflow since conflicts, never overwritten (#2648 review)", { timeout: 120_000 }, async (t) => {
+  const OTHERS = "Answer the question as a whole number, then say whether you are sure.";
+  let moved;
+  const { dir, seed, kept, gateway, claims, row } = await piRun(t, {
+    sure: false,
+    crashBeforeEnd: async (data) => (moved = await answerOnMain(data, OTHERS, "run-other")),
+    agentText: (body) => (/^One more turn: revise your learned workflow `answer`\./m.test(textOf({ messages: (body?.messages ?? []).slice(-1) })) ? revisedBlock : undefined),
+  });
+  assert.equal(claims, 2, "a second claim ended the run");
+  assert.equal(row.state, "ended", JSON.stringify(row));
+  assert.ok(moved && moved !== seed, "main moved past the compile read before the restart");
+  const asks = gateway.requests.filter((request) => !isNode(request) && /One more turn: revise your learned workflow `answer`/.test(textOf({ messages: (request.body?.messages ?? []).slice(-1) })));
+  assert.equal(asks.length, 1, "the restart replays the saved compile answer, never asks it again");
+  assert.ok(!textOf(asks[0].body).includes(OTHERS), "it was asked of main's text before the other run's change");
+  assert.equal(kept?.proposal?.state, "proposed", `the revision was proposed: ${JSON.stringify(kept?.proposal)}`);
+  const proposal = kept.proposal.proposal;
+  assert.ok(proposal.files.some(({ file, text }) => file === "workflows/answer/workflow.json" && text.includes(REVISED_INSTRUCTIONS)), JSON.stringify(proposal.files));
+  const change = mergeChangeOf(RUN, proposal, { merge: true, reason: "kept the revision", items: [] }, {});
+  const folder = learningWorkspace({ mode: "local", data: dir, agentId: "agent-1" });
+  try {
+    const merged = await learningCommit(folder.workspace, change);
+    assert.equal(merged.ok, false, `the replayed revision never overwrites the change since its ask: ${JSON.stringify(merged)}`);
+    assert.equal(merged.reason, "conflict");
+    assert.ok(merged.problems.some((problem) => problem.path === "workflows/answer/workflow.json"), JSON.stringify(merged.problems));
+    const snapshot = await readSnapshot(folder.workspace);
+    assert.equal(snapshot.main, moved, "main keeps the other run's change");
+  } finally {
+    await folder.end();
   }
 });
 
