@@ -303,11 +303,16 @@ export interface ReplayRow {
   readonly guards: readonly GuardRow[];
 }
 
-/** An answer's value: its text as JSON when it is JSON, else its last fenced json block, else its trimmed text. */
+/** The text inside an answer that is one unlabelled fence and nothing else, or undefined. */
+const WHOLE_FENCE = /^ {0,3}(`{3,}|~{3,})[ \t]*\r?\n([\s\S]*?)\r?\n {0,3}\1[`~]*[ \t]*$/;
+
+/** An answer's value: its text as JSON when it is JSON (bare, or the whole of one unlabelled fence), else its last fenced
+ *  json block, else its trimmed text. */
 function valueOf(answer: string): unknown {
   const text = answer.trim();
+  const inner = WHOLE_FENCE.exec(text)?.[2];
   try {
-    return JSON.parse(text);
+    return JSON.parse(inner ?? text);
   } catch {
     const block = answerJson(text);
     return "value" in block ? block.value : text;
