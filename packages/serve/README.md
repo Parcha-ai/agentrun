@@ -1667,19 +1667,15 @@ tool names share), or under a harness id when that harness's own MCP client woul
   (so a new one counts at the next), over its secrets pipe, never its environment; a run that grants none of a
   server's tools gets none of it. It stays in the run's process: no harness's CLI, file or log holds it, and a run
   that writes it into a learned note is refused by the secret scan.
-- **pi** binds each granted tool in the run's process as `mcp__<server>__<tool>`, with the pinned description and
-  schema, and calls the server from there.
-- **claude-agent** uses the Claude CLI's own MCP client: one HTTP server entry per granted server at the session's
-  model proxy, `/mcp/<server>`, behind the session's key, sent over the CLI's stdin (never its arguments), with only
-  those servers (`strictMcpConfig`) and only the granted tools allowed. The proxy answers the MCP exchange itself and
-  makes the call with the credential. The CLI's tool search is off in such a session, so the granted tools are
-  offered whole. The proxy answers the handshake and the tool list itself, so a remote server that can't be reached
-  shows at the first call, as that call's error; only a proxy route the CLI can't connect to fails the turn.
-- **codex** uses Codex's own MCP client the same way: the harness writes each granted server in Codex's
-  `mcp_servers` (an agent's own `config` still may not), at the session's model proxy with the session's key, with
-  only the granted tools enabled. Each call runs without Codex asking (`default_tools_approval_mode = "approve"`): the
-  proxy is the gate. Codex sends a call as soon as it starts it, so the proxy records the call in the session before
-  it sends anything. Each server is `required`, but the proxy answers its handshake, so a remote server that can't be reached shows at the first call, as that call's error; only a proxy route Codex can't reach fails the turn. A tool whose schema Codex would drop or retype (a `not`, `patternProperties`, ...) is `422` at the save, naming the place and why.
+- **Every harness** gets each granted tool as a host tool, `mcp__<server>__<tool>`, with the pinned description and
+  schema, on its own channel for host tools: pi binds it in the run's process, claude-agent serves it from its `hands`
+  MCP server (`mcp__hands__mcp__<server>__<tool>`; the CLI's tool search is off in such a session, so the granted tools
+  are offered whole), codex hands it to Codex as a dynamic tool named `mcp_<server>__<tool>` (Codex refuses a
+  dynamic tool named `mcp__*`), and opencode serves it from its `hands` MCP server. No harness's own MCP client is
+  handed a server. Each call passes the run's one tool gate before anything is sent, is booked and recorded like any
+  host tool, and the runner calls the server with the credential: a call set to ask parks the run with nothing sent,
+  and the claim that resumes it runs the call once on the person's allow, or refuses it in their words. A tool whose
+  schema Codex would drop or retype (a `not`, `patternProperties`, ...) is `422` at the save, naming the place and why.
 - **A call** goes to the pinned URL alone, the 2026-07-28 revision first and a 2025-era server through its
   `initialize`; on 2026-07-28 each `x-mcp-header` parameter of the pinned tool is sent as its `Mcp-Param-*` header. No
   redirect is followed, at most 4 MiB is read, and it may take 120 s. The

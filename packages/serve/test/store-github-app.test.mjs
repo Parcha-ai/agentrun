@@ -225,7 +225,7 @@ test("an App disconnected or replaced while a run holds its token stops it at th
 });
 
 /** A claim's MCP for run-1 with a github_app server "gh" at a fake MCP server, through mcpForClaim as a spec builder makes
- *  it, and its two doors: pi's host tool, and the session a CLI harness's own MCP client reaches through its proxy. */
+ *  it, and its one door: the host tool every harness calls. */
 async function claimedGitHub(t, { failSame } = {}) {
   const { store } = await storeOn(t);
   await connected(store);
@@ -245,19 +245,14 @@ async function claimedGitHub(t, { failSame } = {}) {
   t.after(() => mcp.release());
   const host = mcp.tools.find((tool) => tool.name === "mcp__gh__add");
   let n = 0;
-  const doors = {
-    pi: async () => host.call({ a: 1, b: 1 }, { signal: new AbortController().signal, callId: `pi-${++n}` }),
-    cli: async () => {
-      const said = await mcp.session(new Map([[host.name, host]]), async () => undefined).call("gh", "add", { a: 1, b: 1 }, { signal: new AbortController().signal, callId: `cli-${++n}` });
-      return { text: said.content.map((block) => block.text).join("\n\n"), isError: said.isError === true };
-    },
-  };
+  // The one door: the claim's host tool, which every harness calls (pi's registry, a CLI's tool bridge).
+  const doors = { host: async () => host.call({ a: 1, b: 1 }, { signal: new AbortController().signal, callId: `host-${++n}` }) };
   const calls = () => fake.log.filter((entry) => entry.method === "tools/call").length;
   return { store, github, doors, calls };
 }
 
-test("both doors check the App at each call: on pi's host tools and on a CLI harness's session, an App disconnected between two calls of one claim refuses the second unsent, and its token is revoked", async (t) => {
-  for (const door of ["pi", "cli"]) {
+test("the host tool every harness calls checks the App at each call: an App disconnected between two calls of one claim refuses the second unsent, and its token is revoked", async (t) => {
+  for (const door of ["host"]) {
     const { store, github, doors, calls } = await claimedGitHub(t);
     assert.equal((await doors[door]()).text, "2", `${door}: the first call, with the App's token`);
     const sent = calls();
@@ -270,8 +265,8 @@ test("both doors check the App at each call: on pi's host tools and on a CLI har
   }
 });
 
-test("a per-call check that fails (the App's read throws) refuses the call unsent in words on either door, keeps the token, and the next call that checks goes through", async (t) => {
-  for (const door of ["pi", "cli"]) {
+test("a per-call check that fails (the App's read throws) refuses the call unsent in words, keeps the token, and the next call that checks goes through", async (t) => {
+  for (const door of ["host"]) {
     let failing = false;
     const { github, doors, calls } = await claimedGitHub(t, { failSame: () => failing });
     assert.equal((await doors[door]()).text, "2", door);
