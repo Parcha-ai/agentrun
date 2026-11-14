@@ -11,17 +11,8 @@ import type { TemplateView } from "./v2";
 /** A template's title: its display name, else its name. A display name's `${parameters.<name>}` (filled by the server at
  *  apply) reads as the value typed for it so far (`values`), else "…": never as the raw placeholder. */
 export const titleOf = (t: TemplateView, values: ParameterText = {}) =>
-  (t.display_name || t.name).replace(/\$\{parameters\.([A-Za-z0-9_]+)\}/g, (_, key: string) => (!Object.hasOwn(values, key) ? "" : t.parameters[key]?.type === "array" ? linesOf(values[key]).join(", ") : values[key].trim()) || "…");
+  (t.display_name || t.name).replace(/\$\{parameters\.([A-Za-z0-9_]+)\}/g, (_, key: string) => (Object.hasOwn(values, key) ? linesOf(values[key]).join(", ") : "") || "…");
 
-/** A template's parameter as the form draws it: a list parameter (`type: array`) as a list of its items' scalar, typed
- *  one a line, as an input's list is (the same widget); any other as served. */
-export function parameterField(p: TemplateView["parameters"][string]): FieldSpec {
-  if (p.type !== "array") return p as FieldSpec;
-  const items = (p.items ?? {}) as Partial<FieldSpec>;
-  return { ...items, type: items.type ?? "string", array: true, required: p.required, description: p.description, ...(p.default !== undefined ? { default: p.default } : {}) };
-}
-/** A template's parameters as the form draws them (parameterField), by name, in its order. */
-export const parameterFields = (t: TemplateView): Record<string, FieldSpec> => Object.fromEntries(Object.entries(t.parameters).map(([key, p]) => [key, parameterField(p)]));
 /** A template's Apply screen. */
 export const templateHash = (name: string) => `#/templates/${encodeURIComponent(name)}`;
 
@@ -44,7 +35,7 @@ export function needsOf(t: TemplateView, { secrets = true, mcp = true } = {}): [
 
 /** The values a parameter takes, as the form's text: its `enum` (the server's closed set), else a pattern that is a plain
  *  anchored alternation of words (`^(crm|slack|none)$`). The form offers those as a choice; a number's choice is sent
- *  as a number (parametersOf). A boolean keeps its checkbox, and a list its lines (each line is held to the choices).
+ *  as a number. A boolean keeps its checkbox, and a list its lines (each line is held to the choices).
  *  Any other pattern is the server's to check, and is never shown. */
 export function choicesOf(p: FieldSpec): string[] | null {
   if (p.type === "boolean" || p.array) return null;
@@ -57,35 +48,9 @@ export function choicesOf(p: FieldSpec): string[] | null {
 /** The parameters form's text, by parameter name ("true"/"false" for a boolean). */
 export type ParameterText = Record<string, string>;
 
-/** The parameters as the template types them: a number or an integer as a number, a string as typed, and a boolean as
- *  its checkbox shows it, always (an untouched box is false, and sent so). A text field left empty is not sent (the
- *  server says when a required one is missing). Text that is no number is sent as typed, for the server to refuse in its
- *  own words. */
-export function parametersOf(t: TemplateView, text: ParameterText): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (const [key, p] of Object.entries(parameterFields(t))) {
-    const v = text[key];
-    // A list, one item a line, each of its items' type. None typed: a required one is sent as [] (the server takes or
-    // refuses it), an optional one not at all (the server applies its default, shown as the field's hint).
-    if (p.array) {
-      const items = linesOf(v).map((item) => (p.type === "number" || p.type === "integer") && Number.isFinite(Number(item)) ? Number(item) : p.type === "boolean" && (item === "true" || item === "false") ? item === "true" : item);
-      if (items.length || p.required) out[key] = items;
-      continue;
-    }
-    if (p.type === "boolean") { out[key] = v === "true"; continue; }
-    if (v === undefined || v === "") continue;
-    if (p.type === "number" || p.type === "integer") out[key] = Number.isFinite(Number(v)) ? Number(v) : v;
-    else out[key] = v;
-  }
-  return out;
-}
-
-/** The parameters form as it opens: each boolean at its served default ("true"/"false"), unticked with none; a
- *  `format: timezone` one at the browser's zone and a `format: cron` one at its default; other text and numbers empty
- *  (their default is shown as a hint, and the server applies it when the field is left out). */
-export const startValues = (t: TemplateView): ParameterText => startText(parameterFields(t));
-
-/** Any form of fields as it opens, as startValues says it: an agent's typed input starts the same way. */
+/** A form of fields as it opens (a template's parameters, an agent's typed input): each boolean at its default
+ *  ("true"/"false"), unticked with none; a `format: timezone` one at the browser's zone and a `format: cron` one at its
+ *  default; other text and numbers empty (their default is shown as a hint). */
 export function startText(fields: Record<string, FieldSpec>): ParameterText {
   return Object.fromEntries(Object.entries(fields).flatMap(([key, p]): [string, string][] => {
     if (p.array) return [];
@@ -120,10 +85,6 @@ export const issuesAt = (issues: readonly FieldIssue[], field: string) => issues
 
 /** A parameter, or any field drawn the same way (an agent's typed input field, lib/inputForm.ts). */
 type Parameter = FieldSpec;
-/** A parameter's label, as the Apply form shows it: the template serves no display label, so its key, except for a format
- *  the form picks in words: a cron line is "Schedule" and a zone "Time zone", never CRON or TIMEZONE. */
-export const paramLabel = (key: string, p?: Parameter): string =>
-  p?.type === "string" && p.format === "cron" ? "Schedule" : p?.type === "string" && p.format === "timezone" ? "Time zone" : key;
 
 /** The help under a parameter's label: its own words. A cron line's and a zone's description opens by saying the format
  *  ("when the digest runs, as a cron line (minute hour …): …", "the IANA time zone … (Europe/Madrid, …): …"), which their
@@ -138,26 +99,19 @@ export function paramHelp(p: Parameter): string | undefined {
   return colon < 0 ? undefined : p.description.slice(colon + 2).trim() || undefined;
 }
 
-/** A parameter's choices as the Apply form's picker lists them, each value once. Its empty option is left out of the
- *  apply, so the server applies the default: an optional parameter's default is that option, marked on its own entry in
- *  the list's order ("none (default)"), never a second "none". A required parameter opens with "Choose one"; an optional
- *  one whose default is not among its choices (or that has none) opens with its default's words or "None chosen".
- *  `sent`: a run's typed input field, whose empty option sends nothing at all: each choice keeps its own value. */
-export function choiceOptions(p: Parameter, { sent = false }: { sent?: boolean } = {}): { value: string; label: string }[] | null {
+/** A field's choices as its picker lists them, each value once: an empty option ("Choose one" when it is required, else
+ *  "None chosen"), which sends nothing, then each choice by its own value, its default named as such. */
+export function choiceOptions(p: Parameter): { value: string; label: string }[] | null {
   const choices = choicesOf(p);
   if (!choices) return null;
   const fallback = p.default === undefined ? undefined : String(p.default);
-  // A run's typed input: nothing fills in a field left out, so its default is offered by its own value, named as such.
-  if (sent) return [{ value: "", label: p.required ? "Choose one" : "None chosen" }, ...choices.map((c) => ({ value: c, label: c === fallback ? `${c} (default)` : c }))];
-  const own = !p.required && fallback !== undefined && choices.includes(fallback);
-  const head = own ? [] : [{ value: "", label: p.required ? "Choose one" : fallback !== undefined ? `${fallback} (default)` : "None chosen" }];
-  return [...head, ...choices.map((c) => (own && c === fallback ? { value: "", label: `${c} (default)` } : { value: c, label: c }))];
+  return [{ value: "", label: p.required ? "Choose one" : "None chosen" }, ...choices.map((c) => ({ value: c, label: c === fallback ? `${c} (default)` : c }))];
 }
 
-/** What the Apply form says of a refused parameter: from the served issue's `reason` and the field's label, never the
- *  server's words, which name the raw path ("parameters.risk_appetite is required: …"). A reason with no words here (or
- *  a parameter the template doesn't have) keeps the server's. */
-export function paramIssueWords(issue: FieldIssue, key: string, p: Parameter | undefined, label = paramLabel(key, p)): string {
+/** What a form says of a refused field: from the served issue's `reason` and the field's label, never the server's
+ *  words, which name the raw path ("parameters.risk_appetite is required"). A reason with no words here (or a field the
+ *  form doesn't have) keeps the server's. */
+export function paramIssueWords(issue: FieldIssue, key: string, p: Parameter | undefined, label = key): string {
   if (!p) return issue.message;
   switch (issue.reason) {
     case "missing": return `${label} is required.`;
@@ -174,7 +128,7 @@ const allowedOf = (p: Parameter): string[] => (p.enum?.length ? p.enum.map(Strin
 
 /** Whether a parameter's value, as typed or picked, is one the server takes: an issue at it goes once it is. Empty is
  *  valid only when the parameter isn't required; a choice is one of its choices; a number is judged as the number Apply
- *  sends (parametersOf: Number(text)), so "3.0" and "1e2" are whole and 2^53 is not a safe one; a boolean is one its
+ *  sends (Number(text)), so "3.0" and "1e2" are whole and 2^53 is not a safe one; a boolean is one its
  *  enum allows; text matches its pattern. A field's bounds (minimum, maximum, minLength, maxLength) hold too, and a list
  *  is judged a line at a time. The server checks again on Apply. */
 export function paramValid(p: Parameter, text: string): boolean {

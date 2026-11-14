@@ -13,7 +13,8 @@ import { keeper } from "@/lib/idempotency";
 import { hookUrlOf, isScheduleTrigger, type Schedule, scheduleLine } from "@/lib/schedules";
 import { type Problem, problem } from "@/lib/problem";
 import { type McpServer, SOURCE_LABEL } from "@/lib/mcp";
-import { grantsOf, issuesAt, matchesOf, needsOf, paramHelp, paramIssueWords, paramLabel, parameterField, parameterFields, parametersOf, paramValid, type ParameterText, setUpHref, startValues, templateHash, titleOf } from "@/lib/templatePackages";
+import { type FieldSpec, fieldIssueWords, fieldLabel, fieldOfIssue, fieldStartText, fieldValid, fieldValues, schemaFields } from "@/lib/inputForm";
+import { grantsOf, issuesAt, matchesOf, needsOf, paramHelp, type ParameterText, setUpHref, templateHash, titleOf } from "@/lib/templatePackages";
 import { type Approvals, NEVER_ASK_LINE, type TemplateApplied, type TemplateImported, type TemplateView } from "@/lib/v2";
 
 type Props = { v2: Client; go: (hash: string) => void };
@@ -205,9 +206,10 @@ function bounded<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
 }
 
 function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView }) {
-  // The form starts at the template's served defaults for its checkboxes (a box shows what is sent); a text field
-  // starts empty, its default as its hint, and is left out untouched for the server to apply that default.
-  const [values, setValues] = useState<ParameterText>(() => startValues(t));
+  // The parameters, served compiled as inputs are, drawn and sent by the run form's own code (lib/inputForm.ts): a field
+  // left blank is left out, and the server applies its default.
+  const form = { fields: schemaFields(t.parameters) ?? [], contentRequired: false };
+  const [values, setValues] = useState<ParameterText>(() => fieldStartText(form));
   const [ticked, setTicked] = useState<Set<string>>(new Set());
   // The agent's approvals, sent as overrides.approvals: the template's own (approvals_default: never for one that runs
   // on its triggers with no one there), which the owner can switch.
@@ -252,15 +254,14 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
   const unread = t.mcp.length > 0 && servers === null;
   const at = (field: string) => issuesAt(issues, field);
   // A parameter's value as typed or picked: an issue at it goes as soon as the value is one the server takes.
-  const setParam = (key: string, value: string) => {
+  const setParam = (key: string, p: FieldSpec, value: string) => {
     setValues((was) => ({ ...was, [key]: value }));
-    const p = t.parameters[key];
-    if (p && paramValid(parameterField(p), value)) setIssues((was) => was.filter((i) => i.field !== `parameters.${key}`));
+    if (fieldValid(p, value)) setIssues((was) => was.filter((i) => fieldOfIssue(i.field, "parameters") !== key));
   };
   const apply = async () => {
     setApplying(true); setIssues([]); setSaid(null);
     const sending = values;
-    const body = { parameters: parametersOf(t, sending), ...(grants.length ? { grants } : {}), ...(Object.keys(chosen).length ? { servers: chosen } : {}), overrides: { approvals } };
+    const body = { parameters: fieldValues(form, sending), ...(grants.length ? { grants } : {}), ...(Object.keys(chosen).length ? { servers: chosen } : {}), overrides: { approvals } };
     try {
       const done = await v2.applyTemplate(t.id, body, keys.keyFor(t.id, body));
       keys.done();
@@ -294,7 +295,7 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
       else setSaid({ text: e instanceof Error ? e.message : String(e), withIssues: false });
     } finally { setApplying(false); }
   };
-  const params = Object.entries(parameterFields(t));
+  const params = form.fields;
   // Issues the form has no place for (a trigger's, an override's) show above the button, in the server's words.
   const placed = (i: FieldIssue) => /^(parameters|secrets|mcp|servers)\./.test(i.field) || /^grants\.\d+$/.test(i.field);
   if (made) {
@@ -362,8 +363,8 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
         <Section title="Parameters">
           {params.map(([key, p]) => (
             <div key={key} data-field={`parameters.${key}`} className="px-4 py-3">
-              <FieldInput field={p} label={paramLabel(key, p)} help={paramHelp(p)} value={values[key] ?? ""} onChange={(v) => setParam(key, v)} />
-              <Issues issues={at(`parameters.${key}`)} words={(i) => paramIssueWords(i, key, p)} />
+              <FieldInput field={p} label={fieldLabel(key, p)} help={paramHelp(p)} value={values[key] ?? ""} onChange={(v) => setParam(key, p, v)} />
+              <Issues issues={issues.filter((i) => fieldOfIssue(i.field, "parameters") === key)} words={(i) => fieldIssueWords(i, key, p)} />
             </div>
           ))}
         </Section>
