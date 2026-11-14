@@ -15,7 +15,7 @@ import { existsSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import type { Revision, RunOrigin } from "./agent-rows.js";
-import { type AgentEntry, agentRevision, agentRevisions, agentView, commitAgent, createAgent, etagOf, getAgent, listAgents, makeRevision, refuseExternal, revisionView, type SaveCheck, type SaveStamp, setAgentArchived, setCurrentRevision } from "./agents-store.js";
+import { type AgentEntry, agentRevision, agentRevisions, agentView, commitAgent, createAgent, etagOf, externalKey, getAgent, listAgents, makeRevision, refuseExternal, revisionView, type SaveCheck, type SaveStamp, setAgentArchived, setCurrentRevision } from "./agents-store.js";
 import { WORKFLOW_ADAPTERS } from "./runner/workflow-adapters.js";
 import { DECISION_ADAPTER, decisionsOf, FAUX_JEV_ENV, FAUX_OPENROUTER_ENV, FAUX_PARALLEL_ENV, fauxFetch } from "./decisions.js";
 import { FAUX_WEB_ENV } from "./web-fetch-direct.js";
@@ -1832,12 +1832,22 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   /** What a save of `revision` pins of the MCP tools it grants (an agentic revision's: a workflow's nodes bind none): each
    *  granted server listed once, now, with its saved credential (McpServersOverStore.pinListing), as `tools` each server's
    *  listing in the harnesses' shape for the save's checks (blockersOf's `mcp`), and `pin` making the pin from them. A server
-   *  that cannot be listed refuses the save (422) in words naming it: nothing is saved, and saving again once it answers
-   *  pins it. */
-  async function mcpListingOf(revision: NewRevision): Promise<{ tools: (server: string) => ReturnType<typeof mcpTools>; pin: () => McpPin | undefined }> {
+   *  that cannot be listed keeps the agent's `previous` pin for it when every tool the save grants from it is already
+   *  there (an edit that grants nothing new from it, its instructions say); else the save is refused (422) in words naming
+   *  it: nothing is saved, and saving again once it answers pins it. */
+  async function mcpListingOf(revision: NewRevision, previous?: unknown): Promise<{ tools: (server: string) => ReturnType<typeof mcpTools>; pin: () => McpPin | undefined }> {
     const tools = revision.kind === "agentic" ? ((revision.body as { tools?: readonly string[] }).tools ?? []) : [];
     const granted = tools.filter((tool) => mcpGrantOf(tool) !== undefined);
     const listings = new Map<string, NonNullable<Awaited<ReturnType<typeof mcpServers.pinListing>>>>();
+    // A server carried from the previous pin, as that pin holds it (its tools already in the harnesses' shape).
+    const carried = new Map<string, McpPin[string]>();
+    const before = (previous && typeof previous === "object" ? previous : {}) as McpPin;
+    const carry = (server: string) => {
+      const kept = Object.hasOwn(before, server) ? before[server] : undefined;
+      const all = kept && granted.every((tool) => { const named = mcpGrantOf(tool)!; return named.server !== server || kept.tools.some((one) => one.name === named.tool); });
+      if (all) carried.set(server, kept);
+      return all;
+    };
     const refused: InputIssue[] = [];
     await Promise.all([...new Set(granted.map((tool) => mcpGrantOf(tool)!.server))].map(async (server) => {
       try {
@@ -1845,19 +1855,25 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         if (listing) listings.set(server, listing);
       } catch (error) {
         if (!(error instanceof ApiError)) throw error;
+        if (carry(server)) return;
         const why = (error.extra.fields as InputIssue[] | undefined)?.[0]?.message ?? error.message;
         refused.push({ field: `definition.tools[${tools.findIndex((tool) => mcpGrantOf(tool)?.server === server)}]`, reason: "unavailable", message: `${sentence(`The MCP server ${server} could not be listed to pin its tools: ${why}`)} Nothing was saved: save again once it answers.` });
       }
     }));
     if (refused.length) throw invalid(refused.sort((a, b) => a.field.localeCompare(b.field)));
-    const bound = (server: string) => listings.get(server)?.tools.map((tool) => ({ ...boundTool(tool), ...(tool.grantable === false ? { grantable: false as const, reason: tool.reason! } : {}) }));
+    const bound = (server: string) => {
+      const kept = carried.get(server);
+      // A carried server's tools are checked as pinned, a meta tool marked at its URL then or now (as runnable does).
+      if (kept) return kept.tools.map((tool) => { const meta = metaToolOf(kept.url, tool.name) ?? (mcpMeta.has(server) ? metaToolOf(mcpMeta.get(server)!.url, tool.name) : undefined); return meta ? { ...tool, grantable: false as const, reason: meta.reason } : tool; });
+      return listings.get(server)?.tools.map((tool) => ({ ...boundTool(tool), ...(tool.grantable === false ? { grantable: false as const, reason: tool.reason! } : {}) }));
+    };
     return {
       // A workflow's grants are checked on the registry's listing, as before: its nodes bind no MCP tool, so the save refuses them.
       tools: revision.kind === "agentic" ? bound : mcpTools,
       pin: () => {
         if (!granted.length) return undefined;
         try {
-          return mcpPinOf(granted, { server: (name) => { const listing = listings.get(name); return listing && { url: listing.url, tools: listing.tools.map(boundTool), prices: listing.prices }; } });
+          return mcpPinOf(granted, { server: (name) => { const kept = carried.get(name); if (kept) return kept; const listing = listings.get(name); return listing && { url: listing.url, tools: listing.tools.map(boundTool), prices: listing.prices }; } });
         } catch (error) {
           throw invalid([{ field: "definition.tools", reason: "not_an_option", message: (error as Error).message }]);
         }
@@ -1868,7 +1884,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   /** A definition being saved: refused (422 by field) when it can never run here; else what this host still lacks, and
    *  what the save stamps on it (its MCP pin, mcpListingOf). A revision that names no place is checked where it would run
    *  (fallbackPlace). */
-  async function saveable(revision: NewRevision): Promise<{ warnings: InputIssue[]; stamp: SaveStamp }> {
+  async function saveable(revision: NewRevision, previous?: unknown): Promise<{ warnings: InputIssue[]; stamp: SaveStamp }> {
     // The store's NewRevision keeps the revision's fields under `body` (AgenticBody|WorkflowBody); build the flat shape the
     // host checks (runnable.ts RevisionShape) from it, as shapeOf does for a run's Revision.
     const body = revision.body as AgenticBody & Partial<WorkflowBody>;
@@ -1879,7 +1895,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     }
     const named = (revision.kind === "agentic" ? { kind: "agentic" as const, ...(body as AgenticBody) } : workflowShape(body as never)) as unknown as RevisionShape;
     const shape = named.place ? named : { ...named, place: fallbackPlace(named.kind, named.tools ?? []), unnamed: true as const };
-    const listing = await mcpListingOf(revision);
+    const listing = await mcpListingOf(revision, previous);
     const mcp = listing.tools;
     const blockers = await blockersOf(env, shape, settings.get(), { boxes: boxOffers, computerReady, shellOf, offers, mcp });
     // An agent's default cap caps each run started without one of its own, and a web tool resolves by the cap: what a cap
@@ -2176,9 +2192,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const made = makeRevision(checked.definition, checked.skills ?? {}, checked.note);
     // Refused where POST /agents refuses the definition (one this host can never run); what this host still lacks for it
     // is the run's own refusal (prepareLaunch's runnable), as for a run of a stored agent. Its MCP tools are pinned as a
-    // save pins them; a version already stored keeps the pin its first run made.
-    const revision = { ...made, ...(await saveable(made)).stamp };
+    // save pins them (a server down keeps the agent's current pin when this version grants nothing new from it); a version
+    // already stored keeps the pin its first run made.
     const ref = external as { source: string; kind: string; id: string; version: string | number };
+    const mapped = await store.agents.byExternal(externalKey(ref));
+    const current = mapped?.currentRevision ? await store.agents.revision(mapped.currentRevision) : undefined;
+    const revision = { ...made, ...(await saveable(made, current?.mcpPin)).stamp };
     const inline = {
       external: { source: ref.source, kind: ref.kind, id: ref.id, version: String(ref.version) },
       name: checked.definition.name as string,
@@ -2831,7 +2850,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // the same revision exactly one lands.
         let warnings: InputIssue[] = [];
         const check = async (revision: NewRevision) => {
-          const saved = await saveable(revision);
+          // The pin the agent's current revision holds: a server down now keeps it when the edit grants nothing new from it.
+          const saved = await saveable(revision, entry.revision?.mcpPin);
           warnings = saved.warnings;
           return saved.stamp;
         };

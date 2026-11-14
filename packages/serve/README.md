@@ -1641,7 +1641,8 @@ method, tool and whether an `Authorization` header came, never its value.
 An agent grants a saved server's tool by its catalog name, `mcp:<server>/<tool>`, in `definition.tools`
 (`"tools": ["mcp:github/list_issues"]`). A save lists each server it grants a tool of, once, and checks each grant
 against that listing: a server that is not saved, or can't be listed right now, is `422` naming it ("save again once it
-answers"), a tool it does not list is `422` naming the server's tools, and so is a name whose wire name,
+answers"; an edit that grants nothing new from it keeps the agent's current pin for it instead), a tool it does not list
+is `422` naming the server's tools, and so is a name whose wire name,
 `mcp__<server>__<tool>`, is over 52 characters, or a tool whose `x-mcp-header` declaration cannot be sent (on a
 property not reached through `properties` alone, not a string, integer or boolean, not a header name, or declared twice). pi, claude-agent and codex run them (`features.mcp_client.harnesses`); on
 another harness the save warns that they are not bound there yet, and a run is refused. A workflow's nodes bind no MCP
