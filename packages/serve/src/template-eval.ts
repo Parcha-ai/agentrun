@@ -1020,26 +1020,21 @@ async function sameAsLocal(ctx: Ctx, one: EvalCase, agent: Json, used: Readonly<
   if (differs.length) throw new ApiFailure(`the server's ${pkg.name} package is not this folder's: it differs in ${[...new Set(differs)].sort().join(", ")}. The eval would measure the server's copy: run it without --server, or on a server that ships this version`);
 }
 
-/** The in-process server's settings for a case, set before it applies, as an owner sets them (deploy/walk.md): the pins
- *  the case's apply fills (from its parameters), so the server's pin holds the call to the case's own target beside the
- *  agent's own, as it does in production; and an allow for each of the case's grants. On its own in-process server the
- *  eval acts as an owner who approves every granted call: it writes allow for the case's grants and nothing else. That
- *  is the eval's stand-in for a person, not the template's behaviour: an apply writes no permission for a grant (the
- *  gate's default decides), and this server has no one to answer an ask. On --server it writes nothing: that server's
- *  settings are its owner's, so the agent's own pin alone holds the write, and a grant runs as that owner's settings
- *  and the package's approvals say. */
+/** The pins a case's apply fills (from its parameters) set on the in-process server before it applies, as an owner sets
+ *  them (deploy/walk.md): the server's pin holds the call to the case's own target beside the agent's own, as it does in
+ *  production. Another server's (--server) settings are its owner's, left as they are: there the agent's own pin alone
+ *  holds the write. No permission is written on either: every eval applies with approvals never (runOnce), so a granted
+ *  tool runs with no one to answer and a tool the case did not grant is refused. */
 async function serverPins(ctx: Ctx, one: EvalCase): Promise<void> {
   const { api, pkg, options } = ctx;
   if (options.server) return;
-  const { parameters, grants } = applyBodyOf(pkg, { parameters: one.parameters, grants: one.grants });
+  const { parameters } = applyBodyOf(pkg, { parameters: one.parameters, grants: one.grants });
   // Each fake is saved under its toolkit's name, so the package's own tool names are the server's.
   const pins = filledPins(pkg.mcp.map((need) => ({ ...need, server: need.toolkit })), parameters).filter(({ empty }) => !empty.length);
-  if (!pins.length && !grants.length) return;
+  if (!pins.length) return;
   const settings = expectOk("reading the server's tool settings", await api("GET", "/settings/tools"));
-  const own = (tool: string) => (isObject(settings[tool]) ? settings[tool] : {});
-  for (const tool of grants) settings[tool] = { ...own(tool), permission: "allow" };
-  for (const { tool, pin } of pins) settings[tool] = { ...own(tool), pin };
-  expectOk("setting the case's grants and pins on the server", await api("PUT", "/settings/tools", settings));
+  for (const { tool, pin } of pins) settings[tool] = { ...(isObject(settings[tool]) ? settings[tool] : {}), pin };
+  expectOk("pinning the case's writes on the server", await api("PUT", "/settings/tools", settings));
 }
 
 /** A run of `agentId` started, and kept in `made.runs` until it is known to have ended. */

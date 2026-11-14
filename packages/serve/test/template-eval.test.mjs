@@ -162,7 +162,7 @@ test("a case whose answer fails a grader of every type fails, each failure named
 
 test("a fake MCP server answers from its fixture and records each call; tool_used's args match a call or fail naming it", { timeout: 600_000 }, async () => {
   // update_contact is pinned to id 7 (evalpkg's agent.md): the agent keeps that pin, and on its own server the runner pins
-  // it too and allows the case's grants, as an owner would before the apply, so the granted write reaches the fake.
+  // it too, as an owner would before the apply, so the granted write reaches the fake.
   const match = await caseOf("mcp-match");
   assert.equal(match.pass, true, JSON.stringify(match, null, 1));
   const [run] = match.runs;
@@ -236,8 +236,9 @@ test("a case passes only when every run passes: one failing run of two fails it"
   assert.equal(report.cost_usd.unknown, 0);
 });
 
-test("on its own server the eval allows the case's grants and nothing else: a tool of the package the case did not grant is still refused, never sent", { timeout: 300_000 }, async (t) => {
-  // evalpkg asks (approvals ask) and its two crm tools are the package's; the case grants get_contact alone.
+test("an eval runs under approvals never, which grants nothing: a tool of the package the case did not grant is still refused, never sent", { timeout: 300_000 }, async (t) => {
+  // evalpkg asks (approvals ask), and the eval applies it with approvals never; its two crm tools are the package's, and
+  // the case grants get_contact alone. The eval writes no permission for either.
   const dir = join(await scratch(t), "evalpkg");
   cpSync(PKG, dir, { recursive: true });
   const at = join(dir, "evals", "widens-nothing");
@@ -250,10 +251,10 @@ test("on its own server the eval allows the case's grants and nothing else: a to
   const report = await evalTemplate({ dir, cases: ["widens-nothing"], serve: { faux: FAUX } });
   const [run] = report.cases[0].runs;
   assert.equal(run.status, "completed", JSON.stringify(run, null, 1));
-  // The grant ran unasked: the eval's allow stands in for an owner who approves each granted call.
+  // The grant ran unasked: approvals never lifts the ask of a tool the agent was granted.
   assert.deepEqual(run.mcp_calls.map((call) => call.tool), ["mcp:crm/get_contact"], "only the granted tool reached the fake");
   assert.equal(run.calls.find((call) => call.tool === "mcp:crm/get_contact")?.status, "success", JSON.stringify(run.calls));
-  // The tool the case did not grant got no allow: not the agent's, it is refused and never sent.
+  // The tool the case did not grant is not the agent's: never has nothing to lift, so it is refused and never sent.
   const update = run.calls.find((call) => call.name === "mcp__crm__update_contact");
   assert.ok(!update || update.status !== "success", JSON.stringify(run.calls));
   assert.match(run.answer ?? "", /^The CRM said: /, run.answer);
@@ -263,17 +264,13 @@ test("on its own server the eval allows the case's grants and nothing else: a to
 test("on an owner's server it applies that server's package only when it is this folder's, never replaces an MCP server, and archives what it made", { timeout: 300_000 }, async (t) => {
   const { api, baseUrl, token } = await serve(t, { faux: FAUX, templates: FIXTURES });
   const server = { baseUrl, token };
-  // The owner's settings are theirs, and the runner writes none of them. An apply grants the case's tools with no
-  // permission, and evalpkg asks (approvals ask) on a server with no one to answer, so this owner allows the two crm
-  // tools themselves; the runner allows them only on a server of its own. Unpinned there, the pinned write is held by
-  // the agent's own pin, and the case passes.
-  const allowed = { "mcp:crm/get_contact": { permission: "allow" }, "mcp:crm/update_contact": { permission: "allow" } };
-  assert.equal((await api("PUT", "/settings/tools", { ...(await api("GET", "/settings/tools")).body, ...allowed })).status, 200);
+  // The owner's settings are theirs, and the runner writes none of them. The eval applies with approvals never here too,
+  // so the case's grants run unasked. Unpinned there, the pinned write is held by the agent's own pin, and the case passes.
   const before = (await api("GET", "/settings/tools")).body;
   const unpinned = await evalTemplate({ dir: PKG, cases: ["mcp-match"], server });
   assert.equal(unpinned.pass, true, JSON.stringify(unpinned.cases[0].runs.map((r) => r.error ?? r.status)));
   assert.deepEqual((await api("GET", "/settings/tools")).body, before, "the runner wrote no setting of the owner's");
-  assert.equal((await api("PUT", "/settings/tools", { ...before, "mcp:crm/update_contact": { permission: "allow", pin: { id: "7" } } })).status, 200);
+  assert.equal((await api("PUT", "/settings/tools", { ...before, "mcp:crm/update_contact": { pin: { id: "7" } } })).status, 200);
   const report = await evalTemplate({ dir: PKG, cases: ["mcp-match"], server });
   assert.equal(report.pass, true, JSON.stringify(report, null, 1));
   assert.deepEqual(report.server, { kind: "remote", base_url: baseUrl.replace(/\/$/, "") });
