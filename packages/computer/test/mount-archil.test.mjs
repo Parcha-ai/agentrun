@@ -414,6 +414,37 @@ test("syncingClient: a sync that fails fails the call in words; a call that fail
 	assert.deepEqual(client.methods(), ["files.write", "mount.sync"]);
 });
 
+test("syncingClient: a call that got no answer in time (timeout) answers at once; the sync it starts goes on for the others, and is not waited for", async () => {
+	// Review (#2800, PRRT_kwDOUmdVMs63hNMJ): an exec.run the client bounded at its timeoutMs on a hung transport then
+	// waited for a mount.sync over that same transport, which never answers: the caller never got its timeout. The sync
+	// is held here until the test lets it go, so no clock is involved.
+	let finish;
+	const held = new Promise((resolve) => {
+		finish = resolve;
+	});
+	const calls = [];
+	const timedOut = fail("timeout", "exec.run had no answer within 75 s (its own timeout of 70 s, and 5 s for the answer to come)");
+	const client = {
+		async call(method) {
+			calls.push(method);
+			if (method === "mount.sync") return held;
+			return method === "exec.run" ? timedOut : ok({});
+		},
+		close() {},
+	};
+	const syncing = syncingClient(client);
+	const patient = syncing.call("files.write", { path: "/workspace/a", data: "" });
+	const run = syncing.call("exec.run", { argv: ["sleep", "120"], timeoutMs: 70_000 });
+	const answered = await Promise.race([run, (async () => {
+		for (let i = 0; i < 20; i++) await Promise.resolve();
+		return "still waiting";
+	})()]);
+	assert.deepEqual(answered, timedOut, "the timeout reaches its caller while the sync still hangs");
+	finish(ok({ exitCode: 0 }));
+	assert.equal((await patient).ok, true, "a caller that got its answer still waits for the sync");
+	assert.deepEqual(calls.filter((method) => method === "mount.sync").length, 2, "the timed-out call still asked for a sync, shared after the one in flight");
+});
+
 test("syncingClient: coalesced: calls during a sync in flight wait for it, then share one more", async () => {
 	const client = fakeClient({ syncDelay: 30 });
 	const syncing = syncingClient(client);
