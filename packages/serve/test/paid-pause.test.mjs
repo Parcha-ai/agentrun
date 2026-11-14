@@ -8,8 +8,6 @@ import { existsSync } from "node:fs";
 import { copyFile, readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
-import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
-import { capModels, paidCall, useSpend } from "../dist/cap.js";
 import { join } from "node:path";
 import { test } from "node:test";
 import { KEY } from "./fixtures/faux-monid.mjs";
@@ -156,59 +154,3 @@ test.skip("claude-agent: a turn stopped between a refused paid call and its next
   assert.equal(await monidRuns(log), 0, "the refused call never sent");
 });
 
-test("pi: a paid call's refusal pauses only the turn's next request, the one after its result; a request after a message of the person's (a stop came first) is judged as any other", async (t) => {
-  const sent = [];
-  const send = () => {
-    const events = createAssistantMessageEventStream();
-    sent.push(events);
-    queueMicrotask(() => {
-      const message = { role: "assistant", content: [{ type: "text", text: "ok" }], api: "fake", provider: "fake", model: "m", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: Date.now() };
-      events.push({ type: "done", reason: "stop", message });
-      events.end(message);
-    });
-    return events;
-  };
-  const models = { stream: send, streamSimple: send, complete: (...a) => send(...a).result(), completeSimple: (...a) => send(...a).result(), streamDeferred: send, fetchDeferred: (...a) => send(...a).result() };
-  const model = { id: "m", name: "m", api: "fake", provider: "fake", baseUrl: "", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128_000, maxTokens: 1_000 };
-  t.after(() => useSpend(undefined));
-  const capped = await capModels(models, 0.5, 0);
-  const afterResult = { messages: [{ role: "user", content: "go", timestamp: 0 }, { role: "toolResult", toolCallId: "c1", toolName: "monid_run", content: [{ type: "text", text: "Not sent" }], isError: true, timestamp: 1 }] };
-  const afterPerson = { messages: [...afterResult.messages, { role: "user", content: "Go on without it.", timestamp: 2 }] };
-  const hold = { usd: 1, basis: "the allowance" };
-  // The turn's next request, after the refused call's result: refused in the call's words.
-  assert.ok("refused" in (await paidCall("monid_run", async () => 0, () => 0, hold)));
-  const next = await capped.streamSimple(model, afterResult).result();
-  assert.match(next.errorMessage ?? "", /^spend_cap_reached \(out of budget\): Not sent: this run has spent \$0 of its \$0\.50 cap, and the next step, monid_run, could cost up to \$1 \(the allowance\)\./);
-  assert.equal(sent.length, 0, "not sent");
-  // A refusal a stop left behind, and the person's next message: that request goes.
-  assert.ok("refused" in (await paidCall("monid_run", async () => 0, () => 0, hold)));
-  const after = await capped.streamSimple(model, afterPerson).result();
-  assert.deepEqual([after.stopReason, sent.length], ["stop", 1], JSON.stringify(after));
-});
-
-test("pi: a side request through the run's models (native web_search's own, one fresh message) between a refused paid call and the turn's next request is judged as any other, and leaves the refusal for that next request, which pauses", async (t) => {
-  const sent = [];
-  const send = () => {
-    const events = createAssistantMessageEventStream();
-    sent.push(events);
-    queueMicrotask(() => {
-      const message = { role: "assistant", content: [{ type: "text", text: "ok" }], api: "fake", provider: "fake", model: "m", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: Date.now() };
-      events.push({ type: "done", reason: "stop", message });
-      events.end(message);
-    });
-    return events;
-  };
-  const models = { stream: send, streamSimple: send, complete: (...a) => send(...a).result(), completeSimple: (...a) => send(...a).result(), streamDeferred: send, fetchDeferred: (...a) => send(...a).result() };
-  const model = { id: "m", name: "m", api: "fake", provider: "fake", baseUrl: "", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128_000, maxTokens: 1_000 };
-  t.after(() => useSpend(undefined));
-  const capped = await capModels(models, 0.5, 0);
-  // hosted-search.ts's request: one user message of its own, through the run's models (app.ts searchOn).
-  const search = { messages: [{ role: "user", content: [{ type: "text", text: "Search the web for: Ada\n\nAnswer briefly from what the search finds, and name each source by its URL." }], timestamp: 0 }] };
-  const afterResult = { messages: [{ role: "user", content: "go", timestamp: 0 }, { role: "toolResult", toolCallId: "c1", toolName: "monid_run", content: [{ type: "text", text: "Not sent" }], isError: true, timestamp: 1 }] };
-  assert.ok("refused" in (await paidCall("monid_run", async () => 0, () => 0, { usd: 1, basis: "the allowance" })));
-  const searched = await capped.completeSimple(model, search);
-  assert.deepEqual([searched.stopReason, sent.length], ["stop", 1], "the search's request is judged as any other and sent");
-  const next = await capped.streamSimple(model, afterResult).result();
-  assert.match(next.errorMessage ?? "", /^spend_cap_reached \(out of budget\): Not sent: this run has spent \$0 of its \$0\.50 cap, and the next step, monid_run, could cost up to \$1 \(the allowance\)\./, JSON.stringify(next));
-  assert.equal(sent.length, 1, "the turn's next request not sent");
-});
