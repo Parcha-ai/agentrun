@@ -121,20 +121,24 @@ async function githubGet(url: string, reach: GithubReach, accept: string, signal
   }
 }
 
+/** githubGet, read anonymously again when GitHub refuses the App's token for this repository: one its installation does
+ *  not cover (401, 404), or one without contents read (a 403 that is not its rate limit; the server's token is a listing
+ *  one, metadata read alone). A public repository reads either way; the rest of the import goes without the token. Only
+ *  `reach` is changed. */
+async function githubRead(url: string, reach: GithubReach, accept: string, signal: AbortSignal): Promise<Response> {
+  const res = await githubGet(url, reach, accept, signal);
+  if (!reach.token || !(res.status === 401 || res.status === 404 || (res.status === 403 && !limited(res, reach)))) return res;
+  await res.body?.cancel();
+  reach.anonymous = "its GitHub App's token was refused for this repository";
+  delete reach.token;
+  return githubGet(url, reach, accept, signal);
+}
+
 /** The full commit SHA `source`'s ref (its default branch when it names none) is at now: GitHub's answer, read before
  *  anything else, so what is imported is that one commit and its SHA is what is stored and shown. */
 export async function resolveSha(source: GithubSource, reach: GithubReach, signal: AbortSignal): Promise<string> {
   const api = reach.api.replace(/\/+$/, "");
-  const url = `${api}/repos/${source.owner}/${source.repo}/commits/${encodeURIComponent(source.ref ?? "HEAD")}`;
-  let res = await githubGet(url, reach, "application/vnd.github.sha", signal);
-  // An App token GitHub refuses for this repository (one its installation does not cover): read it anonymously instead,
-  // as a public repository is, and the rest of the import with it. Only `reach` is changed.
-  if (reach.token && (res.status === 401 || res.status === 404)) {
-    await res.body?.cancel();
-    reach.anonymous = "its GitHub App's token was refused for this repository";
-    delete reach.token;
-    res = await githubGet(url, reach, "application/vnd.github.sha", signal);
-  }
+  const res = await githubRead(`${api}/repos/${source.owner}/${source.repo}/commits/${encodeURIComponent(source.ref ?? "HEAD")}`, reach, "application/vnd.github.sha", signal);
   const text = (await res.text()).trim();
   const rate = limited(res, reach);
   if (rate) throw rate;
@@ -153,7 +157,7 @@ type TarEntry = { path: string; type: string; size: number };
 export async function fetchPackageFiles(source: GithubSource, sha: string, reach: GithubReach, signal: AbortSignal): Promise<Map<string, Buffer>> {
   const limits = { ...IMPORT_LIMITS, ...reach.limits };
   const api = reach.api.replace(/\/+$/, "");
-  const res = await githubGet(`${api}/repos/${source.owner}/${source.repo}/tarball/${sha}`, reach, "application/vnd.github+json", signal);
+  const res = await githubRead(`${api}/repos/${source.owner}/${source.repo}/tarball/${sha}`, reach, "application/vnd.github+json", signal);
   const rate = limited(res, reach);
   if (rate) throw (await res.body?.cancel(), rate);
   if (res.status === 404) throw (await res.body?.cancel(), new ImportRefused("source", `GitHub has no tarball of ${source.owner}/${source.repo} at ${sha} that this server can read.`));

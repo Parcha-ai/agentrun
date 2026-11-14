@@ -71,12 +71,17 @@ function tarball(extra = []) {
 
 /** A faux GitHub: the API's commit and tarball routes, the tarball host it redirects to, and the requests it was sent.
  *  `refs` maps a repository's refs to SHAs; `tarballs` each SHA's tarball; `elsewhere` sends a repository's tarball off
- *  GitHub. */
-async function fauxGitHub(t, { refs = { main: SHA_A, HEAD: SHA_A }, tarballs = { [SHA_A]: tarball() }, elsewhere = false } = {}) {
+ *  GitHub; `refuseToken` names the routes ("commits", "tarball") that answer a token 403, as GitHub answers one without
+ *  contents read ("Resource not accessible by integration"). */
+async function fauxGitHub(t, { refs = { main: SHA_A, HEAD: SHA_A }, tarballs = { [SHA_A]: tarball() }, elsewhere = false, refuseToken = [] } = {}) {
   const seen = [];
   const server = createServer((req, res) => {
-    seen.push(`${req.method} ${req.url}`);
+    seen.push(`${req.method} ${req.url}${req.headers.authorization ? " (token)" : ""}`);
     const url = new URL(req.url, "http://faux");
+    const route = /^\/repos\/acme\/agents\/(commits|tarball)\//.exec(url.pathname)?.[1];
+    if (route && req.headers.authorization && refuseToken.includes(route)) {
+      return res.writeHead(403, { "content-type": "application/json", "x-ratelimit-remaining": "4999" }).end(JSON.stringify({ message: "Resource not accessible by integration" }));
+    }
     let match;
     if ((match = /^\/repos\/acme\/agents\/commits\/([^/]+)$/.exec(url.pathname))) {
       const sha = refs[decodeURIComponent(match[1])] ?? (Object.values(refs).includes(match[1]) ? match[1] : undefined);
@@ -256,6 +261,22 @@ test("each read limit refuses the import when passed, and an aborted read ends a
   const began = Date.now();
   await assert.rejects(fetchPackageFiles(source, SHA_A, { api: url, hosts: [new URL(url).host] }, stop.signal), ImportRefused);
   assert.ok(Date.now() - began < 5_000, `an aborted read ends at once, in ${Date.now() - began} ms`);
+});
+
+test("an App token GitHub refuses (403, no contents read) on the commit or the tarball is dropped: the public package is read anonymously", async (t) => {
+  const { fetchPackageFiles, resolveSha, parseSource } = await import("../dist/template-source.js");
+  const source = parseSource(`${ID}@main`);
+  for (const refuseToken of [["commits", "tarball"], ["tarball"]]) {
+    const github = await fauxGitHub(t, { refuseToken });
+    const reach = { api: github.url, hosts: [new URL(github.url).host], token: "ghs_listing" };
+    const signal = new AbortController().signal;
+    assert.equal(await resolveSha(source, reach, signal), SHA_A, `${refuseToken}: ${github.seen}`);
+    const files = await fetchPackageFiles(source, SHA_A, reach, signal);
+    assert.ok(files.has("agent.md"), `${refuseToken}: the package is read: ${github.seen}`);
+    assert.equal(reach.token, undefined, "the token is dropped once refused");
+    assert.match(reach.anonymous, /refused/);
+    assert.ok(github.seen.includes(`GET /repos/acme/agents/tarball/${SHA_A}`), `the tarball is read anonymously: ${github.seen}`);
+  }
 });
 
 test("the store keeps each imported package by id, its files as read: a put replaces the one under its id, and a remove says whether one was there", async (t) => {
