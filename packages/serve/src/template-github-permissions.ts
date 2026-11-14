@@ -8,6 +8,7 @@
 import type { InputIssue } from "./errors.js";
 import { NOT_SET_UP } from "./runnable.js";
 import type { McpNeed } from "./templates.js";
+import { mcpToolName } from "./tool-names.js";
 
 export type Level = "read" | "write";
 
@@ -45,7 +46,7 @@ export async function appPermissionWarnings(pkg: { name: string; mcp: readonly M
   for (const { server, tool, wants } of asked) {
     // One of the grants.<tool> family (a tool the server denies is another): its field and its shape.
     const label = LABELS[wants.permission] ?? wants.permission;
-    const name = `mcp:${server}/${tool}`;
+    const name = mcpToolName(server, tool);
     if ("unreadable" in map) {
       warnings.push({ field: `grants.${name}`, reason: NOT_SET_UP, message: `${name} needs ${label}: ${wants.level} of the GitHub App, and this server could not check whether it has it (${map.unreadable}): if ${pkg.name} can't use it, it ${wants.instead}.` });
       continue;

@@ -3,7 +3,7 @@
 // owns everything else a ComputerProvider does: the spec's check, the daemon's upload, install and start, the stdio
 // bridge, the read-back and the probe, labels, list and attach, the deadline and extend, delete-then-wait-gone, the
 // sweep of a lost create, the Archil mount, and the words of every refusal. These doc comments are the contract a new
-// vendor reads (PROVIDERS.md, "The MachineHost half").
+// vendor reads (PROVIDERS.md, "The eight members").
 import type { MountKind } from "./mount.js";
 import type { ComputerCapabilities, ComputerSpec, GpuCapability, GpuSpec, NetworkForm, NetworkPolicy, Refusal } from "./provider.js";
 import type { ComputerErrorCode, Result } from "./result.js";

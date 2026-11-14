@@ -48,6 +48,7 @@
 import { randomUUID } from "node:crypto";
 import { EndpointRefused, REFRESH_REQUEST_MS, refreshed, refused, RequestUnsent, type Seen, systemNetwork, type OAuthNetwork, type TokenSet } from "../mcp-oauth.js";
 import { type McpCredentials, type McpPin, mcpPinOf } from "../mcp-gateway.js";
+import { isMcpName } from "../tool-names.js";
 import { META_REASON, metaToolOf } from "../mcp-meta.js";
 import { boundTool, credentialInQuery, credentialInQueryWords, type McpTool, shownUrl } from "../mcp-probe.js";
 import { privateOAuthHosts } from "../mcp-private-hosts.js";
@@ -464,7 +465,7 @@ async function pinOf({ store, claim, grants, githubMcpOrigin = GITHUB_MCP_ORIGIN
     }
     return pinned;
   }
-  if (!grants.some((name) => name.startsWith("mcp:"))) return undefined;
+  if (!grants.some(isMcpName)) return undefined;
   const rows = new Map((await store.mcp.servers()).map((row) => [row.name, row]));
   let made: McpPin;
   try {
