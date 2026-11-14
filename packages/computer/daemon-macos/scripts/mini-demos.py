@@ -116,6 +116,11 @@ if movie and not demo_machine():
     sys.exit("--movie records only on a demo machine: a CI runner (GITHUB_ACTIONS=true), or a user whose login name "
              "starts with agentrun-demo. This is neither, so nothing was recorded or made; run without --movie.")
 here =os.path.dirname(os.path.abspath(__file__))
+# A movie captions each scripted call in serve's words for it (call-words.mjs), which it reads from serve's build.
+CALL_WORDS_BUILT = os.path.normpath(os.path.join(here, "..", "..", "..", "serve", "dist", "timeline", "computer.js"))
+if movie and not os.path.isfile(CALL_WORDS_BUILT):
+    sys.exit(f"--movie captions each call in serve's words, and packages/serve is not built ({CALL_WORDS_BUILT}): "
+             "node scripts/build-workspaces.mjs --only @parcha/agentrun-serve")
 CI = os.environ.get("CI") == "true"
 
 RUN = uuid.uuid4().hex[:6]
@@ -703,8 +708,8 @@ class Task:
         # Settings domains the task's fixture changed for the movie, each with its whole old content (`defaults export`),
         # put back by the teardown. Kept in memory only: a person's settings never reach a file.
         self.restore = []
-        # What the task's fixture changed in a running app for the movie (Notes' window and zoom), each undone by the
-        # teardown on its connection, last first: (words, undo(c)).
+        # What the task's fixture changed in a running app for the movie (Notes' window), each undone by the teardown
+        # on its connection, last first, or after a setup that failed (undo_setup): (words, undo(c)).
         self.undo = []
         # Each ref the task's observes showed, as serve's record names it: its role, and its name when it has one.
         self.names = {}
@@ -714,6 +719,11 @@ class Task:
         print(f"  {self.id}: {text}", flush=True)
         if self.rec:
             self.rec.caption(caption or text)
+
+    def words(self, call):
+        """A scripted call's caption (call_words), with --movie only: with no movie there is no caption, and the run
+        needs no serve build."""
+        return call_words(call) if self.rec else None
 
     def step_row(self, step):
         """A ui.act step as serve's record keeps it: its kind, the element it acts on as the task's observes named it, a
@@ -806,7 +816,7 @@ class Task:
         if foreground:
             params["foreground"] = True
         # The caption is the step's words as the console says them, from the steps asked: a refused one fails the task.
-        self.say(label, call_words({"method": "ui.act", "app": self.app, "ok": True, "steps": [self.step_row(s) for s in steps]}))
+        self.say(label, self.words({"method": "ui.act", "app": self.app, "ok": True, "steps": [self.step_row(s) for s in steps]}))
         reply = self.call("ui.act", params, label)
         if "error" in reply:
             raise Failed(f"{label}: {reply['error'].get('message')}")
@@ -832,7 +842,7 @@ class Task:
     def wait_for(self, text, label, seconds=20):
         """Until the task's window (or, before one is pinned, the app's main one) shows the text: an expect, asked again
         while there is no window yet."""
-        self.say(label, call_words({"method": "ui.act", "app": self.app, "ok": True, "steps": [], "expect": "met"}))
+        self.say(label, self.words({"method": "ui.act", "app": self.app, "ok": True, "steps": [], "expect": "met"}))
         deadline = time.monotonic() + seconds
         while True:
             params = {"target": self.target(), "steps": [], "expect": {"text": text, "timeoutMs": 3000}}
@@ -1751,6 +1761,28 @@ def teardown(t):
     return failed
 
 
+def undo_setup(t):
+    """What a setup that failed had changed for the movie (t.undo, last first, and t.restore's settings), put back on a
+    connection of its own: a task whose setup failed has no teardown. The ones that could not be, in words."""
+    failed = []
+    c = Client()
+    try:
+        for words, undo in reversed(t.undo):
+            t.say(f"setup failed: {words}")
+            try:
+                undo(c)
+            except Exception as e:
+                failed.append(f"could not {words}: {e}")
+    finally:
+        c.close()
+    if t.restore:
+        try:
+            settings_back(t)
+        except Exception as e:
+            failed.append(f"could not put back the settings the task's look changed: {e}")
+    return failed
+
+
 def quit_apps(apps, seconds=15):
     """Apps the run started, quit by the driver (an Apple event to quit would itself need the grant), on a connection of
     their own, and waited for: the ones still running after that, by name. One still running after `seconds` is asked
@@ -2001,11 +2033,19 @@ def main():
                     if shield["asked"]:
                         interrupted = KeyboardInterrupt(shield["asked"])
                         error = error or f"stopped by {shield['asked']}"
-            elif app in started:  # the setup failed, so there is no snapshot to compare, but the app still quits
+            else:  # the setup failed, so there is no snapshot to compare, but what it changed is put back and the app quits
+                shield["on"] = True
                 try:
-                    left += [f"{name}, which the run started, did not quit" for name in quit_apps([app])]
-                except Exception as e:
-                    left.append(f"could not quit {APPS[app]}: {e}")
+                    left += undo_setup(t)
+                    if app in started:
+                        try:
+                            left += [f"{name}, which the run started, did not quit" for name in quit_apps([app])]
+                        except Exception as e:
+                            left.append(f"could not quit {APPS[app]}: {e}")
+                finally:
+                    shield["on"] = False
+                if shield["asked"]:
+                    interrupted = KeyboardInterrupt(shield["asked"])
             took =round((time.monotonic() - t.t0) * 1000)
             if t.rec:
                 t.say("passed" if error is None else "failed")

@@ -142,11 +142,16 @@ const STEPS_SAID = 3;
 const lower = (words: string) => words[0]!.toLowerCase() + words.slice(1);
 
 /** An act's steps that ran, in words: the first three, then how many more. "Selected all (⌘A), typed into the text box,
- *  saved (⌘S), +1 more". */
+ *  saved (⌘S), +1 more". A step refused after those is said too, last, the ones before it counted: the call answered,
+ *  so its words are what says the act did not do it all. */
 export function stepsWords(steps: readonly ComputerStepRow[]): string {
   const words = steps.slice(0, STEPS_SAID).map(stepWords);
-  const more = steps.length - words.length;
-  return [words[0]!, ...words.slice(1).map(lower), ...(more > 0 ? [`+${more} more`] : [])].join(", ");
+  const rest = steps.slice(STEPS_SAID);
+  const refused = rest.findIndex((step) => step.error !== undefined);
+  const more = refused < 0 ? rest.length : rest.length - 1;
+  return [
+    words[0]!, ...words.slice(1).map(lower), ...(more > 0 ? [`+${more} more`] : []), ...(refused < 0 ? [] : [lower(stepWords(rest[refused]!))]),
+  ].join(", ");
 }
 
 /** A method other than ui's and apps', as done and as tried. */

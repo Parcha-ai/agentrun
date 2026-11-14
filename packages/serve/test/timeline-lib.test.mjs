@@ -998,7 +998,8 @@ test("a computer call in words, as the run page and a movie's caption say it: th
     "Opened System Settings",
     "Looked at Calendar",
     "Selected all (⌘A), typed into the text box “Pears: 41”, saved (⌘S)",
-    "Pressed “Save”, clicked the element, pressed a key, +2 more",
+    // The refused fifth step is said; the one between is counted.
+    "Pressed “Save”, clicked the element, pressed a key, +1 more, could not press an element",
     "Waited for Notes (not seen)",
     "Could not act on the computer",
     "Took a screenshot",

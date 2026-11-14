@@ -7,6 +7,7 @@ import { execFileSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { callRecordOf } from "../dist/computer-calls.js";
 import { callWords, labelOf } from "../dist/timeline/index.js";
 
 const CAPTIONS = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "computer", "daemon-macos", "scripts", "call-words.mjs");
@@ -58,6 +59,27 @@ test("an act of several steps reads the same on its row and in its call: the fir
   for (const { app } of SURFACES) {
     assert.equal(labelOf("computer_act", { app, steps: asked }, view(line)), words);
     assert.equal(callWords({ method: "ui.act", started_at: at, app, ok: true, ms: 9, steps: kept }), words);
+  }
+});
+
+test("a step refused after the first three is still said, on the row and in the call: the ones before it are counted", () => {
+  const asked = [{ key: "super+a" }, { type: "42", into: "@e4" }, { key: "super+s" }, { nav: "back" }, { press: "@e3" }];
+  const line = ["1. key: background", '2. type into @e4 textbox "Pears": semantic, verified', "3. key: background", "4. nav: semantic, verified", '5. press @e3 button "Save": refused (stale): gone'].join("\n");
+  const kept = [{ do: "key", keys: "super+a" }, { do: "type", on: { role: "textbox", name: "Pears" } }, { do: "key", keys: "super+s" }, { do: "nav", nav: "back" }, { do: "press", on: { role: "button", name: "Save" }, error: "stale" }];
+  const words = "Selected all (⌘A), typed into the text box “Pears”, saved (⌘S), +1 more, could not press “Save”";
+  assert.equal(labelOf("computer_act", { app: "com.apple.TextEdit", steps: asked }, view(line)), words);
+  assert.equal(callWords({ method: "ui.act", started_at: at, app: "com.apple.TextEdit", ok: true, ms: 9, steps: kept }), words);
+  // The fourth refused: nothing between to count.
+  assert.equal(callWords({ method: "ui.act", started_at: at, ok: true, ms: 9, steps: kept.slice(0, 3).concat(kept[4]) }), "Selected all (⌘A), typed into the text box “Pears”, saved (⌘S), could not press “Save”");
+});
+
+test("a look that names no app reads the same on the row and in its record: the app the answer shows", () => {
+  for (const { app, name } of SURFACES) {
+    const answer = { ok: true, value: { state: "s8", app: { id: app, name }, window: { title: "Untitled" }, nodes: [] } };
+    const record = callRecordOf("ui.observe", {}, answer, 30, Date.parse(at));
+    const head = `state s8 · ${app} ${JSON.stringify(name)} · window "Untitled" 360×640 pt\n@e1 generic`;
+    assert.equal(labelOf("computer_observe", {}, view(head)), `Looked at ${name}`);
+    assert.equal(callWords(record), `Looked at ${name}`);
   }
 });
 

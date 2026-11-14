@@ -25,7 +25,7 @@ export type ComputerStepRecord = ComputerStepRow;
 
 /** One computer call, as a run's record keeps it: its method, when it started (`started_at`, ISO, so a reader places each
  *  call of a tool call on the run's own clock), the app it named (apps.launch's and apps.terminate's id, a ui call's
- *  target app), whether it answered and in how long, the error's code when it failed, and a ui.act's steps and whether
+ *  target app; for a ui.observe that named none, the app its answer showed), whether it answered and in how long, the error's code when it failed, and a ui.act's steps and whether
  *  its expect held. */
 export type ComputerCallRecord = ComputerCallRow;
 
@@ -135,7 +135,9 @@ function appOf(method: string, params: unknown): string | undefined {
 export function callRecordOf(method: string, params: unknown, answer: unknown, ms: number, startedAt: number, names: TargetNames = () => undefined): ComputerCallRecord {
   const said = obj(answer);
   const ok = said?.ok === true;
-  const app = appOf(method, params);
+  // A look that names no app looks at the one in front: the answer names it.
+  const shown = method === "ui.observe" && ok ? obj(obj(said?.value)?.app)?.id : undefined;
+  const app = appOf(method, params) ?? (typeof shown === "string" && shown ? shown : undefined);
   const base = { method, started_at: new Date(startedAt).toISOString(), ...(app ? { app } : {}), ok, ms: Math.max(0, Math.round(ms)) };
   if (!ok) {
     const code = obj(said?.error)?.code;
