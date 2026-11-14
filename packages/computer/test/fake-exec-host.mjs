@@ -8,7 +8,9 @@
 //  - mergeStderr: stderr comes back on stdout;
 //  - commandTimeoutMs: the process is killed once this many ms pass (a vendor's command timeout);
 //  - exitCode: wait() answers this, whatever the process exited with;
-//  - killDetaches: kill() lets go of the streams and leaves the process running.
+//  - killDetaches: kill() lets go of the streams and leaves the process running;
+//  - closeStdoutEarly: stdout ends after its first chunk, while the process still runs;
+//  - slowWriteMs: each write() answers this many ms late.
 import { spawn } from "node:child_process";
 
 /** A stream fed by a process, read as an async iterable until it ends. */
@@ -39,7 +41,7 @@ function feed() {
 }
 
 export function fakeExecHost(options = {}) {
-	const { decodeUtf8 = false, bufferOutput = false, holdStdin = false, mergeStderr = false, commandTimeoutMs, exitCode, killDetaches = false } = options;
+	const { decodeUtf8 = false, bufferOutput = false, holdStdin = false, mergeStderr = false, commandTimeoutMs, exitCode, killDetaches = false, closeStdoutEarly = false, slowWriteMs = 0 } = options;
 	const children = new Set();
 	const host = {
 		id: "fake-exec",
@@ -56,6 +58,7 @@ export function fakeExecHost(options = {}) {
 				const bytes = decodeUtf8 ? new Uint8Array(Buffer.from(decoder.decode(chunk, { stream: true }), "utf8")) : new Uint8Array(chunk);
 				if (bufferOutput) held.out.push(bytes);
 				else out.push(bytes);
+				if (closeStdoutEarly) out.end();
 			};
 			const toErr = (chunk) => {
 				if (mergeStderr) return toOut(chunk);
@@ -88,6 +91,7 @@ export function fakeExecHost(options = {}) {
 					stdout: out.iterable,
 					stderr: err.iterable,
 					async write(bytes) {
+						if (slowWriteMs > 0) await new Promise((done) => setTimeout(done, slowWriteMs));
 						if (holdStdin) pending.push(Buffer.from(bytes));
 						else await new Promise((done, fail) => child.stdin.write(Buffer.from(bytes), (error) => (error ? fail(error) : done())));
 					},

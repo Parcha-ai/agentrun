@@ -52,6 +52,8 @@ const DEFAULT_LARGE_BYTES = 8 * 1024 * 1024;
 const DEFAULT_LARGE_MS = 180_000;
 /** What one write gives exec's stdin, as the adapter's own upload does (runToExit). */
 const WRITE_CHUNK = 256 * 1024;
+/** How long stdout-live watches, after "early", that stdout stays open and wait() has no answer. */
+const LIVE_GRACE_MS = 1_000;
 
 /** A failed check: its words are the report's. */
 class Problem extends Error {}
@@ -247,32 +249,37 @@ class Session {
 		return run;
 	}
 
-	/** Writes bytes to the process's stdin, in WRITE_CHUNK pieces, one after another; a refusal is a Problem. */
-	async write(run: Run, bytes: Uint8Array, what: string): Promise<void> {
+	/**
+	 * Writes bytes to the process's stdin, in WRITE_CHUNK pieces, one after another; a refusal is a Problem. Each write
+	 * is bounded by the step, and by `by` when the check has one deadline for all of its steps.
+	 */
+	async write(run: Run, bytes: Uint8Array, what: string, by?: Deadline): Promise<void> {
 		for (let at = 0; at < bytes.length; at += WRITE_CHUNK) {
+			const ms = by ? by.left(this.#stepMs) : this.#stepMs;
 			const written = await within(
 				Promise.resolve().then(() => run.proc.write(bytes.subarray(at, at + WRITE_CHUNK))),
-				this.#stepMs,
+				ms,
 				LATE,
 				this.#signal,
 			).catch((error: unknown) => {
 				throw new Problem(`write() of ${what} failed while the process ran: ${words(error)}`);
 			});
-			if (written === LATE) throw new Problem(`write() of ${what} did not answer within ${secondsOf(this.#stepMs)}`);
+			if (written === LATE) throw new Problem(by?.passed() ? `writing ${what} ran past ${secondsOf(by.ms)}, with ${at} bytes written` : `write() of ${what} did not answer within ${secondsOf(ms)}`);
 		}
 	}
 
 	/** Ends the process's stdin; a refusal is a Problem. */
-	async end(run: Run): Promise<void> {
+	async end(run: Run, by?: Deadline): Promise<void> {
+		const ms = by ? by.left(this.#stepMs) : this.#stepMs;
 		const ended = await within(
 			Promise.resolve().then(() => run.proc.end()),
-			this.#stepMs,
+			ms,
 			LATE,
 			this.#signal,
 		).catch((error: unknown) => {
 			throw new Problem(`end() failed: ${words(error)}`);
 		});
-		if (ended === LATE) throw new Problem(`end() did not answer within ${secondsOf(this.#stepMs)}`);
+		if (ended === LATE) throw new Problem(`end() did not answer within ${secondsOf(ms)}`);
 	}
 
 	/** wait()'s exit code within ms; one that never comes, or a wait() that throws, is a Problem. */
@@ -288,10 +295,29 @@ class Session {
 		return code;
 	}
 
-	/** Kills every process this session started that has not ended: after each check, pass or fail. */
+	/**
+	 * Kills every process this session started, after each check, pass or fail. Every one, ended or not: an exit code
+	 * from the wait() under test is no proof the process is gone, and kill() of an ended one costs nothing.
+	 */
 	async killAll(): Promise<void> {
-		const left = this.#runs.splice(0).filter((run) => run.exitCode === undefined);
-		await Promise.all(left.map((run) => within(Promise.resolve().then(() => run.proc.kill()), 10_000, undefined).catch(() => {})));
+		const runs = this.#runs.splice(0);
+		await Promise.all(runs.map((run) => within(Promise.resolve().then(() => run.proc.kill()), 10_000, undefined).catch(() => {})));
+	}
+}
+
+/** One deadline for every step of a check: what is left of it, at most a step's bound. */
+class Deadline {
+	readonly ms: number;
+	readonly #at: number;
+	constructor(ms: number) {
+		this.ms = ms;
+		this.#at = Date.now() + ms;
+	}
+	left(most: number): number {
+		return Math.max(1, Math.min(most, this.#at - Date.now()));
+	}
+	passed(): boolean {
+		return Date.now() >= this.#at;
 	}
 }
 
@@ -321,18 +347,19 @@ const CHECKS: Record<ExecStreamCheckId, CheckBody> = {
 		if (problem) throw new Problem(outOk ? `${problem}. stdout alone passes every byte (stdout-bytes), so they changed on the way in, on stdin` : problem);
 		return "all 256 byte values written to stdin came back unchanged through cat";
 	},
-	/** A large random payload through cat, read while it is written, compared by sha256. */
+	/** A large random payload through cat, read while it is written, compared by sha256, all within largeMs. */
 	async large(s, { largeBytes, largeMs }) {
 		const payload = randomBytes(largeBytes);
 		const started = Date.now();
+		const by = new Deadline(largeMs);
 		const run = await s.start(["cat"], true);
-		await s.write(run, payload, `${largeBytes} random bytes`);
-		await s.end(run);
-		const left = Math.max(1, largeMs - (Date.now() - started));
-		if (!(await run.out.end(left, s.signal))) {
+		await s.write(run, payload, `${largeBytes} random bytes`, by);
+		await s.end(run, by);
+		if (!(await run.out.end(by.left(largeMs), s.signal))) {
 			throw new Problem(`${run.out.length} of ${largeBytes} bytes came back through cat within ${secondsOf(largeMs)}, and its stdout had not ended: your exec is too slow, or stops passing output on`);
 		}
-		await s.exit(run, s.stepMs, "cat");
+		await s.exit(run, by.left(s.stepMs), "cat");
+		if (by.passed()) throw new Problem(`${largeBytes} bytes through cat took ${secondsOf(Date.now() - started)}, past ${secondsOf(largeMs)}: your exec is too slow`);
 		const got = run.out.bytes();
 		const sent = createHash("sha256").update(payload).digest("hex");
 		const back = createHash("sha256").update(got).digest("hex");
@@ -351,6 +378,9 @@ const CHECKS: Record<ExecStreamCheckId, CheckBody> = {
 		}
 		const got = run.out.bytes().toString("latin1");
 		if (got !== "early") throw new Problem(`stdout read ${JSON.stringify(got)}, not "early"`);
+		// "early" alone is not live: the sleep still runs, so stdout stays open and wait() has no answer yet.
+		if (await run.out.end(LIVE_GRACE_MS, s.signal)) throw new Problem(`stdout ended right after "early", while the process still slept: stdout must stay open until the process ends`);
+		if (run.exitCode !== undefined) throw new Problem(`wait() answered ${run.exitCode} right after "early", while the process still slept: wait() answers once the process ends`);
 		return `"early" came back while the process still ran`;
 	},
 	/** stdin reaches the process as it is written: cat echoes one write, then another, with stdin still open. */

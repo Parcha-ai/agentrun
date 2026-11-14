@@ -1,6 +1,7 @@
 // The exec pre-check (src/conformance/exec-stream.ts) on a fake host whose exec runs real processes on this machine
-// (fake-exec-host.mjs): a good exec passes every check, and each broken one (UTF-8 decode, output held until exit, stdin
-// held until end, stderr merged, a command timeout, a wrong exit code, a kill that leaves the process) fails the check
+// (fake-exec-host.mjs): a good exec passes every check, and each broken one (UTF-8 decode, output held until exit, stdout
+// closed early, slow writes, stdin held until end, stderr merged, a command timeout, a wrong exit code, a kill that leaves
+// the process) fails the check
 // that names it, in words that say what is wrong. Then the CLI: --exec-stream builds the host with the module's
 // createHost and calls nothing but exec.
 import assert from "node:assert/strict";
@@ -53,6 +54,21 @@ test("an exec that holds output until the process exits fails stdout-live in tho
 	assert.match(byId["stdout-live"].words, /holds output until the process exits/);
 	assert.equal(byId["stdin-live"].status, "fail");
 	assert.equal(byId["stdout-bytes"].status, "pass");
+});
+
+test("an exec whose stdout ends after the first output, while the process still runs, fails stdout-live", async () => {
+	const { byId } = await run({ closeStdoutEarly: true });
+	assert.equal(byId["stdout-live"].status, "fail");
+	assert.match(byId["stdout-live"].words, /^stdout ended right after "early", while the process still slept/);
+});
+
+test("large holds one deadline across its writes: slow writes fail it once largeMs passes, not a step per write later", async () => {
+	const started = Date.now();
+	const { byId } = await run({ slowWriteMs: 400 }, { largeMs: 1_000 });
+	assert.equal(byId.large.status, "fail");
+	assert.match(byId.large.words, /^writing 1048576 random bytes ran past 1 s, with \d+ bytes written/);
+	assert.equal(byId["stdin-bytes"].status, "pass");
+	assert.ok(Date.now() - started < 30_000);
 });
 
 test("an exec that holds stdin until end() fails stdin-live, and names stdin since output streams", async () => {
