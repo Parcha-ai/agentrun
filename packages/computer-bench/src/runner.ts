@@ -221,17 +221,22 @@ const STREAM_LOST = /the daemon's stream (ended|closed)/;
 
 /**
  * Whether the record shows the agent's computer was lost in its turn before the bench stopped it: an agent call failed
- * with the connection-lost words, no agent call after it answered, and it was sent before the stop (`stopAt`, ms from
- * the run's start, when the bench knows it). The loss's error when it was, else undefined.
+ * with the connection-lost words, no agent call after it answered, and the bench had seen that failure before the stop.
+ * `steps` is in the order the bench saw each answer (the tap's, and a driver's as it reports them), and `stopAt` is how
+ * many it had seen when it stopped the agent: an order, not a clock, since a driver's step times are on its own clock
+ * and a fast computer answers many calls in one millisecond. A call in flight at the stop is answered after it, and a
+ * stop lets serve's computer go, so that failure is the stop's. With no `stopAt` (the driver stopped the run and did not
+ * say when) nothing orders the loss first: undefined.
  */
-export function lostBeforeStop(steps: readonly Step[], stopAt?: number): Step["error"] | undefined {
+export function lostBeforeStop(steps: readonly Step[], stopAt: number | undefined): Step["error"] | undefined {
+	if (stopAt === undefined) return undefined;
+	const seen = steps.slice(0, stopAt);
 	const agent = steps.filter((step) => step.phase === "agent" && step.method !== "hello" && step.method !== "ping");
 	const at = agent.findLastIndex((step) => !step.ok && STREAM_LOST.test(step.error?.message ?? ""));
 	if (at < 0) return undefined;
 	if (agent.slice(at + 1).some((step) => step.ok)) return undefined;
 	const lost = agent[at] as Step;
-	if (stopAt !== undefined && lost.t_ms > stopAt) return undefined;
-	return lost.error;
+	return seen.includes(lost) ? lost.error : undefined;
 }
 
 /** A ping on the bench's channel, short: why the computer did not answer, or undefined when it did. */
@@ -445,11 +450,11 @@ async function onComputer(options: RunOptions, bench: string, resolved: Resolved
 		if (frames) await frames.take(signal);
 		const stop = new AbortController();
 		let spent: "steps" | "wall" | undefined;
-		// When the bench stopped the agent, in ms from the run's start: what the record's events are ordered against.
+		// When the bench stopped the agent, as how many steps it had seen by then: what a loss is ordered against.
 		let stopAt: number | undefined;
 		const wall = setTimeout(() => {
 			spent ??= "wall";
-			stopAt ??= Date.now() - t0;
+			stopAt ??= steps.length;
 			stop.abort(new Error("the task's wall budget is spent"));
 		}, resolved.budget.wall_s * 1000);
 		const agentSignal = AbortSignal.any([signal, stop.signal]);
@@ -476,7 +481,7 @@ async function onComputer(options: RunOptions, bench: string, resolved: Resolved
 							frames,
 							onSpent: () => {
 								spent ??= "steps";
-								stopAt ??= Date.now() - t0;
+								stopAt ??= steps.length;
 								stop.abort(new Error("the task's step budget is spent"));
 							},
 						}),

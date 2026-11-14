@@ -177,6 +177,21 @@ async function verify(values: Record<string, unknown>): Promise<number> {
 	return proofs.every((proof) => proof.skipped_because !== undefined || provedRight(proof)) ? 0 : 1;
 }
 
+/** What a verify.json entry lacks of a TaskProof, in words, or undefined when it has every field a run reads. */
+function proofProblem(proof: unknown): string | undefined {
+	if (typeof proof !== "object" || proof === null || Array.isArray(proof)) return "is not an object";
+	const p = proof as Record<string, unknown>;
+	const strings = (value: unknown) => Array.isArray(value) && value.every((one) => typeof one === "string");
+	if (typeof p.task !== "string") return "has no task id";
+	if (!Number.isInteger(p.seed)) return "has no integer seed";
+	if (!Number.isInteger(p.version)) return "has no task version";
+	if (typeof p.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(p.sha256)) return "has no task sha256";
+	if (typeof p.untouched !== "string" || typeof p.solved !== "string") return "has no untouched or solved state";
+	if (!strings(p.wrong) || !strings(p.skipped)) return "has no wrong or skipped list";
+	if (p.skipped_because !== undefined && typeof p.skipped_because !== "string") return "has a skipped_because that is not words";
+	return undefined;
+}
+
 /** --verified: the pairs verify did not prove right are refused, and the run says how many it left out. */
 function verifiedOf(path: string | undefined, tasks: readonly Task[], seeds: readonly number[]): ((task: string, seed: number) => string | undefined) | undefined {
 	if (path === undefined) return undefined;
@@ -187,7 +202,11 @@ function verifiedOf(path: string | undefined, tasks: readonly Task[], seeds: rea
 		throw new Usage(`--verified ${path} is not a verify.json: ${(error as Error).message}`);
 	}
 	if (!Array.isArray(proofs)) throw new Usage(`--verified ${path} is not a verify.json: it holds no list of proofs`);
-	const refuse = unverifiedPairs(proofs);
+	proofs.forEach((proof, i) => {
+		const bad = proofProblem(proof);
+		if (bad) throw new Usage(`--verified ${path} is not a verify.json: its proof ${i + 1} ${bad}`);
+	});
+	const refuse = unverifiedPairs(proofs, tasks);
 	const out = tasks.flatMap((task) => seeds.map((seed) => refuse(task.spec.id, seed))).filter((why): why is string => why !== undefined);
 	const skipped = out.filter((why) => why.startsWith("skipped: ")).length;
 	process.stdout.write(`--verified left out ${out.length} of ${tasks.length * seeds.length} task × seed pairs (${out.length - skipped} not verified, ${skipped} skipped)\n`);

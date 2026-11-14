@@ -12,6 +12,9 @@ import type { Task } from "./task.js";
 export interface TaskProof {
 	task: string;
 	seed: number;
+	/** The task as it was proved: its version and its folder's sha256. A proof holds for that folder only. */
+	version: number;
+	sha256: string;
 	/** null: the checks failed on the untouched state, as they must ("fails"), or passed it ("passes": broken). */
 	untouched: "fails" | "passes" | "infra" | "refused" | "skipped";
 	/** oracle: the checks passed on the solved state ("passes"), or failed it ("fails": broken), or there is no oracle. */
@@ -63,11 +66,12 @@ export async function verifySuite(options: {
 	for (const seed of options.seeds) {
 		for (const task of options.tasks) {
 			const id = task.spec.id;
+			const at = { version: task.spec.version, sha256: task.sha256 };
 			const before = proofOf(last(untouched, id, seed));
 			const after = proofOf(last(solved, id, seed));
 			const skip = before.state === "skipped" ? before : after.state === "skipped" ? after : undefined;
 			if (skip) {
-				proofs.push({ task: id, seed, untouched: "skipped", solved: "skipped", wrong: [], skipped: [], skipped_because: skip.why ?? "a precondition failed" });
+				proofs.push({ task: id, seed, ...at, untouched: "skipped", solved: "skipped", wrong: [], skipped: [], skipped_because: skip.why ?? "a precondition failed" });
 				continue;
 			}
 			const hasOracle = (task.spec.oracle ?? []).length > 0;
@@ -89,6 +93,7 @@ export async function verifySuite(options: {
 			proofs.push({
 				task: id,
 				seed,
+				...at,
 				untouched: before.state === "pass" ? "passes" : before.state === "fail" ? "fails" : (before.state as "infra" | "refused"),
 				solved: solvedState,
 				wrong,
@@ -101,15 +106,21 @@ export async function verifySuite(options: {
 }
 
 /**
- * For `run --verified`: why a task × seed is not run, or undefined when verify proved it right. A skipped pair is
- * refused with its skip's why; a pair verify found not right, or never proved (that seed was not verified), is refused
- * "not verified for seed N".
+ * For `run --verified`: why a task × seed is not run, or undefined when verify proved it right. A pair verify never
+ * proved (that seed was not verified), proved on another version of the task's folder, or found not right is refused
+ * "not verified for seed N"; a skipped pair is refused with its skip's why.
  */
-export function unverifiedPairs(proofs: readonly TaskProof[]): (task: string, seed: number) => string | undefined {
+export function unverifiedPairs(proofs: readonly TaskProof[], tasks: readonly Task[]): (task: string, seed: number) => string | undefined {
 	const byPair = new Map(proofs.map((proof) => [`${proof.task}\0${proof.seed}`, proof]));
+	const byId = new Map(tasks.map((task) => [task.spec.id, task]));
 	return (task, seed) => {
 		const proof = byPair.get(`${task}\0${seed}`);
 		if (!proof) return `not verified for seed ${seed}`;
+		const now = byId.get(task);
+		if (!now || now.sha256 !== proof.sha256) {
+			const was = `version ${proof.version}, sha256 ${proof.sha256.slice(0, 12)}`;
+			return `not verified for seed ${seed}: verify proved the task at ${was}, and it is ${now ? `now version ${now.spec.version}, sha256 ${now.sha256.slice(0, 12)}` : "not among this run's tasks"}`;
+		}
 		if (isSkipped(proof)) return `${SKIPPED}${proof.skipped_because}`;
 		if (provedRight(proof)) return undefined;
 		const what = proof.wrong.length > 0 ? proof.wrong.join("; ") : `untouched ${proof.untouched}, solved ${proof.solved}`;

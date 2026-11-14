@@ -153,6 +153,11 @@ test("a capability probe is a check on the bench's channel: never an answer, the
 	assert.match(problemsOf({ ...GOOD, needs: { ...GOOD.needs, capabilities: [probe, probe] } }), /capability camera is probed twice/);
 	assert.match(problemsOf({ ...GOOD, needs: { ...GOOD.needs, capabilities: [{ ...probe, argv: ["get", "{{nonce}}"] }] } }), /capability camera: a probe is the same for every seed, so it holds no \{\{nonce\}\}/);
 	assert.match(problemsOf({ ...GOOD, needs: { ...GOOD.needs, capabilities: [{ ...probe, stdout: { matches: "([" } }] } }), /capability camera stdout/);
+	// A probe gets every rule a check gets: a probe that can never pass would skip the task on every computer.
+	const ui = { id: "dock", kind: "ui", why: "w", find: { role: "button", value: { matches: "([" } } };
+	assert.match(problemsOf({ ...GOOD, needs: { ...GOOD.needs, capabilities: [ui] } }), /capability dock find\.value/);
+	assert.match(problemsOf({ ...GOOD, needs: { ...GOOD.needs, capabilities: [{ ...ui, find: { role: "button" }, min: 2, max: 1 }] } }), /capability dock: min is above max/);
+	assert.match(problemsOf({ ...GOOD, needs: { ...GOOD.needs, capabilities: [{ id: "f", kind: "file", why: "w", path: "/x", exists: false, text: { equals: "y" } }] } }), /capability f: a file that must not exist has no text to match/);
 });
 
 test("exec deny: the oracle drives the path the agent must, so a call outside ui, input, screen and apps is refused by name", () => {

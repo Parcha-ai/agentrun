@@ -8,7 +8,7 @@ import { cpSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { FAKE_AGENTS, FakeWorld, fakeBackend } from "../dist/fake-world.js";
-import { ENTRY, loadSuite, loadTask, proofMarkdown, runBench, runChecks, Store, unverifiedPairs, verifySuite } from "../dist/index.js";
+import { ENTRY, loadSuite, loadTask, lostBeforeStop, proofMarkdown, runBench, runChecks, Store, unverifiedPairs, verifySuite } from "../dist/index.js";
 import { arm, FAKE, recordOf, ROOT, store, tmp } from "./support.mjs";
 
 /** The fake dark-theme task (the fake agents play it by its id), with its task.json changed by `change`. */
@@ -204,6 +204,48 @@ test("a computer lost before the step budget fired is infra: the record shows th
 	assert.match(result.why, /^the computer stopped answering during the agent's turn: its calls failed \(gone: the daemon's stream ended\) before the step budget stopped it; ping: gone/);
 });
 
+test("a loss counts as before the stop only when the bench saw it fail by then: one in flight at the stop is the stop's", () => {
+	const lost = { code: "gone", message: "the daemon's stream ended" };
+	// Steps are in the order the bench saw their answers; the times are a driver's own and order nothing.
+	const ok = { n: 1, phase: "agent", method: "ui.observe", params: {}, t_ms: 900, ms: 10, ok: true };
+	const failed = { n: 2, phase: "agent", method: "ui.observe", params: {}, t_ms: 5, ms: 10, ok: false, error: lost };
+	assert.deepEqual(lostBeforeStop([ok, failed], 2), lost, "it failed, and the bench saw it, before the stop");
+	assert.equal(lostBeforeStop([ok, failed], 1), undefined, "sent before the stop, answered after it: the stop let the computer go");
+	assert.equal(lostBeforeStop([ok, failed], undefined), undefined, "a stop the bench can't place is no evidence of a death");
+});
+
+test("a driver's budget stop whose cancel cut the agent's last call is budget: the loss can't be shown to come first", async () => {
+	// serve cancels a run past its step budget and lets the computer go; the call in flight then fails with the
+	// connection's words. The driver says budget, not when it stopped, so nothing orders that failure before the stop.
+	const worlds = [];
+	const cancelled = async (_wire, request) => {
+		for (let i = 0; i < 6; i += 1) request.onStep({ phase: "agent", method: "computer_act", params: { preview: null }, t_ms: i * 2000, ms: 1800, ok: true });
+		worlds.at(-1).released = true;
+		request.onStep({ phase: "agent", method: "computer_act", params: { preview: null }, t_ms: 12000, ms: 300, ok: false, error: { code: "tool_failed", message: "the daemon's stream ended" } });
+		return { outcome: "budget", message: "the task's budget of 6 computer calls is spent" };
+	};
+	const results = await runBench({ tasks: [darkTheme(() => {})], arms: [arm("cancelled")], seeds: [1], backend: fakeBackend({ agents: { cancelled }, worlds }), store: store(), grade: "never" });
+	assert.deepEqual(results.map((result) => [result.outcome, result.scored]), [["budget", true]]);
+});
+
+test("a wall stop orders a driver's steps by when the bench saw them, not by the driver's own clock", async () => {
+	// serve's step times count from its run's start, later than the bench's: a call cut by the wall stop's cancel would
+	// look sent long before the stop. The bench places it when it reported it, after the stop.
+	const worlds = [];
+	const walled = async (_wire, request) => {
+		request.onStep({ phase: "agent", method: "computer_act", params: { preview: null }, t_ms: 0, ms: 100, ok: true });
+		await new Promise((done) => request.signal.addEventListener("abort", done, { once: true }));
+		worlds.at(-1).released = true;
+		request.onStep({ phase: "agent", method: "computer_act", params: { preview: null }, t_ms: 50, ms: 100, ok: false, error: { code: "tool_failed", message: "the daemon's stream ended" } });
+		return { outcome: "budget", message: "the run was cancelled" };
+	};
+	const task = darkTheme((spec) => {
+		spec.budget.wall_s = 1;
+	});
+	const results = await runBench({ tasks: [task], arms: [arm("walled")], seeds: [1], backend: fakeBackend({ agents: { walled }, worlds }), store: store(), grade: "never" });
+	assert.deepEqual(results.map((result) => [result.outcome, result.scored]), [["budget", true]], results.map((result) => result.why).join(" / "));
+});
+
 test("answer checks drop markdown emphasis and thousands separators before they compare, and nothing fuzzier", async () => {
 	const [invoice] = loadSuite(join(ROOT, "suites", "mobileworld")).filter((task) => task.spec.id === "mobileworld.check-invoice-1");
 	const amount = invoice.spec.checks.find((check) => check.id === "amount");
@@ -225,24 +267,33 @@ test("answer checks drop markdown emphasis and thousands separators before they 
 	assert.equal(await judge("1,2345", equals("12345")), "fail", "only groups of exactly three digits after a comma");
 	assert.equal(await judge("3, 4", equals("34")), "fail");
 	assert.equal(await judge("_Paris_", equals("Paris")), "pass");
+	assert.equal(await judge("*7*", equals("7")), "pass", "a one-character italic is emphasis too");
+	assert.equal(await judge("_A_", equals("A")), "pass");
+	assert.equal(await judge("**7**", equals("7")), "pass");
+	assert.equal(await judge("__A__", equals("A")), "pass");
 	assert.equal(await judge("bid_1_final", equals("bid1final")), "fail", "an underscore inside a word is no emphasis");
 	assert.equal(await judge("2*3*4", equals("234")), "fail", "an asterisk between digits is no emphasis");
 });
 
 test("run --verified: only the pairs verify proved run; the rest are refused without a computer, and the CLI says how many", async () => {
+	const task = darkTheme(() => {});
+	const at = { version: task.spec.version, sha256: task.sha256 };
 	const proofs = [
-		{ task: "fake.settings.dark-theme", seed: 1, untouched: "fails", solved: "passes", wrong: [], skipped: [] },
-		{ task: "fake.settings.dark-theme", seed: 2, untouched: "passes", solved: "passes", wrong: ["every check passed the untouched state"], skipped: [] },
-		{ task: "fake.settings.dark-theme", seed: 3, untouched: "skipped", solved: "skipped", wrong: [], skipped: [], skipped_because: "needs camera: no camera" },
+		{ task: "fake.settings.dark-theme", seed: 1, ...at, untouched: "fails", solved: "passes", wrong: [], skipped: [] },
+		{ task: "fake.settings.dark-theme", seed: 2, ...at, untouched: "passes", solved: "passes", wrong: ["every check passed the untouched state"], skipped: [] },
+		{ task: "fake.settings.dark-theme", seed: 3, ...at, untouched: "skipped", solved: "skipped", wrong: [], skipped: [], skipped_because: "needs camera: no camera" },
+		// Proved right, but on the task as it was before its folder changed: that proof says nothing of the task now.
+		{ task: "fake.settings.dark-theme", seed: 5, version: task.spec.version, sha256: "0".repeat(64), untouched: "fails", solved: "passes", wrong: [], skipped: [] },
 	];
-	const refuse = unverifiedPairs(proofs);
+	const refuse = unverifiedPairs(proofs, [task]);
 	assert.equal(refuse("fake.settings.dark-theme", 1), undefined);
 	assert.equal(refuse("fake.settings.dark-theme", 2), "not verified for seed 2: verify found it not right (every check passed the untouched state)");
 	assert.equal(refuse("fake.settings.dark-theme", 3), "skipped: needs camera: no camera");
 	assert.equal(refuse("fake.settings.dark-theme", 4), "not verified for seed 4");
+	assert.equal(refuse("fake.settings.dark-theme", 5), `not verified for seed 5: verify proved the task at version ${task.spec.version}, sha256 000000000000, and it is now version ${task.spec.version}, sha256 ${task.sha256.slice(0, 12)}`);
 	assert.equal(refuse("fake.notes.front", 1), "not verified for seed 1");
 	const worlds = [];
-	const results = await runBench({ tasks: [darkTheme(() => {})], arms: [arm("fake-right")], seeds: [1, 2, 3, 4], backend: fakeBackend({ agents: FAKE_AGENTS, worlds }), store: store(), grade: "never", refuse });
+	const results = await runBench({ tasks: [task], arms: [arm("fake-right")], seeds: [1, 2, 3, 4, 5], backend: fakeBackend({ agents: FAKE_AGENTS, worlds }), store: store(), grade: "never", refuse });
 	assert.deepEqual(
 		results.map((result) => [result.seed, result.outcome, result.scored]),
 		[
@@ -250,6 +301,7 @@ test("run --verified: only the pairs verify proved run; the rest are refused wit
 			[2, "refused", false],
 			[3, "refused", false],
 			[4, "refused", false],
+			[5, "refused", false],
 		],
 	);
 	assert.equal(results[3].why, "not verified for seed 4");
@@ -272,4 +324,31 @@ test("the command line: verify seed 1, then run seeds 1 and 2 --verified, and se
 	const missing = cli("run", "--suite", FAKE, "--arms", arms, "--out", join(out, "run2"), "--verified", join(out, "nope.json"));
 	assert.equal(missing.status, 2);
 	assert.match(missing.stderr, /--verified .*nope\.json/);
+	// A file that is a list but not of proofs is refused in words, never with a stack trace.
+	const proof = JSON.parse(readFileSync(join(out, "verify", "verify.json"), "utf8"))[0];
+	for (const [n, bad] of [[null], [{ task: "fake.settings.dark-theme", seed: 1 }], [{ ...proof, wrong: undefined }], [{ ...proof, sha256: undefined }]].entries()) {
+		const path = join(out, `bad-${n}.json`);
+		writeFileSync(path, JSON.stringify(bad));
+		const refused = cli("run", "--suite", FAKE, "--arms", arms, "--out", join(out, `bad-run-${n}`), "--verified", path);
+		assert.equal(refused.status, 2, refused.stderr);
+		assert.match(refused.stderr, /--verified .* is not a verify\.json: its proof 1 /, refused.stderr);
+		assert.doesNotMatch(refused.stderr, /\n\s+at /, "no stack trace");
+	}
+});
+
+test("run --verified refuses a task whose folder changed after verify proved it", () => {
+	const cli = (...args) => spawnSync(process.execPath, [join(ROOT, "dist", "cli.js"), ...args], { encoding: "utf8", env: { ...process.env, ANTHROPIC_API_KEY: "", OPENROUTER_API_KEY: "" } });
+	const out = tmp();
+	const suite = join(out, "suite");
+	cpSync(FAKE, suite, { recursive: true });
+	assert.equal(cli("verify", "--suite", suite, "--out", join(out, "verify"), "--seeds", "1", "--task", "fake.settings.dark-theme").status, 0);
+	// The task's folder changes after verify (one byte is enough): the old proof no longer covers it.
+	const path = join(suite, "settings-dark-theme", "task.json");
+	writeFileSync(path, `${readFileSync(path, "utf8")}\n`);
+	const arms = join(out, "arms.json");
+	writeFileSync(arms, JSON.stringify([arm("fake-right")]));
+	const ran = cli("run", "--suite", suite, "--arms", arms, "--out", join(out, "run"), "--seeds", "1", "--task", "fake.settings.dark-theme", "--grade", "never", "--verified", join(out, "verify", "verify.json"));
+	assert.equal(ran.status, 0, ran.stderr);
+	assert.match(ran.stdout, /--verified left out 1 of 1 task × seed pairs \(1 not verified, 0 skipped\)/);
+	assert.match(ran.stderr, /not verified for seed 1: verify proved the task at version 1, sha256 [0-9a-f]{12}, and it is now version 1, sha256 [0-9a-f]{12}/);
 });

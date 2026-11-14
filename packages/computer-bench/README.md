@@ -80,8 +80,9 @@ under the same conditions):
 6. pings the computer on the bench's channel (phase `ping`, 15 s). No answer means it died during the agent's turn: the
    run is infra ("the computer stopped answering during the agent's turn") and runs again, before any check can
    score a dead computer as wrong. After a stop the bench made (the step or wall budget) a failed ping is expected,
-   since serve's cancel lets the computer go, so the run stays `budget`, unless the agent's calls had already lost
-   the computer's stream before the stop: then it is infra too;
+   since serve's cancel lets the computer go, so the run stays `budget`, unless the bench saw the agent's calls lose
+   the computer's stream before it stopped them (ordered by when the bench saw each answer, never by a driver's
+   clock): then it is infra too;
 7. runs the checks on the computer as the agent left it, then reads the tree and a last frame;
 8. tears down and releases (always, once setup began);
 9. grades, after the release: no computer waits on a model.
@@ -99,9 +100,10 @@ without thousands separators (a comma before exactly three digits: `103,190.70` 
 
 `verify` writes `verify.md` and `verify.json`: a skipped task × seed is a proof of its own (`untouched` and `solved`
 are `skipped`, `skipped_because` says why), counted apart: "N task × seed proofs: X right, Y skipped, Z not right".
-`computer-bench run --verified <verify.json>` runs only the pairs that proof shows right. Every other pair is refused
-without opening a computer, as `not verified for seed N` (with what verify found) or as its skip, and the CLI says how
-many it left out.
+Each proof names the task's version and folder sha256. `computer-bench run --verified <verify.json>` runs only the
+pairs that file proves right for the task's folder as it is now. Every other pair is refused without opening a
+computer, as `not verified for seed N` (with what verify found, or that it proved another version) or as its skip, and
+the CLI says how many it left out.
 
 The agent's calls go through a tap (`src/tap.ts`) that records them, keeps the budget, and denies a method outside the
 groups the agent is given (exec on a phone is the bench's, not the agent's). After each act it takes a frame on the

@@ -234,29 +234,27 @@ function ruleProblems(spec: TaskSpec, files: Record<string, string>): string[] {
 			problems.push(`${where}: ${(error as Error).message}`);
 		}
 	};
-	for (const check of spec.checks) {
+	// One set of rules for a check and a probe, which is written as a check.
+	const checkRules = (check: Check, label: string) => {
 		if (check.kind === "exec") {
-			matches(check.stdout, `check ${check.id} stdout`);
-			matches(check.stderr, `check ${check.id} stderr`);
+			matches(check.stdout, `${label} stdout`);
+			matches(check.stderr, `${label} stderr`);
 		} else if (check.kind === "file") {
-			matches(check.text, `check ${check.id} text`);
-			if (check.exists === false && check.text) problems.push(`check ${check.id}: a file that must not exist has no text to match`);
+			matches(check.text, `${label} text`);
+			if (check.exists === false && check.text) problems.push(`${label}: a file that must not exist has no text to match`);
 		} else if (check.kind === "ui") {
-			matches(check.find.name, `check ${check.id} find.name`);
-			matches(check.find.value, `check ${check.id} find.value`);
-			if (check.min !== undefined && check.max !== undefined && check.min > check.max) problems.push(`check ${check.id}: min is above max`);
-		} else if (check.kind === "answer") matches(check.text, `check ${check.id} text`);
-	}
+			matches(check.find.name, `${label} find.name`);
+			matches(check.find.value, `${label} find.value`);
+			if (check.min !== undefined && check.max !== undefined && check.min > check.max) problems.push(`${label}: min is above max`);
+		} else if (check.kind === "answer") matches(check.text, `${label} text`);
+	};
+	for (const check of spec.checks) checkRules(check, `check ${check.id}`);
 	const capabilities = spec.needs.capabilities ?? [];
 	const probeIds = capabilities.map((probe) => probe.id);
 	for (const id of new Set(probeIds.filter((id, i) => probeIds.indexOf(id) !== i))) problems.push(`capability ${id} is probed twice`);
 	for (const probe of capabilities) {
 		if (probe.kind === "answer") problems.push(`capability ${probe.id} is an answer check: a probe reads the computer, never an agent's answer`);
-		else if (probe.kind === "exec") {
-			matches(probe.stdout, `capability ${probe.id} stdout`);
-			matches(probe.stderr, `capability ${probe.id} stderr`);
-		} else if (probe.kind === "file") matches(probe.text, `capability ${probe.id} text`);
-		else if (probe.kind === "ui") matches(probe.find.name, `capability ${probe.id} find.name`);
+		else checkRules(probe, `capability ${probe.id}`);
 		// A probe's verdict is remembered for every seed of the bench run, so it can't depend on one.
 		for (const name of placeholders(probe)) problems.push(`capability ${probe.id}: a probe is the same for every seed, so it holds no {{${name}}}`);
 	}
