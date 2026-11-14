@@ -1023,7 +1023,8 @@ async function sameAsLocal(ctx: Ctx, one: EvalCase, agent: Json, used: Readonly<
 /** The pins a case's apply fills (from its parameters) set on the in-process server before it applies, as an owner sets
  *  them (deploy/walk.md): the server's pin holds the call to the case's own target beside the agent's own, as it does in
  *  production. Another server's (--server) settings are its owner's, left as they are: there the agent's own pin alone
- *  holds the write. */
+ *  holds the write. No permission is written on either: every eval applies with approvals never (runOnce), so a granted
+ *  tool runs with no one to answer and a tool the case did not grant is refused. */
 async function serverPins(ctx: Ctx, one: EvalCase): Promise<void> {
   const { api, pkg, options } = ctx;
   if (options.server) return;

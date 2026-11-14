@@ -235,11 +235,36 @@ test("a case passes only when every run passes: one failing run of two fails it"
   assert.equal(report.cost_usd.unknown, 0);
 });
 
+test("an eval runs under approvals never, which grants nothing: a tool of the package the case did not grant is still refused, never sent", { timeout: 300_000 }, async (t) => {
+  // evalpkg asks (approvals ask), and the eval applies it with approvals never; its two crm tools are the package's, and
+  // the case grants get_contact alone. The eval writes no permission for either.
+  const dir = join(await scratch(t), "evalpkg");
+  cpSync(PKG, dir, { recursive: true });
+  const at = join(dir, "evals", "widens-nothing");
+  mkdirSync(join(at, "graders"), { recursive: true });
+  mkdirSync(join(at, "fixtures"), { recursive: true });
+  cpSync(join(PKG, "evals", "mcp-match", "fixtures", "crm.json"), join(at, "fixtures", "crm.json"));
+  writeFileSync(join(at, "case.yaml"), "parameters:\n  team: blue\nmcp:\n  crm: fixtures/crm.json\ngrants: [mcp:crm/get_contact]\n");
+  writeFileSync(join(at, "prompt.md"), '---\ndescription: Reads contact 7, then tries the update the case did not grant.\n---\nCall mcp__crm__get_contact with {"id": "7"}\nCall mcp__crm__update_contact with {"id": "7", "fields": {"score": 80}}\nAnswer:\nThe CRM said: {{last-result}}\n');
+  writeFileSync(join(at, "graders", "ran.md"), "---\ntype: regex\npattern: \"The CRM said\"\n---\n");
+  const report = await evalTemplate({ dir, cases: ["widens-nothing"], serve: { faux: FAUX } });
+  const [run] = report.cases[0].runs;
+  assert.equal(run.status, "completed", JSON.stringify(run, null, 1));
+  // The grant ran unasked: approvals never lifts the ask of a tool the agent was granted.
+  assert.deepEqual(run.mcp_calls.map((call) => call.tool), ["mcp:crm/get_contact"], "only the granted tool reached the fake");
+  assert.equal(run.calls.find((call) => call.tool === "mcp:crm/get_contact")?.status, "success", JSON.stringify(run.calls));
+  // The tool the case did not grant is not the agent's: never has nothing to lift, so it is refused and never sent.
+  const update = run.calls.find((call) => call.name === "mcp__crm__update_contact");
+  assert.ok(!update || update.status !== "success", JSON.stringify(run.calls));
+  assert.match(run.answer ?? "", /^The CRM said: /, run.answer);
+  assert.doesNotMatch(run.answer, /updated 7/, "the ungranted write never ran");
+});
+
 test("on an owner's server it applies that server's package only when it is this folder's, never replaces an MCP server, and archives what it made", { timeout: 300_000 }, async (t) => {
   const { api, baseUrl, token } = await serve(t, { faux: FAUX, templates: FIXTURES });
   const server = { baseUrl, token };
-  // The owner's settings are theirs, and the runner writes none of them. Unpinned there, the pinned write is held by the
-  // agent's own pin, and the case passes.
+  // The owner's settings are theirs, and the runner writes none of them. The eval applies with approvals never here too,
+  // so the case's grants run unasked. Unpinned there, the pinned write is held by the agent's own pin, and the case passes.
   const before = (await api("GET", "/settings/tools")).body;
   const unpinned = await evalTemplate({ dir: PKG, cases: ["mcp-match"], server });
   assert.equal(unpinned.pass, true, JSON.stringify(unpinned.cases[0].runs.map((r) => r.error ?? r.status)));
