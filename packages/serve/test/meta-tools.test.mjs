@@ -14,7 +14,7 @@ import { claudeAgentSpec, closeOpenSessions as closeClaude } from "./conformance
 import { closeOpenSessions as closeCodex, codexSpec } from "./conformance-codex.mjs";
 import { closeOpenSessions as closeOpenCode, openCodeSpec } from "./conformance-opencode.mjs";
 import { closeOpenSessions, piAdapterSpec, scriptedOrigin } from "./conformance-pi-adapter.mjs";
-import { queue, STEADY_LEASE, stores, until } from "./runner-support.mjs";
+import { queue, release, STEADY_LEASE, stores, until } from "./runner-support.mjs";
 import { runnerGate, verdictOf } from "./gate-support.mjs";
 
 const { CODEMODE, META_TOOLS, metaTools, refusedName, searchTools, TOOLS_CALL, TOOLS_SEARCH } = await import("../dist/runner/meta-tools.js");
@@ -102,14 +102,17 @@ test("a script reads a nested call's value: its structured value, else its one t
 
 /** A pi run of `script` over the suite's tools, its gate `gate(call)`: what each suite tool ran, and the last tool result. */
 async function gatedRun(t, script, gate) {
-  const { server, runners: [store] } = await stores({ runners: 1 });
+  const opened = await stores({ runners: 1 });
+  const { server, runners: [store] } = opened;
   await queue(server, "run-1");
   const { tools, ran } = suiteTools();
   const requests = [];
   const spec = piAdapterSpec({ script, tools: { ...tools, ...fillerTools() }, hooks: quiet }, { requests });
   const loop = createAdapterLoop(async (claim, run) => ({ ...(await spec(claim, run)), gate }));
   const runner = startRunner({ store, createLoop: loop, name: "runner-a", ...TIMING });
-  t.after(() => runner.close());
+  t.after(async () => {
+    try { await runner.close(); } finally { await release(opened); }
+  });
   await until(async () => {
     const now = await server.runs.get("run-1");
     return now.state === "ended" && now.runner === null && now;
@@ -260,12 +263,15 @@ async function metaRun(t, harness, script, own, { native } = {}) {
   const tools = { ...own, ...fillerTools() };
   const { BACKGROUND_CONTEXT: ctx } = await import("@earendil-works/chord/context");
   const { journalRecords, messagesOf } = await import("../dist/runner/journal-reader.js");
-  const { server, runners: [store] } = await stores({ runners: 1 });
+  const opened = await stores({ runners: 1 });
+  const { server, runners: [store] } = opened;
   await queue(server, "run-1");
   const requests = [];
   const spec = harness.name === "pi" ? piAdapterSpec({ script, tools, hooks: quiet }, { requests, ...(native ? { native } : {}) }) : harness.specOf({ script, tools, hooks: quiet });
   const runner = startRunner({ store, createLoop: createAdapterLoop(spec, { restartLimit: MAX_RESTARTS }), name: "runner-a", ...TIMING });
-  t.after(() => runner.close());
+  t.after(async () => {
+    try { await runner.close(); } finally { await release(opened); }
+  });
   const row = await until(async () => {
     const now = await server.runs.get("run-1");
     return (now.state === "ended" || now.state === "failed") && now.runner === null && now;
@@ -356,13 +362,16 @@ test("a run's catalog tools are deferred only past DEFER_CATALOG_OVER of them: t
 
 /** A pi run's first model request's tool names, for `tools` (the session's, `{name, replaySafe, run}`) under `gate`, and what ran. */
 async function listedRun(t, script, tools, gate = Object.assign(() => "allow", { permission: async () => "allow" })) {
-  const { server, runners: [store] } = await stores({ runners: 1 });
+  const opened = await stores({ runners: 1 });
+  const { server, runners: [store] } = opened;
   await queue(server, "run-1");
   const requests = [];
   const spec = piAdapterSpec({ script, tools, hooks: quiet }, { requests });
   const loop = createAdapterLoop(async (claim, run) => ({ ...(await spec(claim, run)), gate }), { restartLimit: MAX_RESTARTS });
   const runner = startRunner({ store, createLoop: loop, name: "runner-a", ...TIMING });
-  t.after(() => runner.close());
+  t.after(async () => {
+    try { await runner.close(); } finally { await release(opened); }
+  });
   await until(async () => {
     const now = await server.runs.get("run-1");
     return (now.state === "ended" || now.state === "failed") && now.runner === null && now;

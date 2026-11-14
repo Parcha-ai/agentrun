@@ -247,6 +247,14 @@ test("the contract's operations are as vendored; this server's own are added and
       // A contract property whose enum this server widens (models.source) is marked on the property, each value it adds
       // listed, as RunStatus is: cut back to the vendored enum and description, it is the contract's.
       const vendored = at.split(".").slice(1).reduce((object, key) => object?.properties?.[key], VENDORED.components.schemas[at.split(".")[0]])?.properties?.[field];
+      if (at === "TimelineUsage" && field === "requests") {
+        assert.equal(property["x-agentrun-serve"], "native/1");
+        assert.deepEqual(property.type, ["integer", "null"], "native aggregate turns cannot invent a model request count");
+        assert.equal(property.minimum, vendored.minimum);
+        schema.properties[field] = structuredClone(vendored);
+        marked.push(`${at}.${field}`);
+        continue;
+      }
       if (Array.isArray(vendored?.enum) && Array.isArray(property.enum)) {
         for (const value of property.enum.filter((v) => !vendored.enum.includes(v))) marked.push(`${at}.${field}.${value}`);
         property.enum = property.enum.filter((v) => vendored.enum.includes(v));

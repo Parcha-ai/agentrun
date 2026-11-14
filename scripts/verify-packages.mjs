@@ -122,6 +122,8 @@ const allowedEndpoints = {
       'http://127.0.0.1:7340/v2'], // key-gate: loopback-rule the default address of the server started on this machine
   ],
   serve: [
+    ['dist/native/cli.js', 'http://127.0.0.1:7340'],
+    ['dist/native/runtime.js', 'http://127.0.0.1:1'],
     // The address agentrun-serve binds by default, which its quick start points a client at.
     ['README.md', 'http://127.0.0.1:7340'],
     // The same address in the changelog entry the release fold writes from the package's fragment (#625).
