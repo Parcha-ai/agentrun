@@ -13,9 +13,9 @@ import type { JsonValue } from "@earendil-works/chord/json";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
-import { type Conversation, type Cursor, defineExtension, defineTool, type Extension, GenerationTask, type Harness, hook, type HookApi, type Registry, type Submission, ToolTask, type ToolRegistration } from "@earendil-works/pi-durable";
+import { type Conversation, type Cursor, defineExtension, defineTool, type Extension, GenerationTask, type Harness, hook, type HookApi, type JsonObject, type Registry, type Submission, type ToolExecutionApi, ToolTask, type ToolRegistration } from "@earendil-works/pi-durable";
 import { anthropicPolicy, withWebSearches } from "@parcha/agentrun-harness-claude";
-import { type AdapterSession, type AgentAdapter, HOST_RESULT_MAX_CHARS, type HostTool, type SessionIO, type SessionPort, type SessionSpec, type TurnStatus, type Wire } from "@parcha/agentrun-kernel";
+import { type AdapterSession, type AgentAdapter, HOST_RESULT_MAX_CHARS, type HostTool, type NestedCalls, type SessionIO, type SessionPort, type SessionSpec, type TurnStatus, type Wire } from "@parcha/agentrun-kernel";
 import { type ModelProxy, NATIVE_SEARCH_USD, type ProviderPolicy, startModelProxy } from "@parcha/agentrun-kernel/host";
 import { randomBytes } from "node:crypto";
 import { DEFAULT_HARNESS } from "../../harness.js";
@@ -303,7 +303,12 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
   // intent: a call it runs with no pass here is one it reruns after a crash (a replay-safe call whose intent an earlier
   // attempt stored), told to the host tool as an attempt above 0, so the loop asks the gate about it again.
   const passed = new Set<string>();
-  const tools = [...spec.tools.filter((tool) => !owned.has(tool.name)).map((tool) => piTool(tool, io, (callId) => (io.gate ? (passed.has(callId) ? 0 : 1) : undefined))), ...(options.tools ?? [])];
+  // The calls asked at the gate or run in this session: a nested call among them is fresh (NestedResult), not one its
+  // record answered.
+  const touched = new Set<string>();
+  // A refused nested call's words, by its id (pi's nested result keeps none of a refused call's output).
+  const nestedRefusals = new Map<string, string>();
+  const tools = [...spec.tools.filter((tool) => !owned.has(tool.name)).map((tool) => piTool(tool, io, (callId) => (io.gate ? (passed.has(callId) ? 0 : 1) : undefined), touched, nestedRefusals)), ...(options.tools ?? [])];
   // A refused call's words (the gate's deny, main's), by call: its result is those words alone, as main gives them.
   const refusals = refusalWords();
   const extension = defineExtension({
@@ -312,6 +317,7 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
     hooks: [
       hook(ToolTask, {
         beforeTool: async (call, api, hookContext: Context) => {
+          touched.add(call.id);
           if (!io.gate) return undefined;
           // A model-issued call's count, read only when the gate holds a budget: a nested call (one a tool made) is its
           // parent's part, and is marked so (the cap's wrap-up lets it through).
@@ -323,6 +329,8 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
           }
           if ("deny" in answer) {
             refusals.refuse(call.id, answer.deny);
+            // A nested call's words for the tool that made it: pi keeps no output of a refused nested call.
+            if (call.parent !== undefined) nestedRefusals.set(call.id, answer.deny);
             return { block: answer.deny };
           }
           // Parked: held until pi closes the Session, so the call never reaches its intent in this process.
@@ -496,19 +504,45 @@ async function callsBefore(api: HookApi, callId: string, upTo: number, context: 
  *  Codex's tool_output_token_limit); each host tool keeps its own answer within it (test/host-bounds.test.mjs). */
 export const HOST_TOOL_OUTPUT = Object.freeze({ maxLines: HOST_RESULT_MAX_CHARS + 1, maxBytes: HOST_RESULT_MAX_CHARS * 3 });
 
+/** pi's nested calls as a host tool's (NestedCalls): each the session's tool by its name, run as pi's own nested tool task
+ *  (`executeTool`, its call id `<callId>/<key>`), whose ToolTask hooks ask the gate as the tool itself (`nested`), and
+ *  whose rerun by the same key gets the recorded call back, finished or still running, never a second one. Fresh: asked
+ *  at the gate or run in this session (`touched`). A refused one is the gate's words (CALL_REFUSED, from refusalWords). */
+function piNested(api: ToolExecutionApi, context: Context, touched: ReadonlySet<string>, refusals: ReadonlyMap<string, string>): NestedCalls {
+  return {
+    async call(name, args, key) {
+      const result = await api.executeTool(name, args as JsonObject, context, { key });
+      const callId = `${api.callId}/${key}`;
+      const codes = result.diagnostics.map((one) => one.code);
+      const refused = (result.details as { [CALL_REFUSED]?: unknown } | undefined)?.[CALL_REFUSED] === true || codes.includes("blocked") || codes.includes("tool_unavailable");
+      const interrupted = codes.some((code) => code === "interrupted" || code === "abandoned" || code === "restart_limit");
+      const value = result.structuredOutput;
+      const said = typeof value === "string" ? value : Array.isArray(value) ? value.map((part) => (part && typeof part === "object" && "text" in part ? String((part as { text: unknown }).text) : "")).join("") : "";
+      // A refusal in the gate's words (this session's), or, answered from an earlier session's record, said so.
+      const words = refused ? (refusals.get(callId) ?? `${name} was refused (the run's tool settings or a person's answer), and it did not run.`) : undefined;
+      const text = words ?? (said || result.diagnostics.map((one) => one.message).join("\n"));
+      return { text, ...(result.isError ? { isError: true } : {}), ...(refused ? { refused: true as const } : {}), ...(interrupted ? { interrupted: true as const } : {}), fresh: touched.has(callId) };
+    },
+    memo: (key, value) => api.memo(`nested:${key}`, value, context),
+  };
+}
+
 /** A host tool as a pi tool: replay-safe or at most once, its answer the host's text and any images it shows, passed
  *  whole within the host's bound (HOST_TOOL_OUTPUT). Each call gets what pi's own tool task gives a tool: the calling
  *  agent's model, resolved in the session's models (its input and input limits, which a file read sizes an image by),
  *  and pi's output stream (the running tool's live slot); and its attempt (`attemptOf`: above 0 for a call the gate did
  *  not pass in this session, pi's rerun after a crash). */
-function piTool(tool: HostTool, io: PiSessionIO, attemptOf: (callId: string) => number | undefined = () => undefined) {
+function piTool(tool: HostTool, io: PiSessionIO, attemptOf: (callId: string) => number | undefined = () => undefined, touched: Set<string> = new Set(), nestedRefusals: ReadonlyMap<string, string> = new Map()) {
   return defineTool({
     name: tool.name,
     description: tool.description,
     parameters: tool.inputSchema as never,
-    replay: tool.replay === "safe" ? "safe" : "unsafe",
+    // A tool that nests calls runs again after a crash: its nested calls are pi's own tool tasks, each answered from its
+    // record by its key (executeTool), never run twice.
+    replay: tool.replay === "safe" || tool.nests ? "safe" : "unsafe",
     outputLimits: HOST_TOOL_OUTPUT,
     execute: async (args: unknown, api, toolContext: Context) => {
+      touched.add(api.callId);
       io.onEvent({ type: "tool_start", callId: api.callId, name: tool.name, args });
       const attempt = attemptOf(api.callId);
       const ref = (await api.agent(toolContext)).model;
@@ -518,6 +552,7 @@ function piTool(tool: HostTool, io: PiSessionIO, attemptOf: (callId: string) => 
         ...(model ? { model } : {}),
         output: (chunk: string) => api.output(chunk),
         ...(attempt === undefined ? {} : { attempt }),
+        ...(tool.nests ? { nested: piNested(api, toolContext, touched, nestedRefusals) } : {}),
       });
       io.onEvent({ type: "tool_end", callId: api.callId, name: tool.name, isError: Boolean(answer.isError), result: answer.text });
       const images = (answer.images ?? []).map((image) => ({ type: "image" as const, data: image.data, mimeType: image.mimeType }));

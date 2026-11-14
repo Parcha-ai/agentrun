@@ -1,0 +1,13 @@
+---
+packages: @parcha/agentrun-serve, @parcha/agentrun-kernel, @parcha/agentrun-harness-claude, @parcha/agentrun-harness-codex
+kind: feature
+---
+Every harness (pi, Claude Code, OpenCode and Codex) now offers three host tools over the run's own tools: `tools_search`, `tools_call` and `codemode`. Codex gets the first two and keeps its own code mode. With MCP servers on a Claude Code run, the CLI's own tool search is on.
+- `tools_search {query, limit?}` ranks the run's tools by what they do (BM25 over each tool's description and argument words) and answers each match's name, description and input schema. It lists only tools the run may call: never one set to deny, and never the three tools themselves.
+- `tools_call {name, args}` calls one of the run's tools by name. The call is asked about, recorded and booked as that tool's own call, under `<callId>/call`. An ask parks the run, and once approved the call runs once. A deny refuses it in the gate's words. A call of an unknown name, of `tools_call` itself, of `tools_search` or of `codemode` is refused in words, and nothing runs.
+- `codemode {script}` runs a JavaScript script in a QuickJS sandbox. Its `await tools.<name>(args)` calls are each the run's own call, gated, recorded and booked under `<callId>/s<n>`. The sandbox has the tools and nothing else of the run: no environment, keys, files, network or timers.
+- A call inside a script that needs approval follows Codex's rule. The run parks. Once a person answers, the script runs again: recorded calls answer from their records, the parked call runs once (or is refused), its outcome is the script's answer, and the rest of the script does not run.
+- A refused call inside a script ends the script with the refusal's words.
+- After a crash, a call that was cut off is told as possibly done, and it is not run again.
+- A paid call made through `tools_call` or a script books exactly as a direct call does: held before it is sent, under the cap, and settled once. The cap's wrap-up still refuses the model's own next call.
+- Claude Code: with an MCP server's tools on the run, the CLI runs with `ENABLE_TOOL_SEARCH=true` and its ToolSearch. The run's MCP tools reach the model through `hands` only once ToolSearch finds them, and every other tool of the session loads as before. The session's proxy admits the tool search's beta (`advanced-tool-use-2025-11-20`), ToolSearch and its placeholder. It also admits a `tool_reference` block, inside a tool result only, that names one of the session's own tools. Without MCP tools, all of these stay refused.

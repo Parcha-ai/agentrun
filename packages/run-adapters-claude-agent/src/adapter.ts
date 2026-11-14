@@ -19,7 +19,7 @@ import { type BinaryProbe, checkedOnce, checkedOnceAsync, hostHeaderProblems, ty
 import { anthropicPolicy, withWebSearches } from "./host/policy.js";
 import { findClaudeExecutable, platformSuffix } from "./binary.js";
 import { CLAUDE_AGENT_PACKAGE, ClaudeAgentNotInstalled, ClaudeAgentPinMismatch, ClaudeAgentThinkingOff } from "./errors.js";
-import { type ClaudeAgentSdk, claudeCodeHarness, lostPrompts } from "./harness.js";
+import { type ClaudeAgentSdk, claudeCodeHarness, claudeToolSearch, lostPrompts } from "./harness.js";
 import { JournalSessionStore } from "./store.js";
 import { type ConfineChild, localMachine } from "./host/machine.js";
 import { serialWriter } from "./serial.js";
@@ -308,6 +308,7 @@ function kernelTool(tool: HostTool, io: SessionIO, maxImageBytes: number, calls:
     description: tool.description,
     inputSchema: tool.inputSchema,
     replay: tool.replay,
+    ...(tool.nests ? { nests: true as const } : {}),
     async execute(input, effect) {
       // The effect's step is `tool:<the CLI's tool_use id>#<attempt>`: the host sees the CLI's call id.
       const callId = (effect.stepId ?? "").replace(/^tool:/, "").replace(/#\d+$/, "");
@@ -315,11 +316,14 @@ function kernelTool(tool: HostTool, io: SessionIO, maxImageBytes: number, calls:
       const attempt = Number(/#(\d+)$/.exec(effect.stepId ?? "")?.[1] ?? 0);
       // In flight, and past the pause's check, before the host hears of it: a pause the host starts on this tool_start
       // waits for this call rather than refusing it.
-      calls.begin(callId);
+      // A tool that nests calls has no intent of its own to wait for (each of its calls begins here as its own): a pause
+      // never waits on it, so a nested call that parks the run does not hold the pause.
+      if (!tool.nests) calls.begin(callId);
       // A guard: a call begun during a pause is not run; the bridge's per-drive mutex keeps it unreachable while calls are serial, and its test lands with the fan-out PR.
       if (calls.draining) throw new Error(`${tool.name} was not run: the session is pausing`);
       io.onEvent({ type: "tool_start", callId, name: tool.name, args: input });
-      const result = await tool.call(input, { callId, signal: effect.signal, attempt });
+      // A tool that nests calls (tools_call, codemode) gets the session's tools as its nested calls, through the bridge.
+      const result = await tool.call(input, { callId, signal: effect.signal, attempt, ...(effect.nested ? { nested: effect.nested } : {}) });
       if (result.isError) throw new Error(result.text);
       if (!result.images?.length) return result.text;
       // An image the model can't be sent is the call's error, by the tool's name and the image, not a request refused later.
@@ -405,6 +409,8 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
           tools: tools.map((t) => t.name),
           ...(builtins.length ? { builtins } : {}),
           ...(webSearch ? { webSearch: true, ...(options.webSearchAllowance !== undefined ? { webSearchAllowance: options.webSearchAllowance } : {}) } : {}),
+          // What the CLI sends with its own tool search on, which the harness turns on as this does (claudeToolSearch).
+          ...(claudeToolSearch(tools.map((t) => t.name)) === "true" ? { toolSearch: true } : {}),
           ...(options.price ? { price: options.price } : {}),
           ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}),
           ...(options.provider.auth ? { auth: options.provider.auth } : {}),
