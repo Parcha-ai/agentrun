@@ -23,7 +23,8 @@
 // a token. A cancel marks pending approvals canceled. Where no one can approve (accounts off), an ask is refused at once
 // in words, never parked.
 
-import { defaultPermissionOf, DESKTOP_TOOL_DEFS, PHONE_TOOL_DEFS } from "@parcha/agentrun-kernel/kernel";
+import { CODEMODE_TOOL_NAME } from "@earendil-works/pi-durable/codemode";
+import { computerToolDefs, defaultPermissionOf } from "@parcha/agentrun-kernel/kernel";
 import { READ_SKILL_FILE } from "@parcha/agentrun-kernel";
 import { LEARNED_DIR } from "./learning.js";
 import { COMPUTER_ROOT, portPath } from "./workspace/paths.js";
@@ -31,35 +32,39 @@ import type { Workspace } from "./workspace/workspace.js";
 import { builtinHarness } from "./harness-table.js";
 import { DEFAULT_HARNESS } from "./harness.js";
 import { SHELL_TOOLS } from "./background.js";
-import { SERVE_OWN_TOOLS, TABLE_TOOLS, type ToolSettingsRead } from "./tool-plane.js";
+import { DECISION_PROVIDER_KEYS, KIND_KEYS, SERVE_OWN_TOOLS, type ToolSettingsRead } from "./tool-plane.js";
+import { isTableTool, isToolRow, tableTools } from "./tool-list.js";
 import { deniedText, NOT_RUN, RAN_UNKNOWN, type SettingFrom } from "./refusal-words.js";
 import { type Approvals, approvalsOf } from "./approvals.js";
 import { BASH_POLICIES, readOnlyReason, readOnlyText } from "./bash-read-only.js";
+import { formatToolName, isMcpName, mcpNameOf, mcpServerOf, mcpToolName } from "./tool-names.js";
 
 /** What the gate does with a tool's calls. */
 export const PERMISSIONS = ["allow", "ask", "deny"] as const;
 export type Permission = (typeof PERMISSIONS)[number];
 
-/** An MCP tool's gate name: `mcp:<server>/<tool>`. */
-export const mcpToolName = (server: string, tool: string): string => `mcp:${server}/${tool}`;
-/** Whether `name` is an MCP tool's gate name. */
-export const isMcpTool = (name: string): boolean => /^mcp:[^/]+\/.+$/.test(name);
+// An MCP tool's gate name is its catalog name, `mcp:<server>/<tool>` (tool-names.ts).
+export { mcpToolName };
 /** The MCP servers a revision grants tools of, by their catalog names (`mcp:<server>/<tool>`, a server's wildcard too), each
  *  once: what a harness that names a session's MCP tool its own way (its facts' toolAlias: OpenCode's `<server>_<tool>`) is
  *  matched against, so its call is held to that tool's settings and never to a table tool's of the same shape. */
-export const mcpServersOf = (granted: readonly string[]): string[] => [...new Set(granted.flatMap((name) => /^mcp:([^/]+)\//.exec(name)?.[1] ?? []))];
-/** A third-party catalog tool, by its name: monid's (`monid.<tool>`) or an MCP server's (`mcp:<server>/<tool>`). */
-export const isCatalogTool = (name: string): boolean => name.startsWith("monid.") || isMcpTool(name);
+export const mcpServersOf = (granted: readonly string[]): string[] => [...new Set(granted.flatMap((name) => mcpServerOf(name) ?? []))];
+/** A third-party catalog tool, by its name: monid's (`monid.<tool>`) or any in MCP's namespace (`mcp:<server>/<tool>`, a
+ *  server's wildcard; one that does not parse too, so the default for it is a catalog tool's ask). */
+export const isCatalogTool = (name: string): boolean => name.startsWith("monid.") || isMcpName(name);
 /** Where a run's shell is, as its default permissions read it: `computer` false for a run with no computer (its bash, where
  *  it has one, runs on the run's folder's own exec: Archil's in Mode 2); undefined where no run is in view (the server's
  *  settings page, capabilities), which reads the computer's defaults. */
 export type ShellWhere = { readonly computer?: boolean };
 
-/** The owner's defaults (11-01): a built-in kernel tool allow; a third-party catalog tool ask. On a run with no computer,
+const isBuiltin = (name: string): boolean => isToolRow(name) || SERVE_OWN_TOOLS.includes(name) || KIND_KEYS.includes(name) || DECISION_PROVIDER_KEYS.includes(name);
+
+/** The owner's defaults: a built-in of this server (a row of the tool list, its own tools, a computer kind's key, a
+ *  decision provider's) allows; anything else asks, so a new source never defaults to allow. On a run with no computer,
  *  the kernel's ruled rule (defaultPermissionOf): bash asks first, and the background tools, which need a computer, are
  *  refused. */
 export const defaultPermission = (name: string, where: ShellWhere = {}): Permission => {
-  if (isCatalogTool(name)) return "ask";
+  if (isCatalogTool(name) || !isBuiltin(name)) return "ask";
   return where.computer === false ? defaultPermissionOf(name, { computer: false }) : "allow";
 };
 
@@ -83,8 +88,8 @@ const shellPermission = (name: string, bash: Permission): Permission => (bash ==
 /** The settings keys that may set `name`'s permission, most specific first: the tool's own name, then, for an MCP
  *  tool, its server's wildcard `mcp:<server>/*`. */
 export function permissionKeys(name: string): string[] {
-  if (!isMcpTool(name)) return [name];
-  return [name, `${name.slice(0, name.indexOf("/"))}/*`];
+  const mcp = mcpNameOf(name);
+  return mcp ? [name, formatToolName({ kind: "mcp-server", server: mcp.server })] : [name];
 }
 
 /** The browser's registrations on pi (pi-browser's BROWSER_TOOL_NAMES, which a test holds this list to): each is a call
@@ -94,47 +99,49 @@ const BROWSER_REGISTRATIONS: readonly string[] = ["snapshot", "run", "screenshot
  *  registry's own definitions say it (their settingsKey), so a tool a kind gains is held to its key with no line here. */
 const KIND_TOOLS: ReadonlyMap<string, readonly string[]> = (() => {
   const keys = new Map<string, string[]>();
-  for (const def of [...DESKTOP_TOOL_DEFS, ...PHONE_TOOL_DEFS]) keys.set(def.name, [...new Set([...(keys.get(def.name) ?? []), def.settingsKey])]);
+  for (const def of [...computerToolDefs("desktop", []), ...computerToolDefs("phone", [])]) keys.set(def.name, [...new Set([...(keys.get(def.name) ?? []), def.settingsKey])]);
+  // pi's code mode, offered only beside a desktop's or a phone's tools (runner/adapters/pi-computer.ts): its scripts
+  // reach the computer as computer_script's do, so it is held to the same keys. Its nested tool calls pass the gate each.
+  keys.set(CODEMODE_TOOL_NAME, keys.get("computer_script") ?? []);
   return keys;
 })();
 const STRICTNESS: Readonly<Record<Permission, number>> = { allow: 0, ask: 1, deny: 2 };
 /** The MCP server through which claude-agent calls the kernel's host tools (`mcp__hands__<wire name>`). */
 const HOST_TOOLS_SERVER = "hands";
 
-/** The settings key a call named `name` on `harness` is held to: the one mapping from every name a call reaches the gate
- *  by. A settings key is itself (a table tool, `monid.<tool>`, `mcp:<server>/<tool>`); a CLI's own tool is the table's it
- *  is; an MCP alias, `mcp__<server>__<tool>` (claude-agent's host tools `mcp__hands__<wire name>`, mapped as their
- *  wire name) and a harness's own (its facts' toolAlias: OpenCode's `<server>_<tool>`), is `mcp:<server>/<tool>`; a catalog's wire name (`monid_run`) is its
- *  catalog name; the browser's registrations are `browser`; an adapter's read_skill_file is `read` (but an agent's MCP tool of that name is its own). OpenCode's `<server>_<tool>` maps only for a server of
- *  `mcpServers` (the run's configured MCP servers), never by its shape, since a host tool's name has the same shape.
- *  Undefined: nothing maps it, and the gate asks. The key only: the runner's adapter loop asks the gate once per call,
- *  before its intent (RunGate.decide). */
-export function settingsKeyOf(harness: string, name: string, mcpServers: readonly string[] = []): string | undefined {
-  // A tool that runs a command in the box (bash_background and the rest) is held to bash's key: before the table's own names.
-  if (Object.hasOwn(SHELL_FAMILY, name)) return SHELL_FAMILY[name];
-  if (TABLE_TOOLS.includes(name) || SERVE_OWN_TOOLS.includes(name) || isCatalogTool(name)) return name;
-  // An adapter's own read of a skill's file (codex's and OpenCode's read_skill_file, from the session's copy of the run's
-  // skills) is a read: held to read's key, so a server's read deny refuses it and the default allows it, on every harness.
-  // Unless the name is an agent's MCP tool on this harness (OpenCode's <server>_<tool>: a configured server `read` with a
-  // tool `skill_file`): that tool keeps its own key, so read's setting never stands in for it.
-  if (name === READ_SKILL_FILE) {
-    const alias = builtinHarness(harness)?.facts?.toolAlias?.exec(name) ?? null;
-    return alias && mcpServers.includes(alias[1]!) ? mcpToolName(alias[1]!, alias[2]!) : "read";
-  }
-  // A desktop's or a phone's tool is its kind's key, as the browser's registrations are `browser`; one both kinds have
-  // (the hand-over) is named by the first, its permission the stricter of both (RunGate's setting).
-  const kind = KIND_TOOLS.get(name);
-  if (kind !== undefined) return kind[0];
-  // A CLI's own tool, the table's tool it is (its facts' nativeTools), by an own name only.
-  const nativeTools = builtinHarness(harness)?.facts?.nativeTools;
-  const native = nativeTools && Object.hasOwn(nativeTools, name) ? nativeTools[name] : undefined;
-  if (native) return native;
+/** A session's `{name -> settings key}` map (nameMapOf). */
+export type NameMap = ReadonlyMap<string, string>;
+
+/** Every name a session on `harness` (with MCP servers `mcpServers`) gives its tools, to the settings key each is held to:
+ *  the shell family (bash's), table, own and decision tools, read_skill_file (`read`, unless the harness's alias makes it a
+ *  configured server's tool), the kinds' tools (a shared one by its first kind), nativeTools, the browser's registrations;
+ *  each also as claude-agent's `mcp__hands__<name>`. The first named wins. */
+export function nameMapOf(harness: string, mcpServers: readonly string[] = []): NameMap {
+  const facts = builtinHarness(harness)?.facts;
+  const names = new Map<string, string>();
+  const name = (own: string, key: string): void => void (names.has(own) || names.set(own, key));
+  for (const [own, key] of Object.entries(SHELL_FAMILY)) name(own, key);
+  for (const own of [...tableTools(), ...SERVE_OWN_TOOLS, ...DECISION_PROVIDER_KEYS]) name(own, own);
+  const alias = facts?.toolAlias?.exec(READ_SKILL_FILE) ?? null;
+  name(READ_SKILL_FILE, alias && mcpServers.includes(alias[1]!) ? mcpToolName(alias[1]!, alias[2]!) : "read");
+  for (const [own, keys] of KIND_TOOLS) name(own, keys[0]!);
+  for (const [own, key] of Object.entries(facts?.nativeTools ?? {})) if (key) name(own, key);
+  for (const own of BROWSER_REGISTRATIONS) name(own, "browser");
+  for (const [own, key] of [...names]) name(`mcp__${HOST_TOOLS_SERVER}__${own}`, key);
+  return names;
+}
+
+/** The settings key a call named `name` on `harness` is held to: a lookup in the session's names (`names`), then the open
+ *  families no list holds (`monid.<tool>`, `mcp:<server>/<tool>`, `mcp__<server>__<tool>`, `monid_<kind>`, and a harness's
+ *  own `<server>_<tool>` for a server of `mcpServers` only). Undefined: nothing maps it, and the gate asks. */
+export function settingsKeyOf(harness: string, name: string, mcpServers: readonly string[] = [], names: NameMap = nameMapOf(harness, mcpServers)): string | undefined {
+  const own = names.get(name);
+  if (own !== undefined) return own;
+  if (isCatalogTool(name)) return name;
   const mcp = /^mcp__([a-z][a-z0-9-]*)__(.+)$/.exec(name);
-  if (mcp) return mcp[1] === HOST_TOOLS_SERVER ? settingsKeyOf(harness, mcp[2]!, mcpServers) : mcpToolName(mcp[1]!, mcp[2]!);
+  if (mcp) return mcp[1] === HOST_TOOLS_SERVER ? settingsKeyOf(harness, mcp[2]!, mcpServers, names) : mcpToolName(mcp[1]!, mcp[2]!);
   const monid = /^monid_([a-z]+)$/.exec(name);
   if (monid) return `monid.${monid[1]}`;
-  if (BROWSER_REGISTRATIONS.includes(name)) return "browser";
-  // A harness whose client names a session's MCP tool another way too (its facts' toolAlias: OpenCode's `<server>_<tool>`).
   const alias = builtinHarness(harness)?.facts?.toolAlias?.exec(name) ?? null;
   return alias && mcpServers.includes(alias[1]!) ? mcpToolName(alias[1]!, alias[2]!) : undefined;
 }
@@ -191,7 +198,7 @@ function bothOf(own: PinValue, theirs: PinValue): PinValue | undefined {
  *  its list. An argument both layers pin takes what holds both; where nothing does, every call is refused. `ran`: whether an earlier attempt of
  *  the call may have been sent (deniedText's). `mismatched`: the arguments that do not hold, for the gate's log line. */
 export function pinRefusal(name: string, args: unknown, server: PermissionSettings, agent: PermissionSettings = {}, ran: "no" | "unknown" = "no"): { text: string; mismatched: string[] } | undefined {
-  if (!isMcpTool(name)) return undefined;
+  if (!mcpNameOf(name)) return undefined;
   const what = ran === "no" ? NOT_RUN : RAN_UNKNOWN;
   if (server[name]?.brokenPin) return { text: `${name} can't be called: its pin in this server's tool settings does not read, so no call is let through until the owner sets it again (Settings → Tools). ${what}`, mismatched: [] };
   const own = agent[name]?.pin ?? {};
@@ -360,6 +367,9 @@ export function resumeHead(request: Pick<ApprovalRequest, "tool" | "call_id">, s
   const args = shown.length > 300 ? `${shown.slice(0, 299)}…` : shown;
   return `${RESUME_PREFIX}This answers your ${request.tool} call ${request.call_id} (arguments ${args}), which waited for a person's approval; it is not a new message from them.`;
 }
+/** The last line of a CLI's resume message (one, after every call it answers): the message arrives as a new turn, and a
+ *  model that reads only results there answers about the approval, not the person's request (Claude Code, live). */
+export const RESUME_GO_ON = "Go on with the person's request from where you stopped, using these results; don't call these tools again for them.";
 export function resumeText(request: Pick<ApprovalRequest, "tool" | "call_id">, shown: string, decision: "allow" | "deny", result: ToolAnswer): string {
   const head = resumeHead(request, shown);
   return decision === "allow" ? `${head} They allowed it, and it ran${result.isError ? " and failed" : ""}. Its result:\n${result.text}` : `${head}\n${result.text}`;
@@ -385,6 +395,7 @@ export class RunGate {
    *  `approvers`: whether anyone can answer an ask here (the owner's password session: accounts on); `approvals`: the
    *  pinned revision's (definition.approvals): "never" runs the agent unattended, an ask allowed (permissionFrom). */
   constructor(private readonly where: { root: string; work: string; runId: string; harness?: string; mcpServers?: readonly string[]; computer?: boolean }, private readonly readServerSettings: () => ToolSettingsRead, private readonly overrides: PermissionSettings = {}, private readonly approvers = true, private readonly approvals: Approvals = "ask") {}
+  private names?: NameMap;
 
   /** A tool's permission now (permissionOf): the revision's own over the server's setting, read at each call, so a change
    *  reaches a live run at its next call; under approvals "never", an ask is an allow. */
@@ -399,7 +410,7 @@ export class RunGate {
    *  the call is run again after an earlier attempt that may have been sent (a replay-safe call rerun after a crash), so a
    *  refusal says whether it took effect is not known, never that nothing was sent. */
   async decide(name: string, args: unknown, options: { readonly replayed?: boolean } = {}): Promise<"allow" | "ask" | { deny: string }> {
-    const key = settingsKeyOf(this.where.harness ?? DEFAULT_HARNESS, name, this.where.mcpServers) ?? name;
+    const key = this.keyOf(name) ?? name;
     const tool = this.askedAs(name);
     const ran = options.replayed ? "unknown" : "no";
     const verdict = this.policy(name);
@@ -412,22 +423,27 @@ export class RunGate {
     return this.approvers ? "ask" : { deny: noApproverText(tool, ran) };
   }
 
+  private keyOf(name: string): string | undefined {
+    const harness = this.where.harness ?? DEFAULT_HARNESS;
+    return settingsKeyOf(harness, name, this.where.mcpServers, (this.names ??= nameMapOf(harness, this.where.mcpServers)));
+  }
+
   /** The name a call is asked about by, as main's request names it (enter's `tool`): its settings key, a shell tool its
    *  own name; a name nothing maps, as it came. */
   askedAs(name: string): string {
-    return shellToolOf(name) ?? settingsKeyOf(this.where.harness ?? DEFAULT_HARNESS, name, this.where.mcpServers) ?? name;
+    return shellToolOf(name) ?? this.keyOf(name) ?? name;
   }
   /** Where the permission `policy` gives `tool` was set: the agent's own tool settings, the server's, or the default; or
    *  "unattended", an ask the agent's approvals allowed. */
   readonly denyFrom = (tool: string): SettingFrom => this.setting(tool).from;
   private setting(tool: string): { permission: Permission; from: SettingFrom } {
-    // A tool the desktop and the phone both have (the hand-over): the gate knows not the run's kind, so it is held to the
+    // A tool the desktop and the phone both have (every computer tool): the gate knows not the run's kind, so it is held to the
     // stricter of both keys' settings, never more permissive than the run's own kind's.
     const shared = KIND_TOOLS.get(tool.replace(/^mcp__hands__/, ""));
     if (shared && shared.length > 1) {
       return shared.map((key) => this.settingOf(tool, key)).reduce((strictest, one) => (STRICTNESS[one.permission] > STRICTNESS[strictest.permission] ? one : strictest));
     }
-    return this.settingOf(tool, settingsKeyOf(this.where.harness ?? DEFAULT_HARNESS, tool, this.where.mcpServers));
+    return this.settingOf(tool, this.keyOf(tool));
   }
 
   /** `tool`'s permission under its settings key `key`, and where it was set. */

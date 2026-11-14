@@ -1,6 +1,6 @@
 {
   "name": "@parcha/agentrun-computer-bench",
-  "version": "0.1.0-beta.35",
+  "version": "0.1.0-beta.37",
   "private": true,
   "description": "computer-bench: tasks as data, a generic runner, checks of the computer's real state through the computer protocol, one agentic grader, and reports per arm (harness, surface, model).",
   "type": "module",
@@ -34,8 +34,8 @@
     "ajv": "^8.18.0"
   },
   "devDependencies": {
-    "@parcha/agentrun-computer": "0.1.0-beta.35",
-    "@parcha/agentrun-serve": "0.1.0-beta.35"
+    "@parcha/agentrun-computer": "0.1.0-beta.37",
+    "@parcha/agentrun-serve": "0.1.0-beta.37"
   },
   "repository": {
     "type": "git",

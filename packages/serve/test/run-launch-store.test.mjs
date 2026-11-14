@@ -71,3 +71,24 @@ test("create is atomic: a run whose revision is unknown writes neither the run n
   assert.equal(await store.runs.get("run-5"), undefined);
   await assert.rejects(store.runs.launch("run-5"), (error) => error.name === "StoreLaunchMissing");
 });
+
+test("the sealed column is the run's for its life: a command or a reopen replaces it in its own write, the end erases it, a steer waiting at the end keeps it, and a final run takes neither", async () => {
+  const store = await freshStore();
+  const bytes = (n) => new Uint8Array([n, n, n]);
+  await store.runs.create({ id: "run-6", agentId: "a1", revisionId: "r1" }, { body: launchBody(sampleLaunch()), sealed: bytes(1) });
+  await store.command("run-6", { kind: "steer", body: { text: "more" } }, { launchSealed: bytes(2) });
+  assert.deepEqual((await store.runs.launch("run-6")).sealed, bytes(2), "replaced with the command");
+  let claim = await store.claim("run-6", "runner-a", { leaseMs: 60_000 });
+  // A steer still waiting when the run ends opens it again (refuseLeftovers): its credential stays for that turn.
+  await store.runs.update(claim, { state: "ended", outcome: "completed" });
+  assert.equal((await store.runs.get("run-6")).state, "running", "opened again by its waiting steer");
+  assert.deepEqual((await store.runs.launch("run-6")).sealed, bytes(2), "kept for the turn it opens");
+  claim = await store.claim("run-6", "runner-a", { leaseMs: 60_000 });
+  for (const command of await store.commands("run-6", 0)) await store.take(claim, command.id);
+  await store.runs.update(claim, { state: "ended", outcome: "completed" });
+  assert.equal((await store.runs.launch("run-6")).sealed, null, "erased by the write that ended it");
+  await assert.rejects(store.runs.launch("run-6").then(() => store.command("run-6", { kind: "cancel", body: {} }, { launchSealed: bytes(3) })), (error) => error.name === "RunFinal");
+  assert.equal((await store.runs.launch("run-6")).sealed, null, "a final run's refused command writes nothing");
+  await store.runs.reopen("run-6", { kind: "steer", body: { text: "again" } }, { launchSealed: bytes(4) });
+  assert.deepEqual((await store.runs.launch("run-6")).sealed, bytes(4), "a follow-up that opens it again hands its own");
+});

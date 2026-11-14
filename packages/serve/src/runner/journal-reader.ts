@@ -2,10 +2,10 @@
 // did, its tool calls and its messages, read the same way for every harness, so no harness grades itself. Two sources,
 // one output: a pi run's own records (its pi.tool tasks and its pi.user / pi.assistant entries), and a CLI run's
 // agentrun.* entries (runner/journal-kinds.ts). A run's stop reason is on its run row (its end commit's summary).
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { type MessageOrigin, originOf } from "../timeline/index.js";
 import type { ConversationId, ConversationRecord, EntryRecord, SubmissionRecord, TaskRecord } from "@earendil-works/pi-durable";
-import { reflectFrom } from "./end-of-run.js";
+import { inReflect, reflectRanges } from "./end-of-run.js";
 import { type CallEndData, type CallStartData, KINDS, type MessageData, type MessageRole, type SessionKeyData } from "./journal-kinds.js";
 // Reads only (JournalReads): a run's live journal (journal(claim)) and the server's read-only view (store.readJournal) both
 // satisfy it, so the same reader runs over either. A full Journal is assignable, so the runner's callers are unchanged.
@@ -26,14 +26,14 @@ export interface MessageRecord {
   readonly role: MessageRole;
   readonly text: string;
   readonly entry: number;
-  /** The end-of-run turn's (end-of-run.ts reflectFrom): its message and its answer, never the run's own. */
+  /** The end-of-run turn's (end-of-run.ts reflectRanges), any round's: its message and its answer, never the run's own. */
   readonly learning?: true;
   /** Who wrote a message the person did not type (a trigger's): the Timeline's attribution, as the message carries it. */
   readonly origin?: MessageOrigin;
 }
 
 /** What the reader reads: every entry and every task of the run, and its submissions (where its end-of-run turn began:
- *  end-of-run.ts reflectFrom). */
+ *  end-of-run.ts reflectRanges). */
 export interface JournalRecords {
   readonly entries: readonly EntryRecord[];
   readonly tasks: readonly TaskRecord<unknown, unknown, unknown>[];
@@ -58,19 +58,21 @@ async function scanAll<T>(scan: (cursor: unknown) => Promise<{ items: readonly T
 
 /** Every entry and task of the run: conversations in id order, each one's entries oldest first; tasks in id order. */
 export async function journalRecords(journal: JournalReads, context: Context): Promise<JournalRecords> {
-  const conversations = await scanAll<ConversationRecord>((cursor) => journal.scanConversations({ order: "ascending" } as never, PAGE, cursor as never, context));
-  const entries: EntryRecord[] = [];
-  for (const conversation of conversations) {
-    entries.push(...(await scanAll<EntryRecord>((cursor) => journal.scanEntries({ conversationId: conversation.id as ConversationId, order: "ascending" }, PAGE, cursor as never, context))));
-  }
+  const entries = await journalEntries(journal, context);
   const tasks = await scanAll<TaskRecord<unknown, unknown, unknown>>((cursor) => journal.scanTasks({ order: "ascending" } as never, PAGE, cursor as never, context) as never);
   const submissions = await scanAll<SubmissionRecord>((cursor) => journal.scanSubmissions({ order: "ascending" } as never, PAGE, cursor as never, context) as never);
   return { entries, tasks, submissions };
 }
 
-/** Every entry of the run (the CLI record and pi's entries alike). */
+/** Every entry of the run (the CLI record and pi's entries alike): its conversations and their entries, no task and no
+ *  submission read, for a reader of entries alone (an ask, an answer). */
 export async function journalEntries(journal: JournalReads, context: Context): Promise<EntryRecord[]> {
-  return [...(await journalRecords(journal, context)).entries];
+  const conversations = await scanAll<ConversationRecord>((cursor) => journal.scanConversations({ order: "ascending" } as never, PAGE, cursor as never, context));
+  const entries: EntryRecord[] = [];
+  for (const conversation of conversations) {
+    entries.push(...(await scanAll<EntryRecord>((cursor) => journal.scanEntries({ conversationId: conversation.id as ConversationId, order: "ascending" }, PAGE, cursor as never, context))));
+  }
+  return entries;
 }
 
 const entryNumber = (entry: EntryRecord): number => Number(entry.id);
@@ -146,8 +148,8 @@ export function messagesOf(from: readonly EntryRecord[] | JournalRecords): Messa
   const out: MessageRecord[] = [];
   const records = asRecords(from);
   // The end-of-run turn's, from the entry its input placed on (the reader's tag, as the server's labelled() reads it).
-  const from_ = reflectFrom(records.submissions ?? [], records.entries);
-  const turn = (entry: number) => (from_ !== undefined && entry >= from_ ? { learning: true as const } : {});
+  const ranges = reflectRanges(records.submissions ?? [], records.entries);
+  const turn = (entry: number) => (inReflect(ranges, entry) ? { learning: true as const } : {});
   for (const entry of recordOf(records.entries)) {
     const at = entryNumber(entry);
     if (entry.kind === KINDS.message) {

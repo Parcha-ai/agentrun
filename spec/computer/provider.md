@@ -13,8 +13,15 @@ Every call answers `{ ok: true, value }` or `{ ok: false, error: { code, message
 such as a refusal, a computer that is gone or a vendor that said no, is a result, never a throw.
 - `message` is words a person can act on. It never holds a key, a token, a secret, or a URL that is a bearer.
 - `code` is what a caller acts on: `gone`, `refused`, `timeout`, `aborted`, `not_found`, `invalid`, `unsupported`,
-  `denied`, `limit`, `exists`, `not_dir`, `is_dir`, and from `testConnection`, `unauthorized` (the vendor refused the
-  key) and `unreachable` (the vendor was not reached).
+  `denied`, `limit`, `exists`, `not_dir`, `is_dir`, `stale`, and from `testConnection`, `unauthorized` (the vendor
+  refused the key) and `unreachable` (the vendor was not reached). The set is closed (`ComputerErrorCode`): a provider
+  never adds one, and `vendor` (below) is the only kind open to a vendor's own failures.
+- Three are easy to mix up, and each means one thing:
+  - `invalid`: the request is malformed whatever the provider: its shape, a value out of range, an unknown field.
+  - `unsupported`: the provider or driver has no such call or feature at all: `release(stop)` where stop is not
+    declared, `ui.nav` on a desktop.
+  - `refused`: the call exists, and this value or state is not one it serves: a network, kind, image or GPU it does
+    not declare, or a network change after create on a remote computer.
 - `vendor` is the code for a failure the vendor answered with (its API, its CLI, its device). The error's `vendor` field
   then names which vendor: its descriptor's id (`daytona`, `phone-harness`, ...). One code serves every vendor, so a new
   vendor never edits the error type. An error passed up in new words keeps its code, and with code `vendor`, its vendor.
@@ -28,10 +35,10 @@ such as a refusal, a computer that is gone or a vendor that said no, is a result
 | `id`, `version` | The provider's id (its registry name) and its own version. A computer whose daemon reports another version is never handed out. |
 | `capabilities()` | What its computers are and can do, before any is made (below). |
 | `check(spec)` | Every way a spec is beyond what it declares, in words, field by field, with no vendor call. `create` refuses the same. |
-| `create(spec)` | Makes one computer for `spec`, with a deadline, and answers its ref. The lifetime is required: a computer with no deadline is refused. |
+| `create(spec, { requestId })` | Makes one computer for `spec`, with a deadline, and answers its ref. The lifetime is required: a computer with no deadline is refused. Once per request id ([below](#idempotent-create)). |
 | `attach(ref)` | Finds one computer this provider made, by id or by labels, with its spec read back from the vendor. None or several is an error in words. |
 | `list(labels)` | Every computer this provider made that carries all of these labels: the janitor's view. |
-| `network(ref, policy?)` | Reads the network back; with a policy, sets it, or refuses in words. Never wider than asked. |
+| `network(ref, policy?)` | Reads the network back; with a policy, sets it, or refuses in words. Never wider than asked. A remote computer's network is fixed at create: a change is refused `refused`, and asking for the network it has answers ok. |
 | `connect(ref)` | A connection to the computer, after `hello`. It refuses a `hello` whose protocol, version, kind or groups differ from what it declared. |
 | `release(ref, how)` | `delete`, or `stop` where declared; an undeclared `stop` is refused in words, with the computer left as it was. Idempotent: a computer already gone is ok. |
 | `extend?` | Moves the deadline later, never earlier, and never past the provider's cap counted from create. |
@@ -49,6 +56,38 @@ A computer's spec (`ComputerSpec`):
 - `mount`: the run's folder, mounted at `/workspace`, of a kind the provider declares;
 - `owner` (**draft**): `{ agent }`, the agent a computer that keeps its state belongs to, so a later run of that agent
   finds it again and no other agent does.
+
+## Idempotent create
+
+`create`'s context carries a required `requestId` (`CreateContext`). It names the request, not the computer, so a
+retry of one request (a timeout, a crash between the vendor's answer and ours) makes no second computer. There is no
+fallback that makes one up: serve passes the run's claim (`<run>#<epoch>`), and conformance one per create.
+
+- The computer's vendor-side name is `computer-<the first 12 hex of sha256(requestId)>` (`computerNameFor`), with no
+  extra label, so a provider finds the request's computer by listing that name.
+- The same id while that computer is still starting is the same create: it waits as a fresh create does, within the
+  same bounds, and answers it once it is up; one that reaches its deadline first is refused `exists`.
+- The same id while it is up answers it once it is the computer the spec asks for, as far as the vendor reads it back
+  (Docker: every field its drift check reads, the network and the mount among them; a phone: its labels and image); one
+  that differs is refused `exists`. A retry never gets a wider network, another folder or another user than it asked.
+  A size (`cpus`, `memoryMb`) is compared only where the vendor reads one back; on a vendor that reads none back
+  (Modal), a retry asking another size after a restart answers the request's computer as it was made.
+  The GPUs are compared likewise: where the vendor reads them back (Daytona), a retry asking a GPU finds a computer
+  made without one, or the other way round, refused `exists`; on Modal, which reads none back, it answers the computer.
+- The same id after it stopped, ended or passed its deadline is refused `exists`, in words: "computer-… was made for
+  this request and has ended: create with a new request id". Never a second computer under the same name.
+- A second create of a request still in flight in the same provider waits for the first and answers what it does; one
+  asking another spec (any field but `lifetimeMs`, which each create counts from its own start) is refused `exists`.
+  The provider remembers the requests whose computers it ended, so the same id is refused even once the vendor forgets
+  the computer; past the process, what the vendor (or the provider's ledger) still shows is what holds.
+
+Every provider that makes computers keeps it through one mechanism, `CreateRequests` (`src/create-requests.ts`): the id checked, the name,
+the creates in flight and the requests ended. What the vendor holds under the name is the provider's to read: the
+hosted adapter lists the name, Docker's `docker run --name` finds the name taken and reads that container, and the
+phone harness reads its ledger by name and sends a key derived from the id as the `Idempotency-Key`.
+
+`provider.create-retried` creates twice with one id and expects one computer; `provider.create-after-release` releases
+it and expects the same id refused `exists`. Both are Full.
 
 ## capabilities()
 
@@ -108,6 +147,34 @@ The conformance case `health.declared` holds `capabilities()` to the declaration
 merges, `PROVIDERS` in `packages/computer/src/kinds.ts` is kept by hand and each module exports its own `CAPABILITIES`
 and `MOUNT`; the suite reads `PROVIDERS` either way. After that, the contract types move to a zero-dependency package,
 `@parcha/agentrun-computer-protocol` (**draft**), and this spec is generated from there.
+
+## A hosted vendor's exec
+
+A vendor on the shared machine-host adapter writes a `MachineHost` (`packages/computer/src/host.ts`), and its `exec` is
+the whole protocol: the adapter installs and starts `computerd` through it, then runs `computerd stdio` through it and
+talks to the daemon over that one process's stdin and stdout for the computer's whole life ([`stdio.md`](stdio.md)).
+`exec(id, argv, { stdin })` must give a process that is:
+
+- **Two-way and live.** Each `write()` reaches the process's stdin as it is written, and stdout and stderr bytes come
+  back as the process writes them, while it runs. Not request and response, and never held until the process exits.
+- **Byte-exact.** Every byte value 0-255, both ways: no UTF-8 decode or encode, no newline translation, no terminal,
+  nothing added or dropped.
+- **Without a timeout.** The process runs until it exits or `kill()` ends it. The vendor's command timeout, and any idle
+  timeout on the stream, are off.
+- **Apart and accountable.** stdout and stderr stay separate, `wait()` answers the process's own exit code, and `kill()`
+  ends the process itself, not only the streams.
+
+The exec pre-check checks each of these with `exec` alone, on a machine made by hand, before anything else of the host
+is written:
+
+```sh
+npm run conformance -w @parcha/agentrun-computer -- --provider <id | ./module.js> --exec-stream --machine <id>
+```
+
+It builds the host with the module's `createHost(options)`, sends all 256 byte values each way and 8 MiB of random
+bytes (compared by sha256), checks output and stdin while the process runs, stderr apart, `sh -c 'exit 7'`, a killed
+`sleep`, and a silent process of 75 s (`--quick`: 5 s). Each failure says what the exec did wrong, such as "byte 0x80
+came back on stdout as ef bf bd: your exec decodes UTF-8". It exits 0 when every check passes and 1 when one fails.
 
 ## A new vendor
 

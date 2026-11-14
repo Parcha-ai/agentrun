@@ -16,7 +16,7 @@ import { defineDocFamily, defineExtension, defineTask } from "@earendil-works/pi
 import type { Extension, Harness, SettledTask, TaskId, TaskRecord, TaskRuntime, Tx } from "@earendil-works/pi-durable";
 import { runWorkflow, type Workflow, type WorkflowDeps } from "@parcha/agentrun-dsl";
 import { bindingDigests, bindingMismatch, canonicalHash, isRecoveryError, openRecovery, recoveryBound, RecoveryError, withRecovery, type EscalationRow, type RecoveryAdapters, type RecoveryDriver, type RecoveryOptions } from "@parcha/agentrun-dsl/recovery";
-import { storageError } from "./pi-versions.js";
+import { durableWait, storageError } from "./pi-versions.js";
 import { documentStore, type DocumentStoreHost } from "./store.js";
 
 type Context = Parameters<Harness["commit"]>[1];
@@ -343,7 +343,8 @@ export function createWorkflowExtension(host: WorkflowTaskHost): {
       const failure = uncommittedOf(key, taskId);
       failure.waits += 1;
       try {
-        const settled = await Promise.race([harness.waitForTask(taskId, context), failure.promise]);
+        // Never on the caller's signal (durableWait): an abort while it registers rejects this wait, never one unhandled.
+        const settled = await Promise.race([durableWait((at) => harness.waitForTask(taskId, at), context), failure.promise]);
         return (await outcomeOf(harness, settled, key, context))!;
       } catch (error) {
         // A Session that failed at a storage error rejects its waits with `SessionFailed` (pi-durable 1.2): the

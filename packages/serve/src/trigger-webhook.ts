@@ -6,7 +6,7 @@
 import { MIN_KEY_BYTES } from "./standard-webhooks.js";
 import { ACCEPT_SCHEMA, acceptOf, acceptRefusal, type Rule } from "./trigger-accept.js";
 import { closedSchema, type Source, type TriggerAdapter, unknownSourceFields } from "./trigger-adapter.js";
-import { DEFAULT_SCHEME, SCHEME_NAMES, SIGNATURE_SCHEMES, schemeOf } from "./trigger-signatures.js";
+import { DEFAULT_SCHEME, SCHEME_NAMES, SIGNATURE_SCHEMES, type Scheme, type SchemeName, schemeOf } from "./trigger-signatures.js";
 import { isObject } from "./validate.js";
 
 /** The longest of a sender's words a payload's attrs keep (its event, its action). */
@@ -14,6 +14,9 @@ const ATTR_CHARS = 200;
 
 /** The scheme a trigger's source takes. */
 const schemeName = (source: Source): string => (typeof source.signature === "string" ? source.signature : DEFAULT_SCHEME);
+
+/** Whether a source's secret is the sender's own (Composio's): given, not minted. */
+const givesSecret = (source: Source): boolean => (SIGNATURE_SCHEMES[schemeName(source) as SchemeName] as Scheme | undefined)?.givenSecret === true;
 
 /** The source's own fields, checked: each issue through `bad`. Undefined when one does not read. */
 function fieldsOf(value: Record<string, unknown>, bad: (field: string, reason: string, message: string) => void): Source | undefined {
@@ -41,6 +44,7 @@ export const webhook: TriggerAdapter = {
   delivery: "push",
   owner: false,
   settings: { scope: "trigger", fields: { secret: { mint: true, minBytes: MIN_KEY_BYTES } } },
+  givesSecret,
   describe: `{kind: "webhook", signature?: ${SCHEME_NAMES.map((name) => `"${name}"`).join(" | ")}, accept?: [{event, actions?, where?}]}`,
   fires: "a signed request to /hooks/{trigger_id} (`webhook`) that its `accept` takes",
   firedBy: "`webhook`: a signed request to /hooks/{trigger_id}, its key from the trigger and what the request's signature covers: its `webhook-id` (`standard`), or the SHA-256 of its body (`github`).",
@@ -67,7 +71,7 @@ export const webhook: TriggerAdapter = {
       return "refusal" in asked ? asked.refusal : asked.scheme.precheck(headers, nowMs);
     },
     verify(key, headers, body, nowMs, source) {
-      const asked = schemeOf(headers);
+      const asked = schemeOf(headers, source && schemeName(source));
       if ("refusal" in asked) return asked.refusal;
       const refusal = asked.scheme.verify(key, headers, body, nowMs);
       // The trigger's scheme is checked after the signature, so a request of another scheme costs what any refusal does.
@@ -76,7 +80,7 @@ export const webhook: TriggerAdapter = {
     // The request is the firing: its scheme's firing key keys it, and its body, whatever it holds, is what the run is
     // given, with its scheme, event, action and unsigned delivery id named on the payload's tag. A trigger with `accept` takes only the events it names.
     parse(headers, body, source) {
-      const asked = schemeOf(headers);
+      const asked = schemeOf(headers, source && schemeName(source));
       if ("refusal" in asked) return [];
       const text = body.toString("utf8");
       const doc = jsonOf(text);

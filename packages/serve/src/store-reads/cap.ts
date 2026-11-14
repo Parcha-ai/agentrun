@@ -1,7 +1,7 @@
 // A run's spend over the one store (design 2.1): the cap's reading from A's journal, where each run's own database was
 // read before. The same computation — cap.ts spentFrom, unchanged — over the same entries in log order; only where the
 // entries come from changes, so no money behaviour differs (the money-parity rule). A run with no journal spends 0.
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { type Meters, meterFiguresFrom, spentFrom } from "../cap.js";
 import type { Store } from "../store/store.js";
 import { bookedCapSpend, bookedSpend, cliModelWorked, costIsBooked } from "../runner/metrics.js";
@@ -22,7 +22,13 @@ export async function spentOverStore(store: Store, runId: string, context: Conte
   // A pi run's paid tool calls (a browser's time, a search, a monid call) are booked on the run's one ledger, not its root:
   // folded back as the charges the file-backed root held (withPaidCosts), as metersOverStore reads them, so a live run's
   // listed spend counts them.
-  return spentFrom(withPaidCosts(entries));
+  const spent = spentFrom(withPaidCosts(entries));
+  // Its learned workflow's decisions (LS-07), booked in their own session: at what each charged, as the run's end reads
+  // them (metrics.ts bookedSpend, "decisions"), so a running or paused run lists them, and one that reported no cost leaves
+  // the listed spend unknown, never the hold the cap counts for it.
+  const decisions = bookedSpend(entries, "decisions");
+  if (!decisions.requests) return spent;
+  return spent === null || decisions.usd === null ? null : spent + decisions.usd;
 }
 
 /** /usage's meters for a run that ended, over the one store's journal (design 2.1): cap.ts meterFiguresFrom over A's

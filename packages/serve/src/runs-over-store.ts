@@ -19,9 +19,11 @@ import { computerOfPlace, settingOfDefinition } from "./computer-setting.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
 import { harnessOfBody } from "./harness.js";
 import { redacted, redactedOutput } from "./key-refusal.js";
-import { chooseWorkflows, LEARNING_BUDGET, learnedParts, type LearningMode, learnsOf, type NoteUsed, type Seed, type Shown } from "./learning.js";
+import { chooseWorkflows, LEARNING_BUDGET, learnedParts, type LearningMode, learnsOf, type NoteUsed, RUN_LEARNING_USE, type Seed, type Shown } from "./learning.js";
 import { thinkingLevel } from "./model.js";
 import { type Place, resolvePlace } from "./place.js";
+import { githubTargetOf } from "./github.js";
+import { type RepoBinding, repoOf } from "./run-repo.js";
 import { type LaunchDisk, launchBody, type RunLaunch, type SeedFailed } from "./run-launch.js";
 import { type ApprovalDecision, raiseFollowUpId, type RunMoment } from "./run-view.js";
 import { sendCommand } from "./runner/commands.js";
@@ -152,7 +154,7 @@ export async function message(
   store: RunsStore,
   moment: RunMoment,
   content: string,
-  { requestId, answers = true, origin, queue }: { requestId?: string; answers?: boolean; origin?: unknown; queue?: (command: SteerCommand) => Promise<{ skipped: string } | void> } = {},
+  { requestId, answers = true, origin, queue, launchSealed, beforeSubmit }: { requestId?: string; answers?: boolean; origin?: unknown; queue?: (command: SteerCommand) => Promise<{ skipped: string } | void>; launchSealed?: Uint8Array; beforeSubmit?: (runId: string, content: string) => Promise<void> | void } = {},
 ): Promise<{ mode: MessageMode; messageId: string; skipped?: string }> {
   if (moment.importedSource !== undefined) throw importedRefusal(moment);
   // Archiving closes a run: it, or a run of its archived agent, takes no message, said as archived (never as finished).
@@ -169,7 +171,7 @@ export async function message(
   // approval): the message is then a message like any other, below.
   if (answers && moment.kind === "agentic" && moment.waitingApprovalId !== undefined) {
     const messageId = newMessageId();
-    const declined = await sendCommand(store, moment.id, { kind: "deny", body: { approval: moment.waitingApprovalId, note: content, by: "message" } }).then(
+    const declined = await sendCommand(store, moment.id, { kind: "deny", body: { approval: moment.waitingApprovalId, note: content, by: "message" } }, launchSealed ? { launchSealed } : undefined).then(
       () => true,
       (error: unknown) => {
         if (error instanceof AnswerTaken) return false;
@@ -190,11 +192,13 @@ export async function message(
   if (mode === "answer" && !answers) throw waitingRefusal();
   const messageId = requestId ?? newMessageId();
   const body: Record<string, unknown> = { text: content, ...(answers ? {} : { answers: false }), ...(origin !== undefined ? { origin } : {}) };
+  // A test's seam (ServeOptions.beforeSubmit): every check above read `moment`; the write below is the run's door.
+  await beforeSubmit?.(moment.id, content);
   if (queue) {
     const queued = await queue({ kind: "steer", body });
     return { mode, messageId, ...(queued ? { skipped: queued.skipped } : {}) };
   }
-  await steerOrReopen(store, moment, { kind: "steer", body });
+  await steerOrReopen(store, moment, { kind: "steer", body }, launchSealed);
   return { mode, messageId };
 }
 
@@ -205,19 +209,21 @@ export type SteerCommand = { kind: "steer"; body: Record<string, unknown> };
  *  through runs.reopen, which opens the run again with the steer in one transaction when the store says it may
  *  (reopenableWhere: an agentic run that completed, or that a person stopped, as the console offers a follow-up to both).
  *  Any other (cancelled, failed, a workflow's, an imported or a learning run) answers 409 finished, nothing written. */
-async function steerOrReopen(store: RunsStore, moment: RunMoment, command: SteerCommand): Promise<void> {
+async function steerOrReopen(store: RunsStore, moment: RunMoment, command: SteerCommand, launchSealed?: Uint8Array): Promise<void> {
+  // The message's launch secrets (its mcp_auth, sealed) ride in the same write as its steer, whichever door takes it.
+  const sealed = launchSealed ? { launchSealed } : undefined;
   try {
-    await sendCommand(store, moment.id, command);
+    await sendCommand(store, moment.id, command, sealed);
   } catch (error) {
     if (!(error instanceof RunFinal)) throw error;
     try {
-      await store.runs.reopen(moment.id, command);
+      await store.runs.reopen(moment.id, command, sealed);
     } catch (again) {
       if (!(again instanceof RunFinal)) throw again;
       // Refused: another message may have opened the run again meanwhile, so the steer is sent once more, to the run now
       // running. Refused that too, the run takes no message.
       try {
-        await sendCommand(store, moment.id, command);
+        await sendCommand(store, moment.id, command, sealed);
       } catch (last) {
         if (!(last instanceof RunFinal)) throw last;
         // Worded by the run's end as the store holds it now: the moment may have been read before that end (a race).
@@ -433,6 +439,9 @@ export interface StartDeps {
   /** The model the server names to grade what a run proposes (learning.ts gradeModelOf), put on each learning start; none,
    *  the agent's own grades it. */
   readonly gradeModel?: string;
+  /** What the agent's GitHub triggers bind it to (run-repo.ts bindingOf), read when a person's start names or defaults a
+   *  repository. Absent: the agent is bound to none. */
+  boundRepos?(agentId: string): Promise<RepoBinding>;
   /** The host's secrets as they are shown now (learning-run.ts shown), for cutting the notes a run is given. */
   shown?(): Shown;
 }
@@ -441,6 +450,8 @@ export interface StartDeps {
  *  it must have a cap (a trigger's), and who its first message is from when the person did not write it. */
 export interface StartOptions {
   readonly trigger?: RunTrigger;
+  /** The run's launch secrets, sealed for its id once it has one (the create body's mcp_auth, server.ts). */
+  readonly sealed?: (runId: string) => Uint8Array;
   /** The run's title when its starter names one (a trigger's: "<Source> <name>"), else it is made from its input. */
   readonly title?: string;
   readonly origin?: RunOrigin;
@@ -455,13 +466,16 @@ const noShown: Shown = { text: (text) => text, name: (name) => name, holds: () =
  *  server's learning off, a workflow revision, or its revision does not say learning), else the notes its # Learned section
  *  names and the # Learned text (learnedParts, the one decision the runner puts in the prompt), the seed sha it starts
  *  from and the count of all the seed's notes before the budget picked `given` (seedNotes) — or given empty, seed null and no
- *  seedNotes when its seed cannot be read (a learning fault never refuses a run). */
-async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Revision, rbody: StartBody, input: unknown): Promise<{ given: NoteUsed[]; seed: string | null; section: string; seedNotes?: number; skills?: string[]; workflows?: string[]; notesOnly?: true; gradeModel?: string; seedFailed?: SeedFailed } | undefined> {
-  const learns = deps.learning !== undefined && deps.learning !== "off" && revision.kind === "agentic" && learnsOf(rbody.learning);
+ *  seedNotes when its seed cannot be read (a learning fault never refuses a run). `use`: the run's start said `learning:
+ *  "use"`, so it starts from what its agent learned, its revision's own learning aside, and keeps nothing. */
+async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Revision, rbody: StartBody, input: unknown, use: boolean): Promise<{ given: NoteUsed[]; seed: string | null; section: string; seedNotes?: number; notesLeftOut?: string[]; skills?: string[]; workflows?: string[]; notesOnly?: true; gradeModel?: string; seedFailed?: SeedFailed; use?: true } | undefined> {
+  // A run started with `learning: "use"` starts from what its agent learned whatever its revision says, and keeps nothing
+  // (no grade model: nothing is graded); the server's learning off still gives it nothing.
+  const learns = deps.learning !== undefined && deps.learning !== "off" && revision.kind === "agentic" && (learnsOf(rbody.learning) || use);
   // `learning: "notes"`: its notes and skills, never a learned workflow (none offered, none asked for at its end).
   const notesOnly = rbody.learning === "notes" ? { notesOnly: true as const } : {};
   if (!learns || !deps.seedFor) return undefined;
-  const grade = deps.gradeModel ? { gradeModel: deps.gradeModel } : {};
+  const grade = use ? { use: true as const } : deps.gradeModel ? { gradeModel: deps.gradeModel } : {};
   const seeded = await deps.seedFor(entry.agent.id);
   // The folder could not be read (main's STOPPED.unreadable), or what it read could not be made into the start (main's
   // copy that threw, STOPPED.notCopied): the run starts with nothing learned, and its learning end says which.
@@ -472,7 +486,9 @@ async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Re
     // The notes and the # Learned text are the old start's one decision (learnedParts: one choice of the note selector), so
     // the runner lays exactly this section for exactly these notes and reads no learning folder. seedNotes is the whole
     // seed's note count, before the budget narrowed `given` (as the old seed_notes was).
-    const { section, given } = learnedParts(seeded.seed, options);
+    const { section, given, left } = learnedParts(seeded.seed, options);
+    // The notes the section names in no way, over the budget: the claim says them in the run's log (learning-seed.ts).
+    const notesLeftOut = left.map((note) => options.shown.name(note.file));
     // The learned skills the seed offers the run, by name: each with its files (one over a run's skill budget at all is held
     // by its size and never laid) and no host secret in it, as chooseSkills leaves them out. The claim lays them; the
     // end-of-run turn counts the runs each served (runner/learning-end.ts draftForOf).
@@ -480,7 +496,7 @@ async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Re
     // The learned workflows its learned_workflow tool runs, by name, as the claim chooses them (chooseWorkflows): what the
     // agent's impact counts a run as started from, beside its notes and skills.
     const workflows = notesOnly.notesOnly ? [] : chooseWorkflows(seeded.seed, options.shown).flows.map(({ name }) => name);
-    return { given: given.map(({ file, name }) => ({ file, name })), seed: seeded.seed.sha, section: section ?? "", seedNotes: Object.keys(seeded.seed.notes).length, ...(skills.length ? { skills } : {}), ...(workflows.length ? { workflows } : {}), ...notesOnly, ...grade };
+    return { given: given.map(({ file, name }) => ({ file, name })), seed: seeded.seed.sha, section: section ?? "", seedNotes: Object.keys(seeded.seed.notes).length, ...(notesLeftOut.length ? { notesLeftOut } : {}), ...(skills.length ? { skills } : {}), ...(workflows.length ? { workflows } : {}), ...notesOnly, ...grade };
   } catch {
     return { given: [], seed: null, section: "", seedFailed: "not_copied", ...notesOnly, ...grade };
   }
@@ -491,11 +507,11 @@ async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Re
  *  (store.runs.create), which a runner reads at its claim. No process, no door, no setup file: where the run runs is the
  *  runner's. Under `origin`, a key that already started a run gets that run (the store's one-run-per-key), so a retry never
  *  starts a second. */
-export async function startRun(store: Pick<Store, "runs" | "runOfOrigin">, deps: StartDeps, entry: AgentEntry, body: Json, { trigger, origin, capped = false, from, title }: StartOptions = {}): Promise<RunRow> {
+export async function startRun(store: Pick<Store, "runs" | "runOfOrigin">, deps: StartDeps, entry: AgentEntry, body: Json, { trigger, origin, capped = false, from, title, sealed }: StartOptions = {}): Promise<RunRow> {
   const { launch, revision } = await prepareLaunch(deps, entry, body, { ...(trigger ? { trigger } : {}), capped, ...(from ? { from } : {}), ...(title !== undefined ? { title } : {}) });
   const runId = (deps.newRunId ?? uuidv7)();
   try {
-    return await withHeldFiles(deps, runId, launch, () => store.runs.create({ id: runId, agentId: entry.agent.id, revisionId: revision.id, ...(origin ? { origin } : {}) }, { body: launchBody(launch) }));
+    return await withHeldFiles(deps, runId, launch, () => store.runs.create({ id: runId, agentId: entry.agent.id, revisionId: revision.id, ...(origin ? { origin } : {}) }, { body: launchBody(launch), ...(sealed ? { sealed: sealed(runId) } : {}) }));
   } catch (error) {
     // Only another writer of the store got here first under the same origin key: its run is the one asked for.
     if (origin && error instanceof StoreConstraint) {
@@ -538,7 +554,7 @@ export interface InlineAgent {
  *  agent already mapped to the reference is the run's (its id, its learning), so a run of a later version learns from the
  *  earlier ones. A different definition under a version already run is 409 external_body_conflict, nothing written; under
  *  `origin`, a key that already started a run gets that run, as startRun's. */
-export async function startInline(store: Pick<Store, "runs" | "runOfOrigin" | "agents">, deps: StartDeps, inline: InlineAgent, body: Json, { origin }: { origin?: RunOrigin } = {}): Promise<RunRow> {
+export async function startInline(store: Pick<Store, "runs" | "runOfOrigin" | "agents">, deps: StartDeps, inline: InlineAgent, body: Json, { origin, sealed }: Pick<StartOptions, "origin" | "sealed"> = {}): Promise<RunRow> {
   const { external, revision } = inline;
   const ref = externalKey(external);
   const mapped = await store.agents.byExternal(ref);
@@ -562,7 +578,7 @@ export async function startInline(store: Pick<Store, "runs" | "runOfOrigin" | "a
       agent: { id: entry.agent.id, name: inline.name, description: inline.description, ref },
       revision: { id: revision.id, version: external.version, kind: revision.kind, body: revision.body, skills: revision.skills, ...(revision.note !== undefined ? { note: revision.note } : {}) },
       run: { id: runId, ...(origin ? { origin } : {}) },
-      launch: { body: launchBody(launch) },
+      launch: { body: launchBody(launch), ...(sealed ? { sealed: sealed(runId) } : {}) },
     }));
   } catch (error) {
     if (error instanceof ExternalBodyConflict) {
@@ -634,7 +650,7 @@ export async function prepareLaunch(deps: StartDeps, entry: AgentEntry, body: Js
   // learning is on and its revision says so; then its seed is read now and the notes its # Learned section names (learnedParts,
   // the one decision) are pinned in the launch for the runner to put in the prompt. A seed that cannot be read starts it with
   // nothing (given empty, seed null); the end state is the runner's.
-  const learning = await learningStartFor(deps, entry, revision, rbody, input);
+  const learning = await learningStartFor(deps, entry, revision, rbody, input, body.learning === RUN_LEARNING_USE);
   // The run's Archil disk, chosen now and kept in its launch (run-launch.ts archilDisk): the one the body names (a disk per
   // customer), else its agent's when it has one; with neither, its claim makes the agent's.
   const named = isObject(body.archil_disk) && typeof body.archil_disk.disk_id === "string" ? body.archil_disk.disk_id : undefined;
@@ -644,8 +660,15 @@ export async function prepareLaunch(deps: StartDeps, entry: AgentEntry, body: Js
   // else none). Nothing set: none, so the run gets no effort note and its harness's own default. Kept in its launch, so
   // its harness's thinking, its guidance and its metrics all read the one value.
   const effort = typeof body.effort === "string" ? body.effort : (thinkingLevel(rbody.thinking) ?? thinkingLevel(deps.planeEnv().AGENT_THINKING));
+  // The repository a person's run reaches (run-repo.ts): the one the body names when the agent is bound to it, else the
+  // agent's one repository when the first message names none. A trigger's run takes its repository from its event.
+  const namedRepo = typeof body.repo === "string" ? body.repo : undefined;
+  if (trigger && namedRepo !== undefined) throw invalid([{ field: "repo", reason: "not_allowed", message: "A run a trigger starts takes its repository from the event that fired it.", fix: "Remove repo." }]);
+  const picked = trigger ? {} : repoOf(await (deps.boundRepos?.(entry.agent.id) ?? { repos: [], open: false }), namedRepo, githubTargetOf(typeof input.content === "string" ? input.content : undefined) !== undefined);
+  if (picked.refused) throw invalid([{ field: "repo", reason: "not_allowed", message: picked.refused }]);
   const launch: RunLaunch = {
     input,
+    ...(picked.repo !== undefined ? { repo: picked.repo } : {}),
     title: clip(redacted(title.trim().replace(/\s+/g, " "), deps.serverSecrets()), 80),
     place,
     harness: harnessOfBody(revision.body),

@@ -10,12 +10,11 @@ import { tmpdir } from "node:os";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { startServe } from "../dist/index.js";
 import { openapiDocument } from "../dist/openapi.js";
 import { SECRET_NAMES } from "../dist/secrets.js";
 import { sealColumn, sealedAt } from "../dist/store/index.js";
 import { DatabaseSync } from "node:sqlite";
-import { client, FAUX, scratch, serve, storeBytes, withEnv } from "./support.mjs";
+import { client, FAUX, scratch, serve, startServe, storeBytes, withEnv } from "./support.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 
 const TOOLS = ["add", "slow_write", "delete_thing", "paid"];
@@ -53,7 +52,8 @@ async function plain(t, answer) {
 /** A server on `data` that a test closes before starting another on it, and that is closed after the test whatever
  *  happens. */
 async function started(t, data) {
-  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  // A local install, as its operator says: its fake MCP servers are on loopback.
+  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", mcpLoopback: true });
   let closed;
   const close = () => (closed ??= server.close());
   t.after(close);
@@ -120,7 +120,7 @@ test("preview agrees the protocol with a 2026-07-28 server and with a 2025 one, 
   assert.ok(legacy.log.some((entry) => entry.method === "initialize"), "the 2025 server was met with initialize");
   assert.deepEqual((await api("GET", "/settings/mcp-servers")).body, { servers: [] }, "a preview stores nothing");
   const caps = (await api("GET", "/capabilities")).body;
-  assert.deepEqual(caps.features.mcp_client, { transports: ["streamable-http"], auth: ["none", "bearer", "headers", "oauth", "github_app"], at_rest: "sealed", harnesses: ["pi", "claude-agent", "codex"] });
+  assert.deepEqual(caps.features.mcp_client, { transports: ["streamable-http"], auth: ["none", "bearer", "headers", "oauth", "github_app", "per_run"], at_rest: "sealed", harnesses: ["pi", "claude-agent", "codex"] });
 });
 
 test("preview tells a server that wants a credential (bearer or OAuth), one that is not MCP, one that is down, and one that redirects apart", async (t) => {
@@ -212,7 +212,8 @@ test("PUT seals the credential: reads say `sealed` and never hold it, nor does t
   assert.equal(one.status, 200);
   assert.equal(one.body.credential, "sealed");
   const all = await api("GET", "/settings/mcp-servers");
-  assert.deepEqual(all.body.servers.map((s) => [s.name, s.url, s.credential]), [["fake", server.url, "sealed"]]);
+  // Its URL shown as its origin, the path and query held (shownUrl).
+  assert.deepEqual(all.body.servers.map((s) => [s.name, s.url, s.credential]), [["fake", `${new URL(server.url).origin}/…`, "sealed"]]);
   holdsNone(JSON.stringify([saved.body, one.body, all.body]), token, "a read");
 
   // Sealed at rest: no store byte (the DB and its WAL/shm) holds the credential in the clear. How it is sealed in its row,

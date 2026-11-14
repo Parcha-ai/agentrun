@@ -17,6 +17,8 @@ export interface ProviderKey {
   readonly name: string;
   readonly option: string;
   readonly required: boolean;
+  /** A person picks its value from the vendor's list (keyChoices), not types it. */
+  readonly picked?: boolean;
 }
 
 /** A setting that is no key but fills a create() option: its name in the server's settings, and its default. */
@@ -36,9 +38,13 @@ export type OptionsAnswer = { ok: true; options: Record<string, string> } | { ok
 /** testConnection's answer: the registry's own (TestConnection's Result<{ detail }>). */
 export type TestAnswer = KeyResult<{ detail: string }>;
 
-/** A provider as testConnection uses it: its one account-level read. */
+/** One value Settings offers for a picked key: the value saved, and the words a person picks it by. */
+export type KeyChoice = { value: string; label: string };
+
+/** A provider as testConnection and keyChoices use it: its one account-level read, and a picked key's choices. */
 export interface TestableProvider {
   testConnection?(context?: { signal?: AbortSignal }): Promise<KeyResult<{ detail: string }>>;
+  keyChoices?(option: string, context?: { signal?: AbortSignal }): Promise<KeyResult<KeyChoice[]>>;
 }
 /** A provider module's create(), by provider id: the computer package's, or a test's stand-in. */
 export type ProviderFactories = Readonly<Partial<Record<string, (options: Record<string, string>) => TestableProvider | Promise<TestableProvider>>>>;
@@ -54,7 +60,7 @@ export interface KeyTable {
 /** The key table of `entries` (the kind registry's PROVIDERS, each from its descriptor). */
 export function keyTableOf(entries: readonly Pick<ProviderEntry, "id" | "label" | "keys" | "settings">[]): KeyTable {
   return {
-    keys: Object.fromEntries(entries.map((entry) => [entry.id, entry.keys.map(({ name, option, required }) => ({ name, option, required }))])),
+    keys: Object.fromEntries(entries.map((entry) => [entry.id, entry.keys.map(({ name, option, required, picked }) => ({ name, option, required, ...(picked ? { picked } : {}) }))])),
     labels: Object.fromEntries(entries.map((entry) => [entry.id, entry.label])),
     settings: Object.fromEntries(entries.map((entry) => [entry.id, (entry.settings ?? []).map(({ name, option, default: fallback }) => ({ name, option, ...(fallback === undefined ? {} : { default: fallback }) }))])),
   };
@@ -133,6 +139,61 @@ function wordsFor(code: string, providerId: string, said: string, table: KeyTabl
 
 const messageOf = (error: unknown): string => String((error as Error)?.message ?? error).replace(/\s+/g, " ").slice(0, 500);
 
+/** Provider `providerId` made from its saved keys by its module's create(), with its label and the key values to scrub
+ *  from its words; refused before anything is made when a required key is missing or it has no module here (`what`
+ *  names the feature that isn't available). */
+async function builtFrom(providerId: string, keys: Readonly<Record<string, string>>, factories: ProviderFactories, settings: ProviderSettings, table: KeyTable, what: string): Promise<KeyResult<{ provider: TestableProvider; label: string; values: string[] }>> {
+  const made = providerOptions(providerId, keys, settings, table);
+  if (!made.ok) return made;
+  const label = labelOf(providerId, table);
+  const values = Object.values(keys).filter((value): value is string => typeof value === "string");
+  const create = has(factories, providerId) ? factories[providerId] : undefined;
+  if (typeof create !== "function") return refused("unsupported", `${label}'s ${what} isn't available on this server yet.`);
+  try {
+    return { ok: true, value: { provider: await create(made.options), label, values } };
+  } catch (error) {
+    return refused("invalid", wordsFor("invalid", providerId, scrub(messageOf(error), values), table));
+  }
+}
+
+/**
+ * The values Settings offers for provider `providerId`'s picked key `keyName` (its descriptor key's picked), read by the
+ * provider made from its saved keys (its keyChoices, by the option the key fills), never making a computer. ok with each
+ * value and its words; else the provider's words (a key the vendor refused says which key to check), its code kept.
+ * Nothing is made when a required key is missing; a key that is not picked is refused naming the ones that are.
+ */
+export async function keyChoices(
+  providerId: string,
+  keyName: string,
+  { keys, signal }: { keys: Readonly<Record<string, string>>; signal?: AbortSignal },
+  factories: ProviderFactories,
+  settings: ProviderSettings = {},
+  table: KeyTable = KEY_TABLE,
+): Promise<KeyResult<KeyChoice[]>> {
+  const key = (has(table.keys, providerId) ? table.keys[providerId]! : []).find((one) => one.name === keyName);
+  const label = labelOf(providerId, table);
+  if (!key?.picked) return refused("unsupported", `${label} offers no choices for ${keyName}`);
+  // The key being picked is left out, so the provider reads the vendor's list rather than the value saved.
+  const { [keyName]: _picked, ...others } = keys;
+  const built = await builtFrom(providerId, others, factories, settings, table, "choices");
+  if (!built.ok) return built;
+  const { provider, values } = built.value;
+  if (typeof provider?.keyChoices !== "function") return refused("unsupported", `${label}'s choices for ${keyName} aren't available on this server yet.`);
+  let answer: KeyResult<KeyChoice[]>;
+  try {
+    answer = await provider.keyChoices(key.option, signal ? { signal } : {});
+  } catch (error) {
+    return refused("unreachable", wordsFor("unreachable", providerId, scrub(messageOf(error), values), table));
+  }
+  if (answer?.ok === true && Array.isArray(answer.value)) {
+    return { ok: true, value: answer.value.filter((one) => typeof one?.value === "string" && typeof one.label === "string").map((one) => ({ value: one.value, label: scrub(one.label, values) })) };
+  }
+  const error = (answer as { error?: { code?: unknown; message?: unknown } } | undefined)?.error;
+  const code = typeof error?.code === "string" ? error.code : "error";
+  const said = scrub(String(error?.message ?? ""), values);
+  return refused(code, code === "denied" || code === "unauthorized" ? wordsFor("unauthorized", providerId, said, table) : said || wordsFor(code, providerId, "", table));
+}
+
 /**
  * Settings' "test connection" for `providerId` (the kind registry's TestConnection, and serve's ComputerRegistry.test):
  * the provider made from its saved keys by its module's create(), then its one account-level read. ok with the
@@ -146,18 +207,9 @@ export async function testConnection(
   settings: ProviderSettings = {},
   table: KeyTable = KEY_TABLE,
 ): Promise<TestAnswer> {
-  const made = providerOptions(providerId, keys, settings, table);
-  if (!made.ok) return made;
-  const label = labelOf(providerId, table);
-  const values = Object.values(keys).filter((value): value is string => typeof value === "string");
-  const create = has(factories, providerId) ? factories[providerId] : undefined;
-  if (typeof create !== "function") return refused("unsupported", `${label}'s connection test isn't available on this server yet.`);
-  let provider: TestableProvider;
-  try {
-    provider = await create(made.options);
-  } catch (error) {
-    return refused("invalid", wordsFor("invalid", providerId, scrub(messageOf(error), values), table));
-  }
+  const built = await builtFrom(providerId, keys, factories, settings, table, "connection test");
+  if (!built.ok) return built;
+  const { provider, label, values } = built.value;
   if (typeof provider?.testConnection !== "function") return refused("unsupported", `${label}'s connection test isn't available on this server yet.`);
   let answer: KeyResult<{ detail: string }>;
   try {

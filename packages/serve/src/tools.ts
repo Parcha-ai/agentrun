@@ -4,8 +4,8 @@
 // nothing here: a run's runner binds them from its workspace's registry (workspace/run-tools.ts), each call made on the
 // run's folder or its computer. `bash` and the background tools may be named only by an agent whose place is a box
 // (runnable.ts).
-import { blurbOf } from "./tool-blurbs.js";
-import { LEARNED_MCP_TOOL } from "./learn/skills.js";
+import { blurbOf, isHostTool } from "./tool-list.js";
+import { mcpNameOf, mcpToolName, parseToolName } from "./tool-names.js";
 import type { TSchema } from "typebox";
 import { appendFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
@@ -17,7 +17,6 @@ import { isWorkspaceError, localWorkspace, type Workspace } from "./workspace/in
 import type { ClaimBrowser } from "./workspace/resolve-computer.js";
 import { fetchOptions, HTML_READ_CHARS, TEXT_CAP } from "./web-fetch-direct.js";
 import { DEFAULT_HARNESS, HARNESSES } from "./harness.js";
-import { REPLAY } from "./host-tools.js";
 import { localFolderOf } from "./workspace/local.js";
 import { type Complete, LLM_TOOL } from "./llm.js";
 import { DOCUMENTS_ENV, PDF_PAGES_TOOL, pdfPages } from "./pdf-pages.js";
@@ -29,11 +28,12 @@ import { hostToolDefs, type ShellPlace } from "@parcha/agentrun-kernel/kernel";
 import { browserPrice, browserSpend } from "./browser-cost.js";
 import { forModel } from "./result.js";
 import { fetchFor, pagesOf, WEB_FETCH_TOOL, webFetchTool } from "./web-fetch.js";
-import { searchFor, WEB_SEARCH_TOOL, webSearchTool } from "./web-search.js";
+import { searchFor, type SearchOn, WEB_SEARCH_TOOL, webSearchTool } from "./web-search.js";
 import { browserNeeds, explainsView, isUnavailable, NO_PARALLEL_KEY, type Pickable, PICKABLE, planeOf, type Plane, PROVIDERS, type Resolution, serverGate, type Tooling, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
 import type { DenyFrom, SettingFrom } from "./tool-gate.js";
 import { fauxFetch, PARALLEL_KEY_ENV } from "./decisions.js";
 import { keyNeeded } from "./key-words.js";
+import { unattachable } from "./attach-images.js";
 import { handedSignIn } from "./secrets.js";
 import { redactedAnswer } from "./key-refusal.js";
 import { SIGN_IN_KEY, vendorsOver } from "./sign-ins.js";
@@ -42,6 +42,7 @@ import { waitingAsk } from "./browser-commands.js";
 import { runnerSecrets } from "./runner/redact.js";
 import { HANDOVER_WAITING, type HandoverAnswered } from "./runner/journal-kinds.js";
 import type { LiveHandover, LiveViewerStore } from "./browser-live.js";
+import { provenFor, type RunnerLive } from "./live-reach.js";
 import { clearWaitEnded, markWaitEnded } from "./browser-wait-ended.js";
 import type { Claim, Store } from "./store/store.js";
 import { type RunSignIn, runSignIn, verifyRunSignIn } from "./sign-ins-store.js";
@@ -114,6 +115,9 @@ export type ToolHost = {
    *  binding reads `liveViewers`, never them directly. Absent, no viewer is handed over (browser-live.ts
    *  sessionHandovers), and nothing is written in the run's folder. */
   liveViewers?: { put(handover: LiveHandover): Promise<boolean>; drop(tag?: string): Promise<void> };
+  /** On a runner on another host than its server (live-reach.ts runnerLiveOf): where its browser's viewer listens, the host
+   *  its hand-over names, and the key the server's proof is checked with. Absent: loopback. */
+  liveAt?: RunnerLive;
   /** The one store, for the live-viewer seam above, the run's saved sign-in (its runs and sign-ins, read under `claim`),
    *  the sign-in verify the runner saves, and the Screen tab's ended state (settings: browser-wait-ended.ts). */
   store?: LiveViewerStore & Pick<Store, "runs" | "signIns" | "settings">;
@@ -140,6 +144,9 @@ export type ToolHost = {
    *  claim's provider, whatever the tool plane picked. Absent: the plane's vendor, opened the same way (browser-computer.ts
    *  planeBrowser). */
   browserComputer?: ClaimBrowser;
+  /** The run's own models a native web_search goes through (hosted-search.ts), asked as a search runs: on the runner, the
+   *  session's port (its proxy, policy, key, price and cap), this run's alone. Absent: a native search has no model. */
+  search?: SearchOn;
 };
 
 /** What a name stands for in the run: the pi tools it offers, and the extensions a conversation selects for them. */
@@ -154,7 +161,7 @@ function installTool(host: Pick<ToolHost, "install">, name: string, tool: ToolRe
 
 /** What a call node's effect gets from the run's process: its signal, environment and work directory, one completion
  *  on the run's models (the `llm` tool's), and the ledger its paid requests are booked in (paid-calls.ts). */
-export type EffectRun = { signal: AbortSignal; env: NodeJS.ProcessEnv; work: string; complete?: Complete; ledger?: Ledger };
+export type EffectRun = { signal: AbortSignal; env: NodeJS.ProcessEnv; work: string; complete?: Complete; ledger?: Ledger; search?: SearchOn };
 
 export type ToolEntry = {
   /** One line, for capabilities. */
@@ -277,12 +284,26 @@ export const uploadsFrom = (work: Workspace, maxBytes: number, mime: (name: stri
   },
 });
 
-/** Every string in `value` (a tool's answer: its content, its details) passed through `cut`; anything else as it is. */
-function cutStrings<T>(value: T, cut: (text: string) => string): T {
+/** An image block's `data` kept whole by the cut: its base64 is an image a model can be sent (attach-images.ts
+ *  unattachable: a PNG, JPEG, GIF or WebP whose bytes are the type it names and whose header says its size), and its
+ *  decoded bytes, read as text, hold nothing the cut takes out (a held value written after a valid header). */
+const wholeImage = (block: { readonly data?: unknown; readonly mimeType?: unknown }, cut: (text: string) => string): boolean => {
+  if (unattachable(block) !== undefined) return false;
+  const bytes = Buffer.from(block.data as string, "base64").toString("latin1");
+  return cut(bytes) === bytes;
+};
+
+/** Every string in `value` (a tool's answer: its content, its details) passed through `cut`; anything else as it is. An
+ *  image block's `data` that is an image (wholeImage) is its pixels' base64, not text, and is kept whole: the cut reads a
+ *  run of more than 8,192 characters with no whitespace as "[redacted]" (key-refusal.ts redactedAnswer), which no model
+ *  takes as an image. Any other `data`, on a block of any type, is cut like every other string. */
+export function cutAnswer<T>(value: T, cut: (text: string) => string): T {
   if (typeof value === "string") return cut(value) as T;
-  if (Array.isArray(value)) return value.map((item) => cutStrings(item, cut)) as T;
+  if (Array.isArray(value)) return value.map((item) => cutAnswer(item, cut)) as T;
   if (value && typeof value === "object" && Object.getPrototypeOf(value) === Object.prototype) {
-    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => [key, cutStrings(item, cut)])) as T;
+    const block = value as { type?: unknown; data?: unknown; mimeType?: unknown };
+    const keep = block.type === "image" && wholeImage(block, cut);
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => [key, keep && key === "data" ? item : cutAnswer(item, cut)])) as T;
   }
   return value;
 }
@@ -294,7 +315,7 @@ function answersCutInside(tool: ToolRegistration, cut: (text: string) => string)
     ...tool,
     execute: (async (...args: Parameters<ToolRegistration["execute"]>) => {
       try {
-        return cutStrings(await (tool.execute as (...a: unknown[]) => Promise<unknown>)(...args), cut);
+        return cutAnswer(await (tool.execute as (...a: unknown[]) => Promise<unknown>)(...args), cut);
       } catch (error) {
         if (error instanceof Error) {
           error.message = cut(error.message);
@@ -463,7 +484,14 @@ const browserTool: ToolEntry = {
         return { outcome: stood.state, at: stood.at, ...(stood.reason !== undefined ? { reason: stood.reason } : {}) };
       },
     });
-    const view = createLiveView({ hostOrigin: "'self'", gates, takeOver: { take: (tag) => hands.take(tag) } });
+    // On a runner on another host than its server, the viewer listens on the runner's live address and takes no page or
+    // socket without the server's proof for its own path id (live-reach.ts).
+    const at = host.liveAt;
+    const admit = at ? (req: { readonly url?: string; readonly headers: Record<string, string | string[] | undefined> }) => {
+      const id = /^\/v\/([A-Za-z0-9_-]{22})(?:\/ws)?(?:\?|$)/.exec(req.url ?? "")?.[1];
+      return id !== undefined && provenFor(req as never, at, id);
+    } : undefined;
+    const view = createLiveView({ hostOrigin: "'self'", gates, takeOver: { take: (tag) => hands.take(tag) }, ...(at ? { listen: { bind: at.bind, host: at.host }, admit: admit! } : {}) });
     const watched = handedProvider ? liveViewProvider(handedProvider as never, view) : undefined;
     const provider = () => {
       if (refused) throw refused;
@@ -471,13 +499,13 @@ const browserTool: ToolEntry = {
     };
     // Each session's viewer reaches the server as it launches, and goes as it ends: through the store, under the run's claim
     // (host.liveViewers); never a file in the run's folder, which is the agent's workspace.
-    const viewers = live.sessionHandovers(host.liveViewers);
+    const viewers = live.sessionHandovers(host.liveViewers, at?.host);
     const onSession = (row: { session: { tag: string }; liveView: { fullscreen: string } | null }, change: string) => viewers.changed(row, change);
     // Its session time is the run's spend, at its provider's price, and held under the run's cap (browser-cost.ts).
     const providerName = (parts.provider as { name?: string } | undefined)?.name ?? vendor;
     const price = browserPrice(providerName, host.env);
     // On the runner, the run's ledger (host.ledger): each call held and settled on its booking, and a session's release one
-    // more request there, never this process's own spend. Undefined on the old per-run process: browserSpend's own then.
+    // more request there. With none, every browser call is refused unsent (browserSpend).
     const spend = browserSpend(providerName, price, DEFAULT_BROWSER_POLICY.idleReleaseS, (conversation, at) => browser.release(conversation as never, "close", at), undefined, { paid: host.ledger?.paid, pause: host.ledger?.pause, flush: host.ledger?.flush });
     // The run's own Workspace, the one its read opens (on the runner: Mode 1's local folder, Mode 2's folder on the run's
     // disk): the browser files its evidence there, and browser_upload chooses from it.
@@ -629,8 +657,9 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
     summary: "Search the web: codex's own search (claude-agent's where it is picked), on pi the model provider's hosted search (Anthropic, OpenAI), with none of those Parallel's Search API where the server holds its key, else Exa's keyless search; or the provider picked: { query, n? } -> { provider, query, results: [{ url, title, snippet, published? }], text? }, provider naming the one that served it, 1 to 25 results, each snippet at most 3,000 characters; { error } when the search gives no answer.",
     needs: [],
     nodes: true,
-    bind: async (host) => installTool(host, "web-search", booking(webSearchTool(host.env)) as unknown as ToolRegistration),
-    effect: async (args, run) => bookedIn(run.ledger, () => searchFor(run.env, args, run.signal)),
+    // On the runner its hosted search goes through the run's own route (host.search, run.search), labelled web_search.
+    bind: async (host) => installTool(host, "web-search", booking(webSearchTool(host.env, host.search)) as unknown as ToolRegistration),
+    effect: async (args, run) => bookedIn(run.ledger, () => searchFor(run.env, args, run.signal, run.search)),
   },
   browser: browserTool,
   // monid's catalog on one key (monid.ts): every harness calls each by its wire name, `monid_discover` and the rest.
@@ -638,7 +667,7 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
   "monid.inspect": monidTool("inspect"),
   "monid.run": monidTool("run"),
   // A pi run's subagent (runner/subagent.ts): a native tool of the run's root agent, bound by the runner's pi spec
-  // (adapter-run-spec.ts), never by this table; not a host tool (host-tools.ts REPLAY), so another harness refuses it.
+  // (adapter-run-spec.ts), never by this table; not a host tool (tool-list.ts `replay`), so another harness refuses it.
   subagent: {
     summary: "Run a subagent: a fresh conversation with only the call's prompt, on the agent's own model (or one of its model tiers, fast or strong, when the call names one), with a subset of the agent's own tools (bash among them, under the agent's bash policy), under the run's permissions and cap; answers with its final text. A call may narrow its child's tool-call budget (max_tool_calls) and set its effort (low, medium, high). Several calls in a turn run at once, at most 4 at a time; a subagent starts none of its own. pi only.",
     needs: [],
@@ -667,11 +696,11 @@ export const allows = (allowed: readonly string[], name: string): boolean => all
 
 /** The tools a run's learned workflow may name (learn/check.ts at learn time, learned-workflow.ts at a call): those of the
  *  agent's `granted` tools a workflow's call node runs here (CALL_TOOLS, and each MCP tool granted by its own name,
- *  skills.ts LEARNED_MCP_TOOL: a wildcard is read against its server's listing first, mcpGrantsListed), and with the run's `plane`, none it resolves unavailable (its agent's own tool of the name does not run either). A
+ *  tool-names.ts mcpNameOf: a wildcard is read against its server's listing first, mcpGrantsListed), and with the run's `plane`, none it resolves unavailable (its agent's own tool of the name does not run either). A
  *  learned model node runs without tools (learn/skills.ts MODEL_NODE_TOOLS), and a harness's own tool (Bash,
  *  exec_command, apply_patch) is never one, so the DSL refuses a draft that names it. */
 export const learnedWorkflowTools = (granted: readonly string[], plane?: Plane, options: LearnedMcp = {}): string[] =>
-  [...new Set(granted.filter((name) => (options.mcp === true && LEARNED_MCP_TOOL.test(name)) || (allows(CALL_TOOLS, name) && !isUnavailable(plane?.[name as Pickable]))))];
+  [...new Set(granted.filter((name) => (options.mcp === true && mcpNameOf(name) !== undefined) || (allows(CALL_TOOLS, name) && !isUnavailable(plane?.[name as Pickable]))))];
 
 /** `mcp: true` at learn time (the end-of-run step's draft tools, a person's write): an MCP tool the revision grants by its
  *  own name may be named. Without it (the runtime's read at a call, learned-workflow.ts), none is: the run's MCP tools are
@@ -689,9 +718,9 @@ export type LearnedMcp = { readonly mcp?: boolean; readonly approvers?: boolean 
 export function mcpGrantsListed(granted: readonly string[], listed: (server: string) => readonly string[]): string[] {
   const out = new Set<string>();
   for (const name of granted) {
-    const wildcard = /^mcp:([^/]+)\/\*$/.exec(name);
-    if (!wildcard) out.add(name);
-    else for (const tool of listed(wildcard[1]!)) out.add(`mcp:${wildcard[1]}/${tool}`);
+    const parsed = parseToolName(name);
+    if (parsed?.kind !== "mcp-server") out.add(name);
+    else for (const tool of listed(parsed.server)) out.add(mcpToolName(parsed.server, tool));
   }
   return [...out];
 }
@@ -710,7 +739,7 @@ export const learnedDraftTools = (granted: readonly string[], permission: (name:
     // An MCP tool set to ask is offered where someone can answer: its learned_workflow call asks once, naming its MCP
     // tools, before any node runs (#2424). A table tool set to ask is not: its call node can't wait for an approval.
     if (setting === "allow") return true;
-    if (setting === "ask" && options.approvers === true && LEARNED_MCP_TOOL.test(name)) return (asked.push(name), true);
+    if (setting === "ask" && options.approvers === true && mcpNameOf(name) !== undefined) return (asked.push(name), true);
     gated[name] = setting;
     // A deny comes from a layer or the default, never from approvals, which only ever allows.
     if (setting === "deny" && from) deniedBy[name] = from(name) as DenyFrom;
@@ -784,7 +813,7 @@ export const toolsView = (env: NodeJS.ProcessEnv, settings: ToolSettingsMap = {}
     // Unavailable says why: a sandbox-only tool no box here can run, why none can (`noBox`); on a tool a user picks a
     // provider for, the resolutions' own words (`web_search is turned off in settings`); else the variables it needs.
     const reason = available ? undefined : refusal ?? boxless ?? (plane ? [...new Set(Object.values(plane).filter(isUnavailable).map(whyUnavailable))].join("; ") : `Needs ${keyNeeded(missing)}`);
-    return { name, summary: entry.summary, ...(blurbOf(name) ? { blurb: blurbOf(name) } : {}), nodes: entry.nodes, calls: entry.effect !== undefined, ...(entry.callOnly ? { call_only: true } : {}), ...(entry.sandboxOnly ? { sandbox_only: true } : {}), available, ...(reason ? { reason } : {}), ...(missing.length ? { missing } : {}), harnesses: name in REPLAY ? [...HARNESSES] : [DEFAULT_HARNESS], ...serverGate(name, settings), ...(plane ? { providers: [...PROVIDERS[name as Pickable]], provider: picked[name as Pickable].provider, default_provider: PROVIDERS[name as Pickable][0], resolves: plane, why: view!.why } : {}) };
+    return { name, summary: entry.summary, ...(blurbOf(name) ? { blurb: blurbOf(name) } : {}), nodes: entry.nodes, calls: entry.effect !== undefined, ...(entry.callOnly ? { call_only: true } : {}), ...(entry.sandboxOnly ? { sandbox_only: true } : {}), available, ...(reason ? { reason } : {}), ...(missing.length ? { missing } : {}), harnesses: isHostTool(name) ? [...HARNESSES] : [DEFAULT_HARNESS], ...serverGate(name, settings), ...(plane ? { providers: [...PROVIDERS[name as Pickable]], provider: picked[name as Pickable].provider, default_provider: PROVIDERS[name as Pickable][0], resolves: plane, why: view!.why } : {}) };
   });
 };
 

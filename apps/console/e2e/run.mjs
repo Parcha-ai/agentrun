@@ -31,6 +31,12 @@ const within = (promise, ms, what) => {
   return Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`${what} took longer than ${ms} ms`)), ms); })]).finally(() => clearTimeout(timer));
 };
 
+// A rejection nothing handles while a flow runs or is closed (a route handler that threw: Playwright leaves it unhandled)
+// fails that flow, its server's output printed, instead of ending the whole run with no results; outside a flow it ends
+// the run.
+let stray = null;
+process.on("unhandledRejection", (error) => { if (!stray) throw error; stray(error); });
+
 const browser = await launchBrowser();
 const results = [];
 for (const flow of chosen) {
@@ -39,7 +45,9 @@ for (const flow of chosen) {
   const shares = typeof flow.shares === "function" ? flow.shares({ setupCodeFile: values["setup-code-file"] }) : flow.shares;
   if (values.url && !shares) { results.push({ name: flow.name, state: "SKIP", note: typeof flow.shares === "function" ? "needs a server not set up yet (--setup-code-file)" : "needs a server of its own (a --checkout target)" }); continue; }
   const started = Date.now();
-  let server, context;
+  const strays = [];
+  let server, context, result;
+  const failed = (error) => ({ name: flow.name, state: "FAIL", ms: Date.now() - started, note: String(error?.stack ?? error).split("\n").slice(0, 6).join("\n"), log: server?.log() });
   try {
     // A flow's server options, or a function making them (a flow whose server must know its port first).
     if (values.url) server = attachServer({ url: values.url, setupCodeFile: values["setup-code-file"] });
@@ -48,20 +56,24 @@ for (const flow of chosen) {
     context = opened.context;
     const { page, errors } = await newPage(context);
     const origin = flow.origin?.(server) ?? server.origin;
-    await within((async () => {
+    const strayed = new Promise((_, reject) => { stray = (error) => { strays.push(error); reject(error); }; });
+    await within(Promise.race([strayed, (async () => {
       // A flow that starts signed in: the owner set (through the API when it has none), then this page signed in.
       if (flow.signedIn) { await owner(server); await signIn(page, origin); }
       await flow.run({ server, context, page, errors, blocked: opened.blocked, icons: opened.icons, browser, origin, base: origin, api: apiOf(server) });
-    })(), FLOW_MS, flow.name);
+    })()]), FLOW_MS, flow.name);
     if (opened.blocked.length && !flow.allowsBlocked) throw new Error(`requests left loopback: ${opened.blocked.join(", ")}`);
     if (errors.length && !flow.allowsErrors) throw new Error(`the page reported errors: ${errors.join(" | ")}`);
-    results.push({ name: flow.name, state: "PASS", ms: Date.now() - started });
+    result = { name: flow.name, state: "PASS", ms: Date.now() - started };
   } catch (error) {
-    results.push({ name: flow.name, state: "FAIL", ms: Date.now() - started, note: String(error?.stack ?? error).split("\n").slice(0, 6).join("\n"), log: server?.log() });
+    result = failed(error);
   } finally {
     await context?.close().catch(() => {});
     await server?.stop().catch(() => {});
+    stray = null;
   }
+  // One that came while the flow was being closed, after it passed, fails it too.
+  results.push(result.state === "PASS" && strays.length ? failed(strays[0]) : result);
 }
 await browser.close();
 

@@ -12,11 +12,11 @@ import { fileURLToPath } from "node:url";
 import { claudeAgentExecutable } from "@parcha/agentrun-harness-claude";
 import { codexTarget } from "../../run-adapters-codex/dist/binary.js";
 import { processAlive } from "@parcha/agentrun-kernel/host";
-import { startServe } from "../dist/index.js";
+import { startServe as startServeBuilt } from "../dist/index.js";
 import { dockerPathsForRuns } from "../dist/box-paths.js";
 import { hostAddressesOnce } from "../dist/docker-host-addresses.js";
 import { fauxEnvOf } from "../dist/server.js";
-import { readRunDbSync } from "../dist/run-db.js";
+import { FAUX_VENDOR_API_ENV } from "../dist/tools.js";
 import { resolve } from "node:path";
 import { openSqliteStore } from "../dist/store/index.js";
 import { startRunner } from "../dist/runner/runner.js";
@@ -24,9 +24,10 @@ import { maxRunsOf } from "../dist/host.js";
 import { claimInstallsStopped } from "../dist/harness-install.js";
 import { runnerMemory } from "../dist/runner/memory-claim.js";
 import { dispatchRunner } from "../dist/runner/harness-loops.js";
-import { computerDepsFrom } from "../dist/workspace/index.js";
+import { runnerComputers } from "../dist/runner/main.js";
 import { routeOf } from "../dist/runner/model-route.js";
 import { withoutFaux } from "../dist/model.js";
+import { runLine } from "../dist/print.js";
 import { bootSealKey } from "../dist/seal-key.js";
 
 // Every test process has a config home of its own, never this machine's ~/.config: a test writes nothing outside its own
@@ -62,6 +63,14 @@ const secretWrite = (method, path) => SECRET_WRITE_PATHS.some((write) => write.m
 const CLIENT_OWNER_PHRASE = `client-owner-${createHash("sha256").update(String(process.pid)).digest("hex").slice(0, 24)}`;
 /** Each server's owner session cookie, by its base URL: set once, when the client first makes a secret write. */
 const ownerCookies = new Map();
+/** Each accounts-off server's launch code (Serve's launchCode), by its /v2 base URL: what the test client's owner's session
+ *  opens (ownerSessionOf). A server a test starts itself registers its own (launchFor). */
+const launchCodes = new Map();
+/** Registers `server`'s launch code (a Serve, or anything with `baseUrl` and `launchCode`) for the test client. */
+export const launchFor = (server) => (server?.launchCode ? launchCodes.set(server.baseUrl, server.launchCode) : undefined, server);
+/** The server's startServe, its launch code registered for the test client (launchFor): every test starts a server
+ *  through this one, so the client's secret writes open that server's launch link with accounts off. */
+export const startServe = async (options) => launchFor(await startServeBuilt(options));
 
 export const FAUX = new URL("./fixtures/faux-model.mjs", import.meta.url).pathname;
 
@@ -296,8 +305,9 @@ const FAST_MODEL_RETRY = { retry: { enabled: true, maxRetries: 8, baseDelayMs: 1
  *  harnesses' sizes the host's memory holds together (memory-claim.ts runnerMemory), as the CLI's runner does; a run past
  *  either waits queued. Returns a close() that
  *  stops the runner and closes its store handle, and whose `beats()` counts the runner's polls and renewal passes
- *  (RunnerOptions.onBeat), so a test can wait for polls to pass without a clock. */
-export async function startInProcessRunner(data, { faux, githubApi, githubWeb, githubMcpOrigin, gradeTimeoutMs, computerForClaim, harnessLocks, runnerTiming, modelRetry = FAST_MODEL_RETRY, ...switches } = {}) {
+ *  (RunnerOptions.onBeat), so a test can wait for polls to pass without a clock. `computers`: a test's kind registry and
+ *  provider loader for the run's claim-time computer. */
+export async function startInProcessRunner(data, { faux, githubApi, githubWeb, githubMcpOrigin, gradeTimeoutMs, computerForClaim, computers: own, harnessLocks, runnerTiming, modelRetry = FAST_MODEL_RETRY, log, failRunsUpdate, fauxVendorApi, ...switches } = {}) {
   const opened = await openSqliteStore({ dataDir: data, role: "runner" });
   // The runner's store, as a crash would leave its writes: once kill() has run, a journal commit of its loops never
   // lands while the test runs (a dead process writes nothing more), and fails when the runner's handle is closed.
@@ -310,9 +320,22 @@ export async function startInProcessRunner(data, { faux, githubApi, githubWeb, g
       return (...args) => (dead ? new Promise((_, reject) => frozen.push(reject)) : value.apply(target, args));
     },
   });
+  // A store-write fault (`failRunsUpdate(claim, patch)`, a test's): a runs.update it answers true for throws, writing
+  // nothing, as a store that cannot be written does. The test's predicate counts its own hits to prove the fault fired.
+  const runsOf = (runs) => new Proxy(runs, {
+    get(target, prop) {
+      const value = Reflect.get(target, prop, target);
+      if (prop !== "update" || !failRunsUpdate) return typeof value === "function" ? value.bind(target) : value;
+      return async (claim, patch, ...rest) => {
+        if (failRunsUpdate(claim, patch)) throw new Error("the store can't be written (a test's fault)");
+        return value.call(target, claim, patch, ...rest);
+      };
+    },
+  });
   const store = new Proxy(opened, {
     get(target, prop) {
       const value = Reflect.get(target, prop, target);
+      if (prop === "runs" && failRunsUpdate) return runsOf(value);
       if (prop === "journal") return (...args) => journalOf(value.apply(target, args));
       return typeof value === "function" ? value.bind(target) : value;
     },
@@ -328,7 +351,9 @@ export async function startInProcessRunner(data, { faux, githubApi, githubWeb, g
   // the test gave its server (fauxMonid, fauxParallel, fauxJev, harnessTable…).
   // A test's harness table reaches the runner with or without the faux model (fauxEnvOf hands it either way): a CLI
   // harness's run on a gateway or a vendor's fake runs on the table's harness, never on the real CLI.
-  const env = { ...withoutFaux(process.env), ...fauxEnvOf({ ...switches, faux }) };
+  // `fauxVendorApi` (a test's): the module whose default export is the fetch the runner's own sign-in calls to a vendor
+  // (a context or profile made at a launch, tools.ts) go through; the check fakes (fauxBrowserbase, fauxKernel) are the server's.
+  const env = { ...withoutFaux(process.env), ...fauxEnvOf({ ...switches, faux }), ...(fauxVendorApi ? { [FAUX_VENDOR_API_ENV]: resolve(fauxVendorApi) } : {}) };
   let seal;
   try {
     seal = await bootSealKey(store, data, { role: "runner" });
@@ -336,15 +361,16 @@ export async function startInProcessRunner(data, { faux, githubApi, githubWeb, g
     await store.close();
     throw error;
   }
-  // The run's claim-time computer, composed once the one way (workspace/computer-deps.ts computerDepsFrom): none for the
-  // runner's place, the real kinds otherwise, keys read from this env then the store's sealed rows; a Docker computer's
-  // mounts by where the Docker has the data directory, as the CLI's runner reads it (box-paths.ts dockerPathsForRuns).
+  // The run's claim-time computer, composed once the one way, as the CLI's runner composes it (main.ts runnerComputers, a
+  // desktop's or a phone's live view with it): none for the runner's place, the real kinds otherwise, keys read from this
+  // env then the store's sealed rows; a Docker computer's mounts by where the Docker has the data directory, as the CLI's
+  // runner reads it (box-paths.ts dockerPathsForRuns). `computers`: a test's kind registry and provider loader.
   const sealKey = seal.key;
-  const computers = computerDepsFrom({ env, store, sealKey, dockerPaths: () => dockerPathsForRuns(env, data), hostAddresses: () => hostAddressesOnce(env) });
+  const computers = runnerComputers(store, env, sealKey, { dockerPaths: () => dockerPathsForRuns(env, data), hostAddresses: () => hostAddressesOnce(env), ...own });
   let runner;
   let beats = 0;
   try {
-    const createLoop = dispatchRunner({ env, data, journal: (claim) => store.journal(claim), store, sealKey, routeOf, computerForClaim: computerForClaim ?? computers.computerForClaim, computerDeps: computers.computerDeps, ...(githubApi ? { githubApi } : {}), ...(githubWeb ? { githubWeb } : {}), ...(githubMcpOrigin ? { githubMcpOrigin } : {}), ...(harnessLocks ? { harnessLocks } : {}), modelRetry, ...(gradeTimeoutMs ? { gradeBound: () => AbortSignal.timeout(gradeTimeoutMs) } : {}) });
+    const createLoop = dispatchRunner({ env, data, journal: (claim) => store.journal(claim), store, sealKey, routeOf, computerForClaim: computerForClaim ?? computers.computerForClaim, computerDeps: computers.computerDeps, mcpLoopback: true, ...(githubApi ? { githubApi } : {}), ...(githubWeb ? { githubWeb } : {}), ...(githubMcpOrigin ? { githubMcpOrigin } : {}), ...(harnessLocks ? { harnessLocks } : {}), modelRetry, ...(gradeTimeoutMs ? { gradeBound: () => AbortSignal.timeout(gradeTimeoutMs) } : {}) });
     runner = startRunner({
       ...(runnerTiming ?? {}),
       store,
@@ -353,6 +379,8 @@ export async function startInProcessRunner(data, { faux, githubApi, githubWeb, g
       // host's memory, read now (a test's process.constrainedMemory stand-in, set before serve(), is its container limit).
       memory: runnerMemory(store),
       onBeat: () => void beats++,
+      // The run start and end lines go to the server's log, as the CLI's runner beside it prints them (print.ts runLine).
+      ...(log ? { onEvent: (event) => { const line = runLine(event); if (line) log(line); } } : {}),
       // A test's fake GitHub, the server's githubApi seam: the runner mints the App's tokens there (never from the env). Its
       // fake GitHub MCP, the server's githubMcpOrigin seam: a github_app server there is the runner's GitHub MCP too. Its
       // GitHub site (githubWeb, the runner's alone): where a run's pull request is checked out from (pr-checkout.ts). The
@@ -397,7 +425,9 @@ export async function serve(t, { harnesses: asked, runner: wantRunner = true, co
   const dir = options.data ? undefined : await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-serve-"));
   const data = options.data ?? join(dir, "agents");
   if (harnesses) await linkHarnesses(data, harnesses === true ? {} : harnesses);
-  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", ...options });
+  // mcpLoopback: a test's server is a local install, as its operator would say (its fake MCP servers are on loopback);
+  // a case that wants the hosted rule passes mcpLoopback: false.
+  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", mcpLoopback: true, ...options });
   // A runner beside the server on the same data (the CLI start's server-and-runner): it claims and runs what the server
   // starts, so a test reads a run that runs, not one that queues forever. `runner: false` leaves it off for a test that
   // wants the server alone. Its loop is the switch's dispatch (learning wired; pi/workflow the server's own, E2r).
@@ -499,7 +529,8 @@ export function client(baseUrl, token, { owner = false } = {}) {
 /** The owner's session on the server at `baseUrl` (its /v2), for the client's secret writes. With accounts on, the client
  *  sets the owner's password the first time, with its token standing in for the setup code (so on any server, its setup
  *  open or not), or signs in with it on a server it set up before a restart; with accounts off, it follows the launch link
- *  (`/?token=`, the 303 that sets the console's cookie), whose console is the owner's on a loopback server
+ *  (`/?launch=<code>`, the server's launchCode, registered by launchFor; the 303 that sets the console's session cookie),
+ *  whose console is the owner's on a loopback server
  *  (secret-writes.ts). Where none works (an owner the test set up with its own password) it throws, saying so: a secret
  *  write never falls back to the token, which the server refuses; such a test makes its own owner's session. */
 async function ownerSessionOf(baseUrl, token) {
@@ -512,7 +543,8 @@ async function ownerSessionOf(baseUrl, token) {
   const answer = async (what, res) => (tried.push(`${what}: ${res.status}`), res);
   let res = await answer("setup", await post("/setup", token ? { authorization: `Bearer ${token}` } : {}));
   if (res.status !== 201) res = await answer("sign-in", await post("/auth/sign-in"));
-  if (res.status !== 200 && res.status !== 201 && token) res = await answer("launch link", await fetch(`${origin}/?token=${encodeURIComponent(token)}`, { redirect: "manual" }));
+  const code = launchCodes.get(baseUrl);
+  if (res.status !== 200 && res.status !== 201 && code) res = await answer("launch link", await fetch(`${origin}/?launch=${code}`, { redirect: "manual" }));
   const cookie = [200, 201, 303].includes(res.status) ? res.headers.getSetCookie().map((line) => line.split(";")[0]).join("; ") : "";
   if (!cookie) throw new Error(`the test client has no owner's session on ${baseUrl} for a secret write (${tried.join(", ")}): the token never writes a secret, so a test whose owner has its own password signs in itself`);
   const session = { cookie, origin };
@@ -617,12 +649,39 @@ export function journalOf(data, runId) {
   }
 }
 
+/** The run's one ledger for its paid tool calls (the kernel cap's RunTools on its TOOL_SESSION, paid-calls.ts
+ *  Ledger.paid) over a fresh memory store, as a claim opens it: under `cap` (USD, or a function read at each check;
+ *  undefined: no cap). Its `spend(usd)` books a step already settled at `usd` (owed: never refused), what the run spent
+ *  before; `records()`, its runner records as written; `modelRequest(inputTokens)`, the run's one rule asked for a model
+ *  request beside its paid calls (`model`'s, the kernel's CapModel): its verdict, `refuse` when it does not fit. */
+export async function toolLedger(cap, { model } = {}) {
+  const [{ memorySessionStore }, kernelCap] = await Promise.all([import("@parcha/agentrun-kernel/testing"), import("@parcha/agentrun-kernel/kernel/cap")]);
+  const store = memorySessionStore();
+  const writer = await store.open(kernelCap.TOOL_SESSION);
+  const run = kernelCap.runCap({ sessions: store, capUsd: typeof cap === "function" ? cap : () => cap, modelOf: (id) => (id === model?.id ? model : undefined) });
+  const paid = await run.tools(writer);
+  let turns = 0;
+  const modelRequest = (inputTokensMax) => run.before({ key: "run:test", label: "run:test", model: model?.id, turn: (turns += 1), maxTurns: null, spentUsd: 0, inputTokensMax });
+  let spends = 0;
+  const spend = async (usd) => {
+    const id = `spent-before#${(spends += 1)}`;
+    await paid.admit({ id, name: "what the run spent before", holdUsd: usd, basis: "the test's", owed: true });
+    await paid.settle(id, usd);
+  };
+  return Object.assign(paid, { store, spend, records: () => writer.read(), modelRequest });
+}
+
 /** Run `runId`'s paid tool calls as its runner books them on the run's one ledger (the paid-tools session's runner.request
  *  and runner.turn records, run-cap.ts paidCalls), in the words main's records used: each request's hold as an
  *  `agentrun.tool_started` mark (`tool`, `charged_by`, `call`, `heldUsd`) and its settle as an `agentrun.tool_cost` charge
  *  (`usd`; none when unknown). A hold given back unused (nothing sent) has no charge. */
 export function paidCallsOf(data, runId) {
-  const entries = journalOf(data, runId);
+  return paidBookings(journalOf(data, runId));
+}
+
+/** `entries`' paid tool calls (runner.request and runner.turn records of the paid-tools session: a run's journal, or a
+ *  toolLedger's `records()`), as paidCallsOf reads them. */
+export function paidBookings(entries) {
   const requests = new Map();
   const out = [];
   for (const entry of entries) {
@@ -639,10 +698,9 @@ export function paidCallsOf(data, runId) {
   return out;
 }
 
-/** Run `runId` as its claim and its process say it: the record the process keeps in its store (its status, `detail` and
- *  the epoch it ran under as `generation`), and its holder from the run's row — the runner that claimed it, whose name the
- *  runner mints as `<hostname>:<pid>:<uuid>` (runner.ts), so its `pid` is the process now running it; `{}` when there is
- *  neither yet. */
+/** Run `runId` as its claim says it: the epoch it runs under and its holder from the run's row — the runner that claimed
+ *  it, whose name the runner mints as `<hostname>:<pid>:<uuid>` (runner.ts), so its `pid` is the process now running it;
+ *  `{}` when there is neither yet. */
 export function runRecordOf(data, runId) {
   let claim;
   try {
@@ -660,20 +718,7 @@ export function runRecordOf(data, runId) {
     const pid = Number(/:(\d+):[^:]+$/.exec(claim.runner)?.[1]);
     if (Number.isInteger(pid)) holder = { pid, runner: claim.runner };
   }
-  let record = {};
-  const file = join(runDir(data, runId), "store", "run.sqlite");
-  if (existsSync(file)) {
-    try {
-      record = readRunDbSync(file, false, (db) => {
-        const row = db.prepare("SELECT record FROM pda_run_status WHERE id = 1").get();
-        return row ? JSON.parse(row.record) : {};
-      });
-    } catch {
-      record = {};
-    }
-  }
-  const { holder: _kept, ...rest } = record;
-  return { ...rest, ...(holder ? { holder } : {}), ...(claim ? { epoch: Number(claim.epoch) } : {}) };
+  return { ...(holder ? { holder } : {}), ...(claim ? { epoch: Number(claim.epoch) } : {}) };
 }
 
 /** Create agent `id` and start one run of it with `content`. */

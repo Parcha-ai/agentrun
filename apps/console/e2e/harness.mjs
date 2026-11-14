@@ -199,6 +199,15 @@ export async function newContext(browser, origin, { allow = [] } = {}) {
   return { context, blocked, icons };
 }
 
+/** The server's own answer to a GET a flow routes (to change it before the page gets it): `route.fetch`, sent once more
+ *  on a connection reset only. Playwright sends it over a kept-alive socket with no idle timer of its own, and the server
+ *  closes a socket idle 5 s (+1 s): a request sent just as that timer is due, while the server is busy, finds its
+ *  socket closed with the request unread (ECONNRESET, "socket hang up"). Chrome sends such a request again by itself;
+ *  route.fetch does not unless asked. Only for an idempotent GET. */
+export function serverAnswer(route) {
+  return route.fetch({ maxRetries: 1 });
+}
+
 /** A page that records what went wrong in it: uncaught errors and console errors. */
 export async function newPage(context) {
   const page = await context.newPage();
@@ -234,4 +243,21 @@ export async function signedIn(page) {
 /** Throws with `what` unless `ok`. */
 export function check(ok, what) {
   if (!ok) throw new Error(what);
+}
+
+/** The "Example data" badge on a shot a person sees outside a test (a PR, a doc, a README): drawn into the page by the
+ *  shooting step, in a strip of its own at the top of `box` (a locator) so it never covers the card's words at 390 px, and
+ *  on the picture itself, never only in a caption. Not product code: the console never draws it. Idempotent. */
+export async function markExample(box) {
+  await box.evaluate((el) => {
+    if (el.querySelector("[data-example-badge]")) return;
+    const row = document.createElement("div");
+    row.setAttribute("data-example-badge", "");
+    row.style.cssText = "display:flex;justify-content:flex-end;padding:6px 8px 0";
+    const badge = document.createElement("span");
+    badge.textContent = "Example data";
+    badge.style.cssText = "font:600 12px/16px ui-monospace,monospace;letter-spacing:.04em;text-transform:uppercase;padding:2px 8px;border:1px solid currentColor;background:#fff7d6;color:#7a4b00";
+    row.append(badge);
+    el.prepend(row);
+  });
 }

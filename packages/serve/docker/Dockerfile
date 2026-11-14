@@ -22,6 +22,22 @@ RUN apt-get update -qq \
  && rm -rf /var/lib/apt/lists/* \
  && sh /usr/local/sbin/install-node.sh "$NODE_VERSION" "$NODE_SIGNER" "$NODE_RELEASE_KEYS" /opt/node
 
+# The Android SDK files phoned's build reads, at the pin of packages/computer/scripts/android-sdk.mjs: the platform's
+# android.jar and core-for-system-modules.jar (platforms;android-35, r02), and d8 (build-tools;35.0.0), a jar the JDK
+# runs on either architecture. Each zip from Google pinned by sha256; the JDK's jar takes the three files out, so no
+# unzip is installed and nothing else of them is kept. The JDK is Eclipse Temurin 17's, pinned by digest (a multi-arch
+# index), as the build stage takes it.
+FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2 AS android
+COPY --from=eclipse-temurin:17.0.21_9-jdk@sha256:5465815640e10433422217335e15a523a3e57021a1f2ae0fc3849380d237979f /opt/java/openjdk /opt/jdk-17
+ADD --checksum=sha256:0988cacad01b38a18a47bac14a0695f246bc76c1b06c0eeb8eb0dc825ab0c8e0 https://dl.google.com/android/repository/platform-35_r02.zip /tmp/platform.zip
+ADD --checksum=sha256:bd3a4966912eb8b30ed0d00b0cda6b6543b949d5ffe00bea54c04c81e1561d88 https://dl.google.com/android/repository/build-tools_r35_linux.zip /tmp/build-tools.zip
+RUN install -d /tmp/x /opt/android-sdk/platforms /opt/android-sdk/build-tools/35.0.0/lib && cd /tmp/x \
+ && /opt/jdk-17/bin/jar xf /tmp/platform.zip android-35/android.jar android-35/core-for-system-modules.jar \
+ && /opt/jdk-17/bin/jar xf /tmp/build-tools.zip android-15/lib/d8.jar \
+ && mv android-35 /opt/android-sdk/platforms/android-35 \
+ && mv android-15/lib/d8.jar /opt/android-sdk/build-tools/35.0.0/lib/d8.jar \
+ && rm -rf /tmp/x /tmp/platform.zip /tmp/build-tools.zip
+
 FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2 AS build
 COPY --from=node /opt/node/ /usr/local/
 RUN [ "$(node --version)" = v24.22.3 ]
@@ -37,11 +53,17 @@ COPY . .
 # Go, for the computer daemon (computerd) alone: built for both architectures after the workspace, into the computer
 # package's dist, where a computer finds it. The toolchain stays in this stage; GOTOOLCHAIN=local fetches no other.
 COPY --from=golang:1.24.13-trixie@sha256:5835f052b784aa39f2fe9070def3568605c8bc3fcd810f10402066348b61e716 /usr/local/go /usr/local/go
+# A JDK 17 and the Android SDK's files (the android stage), for phoned, the phone's driver (dist/phoned.jar), which the
+# phone provider pushes to each phone: built after the daemon, the same way. Both stay in this stage.
+COPY --from=android /opt/jdk-17 /opt/jdk-17
+COPY --from=android /opt/android-sdk /opt/android-sdk
 RUN npm ci --ignore-scripts && (cd apps/console && npm ci --ignore-scripts && npm run build) \
  && npm run build && test -f packages/serve/dist/console/index.html && rm -rf apps \
  && PATH="/usr/local/go/bin:$PATH" GOTOOLCHAIN=local GOCACHE=/tmp/go-build GOPATH=/tmp/go npm run build:daemon -w @parcha/agentrun-computer \
  && test -x packages/computer/dist/computerd-linux-amd64 && test -x packages/computer/dist/computerd-linux-arm64 \
  && rm -rf /tmp/go-build /tmp/go \
+ && JAVA_HOME=/opt/jdk-17 ANDROID_HOME=/opt/android-sdk npm run build:phoned -w @parcha/agentrun-computer \
+ && npm run check:phoned -w @parcha/agentrun-computer \
  && rm -rf node_modules/@anthropic-ai/claude-agent-sdk node_modules/@anthropic-ai/claude-agent-sdk-* \
       node_modules/@anthropic-ai/claude-code node_modules/.bin/claude \
       node_modules/@openai/codex node_modules/@openai/codex-* node_modules/.bin/codex \

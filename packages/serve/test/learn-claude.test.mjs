@@ -12,7 +12,7 @@ import { answerWith, note } from "./fixtures/faux-learn.mjs";
 import { ended, keptProposal, learner, made, reflectRows, started } from "./learn-support.mjs";
 import { serve, withEnv } from "./support.mjs";
 
-const MODEL = "claude-haiku-4-5";
+const MODEL = "claude-haiku-5-5";
 const UNITS = note("Check units", "Convert every amount to one unit before comparing", "Amounts in one answer came in cents and in dollars.\n");
 // A note longer than a timeline row's text, with a URL in it: the server reads the answer whole, never a row of it.
 const SOURCES = note("Cite sources", "Name the page each figure came from", `A figure with no page could not be checked: https://example.com/policies/refund-policy?ref=notes\n${"Keep the page's own words. ".repeat(80).trimEnd()}\n`);
@@ -32,7 +32,7 @@ test("on claude-agent's real adapter, with no tool of its own, the end-of-run tu
       // The grader: one call with no tools, on the agent's own model, which keeps both notes.
       if (r.text.includes("Answer with one JSON object and nothing else")) {
         graded += 1;
-        return { text: JSON.stringify({ merge: true, reason: "Each note is general and new.", items: [{ file: "check-units.md", decision: "keep", why: "It holds as a general rule." }, { file: "cite-sources.md", decision: "keep", why: "It holds as a general rule." }] }) };
+        return { text: JSON.stringify({ merge: true, reason: "Each note is general and new.", items: [{ file: "check-units.md", decision: "keep", general: true, why: "It holds as a general rule." }, { file: "cite-sources.md", decision: "keep", general: true, why: "It holds as a general rule." }] }) };
       }
       cwd ??= CWD.exec(JSON.stringify(r.body))?.[1];
       // The end-of-run turn: its message asks for the notes, and the answer holds them.

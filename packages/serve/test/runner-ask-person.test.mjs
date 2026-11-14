@@ -3,7 +3,7 @@
 // The runner carries it the same way, as a pi-native extension on the root agent (adapter-run-spec.ts, through the pi
 // adapter's PiAdapterOptions.extensions, which both offers and runs it), so pi keeps its terminate; the loop reads that
 // turn end (endedOnTurnEndingTool) and commits the run parked on a KINDS.personAsked entry, never ending it. A person's
-// message resumes it as the next user turn. pi only: CLI harnesses refuse ask_person (runnable.ts, not in REPLAY).
+// message resumes it as the next user turn. pi only: CLI harnesses refuse ask_person (runnable.ts, no replay row).
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -51,11 +51,11 @@ const driveAsk = ({ body }) => {
  *  with `settled`, to what that reads). `personWait`: a tool host's hold the spec's lifecycle carries (HostLifecycle
  *  .personWait), as the browser's is. The runner stays up so a test may resume it; its store, server and gateway are
  *  returned. */
-async function askRun(t, { tools, personWait, settled, loopOptions = {}, upstream }) {
+async function askRun(t, { tools, personWait, settled, loopOptions = {}, upstream, drive = driveAsk }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-ask-person-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
-  const gw = await startFauxGateway({ call: driveAsk, text: "done" });
+  const gw = await startFauxGateway({ call: drive, text: "done" });
   let runner;
   t.after(async () => {
     await runner?.close().catch(() => {});
@@ -65,11 +65,11 @@ async function askRun(t, { tools, personWait, settled, loopOptions = {}, upstrea
     rmSync(dir, { recursive: true, force: true });
   });
   await server.agents.create({ id: "agent-1", name: "Asks" }, { id: "rev-1", kind: "agentic", body: { instructions: "Ask the person.", tools } });
-  const launch = { input: { content: "Pick a region." }, title: "t", place: { mode: "runner" }, model: { provider: "anthropic", modelId: "claude-sonnet-4-5" } };
+  const launch = { input: { content: "Pick a region." }, title: "t", place: { mode: "runner" }, model: { provider: "anthropic", modelId: "claude-sonnet-5-5" } };
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
   await server.flush?.();
-  const price = (_model, usage) => ((usage.input ?? 0) * 3 + (usage.output ?? 0) * 15) / 1e6;
-  const route = { model: "claude-sonnet-4-5", provider: { api: "anthropic-messages", origin: gw.url, credential: () => `not-a-secret-${"pi"}` }, cost: { input: 3, output: 15 }, outputCeiling: 8_192, price, fetch: (...args) => (upstream ?? globalThis.fetch)(...args) };
+  const price = (_model, usage) => ((usage.input ?? 0) * 2 + (usage.output ?? 0) * 10) / 1e6;
+  const route = { model: "claude-sonnet-5-5", provider: { api: "anthropic-messages", origin: gw.url, credential: () => `not-a-secret-${"pi"}` }, cost: { input: 2, output: 10 }, outputCeiling: 8_192, price, fetch: (...args) => (upstream ?? globalThis.fetch)(...args) };
   const deps = { env: {}, data: dir, journal: (claim) => store.journal(claim), store, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim: async () => ({ release: async () => {} }) };
   const specOf = async (claim, run) => {
     const spec = await adapterRunSpecFromLaunch(launch, run, deps, claim);
@@ -157,8 +157,58 @@ test("resume: the answer to a parked question clears the row's waiting summary i
   assert.equal(ended.summary, null);
 });
 
+// Issue 2230, the runner's half: any answer to an ask clears the row's waiting summary in its take, not only an in-claim
+// wait's or a first claim's. A run that ended, was reopened by a follow-up and then parked on a question holds its earlier
+// end in its journal, so the answer's claim reads as reopened and its steer takes the reopened path: that take clears the
+// summary too.
+test("resume after a follow-up: a reopened run that parks on its question has its waiting summary cleared by the answer's take", async (t) => {
+  const FOLLOW_UP = "Now ask me which region.";
+  // The model asks only on the follow-up's turn: the first input is answered, and the answer's turn says "done".
+  const drive = ({ body }) => {
+    const lastUser = (body?.messages ?? []).findLast((message) => message.role === "user");
+    const asked = JSON.stringify(lastUser?.content ?? "").includes(FOLLOW_UP);
+    return (body?.tools ?? []).some((tool) => tool?.name === "ask_person") && asked ? { name: "ask_person", input: { question: QUESTION } } : undefined;
+  };
+  let hold;
+  const held = new Promise((resolve) => (hold = resolve));
+  let release;
+  const released = new Promise((resolve) => (release = resolve));
+  let holding = true;
+  // The answer's model request waits until the row is read: the answer is taken, its turn running.
+  const upstream = async (url, init) => {
+    const sent = typeof init?.body === "string" ? init.body : init?.body instanceof Uint8Array ? Buffer.from(init.body).toString("utf8") : "";
+    if (holding && sent.includes("us-west-2")) {
+      holding = false;
+      hold();
+      await released;
+    }
+    return globalThis.fetch(url, init);
+  };
+  t.after(() => release());
+  const { row, server } = await askRun(t, { tools: ["ask_person"], upstream, drive });
+  assert.equal(row.state, "ended", `the first input is answered and the run ends: ${JSON.stringify({ state: row.state, summary: row.summary })}`);
+  await server.runs.reopen(RUN, { kind: "steer", body: { text: FOLLOW_UP } });
+  const parked = await until(async () => {
+    const now = await server.runs.get(RUN);
+    return now.state === "parked" && now.runner === null && now;
+  }, "the follow-up's turn asks and the run parks on its question");
+  assert.equal(parked.summary, "Waiting for your reply", "parked on its question, the row saying so");
+  await sendCommand(server, RUN, { kind: "steer", body: { text: "us-west-2" } });
+  await held;
+  const during = await server.runs.get(RUN);
+  assert.equal(during.state, "running", "the answer's turn runs");
+  assert.notEqual(during.runner, null, "in its claim");
+  assert.equal(during.summary, null, `the waiting summary went with the answer's take, never left to the end: ${JSON.stringify(during.summary)}`);
+  release();
+  const ended = await until(async () => {
+    const now = await server.runs.get(RUN);
+    return now.state === "ended" && now.runner === null && now;
+  }, "the answer ends the run");
+  assert.equal(ended.summary, null);
+});
+
 test("CLI refused: a CLI-harness run that names ask_person is refused in main's words, never bound", async () => {
-  const blockers = await blockersOf({}, { kind: "agentic", instructions: "Ask the person.", tools: ["ask_person"], harness: "codex", model: "gpt-5" });
+  const blockers = await blockersOf({}, { kind: "agentic", instructions: "Ask the person.", tools: ["ask_person"], harness: "codex", model: "gpt-6.1-sol" });
   const ask = blockers.find((blocker) => blocker.tool === "ask_person");
   assert.ok(ask, `ask_person is refused on a CLI harness: ${JSON.stringify(blockers)}`);
   assert.match(ask.message, /runs on pi here/, `refused in main's words: ${JSON.stringify(ask)}`);

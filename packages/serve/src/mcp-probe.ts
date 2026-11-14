@@ -8,13 +8,14 @@
 import { ApiError, invalid, type InputIssue } from "./errors.js";
 import { metaToolOf } from "./mcp-meta.js";
 import { SIGN_IN_AGAIN } from "./mcp-oauth.js";
+import { MCP_SERVER_NAME } from "./tool-names.js";
 import { isObject, unknownFields } from "./validate.js";
 
-export const MCP_SERVER_NAME = /^[a-z][a-z0-9-]{0,31}$/;
 /** The names AgentRun's own tools are called by, which no MCP server takes: claude-agent calls the kernel's host tools
  *  as `mcp__hands__<tool>`, and monid's are `monid_<tool>` (tool-gate.ts settingsKeyOf reads both as AgentRun's). */
 const RESERVED_MCP_NAMES: readonly string[] = ["hands", "monid"];
-export const MCP_AUTH_TYPES = ["none", "bearer", "headers", "oauth", "github_app"] as const;
+/** `per_run`: the server keeps no credential; each run's caller hands one with the run (mcp_auth), held for that run alone. */
+export const MCP_AUTH_TYPES = ["none", "bearer", "headers", "oauth", "github_app", "per_run"] as const;
 /** Where an owner updates a saved MCP server, as people read it. */
 const MCP_SETTINGS = "Settings → MCP servers";
 /** Why a saved credential can't be used for a run's calls, each with its own remedy and no other, as the model reads it
@@ -28,6 +29,8 @@ export const UNUSABLE = {
   silent: "the sign-in server didn't answer; try again",
   /** An access token past its expiry whose refresh the address check refused unsent (mcp-oauth.ts), followed by its words. */
   blocked: "its sign-in server's address is refused here",
+  /** A per_run server's run that was handed no credential for it (mcp_auth), or whose credential was erased at its end. */
+  perRunMissing: "this server takes its credential from each run, and this run was handed none: its caller sends one as mcp_auth when it starts the run or sends it a message",
 } as const;
 export const REFRESH_MARGIN_MS = 5 * 60_000;
 /** How long an access token given with no expiry is taken to last: it is refreshed within the margin of then. */
@@ -117,6 +120,42 @@ export function pricesOf(value: unknown, issues: InputIssue[]): McpPrices | unde
   return bad.length ? undefined : (Object.assign(Object.create(null), value) as McpPrices);
 }
 
+/** Query parameter names that look like a credential, compared lowercase with every "-" and "_" gone: an MCP server's url
+ *  is kept and shown in plain text (its row's url, every read, the console), so a credential belongs in a header. Only
+ *  names that say they hold one: a bare `key`, `session` or `sessionid` names a server's own lookup or routing value as
+ *  often (?key=docs, ?session=eu-1), so those stay the server's. */
+export const CREDENTIAL_QUERY_NAMES: readonly string[] = [
+  "token", "accesstoken", "authtoken", "idtoken", "refreshtoken", "sessiontoken", "bearer", "jwt",
+  "apikey", "xapikey", "accesskey", "secretkey", "privatekey",
+  "secret", "clientsecret", "auth", "authorization", "credential", "credentials",
+  "password", "passwd", "pass", "pwd", "sig", "signature",
+];
+const credentialQueryName = (name: string) => CREDENTIAL_QUERY_NAMES.includes(name.toLowerCase().replace(/[-_]/g, ""));
+
+/** The first query parameter of `url` whose name looks like a credential, if any: a saved row's URL is held to it at each
+ *  use (the server's preview, refresh and sign-in, the runner's claim) as a new one is at its save. */
+export function credentialInQuery(url: string | URL): string | undefined {
+  const parsed = typeof url === "string" ? URL.parse(url) : url;
+  return parsed ? [...parsed.searchParams.keys()].find(credentialQueryName) : undefined;
+}
+
+/** An MCP server's URL as every read shows it: its origin, and "/…" for a path or query, which is held as a secret (a
+ *  provider may put a key in either: Zapier's /mcp/<key>/sse, a ?token= no list names). The whole URL is used only to call
+ *  the server. A body that sends this back unchanged for a saved server means its saved URL (savedOrGiven). */
+export function shownUrl(url: string): string {
+  const parsed = URL.parse(url);
+  if (!parsed) return "(not a URL)";
+  return `${parsed.origin}/${parsed.pathname !== "/" || parsed.search ? "…" : ""}`;
+}
+
+/** A body's URL for saved server `saved`: its saved URL when the body sent back the shown one (shownUrl), else as given. */
+export function savedOrGiven(given: unknown, saved: string | undefined): unknown {
+  return saved !== undefined && typeof given === "string" && given === shownUrl(saved) ? saved : given;
+}
+
+/** What a URL with a credential in its query says, wherever it is refused. */
+export const credentialInQueryWords = (name: string) => `${name} in the URL's query looks like a credential; send it as a header instead (Headers).`;
+
 export function urlOf(value: unknown, issues: InputIssue[]): URL | undefined {
   if (typeof value !== "string" || value === "") return void issues.push({ field: "url", reason: value === undefined ? "missing" : "wrong_type", message: "url is the MCP server's Streamable HTTP endpoint, as text." });
   let url: URL;
@@ -127,6 +166,7 @@ export function urlOf(value: unknown, issues: InputIssue[]): URL | undefined {
   }
   if (value.length > MAX_URL) issues.push({ field: "url", reason: "too_long", message: `url is at most ${MAX_URL} characters.` });
   else if (url.username || url.password) issues.push({ field: "url", reason: "invalid", message: "url holds a user or password: send a credential as auth instead." });
+  else if (credentialInQuery(url)) issues.push({ field: "url", reason: "invalid", message: credentialInQueryWords(credentialInQuery(url)!) });
   else if (url.protocol === "http:" && !LOOPBACK(url.hostname)) issues.push({ field: "url", reason: "not_https", message: `url is http://${url.host}, which is not this machine's loopback: use https, or http only on loopback.` });
   else if (url.protocol !== "https:" && url.protocol !== "http:") issues.push({ field: "url", reason: "invalid", message: "url is https, or http on loopback." });
   url.hash = "";
@@ -136,7 +176,7 @@ export function urlOf(value: unknown, issues: InputIssue[]): URL | undefined {
 /** The body's auth: its type and, when it sends one, its credential as the headers it becomes. */
 export function authOf(value: unknown, issues: InputIssue[]): Auth | undefined {
   if (value === undefined) return { type: "none" };
-  if (!isObject(value)) return void issues.push({ field: "auth", reason: "wrong_type", message: "auth is {type: none|bearer|headers|oauth|github_app, token?, headers?}." });
+  if (!isObject(value)) return void issues.push({ field: "auth", reason: "wrong_type", message: "auth is {type: none|bearer|headers|oauth|github_app|per_run, token?, headers?}." });
   const before = issues.length;
   issues.push(...unknownFields(value, ["type", "token", "headers"]).map((issue) => ({ ...issue, field: `auth.${issue.field}` })));
   const type = value.type;
@@ -148,6 +188,7 @@ export function authOf(value: unknown, issues: InputIssue[]): Auth | undefined {
   };
   let headers: HeaderMap | undefined;
   if (type === "github_app" && value.token !== undefined) issues.push({ field: "auth.token", reason: "not_allowed", message: "auth.type github_app takes no token: the connected GitHub App's installation token is minted for each run." });
+  if (type === "per_run" && value.token !== undefined) issues.push({ field: "auth.token", reason: "not_allowed", message: "auth.type per_run takes headers to list the server's tools with, never kept: a run's own credential is its mcp_auth." });
   if ((type === "none" || type === "oauth") && (value.token !== undefined || value.headers !== undefined)) issues.push({ field: "auth", reason: "not_allowed", message: type === "none" ? "auth.type none sends no credential." : "auth.type oauth takes its credential from a sign-in, never from a body." });
   if (type === "bearer") {
     if (value.headers !== undefined) issues.push({ field: "auth.headers", reason: "not_allowed", message: "A bearer credential is auth.token." });
@@ -156,23 +197,56 @@ export function authOf(value: unknown, issues: InputIssue[]): Auth | undefined {
       headers = { authorization: `Bearer ${String(value.token)}` };
     }
   }
-  if (type === "headers" || type === "github_app") {
+  if (type === "headers" || type === "github_app" || type === "per_run") {
     if (type === "headers" && value.token !== undefined) issues.push({ field: "auth.token", reason: "not_allowed", message: "Named headers are auth.headers." });
-    if (value.headers !== undefined) {
-      const entries = isObject(value.headers) ? Object.entries(value.headers) : [];
-      if (!entries.length || entries.length > MAX_HEADERS) issues.push({ field: "auth.headers", reason: "invalid", message: `auth.headers names 1 to ${MAX_HEADERS} headers and their values.` });
-      headers = Object.create(null) as HeaderMap;
-      for (const [name, text] of entries) {
-        const lower = name.toLowerCase();
-        if (!HEADER_NAME.test(name) || RESERVED.has(lower)) issues.push({ field: `auth.headers.${name}`, reason: "invalid", message: `${name} is not a header a credential may be sent in.` });
-        else if (type === "github_app" && lower === "authorization") issues.push({ field: `auth.headers.${name}`, reason: "not_allowed", message: "A github_app server's Authorization is the installation token minted for each run, never a saved one." });
-        else if (lower in headers) issues.push({ field: `auth.headers.${name}`, reason: "duplicate", message: `${name} is named twice.` });
-        check(`auth.headers.${name}`, text);
-        headers[lower] = String(text);
-      }
-    }
+    if (value.headers !== undefined) headers = headersOf("auth.headers", value.headers, issues, type === "github_app" ? "A github_app server's Authorization is the installation token minted for each run, never a saved one." : undefined);
   }
   return issues.length > before ? undefined : { type: type as AuthType, ...(headers ? { headers } : {}) };
+}
+
+/** A credential's named headers at `field`: 1 to MAX_HEADERS, each a header a credential may be sent in, its value text
+ *  with no control character, within MAX_VALUE_BYTES. `noAuthorization`: why Authorization is refused, when it is. */
+function headersOf(field: string, value: unknown, issues: InputIssue[], noAuthorization?: string): HeaderMap {
+  const entries = isObject(value) ? Object.entries(value) : [];
+  if (!entries.length || entries.length > MAX_HEADERS) issues.push({ field, reason: "invalid", message: `${field} names 1 to ${MAX_HEADERS} headers and their values.` });
+  const headers = Object.create(null) as HeaderMap;
+  for (const [name, text] of entries) {
+    const lower = name.toLowerCase();
+    const at = `${field}.${name}`;
+    if (!HEADER_NAME.test(name) || RESERVED.has(lower)) issues.push({ field: at, reason: "invalid", message: `${name} is not a header a credential may be sent in.` });
+    else if (noAuthorization && lower === "authorization") issues.push({ field: at, reason: "not_allowed", message: noAuthorization });
+    else if (lower in headers) issues.push({ field: at, reason: "duplicate", message: `${name} is named twice.` });
+    if (typeof text !== "string" || text === "") issues.push({ field: at, reason: "wrong_type", message: `${at} is text, not empty.` });
+    else if (CONTROL.test(text)) issues.push({ field: at, reason: "invalid", message: `${at} holds a control character.` });
+    else if (Buffer.byteLength(text) > MAX_VALUE_BYTES) issues.push({ field: at, reason: "too_long", message: `${at} is at most ${MAX_VALUE_BYTES} bytes.` });
+    headers[lower] = String(text);
+  }
+  return headers;
+}
+
+/** The most servers one mcp_auth names. */
+const MAX_MCP_AUTH_SERVERS = 8;
+
+/** A run's `mcp_auth` (POST /runs, POST /agents/{id}/runs, POST /runs/{id}/messages): the headers each named per_run
+ *  server is called with for this run, `{"<server>": {"headers": {...}}}`. Checked for shape here; that each name is a
+ *  saved per_run server is the caller's check. Undefined when absent or wrong (with its issues). */
+export function mcpAuthOf(value: unknown, issues: InputIssue[]): Record<string, HeaderMap> | undefined {
+  if (value === undefined) return undefined;
+  const shape = 'mcp_auth is {"<server>": {"headers": {"<name>": "<value>"}}}, one entry for each per_run MCP server the run calls.';
+  if (!isObject(value) || !Object.keys(value).length || Object.keys(value).length > MAX_MCP_AUTH_SERVERS) return void issues.push({ field: "mcp_auth", reason: isObject(value) ? "invalid" : "wrong_type", message: `${shape} It names 1 to ${MAX_MCP_AUTH_SERVERS} servers.` });
+  const before = issues.length;
+  const out: Record<string, HeaderMap> = Object.create(null);
+  for (const [server, entry] of Object.entries(value)) {
+    const field = `mcp_auth.${server}`;
+    if (!MCP_SERVER_NAME.test(server)) issues.push({ field, reason: "invalid", message: `${server} is not an MCP server's name.` });
+    if (!isObject(entry)) {
+      issues.push({ field, reason: "wrong_type", message: shape });
+      continue;
+    }
+    issues.push(...unknownFields(entry, ["headers"]).map((issue) => ({ ...issue, field: `${field}.${issue.field}` })));
+    out[server] = headersOf(`${field}.headers`, entry.headers, issues);
+  }
+  return issues.length > before ? undefined : out;
 }
 
 /** The OAuth scope list a sign-in body may send: 1 to 32 OAuth scopes. */
@@ -188,15 +262,16 @@ type Seen = { status: number; headers: globalThis.Headers; rpc: Promise<boolean>
 
 /** Connect to `url`, agree a protocol revision, and list every tool (all pages), each request held to REQUEST_MS and
  *  MAX_RESPONSE_BYTES and the whole to PREVIEW_MS. A failure is an ApiError: 422 auth_required (with the auth the
- *  server asks for), 422 not_mcp, 422 input_invalid for a redirect, else 424 upstream_failed. */
-export async function listServer(url: URL, headers: HeaderMap, version: string, stop?: AbortSignal): Promise<Listed> {
+ *  server asks for), 422 not_mcp, 422 input_invalid for a redirect, else 424 upstream_failed. `send`: how each request
+ *  goes, the store-backed registry's dialled at the address its check let through (mcp-oauth.ts mcpServerAt, dialAt). */
+export async function listServer(url: URL, headers: HeaderMap, version: string, stop?: AbortSignal, send: typeof fetch = fetch): Promise<Listed> {
   const sdk = await import("@modelcontextprotocol/client");
   const deadline = AbortSignal.any([AbortSignal.timeout(PREVIEW_MS), ...(stop ? [stop] : [])]);
   const seen: Seen[] = [];
   let overflow = false;
   const watched = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const signal = AbortSignal.any([deadline, AbortSignal.timeout(REQUEST_MS), ...(init?.signal ? [init.signal] : [])]);
-    const res = await fetch(input, { ...init, redirect: "manual", signal });
+    const res = await send(input, { ...init, redirect: "manual", signal });
     const type = res.headers.get("content-type") ?? "";
     seen.push({ status: res.status, headers: res.headers, rpc: type.startsWith("text/event-stream") ? Promise.resolve(true) : type.includes("json") ? speaksJsonRpc(res.clone()) : Promise.resolve(false) });
     return capped(res, () => (overflow = true));
@@ -240,13 +315,13 @@ export async function listServer(url: URL, headers: HeaderMap, version: string, 
     };
   } catch (error) {
     if (error instanceof ApiError) throw error;
-    throw await refusal(error, seen, overflow, url, headers, deadline, sdk);
+    throw await refusal(error, seen, overflow, url, headers, deadline, sdk, send);
   } finally {
     await client.close().catch(() => {});
   }
 }
 
-async function refusal(error: unknown, seen: Seen[], overflow: boolean, url: URL, headers: HeaderMap, deadline: AbortSignal, sdk: typeof import("@modelcontextprotocol/client")): Promise<ApiError> {
+async function refusal(error: unknown, seen: Seen[], overflow: boolean, url: URL, headers: HeaderMap, deadline: AbortSignal, sdk: typeof import("@modelcontextprotocol/client"), send: typeof fetch): Promise<ApiError> {
   const upstream = (message: string, status?: number) => new ApiError("upstream_failed", message, status ? { details: { status } } : {});
   if (overflow) return upstream(`The MCP server answered more than ${MAX_RESPONSE_BYTES / 2 ** 20} MiB in one response.`);
   const redirect = seen.find((one) => one.status >= 300 && one.status < 400);
@@ -260,7 +335,7 @@ async function refusal(error: unknown, seen: Seen[], overflow: boolean, url: URL
   }
   const denied = seen.find((one) => one.status === 401 || one.status === 403);
   if (denied) {
-    const auth = await authAsked(url, denied.headers, deadline, sdk);
+    const auth = await authAsked(url, denied.headers, deadline, sdk, send);
     const sent = Object.keys(headers).length > 0;
     const asks = auth === "oauth" ? `It signs in with OAuth: ${sent ? `${SIGN_IN_AGAIN}, or ` : ""}sign in with POST /v2/settings/mcp-servers/{name}/oauth/start and its url.` : "Send a bearer token or the headers it takes.";
     return new ApiError("auth_required", `The MCP server ${sent ? "refused the credential sent" : "asks for a credential"} (HTTP ${denied.status}). ${asks}`, { details: { auth, status: denied.status } });
@@ -271,7 +346,7 @@ async function refusal(error: unknown, seen: Seen[], overflow: boolean, url: URL
     if (deadline.aborted || timedOut(error)) return upstream(`The MCP server did not answer within ${REQUEST_MS / 1000} s.`);
     return upstream(`Could not reach the MCP server at ${url.origin}${causeCode(error) ? ` (${causeCode(error)})` : ""}.`);
   }
-  if (!(await Promise.all(seen.map((one) => one.rpc))).some(Boolean)) return new ApiError("not_mcp", `${url.href} does not speak MCP over Streamable HTTP: it answered HTTP ${seen.at(-1)!.status} with no JSON-RPC reply.`);
+  if (!(await Promise.all(seen.map((one) => one.rpc))).some(Boolean)) return new ApiError("not_mcp", `${shownUrl(url.href)} does not speak MCP over Streamable HTTP: it answered HTTP ${seen.at(-1)!.status} with no JSON-RPC reply.`);
   // The listing's own limit when it was the one that ran out, else one request's.
   if (deadline.aborted || timedOut(error)) return upstream(deadline.aborted ? `The MCP server did not finish listing its tools within ${PREVIEW_MS / 1000} s.` : `The MCP server did not answer a request within ${REQUEST_MS / 1000} s.`);
   // Cut every credential value from the SDK's words: a server may echo what it was sent.
@@ -281,10 +356,10 @@ async function refusal(error: unknown, seen: Seen[], overflow: boolean, url: URL
 
 /** What a 401 or 403 asks for: `oauth` when the server names protected-resource metadata (its WWW-Authenticate, or a
  *  well-known document naming an authorization server), else `bearer`. The probe sends no credential. */
-async function authAsked(url: URL, headers: globalThis.Headers, deadline: AbortSignal, sdk: typeof import("@modelcontextprotocol/client")): Promise<"oauth" | "bearer"> {
+async function authAsked(url: URL, headers: globalThis.Headers, deadline: AbortSignal, sdk: typeof import("@modelcontextprotocol/client"), send: typeof fetch): Promise<"oauth" | "bearer"> {
   if (sdk.extractWWWAuthenticateParams(new Response(null, { headers })).resourceMetadataUrl) return "oauth";
   try {
-    const probe = async (input: string | URL | Request, init?: RequestInit) => capped(await fetch(input, { ...init, redirect: "manual", signal: AbortSignal.any([deadline, AbortSignal.timeout(5_000)]) }), () => {});
+    const probe = async (input: string | URL | Request, init?: RequestInit) => capped(await send(input, { ...init, redirect: "manual", signal: AbortSignal.any([deadline, AbortSignal.timeout(5_000)]) }), () => {});
     const metadata = await sdk.discoverOAuthProtectedResourceMetadata(url, undefined, probe);
     return metadata.authorization_servers?.length ? "oauth" : "bearer";
   } catch {

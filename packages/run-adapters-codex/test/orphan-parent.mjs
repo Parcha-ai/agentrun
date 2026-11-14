@@ -28,7 +28,7 @@ const fetch = async (_url, init) => {
   return answer(requests, [{ type: 'message', role: 'assistant', id: `msg_${requests}`, content: [{ type: 'output_text', text: 'done' }] }]);
 };
 const hold = { name: 'hold', description: 'Wait.', inputSchema: { type: 'object' }, replay: 'safe', call: (_args, { signal }) => { ready(); return new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('cut')), { once: true })); } };
-const codex = codexAdapter({ model: 'gpt-5.4-mini', provider: { origin: 'https://provider.invalid', credential: () => 'provider-secret' }, sessionsDir: dir, fetch });
+const codex = codexAdapter({ model: 'gpt-6-luna', provider: { origin: 'https://provider.invalid', credential: () => 'provider-secret' }, sessionsDir: dir, fetch });
 const spec = { key: 'step:orphan', label: 'orphan', system: [], tools: mode === 'tool' ? [hold] : [], context: 'fresh' };
 const store = memorySessionStore();
 const session = await codex.open(spec, { writer: await store.open(spec.key), models: { beforeRequest: async () => {}, afterRequest: async () => {} }, signal: new AbortController().signal, onEvent: () => {} });

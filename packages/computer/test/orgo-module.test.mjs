@@ -27,6 +27,8 @@ test("the Orgo module's env names: the live switch, the key, the workspace, the 
 		os: "COMPUTER_ORGO_OS",
 	});
 	assert.deepEqual(settingsFromEnv({ COMPUTER_ORGO_API_KEY: KEY, COMPUTER_ORGO_WORKSPACE: WORKSPACE }), { apiKey: KEY, workspaceId: WORKSPACE });
+	// No workspace named: the provider uses the key's account's one workspace (orgo-workspaces.ts).
+	assert.deepEqual(settingsFromEnv({ COMPUTER_ORGO_API_KEY: KEY }), { apiKey: KEY });
 	assert.deepEqual(settingsFromEnv({ COMPUTER_ORGO_API_KEY: KEY, COMPUTER_ORGO_WORKSPACE: WORKSPACE, COMPUTER_ORGO_API_URL: "https://orgo.example/api" }).apiUrl, "https://orgo.example/api");
 	assert.throws(() => settingsFromEnv({ ORGO_API_KEY: KEY, COMPUTER_ORGO_WORKSPACE: WORKSPACE }), (error) => /COMPUTER_ORGO_API_KEY/.test(error.message) && !error.message.includes(KEY));
 });
@@ -51,7 +53,7 @@ test("the registry holds orgo, and its Settings entry: the desktop kind, the ORG
 	const entry = PROVIDERS.find((one) => one.id === "orgo");
 	assert.deepEqual(entry.kinds, ["desktop"], "a desktop only: an agent that wants a sandbox gets a cheaper one");
 	// The workspace fills workspaceId, which every Orgo provider is built with (Linux and Windows alike).
-	assert.deepEqual(entry.keys, [{ name: "ORGO_API_KEY", option: "apiKey", required: true }, { name: "ORGO_WORKSPACE_ID", option: "workspaceId", required: true }]);
+	assert.deepEqual(entry.keys, [{ name: "ORGO_API_KEY", option: "apiKey", required: true }, { name: "ORGO_WORKSPACE_ID", option: "workspaceId", required: false, picked: true }]);
 	assert.deepEqual(entry.mounts, []);
 	assert.equal(entry.metered, true);
 	const orgo = await import("../dist/orgo.js");

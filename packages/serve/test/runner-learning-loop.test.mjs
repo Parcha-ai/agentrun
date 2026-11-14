@@ -17,7 +17,7 @@ const { gradePrompt } = await import("../dist/learn/grade.js");
 const NOTE = { file: "retries.md", text: "---\nname: Retries\ndescription: retry twice\n---\nRetry a flaky fetch twice." };
 const PROPOSAL = { seed: "s1", notes: [NOTE], asked: ["please be careful with retries"] };
 const MAIN = { active: [], superseded: [], graded: { "old.md": "oid-1" } };
-const KEEP = JSON.stringify({ merge: true, reason: "Worth keeping.", items: [{ file: "retries.md", decision: "keep", why: "useful" }] });
+const KEEP = JSON.stringify({ merge: true, reason: "Worth keeping.", items: [{ file: "retries.md", decision: "keep", general: true, why: "useful" }] });
 const DROP = JSON.stringify({ merge: false, reason: "Too vague to help.", items: [{ file: "retries.md", decision: "drop", why: "vague" }] });
 const MERGED = { ok: true, main: "c0ffee", commit: "c0ffee", files: ["retries.md"] };
 
@@ -96,7 +96,7 @@ test("an answer the grader's reader can't read is asked once more; two such answ
 });
 
 /** A grade that contradicts itself: every item kept, and no merge, with a reason that says it can be kept (#2407). */
-const CONTRADICTS = JSON.stringify({ merge: false, reason: "It is general, so it can be kept.", items: [{ file: "retries.md", decision: "keep", why: "useful" }] });
+const CONTRADICTS = JSON.stringify({ merge: false, reason: "It is general, so it can be kept.", items: [{ file: "retries.md", decision: "keep", general: true, why: "useful" }] });
 
 test("a grade that keeps every item and says no merge is asked once more, the contradiction named; the second answer is the one that counts", async (t) => {
   const { store, clock, claim } = await setUp(t);
@@ -231,6 +231,9 @@ test("a learning run stopped after its grade booked keeps that grade's cost on i
   assert.deepEqual([row.state, row.costUsd], ["stopped", 0.01], "the paid grade stays on the stopped run's row");
   const { learningSpendOverStore } = await import("../dist/store-reads/learning.js");
   assert.deepEqual((await learningSpendOverStore(store, { from: 0, to: Number.MAX_SAFE_INTEGER })).map((one) => [one.agent, one.cost]), [["agent-1", 0.01]], "what /v2/usage reads as learning's spend");
+  const { agentCostOverStore } = await import("../dist/store-reads/learning.js");
+  const [run] = (await agentCostOverStore(store, "agent-1")).runs;
+  assert.deepEqual([run.run_id, run.learning_usd], ["run-1", 0.01], "the cost per run books the stopped grade's cost to its run");
 });
 
 test("a learning run stopped while its grade request was cut keeps an unknown cost (null), and /v2/usage's learning spend says so", async (t) => {
@@ -245,6 +248,9 @@ test("a learning run stopped while its grade request was cut keeps an unknown co
   assert.deepEqual([row.state, row.costUsd], ["stopped", null], "a cut request may have been billed: unknown, never 0");
   const { learningSpendOverStore } = await import("../dist/store-reads/learning.js");
   assert.deepEqual((await learningSpendOverStore(store, { from: 0, to: Number.MAX_SAFE_INTEGER })).map((one) => [one.agent, one.cost]), [["agent-1", null]]);
+  const { agentCostOverStore } = await import("../dist/store-reads/learning.js");
+  const [run] = (await agentCostOverStore(store, "agent-1")).runs;
+  assert.deepEqual([run.run_id, run.learning_usd, run.total_usd], ["run-1", null, null], "the cost per run says the stopped grade's cost is unknown, never 0");
 });
 
 test("a learning run whose source kept nothing ends with nothing graded", async (t) => {
@@ -263,7 +269,7 @@ test("a learning run whose source kept nothing ends with nothing graded", async 
 test("a draft the proposal holds as unpriced is merged pending though the grader keeps it; without the hold it is merged active", async (t) => {
   const FLOW = { file: "workflows/file-ticket/workflow.json", text: "{}" };
   const README = { file: "workflows/file-ticket/README.md", text: "---\nname: file-ticket\ndescription: Files a ticket\n---\n" };
-  const keepAll = JSON.stringify({ merge: true, reason: "Worth keeping.", items: [{ file: "retries.md", decision: "keep", why: "useful" }, { file: FLOW.file, decision: "keep", why: "a repeatable job" }] });
+  const keepAll = JSON.stringify({ merge: true, reason: "Worth keeping.", items: [{ file: "retries.md", decision: "keep", general: true, why: "useful" }, { file: FLOW.file, decision: "keep", general: true, why: "a repeatable job" }] });
   for (const [held, want] of [[{ [FLOW.file]: ["its step File the ticket calls create_issue on linear, which has no price here, so it runs outside the run's cost and cap"] }, [README.file]], [undefined, undefined]]) {
     const { store, clock } = await storeOn(t);
     await agentWithRevision(store);
@@ -286,7 +292,7 @@ test("a held draft's grade prompt says it waits for its owner's OK, and why", as
   const files = [{ file: draft, text: JSON.stringify({ v: 2, name: "answer", schemas: {}, root: { node: "chain", steps: [] } }) }, { file: "workflows/answer/README.md", text: "---\nname: answer\ndescription: Answers a question\n---\n" }];
   const why = "its step lookup calls the MCP tool billing.charge, which declares no price";
   const { store, clock, claim } = await setUp(t, { ...PROPOSAL, files, held: { [draft]: [why] } });
-  const { loop, calls } = loopOn(store, clock, { answers: [JSON.stringify({ merge: true, reason: "Worth keeping.", items: [{ file: "retries.md", decision: "keep", why: "useful" }, { file: draft, decision: "keep", why: "useful" }] })] });
+  const { loop, calls } = loopOn(store, clock, { answers: [JSON.stringify({ merge: true, reason: "Worth keeping.", items: [{ file: "retries.md", decision: "keep", general: true, why: "useful" }, { file: draft, decision: "keep", general: true, why: "useful" }] })] });
   await loop.start(claim);
   const prompt = calls.ask[0].request.prompt;
   assert.match(prompt, /It waits for its owner's OK whatever you decide, for the reason below/, prompt.slice(-1500));

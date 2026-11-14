@@ -56,12 +56,12 @@ test("a catalog model's route: its provider's key by name, its catalog cost with
 
 test("an Anthropic model's route goes to Anthropic itself, its key read by name, with no fetch of its own", async () => {
   const env = { ANTHROPIC_API_KEY: KEY };
-  const route = await routeOf("anthropic/claude-sonnet-4-5", env);
-  assert.equal(route.model, "claude-sonnet-4-5");
+  const route = await routeOf("anthropic/claude-sonnet-5-5", env);
+  assert.equal(route.model, "claude-sonnet-5-5");
   assert.equal(route.provider.origin, "https://api.anthropic.com");
   assert.equal(route.fetch, undefined, "the network, Anthropic's own API");
   assert.equal(await route.provider.credential(), KEY, "its key, read by name when a request goes");
-  assert.ok(route.price("claude-sonnet-4-5", usage(1_000, 100)) > 0, "priced from the catalog");
+  assert.ok(route.price("claude-sonnet-5-5", usage(1_000, 100)) > 0, "priced from the catalog");
 });
 
 test("under --faux the route answers a Messages request through its fetch from the faux model, and never the network", async () => {

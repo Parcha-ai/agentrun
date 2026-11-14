@@ -17,7 +17,8 @@ import { parseDocument } from "yaml";
 import { answerJson, lastJsonBlock, schemaCheck } from "./answer-json.js";
 import { checkNote } from "./learn/index.js";
 import { NOTE_FILE } from "./learn/notes.js";
-import { MCP_SERVER_NAME } from "./mcp-probe.js";
+import { shownUrl } from "./mcp-probe.js";
+import { MCP_SERVER_NAME, MCP_TOOL_NAME, mcpNameOf, mcpToolName } from "./tool-names.js";
 import { settingsKeyOf, shellToolOf } from "./tool-gate.js";
 import { ASK_TOOL, BOUND_TOOLS } from "./tools.js";
 import { applyBodyOf, compiled, filledPins, type Package, packageView, readPackage } from "./templates.js";
@@ -51,8 +52,6 @@ const GRADER_FIELDS: Record<string, string[]> = {
   file_exists: ["type", "path"],
   schema: ["type", "schema"],
 };
-/** A gate name of an MCP tool: `mcp:<server>/<tool>`. */
-const MCP_GATE = /^mcp:([a-z][a-z0-9-]{0,31})\/([A-Za-z0-9_.-]{1,128})$/;
 /** A target: a field of the answer's JSON, dotted for a nested one. */
 const TARGET = /^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$/;
 const ENDED = ["completed", "failed", "cancelled"];
@@ -149,7 +148,7 @@ function fixtureOf(text: string, name: string, at: string, bad: (message: string
       && (search.limit === undefined || (Number.isSafeInteger(search.limit) && (search.limit as number) >= 1)) && (search.note === undefined || typeof search.note === "string"));
     const ok = isObject(spec) && !unknown(spec, ["description", "input", "answers", "default", "search"]).length && searchOk && typeof spec.description === "string" && isObject(spec.input) && spec.input.type === "object"
       && answers !== undefined && answers.every((a) => isObject(a) && !unknown(a, ["when", "result"]).length && (isObject(a.when) || (Array.isArray(a.when) && a.when.length > 0 && a.when.every(isObject))) && isObject(a.result)) && (spec.default === undefined || isObject(spec.default));
-    if (!ok || !/^[A-Za-z0-9_.-]{1,128}$/.test(tool)) {
+    if (!ok || !MCP_TOOL_NAME.test(tool)) {
       bad(`${at}: tools.${tool} is {description, input: an object's JSON Schema, answers: [{when: {...} or [{...}, ...], result: an MCP tool result}], default?: a result, search?: {query: the argument's name, files: [{path, text}], limit?, note?}}`);
       continue;
     }
@@ -189,9 +188,9 @@ function graderOf(dir: string, p: Package, file: string, text: string, mcp: Reco
     case "tool_used": {
       const tools = data.tool !== undefined && data.tools === undefined ? [data.tool] : data.tools;
       if (!Array.isArray(tools) || !tools.length || !tools.every((t) => typeof t === "string") || (data.tool !== undefined && data.tools !== undefined)) return bad(`${file}: a tool_used grader names tool (one gate name) or tools (a list), not both`), undefined;
-      const listed = p.mcp.flatMap(({ server, tools: names }) => names.map((name) => `mcp:${server}/${name}`));
+      const listed = p.mcp.flatMap(({ server, tools: names }) => names.map((name) => mcpToolName(server, name)));
       for (const tool of tools as string[]) {
-        if (MCP_GATE.test(tool) ? !listed.includes(tool) : !(BOUND_TOOLS.includes(tool) || tool === ASK_TOOL)) bad(`${file}: ${tool} is neither a tool this server binds nor an MCP tool the package lists (mcp:<server>/<tool>)`);
+        if (mcpNameOf(tool) ? !listed.includes(tool) : !(BOUND_TOOLS.includes(tool) || tool === ASK_TOOL)) bad(`${file}: ${tool} is neither a tool this server binds nor an MCP tool the package lists (mcp:<server>/<tool>)`);
       }
       const expect = data.expect ?? "called";
       if (expect !== "called" && expect !== "not_called") return bad(`${file}: expect is called or not_called`), undefined;
@@ -201,7 +200,7 @@ function graderOf(dir: string, p: Package, file: string, text: string, mcp: Reco
       if (data.args !== undefined) {
         if (!isObject(data.args)) bad(`${file}: args is a mapping of the arguments a call must carry`);
         // A call's arguments are known whole only from a fake MCP server's log: the timeline keeps a preview.
-        for (const tool of tools as string[]) if (!Object.hasOwn(mcp, MCP_GATE.exec(tool)?.[1] ?? "")) bad(`${file}: args are checked on a faked MCP tool's calls alone, and ${tool} is not one (case.yaml mcp fakes its server)`);
+        for (const tool of tools as string[]) if (!Object.hasOwn(mcp, mcpNameOf(tool)?.server ?? "")) bad(`${file}: args are checked on a faked MCP tool's calls alone, and ${tool} is not one (case.yaml mcp fakes its server)`);
       }
       return { file, type, tools: tools as string[], expect, ...(count !== undefined ? { count: count as number } : {}), ...(isObject(data.args) ? { args: data.args } : {}) };
     }
@@ -274,7 +273,7 @@ export function readCases(dir: string, names?: readonly string[]): { pkg: Packag
     }
     // A grant of a faked server's tool its fixture does not serve: the agent would be granted a tool the fake lacks.
     for (const grant of grants) {
-      const [, server, tool] = MCP_GATE.exec(grant) ?? [];
+      const { server, tool } = mcpNameOf(grant) ?? {};
       if (server !== undefined && mcp[server] && !Object.hasOwn(mcp[server].tools, tool!)) bad(`${at}/case.yaml: grants ${grant}, a tool the fake ${server} does not serve`);
     }
     const learning: EvalCase["learning"] = [];
@@ -445,7 +444,7 @@ export function gradeDeterministic(grader: Exclude<Grader, { type: "llm" }>, run
     case "tool_used": {
       // A faked MCP tool's calls are its fake's log (each call that reached it, whole); any other tool's, the timeline's.
       const calls = grader.tools.flatMap((tool) => {
-        const server = MCP_GATE.exec(tool)?.[1];
+        const server = mcpNameOf(tool)?.server;
         const from = server !== undefined && faked.includes(server) ? run.mcpCalls : run.calls;
         return from.filter((call) => call.tool === tool && (!grader.args || carries(call.arguments, grader.args)));
       });
@@ -505,7 +504,7 @@ export async function startFake(name: string, fixture: McpFixture): Promise<Fake
     for (const [tool, spec] of Object.entries(fixture.tools)) {
       server.registerTool(tool, { description: spec.description, inputSchema: fromJsonSchema(spec.input as Parameters<typeof fromJsonSchema>[0]) }, (args: unknown) => {
         const given = isObject(args) ? args : {};
-        calls.push({ tool: `mcp:${name}/${tool}`, arguments: given });
+        calls.push({ tool: mcpToolName(name, tool), arguments: given });
         return fakeAnswer(fixture, tool, given) as never;
       });
     }
@@ -750,7 +749,8 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
     // directory of its own, gone when the eval is.
     cpSync(options.dir, join(scratch!, "templates", pkg.name), { recursive: true });
     const { startServe } = await import("./server.js");
-    const serve = await startServe({ data: join(scratch!, "data"), port: 0, token: randomBytes(24).toString("base64url"), templates: join(scratch!, "templates"), drainTimeout: "5s", ...(options.serve ?? {}) }).catch((error: unknown) => {
+    // A local install by construction: its own scratch server, reached on loopback, its fake MCP servers there too.
+    const serve = await startServe({ mcpLoopback: true, data: join(scratch!, "data"), port: 0,token: randomBytes(24).toString("base64url"), templates: join(scratch!, "templates"), drainTimeout: "5s", ...(options.serve ?? {}) }).catch((error: unknown) => {
       removeTree(scratch!);
       throw error;
     });
@@ -761,7 +761,8 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
     const { fauxEnvOf } = await import("./server.js");
     const { withoutFaux } = await import("./model.js");
     const serveOptions = options.serve ?? {};
-    const beside = await runnerBeside(join(scratch!, "data"), serveOptions.faux ? { env: { ...withoutFaux(process.env), ...fauxEnvOf({ data: join(scratch!, "data"), ...serveOptions } as Parameters<typeof fauxEnvOf>[0]) } } : {}).catch(async (error: unknown) => {
+    // Its run lines go to stderr: stdout is the eval's report.
+    const beside = await runnerBeside(join(scratch!, "data"), { mcpLoopback: serve.localInstall, onLine: (line) => console.error(line), ...(serveOptions.faux ? { env: { ...withoutFaux(process.env), ...fauxEnvOf({ data: join(scratch!, "data"), ...serveOptions } as Parameters<typeof fauxEnvOf>[0]) } } : {}) }).catch(async (error: unknown) => {
       await serve.close();
       removeTree(scratch!);
       throw error;
@@ -859,7 +860,7 @@ async function runCase(ctx: Ctx, one: EvalCase): Promise<CaseResult> {
   }
 }
 /** Whether the server's MCP server `name` is still this eval's fake at `url`. */
-const ownsFake = (api: Api, name: string, url: string): Promise<boolean> => api("GET", `/settings/mcp-servers/${name}`).then((read) => read.status === 200 && isObject(read.body) && read.body.url === url, () => false);
+const ownsFake = (api: Api, name: string, url: string): Promise<boolean> => api("GET", `/settings/mcp-servers/${name}`).then((read) => read.status === 200 && isObject(read.body) && read.body.url === shownUrl(url), () => false);
 const caseCost = (runs: readonly RunResult[]) => Math.round(runs.reduce((sum, r) => sum + (r.cost_usd ?? 0) + r.graders.reduce((g, x) => g + (x.cost_usd ?? 0), 0), 0) * 1e6) / 1e6;
 
 /** One run of a case: a fresh agent (so one run's learning never reaches the next), its notes, the run, its grades. */

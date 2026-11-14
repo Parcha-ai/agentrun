@@ -23,11 +23,9 @@ import { filedAnswer } from "./filed-answer.js";
 import { paidLedger, paidStep } from "./paid-calls.js";
 import { metaToolOf } from "./mcp-meta.js";
 import { SIGN_IN_AGAIN } from "./mcp-oauth.js";
-import { mcpToolName } from "./tool-gate.js";
+import { mcpNameOf, mcpToolName } from "./tool-names.js";
 import { type Workspace, workspaceAt, workspaceErrorWords } from "./workspace/index.js";
 
-/** A catalog name of an MCP tool: `mcp:<server>/<tool>`. A server name has no `_`, so `mcp__<server>__<tool>` splits one way. */
-export const MCP_NAME = /^mcp:([a-z][a-z0-9-]{0,31})\/([A-Za-z0-9_-]{1,64})$/;
 /** The longest answer the model reads whole; past it, the rest is filed in the run's work/ as lines read pages through
  *  (filed-answer.ts). Within the host's result bound (HOST_RESULT_MAX_CHARS), so every harness passes it whole. */
 export const MCP_CLIP = 60_000;
@@ -46,12 +44,6 @@ export type McpCredentials = Record<string, { url: string; headers?: Record<stri
 export interface McpServerSource {
   server(name: string): { url: string; tools: readonly McpTool[]; prices?: Readonly<Record<string, number>> } | undefined;
 }
-
-/** `mcp:<server>/<tool>` read, or undefined for a name that is not one. */
-export const mcpNameOf = (name: string): { server: string; tool: string } | undefined => {
-  const match = MCP_NAME.exec(name);
-  return match ? { server: match[1]!, tool: match[2]! } : undefined;
-};
 
 /** The most schema nodes, and the deepest nesting, a tool's declarations are checked through: past either the tool is
  *  refused, never walked further. */
@@ -137,6 +129,23 @@ export function mcpPinOf(names: readonly string[], source: McpServerSource): Mcp
   return pin;
 }
 
+/** A request's address refused by the guarded fetch below, before anything left: thrown only there, and told apart by
+ *  its class, never by its words. A server's error answer can carry the same words after it ran the call (the SDK puts
+ *  the body of a failed POST in its error's message), and reading them as this refusal would say a call that may have
+ *  run was never sent. */
+class AddressRefused extends Error {
+  constructor(readonly reason: string) {
+    super(`its address is refused here: ${reason}`);
+  }
+}
+/** The reason of the address refusal an error is, or a cause the SDK wrapped it in: the one request's own, so a
+ *  refusal of one call is never read as another's. */
+function addressRefusal(error: unknown): string | undefined {
+  for (let e: unknown = error, depth = 0; e && depth < 8; e = (e as { cause?: unknown }).cause, depth++) {
+    if (e instanceof AddressRefused) return e.reason;
+  }
+  return undefined;
+}
 
 /** Why a connection failed, in a few words: the network's own code, read down the error's causes (the SDK wraps fetch's
  *  error, which wraps the socket's), else the deepest message, cut short. */
@@ -185,6 +194,11 @@ export interface McpGatewayOptions {
   bounds?: { callMs?: number; connectMs?: number };
   /** The run's commit to its store: an unpriced call's "not metered" is written on its root. */
   commit?: () => McpCommit | undefined;
+  /** Where each request to a server may go, asked before anything is sent to it: the runner's MCP claim passes the
+   *  address rule (mcp-oauth.ts mcpServerAt) with the owner's private-network hosts read now, and a fetch dialled at the
+   *  address it checked (`send`; none, `fetch` as it is). A refusal is said to the model, nothing sent. None: every
+   *  request goes as `fetch` sends it. */
+  reach?: (url: string, signal: AbortSignal) => Promise<{ refused: string } | { send?: typeof fetch }>;
   /** The claim's per-call check of a server's credential (its custody stamp): awaited before each call is checked for
    *  sending, it may drop the credential (`credentials[server].unopened`), which the call then refuses unsent; one that
    *  throws (a store read failed, the call was stopped) refuses the call unsent too, in words, and the run goes on. Only
@@ -213,7 +227,8 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
   const clients = new Map<string, Promise<Upstream>>();
   const pins = new Map(Object.entries(options.pin));
   const credentials: Pick<Map<string, McpCredentials[string]>, "get"> = { get: (server) => (Object.hasOwn(options.credentials, server) ? options.credentials[server] : undefined) };
-  /** Each server's last HTTP status, which tells a refused credential from another failure. */
+  /** Each server's last HTTP status, which tells a refused credential from another failure. (An address refusal is never
+   *  kept here: it is read from each call's own error, since calls to one server run at once.) */
   const statuses = new Map<string, { last?: number }>();
   const send = options.fetch ?? fetch;
   /** The credential values each call in flight took or its server's requests sent while it was out, one set per call, by
@@ -246,10 +261,20 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
 
   /** The fetch one server's client sends with: its credential added, no redirect followed, at most MAX_RESPONSE read. */
   const guarded = (server: string, headers: Record<string, string> | (() => Record<string, string>), status: { last?: number }) => async (input: string | URL | Request, init: RequestInit = {}) => {
+    // Its address checked first, every request: a name that resolves somewhere private now is refused before anything
+    // (its credential among it) leaves, and the request is dialled at the address checked.
+    let through = send;
+    if (options.reach) {
+      const at = await options.reach(input instanceof Request ? input.url : String(input), init.signal ?? AbortSignal.timeout(options.bounds?.connectMs ?? CONNECT_MS));
+      if ("refused" in at) {
+        throw new AddressRefused(at.refused);
+      }
+      if (at.send) through = at.send;
+    }
     const sent = new Headers(init.headers);
     // Live credentials: the server's headers as they are at this request, held for the scrub before they leave.
     for (const [name, value] of Object.entries(hold(server, typeof headers === "function" ? headers() : headers))) sent.set(name, value);
-    const response = await send(input, { ...init, headers: sent, redirect: "manual" });
+    const response = await through(input, { ...init, headers: sent, redirect: "manual" });
     status.last = response.status;
     if (response.status >= 300 && response.status < 400) throw new Error(`it answered a redirect (HTTP ${response.status}), which is never followed`);
     if (!response.body) return response;
@@ -318,7 +343,7 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
    *  it, in `call` below: the one place every harness's call passes before anything is sent. */
   /** `sending`, when given, runs once the server is connected and right before the call leaves: its refusal (a text)
    *  keeps the call from leaving. A call that never got that far (a failed connect, a stop) never ran it. */
-  const forward = async (server: string, url: string, headers: Record<string, string>, tool: McpTool, args: Record<string, unknown>, signal: AbortSignal, sending?: () => Promise<string | undefined>): Promise<McpCallResult> => {
+  const forward = async (server: string, url: string, headers: Record<string, string>, tool: McpTool, args: Record<string, unknown>, signal: AbortSignal, sending?: () => Promise<string | undefined>, outcome: { unsent?: true } = {}): Promise<McpCallResult> => {
     let connected = false;
     // Read at each use: a token refreshed while the call is out, and sent, is scrubbed with the one it took.
     const held = callSet(server);
@@ -338,6 +363,15 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
       if (signal.aborted) return said(`The call to the MCP server ${server} was stopped.`, true);
       // The next call connects again (a server that dropped its session, say); this one is never sent again.
       clients.delete(server);
+      // Its address refused before the request left (reach): nothing reached it. Read from this call's own error, never
+      // from the server's shared state: another call's refusal says nothing of whether this one was sent.
+      const refused = addressRefusal(error);
+      if (refused !== undefined) {
+        // `sending` may have run already (the connection was open): the request's own address check refused it, so the call
+        // never left and `outcome` says so, for the caller that books a price only for a call that went.
+        outcome.unsent = true;
+        return said(`The MCP server ${server}'s address is refused here: ${refused}. Nothing was sent.`, true);
+      }
       const status = statuses.get(server)?.last;
       // An OAuth token that expired mid-run is not refreshed here (no channel to serve for it): the next launch does.
       if (status === 401 || status === 403) return said(`The MCP server ${server} refused its credential (its sign-in expired or was revoked, or its key changed): ${SIGN_IN_AGAIN}, or update its credential there.`, true);
@@ -387,11 +421,17 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
     const listed = pinnedTools.find((t) => t.name === tool)!;
     // Whether the call left for the server: only then is it booked, at its price or as not metered.
     let went = false;
-    const call = (mark: () => Promise<string | undefined> = async () => undefined) => forward(server, url, credentials.get(server)?.headers ?? {}, listed, args, signal, async () => {
-      const refused = await mark();
-      went = refused === undefined;
-      return refused;
-    });
+    const call = async (mark: () => Promise<string | undefined> = async () => undefined) => {
+      const outcome: { unsent?: true } = {};
+      const result = await forward(server, url, credentials.get(server)?.headers ?? {}, listed, args, signal, async () => {
+        const refused = await mark();
+        went = refused === undefined;
+        return refused;
+      }, outcome);
+      // The request's own address check refused it after the mark: it never left, so nothing is booked.
+      if (outcome.unsent) went = false;
+      return result;
+    };
     const name = mcpToolName(server, tool);
     const label = { tool: name, charged_by: server, call: callId };
     const commit = options.commit?.();
@@ -415,8 +455,9 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
     servers: [...pins].map(([name, pinned]) => ({ name, tools: pinned.tools })),
     heldValues: () => [...new Set([...inFlight.values()].flatMap((calls) => [...calls].flatMap((values) => [...values])))],
     async call(server, tool, args, { signal, callId }) {
-      const why = unsendable(server, tool);
-      if (why) return said(why, true);
+      // Only what no sign-in can change is refused here: the rest (a credential that did not open, a server since removed)
+      // is read by sent() after beforeCall, which opens the row again, so a call after the owner signs in again goes.
+      if (!pins.get(server)?.tools.some((t) => t.name === tool)) return said(`${tool} is not a tool of the MCP server ${server} in this run.`, true);
       return sent(server, tool, args, callId ?? `mcp_${randomUUID()}`, signal);
     },
   };

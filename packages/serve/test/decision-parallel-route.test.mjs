@@ -6,7 +6,6 @@ import assert from "node:assert/strict";
 import { appendFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { durableDecisions } from "../dist/workflow/readers.js";
 import { decisionKeysFor, decisionsOf, providerMissing } from "../dist/decisions.js";
 import { flowAgent, serve, withEnv } from "./support.mjs";
 import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";

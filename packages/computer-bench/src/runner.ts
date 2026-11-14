@@ -204,18 +204,21 @@ export async function resolveFinds(wire: Wire, params: JsonObject, signal?: Abor
 }
 
 /**
- * Why a ui.act's answer means its steps did not all happen, or undefined when they did. A step counts only when it
- * answers verified: true (a readback saw its effect); verified: false is unconfirmed, so a setup or an oracle that
- * relies on it has not done its job.
+ * Why a ui.act's answer means its steps did not all happen, or undefined when they did. A step counts when it answers
+ * verified: true (a readback saw its effect). A step whose effect comes later (a Save that shows "Saved" a moment after
+ * its press) answers verified: false, and only the act's expect can see it: so an act whose expect was met and whose
+ * window changed is done, unverified steps and all. Without that, verified: false is unconfirmed, and a setup or an
+ * oracle that relies on it has not done its job.
  */
 export function actShortfall(value: unknown): string | undefined {
-	const v = (value ?? {}) as { steps?: { route?: string; verified?: boolean; error?: { kind?: string; message?: string } }[]; expect?: string };
+	const v = (value ?? {}) as { steps?: { route?: string; verified?: boolean; error?: { kind?: string; message?: string } }[]; expect?: string; changed?: boolean };
 	const steps = v.steps ?? [];
 	const refused = steps.findIndex((one) => one.error !== undefined);
 	if (refused >= 0) return `its step ${refused + 1} was refused: ${steps[refused]?.error?.kind}: ${steps[refused]?.error?.message}`;
+	if (v.expect === "unmet") return "its expect did not hold in time";
+	if (v.expect === "met" && v.changed === true) return undefined;
 	const unverified = steps.findIndex((one) => one.verified !== true);
 	if (unverified >= 0) return `its step ${unverified + 1} ran by the ${steps[unverified]?.route ?? "unknown"} route but was not verified (no readback saw its effect)`;
-	if (v.expect === "unmet") return "its expect did not hold in time";
 	return undefined;
 }
 

@@ -44,6 +44,7 @@ import type {
 	ComputerProvider,
 	ComputerRef,
 	ComputerSpec,
+	CreateContext,
 	CreatedComputer,
 	NetworkForm,
 	NetworkPolicy,
@@ -222,7 +223,8 @@ export class LocalBrowserProvider implements ComputerProvider {
 	}
 
 	/** Starts Chrome under a supervisor of its own, waits until its DevTools socket answers, and hands back its ref. */
-	async create(spec: ComputerSpec, { signal }: { signal?: AbortSignal } = {}): Promise<Result<CreatedComputer>> {
+	async create(spec: ComputerSpec, context: CreateContext): Promise<Result<CreatedComputer>> {
+		const signal = context?.signal;
 		const refusals = this.check(spec);
 		if (refusals.length > 0) return fail(refusals.some((r) => r.field === "image" && r.message.endsWith(NO_CHROME)) ? "not_found" : "refused", refusals.map(({ field, message }) => `${field}: ${message}`).join("; "));
 		if (signal?.aborted) return fail("aborted", "create was aborted before Chrome was started");

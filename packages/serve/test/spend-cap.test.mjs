@@ -59,8 +59,10 @@ test("a request the cap refuses never reaches the model: the run's second reques
   const calls = join(await scratch(t), "calls.jsonl");
   withEnv(t, { AGENTRUN_TEST_FAUX_CALLS: calls });
   const { api } = await serve(t, { faux: new URL("./fixtures/faux-recorded.mjs", import.meta.url).pathname });
-  // The ask is small and cheap; the answer's 20,000 characters (about 5,700 tokens at $100 per million) pass $0.2 alone.
-  const run = await start(api, "region", "Pick a region.", { max_cost_usd: 0.2 }, { tools: ["ask_person"] });
+  // The ask is small and cheap; the answer's 20,000 characters (about 5,700 tokens at $100 per million, $0.57) pass the cap
+  // alone. The cap is above the wrap-up line at step 0 (three times a request's least, $0.31): under it the run is told to
+  // finish and never asks.
+  const run = await start(api, "region", "Pick a region.", { max_cost_usd: 0.35 }, { tools: ["ask_person"] });
   await follow(api, run.run_id, ["input_required"]);
   assert.equal((await api("POST", `/runs/${run.run_id}/messages`, { content: "eu ".repeat(6_666) })).body.mode, "answer");
   const view = await ended(api, run.run_id);
@@ -101,9 +103,7 @@ const GROUPS = ["meter", "agent", "key", "day", "region"];
 /** /usage for every grouping: its total and each line's usd. */
 const usages = async (api) => Promise.all(GROUPS.map(async (group) => (await api("GET", `/usage?group_by=${group}`)).body));
 
-// SKIP (follow-up #2080): a pi run's end reads its cost from its root's answers, so a request a cancel cut mid-answer (booked
-// unknown in its model session) ends at $0; waits on #2487's nullable end cost and #2486's pi end cost
-test.skip("a run cancelled while its request answers costs unknown (the request may have been billed), and /usage stays priced with the runs it knows", async (t) => {
+test("a run cancelled while its request answers costs unknown (the request may have been billed), and /usage stays priced with the runs it knows", async (t) => {
   const { api, data } = await serve(t, { faux: OUTPUT_PRICED });
   const paid = await ended(api, (await start(api, "paid", "What is six times seven?")).run_id);
   assert.ok(paid.cost.usd > 0);

@@ -27,18 +27,18 @@ const sse = (events) => events.map((event) => `${event.name ? `event: ${event.na
  *  `response.failed`). */
 const POLICIES = {
   "claude-agent": {
-    policy: anthropicPolicy({ model: "claude-sonnet-4-5", tools: [] }),
+    policy: anthropicPolicy({ model: "claude-sonnet-5-5", tools: [] }),
     path: "/v1/messages",
     headers: { "anthropic-version": "2023-06-01" },
-    body: { model: "claude-sonnet-4-5", max_tokens: 100, stream: true, messages: [{ role: "user", content: "hi" }] },
+    body: { model: "claude-sonnet-5-5", max_tokens: 100, stream: true, messages: [{ role: "user", content: "hi" }] },
     healthy: sse([{ name: "message_start", data: { type: "message_start", message: { id: "msg_1", type: "message", role: "assistant", content: [], usage: { input_tokens: 3, output_tokens: 1 } } } }]),
     status: (said) => ({ type: "error", error: { type: "authentication_error", message: `invalid x-api-key: ${said}` } }),
     events: (said) => [sse([{ name: "error", data: { type: "error", error: { type: "overloaded_error", message: `upstream refused key ${said}` } } }])],
   },
   codex: {
-    policy: codexPolicy({ model: "gpt-5", tools: [] }),
+    policy: codexPolicy({ model: "gpt-6.1-sol", tools: [] }),
     path: "/v1/responses",
-    body: { model: "gpt-5", stream: true, input: [{ role: "user", content: "hi" }] },
+    body: { model: "gpt-6.1-sol", stream: true, input: [{ role: "user", content: "hi" }] },
     healthy: sse([{ data: { type: "response.created", response: { id: "resp_1", status: "in_progress", output: [] } } }]),
     status: (said) => ({ error: { message: `Incorrect API key provided: ${said}.`, type: "invalid_request_error", code: "invalid_api_key" } }),
     events: (said) => [
@@ -47,9 +47,9 @@ const POLICIES = {
     ],
   },
   opencode: {
-    policy: openCodePolicy({ model: "gpt-5", tools: [] }),
+    policy: openCodePolicy({ model: "gpt-6.1-sol", tools: [] }),
     path: "/v1/responses",
-    body: { model: "gpt-5", stream: true, input: [{ role: "user", content: "hi" }] },
+    body: { model: "gpt-6.1-sol", stream: true, input: [{ role: "user", content: "hi" }] },
     healthy: sse([{ data: { type: "response.created", response: { id: "resp_1", status: "in_progress", output: [] } } }]),
     status: (said) => ({ error: { message: `Incorrect API key provided: ${said}.`, type: "invalid_request_error", code: "invalid_api_key" } }),
     events: (said) => [

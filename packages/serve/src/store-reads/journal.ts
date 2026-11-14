@@ -3,9 +3,9 @@
 // its own database file ("SELECT record FROM entries ORDER BY id") and fed the same pure renderer; these read the one store instead.
 // The renderer and the hearing keep their words; only where the entries come from changes.
 import { createHash } from "node:crypto";
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import type { EntryLike, TimelineEvent, TimelineOptions } from "../timeline/index.js";
-import { CAPS, costLabel, timelineOf, TOOL_COST } from "../timeline/index.js";
+import { CALL_REFUSED, CAPS, costLabel, timelineOf, TOOL_COST } from "../timeline/index.js";
 import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
 import { wireName } from "../catalog.js";
 import { TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
@@ -13,13 +13,14 @@ import { Hearing } from "../heard.js";
 import { redactedAnswer } from "../key-refusal.js";
 import { LEARNED_NODES, LEARNED_NODES_MAX } from "../learned-nodes.js";
 import { computerCallsOf } from "../computer-calls.js";
-import { labelled, type Reflect } from "../reflect-range.js";
-import { reflectFrom } from "../runner/end-of-run.js";
-import { journalEntries, journalRecords } from "../runner/journal-reader.js";
+import { labelled, type Reflect, reflects } from "../reflect-range.js";
+import { reflectRanges } from "../runner/end-of-run.js";
+import { journalEntries, journalRecords, recordOf } from "../runner/journal-reader.js";
 import { endedAnswer, KINDS } from "../runner/journal-kinds.js";
 import { bookedSpend, cliModelWorked, costIsBooked } from "../runner/metrics.js";
 import type { Store } from "../store/store.js";
 import { waitingText } from "../tool-gate.js";
+import { Turns } from "../turns.js";
 
 /** A run's entries from the one store, in log order (by id across every conversation), as the old "SELECT record FROM
  *  entries ORDER BY id" read them for a settled run. A run with no journal reads as none. */
@@ -28,14 +29,22 @@ export async function runEntries(store: Store, runId: string, context: Context):
   return entries.slice().sort((a, b) => Number(a.id ?? 0) - Number(b.id ?? 0));
 }
 
-/** Where a run's end-of-run turn is in its journal, as the server's Reflect names it for labelled(): `after`, the entry
- *  before its input; `until`, the run's end entry once written. Undefined for a run that asked none. */
-export async function runReflect(store: Store, runId: string, context: Context): Promise<Pick<Reflect, "after" | "until"> | undefined> {
-  const records = await journalRecords(store.readJournal(runId), context);
-  const from = reflectFrom(records.submissions ?? [], records.entries);
-  if (from === undefined) return undefined;
-  const end = records.entries.find((entry) => entry.kind === KINDS.end && Number(entry.id) >= from);
-  return { after: from - 1, ...(end ? { until: Number(end.id) } : {}) };
+/** Where a run's end-of-run turn is in its journal, as the server's Reflect names it for labelled(): its newest round's
+ *  `after`, the entry before its input, and `until`, the run's end entry once written; `earlier`, each earlier round's (a
+ *  follow-up opened the run again after it). Undefined for a run that asked none. */
+export async function runReflect(store: Store, runId: string, context: Context): Promise<Pick<Reflect, "after" | "until" | "earlier"> | undefined> {
+  return reflectOf(await journalRecords(store.readJournal(runId), context));
+}
+
+type Records = Awaited<ReturnType<typeof journalRecords>>;
+
+/** runReflect over records already read. */
+function reflectOf(records: Records): Pick<Reflect, "after" | "until" | "earlier"> | undefined {
+  const ranges = reflectRanges(records.submissions ?? [], records.entries);
+  const newest = ranges.at(-1);
+  if (newest === undefined) return undefined;
+  const earlier = ranges.slice(0, -1).flatMap(({ from, until }) => (until === undefined ? [] : [{ after: from - 1, until }]));
+  return { after: newest.from - 1, ...(newest.until !== undefined ? { until: newest.until } : {}), ...(earlier.length ? { earlier } : {}) };
 }
 
 /** The CLI record (a harness whose own records are resume log only, record "loop": adapter-loop.ts openCliRecord) as the
@@ -99,7 +108,10 @@ function piShaped(entries: readonly EntryLike[]): EntryLike[] {
       // text), as pi's own interrupted result does, never an empty failure.
       const failed = data.status !== undefined && data.status !== "done";
       const content = data.output === undefined && data.status === "interrupted" ? endedAnswer("", { status: "interrupted" }).text : (data.output ?? "");
-      return { ...entry, kind: "pi.tool-result", model: [{ role: "tool", toolCallId: String(data.callId ?? ""), content, ...(failed ? { isError: true } : {}), ...timestamp }] };
+      // One refused before it ran (its gate's deny, a person's, an approval the run ended without) carries pi's refusal
+      // mark, so its rows read refused, as pi's do, never as a call that ran and failed.
+      const refused = data.status === "refused" ? { details: { [CALL_REFUSED]: true } } : {};
+      return { ...entry, kind: "pi.tool-result", model: [{ role: "tool", toolCallId: String(data.callId ?? ""), content, ...(failed ? { isError: true } : {}), ...refused, ...timestamp }] };
     }
     return entry;
   });
@@ -187,12 +199,27 @@ const inWorkspace = (cwd: string) => (path: string): string => {
 export async function runTimeline(store: Store, runId: string, context: Context, options: TimelineOptions = {}): Promise<TimelineEvent[]> {
   const entries = await runEntries(store, runId, context);
   const cli = isCliRecord(entries);
+  const records = await journalRecords(store.readJournal(runId), context);
+  const reflect = reflectOf(records) as Reflect | undefined;
   // A CLI names a file by its absolute path under its working directory (CallStartData.cwd): the rows name it by its
   // name in the workspace, never a path on the runner's machine. Its arguments, as the harness sent them, stay.
   const cwd = cli && !options.path ? entries.find((entry) => entry.kind === KINDS.callStart && typeof (entry.data as { cwd?: unknown } | undefined)?.cwd === "string")?.data as { cwd: string } | undefined : undefined;
-  const rendered = timelineOf(withPaidCosts(cli ? piShaped(entries) : entries), cwd ? { ...options, path: inWorkspace(cwd.cwd) } : options);
-  const rows = costIsBooked(entries, cli) ? bookedUsage(rendered, entries, options) : rendered;
-  return labelled((await runReflect(store, runId, context)) as Reflect | undefined, withComputerCalls(withLearnedNodes(await datedRows(store, runId, rows), entries, options.redact), entries));
+  // A run whose newest turn a stop or a cancel cut reads it over (run-view.ts statusOf: input_required) from the moment pi
+  // settles that turn's message aborted, before the runner books what the abort cut (its request's end mark comes once the
+  // session's proxy sees its upstream end). Its cost reads that turn the same way, the request it cut a charge with no
+  // price, never one in flight: never the known sum as its cost while the run reads stopped.
+  const read = { ...options, ...(cwd ? { path: inWorkspace(cwd.cwd) } : {}), ...(!options.settled && turnCutOf(records, reflect) ? { turnCut: true } : {}) };
+  const rendered = timelineOf(withPaidCosts(cli ? piShaped(entries) : entries), read);
+  const rows = costIsBooked(entries, cli) ? bookedUsage(rendered, entries, options) : withSideUsage(rendered, entries);
+  return labelled(reflect, withComputerCalls(withLearnedNodes(await datedRows(store, runId, rows), entries, options.redact), entries));
+}
+
+/** Whether the run's newest turn is over, cut (turns.ts: no message of the run's open, the newest one's end interrupted),
+ *  its end-of-run turn's entries apart, as the run's view reads its status. */
+function turnCutOf(records: Records, reflect: Reflect | undefined): boolean {
+  const turns = new Turns();
+  turns.note(recordOf(records.entries), records.submissions ?? [], reflect ? (id: number) => reflects(reflect, id) : undefined);
+  return turns.end()?.status === "interrupted";
 }
 
 /** `rows` with each tool call's result row carrying the computer protocol calls it made (`computer_calls`, and
@@ -228,6 +255,27 @@ function withLearnedNodes(rows: TimelineEvent[], entries: readonly EntryLike[], 
   }
   if (!traces.size) return rows;
   return rows.map((row) => (row.kind === "tool_result" && row.tool_use_id && traces.has(row.tool_use_id) ? { ...row, learned_nodes: traces.get(row.tool_use_id)! } : row));
+}
+
+/** A pi run's `rows` with its side calls in its usage row: the requests its session booked that no answer of pi's carries
+ *  (a learned workflow's nodes, a request on another model: runner/metrics.ts bookedSpend "side"), at what they were
+ *  booked at, unknown when one's price is, beside the answers the renderer counted. Their requests join its count; its
+ *  words are the renderer's, figures changed. A run with none is as rendered. */
+function withSideUsage(rows: readonly TimelineEvent[], entries: readonly EntryLike[]): TimelineEvent[] {
+  const side = bookedSpend(entries, "side");
+  const at = rows.findLastIndex((row) => row.kind === "usage");
+  if (!side.requests || at < 0) return [...rows];
+  const row = rows[at]!;
+  const own = row.usage ?? { usd: 0, requests: 0 };
+  const known = (own.usd ?? own.so_far_usd ?? 0) + side.known;
+  const unpriced = (own.usd === null ? (own.unpriced ?? 0) : 0) + side.unpriced;
+  const usd = unpriced ? null : Math.round(known * 1e6) / 1e6;
+  const requests = own.requests + side.requests;
+  const dollars = (value: number) => (value === 0 ? "$0" : `$${value.toFixed(4)}`);
+  const spent = usd !== null ? dollars(usd) : `${dollars(Math.round(known * 1e6) / 1e6)} known, ${unpriced} not priced,`;
+  const summary = (row.summary ?? "").replace(/^([^:]+): .+? over \d+ model requests?/, `$1: ${spent} over ${requests} model request${requests === 1 ? "" : "s"}`);
+  const usage = { usd, requests, ...(usd === null ? { so_far_usd: Math.round(known * 1e6) / 1e6, unpriced } : {}), ...(own.not_metered ? { not_metered: own.not_metered } : {}) };
+  return rows.map((each, i) => (i === at ? { ...row, summary, usage } : each));
 }
 
 /** A CLI or workflow run's `rows` with its usage row in its booking's words (runner/metrics.ts bookedSpend over every

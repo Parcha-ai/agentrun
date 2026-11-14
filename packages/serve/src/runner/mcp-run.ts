@@ -22,9 +22,10 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Harness } from "@earendil-works/pi-durable";
 import { wireName } from "../catalog.js";
 import { mcpGateway, type McpGatewayOptions, noCallId } from "../mcp-gateway.js";
-import type { OAuthNetwork } from "../mcp-oauth.js";
+import { dialAt, mcpServerAt, type OAuthNetwork, systemNetwork } from "../mcp-oauth.js";
+import { privateOAuthHosts } from "../mcp-private-hosts.js";
 import type { Store, TriggerSettings } from "../store/index.js";
-import { type ApprovalPrice, argsPreview, mcpToolName, resumeText, RESUME_PREFIX, waitingText } from "../tool-gate.js";
+import { type ApprovalPrice, argsPreview, mcpToolName, RESUME_GO_ON, resumeText, RESUME_PREFIX, waitingText } from "../tool-gate.js";
 import { deniedText } from "./loop-contract.js";
 import { STOPPED_WHILE_WAITING } from "../refusal-words.js";
 import { type AnswerData, type AskData, type CallEndData, endedAnswer, KINDS } from "./journal-kinds.js";
@@ -59,6 +60,9 @@ export interface McpForClaimOptions {
   /** A test's fake GitHub MCP origin, handed to the claim step (mcpClaim's githubMcpOrigin): for tests only: no environment variable, flag or setting maps onto it; absent, GitHub's hosted MCP
    *  (github.ts GITHUB_MCP_ORIGIN). */
   readonly githubMcpOrigin?: string;
+  /** Whether this runner may reach an MCP server whose URL is on loopback (AdapterSpecDeps.mcpLoopback): only a runner
+   *  beside a local-install server is. Absent, never. */
+  readonly loopback?: boolean;
   /** For tests: the authorization servers' network, a refresh's bound, the gateway's upstream fetch and bounds, and the
    *  timer a github_app token's refresh is armed on. */
   readonly network?: OAuthNetwork;
@@ -66,6 +70,8 @@ export interface McpForClaimOptions {
   readonly fetch?: typeof fetch;
   readonly callBounds?: { callMs?: number; connectMs?: number };
   readonly githubTimer?: GithubTimer;
+  /** Each credential value the claim opens, refreshes or mints, for the run's redactors (mcp-claim.ts `hold`). */
+  readonly hold?: (values: string[]) => void;
 }
 
 /** A call as the loop's gate is asked about it: the tool by its catalog name. */
@@ -87,9 +93,6 @@ export interface ClaimMcp {
    *  sent; or parked, answered the gate's waiting words marked parked, nothing sent), then its host tool from `wrapped`,
    *  as the loop wrapped it. */
   session(wrapped: ReadonlyMap<string, HostTool>, gate: (call: McpGateCall) => Promise<McpGateAnswer>): SessionMcp;
-  /** The credential values the gateway's calls in flight hold, for a redaction: each call's for as long as it is out,
-   *  with any token refreshed while it was; none when idle. */
-  redactions(): string[];
   /** The claim step's credentials opened again on the same pin (an expired OAuth token refreshed), then the claim
    *  confirmed: before a resumed loop's next model request. */
   fresh(): Promise<void>;
@@ -118,9 +121,11 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
       signal: held.signal,
       ...(options.bounds ? { bounds: options.bounds } : {}),
       ...(options.network ? { network: options.network } : {}),
+      ...(options.loopback ? { loopback: true } : {}),
       ...(githubApp ? { githubApp } : {}),
       ...(options.githubMcpOrigin ? { githubMcpOrigin: options.githubMcpOrigin } : {}),
       ...(options.githubTimer ? { githubTimer: options.githubTimer } : {}),
+      ...(options.hold ? { hold: options.hold } : {}),
     });
   } catch (error) {
     held.abort();
@@ -131,9 +136,19 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
     held.abort();
     return undefined;
   }
+  const network = options.network ?? systemNetwork;
   const gateway = mcpGateway({
     pin,
     credentials: step.credentials,
+    // Each request's address checked as the server checks it at a save (mcp-oauth.ts mcpServerAt), with the owner's
+    // private-network hosts read now, and dialled at the address checked: a name that resolves somewhere private since the
+    // save, or a host the owner no longer allows, is refused unsent. A URL on loopback is reached only by a runner told
+    // so by the local-install server beside it, in its own process (options.loopback): never by what a store says, so
+    // one host's local install never opens loopback for another host's runner on a shared store.
+    reach: async (url, signal) => {
+      const at = await mcpServerAt(new URL(url), signal, network, { allowed: await privateOAuthHosts(options.store), loopback: options.loopback === true });
+      return "refused" in at ? { refused: at.refused } : { send: dialAt(network, at.address, options.fetch ?? fetch) as typeof fetch };
+    },
     beforeCall: step.beforeCall,
     work: options.work,
     commit: () => <T>(change: (tx: unknown) => Promise<T>) => options.harness.commit(change as never, BACKGROUND_CONTEXT) as Promise<T>,
@@ -186,7 +201,6 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
         return said(result.text, result.isError === true);
       },
     }),
-    redactions: () => gateway.heldValues(),
     fresh: () => step.fresh(),
     release: () => held.abort(),
   };
@@ -248,5 +262,5 @@ export async function parkedFollowUp(mcp: ClaimMcp, options: ParkedFollowUpOptio
     texts.push(resumeText({ tool: call.tool, call_id: call.callId }, argsPreview(call.args), answer.approved ? "allow" : "deny", { text: result.text, isError: result.isError === true }));
     callIds.push(call.callId);
   }
-  return texts.length ? { text: texts.join("\n\n"), callIds } : undefined;
+  return texts.length ? { text: `${texts.join("\n\n")}\n\n${RESUME_GO_ON}`, callIds } : undefined;
 }

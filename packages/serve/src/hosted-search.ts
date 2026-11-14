@@ -12,6 +12,7 @@
 // held at its context plus HOSTED_SEARCH_ALLOWANCE_TOKENS.
 import type { AssistantMessage, Context, Models } from "@earendil-works/pi-ai";
 import { clip, TITLE_CAP } from "./web-fetch-direct.js";
+import { NATIVE_SEARCH_USD } from "@parcha/agentrun-kernel/host";
 import { sideRequests } from "./cap.js";
 import { ANSWER_MAX, type Hit, type Search, snippetOf } from "./web-search.js";
 
@@ -27,8 +28,6 @@ export const OPENAI_SEARCH_TOOL = Object.freeze({ type: "web_search", external_w
 /** OpenAI's hosted search has no per-tool limit: the Responses API's `max_tool_calls` caps the built-in tool calls of the
  *  request at the HOSTED_MAX_USES its fee is reserved for, as Anthropic's tool's `max_uses` does. */
 export const OPENAI_SEARCH_LIMIT = Object.freeze({ max_tool_calls: HOSTED_MAX_USES });
-/** $10 per 1,000 searches (Anthropic) or calls (OpenAI). */
-export const SEARCH_USD = 0.01;
 /** OpenAI's models that bill each call's search content as a fixed block of 8,000 input tokens apart from the response's
  *  usage: the block is added to the fee at the model's input price. */
 const BLOCK_BILLED = /^gpt-(?:4o|4\.1)-mini(?:-|$)/;
@@ -36,11 +35,9 @@ const ANSWER_TOKENS = 2_048;
 /** As Exa's and Parallel's searches stop. */
 const TIMEOUT_MS = 60_000;
 
-let runModels: Models | undefined;
-/** The run's models, marked and capped, handed over by the run's app before its tools are bound. */
-export function searchOn(models: Models): void {
-  runModels = models;
-}
+/** What a hosted search asks: the run's models a search request goes through (on the runner, the session's port: its
+ *  proxy, policy, key, price and cap), handed to each search by its run, never kept per process. */
+export type SearchModels = Pick<Models, "getModel" | "completeSimple">;
 
 type Event = { type?: string; index?: number; content_block?: Record<string, unknown>; delta?: Record<string, unknown>; usage?: Record<string, unknown>; item?: Record<string, unknown>; response?: Record<string, unknown> };
 const list = (value: unknown): Record<string, unknown>[] => (Array.isArray(value) ? value.filter((item) => typeof item === "object" && item !== null) : []);
@@ -99,8 +96,8 @@ function reader(anthropic: boolean) {
 }
 
 /** `query` searched by `ref`'s provider (`provider/model-id`, the model the server resolved web_search on) through the
- *  run's models, at most `n` results: a Search. `models`: the run's (searchOn). */
-export async function hostedSearch(query: string, n: number, ref: string | undefined, signal?: AbortSignal, models = runModels): Promise<Search> {
+ *  run's models (`models`: its own, handed by the run; none, no model to search on), at most `n` results: a Search. */
+export async function hostedSearch(query: string, n: number, ref: string | undefined, signal: AbortSignal | undefined, models: SearchModels | undefined): Promise<Search> {
   const slash = ref?.indexOf("/") ?? -1;
   const provider = ref && slash > 0 ? ref.slice(0, slash) : undefined;
   const id = ref && slash > 0 ? ref.slice(slash + 1) : undefined;
@@ -113,7 +110,7 @@ export async function hostedSearch(query: string, n: number, ref: string | undef
   const read = reader(anthropic);
   const context: Context = { messages: [{ role: "user", content: [{ type: "text", text: `Search the web for: ${query}\n\nAnswer briefly from what the search finds, and name each source by its URL.` }], timestamp: Date.now() }] };
   const block = BLOCK_BILLED.test(model.id) ? (8_000 * (model.cost?.input ?? 0)) / 1e6 : 0;
-  sideRequests.set(context, { label: "web_search", extraInputTokens: HOSTED_SEARCH_ALLOWANCE_TOKENS, maxFeeUsd: HOSTED_MAX_USES * (SEARCH_USD + block), feeUsd: () => read.searches() * (SEARCH_USD + block) });
+  sideRequests.set(context, { label: "web_search", extraInputTokens: HOSTED_SEARCH_ALLOWANCE_TOKENS, maxFeeUsd: HOSTED_MAX_USES * (NATIVE_SEARCH_USD + block), feeUsd: () => read.searches() * (NATIVE_SEARCH_USD + block) });
   let answer: AssistantMessage;
   try {
     answer = await models.completeSimple(model, context, {

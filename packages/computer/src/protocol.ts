@@ -96,7 +96,8 @@ export interface HelloResult {
 	screen?: ScreenSize;
 	/**
 	 * What this computer's groups can and cannot do here, by the names in FEATURES. A feature that is off says why, in
-	 * words a person can act on. A feature not listed is not offered. A caller ignores a name it does not know.
+	 * words a person can act on. A feature not listed is not offered, but for screen.capture, which a computer of the
+	 * screen group lists when it can be off. A caller ignores a name it does not know.
 	 */
 	features?: Features;
 	/** The machine, for a person and a run's record: "Apple", "MacBook Pro"; "Google", "Pixel 9". */
@@ -130,6 +131,7 @@ export interface Features {
  * a driver on any OS lists the same names, and says in the off reason what its OS is missing.
  */
 export const FEATURES = {
+	"screen.capture": "screen.shot and screen.watch capture the whole screen; a computer of the screen group that does not list it captures it, and one that lists it off refuses both with its reason (a Mac whose owner has not granted the server it is paired with the screen)",
 	"apps.background": "apps.launch with background: true opens an app without bringing it to the front",
 	"ui.tree": "ui.observe reads the window's elements; off, it answers the window's image with no nodes (ui.image on) or is refused",
 	"ui.image": "ui.observe returns the window's image",
@@ -641,6 +643,12 @@ export interface AppsLaunchParams {
 	background?: boolean;
 }
 
+/**
+ * The longest apps.launch waits for the app's window: it answers once the app has one, so an observe right after it
+ * finds the window, or fails timeout naming the app when none came in this long.
+ */
+export const LAUNCH_WINDOW_MS = 10_000;
+
 export interface AppsTerminateParams {
 	id: string;
 }
@@ -659,6 +667,11 @@ export const MAX_EXPECT_MS = 60_000;
 export const DEFAULT_EXPECT_MS = 5_000;
 /** The longest a driver waits for a window to settle after the steps, before it answers anyway. */
 export const MAX_SETTLE_MS = 3_000;
+/**
+ * How long a set's value must hold once the act settled: a driver reads it again this long after, and a value the app
+ * took back (a field that rejects it, a switch that springs back) answers verified false.
+ */
+export const SET_HOLD_MS = 500;
 /** An observe image's longest edge, in pixels: at least MIN_IMAGE_EDGE, at most MAX_IMAGE_EDGE, DEFAULT_IMAGE_EDGE when not given. */
 export const MIN_IMAGE_EDGE = 256;
 export const MAX_IMAGE_EDGE = 2048;
@@ -732,12 +745,21 @@ export interface UiImage {
 	data: string;
 }
 
+/** One window of an app. */
+export interface UiWindow {
+	id: string;
+	title?: string;
+	/** What it is, by the node roles: "dialog" for a sheet, an alert or a panel. Absent: "window". */
+	role?: UiRole;
+	/** In screen points: where the window sits. */
+	bounds: Rect;
+}
+
 export interface UiObserveResult {
 	/** This observation's id, such as "s7". A step's points are read against the state they came from. */
 	state: string;
 	app: { id: string; name: string; pid?: number };
-	/** bounds in screen points: where the window sits. */
-	window: { id: string; title?: string; bounds: Rect };
+	window: UiWindow;
 	/** In order, a node after its parent. */
 	nodes: UiNode[];
 	/** Against since, by ref. Absent when since was not given or the driver no longer holds it. */
@@ -770,7 +792,7 @@ export type UiStep =
 	| { click: UiRef | Point; button?: "left" | "right"; count?: 1 | 2 | 3 }
 	/** Type text, into the element when named, else where the focus is. */
 	| { type: string; into?: UiRef }
-	/** A chord: names in KEYS or one printable character, joined by "+": "super+s", "enter", "ctrl+shift+t". */
+	/** A chord: names in KEYS or one printable character, joined by "+", the last of which may be "+" itself: "super+s", "enter", "ctrl+shift+t", "shift++". */
 	| { key: string }
 	/** The system's own navigation (feature ui.nav). */
 	| { nav: "back" | "home" | "app_switch" }
@@ -782,11 +804,14 @@ export type UiStep =
 /**
  * What the caller expects to see once the steps ran, checked on the computer against the whole window, polled until
  * it holds or timeoutMs passes. text: some node's name or value holds it. ref: the element exists. Both: that element's
- * name or value holds the text. gone: the opposite of each. At least one of text and ref.
+ * name or value holds the text. window: the act's app shows a window that matches it (its main one), whose state the
+ * act then answers. gone: the opposite of each. One of text and ref (or both), or window alone.
  */
 export interface UiExpect {
 	text?: string;
 	ref?: UiRef;
+	/** A window of the act's app: its title holds title, and its role is role. At least one of the two. */
+	window?: { title?: string; role?: UiRole };
 	gone?: boolean;
 	/** Default DEFAULT_EXPECT_MS, at most MAX_EXPECT_MS. */
 	timeoutMs?: number;
@@ -813,9 +838,17 @@ export type UiStepResult =
 export interface UiActResult {
 	/** One per step tried, in order. A refused step is the last: the steps after it do not run. */
 	steps: UiStepResult[];
-	/** The state after the steps, once the window settled (at most MAX_SETTLE_MS). */
-	state: string;
-	/** The window's nodes or image changed between before the first step and the settled state. */
+	/** The state after the steps, once the window settled (at most MAX_SETTLE_MS). Absent when window is "closed". */
+	state?: string;
+	/**
+	 * "closed": a step closed the act's window and its app has no window left (super+w on the last one), so there is no
+	 * state to answer. The steps that ran keep their results. Absent while the act has a window.
+	 */
+	window?: "closed";
+	/**
+	 * Whether the window changed between before the first step and the settled state: its nodes, or its image when it
+	 * has no nodes. True when the window closed.
+	 */
 	changed: boolean;
 	/** Whether the expect held in time. Absent with no expect, or when a step was refused. */
 	expect?: "met" | "unmet";
@@ -884,6 +917,49 @@ export interface DaemonMethods {
 export type DaemonMethod = keyof DaemonMethods;
 
 /**
+ * Every daemon method, as a value: what a caller checks a method name against at run time (serve refuses a call to a
+ * method the protocol doesn't have before it reaches a computer). `satisfies` keeps it equal to DaemonMethods: a method
+ * added there and not here, or here and not there, fails the build.
+ */
+export const DAEMON_METHODS = {
+	hello: true,
+	ping: true,
+	"exec.run": true,
+	"files.read": true,
+	"files.write": true,
+	"files.stat": true,
+	"files.list": true,
+	"files.mkdir": true,
+	"files.move": true,
+	"files.remove": true,
+	"tar.pull.begin": true,
+	"tar.pull.read": true,
+	"tar.pull.end": true,
+	"tar.push.begin": true,
+	"tar.push.write": true,
+	"tar.push.end": true,
+	"process.start": true,
+	"process.read": true,
+	"process.write": true,
+	"process.signal": true,
+	"process.resize": true,
+	"process.list": true,
+	"process.wait": true,
+	"screen.shot": true,
+	"screen.read": true,
+	"screen.watch": true,
+	"input.actions": true,
+	"apps.list": true,
+	"apps.install": true,
+	"apps.launch": true,
+	"apps.terminate": true,
+	"ui.observe": true,
+	"ui.act": true,
+	"deadline.extend": true,
+	"mount.sync": true,
+} satisfies Record<DaemonMethod, true>;
+
+/**
  * What answers a computer's methods: computerd over a stream (DaemonClient), or, with daemon none, the provider in
  * process. Callers and the conformance suite see one surface.
  */
@@ -906,7 +982,9 @@ export type DaemonErrorKind =
 	| "not_dir"
 	| "is_dir"
 	/** A ref whose element is gone, or a point whose window moved or redrew under it since its state. */
-	| "stale";
+	| "stale"
+	/** The call exists, but this value or state is not one it serves: a step on a disabled control. */
+	| "refused";
 
 export const JSONRPC_CODES = {
 	parse: -32700,

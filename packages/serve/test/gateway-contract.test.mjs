@@ -72,12 +72,12 @@ function sent(gw) {
 /** One run of `harness` on serve's gateway at `base`, with the gateway's key: what the gateway saw and what was booked.
  *  `price`: AGENT_MODEL_PRICE, or null for none (the catalog prices the model). `deadlineMs`: how long the run may take
  *  (follow's deadline), kept under the test's own timeout so a slow run fails in follow's words. */
-async function onGateway(t, harness, base, { model = "openai/gpt-5.4", price = GATEWAY_PRICE, deadlineMs = 80_000 } = {}) {
+async function onGateway(t, harness, base, { model = "openai/gpt-6.1-sol", price = GATEWAY_PRICE, deadlineMs = 80_000 } = {}) {
   const gw = await gateway(t);
   withEnv(t, { AGENT_MODEL_BASE_URL: base(gw.url), AGENT_MODEL_API_KEY: KEY("gateway"), AGENT_MODEL: model, ...(price ? { AGENT_MODEL_PRICE: price } : {}), ...(harness === "codex" ? CODEX_STAND_IN : {}) }, NAMES);
   const { api } = await serve(t, { faux: undefined });
   // max_concurrent_runs follows the host's memory: admission.test.mjs checks it.
-  const { max_concurrent_runs, ...offer } = (await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === harness);
+  const { max_concurrent_runs, models: _models, ...offer } = (await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === harness);
   assert.deepEqual(offer, { id: harness, available: true, steer: harness === "pi", default_model: `agent-model/${model}`, run_memory_mib: { pi: 128, codex: 192, "claude-agent": 288 }[harness] });
   assert.equal((await api("POST", "/agents", agent(`${harness}-gw`, harness === "pi" ? {} : { harness }))).status, 201);
   const { run, usage } = await runOf(api, `${harness}-gw`, deadlineMs);
@@ -88,7 +88,7 @@ async function onGateway(t, harness, base, { model = "openai/gpt-5.4", price = G
 
 test("pi through serve's gateway at <gw>/v1 (AGENT_MODEL_BASE_URL, AGENT_MODEL_API_KEY): POST /v1/responses, the key as a bearer token only, the host's model id whole, booked from the usage at the gateway's price", { timeout: 60_000 }, async (t) => {
   const { run, usage, count, shapes, gw } = await onGateway(t, "pi", (url) => `${url}/v1`);
-  assert.deepEqual(shapes, [["/v1/responses", `Bearer ${KEY("gateway")}`, null, "openai/gpt-5.4"]], JSON.stringify(gw.requests));
+  assert.deepEqual(shapes, [["/v1/responses", `Bearer ${KEY("gateway")}`, null, "openai/gpt-6.1-sol"]], JSON.stringify(gw.requests));
   assert.equal(run.status, "completed", JSON.stringify(run.error));
   assert.deepEqual(usage, booked(count, atPrice(1, 2)), "each answer once, from its usage, at the gateway's price");
 });
@@ -112,19 +112,19 @@ for (const [form, base, path] of [["<gw>", (url) => url, "/v1/responses"], ["<gw
 
 test("claude-agent through ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY: POST /v1/messages at its proxy, the key in x-api-key only, an anthropic-version, Anthropic's own model id, booked from the usage at the catalog's price", { timeout: 180_000, skip: noSetpriv }, async (t) => {
   const gw = await gateway(t);
-  withEnv(t, { ANTHROPIC_BASE_URL: gw.url, ANTHROPIC_API_KEY: KEY("anthropic"), AGENT_MODEL: "anthropic/claude-haiku-4-5" }, NAMES);
+  withEnv(t, { ANTHROPIC_BASE_URL: gw.url, ANTHROPIC_API_KEY: KEY("anthropic"), AGENT_MODEL: "anthropic/claude-haiku-5-5" }, NAMES);
   const { api } = await serve(t, { faux: undefined });
-  const { max_concurrent_runs, ...claude } = (await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "claude-agent");
-  assert.deepEqual(claude, { id: "claude-agent", available: true, steer: false, default_model: "anthropic/claude-haiku-4-5", run_memory_mib: 288 });
-  assert.equal((await api("POST", "/agents", agent("claude-gw", { harness: "claude-agent", model: "anthropic/claude-haiku-4.5" }))).status, 201);
+  const { max_concurrent_runs, models: _models, ...claude } = (await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "claude-agent");
+  assert.deepEqual(claude, { id: "claude-agent", available: true, steer: false, default_model: "anthropic/claude-haiku-5-5", run_memory_mib: 288 });
+  assert.equal((await api("POST", "/agents", agent("claude-gw", { harness: "claude-agent", model: "anthropic/claude-haiku-5.5" }))).status, 201);
   const { run, usage } = await runOf(api, "claude-gw", 150_000);
   const { count, shapes } = sent(gw);
   assert.ok(count >= 1, "the CLI asked the gateway");
-  assert.deepEqual(shapes, [["/v1/messages", null, KEY("anthropic"), "claude-haiku-4-5"]], JSON.stringify(gw.requests));
+  assert.deepEqual(shapes, [["/v1/messages", null, KEY("anthropic"), "claude-haiku-5-5"]], JSON.stringify(gw.requests));
   assert.ok(gw.requests.filter((r) => r.method === "POST").every((r) => typeof r.headers["anthropic-version"] === "string"), "each request names an anthropic-version");
   assert.equal(run.status, "completed", JSON.stringify(run.error));
-  // claude-haiku-4-5 in serve's catalog: $1 in, $5 out per million tokens.
-  assert.deepEqual(usage, booked(count, atPrice(1, 5)), "each answer once, from its usage, at the catalog's price");
+  // claude-haiku-5-5 in serve's catalog: $0.1 in, $0.5 out per million tokens.
+  assert.deepEqual(usage, booked(count, atPrice(0.1, 0.5)), "each answer once, from its usage, at the catalog's price");
 });
 
 test("claude-agent's OpenRouter form, guard on main: on its adapter as serve builds it ({ origin: <gw>/api, credential, auth: \"bearer\" }), one turn on the pinned CLI sends POST /api/v1/messages with the key as a bearer token and no x-api-key, and Anthropic's native id on the wire (claude-sonnet-5-5 for anthropic/claude-sonnet-5.5), each answer booked from its usage", { timeout: 180_000, skip: noSetpriv }, async (t) => {
@@ -176,7 +176,7 @@ test("custody, guard on main: with the OpenRouter key and an explicit Anthropic 
   const gw = await gateway(t);
   withEnv(t, { OPENROUTER_API_KEY: OR_KEY, ANTHROPIC_BASE_URL: `${gw.url}/api` }, NAMES);
   const { api } = await serve(t, { faux: undefined });
-  const { max_concurrent_runs, ...claude } = (await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "claude-agent");
+  const { max_concurrent_runs, models: _models, ...claude } = (await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "claude-agent");
   assert.deepEqual(claude, { id: "claude-agent", available: false, steer: false, reason: "claude-agent needs ANTHROPIC_API_KEY.", default_model: null, run_memory_mib: 288 });
   assert.equal((await api("POST", "/agents", agent("claude-custody", { harness: "claude-agent", model: CLAUDE_OR_MODEL }))).status, 201);
   const started = await api("POST", "/agents/claude-custody/runs", { input: { content: "Say hi." } });
@@ -202,7 +202,7 @@ for (const [harness, model] of [["claude-agent", CLAUDE_OR_MODEL], ["codex", COD
     withEnv(t, { OPENROUTER_API_KEY: OR_KEY }, NAMES);
     const { api } = await serve(t, { faux: undefined });
     // How many fit at once is this host's memory (admission.test.mjs); the memory a run takes is the harness's own.
-    const { max_concurrent_runs, ...offer } = (await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === harness);
+    const { max_concurrent_runs, models: _models, ...offer } = (await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === harness);
     assert.deepEqual(offer, { id: harness, available: true, steer: false, default_model: model, run_memory_mib: { "claude-agent": 288, codex: 192 }[harness] });
     assert.deepEqual(gw.requests, [], "no request reached the loopback gateway");
   });
@@ -214,7 +214,7 @@ const PI_OR_DEFAULT = "openrouter/openai/gpt-6.1-sol";
 test("pi on OPENROUTER_API_KEY alone: its default model, on pi-ai's own openrouter provider, keyed by OPENROUTER_API_KEY and priced (red on main: pi has no default)", { timeout: 60_000, skip: !PI_OR_DEFAULT && "pi's default id on OpenRouter alone is not set yet" }, async (t) => {
   withEnv(t, { OPENROUTER_API_KEY: OR_KEY }, NAMES);
   const { api } = await serve(t, { faux: undefined });
-  const { max_concurrent_runs, ...pi } = (await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "pi");
+  const { max_concurrent_runs, models: _models, ...pi } = (await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "pi");
   assert.deepEqual(pi, { id: "pi", available: true, steer: true, default_model: PI_OR_DEFAULT, run_memory_mib: 128 });
   const { runModels } = await import("../dist/model.js");
   const { models, model } = await runModels({ OPENROUTER_API_KEY: OR_KEY }, undefined);

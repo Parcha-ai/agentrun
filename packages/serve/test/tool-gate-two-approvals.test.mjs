@@ -6,7 +6,8 @@ import assert from "node:assert/strict";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { agent, call, cookieOf, follow, scratch, serve } from "./support.mjs";
+import { agent, call, cookieOf, FAUX, follow, scratch, serve } from "./support.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const fixture = (name) => new URL(`./fixtures/${name}`, import.meta.url).pathname;
 const GATE = { faux: fixture("faux-gate.mjs"), fauxWeb: fixture("faux-gate-web.mjs"), accounts: true, openSetup: true };
@@ -36,7 +37,8 @@ function readsInOrder(rows, callId, outcome, at) {
   const shown = rows.map((r) => `${r.kind}: ${r.summary}`);
   const own = rows.flatMap((r, i) => ((r.kind === "tool_use" || r.kind === "tool_result") && r.tool_use_id === callId ? [i] : []));
   const ask = rows.findIndex((r) => r.kind === "tool_approval_requested" && r.tool_use_id === callId);
-  const resume = rows.findIndex((r) => r.origin === "server" && outcome.test(r.summary ?? ""));
+  // Its own outcome: the first after its approval row (two calls' outcomes may read the same).
+  const resume = rows.findIndex((r, i) => i > ask && r.origin === "server" && outcome.test(r.summary ?? ""));
   assert.ok(own.length > 0 && ask > Math.max(...own), `${at}: the approval row follows the call's own rows: ${JSON.stringify(shown)}`);
   assert.ok(resume > ask, `${at}: the outcome (the resume row) follows the approval row: ${JSON.stringify(shown)}`);
   assert.deepEqual(own.map((i) => rows[i].summary), own.map(() => "Held for your approval"), `${at}: the call's own rows say only that it was held: ${JSON.stringify(shown)}`);
@@ -85,3 +87,163 @@ test("pi: two calls set to ask in one run, the first allowed, the second denied 
   readsInOrder(done, asks[0], /^AgentRun: web_fetch ran once you allowed it/, "the first call, at the run's end");
   readsInOrder(done, asks[1], new RegExp(`^AgentRun: You declined web_fetch: ${NOTE}$`), "the second call, at the run's end");
 });
+
+// One answer with two fetches at once (faux-model.mjs on pi, faux-harness.mjs on the CLIs): the run parks on the first;
+// once it is allowed, on the second. The QA walk that found it put web_fetch's setting back to its default (allow) while
+// the second waited: the next claim's gate read allow and ran the call without taking the person's allow, and the call
+// that ran read "Not run: the run ended while it waited" and "Withdrawn when the run ended". An ask a person was shown
+// stands until it is answered, and flipping the tool to allow answers it: the flip itself wakes the run (PUT
+// /settings/tools), the call runs, the ask closes reading "Allowed by the tool's setting", and the person is never asked
+// again, nor has to answer (a deny set since still refuses it).
+for (const harness of ["pi", "claude-agent", "codex"]) {
+  for (const putBack of [false, "woken"]) {
+    test(`${harness}: two calls set to ask in ONE answer, ${putBack ? "the first allowed, then web_fetch's setting put back to allow while the second waits, which alone ends its wait" : "each allowed in turn"}: at the run's end each reads held, then its approval (asked, or allowed by the setting once it was put back, never withdrawn), then that it ran, its result the fetch's own`, { timeout: 150_000 }, (t) => bothAllowed(t, harness, putBack));
+  }
+}
+
+// The run's effective permission is its pinned revision's: an agent whose own settings set web_fetch to ask still asks
+// once the server's setting is put back to allow, so that flip wakes nothing (no claim: the run's epoch stays), and the
+// waiting call runs on the person's own allow, its approval row reading asked.
+for (const harness of ["pi", "claude-agent", "codex"]) {
+  test(`${harness}: web_fetch's server setting put back to allow while the second call waits, the agent's own setting still ask: the flip wakes nothing, and the call waits for the person's allow`, { timeout: 150_000 }, (t) => bothAllowed(t, harness, "agent-ask"));
+}
+
+for (const harness of ["pi"]) {
+  test(`${harness}: a settings save that changes only a provider, while a call waits: no run is woken and no journal is read`, { timeout: 150_000 }, (t) => bothAllowed(t, harness, "provider-only"));
+}
+
+// The scan itself, over a counting store: a save that turns no tool toward allow lists no run and reads no journal; one that
+// does reads only entries (no task, no submission scan) of the parked run.
+test("a settings save that turns no tool toward allow reads no journal; one that does reads entries only", async () => {
+  const { wakeAnsweredBySetting } = await import("../dist/settings-wake.js");
+  const counts = { list: 0, scanEntries: 0, scanConversations: 0, scanTasks: 0, scanSubmissions: 0, wake: 0 };
+  const page = (name, items = []) => async () => { counts[name] += 1; return { items }; };
+  const journal = {
+    scanConversations: page("scanConversations", [{ id: 1 }]),
+    scanEntries: page("scanEntries", [{ id: 1, conversationId: 1, kind: "agentrun.ask", data: { callId: "c1", tool: "web_fetch", args: {}, requestedAt: "" } }]),
+    scanTasks: page("scanTasks"),
+    scanSubmissions: page("scanSubmissions"),
+  };
+  const store = {
+    runs: { list: async () => { counts.list += 1; return [{ id: "r1", revisionId: "v1" }]; }, wake: async () => { counts.wake += 1; return true; } },
+    agents: { revision: async () => ({ body: {} }) },
+    readJournal: () => journal,
+  };
+  const read = (settings) => ({ settings, problems: [] });
+  assert.deepEqual(await wakeAnsweredBySetting(store, read({ web_fetch: { permission: "ask" }, web_search: { provider: "off" } }), { web_fetch: { permission: "ask" } }), []);
+  assert.deepEqual(counts, { list: 0, scanEntries: 0, scanConversations: 0, scanTasks: 0, scanSubmissions: 0, wake: 0 }, "a provider-only save read nothing");
+  assert.deepEqual(await wakeAnsweredBySetting(store, read({ web_fetch: { permission: "allow" } }), { web_fetch: { permission: "ask" } }), ["r1"]);
+  assert.deepEqual(counts, { list: 1, scanEntries: 1, scanConversations: 1, scanTasks: 0, scanSubmissions: 0, wake: 1 }, "an allow reads the entries alone");
+});
+
+// The reviewer's case: an MCP call parks under its exact key's ask with the server wildcard on deny (the deny stands behind the
+// ask, so approvals "never" does not lift it). Changing only the wildcard to ask removes that block, so the call reads allow:
+// a save that touched a permission must reach the gate, whichever key moved.
+test("a save that moves only a server wildcard from deny to ask wakes a run whose exact-key ask waited behind it, approvals never", async () => {
+  const { wakeAnsweredBySetting } = await import("../dist/settings-wake.js");
+  let woken = 0;
+  const page = (items = []) => async () => ({ items });
+  const store = {
+    runs: { list: async () => [{ id: "r1", revisionId: "v1" }], wake: async () => { woken += 1; return true; } },
+    agents: { revision: async () => ({ body: { approvals: "never" } }) },
+    readJournal: () => ({
+      scanConversations: page([{ id: 1 }]),
+      scanEntries: page([{ id: 1, conversationId: 1, kind: "agentrun.ask", data: { callId: "c1", tool: "mcp:fake/add", args: {}, requestedAt: "" } }]),
+      scanTasks: page(),
+      scanSubmissions: page(),
+    }),
+  };
+  const read = (settings) => ({ settings, problems: [] });
+  const before = { "mcp:fake/add": { permission: "ask" }, "mcp:fake/*": { permission: "deny" } };
+  assert.deepEqual(await wakeAnsweredBySetting(store, read(before), before), [], "nothing changed: not woken");
+  assert.deepEqual(await wakeAnsweredBySetting(store, read({ "mcp:fake/add": { permission: "ask" }, "mcp:fake/*": { permission: "ask" } }), before), ["r1"]);
+  assert.equal(woken, 1);
+});
+
+// A person's deny already sent wins over the setting: the owner declines the second call, then web_fetch's setting goes
+// back to allow, which wakes the run if it is still parked. Whichever claim reads the ask, the stored deny is its answer:
+// the call is never run, and its rows say it was declined.
+for (const harness of ["pi", "claude-agent", "codex"]) {
+  test(`${harness}: a call the person declined, web_fetch's setting put back to allow right after, is never run`, { timeout: 150_000 }, (t) => bothAllowed(t, harness, "declined"));
+}
+
+async function bothAllowed(t, harness, putBack) {
+  const server = await serve(t, { faux: FAUX, harnessTable: fauxTable(fixture("faux-harness.mjs")), fauxWeb: fixture("faux-gate-web.mjs"), accounts: true, openSetup: true });
+  const { api } = server;
+  const answer = await owner(server);
+  assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: "ask" } })).status, 200);
+  const ask = "Fetch two pages at once and both fail, then stop.";
+  const own = putBack === "agent-ask" ? { tool_settings: { web_fetch: { permission: "ask" } } } : {};
+  assert.equal((await api("POST", "/agents", agent("both", harness === "pi" ? { tools: ["web_fetch"], ...own } : { harness, instructions: ask, tools: ["web_fetch"], ...own }))).status, 201);
+  const started = await api("POST", "/agents/both/runs", { input: { content: ask } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const runId = started.body.run_id;
+
+  const pendingOther = async (than, what) => {
+    for (const end = Date.now() + 55_000; ; await new Promise((resolve) => setTimeout(resolve, 100))) {
+      const view = (await api("GET", `/runs/${runId}`)).body;
+      if (view.status === "input_required" && view.pending?.kind === "approval" && view.pending.id !== than) return view.pending;
+      assert.ok(Date.now() < end, `${what}: ${view.status} ${JSON.stringify(view.pending)}`);
+    }
+  };
+  const first = await pendingOther(undefined, "the run never parked on the first call");
+  assert.equal(JSON.parse(first.args_preview).url, "http://a.example/", "parked on the first call");
+  assert.equal(await answer(runId, first.id, { decision: "allow" }), 204);
+  const second = await pendingOther(first.id, "the second call never parked on its own");
+  assert.equal(JSON.parse(second.args_preview).url, "http://b.example/", "then on the second");
+  const putBackNow = async () => assert.equal((await api("PUT", "/settings/tools", { web_fetch: {} })).status, 200);
+  if (putBack === "declined") {
+    assert.equal(await answer(runId, second.id, { decision: "deny", note: NOTE }), 204);
+    await putBackNow();
+  } else if (putBack === "woken") {
+    // No answer: the flip alone ends the wait.
+    await putBackNow();
+  } else if (putBack === "provider-only") {
+    // A save that turns no tool toward allow (web_fetch stays ask; only web_search's provider changes) wakes nothing.
+    const before = await server.store.runs.get(runId);
+    assert.equal(before.state, "parked", "parked on the second call, released");
+    assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: "ask" }, web_search: { provider: "off" } })).status, 200);
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    const after = await server.store.runs.get(runId);
+    assert.deepEqual([after.state, after.epoch], ["parked", before.epoch], "nothing woken: still parked, never claimed");
+    assert.equal(await answer(runId, second.id, { decision: "allow" }), 204);
+  } else if (putBack === "agent-ask") {
+    const before = await server.store.runs.get(runId);
+    assert.equal(before.state, "parked", "parked on the second call, released");
+    await putBackNow();
+    // Long past the runner's poll: a wake would have claimed it (its epoch moves at a claim) by now.
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    const after = await server.store.runs.get(runId);
+    assert.deepEqual([after.state, after.epoch], ["parked", before.epoch], "the flip woke nothing: still parked, never claimed");
+    const view = (await api("GET", `/runs/${runId}`)).body;
+    assert.deepEqual([view.status, view.pending?.id], ["input_required", second.id], "still waiting on the person");
+    assert.equal(await answer(runId, second.id, { decision: "allow" }), 204);
+  } else {
+    assert.equal(await answer(runId, second.id, { decision: "allow" }), 204);
+  }
+
+  await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
+  const done = await rowsNow(api, runId);
+  const shown = JSON.stringify(done.map((r) => `${r.kind}: ${r.summary}`));
+  if (putBack === "declined") {
+    assert.ok(!done.some((r) => r.kind === "tool_result" && r.tool_use_id === second.call_id && r.summary !== "Held for your approval"), `the declined call never ran: ${shown}`);
+    assert.ok(!done.some((r) => /ENOTFOUND b\.example|as its setting allows it/.test(`${r.summary ?? ""} ${r.tool_result_preview ?? ""}`)), `no row says it ran: ${shown}`);
+    assert.ok(done.some((r) => r.kind === "phase" && new RegExp(`^AgentRun: You declined web_fetch: ${NOTE}$`).test(r.summary ?? "")), `its rows say it was declined: ${shown}`);
+    return;
+  }
+  for (const [call, host] of [[first.call_id, "a.example"], [second.call_id, "b.example"]]) {
+    const asked = done.filter((r) => r.kind === "tool_approval_requested" && r.tool_use_id === call);
+    // The second call waited when the setting went back to allow: the setting answered its ask (the agent's own ask kept
+    // it the person's).
+    const bySetting = putBack === "woken" && call === second.call_id;
+    const head = bySetting ? "Allowed by the tool's setting" : "Asked your approval";
+    assert.deepEqual(asked.map((r) => r.summary), [`${head}: web_fetch {"url":"http://${host}/"}`], `${host}: its approval row reads ${head}, never withdrawn: ${shown}`);
+    readsInOrder(done, call, bySetting ? /^AgentRun: web_fetch ran, as its setting allows it, and failed$/ : /^AgentRun: web_fetch ran once you allowed it, and failed$/, `${host}, at the run's end`);
+    const result = done.find((r) => r.kind === "tool_result" && r.tool_use_id === call);
+    assert.match(result?.tool_result_preview ?? "", new RegExp(`ENOTFOUND ${host.replace(".", "\\.")}`), `${host}: its result row is the fetch's own: ${shown}`);
+  }
+  assert.equal(done.filter((r) => r.kind === "phase" && /^AgentRun: web_fetch ran(?: once you allowed it|, as its setting allows it)/.test(r.summary ?? "")).length, 2, `one outcome row for each call: ${shown}`);
+  // Asked once each: no second card for a call the setting answered.
+  assert.equal(done.filter((r) => r.kind === "tool_approval_requested").length, 2, `one approval row for each call: ${shown}`);
+  assert.ok(!done.some((r) => /^(Not run|Withdrawn)/.test(r.summary ?? "")), `no row says a call that ran was not run or withdrawn: ${shown}`);
+}

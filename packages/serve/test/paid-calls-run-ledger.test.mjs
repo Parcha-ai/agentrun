@@ -33,7 +33,7 @@ test("monid.run on the run's one ledger books what monid reported, and a later c
   const paid = await claimOn(store);
   const tool = monidRegistration("run", { [FAUX_ENV]: "1", [FAUX_MONID_ENV]: FAUX_MONID, [MONID_KEY_ENV]: MONID_KEY }, () => work);
   const api = { callId: "c1", commit: async () => {} };
-  const result = await bookedIn({ call: "c1", record: async () => {}, paid }, () => tool.execute({ provider: "faux", endpoint: "/person/enrich", input: { name: "Ada" } }, api, { abortSignal: new AbortController().signal }));
+  const result = await bookedIn({ call: "c1", paid }, () => tool.execute({ provider: "faux", endpoint: "/person/enrich", input: { name: "Ada" } }, api, { abortSignal: new AbortController().signal }));
   near(paid.spentUsd(), 0.003, `this claim's ledger (the call answered ${JSON.stringify(result?.content?.[0]?.text ?? result).slice(0, 160)})`);
   near((await claimOn(store)).spentUsd(), 0.003, "the next claim");
 });
@@ -128,7 +128,7 @@ test("a charge whose commit fails books nothing on the ledger", async () => {
 test("a paid web search's request record on the run's one ledger names the tool call it was booked under", async () => {
   const store = memorySessionStore();
   const paid = await claimOn(store);
-  const response = await bookedIn({ call: "call-7", record: async () => {}, paid }, () => paidRequest(parallelSearchFee(10), async () => new Response("{}", { status: 200 })));
+  const response = await bookedIn({ call: "call-7", paid }, () => paidRequest(parallelSearchFee(10), async () => new Response("{}", { status: 200 })));
   assert.equal(response.status, 200, "the search was sent");
   const requests = (await store.read(cap.TOOL_SESSION)).filter((r) => r.kind === "runner.request").map((r) => r.data);
   assert.equal(requests.length, 1, `one paid request: ${JSON.stringify(requests)}`);
@@ -148,7 +148,7 @@ test("a priced MCP call on the run's one ledger books its owner's price, and a l
     work: () => work,
     commit: () => async () => {},
   });
-  const result = await bookedIn({ call: "c1", record: async () => {}, paid }, () => gateway.call("fake", "paid", { query: "ada" }, { signal: new AbortController().signal, callId: "c1" }));
+  const result = await bookedIn({ call: "c1", paid }, () => gateway.call("fake", "paid", { query: "ada" }, { signal: new AbortController().signal, callId: "c1" }));
   assert.equal(result.content?.[0]?.text, "paid for ada", "the call was answered");
   near(paid.spentUsd(), 0.05, "this claim's ledger");
   near((await claimOn(store)).spentUsd(), 0.05, "the next claim");

@@ -7,7 +7,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { fakeUiConnection } from "@parcha/agentrun-computer/fake-ui-driver";
 import { FAKE_AGENTS, FIXTURE_APP, fakeBackend, helper } from "../dist/fake-world.js";
-import { ENTRY, imageType, loadSuite, proofMarkdown, runBench, Store, verifySuite } from "../dist/index.js";
+import { actShortfall, ENTRY, imageType, loadSuite, proofMarkdown, runBench, Store, verifySuite } from "../dist/index.js";
 import { arm, recordOf, SUITES, store, tmp } from "./support.mjs";
 
 const FIXTURE = join(SUITES, "ui-fixture");
@@ -59,7 +59,8 @@ test("an act's record on the fake ui driver: routes, verified, state before and 
 	const [result] = await runBench({ tasks: tasks("fixture.save"), arms: [arm("fake-right")], seeds: [1], backend: driverBackend(FAKE_AGENTS), store: s, grade: "never" });
 	assert.equal(result.outcome, "pass", result.why);
 	assert.deepEqual(result.routes, { semantic: 2 });
-	assert.equal(result.verified, 2);
+	// The set is read back; Save shows "Saved" only after its press, so the press is unverified and the expect sees it.
+	assert.equal(result.verified, 1);
 	assert.equal(result.acts, 1);
 	assert.equal(result.stale, 0);
 	const entries = recordOf(s, result.run);
@@ -69,7 +70,7 @@ test("an act's record on the fake ui driver: routes, verified, state before and 
 	const act = steps.find((step) => step.phase === "agent" && step.method === "ui.act");
 	assert.deepEqual(act.routes, ["semantic", "semantic"]);
 	assert.equal(act.ran, 2);
-	assert.equal(act.verified, 2);
+	assert.equal(act.verified, 1);
 	assert.equal(act.changed, true);
 	assert.equal(act.expect, "met");
 	assert.match(act.state.before, /^\S+$/);
@@ -170,4 +171,13 @@ test("an oracle step that ran but answered verified false is unconfirmed, never 
 	assert.match(blind.why ?? "", /ui\.act: its step 1 ran by the background route but was not verified/);
 	const seen = proofs.find((p) => p.task === "fixture.seen");
 	assert.equal(seen.solved, "passes", seen.why);
+});
+
+test("an unverified step is done only when the act's expect was met and its window changed", () => {
+	const steps = [{ route: "semantic", verified: true }, { route: "semantic", verified: false }];
+	assert.equal(actShortfall({ steps, changed: true, expect: "met" }), undefined);
+	assert.match(actShortfall({ steps, changed: false, expect: "met" }), /step 2 ran by the semantic route but was not verified/);
+	assert.match(actShortfall({ steps, changed: true }), /step 2 ran by the semantic route but was not verified/);
+	assert.match(actShortfall({ steps: [{ route: "semantic", verified: true }], changed: true, expect: "unmet" }), /expect did not hold/);
+	assert.match(actShortfall({ steps: [{ route: "semantic", verified: true }, { error: { kind: "stale", message: "gone" } }], expect: "met" }), /step 2 was refused: stale/);
 });

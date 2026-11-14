@@ -11,7 +11,7 @@ const { learningLoopFactory, LEARNING_HARNESS } = await import("../dist/runner/l
 const { folderTestHooks, learningWorkspace, readSnapshot } = await import("../dist/learn/folder.js");
 
 const NOTE = { file: "retries.md", text: "---\nname: Retries\ndescription: Retry a flaky fetch twice\ntype: reference\n---\nRetry a flaky fetch twice.\n" };
-const KEEP = JSON.stringify({ merge: true, reason: "Worth keeping.", items: [{ file: "retries.md", decision: "keep", why: "useful" }] });
+const KEEP = JSON.stringify({ merge: true, reason: "Worth keeping.", items: [{ file: "retries.md", decision: "keep", general: true, why: "useful" }] });
 
 /** A fresh store: run-1 ended keeping NOTE, its learning run claimed and run by the factory's loop on agent-1's
  *  folder, the grader answering `answer`. The loop's end. */

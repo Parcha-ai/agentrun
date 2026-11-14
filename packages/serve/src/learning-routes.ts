@@ -18,7 +18,8 @@
 import type { DraftAsk } from "./learn/skills.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { approve, buildIndex, CAPS, checkNote, draftProblems, frontKeys, INDEX_FILE, INDEX_LINES, isHeld, LEARNED_KEYS, type LearnedNote, learnedName, learnedPlace, learnedStatus, NOTE_FILE, NOTE_STATUSES, parseNoteFile, type Problem, printable, released, retire, retiredLearned, skillProblems, SKILLS_DIR, supersede, UNCLEAR_FRONT, unstorable, WORKFLOWS_DIR, unclearFront, restorable, restore, restoredLearned } from "./learn/index.js";
-import { blobOid, type FolderChange, FolderBusy, FolderRefused, FolderTooLarge, FolderUnreadable, heldOnMain, isBodyMismatch, type PersonKind, readLearning, PATCH_CAP, readRunDiff, readSnapshot, type SnapChange, type SnapHistory, type SnapLearned, type SnapNote, type Snapshot, snapshotNotes, writeLearning } from "./learn/folder.js";
+import type { DraftDecisions } from "./learn/skills.js";
+import { blobOid, type FolderChange, FolderBusy, FolderRefused, FolderTooLarge, FolderUnreadable, heldOnMain, isBodyMismatch, type PersonKind, readLearning, PATCH_CAP, readRunDiff, readSnapshot, runDiffKey, type SnapChange, type SnapHistory, type SnapLearned, type SnapNote, type Snapshot, snapshotNotes, textsAt, writeLearning } from "./learn/folder.js";
 import { ApiError, invalid } from "./errors.js";
 import { type ItemStatus, detailShown, type Learning, learningFolderOf, type NoteRuns, notesView, reasonShown, secretsShown, type Shown, withAgentRepo } from "./learning.js";
 import type { Impact } from "./learning-run.js";
@@ -253,6 +254,39 @@ export async function learningLog(data: string, agentId: string, query: URLSearc
   }, () => EMPTY);
 }
 
+/** The most revisions a workflow's history answers, and its default. */
+const REVISIONS_MAX = 50;
+const REVISIONS_DEFAULT = 20;
+/** One revision of a learned workflow: a commit on main that changed its workflow.json, with that commit's text (null
+ *  when the commit holds no such file: it was deleted there), cut of the host's secrets. */
+type WorkflowRevision = { commit: string; at: string; by: Change["by"]; reason: string; text: string | null };
+
+/** GET /agents/{id}/learning/workflows/{name}/revisions?limit=: the latest revisions of learned workflow `name` (the
+ *  commits on main's log that changed `workflows/<name>/workflow.json`), oldest first, each with the workflow's text at
+ *  that commit, so a person can step through how it changed. One read-only exec per revision (textsAt), at most `limit`
+ *  of them. `total` counts every such commit the log holds, `truncated` says the log itself is cut (it keeps the latest
+ *  LOG_KEEP changes). A workflow no commit of the log changed is not_found. */
+export async function workflowRevisions(data: string, agentId: string, name: string, query: URLSearchParams, shown: Shown): Promise<{ name: string; revisions: WorkflowRevision[]; total: number; truncated: boolean }> {
+  if (!learnedName("workflow", name)) throw new ApiError("bad_request", "A workflow's folder is named with lowercase letters, digits, dashes and underscores.");
+  const given = query.get("limit");
+  const limit = given === null ? REVISIONS_DEFAULT : Number(given);
+  if ((given !== null && !/^\d+$/.test(given)) || limit < 1 || limit > REVISIONS_MAX) throw new ApiError("bad_request", `limit is an integer from 1 to ${REVISIONS_MAX}`);
+  const path = `${WORKFLOWS_DIR}/${name}/workflow.json`;
+  if (shown.name(path) !== path) throw new ApiError("not_found", "the agent's learning folder has no such workflow");
+  const found = await reading(data, agentId, async ({ ws, snapshot }) => {
+    const touched = snapshot.log.filter((change) => change.files.includes(path));
+    const latest = touched.slice(0, limit).reverse();
+    const revisions: WorkflowRevision[] = [];
+    for (const change of latest) {
+      const texts = await textsAt(ws, change.commit, [path]).catch((error: unknown) => { throw routeFailure(error); });
+      revisions.push({ commit: change.commit, at: change.at, by: change.by, reason: shown.text(change.reason), text: texts?.[path] === undefined ? null : shown.text(texts[path]!) });
+    }
+    return { revisions, total: touched.length, truncated: snapshot.log_more };
+  }, () => undefined);
+  if (!found || !found.total) throw new ApiError("not_found", "the agent's learning folder has no such workflow");
+  return { name, ...found };
+}
+
 /** The blob of `file` on the snapshot's main, as a route names it: the index, a note, a skill's SKILL.md, a draft's
  *  README.md or workflow.json; undefined when main holds no such file the snapshot names. */
 function blobIn(snapshot: Snapshot | undefined, file: string): string | undefined {
@@ -361,7 +395,7 @@ const NOT_NOTE = "The folder's file by this name on main is no note (not a regul
  *  `Approved-Via: console` on an approval), main moved only from the main it read (computed again on a main that moved
  *  meanwhile), then the checked-out files and the snapshot. A note the checks refuse is never written to git. A retire
  *  of a note that is not active, and an edit that changes nothing, commit nothing. `refuse`: the host's secrets. */
-export async function writeNote(data: string, agentId: string, raw: string, input: { ifMatch?: string; ifNoneMatch?: string; body?: Buffer; refuse: readonly string[]; approve?: boolean; restore?: boolean; draftTools?: () => Promise<{ tools: string[]; gated: Record<string, string>; deniedBy?: Record<string, "agent" | "server" | "default">; ask?: DraftAsk }> }): Promise<{ status: 200 | 201; file: string; text: string; etag: string }> {
+export async function writeNote(data: string, agentId: string, raw: string, input: { ifMatch?: string; ifNoneMatch?: string; body?: Buffer; refuse: readonly string[]; approve?: boolean; restore?: boolean; draftTools?: () => Promise<{ tools: string[]; gated: Record<string, string>; deniedBy?: Record<string, "agent" | "server" | "default">; ask?: DraftAsk; decisions?: DraftDecisions }> }): Promise<{ status: 200 | 201; file: string; text: string; etag: string }> {
   const file = fileOf(raw, input.approve ? "approve" : input.restore ? "restore" : input.body === undefined ? "retire" : "write");
   // A skill's SKILL.md or a draft's README.md: only ever approved or retired here.
   const learned = learnedPlace(file);
@@ -445,9 +479,9 @@ export async function writeNote(data: string, agentId: string, raw: string, inpu
             // a restore never brings back a draft no run could run.
             const draft = changes.find(({ path }) => path === `${folder}workflow.json`);
             if (learned.kind !== "skill" && draft && input.draftTools) {
-              const { tools, gated, deniedBy, ask } = await input.draftTools();
+              const { tools, gated, deniedBy, ask, decisions } = await input.draftTools();
               const dsl = await import("@parcha/agentrun-dsl");
-              for (const { rule, detail } of draftProblems(dsl as never, draft.bytes.toString("utf8"), tools, gated, deniedBy ?? {}, ask)) problems.push(printable({ rule, path: draft.path, detail }, input.refuse));
+              for (const { rule, detail } of draftProblems(dsl as never, draft.bytes.toString("utf8"), tools, gated, deniedBy ?? {}, ask, decisions)) problems.push(printable({ rule, path: draft.path, detail }, input.refuse));
             }
             if (problems.length) throw refused(problems);
           } else {
@@ -529,7 +563,7 @@ export type Promotable = { name: string; description: string; workflow: Record<s
  *  its gate (draftProblems: the DSL's validation with no code run, no code node, no shell or executor call, no call node
  *  on a tool the agent does not have or the gate holds to ask or deny). Any of those is 400 with `problems`, printable.
  *  Reads only: the folder is never written. */
-export async function promotable(data: string, agentId: string, raw: string, input: { refuse: readonly string[]; draftTools: () => Promise<{ tools: string[]; gated: Record<string, string>; deniedBy?: Record<string, "agent" | "server" | "default"> }> }): Promise<Promotable> {
+export async function promotable(data: string, agentId: string, raw: string, input: { refuse: readonly string[]; draftTools: () => Promise<{ tools: string[]; gated: Record<string, string>; deniedBy?: Record<string, "agent" | "server" | "default">; decisions?: DraftDecisions }> }): Promise<Promotable> {
   let name: string;
   try {
     name = decodeURIComponent(raw);
@@ -553,8 +587,9 @@ export async function promotable(data: string, agentId: string, raw: string, inp
   if (!json) problems.push(printable({ rule: "workflow", path: file, detail: "the workflow's folder holds no workflow.json" }, input.refuse));
   const dsl = await import("@parcha/agentrun-dsl");
   if (json && !problems.length) {
-    const { tools, gated, deniedBy } = await input.draftTools();
-    for (const { rule, detail } of draftProblems(dsl as never, json.text, tools, gated, deniedBy ?? {})) problems.push(printable({ rule, path: file, detail }, input.refuse));
+    // A learned workflow's decision nodes (LS-07) are checked on this server's decision providers, as a restore checks them.
+    const { tools, gated, deniedBy, decisions } = await input.draftTools();
+    for (const { rule, detail } of draftProblems(dsl as never, json.text, tools, gated, deniedBy ?? {}, undefined, decisions)) problems.push(printable({ rule, path: file, detail }, input.refuse));
   }
   if (problems.length) throw new ApiError("bad_request", `The workflow does not pass the checks: ${[...new Set(problems.map((problem) => problem.rule))].join(", ")}.`, { problems });
   const workflow = JSON.parse(json!.text) as Record<string, unknown>;
@@ -621,7 +656,7 @@ export async function runDiffOverStore(data: string, store: Store, runId: string
   };
   if (end?.merged) {
     const folder = learningFolderOf(data, row.agentId);
-    const diff = await readRunDiff(folder.workspace, runId).catch((error: unknown) => Promise.reject(routeFailure(error))).finally(() => folder.end());
+    const diff = await readRunDiff(folder.workspace, runDiffKey(runId, kept?.round)).catch((error: unknown) => Promise.reject(routeFailure(error))).finally(() => folder.end());
     if (!diff || diff.merge !== end.merged) throw new ApiError("not_found", "the run's merge is not in its agent's learning folder");
     return { base: diff.parent, head: diff.merge, files: diff.files.map((entry) => ("patch" in entry ? file(entry.path, entry.status, entry.patch) : { path: shown.name(entry.path), status: entry.status, withheld: entry.withheld })) };
   }

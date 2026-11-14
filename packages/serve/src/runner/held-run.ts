@@ -26,6 +26,8 @@ export type HeldWait = "moved" | "cut";
 export function journalHeld(spec: HeldSpec, commit: (entries: readonly RootEntry[]) => Promise<void>, now: () => number = Date.now) {
   const ms = spec.minutes * 60_000;
   let read: HeldRead | undefined;
+  /** The owner's calls in flight: the hold's idle count cannot lapse while any is. */
+  let calls = 0;
   let queue: Promise<void> = Promise.resolve();
   let wake: () => void = () => {};
   let changed = new Promise<void>((resolve) => (wake = resolve));
@@ -60,6 +62,11 @@ export function journalHeld(spec: HeldSpec, commit: (entries: readonly RootEntry
     while (read && states.includes(read.state)) {
       if (isCut) return "cut";
       const left = read.until - now();
+      // An owner's call in flight keeps the hold: its count starts again when the last one ends (callEnded pokes this wait).
+      if (calls > 0) {
+        await changed;
+        continue;
+      }
       if (left <= 0) {
         // A row the journal refuses (a lost claim's fence) is the cut's to answer, not this wait's.
         await move("released", { why: "timeout" }, heldWords.timeout(spec.minutes)).catch(() => undefined);
@@ -109,7 +116,17 @@ export function journalHeld(spec: HeldSpec, commit: (entries: readonly RootEntry
       if (read?.state !== "released") return undefined;
       return released();
     },
-    /** An owner's call ended at `at` (its computer.call entry's stamp): the hold's count starts again from it. */
+    /** An owner's call starts: the hold cannot lapse until every call in flight has ended. */
+    callStarted(): void {
+      calls += 1;
+      this.touched(now());
+    },
+    /** An owner's call ended at `at`: the hold's count starts again from it once the last call in flight is done. */
+    callEnded(at: number): void {
+      calls = Math.max(0, calls - 1);
+      this.touched(at);
+    },
+    /** The hold's count starts again from `at`. */
     touched(at: number): void {
       if (!read || read.state === "released") return;
       read = { ...read, until: Math.max(read.until, at + ms) };

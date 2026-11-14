@@ -296,8 +296,8 @@ has Docker, and no computer otherwise. Remote computers bill through your own ac
 - **Keys.** Add a vendor's key once in **Settings → Computers**. Your server seals it and shows it only as set or
   missing; it never enters the agent's computer. **Test connection** makes one read at the vendor and starts nothing.
 - **The run's files.** By default a run's folder lives on your server and the Docker sandbox mounts it. Turn on an
-  Archil disk in Settings and the folder lives there instead, so a Daytona, Modal or E2B sandbox mounts the same folder.
-  Those three run only with an Archil disk, and with Archil on the Docker sandbox is refused.
+  Archil disk in Settings and the folder lives there instead, so a Daytona, Modal, E2B or Agent37 sandbox mounts the same
+  folder. Those four run only with an Archil disk, and with Archil on the Docker sandbox is refused.
 - **Watching and taking over.** A browser run streams to the run's **Screen** tab through your own server, never
   through a vendor link. Take the controls, then hand them back. The agent can also stop and ask you to take over, for
   a login or a captcha.
@@ -306,7 +306,7 @@ has Docker, and no computer otherwise. Remote computers bill through your own ac
   `npm run conformance -w @parcha/agentrun-computer -- --provider docker --kind sandbox`.
 
 [`@parcha/agentrun-computer`](packages/computer/README.md) is the protocol underneath: one small daemon in every
-computer and one provider per vendor.
+computer and one provider per vendor. To add your vendor, see [How to contribute a provider](packages/computer/PROVIDERS.md#how-to-contribute-a-provider).
 
 </details>
 

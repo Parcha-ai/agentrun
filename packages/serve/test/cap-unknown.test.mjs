@@ -478,9 +478,9 @@ test("a stopped request counts every byte it streamed, whatever its blocks hold:
   assert.equal(await spentSaid(capped), eight(0.004 + (bytes + STOP_ALLOWANCE) * 100 / 1e6));
 });
 
-/** A gpt-5-class model on the Responses API: $1.25 a million input tokens, $10 a million output, reasoning that streams
+/** A gpt-6.1-sol-class model on the Responses API: $2 a million input tokens, $10 a million output, reasoning that streams
  *  only its summary. */
-const responsesReasoner = { ...model({ input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 0 }, { maxTokens: 128_000, contextWindow: 400_000 }), id: "gpt-5", api: "openai-responses", provider: "openai", reasoning: true };
+const responsesReasoner = { ...model({ input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5 }, { maxTokens: 128_000, contextWindow: 272_000 }), id: "gpt-6.1-sol", api: "openai-responses", provider: "openai", reasoning: true };
 /** A Claude-class model on the Messages API, whose thinking takes a budget: $3 a million input, $15 output. */
 const budgetReasoner = { ...model({ input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, { maxTokens: 64_000, contextWindow: 200_000 }), id: "claude", api: "anthropic-messages", provider: "anthropic", reasoning: true };
 /** A 20 KB context: one message of 20,000 bytes. */
@@ -823,19 +823,20 @@ test.skip("QA 7.4: a pi run under a $1 cap, stopped while its clamped request is
 });
 
 test("a capped pi run refused for room with no stop pauses at its cap: its cost stays the known total it spent, and the refused request counts as no request", async (t) => {
-  const { api, store } = await serve(t, { faux: OUTPUT_PRICED });
+  const { api, store } = await serve(t, { faux: new URL("./fixtures/faux-input-priced.mjs", import.meta.url).pathname });
   // A probe: one paid request (asking the person), to learn what one costs.
   assert.equal((await api("POST", "/agents", agent("probe", { tools: ["ask_person"] }))).status, 201);
   const probe = (await api("POST", "/agents/probe/runs", { input: { content: "Pick a region." } })).body.run_id;
   await follow(api, probe, ["input_required"]);
   const first = (await view(api, probe)).cost.usd;
   assert.ok(first > 0, "the ask was paid for");
-  // One request's least (1,024 tokens at $0.0001) plus half the ask: the ask goes, limited to what the cap buys, and the
-  // answer cannot buy its least after it.
+  // The cap sits above the wrap-up line at step 0 (a bit over three times a request's least, 1,024 tokens at $0.0001, with
+  // the note's own bytes: under it the run is told to finish and never asks), so the ask goes. The answer is a long message, input priced: its input alone, about
+  // 5,700 tokens ($0.57), is more than what the cap leaves after the ask, so it cannot be bought.
   assert.equal((await api("POST", "/agents", agent("plain", { tools: ["ask_person"] }))).status, 201);
-  const runId = (await api("POST", "/agents/plain/runs", { input: { content: "Pick a region." }, max_cost_usd: (1_024 * 100) / 1e6 + first / 2 })).body.run_id;
+  const runId = (await api("POST", "/agents/plain/runs", { input: { content: "Pick a region." }, max_cost_usd: 0.5 })).body.run_id;
   await follow(api, runId, ["input_required"]);
-  assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "eu" })).body.mode, "answer");
+  assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "eu ".repeat(6_666) })).body.mode, "answer");
   // Its next pause, past the question it answered: the answer is taken once the run reads as no longer asking.
   const run = await pausedPast(api, runId, "question");
   assert.deepEqual(pausedState(run), PAUSED, JSON.stringify(run));

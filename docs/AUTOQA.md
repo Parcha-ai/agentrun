@@ -145,7 +145,7 @@ same ground with no key.
 | Journal | In the run's rows of the store (`pi_entries`, `pi_tasks`, `pi_submissions`), from `packages/serve/src/timeline`: `REQUEST_STARTED` (`heldUsd`, `capRefused`), `REQUEST_ENDED` (`heldUsd`, `unsent`), `REQUEST_COST`, `REQUEST_REFUSED`, `REQUEST_COST_PENDING`, `REQUEST_COST_LATE`, `REQUEST_CONTINUED`. Read through `timelineOf` and `runMetricsOf` |
 | Run directory | `DIR/disk/agents/<agent>/runs/<id>/work/`; the run's record is in the store, not its folder. The run's claim is its row in `runs` (`epoch`, `runner`, `claimed_until`), and a message, stop, cancel, raise or approval is a row of `commands` that its runner reads |
 | Adapters it calls | `dispatch.ts` reads the run's launch record and picks its loop (`harness-loops.ts` `resolveRunnerLoop`); `adapter-loop.ts` drives an `AgentAdapter` (`check`, `open`) for a `SessionSpec`: pi is `runner/adapters/pi.ts`, the others are `packages/run-adapters-*`. The cap is the loop's `beforeRequest` on the run's model port (`modelPortFor`), the one ledger for every harness; a CLI harness's requests reach it through `startModelProxy` under a `ProviderPolicy` |
-| Takes from the tool plane | `TOOLS` (`ToolEntry`, `tools.ts`); a run's session carries `HostTool[]`, each with its `REPLAY` class (`safe` or `never`), which the loop's side-effect rule (`runner/side-effects.ts`) reads before a call |
+| Takes from the tool plane | `TOOLS` (`ToolEntry`, `tools.ts`); a run's session carries `HostTool[]`, each with its `replay` class (tool-list.ts) (`safe` or `never`), which the loop's side-effect rule (`runner/side-effects.ts`) reads before a call |
 | Takes from places | The run's Workspace and its computer, both opened at the claim (`workspace/run-workspace.ts`, `workspace/computer-for-claim.ts`), from the revision's `computer` setting (`definition.place` is its API view); see Places below |
 | Gives the console | The routes above, and `GET /v2/stats` `analytics`, summed from the `RunMetrics` each run's end writes to its row |
 | Gives the learning loop | Not wired into serve yet. |
@@ -231,7 +231,7 @@ land (native and picked web search and tool settings, monid on every harness, th
   - pi's tool binding (`TOOLS[name].bind`);
   - the host-tool slot the claude-agent and codex adapters serve (`hostTools`, served over MCP or app-server dynamic
     tools);
-  - the journal's replay classes (`REPLAY`: `safe` may run again after a crash, `never` is answered interrupted);
+  - the journal's replay classes (tool-list.ts `replay`: `safe` may run again after a crash, `never` is answered interrupted);
   - the run's `work/` directory.
 - Gives back:
   - tool registrations per harness, and one journal entry per call;
@@ -366,8 +366,8 @@ npm run test:docker -w @parcha/agentrun-computer` (without the variable, every D
    words for its version, read with getprop when it connected: `The phone is ready: Android <version> (<arch>), from
    Phone harness.`
 
-   It passes when the run completes; its timeline shows that row, then `phone_open` of `com.android.settings` (or a tap
-   that opens it) and a `phone_tree` or `phone_screen` read of the About phone page; its final answer names the version
+   It passes when the run completes; its timeline shows that row, then a `computer_act` or `computer_script` that opens
+   `com.android.settings` and a `computer_observe` read of the About phone page; its final answer names the version
    in that row (a phone of this account said `15`); the phone is released at the run's end (a minute later the
    account lists no session `provisioning` or `ready`: `GET https://api.phone-harness.com/sessions`, the key as a
    bearer); and no key is in any answer, the timeline or the server's log.
@@ -412,7 +412,7 @@ node --input-type=module -e '
 **Checks.**
 
 1. The console loads at `/` and signs in: setup, then the password. With `AGENTRUN_ACCOUNTS=0` the printed
-   link signs the browser in and the token leaves the address.
+   link (`?launch=<code>`) signs the browser in and the code leaves the address; a `?token=` link signs nothing in.
 2. An agent is created from New agent with its defaults, and a run is started from its page. Once the workflow
    starter is on main (#1315), a workflow agent is created from it too.
 3. One run on a priced faux model (`packages/serve/test/fixtures/faux-priced.mjs`): its timeline's usage row, its
