@@ -52,8 +52,9 @@ frames.sort { $0.at < $1.at }
 captions.sort { $0.at < $1.at }
 
 // The task's own frames and captions. A frame from well before the start is the setup's (Notes' welcome sheet, answered
-// before the task, or its window before the fixture sized it): the movie starts at the task's first frame instead, and
-// sizes its window by the task's frames alone.
+// before the task, or its window before the fixture sized it), and one after the end the teardown's (Notes' window put
+// back to its own size): the movie starts at the task's first frame instead, ends at its end, and sizes its window by
+// the task's frames alone.
 var start = from ?? frames[0].at
 let last = end > start ? end : frames.last!.at + 1.2
 // A caption from before the start is the setup's, not the task's.
@@ -64,6 +65,8 @@ if let first = frames.firstIndex(where: { $0.at >= start - 0.5 }) {
 } else {
 	frames = [frames.last!]
 }
+// The movie shows no frame after its end; the first frame stays, so there is one.
+frames = [frames[0]] + frames.dropFirst().filter { $0.at <= last }
 
 func image(_ path: String) -> CGImage? {
 	guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil) else { return nil }
