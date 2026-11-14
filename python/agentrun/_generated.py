@@ -3607,6 +3607,7 @@ class _GradeRunBodyRequired(TypedDict):
 class GradeRunBody(_GradeRunBodyRequired, total=False):
     expected: dict[str, Any]
     source: Literal["feedback", "eval"]
+    label: str
 
 
 class _GradeRunResponseRequired(TypedDict):
@@ -3617,6 +3618,7 @@ class _GradeRunResponseRequired(TypedDict):
     path: Literal["agent", "handed_back", "workflow", "replay"]
     workflow: str | None
     workflow_digest: str | None
+    feedback: Literal["revise", "look_back"] | None
 
 
 class GradeRunResponse(_GradeRunResponseRequired, total=False):
