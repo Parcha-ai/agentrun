@@ -1240,10 +1240,9 @@ runs on the VM runtime, or on gVisor for a GPU computer (below). Its unit tests 
   `workdir` are refused: Modal has no pids limit, and a computer works in `/work`, its home.
 - **Tags.** A sandbox's tags are the adapter's labels (`agentrun.computer`, its name, deadline, image and the most its
   deadline may reach) and the caller's, so a computer takes at most 5 labels of its caller's (Modal's 10 tags). Modal
-  holds a sandbox's tags to 512 bytes, names and values together: `check()` counts them and refuses past it in words.
-  An Archil computer's mount label names its folder, `agents/<agent>/runs/<run>/work`, whose run is the `agentrun.run`
-  label's, so the tag records the agent alone and the host reads the folder back from it (`tagsOf`, `labelsOf`).
-  `list` is `sandboxes.list({ appId, tags })` over the provider's app: running sandboxes only, and one Modal still
+  holds a sandbox's tags to 512 bytes, names and values together (`labelRules.maxBytes`): the adapter's `check()`
+  counts them, its own at their longest, and refuses past it in words. An Archil computer's mount label records the
+  folder's agent alone, as on every host: the folder's run is the `agentrun.run` label's. `list` is `sandboxes.list({ appId, tags })` over the provider's app: running sandboxes only, and one Modal still
   lists after its terminate is polled and left out once `poll()` reads it finished.
 - **release** `delete` is `terminate()`, and the adapter waits until the sandbox reads gone and is no longer listed.
   `stop` is refused as `unsupported`: terminate is a sandbox's only end.
