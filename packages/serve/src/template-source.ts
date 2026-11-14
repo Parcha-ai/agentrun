@@ -26,14 +26,21 @@ export type GithubSource = { owner: string; repo: string; path: string | null; r
 
 const refused = (message: string) => invalid([{ field: "source", reason: "bad_format", message, expected: "github:<owner>/<repo>[/<path>][@<ref>]", example: "github:Parcha-ai/agentrun/packages/serve/templates/kyb@main" }]);
 
-/** A source's path part with its percent escapes read, in either form (a tree URL's are escaped, and a github: source
- *  copied from one may be); a % that starts no escape is refused by name, never as a folder name's wrong letter. */
+/** A % in a source's path part, refused by name, never as a folder name's wrong letter: one that starts no escape; else,
+ *  in a github: source (`escapes` false), any escape. A github: source is stored and linked as written, so an escaped @
+ *  or / in it would read back as another package. */
+function percentRefused(part: string, escapes: boolean) {
+  const bad = /%(?![0-9A-Fa-f]{2}).{0,2}/s.exec(part)?.[0];
+  if (bad) return refused(`${JSON.stringify(part)} has ${JSON.stringify(bad)}, which is no percent escape: a % is followed by two hex digits (%25 is a % itself).`);
+  return refused(escapes ? `${JSON.stringify(part)} has percent escapes that spell no text.` : `${JSON.stringify(part)} has ${JSON.stringify(/%../.exec(part)?.[0])}, a percent escape: a github: source names each folder as it is, unescaped.`);
+}
+
+/** A tree URL's path part with its percent escapes read. */
 function unescaped(part: string): string {
   try {
     return decodeURIComponent(part);
   } catch {
-    const bad = /%(?![0-9A-Fa-f]{2}).{0,2}/s.exec(part)?.[0];
-    throw refused(bad ? `${JSON.stringify(part)} has ${JSON.stringify(bad)}, which is no percent escape: a % is followed by two hex digits (%25 is a % itself).` : `${JSON.stringify(part)} has percent escapes that spell no text.`);
+    throw percentRefused(part, true);
   }
 }
 
@@ -66,7 +73,9 @@ export function parseSource(text: unknown): GithubSource {
     // given a ref, as the source every install of the console pins to a commit is (<id>@<sha>).
     const body = given.slice("github:".length);
     const at = body.lastIndexOf("@");
-    const parts = (at < 0 ? body : body.slice(0, at)).split("/").map(unescaped);
+    const parts = (at < 0 ? body : body.slice(0, at)).split("/");
+    const escaped = parts.find((part) => part.includes("%"));
+    if (escaped !== undefined) throw percentRefused(escaped, false);
     [owner = "", repo = ""] = parts;
     rest = parts.slice(2);
     ref = at < 0 ? null : body.slice(at + 1);
