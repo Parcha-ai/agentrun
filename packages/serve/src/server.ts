@@ -1,3 +1,6 @@
+import { SdkRuns, sdkOf } from "./sdk/runs.js";
+import { gradeRouteFor } from "./runner/harness-loops.js";
+import { routeOf as sdkModelRoute } from "./runner/model-route.js";
 import { RemoteConnectors, verifyRemote } from './native/remote.js';
 import { nativeOf, nativeModelOverrides, NATIVE_MODEL_SETTINGS_UNSUPPORTED, NATIVE_TOOL_BUDGET_UNSUPPORTED } from "./native/binding.js";
 import { discoverNative } from "./native/discovery.js";
@@ -428,6 +431,10 @@ export const ROUTES: readonly Route[] = [
   {method:"POST",pattern:/^\/connectors\/([^/]+)\/poll$/,name:"pollRemoteConnector"},
   {method:"POST",pattern:/^\/connectors\/([^/]+)\/commands\/([^/]+)\/events$/,name:"remoteCommandEvents"},
   {method:"POST",pattern:/^\/connectors\/([^/]+)\/commands\/([^/]+)\/complete$/,name:"completeRemoteCommand"},
+  {method:"POST",pattern:/^\/agents\/([^/]+)\/sdk-runs$/,name:"startSdkRun"},
+  {method:"GET",pattern:/^\/sdk-runs\/([^/]+)$/,name:"getSdkRun"},
+  {method:"POST",pattern:/^\/sdk-runs\/([^/]+)\/events$/,name:"sdkRunEvents"},
+  {method:"POST",pattern:/^\/sdk-runs\/([^/]+)\/complete$/,name:"completeSdkRun"},
   {method:"POST",pattern:/^\/native\/discover$/,name:"discoverNative"},
   {method:"POST",pattern:/^\/native\/connect$/,name:"connectNative"},
   {method:"GET",pattern:/^\/agents\/([^/]+)\/native$/,name:"getNative"},
@@ -1844,6 +1851,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  starts with the checks a save makes (runnable.ts): one a save refused, or one a setting of this host fixes that it
    *  does not have yet. `capped`: the run has a spend cap, which a web tool's resolution reads (tool-plane.ts). */
   async function runnable(revision: Revision, place: Place, { capped = false }: { capped?: boolean } = {}): Promise<void> {
+    if (sdkOf(revision.body)) throw new ApiError("agent_not_runnable", "This agent runs in its backend SDK. Call its SDK wrapper to start a task; AgentRun does not launch its tools or credentials.");
     const native = nativeOf(revision.body);
     if (native) {
       const overrides = nativeModelOverrides(revision.body);
@@ -1888,6 +1896,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       if (overrides.length) throw invalid(overrides.map(field => ({ field: `definition.${field}`, reason: "not_allowed", message: NATIVE_MODEL_SETTINGS_UNSUPPORTED })));
       return [];
     }
+    if (sdkOf(body)) return [];
     // An agent on a harness that installs on first use starts its install, if it is not in yet: its first run waits for less.
     const install = revision.kind === "agentic" ? installs[harnessOfBody(body)] : undefined;
     if (install) {
@@ -2832,6 +2841,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const commandId = decodeURIComponent(parts[2]!);
       return send(res, 200, found.name === "remoteCommandEvents" ? await broker.events(connectorId, commandId, body) : await broker.complete(connectorId, commandId, body));
     }
+    if (["getSdkRun","sdkRunEvents","completeSdkRun"].includes(found.name)) {
+      const runId=decodeURIComponent(found.pattern.exec(path)![1]!);
+      const sdk=new SdkRuns(store,data,token,serverSecrets);
+      await sdk.authenticate(runId,String(req.headers.authorization??"").replace(/^Bearer /,""));
+      if(found.name==="sdkRunEvents")return send(res,200,await sdk.events(runId,await bodyOf(req)));
+      if(found.name==="completeSdkRun")return send(res,200,await sdk.complete(runId,await bodyOf(req)));
+      return send(res,200,{...await sdk.status(runId),learning:await servedRunLearning({serverSecrets,signIns,statuses},store,runId)});
+    }
     if (!timingSafeEqual(digest(String(req.headers.authorization ?? "")), expected)) {
       authFailed(`/v2${path}`, req.headers.authorization === undefined ? "no_credential" : "wrong_token");
       throw new ApiError("unauthenticated", "this route needs Authorization: Bearer <the token in the data directory>", {}, { "www-authenticate": "Bearer" });
@@ -2841,6 +2858,22 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const [, first, second] = found.pattern.exec(path)!;
     const id = first ? decodeURIComponent(first) : "";
     switch (found.name) {
+      case "startSdkRun": {
+        if(!req.headers["idempotency-key"])throw new ApiError("bad_request","An SDK run requires Idempotency-Key so a retried start never duplicates execution.");
+        const body=await bodyOf(req),entry=await needAgent(id);
+        let gradeModel=gradeModelOf(env,options.gradeModel);
+        if(!gradeModel && sdkOf(entry.revision?.body) && learnsOf((entry.revision!.body as AgenticBody).learning) && learning!=="off"){
+          try{const chosen=await runModelRef(env,(await pinnedOf(entry,{}))!.revision);if(chosen)gradeModel=`${chosen.provider}/${chosen.modelId}`;}catch{}
+        }
+        const sdk=new SdkRuns(store,data,token,serverSecrets);
+        const answer=await idempotent(req,path,body,async origin=>({status:201,body:await sdk.start(entry,body,{...startDeps,...(gradeModel?{gradeModel}:{})},origin,async model=>{
+          try{const route=await gradeRouteFor({model,agentId:id},env,sdkModelRoute);await route.provider.credential();}catch{throw new ApiError("agent_not_runnable","Self-improving SDK runs need a working server model key and grading model. Configure Model keys or turn self-improving off.");}
+        },linkOrigin(req))}));
+        // Re-read the pinned receipt even on an in-memory replay: credentials saved since
+        // the first response must still be withheld without reselecting a different seed.
+        const receipt=await sdk.receipt((answer.body as {run_id:string}).run_id,linkOrigin(req));
+        return send(res,answer.status,receipt,answer.headers);
+      }
       case "listRemoteConnectors": return send(res, 200, await new RemoteConnectors(store).list());
       case "enrollRemoteConnector": return send(res, 200, await new RemoteConnectors(store).enroll(await bodyOf(req)));
       case "revokeRemoteConnector": return send(res, 200, await new RemoteConnectors(store).revoke(id));
