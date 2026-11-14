@@ -13,7 +13,7 @@ import { netDevText } from "./net-dev.mjs";
 export const VERSION = JSON.parse(await (await import("node:fs/promises")).readFile(new URL("../package.json", import.meta.url), "utf8")).version;
 export const DAEMON = "/opt/agentrun/computerd";
 export const LINUX_GROUPS = ["exec", "files", "processes"];
-export const DESKTOP_GROUPS = ["exec", "files", "processes", "screen", "input.pointer", "input.keys"];
+export const DESKTOP_GROUPS = ["exec", "files", "processes", "screen", "input.pointer", "input.keys", "apps"];
 const NO_CAPS = "0000000000000000";
 const STDIN_VERBS = new Set(["mount", "revoke"]);
 
@@ -221,6 +221,7 @@ export function fakeHost({
 			return result({ exitCode: 0, stdout: Buffer.from(`${argv.join(" ")}\n`).toString("base64"), stderr: "", timedOut: false, truncated: false });
 		}
 		if (method === "process.start") {
+			if (params.argv[0] === "no-such-program") return error("not_found", "no-such-program: executable file not found in $PATH");
 			const entry = { id: `p${m.processes.length + 1}`, pid: 100 + m.processes.length, argv: params.argv, running: true, exitCode: null, signal: null, stderr: "" };
 			if (params.argv[0] === "Xvfb") {
 				m.xvfb = entry;

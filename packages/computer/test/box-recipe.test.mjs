@@ -161,13 +161,20 @@ function fakeBuilds({ description, fail } = {}) {
   return { fetch, calls };
 }
 
-test("the Agent37 build's recipe is box/Dockerfile plus Xvfb, named agentrun-box, its hash over every copied file and the desktop's lines", async () => {
+test("the Agent37 build's recipe is box/Dockerfile plus Xvfb, xfwm4 and the apps, named agentrun-box, its hash over every copied file and the desktop's lines", async () => {
   const { AGENT37_BOX_TEMPLATE } = await import("../dist/index.js");
+  const { WINDOW_MANAGER } = await import("../dist/desktop.js");
+  const { DESKTOP_APPS } = await import("../dist/conformance/cases/apps.js");
   assert.equal(agent37Build.NAME, AGENT37_BOX_TEMPLATE, "the descriptor's desktop image is the template this builds");
   const copied = INSTRUCTIONS.filter((line) => line.startsWith("COPY ")).map((line) => line.split(/\s+/)[1]);
   assert.deepEqual([...agent37Build.RECIPE].sort(), ["Dockerfile", ...copied].sort());
-  assert.match(agent37Build.DESKTOP, /apt-get install -y -qq --no-install-recommends xvfb/);
-  assert.match(agent37Build.DESKTOP, /! command -v sudo/, "Xvfb brings no sudo, checked");
+  assert.ok(agent37Build.DESKTOP.includes(`apt-get install -y -qq --no-install-recommends ${agent37Build.DESKTOP_PACKAGES.join(" ")} >/dev/null`));
+  for (const name of ["xvfb", "xfwm4", "xfce4-terminal", "mousepad", "firefox-esr", "xdotool"]) assert.ok(agent37Build.DESKTOP_PACKAGES.includes(name), name);
+  assert.equal(WINDOW_MANAGER[0], "xfwm4", "the window manager the provider starts is one the image has");
+  assert.match(agent37Build.DESKTOP, /for x in Xvfb xfwm4 [^;]*; do command -v "\$x"/, "the build checks the programs are there");
+  const checked = agent37Build.DESKTOP.match(/for app in ([^;]*); do/)?.[1].split(" ") ?? [];
+  assert.ok(checked.some((app) => DESKTOP_APPS.includes(app)), "the build checks a desktop file the conformance apps case opens");
+  assert.match(agent37Build.DESKTOP, /! command -v sudo/, "the desktop's packages bring no sudo, checked");
   const recipe = agent37Build.recipeOf();
   assert.match(recipe.hash, /^[0-9a-f]{12}$/);
   const context = untar(agent37Build.contextOf(recipe));

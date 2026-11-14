@@ -1,7 +1,8 @@
 // A desktop on an X server computerd starts itself: the provider gives init DISPLAY, then starts the X server through
 // the daemon with process.start, as any program, so the server is in init's process table and ends with the computer.
-// The daemon reaches the display once it answers, and hello declares screen, input.pointer and input.keys from then on
-// (hello re-checks the display on each call). Docker's desktops and E2B's start the display this way.
+// The daemon reaches the display once it answers, and hello declares screen, input.pointer, input.keys and apps from then
+// on (hello re-checks the display on each call). A window manager, when the desktop has one, starts next, the same way.
+// Docker's desktops, E2B's and Agent37's start the display this way.
 import { setTimeout as sleep } from "node:timers/promises";
 import type { ComputerClient } from "./protocol.js";
 import { fail, ok, type Result, vendorFail } from "./result.js";
@@ -13,10 +14,18 @@ export interface DesktopOptions {
 	server?: readonly string[];
 	/** How long create waits for the display to answer after starting the server. Default 30 s. */
 	timeoutMs?: number;
+	/**
+	 * A window manager's argv, started the same way once the display answers, with DISPLAY: it frames, stacks and
+	 * focuses the windows apps.launch opens. Default none; E2B's and Agent37's desktops run xfwm4 (WINDOW_MANAGER).
+	 */
+	windowManager?: readonly string[];
 }
 
-/** The groups a desktop declares besides exec, files and processes. */
-export const DESKTOP_GROUPS = ["screen", "input.pointer", "input.keys"] as const;
+/** The groups a desktop declares besides exec, files and processes: apps is computerd's, from the desktop's .desktop files. */
+export const DESKTOP_GROUPS = ["screen", "input.pointer", "input.keys", "apps"] as const;
+
+/** The window manager E2B's and Agent37's desktops run: xfwm4, which both images have, with no compositor and no session. */
+export const WINDOW_MANAGER: readonly string[] = ["xfwm4", "--compositor=off", "--sm-client-disable"];
 
 const DISPLAY = /^:\d{1,5}(\.\d{1,5})?$/;
 /** How often create asks the daemon whether the display is up yet. */
@@ -25,18 +34,20 @@ const DISPLAY_POLL_MS = 100;
 const MAX_TIMER_MS = 2 ** 31 - 1;
 
 /** The desktop options with their defaults, or a throw in words. */
-export function desktopOf({ display = ":0", server, timeoutMs = 30_000 }: DesktopOptions): Required<DesktopOptions> {
+export function desktopOf({ display = ":0", server, timeoutMs = 30_000, windowManager = [] }: DesktopOptions): Required<DesktopOptions> {
 	if (typeof display !== "string" || !DISPLAY.test(display)) throw new Error(`the desktop's display ${JSON.stringify(display)} must be a local X display, such as :0`);
 	const argv = server ?? ["Xvfb", display, "-screen", "0", "1280x800x24", "-nolisten", "tcp"];
-	if (!Array.isArray(argv) || argv.length === 0 || !argv.every((arg) => typeof arg === "string" && !arg.includes("\0")) || argv[0] === "") {
-		throw new Error("the desktop's server must be a program and its arguments, such as [\"Xvfb\", \":0\"]");
+	const program = (list: unknown) => Array.isArray(list) && list.length > 0 && list.every((arg) => typeof arg === "string" && !arg.includes("\0")) && list[0] !== "";
+	if (!program(argv)) throw new Error("the desktop's server must be a program and its arguments, such as [\"Xvfb\", \":0\"]");
+	if (!Array.isArray(windowManager) || (windowManager.length > 0 && !program(windowManager))) {
+		throw new Error("the desktop's windowManager must be a program and its arguments, such as [\"xfwm4\"], or [] for none");
 	}
 	// AbortSignal.timeout and Node's timers hold at most 2^31 - 1 ms (a longer one throws or fires at once), so a longer
 	// bound is refused here, before any computer exists, not in create after the computer is made.
 	if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > MAX_TIMER_MS) {
 		throw new Error(`the desktop's timeoutMs must be a whole number of milliseconds above 0 and at most ${MAX_TIMER_MS}, not ${timeoutMs}`);
 	}
-	return { display, server: [...argv], timeoutMs };
+	return { display, server: [...argv], timeoutMs, windowManager: [...windowManager] };
 }
 
 /**
@@ -63,7 +74,7 @@ export async function startDisplay(
 	for (;;) {
 		const hello = await client.call("hello", { client: `@parcha/agentrun-computer ${version}` }, { signal: either });
 		if (!hello.ok) return timedOut() ? late() : hello;
-		if (Array.isArray(hello.value.groups) && hello.value.groups.includes("screen")) return ok(undefined);
+		if (Array.isArray(hello.value.groups) && hello.value.groups.includes("screen")) return await startWindowManager(client, desktop, either, timedOut, late);
 		const waited = await client.call("process.wait", { id, timeoutMs: 0 }, { signal: either });
 		if (waited.ok && !waited.value.running) {
 			const read = await client.call("process.read", { id, stream: "stderr", offset: 0 }, { signal: either });
@@ -76,4 +87,19 @@ export async function startDisplay(
 		await sleep(DISPLAY_POLL_MS, undefined, { signal: either }).catch(() => undefined);
 		if (signal?.aborted) return fail("aborted", "create was aborted while the display came up");
 	}
+}
+
+/** Starts the desktop's window manager, if it has one, on the display that answers; a manager that cannot start fails create. */
+async function startWindowManager(
+	client: ComputerClient,
+	desktop: Required<DesktopOptions>,
+	signal: AbortSignal,
+	timedOut: () => boolean,
+	late: () => Result<never>,
+): Promise<Result<void>> {
+	if (desktop.windowManager.length === 0) return ok(undefined);
+	const manager = desktop.windowManager.join(" ");
+	const started = await client.call("process.start", { argv: [...desktop.windowManager], env: { DISPLAY: desktop.display } }, { signal });
+	if (!started.ok) return timedOut() ? late() : fail(started.error.code, `the window manager (${manager}) did not start on ${desktop.display}: ${started.error.message}`);
+	return ok(undefined);
 }

@@ -1,4 +1,4 @@
-// Build the box image (this folder's Dockerfile, plus Xvfb for a desktop) as a template of an Agent37 workspace, through
+// Build the box image (this folder's Dockerfile, plus Xvfb, xfwm4 and apps for a desktop) as a template of an Agent37 workspace, through
 // Agent37's cloud build, with the workspace's key in AGENT37_API_KEY, and print the template's name: an Agent37 desktop
 // starts from it (src/descriptors/agent37.ts AGENT37_BOX_TEMPLATE), and so can an Archil computer.
 //
@@ -27,16 +27,21 @@ export const API_URL = "https://api.agent37.com";
 /** Every file the image is made of besides DESKTOP: the Dockerfile and what it copies, as build-e2b.mjs hashes them. */
 export const RECIPE = ["Dockerfile", "agentrun-archil"];
 /**
- * What a desktop adds to box/Dockerfile: Xvfb, which the provider starts through computerd as the tool user on :0
- * (src/desktop.ts). Nothing starts it here, and no window manager, VNC server or sudo comes with it.
+ * What a desktop adds to box/Dockerfile: Xvfb and xfwm4, which the provider starts through computerd as the tool user on
+ * :0 (src/desktop.ts), and the apps E2B Desktop has that are cheap to carry: Xfce's terminal and text editor, Firefox
+ * ESR, and xdotool. computerd's apps group lists and opens them by their desktop files. Nothing starts here, and no VNC
+ * server or sudo comes with it.
  */
+export const DESKTOP_PACKAGES = ["xvfb", "xfwm4", "xfce4-terminal", "mousepad", "firefox-esr", "xdotool", "fonts-dejavu-core", "adwaita-icon-theme"];
 export const DESKTOP = `
-# A desktop (build-agent37.mjs): Xvfb, which the provider starts through computerd as the tool user on :0.
+# A desktop (build-agent37.mjs): Xvfb and xfwm4, which the provider starts through computerd as the tool user on :0, and
+# the apps an agent opens.
 RUN set -eu; \\
     apt-get update -qq; \\
-    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends xvfb >/dev/null; \\
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends ${DESKTOP_PACKAGES.join(" ")} >/dev/null; \\
     rm -rf /var/lib/apt/lists/*; \\
-    command -v Xvfb >/dev/null || { echo "the image has no Xvfb" >&2; exit 1; }; \\
+    for x in Xvfb xfwm4 xfce4-terminal mousepad firefox-esr xdotool; do command -v "$x" >/dev/null || { echo "the image has no $x" >&2; exit 1; }; done; \\
+    for app in org.xfce.mousepad xfce4-terminal firefox-esr; do [ -f "/usr/share/applications/$app.desktop" ] || { echo "the image has no desktop file $app.desktop" >&2; exit 1; }; done; \\
     ! command -v sudo >/dev/null 2>&1 || { echo "the image has sudo" >&2; exit 1; }
 `;
 /** How often a build's log is read, and the longest a build is waited for: Agent37's 45 minutes, and some. */
@@ -57,7 +62,7 @@ export function recipeOf(dir = here) {
 }
 
 /** The template's description: the recipe's hash is how a later build knows this one is current. */
-export const descriptionOf = (hash) => `AgentRun's box image (Archil client and helper, tool user, Xvfb), recipe ${hash}`;
+export const descriptionOf = (hash) => `AgentRun's box image (Archil client and helper, tool user, Xvfb, xfwm4 and apps), recipe ${hash}`;
 
 /** One ustar header block: a file at the archive's root, owned by root. */
 function header(name, mode, size) {
