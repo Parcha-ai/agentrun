@@ -137,6 +137,7 @@ function revisionInputOf(definition: Json, files: Record<string, string>): Revis
     ...(isObject(definition.model_tiers) ? { modelTiers: definition.model_tiers as ModelTiers } : {}),
     ...(typeof definition.thinking === "string" ? { thinking: definition.thinking } : {}),
     ...(definition.approvals === "ask" || definition.approvals === "never" ? { approvals: definition.approvals } : {}),
+    ...(isObject(definition.input_schema) ? { inputSchema: definition.input_schema } : {}),
     ...(isObject(definition.output_schema) ? { outputSchema: definition.output_schema } : {}),
     ...(definition.checkout === "pull_request" ? { checkout: "pull_request" as const } : {}),
     // The tool-call budget (tool-budget.ts): 0 keeps none.
@@ -329,7 +330,9 @@ function editOn(entry: AgentEntry, definition: Json, skills: Record<string, stri
         // A tool-call budget is a limit too: an edit of an agentic revision that leaves it out keeps it.
         ...(definition.max_tool_calls === undefined && current.kind === "agentic" && !isObject(definition.workflow) && (currentBody as AgenticBody).maxToolCalls !== undefined ? { max_tool_calls: (currentBody as AgenticBody).maxToolCalls } : {}),
         ...(definition.cap_mode === undefined && currentBody.capMode !== undefined ? { cap_mode: currentBody.capMode } : {}),
-        // The structured answer's schema is the agent's contract with its callers: an edit that leaves it out keeps it.
+        // Its input's and its structured answer's schemas are the agent's contract with its callers: an edit that leaves
+        // one out keeps it.
+        ...(definition.input_schema === undefined && current.kind === "agentic" && !isObject(definition.workflow) && (currentBody as AgenticBody).inputSchema !== undefined ? { input_schema: (currentBody as AgenticBody).inputSchema } : {}),
         ...(definition.output_schema === undefined && current.kind === "agentic" && !isObject(definition.workflow) && (currentBody as AgenticBody).outputSchema !== undefined ? { output_schema: (currentBody as AgenticBody).outputSchema } : {}),
         // So is the checkout its runs start in (none clears it).
         ...(definition.checkout === undefined && current.kind === "agentic" && !isObject(definition.workflow) && (currentBody as AgenticBody).checkout !== undefined ? { checkout: (currentBody as AgenticBody).checkout } : {}),
@@ -380,7 +383,7 @@ export function definitionOf(agent: AgentRow, revision: RevisionRow, version: nu
     ...(body.capMode !== undefined ? { cap_mode: body.capMode } : {}),
   };
   const kindBody = revision.kind === "agentic"
-    ? { instructions: (body as AgenticBody).instructions, ...((body as AgenticBody).model ? { model: (body as AgenticBody).model } : {}), ...((body as AgenticBody).modelTiers ? { model_tiers: (body as AgenticBody).modelTiers } : {}), ...((body as AgenticBody).thinking ? { thinking: (body as AgenticBody).thinking } : {}), ...((body as AgenticBody).learning !== undefined ? { learning: (body as AgenticBody).learning } : {}), ...((body as AgenticBody).outputSchema !== undefined ? { output_schema: (body as AgenticBody).outputSchema } : {}), ...((body as AgenticBody).maxToolCalls !== undefined ? { max_tool_calls: (body as AgenticBody).maxToolCalls } : {}), ...((body as AgenticBody).checkout !== undefined ? { checkout: (body as AgenticBody).checkout } : {}), ...common }
+    ? { instructions: (body as AgenticBody).instructions, ...((body as AgenticBody).model ? { model: (body as AgenticBody).model } : {}), ...((body as AgenticBody).modelTiers ? { model_tiers: (body as AgenticBody).modelTiers } : {}), ...((body as AgenticBody).thinking ? { thinking: (body as AgenticBody).thinking } : {}), ...((body as AgenticBody).learning !== undefined ? { learning: (body as AgenticBody).learning } : {}), ...((body as AgenticBody).inputSchema !== undefined ? { input_schema: (body as AgenticBody).inputSchema } : {}), ...((body as AgenticBody).outputSchema !== undefined ? { output_schema: (body as AgenticBody).outputSchema } : {}), ...((body as AgenticBody).maxToolCalls !== undefined ? { max_tool_calls: (body as AgenticBody).maxToolCalls } : {}), ...((body as AgenticBody).checkout !== undefined ? { checkout: (body as AgenticBody).checkout } : {}), ...common }
     : { workflow: (body as WorkflowBody).workflow, ...common };
   return {
     id: agent.id,

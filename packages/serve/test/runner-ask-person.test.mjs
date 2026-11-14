@@ -3,7 +3,7 @@
 // The runner carries it the same way, as a pi-native extension on the root agent (adapter-run-spec.ts, through the pi
 // adapter's PiAdapterOptions.extensions, which both offers and runs it), so pi keeps its terminate; the loop reads that
 // turn end (endedOnTurnEndingTool) and commits the run parked on a KINDS.personAsked entry, never ending it. A person's
-// message resumes it as the next user turn. pi only: CLI harnesses refuse ask_person (runnable.ts, not in REPLAY).
+// message resumes it as the next user turn. pi only: CLI harnesses refuse ask_person (runnable.ts, no replay row).
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";

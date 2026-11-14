@@ -200,15 +200,6 @@ export interface ClaudeCodeHarnessOptions {
    */
   builtinReplay?: Record<string, ReplayPolicy> | ((name: string) => ReplayPolicy);
   /**
-   * Remote MCP servers the CLI's own MCP client calls, each at the session's
-   * model proxy (`<modelUrl>/mcp/<name>`, behind the session's key), with the
-   * tools granted on each: those are allowed by name (`mcp__<name>__<tool>`)
-   * and each call is recorded as a built-in's. They are set over the CLI's
-   * stdin (`setMcpServers`), never in its argv. The proxy answers the
-   * handshake: an unreachable server shows at its first call. Default none.
-   */
-  mcpServers?: readonly { readonly name: string; readonly tools: readonly string[] }[];
-  /**
    * The MCP library the session's tool server is built with, as the host
    * loaded it from where it installed the Agent SDK. Default: imported by
    * name.
@@ -296,9 +287,6 @@ export const TOOLS_NOTE = `Your only tools are this app's, the mcp__${MCP_SERVER
 
 /** `TOOLS_NOTE` with WebSearch on (`providerTools: ['web_search']`) and the other built-ins off. */
 export const WEB_SEARCH_NOTE = `Your only tools are this app's (the mcp__${MCP_SERVER}__ tools, if it has any) and WebSearch; you have no shell, file or fetch tools of your own.`;
-
-/** `TOOLS_NOTE` with the app's remote MCP servers (`mcpServers`) and the built-ins off. */
-export const MCP_NOTE = `Your only tools are this app's: the mcp__${MCP_SERVER}__ tools, if it has any, and those of its MCP servers (the other mcp__ tools); you have no shell, file, search or web tools of your own.`;
 
 /** `TOOLS_NOTE` for a session with no tools at all (built-ins off, no `tools`). */
 export const NO_TOOLS_NOTE = 'You have no tools in this session: no shell, file, search or web tools. Answer from the conversation.';
@@ -426,29 +414,6 @@ async function bwrapWorks(machine: SessionMachine, signal: AbortSignal): Promise
   }
 }
 
-/** The part of `query()`'s answer that sets its MCP servers. */
-type McpQuery = {
-  setMcpServers(servers: Record<string, unknown>): Promise<{ errors?: Record<string, string> }>;
-  mcpServerStatus(): Promise<{ name: string; status: string; error?: string }[]>;
-};
-
-/**
- * The session's remote MCP servers, each an http entry at the model proxy's
- * `/mcp/<name>` with the session's key, sent over the CLI's stdin (an entry
- * in `options.mcpServers` would be in its argv). The in-process server
- * (`own`) goes with them, since the call replaces the dynamic set. A server
- * that did not connect throws: the turn fails rather than run without its
- * tools. Each call may take `timeoutMs`, what is left of the invocation.
- */
-async function connectMcp(q: McpQuery, machine: SessionMachine, names: readonly string[], own: Record<string, unknown>, timeoutMs: number): Promise<void> {
-  const entry = (name: string) => ({ type: 'http', url: `${machine.modelUrl}/mcp/${name}`, headers: { authorization: `Bearer ${machine.modelKey}` }, timeout: Math.floor(timeoutMs), alwaysLoad: true });
-  const set = await q.setMcpServers({ ...own, ...Object.fromEntries(names.map((name) => [name, entry(name)])) });
-  const status = new Map((await q.mcpServerStatus()).map((server) => [server.name, server]));
-  const error = (name: string) => (set.errors && Object.hasOwn(set.errors, name) ? set.errors[name] : undefined);
-  const failed = names.filter((name) => error(name) !== undefined || status.get(name)?.status !== 'connected');
-  if (failed.length) throw new Error(`the MCP server${failed.length > 1 ? 's' : ''} ${failed.join(', ')} did not connect: ${failed.map((name) => error(name) ?? status.get(name)?.error ?? status.get(name)?.status ?? 'no status').join('; ').slice(0, 300)}`);
-}
-
 export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harness {
   const tools = options.tools ?? [];
   const allowed = builtinTools(options.builtins);
@@ -461,8 +426,8 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
   const replay = typeof options.builtinReplay === 'function' ? options.builtinReplay : options.builtinReplay ? (name: string) => (options.builtinReplay as Record<string, ReplayPolicy>)[name] ?? claudeBuiltinReplay(name) : claudeBuiltinReplay;
   const providerTools = options.providerTools ?? [];
   const webSearch = providerTools.includes('web_search');
-  const mcpServers = options.mcpServers ?? [];
-  const mcpNames = new Set(mcpServers.flatMap((server) => server.tools.map((tool) => `mcp__${server.name}__${tool}`)));
+  // A run's remote MCP tools (`mcp__<server>__<tool>`), host tools like any other, served with them.
+  const remoteMcp = tools.some((tool) => tool.name.startsWith('mcp__'));
   const log = options.log ?? (() => {});
   let sdk: Promise<ClaudeAgentSdk> | undefined;
   const loadSdk = (): Promise<ClaudeAgentSdk> => {
@@ -649,8 +614,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
                       return name === asked ? allow() : allow({ ...input, skill: name });
                     }
                     // WebSearch, when on, takes the built-ins' path below: its intent recorded before it runs.
-                    // WebSearch and a granted MCP tool too.
-                    if (!builtinsOn && !(webSearch && hook.tool_name === 'WebSearch') && !mcpNames.has(hook.tool_name)) return deny("Not run: this session's only tools are its own.");
+                    if (!builtinsOn && !(webSearch && hook.tool_name === 'WebSearch')) return deny("Not run: this session's only tools are its own.");
                     if (ctx.signal.aborted) return deny('the session stopped');
                     // The host's gate decides every native search, as it does a host tool's call, before anything of it
                     // is written: a deny refuses it in the gate's words, an ask holds it until the person answers (the
@@ -748,8 +712,8 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
           // A host tool's result within the host's bound reaches the model whole (each tool is listed with it, too).
           mcpOutputTokens: MCP_OUTPUT_TOKENS,
         });
-        // MCP tools are offered whole, never deferred behind the CLI's tool search, which the session's proxy does not carry.
-        if (mcpServers.length) vmEnv.ENABLE_TOOL_SEARCH = 'false';
+        // A run's MCP tools are offered whole, never deferred behind the CLI's tool search, which the session's proxy does not carry.
+        if (remoteMcp) vmEnv.ENABLE_TOOL_SEARCH = 'false';
         const sdkEnv = { ...vmEnv, CLAUDE_CONFIG_DIR: configDir };
         const disallowed = [...CLAUDE_BUILTINS_OFF, ...(providerTools.includes('web_search') ? [] : ['WebSearch']), ...(options.disallowedTools ?? [])].filter((name) => !(skills && name === 'Skill'));
         const sessionId = uuidFrom(ctx.runId);
@@ -791,7 +755,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
           hooks,
           ...(ownSandbox ? { sandbox: claudeSandboxSettings(machine, sandbox.network) } : {}),
           ...(bridge.tools.length ? { mcpServers: { [MCP_SERVER]: server } } : {}),
-          allowedTools: [...bridge.tools.map((t) => `mcp__${MCP_SERVER}__${t.name}`), ...mcpNames],
+          allowedTools: bridge.tools.map((t) => `mcp__${MCP_SERVER}__${t.name}`),
           permissionMode: 'dontAsk',
           strictMcpConfig: true,
           // No user, project or local settings (and so no CLAUDE.md): a model-planted .claude/ on the Drive is ignored.
@@ -803,7 +767,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
           systemPrompt: {
             type: 'preset',
             preset: 'claude_code',
-            append: [builtinsOn ? DRIVE_NOTE : webSearch ? WEB_SEARCH_NOTE : mcpServers.length ? MCP_NOTE : bridge.tools.length ? TOOLS_NOTE : NO_TOOLS_NOTE, options.instructions, recovered].filter(Boolean).join('\n\n'),
+            append: [builtinsOn ? DRIVE_NOTE : webSearch ? WEB_SEARCH_NOTE : bridge.tools.length ? TOOLS_NOTE : NO_TOOLS_NOTE, options.instructions, recovered].filter(Boolean).join('\n\n'),
             snapshot: !recovered,
           },
           ...(store.hasSession ? { resume: sessionId } : { sessionId }),
@@ -825,7 +789,6 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
         };
         const q = query({ prompt: input, options: queryOptions });
         const messages = q[Symbol.asyncIterator]();
-        if (mcpServers.length) await connectMcp(q as unknown as McpQuery, machine, mcpServers.map((server) => server.name), bridge.tools.length ? { [MCP_SERVER]: server } : {}, Math.max(1_000, deadline - Date.now()));
 
         const send = async (text: string, placed: Submission[], how: { synthetic?: string; priority?: 'next' | 'later'; covers?: string[] } = {}) => {
           // The drive's first message says, once, what the sandbox told it (a lost Drive).

@@ -35,7 +35,7 @@ Set your password: http://127.0.0.1:7340/setup (the first visit sets it)
 A Docker box's image is built on its first run, which shows that on its timeline. `npx @parcha/agentrun` prints the
 `Boxes:` line on stderr, after its own line on stdout. On a machine where Docker is not running, the `Boxes:` line says so instead (`Boxes: none, so new agents run on the
 runner. Docker isn't running on this machine (no docker command on PATH): install or start Docker, then restart
-AgentRun.`); see [Boxes](#boxes).
+AgentRun.`); see [Sandbox](#sandbox).
 
 `Open` is [the console](#the-console), which takes [your password](#your-password). For a client, export the two lines before
 it, then make an agent, start a run, and read its timeline until a page says `final`:
@@ -137,7 +137,7 @@ at=2026-10-25T21:04:09.010Z event=auth_failed route=/v2/runs reason=wrong_token
 A request's path has no query. `auth_failed` names the route and why (`no_credential`, `wrong_token`,
 `wrong_launch_code`, `wrong_password`, `sign_in_table_full`), never the token given nor any part of it. `AGENTRUN_LOG=quiet` leaves out the request lines; the
 run and `auth_failed` lines stay. A run whose process failed at its start says why in its `error.message`, in words.
-One line at start, `event=boxes`, says which boxes this server has ([Boxes](#boxes)); quiet keeps it too.
+One line at start, `event=boxes`, says which boxes this server has ([Sandbox](#sandbox)); quiet keeps it too.
 `event=harness_offers why=start ms=<n>` says how long the server took to check what each harness offers (each CLI's
 package and pins; [harnesses](#harnesses)), the bulk of its start; quiet keeps it too. It is made at the start only: a
 PUT of `/settings/tools` and a save or delete of a tool key change no harness's offer, so they remake capabilities at
@@ -290,7 +290,7 @@ set (the environment, or Settings → Computers). No box holds a key. A Docker b
 and GitHub through a proxy, and nothing else; a Daytona or Modal box is made with no network when a host list is set, and
 capabilities say so in its `places.boxes` entry. Its `read`, `write` and `edit` work on that same `work/`: on this server, where the box binds it and this server
 holds directory handles (Docker on Linux), else in the box. The agent's loop, its log, its model calls and every key stay
-on the server. An agent says so in its [place](#place); the server says which [boxes](#boxes) it has; [a run in a Docker
+on the server. An agent says so in its [place](#place); the server says which boxes it has (`places.boxes` in its capabilities); [a run in a Docker
 box](#a-run-in-a-docker-box) is what the container gets; [the box's image](#the-boxs-image) is what it starts from.
 [Sandbox in 60 seconds](#sandbox-in-60-seconds) is all of it
 end to end. The [published image](#in-the-published-image) hosts Docker boxes through the host's Docker socket.
@@ -672,10 +672,9 @@ computer is made with the GPUs asked.
   `types: ["H100"]`, `max: 1`); another type or count needs a snapshot of its own, so it is refused. A GPU sandbox is
   made from that snapshot, with its 16 vCPUs, 100 GiB of memory and 400 GiB of disk, in region `earth`. Stopping it
   deletes it: it has no pause and no snapshot, so nothing on it outlives the run. A Daytona GPU may be preempted, so a
-  run on one can be cut short. The Daytona org needs GPU credits. It takes no mount (`mounts: []`: the snapshot's user
-  is not root and has no Archil client), so it can't hold the run's folder from Archil: in Mode 2 this server refuses a
-  Daytona sandbox with a `gpu`, and `GET /v2/computers` says why in Daytona's `gpu.why`. In Mode 1 a sandbox runs on
-  Docker only, so a Daytona GPU sandbox runs on neither mode's server today.
+  run on one can be cut short. The Daytona org needs GPU credits. No Daytona sandbox takes an Archil mount, with a GPU
+  or without (Archil's client hangs on its sandboxes), so it can't hold the run's folder: Mode 2 refuses it, and in
+  Mode 1 a sandbox runs on Docker only, so a Daytona sandbox runs on neither mode's server today.
 - **Modal** declares its GPUs, but a Modal GPU sandbox runs on gVisor, and the Archil mount the run's folder needs is not
   proven there. So this server refuses a Modal sandbox with a `gpu` for now. A Modal GPU is also preemptible.
 
@@ -739,9 +738,9 @@ passes the binding's conformance cases (below) needs no change here.
   region and that region's S3 URL (and an exec image pinned by digest, if you want one other than serve's default);
   `DELETE` turns it off. The default exec image is Docker's `buildpack-deps:trixie-scm` pinned by digest (git 2.47),
   because Archil's own has git 2.34 and a read-only bash policy runs git only at 2.43 or later. An image you name needs
-  git 2.43 for that too, and GNU coreutils and perl, as Debian-family images have. A Daytona, Modal, E2B or Agent37 sandbox mounts
+  git 2.43 for that too, and GNU coreutils and perl, as Debian-family images have. A Modal, E2B or Agent37 sandbox mounts
   the run's folder from its disk with a mount credential minted for that run alone; Docker's sandbox is refused, since
-  it cannot mount the disk.
+  it cannot mount the disk, and so is Daytona's, since Archil's client hangs on its sandboxes.
 
   The PUT is a secret write, so it takes the owner's signed-in session. A server with none to give it (API only, or
   `AGENTRUN_ACCOUNTS=0` reached beyond loopback) is set where it is started instead: `AGENTRUN_ARCHIL_REGION` and
@@ -797,20 +796,17 @@ owner's.
 - **Later, narrower tokens.** Archil's tokens reach a whole disk; nothing narrower exists today. If Archil ships
   path-scoped tokens, a run's token narrows from its disk to its own folder with no other change.
 
-**A Daytona computer's snapshot.** The mount runs as root through the image's root helper and its pinned archil client,
-so a Daytona computer that mounts the run's folder must start from a snapshot of the computer package's
-`box/Dockerfile`; Daytona's default snapshot, whose user is not root, is refused before anything mounts. Build one in
-the organization of `DAYTONA_API_KEY` with Daytona's Python SDK (`pip install daytona`), which prints its name, a hash
-of the recipe:
+**A Daytona computer's snapshot.** `AGENTRUN_DAYTONA_SNAPSHOT` names the snapshot (its id or name) every Daytona
+computer is made from, as `AGENTRUN_DOCKER_IMAGE` names Docker's image; unset, it is Daytona's default snapshot. One of
+the computer package's `box/Dockerfile` is built in the organization of `DAYTONA_API_KEY` with Daytona's Python SDK
+(`pip install daytona`), which prints its name, a hash of the recipe:
 
 ```sh
 DAYTONA_API_KEY=... python3 packages/computer/box/build-daytona.py   # prints snapshot=agentrun-archil-<12 hex>
 ```
 
-and name it in the server's environment, `AGENTRUN_DAYTONA_SNAPSHOT=agentrun-archil-<12 hex>` (the id or name of any
-Daytona snapshot), as `AGENTRUN_DOCKER_IMAGE` names Docker's image. Every Daytona computer is then made from it. Unset,
-it is Daytona's default snapshot, as before. A changed recipe is a new name, so build again after an upgrade that
-changes `box/`. The [Daytona box](#a-run-in-a-daytona-box) never reads it.
+A Daytona computer takes no Archil mount, so this server never holds a run's folder on one (see Mode 2 above). A
+Daytona [box](#sandbox) never reads it.
 
 A desktop, a phone and a browser run in either mode. The run's folder is at `/workspace` in every computer that mounts
 it: a sandbox always, and a desktop whose provider mounts the mode's folder (Docker's in Mode 1, E2B's in Mode 2). A
@@ -1518,6 +1514,8 @@ action the saved server doesn't list. Both routes are the owner's
 session alone, and a saved Composio server is gated, approved and shown on the Timeline as any MCP server's tools are,
 "not metered" until you price them. Composio's own meta tools stay refused, and the helper actions that connect an
 account are left off the server's address.
+[Connect Composio tools and triggers](../../docs/tutorials/composio.md) walks through the preset and a Composio
+trigger in the console, with each step's API call.
 
 What can go wrong, told apart:
 
@@ -1666,19 +1664,15 @@ asked by default.
   (so a new one counts at the next), over its secrets pipe, never its environment; a run that grants none of a
   server's tools gets none of it. It stays in the run's process: no harness's CLI, file or log holds it, and a run
   that writes it into a learned note is refused by the secret scan.
-- **pi** binds each granted tool in the run's process as `mcp__<server>__<tool>`, with the pinned description and
-  schema, and calls the server from there.
-- **claude-agent** uses the Claude CLI's own MCP client: one HTTP server entry per granted server at the session's
-  model proxy, `/mcp/<server>`, behind the session's key, sent over the CLI's stdin (never its arguments), with only
-  those servers (`strictMcpConfig`) and only the granted tools allowed. The proxy answers the MCP exchange itself and
-  makes the call with the credential. The CLI's tool search is off in such a session, so the granted tools are
-  offered whole. The proxy answers the handshake and the tool list itself, so a remote server that can't be reached
-  shows at the first call, as that call's error; only a proxy route the CLI can't connect to fails the turn.
-- **codex** uses Codex's own MCP client the same way: the harness writes each granted server in Codex's
-  `mcp_servers` (an agent's own `config` still may not), at the session's model proxy with the session's key, with
-  only the granted tools enabled. Each call runs without Codex asking (`default_tools_approval_mode = "approve"`): the
-  proxy is the gate. Codex sends a call as soon as it starts it, so the proxy records the call in the session before
-  it sends anything. Each server is `required`, but the proxy answers its handshake, so a remote server that can't be reached shows at the first call, as that call's error; only a proxy route Codex can't reach fails the turn. A tool whose schema Codex would drop or retype (a `not`, `patternProperties`, ...) is `422` at the save, naming the place and why.
+- **Every harness** gets each granted tool as a host tool, `mcp__<server>__<tool>`, with the pinned description and
+  schema, on its own channel for host tools: pi binds it in the run's process, claude-agent serves it from its `hands`
+  MCP server (`mcp__hands__mcp__<server>__<tool>`; the CLI's tool search is off in such a session, so the granted tools
+  are offered whole), codex hands it to Codex as a dynamic tool named `mcp_<server>__<tool>` (Codex refuses a
+  dynamic tool named `mcp__*`), and opencode serves it from its `hands` MCP server. No harness's own MCP client is
+  handed a server. Each call passes the run's one tool gate before anything is sent, is booked and recorded like any
+  host tool, and the runner calls the server with the credential: a call set to ask parks the run with nothing sent,
+  and the claim that resumes it runs the call once on the person's allow, or refuses it in their words. A tool whose
+  schema Codex would drop or retype (a `not`, `patternProperties`, ...) is `422` at the save, naming the place and why.
 - **A call** goes to the pinned URL alone, the 2026-07-28 revision first and a 2025-era server through its
   `initialize`; on 2026-07-28 each `x-mcp-header` parameter of the pinned tool is sent as its `Mcp-Param-*` header. No
   redirect is followed, at most 4 MiB is read, and it may take 120 s. The
@@ -3168,13 +3162,13 @@ its held worst case.
 
 ### A workflow run under its cap
 
-A workflow run is capped by the same checks, in its own process, each before the paid step is sent:
+A workflow run is capped by the same checks, on the run's one ledger (the kernel cap), each before the paid step is sent:
 
 | Step | Held at | Where |
 |---|---|---|
-| A model node's request | its expected cost, as an agentic run's request | the run's models (`cap.ts` capModels) |
+| A model node's request | its expected cost, as an agentic run's request | the run's ledger |
 | A call node's `llm` call | the same | the same, as a side request |
-| A call node's paid tool call (Parallel's search or extract) | its fee | `paidCall`, as an agentic run's |
+| A call node's paid tool call (Parallel's search or extract) | its fee | the run's ledger, as an agentic run's |
 | A decision on Parallel | its list price for one request, $0.001 | before the driver admits it (`decision-cap.ts`) |
 | A decision on Jev | TypeSafe's published price, $0.042 a million input tokens, one token a byte of its state and questions | the same |
 | A decision on an OpenRouter Decisions model | its catalog price: per request, per image, per input token, and per output token for 256 a question (`expected`) or the catalog's most (`strict`) | the same |
@@ -3289,7 +3283,7 @@ carries no cost at all, as from a provider that does not price the model. The te
   `SENTRY_DSN`, `DB_PWD`; never `PWD` or `OLDPWD`), whether the launcher's list names it or not. The rule is
   `keyShaped` (`src/secret-cut.ts`), which an import's cut and a harness's log take too. The keys a
   run needs are read from the store at its claim, opened with the seal key, and are put on that run's environment alone.
-  It gets none of the boxes' keys ([Boxes](#boxes)). A tool key reaches it only when its
+  It gets none of the boxes' keys ([Sandbox](#sandbox)). A tool key reaches it only when its
   revision names a tool the key unlocks (`MONID_API_KEY` a monid tool, `BROWSERBASE_API_KEY` and `KERNEL_API_KEY` `browser`; a workflow's
   tools are those its model and call nodes name), and a model key only when its model needs it ([Models](#models)), read
   from the revision at each claim, a resume after a restart included.

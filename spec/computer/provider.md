@@ -123,6 +123,7 @@ that the server, Settings and the conformance suite all read the same declaratio
 | `settings?` | Values that are not keys but fill a `create()` option (Modal's app): `name`, `option`, and a `default` used when the server names none. |
 | `metered` | The vendor bills by time. Prices are the vendor's page, not ours. |
 | `mounts` | The mount kinds its computers take (`bind`, `archil`), as its providers' `capabilities().mount` declare; `[]` for none. |
+| `unmounted?` | Why its computers take none of some mount kinds, each in one sentence, keyed by kind; never one `mounts` declares. `check()` refuses a mount of that kind in these words, code `refused` (Daytona's `archil`: Archil's client hangs on its sandboxes). |
 | `capabilities` | One entry per configuration it offers: a machine kind and its groups, as each built provider's `capabilities()` declares. At least one. |
 | `defaultImage?` | The image a computer of each setting kind starts from when its setting names none. A kind with no entry has no default, and the caller refuses the setting in words. |
 | `prepareImage?` | Its providers have `prepareImage()`: the image is built or pulled before the first create. |
@@ -147,6 +148,34 @@ The conformance case `health.declared` holds `capabilities()` to the declaration
 merges, `PROVIDERS` in `packages/computer/src/kinds.ts` is kept by hand and each module exports its own `CAPABILITIES`
 and `MOUNT`; the suite reads `PROVIDERS` either way. After that, the contract types move to a zero-dependency package,
 `@parcha/agentrun-computer-protocol` (**draft**), and this spec is generated from there.
+
+## A hosted vendor's exec
+
+A vendor on the shared machine-host adapter writes a `MachineHost` (`packages/computer/src/host.ts`), and its `exec` is
+the whole protocol: the adapter installs and starts `computerd` through it, then runs `computerd stdio` through it and
+talks to the daemon over that one process's stdin and stdout for the computer's whole life ([`stdio.md`](stdio.md)).
+`exec(id, argv, { stdin })` must give a process that is:
+
+- **Two-way and live.** Each `write()` reaches the process's stdin as it is written, and stdout and stderr bytes come
+  back as the process writes them, while it runs. Not request and response, and never held until the process exits.
+- **Byte-exact.** Every byte value 0-255, both ways: no UTF-8 decode or encode, no newline translation, no terminal,
+  nothing added or dropped.
+- **Without a timeout.** The process runs until it exits or `kill()` ends it. The vendor's command timeout, and any idle
+  timeout on the stream, are off.
+- **Apart and accountable.** stdout and stderr stay separate, `wait()` answers the process's own exit code, and `kill()`
+  ends the process itself, not only the streams.
+
+The exec pre-check checks each of these with `exec` alone, on a machine made by hand, before anything else of the host
+is written:
+
+```sh
+npm run conformance -w @parcha/agentrun-computer -- --provider <id | ./module.js> --exec-stream --machine <id>
+```
+
+It builds the host with the module's `createHost(options)`, sends all 256 byte values each way and 8 MiB of random
+bytes (compared by sha256), checks output and stdin while the process runs, stderr apart, `sh -c 'exit 7'`, a killed
+`sleep`, and a silent process of 75 s (`--quick`: 5 s). Each failure says what the exec did wrong, such as "byte 0x80
+came back on stdout as ef bf bd: your exec decodes UTF-8". It exits 0 when every check passes and 1 when one fails.
 
 ## A new vendor
 

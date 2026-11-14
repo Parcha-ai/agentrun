@@ -332,6 +332,8 @@ test("firings a restart finds due past their retry wait, queued behind a slow lo
   let atOnce = 0;
   const { arm } = second.clock;
   second.clock.arm = (fire, ms) => (ms <= 0 && atOnce++, arm(fire, ms));
+  // The restart's first lookup comes after the store's reads, slower on Postgres: the others are watched from there.
+  await until(() => lookups.length === 1, "the first firing looked up");
   for (let i = 0; i < 20; i++) {
     second.clock.to("2026-06-01T00:01:00Z");
     await sleep(1);

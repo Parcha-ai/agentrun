@@ -138,7 +138,7 @@ test("a phone with the ui group: observe is the outline of its window, act its s
   assert.equal(seen.images, undefined, "no image unless asked");
   assert.equal(seen.structured.id, "s1");
   const acted = await call(tools, "computer_act", { steps: [{ set: "@e2", value: "Groceries" }, { press: "@e3" }] });
-  assert.deepEqual(acted.text.split("\n"), ["1. set: semantic, verified", "2. press: semantic, verified", "changed · state s2"]);
+  assert.deepEqual(acted.text.split("\n"), ['1. set @e2 textbox "Title": semantic, verified', '2. press @e3 button "Save": semantic, verified', "changed · state s2"]);
   await call(tools, "computer_act", { steps: [{ click: [320, 260] }] });
   assert.deepEqual(phone.calls.filter(([method]) => method === "ui.act").map(([, params]) => params), [
     { steps: [{ set: "@e2", value: "Groceries" }, { press: "@e3" }] },
@@ -269,6 +269,27 @@ test("a script's shell and files are held to the run's gate: a denied bash, a de
   assert.match((await call(tools, "computer_script", { code: "try { await computer.files.write('/workspace/a.txt', 'x'); return 'wrote'; } catch (error) { return String(error.message); }" })).structured, /write setting asks a person first/);
   assert.deepEqual(seen.at(-1), ["write", { path: "/workspace/a.txt" }]);
   assert.equal(computer.calls.filter(([method]) => method === "files.write").length, 0, "a refused write sent nothing");
+  await run.end();
+});
+
+test("a script's processes.start is held as bash_background (bash's setting; a read-only bash policy refuses it), and opens on the desktop's display", async () => {
+  const root = scratch();
+  const computer = fakeScreen(root);
+  const run = await runTools(localWorkspace(root), { kind: "desktop", computer, hello: { ...helloOf("desktop", DESKTOP_GROUPS), display: ":0" }, check: { readBackOf } }, { mode: 1, context: ctx });
+  const seen = [];
+  let verdict = "allow";
+  run.computer.guard.install(async (tool, args) => { seen.push([tool, args]); return verdict; });
+  const tools = run.hostTools(run.kindTools);
+  const code = "try { return await computer.processes.start('mousepad', { cwd: '/tmp' }); } catch (error) { return String(error.message); }";
+  assert.deepEqual((await call(tools, "computer_script", { code })).structured, { pid: 42 });
+  assert.deepEqual(seen, [["bash_background", { command: "mousepad", cwd: "/tmp" }]]);
+  const [, sent] = computer.calls.filter(([method]) => method === "process.start").at(-1);
+  assert.deepEqual(sent, { argv: ["sh", "-c", "mousepad"], cwd: "/tmp", env: { DISPLAY: ":0" }, orphans: "keep" });
+  const [, ran] = await (async () => { await call(tools, "computer_script", { code: "await computer.shell.run('xdotool getactivewindow'); return 1;" }); return computer.calls.filter(([method]) => method === "exec.run").at(-1); })();
+  assert.equal(ran.env.DISPLAY, ":0", "a desktop's shell.run opens on its display too");
+  verdict = "ask";
+  assert.match((await call(tools, "computer_script", { code })).structured, /bash_background setting asks a person first/);
+  assert.equal(computer.calls.filter(([method]) => method === "process.start").length, 1, "a refused start sent nothing");
   await run.end();
 });
 

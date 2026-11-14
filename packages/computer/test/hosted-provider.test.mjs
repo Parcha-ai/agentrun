@@ -624,8 +624,15 @@ test("connect checks hello against the provider: one that drifted is refused; a 
 	assert.equal(connected.hello.version, VERSION);
 	await connected.close();
 	const m = only(fake);
+	// Exact match: a daemon of another version, older or newer, and a daemon one protocol step ahead are each refused.
 	m.box.helloPatch = { version: "0.0.0-other" };
-	assert.equal((await provider.connect(ref)).error?.code, "refused");
+	const older = await provider.connect(ref);
+	assert.equal(older.error?.code, "refused");
+	assert.match(older.error.message, new RegExp(`hello: the daemon reports version "?0\\.0\\.0-other"?, expected ${VERSION.replaceAll(".", "\\.")}`));
+	m.box.helloPatch = { protocol: "0.3" };
+	const ahead = await provider.connect(ref);
+	assert.equal(ahead.error?.code, "refused");
+	assert.match(ahead.error.message, /hello: the daemon speaks protocol 0\.3, expected exactly 0\.2/);
 	m.state = "stopped";
 	assert.equal((await provider.connect(ref)).error?.code, "refused");
 });
@@ -876,6 +883,50 @@ test("pid1: the machine's command is the entrypoint; the daemon goes in beside i
 	assert.notEqual([...fake.machines.values()][1].request.command[8], m.request.command[8], "each create its own");
 	assert.ok(!runsOf(fake, m.id).includes("run start"));
 	assert.equal(provider.capabilities().daemon, "pid1");
+});
+
+test("a desktop's window manager starts once the display answers, with DISPLAY; none by default; one that cannot start fails create, and nothing is left", async () => {
+	const starts = (fake, id) => fake.requests.filter(({ machine, method }) => machine === id && method === "process.start").map(({ params }) => params);
+	const managed = setup({ kind: "desktop", desktop: { windowManager: ["xfwm4", "--compositor=off"] } });
+	made(await create(managed.provider));
+	const m = only(managed.fake);
+	const [server, manager, ...more] = starts(managed.fake, m.id);
+	assert.equal(server.argv[0], "Xvfb", "the X server first");
+	assert.deepEqual(manager, { argv: ["xfwm4", "--compositor=off"], env: { DISPLAY: ":0" } }, "then the window manager, on the display");
+	assert.deepEqual(more, []);
+	const order = managed.fake.requests.filter(({ machine }) => machine === m.id).map(({ method, params }) => (method === "process.start" ? params.argv[0] : method));
+	const between = order.slice(order.indexOf("Xvfb") + 1, order.indexOf("xfwm4"));
+	assert.ok(between.filter((method) => method === "hello").length >= 2, `the window manager starts after a hello saw the display, not before: ${order.join(", ")}`);
+
+	const bare = setup({ kind: "desktop" });
+	made(await create(bare.provider));
+	assert.deepEqual(starts(bare.fake, only(bare.fake).id).map(({ argv }) => argv[0]), ["Xvfb"], "no window manager unless the provider names one");
+
+	const missing = setup({ kind: "desktop", desktop: { windowManager: ["no-such-program"] } }, { lingers: { reads: 1, lists: 1 } });
+	const failed = await create(missing.provider);
+	assert.equal(failed.error?.code, "not_found");
+	assert.match(failed.error.message, /the window manager \(no-such-program\) did not start on :0: no-such-program: executable file not found/);
+	await nothingLeft(missing.fake, "a window manager that cannot start");
+
+	const ends = setup({ kind: "desktop", desktop: { windowManager: ["ends-at-once"] } }, { lingers: { reads: 1, lists: 1 } });
+	const ended = await create(ends.provider);
+	assert.equal(ended.error?.code, "vendor");
+	assert.match(ended.error.message, /the window manager \(ends-at-once\) ended with exit code 1 within 1 s of starting on :0: Xfconf could not be initialized/);
+	await nothingLeft(ends.fake, "a window manager that ends at once");
+	assert.ok(
+		managed.fake.requests.some(({ machine, method, params }) => machine === m.id && method === "process.wait" && params.timeoutMs === 1000),
+		"create watches the window manager for a second",
+	);
+
+	// The watch has its own bound: a display with a short timeoutMs that came up with less than a second of it left still
+	// gets a healthy manager, whose process.wait computerd holds the whole second.
+	let held;
+	held = setup(
+		{ kind: "desktop", desktop: { windowManager: ["xfwm4"], timeoutMs: 700 } },
+		{ onStep: async (name) => (name === "process.wait" && held.fake.requests.at(-1).params.timeoutMs === 1000 ? new Promise((done) => setTimeout(done, 1000)) : undefined) },
+	);
+	made(await create(held.provider));
+	assert.throws(() => setup({ kind: "desktop", desktop: { windowManager: [""] } }), /windowManager must be a program and its arguments/);
 });
 
 test("pid1 desktop: the entrypoint carries the display, and init starts with it", async () => {

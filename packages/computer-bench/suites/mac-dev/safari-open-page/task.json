@@ -1,0 +1,57 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "mac.safari.open-page",
+  "version": 1,
+  "title": "Find a named page on the IANA website",
+  "split": "dev",
+  "tags": ["safari", "browse", "network"],
+  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "apps": ["com.apple.Safari"] },
+  "params": {
+    "page": {
+      "pick": [
+        { "say": "the Root Zone Database", "url": "https://www.iana.org/domains/root/db", "re": "^https?://(www\\.)?iana\\.org/domains/root/db/?([?#].*)?$" },
+        { "say": "Reserved Domains", "url": "https://www.iana.org/domains/reserved", "re": "^https?://(www\\.)?iana\\.org/domains/reserved/?([?#].*)?$" },
+        { "say": "the Time Zone Database", "url": "https://www.iana.org/time-zones", "re": "^https?://(www\\.)?iana\\.org/time-zones/?([?#].*)?$" },
+        { "say": "Protocol Registries", "url": "https://www.iana.org/protocols", "re": "^https?://(www\\.)?iana\\.org/protocols/?([?#].*)?$" }
+      ]
+    }
+  },
+  "setup": [
+    {
+      "method": "exec.run",
+      "why": "Close windows a run left on iana.org, so the front window is the one setup opens.",
+      "params": { "argv": ["osascript", "-e", "{{file:safari.applescript}}", "teardown"], "timeoutMs": 30000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "A new Safari window on IANA's home page, which is not the asked page.",
+      "params": { "argv": ["osascript", "-e", "{{file:safari.applescript}}", "start"], "timeoutMs": 30000 }
+    }
+  ],
+  "instruction": "In Safari, open the IANA website's page for {{page.say}}.",
+  "budget": { "steps": 15, "usd": 1, "wall_s": 180 },
+  "checks": [
+    {
+      "id": "url",
+      "kind": "exec",
+      "why": "The front Safari window's current tab shows the asked page: its URL, read over AppleScript, is that page's path on iana.org.",
+      "argv": ["osascript", "-e", "{{file:safari.applescript}}", "url"],
+      "timeoutMs": 30000,
+      "stdout": { "matches": "{{page.re}}" }
+    }
+  ],
+  "teardown": [
+    {
+      "method": "exec.run",
+      "why": "Close the windows on iana.org.",
+      "params": { "argv": ["osascript", "-e", "{{file:safari.applescript}}", "teardown"], "timeoutMs": 30000 }
+    }
+  ],
+  "oracle": [
+    {
+      "method": "exec.run",
+      "why": "Load the page in the front tab.",
+      "params": { "argv": ["osascript", "-e", "{{file:safari.applescript}}", "go"], "timeoutMs": 30000 }
+    }
+  ]
+}

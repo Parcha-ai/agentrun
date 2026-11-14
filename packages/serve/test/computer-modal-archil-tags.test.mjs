@@ -18,7 +18,7 @@ import { computerSpecOf } from "../dist/workspace/computer-deps.js";
 import { FakeArchilDisk } from "./fixtures/archil-fake.mjs";
 import { readBackOf } from "./fixtures/archil-readback.mjs";
 import { storeOn } from "./store-helpers.mjs";
-import { ARCHIL_KINDS } from "./workspace-kinds-fixture.mjs";
+import { KINDS } from "./workspace-kinds-fixture.mjs";
 
 const RUN = "01a1d0b9-3e8b-7352-9497-a407e2909f53";
 const AGENT = "a".repeat(128);
@@ -61,7 +61,7 @@ test("a Modal sandbox with the run's Archil folder, for the longest agent id, is
   // The recorder refuses the create, as Modal refuses one, so the claim gets no computer: what was asked is the point.
   await assert.rejects(
     computerForClaim({ runId: RUN, epoch: 1, computer: { kind: "sandbox", provider: "modal" } }, store, {
-      mode: 2, kinds: ARCHIL_KINDS, sealKey,
+      mode: 2, kinds: KINDS, sealKey,
       providers: { modal: async ({ app }) => new ModalProvider({ sdk: sdk.sdk, app, daemonPath: DAEMON_PATH }) },
       spec: computerSpecOf({}),
       workspace, check: { readBackOf, epoch: 1 },

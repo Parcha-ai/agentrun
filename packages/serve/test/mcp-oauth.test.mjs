@@ -649,7 +649,7 @@ test("the default network dials the address it is given, whatever the name: a na
 async function harnessServe(t, harness) {
   if (harness === "pi") return { server: await serve(t, { faux: FAUX_MCP }), extra: {}, content: 'Call mcp__docs__add with {"a":2,"b":3}' };
   if (harness === "claude-agent") {
-    const anthropic = await fakeAnthropic({ reply: (request) => (Object.keys(request.results).length ? { text: `The tool said: ${Object.values(request.results)[0]}` } : request.tools.includes("mcp__docs__add") ? { tool: { name: "mcp__docs__add", input: { a: 2, b: 3 } } } : { text: "Noted." }) });
+    const anthropic = await fakeAnthropic({ reply: (request) => (Object.keys(request.results).length ? { text: `The tool said: ${Object.values(request.results)[0]}` } : request.tools.includes("mcp__hands__mcp__docs__add") ? { tool: { name: "mcp__hands__mcp__docs__add", input: { a: 2, b: 3 } } } : { text: "Noted." }) });
     t.after(() => anthropic.close());
     withEnv(t, { ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}`, ANTHROPIC_BASE_URL: anthropic.url, AGENT_MODEL: "anthropic/claude-haiku-4-5" }, ["AGENT_MODEL_BASE_URL"]);
     return { server: await serve(t, { faux: undefined }), extra: { harness: "claude-agent", model: "anthropic/claude-haiku-4-5" }, content: "Add 2 and 3 with the add tool." };
@@ -673,7 +673,7 @@ async function harnessServe(t, harness) {
     AGENT_MODEL: "gpt-test",
     AGENT_MODEL_API_KEY: `not-a-secret-${"gateway"}`,
   }, ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"]);
-  return { server: await serve(t, { faux: undefined }), extra: { harness: "codex" }, content: 'mcp docs add {"a":2,"b":3}' };
+  return { server: await serve(t, { faux: undefined }), extra: { harness: "codex" }, content: 'call mcp_docs__add {"a":2,"b":3}' };
 }
 
 /** A run on `harness` whose sign-in's refresh is refused at its launch: started, followed to its end, and read back: its

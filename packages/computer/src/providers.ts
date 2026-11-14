@@ -9,6 +9,7 @@
 import type { RunFolder } from "./conformance/types.js";
 import type { ProviderDescriptor } from "./descriptor.js";
 import { DESCRIPTORS } from "./descriptors/index.js";
+import type { MachineHost } from "./host.js";
 import type { KindCapabilities } from "./kinds.js";
 import type { MountKind } from "./mount.js";
 import type { ComputerProvider } from "./provider.js";
@@ -30,6 +31,12 @@ export interface ConformanceModule {
 	mountFor?(kind: MountKind, options?: object): RunFolder | undefined | Promise<RunFolder | undefined>;
 	conformanceImage?(options?: object): string | Promise<string>;
 	conformanceNotes?: string[];
+	/**
+	 * A provider on the shared adapter: its MachineHost from the same settings, with no live switch, since it makes
+	 * nothing by itself. The live sweep lists and deletes through it, and the exec pre-check (--exec-stream) calls its
+	 * exec alone.
+	 */
+	createHost?(options?: object): MachineHost | Promise<MachineHost>;
 	settingsFromEnv?(env?: ProviderEnv): object;
 	/** Every name settingsFromEnv (and the module) reads, by role: COMPUTER_<ID>_*, or its live switch. */
 	readonly ENV?: Readonly<Record<string, string>>;

@@ -48,7 +48,8 @@ test('check(): a root with not, if/then or an enum is used as given', () => {
 });
 
 test("check(): a remote MCP server's granted tool meets the same checks, so the CLI never drops one the session was granted", () => {
-  const mcp = (inputSchema) => ({ ...spec({ type: 'object' }), tools: [], mcp: { servers: [{ name: 'fake', tools: [{ name: 'pick', inputSchema }] }], call: async () => ({ content: [] }) } });
+  // The run's MCP tool, a host tool like any other (mcp__<server>__<tool>).
+  const mcp = (inputSchema) => ({ ...spec({ type: 'object' }), tools: [{ name: 'mcp__fake__pick', description: 'Pick.', inputSchema, replay: 'safe', call: async () => ({ text: '' }) }] });
   const object = { type: 'object', properties: { a: { type: 'string' }, b: { type: 'string' } } };
   assert.deepEqual(adapter.check(mcp(object)), []);
   for (const key of ['anyOf', 'allOf', 'oneOf']) {

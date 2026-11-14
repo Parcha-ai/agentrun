@@ -26,7 +26,10 @@
 //	                    print one JSON line: this process's uid and gid, the kernel's release, the network interfaces
 //	                    it sees (interfaces, live; quiet; raised), with --sockets the unix sockets with a path it can
 //	                    connect to (sockets, by real path: a walk of /run, /tmp and the like, and /proc/net/unix's
-//	                    paths), the addresses that
+//	                    paths) and the TCP and UDP sockets that listen in its own network namespace (listeners: TCP in
+//	                    LISTEN and UDP bound with no peer, from /proc/net/tcp, tcp6, udp and udp6, each with the process
+//	                    that holds it where /proc shows its descriptors, and whether that process runs computerd), the
+//	                    addresses that
 //	                    answered (reached: bytes came back), those that accepted a TCP connection and sent nothing back
 //	                    (accepted), and each target's outcome (results). A TCP target gets a request by its port (443 a
 //	                    TLS ClientHello, 80 an HTTP HEAD, 53 a DNS query, any other an HTTP HEAD), a host:port/udp one
@@ -144,6 +147,8 @@ func main() {
 			netUnix, _ := os.ReadFile("/proc/net/unix")
 			search := probe.ConnectableSockets(probe.SocketRoots, string(netUnix), probe.DefaultSocketBounds, 2*time.Second)
 			result.Sockets = &search
+			listeners := probe.Listeners("/proc")
+			result.Listeners = &listeners
 		}
 		if err := json.NewEncoder(os.Stdout).Encode(result); err != nil {
 			logger.Printf("probe: %v", err)
@@ -162,6 +167,14 @@ func main() {
 // with args, init's own (daemon.InitInUserNamespace), and ends with that init.
 func runInit(opts initOptions, isolation daemon.Isolation, args []string, logger *log.Logger) int {
 	var dropped error
+	// A desktop's user gets a name first, while init is root, where the image has none for it: its programs look it up
+	// (daemon.NameUser). An init started again in a user namespace finds the name its first start gave.
+	if opts.user != nil && os.Getenv("DISPLAY") != "" && os.Geteuid() == 0 {
+		if err := daemon.NameUser("/etc", opts.user.uid, opts.user.gid, os.Getenv("HOME")); err != nil {
+			logger.Printf("init refuses to start: the desktop's user has no name, and %v", err)
+			return 1
+		}
+	}
 	if opts.user != nil {
 		dropped = daemon.Become(opts.user.uid, opts.user.gid, os.Getenv("HOME"), daemon.SocketPath(), isolation)
 	} else {

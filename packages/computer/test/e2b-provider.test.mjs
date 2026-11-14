@@ -3,6 +3,8 @@
 // from what the SDK slice is handed. The adapter's lifecycle is tested once, against its one fake host
 // (hosted-provider.test.mjs); E2B's own lifecycle is proven live (test/e2b). The Sandbox class here only records what
 // it is given and throws: no sandbox exists, no SDK is loaded unless a test says so, and nothing reaches the network.
+// The one exception is exec: the real SDK's envd client talks to a stand-in envd on 127.0.0.1 (fake-envd.mjs) that runs
+// each command on this machine, so the exec pre-check shows E2B's exec passes every byte through.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -12,19 +14,21 @@ import test from "node:test";
 import { checkLifetime, kindRefusals } from "../dist/index.js";
 import * as registry from "../dist/providers.js";
 import { fakeObjects } from "./fake-archil.mjs";
+import { fakeEnvd } from "./fake-envd.mjs";
 
 const e2b = await import("../dist/e2b.js");
 const { E2BProvider, create } = e2b;
 const { providerFor } = registry;
 /** The conformance module's names: the only place E2B settings are read from an environment. */
-const { E2B_ENV: ENV, settingsFromEnv } = await import("../dist/conformance/e2b.js");
+const { E2B_ENV: ENV, settingsFromEnv, createHost } = await import("../dist/conformance/e2b.js");
+const { checkExecStream, formatExecStream } = await import("../dist/conformance/exec-stream.js");
 
 const VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 const KEY = "e2b_fake_computer_key_0123456789";
 const COMPUTER = "agentrun.computer";
 const SPEC = { image: "desktop", lifetimeMs: 600_000, network: "none" };
 const HOUR = 3_600_000;
-const DESKTOP_GROUPS = ["exec", "files", "processes", "screen", "input.pointer", "input.keys"];
+const DESKTOP_GROUPS = ["exec", "files", "processes", "screen", "input.pointer", "input.keys", "apps"];
 const LINUX_GROUPS = ["exec", "files", "processes"];
 const BARE = "e2b_bare_key_must_never_be_used";
 const dir = mkdtempSync(join(tmpdir(), "computer-e2b-"));
@@ -338,6 +342,38 @@ test("the real SDK, given the provider's connection options, takes none of an am
 		assert.equal(config.debug, false);
 		assert.equal(config.sandboxUrl, undefined);
 	});
+});
+
+test("E2B's exec, through the real SDK's envd client, passes the exec pre-check: every byte comes back as sent, where commands.run's onStdout decodes UTF-8", async (t) => {
+	const sdk = await import("e2b").catch(() => undefined);
+	if (sdk === undefined) return t.skip("the e2b package is not installed here; it is the host's, as Modal's SDK is");
+	const envd = await fakeEnvd();
+	t.after(() => envd.close());
+	const connected = (id) => new sdk.Sandbox({ ...e2b.connectionOptions({ apiKey: KEY, domain: "e2b.app" }), sandboxId: id, envdVersion: "0.5.7", sandboxUrl: envd.url });
+	const unused = (name) => async () => assert.fail(`the pre-check calls exec alone, not ${name}`);
+	const Sandbox = {
+		create: unused("Sandbox.create"),
+		setTimeout: unused("Sandbox.setTimeout"),
+		kill: unused("Sandbox.kill"),
+		list: unused("Sandbox.list"),
+		// exec connects to a sandbox it did not create: getInfo for the time left, then connect.
+		getInfo: async (id) => ({ sandboxId: id, templateId: "base", metadata: {}, startedAt: new Date(), endAt: new Date(Date.now() + HOUR), state: "running" }),
+		connect: async (id) => connected(id),
+	};
+	const host = await createHost({ env: { [ENV.key]: KEY }, Sandbox });
+	const report = await checkExecStream(host, "sbx-exec", { longMs: 2_000, stepMs: 5_000, largeBytes: 1024 * 1024, largeMs: 30_000 });
+	assert.equal(report.pass, true, formatExecStream(report));
+	const start = envd.requests.find((request) => request.method === "Start");
+	assert.equal(start.headers.authorization, `Basic ${Buffer.from("root:").toString("base64")}`, "every process runs as root");
+	assert.equal(start.headers["keepalive-ping-interval"], "50");
+	assert.deepEqual([start.body.process.cmd, ...start.body.process.args.slice(0, 2)], ["/bin/bash", "-l", "-c"]);
+	assert.ok(!("timeout" in start.headers) && !("connect-timeout-ms" in start.headers), "the stream has no deadline");
+
+	// The SDK's own commands.run, the path exec took before: the byte 0x80 comes back as U+FFFD through onStdout.
+	const decoded = [];
+	const handle = await connected("sbx-exec").commands.run("printf '\\200'", { background: true, onStdout: (text) => decoded.push(Buffer.from(text, "utf8")) });
+	await handle.wait();
+	assert.deepEqual([...Buffer.concat(decoded)], [0xef, 0xbf, 0xbd]);
 });
 
 test("the module never reads E2B_API_KEY, never imports the SDK at load, and names no environment variable: the conformance module's names are COMPUTER_E2B_*", () => {

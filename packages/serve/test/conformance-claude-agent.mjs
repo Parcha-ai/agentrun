@@ -45,7 +45,6 @@ export async function closeOpenSessions() {
 function tracked(adapter) {
   return {
     ...adapter,
-    capabilities: () => adapter.capabilities(),
     check: (spec) => adapter.check(spec),
     open: async (spec, io) => {
       const session = await adapter.open(spec, io);
