@@ -46,9 +46,24 @@ test("one step, one string: the Timeline row, the expanded call and the caption,
       assert.equal(shown[index], words, `${surface}: the caption of ${JSON.stringify(asked)}`);
     });
   }
-  // A scripted demo captions its own calls in the record's shape, its chords as asked: the caption keeps them as the
-  // record would.
-  assert.deepEqual(captions([{ method: "ui.act", app: "com.apple.Notes", ok: true, steps: [{ do: "key", keys: "x" }, { do: "key", keys: "super+n" }] }]), ["Pressed a key, pressed ⌘N"]);
+  // A scripted demo captions its own raw calls (method, params, answer): serve records each as it records an agent's,
+  // its chords kept as the record keeps them, each ref by the name an earlier look gave it.
+  const target = { app: "com.apple.Notes" };
+  const look = { ok: true, value: { app: { id: "com.apple.Notes" }, nodes: [{ ref: "@e3", role: "button", name: " New\n Note " }] } };
+  const act = (steps) => ({ method: "ui.act", params: { target, steps }, answer: { ok: true, value: { steps: steps.map(() => ({ route: "semantic" })) } } });
+  assert.deepEqual(captions([act([{ key: "x" }, { key: "super+n" }]), { method: "ui.observe", params: { target }, answer: look }, act([{ press: "@e3" }])]), [
+    "Pressed a key, pressed ⌘N",
+    "Looked at Notes",
+    "Pressed “New Note”",
+  ]);
+});
+
+test("a started program reads as words in its call list and its caption, never as the wire method", () => {
+  const params = { argv: ["sleep", "9"] };
+  const answer = { ok: true, value: { pid: 41 } };
+  assert.equal(callWords(callRecordOf("process.start", params, answer, 5, Date.parse(at))), "Started a process");
+  assert.equal(callWords(callRecordOf("process.start", params, { ok: false, error: { code: "denied" } }, 5, Date.parse(at))), "Could not start a process");
+  assert.deepEqual(captions([{ method: "process.start", params, answer }]), ["Started a process"]);
 });
 
 test("an act of several steps reads the same on its row and in its call: the first three, the rest counted", () => {
