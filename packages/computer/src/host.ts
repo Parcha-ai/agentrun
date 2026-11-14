@@ -1,9 +1,9 @@
 // The machine host: what a vendor writes to put computers on its machines. A vendor answers seven calls about its own
 // machines (create, get, list, delete, exec, errorCode, and its static facts); hostedProvider (./hosted/provider.ts)
 // owns everything else a ComputerProvider does: the spec's check, the daemon's upload, install and start, the stdio
-// bridge, the read-back and the probe, labels, list and attach, the deadline and extend, delete-then-wait-gone, the
-// sweep of a lost create, the Archil mount, and the words of every refusal. These doc comments are the contract a new
-// vendor reads (PROVIDERS.md, "The eight members").
+// bridge, the read-back and the probe, labels, list and attach, the deadline and extend, the waits after a delete and a
+// stop, the sweep of a lost create, the Archil mount, and the words of every refusal. These doc comments are the
+// contract a new vendor reads (PROVIDERS.md, "The eight members").
 import type { MountKind, Unmounted } from "./mount.js";
 import type { ComputerCapabilities, ComputerSpec, GpuCapability, GpuSpec, NetworkForm, NetworkPolicy, Refusal } from "./provider.js";
 import type { ComputerErrorCode, Result } from "./result.js";
@@ -27,8 +27,10 @@ export interface MachineHost {
 	/** One machine as the vendor reads it now; undefined once the vendor no longer has it (not found is that, not an error). */
 	get(id: string, ctx: HostCall): Promise<Result<Machine | undefined>>;
 	/**
-	 * Every machine of the account that carries all of these labels, every page, each as get reads it (network included,
-	 * where the vendor reads one back), within ctx.timeoutMs in all. A machine the vendor is deleting may still be listed.
+	 * The machines of the account the vendor's listing shows for these labels, every page, within ctx.timeoutMs in all,
+	 * each as the listing reads it: a field it leaves out (the network, drift) is absent, and the adapter reads get where
+	 * it needs one. It may answer more machines than carry all the labels (a vendor that filters by some, or none): the
+	 * adapter keeps those that do. A machine the vendor is deleting may still be listed; one it no longer has is not.
 	 */
 	list(labels: Record<string, string>, ctx: HostCall): Promise<Result<Machine[]>>;
 	/** Deletes a machine; not found is ok. It answers once the vendor took the delete: the adapter waits for gone. */
@@ -62,7 +64,11 @@ export interface MachineHost {
 	errorCode?(error: unknown): ComputerErrorCode;
 	/** Vendor settings a machine takes once it runs and before the daemon goes in (egress rules, an idle timer). */
 	prepare?(id: string, ctx: HostCall): Promise<Result<void>>;
-	/** Stops a machine, keeping it; declared with facts.release "stop". It answers once the machine reads stopped (or gone with stopDeletes). */
+	/**
+	 * Asks the vendor to stop a machine, keeping it; declared with facts.release "stop". It answers once the vendor took
+	 * the ask: the adapter waits until get and the listing read it stopped (gone, where a stop deletes it), and asks again
+	 * while it reads running.
+	 */
 	stop?(id: string, ctx: HostCall): Promise<Result<void>>;
 	/**
 	 * Moves the vendor's own timer (facts.lifetime "vendor") so the machine ends at want.end, never past want.most, the
@@ -72,8 +78,11 @@ export interface MachineHost {
 	setTimer?(id: string, want: { end: Date; most: Date }, ctx: HostCall): Promise<Result<void>>;
 	/** Replaces some labels of a machine (the janitor's deadline label, at extend); facts.lifetime "janitor". */
 	setLabels?(id: string, labels: Record<string, string>, ctx: HostCall): Promise<Result<void>>;
-	/** The vendor's own rules of a spec, over the adapter's shared ones: an image name it takes, a GPU's image. No call. */
-	check?(spec: ComputerSpec): Refusal[];
+	/**
+	 * The vendor's own rules of a spec, over the adapter's shared ones: an image name it takes, a GPU's image. No call. The
+	 * spec is an object, as the caller gave it: its fields are not checked yet (an image may be a number).
+	 */
+	check?(spec: Partial<ComputerSpec>): Refusal[];
 	/** Settings' test, where a list would make something (an app); default: one list by the adapter's label, counted. */
 	testConnection?(ctx: HostCall): Promise<Result<{ detail: string }>>;
 }
@@ -113,8 +122,8 @@ export interface Machine {
 	id: string;
 	/** Every label it carries, the adapter's own included. */
 	labels: Record<string, string>;
-	/** starting: not yet running; going: being deleted or ended; failed: the vendor gave up on it (why says how). */
-	state: "starting" | "running" | "stopped" | "going" | "failed";
+	/** starting: not yet running; stopping: on its way to stopped; going: being deleted or ended; failed: the vendor gave up on it (why says how). */
+	state: "starting" | "running" | "stopping" | "stopped" | "going" | "failed";
 	/** The vendor's own read of its network; absent when the vendor reads none back (the probe stands for it then). */
 	network?: NetworkPolicy;
 	/** What the vendor resolved the image to, by its own name (a template's id, a snapshot). */

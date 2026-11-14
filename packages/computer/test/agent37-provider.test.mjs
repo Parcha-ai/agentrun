@@ -171,8 +171,8 @@ test("create posts the template, type, region, name, labels as metadata, deny-al
 	assert.equal(rest.calls[1].body.resources, undefined, "no size asked, none sent");
 });
 
-test("get reads an instance back as a machine; an unknown id is none; list matches labels over the whole workspace; delete twice is done", async () => {
-	const { rest, host } = restOnly();
+test("get reads an instance back as a machine; an unknown id is none; list answers the whole workspace, which the adapter matches by labels; delete twice is done", async () => {
+	const { rest, host, provider } = restOnly();
 	const { value } = await host.create(request({ "agentrun.conformance": "run-1" }), CTX);
 	await host.create(request({ "agentrun.conformance": "run-2" }), CTX);
 	const machine = (await host.get(value.id, CTX)).value;
@@ -187,9 +187,9 @@ test("get reads an instance back as a machine; an unknown id is none; list match
 	// get no longer catches 404: the adapter reads not_found as none (hosted-provider.test.mjs).
 	assert.equal(host.errorCode(await host.get("zzzzzzzzzz", CTX).catch((thrown) => thrown)), "not_found");
 	assert.equal(host.errorCode(await host.get("not an id", CTX).catch((thrown) => thrown)), "not_found", "an id that is not Agent37's is not found, never a URL");
-	const listed = (await host.list({ "agentrun.conformance": "run-1" }, CTX)).value;
-	assert.deepEqual(listed.map((one) => one.id), [value.id]);
-	assert.equal((await host.list({ [COMPUTER]: "1" }, CTX)).value.length, 2);
+	// Agent37 filters nothing: its listing is the whole workspace, and the adapter keeps the machines that carry the labels.
+	assert.equal((await host.list({ "agentrun.conformance": "run-1" }, CTX)).value.length, 2);
+	assert.deepEqual((await provider.list({ "agentrun.conformance": "run-1" })).value.map((info) => info.ref.id), [value.id]);
 	assert.ok((await host.delete(value.id, CTX)).ok);
 	assert.equal(host.errorCode(await host.delete(value.id, CTX).catch((thrown) => thrown)), "not_found", "a repeat's 404 is not_found, which the adapter's delete reads as done");
 	assert.equal(rest.instances.has(value.id), false);
