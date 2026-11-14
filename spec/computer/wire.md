@@ -60,8 +60,8 @@ A computer with the `ui` group also says its screen and its features:
 - `screen`: the main screen's size in points and its scale (pixels per point). Present with the `ui` group.
 - `features`: what the computer can and cannot do inside its groups, each name `true`, or `{"off": "<why, in words>"}`.
   A feature that is off is refused with that sentence when asked for, never ignored. The names and what they mean are
-  `features` in [`protocol.json`](protocol.json): `screen.capture`, `ui.tree`, `ui.image`, `ui.background`,
-  `ui.foreground`, `ui.page`, `ui.nav` and `apps.background`. Names stay the same on every OS; an OS name appears only
+  `features` in [`protocol.json`](protocol.json): `screen.capture`, `screen.ahead`, `ui.tree`, `ui.image`,
+  `ui.background`, `ui.foreground`, `ui.page`, `ui.nav` and `apps.background`. Names stay the same on every OS; an OS name appears only
   in a reason. A computer of the `ui` group always declares `ui.tree`. A feature not declared is not offered, but for
   `screen.capture`: a computer of the `screen` group that does not declare it captures its screen, and one that declares
   it off refuses `screen.shot` and `screen.watch` with its reason (an attached Mac whose owner has not granted the
@@ -270,7 +270,9 @@ The result:
   `invalid`. A window that only moved keeps its points good, because they are window points. Every point a step
   touches is held to this, each point of a drag's path as much as its first.
 - **The driver waits, never the model.** Every act settles before it answers: the window looks the same twice, a short
-  quiet apart, or `maxSettleMs` passed. An expect is polled on the computer, and an act's `state` is the window once it
+  quiet apart, or `maxSettleMs` passed. A driver whose OS tells when an app's tree changes (macOS's accessibility
+  notifications) may settle on those instead: it reads the window once the app told no change for the quiet, and
+  reads it again only for a change told after that read began. An expect is polled on the computer, and an act's `state` is the window once it
   settles after the expect, never a frame of a transition. Every verdict of an act reads that one final view: a set's
   hold, the expect's `met`, and the `state` it answers. A poll's look only says when to read the final view again.
 - **A settle reads the tree.** "Looks the same" compares the window's id, bounds and the nodes on it (each node's role,

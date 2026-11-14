@@ -1280,7 +1280,7 @@ test("a Claude Code API error is a request that failed, at its 0 tokens, never u
   assert.deepEqual([two.metrics.requests, two.metrics.unmetered], [2, 0]);
   assert.deepEqual(two.kinds, ["pi.user", "pi.assistant", "pi.tool-result", "pi.assistant", "pi.user", "pi.user"]);
   const rows = async (id) => timelineOf(await entriesOf(store, id), { settled: true });
-  assert.ok((await rows(failed.id)).some((r) => r.kind === "error" && r.summary === "Model request failed: API Error: overloaded"));
+  assert.ok((await rows(failed.id)).some((r) => r.kind === "error" && r.summary === "Model request failed: API Error: overloaded (its cost is unknown: the provider sent no price and may still bill it)"));
   assert.equal((await rows(interrupted.id)).findLast((r) => r.kind === "user_message").summary, "Claude Code: No response requested.");
   assert.equal((await readSession(noted, "claude-code")).users, 2, "the note is not the person's");
 });

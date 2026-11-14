@@ -75,6 +75,7 @@ function kernelTool(tool: HostTool): KernelTool {
     inputSchema: tool.inputSchema,
     replay: tool.replay,
     ...(tool.nests ? { nests: true as const } : {}),
+    ...(tool.deferred ? { deferred: true as const } : {}),
     async execute(input, io) {
       // The effect's step is `tool:<the model's call id>#<attempt>`: the host sees the model's call id.
       const callId = (io.stepId ?? "").replace(/^tool:/, "").replace(/#\d+$/, "");
