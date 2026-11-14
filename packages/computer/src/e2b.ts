@@ -171,6 +171,8 @@ function ambientProblem(): string | undefined {
  */
 export async function create(options: E2BOptions): Promise<E2BProvider> {
 	const { apiKey, Sandbox: given, ...rest } = options ?? ({} as E2BOptions);
+	// The key is checked before the SDK is loaded, so a missing key is named even where the package is not installed.
+	requireText(apiKey, "options.apiKey, the E2B API key is required: the provider reads no environment, so the caller passes it");
 	const ambient = ambientProblem();
 	if (ambient) throw new Error(ambient);
 	const Sandbox = given ?? (await loadPackage<{ Sandbox: E2BSandboxClass }>(E2B_PACKAGE)).Sandbox;

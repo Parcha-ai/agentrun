@@ -799,6 +799,9 @@ function pemOf(text: string): string | undefined {
  */
 export async function create(options: Agent37Options): Promise<Agent37Provider> {
 	const { apiKey, sshKey, ssh2: given, ...rest } = options ?? ({} as Agent37Options);
+	// The keys are checked before ssh2 is loaded, so a missing key is named even where the package is not installed.
+	requireText(apiKey, "options.apiKey, the Agent37 API key is required: the provider reads no environment, so the caller passes it");
+	requireText(sshKey, "options.sshKey, the private half of an SSH key registered on the Agent37 workspace, is required: its contents, never a path");
 	// ssh2 is CommonJS: its Client is a named export of the module, and of its default.
 	const loaded = given ?? (await loadPackage<Partial<Ssh2Module> & { default?: Ssh2Module }>(SSH2_PACKAGE));
 	const ssh2 = typeof loaded.Client === "function" ? (loaded as Ssh2Module) : (loaded as { default?: Ssh2Module }).default;
