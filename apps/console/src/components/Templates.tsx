@@ -397,7 +397,7 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
       <fieldset aria-label="Approvals" className="mt-6">
         <legend className="caps text-small font-semibold">Approvals</legend>
         <div className="mt-2 divide-y border">
-          {([["ask", "Ask me", "A call that asks waits for your answer: every write, and a read unless you turned on Allow reads for its server."], ["never", "Never ask (run unattended)", "Runs without asking you, even for writes. Pick this if a trigger starts the agent while you're away."]] as const).map(([value, label, note]) => (
+          {([["ask", "Ask me", "A call that asks waits for your answer: a ticked tool's write, and its read unless you turned on Allow reads for its server."], ["never", "Never ask (run unattended)", "Runs without asking you, even for writes. Pick this if a trigger starts the agent while you're away."]] as const).map(([value, label, note]) => (
             <label key={value} className="flex items-start gap-3 px-4 py-3">
               <input type="radio" name="approvals" value={value} className="mt-1 accent-primary" checked={approvals === value} onChange={() => setApprovals(value)} />
               <span><span className="font-mono text-body">{label}</span><span className="block text-small text-muted-foreground">{note}</span></span>
