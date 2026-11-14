@@ -5,8 +5,14 @@
 // no_auth only as `auth_config_details[].mode` "NO_AUTH" (only the toolkit list has a `no_auth` field). `authConfigs`: by toolkit slug, the auth configs
 // it already has. `active`: toolkit slugs the user already has an ACTIVE connected account for, under the auth config the
 // call names. `accounts`: by toolkit slug, the user's accounts as `{ status, auth_config }` (an ACTIVE one under another
-// config, say); as the real one, `auth_config_ids` narrows the list to those under it. `noTools`: its MCP endpoint serves no tool at all. `fail`: `{ path, status }`
-// makes the call whose path ends in `path` answer that status.
+// config, say); as the real one, `auth_config_ids` narrows the list to those under it. `noTools`: its MCP endpoint serves no tool at all. `fail`: `{ path, status, method? }`
+// makes the call whose path ends in `path` (or for which `path`, a function, holds) answer that status.
+// Its base URL carries a path of its own, new each start, and its MCP server's id is new each start too: a request on its
+// port that the server under test didn't send (a port prober on the host GETs / on each new loopback listener; another
+// test process's client may still call a port it freed, which this fake then took) is not one of its calls. Such a
+// request is answered 404 and kept apart in `strays`, never in `calls`, so a stray without the key can't read as the
+// server sending none; `mcpLog` likewise holds only the requests on the MCP endpoint's own path.
+import { randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import { startFakeMcp } from "./fake-mcp-server.mjs";
 
@@ -32,8 +38,10 @@ async function startEmptyMcp(path, inspect) {
 
 export async function startFakeComposio({ apiKey = "fake-test-key", toolkits, authConfigs = {}, active = [], accounts = {}, fail, noTools = false } = {}) {
   const calls = [];
+  const strays = [];
   const mcpKeys = [];
-  const id = "srv_fake1";
+  const own = `/fake-composio-${randomBytes(6).toString("hex")}`;
+  const id = `srv_fake_${randomBytes(4).toString("hex")}`;
   const inspect = (headers) => mcpKeys.push(headers["x-api-key"]);
   const mcp = noTools ? await startEmptyMcp(`/v3/mcp/${id}/mcp`, inspect) : await startFakeMcp({ path: `/v3/mcp/${id}/mcp`, inspect });
   const mcpOrigin = new URL(mcp.url).origin;
@@ -43,11 +51,17 @@ export async function startFakeComposio({ apiKey = "fake-test-key", toolkits, au
     for await (const chunk of req) chunks.push(chunk);
     const text = Buffer.concat(chunks).toString("utf8");
     const url = new URL(req.url, "http://x");
-    const body = text ? JSON.parse(text) : undefined;
+    if (!url.pathname.startsWith(`${own}/`)) {
+      strays.push({ method: req.method, path: url.pathname, headers: Object.keys(req.headers), at: Date.now() });
+      return void (res.writeHead(404, { "content-type": "application/json" }), res.end(JSON.stringify({ error: { message: "not this fake's" } })));
+    }
+    url.pathname = url.pathname.slice(own.length);
+    let body;
+    try { body = text ? JSON.parse(text) : undefined; } catch { body = text; }
     calls.push({ method: req.method, path: url.pathname, query: Object.fromEntries(url.searchParams), body, keyOk: req.headers["x-api-key"] === apiKey });
     const reply = (status, value) => (res.writeHead(status, { "content-type": "application/json" }), res.end(JSON.stringify(value)));
     if (req.headers["x-api-key"] !== apiKey) return reply(401, { error: { message: "Invalid API key" } });
-    if (fail && url.pathname.endsWith(fail.path)) return reply(fail.status, { error: { message: `Composio refused ${fail.path}` } });
+    if (fail && (!fail.method || fail.method === req.method) && (typeof fail.path === "function" ? fail.path(url.pathname) : url.pathname.endsWith(fail.path))) return reply(fail.status, { error: { message: `Composio refused ${url.pathname}` } });
     const slug = url.searchParams.get("toolkit_slug");
     if (req.method === "GET" && url.pathname === "/api/v3/tools") {
       const known = toolkits[slug];
@@ -71,8 +85,10 @@ export async function startFakeComposio({ apiKey = "fake-test-key", toolkits, au
   });
   await new Promise((resolve) => http.listen(0, "127.0.0.1", resolve));
   return {
-    baseUrl: `http://127.0.0.1:${http.address().port}`,
-    apiKey, calls, mcpKeys, mcpId: id, mcpLog: mcp.log,
+    baseUrl: `http://127.0.0.1:${http.address().port}${own}`,
+    apiKey, calls, strays, mcpKeys, mcpId: id,
+    /** The fake MCP server's log of the requests on its endpoint (a stray on another path is not one). */
+    get mcpLog() { return mcp.log.filter((entry) => new URL(entry.path, "http://x").pathname === `/v3/mcp/${id}/mcp`); },
     /** The calls to `path` (the Composio API's, exact), in order. */
     to: (path, method) => calls.filter((call) => call.path === path && (!method || call.method === method)),
     close: async () => { await mcp.close(); await new Promise((resolve) => (http.close(resolve), http.closeAllConnections())); },

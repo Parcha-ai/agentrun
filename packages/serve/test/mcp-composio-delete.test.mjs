@@ -11,7 +11,8 @@ import { secretWritePath, serve, serverLog } from "./support.mjs";
 secretWritePath(["PUT"], /^\/settings\/mcp-servers\/[^/]+\/composio$/);
 
 const TOOLS = [{ slug: "HACKERNEWS_GET_FRONTPAGE", name: "Front page", description: "The front page." }];
-const MADE = "/api/v3.1/mcp/srv_fake1";
+/** The delete of the MCP server the save made on Composio: its id is the fake's, new each start. */
+const MADE = { method: "DELETE", path: (path) => /^\/api\/v3\.1\/mcp\/srv_fake_[0-9a-f]+$/.test(path) };
 
 async function setup(t, options = {}) {
   const composio = await startFakeComposio({ toolkits: { hackernews: { no_auth: true, tools: TOOLS } }, ...options });
@@ -22,7 +23,7 @@ async function setup(t, options = {}) {
   assert.equal(saved.status, 200, JSON.stringify(saved.body));
   return { composio, log, api: server.api };
 }
-const deleted = (s) => s.composio.to(MADE, "DELETE");
+const deleted = (s) => s.composio.to(`/api/v3.1/mcp/${s.composio.mcpId}`, "DELETE");
 
 test("deleting a preset server deletes the one it made on Composio, with the saved key, then forgets our row", async (t) => {
   const s = await setup(t);
@@ -35,7 +36,7 @@ test("deleting a preset server deletes the one it made on Composio, with the sav
 });
 
 test("Composio's 404 means it is already gone: the delete goes on and says nothing is left to remove", async (t) => {
-  const s = await setup(t, { fail: { path: MADE, status: 404 } });
+  const s = await setup(t, { fail: { ...MADE, status: 404 } });
   const res = await s.api("DELETE", "/settings/mcp-servers/hn");
   assert.equal(res.status, 204, JSON.stringify(res.body));
   assert.equal(deleted(s).length, 1);
@@ -44,7 +45,7 @@ test("Composio's 404 means it is already gone: the delete goes on and says nothi
 
 for (const status of [403, 500]) {
   test(`Composio ${status}: our row is still forgotten, and the answer says to remove it in Composio, never the key`, async (t) => {
-    const s = await setup(t, { fail: { path: MADE, status } });
+    const s = await setup(t, { fail: { ...MADE, status } });
     const res = await s.api("DELETE", "/settings/mcp-servers/hn");
     assert.equal(res.status, 200, JSON.stringify(res.body));
     assert.equal(res.body.deleted, true);

@@ -2,8 +2,8 @@
 // runs in the computer beside them (Daytona's toolbox, E2B's envd) and runs commands as root, or as a user with sudo, for
 // whoever reaches it, on the computer's loopback and on every other address it has. So init, while it is still root,
 // moves itself into a network namespace that holds its own loopback alone (OwnNetwork), refuses to start while another
-// process holds the uid its programs run as (RefuseStrangers), and, once it has dropped, takes vsock and io_uring from
-// every thread (DenySockets). Every program init starts inherits all three.
+// process holds the uid its programs run as (RefuseStrangers), and, once it has dropped, takes vsock, io_uring and setns
+// from every thread (DenySockets). Every program init starts inherits all three.
 package isolate
 
 import (

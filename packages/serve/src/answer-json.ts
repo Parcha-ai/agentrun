@@ -42,8 +42,9 @@ type Validator = ReturnType<typeof Compile>;
 const compiledSchemas = new Map<string, Validator>();
 
 /** `schema` compiled to its checker (and the compiled validator, for a caller that reads each error's keyword and path),
- *  or why it does not compile. The one wrapper of the compiler: the most recent 256 schemas are kept compiled. */
-export function schemaCheck(schema: unknown): { check: SchemaCheck; validator: Validator } | { why: string } {
+ *  or why it does not compile. The one wrapper of the compiler: the most recent 256 schemas are kept compiled. `misses`:
+ *  the same problems as `check`, each with the JSON Pointer of the value it is about apart from its words. */
+export function schemaCheck(schema: unknown): { check: SchemaCheck; misses: (value: unknown) => { path: string; words: string }[]; validator: Validator } | { why: string } {
   if (!isObject(schema)) return { why: "it is not a JSON object" };
   const key = JSON.stringify(schema);
   let validator = compiledSchemas.get(key);
@@ -57,7 +58,8 @@ export function schemaCheck(schema: unknown): { check: SchemaCheck; validator: V
     compiledSchemas.set(key, validator);
   }
   const compiled = validator;
-  return { validator: compiled, check: (value) => compiled.Errors(value)[1].map((e) => `${e.instancePath || "/"} ${e.message}`) };
+  const misses = (value: unknown) => compiled.Errors(value)[1].map((e) => ({ path: e.instancePath, words: `${e.instancePath || "/"} ${e.message}` }));
+  return { validator: compiled, misses, check: (value) => misses(value).map((miss) => miss.words) };
 }
 
 /** The section every harness's system prompt ends its instructions with when the agent has an output schema

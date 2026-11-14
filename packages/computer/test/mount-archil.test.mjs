@@ -513,7 +513,7 @@ test("syncingClient: a caller whose signal fires stops waiting for the sync, in 
 test("archilReadBack: fuse.archil at /workspace with the asked source, under the epoch, exclusive once serve answers; anything else is in words", () => {
 	const line = `${MOUNT.disk}:/${MOUNT.folder}[${MOUNT.region}] /workspace fuse.archil rw,nosuid,nodev 0 0`;
 	const proc = "proc /proc proc rw,hidepid=invisible 0 0";
-	const read = (mounts, { epoch = 3, served = true, recorded = recordedMount(archilLabels(MOUNT)) } = {}) => archilReadBack({ mounts: `${proc}\n${mounts}\n`, epoch, served, recorded });
+	const read = (mounts, { epoch = 3, served = true, recorded = recordedMount({ ...LABELS, ...archilLabels(MOUNT) }) } = {}) => archilReadBack({ mounts: `${proc}\n${mounts}\n`, epoch, served, recorded });
 	assert.deepEqual(read(line), computer.readBackOf(MOUNT, 3));
 	assert.deepEqual(read(line, { served: false }), { ...computer.readBackOf(MOUNT, 3), exclusive: false });
 	assert.deepEqual(read(`${MOUNT.disk}:/${MOUNT.folder} /workspace fuse.archil rw 0 0`), computer.readBackOf(MOUNT, 3), "no region in the source: the recorded one");
@@ -523,13 +523,17 @@ test("archilReadBack: fuse.archil at /workspace with the asked source, under the
 	noToken(read(line), "the read-back");
 });
 
-test("archilLabels and recordedMount: the mount's kind and source as one label, never the token, read back as written", () => {
+test("archilLabels and recordedMount: the mount's kind, disk, region and the folder's agent as one label, never the token; read back whole with the run's label", () => {
 	const labels = archilLabels(MOUNT);
 	assert.deepEqual(Object.keys(labels), [ARCHIL_MOUNT_LABEL]);
+	assert.equal(labels[ARCHIL_MOUNT_LABEL], JSON.stringify({ kind: "archil", disk: MOUNT.disk, region: MOUNT.region, agent: "a1" }));
 	noToken(labels, "the label");
-	assert.deepEqual(recordedMount(labels), { kind: "archil", disk: MOUNT.disk, region: MOUNT.region, folder: MOUNT.folder });
+	assert.deepEqual(recordedMount({ ...LABELS, ...labels }), { kind: "archil", disk: MOUNT.disk, region: MOUNT.region, folder: MOUNT.folder });
+	assert.equal(recordedMount(labels), undefined, "no run label: no folder");
+	assert.equal(recordedMount({ ...LABELS, [ARCHIL_MOUNT_LABEL]: JSON.stringify({ kind: "archil", disk: MOUNT.disk, region: MOUNT.region, folder: MOUNT.folder }) }), undefined, "the folder whole is not a label this provider writes");
+	assert.equal(recordedMount({ ...LABELS, [ARCHIL_MOUNT_LABEL]: JSON.stringify({ kind: "archil", disk: MOUNT.disk, region: MOUNT.region, agent: "a/1" }) }), undefined, "an agent of no folder's shape");
 	assert.equal(recordedMount({}), undefined);
-	assert.equal(recordedMount({ [ARCHIL_MOUNT_LABEL]: "{not json" }), undefined);
+	assert.equal(recordedMount({ ...LABELS, [ARCHIL_MOUNT_LABEL]: "{not json" }), undefined);
 });
 
 test("archilRelease: a final sync through computerd, then checkin as root; nothing mounted is let go already; a failed sync is said, and checkin still runs", async () => {

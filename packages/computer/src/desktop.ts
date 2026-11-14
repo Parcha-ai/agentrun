@@ -20,12 +20,46 @@ export interface DesktopOptions {
 export const DESKTOP_GROUPS = ["screen", "input.pointer", "input.keys", "apps"] as const;
 
 /**
+ * The session bus the window manager reads its settings over: dbus's own session config, but listening on an abstract
+ * name, which only a program in the bus's own network namespace reaches. dbus's unix:tmpdir is a socket under /tmp
+ * with dbus 1.16 (Agent37's box), which every program of the user reaches.
+ */
+const WINDOW_MANAGER_BUS = `<busconfig>
+  <type>session</type>
+  <keep_umask/>
+  <listen>unix:abstract=/agentrun/window-manager</listen>
+  <auth>EXTERNAL</auth>
+  <standard_session_servicedirs/>
+  <policy context="default">
+    <allow send_destination="*" eavesdrop="true"/>
+    <allow eavesdrop="true"/>
+    <allow own="*"/>
+  </policy>
+</busconfig>`;
+
+/**
  * The window manager a host's desktops run where its facts say so (HostFacts.windowManager: E2B's and Agent37's), once
  * the display answers: it frames, stacks and focuses the windows apps.launch opens. xfwm4, which both images have, with
- * no compositor and no session manager, in a session bus of its own (dbus-run-session), where it reads its settings
- * from xfconfd: without one it exits at once, "Xfconf could not be initialized".
+ * no compositor and no session manager. It reads its settings from xfconfd over a session bus, and exits at once
+ * without one ("Xfconf could not be initialized"). So it runs in a session bus of its own (dbus-run-session, WINDOW_MANAGER_BUS, written to a file of
+ * its own under /tmp), in a user namespace (the same uid) and a network namespace of its own: a program of the
+ * computer's user reaches no socket of that bus. The user owns that user namespace, but init's filter refuses setns to
+ * every program (daemon/internal/isolate), so none joins it. xfwm4 reaches the display as any program does, by its path.
  */
-export const WINDOW_MANAGER: readonly string[] = ["dbus-run-session", "--", "xfwm4", "--compositor=off", "--sm-client-disable"];
+export const WINDOW_MANAGER: readonly string[] = [
+	"unshare",
+	"--user",
+	"--map-current-user",
+	"--net",
+	"--",
+	"sh",
+	"-c",
+	'bus=$(mktemp) && printf "%s" "$1" > "$bus" && exec dbus-run-session --config-file="$bus" -- xfwm4 --compositor=off --sm-client-disable',
+	"sh",
+	WINDOW_MANAGER_BUS,
+];
+/** WINDOW_MANAGER as create's errors name it: what runs, without the shell line and the bus's config. */
+const WINDOW_MANAGER_WORDS = "unshare --user --map-current-user --net -- dbus-run-session -- xfwm4 --compositor=off --sm-client-disable";
 
 const DISPLAY = /^:\d{1,5}(\.\d{1,5})?$/;
 /** How often create asks the daemon whether the display is up yet. */
@@ -103,7 +137,7 @@ async function startWindowManager(
 	vendor: string,
 	caller: AbortSignal | undefined,
 ): Promise<Result<void>> {
-	const manager = WINDOW_MANAGER.join(" ");
+	const manager = WINDOW_MANAGER_WORDS;
 	const bound = AbortSignal.timeout(WM_BOUND_MS);
 	const signal = caller ? AbortSignal.any([caller, bound]) : bound;
 	const stopped = (code: ComputerErrorCode, message: string) =>

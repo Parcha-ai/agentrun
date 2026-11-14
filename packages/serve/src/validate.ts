@@ -258,7 +258,22 @@ export function inputIssues(input: Json, schema: Json, at = "input"): InputIssue
     else if (error.keyword === "additionalProperties") for (const key of (params.additionalProperties as string[] | undefined) ?? []) add(`${where}.${key}`, "not_allowed", `${where} keeps no field ${key}`, `Remove ${where}.${key}.`);
     // A closed object's own refusal of each extra property, said once above by its name.
     else if (error.keyword === "boolean" && error.schemaPath.endsWith("/additionalProperties")) continue;
+    // A required text sent empty is one left blank (a form sends it so): said as a missing one is, never as its length.
+    else if (error.keyword === "minLength" && emptyRequired(input, schema, error.instancePath, error.schemaPath)) add(where, "missing", `${where} is required`);
     else add(where, KEYWORD_REASON[error.keyword] ?? "invalid", `${where} ${error.message}`);
   }
   return out;
+}
+
+/** The parts of a JSON Pointer as the compiler writes it (`/topics/0`, `#/properties/company`). */
+const pointerParts = (pointer: string) => pointer.replace(/^#/, "").split("/").slice(1).map((part) => part.replace(/~1/g, "/").replace(/~0/g, "~"));
+/** What `parts` name in `root`, or undefined. */
+const pointed = (root: unknown, parts: string[]): unknown => parts.reduce<unknown>((x, part) => (isObject(x) || Array.isArray(x) ? (x as Json)[part] : undefined), root);
+
+/** Whether the value at `instancePath` is "" and its object schema (`schemaPath` is `…/properties/<name>`) requires it. */
+function emptyRequired(input: Json, schema: Json, instancePath: string, schemaPath: string): boolean {
+  const at = pointerParts(schemaPath);
+  if (pointed(input, pointerParts(instancePath)) !== "" || at.at(-2) !== "properties") return false;
+  const parent = pointed(schema, at.slice(0, -2));
+  return isObject(parent) && Array.isArray(parent.required) && parent.required.includes(at.at(-1));
 }
