@@ -364,7 +364,7 @@ export async function approve(store: RunsStore, moment: RunMoment, id: string, d
 // ---- start -----------------------------------------------------------------------------------------------------------
 
 /** A UUIDv7 run id: time-ordered, so a listing by start time is stable, and unique per run. */
-function uuidv7(now = Date.now()): string {
+export function uuidv7(now = Date.now()): string {
   const bytes = randomBytes(16);
   bytes.writeUIntBE(now, 0, 6);
   bytes[6] = (bytes[6]! & 0x0f) | 0x70;

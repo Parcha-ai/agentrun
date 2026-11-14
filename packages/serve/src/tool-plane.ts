@@ -19,6 +19,7 @@
 // harness's own search (inside its CLI, where no call can wait for a person) gives way to the kernel's. A run is never
 // told a deny: its Plane resolves a denied capability as under ask, and the gate, which reads the permission at each
 // call, is the one place that refuses it, so a deny lifted mid-run is lifted at the next call.
+import { META_TOOLS } from "./meta-tool-names.js";
 import { blurbOf, isAskable, isTableTool, tableTools } from "./tool-list.js";
 import { PROVIDERS as COMPUTER_PROVIDERS } from "@parcha/agentrun-computer";
 import { decisionKeysOf, PARALLEL_KEY_ENV } from "./decisions.js";
@@ -68,8 +69,9 @@ export const serverGate = (name: string, settings: ToolSettingsMap, effect?: Too
   return { permission, ...(lifted ? { allow_reads: true as const } : {}), default_permission: defaultPermission(name), permissions: [...permissionsOf(name)] };
 };
 /** The run's own tools beyond the table, each its own settings key, allowed by default like a table tool: the learned
- *  workflow a run's pin names runs as `learned_workflow` (learned-workflow.ts LEARNED_WORKFLOW_TOOL). */
-export const SERVE_OWN_TOOLS: readonly string[] = ["learned_workflow"];
+ *  workflow a run's pin names runs as `learned_workflow` (learned-workflow.ts LEARNED_WORKFLOW_TOOL), and the host's
+ *  `tools_search`, `tools_call` and `codemode` (runner/meta-tools.ts): set to deny, one is not offered to a run. */
+export const SERVE_OWN_TOOLS: readonly string[] = ["learned_workflow", ...META_TOOLS];
 /** A computer kind's tools, one settings key per kind, as `browser` holds the browser's family: every desktop tool is
  *  held to `desktop`, every phone tool to `phone` (the kernel registry's definitions name the key; tool-gate.ts
  *  settingsKeyOf reads it there). Allowed by default like a table tool; allow or deny. */

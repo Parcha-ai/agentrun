@@ -97,7 +97,7 @@ export type LearningCost = Answer<"getLearningCost">;
 export type LearningEvals = Answer<"listLearningEvals">;
 export type LearningEval = LearningEvals["evals"][number];
 /** One run of that series. `path`: `workflow` a learned workflow finished it alone, `handed_back` one ran and the agent
- *  went on, `agent` none ran. */
+ *  went on, `agent` none ran, `replay` a replay run deciding whether a learned workflow's new revision serves. */
 /** A learning batch (learn from rows): GET /v2/agents/{id}/learning/batches/{batch_id}'s answer, its list's headers, a start's body and a row. */
 export type LearningBatch = Answer<"getLearningBatch">;
 export type LearningBatchHead = Answer<"listLearningBatches">["batches"][number];
